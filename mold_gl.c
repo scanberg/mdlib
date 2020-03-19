@@ -1,7 +1,5 @@
 #include "mold.h"
 
-#if 0
-
 #if defined(_WIN32) && !defined(APIENTRY) && !defined(__CYGWIN__) && !defined(__SCITECH_SNAP__)
 #define APIENTRY __stdcall
 #endif
@@ -84,8 +82,6 @@ GLAPI GLenum APIENTRY glCheckFramebufferStatus (GLenum target);
 GLAPI void APIENTRY glFramebufferTexture2D (GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
 GLAPI void APIENTRY glFramebufferRenderbuffer (GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
 
-#define MOLD_MAX_REP_SLOTS 16
-
 typedef struct mold_gl_buffer_t {
     GLuint id;
 } mold_gl_buffer_t;
@@ -94,16 +90,6 @@ typedef struct mold_gl_aabb_t {
     float min[3];
     float max[3];
 } mold_gl_aabb_t;
-
-typedef struct mold_gl_rep_t {
-    mold_rep_type_t type;
-    mold_rep_args_t args;
-
-    struct {
-        uint32_t count;
-        GLuint data;
-    } color;
-} mold_gl_rep_t;
 
 typedef struct mold_gl_mol_t {
     struct {
@@ -137,6 +123,16 @@ typedef struct mold_gl_mol_t {
     } backbone;
 } mold_gl_mol_t;
 
+typedef struct mold_gl_rep_t {
+    mold_rep_type_t type;
+    mold_rep_args_t args;
+
+    struct {
+        uint32_t count;
+        GLuint data;
+    } color;
+} mold_gl_rep_t;
+
 typedef uint32_t mold_gl_version_t;
 typedef enum mold_gl_version {
     MOLD_UNKNOWN = 0,
@@ -146,12 +142,16 @@ typedef enum mold_gl_version {
 
 typedef struct mold_gl_context_t {
     mold_gl_version_t version;
-    mold_gl_mol_t molecule;
 
     struct {
         uint32_t count;
-        mold_gl_rep_t data[MOLD_MAX_REP_SLOTS];
-    } representation;
+        mold_gl_mol_t data[MOLD_MOL_SLOTS];
+    } molecule;
+
+    struct {
+        uint32_t count;
+        mold_gl_rep_t data[MOLD_REP_SLOTS];
+    };
 
     GLuint vao;
     GLuint ubo;
@@ -163,8 +163,7 @@ static mold_result_t mold_gl_init_common_resources(mold_gl_context_t* ctx) {
     glGenBuffers(1, &ctx->ubo);
     glGenFramebuffers(1, &ctx->fbo);
 
-    mold_result_t res = {MOLD_SUCCESS, ""};
-    return res;
+    return MOLD_SUCCESS;
 }
 
 static mold_result_t mold_gl_free_common_resources(mold_gl_context_t* ctx) {
@@ -172,14 +171,12 @@ static mold_result_t mold_gl_free_common_resources(mold_gl_context_t* ctx) {
     glDeleteBuffers(1, &ctx->ubo);
     glDeleteFramebuffers(1, &ctx->fbo);
 
-    mold_result_t res = {MOLD_SUCCESS, ""};
-    return res;
+    return MOLD_SUCCESS;
 }
 
 static mold_result_t mold_gl_setup_fbo(const mold_gl_desc_t* desc) {
 
-    mold_result_t res = {MOLD_SUCCESS, ""};
-    return res;
+    return MOLD_SUCCESS;
 }
 
 static mold_result_t mold_gl_set_atom_position_data(mold_gl_mol_t* mol, const mold_position_t pos_xyz[], uint32_t count, uint32_t offset) {
@@ -202,7 +199,7 @@ static mold_result_t mold_gl_set_covalent_bond_data(mold_gl_mol_t* mol, const mo
 
 }
 
-static mold_result_t mold_gl_set_backbone_segment_index_data(mold_gl_mol_t* mol, const mold_segment_indices_t segment_indices[], uint32_t count, uint32_t offset) {
+static mold_result_t mold_gl_set_backbone_segment_index_data(mold_gl_mol_t* mol, const mold_backbone_segment_indices_t indices[], uint32_t count, uint32_t offset) {
 
 }
 
@@ -210,7 +207,7 @@ static mold_result_t mold_gl_set_backbone_segment_secondary_structure_data(mold_
 
 }
 
-static mold_result_t mold_gl_set_backbone_sequence_data(mold_gl_mol_t* mol, const mold_sequence_t sequence[], uint32_t count, uint32_t offset) {
+static mold_result_t mold_gl_set_backbone_sequence_data(mold_gl_mol_t* mol, const mold_backbone_sequence_t sequence[], uint32_t count, uint32_t offset) {
 
 }
 
@@ -277,16 +274,15 @@ static mold_result_t mold_gl_init_mol_resources(mold_gl_mol_t* mol, const mold_m
     mol->backbone.sequence.count = desc->backbone.sequence.count;
     if (mol->backbone.sequence.count > 0) {
         glBindBuffer(GL_ARRAY_BUFFER, mol->backbone.sequence.segment_range.id);
-        glBufferData(GL_ARRAY_BUFFER, mol->backbone.sequence.count * sizeof(mold_sequence_t), NULL, GL_STATIC_DRAW);
-        if (desc->backbone.sequence.segment_range_data) {
-            mold_gl_set_backbone_sequence_data(mol, desc->backbone.sequence.segment_range_data, desc->backbone.sequence.count, 0);
+        glBufferData(GL_ARRAY_BUFFER, mol->backbone.sequence.count * sizeof(mold_backbone_sequence_t), NULL, GL_STATIC_DRAW);
+        if (desc->backbone.sequence.data) {
+            mold_gl_set_backbone_sequence_data(mol, desc->backbone.sequence.data, desc->backbone.sequence.count, 0);
         }
     }
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    mold_result_t res = {MOLD_SUCCESS, ""};
-    return res;
+    return MOLD_SUCCESS;
 }
 
 static mold_result_t mold_gl_free_mol_resources(mold_gl_mol_t* mol) {
@@ -321,8 +317,7 @@ static mold_result_t mold_context_init(const mold_gl_desc_t* desc) {
         version = MOLD_GL_330;
     }
     else {
-        mold_result_t res = {MOLD_GL_VERSION_NOT_SUPPORTED, "OpenGL version is not supported"};
-        return res;
+        return MOLD_GL_VERSION_NOT_SUPPORTED;
     }
     ctx.version = version;
 
@@ -360,4 +355,3 @@ static mold_result_t mold_init_molecule(mold_mol_t* mol, const mold_mol_desc_t* 
 static mold_result_t mold_gl_free_molecule(mold_gl_context_t* ctx, mold_mol_t* mol) {
 
 }
-#endif
