@@ -184,6 +184,15 @@ void bit_and_not(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, ui
     dst[end_idx] = (~end_mask & dst[end_idx]) | (end_mask & (src_a[end_idx] & ~src_b[end_idx]));
 }
 
+/*
+void bit_copy(uint64_t* dst, uint64_t dst_offset, const uint64_t* src, uint64_t src_offset, uint64_t bit_count) {
+    const uint64_t dst_beg_idx = block_idx(dst_offset);
+    const uint64_t dst_end_idx = block_idx(dst_offset + bit_count);
+    const uint64_t src_beg_idx = block_idx(src_offset);
+    const uint64_t src_end_idx = block_idx(src_offset + bit_count);
+}
+*/
+
 uint64_t bit_count(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
     const uint64_t beg_idx = block_idx(bit_offset);
     const uint64_t end_idx = block_idx(bit_offset + bit_count);
@@ -203,6 +212,11 @@ uint64_t bit_count(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count
     count += bit_count_mask(bits[end_idx] & end_mask);
 
     return count;
+}
+
+bool bit_test(const uint64_t* bits, uint64_t idx) {
+    const uint64_t block = bits[block_idx(idx)];
+    return block & (1ULL << fast_mod(idx, BITS_PER_BLOCK));
 }
 
 bool find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {

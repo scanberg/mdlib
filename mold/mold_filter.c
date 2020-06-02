@@ -35,20 +35,20 @@
 extern "C" {
 #endif
 
-void filter_func_all(uint64_t* bits, const mold_molecule* mol);
-void filter_func_none(uint64_t* bits, const mold_molecule* mol);
-void filter_func_protein(uint64_t* bits, const mold_molecule* mol);
-void filter_func_water(uint64_t* bits, const mold_molecule* mol);
-void filter_func_name(const char* str, uint64_t* bits, const mold_molecule* mol);
-void filter_func_element(const char* str, uint64_t* bits, const mold_molecule* mol);
-void filter_func_resname(const char* str, uint64_t* bits, const mold_molecule* mol);
-void filter_func_resid(int min_range, int max_range, uint64_t* bits, const mold_molecule* mol);
-void filter_func_residue(int min_range, int max_range, uint64_t* bits, const mold_molecule* mol);
-void filter_func_chain(const char* str, uint64_t* bits, const mold_molecule* mol);
-void filter_func_within(float min_range, float max_range, const uint64_t* in_bits, uint64_t* out_bits, const mold_molecule* mol);
-void filter_func_resid_int(int val, uint64_t* bits, const mold_molecule* mol);
-void filter_func_residue_int(int val, uint64_t* bits, const mold_molecule* mol);
-void filter_func_within_flt(float range, const uint64_t* in_bits, uint64_t* out_bits, const mold_molecule* mol);
+void filter_func_all(uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_none(uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_protein(uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_water(uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_name(const char* str, uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_element(const char* str, uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_resname(const char* str, uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_resid(int min_range, int max_range, uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_residue(int min_range, int max_range, uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_chain(const char* str, uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_within(float min_range, float max_range, const uint64_t* in_bits, uint64_t* out_bits, const mold_filter_molecule* mol);
+void filter_func_resid_int(int val, uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_residue_int(int val, uint64_t* bits, const mold_filter_molecule* mol);
+void filter_func_within_flt(float range, const uint64_t* in_bits, uint64_t* out_bits, const mold_filter_molecule* mol);
 
 typedef struct str_slice_t {
     uint32_t offset;
@@ -305,7 +305,7 @@ void log_error_with_context(const char* msg, const char* str, uint32_t len, str_
         int carret_w = carret.length < 40 ? carret.length : 40;
         char buf[64] = {0};
         buf[0] = '^';
-        for (int i = 1; i < carret.length; i++) {
+        for (uint32_t i = 1; i < carret.length; i++) {
             buf[i] = '_';
         }
     
@@ -375,7 +375,7 @@ token_t get_next_token_from_buffer(lexer_t* lexer) {
     char* buf = lexer->buff;
     for (uint32_t i = lexer->at; buf[i]; ++i) {
         if (is_whitespace(buf[i])) {
-            ++i;
+            continue;
         }
         else if (is_digit(buf[i])) {
             // @NOTE: Number
@@ -430,7 +430,7 @@ bool require_token_type(lexer_t* lexer, token_type_t type, token_t* tok_ptr) {
     bool match = false;
     token_t tok = get_next_token_from_buffer(lexer);
     if (type == tok.type) {
-        lexer->at += tok.str.offset + tok.str.length;
+        lexer->at = tok.str.offset + tok.str.length;
         if (tok_ptr) {
             *tok_ptr = tok;
             match = true;
@@ -678,9 +678,12 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
 
     if (token.type == '(') { // Function call with arguments
         next_token(lexer); // (
-        do {
+        while(true) {
             token = peek_token(lexer);
-            if (token.type == ',') {
+            if (token.type == ')') {
+                break;
+            }
+            else if (token.type == ',') {
                 next_token(lexer); // ,
                 ++arg_count;
                 if (arg_count > MAX_FUNC_ARGS) {
@@ -693,7 +696,7 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
                 if (!(nodes[node_count++] = parse_expression(ctx, lexer))) return NULL;
                 ++arg_lengths[arg_count];
             }
-        } while (token.type != ')');
+        }
         next_token(lexer); // )
         ++arg_count;
     }
@@ -769,13 +772,14 @@ static ast_node_t* parse_number(parse_context_t* ctx, lexer_t* lexer) {
     if (require_token_type(lexer, TOKEN_NUM, &token)) {
         ast_node_t* node = parser_allocate_node(ctx, NODE_TYPE_VALUE);
         str_slice_t str = token.str;
-        token = peek_token(lexer);
-        if (token.type == '.') {
-            str.length += token.str.length;
+        token_t next = peek_token(lexer);
+        if (next.type == '.') {
+            str.length += next.str.length;
             next_token(lexer); // '.'
-            token = peek_token(lexer);
-            if (token.type == TOKEN_NUM) {
-                str.length += token.str.length;
+            next = peek_token(lexer);
+            if (next.type == TOKEN_NUM) {
+                next_token(lexer); // [0-9]
+                str.length += next.str.length;
             }
             node->return_type = VALUE_TYPE_FLT;
             node->_value.type = VALUE_TYPE_FLT;
@@ -843,7 +847,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
         case TOKEN_AND:
         case TOKEN_OR:
         {
-            next_token(lexer); // and / or
+            token_t t = next_token(lexer); // and / or
             node_type_t node_type = token.type == TOKEN_AND ? NODE_TYPE_AND : NODE_TYPE_OR;
             ast_node_t* node = parser_allocate_node(ctx, node_type);
             if (!node) return NULL;
@@ -853,11 +857,11 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             ast_node_t* arg_node[2] = {prv_node, parse_expression(ctx, lexer)};
 
             if (!arg_node[0] || arg_node[0]->return_type != VALUE_TYPE_BOOL) {
-                log_error_with_context("Left hand side expression for logic operation did not evaluate to bool", ctx->expr_str, ctx->expr_len, arg_node[0]->str);
+                log_error_with_context("Left hand side expression for logic operation did not evaluate to bool", ctx->expr_str, ctx->expr_len, t.str);
                 return NULL;
             }
             if (!arg_node[1] || arg_node[1]->return_type != VALUE_TYPE_BOOL) {
-                log_error_with_context("Right hand side expression for logic operation did not evaluate to bool", ctx->expr_str, ctx->expr_len, arg_node[1]->str);
+                log_error_with_context("Right hand side expression for logic operation did not evaluate to bool", ctx->expr_str, ctx->expr_len, t.str);
                 return NULL;
             }
 
@@ -870,7 +874,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
         }
         case TOKEN_NOT:
         {
-            next_token(lexer); // not
+            token_t t = next_token(lexer); // not
             ast_node_t* node = parser_allocate_node(ctx, NODE_TYPE_NOT);
             if (!node) return NULL;
 
@@ -882,7 +886,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             ctx->cur_node = node;
 
             if (!arg_node || arg_node->return_type != VALUE_TYPE_BOOL) {
-                log_error_with_context("Expression following 'not' did not evaluate to bool", ctx->expr_str, ctx->expr_len, arg_node->str);
+                log_error_with_context("Expression following 'not' did not evaluate to bool", ctx->expr_str, ctx->expr_len, t.str);
                 return NULL;
             }
 
@@ -955,9 +959,15 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
                 node->_value._irange.max = next_node->_value._int;
             }
             ctx->cur_node = node;
+            break;
         }
         case TOKEN_NUM:
-            return parse_number(ctx, lexer);
+        {
+            ast_node_t* node = parse_number(ctx, lexer);
+            ctx->cur_node = node;
+            if (peek_token(lexer).type != ':') return node;
+            break;
+        }
         case TOKEN_STR:
         {
             token = next_token(lexer);
@@ -993,9 +1003,9 @@ const char* node_type_to_str(node_type_t type) {
     case NODE_TYPE_NOT:       return "not";
     case NODE_TYPE_FUNC:      return "function";
     case NODE_TYPE_VALUE:     return "value";
+    case NODE_TYPE_REF:       return "reference";
     default:                  return "unknown";
     }
-    return "";
 }
 
 const char* value_type_to_str(value_type_t type) {
@@ -1009,7 +1019,6 @@ const char* value_type_to_str(value_type_t type) {
     case VALUE_TYPE_STR:       return "string";
     default:                   return "unknown";
     }
-    return "";
 }
 
 void print_label(FILE* file, const ast_node_t* node, const char* expr_str) {
@@ -1032,7 +1041,7 @@ void print_label(FILE* file, const ast_node_t* node, const char* expr_str) {
             fprintf(file, "%.*s", node->_value._str.length, expr_str + node->_value._str.offset);
             break;
         }
-
+        break;
     case NODE_TYPE_FUNC:
         fprintf(file, "%s", ident_table[node->_func.ident].str);
         break;
@@ -1124,7 +1133,7 @@ void mold_filter_molecule_extract(mold_filter_molecule* filt_mol, const mold_mol
 
     filt_mol->residue.count               = mol->residue.count;
     filt_mol->residue.name                = mol->residue.name;
-    filt_mol->residue.resid               = mol->residue.id;
+    filt_mol->residue.id               = mol->residue.id;
     filt_mol->residue.atom_range          = mol->residue.atom_range;
     filt_mol->residue.secondary_structure = mol->residue.secondary_structure;
 
@@ -1208,14 +1217,14 @@ value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
     {
     case FUNC_TYPE_VOID:
     {
-        void (*func)(uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(uint64_t*, const mold_filter_molecule*) = ident.func_addr;
         func(ctx->bit_buf[0], ctx->filt_ctx->mol);
         break;
     }
     case FUNC_TYPE_STR:
     {
         ASSERT(args && args[0].type == VALUE_TYPE_STR);
-        void (*func)(const char*, uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(const char*, uint64_t*, const mold_filter_molecule*) = ident.func_addr;
         str_slice_t str = args[0]._str;
         ASSERT(str.length < 127);
         char buf[128] = {0};
@@ -1227,7 +1236,7 @@ value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
     {
         ASSERT(args && args[0].type == VALUE_TYPE_FLT);
         float val = args[0]._flt;
-        void (*func)(float, uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(float, uint64_t*, const mold_filter_molecule*) = ident.func_addr;
         func(val, ctx->bit_buf[0], ctx->filt_ctx->mol);
         break;
     }
@@ -1235,7 +1244,7 @@ value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
     {
         ASSERT(args && args[0].type == VALUE_TYPE_INT);
         int val = args[0]._int;
-        void (*func)(int, uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(int, uint64_t*, const mold_filter_molecule*) = ident.func_addr;
         func(val, ctx->bit_buf[0], ctx->filt_ctx->mol);
         break;
     }
@@ -1243,7 +1252,7 @@ value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
     {
         ASSERT(args && args[0].type == VALUE_TYPE_FLT_RNG);
         frange_t range = args[0]._frange;
-        void (*func)(float, float, uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(float, float, uint64_t*, const mold_filter_molecule*) = ident.func_addr;
         func(range.min, range.max, ctx->bit_buf[0], ctx->filt_ctx->mol);
         break;
     }
@@ -1251,7 +1260,7 @@ value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
     {
         ASSERT(args && args[0].type == VALUE_TYPE_INT_RNG);
         irange_t range = args[0]._irange;
-        void (*func)(int, int, uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(int, int, uint64_t*, const mold_filter_molecule*) = ident.func_addr;
         func(range.min, range.max, ctx->bit_buf[0], ctx->filt_ctx->mol);
         break;
     }
@@ -1260,7 +1269,7 @@ value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
         ASSERT(args && args[0].type == VALUE_TYPE_FLT && args[1].type == VALUE_TYPE_BOOL);
         float val = args[0]._flt;
         uint64_t* src_bits = args[1]._bool;
-        void (*func)(float, const uint64_t*, uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(float, const uint64_t*, uint64_t*, const mold_filter_molecule*) = ident.func_addr;
         func(val, src_bits, ctx->bit_buf[0], ctx->filt_ctx->mol);
         break;
     }
@@ -1269,7 +1278,7 @@ value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
         ASSERT(args && args[0].type == VALUE_TYPE_FLT_RNG && args[1].type == VALUE_TYPE_BOOL);
         frange_t range = args[0]._frange;
         uint64_t* src_bits = args[1]._bool;
-        void (*func)(float, float, const uint64_t*, uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(float, float, const uint64_t*, uint64_t*, const mold_filter_molecule*) = ident.func_addr;
         func(range.min, range.max, src_bits, ctx->bit_buf[0], ctx->filt_ctx->mol);
         break;
     }
@@ -1312,6 +1321,7 @@ value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
     case NODE_TYPE_NOT:
     {
         const ast_node_t* child = (ast_node_t*)dec_rel_ptr(&node->_child[0]);
+        evaluate(child, ctx);
         bit_invert(ctx->bit_buf[0], 0, ctx->bit_count);
         value_t res;
         res.type = VALUE_TYPE_BOOL;
@@ -1344,7 +1354,7 @@ value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
 
         uint32_t idx = -1;
         for (uint32_t i = 0; i < ctx->filt_ctx->sel_count; ++i) {
-            if (strncmp(buf, ctx->filt_ctx->sel[i].identifier, str.length) == 0) {
+            if (strncmp(buf, ctx->filt_ctx->sel[i].ident, str.length) == 0) {
                 idx = i;
                 break;
             }
@@ -1355,7 +1365,8 @@ value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
             break;
         }
 
-        ctx->bit_buf[0] = ctx->filt_ctx->sel[idx].bits;
+        const uint64_t block_count = (ctx->bit_count + 63) / 64;
+        memcpy(ctx->bit_buf[0], ctx->filt_ctx->sel[idx].bits, block_count * sizeof(uint64_t));
         value_t res = {VALUE_TYPE_BOOL};
         res._bool = ctx->bit_buf[0];
         return res;
@@ -1438,9 +1449,9 @@ bool mold_filter_apply(uint64_t* bits, uint64_t bit_count, const mold_filter* fi
 }
 */
 
-bool mold_filter_apply(uint64_t* bits, uint64_t bit_count, const char* expression, const mold_filter_context* context) {
+bool mold_filter_parse(const char* expression, const mold_filter_context* context) {
     int balance = 0;
-    for (const char* c = expression; c; ++c) {
+    for (const char* c = expression; *c; ++c) {
         if (*c == '(') ++balance;
         else if (*c == ')') --balance;
     }
@@ -1460,30 +1471,31 @@ bool mold_filter_apply(uint64_t* bits, uint64_t bit_count, const char* expressio
     mem_arena_t ast_arena = {0};
     arena_init(&ast_arena, ast_mem, ARRAY_SIZE(ast_mem));
 
-    parse_context_t state = {0};
-    state.arena = &ast_arena;
-    state.expr_str = expr_str;
-    state.expr_len = expr_len;
-    state.lexer = &lexer;
+    parse_context_t parse_ctx = {0};
+    parse_ctx.arena = &ast_arena;
+    parse_ctx.expr_str = expr_str;
+    parse_ctx.expr_len = expr_len;
+    parse_ctx.lexer = &lexer;
 
-    ast_node_t* root = parse(&state);
+    ast_node_t* root = parse_expression(&parse_ctx, &lexer);
     if (root) {
 #if 1
+        // @NOTE: For debugging
         save_tree_to_json(root, "tree.json", expr_str);
 #endif
-        if (bits && bit_count && expression && context) {
-            const uint64_t block_count = (bit_count + 63) / 64;
+        if (context && context->bits && context->bit_count && context->mol) {
+            const uint64_t block_count = (context->bit_count + 63) / 64;
             uint64_t* tmp_bits = (uint64_t*)calloc(block_count, sizeof(uint64_t));
 
-            bit_clear(bits, 0, bit_count);
-            bit_clear(tmp_bits, 0, bit_count);
+            bit_clear(context->bits, 0, context->bit_count);
+            bit_clear(tmp_bits, 0, context->bit_count);
 
             eval_context_t eval_ctx = {0};
             eval_ctx.expr_str = expr_str;
             eval_ctx.expr_len = expr_len;
-            eval_ctx.bit_buf[0] = bits;
+            eval_ctx.bit_buf[0] = context->bits;
             eval_ctx.bit_buf[1] = tmp_bits;
-            eval_ctx.bit_count = bit_count;
+            eval_ctx.bit_count = context->bit_count;
             eval_ctx.filt_ctx = context;
 
             value_t res = evaluate(root, &eval_ctx);
@@ -1547,15 +1559,15 @@ static inline uint8_t element_symbol_to_index(const char* str) {
     return 0;
 }
 
-void filter_func_all(uint64_t* bits, const mold_molecule* mol) {
+void filter_func_all(uint64_t* bits, const mold_filter_molecule* mol) {
     bit_set(bits, 0, mol->atom.count);
 }
 
-void filter_func_none(uint64_t* bits, const mold_molecule* mol) {
+void filter_func_none(uint64_t* bits, const mold_filter_molecule* mol) {
     bit_clear(bits, 0, mol->atom.count);
 }
 
-void filter_func_protein(uint64_t* bits, const mold_molecule* mol) {
+void filter_func_protein(uint64_t* bits, const mold_filter_molecule* mol) {
     const char** name = mol->atom.name;
     for (uint32_t i = 0; i < mol->residue.count; ++i) {
         const mold_range range = mol->residue.atom_range[i];
@@ -1575,7 +1587,7 @@ void filter_func_protein(uint64_t* bits, const mold_molecule* mol) {
     }
 }
 
-void filter_func_water(uint64_t* bits, const mold_molecule* mol) {
+void filter_func_water(uint64_t* bits, const mold_filter_molecule* mol) {
     for (uint32_t i = 0; i < mol->residue.count; ++i) {
         const mold_range range = mol->residue.atom_range[i];
         const uint32_t range_ext = (range.end - range.beg);
@@ -1592,7 +1604,7 @@ void filter_func_water(uint64_t* bits, const mold_molecule* mol) {
     }
 }
 
-void filter_func_name(const char* str, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_name(const char* str, uint64_t* bits, const mold_filter_molecule* mol) {
     const uint64_t blk_count = DIV_UP(mol->atom.count);
     for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
         const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
@@ -1607,7 +1619,7 @@ void filter_func_name(const char* str, uint64_t* bits, const mold_molecule* mol)
     }
 }
 
-void filter_func_element(const char* str, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_element(const char* str, uint64_t* bits, const mold_filter_molecule* mol) {
     uint8_t elem_idx = element_symbol_to_index(str);
     if (!elem_idx) return;
 
@@ -1625,7 +1637,7 @@ void filter_func_element(const char* str, uint64_t* bits, const mold_molecule* m
     }
 }
 
-void filter_func_resname(const char* str, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_resname(const char* str, uint64_t* bits, const mold_filter_molecule* mol) {
     for (uint32_t i = 0; i < mol->residue.count; ++i) {
         if (strcmp(str, mol->residue.name[i]) == 0) {
             const mold_range range = mol->residue.atom_range[i];
@@ -1635,7 +1647,7 @@ void filter_func_resname(const char* str, uint64_t* bits, const mold_molecule* m
     }
 }
 
-void filter_func_resid(int min_range, int max_range, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_resid(int min_range, int max_range, uint64_t* bits, const mold_filter_molecule* mol) {
     for (uint32_t i = 0; i < mol->residue.count; ++i) {
         const int32_t id = mol->residue.id[i];
         if (min_range <= id && id <= max_range) {
@@ -1646,7 +1658,7 @@ void filter_func_resid(int min_range, int max_range, uint64_t* bits, const mold_
     }
 }
 
-void filter_func_residue(int min_range, int max_range, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_residue(int min_range, int max_range, uint64_t* bits, const mold_filter_molecule* mol) {
     min_range = MAX(min_range, 0);
     max_range = MIN(max_range, (int)mol->residue.count - 1);
     for (int i = min_range; i <= max_range; ++i) {
@@ -1656,7 +1668,7 @@ void filter_func_residue(int min_range, int max_range, uint64_t* bits, const mol
     }
 }
 
-void filter_func_chain(const char* str, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_chain(const char* str, uint64_t* bits, const mold_filter_molecule* mol) {
     for (uint32_t i = 0; i < mol->chain.count; ++i) {
         if (strcmp(str, mol->chain.id[i]) == 0) {
             const mold_range range = mol->chain.atom_range[i];
@@ -1683,7 +1695,7 @@ struct grid_cell_t {
 
 static_assert(sizeof(grid_cell_t) == 4, "sizeof grid_cell should be 4");
 
-void filter_func_within(float min_range, float max_range, const uint64_t* in_bits, uint64_t* out_bits, const mold_molecule* mol) {
+void filter_func_within(float min_range, float max_range, const uint64_t* in_bits, uint64_t* out_bits, const mold_filter_molecule* mol) {
     // Create a coarse uniform grid where we mark the cells which are candidate locations based on atomic positions of in_bits.
     // As a second step we go over the entire set of atoms and bin them to the uniform grid, if they end up in a candidate voxel, we do additional distance tests
 
@@ -1868,15 +1880,15 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
     }
 }
 
-void filter_func_resid_int(int val, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_resid_int(int val, uint64_t* bits, const mold_filter_molecule* mol) {
     filter_func_resid(val, val, bits, mol);
 }
 
-void filter_func_residue_int(int val, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_residue_int(int val, uint64_t* bits, const mold_filter_molecule* mol) {
     filter_func_residue(val, val, bits, mol);
 }
 
-void filter_func_within_flt(float range, const uint64_t* in_bits, uint64_t* out_bits, const mold_molecule* mol) {
+void filter_func_within_flt(float range, const uint64_t* in_bits, uint64_t* out_bits, const mold_filter_molecule* mol) {
     filter_func_within(0, range, in_bits, out_bits, mol);
 }
 

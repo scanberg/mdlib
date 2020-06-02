@@ -38,8 +38,13 @@ void bit_and_not(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, ui
 void bit_xor    (uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count);
 void bit_not    (uint64_t* dst, const uint64_t* src, uint64_t bit_offset, uint64_t bit_count);
 
+//void bit_copy   (uint64_t* dst, uint64_t dst_offset, const uint64_t* src, uint64_t src_offset, uint64_t bit_count);
+
 // Counts the number of bits set
 uint64_t bit_count(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
+
+// Test if single bit in field is set
+bool bit_test(const uint64_t* bits, uint64_t idx);
 
 bool find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
 
