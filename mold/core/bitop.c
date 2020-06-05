@@ -223,8 +223,6 @@ bool find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_off
 #ifdef ASSERT
     ASSERT(bit_idx);
 #endif
-    if (*bit_idx >= bit_count) return false;
-    bit_offset += *bit_idx;
 
     const uint64_t beg_idx = block_idx(bit_offset);
     const uint64_t end_idx = block_idx(bit_offset + bit_count);
@@ -237,8 +235,7 @@ bool find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_off
     }
 
     uint64_t bit_base = 0;
-    if (bit_scan_forward_mask(bit_idx, beg_mask & bits[beg_mask])) {
-        *bit_idx += bit_base;
+    if (bit_scan_forward_mask(bit_idx, beg_mask & bits[beg_idx])) {
         return true;
     }
     for (uint64_t i = beg_idx + 1, bit_base = BITS_PER_BLOCK; i < end_idx; ++i, bit_base += BITS_PER_BLOCK) {
@@ -247,7 +244,7 @@ bool find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_off
             return true;
         }
     }
-    if (bit_scan_forward_mask(bit_idx, beg_mask & bits[beg_mask])) {
+    if (bit_scan_forward_mask(bit_idx, end_mask & bits[end_idx])) {
         *bit_idx += bit_base;
         return true;
     }
