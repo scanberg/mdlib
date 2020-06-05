@@ -54,9 +54,9 @@ inline bool mold_util_protein_backbone_atoms_valid(mold_backbone_atoms prot) {
     return (prot.ca != prot.c  && prot.ca != prot.o) && (prot.c != prot.o);
 }
 
-bool mold_util_extract_backbone_atoms(mold_backbone_atoms* backbone_atoms, const char** residue_atom_name, mold_range residue_atom_range);
+bool mold_util_extract_backbone_atoms(mold_backbone_atoms* out_backbone_atoms, const char** residue_atom_name, mold_range residue_atom_range);
 void mold_util_extract_backbone(const mold_util_backbone_args* args);
-void molt_util_extract_secondary_structure(const mold_util_secondary_structure_args* args);
+void mold_util_extract_secondary_structure(const mold_util_secondary_structure_args* args);
 
 #ifdef __cplusplus
 }

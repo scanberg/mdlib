@@ -52,7 +52,7 @@ static inline bool cmp2(const char* str, const char* ref) {
     return str[0] == ref[0] && str[1] == ref[1] && str[2] == '\0';
 }
 
-bool mold_util_extract_backbone_atoms(mold_backbone_atoms* backbone_atoms, const char** residue_atom_name, mold_range residue_range) {
+bool mold_util_extract_backbone_atoms(mold_backbone_atoms* out_backbone_atoms, const char** residue_atom_name, mold_range residue_range) {
     uint32_t bits = 0;
     mold_backbone_atoms bb = {0};
     for (uint32_t i = residue_range.beg; i < residue_range.end; ++i) {
@@ -61,13 +61,13 @@ bool mold_util_extract_backbone_atoms(mold_backbone_atoms* backbone_atoms, const
         if (!(bits & 4) && cmp1(residue_atom_name[i], "C"))  { bb.c  = i; bits |= 4;  continue; }
         if (!(bits & 8) && cmp1(residue_atom_name[i], "O"))  { bb.o  = i; bits |= 8;  continue; }
         if (!(bits & 8) && i == (residue_range.end - 1) && residue_atom_name[i][0] == 'O') {
-            bb.o  = i; bits |= 8; continue;
+            bb.o = i; bits |= 8; continue;
         } 
     }
 
     // If we have CA, C and O, we have enough for computing the backbone
-    if (bits & (2+4+8)) {
-        *backbone_atoms = bb;
+    if (bits & (2|4|8)) {
+        if (out_backbone_atoms) *out_backbone_atoms = bb;
         return true;
     }
     return false;
@@ -111,7 +111,15 @@ static inline bool is_sheet(const mold_util_secondary_structure_args* args, mold
 
 // TM-align: a protein structure alignment algorithm based on the Tm-score
 // doi:10.1093/nar/gki524
-void molt_util_extract_secondary_structure(const mold_util_secondary_structure_args* args) {
+void mold_util_extract_secondary_structure(const mold_util_secondary_structure_args* args) {
+    ASSERT(args);
+    ASSERT(args->secondary_structure);
+    ASSERT(args->atom.x);
+    ASSERT(args->atom.y);
+    ASSERT(args->atom.z);
+    ASSERT(args->residue.backbone_atoms);
+    ASSERT(args->chain.residue_range);
+
     for (uint32_t chain_idx = 0; chain_idx < args->chain.count; ++chain_idx) {
         const mold_range range = args->chain.residue_range[chain_idx];
         if (range.end - range.beg < 4) continue;
