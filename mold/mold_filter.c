@@ -217,29 +217,6 @@ typedef struct parse_context_t {
     ast_node_t*     cur_node;
 } parse_context_t;
 
-/*
-inline token_t eat_token(parse_context_t* s, token_type_t expected_type) {
-    ASSERT(s->cur_tok->type == expected_type);
-    token_t tok = *s->cur_tok;
-    s->curtok += 1;
-    return tok;
-}
-
-inline token_t get_token(parse_context_t* s) {
-    token_t tok = *s->tok;
-    s->tok += 1;
-    return tok;
-}
-*/
-
-inline void enc_rel_ptr(int16_t* ptr, void* adress) {
-    *ptr = (int16_t)((uint8_t*)adress - (uint8_t*)ptr);
-}
-
-inline void* dec_rel_ptr(const int16_t* ptr) {
-    return (uint8_t*)ptr + *ptr;
-}
-
 typedef struct keyword_t {
     const char*     str;
     uint32_t        len;
@@ -290,11 +267,19 @@ static const ident_t ident_table[] = {
     {"occupancy", 8, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG,      NULL,                       1, VALUE_TYPE_FLT_RNG},
 };
 
-void log_error(const char* msg) {
+static inline void enc_rel_ptr(int16_t* ptr, void* adress) {
+    *ptr = (int16_t)((uint8_t*)adress - (uint8_t*)ptr);
+}
+
+static inline void* dec_rel_ptr(const int16_t* ptr) {
+    return (uint8_t*)ptr + *ptr;
+}
+
+static void log_error(const char* msg) {
     fprintf(stderr, "ERROR: %s\n", msg);
 }
 
-void log_error_with_context(const char* msg, const char* str, uint32_t len, str_slice_t carret) {
+static void log_error_with_context(const char* msg, const char* str, uint32_t len, str_slice_t carret) {
     fprintf(stderr, "ERROR: %s\n", msg);
 
     if(str && carret.length) {
@@ -314,7 +299,7 @@ void log_error_with_context(const char* msg, const char* str, uint32_t len, str_
     }
 }
 
-inline const uint32_t match_keyword(const char* str, uint32_t len) {
+static inline const uint32_t match_keyword(const char* str, uint32_t len) {
     for (uint32_t i = 1; i < ARRAY_SIZE(keyword_table); ++i) {
         if (keyword_table[i].len < len) {
             continue;
@@ -329,7 +314,7 @@ inline const uint32_t match_keyword(const char* str, uint32_t len) {
     return 0;
 }
 
-inline uint32_t match_ident(const char* str, uint32_t len, uint32_t arg_count, const value_type_t arg_types[MAX_FUNC_ARGS]) {
+static inline uint32_t match_ident(const char* str, uint32_t len, uint32_t arg_count, const value_type_t arg_types[MAX_FUNC_ARGS]) {
     for (uint32_t i = 1; i < ARRAY_SIZE(ident_table); ++i) {
         ident_t ident = ident_table[i];
         if (ident.len < len) {
@@ -349,7 +334,7 @@ inline uint32_t match_ident(const char* str, uint32_t len, uint32_t arg_count, c
     return 0;
 }
 
-inline bool match_ident_str(const char* str, uint32_t len) {
+static inline bool match_ident_str(const char* str, uint32_t len) {
     for (uint32_t i = 1; i < ARRAY_SIZE(ident_table); ++i) {
         ident_t ident = ident_table[i];
         if (ident.len < len) {
@@ -367,7 +352,7 @@ inline bool match_ident_str(const char* str, uint32_t len) {
     return 0;
 }
 
-token_t get_next_token_from_buffer(lexer_t* lexer) {
+static token_t get_next_token_from_buffer(lexer_t* lexer) {
     ASSERT(lexer);
     token_t t = {0};
     t.type = TOKEN_UNDEFINED;
@@ -416,17 +401,17 @@ token_t get_next_token_from_buffer(lexer_t* lexer) {
     return t;
 }
 
-token_t peek_token(lexer_t* lexer) {
+static token_t peek_token(lexer_t* lexer) {
     return get_next_token_from_buffer(lexer);
 }
 
-token_t next_token(lexer_t* lexer) {
+static token_t next_token(lexer_t* lexer) {
     token_t tok = get_next_token_from_buffer(lexer);
     lexer->at = tok.str.offset + tok.str.length;
     return tok;
 }
 
-bool require_token_type(lexer_t* lexer, token_type_t type, token_t* tok_ptr) {
+static bool require_token_type(lexer_t* lexer, token_type_t type, token_t* tok_ptr) {
     bool match = false;
     token_t tok = get_next_token_from_buffer(lexer);
     if (type == tok.type) {
@@ -540,7 +525,7 @@ uint32_t lex_expression(mem_arena_t* mem_arena, const char* str, uint32_t len) {
 }
 */
 
-ast_node_t* parser_allocate_node(parse_context_t* s, node_type_t type) {
+static ast_node_t* parser_allocate_node(parse_context_t* s, node_type_t type) {
     ast_node_t* node = (ast_node_t*)arena_alloc(s->arena, sizeof(ast_node_t));
     if (!node) {
         log_error("Out of memory");
@@ -550,7 +535,7 @@ ast_node_t* parser_allocate_node(parse_context_t* s, node_type_t type) {
     return node;
 }
 
-bool convert_node(ast_node_t* node, value_type_t dst_type) {
+static bool convert_node(ast_node_t* node, value_type_t dst_type) {
     ASSERT(node->type == NODE_TYPE_VALUE);
     const value_type_t src_type = node->_value.type;
     switch (dst_type) {
@@ -620,7 +605,7 @@ finish_up:
     return true;
 }
 
-void fix_precedence(ast_node_t** node) {
+static void fix_precedence(ast_node_t** node) {
     // We parse from left to right thus unbalancing the tree in its right child node _child[1]
     // Therefore we only need to fix potential precedence issues down this path
     ASSERT(node);
@@ -637,7 +622,7 @@ void fix_precedence(ast_node_t** node) {
     }
 }
 
-void* encode_args(mem_arena_t* arena, uint32_t arg_count, ast_node_t** arg_nodes) {
+static void* encode_args(mem_arena_t* arena, uint32_t arg_count, ast_node_t** arg_nodes) {
     if (arg_count == 1) {
         // No need to allocate and encode an array of relative pointers to the nodes, just encode the one node
         return arg_nodes[0];
@@ -649,7 +634,7 @@ void* encode_args(mem_arena_t* arena, uint32_t arg_count, ast_node_t** arg_nodes
     return mem;
 }
 
-void decode_args(const ast_node_t** arg_nodes, uint32_t arg_count, const void* mem) {
+static void decode_args(const ast_node_t** arg_nodes, uint32_t arg_count, const void* mem) {
     if (arg_count == 1) {
         arg_nodes[0] = (const ast_node_t*)mem;
     }
@@ -918,20 +903,24 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
         }
         case ':':
         {
-            next_token(lexer); // :
+            token_t delim_tok = next_token(lexer); // :
             ast_node_t* prev_node = ctx->cur_node;
             ast_node_t* next_node;
+            if (!prev_node) {
+                log_error("Missing token before range delimiter ':'");
+                return NULL;
+            }
             if (prev_node->type == NODE_TYPE_VALUE && prev_node->_value.type == VALUE_TYPE_FLT) {
                 next_node = parse_expression(ctx, lexer);
                 if (!next_node || !convert_node(next_node, VALUE_TYPE_FLT)) {
-                    log_error_with_context("Token following ':' could not be interpreted as float", ctx->expr_str, ctx->expr_len, next_node->str);
+                    log_error_with_context("Token following ':' could not be interpreted as float", ctx->expr_str, ctx->expr_len, delim_tok.str);
                     return NULL;
                 }
             }
             else if (prev_node->type == NODE_TYPE_VALUE && prev_node->_value.type == VALUE_TYPE_INT) {
                 next_node = parse_expression(ctx, lexer);
                 if (!next_node || !convert_node(next_node, VALUE_TYPE_INT)) {
-                    log_error_with_context("Token following ':' could not be interpreted as integer", ctx->expr_str, ctx->expr_len, next_node->str);
+                    log_error_with_context("Token following ':' could not be interpreted as integer", ctx->expr_str, ctx->expr_len, delim_tok.str);
                     return NULL;
                 }
             }
@@ -989,13 +978,13 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
     return ctx->cur_node;
 }
 
-void indent(FILE* file, int amount) {
+static void indent(FILE* file, int amount) {
     for (int i = 0; i < amount; ++i) {
         fprintf(file, "\t");
     }
 }
 
-const char* node_type_to_str(node_type_t type) {
+static const char* node_type_to_str(node_type_t type) {
     switch (type) {
     case NODE_TYPE_UNDEFINED: return "undefined";
     case NODE_TYPE_AND:       return "and";
@@ -1008,7 +997,7 @@ const char* node_type_to_str(node_type_t type) {
     }
 }
 
-const char* value_type_to_str(value_type_t type) {
+static const char* value_type_to_str(value_type_t type) {
     switch (type) {
     case VALUE_TYPE_UNDEFINED: return "undefined";
     case VALUE_TYPE_BOOL:      return "bool";
@@ -1021,7 +1010,7 @@ const char* value_type_to_str(value_type_t type) {
     }
 }
 
-void print_label(FILE* file, const ast_node_t* node, const char* expr_str) {
+static void print_label(FILE* file, const ast_node_t* node, const char* expr_str) {
     switch(node->type) {
     case NODE_TYPE_VALUE:
         switch(node->_value.type) {
@@ -1052,7 +1041,7 @@ void print_label(FILE* file, const ast_node_t* node, const char* expr_str) {
     fprintf(file, " (%s)", value_type_to_str(node->return_type));
 }
 
-void print_node(const ast_node_t* node, FILE* file, int depth, const char* expr_str) {
+static void print_node(const ast_node_t* node, FILE* file, int depth, const char* expr_str) {
     if (!node || !file) return;
 
     indent(file, depth);
@@ -1096,7 +1085,7 @@ void print_node(const ast_node_t* node, FILE* file, int depth, const char* expr_
     fprintf(file, "},\n");
 }
 
-void save_tree_to_json(const ast_node_t* tree, const char* filename, const char* expr_str) {
+static void save_tree_to_json(const ast_node_t* tree, const char* filename, const char* expr_str) {
     FILE* file = fopen(filename, "w");
 
     if (file) {
@@ -1106,14 +1095,6 @@ void save_tree_to_json(const ast_node_t* tree, const char* filename, const char*
         fclose(file);
     }
 }
-
-/*
-struct mold_filter {
-    const char* expr_str;
-    uint32_t    expr_len;
-    uint32_t    root_offset; // offset to root node in bytes
-};
-*/
 
 void mold_filter_molecule_extract(mold_filter_molecule* filt_mol, const mold_molecule* mol) {
     ASSERT(filt_mol);
@@ -1205,13 +1186,13 @@ struct eval_context_t {
     const mold_filter_context* filt_ctx;
 };
 
-inline void swap_bit_buffers(eval_context_t* ctx) {
+static inline void swap_bit_buffers(eval_context_t* ctx) {
     uint64_t* tmp = ctx->bit_buf[0];
     ctx->bit_buf[0] = ctx->bit_buf[1];
     ctx->bit_buf[1] = tmp;
 }
 
-value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
+static value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
     value_t res;
     switch (ident.func_type)
     {
@@ -1291,7 +1272,7 @@ value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
     return res;
 }
 
-value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
+static value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
     switch (node->type)
     {
     case NODE_TYPE_AND:
@@ -1300,6 +1281,7 @@ value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
         evaluate(child[0], ctx);
         swap_bit_buffers(ctx);
         evaluate(child[1], ctx);
+        swap_bit_buffers(ctx);
         bit_and(ctx->bit_buf[0], ctx->bit_buf[0], ctx->bit_buf[1], 0, ctx->bit_count);
         value_t res;
         res.type = VALUE_TYPE_BOOL;
@@ -1312,6 +1294,7 @@ value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
         evaluate(child[0], ctx);
         swap_bit_buffers(ctx);
         evaluate(child[1], ctx);
+        swap_bit_buffers(ctx);
         bit_or(ctx->bit_buf[0], ctx->bit_buf[0], ctx->bit_buf[1], 0, ctx->bit_count);
         value_t res;
         res.type = VALUE_TYPE_BOOL;
@@ -1569,21 +1552,23 @@ void filter_func_none(uint64_t* bits, const mold_filter_molecule* mol) {
 
 void filter_func_protein(uint64_t* bits, const mold_filter_molecule* mol) {
     const char** name = mol->atom.name;
-    for (uint32_t i = 0; i < mol->residue.count; ++i) {
-        const mold_range range = mol->residue.atom_range[i];
+    for (uint32_t ri = 0; ri < mol->residue.count; ++ri) {
+        const mold_range range = mol->residue.atom_range[ri];
         const uint32_t range_ext = (range.end - range.beg);
-//        if (8 <= range_ext && range_ext <= 27) {
+        if (4 <= range_ext && range_ext <= 30) {
             uint32_t mask = 0;
-            for (uint32_t j = range.beg; j < range.end; ++j) {
-                if      (strcmp(name[j], "C") == 0)  mask |= 1;
-                else if (strcmp(name[j], "N") == 0)  mask |= 2;
-                else if (strcmp(name[j], "CA") == 0) mask |= 4;
-                else if (strcmp(name[j], "O") == 0)  mask |= 8;
+            for (uint32_t i = range.beg; i < range.end; ++i) {
+                if (!(mask & 1) && name[i][0] == 'N')                         { mask |= 1; continue; }
+                if (!(mask & 2) && name[i][0] == 'C' && name[i][1] == 'A')    { mask |= 2; continue; }
+                if (!(mask & 4) && name[i][0] == 'C')                         { mask |= 4; continue; }
+                if (!(mask & 8) && name[i][0] == 'O')                         { mask |= 8; continue; }
+                if (!(mask & 8) && i == (range.end - 1) && name[i][0] == 'O') { mask |= 8; continue; }
+                if (mask == 15) break;
             }
-            if (mask == 15U) {
+            if (mask == 15) {
                 bit_set(bits, range.beg, range_ext);
             }
-//        }
+        }
     }
 }
 
@@ -1850,7 +1835,7 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
 
         uint64_t dst_i = 0;
         uint64_t src_i = 0;
-        while (find_next_bit_set(&src_i, in_bits, 0, mol->atom.count)) {
+        while (find_next_bit_set(&src_i, in_bits, src_i, mol->atom.count - src_i)) {
             ref_x[dst_i] = x[src_i];
             ref_y[dst_i] = y[src_i];
             ref_z[dst_i] = z[src_i];
