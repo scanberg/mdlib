@@ -12,6 +12,10 @@
 #define ATOM_IDX 1
 #endif
 
+#ifndef ORTHO
+#define ORTHO 0
+#endif
+
 layout (points) in;
 layout (triangle_strip, max_vertices = 4) out;
 
@@ -40,6 +44,9 @@ out GS_FS {
 #if ATOM_IDX
     flat uint atom_idx;
 #endif
+#if ORTHO
+    smooth vec2 uv;
+#endif
 } out_frag;
 
 layout (std140) uniform ubo {
@@ -57,12 +64,23 @@ layout (std140) uniform ubo {
     float u_radius_scale;
 };
 
-void emit_vertex(vec4 clip_coord) {
+#if ORTHO
+void emit_vertex_ortho(vec2 uv) {
+    vec3  pos = in_vert[0].view_sphere.xyz;
+    float rad = in_vert[0].view_sphere.w;
+    out_frag.uv = uv;
+    out_frag.view_coord = vec3(pos + vec3(uv * rad, 0));
+    gl_Position = u_view_to_clip * vec4(out_frag.view_coord + vec3(0,0,rad), 1.0);
+    EmitVertex();
+}
+#else
+void emit_vertex_persp(vec4 clip_coord) {
     vec4 view_coord = u_clip_to_view * clip_coord;
     out_frag.view_coord = view_coord.xyz / view_coord.w;
     gl_Position = clip_coord;
     EmitVertex();
 }
+#endif
 
 // From Inigo Quilez!
 void proj_sphere(in vec4 sphere, 
@@ -84,22 +102,16 @@ void proj_sphere(in vec4 sphere,
 
 void main()
 {
-    if (in_vert[0].color.a == 0 || in_vert[0].view_sphere.w == 0) { // Zero alpha or zero radius
+    if (in_vert[0].view_sphere.w == 0) {
         EndPrimitive();
         return;
     }
-
-    // Focal length
-    vec2 fle = vec2(u_view_to_clip[0][0], u_view_to_clip[1][1]);
-
-    vec2 axis_a;
-    vec2 axis_b;
-    vec2 center;
-    proj_sphere(in_vert[0].view_sphere, fle, axis_a, axis_b, center);
-    center += u_jitter_uv.xy * 0.5;
-
-    // Compute clip z (with bias of radius) 
-    float clip_z = -u_view_to_clip[2][2] - u_view_to_clip[3][2] / (in_vert[0].view_sphere.z + in_vert[0].view_sphere.w);
+#if ATOM_COL
+    if (in_vert[0].color.a == 0) {
+        EndPrimitive();
+        return;
+    }
+#endif
 
     out_frag.view_sphere = in_vert[0].view_sphere;
 #if ATOM_VEL
@@ -112,10 +124,27 @@ void main()
     out_frag.atom_idx = in_vert[0].atom_idx;
 #endif
 
-    emit_vertex(vec4(center -axis_a -axis_b, clip_z, 1));
-    emit_vertex(vec4(center +axis_a -axis_b, clip_z, 1));
-    emit_vertex(vec4(center -axis_a +axis_b, clip_z, 1));
-    emit_vertex(vec4(center +axis_a +axis_b, clip_z, 1));
-
+#if ORTHO
+    emit_vertex_ortho(vec2(-1, -1));
+    emit_vertex_ortho(vec2(+1, -1));
+    emit_vertex_ortho(vec2(-1, +1));
+    emit_vertex_ortho(vec2(+1, +1));
     EndPrimitive();
+#else
+    // Focal length
+    vec2 fle = vec2(u_view_to_clip[0][0], u_view_to_clip[1][1]);
+    vec2 axis_a;
+    vec2 axis_b;
+    vec2 center;
+    proj_sphere(in_vert[0].view_sphere, fle, axis_a, axis_b, center);
+    // center += u_jitter_uv.xy * 0.5; // This should be incorporated somehow, but it is creating flickering artifacts when depth testing equal
+    // Compute clip z (with bias of radius) 
+    float clip_z = -u_view_to_clip[2][2] - u_view_to_clip[3][2] / (in_vert[0].view_sphere.z + in_vert[0].view_sphere.w);
+
+    emit_vertex_persp(vec4(center -axis_a -axis_b, clip_z, 1));
+    emit_vertex_persp(vec4(center +axis_a -axis_b, clip_z, 1));
+    emit_vertex_persp(vec4(center -axis_a +axis_b, clip_z, 1));
+    emit_vertex_persp(vec4(center +axis_a +axis_b, clip_z, 1));
+    EndPrimitive();
+#endif
 }

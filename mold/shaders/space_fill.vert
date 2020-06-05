@@ -15,8 +15,8 @@
 layout (location = 0) in vec3  in_atom_pos;
 layout (location = 1) in vec3  in_atom_prev_pos;
 layout (location = 2) in float in_atom_rad;
-layout (location = 3) in vec4  in_atom_col;
-layout (location = 4) in uint  in_atom_flags;
+layout (location = 3) in uint  in_atom_flags;
+layout (location = 4) in vec4  in_atom_col;
 
 out VS_GS {
     flat vec4 view_sphere;

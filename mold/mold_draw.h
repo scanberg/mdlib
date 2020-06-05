@@ -10,10 +10,6 @@
 //  @TODO: Fill in
 
 
-
-// @TODO:
-// - Reduce footprint of ctx, mol and rep (especially ctx and mol)
-
 #include <stdint.h>
 #include "mold_molecule.h"
 
@@ -21,7 +17,7 @@
 extern "C" {
 #endif
 
-#define MOLD_SPLINE_SUBDIVISION_COUNT 16
+#define MOLD_SPLINE_SUBDIVISION_COUNT 8
 
 typedef uint32_t mold_error;
 enum {
@@ -48,7 +44,7 @@ const char* mold_draw_get_error_str();
 // The draw context holds the shared resources such as buffers, shaders and textures needed to draw molecules
 typedef struct mold_draw_ctx mold_draw_ctx;
 struct mold_draw_ctx {
-    uint64_t _mem[10];
+    uint64_t _mem[72];
 };
 
 typedef struct mold_draw_ctx_desc mold_draw_ctx_desc;
@@ -158,6 +154,9 @@ mold_error mold_draw_mol_set_atom_flags(mold_draw_mol* mol, uint32_t offset, uin
 
 mold_error mold_draw_mol_set_residue_secondary_structure(mold_draw_mol* mol, uint32_t offset, uint32_t count, const mold_secondary_structure* secondary_structure, uint32_t byte_stride);
 
+// This is called to copy the atom position buffer to previous atom position
+// Usually just before calling mold_draw_mol_set_atom_position() to set a new current position
+mold_error mold_draw_mol_update_atom_previous_position(mold_draw_mol* mol);
 /*
  *  REPRESENTATIONS
  *  Interface for creating visual representations for molecules
@@ -218,7 +217,7 @@ typedef struct mold_draw_rendertarget {
     uint32_t width;
     uint32_t height;
     uint32_t texture_depth;
-    uint32_t texture_color;
+    uint32_t texture_color;             // [Optional] (0 = ignore)
     uint32_t texture_atom_index;        // [Optional] (0 = ignore)
     uint32_t texture_view_normal;       // [Optional] (0 = ignore)
     uint32_t texture_view_velocity;     // [Optional] (0 = ignore)
@@ -251,7 +250,7 @@ typedef struct mold_draw_desc {
     // If mol_mask is non-zero, the value is used as a mask and is ANDed with the atom flag of the molecule,
     // if the result after the operation is non-zero, the atom will be drawn.
     // Some representations (such as ribbons, cartoon) use spline segments derived from CA atoms, hide the CA atom => hide the segment
-    uint8_t mol_mask;
+    uint32_t mol_mask;
 
     mold_draw_options options;
 } mold_draw_desc;

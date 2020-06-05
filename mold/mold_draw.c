@@ -53,10 +53,6 @@ enum {
     GL_PROGRAM_CULL_AABB,
     GL_PROGRAM_EXTRACT_CONTROL_POINTS,
     GL_PROGRAM_COMPUTE_SPLINE,
-    GL_PROGRAM_SPACE_FILL,
-    GL_PROGRAM_LICORICE,
-    GL_PROGRAM_RIBBONS,
-    GL_PROGRAM_CARTOON,
     GL_PROGRAM_COUNT
 };
 
@@ -86,6 +82,16 @@ enum {
     GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX,           // u32, LINE_STRIP indices for rendering, seperated by primitive restart index 0xFFFFFFFF
     GL_BUFFER_MOL_COUNT
 };
+
+enum {
+    PERMUTATION_BIT_ORTHO = 1,
+    PERMUTATION_BIT_COLOR = 2,
+    PERMUTATION_BIT_NORMAL = 4,
+    PERMUTATION_BIT_VELOCITY = 8,
+    PERMUTATION_BIT_INDEX = 16,
+};
+
+#define MAX_SHADER_PERMUTATIONS 32
 
 typedef union vec4 {
     struct {
@@ -375,7 +381,12 @@ struct internal_mol {
 };
 
 struct internal_ctx {
-   //  gl_view_transform view_transform[GL_VIEW_TRANSFORM_COUNT];
+    struct {
+        gl_program space_fill[MAX_SHADER_PERMUTATIONS];
+        gl_program licorice[MAX_SHADER_PERMUTATIONS];
+        gl_program ribbons[MAX_SHADER_PERMUTATIONS];
+        gl_program cartoon[MAX_SHADER_PERMUTATIONS];
+    } permuted_program;
 
     gl_program program[GL_PROGRAM_COUNT];
     gl_texture texture[GL_TEXTURE_COUNT];
@@ -576,6 +587,9 @@ mold_error validate_context(const internal_ctx* ctx) {
 mold_error mold_draw_mol_set_atom_position(mold_draw_mol* ext_mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
     if (ext_mol && x && y && z) {
         internal_mol* mol = (internal_mol*)ext_mol;
+        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
+            return MOLD_DRAW_GL_INVALID_BUFFER;
+        }
         if (offset + count > mol->atom_count) {
             return MOLD_DRAW_GL_ATTEMPTING_TO_WRITE_OUT_OF_BUFFER_RANGE;
         }
@@ -601,6 +615,9 @@ mold_error mold_draw_mol_set_atom_position(mold_draw_mol* ext_mol, uint32_t offs
 mold_error mold_draw_mol_set_atom_radius(mold_draw_mol* ext_mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride) {
     if (ext_mol && radius) {
         internal_mol* mol = (internal_mol*)ext_mol;
+        if (!mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id) {
+            return MOLD_DRAW_GL_INVALID_BUFFER;
+        }
         byte_stride = MAX(sizeof(float), byte_stride);
         if (byte_stride > sizeof(float)) {
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id);
@@ -627,6 +644,9 @@ mold_error mold_draw_mol_set_atom_radius(mold_draw_mol* ext_mol, uint32_t offset
 mold_error mold_draw_mol_set_atom_flags(mold_draw_mol* ext_mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride) {
     if (ext_mol && flags) {
         internal_mol* mol = (internal_mol*)ext_mol;
+        if (!mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id) {
+            return MOLD_DRAW_GL_INVALID_BUFFER;
+        }
         byte_stride = MAX(sizeof(uint8_t), byte_stride);
         if (byte_stride > sizeof(uint8_t)) {
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
@@ -653,6 +673,9 @@ mold_error mold_draw_mol_set_atom_flags(mold_draw_mol* ext_mol, uint32_t offset,
 mold_error mold_draw_mol_set_residue_secondary_structure(mold_draw_mol* ext_mol, uint32_t offset, uint32_t count, const mold_secondary_structure* secondary_structure, uint32_t byte_stride) {
     if (ext_mol && secondary_structure) {
         internal_mol* mol = (internal_mol*)ext_mol;
+        if (!mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE].id) {
+            return MOLD_DRAW_GL_INVALID_BUFFER;
+        }
         byte_stride = MAX(sizeof(mold_secondary_structure), byte_stride);
         if (byte_stride > sizeof(mold_secondary_structure)) {
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE].id);
@@ -672,6 +695,25 @@ mold_error mold_draw_mol_set_residue_secondary_structure(mold_draw_mol* ext_mol,
             gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE], offset * sizeof(mold_secondary_structure), count * sizeof(mold_secondary_structure), secondary_structure);
             return MOLD_DRAW_SUCCESS;
         }
+    }
+    return MOLD_DRAW_ARGUMENT_IS_NULL;
+}
+
+mold_error mold_draw_mol_update_atom_previous_position(mold_draw_mol* ext_mol) {
+    if (ext_mol) {
+        internal_mol* mol = (internal_mol*)ext_mol;
+        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
+            return MOLD_DRAW_GL_INVALID_BUFFER;
+        }
+        if (!mol->buffer[GL_BUFFER_MOL_ATOM_PREV_POSITION].id) {
+            return MOLD_DRAW_GL_INVALID_BUFFER;
+        }
+        
+        glBindBuffer(GL_COPY_READ_BUFFER,  mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_PREV_POSITION].id);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, gl_buffer_size(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]));
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
     }
     return MOLD_DRAW_ARGUMENT_IS_NULL;
 }
@@ -751,6 +793,38 @@ mold_error mold_draw_rep_set_color(mold_draw_rep* ext_rep, uint32_t offset, uint
     return MOLD_DRAW_ARGUMENT_IS_NULL;
 }
 
+mold_error create_permuted_program(gl_program* program_permutations, const char* vert_file, const char* geom_file, const char* frag_file) {
+    GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
+    GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
+    GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
+
+    for (uint32_t perm = 0; perm < MAX_SHADER_PERMUTATIONS; ++perm) {
+        char define[128] = {0};
+        int  at = 0;
+
+        at += snprintf(define + at, ARRAY_SIZE(define) - at, "#define ORTHO %i\n",     (int)((perm & PERMUTATION_BIT_ORTHO) != 0));
+        at += snprintf(define + at, ARRAY_SIZE(define) - at, "#define ATOM_COL %i\n",  (int)((perm & PERMUTATION_BIT_COLOR) != 0));
+        at += snprintf(define + at, ARRAY_SIZE(define) - at, "#define VIEW_NORM %i\n", (int)((perm & PERMUTATION_BIT_NORMAL) != 0));
+        at += snprintf(define + at, ARRAY_SIZE(define) - at, "#define ATOM_VEL %i\n",  (int)((perm & PERMUTATION_BIT_VELOCITY) != 0));
+        at += snprintf(define + at, ARRAY_SIZE(define) - at, "#define ATOM_IDX %i\n",  (int)((perm & PERMUTATION_BIT_INDEX) != 0));
+
+        mold_error err;
+        if (vert_file && ((err = compile_shader_from_file(vert_shader, vert_file, define)) != MOLD_DRAW_SUCCESS)) return err;
+        if (geom_file && ((err = compile_shader_from_file(geom_shader, geom_file, define)) != MOLD_DRAW_SUCCESS)) return err;
+        if (frag_file && ((err = compile_shader_from_file(frag_shader, frag_file, define)) != MOLD_DRAW_SUCCESS)) return err;
+
+        program_permutations[perm].id = glCreateProgram();
+        const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
+        if ((err = link_program(program_permutations[perm].id, shaders, ARRAY_SIZE(shaders))) != MOLD_DRAW_SUCCESS) return err;
+    }
+
+    glDeleteShader(vert_shader);
+    glDeleteShader(geom_shader);
+    glDeleteShader(frag_shader);
+
+    return MOLD_DRAW_SUCCESS;
+}
+
 mold_error mold_draw_ctx_init(mold_draw_ctx* ext_ctx) {
     if (!ext_ctx) {
         snprintf(error_buf, ARRAY_SIZE(error_buf), "Context pointer is NULL");
@@ -784,95 +858,11 @@ mold_error mold_draw_ctx_init(mold_draw_ctx* ext_ctx) {
     }
 
     {
-        GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
-        GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
-        GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
-
         mold_error err;
-        if (((err = compile_shader_from_file(vert_shader, MOLD_SHADER_DIR "/space_fill.vert", NULL)) != MOLD_DRAW_SUCCESS) ||
-            ((err = compile_shader_from_file(geom_shader, MOLD_SHADER_DIR "/space_fill.geom", NULL)) != MOLD_DRAW_SUCCESS) ||
-            ((err = compile_shader_from_file(frag_shader, MOLD_SHADER_DIR "/space_fill.frag", NULL)) != MOLD_DRAW_SUCCESS)) {
-            return err;
-        }
-
-        ctx->program[GL_PROGRAM_SPACE_FILL].id = glCreateProgram();
-        const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
-        if ((err = link_program(ctx->program[GL_PROGRAM_SPACE_FILL].id, shaders, ARRAY_SIZE(shaders))) != MOLD_DRAW_SUCCESS) {
-            return err;
-        }
-
-        glDeleteShader(vert_shader);
-        glDeleteShader(geom_shader);
-        glDeleteShader(frag_shader);
-    }
-
-    {
-        GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
-        GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
-        GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
-
-        mold_error err;
-        if (((err = compile_shader_from_file(vert_shader, MOLD_SHADER_DIR "/licorice.vert", NULL)) != MOLD_DRAW_SUCCESS) ||
-            ((err = compile_shader_from_file(geom_shader, MOLD_SHADER_DIR "/licorice.geom", NULL)) != MOLD_DRAW_SUCCESS) ||
-            ((err = compile_shader_from_file(frag_shader, MOLD_SHADER_DIR "/licorice.frag", NULL)) != MOLD_DRAW_SUCCESS)) {
-            return err;
-        }
-
-        ctx->program[GL_PROGRAM_LICORICE].id = glCreateProgram();
-        const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
-        if ((err = link_program(ctx->program[GL_PROGRAM_LICORICE].id, shaders, ARRAY_SIZE(shaders))) != MOLD_DRAW_SUCCESS) {
-            return err;
-        }
-
-        glDeleteShader(vert_shader);
-        glDeleteShader(geom_shader);
-        glDeleteShader(frag_shader);
-    }
-
-    {
-        GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
-        GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
-        GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
-
-        mold_error err;
-        if (((err = compile_shader_from_file(vert_shader, MOLD_SHADER_DIR "/ribbons.vert", NULL)) != MOLD_DRAW_SUCCESS) ||
-            ((err = compile_shader_from_file(geom_shader, MOLD_SHADER_DIR "/ribbons.geom", NULL)) != MOLD_DRAW_SUCCESS) ||
-            ((err = compile_shader_from_file(frag_shader, MOLD_SHADER_DIR "/ribbons.frag", NULL)) != MOLD_DRAW_SUCCESS)) {
-            return err;
-        }
-
-        ctx->program[GL_PROGRAM_RIBBONS].id = glCreateProgram();
-        const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
-        if ((err = link_program(ctx->program[GL_PROGRAM_RIBBONS].id, shaders, ARRAY_SIZE(shaders))) != MOLD_DRAW_SUCCESS) {
-            return err;
-        }
-
-        glDeleteShader(vert_shader);
-        glDeleteShader(geom_shader);
-        glDeleteShader(frag_shader);
-    }
-
-    {
-        GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
-        GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
-        GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
-
-        mold_error err;
-        if (((err = compile_shader_from_file(vert_shader, MOLD_SHADER_DIR "/cartoon.vert", NULL)) != MOLD_DRAW_SUCCESS) ||
-            ((err = compile_shader_from_file(geom_shader, MOLD_SHADER_DIR "/cartoon.geom", NULL)) != MOLD_DRAW_SUCCESS) ||
-            ((err = compile_shader_from_file(frag_shader, MOLD_SHADER_DIR "/cartoon.frag", NULL)) != MOLD_DRAW_SUCCESS)) {
-            return err;
-        }
-
-        ctx->program[GL_PROGRAM_CARTOON].id = glCreateProgram();
-        const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
-        if ((err = link_program(ctx->program[GL_PROGRAM_CARTOON].id, shaders, ARRAY_SIZE(shaders))) != MOLD_DRAW_SUCCESS) {
-            return err;
-        }
-
-        glDeleteShader(vert_shader);
-        glDeleteShader(geom_shader);
-        glDeleteShader(frag_shader);
+        if ((err = create_permuted_program(ctx->permuted_program.space_fill, MOLD_SHADER_DIR "/space_fill.vert", MOLD_SHADER_DIR "/space_fill.geom", MOLD_SHADER_DIR "/space_fill.frag")) != MOLD_DRAW_SUCCESS) return err;
+        if ((err = create_permuted_program(ctx->permuted_program.licorice,   MOLD_SHADER_DIR "/licorice.vert",   MOLD_SHADER_DIR "/licorice.geom",   MOLD_SHADER_DIR "/licorice.frag")) != MOLD_DRAW_SUCCESS) return err;
+        if ((err = create_permuted_program(ctx->permuted_program.ribbons,    MOLD_SHADER_DIR "/ribbons.vert",    MOLD_SHADER_DIR "/ribbons.geom",    MOLD_SHADER_DIR "/ribbons.frag")) != MOLD_DRAW_SUCCESS) return err;
+        if ((err = create_permuted_program(ctx->permuted_program.cartoon,    MOLD_SHADER_DIR "/cartoon.vert",    MOLD_SHADER_DIR "/cartoon.geom",    MOLD_SHADER_DIR "/cartoon.frag")) != MOLD_DRAW_SUCCESS) return err;
     }
 
     {
@@ -1014,15 +1004,18 @@ mold_error mold_draw_mol_init(mold_draw_mol* ext_mol, const mold_draw_mol_desc* 
         mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS]        = gl_buffer_create(mol->atom_count * sizeof(float) * 1, NULL, GL_STATIC_DRAW);
         mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS]         = gl_buffer_create(mol->atom_count * sizeof(uint8_t),   NULL, GL_STATIC_DRAW);
 
-        if (desc->atom.x && desc->atom.y && desc->atom.z)   mold_draw_mol_set_atom_position(ext_mol, 0, mol->atom_count, desc->atom.x, desc->atom.y, desc->atom.z, 0);
+        if (desc->atom.x && desc->atom.y && desc->atom.z) {
+            mold_draw_mol_set_atom_position(ext_mol, 0, mol->atom_count, desc->atom.x, desc->atom.y, desc->atom.z, 0);
+            mold_draw_mol_update_atom_previous_position(ext_mol);
+        }
         if (desc->atom.radius)                              mold_draw_mol_set_atom_radius(ext_mol, 0, mol->atom_count, desc->atom.radius, 0);
         if (desc->atom.flags)                               mold_draw_mol_set_atom_flags(ext_mol, 0, mol->atom_count, desc->atom.flags, 0);
 
         mol->residue_count = desc->residue.count;
-        mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE]          = gl_buffer_create(mol->residue_count * sizeof(uint32_t) * 2, NULL, GL_STATIC_DRAW);
+        mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE]          = gl_buffer_create(mol->residue_count * sizeof(mold_range),   NULL, GL_STATIC_DRAW);
         mol->buffer[GL_BUFFER_MOL_RESIDUE_AABB]                = gl_buffer_create(mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
         mol->buffer[GL_BUFFER_MOL_RESIDUE_VISIBLE]             = gl_buffer_create(mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
-        mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE] = gl_buffer_create(mol->residue_count * sizeof(uint8_t) * 4,  NULL, GL_DYNAMIC_DRAW);
+        mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE] = gl_buffer_create(mol->residue_count * sizeof(mold_secondary_structure), NULL, GL_DYNAMIC_DRAW);
 
         if (desc->residue.atom_range)           gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE], 0, mol->residue_count * sizeof(uint32_t) * 2, desc->residue.atom_range);
         //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
@@ -1177,10 +1170,10 @@ mold_error gl_compute_residue_aabb(const internal_ctx* ctx, const internal_mol* 
 mold_error gl_cull_aabb(const internal_ctx* ctx, const internal_mol* mol);
 mold_error gl_compute_spline(const internal_ctx* ctx, const internal_mol* mol);
 
-mold_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* rep);
-mold_error gl_draw_licorice(const internal_ctx* ctx, const internal_rep* rep);
-mold_error gl_draw_ribbons(const internal_ctx* ctx, const internal_rep* rep);
-mold_error gl_draw_cartoon(const internal_ctx* ctx, const internal_rep* rep);
+mold_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
+mold_error gl_draw_licorice  (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
+mold_error gl_draw_ribbons   (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
+mold_error gl_draw_cartoon   (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
 
 int compare_draw_rep(const void* elem1, const void* elem2) {
     const internal_rep* r1 = (const internal_rep*)elem1;
@@ -1295,8 +1288,9 @@ mold_error mold_draw(const mold_draw_ctx* ext_ctx, const mold_draw_desc* desc) {
         }
     }
     POP_GPU_SECTION()
-            
-    // Possibly resize internal depth buffer to match render_target size
+        
+
+    // possibly resize internal depth buffer to match render_target size
     const gl_texture* max_tex = &ctx->texture[GL_TEXTURE_MAX_DEPTH];
     uint32_t max_tex_w = gl_texture_width(*max_tex, 0);
     uint32_t max_tex_h = gl_texture_height(*max_tex, 0);
@@ -1314,8 +1308,10 @@ mold_error mold_draw(const mold_draw_ctx* ext_ctx, const mold_draw_desc* desc) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
-        
     bool using_internal_depth = false;
+
+    int program_permutation = 0;
+    if (is_ortho_proj_matrix(ubo_data.view_transform.view_to_clip)) program_permutation |= PERMUTATION_BIT_ORTHO;
         
     // If we have rendertargets -> setup and enable fbo
     if (desc->render_target) {
@@ -1331,18 +1327,22 @@ mold_error mold_draw(const mold_draw_ctx* ext_ctx, const mold_draw_desc* desc) {
         if (desc->render_target->texture_color) {
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc->render_target->texture_color, 0);
             draw_buffers[count++] = GL_COLOR_ATTACHMENT0;
+            program_permutation |= PERMUTATION_BIT_COLOR;
         }
         if (desc->render_target->texture_view_normal) {
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, desc->render_target->texture_view_normal, 0);
             draw_buffers[count++] = GL_COLOR_ATTACHMENT1;
+            program_permutation |= PERMUTATION_BIT_NORMAL;
         }
         if (desc->render_target->texture_view_velocity) {
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, desc->render_target->texture_view_velocity, 0);
             draw_buffers[count++] = GL_COLOR_ATTACHMENT2;
+            program_permutation |= PERMUTATION_BIT_VELOCITY;
         }
         if (desc->render_target->texture_atom_index) {
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, desc->render_target->texture_atom_index, 0);
             draw_buffers[count++] = GL_COLOR_ATTACHMENT3;
+            program_permutation |= PERMUTATION_BIT_INDEX;
         }
         glDrawBuffers(count, draw_buffers);
         glViewport(0, 0, desc->render_target->width, desc->render_target->height);
@@ -1373,10 +1373,10 @@ mold_error mold_draw(const mold_draw_ctx* ext_ctx, const mold_draw_desc* desc) {
         
     PUSH_GPU_SECTION("DRAW REP")
     {
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
-        glColorMask(1,1,1,1);
-        glDepthMask(1);
+        //glEnable(GL_DEPTH_TEST);
+        //glDepthFunc(GL_LESS);
+        //glColorMask(1,1,1,1);
+        //glDepthMask(1);
         
         for (uint32_t i = 0; i < draw_rep_count; i++) {
             switch (draw_rep[i]->type) {
@@ -1384,16 +1384,16 @@ mold_error mold_draw(const mold_draw_ctx* ext_ctx, const mold_draw_desc* desc) {
                 break;
             case MOLD_DRAW_REP_DEFAULT:
             case MOLD_DRAW_REP_SPACE_FILL:
-                gl_draw_space_fill(ctx, draw_rep[i]);
+                gl_draw_space_fill(ctx, draw_rep[i], program_permutation);
                 break;
             case MOLD_DRAW_REP_RIBBONS:
-                gl_draw_ribbons(ctx, draw_rep[i]);
+                gl_draw_ribbons(ctx, draw_rep[i], program_permutation);
                 break;
             case MOLD_DRAW_REP_CARTOON:
-                gl_draw_cartoon(ctx, draw_rep[i]);
+                gl_draw_cartoon(ctx, draw_rep[i], program_permutation);
                 break;
             case MOLD_DRAW_REP_LICORICE:
-                gl_draw_licorice(ctx, draw_rep[i]);
+                gl_draw_licorice(ctx, draw_rep[i], program_permutation);
                 break;
             default:
                 snprintf(error_buf, ARRAY_SIZE(error_buf), "Representation had unexpected type");
@@ -1404,7 +1404,7 @@ mold_error mold_draw(const mold_draw_ctx* ext_ctx, const mold_draw_desc* desc) {
     }
     POP_GPU_SECTION()
        
-#if 1
+#if 0
     PUSH_GPU_SECTION("DOWNSAMPLE MAX DEPTH")
     {
         gl_texture dst = ctx->texture[GL_TEXTURE_MAX_DEPTH];
@@ -1418,17 +1418,7 @@ mold_error mold_draw(const mold_draw_ctx* ext_ctx, const mold_draw_desc* desc) {
     }
     POP_GPU_SECTION()
 #endif
-#if 1
-    PUSH_GPU_SECTION("COPY POSITION DATA")    
-    for (uint32_t i = 0; i < unique_mol_count; i++) {
-        glBindBuffer(GL_COPY_READ_BUFFER,  unique_mol_ptr[i]->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, unique_mol_ptr[i]->buffer[GL_BUFFER_MOL_ATOM_PREV_POSITION].id);
-        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, gl_buffer_size(unique_mol_ptr[i]->buffer[GL_BUFFER_MOL_ATOM_POSITION]));
-        glBindBuffer(GL_COPY_READ_BUFFER, 0);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
-    }
-    POP_GPU_SECTION()
-#endif
+
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, bound_fbo);
     glViewport(bound_viewport[0], bound_viewport[1], bound_viewport[2], bound_viewport[3]);
     glDrawBuffers(bound_draw_buffer_count, (GLenum*)bound_draw_buffer);
@@ -1438,7 +1428,7 @@ mold_error mold_draw(const mold_draw_ctx* ext_ctx, const mold_draw_desc* desc) {
     return MOLD_DRAW_SUCCESS;
 }
 
-mold_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* rep) {
+mold_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
     const float radius_scale = rep->args.space_fill.radius_scale;
     gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base), sizeof(radius_scale), &radius_scale);
 
@@ -1446,23 +1436,27 @@ mold_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* rep) 
 
     glEnableVertexAttribArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, 0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(1);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_PREV_POSITION].id);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, 0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(2);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id);
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, sizeof(float), 0);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(3);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, 0, 0);
+
+    glEnableVertexAttribArray(4);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);
-    glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(uint32_t), 0);
+    glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, 0);
     
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     
-    glUseProgram(ctx->program[GL_PROGRAM_SPACE_FILL].id);
+    glUseProgram(ctx->permuted_program.space_fill[program_permutation].id);
     glDrawArrays(GL_POINTS, 0, rep->mol->atom_count);
     glUseProgram(0);
     
@@ -1470,13 +1464,14 @@ mold_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* rep) 
     glDisableVertexAttribArray(1);
     glDisableVertexAttribArray(2);
     glDisableVertexAttribArray(3);
+    glDisableVertexAttribArray(4);
     
     glBindVertexArray(0);
     
     return MOLD_DRAW_SUCCESS;
 }
 
-mold_error gl_draw_licorice(const internal_ctx* ctx, const internal_rep* rep) {
+mold_error gl_draw_licorice(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
     const float radius = rep->args.licorice.radius;
     gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base), sizeof(radius), &radius);
 
@@ -1484,21 +1479,25 @@ mold_error gl_draw_licorice(const internal_ctx* ctx, const internal_rep* rep) {
 
     glEnableVertexAttribArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, 0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(1);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_PREV_POSITION].id);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, 0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(2);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    glVertexAttribIPointer(2, 1, GL_UNSIGNED_BYTE, 0, 0);
+
+    glEnableVertexAttribArray(3);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);
-    glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(uint32_t), 0);
+    glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, 0);
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
 
-    glUseProgram(ctx->program[GL_PROGRAM_LICORICE].id);
+    glUseProgram(ctx->permuted_program.licorice[program_permutation].id);
     glDrawElements(GL_LINES, rep->mol->bond_count * 2, GL_UNSIGNED_INT, 0);
     glUseProgram(0);
 
@@ -1507,13 +1506,14 @@ mold_error gl_draw_licorice(const internal_ctx* ctx, const internal_rep* rep) {
     glDisableVertexAttribArray(0);
     glDisableVertexAttribArray(1);
     glDisableVertexAttribArray(2);
+    glDisableVertexAttribArray(3);
 
     glBindVertexArray(0);
 
     return MOLD_DRAW_SUCCESS;
 }
 
-mold_error gl_draw_ribbons(const internal_ctx* ctx, const internal_rep* rep) {
+mold_error gl_draw_ribbons(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
     ASSERT(rep->mol);
     if (!rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id) {
         snprintf(error_buf, ARRAY_SIZE(error_buf), "No spline present for molecule, which is required for rendering ribbons representation");
@@ -1555,10 +1555,17 @@ mold_error gl_draw_ribbons(const internal_ctx* ctx, const internal_rep* rep) {
     glBindTexture(GL_TEXTURE_BUFFER, ctx->texture[GL_TEXTURE_BUFFER_0].id);
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, rep->color.id);
 
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx->texture[GL_TEXTURE_BUFFER_1].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFF);
 
-    glUseProgram(ctx->program[GL_PROGRAM_RIBBONS].id);
+    GLuint program = ctx->permuted_program.ribbons[program_permutation].id;
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_atom_color_buffer"), 0);
+    glUniform1i(glGetUniformLocation(program, "u_atom_flags_buffer"), 1);
     glDrawElements(GL_LINE_STRIP, rep->mol->backbone_spline_index_count, GL_UNSIGNED_INT, 0);
     glUseProgram(0);
 
@@ -1577,7 +1584,7 @@ mold_error gl_draw_ribbons(const internal_ctx* ctx, const internal_rep* rep) {
     return MOLD_DRAW_SUCCESS;
 }
 
-mold_error gl_draw_cartoon(const internal_ctx* ctx, const internal_rep* rep) {
+mold_error gl_draw_cartoon(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
     ASSERT(rep->mol);
     if (!rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id) {
         snprintf(error_buf, ARRAY_SIZE(error_buf), "No spline present for molecule, which is required for rendering ribbons representation");
@@ -1625,10 +1632,17 @@ mold_error gl_draw_cartoon(const internal_ctx* ctx, const internal_rep* rep) {
     glBindTexture(GL_TEXTURE_BUFFER, ctx->texture[GL_TEXTURE_BUFFER_0].id);
     glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, rep->color.id);
 
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_BUFFER, ctx->texture[GL_TEXTURE_BUFFER_1].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFF);
 
-    glUseProgram(ctx->program[GL_PROGRAM_CARTOON].id);
+    GLuint program = ctx->permuted_program.cartoon[program_permutation].id;
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_atom_color_buffer"), 0);
+    glUniform1i(glGetUniformLocation(program, "u_atom_flags_buffer"), 1);
     glDrawElements(GL_LINE_STRIP, rep->mol->backbone_spline_index_count, GL_UNSIGNED_INT, 0);
     glUseProgram(0);
 

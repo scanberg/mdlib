@@ -18,6 +18,10 @@
 #define VIEW_NORM 1
 #endif
 
+#ifndef ORTHO
+#define ORTHO 0
+#endif
+
 in GS_FS {
     smooth vec3 view_coord;
     flat vec4 view_sphere;
@@ -29,6 +33,9 @@ in GS_FS {
 #endif
 #if ATOM_IDX
     flat uint atom_idx;
+#endif
+#if ORTHO
+    smooth vec2 uv;
 #endif
 } in_frag;
 
@@ -74,20 +81,25 @@ vec4 unpackUnorm4x8(in uint data) {
 void main() {
     vec3 center = in_frag.view_sphere.xyz;
     float radius = in_frag.view_sphere.w;
-    vec3 view_dir = normalize(in_frag.view_coord);
 
+#if ORTHO
+    vec2 uv = in_frag.uv;
+    float len = length(uv);
+    if (len > 1.0) discard;
+    vec3 view_coord = in_frag.view_coord.xyz + vec3(0, 0, radius * (sqrt(1.0 - len*len)));
+#else
     vec3 m = -center;
-    vec3 d = view_dir;
+    vec3 d = normalize(in_frag.view_coord);
     float r = radius;
     float b = dot(m, d);
     float c = dot(m, m) - r*r;
     float discr = b*b - c;
     if (discr < 0.0) discard;
     float t = -b -sqrt(discr);
-
     vec3 view_coord = d * t;
-    vec4 clip_coord = u_view_to_clip * vec4(view_coord, 1);
+#endif
 
+    vec4 clip_coord = u_view_to_clip * vec4(view_coord, 1);
     gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
 
 #if ATOM_VEL

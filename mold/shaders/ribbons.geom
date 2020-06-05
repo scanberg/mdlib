@@ -200,7 +200,7 @@ void main() {
     EndPrimitive();
 
     // CAPS THOSE ENDS
-    if ((in_vert[0].flags & 1U) != 0U) { // BEG_CHAIN
+    //if ((in_vert[0].flags & 1U) != 0U) { // BEG_CHAIN
         out_frag.color = in_vert[0].color;
         out_frag.picking_idx = in_vert[0].picking_idx;
         out_frag.view_normal = vec3(N[0] * vec4( 0, 0, -1, 0));
@@ -217,7 +217,7 @@ void main() {
         out_frag.prev_clip_coord = prev_clip0[2];
         gl_Position = curr_clip0[2]; EmitVertex();
         EndPrimitive();
-    } else if ((in_vert[1].flags & 2U) != 0U) {
+    //} else if ((in_vert[1].flags & 2U) != 0U) {
         out_frag.color = in_vert[1].color;
         out_frag.picking_idx = in_vert[1].picking_idx;
         out_frag.view_normal = vec3(N[1] * vec4( 0, 0, 1, 0));
@@ -234,5 +234,5 @@ void main() {
         out_frag.prev_clip_coord = prev_clip1[3];
         gl_Position = curr_clip1[3]; EmitVertex();
         EndPrimitive();
-    }
+   //}
 }
