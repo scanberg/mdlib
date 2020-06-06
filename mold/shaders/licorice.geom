@@ -1,5 +1,17 @@
 #version 150 core
 
+#ifndef ATOM_COL
+#define ATOM_COL 1
+#endif
+
+#ifndef ATOM_VEL
+#define ATOM_VEL 0
+#endif
+
+#ifndef ATOM_IDX
+#define ATOM_IDX 1
+#endif
+
 layout (std140) uniform ubo {
     mat4 u_world_to_view;
     mat4 u_world_to_view_normal;
@@ -10,7 +22,7 @@ layout (std140) uniform ubo {
     mat4 u_prev_world_to_clip;
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
-    uint  u_atom_mask;
+    uint u_atom_mask;
     
     float u_radius;
 };
@@ -19,9 +31,16 @@ layout (lines) in;
 layout (triangle_strip, max_vertices = 24) out;
 
 in Vertex {
+#if ATOM_VEL
     flat vec3 view_velocity;
+#endif
+#if ATOM_IDX
     flat uint picking_idx;
+#endif
+#if ATOM_COL
     flat vec4 color;
+#endif
+    flat uint flags;
 } in_vert[];
 
 out Fragment {
@@ -61,10 +80,19 @@ vec3 get_ortho_vec(vec3 v, vec3 A, vec3 B){
 
 void main()
 {
+    if (u_atom_mask != 0U &&
+        ((in_vert[0].flags & u_atom_mask) == 0U ||
+         (in_vert[1].flags & u_atom_mask) == 0U)){
+        EndPrimitive();
+        return;
+    }
+
+#if ATOM_COL
     if (in_vert[0].color.a == 0 || in_vert[1].color.a == 0) {
         EndPrimitive();
         return;
     }
+#endif
 
     // Compute orientation vectors for the two connecting faces:
     vec3 p0 = gl_in[0].gl_Position.xyz;
@@ -74,14 +102,20 @@ void main()
     vec3 a = (p1 - p0) / l;
     vec3 c = (p0 + p1) * 0.5;
 
+#if ATOM_VEL
     out_frag.view_velocity[0] = in_vert[0].view_velocity;
     out_frag.view_velocity[1] = in_vert[1].view_velocity;
+#endif
 
+#if ATOM_COL
     out_frag.color[0] = in_vert[0].color;
     out_frag.color[1] = in_vert[1].color;
+#endif
 
+#if ATOM_IDX
     out_frag.picking_idx[0] = in_vert[0].picking_idx;
     out_frag.picking_idx[1] = in_vert[1].picking_idx;
+#endif
 
     out_frag.capsule_center_radius = vec4(c, r);
     out_frag.capsule_axis_length = vec4(a, l);
