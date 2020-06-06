@@ -198,7 +198,7 @@ struct ast_node_t {
     };
 };
 
-static const int ast_node_size = sizeof(ast_node_t);
+//static const int ast_node_size = sizeof(ast_node_t);
 static_assert((sizeof(ast_node_t) & (sizeof(ast_node_t) - 1)) == 0, "ast_node_t size should be power of 2");
 
 typedef struct lexer_t lexer_t;
@@ -233,13 +233,13 @@ static const keyword_t keyword_table[] = {
 };
 
 typedef struct ident_t {
-    const char* str;
-    uint32_t    len;
-    node_type_t type;
-    func_type_t func_type;
-    void*       func_addr;
-    uint32_t    arg_count;
-    node_type_t arg_type[2]; // add more in the future
+    const char*  str;
+    uint32_t     len;
+    node_type_t  type;
+    func_type_t  func_type;
+    void*        func_addr;
+    uint32_t     arg_count;
+    value_type_t arg_type[2]; // add more in the future
 
 } ident_t;
 
@@ -376,10 +376,10 @@ static token_t get_next_token_from_buffer(lexer_t* lexer) {
             while (buf[i] && (is_alpha(buf[i]) || is_digit(buf[i]) || buf[i] == '_')) ++i;
             t.str.length = i - t.str.offset;
 
-            uint32_t idx;
-            if (idx = match_keyword(buf + t.str.offset, t.str.length)) {
+            uint32_t idx = match_keyword(buf + t.str.offset, t.str.length);
+            if (idx) {
                 t.type = keyword_table[idx].type;
-            } else if (idx = match_ident_str(buf + t.str.offset, t.str.length)) {
+            } else if (match_ident_str(buf + t.str.offset, t.str.length)) {
                 t.type = TOKEN_IDENT;
             } else {
                 while (buf[i] && is_alpha(buf[i]) && is_digit(buf[i])) ++i;
@@ -646,8 +646,8 @@ static void decode_args(const ast_node_t** arg_nodes, uint32_t arg_count, const 
     }
 }
 
-static ast_node_t* parse_expression(parse_context_t*);
-static ast_node_t* parse_identifier(parse_context_t*);
+static ast_node_t* parse_expression(parse_context_t*, lexer_t* lexer);
+static ast_node_t* parse_identifier(parse_context_t*, lexer_t* lexer);
 
 static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
     token_t token = next_token(lexer);
