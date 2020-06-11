@@ -1,0 +1,16 @@
+# libxdrfile
+
+Fork of GROMACS libxdrfile version 1.1.4, with patches for uses within the
+chemfiles project. This version is BSD licensed.
+
+
+Original README below.
+
+-------
+
+This library allows to read GROMACS trr and xtc files and also to
+convert from one format to another.
+
+The library itself is offered under the BSD license, which means you are free
+to incorporate it any way you want in other libraries or executables, no
+matter what the final license is.
