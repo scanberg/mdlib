@@ -4,6 +4,22 @@
 //#define NUM_VERTS 26    // RES * 2 + 2 (Cylinder) + 1 + RES (CAP)
 #define NUM_VERTS 26
 
+#ifndef ATOM_COL
+#define ATOM_COL 1
+#endif
+
+#ifndef ATOM_VEL
+#define ATOM_VEL 0
+#endif
+
+#ifndef ATOM_IDX
+#define ATOM_IDX 1
+#endif
+
+#ifndef VIEW_NORM
+#define VIEW_NORM 1
+#endif
+
 layout (std140) uniform ubo {
     mat4 u_world_to_view;
     mat4 u_world_to_view_normal;
@@ -15,9 +31,13 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
     float u_width_scale;
     float u_height_scale;
 };
+
 
 layout(lines) in;
 layout(triangle_strip, max_vertices = NUM_VERTS) out;
@@ -26,41 +46,78 @@ in Vertex {
     vec4  control_point;
     vec4  support_vector;
     vec4  support_tangent;
+#if ATOM_VEL
     vec4  velocity;
+#endif
     float segment_t;
     vec3  secondary_structure;
     uint  flags;
+#if ATOM_COL
     vec4  color;
-    uint  picking_idx;
+#endif
+#if ATOM_IDX
+    flat uint  picking_idx;
+#endif
 } in_vert[];
 
+#if ATOM_COL || ATOM_VEL || ATOM_IDX || VIEW_NORM
 out Fragment {
+#if ATOM_VEL
     smooth vec4 curr_clip_coord;
     smooth vec4 prev_clip_coord;
+#endif
+#if ATOM_COL
     smooth vec4 color;
-    smooth vec3 view_normal;
+#endif
+#if VIEW_NORM
+    smooth vec4 view_normal;
+#endif
+#if ATOM_IDX
     flat   uint picking_idx;
+#endif
 } out_frag;
+#endif
 
 void emit_vertex(in vec4 curr_clip_coord, in vec4 prev_clip_coord, in vec4 normal, in int idx) {
+#if ATOM_COL
     out_frag.color = in_vert[idx].color;
-    //out_frag.color = vec4(in_vert[idx].secondary_structure.xyz, 1);
-    //out_frag.color = mix(out_frag.color, vec4(1.0), fract(in_vert[idx].segment_t));
-    out_frag.picking_idx = in_vert[idx].picking_idx;
-    out_frag.view_normal = normal.xyz;
+#endif
+#if ATOM_VEL
     out_frag.curr_clip_coord = curr_clip_coord;
     out_frag.prev_clip_coord = prev_clip_coord;
+#endif
+#if VIEW_NORM
+    out_frag.view_normal = normal;
+#endif
+#if ATOM_IDX
+    out_frag.picking_idx = in_vert[0].picking_idx;
+#endif
     gl_Position = curr_clip_coord;
     EmitVertex();
 }
 
 void main() {
-    if (in_vert[0].color.a == 0.0f || in_vert[1].color.a == 0.0f) return;
+    // We consider the rendered segment to fully belong to index 0
+    if ((in_vert[0].flags & u_atom_mask) != u_atom_mask) return;
+#if ATOM_COL
+    if (in_vert[0].color.a == 0.0f) return;
+#endif
 
     vec4 x[2];
     vec4 y[2];
     vec4 z[2];
     vec4 w[2];
+    mat4 M[2];
+    mat4 N[2];
+    mat4 C[2];
+    vec3 ss[2];
+    vec2 s[2];
+    vec4 v0[RES];
+    vec4 v1[RES];
+    vec4 p0[RES];
+    vec4 p1[RES];   
+    vec4 n0[RES];
+    vec4 n1[RES];
     
     x[0] = in_vert[0].support_vector;
     x[1] = in_vert[1].support_vector * sign(dot(in_vert[0].support_vector, in_vert[1].support_vector));
@@ -73,19 +130,17 @@ void main() {
 
     const float TWO_PI = 2.0 * 3.14159265;
 
-    mat4 M[2];
     M[0] = mat4(x[0], y[0], z[0], w[0]);
     M[1] = mat4(x[1], y[1], z[1], w[1]);
 
-    mat4 N[2];
+#if VIEW_NORM
     N[0] = u_world_to_view_normal * M[0];
     N[1] = u_world_to_view_normal * M[1];
+#endif
 
-    mat4 C[2];
     C[0] = u_world_to_clip * M[0];
     C[1] = u_world_to_clip * M[1];
 
-    vec3 ss[2];
     ss[0] = in_vert[0].secondary_structure;
     ss[1] = in_vert[1].secondary_structure;
 
@@ -96,21 +151,10 @@ void main() {
 
     vec2 scale = vec2(u_width_scale, u_height_scale);
 
-    vec2 s[2];
     s[0] = scale * (ss[0].x * coil_scale + ss[0].y * helix_scale + ss[0].z * sheet_scale);
     s[1] = scale * (ss[1].x * coil_scale + ss[1].y * helix_scale + ss[1].z * sheet_scale);
 
-    //s0 = vec2(w0.x, w0.y);
-    //s1 = vec2(w1.x, w1.y);
 
-    vec4 v0[RES];
-    vec4 v1[RES];
-
-    vec4 p0[RES];
-    vec4 p1[RES];   
-
-    vec4 n0[RES];
-    vec4 n1[RES];
 
 /*
     if ((in_vert[0].flags & 8U) != 0U || (in_vert[1].flags & 8U) != 0U) {
@@ -122,11 +166,15 @@ void main() {
         float t = float(i) / float(RES) * TWO_PI;
         vec2 x = vec2(cos(t), sin(t));
         v0[i] = C[0] * vec4(x * s[0],0,1);
-        p0[i] = u_prev_world_to_clip * (M[0] * vec4(x * s[0], 0, 1) - in_vert[0].velocity);
-        n0[i] = N[0] * vec4(x / s[0],0,0);
         v1[i] = C[1] * vec4(x * s[1],0,1);
+#if ATOM_VEL
+        p0[i] = u_prev_world_to_clip * (M[0] * vec4(x * s[0], 0, 1) - in_vert[0].velocity);
         p1[i] = u_prev_world_to_clip * (M[1] * vec4(x * s[1], 0, 1) - in_vert[1].velocity);
+#endif
+#if VIEW_NORM
+        n0[i] = N[0] * vec4(x / s[0],0,0);
         n1[i] = N[1] * vec4(x / s[1],0,0);
+#endif
     }
     
     for (int i = 0; i < RES; ++i) {

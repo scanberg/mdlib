@@ -1,11 +1,11 @@
 #version 330 core
 
-#ifndef ATOM_VEL
-#define ATOM_VEL 1
-#endif
-
 #ifndef ATOM_COL
 #define ATOM_COL 1
+#endif
+
+#ifndef ATOM_VEL
+#define ATOM_VEL 0
 #endif
 
 #ifndef ATOM_IDX
@@ -42,7 +42,9 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
-    
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
     float u_radius_scale;
 };
 
@@ -50,7 +52,7 @@ void main() {
 	vec4  col = in_atom_col;
 	vec3  pos = in_atom_pos;
     float rad = in_atom_rad * u_radius_scale;
-    if (u_atom_mask > 0U && (in_atom_flags & u_atom_mask) == 0U) rad = 0;
+    if ((in_atom_flags & u_atom_mask) != u_atom_mask) rad = 0;
 
     vec3 view_pos    = vec3(u_world_to_view * vec4(pos, 1.0));
 	vec4 view_sphere = vec4(view_pos, rad);

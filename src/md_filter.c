@@ -3,81 +3,228 @@
 #pragma warning( disable : 6011 26451 )
 #endif
 
-#include "mold_filter.h"
+#include "md_filter.h"
+#include "md_log.h"
+#include <md_molecule.h>
 
 #include <string.h>
 #include <stdio.h>
 
+#include "core/intrinsics.h"
 #include "core/arena_alloc.h"
 #include "core/bitop.h"
+#include "core/common.h"
 
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
-#define MAX(x, y) ((x) > (y) ? (x) : (y))
-#define CLAMP(v, _min, _max) MIN(MAX(v, _min), _max)
-#define DIV_UP(x) ((x + 63) / 64)
-#define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
+#define DIV_UP(x, y) ((x + (y-1)) / y)
 #define MAX_FUNC_ARGS 2
 #define FLT_EPSILON 1E-5
 #define FLT_MAX     1E+37
-
-#ifndef ASSERT
-#include <assert.h>
-#define ASSERT assert
-#endif
+#define EVAL_TMP_BUFS 2
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void filter_func_all(uint64_t* bits, const mold_molecule* mol);
-void filter_func_none(uint64_t* bits, const mold_molecule* mol);
-void filter_func_protein(uint64_t* bits, const mold_molecule* mol);
-void filter_func_water(uint64_t* bits, const mold_molecule* mol);
-void filter_func_name(const char* str, uint64_t* bits, const mold_molecule* mol);
-void filter_func_element(const char* str, uint64_t* bits, const mold_molecule* mol);
-void filter_func_resname(const char* str, uint64_t* bits, const mold_molecule* mol);
-void filter_func_resid(int min_range, int max_range, uint64_t* bits, const mold_molecule* mol);
-void filter_func_residue(int min_range, int max_range, uint64_t* bits, const mold_molecule* mol);
-void filter_func_chain(const char* str, uint64_t* bits, const mold_molecule* mol);
-void filter_func_within(float min_range, float max_range, const uint64_t* in_bits, uint64_t* out_bits, const mold_molecule* mol);
-void filter_func_resid_int(int val, uint64_t* bits, const mold_molecule* mol);
-void filter_func_residue_int(int val, uint64_t* bits, const mold_molecule* mol);
-void filter_func_within_flt(float range, const uint64_t* in_bits, uint64_t* out_bits, const mold_molecule* mol);
+typedef uint32_t token_type_t;
+typedef uint32_t node_type_t;
+typedef uint32_t value_type_t;
+typedef uint32_t func_type_t;
 
-typedef struct str_slice_t {
+typedef struct str_slice_t      str_slice_t;
+typedef struct frange_t         frange_t;
+typedef struct irange_t         irange_t;
+typedef struct value_t          value_t;
+typedef struct token_t          token_t;
+typedef struct ast_node_t       ast_node_t;
+typedef struct parse_context_t  parse_context_t;
+typedef struct eval_context_t   eval_context_t;
+typedef struct lexer_t          lexer_t;
+typedef struct keyword_t        keyword_t;
+
+enum {
+    TOKEN_TYPE_UNDEFINED = 0,
+    TOKEN_TYPE_IDENT = 128, // Reserve the first indices for character literals
+    TOKEN_TYPE_NOT,
+    TOKEN_TYPE_AND,
+    TOKEN_TYPE_OR,
+    TOKEN_TYPE_OF,
+    TOKEN_TYPE_IN,
+    TOKEN_TYPE_NUM,
+    TOKEN_TYPE_STR,
+    TOKEN_TYPE_END
+};
+
+// AST NODE TYPES
+enum { // Sorted in precedence top to bottom
+    NODE_TYPE_UNDEFINED = 0,
+    NODE_TYPE_VALUE,
+    NODE_TYPE_REF,
+    NODE_TYPE_FUNC,
+    NODE_TYPE_NOT,
+    NODE_TYPE_AND,
+    NODE_TYPE_OR,
+};
+
+enum {
+    VALUE_TYPE_UNDEFINED = 0,
+    VALUE_TYPE_BOOL,
+    VALUE_TYPE_INT,
+    VALUE_TYPE_FLT,
+    VALUE_TYPE_STR,
+    VALUE_TYPE_IRNG,
+    VALUE_TYPE_FRNG
+};
+
+enum {
+    FUNC_TYPE_UNDEFINED = 0,
+    FUNC_TYPE_VOID,
+    FUNC_TYPE_BOOL,
+    FUNC_TYPE_STR,
+    FUNC_TYPE_INT,
+    FUNC_TYPE_FLT,
+    FUNC_TYPE_IRNG,
+    FUNC_TYPE_INT_BOOL,
+    FUNC_TYPE_IRNG_BOOL,
+    FUNC_TYPE_FRNG,
+    FUNC_TYPE_FLT_BOOL,
+    FUNC_TYPE_FRNG_BOOL
+};
+
+void filter_func_all(uint64_t* bits, const md_molecule* mol);
+void filter_func_none(uint64_t* bits, const md_molecule* mol);
+void filter_func_protein(uint64_t* bits, const md_molecule* mol);
+void filter_func_water(uint64_t* bits, const md_molecule* mol);
+void filter_func_x(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_x_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_y(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_y_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_z(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_z_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_radius(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_radius_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_mass(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_mass_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_bfactor(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_bfactor_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_occupancy(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_occupancy_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_atom(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_atom_int(int val, uint64_t* bits, const md_molecule* mol);
+void filter_func_name(const char* str, uint64_t* bits, const md_molecule* mol);
+void filter_func_element(const char* str, uint64_t* bits, const md_molecule* mol);
+void filter_func_resname(const char* str, uint64_t* bits, const md_molecule* mol);
+void filter_func_resid(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_resid_int(int val, uint64_t* bits, const md_molecule* mol);
+void filter_func_residue(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_residue_int(int val, uint64_t* bits, const md_molecule* mol);
+void filter_func_chain(const char* str, uint64_t* bits, const md_molecule* mol);
+void filter_func_chain_int(int idx, uint64_t* bits, const md_molecule* mol);
+void filter_func_chain_irng(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
+void filter_func_within(float min_range, float max_range, const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol);
+void filter_func_within_flt(float range, const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol);
+void filter_func_within_int(int range, const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol);
+void filter_func_within_irng(int min_range, int max_range, const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol);
+void filter_func_fill_residue(const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol);
+void filter_func_fill_chain(const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol);
+
+struct str_slice_t {
     uint32_t offset;
     uint32_t length;
-} str_slice_t;
+};
 
-typedef struct frange_t {
+struct frange_t {
     float min;
     float max;
-} frange_t;
+};
 
-typedef struct irange_t {
+struct irange_t {
     int32_t min;
     int32_t max;
-} irange_t;
+};
 
-static inline bool is_digit(char c) {
+struct value_t {
+    value_type_t type;
+    union {
+        uint64_t*   _bool;
+        str_slice_t _str;
+        float       _flt;
+        int32_t     _int;
+        frange_t    _frange;
+        irange_t    _irange;
+    };
+};
+
+struct token_t {
+    token_type_t type;
+    str_slice_t str;
+};
+
+struct eval_context_t {
+    const char* expr_str;
+    uint32_t    expr_len;
+    uint64_t    bit_count;
+    uint64_t*   res_buf;    // result buffer
+    uint64_t*   tmp_buf[EVAL_TMP_BUFS]; // auxiliary buffers for intermediate results
+    uint32_t    tmp_buf_used; // bitfield signaling if a temporary buffer is used or not
+    const md_filter_context* filt_ctx;
+};
+
+struct ast_node_t {
+    node_type_t  type;
+    value_type_t return_type;
+    str_slice_t  str;
+    union {
+        value_t      _value;
+        struct {
+            uint16_t ident;
+            int16_t  args;      // relative byte pointer to array of relative byte pointers to argument nodes
+        } _func;
+        int16_t      _child[2];  // relative byte pointers to ast_node children
+    };
+};
+
+static_assert((sizeof(ast_node_t) & (sizeof(ast_node_t) - 1)) == 0, "ast_node_t size should be power of 2");
+
+struct lexer_t {
+    const char* buff;
+    uint32_t    buff_len;
+    uint32_t    at;
+};
+
+struct parse_context_t {
+    mem_arena_t*    arena;
+    const char*     expr_str;
+    uint32_t        expr_len;
+    lexer_t*        lexer;
+    const token_t   cur_tok;
+    ast_node_t*     cur_node;
+};
+
+struct keyword_t {
+    const char*     str;
+    uint32_t        len;
+    token_type_t    type;
+};
+
+internal inline bool is_digit(char c) {
     return '0' <= c && c <= '9';
 }
 
-static inline bool is_alpha(char c) {
+internal inline bool is_alpha(char c) {
     return ('a' <= c && c <= 'z') ||
         ('A' <= c && c <= 'Z');
 }
 
-static inline bool is_whitespace(char c) {
+internal inline bool is_whitespace(char c) {
     return (c == ' ' || c == '\t' || c == '\n' || c == '\r');
 }
 
 // Fast parser for floats (with assumptions)
 // no leading +- (This is caught as unary operators)
 // no scientific notation (e.g. 1.0e+7)
-static inline double parse_float(const char* str, uint32_t len) {
+internal inline double parse_float(const char* str, uint32_t len) {
     const double pow10[16] = {
-        1,     1e+1,  1e+2,  1e+3,
+        1e+0,  1e+1,  1e+2,  1e+3,
         1e+4,  1e+5,  1e+6,  1e+7,
         1e+8,  1e+9,  1e+10, 1e+11,
         1e+12, 1e+13, 1e+14, 1e+15
@@ -102,7 +249,7 @@ static inline double parse_float(const char* str, uint32_t len) {
 
 // Fast parser for ints (with assumptions)
 // no leading +- (This is caught as unary operators)
-static inline int64_t parse_int(const char* str, uint32_t len) {
+internal inline int64_t parse_int(const char* str, uint32_t len) {
     int64_t val = 0;
     const char* c = str;
     const char* end = str + len;
@@ -113,117 +260,13 @@ static inline int64_t parse_int(const char* str, uint32_t len) {
     return val;
 }
 
-typedef enum {
-    TOKEN_UNDEFINED = 0,
-    TOKEN_IDENT = 128, // Reserve the first indices for character literals
-    TOKEN_NOT,
-    TOKEN_AND,
-    TOKEN_OR,
-    TOKEN_OF,
-    TOKEN_IN,
-    TOKEN_NUM,
-    TOKEN_STR,
-    TOKEN_END
-} token_type_t;
-
-typedef enum { // Sorted in precedence top to bottom
-    NODE_TYPE_UNDEFINED = 0,
-    NODE_TYPE_VALUE,
-    NODE_TYPE_REF,
-    NODE_TYPE_FUNC,
-    NODE_TYPE_NOT,
-    NODE_TYPE_AND,
-    NODE_TYPE_OR,
-} node_type_t;
-
-typedef enum {
-    VALUE_TYPE_UNDEFINED = 0,
-    VALUE_TYPE_BOOL,
-    VALUE_TYPE_INT,
-    VALUE_TYPE_FLT,
-    VALUE_TYPE_STR,
-    VALUE_TYPE_INT_RNG,
-    VALUE_TYPE_FLT_RNG
-} value_type_t;
-
-typedef enum {
-    FUNC_TYPE_UNDEFINED = 0,
-    FUNC_TYPE_VOID,
-    FUNC_TYPE_STR,
-    FUNC_TYPE_INT,
-    FUNC_TYPE_FLT,
-    FUNC_TYPE_INT_RNG,
-    FUNC_TYPE_FLT_RNG,
-    FUNC_TYPE_FLT_BOOL,
-    FUNC_TYPE_FLT_RNG_BOOL
-} func_type_t;
-
-typedef struct token_t token_t;
-
-struct token_t {
-    token_type_t type;
-    str_slice_t str;
-};
-
-typedef struct value_t {
-    value_type_t type;
-    union {
-        uint64_t*   _bool;
-        str_slice_t _str;
-        float       _flt;
-        int32_t     _int;
-        frange_t    _frange;
-        irange_t    _irange;
-    };
-} value_t;
-
-typedef struct ast_node_t ast_node_t;
-struct ast_node_t {
-    node_type_t  type;
-    value_type_t return_type;
-    str_slice_t  str;
-    union {
-        value_t      _value;
-        struct {
-            uint16_t ident;
-            int16_t  args;      // relative byte pointer to array of relative byte pointers to argument nodes
-        } _func;
-        int16_t      _child[2];  // relative byte pointers to ast_node children
-    };
-};
-
-//static const int ast_node_size = sizeof(ast_node_t);
-static_assert((sizeof(ast_node_t) & (sizeof(ast_node_t) - 1)) == 0, "ast_node_t size should be power of 2");
-
-typedef struct lexer_t lexer_t;
-struct lexer_t {
-    const char* buff;
-    uint32_t    buff_len;
-    uint32_t    at;
-};
-
-typedef struct parse_context_t {
-    mem_arena_t*    arena;
-    const char*     expr_str;
-    uint32_t        expr_len;
-    lexer_t*        lexer;
-    const token_t   cur_tok;
-    ast_node_t*     cur_node;
-} parse_context_t;
-
-typedef struct keyword_t {
-    const char*     str;
-    uint32_t        len;
-    token_type_t    type;
-} keyword_t;
-
 static const keyword_t keyword_table[] = {
     {0},    // idx zero as invalid
-    {"or",  2, TOKEN_OR},
-    {"of",  2, TOKEN_OF},           // reserved
-    {"in",  2, TOKEN_IN},           // reserved
-    {"and", 3, TOKEN_AND},
-    {"not", 3, TOKEN_NOT},
+    {"or",  2, TOKEN_TYPE_OR},
+    {"of",  2, TOKEN_TYPE_OF},           // reserved
+    {"in",  2, TOKEN_TYPE_IN},           // reserved
+    {"and", 3, TOKEN_TYPE_AND},
+    {"not", 3, TOKEN_TYPE_NOT},
 };
 
 typedef struct ident_t {
@@ -239,26 +282,41 @@ typedef struct ident_t {
 
 static const ident_t ident_table[] = {
     {0},          // use idx zero as invalid
-    {"x",         1, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG,      NULL,                       1, VALUE_TYPE_FLT_RNG},
-    {"y",         1, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG,      NULL,                       1, VALUE_TYPE_FLT_RNG},
-    {"z",         1, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG,      NULL,                       1, VALUE_TYPE_FLT_RNG},
-    {"all",       3, NODE_TYPE_FUNC, FUNC_TYPE_VOID,         filter_func_all,            0},
-    {"none",      4, NODE_TYPE_FUNC, FUNC_TYPE_VOID,         filter_func_none,           0},
-    {"mass",      4, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG,      NULL,                       1, VALUE_TYPE_FLT_RNG},
-    {"name",      4, NODE_TYPE_FUNC, FUNC_TYPE_STR,          filter_func_name,           1, VALUE_TYPE_STR},
-    {"water",     5, NODE_TYPE_FUNC, FUNC_TYPE_VOID,         filter_func_water,          0},
-    {"resid",     5, NODE_TYPE_FUNC, FUNC_TYPE_INT_RNG,      filter_func_resid,          1, VALUE_TYPE_INT_RNG},
-    {"resid",     5, NODE_TYPE_FUNC, FUNC_TYPE_INT_RNG,      filter_func_resid_int,      1, VALUE_TYPE_INT},
-    {"chain",     5, NODE_TYPE_FUNC, FUNC_TYPE_STR,          NULL,                       1, VALUE_TYPE_STR},
-    {"radius",    6, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG,      NULL,                       1, VALUE_TYPE_FLT_RNG},
-    {"within",    6, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG_BOOL, filter_func_within,         2, {VALUE_TYPE_FLT_RNG, VALUE_TYPE_BOOL}},
-    {"within",    6, NODE_TYPE_FUNC, FUNC_TYPE_FLT_BOOL,     filter_func_within_flt,     2, {VALUE_TYPE_FLT, VALUE_TYPE_BOOL}},
-    {"protein",   7, NODE_TYPE_FUNC, FUNC_TYPE_VOID,         filter_func_protein,        0},
-    {"bfactor",   7, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG,      NULL,                       1, VALUE_TYPE_FLT_RNG},
-    {"resname",   7, NODE_TYPE_FUNC, FUNC_TYPE_STR,          filter_func_resname,        1, VALUE_TYPE_STR},
-    {"residue",   7, NODE_TYPE_FUNC, FUNC_TYPE_INT_RNG,      filter_func_residue,        1, VALUE_TYPE_INT_RNG},
-    {"residue",   7, NODE_TYPE_FUNC, FUNC_TYPE_INT,          filter_func_residue_int,    1, VALUE_TYPE_INT},
-    {"occupancy", 8, NODE_TYPE_FUNC, FUNC_TYPE_FLT_RNG,      NULL,                       1, VALUE_TYPE_FLT_RNG},
+    {"x",           1, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_x,              1, VALUE_TYPE_FRNG},
+    {"x",           1, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_x_int,          1, VALUE_TYPE_IRNG},
+    {"y",           1, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_y,              1, VALUE_TYPE_FRNG},
+    {"y",           1, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_y_int,          1, VALUE_TYPE_IRNG},
+    {"z",           1, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_z,              1, VALUE_TYPE_FRNG},
+    {"z",           1, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_z_int,          1, VALUE_TYPE_IRNG},
+    {"all",         3, NODE_TYPE_FUNC, FUNC_TYPE_VOID,      filter_func_all,            0},
+    {"none",        4, NODE_TYPE_FUNC, FUNC_TYPE_VOID,      filter_func_none,           0},
+    {"atom",        4, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_atom,           1, VALUE_TYPE_IRNG},
+    {"atom",        4, NODE_TYPE_FUNC, FUNC_TYPE_INT,       filter_func_atom_int,       1, VALUE_TYPE_INT},
+    {"mass",        4, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_mass,           1, VALUE_TYPE_FRNG},
+    {"mass",        4, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_mass_int,       1, VALUE_TYPE_IRNG},
+    {"name",        4, NODE_TYPE_FUNC, FUNC_TYPE_STR,       filter_func_name,           1, VALUE_TYPE_STR},
+    {"water",       5, NODE_TYPE_FUNC, FUNC_TYPE_VOID,      filter_func_water,          0},
+    {"resid",       5, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_resid,          1, VALUE_TYPE_IRNG},
+    {"resid",       5, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_resid_int,      1, VALUE_TYPE_INT},
+    {"chain",       5, NODE_TYPE_FUNC, FUNC_TYPE_STR,       filter_func_chain,          1, VALUE_TYPE_STR},
+    {"chain",       5, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_chain_irng,     1, VALUE_TYPE_IRNG},
+    {"chain",       5, NODE_TYPE_FUNC, FUNC_TYPE_INT,       filter_func_chain_int,      1, VALUE_TYPE_INT},
+    {"radius",      6, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_radius,         1, VALUE_TYPE_FRNG},
+    {"radius",      6, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_radius_int,     1, VALUE_TYPE_IRNG},
+    {"within",      6, NODE_TYPE_FUNC, FUNC_TYPE_FRNG_BOOL, filter_func_within,         2, {VALUE_TYPE_FRNG, VALUE_TYPE_BOOL}},
+    {"within",      6, NODE_TYPE_FUNC, FUNC_TYPE_FLT_BOOL,  filter_func_within_flt,     2, {VALUE_TYPE_FLT, VALUE_TYPE_BOOL}},
+    {"within",      6, NODE_TYPE_FUNC, FUNC_TYPE_INT_BOOL,  filter_func_within_int,     2, {VALUE_TYPE_INT, VALUE_TYPE_BOOL}},
+    {"protein",     7, NODE_TYPE_FUNC, FUNC_TYPE_VOID,      filter_func_protein,        0},
+    {"element",     7, NODE_TYPE_FUNC, FUNC_TYPE_STR,       filter_func_element,        1, VALUE_TYPE_STR},
+    {"bfactor",     7, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_bfactor,        1, VALUE_TYPE_FRNG},
+    {"bfactor",     7, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_bfactor_int,    1, VALUE_TYPE_IRNG},
+    {"resname",     7, NODE_TYPE_FUNC, FUNC_TYPE_STR,       filter_func_resname,        1, VALUE_TYPE_STR},
+    {"residue",     7, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_residue,        1, VALUE_TYPE_IRNG},
+    {"residue",     7, NODE_TYPE_FUNC, FUNC_TYPE_INT,       filter_func_residue_int,    1, VALUE_TYPE_INT},
+    {"fillres",     7, NODE_TYPE_FUNC, FUNC_TYPE_BOOL,      filter_func_fill_residue,   1, VALUE_TYPE_BOOL},
+    {"fillchain",   9, NODE_TYPE_FUNC, FUNC_TYPE_BOOL,      filter_func_fill_chain,     1, VALUE_TYPE_BOOL},
+    {"occupancy",   9, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_occupancy,      1, VALUE_TYPE_FRNG},
+    {"occupancy",   9, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_occupancy_int,  1, VALUE_TYPE_IRNG},
 };
 
 static inline void enc_rel_ptr(int16_t* ptr, void* adress) {
@@ -349,7 +407,7 @@ static inline bool match_ident_str(const char* str, uint32_t len) {
 static token_t get_next_token_from_buffer(lexer_t* lexer) {
     ASSERT(lexer);
     token_t t = {0};
-    t.type = TOKEN_UNDEFINED;
+    t.type = TOKEN_TYPE_UNDEFINED;
 
     char* buf = lexer->buff;
     for (uint32_t i = lexer->at; buf[i]; ++i) {
@@ -358,7 +416,7 @@ static token_t get_next_token_from_buffer(lexer_t* lexer) {
         }
         else if (is_digit(buf[i])) {
             // @NOTE: Number
-            t.type = TOKEN_NUM;
+            t.type = TOKEN_TYPE_NUM;
             t.str.offset = i++;
             while (buf[i] && is_digit(buf[i])) ++i;
             t.str.length = i - t.str.offset;
@@ -374,11 +432,11 @@ static token_t get_next_token_from_buffer(lexer_t* lexer) {
             if (idx) {
                 t.type = keyword_table[idx].type;
             } else if (match_ident_str(buf + t.str.offset, t.str.length)) {
-                t.type = TOKEN_IDENT;
+                t.type = TOKEN_TYPE_IDENT;
             } else {
                 while (buf[i] && is_alpha(buf[i]) && is_digit(buf[i])) ++i;
                 t.str.length = i - t.str.offset;
-                t.type = TOKEN_STR;
+                t.type = TOKEN_TYPE_STR;
             }
             break;
         }
@@ -391,7 +449,7 @@ static token_t get_next_token_from_buffer(lexer_t* lexer) {
         }
     }
 
-    if (t.type == TOKEN_UNDEFINED) t.type = TOKEN_END;
+    if (t.type == TOKEN_TYPE_UNDEFINED) t.type = TOKEN_TYPE_END;
     return t;
 }
 
@@ -445,14 +503,15 @@ static bool convert_node(ast_node_t* node, value_type_t dst_type) {
         case VALUE_TYPE_FLT: node->_value._int = (int)node->_value._flt; goto finish_up;
         default: return false;
         }
-    case VALUE_TYPE_FLT_RNG:
+    case VALUE_TYPE_FRNG:
         switch(src_type) {
-        case VALUE_TYPE_FLT_RNG: goto finish_up;
-        case VALUE_TYPE_INT_RNG: {
+        case VALUE_TYPE_FRNG: goto finish_up;
+        case VALUE_TYPE_IRNG: {
             frange_t val = {(float)node->_value._irange.min, (float)node->_value._irange.max};
             node->_value._frange = val;
             goto finish_up;
         }
+/*
         case VALUE_TYPE_INT: {
             frange_t val = {(float)node->_value._int, (float)node->_value._int};
             node->_value._frange = val;
@@ -463,16 +522,18 @@ static bool convert_node(ast_node_t* node, value_type_t dst_type) {
             node->_value._frange = val;
             goto finish_up;
         }
+*/
         default: return false;
         }
-    case VALUE_TYPE_INT_RNG:
+    case VALUE_TYPE_IRNG:
         switch(src_type) {
-        case VALUE_TYPE_INT_RNG: goto finish_up;
-        case VALUE_TYPE_FLT_RNG: {
+        case VALUE_TYPE_IRNG: goto finish_up;
+        case VALUE_TYPE_FRNG: {
             irange_t val = {(int)node->_value._frange.min, (int)node->_value._frange.max};
             node->_value._irange = val;
             goto finish_up;
         }
+/*
         case VALUE_TYPE_INT: {
             irange_t val = {node->_value._int, node->_value._int};
             node->_value._irange = val;
@@ -483,6 +544,7 @@ static bool convert_node(ast_node_t* node, value_type_t dst_type) {
             node->_value._irange = val;
             goto finish_up;
         }
+*/
         default: return false;
         }
     case VALUE_TYPE_STR:
@@ -544,7 +606,7 @@ static ast_node_t* parse_identifier(parse_context_t*, lexer_t* lexer);
 
 static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
     token_t token = next_token(lexer);
-    ASSERT(token.type == TOKEN_IDENT);
+    ASSERT(token.type == TOKEN_TYPE_IDENT);
 
     str_slice_t ident_str = token.str;
     token = peek_token(lexer);
@@ -647,7 +709,7 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
 
 static ast_node_t* parse_number(parse_context_t* ctx, lexer_t* lexer) {
     token_t token = {0};
-    if (require_token_type(lexer, TOKEN_NUM, &token)) {
+    if (require_token_type(lexer, TOKEN_TYPE_NUM, &token)) {
         ast_node_t* node = parser_allocate_node(ctx, NODE_TYPE_VALUE);
         str_slice_t str = token.str;
         token_t next = peek_token(lexer);
@@ -655,7 +717,7 @@ static ast_node_t* parse_number(parse_context_t* ctx, lexer_t* lexer) {
             str.length += next.str.length;
             next_token(lexer); // '.'
             next = peek_token(lexer);
-            if (next.type == TOKEN_NUM) {
+            if (next.type == TOKEN_TYPE_NUM) {
                 next_token(lexer); // [0-9]
                 str.length += next.str.length;
             }
@@ -679,7 +741,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
     do {
         token = peek_token(lexer);
 
-        if (token.type == TOKEN_UNDEFINED || token.type == TOKEN_END) {
+        if (token.type == TOKEN_TYPE_UNDEFINED || token.type == TOKEN_TYPE_END) {
             break;
         }
 
@@ -716,17 +778,17 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             ctx->cur_node = ref_node;
             break;
         }
-        case TOKEN_IDENT:
+        case TOKEN_TYPE_IDENT:
         {
             ctx->cur_node = parse_identifier(ctx, lexer);
             if (!ctx->cur_node) return NULL;
             break;
         }
-        case TOKEN_AND:
-        case TOKEN_OR:
+        case TOKEN_TYPE_AND:
+        case TOKEN_TYPE_OR:
         {
             token_t t = next_token(lexer); // and / or
-            node_type_t node_type = token.type == TOKEN_AND ? NODE_TYPE_AND : NODE_TYPE_OR;
+            node_type_t node_type = token.type == TOKEN_TYPE_AND ? NODE_TYPE_AND : NODE_TYPE_OR;
             ast_node_t* node = parser_allocate_node(ctx, node_type);
             if (!node) return NULL;
             
@@ -750,7 +812,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             ctx->cur_node = node;
             break;
         }
-        case TOKEN_NOT:
+        case TOKEN_TYPE_NOT:
         {
             token_t t = next_token(lexer); // not
             ast_node_t* node = parser_allocate_node(ctx, NODE_TYPE_NOT);
@@ -827,30 +889,30 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
 
             if (prev_node->_value.type == VALUE_TYPE_FLT) {
                 ASSERT(next_node->_value.type == VALUE_TYPE_FLT);
-                node->return_type = VALUE_TYPE_FLT_RNG;
-                node->_value.type = VALUE_TYPE_FLT_RNG;
+                node->return_type = VALUE_TYPE_FRNG;
+                node->_value.type = VALUE_TYPE_FRNG;
                 node->_value._frange.min = prev_node->_value._flt;
                 node->_value._frange.max = next_node->_value._flt;
             }
             else {
                 ASSERT(prev_node->_value.type == VALUE_TYPE_INT);
                 ASSERT(next_node->_value.type == VALUE_TYPE_INT);
-                node->return_type = VALUE_TYPE_INT_RNG;
-                node->_value.type = VALUE_TYPE_INT_RNG;
+                node->return_type = VALUE_TYPE_IRNG;
+                node->_value.type = VALUE_TYPE_IRNG;
                 node->_value._irange.min = prev_node->_value._int;
                 node->_value._irange.max = next_node->_value._int;
             }
             ctx->cur_node = node;
             break;
         }
-        case TOKEN_NUM:
+        case TOKEN_TYPE_NUM:
         {
             ast_node_t* node = parse_number(ctx, lexer);
             ctx->cur_node = node;
             if (peek_token(lexer).type != ':') return node;
             break;
         }
-        case TOKEN_STR:
+        case TOKEN_TYPE_STR:
         {
             token = next_token(lexer);
             ast_node_t* node = parser_allocate_node(ctx, NODE_TYPE_VALUE);
@@ -866,7 +928,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             log_error_with_context("Unexpected token", ctx->expr_str, ctx->expr_len, token.str);
             return NULL;
         }
-    } while (token.type != TOKEN_END);
+    } while (token.type != TOKEN_TYPE_END);
 
     return ctx->cur_node;
 }
@@ -896,8 +958,8 @@ static const char* value_type_to_str(value_type_t type) {
     case VALUE_TYPE_BOOL:      return "bool";
     case VALUE_TYPE_INT:       return "int";
     case VALUE_TYPE_FLT:       return "float";
-    case VALUE_TYPE_INT_RNG:   return "irange";
-    case VALUE_TYPE_FLT_RNG:   return "frange";
+    case VALUE_TYPE_IRNG:   return "irange";
+    case VALUE_TYPE_FRNG:   return "frange";
     case VALUE_TYPE_STR:       return "string";
     default:                   return "unknown";
     }
@@ -913,10 +975,10 @@ static void print_label(FILE* file, const ast_node_t* node, const char* expr_str
         case VALUE_TYPE_FLT:
             fprintf(file, "%f", node->_value._flt);
             break;
-        case VALUE_TYPE_INT_RNG:
+        case VALUE_TYPE_IRNG:
             fprintf(file, "%i:%i", node->_value._irange.min, node->_value._irange.max);
             break;
-        case VALUE_TYPE_FLT_RNG:
+        case VALUE_TYPE_FRNG:
             fprintf(file, "%f:%f", node->_value._frange.min, node->_value._frange.max);
             break;
         case VALUE_TYPE_STR:
@@ -989,90 +1051,109 @@ static void save_tree_to_json(const ast_node_t* tree, const char* filename, cons
     }
 }
 
-typedef struct eval_context_t eval_context_t;
-struct eval_context_t {
-    const char* expr_str;
-    uint32_t    expr_len;
-    uint64_t    bit_count;
-    uint64_t*   bit_buf[2];
-    const mold_filter_context* filt_ctx;
-};
 
+#if 0 
 static inline void swap_bit_buffers(eval_context_t* ctx) {
     uint64_t* tmp = ctx->bit_buf[0];
     ctx->bit_buf[0] = ctx->bit_buf[1];
     ctx->bit_buf[1] = tmp;
 }
+#endif
 
-static value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx) {
+static value_t call_func(ident_t ident, const value_t* args, uint64_t* dst_bits, const md_molecule* mol, const char* expr_str) {
     value_t res;
     switch (ident.func_type)
     {
     case FUNC_TYPE_VOID:
     {
-        void (*func)(uint64_t*, const mold_molecule*) = ident.func_addr;
-        func(ctx->bit_buf[0], ctx->filt_ctx->mol);
+        void (*func)(uint64_t*, const md_molecule*) = ident.func_addr;
+        func(dst_bits, mol);
+        break;
+    }
+    case FUNC_TYPE_BOOL:
+    {
+        ASSERT(args && args[0].type == VALUE_TYPE_BOOL);
+        uint64_t* src_bits = args[0]._bool;
+        void (*func)(const uint64_t*, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(src_bits, dst_bits, mol);
         break;
     }
     case FUNC_TYPE_STR:
     {
         ASSERT(args && args[0].type == VALUE_TYPE_STR);
-        void (*func)(const char*, uint64_t*, const mold_molecule*) = ident.func_addr;
+        void (*func)(const char*, uint64_t*, const md_molecule*) = ident.func_addr;
         str_slice_t str = args[0]._str;
         ASSERT(str.length < 127);
         char buf[128] = {0};
-        strncpy(buf, ctx->expr_str + str.offset, str.length);
-        func(buf, ctx->bit_buf[0], ctx->filt_ctx->mol);
+        strncpy(buf, expr_str + str.offset, str.length);
+        func(buf, dst_bits, mol);
         break;
     }
     case FUNC_TYPE_FLT:
     {
         ASSERT(args && args[0].type == VALUE_TYPE_FLT);
         float val = args[0]._flt;
-        void (*func)(float, uint64_t*, const mold_molecule*) = ident.func_addr;
-        func(val, ctx->bit_buf[0], ctx->filt_ctx->mol);
+        void (*func)(float, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(val, dst_bits, mol);
         break;
     }
     case FUNC_TYPE_INT:
     {
         ASSERT(args && args[0].type == VALUE_TYPE_INT);
         int val = args[0]._int;
-        void (*func)(int, uint64_t*, const mold_molecule*) = ident.func_addr;
-        func(val, ctx->bit_buf[0], ctx->filt_ctx->mol);
+        void (*func)(int, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(val, dst_bits, mol);
         break;
     }
-    case FUNC_TYPE_FLT_RNG:
+    case FUNC_TYPE_FRNG:
     {
-        ASSERT(args && args[0].type == VALUE_TYPE_FLT_RNG);
+        ASSERT(args && args[0].type == VALUE_TYPE_FRNG);
         frange_t range = args[0]._frange;
-        void (*func)(float, float, uint64_t*, const mold_molecule*) = ident.func_addr;
-        func(range.min, range.max, ctx->bit_buf[0], ctx->filt_ctx->mol);
+        void (*func)(float, float, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(range.min, range.max, dst_bits, mol);
         break;
     }
-    case FUNC_TYPE_INT_RNG:
+    case FUNC_TYPE_IRNG:
     {
-        ASSERT(args && args[0].type == VALUE_TYPE_INT_RNG);
+        ASSERT(args && args[0].type == VALUE_TYPE_IRNG);
         irange_t range = args[0]._irange;
-        void (*func)(int, int, uint64_t*, const mold_molecule*) = ident.func_addr;
-        func(range.min, range.max, ctx->bit_buf[0], ctx->filt_ctx->mol);
+        void (*func)(int, int, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(range.min, range.max, dst_bits, mol);
         break;
+    }
+    case FUNC_TYPE_INT_BOOL:
+    {
+        ASSERT(args && args[0].type == VALUE_TYPE_INT && args[1].type == VALUE_TYPE_BOOL);
+        int val = args[0]._int;
+        uint64_t* src_bits = args[1]._bool;
+        void (*func)(int, const uint64_t*, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(val, src_bits, dst_bits, mol);
+        break;
+    }
+    case FUNC_TYPE_IRNG_BOOL:
+    {
+        ASSERT(args && args[0].type == VALUE_TYPE_IRNG && args[1].type == VALUE_TYPE_BOOL);
+        irange_t range = args[0]._irange;
+        uint64_t* src_bits = args[1]._bool;
+        void (*func)(int, int, const uint64_t*, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(range.min, range.max, src_bits, dst_bits, mol);
     }
     case FUNC_TYPE_FLT_BOOL:
     {
         ASSERT(args && args[0].type == VALUE_TYPE_FLT && args[1].type == VALUE_TYPE_BOOL);
         float val = args[0]._flt;
         uint64_t* src_bits = args[1]._bool;
-        void (*func)(float, const uint64_t*, uint64_t*, const mold_molecule*) = ident.func_addr;
-        func(val, src_bits, ctx->bit_buf[0], ctx->filt_ctx->mol);
+        void (*func)(float, const uint64_t*, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(val, src_bits, dst_bits, mol);
         break;
     }
-    case FUNC_TYPE_FLT_RNG_BOOL:
+    case FUNC_TYPE_FRNG_BOOL:
     {
-        ASSERT(args && args[0].type == VALUE_TYPE_FLT_RNG && args[1].type == VALUE_TYPE_BOOL);
+        ASSERT(args && args[0].type == VALUE_TYPE_FRNG && args[1].type == VALUE_TYPE_BOOL);
         frange_t range = args[0]._frange;
         uint64_t* src_bits = args[1]._bool;
-        void (*func)(float, float, const uint64_t*, uint64_t*, const mold_molecule*) = ident.func_addr;
-        func(range.min, range.max, src_bits, ctx->bit_buf[0], ctx->filt_ctx->mol);
+        void (*func)(float, float, const uint64_t*, uint64_t*, const md_molecule*) = ident.func_addr;
+        func(range.min, range.max, src_bits, dst_bits, mol);
         break;
     }
     default:
@@ -1080,47 +1161,75 @@ static value_t call_func(ident_t ident, const value_t* args, eval_context_t* ctx
         break;
     }
     res.type = VALUE_TYPE_BOOL;
-    res._bool = ctx->bit_buf[0];
+    res._bool = dst_bits;
     return res;
 }
 
-static value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
+static uint64_t* alloc_tmp_buf(eval_context_t* ctx) {
+    ASSERT(ctx);
+    const uint64_t block_count = (ctx->bit_count + 63) / 64;
+    return (uint64_t*)calloc(block_count, sizeof(uint64_t));
+}
+
+static void free_tmp_buf(uint64_t* ptr, eval_context_t* ctx) {
+    free(ptr);
+}
+
+static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context_t* ctx) {
     switch (node->type)
     {
     case NODE_TYPE_AND:
     {
         const ast_node_t* child[2] = {dec_rel_ptr(&node->_child[0]), dec_rel_ptr(&node->_child[1])};
-        evaluate(child[0], ctx);
-        swap_bit_buffers(ctx);
-        evaluate(child[1], ctx);
-        swap_bit_buffers(ctx);
-        bit_and(ctx->bit_buf[0], ctx->bit_buf[0], ctx->bit_buf[1], 0, ctx->bit_count);
+        value_t res_a = evaluate(child[0], dst_bits, ctx);
+        if (res_a.type != VALUE_TYPE_BOOL) {
+            log_error("Cannot apply logical operator 'and' to expression which has the type '%s'", value_type_to_str(res_a.type));
+            break;
+        }
+        uint64_t* tmp_buf = alloc_tmp_buf(ctx);
+        value_t res_b = evaluate(child[1], tmp_buf, ctx);
+        if (res_b.type != VALUE_TYPE_BOOL) {
+            log_error("Cannot apply logical operator 'and' to expression which has the type '%s'", value_type_to_str(res_b.type));
+            if (tmp_buf) free_tmp_buf(tmp_buf, ctx);
+            break;
+        }
+        bit_and(dst_bits, res_a._bool, res_b._bool, 0, ctx->bit_count);
         value_t res;
         res.type = VALUE_TYPE_BOOL;
-        res._bool = ctx->bit_buf[0];
+        res._bool = dst_bits;
+        if (tmp_buf) free_tmp_buf(tmp_buf, ctx);
         return res;
     }
     case NODE_TYPE_OR:
     {
         const ast_node_t* child[2] = {dec_rel_ptr(&node->_child[0]), dec_rel_ptr(&node->_child[1])};
-        evaluate(child[0], ctx);
-        swap_bit_buffers(ctx);
-        evaluate(child[1], ctx);
-        swap_bit_buffers(ctx);
-        bit_or(ctx->bit_buf[0], ctx->bit_buf[0], ctx->bit_buf[1], 0, ctx->bit_count);
+        value_t res_a = evaluate(child[0], dst_bits, ctx);
+        if (res_a.type != VALUE_TYPE_BOOL) {
+            log_error("Cannot apply logical operator 'and' to expression which has the type '%s'", value_type_to_str(res_a.type));
+            break;
+        }
+        uint64_t* tmp_buf = alloc_tmp_buf(ctx);
+        value_t res_b = evaluate(child[1], tmp_buf, ctx);
+        if (res_b.type != VALUE_TYPE_BOOL) {
+            log_error("Cannot apply logical operator 'and' to expression which has the type '%s'", value_type_to_str(res_b.type));
+            if (tmp_buf) free_tmp_buf(tmp_buf, ctx);
+            break;
+        }
+        bit_or(dst_bits, res_a._bool, res_b._bool, 0, ctx->bit_count);
         value_t res;
         res.type = VALUE_TYPE_BOOL;
-        res._bool = ctx->bit_buf[0];
+        res._bool = dst_bits;
+        if (tmp_buf) free_tmp_buf(tmp_buf, ctx);
         return res;
     }
     case NODE_TYPE_NOT:
     {
         const ast_node_t* child = (ast_node_t*)dec_rel_ptr(&node->_child[0]);
-        evaluate(child, ctx);
-        bit_invert(ctx->bit_buf[0], 0, ctx->bit_count);
-        value_t res;
+        value_t res = evaluate(child, dst_bits, ctx);
+        ASSERT(res.type == VALUE_TYPE_BOOL);
+        bit_invert(dst_bits, 0, ctx->bit_count);
         res.type = VALUE_TYPE_BOOL;
-        res._bool = ctx->bit_buf[0];
+        res._bool = dst_bits;
         return res;
     }
     case NODE_TYPE_FUNC:
@@ -1128,11 +1237,16 @@ static value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
         ident_t ident = ident_table[node->_func.ident];
         const ast_node_t* arg_nodes[MAX_FUNC_ARGS];
         value_t           args[MAX_FUNC_ARGS];
+        uint64_t*         tmp_buf[MAX_FUNC_ARGS];
         decode_args(arg_nodes, ident.arg_count, dec_rel_ptr(&node->_func.args));
         for (uint32_t i = 0; i < ident.arg_count; ++i) {
-            args[i] = evaluate(arg_nodes[i], ctx);
+            tmp_buf[i] = alloc_tmp_buf(ctx);
+            args[i] = evaluate(arg_nodes[i], tmp_buf[i], ctx);
         }
-        value_t res = call_func(ident, args, ctx);
+        value_t res = call_func(ident, args, dst_bits, ctx->filt_ctx->mol, ctx->expr_str);
+        for (uint32_t i = 0; i < ident.arg_count; ++i) {
+            free_tmp_buf(tmp_buf[i], ctx);
+        }
         return res;
     }
     case NODE_TYPE_REF:
@@ -1161,9 +1275,9 @@ static value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
         }
 
         const uint64_t block_count = (ctx->bit_count + 63) / 64;
-        memcpy(ctx->bit_buf[0], ctx->filt_ctx->sel[idx].bits, block_count * sizeof(uint64_t));
+        memcpy(dst_bits, ctx->filt_ctx->sel[idx].bits, block_count * sizeof(uint64_t));
         value_t res = {VALUE_TYPE_BOOL};
-        res._bool = ctx->bit_buf[0];
+        res._bool = dst_bits;
         return res;
     }
     case NODE_TYPE_VALUE:
@@ -1192,18 +1306,18 @@ static value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
             return res;
             break;
         }
-        case VALUE_TYPE_FLT_RNG:
+        case VALUE_TYPE_FRNG:
         {
             value_t res;
-            res.type = VALUE_TYPE_FLT_RNG;
+            res.type = VALUE_TYPE_FRNG;
             res._frange = node->_value._frange;
             return res;
             break;
         }
-        case VALUE_TYPE_INT_RNG:
+        case VALUE_TYPE_IRNG:
         {
             value_t res;
-            res.type = VALUE_TYPE_INT_RNG;
+            res.type = VALUE_TYPE_IRNG;
             res._irange = node->_value._irange;
             return res;
             break;
@@ -1217,34 +1331,7 @@ static value_t evaluate(const ast_node_t* node, eval_context_t* ctx) {
     return res;
 }
 
-/*
-bool mold_filter_apply(uint64_t* bits, uint64_t bit_count, const mold_filter* filter, const mold_filter_context* filt_ctx) {
-    if (bits && filter && filt_ctx) {
-        const uint64_t block_count = (bit_count + 63) / 64;
-        uint64_t* tmp_bits = (uint64_t*)calloc(block_count, sizeof(uint64_t));
-        const ast_node_t* root = (ast_node_t*)((uint8_t*)filter + filter->root_offset);
-
-        bit_clear(bits, 0, bit_count);
-        bit_clear(tmp_bits, 0, bit_count);
-
-        eval_context_t eval_ctx = {0};
-        eval_ctx.expr_str = filter->expr_str;
-        eval_ctx.expr_len = filter->expr_len;
-        eval_ctx.bit_buf[0] = bits;
-        eval_ctx.bit_buf[1] = tmp_bits;
-        eval_ctx.bit_count = bit_count;
-        eval_ctx.filt_ctx = filt_ctx;
-
-        value_t res = evaluate(root, &eval_ctx);
-        free(tmp_bits);
-        return res.type != VALUE_TYPE_UNDEFINED;
-    }
-
-    return false;
-}
-*/
-
-bool mold_filter_parse(const char* expression, const mold_filter_context* context) {
+bool md_filter_apply(const char* expression, const md_filter_context* context) {
     int balance = 0;
     for (const char* c = expression; *c; ++c) {
         if (*c == '(') ++balance;
@@ -1280,21 +1367,23 @@ bool mold_filter_parse(const char* expression, const mold_filter_context* contex
 #endif
         if (context && context->bits && context->bit_count && context->mol) {
             const uint64_t block_count = (context->bit_count + 63) / 64;
-            uint64_t* tmp_bits = (uint64_t*)calloc(block_count, sizeof(uint64_t));
+            uint64_t* tmp_mem = (uint64_t*)calloc(block_count * EVAL_TMP_BUFS, sizeof(uint64_t));
 
             bit_clear(context->bits, 0, context->bit_count);
-            bit_clear(tmp_bits, 0, context->bit_count);
 
             eval_context_t eval_ctx = {0};
             eval_ctx.expr_str = expr_str;
             eval_ctx.expr_len = expr_len;
-            eval_ctx.bit_buf[0] = context->bits;
-            eval_ctx.bit_buf[1] = tmp_bits;
+            eval_ctx.res_buf = context->bits;
+            for (int i = 0; i < EVAL_TMP_BUFS; ++i) {
+                eval_ctx.tmp_buf[i] = tmp_mem + i * block_count;
+            }
+            eval_ctx.tmp_buf_used = 0;
             eval_ctx.bit_count = context->bit_count;
             eval_ctx.filt_ctx = context;
 
-            value_t res = evaluate(root, &eval_ctx);
-            free(tmp_bits);
+            value_t res = evaluate(root, context->bits, &eval_ctx);
+            free(tmp_mem);
             return res.type != VALUE_TYPE_UNDEFINED;
         }
     }
@@ -1354,18 +1443,18 @@ static inline uint8_t element_symbol_to_index(const char* str) {
     return 0;
 }
 
-void filter_func_all(uint64_t* bits, const mold_molecule* mol) {
+void filter_func_all(uint64_t* bits, const md_molecule* mol) {
     bit_set(bits, 0, mol->atom.count);
 }
 
-void filter_func_none(uint64_t* bits, const mold_molecule* mol) {
+void filter_func_none(uint64_t* bits, const md_molecule* mol) {
     bit_clear(bits, 0, mol->atom.count);
 }
 
-void filter_func_protein(uint64_t* bits, const mold_molecule* mol) {
+void filter_func_protein(uint64_t* bits, const md_molecule* mol) {
     const char** name = mol->atom.name;
     for (uint32_t ri = 0; ri < mol->residue.count; ++ri) {
-        const mold_range range = mol->residue.atom_range[ri];
+        const md_range range = mol->residue.atom_range[ri];
         const uint32_t range_ext = (range.end - range.beg);
         if (4 <= range_ext && range_ext <= 30) {
             uint32_t mask = 0;
@@ -1384,13 +1473,13 @@ void filter_func_protein(uint64_t* bits, const mold_molecule* mol) {
     }
 }
 
-void filter_func_water(uint64_t* bits, const mold_molecule* mol) {
+void filter_func_water(uint64_t* bits, const md_molecule* mol) {
+    const uint8_t* elem = mol->atom.element;
     for (uint32_t i = 0; i < mol->residue.count; ++i) {
-        const mold_range range = mol->residue.atom_range[i];
+        const md_range range = mol->residue.atom_range[i];
         const uint32_t range_ext = (range.end - range.beg);
         if (range_ext == 3) {
-            const uint8_t* elem = mol->atom.element;
-            uint32_t j = mol->residue.atom_range->beg;
+            uint32_t j = range.beg;
 
             if (elem[j] == O && elem[j+1] == H && elem[j+2] == H ||
                 elem[j] == H && elem[j+1] == O && elem[j+2] == H ||
@@ -1401,8 +1490,153 @@ void filter_func_water(uint64_t* bits, const mold_molecule* mol) {
     }
 }
 
-void filter_func_name(const char* str, uint64_t* bits, const mold_molecule* mol) {
-    const uint64_t blk_count = DIV_UP(mol->atom.count);
+void filter_func_x(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
+    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
+        uint64_t mask = 0;
+        for (uint64_t bit = 0; bit < bit_count; ++bit) {
+            const uint64_t i = blk_idx * 64 + bit;
+            if (min_range <= mol->atom.x[i] && mol->atom.x[i] <= max_range) {
+                mask |= 1ULL << bit;
+            }
+        }
+        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
+    }
+}
+
+void filter_func_x_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    filter_func_x((float)min_range, (float)max_range, bits, mol);
+}
+
+void filter_func_y(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
+    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
+        uint64_t mask = 0;
+        for (uint64_t bit = 0; bit < bit_count; ++bit) {
+            const uint64_t i = blk_idx * 64 + bit;
+            if (min_range <= mol->atom.y[i] && mol->atom.y[i] <= max_range) {
+                mask |= 1ULL << bit;
+            }
+        }
+        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
+    }
+}
+
+void filter_func_y_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    filter_func_y((float)min_range, (float)max_range, bits, mol);
+}
+
+void filter_func_z(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
+    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
+        uint64_t mask = 0;
+        for (uint64_t bit = 0; bit < bit_count; ++bit) {
+            const uint64_t i = blk_idx * 64 + bit;
+            if (min_range <= mol->atom.z[i] && mol->atom.z[i] <= max_range) {
+                mask |= 1ULL << bit;
+            }
+        }
+        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
+    }
+}
+
+void filter_func_z_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    filter_func_z((float)min_range, (float)max_range, bits, mol);
+}
+
+void filter_func_radius(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
+    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
+        uint64_t mask = 0;
+        for (uint64_t bit = 0; bit < bit_count; ++bit) {
+            const uint64_t i = blk_idx * 64 + bit;
+            if (min_range <= mol->atom.radius[i] && mol->atom.radius[i] <= max_range) {
+                mask |= 1ULL << bit;
+            }
+        }
+        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
+    }
+}
+
+void filter_func_radius_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    filter_func_radius((float)min_range, (float)max_range, bits, mol);
+}
+
+void filter_func_mass(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
+    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
+        uint64_t mask = 0;
+        for (uint64_t bit = 0; bit < bit_count; ++bit) {
+            const uint64_t i = blk_idx * 64 + bit;
+            if (min_range <= mol->atom.mass[i] && mol->atom.mass[i] <= max_range) {
+                mask |= 1ULL << bit;
+            }
+        }
+        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
+    }
+}
+
+void filter_func_mass_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    filter_func_mass((float)min_range, (float)max_range, bits, mol);
+}
+
+void filter_func_bfactor(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
+    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
+        uint64_t mask = 0;
+        for (uint64_t bit = 0; bit < bit_count; ++bit) {
+            const uint64_t i = blk_idx * 64 + bit;
+            if (min_range <= mol->atom.bfactor[i] && mol->atom.bfactor[i] <= max_range) {
+                mask |= 1ULL << bit;
+            }
+        }
+        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
+    }
+}
+
+void filter_func_bfactor_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    filter_func_bfactor((float)min_range, (float)max_range, bits, mol);
+}
+
+void filter_func_occupancy(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
+    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
+        uint64_t mask = 0;
+        for (uint64_t bit = 0; bit < bit_count; ++bit) {
+            const uint64_t i = blk_idx * 64 + bit;
+            if (min_range <= mol->atom.occupancy[i] && mol->atom.occupancy[i] <= max_range) {
+                mask |= 1ULL << bit;
+            }
+        }
+        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
+    }
+}
+
+void filter_func_occupancy_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    filter_func_occupancy((float)min_range, (float)max_range, bits, mol);
+}
+
+void filter_func_atom(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    min_range = MAX(min_range, 0);
+    max_range = MIN(max_range, (int)mol->atom.count);
+    int count = max_range - min_range;
+    bit_set(bits, min_range, count);
+}
+
+void filter_func_atom_int(int val, uint64_t* bits, const md_molecule* mol) {
+    val = CLAMP(val, 0, mol->atom.count - 1);
+    bit_set(bits, val, 1);
+}
+
+void filter_func_name(const char* str, uint64_t* bits, const md_molecule* mol) {
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
     for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
         const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
         uint64_t mask = 0;
@@ -1416,11 +1650,11 @@ void filter_func_name(const char* str, uint64_t* bits, const mold_molecule* mol)
     }
 }
 
-void filter_func_element(const char* str, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_element(const char* str, uint64_t* bits, const md_molecule* mol) {
     uint8_t elem_idx = element_symbol_to_index(str);
     if (!elem_idx) return;
 
-    const uint64_t blk_count = DIV_UP(mol->atom.count);
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
     for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
         const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
         uint64_t mask = 0;
@@ -1434,43 +1668,86 @@ void filter_func_element(const char* str, uint64_t* bits, const mold_molecule* m
     }
 }
 
-void filter_func_resname(const char* str, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_resname(const char* str, uint64_t* bits, const md_molecule* mol) {
     for (uint32_t i = 0; i < mol->residue.count; ++i) {
         if (strcmp(str, mol->residue.name[i]) == 0) {
-            const mold_range range = mol->residue.atom_range[i];
+            const md_range range = mol->residue.atom_range[i];
             const uint32_t range_ext = (range.end - range.beg);
             bit_set(bits, range.beg, range_ext);
         }
     }
 }
 
-void filter_func_resid(int min_range, int max_range, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_resid(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
     for (uint32_t i = 0; i < mol->residue.count; ++i) {
         const int32_t id = mol->residue.id[i];
         if (min_range <= id && id <= max_range) {
-            const mold_range range = mol->residue.atom_range[i];
+            const md_range range = mol->residue.atom_range[i];
             const uint32_t range_ext = (range.end - range.beg);
             bit_set(bits, range.beg, range_ext);
         }
     }
 }
 
-void filter_func_residue(int min_range, int max_range, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_residue(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
     min_range = MAX(min_range, 0);
     max_range = MIN(max_range, (int)mol->residue.count - 1);
     for (int i = min_range; i <= max_range; ++i) {
-        const mold_range range = mol->residue.atom_range[i];
+        const md_range range = mol->residue.atom_range[i];
         const uint32_t range_ext = (range.end - range.beg);
         bit_set(bits, range.beg, range_ext);
     }
 }
 
-void filter_func_chain(const char* str, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_chain(const char* str, uint64_t* bits, const md_molecule* mol) {
     for (uint32_t i = 0; i < mol->chain.count; ++i) {
         if (strcmp(str, mol->chain.id[i]) == 0) {
-            const mold_range range = mol->chain.atom_range[i];
+            const md_range range = mol->chain.atom_range[i];
             const uint32_t range_ext = range.end - range.beg;
-            bit_set(bits, range.beg, range.end);
+            bit_set(bits, range.beg, range_ext);
+        }
+    }
+}
+
+void filter_func_chain_irng(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
+    min_range = MAX(min_range, 0);
+    max_range = MIN(max_range, (int)mol->chain.count - 1);
+    for (int i = min_range; i <= max_range; ++i) {
+        const md_range range = mol->chain.atom_range[i];
+        const uint32_t range_ext = range.end - range.beg;
+        bit_set(bits, range.beg, range_ext);
+    }
+}
+
+void filter_func_chain_int(int idx, uint64_t* bits, const md_molecule* mol) {
+    idx = CLAMP(idx, 0, mol->chain.count - 1);
+    const md_range range = mol->chain.atom_range[idx];
+    const uint32_t range_ext = range.end - range.beg;
+    bit_set(bits, range.beg, range_ext);
+}
+
+void filter_func_fill_residue(const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol) {
+    for (uint32_t i = 0; i < mol->residue.count; ++i) {
+        const md_range range = mol->residue.atom_range[i];
+        const uint32_t range_ext = (range.end - range.beg);
+        if (bit_count(in_bits, range.beg, range_ext)) {
+            bit_set(out_bits, range.beg, range_ext);
+        }
+        else {
+            bit_clear(out_bits, range.beg, range_ext);
+        }
+    }
+}
+
+void filter_func_fill_chain(const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol) {
+    for (uint32_t i = 0; i < mol->chain.count; ++i) {
+        const md_range range = mol->chain.atom_range[i];
+        const uint32_t range_ext = (range.end - range.beg);
+        if (bit_count(in_bits, range.beg, range_ext)) {
+            bit_set(out_bits, range.beg, range_ext);
+        }
+        else {
+            bit_clear(out_bits, range.beg, range_ext);
         }
     }
 }
@@ -1485,14 +1762,12 @@ inline uint32_t compute_cell_idx(const uint32_t cc[3]) {
 
 typedef struct grid_cell_t grid_cell_t;
 struct grid_cell_t {
-    uint32_t offset : 22;
-    uint32_t count  : 9;
+    uint32_t offset : 23;
+    uint32_t count  : 8;
     uint32_t mark   : 1;
 };
 
-static_assert(sizeof(grid_cell_t) == 4, "sizeof grid_cell should be 4");
-
-void filter_func_within(float min_range, float max_range, const uint64_t* in_bits, uint64_t* out_bits, const mold_molecule* mol) {
+void filter_func_within(float min_range, float max_range, const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol) {
     // Create a coarse uniform grid where we mark the cells which are candidate locations based on atomic positions of in_bits.
     // As a second step we go over the entire set of atoms and bin them to the uniform grid, if they end up in a candidate voxel, we do additional distance tests
 
@@ -1505,6 +1780,7 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
 
     if (max_d2 - min_d2 < FLT_EPSILON) return;
 
+    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
     const uint64_t N = bit_count(in_bits, 0, mol->atom.count);
     const uint64_t M = GRID_RES * GRID_RES * GRID_RES;
 
@@ -1513,7 +1789,7 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
         void* mem = calloc(req_mem, 1); // Need 0 for cells, g_idx and l_idx
 
         grid_cell_t* cells = (grid_cell_t*)(mem);
-        uint32_t* g_idx = (uint32_t*)(cells + M) + N * 0;
+        uint32_t* c_idx = (uint32_t*)(cells + M) + N * 0;
         uint32_t* l_idx = (uint32_t*)(cells + M) + N * 1;
         float* ref_x =       (float*)(cells + M) + N * 2;
         float* ref_y =       (float*)(cells + M) + N * 3;
@@ -1524,110 +1800,137 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
 
         float aabb_min[3] = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
         float aabb_max[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-
-        uint64_t i = 0;
+        
         uint64_t dst_i = 0;
-        while (find_next_bit_set(&i, in_bits, 0, mol->atom.count)) {
-            aabb_min[0] = (x[i] < aabb_min[0]) ? x[i] : aabb_min[0];
-            aabb_min[1] = (y[i] < aabb_min[1]) ? y[i] : aabb_min[1];
-            aabb_min[2] = (z[i] < aabb_min[2]) ? z[i] : aabb_min[2];
+        for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+            uint64_t mask = in_bits[blk_idx];
+            if (mask) {
+                uint64_t bit_idx;
+                while (bsf(&bit_idx, mask)) {
+                    mask &= ~(1LLU << bit_idx); // clear the current bit_idx
+                    uint64_t src_i = blk_idx * 64 + bit_idx;
+                    aabb_min[0] = MIN(x[src_i], aabb_min[0]);
+                    aabb_min[1] = MIN(y[src_i], aabb_min[1]);
+                    aabb_min[2] = MIN(z[src_i], aabb_min[2]);
 
-            aabb_max[0] = (x[i] > aabb_max[0]) ? x[i] : aabb_max[0];
-            aabb_max[1] = (y[i] > aabb_max[1]) ? y[i] : aabb_max[1];
-            aabb_max[2] = (z[i] > aabb_max[2]) ? z[i] : aabb_max[2];
+                    aabb_max[0] = MAX(x[src_i], aabb_max[0]);
+                    aabb_max[1] = MAX(y[src_i], aabb_max[1]);
+                    aabb_max[2] = MAX(z[src_i], aabb_max[2]);
 
-            tmp_x[dst_i] = x[i];
-            tmp_y[dst_i] = y[i];
-            tmp_z[dst_i] = z[i];
+                    tmp_x[dst_i] = x[src_i];
+                    tmp_y[dst_i] = y[src_i];
+                    tmp_z[dst_i] = z[src_i];
 
-            ++dst_i;
-            ++i;
+                    ++dst_i;
+                }
+            }
         }
+        aabb_min[0] -= max_range;
+        aabb_min[1] -= max_range;
+        aabb_min[2] -= max_range;
 
-        const float inv_aabb_ext[3] = {
-            1.0f / (aabb_max[0]-aabb_min[0]),
-            1.0f / (aabb_max[1]-aabb_min[1]),
-            1.0f / (aabb_max[2]-aabb_min[2])
+        aabb_max[0] += max_range;
+        aabb_max[1] += max_range;
+        aabb_max[2] += max_range;
+
+        ASSERT(dst_i == N);
+
+        const float inv_cell_ext[3] = {
+            GRID_RES / (aabb_max[0]-aabb_min[0]),
+            GRID_RES / (aabb_max[1]-aabb_min[1]),
+            GRID_RES / (aabb_max[2]-aabb_min[2]),
         };
-        for (i = 0; i < N; ++i) {
+
+        for (uint64_t i = 0; i < N; ++i) {
             const uint32_t cell_coord[3] = {
-                (uint32_t)((tmp_x[i] - aabb_min[0]) * inv_aabb_ext[0]),
-                (uint32_t)((tmp_y[i] - aabb_min[1]) * inv_aabb_ext[1]),
-                (uint32_t)((tmp_z[i] - aabb_min[2]) * inv_aabb_ext[2])
-            };
-
-            const uint32_t min_cell_coord[3] = {
-                MAX((uint32_t)((tmp_x[i] - max_range - aabb_min[0]) * inv_aabb_ext[0]), 0),
-                MAX((uint32_t)((tmp_y[i] - max_range - aabb_min[1]) * inv_aabb_ext[1]), 0),
-                MAX((uint32_t)((tmp_z[i] - max_range - aabb_min[2]) * inv_aabb_ext[2]), 0)
-            };
-
-            const uint32_t max_cell_coord[3] = {
-                MIN((uint32_t)((tmp_x[i] + max_range - aabb_min[0]) * inv_aabb_ext[0]), GRID_RES - 1),
-                MIN((uint32_t)((tmp_y[i] + max_range - aabb_min[1]) * inv_aabb_ext[1]), GRID_RES - 1),
-                MIN((uint32_t)((tmp_z[i] + max_range - aabb_min[2]) * inv_aabb_ext[2]), GRID_RES - 1)
+                (uint32_t)((tmp_x[i] - aabb_min[0]) * inv_cell_ext[0]),
+                (uint32_t)((tmp_y[i] - aabb_min[1]) * inv_cell_ext[1]),
+                (uint32_t)((tmp_z[i] - aabb_min[2]) * inv_cell_ext[2])
             };
 
             const uint32_t cell_idx = compute_cell_idx(cell_coord);
             l_idx[i] = cells[cell_idx].count++;
-            g_idx[i] = cell_idx;
+            c_idx[i] = cell_idx;
+
+            const uint32_t min_cell_coord[3] = {
+                MAX((uint32_t)((tmp_x[i] - max_range - aabb_min[0]) * inv_cell_ext[0]), 0),
+                MAX((uint32_t)((tmp_y[i] - max_range - aabb_min[1]) * inv_cell_ext[1]), 0),
+                MAX((uint32_t)((tmp_z[i] - max_range - aabb_min[2]) * inv_cell_ext[2]), 0)
+            };
+
+            const uint32_t max_cell_coord[3] = {
+                MIN((uint32_t)((tmp_x[i] + max_range - aabb_min[0]) * inv_cell_ext[0]), GRID_RES - 1),
+                MIN((uint32_t)((tmp_y[i] + max_range - aabb_min[1]) * inv_cell_ext[1]), GRID_RES - 1),
+                MIN((uint32_t)((tmp_z[i] + max_range - aabb_min[2]) * inv_cell_ext[2]), GRID_RES - 1)
+            };
 
             uint32_t cc[3];
             for (cc[2] = min_cell_coord[2]; cc[2] <= max_cell_coord[2]; ++cc[2]) {
-                for (cc[1] = min_cell_coord[1]; cc[1] < max_cell_coord[1]; ++cc[1]) {
-                    for (cc[0] = min_cell_coord[0]; cc[0] < max_cell_coord[0]; ++cc[0]) {
-                        const uint32_t idx = compute_cell_idx(cc);
-                        cells[idx].mark = 1;
+                for (cc[1] = min_cell_coord[1]; cc[1] <= max_cell_coord[1]; ++cc[1]) {
+                    for (cc[0] = min_cell_coord[0]; cc[0] <= max_cell_coord[0]; ++cc[0]) {
+                        cells[compute_cell_idx(cc)].mark = 1;
                     }
                 }
             }
         }
 
-        for (i = 1; i < M; ++i) {
+        for (uint64_t i = 1; i < M; ++i) {
             cells[i].offset = cells[i - 1].offset + cells[i - 1].count;
         }
 
-        for (i = 0; i < N; ++i) {
-            dst_i = g_idx[i] + l_idx[i];
+        for (uint64_t i = 0; i < N; ++i) {
+            dst_i = cells[c_idx[i]].offset + l_idx[i];
             ref_x[dst_i] = tmp_x[i];
             ref_y[dst_i] = tmp_y[i]; 
             ref_z[dst_i] = tmp_z[i]; 
         }
 
-        const uint64_t blk_count = mol->atom.count / 64;
         for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
             const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
             uint64_t mask = 0;
             for (uint64_t bit = 0; bit < bit_count; ++bit) {
                 const uint64_t i = blk_idx * 64 + bit;
+
+                if (in_bits[blk_idx] & 1ULL << bit) continue; // SKIP THE SUPPLIED REFERENCE BITS
+
+                if (x[i] < aabb_min[0] || aabb_max[0] < x[i]) continue;
+                if (y[i] < aabb_min[1] || aabb_max[1] < y[i]) continue;
+                if (z[i] < aabb_min[2] || aabb_max[2] < z[i]) continue;
+
+                const uint32_t cell_coord[3] = {
+                    (uint32_t)((x[i] - aabb_min[0]) * inv_cell_ext[0]),
+                    (uint32_t)((y[i] - aabb_min[1]) * inv_cell_ext[1]),
+                    (uint32_t)((z[i] - aabb_min[2]) * inv_cell_ext[2])
+                };
+
+                if (cells[compute_cell_idx(cell_coord)].mark == 0) continue;
+
                 const uint32_t min_cell_coord[3] = {
-                    MAX((uint32_t)((x[i] - max_range - aabb_min[0]) * inv_aabb_ext[0]), 0),
-                    MAX((uint32_t)((y[i] - max_range - aabb_min[1]) * inv_aabb_ext[1]), 0),
-                    MAX((uint32_t)((z[i] - max_range - aabb_min[2]) * inv_aabb_ext[2]), 0)
+                    MAX((uint32_t)((x[i] - max_range - aabb_min[0]) * inv_cell_ext[0]), 0),
+                    MAX((uint32_t)((y[i] - max_range - aabb_min[1]) * inv_cell_ext[1]), 0),
+                    MAX((uint32_t)((z[i] - max_range - aabb_min[2]) * inv_cell_ext[2]), 0)
                 };
 
                 const uint32_t max_cell_coord[3] = {
-                    MIN((uint32_t)((x[i] + max_range - aabb_min[0]) * inv_aabb_ext[0]), GRID_RES - 1),
-                    MIN((uint32_t)((y[i] + max_range - aabb_min[1]) * inv_aabb_ext[1]), GRID_RES - 1),
-                    MIN((uint32_t)((z[i] + max_range - aabb_min[2]) * inv_aabb_ext[2]), GRID_RES - 1)
+                    MIN((uint32_t)((x[i] + max_range - aabb_min[0]) * inv_cell_ext[0]), GRID_RES - 1),
+                    MIN((uint32_t)((y[i] + max_range - aabb_min[1]) * inv_cell_ext[1]), GRID_RES - 1),
+                    MIN((uint32_t)((z[i] + max_range - aabb_min[2]) * inv_cell_ext[2]), GRID_RES - 1)
                 };
 
                 uint32_t cc[3];
                 for (cc[2] = min_cell_coord[2]; cc[2] <= max_cell_coord[2]; ++cc[2]) {
-                    for (cc[1] = min_cell_coord[1]; cc[1] < max_cell_coord[1]; ++cc[1]) {
-                        for (cc[0] = min_cell_coord[0]; cc[0] < max_cell_coord[0]; ++cc[0]) {
+                    for (cc[1] = min_cell_coord[1]; cc[1] <= max_cell_coord[1]; ++cc[1]) {
+                        for (cc[0] = min_cell_coord[0]; cc[0] <= max_cell_coord[0]; ++cc[0]) {
                             const uint32_t idx = compute_cell_idx(cc);
-                            if (cells[idx].mark) {
-                                const uint32_t beg = cells[idx].offset;
-                                const uint32_t end = cells[idx].count;
-                                for (uint32_t j = beg; j < end; ++j) {
-                                    const float dx = x[i] - ref_x[j];
-                                    const float dy = y[i] - ref_y[j];
-                                    const float dz = z[i] - ref_z[j];
-                                    const float r2 = dx * dx + dy * dy + dz * dz;
-                                    if (min_d2 < r2 && r2 < max_d2) {
-                                        mask |= 1ULL << bit;
-                                    }
+                            const uint32_t beg = cells[idx].offset;
+                            const uint32_t end = cells[idx].offset + cells[idx].count;
+                            for (uint32_t j = beg; j < end; ++j) {
+                                const float dx = x[i] - ref_x[j];
+                                const float dy = y[i] - ref_y[j];
+                                const float dz = z[i] - ref_z[j];
+                                const float r2 = dx * dx + dy * dy + dz * dz;
+                                if (min_d2 < r2 && r2 < max_d2) {
+                                    mask |= 1ULL << bit;
                                 }
                             }
                         }
@@ -1646,17 +1949,20 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
         float ref_z[SPATIAL_GRID_MIN_SIZE] = {0};
 
         uint64_t dst_i = 0;
-        uint64_t src_i = 0;
-        while (find_next_bit_set(&src_i, in_bits, src_i, mol->atom.count - src_i)) {
-            ref_x[dst_i] = x[src_i];
-            ref_y[dst_i] = y[src_i];
-            ref_z[dst_i] = z[src_i];
-            ++dst_i;
-            ++src_i;
+        for (uint64_t i = 0; i < blk_count; ++i) {
+            uint64_t mask = in_bits[i];
+            uint64_t bit_idx;
+            while (bsf(&bit_idx, mask)) {
+                mask &= ~(1LLU << bit_idx); // clear the current bit_idx
+                uint64_t src_i = i * 64 + bit_idx;
+                ref_x[dst_i] = x[src_i];
+                ref_y[dst_i] = y[src_i];
+                ref_z[dst_i] = z[src_i];
+                ++dst_i;
+            }
         }
 
         // test all atoms against the reference set
-        const uint64_t blk_count = DIV_UP(mol->atom.count);
         for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
             const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
             uint64_t mask = 0;
@@ -1677,16 +1983,24 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
     }
 }
 
-void filter_func_resid_int(int val, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_resid_int(int val, uint64_t* bits, const md_molecule* mol) {
     filter_func_resid(val, val, bits, mol);
 }
 
-void filter_func_residue_int(int val, uint64_t* bits, const mold_molecule* mol) {
+void filter_func_residue_int(int val, uint64_t* bits, const md_molecule* mol) {
     filter_func_residue(val, val, bits, mol);
 }
 
-void filter_func_within_flt(float range, const uint64_t* in_bits, uint64_t* out_bits, const mold_molecule* mol) {
+void filter_func_within_flt(float range, const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol) {
     filter_func_within(0, range, in_bits, out_bits, mol);
+}
+
+void filter_func_within_int(int range, const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol) {
+    filter_func_within(0, (float)range, in_bits, out_bits, mol);
+}
+
+void filter_func_within_irng(int min_range, int max_range, const uint64_t* in_bits, uint64_t* out_bits, const md_molecule* mol) {
+    filter_func_within((float)min_range, (float)max_range, in_bits, out_bits, mol);
 }
 
 #ifdef __cplusplus

@@ -180,7 +180,7 @@ void main() {
         out_position = spline(cp[0], cp[1], cp[2], cp[3], t);
         out_atom_idx = t < 0.5 ? ai[0] : ai[1];   // Pick closest control point for index
         out_velocity = spline(cv[0], cv[1], cv[2], cv[3], t);
-        out_segment_t = in_vert[0].segment_t + t;
+        out_segment_t = in_vert[1].segment_t + t;
         out_secondary_structure_and_flags = (s_flags << 24U) | (packUnorm4x8(vec4(s_sec, 0)) & 0x00FFFFFFU);
         out_support_and_tangent_vector[0] = packSnorm2x16(s_vec.xy);
         out_support_and_tangent_vector[1] = packSnorm2x16(vec2(s_vec.z, s_tan.x));

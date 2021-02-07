@@ -623,14 +623,16 @@ static int skip_dcdstep(fio_fd fd, int natoms, int nfixed, int charmm, int numst
   return DCD_SUCCESS;
 }
 
+#define ofr
+
 static int jump_to_dcdstep(fio_fd fd, int natoms, int nsets, int nfixed, int charmm, int header_size, int step) {
   int rc;
   if (step > nsets) {
     return DCD_BADEOF;
   }
   // Calculate file offset
-  off_t extrablocksize, ndims, firstframesize, framesize;
-  off_t pos;
+  size_t extrablocksize, ndims, firstframesize, framesize;
+  size_t pos;
   extrablocksize = charmm & DCD_HAS_EXTRA_BLOCK ? 48 + 8 : 0;
   ndims = charmm & DCD_HAS_4DIMS ? 4 : 3;
   firstframesize = (natoms+2) * ndims * sizeof(float) + extrablocksize;

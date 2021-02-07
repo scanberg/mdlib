@@ -1,7 +1,7 @@
-#ifndef _MOLD_PARSE_H_
-#define _MOLD_PARSE_H_
+#ifndef _MD_XTC_H_
+#define _MD_XTC_H_
 
-#include "mold.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {

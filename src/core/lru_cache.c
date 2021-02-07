@@ -46,7 +46,7 @@ inline void lru_cache_init(lru_cache_8* cache) {
 inline int lru_cache_get_lru_idx(lru_cache_8* cache) {
 	ASSERT(cache);
 	ASSERT(cache->mat != 0 && "Cache matrix is 0, lru_cache is not initialized");
-	return find_first_zero_byte(cache->mat);
+	return find_first_zero_byte64(cache->mat);
 }
 
 inline void lru_cache_set_mru_idx(lru_cache_8* cache, int idx) {

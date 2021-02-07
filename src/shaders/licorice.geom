@@ -23,7 +23,9 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
-    
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
     float u_radius;
 };
 
@@ -80,16 +82,13 @@ vec3 get_ortho_vec(vec3 v, vec3 A, vec3 B){
 
 void main()
 {
-    if (u_atom_mask != 0U &&
-        ((in_vert[0].flags & u_atom_mask) == 0U ||
-         (in_vert[1].flags & u_atom_mask) == 0U)){
-        EndPrimitive();
+    if ((in_vert[0].flags & u_atom_mask) != u_atom_mask ||
+        (in_vert[1].flags & u_atom_mask) != u_atom_mask) {
         return;
     }
 
 #if ATOM_COL
     if (in_vert[0].color.a == 0 || in_vert[1].color.a == 0) {
-        EndPrimitive();
         return;
     }
 #endif

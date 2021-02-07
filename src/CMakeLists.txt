@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.0)
 
 project(libmold VERSION 0.1.1 LANGUAGES C)
 
-option(MOLD_USE_RELATIVE_PATHS OFF)
+option(MD_USE_RELATIVE_PATHS OFF)
 
 file(GLOB SRC_FILES *)
 file(GLOB CORE_FILES core/*)
@@ -24,17 +24,17 @@ add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
 target_include_directories(mold
 	PUBLIC
 		$<INSTALL_INTERFACE:
-			${CMAKE_CURRENT_SOURCE_DIR}/mold_draw.h>
-			${CMAKE_CURRENT_SOURCE_DIR}/mold_filter.h>
-			${CMAKE_CURRENT_SOURCE_DIR}/mold_util.h>
+			${CMAKE_CURRENT_SOURCE_DIR}/md_draw.h>
+			${CMAKE_CURRENT_SOURCE_DIR}/md_filter.h>
+			${CMAKE_CURRENT_SOURCE_DIR}/md_util.h>
 		$<BUILD_INTERFACE:
-			${CMAKE_CURRENT_SOURCE_DIR}/mold_draw.h>
-			${CMAKE_CURRENT_SOURCE_DIR}/mold_filter.h>
-			${CMAKE_CURRENT_SOURCE_DIR}/mold_util.h>
+			${CMAKE_CURRENT_SOURCE_DIR}/md_draw.h>
+			${CMAKE_CURRENT_SOURCE_DIR}/md_filter.h>
+			${CMAKE_CURRENT_SOURCE_DIR}/md_util.h>
 )
 
-if (MOLD_USE_RELATIVE_PATHS)
-    target_compile_definitions(mold PRIVATE MOLD_SHADER_DIR=\"shaders\")
+if (MD_USE_RELATIVE_PATHS)
+    target_compile_definitions(mold PRIVATE MD_SHADER_DIR=\"shaders\")
 
 	# COPY SHADER FILES TO EXECUTABLE DIRECTORY TO KEEP RELATIVE PATH
     # CANNOT COPY ENTIRE DIRECTORY -> WILL REMOVE ANY EXISTING DIRECTORY
@@ -56,5 +56,5 @@ if (MOLD_USE_RELATIVE_PATHS)
 	#				${CMAKE_CURRENT_SOURCE_DIR}/shaders
 	#				${CMAKE_BINARY_DIR}/$<CONFIG>/shaders)
 else()
-	target_compile_definitions(mold PRIVATE MOLD_SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\")
+	target_compile_definitions(mold PRIVATE MD_SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\")
 endif()

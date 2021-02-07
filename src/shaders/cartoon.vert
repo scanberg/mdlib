@@ -1,5 +1,17 @@
 #version 330 core
 
+#ifndef ATOM_COL
+#define ATOM_COL 1
+#endif
+
+#ifndef ATOM_VEL
+#define ATOM_VEL 0
+#endif
+
+#ifndef ATOM_IDX
+#define ATOM_IDX 1
+#endif
+
 uniform samplerBuffer u_atom_color_buffer;
 uniform usamplerBuffer u_atom_flags_buffer;
 
@@ -14,9 +26,13 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
     float u_width_scale;
     float u_height_scale;
 };
+
 
 layout (location = 0) in vec3  in_control_point;
 layout (location = 1) in uint  in_atom_index;
@@ -31,25 +47,33 @@ out Vertex {
     vec4  control_point;
     vec4  support_vector;
     vec4  support_tangent;
+#if ATOM_VEL
     vec4  velocity;
+#endif
     float segment_t;
     vec3  secondary_structure;
     uint  flags;
+#if ATOM_COL
     vec4  color;
-    uint  picking_idx;
+#endif
+#if ATOM_IDX
+    flat uint  picking_idx;
+#endif
 } out_vert;
 void main() {
-    uint atom_flags = texelFetch(u_atom_flags_buffer, int(in_atom_index)).x;
-    vec4 atom_color = texelFetch(u_atom_color_buffer, int(in_atom_index));
-    if (u_atom_mask > 0U && (atom_flags & u_atom_mask) == 0U) atom_color = vec4(0);
-
     out_vert.control_point       = vec4(in_control_point, 1);
     out_vert.support_vector      = vec4(in_support_vector, 0);
     out_vert.support_tangent     = vec4(in_support_tangent, 0);
+#if ATOM_VEL
     out_vert.velocity            = vec4(in_velocity, 0);
+#endif
     out_vert.segment_t           = in_segment_t;
     out_vert.secondary_structure = in_secondary_structure;
-    out_vert.flags               = in_flags;
-    out_vert.color               = atom_color;
+    out_vert.flags               = texelFetch(u_atom_flags_buffer, int(in_atom_index)).x;
+#if ATOM_COL
+    out_vert.color               = texelFetch(u_atom_color_buffer, int(in_atom_index));
+#endif
+#if ATOM_IDX
     out_vert.picking_idx         = in_atom_index;
+#endif
 }

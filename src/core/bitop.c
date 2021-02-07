@@ -1,4 +1,5 @@
 #include "bitop.h"
+#include "intrinsics.h"
 
 #if _MSC_VER && !__INTEL_COMPILER
 #define _CRT_SECURE_NO_WARNINGS
@@ -202,14 +203,14 @@ uint64_t bit_count(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count
 
     if (beg_idx == end_idx) {
         const uint64_t mask = beg_mask & end_mask;
-        return bit_count_mask(bits[beg_idx] & mask);
+        return popcnt64(bits[beg_idx] & mask);
     }
     
-    count += bit_count_mask(bits[beg_idx] & beg_mask);
+    count += popcnt64(bits[beg_idx] & beg_mask);
     for (uint64_t i = beg_idx + 1; i < end_idx; ++i) {
-        count += bit_count_mask(bits[i]);
+        count += popcnt64(bits[i]);
     }
-    count += bit_count_mask(bits[end_idx] & end_mask);
+    count += popcnt64(bits[end_idx] & end_mask);
 
     return count;
 }
@@ -219,7 +220,8 @@ bool bit_test(const uint64_t* bits, uint64_t idx) {
     return block & (1ULL << fast_mod(idx, BITS_PER_BLOCK));
 }
 
-bool find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
+/*
+uint64_t find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
 #ifdef ASSERT
     ASSERT(bit_idx);
 #endif
@@ -231,22 +233,24 @@ bool find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_off
 
     if (beg_idx == end_idx) {
         const uint64_t mask = beg_mask & end_mask;
-        return bit_scan_forward_mask(bit_idx, bits[beg_idx] & mask);
+        return bit_scan_forward(bit_idx, bits[beg_idx] & mask);
     }
 
-    uint64_t bit_base = 0;
-    if (bit_scan_forward_mask(bit_idx, beg_mask & bits[beg_idx])) {
+    if (bit_scan_forward(bit_idx, beg_mask & bits[beg_idx])) {
+        *bit_idx += bit_offset;
         return true;
     }
-    for (uint64_t i = beg_idx + 1, bit_base = BITS_PER_BLOCK; i < end_idx; ++i, bit_base += BITS_PER_BLOCK) {
-        if (bit_scan_forward_mask(bit_idx, bits[i])) {
-            *bit_idx += bit_base;
+    bit_offset += BITS_PER_BLOCK;
+    for (uint64_t i = beg_idx + 1; i < end_idx; ++i, bit_offset += BITS_PER_BLOCK) {
+        if (bit_scan_forward(bit_idx, bits[i])) {
+            *bit_idx += bit_offset;
             return true;
         }
     }
-    if (bit_scan_forward_mask(bit_idx, end_mask & bits[end_idx])) {
-        *bit_idx += bit_base;
+    if (bit_scan_forward(bit_idx, end_mask & bits[end_idx])) {
+        *bit_idx += bit_offset;
         return true;
     }
     return false;
 }
+*/
