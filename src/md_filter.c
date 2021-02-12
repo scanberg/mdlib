@@ -1806,9 +1806,10 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
             uint64_t mask = in_bits[blk_idx];
             if (mask) {
                 uint64_t bit_idx;
-                while (bsf(&bit_idx, mask)) {
-                    mask &= ~(1LLU << bit_idx); // clear the current bit_idx
-                    uint64_t src_i = blk_idx * 64 + bit_idx;
+                while (bit_idx = bit_scan_forward64(mask)) {
+                    uint64_t bit = bit_idx - 1;
+                    mask &= ~(1LLU << bit); // clear the current bit_idx
+                    uint64_t src_i = blk_idx * 64 + bit;
                     aabb_min[0] = MIN(x[src_i], aabb_min[0]);
                     aabb_min[1] = MIN(y[src_i], aabb_min[1]);
                     aabb_min[2] = MIN(z[src_i], aabb_min[2]);
@@ -1952,9 +1953,10 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
         for (uint64_t i = 0; i < blk_count; ++i) {
             uint64_t mask = in_bits[i];
             uint64_t bit_idx;
-            while (bsf(&bit_idx, mask)) {
-                mask &= ~(1LLU << bit_idx); // clear the current bit_idx
-                uint64_t src_i = i * 64 + bit_idx;
+            while (bit_idx = bit_scan_forward64(mask)) {
+                uint64_t bit = bit_idx - 1;
+                mask &= ~(1LLU << bit); // clear the current bit_idx
+                uint64_t src_i = i * 64 + bit;
                 ref_x[dst_i] = x[src_i];
                 ref_y[dst_i] = y[src_i];
                 ref_z[dst_i] = z[src_i];

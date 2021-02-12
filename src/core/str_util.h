@@ -14,12 +14,16 @@ struct str_t {
 extern "C" {
 #endif
 
-inline int  char_to_digit(char c) { return c - '0'; }
-inline char to_lower(char c)      { return ('A' <= c && c <= 'Z') ? c+32 : c; }
-inline char to_upper(char c)      { return ('a' <= c && c <= 'z') ? c-32 : c; }
-inline bool is_digit(char c)      { return '0' <= c && c <= '9'; }
-inline bool is_alpha(char c)      { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'); }
-inline bool is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+// Only for ASCII character set
+inline int  char_to_digit(int c) { return c - '0'; }
+inline int  to_lower(int c)      { return ('A' <= c && c <= 'Z') ? c+32 : c; }
+inline int  to_upper(int c)      { return ('a' <= c && c <= 'z') ? c-32 : c; }
+inline bool is_digit(int c)      { return '0' <= c && c <= '9'; }
+inline bool is_alpha(int c)      { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'); }
+inline bool is_whitespace(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+inline bool is_symbol(int c) {
+    return (32 < c && c < 48) || (57 < c && c < 65) || (90 < c && c < 97) || (123 < c && c < 127);
+}
 
 str_t substr(str_t str, int offset, int length);
 bool skip_line(str_t* in_out_str);

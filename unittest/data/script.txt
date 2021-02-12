@@ -1,21 +1,46 @@
+# This syntax is inspired by Python and should hopefully be familiar to a broad audience
 # This is a comment
 
-sel1: resname(PFT) and not c_alpha; # This is also a comment until end of line
-sel2: x <= 10.0;
-sel3: y in [*:10.0]; 	# Select all atoms with y coordinates in range -infinity to 10.0
-sel4: z = [10.0:20.0];
-sel5: residue(1:2:10) 	# Select every other residue from 1 to 10 = (1 3 5 7 9) 
+rng1 = 0:10; 	# Explicitly stored range 0-9
+rng2 = 0:10:2; 	# 0 2 4 6 8 
 
-prop1: distance(sel2, sel3);
+sel1 = resname("PFT") and not c_alpha; # This is also a comment until end of line
+sel2 = x < 10.0;		# Select all atoms with x coordinates less than or equal to 10.0, equal to function call x([:10.0]) returns bitfield
+sel3 = y in 5.0:10.0; 	# Select all atoms with y coordinates in range -infinity to 10.0 returns bitfield
+sel4 = z[10.0:20.0];	# Using a range on a built in property, returns bitfield
+sel5 = residue(:); 		# Returns array of ranges for each residue in the dataset
+sel6 = residue[1:7] or residue <= 5;
 
-d1: dihedral(resname("PFT"), 22, 20,  1,  2);
-d2: dihedral(resname("PFT"), 2,   3,  6, 10);
-d3: dihedral(resname("PFT"), 10,  9, 27, 29);
-d4: dihedral(resname("PFT"), 29, 31, 33, 35);
+prop1 = distance_com(sel2, sel3);
+prop2 = distance_min(sel2, sel3);
+prop3 = distance_pair(sel2, sel3);
 
-PI_2: PI / 2.0; # Define a constant
+sel = resname("VAL");
 
-planarity: 	abs((abs(d1) - PI_2)) / PI_2 +
+sel2: []float;
+
+sel2
+
+"this is not a valid string
+";
+
+bla = angle(resname("ALA"), 1, 2, 3);
+
+str1 = "this is a string";
+str2 = 'this is also a string';
+
+d1 = dihedral(resname("PFT"), 22, 20,  1,  2);
+d2 = dihedral(resname("PFT"), 2,   3,  6, 10);
+d3 = dihedral(resname("PFT"), 10,  9, 27, 29);
+d4 = dihedral(resname("PFT"), 29, 31, 33, 35);
+
+rdf1 = rdf(resname("PFT"));
+
+PI_2 = PI / 2.0; # Define a constant
+
+# Compute a property as an expression of other properties
+# This has a dependency on d1, d2, d3 and d4
+planarity =	abs((abs(d1) - PI_2)) / PI_2 +
 			abs((abs(d2) - PI_2)) / PI_2 +
 			abs((abs(d3) - PI_2)) / PI_2 +
 			abs((abs(d4) - PI_2)) / PI_2;

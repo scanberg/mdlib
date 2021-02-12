@@ -16,12 +16,26 @@ inline uint64_t clz64(uint64_t v) {
     return __builtin_clzll(v);
 }
 
-inline uint64_t popcnt(uint64_t v) {
+// Population count: counts the number of bits set
+inline uint32_t popcnt(uint32_t v) {
     return __builtin_popcount(v);
 }
 
+// Population count: counts the number of bits set
 inline uint64_t popcnt64(uint64_t v) {
     return __builtin_popcountll(v);
+}
+
+// Scans for the first bit set, from least significant to most significant bit,
+// indexing starts at 1, returns 0 if no bit is set (posix convention)
+inline uint32_t bit_scan_forward(uint32_t v) {
+    return __builtin_ffs(v);
+}
+
+// Scans for the first bit set, from least significant to most significant bit,
+// indexing starts at 1, returns 0 if no bit is set 
+inline uint64_t bit_scan_forward(uint64_t v) {
+    return __builtin_ffsll(v);
 }
 
 #elif MD_COMPILER_MSVC
@@ -47,25 +61,36 @@ inline uint64_t popcnt64(uint64_t v) {
     return __popcnt64(v);
 }
 
-// bit scan forward
-inline bool bsf(uint64_t* bit_idx, uint64_t v) {
-    unsigned long i;
-    bool result = (bool)_BitScanForward64(&i, v);
-    *bit_idx = i;
-    return result;
+// Scans for the first bit set, from least significant to most significant bit,
+// indexing starts at 1, returns 0 if no bit is set (posix convention)
+inline uint32_t bit_scan_forward(uint32_t v) {
+    if (v == 0) return 0;
+    unsigned long idx;
+    _BitScanForward(&idx, v);
+    return idx + 1;
+}
+
+
+// Scans for the first bit set, from least significant to most significant bit,
+// indexing starts at 1, returns 0 if no bit is set (posix convention)
+inline uint64_t bit_scan_forward64(uint64_t v) {
+    if (v == 0) return 0;
+    unsigned long idx;
+    _BitScanForward64(&idx, v);
+    return idx + 1;
 }
 
 #endif
 
 // find first zero Byte
-inline uint32_t ffzB(uint32_t x) {
+inline uint32_t find_first_zero_byte(uint32_t x) {
     uint32_t y = (x & 0x7F7F7F7F) + 0x7F7F7F7F;
     y = ~(y | x | 0x7F7F7F7F);
     return (31U - clz(y)) >> 3;
 }
 
 // find first zero Byte 64-bit
-inline uint64_t ffzB64(uint64_t x) {
+inline uint64_t find_first_zero_byte64(uint64_t x) {
     //uint64_t y = (x & 0x7F7F7F7F7F7F7F7F) + 0x7F7F7F7F7F7F7F7F;
     //y = ~(y | x | 0x7F7F7F7F7F7F7F7F);
     //return (63LLU - clz(y)) >> 3LLU;

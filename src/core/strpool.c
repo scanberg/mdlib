@@ -118,6 +118,8 @@ md_strpool_entry md_strpool_insert(md_strpool* pool, const char* str, int len) {
     pool->entry.ptr[pool->entry.len].offset = offset;
     pool->entry.ptr[pool->entry.len].length = len;
     pool->entry.len += 1;
+
+    return pool->entry.ptr[pool->entry.len - 1];
 }
 
 const char* md_strpool_cstr(md_strpool* pool, md_strpool_entry entry) {

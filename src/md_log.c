@@ -36,7 +36,7 @@
 #define ANSI_COLOR_RESET   "\x1b[0m"
 
 
-static void log(struct md_logger_o* inst, enum md_log_type log_type, const char* msg) {
+static void _log(struct md_logger_o* inst, enum md_log_type log_type, const char* msg) {
     (void)inst;
 
     time_t now = time(0);
@@ -71,7 +71,7 @@ static void log(struct md_logger_o* inst, enum md_log_type log_type, const char*
 
 static struct md_logger_i _default_logger = {
     NULL,
-    log
+    _log
 };
 
 static int num_loggers = 1;
@@ -100,16 +100,19 @@ int md_print(enum md_log_type log_type, const char* msg) {
     for (int i = 0; i < num_loggers; ++i) {
         loggers[i]->log(loggers[i]->inst, log_type, msg);
     }
+    return (int)strlen(msg);
 }
 
 int md_printf(enum md_log_type log_type, const char* format, ...) {
     char msg[512] = {0};
     va_list args;
     va_start(args, format);
-    vsnprintf(msg, ARRAY_SIZE(msg), format, args);
+    int res = vsnprintf(msg, ARRAY_SIZE(msg), format, args);
     va_end(args);
 
     for (int i = 0; i < num_loggers; ++i) {
         loggers[i]->log(loggers[i]->inst, log_type, msg);
     }
+
+    return res;
 }

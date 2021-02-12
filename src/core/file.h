@@ -25,12 +25,14 @@ struct md_file;
 
 // Similar interface as fopen, but explicit length and supports utf-8 encoding
 md_file* md_file_open(const char* filename, uint32_t filename_len, const char* mode);
-void       md_file_close(md_file* file);
+void     md_file_close(md_file* file);
 
 // supports 64-bit offsets
 int64_t md_file_tell(md_file* file);
 bool    md_file_seek(md_file* file, int64_t offset, int origin);
 
+// Returns the size of a file-stream in bytes
+// Does not alter the current position within the stream
 uint64_t md_file_size(md_file* file);
 
 // Returns the number of successfully written/read bytes

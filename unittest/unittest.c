@@ -8,11 +8,13 @@
 #include "md_gro.h"
 #include "md_xtc.h"
 
+#include "core/array.inl"
 #include "core/common.h"
 #include "core/bitop.h"
 #include "core/strpool.h"
 #include "core/file.h"
 #include "core/str_util.h"
+#include "core/pool_allocator.h"
 
 extern void filter_func_all     (uint64_t* bits, const md_molecule* mol);
 extern void filter_func_none    (uint64_t* bits, const md_molecule* mol);
@@ -349,10 +351,10 @@ UTEST(strpool, test) {
 }
 
 UTEST(script, test) {
-    const char script_file[] = "script.txt";
+    const char script_file[] = MD_UNITTEST_DATA_DIR "/script.txt";
     str_t script_text = load_textfile(script_file, ARRAY_SIZE(script_file), default_allocator);
     // @TODO: Don't leak here, fix a proper free function for str_t
-    struct md_script_ir* ir = md_script_compile(script_text.str, (uint32_t)script_text.len, NULL);
+    struct md_script_ir* ir = md_script_compile(script_text.str, (uint32_t)script_text.len, default_allocator);
 
     md_print(MD_LOG_TYPE_INFO, "cool");
 }
@@ -360,6 +362,51 @@ UTEST(script, test) {
 UTEST(allocator, test) {
     void* ptr;
     for (int i = 0; i < 1000000; ++i) {
-        ptr = md_alloc(default_temp_allocator, 1000);
+        ptr = md_alloc(default_temp_allocator, KILOBYTES(1));
     }
+}
+
+UTEST(array, test) {
+    uint64_t arr_data[] = {0, 5, 1, 2, 3, 4, 5};
+    uint64_t *arr = arr_data + 2;
+
+    EXPECT_EQ(md_array_size(arr), 5);
+    EXPECT_EQ(md_array_capacity(arr), 0);
+    EXPECT_EQ(md_array_bytes(arr), 5 * sizeof(uint64_t));
+    EXPECT_EQ(md_array_end(arr), arr + 5);
+    EXPECT_EQ(md_array_last(arr), arr + 4);
+
+    // TODO: FILL IN
+}
+
+UTEST(pool_alloc, test) {
+    md_allocator_i* pool = md_create_pool_allocator(default_allocator, sizeof(uint64_t));
+
+    uint64_t **mem = {0};
+
+    for (int j = 0; j < 1000; ++j) {
+        for (int i = 0; i < 1000; ++i) {
+            uint64_t *item = *md_array_push(mem, md_alloc(pool, sizeof(uint64_t)), default_allocator);
+            *item = i;
+        }
+
+        for (int i = 100; i < 1000; ++i) {
+            md_free(pool, mem[i], sizeof(uint64_t));
+        }
+        md_array_shrink(mem, 100);
+
+        int indices[10] = {1, 2, 5, 6, 70, 90, 18, 16, 12, 10};
+
+        for (int i = 0; i < ARRAY_SIZE(indices); ++i) {
+            int idx = indices[i];
+            md_free(pool, mem[idx], sizeof(uint64_t));
+        }
+
+        for (int i = 0; i < ARRAY_SIZE(indices); ++i) {
+            int idx = indices[i];
+            mem[idx] = md_alloc(pool, sizeof(uint64_t));
+        }
+    }
+
+    md_array_free(mem, default_allocator);
 }
