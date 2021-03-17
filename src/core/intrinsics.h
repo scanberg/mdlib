@@ -34,7 +34,7 @@ inline uint32_t bit_scan_forward(uint32_t v) {
 
 // Scans for the first bit set, from least significant to most significant bit,
 // indexing starts at 1, returns 0 if no bit is set 
-inline uint64_t bit_scan_forward(uint64_t v) {
+inline uint64_t bit_scan_forward64(uint64_t v) {
     return __builtin_ffsll(v);
 }
 
