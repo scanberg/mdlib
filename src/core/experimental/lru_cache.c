@@ -2,7 +2,6 @@
 #include "intrinsics.h"
 
 
-
 // 8-way fully associative cache using Least Recently Used (LRU) eviction policy
 // Based on the '8x8 bit matrix technique' presented in Hacker's Delight
 // The bit matrix is initialized to a upper triangular matrix (only 4x4 bits are shown here for simplicity)
@@ -38,7 +37,7 @@ struct lru_cache_8 {
 inline void lru_cache_init(lru_cache_8* cache) {
 	cache->mat = 0x0080c0e0f0f8fcfe; // Upper triangular bit matrix
 	for (uint64_t i = 0; i < 8; ++i) {
-		cache->line[i] = NULL;
+		cache->line[i] = 0;
 	}
 }
 

@@ -24,12 +24,12 @@ add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
 target_include_directories(mold
 	PUBLIC
 		$<INSTALL_INTERFACE:
-			${CMAKE_CURRENT_SOURCE_DIR}/md_draw.h>
-			${CMAKE_CURRENT_SOURCE_DIR}/md_filter.h>
+			${CMAKE_CURRENT_SOURCE_DIR}/md_draw.h
+			${CMAKE_CURRENT_SOURCE_DIR}/md_filter.h
 			${CMAKE_CURRENT_SOURCE_DIR}/md_util.h>
 		$<BUILD_INTERFACE:
-			${CMAKE_CURRENT_SOURCE_DIR}/md_draw.h>
-			${CMAKE_CURRENT_SOURCE_DIR}/md_filter.h>
+			${CMAKE_CURRENT_SOURCE_DIR}/md_draw.h
+			${CMAKE_CURRENT_SOURCE_DIR}/md_filter.h
 			${CMAKE_CURRENT_SOURCE_DIR}/md_util.h>
 )
 
@@ -49,12 +49,6 @@ if (MD_USE_RELATIVE_PATHS)
         COMMAND ${CMAKE_COMMAND} -E copy ${SRC} ${DST}
         )
     endforeach(FILENAME)
-
-	#add_custom_command(
-	#		TARGET mold POST_BUILD
-	#		COMMAND ${CMAKE_COMMAND} -E copy_directory
-	#				${CMAKE_CURRENT_SOURCE_DIR}/shaders
-	#				${CMAKE_BINARY_DIR}/$<CONFIG>/shaders)
 else()
 	target_compile_definitions(mold PRIVATE MD_SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\")
 endif()
