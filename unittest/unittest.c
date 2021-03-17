@@ -8,13 +8,15 @@
 #include "md_gro.h"
 #include "md_xtc.h"
 
+#include "core/intrinsics.h"
 #include "core/array.inl"
+#include "core/file.inl"
 #include "core/common.h"
 #include "core/bitop.h"
 #include "core/strpool.h"
-#include "core/file.h"
 #include "core/str_util.h"
 #include "core/pool_allocator.h"
+#include "core/arena_allocator.h"
 
 extern void filter_func_all     (uint64_t* bits, const md_molecule* mol);
 extern void filter_func_none    (uint64_t* bits, const md_molecule* mol);
@@ -49,9 +51,217 @@ void print_bits(const uint64_t* bits, uint64_t bit_count) {
     }
 }
 
-UTEST_MAIN();
+typedef struct AllocatorTestData {
+    void* mem;
+    uint64_t size;
+} AllocatorTestData;
 
+typedef struct linear_allocator {
+    void* mem;
+    uint64_t offset;
+    uint64_t size;
+} linear_allocator;
+
+inline void linear_allocator_init(linear_allocator* alloc, void* mem, uint64_t size) {
+    alloc->mem = mem;
+    alloc->offset = 0;
+    alloc->size = size;
+}
+
+inline void* linear_allocator_alloc(linear_allocator* alloc, uint64_t size) {
+    ASSERT(alloc->offset + size <= alloc->size);
+    void* res = (char*)alloc->mem + alloc->offset;
+    alloc->offset += size;
+    return res;
+}
+
+inline void linear_allocator_reset(linear_allocator* alloc) {
+    alloc->offset = 0;
+}
+
+static AllocatorTestData allocator_test_data;
+static linear_allocator linear_alloc;
+
+UTEST_STATE();
+
+int main(int argc, const char *const argv[]) {
+    allocator_test_data.mem = md_alloc(default_allocator, MEGABYTES(4));
+    allocator_test_data.size = MEGABYTES(4);
+
+    linear_allocator_init(&linear_alloc, allocator_test_data.mem, allocator_test_data.size);
+
+    // do your own thing
+    return utest_main(argc, argv);
+}
+
+UTEST(core, intrinsics) {
+    {
+        static const uint32_t mask[5] = {0, 0xFFU, 0xFFFFU, 0xFFFFFFU, 0xFFFFFFFFU};
+
+        EXPECT_EQ(clz(mask[0]), 32);
+        EXPECT_EQ(clz(mask[1]), 24);
+        EXPECT_EQ(clz(mask[2]), 16);
+        EXPECT_EQ(clz(mask[3]), 8);
+        EXPECT_EQ(clz(mask[4]), 0);
+
+        EXPECT_EQ(popcnt(mask[0]), 0);
+        EXPECT_EQ(popcnt(mask[1]), 8);
+        EXPECT_EQ(popcnt(mask[2]), 16);
+        EXPECT_EQ(popcnt(mask[3]), 24);
+        EXPECT_EQ(popcnt(mask[4]), 32);
+    }
+
+    {
+        static const uint32_t mask[5] = {0, (1U << 8), (1U << 16), (1U << 24), (1U << 31)};
+
+        EXPECT_EQ(bit_scan_forward(mask[0]), 0);
+        EXPECT_EQ(bit_scan_forward(mask[1]), 9);
+        EXPECT_EQ(bit_scan_forward(mask[2]), 17);
+        EXPECT_EQ(bit_scan_forward(mask[3]), 25);
+        EXPECT_EQ(bit_scan_forward(mask[4]), 32);
+    }
+
+    EXPECT_EQ(next_power_of_two(3), 4);
+    EXPECT_EQ(next_power_of_two(31), 32);
+    EXPECT_EQ(next_power_of_two(32), 32);
+    EXPECT_EQ(next_power_of_two(1), 1);
+    EXPECT_EQ(next_power_of_two(5), 8);
+    EXPECT_EQ(next_power_of_two(8000), 8192);
+
+    EXPECT_EQ(next_power_of_two64(sizeof(void*)), sizeof(void*));
+
+    // @TODO: Implement more tests for example find_first_zero_byte
+}
+
+UTEST(allocator_perf, temp) {
+    void* ptr[1000];
+    for (int j = 0; j < 1000; ++j) {
+        for (int i = 0; i < 1000; ++i) {
+            ptr[i] = md_alloc(default_temp_allocator, 4);
+        }
+        /*
+        for (int i = 0; i < 1000; ++i) {
+            md_free(default_temp_allocator, ptr[i], 4);
+        }
+        */
+    }
+}
+
+UTEST(allocator_perf, linear_inline) {
+    void* ptr[1000];
+    for (int j = 0; j < 1000; ++j) {
+        for (int i = 0; i < 1000; ++i) {
+            ptr[i] = linear_allocator_alloc(&linear_alloc, 4);
+        }
+    }
+}
+
+UTEST(allocator_perf, default) {
+    void* ptr[1000];
+    for (int j = 0; j < 1000; ++j) {
+        for (int i = 0; i < 1000; ++i) {
+            ptr[i] = md_alloc(default_allocator, 4);
+        }
+        for (int i = 0; i < 1000; ++i) {
+            md_free(default_allocator, ptr[i], 4);
+        }
+    }
+}
+
+UTEST(allocator_perf, arena) {
+    md_allocator_i* arena = md_arena_allocator_create(default_allocator, MEGABYTES(1));
+    void* ptr[1000];
+    for (int j = 0; j < 1000; ++j) {
+        for (int i = 0; i < 1000; ++i) {
+            ptr[i] = md_alloc(arena, 4);
+        }
+        /*
+        for (int i = 0; i < 1000; ++i) {
+            md_free(arena, ptr[i], 4);
+        }
+        */
+    }
+    md_arena_allocator_destroy(arena);
+}
+
+UTEST(array, test) {
+    uint64_t arr_data[] = {0, 5, 1, 2, 3, 4, 5};
+    uint64_t *arr = arr_data + 2;
+
+    EXPECT_EQ(md_array_size(arr), 5);
+    EXPECT_EQ(md_array_capacity(arr), 0);
+    EXPECT_EQ(md_array_bytes(arr), 5 * sizeof(uint64_t));
+    EXPECT_EQ(md_array_end(arr), arr + 5);
+    EXPECT_EQ(md_array_last(arr), arr + 4);
+
+    // TODO: FILL IN
+}
+
+UTEST(pool_alloc, test) {
+    md_allocator_i* pool = md_pool_allocator_create(default_allocator, sizeof(uint64_t));
+
+    uint64_t **mem = {0};
+
+    for (int j = 0; j < 1000; ++j) {
+        for (int i = 0; i < 1000; ++i) {
+            uint64_t *item = *md_array_push(mem, md_alloc(pool, sizeof(uint64_t)), default_allocator);
+            *item = i;
+        }
+
+        for (int i = 100; i < 1000; ++i) {
+            md_free(pool, mem[i], sizeof(uint64_t));
+        }
+        md_array_shrink(mem, 100);
+
+        int indices[10] = {1, 2, 5, 6, 70, 90, 18, 16, 12, 10};
+
+        for (int i = 0; i < ARRAY_SIZE(indices); ++i) {
+            int idx = indices[i];
+            md_free(pool, mem[idx], sizeof(uint64_t));
+        }
+
+        for (int i = 0; i < ARRAY_SIZE(indices); ++i) {
+            int idx = indices[i];
+            mem[idx] = md_alloc(pool, sizeof(uint64_t));
+        }
+    }
+
+    md_array_free(mem, default_allocator);
+}
+
+UTEST(arena_alloc, test) {
+    md_allocator_i* arena = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+
+    for (int j = 0; j < 1000; ++j) {
+        EXPECT_EQ((uint64_t)md_alloc(arena, 16) % 16, 0); // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);  // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);  // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);  // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);  // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);  // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 2) % 2, 0);  // Expect to be aligned to 2 bytes
+
+        EXPECT_NE(md_alloc(arena, 9000), NULL); // Exceeds page size, should still be good
+
+        // Make sure we get some internal pages going.
+        for (int i = 0; i < 20; ++i) {
+            EXPECT_EQ((uint64_t)md_alloc(arena, 1024) % 16, 0);
+        }
+
+        md_arena_allocator_reset(arena);
+    }
+
+    md_arena_allocator_destroy(arena);
+}
+
+/*
 UTEST(filter, test) {
+
     uint32_t atom_count = 8;
     float x[] = {1,2,3,4,5,6,7,8};
     float y[] = {1,1,1,1,1,1,1,1};
@@ -59,19 +269,19 @@ UTEST(filter, test) {
     float r[] = {1,2,3,4,4,4,5,1};
     float m[] = {1,2,2,2,2,4,4,4};
     uint8_t e[] = {1,8,1,8,5,8,8,8};
-    char* n[] = {"H", "O", "H", "He", "C", "N", "CA", "O"};
+    md_label n[] = {"H", "O", "H", "He", "C", "N", "CA", "O"};
     float b[] = {0,0,0,0,0,1,0,0};
     float o[] = {1,1,1,1,1,2,2,2};
     uint32_t r_idx[] = {0,0,0,1,1,1,1,1};
     uint32_t c_idx[] = {0,0,0,0,0,0,0,0};
 
     uint32_t res_count = 2;
-    char* r_name[] = {"SOL", "LYS"};
+    md_label r_name[] = {"SOL", "LYS"};
     uint32_t r_id[] = {1, 2};
     md_range r_range[] = {{0, 3}, {3, 8}};
 
     uint32_t chain_count = 1;
-    char* c_id[] = {"A"};
+    md_label c_id[] = {"A"};
     md_range c_range[] = {0,8};
 
     md_molecule mol = {0};
@@ -262,6 +472,7 @@ UTEST(filter, test) {
         EXPECT_FALSE(md_filter_apply("residue(1 ALA 8 1:8)", NULL));
     }
 }
+*/
 
 UTEST(strpool, test) {
     md_strpool pool;
@@ -323,12 +534,12 @@ UTEST(strpool, test) {
     EXPECT_EQ(pool.page.len, 1);
 
     const char filename[] = MD_UNITTEST_DATA_DIR "/atom_res_chain.txt";
-    md_file* file = md_file_open(filename, ARRAY_SIZE(filename), "rb");
+    FILE* file = md_file_open(filename, ARRAY_SIZE(filename), "rb");
     EXPECT_TRUE(file);
 
     char buf[64];
     int lines_read = 0;
-    while (fgets(buf, 64, (FILE*)file)) {
+    while (fgets(buf, 64, file)) {
         const char* atom = buf;
         int atom_len = 0;
         while (buf[atom_len] != ' ' && atom_len < 64) ++atom_len;
@@ -351,62 +562,62 @@ UTEST(strpool, test) {
 }
 
 UTEST(script, test) {
+    uint32_t atom_count = 8;
+    float x[] = {1,2,3,4,5,6,7,8};
+    float y[] = {1,1,1,1,1,1,1,1};
+    float z[] = {2,2,2,2,2,2,2,2};
+    float r[] = {1,2,3,4,4,4,5,1};
+    float m[] = {1,2,2,2,2,4,4,4};
+    uint8_t e[] = {1,8,1,8,5,8,8,8};
+    md_label n[] = {"H", "O", "H", "He", "C", "N", "CA", "O"};
+    float b[] = {0,0,0,0,0,1,0,0};
+    float o[] = {1,1,1,1,1,2,2,2};
+    uint32_t r_idx[] = {0,0,0,1,1,1,1,1};
+    uint32_t c_idx[] = {0,0,0,0,0,0,0,0};
+
+    uint32_t res_count = 2;
+    md_label r_name[] = {"SOL", "LYS"};
+    uint32_t r_id[] = {1, 2};
+    md_range r_range[] = {{0, 3}, {3, 8}};
+
+    uint32_t chain_count = 1;
+    md_label c_id[] = {"A"};
+    md_range c_arange[] = {0,8};
+    md_range c_rrange[] = {0,2};
+
+    md_molecule mol = {
+        .atom = {
+            .count = atom_count,
+            .x = x,
+            .y = y,
+            .z = z,
+            .radius = r,
+            .mass = m,
+            .element = e,
+            .name = n,
+            .bfactor = b,
+            .occupancy = o,
+            .residue_idx = r_idx,
+            .chain_idx = c_idx
+        },
+        .residue = {
+            .count = res_count,
+            .name = r_name,
+            .id = r_id,
+            .atom_range = r_range
+        },
+        .chain = {
+            .count = chain_count,
+            .id = c_id,
+            .atom_range = c_arange,
+            .residue_range = c_rrange
+        }
+    };
+
     const char script_file[] = MD_UNITTEST_DATA_DIR "/script.txt";
     str_t script_text = load_textfile(script_file, ARRAY_SIZE(script_file), default_allocator);
-    // @TODO: Don't leak here, fix a proper free function for str_t
-    struct md_script_ir* ir = md_script_compile(script_text.str, (uint32_t)script_text.len, default_allocator);
 
-    md_print(MD_LOG_TYPE_INFO, "cool");
-}
+    struct md_script_ir* ir = md_script_compile(script_text.ptr, script_text.len, &mol, default_allocator);
 
-UTEST(allocator, test) {
-    void* ptr;
-    for (int i = 0; i < 1000000; ++i) {
-        ptr = md_alloc(default_temp_allocator, KILOBYTES(1));
-    }
-}
-
-UTEST(array, test) {
-    uint64_t arr_data[] = {0, 5, 1, 2, 3, 4, 5};
-    uint64_t *arr = arr_data + 2;
-
-    EXPECT_EQ(md_array_size(arr), 5);
-    EXPECT_EQ(md_array_capacity(arr), 0);
-    EXPECT_EQ(md_array_bytes(arr), 5 * sizeof(uint64_t));
-    EXPECT_EQ(md_array_end(arr), arr + 5);
-    EXPECT_EQ(md_array_last(arr), arr + 4);
-
-    // TODO: FILL IN
-}
-
-UTEST(pool_alloc, test) {
-    md_allocator_i* pool = md_create_pool_allocator(default_allocator, sizeof(uint64_t));
-
-    uint64_t **mem = {0};
-
-    for (int j = 0; j < 1000; ++j) {
-        for (int i = 0; i < 1000; ++i) {
-            uint64_t *item = *md_array_push(mem, md_alloc(pool, sizeof(uint64_t)), default_allocator);
-            *item = i;
-        }
-
-        for (int i = 100; i < 1000; ++i) {
-            md_free(pool, mem[i], sizeof(uint64_t));
-        }
-        md_array_shrink(mem, 100);
-
-        int indices[10] = {1, 2, 5, 6, 70, 90, 18, 16, 12, 10};
-
-        for (int i = 0; i < ARRAY_SIZE(indices); ++i) {
-            int idx = indices[i];
-            md_free(pool, mem[idx], sizeof(uint64_t));
-        }
-
-        for (int i = 0; i < ARRAY_SIZE(indices); ++i) {
-            int idx = indices[i];
-            mem[idx] = md_alloc(pool, sizeof(uint64_t));
-        }
-    }
-
-    md_array_free(mem, default_allocator);
+    free_str(script_text, default_allocator);
 }

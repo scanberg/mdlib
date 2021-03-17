@@ -14,12 +14,12 @@ extern "C" {
 internal inline int32_t compute_position_field_width(str_t line) {
     // First float starts at offset 20, count
     if (line.len > 20) {
-        const char* c = line.str + 20;
-        const char* end = line.str + line.len;
+        const char* c = line.ptr + 20;
+        const char* end = line.ptr + line.len;
         while (c != end && *c != '\n' && *c == ' ') ++c;
         while (c != end && *c != '\n' && *c != ' ') ++c;
         if (c != end) {
-            return (int32_t)(c - (line.str + 20));
+            return (int32_t)(c - (line.ptr + 20));
         }
     }
     return 0;
@@ -42,7 +42,7 @@ md_error md_parse_gro(const md_parse_gro_desc* desc) {
         err_log = &desc->optional.context->error_log;
     }
 
-    if (!desc->str) {
+    if (!desc->ptr) {
         log_error(err_log, MD_LOG_SEVERITY_ERROR, "Input string was NULL");
         return MD_PARSE_ERROR_NULL_PARAMETER;
     }
@@ -52,19 +52,19 @@ md_error md_parse_gro(const md_parse_gro_desc* desc) {
     }
     memset(mol, 0, sizeof(*mol));
 
-    // Use str as our string stream and modify it as we parse
-    str_t str = {desc->str, desc->str + desc->str_len};
+    // Use ptr as our string stream and modify it as we parse
+    str_t ptr = {desc->ptr, desc->ptr + desc->str_len};
     str_t line;
     str_t header;
     str_t atom_count_str;
     int pos_width = 0;
 
-    if (!extract_line(&header, &str)) {           // header
+    if (!extract_line(&header, &ptr)) {           // header
         log_error(err_log, MD_LOG_SEVERITY_ERROR, "Could not read header.");
         return MD_PARSE_ERROR_MALFORMED_INPUT;
     }
 
-    if (!extract_line(&atom_count_str, &str)) {    // num atoms
+    if (!extract_line(&atom_count_str, &ptr)) {    // num atoms
         log_error(err_log, MD_LOG_SEVERITY_ERROR, "Could not read number of atoms.");
         return MD_PARSE_ERROR_MALFORMED_INPUT;
     }
@@ -75,7 +75,7 @@ md_error md_parse_gro(const md_parse_gro_desc* desc) {
         return false;
     }
 
-    if (peek_line(&line, &str)) {
+    if (peek_line(&line, &ptr)) {
         pos_width = compute_position_field_width(line);
     }
 
@@ -94,7 +94,7 @@ md_error md_parse_gro(const md_parse_gro_desc* desc) {
     uint32_t res_count = 0;
     uint32_t cur_res_id = -1;
     for (int i = 0; i < atom_count; ++i) {
-        if (!extract_line(&line, &str)) {
+        if (!extract_line(&line, &ptr)) {
             log_error(err_log, MD_LOG_SEVERITY_ERROR, "Failed to extract line, too few lines for the number of atoms specified");
             return MD_PARSE_ERROR_MALFORMED_INPUT;
         }

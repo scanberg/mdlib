@@ -3,15 +3,16 @@
 #pragma warning( disable : 6011 26451 )
 #endif
 
-#include "md_filter.h"
-#include "md_log.h"
+#include <md_filter.h>
+#include <md_log.h>
 #include <md_molecule.h>
+#include <md_allocator.h>
 
 #include <string.h>
 #include <stdio.h>
 
 #include "core/intrinsics.h"
-#include "core/arena_alloc.h"
+#include "core/arena_allocator.h"
 #include "core/bitop.h"
 #include "core/common.h"
 
@@ -50,7 +51,7 @@ enum {
     TOKEN_TYPE_OF,
     TOKEN_TYPE_IN,
     TOKEN_TYPE_NUM,
-    TOKEN_TYPE_STR,
+    TOKEN_TYPE_STRING,
     TOKEN_TYPE_END
 };
 
@@ -171,7 +172,7 @@ struct eval_context_t {
 
 struct ast_node_t {
     node_type_t  type;
-    value_type_t return_type;
+    value_type_t base_type;
     str_slice_t  str;
     union {
         value_t      _value;
@@ -192,7 +193,7 @@ struct lexer_t {
 };
 
 struct parse_context_t {
-    mem_arena_t*    arena;
+    md_allocator_i* arena;
     const char*     expr_str;
     uint32_t        expr_len;
     lexer_t*        lexer;
@@ -237,6 +238,7 @@ internal inline double parse_float(const char* str, uint32_t len) {
         val = val * 10 + (*c - '0');
         ++c;
     }
+    ASSERT(*c == '.');
     ++c; // skip '.'
     const uint32_t count = (uint32_t)(end - c);
     while (c < end) {
@@ -436,7 +438,7 @@ static token_t get_next_token_from_buffer(lexer_t* lexer) {
             } else {
                 while (buf[i] && is_alpha(buf[i]) && is_digit(buf[i])) ++i;
                 t.str.length = i - t.str.offset;
-                t.type = TOKEN_TYPE_STR;
+                t.type = TOKEN_TYPE_STRING;
             }
             break;
         }
@@ -477,7 +479,7 @@ static bool require_token_type(lexer_t* lexer, token_type_t type, token_t* tok_p
 }
 
 static ast_node_t* parser_allocate_node(parse_context_t* s, node_type_t type) {
-    ast_node_t* node = (ast_node_t*)arena_alloc(s->arena, sizeof(ast_node_t));
+    ast_node_t* node = (ast_node_t*)md_alloc(s->arena, sizeof(ast_node_t));
     if (!node) {
         log_error("Out of memory");
         return NULL;
@@ -556,7 +558,7 @@ static bool convert_node(ast_node_t* node, value_type_t dst_type) {
     }
 finish_up:
     node->type = dst_type;
-    node->return_type = dst_type;
+    node->base_type = dst_type;
     return true;
 }
 
@@ -577,12 +579,12 @@ static void fix_precedence(ast_node_t** node) {
     }
 }
 
-static void* encode_args(mem_arena_t* arena, uint32_t arg_count, ast_node_t** arg_nodes) {
+static void* encode_args(md_allocator_i* arena, uint32_t arg_count, ast_node_t** arg_nodes) {
     if (arg_count == 1) {
         // No need to allocate and encode an array of relative pointers to the nodes, just encode the one node
         return arg_nodes[0];
     }
-    int16_t* mem = arena_alloc(arena, arg_count * sizeof(int16_t));
+    int16_t* mem = md_alloc(arena, arg_count * sizeof(int16_t));
     for (uint32_t i = 0; i < arg_count; ++i) {
         enc_rel_ptr(&mem[i], arg_nodes[i]);
     }
@@ -650,7 +652,7 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
         ident_t ident = ident_table[ident_idx];
         ast_node_t* node = parser_allocate_node(ctx, ident.type);
         if (!node) return NULL;
-        node->return_type = VALUE_TYPE_BOOL;
+        node->base_type = VALUE_TYPE_BOOL;
         node->_func.ident = (uint16_t)ident_idx;
         return node;
     }
@@ -658,7 +660,7 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
         // One arg is a special case since all args are implicitly 'OR'-ed
         ast_node_t* node = NULL;
         for (uint32_t i = 0; i < node_count; ++i) {
-            uint32_t ident_idx = match_ident(ctx->expr_str + ident_str.offset, ident_str.length, 1, &nodes[i]->return_type);
+            uint32_t ident_idx = match_ident(ctx->expr_str + ident_str.offset, ident_str.length, 1, &nodes[i]->base_type);
             if (!ident_idx) {
                 log_error_with_context("Could not match identifier", ctx->expr_str, ctx->expr_len, ident_str);
                 return NULL;
@@ -666,14 +668,14 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
 
             ast_node_t* func_node = parser_allocate_node(ctx, NODE_TYPE_FUNC);
             if (!func_node) return NULL;
-            func_node->return_type = VALUE_TYPE_BOOL;
+            func_node->base_type = VALUE_TYPE_BOOL;
             func_node->_func.ident = (uint16_t)ident_idx;
             enc_rel_ptr(&func_node->_func.args, encode_args(ctx->arena, 1, &nodes[i]));
 
             if (node) {
                 ast_node_t* or_node = parser_allocate_node(ctx, NODE_TYPE_OR);
                 if (!or_node) return NULL;
-                or_node->return_type = VALUE_TYPE_BOOL;
+                or_node->base_type = VALUE_TYPE_BOOL;
                 enc_rel_ptr(&or_node->_child[0], node);
                 enc_rel_ptr(&or_node->_child[1], func_node);
                 node = or_node;
@@ -690,7 +692,7 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
                 log_error_with_context("Only one argument is allowed per slot in a multi-argument function call", ctx->expr_str, ctx->expr_len, ident_str);
                 return NULL;
             }
-            arg_types[i] = nodes[i]->return_type;
+            arg_types[i] = nodes[i]->base_type;
         }
         uint32_t ident_idx = match_ident(ctx->expr_str + ident_str.offset, ident_str.length, arg_count, arg_types);
         if (!ident_idx) {
@@ -700,7 +702,7 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
 
         ast_node_t* node = parser_allocate_node(ctx, NODE_TYPE_FUNC);
         if (!node) return NULL;
-        node->return_type = VALUE_TYPE_BOOL;
+        node->base_type = VALUE_TYPE_BOOL;
         node->_func.ident = (uint16_t)ident_idx;
         enc_rel_ptr(&node->_func.args, encode_args(ctx->arena, arg_count, nodes));
         return node;
@@ -721,11 +723,11 @@ static ast_node_t* parse_number(parse_context_t* ctx, lexer_t* lexer) {
                 next_token(lexer); // [0-9]
                 str.length += next.str.length;
             }
-            node->return_type = VALUE_TYPE_FLT;
+            node->base_type = VALUE_TYPE_FLT;
             node->_value.type = VALUE_TYPE_FLT;
             node->_value._flt = parse_float(ctx->expr_str + str.offset, str.length);
         } else {
-            node->return_type = VALUE_TYPE_INT;
+            node->base_type = VALUE_TYPE_INT;
             node->_value.type = VALUE_TYPE_INT;
             node->_value._int = parse_int(ctx->expr_str + str.offset, str.length);
         }
@@ -773,7 +775,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             ast_node_t* ref_node = parser_allocate_node(ctx, NODE_TYPE_REF);
             if (!ref_node) return NULL;
 
-            ref_node->return_type = VALUE_TYPE_BOOL;
+            ref_node->base_type = VALUE_TYPE_BOOL;
             enc_rel_ptr(&ref_node->_child[0], str_node);
             ctx->cur_node = ref_node;
             break;
@@ -788,24 +790,24 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
         case TOKEN_TYPE_OR:
         {
             token_t t = next_token(lexer); // and / or
-            node_type_t node_type = token.type == TOKEN_TYPE_AND ? NODE_TYPE_AND : NODE_TYPE_OR;
-            ast_node_t* node = parser_allocate_node(ctx, node_type);
+            node_type_t type = token.type == TOKEN_TYPE_AND ? NODE_TYPE_AND : NODE_TYPE_OR;
+            ast_node_t* node = parser_allocate_node(ctx, type);
             if (!node) return NULL;
             
             ast_node_t* prv_node = ctx->cur_node;
             ctx->cur_node = node;
             ast_node_t* arg_node[2] = {prv_node, parse_expression(ctx, lexer)};
 
-            if (!arg_node[0] || arg_node[0]->return_type != VALUE_TYPE_BOOL) {
+            if (!arg_node[0] || arg_node[0]->base_type != VALUE_TYPE_BOOL) {
                 log_error_with_context("Left hand side expression for logic operation did not evaluate to bool", ctx->expr_str, ctx->expr_len, t.str);
                 return NULL;
             }
-            if (!arg_node[1] || arg_node[1]->return_type != VALUE_TYPE_BOOL) {
+            if (!arg_node[1] || arg_node[1]->base_type != VALUE_TYPE_BOOL) {
                 log_error_with_context("Right hand side expression for logic operation did not evaluate to bool", ctx->expr_str, ctx->expr_len, t.str);
                 return NULL;
             }
 
-            node->return_type = VALUE_TYPE_BOOL;
+            node->base_type = VALUE_TYPE_BOOL;
             enc_rel_ptr(&node->_child[0], arg_node[0]);
             enc_rel_ptr(&node->_child[1], arg_node[1]);
             fix_precedence(&node);
@@ -819,13 +821,13 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             if (!node) return NULL;
 
             node->type = NODE_TYPE_NOT;
-            node->return_type = VALUE_TYPE_BOOL;
+            node->base_type = VALUE_TYPE_BOOL;
 
             token_t tok = peek_token(lexer);
             ast_node_t* arg_node = parse_expression(ctx, lexer);
             ctx->cur_node = node;
 
-            if (!arg_node || arg_node->return_type != VALUE_TYPE_BOOL) {
+            if (!arg_node || arg_node->base_type != VALUE_TYPE_BOOL) {
                 log_error_with_context("Expression following 'not' did not evaluate to bool", ctx->expr_str, ctx->expr_len, t.str);
                 return NULL;
             }
@@ -889,7 +891,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
 
             if (prev_node->_value.type == VALUE_TYPE_FLT) {
                 ASSERT(next_node->_value.type == VALUE_TYPE_FLT);
-                node->return_type = VALUE_TYPE_FRNG;
+                node->base_type = VALUE_TYPE_FRNG;
                 node->_value.type = VALUE_TYPE_FRNG;
                 node->_value._frange.min = prev_node->_value._flt;
                 node->_value._frange.max = next_node->_value._flt;
@@ -897,7 +899,7 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             else {
                 ASSERT(prev_node->_value.type == VALUE_TYPE_INT);
                 ASSERT(next_node->_value.type == VALUE_TYPE_INT);
-                node->return_type = VALUE_TYPE_IRNG;
+                node->base_type = VALUE_TYPE_IRNG;
                 node->_value.type = VALUE_TYPE_IRNG;
                 node->_value._irange.min = prev_node->_value._int;
                 node->_value._irange.max = next_node->_value._int;
@@ -912,13 +914,13 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             if (peek_token(lexer).type != ':') return node;
             break;
         }
-        case TOKEN_TYPE_STR:
+        case TOKEN_TYPE_STRING:
         {
             token = next_token(lexer);
             ast_node_t* node = parser_allocate_node(ctx, NODE_TYPE_VALUE);
             if (!node) return NULL;
 
-            node->return_type = VALUE_TYPE_STR;
+            node->base_type = VALUE_TYPE_STR;
             node->_value.type = VALUE_TYPE_STR;
             node->_value._str = token.str;
             node->str = token.str;
@@ -993,7 +995,7 @@ static void print_label(FILE* file, const ast_node_t* node, const char* expr_str
         fprintf(file, "%s", node_type_to_str(node->type));
         break;
     }
-    fprintf(file, " (%s)", value_type_to_str(node->return_type));
+    fprintf(file, " (%s)", value_type_to_str(node->base_type));
 }
 
 static void print_node(const ast_node_t* node, FILE* file, int depth, const char* expr_str) {
@@ -1260,6 +1262,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
         }
         char buf[256] = {0};
         strncpy(buf, ctx->expr_str + str.offset, str.length);
+        buf[255] = '\0';
 
         uint32_t idx = -1;
         for (uint32_t i = 0; i < ctx->filt_ctx->sel_count; ++i) {
@@ -1349,12 +1352,10 @@ bool md_filter_apply(const char* expression, const md_filter_context* context) {
     lexer.buff = expr_str;
     lexer.buff_len = expr_len;
 
-    char ast_mem[1 << 12]; // enough for 256 nodes
-    mem_arena_t ast_arena = {0};
-    arena_init(&ast_arena, ast_mem, ARRAY_SIZE(ast_mem));
+    md_allocator_i* arena = md_arena_allocator_create(default_allocator, 4096);
 
     parse_context_t parse_ctx = {0};
-    parse_ctx.arena = &ast_arena;
+    parse_ctx.arena = arena;
     parse_ctx.expr_str = expr_str;
     parse_ctx.expr_len = expr_len;
     parse_ctx.lexer = &lexer;

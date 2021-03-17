@@ -38,10 +38,9 @@ internal void* ring_alloc_internal(struct md_allocator_o *inst, void* ptr, uint6
     (void)old_size;
     (void)file;
     (void)line;
-    if (new_size > sizeof(ring.mem)) {
-        return NULL;
-    }
-    else if (new_size > (sizeof(ring.mem) - ring.curr)) {
+    ASSERT(new_size < sizeof(ring.mem));
+    
+    if (ring.curr + new_size > sizeof(ring.mem)) {
         ring.curr = new_size;
         ring.prev = 0;
         return &ring.mem[0];

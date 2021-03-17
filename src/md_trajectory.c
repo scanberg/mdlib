@@ -9,7 +9,7 @@
 #define ASSERT assert
 #endif
 
-#include <core/file.h>
+#include <core/file.inl>
 #include <ext/xtc/xdrfile_xtc.h>
 #include <ext/dcd/readdcd.h>
 

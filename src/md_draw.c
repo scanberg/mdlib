@@ -9,7 +9,7 @@
 #include "ext/gl3w/gl3w.h"
 #include "core/vec_math.h"
 #include "core/common.h"
-#include "core/file.h"
+#include "core/file.inl"
 
 #include <stdbool.h>
 #include <string.h>     // memset, memcpy
@@ -304,7 +304,7 @@ internal md_draw_error compile_shader_from_source(GLuint shader, const char* sha
 }
 
 internal md_draw_error compile_shader_from_file(GLuint shader, const char* filename, const char* defines) {
-    md_file* file = md_file_open(filename, (uint32_t)strlen(filename), "rb");
+    FILE* file = md_file_open(filename, (uint32_t)strlen(filename), "rb");
     if (file) {
         char buffer[MD_SHADER_BUF_SIZE] = {0};
         uint64_t file_size = md_file_size(file);

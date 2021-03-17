@@ -1,6 +1,8 @@
 #ifndef __MD_STRING_BUILDER_H__
 #define __MD_STRING_BUILDER_H__
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,7 +13,8 @@ typedef struct md_string_builder_o md_string_builder_o;
 typedef struct md_string_builder_i {
     md_string_builder_o* inst;
 
-    void (*append)(const char* str, uint32_t len);
+    void (*append)(const char* str, uint64_t len);
+    void (*print)(const char* format, ...);
 
     // Resets the internal buffers
     void (*reset)();

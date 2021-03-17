@@ -1,46 +1,128 @@
+# This is a declarative language, where the logic of computation is expressed without an explicit control flow.
+# We should be able to express every operation of interest without explicit control flow.
 # This syntax is inspired by Python and should hopefully be familiar to a broad audience
+
 # This is a comment
 
-rng1 = 0:10; 	# Explicitly stored range 0-9
-rng2 = 0:10:2; 	# 0 2 4 6 8 
+# Expressions
+# All text which is not a comment will be interpered as an expression (where we assign variables) and each expression is terminated by a semi-colon ';'.
 
-sel1 = resname("PFT") and not c_alpha; # This is also a comment until end of line
-sel2 = x < 10.0;		# Select all atoms with x coordinates less than or equal to 10.0, equal to function call x([:10.0]) returns bitfield
-sel3 = y in 5.0:10.0; 	# Select all atoms with y coordinates in range -infinity to 10.0 returns bitfield
-sel4 = z[10.0:20.0];	# Using a range on a built in property, returns bitfield
+# Numbers
+number = sqrt(2.0) * 5 / (3 + 2 - 15.0) + pow(1.0, 2); # This is a standard expression which is constant
+
+fool1 = {1.0, 2.0, 3.0, 4.0} + {2.0, 3.0, 4.0, 5.0};
+fool2 = resname({"SOL", "GLY"});
+
+cool1 = not element("C") in resname("SOL");
+cool2 = (not element("C")) in resname("SOL");
+cool3 = not (element("C") in resname("SOL"));
+
+
+arr0 = {vec4(1,0,0,0), vec4(1,0,0,0), vec4(1,0,0,0)};
+
+arr1 = {1, 2, 4, 7:9}; # All integers should be promoted to irange thanks to last arg
+arr2 = {1, 2, 3, 4.0}; # All integers should be promoted to floats thanks to last arg
+
+# Ranges
+# Ranges represents a continous span of values.
+# ranges are open ended and written like this 'min:max' where min is the minumum value, max is the maximum value
+# Actually both min and max is optional and can be left out, if both are left out, this represents all values from -infinity to +infinity
+
+rng1 = 0:10.5;	# 0 to 10.5
+rng2 = 5:10;	# 5 to 10
+rng3 = :10;		# -INF to 10
+rng4 = 9:; 		# 9 to INF
+rng5 = :;  		# -INF to INF. Should be Irange since that is implicitly convertible to Frange, but not the other way around
+
+# Strings
+# Strings are expressed using quotation marks "" or '', as long as the marks matches.
+str1 = "This is a valid string";
+str2 = 'This is also a valid string';
+#str3 = "This is not a valid string';
+#str5 = "This is not a valid string 
+#since it spans multiple lines";
+
+# Variables
+# Variables are defined by giving them a unique identifier and assigning them (using '=') a value.
+# The type of the variable is determined by the expression
+i_am_a_variable = 10;
+v1 = 10.0; 		# v1 is a number!
+v2 = "Text!"; 	# v2 is a string!
+v3 = 0.0:10.0;	# v3 is a range!
+v4 = v1;		# v4 is also a number, copied from v1.
+
+
+sel1 = resname("GLY") and not label("CA"); # resname("PFT") will return a bitrange
+#sel2 := x < 10.0;		# Select all atoms with x coordinates less than or equal to 10.0, equal to function call x([:10.0]) returns bitfield
+#sel3 = y in :10.0; 		# Select all atoms with y coordinates in range -infinity to 10.0 returns bitfield
+
+# sel4 = z[10.0:20.0];	# Using a range on a built in property, returns bitfield
+# This notation is a bit wierd, and I don't think we should allow it.
+# We should reserve brackets [] for more meaningful operations such as array subindexing and array like things.
+
 sel5 = residue(:); 		# Returns array of ranges for each residue in the dataset
-sel6 = residue[1:7] or residue <= 5;
 
-prop1 = distance_com(sel2, sel3);
-prop2 = distance_min(sel2, sel3);
-prop3 = distance_pair(sel2, sel3);
+prop1 = distance_com(sel2, sel3); # Same as distance()
+prop2 = distance_min(sel2, sel3); # l
+prop3 = distance_max(sel2, sel3); # 
+prop3 = distance_pair(sel2, sel3); # Pairwise distance of everything
 
 sel = resname("VAL");
 
-sel2: []float;
+bla1 = angle(1, 2, 3) in resname("ALA")[1 2 5:7]; # Returns float[5]
+# resname("ALA") returns bitrange[N] on which we can apply the operation localy: To compute the angle between local atom indices 1, 2, 3
 
-sel2
+v1 = vec4(0, 1, 13, 5);
 
-"this is not a valid string
-";
+resname({"ALA", "GLY", "LYS"}); # Generate an array of strings from the arguments
+residue({1,2,5,4:9}); 		# Generate an array of indices from the arguments
 
-bla = angle(resname("ALA"), 1, 2, 3);
+# Select all atoms within 2.0 Ångström of Carbon or Iron atoms
+sel6 = within(2.0, element('C' 'Fe'));
+
+# Compute a plane for each resname called BLA -> float[4][N] where N is number of residues called BLA
+# Each plane is represented as a float[4] where the components represent (A,B,C,D) in the equation for a plane Ax + By + Cz + D = 0
+planes = plane(resname("BLA"));
+asdas = plane(1:7) in resname("BLA");
 
 str1 = "this is a string";
 str2 = 'this is also a string';
 
-d1 = dihedral(resname("PFT"), 22, 20,  1,  2);
-d2 = dihedral(resname("PFT"), 2,   3,  6, 10);
-d3 = dihedral(resname("PFT"), 10,  9, 27, 29);
-d4 = dihedral(resname("PFT"), 29, 31, 33, 35);
+dist1 = distance(resname("PFT"), vec3(0,0,0)); 	# Distance between com of each residue "PFT" and global coordinate (0,0,0)
+dist2 = distance(10, 11) in resname("PFT"); 	# Distance between local atoms 10 and 11 in each residue named "PFT"
 
-rdf1 = rdf(resname("PFT"));
+#dist3 = distance(atom(1:7) in resname("PFT"), vec3(0,0,0)); # Distance between com of local atoms 1:7 in each residue named "PFT" and global coordinate (0,0,0)
 
-PI_2 = PI / 2.0; # Define a constant
+# There is a conceptual difference between these two operations
+sel_a = element('C') and resname("PFT"); # bitfield AND bitrange returns bitfield, we loose the 'context' of resname("PFT")
+sel_b = element('C') in resname("PFT");  # bitfield IN  bitrange returns bitrange, we maintain the 'context' of resname("PFT"), we only add a filter to it
+
+# Operations inside a local context (all residues named PFT)
+# Note that these operations return float[N] where N is the count of residues named PFT.
+d1 = dihedral(22, 20,  1,  2) in resname("PFT");
+d2 = dihedral(2,   3,  6, 10) in resname("PFT");
+d3 = dihedral(10,  9, 27, 29) in resname("PFT");
+d4 = dihedral(29, 31, 33, 35) in resname("PFT");
+
+# Define a constant
+PI_2 = PI / 2.0;
 
 # Compute a property as an expression of other properties
-# This has a dependency on d1, d2, d3 and d4
-planarity =	abs((abs(d1) - PI_2)) / PI_2 +
-			abs((abs(d2) - PI_2)) / PI_2 +
-			abs((abs(d3) - PI_2)) / PI_2 +
-			abs((abs(d4) - PI_2)) / PI_2;
+# This has a dependency on d1, d2, d3 and d4, the result will be of same type as d1, d2, d3 and d4: float[N]
+#planarity =    abs((abs(d1) - PI_2)) / PI_2 +
+#               abs((abs(d2) - PI_2)) / PI_2 +
+#               abs((abs(d3) - PI_2)) / PI_2 +
+#               abs((abs(d4) - PI_2)) / PI_2;
+
+# radial distribution function from each carbon atom found in residues "PFT" with a distance to all atoms with element('C'), cutoff distance is 20 Ångström
+rdf1 = rdf(resname("PFT") and element('C'), element('O'), 20.0); # RETURNS distribution[N] where N is the number of carbon atoms within all residues named PFT
+
+# radial distribution function from each COM computed from carbons within each residue "PFT" to all atoms with element('C'), cutoff distance is 20 Ångström 
+rdf2 = rdf(element('C') in resname("PFT"), element('O'), 20.0); # RETURNS distribution[M] where M is the number of residues named PFT
+
+# Spatial distribution function: This is the operation we did in the article expressed in this syntax
+# Match all chains
+sdf1 = sdf(chain(:), resname("PFT"), 30.0);
+
+# Should replicate the Paranitroaniline operation used in the paper.
+sdf2 = sdf(resname("PARA"), element("O"), 20.0);

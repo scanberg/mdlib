@@ -14,13 +14,13 @@ typedef uint32_t                    md_chain_idx;
 typedef uint32_t                    md_secondary_structure;
 typedef uint8_t                     md_flag;
 typedef uint8_t                     md_element;
-typedef struct md_label           md_label;
-typedef struct md_range           md_range;
-typedef struct md_bond            md_bond;
-typedef struct md_bond_entry      md_bond_entry;
-typedef struct md_backbone_atoms  md_backbone_atoms;
-typedef struct md_molecule        md_molecule;
-typedef struct md_model           md_model;
+typedef const char*                 md_label;
+typedef struct md_range             md_range;
+typedef struct md_bond              md_bond;
+typedef struct md_bond_entry        md_bond_entry;
+typedef struct md_backbone_atoms    md_backbone_atoms;
+typedef struct md_molecule          md_molecule;
+typedef struct md_model             md_model;
 
 // We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
 enum {
@@ -86,24 +86,24 @@ struct md_backbone_atoms {
 
 struct md_molecule {
     struct {
-        md_size         count;
-        float*            x;
-        float*            y;
-        float*            z;
-        float*            radius;
-        float*            mass;
+        uint64_t        count;
+        float*          x;
+        float*          y;
+        float*          z;
+        float*          radius;
+        float*          mass;
         md_element*     element;
-        const char**      name;
-        float*            bfactor;
-        float*            occupancy;
-        md_flag*        flags;       // Auxillary bit buffer for flagging individual atoms, only 8-bit
+        md_label*       name;
+        float*          bfactor;
+        float*          occupancy;
+        md_flag*        flags;       // Auxillary bit buffer for flagging individual atoms
         md_residue_idx* residue_idx;
         md_chain_idx*   chain_idx;
     } atom;
 
     struct {
-        md_size                 count;
-        const char**              name;
+        uint64_t                count;
+        md_label*               name;
         md_residue_id*          id;
         md_range*               atom_range;
         md_backbone_atoms*      backbone_atoms;         // Only amino acids and nucleic acids
@@ -111,23 +111,31 @@ struct md_molecule {
     } residue;
 
     struct {
-        md_size    count;
-        const char** id;
-        md_range*  residue_range;
-        md_range*  atom_range;
+        uint64_t        count;
+        md_label*       id;
+        md_range*       residue_range;
+        md_range*       atom_range;
     } chain;
 
     struct {
         md_size  count;
         md_bond* bond;
     } bond;
+
+    struct {
+        // This is just to 
+        struct md_allocator_i* alloc;
+        void*    ptr;
+        uint64_t size;
+    } mem;
 };
 
 struct md_model {
     md_molecule molecule;
     struct {
-        uint32_t count;
-        float (*transform)[4][4];
+        uint64_t        count;
+        md_label*       name;
+        float           (*transform)[4][4];
     } instance;
 };
 

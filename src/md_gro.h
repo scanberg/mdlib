@@ -29,7 +29,7 @@ struct md_parse_result {
 };
 
 // Parse a text-blob as GRO
-struct md_parse_result md_parse_gro(const char* str, uint32_t len, struct md_allocator_i*);
+struct md_parse_result md_parse_gro(const char* str_ptr, uint64_t str_len, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

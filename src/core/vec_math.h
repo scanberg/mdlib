@@ -173,6 +173,16 @@ inline md_mat4 md_mat4_mul(const md_mat4 A, const md_mat4 B) {
     return C;
 }
 
+inline md_vec4 md_mat4_mul_vec4(const md_mat4 M, const md_vec4 V) {
+    md_vec4 R;
+#if VEC_MATH_USE_SSE_H
+    R.mm128 = md_linear_combine_sse(V.mm128, M);
+#else
+    ASSERT(false);
+#endif
+    return R;
+}
+
 inline md_mat4 md_mat4_mul_f(const md_mat4 M, float s) {
     md_mat4 C;
 #if VEC_MATH_USE_SSE_H
@@ -205,12 +215,7 @@ inline md_mat4 md_mat4_mul_f(const md_mat4 M, float s) {
 }
 
 inline md_mat4 md_mat4_ident() {
-    md_mat4 M = {0};
-    M.elem[0][0] = 1.0f;
-    M.elem[1][1] = 1.0f;
-    M.elem[2][2] = 1.0f;
-    M.elem[3][3] = 1.0f;
-    return M;
+    return (md_mat4) {.col[0] = {1,0,0,0}, .col[1] = {0,1,0,0}, .col[2] = {0,0,1,0}, .col[3] = {0,0,0,1}};
 }
 
 inline md_mat4 md_mat4_inverse(const md_mat4 M) {

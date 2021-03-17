@@ -15,7 +15,7 @@ typedef struct page_t {
 
 typedef struct pool_t {
     uint64_t magic_number;
-    uint32_t slot_size;
+    uint64_t slot_size;
     page_t* pages;
     md_allocator_i* alloc;
 } pool_t;
@@ -24,7 +24,7 @@ static inline uint64_t pool_page_size(const pool_t* pool) {
     return pool->slot_size * PAGE_SLOT_CAPACITY;
 }
 
-static inline void* page_slot_ptr(const page_t* page, uint32_t idx, uint32_t slot_size) {
+static inline void* page_slot_ptr(const page_t* page, uint64_t idx, uint64_t slot_size) {
     return (char*)page->mem + idx * slot_size;
 }
 
@@ -57,11 +57,11 @@ static void* pool_new_slot(pool_t* pool, uint64_t size) {
     return page_slot_ptr(page, idx, pool->slot_size);
 }
 
-static void* pool_free_slot(pool_t* pool, void* mem) {
+static void pool_free_slot(pool_t* pool, void* mem) {
     const uint64_t page_size = pool_page_size(pool);
     for (uint64_t i = 0; i < md_array_size(pool->pages); ++i) {
         const char* base = (const char*)pool->pages[i].mem;
-        if (base <= mem && mem < (base + page_size)) {
+        if (base <= (char*)mem && (char*)mem < (base + page_size)) {
             uint64_t idx = ((uint64_t)mem - (uint64_t)pool->pages[i].mem) / pool->slot_size;
             pool->pages[i].free_slots |= (1ULL << idx);
             return;
@@ -78,7 +78,7 @@ static void pool_init(pool_t* pool, md_allocator_i* alloc, uint32_t slot_size) {
     pool_new_page(pool);
 }
 
-static void* pool_free(pool_t* pool) {
+static void pool_free(pool_t* pool) {
     const uint64_t page_size = pool_page_size(pool);
     for (uint64_t i = 0; i < md_array_size(pool->pages); ++i) {
         md_free(pool->alloc, pool->pages[i].mem, page_size);
@@ -87,22 +87,29 @@ static void* pool_free(pool_t* pool) {
 }
 
 static void* pool_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+    (void)file;
+    (void)line;
+    (void)old_size;
+
     pool_t* pool = (pool_t*)inst;
     ASSERT(pool && pool->magic_number == MAGIC_NUMBER);
     if (new_size == 0) {
         pool_free_slot(pool, ptr);
         return NULL;
     }
+
+    ASSERT(!ptr); // WE DO NOT DEAL PROPERLY WITH REALLOCATIONS, LET IT BE KNOWN!
+
     return pool_new_slot(pool, new_size);
 }
 
-struct md_allocator_i* md_create_pool_allocator(struct md_allocator_i* backing, uint32_t slot_size) {
+struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, uint32_t slot_size) {
     uint64_t mem_size = sizeof(md_allocator_i) + sizeof(pool_t);
-    char* mem = md_alloc(backing, mem_size);
+    void* mem = md_alloc(backing, mem_size);
     memset(mem, 0, mem_size);
 
     md_allocator_i* pool_alloc = mem;
-    md_allocator_o* inst = mem + sizeof(md_allocator_i);
+    md_allocator_o* inst = (md_allocator_o*)((char*)mem + sizeof(md_allocator_i));
 
     pool_t* pool = (pool_t*)inst;
     pool_init(pool, backing, slot_size);
@@ -113,7 +120,7 @@ struct md_allocator_i* md_create_pool_allocator(struct md_allocator_i* backing, 
     return pool_alloc;
 }
 
-void md_destroy_pool_allocator(struct md_allocator_i* a) {
+void md_pool_allocator_destroy(struct md_allocator_i* a) {
     pool_t* pool = (pool_t*)a->inst;
     ASSERT(pool->magic_number == MAGIC_NUMBER); // Make sure this allocator is a pool allocator
     pool_free(pool);

@@ -1,31 +1,26 @@
 #include "bitop.h"
 #include "intrinsics.h"
+#include "common.h"
+#include "compiler.h"
+#include <string.h> // memset
 
-#if _MSC_VER && !__INTEL_COMPILER
+#if MD_COMPILER_MSVC
 #define _CRT_SECURE_NO_WARNINGS
 #pragma warning( disable : 6011 )
 #endif
 
-#include <string.h> // memset
-
-#ifndef ASSERT
-#include <assert.h>
-#define ASSERT assert
-#endif
-
 #define BITS_PER_BLOCK (sizeof(uint64_t) * 8)
-
 #define MASKED_OP(mask, op, a, b) ((mask) & ((a) op (b)))
 
-inline uint64_t fast_mod(uint64_t x, uint64_t y) {
+static inline uint64_t fast_mod(uint64_t x, uint64_t y) {
     return x & (y - 1);
 }
 
-inline uint64_t bit_pattern(uint64_t bit_idx) {
+static inline uint64_t bit_pattern(uint64_t bit_idx) {
     return 1LLU << (bit_idx & 63);
 }
 
-inline uint64_t block_idx(uint64_t bit_idx) {
+static inline uint64_t block_idx(uint64_t bit_idx) {
     return bit_idx / BITS_PER_BLOCK;
 }
 

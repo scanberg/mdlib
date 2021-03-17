@@ -855,6 +855,8 @@ UTEST_WEAK int utest_main(int argc, const char *const argv[]) {
     utest_state.tests[index].func(&result, utest_state.tests[index].index);
     ns = utest_ns() - ns;
 
+    double ms = ns / 1000000.0;
+
     if (utest_state.output) {
       fprintf(utest_state.output, "</testcase>\n");
     }
@@ -866,11 +868,11 @@ UTEST_WEAK int utest_main(int argc, const char *const argv[]) {
                             sizeof(size_t) * failed_testcases_length));
       failed_testcases[failed_testcase_index] = index;
       failed++;
-      printf("%s[  FAILED  ]%s %s (%" UTEST_PRId64 "ns)\n", colours[RED],
-             colours[RESET], utest_state.tests[index].name, ns);
+      printf("%s[  FAILED  ]%s %s (%" UTEST_PRId64 "ns) (%fms)\n", colours[RED],
+             colours[RESET], utest_state.tests[index].name, ns, ms);
     } else {
-      printf("%s[       OK ]%s %s (%" UTEST_PRId64 "ns)\n", colours[GREEN],
-             colours[RESET], utest_state.tests[index].name, ns);
+      printf("%s[       OK ]%s %s (%" UTEST_PRId64 "ns) (%fms)\n", colours[GREEN],
+             colours[RESET], utest_state.tests[index].name, ns, ms);
     }
   }
 

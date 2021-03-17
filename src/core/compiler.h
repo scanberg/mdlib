@@ -6,6 +6,17 @@
 #define MD_COMPILER_MSVC    0
 #define MD_COMPILER_UNKNOWN 0
 
+#define MD_DEBUG            0
+#define MD_RELEASE          0
+
+#ifdef NDEBUG
+#undef MD_RELEASE
+#define MD_RELEASE 1
+#else
+#undef MD_DEBUG
+#define MD_DEBUG 1
+#endif // NDEBUG
+
 #if defined(_MSC_VER)
 #undef  MD_COMPILER_MSVC
 #define MD_COMPILER_MSVC 1

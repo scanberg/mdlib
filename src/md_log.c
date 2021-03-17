@@ -44,7 +44,7 @@ static void _log(struct md_logger_o* inst, enum md_log_type log_type, const char
     tstruct = *localtime(&now);
 
     char time_buf[64];
-    uint64_t count = strftime(time_buf, ARRAY_SIZE(time_buf), "[%T] ", &tstruct);
+    uint64_t count = strftime(time_buf, ARRAY_SIZE(time_buf), "[%T]", &tstruct);
     ASSERT(count <= ARRAY_SIZE(time_buf)); // We should never have to trunkate the time string
 
     fprintf(stderr, "%.*s", (uint32_t)ARRAY_SIZE(time_buf), time_buf);
@@ -62,10 +62,11 @@ static void _log(struct md_logger_o* inst, enum md_log_type log_type, const char
     default:
         break;
     }
-    fprintf(stderr, "%s\n",  msg);
+    fprintf(stderr, " %s\n",  msg);
 
 #if MD_COMPILER_MSVC
     OutputDebugString(msg);
+    OutputDebugString("\n");
 #endif
 }
 
