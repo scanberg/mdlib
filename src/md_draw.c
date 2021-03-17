@@ -273,8 +273,7 @@ internal md_draw_error compile_shader_from_source(GLuint shader, const char* sha
             if ((endline = strchr(shader_src, '\n')) != NULL) {
                 ++endline;
                 const size_t length = endline - shader_src;
-                //strncpy(version_str, shader_src, length);
-                strncpy_s(version_str, ARRAY_SIZE(version_str), shader_src, length);
+                strncpy(version_str, shader_src, MIN(ARRAY_SIZE(version_str), length));
             }
             src = endline;
         }

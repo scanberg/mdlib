@@ -1,8 +1,6 @@
 #ifndef __MD_SCRIPT_FUNCTIONS_INL__
 #define __MD_SCRIPT_FUNCTIONS_INL__
 
-#include <math.h>
-#include "core/vec_math.h"
 
 #define as_float(arg) (*((float*)((arg).ptr)))
 #define as_float_arr(arg) ((float*)((arg).ptr))

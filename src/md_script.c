@@ -9,11 +9,12 @@
 #include "core/arena_allocator.h"
 #include "core/compiler.h"
 #include "core/bitop.h"
+#include "core/vec_math.h"
 
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
-
+#include <math.h>
 #include <float.h>
 
 #pragma warning(disable:4063) // Single character tokens not being valid tokens

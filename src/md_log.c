@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 #include <time.h>
 
 #define MAX_LOGGERS 64
@@ -81,7 +82,7 @@ md_logger_i* default_logger = &_default_logger;
 
 void md_add_logger(const md_logger_i* logger) {
     if (num_loggers < MAX_LOGGERS) {
-        loggers[num_loggers++] = logger; // push back
+        loggers[num_loggers++] = (md_logger_i*)logger; // push back
         return;
     }
     md_printf(MD_LOG_TYPE_ERROR, "Failed to add logger, maximum capacity reached. (%d)", MAX_LOGGERS);
