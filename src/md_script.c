@@ -315,6 +315,63 @@ static inline uint64_t base_type_byte_size(base_type_t type) {
     }
 }
 
+static inline bool is_type_dim_compatible(type_info_t from, type_info_t to) {
+
+    // Some examples of matching, ^ shows len_dim
+    // float[4][0][0][0] should match     float[-1][0][0][0]
+    //       ^                                   ^
+    // float[4][4][0][0] should match     float[4][-1][0][0]
+    //          ^                                   ^
+    // float[4][4][0][0] should not match float[4][-1][0][0]
+    //             ^                                ^
+    // 
+    // This case should be nice to have, but is perhaps more confusing and too loose to support
+    // float[4][4][1][0] should     match float[4][-1][0][0]
+    //             ^                                ^
+
+
+    // Is this always the case??? (Not if we want to support the last special case
+    if (from.len_dim != to.len_dim) return false;
+
+    for (int i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
+        if (from.dim[i] == to.dim[i] && from.dim[i] > 0) continue;
+        else if (to.dim[i] == -1) return true; // We consider a zero length array to be a valid type as well
+    }
+    return false;
+}
+
+static inline bool is_type_equivalent(type_info_t a, type_info_t b) {
+    return memcmp(&a, &b, sizeof(type_info_t)) == 0;
+}
+
+static inline bool is_type_directly_compatible(type_info_t from, type_info_t to) {
+    if (compare_type_info(from, to)) return true;
+
+    if (is_scalar(from)) {
+        if (from.base_type == to.base_type) {
+            // To support varying length convention used by procedure args
+            if (to.dim[0] == -1) return true;
+        }
+    }
+    else {
+        if (from.base_type == to.base_type) {
+            if (is_variable_length(to)) {
+                return is_type_dim_compatible(from, to);
+            }
+        }
+    }
+    return false;
+}
+
+static inline bool compare_type_info_array(const type_info_t a[], const type_info_t b[], uint64_t num_arg_types) {
+    for (uint64_t i = 0; i < num_arg_types; ++i) {
+        if (!is_type_directly_compatible(a[i], b[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Returns the count of elements for this type, i.e an array of [4][4][1] would return 16
 // NOTE: It does not include the last dimension which encodes the length of the array
 // 
@@ -469,6 +526,17 @@ static uint32_t count_chains(bitfield_t mask, md_molecule* mol) {
 // ###   HELPER FUNCTIONS   ###
 // ############################
 
+static inline bool is_type_implicitly_convertible(type_info_t from, type_info_t to) {
+    for (uint64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+        if (is_type_directly_compatible(casts[i].arg_type[0], from) &&
+            is_type_directly_compatible(casts[i].return_type, to)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // Returns if the value type can be operated on using logical operators
 static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
     return type == TYPE_BOOL || type == TYPE_BITFIELD;
@@ -547,20 +615,6 @@ static void fix_precedence(ast_node_t** node) {
             *node = child;
         }
     }
-
-    /*
-    if (!node) return;
-    ast_node_t* parent = *node;
-    if (!parent || md_array_size(parent->children) < 2) return;
-    ast_node_t* child = parent->children[1];
-    if (!child || md_array_size(child->children) == 0) return;
-    ast_node_t* grand_child = child->children[0];
-
-    if (child->type > parent->type) { // type is sorted on precedence
-        child->children[0] = parent;
-        parent->children[1] = grand_child;
-        *node = child;
-    }*/
 }
 
 static bool convert_node(ast_node_t* node, type_info_t new_type, md_script_ir* ir) {
@@ -664,95 +718,6 @@ static void create_error(md_script_ir* ir, token_t token, const char* format, ..
         md_printf(MD_LOG_TYPE_DEBUG, "%.*s", (end-beg), beg);
         md_printf(MD_LOG_TYPE_DEBUG, "%*s^%.*s", (token.str.ptr - beg), "", token.str.len-1, long_ass_carret);
     }
-}
-
-static inline bool is_type_dim_compatible(type_info_t from, type_info_t to) {
-
-    // Some examples of matching, ^ shows len_dim
-    // float[4][0][0][0] should match     float[-1][0][0][0]
-    //       ^                                   ^
-    // float[4][4][0][0] should match     float[4][-1][0][0]
-    //          ^                                   ^
-    // float[4][4][0][0] should not match float[4][-1][0][0]
-    //             ^                                ^
-    // 
-    // This case should be nice to have, but is perhaps more confusing and too loose to support
-    // float[4][4][1][0] should     match float[4][-1][0][0]
-    //             ^                                ^
-
-
-    // Is this always the case??? (Not if we want to support the last special case
-    if (from.len_dim != to.len_dim) return false;
-
-    for (int i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
-        if (from.dim[i] == to.dim[i] && from.dim[i] > 0) continue;
-        else if (to.dim[i] == -1) return true; // We consider a zero length array to be a valid type as well
-    }
-    return false;
-}
-
-static inline bool is_type_equivalent(type_info_t a, type_info_t b) {
-    return memcmp(&a, &b, sizeof(type_info_t)) == 0;
-}
-
-static inline bool is_type_directly_compatible(type_info_t from, type_info_t to) {
-    if (compare_type_info(from, to)) return true;
-
-    if (is_scalar(from)) {
-        if (from.base_type == to.base_type) {
-            // To support varying length convention used by procedure args
-            if (to.dim[0] == -1) return true;
-        }
-    }
-    else {
-        if (from.base_type == to.base_type) {
-            if (is_variable_length(to)) {
-                return is_type_dim_compatible(from, to);
-            }
-        }
-    }
-    return false;
-}
-
-static inline bool is_type_implicitly_convertible(type_info_t from, type_info_t to) {
-    // SCALARS
-
-    for (uint64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
-    
-    }
-
-    if (is_scalar(from)) {
-        if (is_scalar(to)) {
-            if      (from.base_type == TYPE_INT      && to.base_type == TYPE_FLOAT)     return true;
-            else if (from.base_type == TYPE_INT      && to.base_type == TYPE_IRANGE)    return true;
-            // else if (from.base_type == TYPE_INT      && to.base_type == TYPE_FRANGE)    return true;
-            // else if (from.base_type == TYPE_FLOAT    && to.base_type == TYPE_FRANGE)    return true;
-            else if (from.base_type == TYPE_IRANGE   && to.base_type == TYPE_FRANGE)    return true;
-        }
-    }
-    else {
-        if (is_array(to)) {
-            // @TODO: implement type conversion for arrays
-            // We should allow conversions of int[N] to float[N]
-            // We should allow conversions of irange[N] to frange[N]
-            if (compare_type_info_dim(from, to)) {
-                if      (from.base_type == TYPE_INT      && to.base_type == TYPE_FLOAT)     return true;
-                else if (from.base_type == TYPE_IRANGE   && to.base_type == TYPE_FRANGE)    return true;
-                //else if (from.base_type == TYPE_BITRANGE && to.base_type == TYPE_BITFIELD)  return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-static inline bool compare_type_info_array(const type_info_t a[], const type_info_t b[], uint64_t num_arg_types) {
-    for (uint64_t i = 0; i < num_arg_types; ++i) {
-        if (!is_type_directly_compatible(a[i], b[i])) {
-            return false;
-        }
-    }
-    return true;
 }
 
 static procedure_t* find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], uint64_t num_arg_types, procedure_t* candidates, uint64_t num_cantidates, bool allow_implicit_conversions) {
@@ -1974,6 +1939,11 @@ static int evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_co
 
 static int evaluate_cast(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CAST);
+    ASSERT(dst && dst->ptr && dst->size == node->data.size);
+    ASSERT(compare_type_info(dst->type, node->data.type));
+    ASSERT(md_array_size(node->children) == 1);
+
+    
 
     return -1;
 }
