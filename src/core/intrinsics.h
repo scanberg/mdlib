@@ -3,16 +3,18 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "compiler.h"
+#include "common.h"
 
 #if (MD_COMPILER_CLANG || MD_COMPILER_GCC)
 // count leading zeros
 static inline uint32_t clz(uint32_t v) {
+    ASSERT(v != 0); // 0 is undefined behaviour
     return __builtin_clz(v);
 }
 
 // count leading zeros 64-bit
 static inline uint64_t clz64(uint64_t v) {
+    ASSERT(v != 0); // 0 is undefined behaviour
     return __builtin_clzll(v);
 }
 
@@ -43,6 +45,7 @@ static inline uint64_t bit_scan_forward64(uint64_t v) {
 
 // count leading zeros
 static inline uint32_t clz(uint32_t v) {
+    ASSERT(v != 0); // 0 is undefined behaviour
     return __lzcnt(v);
 }
 
@@ -118,11 +121,13 @@ static inline uint64_t find_first_zero_byte64(uint64_t x) {
 
 static inline uint32_t next_power_of_two(uint32_t x) {
     if (x == 0) return 0;
+    if (x == 1) return 1; // avoid clz(0)
     return 1UL << (sizeof(uint32_t) * 8 - clz(x-1));
 }
 
 static inline uint64_t next_power_of_two64 (uint64_t x) {
     if (x == 0) return 0;
+    if (x == 1) return 1; // avoid clz(0)
     return 1ULL << (sizeof(uint64_t) * 8 - clz64(x-1));
 }
 
