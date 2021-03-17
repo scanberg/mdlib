@@ -21,9 +21,6 @@ endif()
 
 add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
 
-set_property(TARGET mold PROPERTY C_STANDARD 99)
-set_property(TARGET mold PROPERTY C_STANDARD_REQUIRED ON)
-
 target_include_directories(mold
 	PUBLIC
 		$<INSTALL_INTERFACE: ${CMAKE_CURRENT_SOURCE_DIR}>
@@ -47,5 +44,12 @@ if (MD_USE_RELATIVE_PATHS)
         )
     endforeach(FILENAME)
 else()
-	target_compile_definitions(mold PRIVATE MD_SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\" -D_GNU_SOURCE)
+	target_compile_definitions(mold PRIVATE MD_SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\")
+endif()
+
+if (CMAKE_COMPILER_IS_GNUCC)
+set_property(TARGET mold PROPERTY C_STANDARD 99)
+set_property(TARGET mold PROPERTY C_STANDARD_REQUIRED ON)
+target_compile_definitions(mold PRIVATE -D_GNU_SOURCE)
+target_link_libraries(mold m)
 endif()
