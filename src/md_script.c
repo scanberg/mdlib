@@ -410,7 +410,7 @@ static bool allocate_data(data_t* data, const md_molecule* mol, md_allocator_i* 
         const uint64_t bit_size = DIV_UP(mol->atom.count, 64); // Compute how many uint64_t we need to allocate the bitfield, 64-bits per uint64_t.
         for (uint64_t i = 0; i < array_len; ++i) {
             bf[i].bits = md_alloc(alloc, bit_size);
-            bf[i].num_bits = num_bits;
+            bf[i].num_bits = (uint32_t)num_bits;
         }
     }
 
@@ -481,7 +481,7 @@ static uint64_t count_atoms(bitfield_t mask, md_molecule* mol) {
     return bit_count(mask.bits, 0, mask.num_bits);
 }
 
-static uint32_t count_residues(bitfield_t mask, md_molecule* mol) {
+static uint64_t count_residues(bitfield_t mask, md_molecule* mol) {
     ASSERT(mol);
     ASSERT(mask.num_bits == mol->atom.count);
     ASSERT(mol->atom.residue_idx);
@@ -499,7 +499,7 @@ static uint32_t count_residues(bitfield_t mask, md_molecule* mol) {
     return count;
 }
 
-static uint32_t count_chains(bitfield_t mask, md_molecule* mol) {
+static uint64_t count_chains(bitfield_t mask, md_molecule* mol) {
     ASSERT(mol);
     ASSERT(mask.num_bits == mol->atom.count);
     ASSERT(mol->atom.chain_idx);
@@ -1135,7 +1135,7 @@ static void print_value(FILE* file, data_t data) {
                 fprintf(file, "%i", *(int*)data.ptr);
                 break;
             case TYPE_FLOAT:
-                fprintf(file, "%f", *(float*)data.ptr);
+                fprintf(file, "%.1f", *(float*)data.ptr);
                 break;
             case TYPE_IRANGE:
             {
@@ -1286,7 +1286,7 @@ static void print_expr(FILE* file, str_t str) {
     fprintf(file, "\"%.*s\"\n", (int)at, buf);
 }
 
-static void save_expressions_to_json(const expression_t** expr, uint64_t num_expr, str_t filename) {
+static void save_expressions_to_json(expression_t** expr, uint64_t num_expr, str_t filename) {
     FILE* file = (FILE*)md_file_open(filename.ptr, filename.len, "w");
 
     if (file) {

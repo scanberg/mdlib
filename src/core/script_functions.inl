@@ -292,9 +292,9 @@ static const float _E   = 2.71828182845f;
 
 // @TODO: Add your values here
 static identifier_t constants[] = {
-    {{"PI", 2},     {TI_FLOAT, &_PI,    sizeof(float)}},
-    {{"TAU", 3},    {TI_FLOAT, &_TAU,   sizeof(float)}},
-    {{"E", 1},      {TI_FLOAT, &_E,     sizeof(float)}},
+    {{"PI", 2},     {TI_FLOAT, (void*)(&_PI),    sizeof(float)}},
+    {{"TAU", 3},    {TI_FLOAT, (void*)(&_TAU),   sizeof(float)}},
+    {{"E", 1},      {TI_FLOAT, (void*)(&_E),     sizeof(float)}},
 };
 
 static procedure_t casts[] = {

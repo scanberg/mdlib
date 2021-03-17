@@ -24,7 +24,7 @@ typedef union md_mat4 {
     md_vec4 col[4];
 } md_mat4;
 
-inline md_vec4 md_vec4_mul(const md_vec4 a, const md_vec4 b) {
+static inline md_vec4 md_vec4_mul(const md_vec4 a, const md_vec4 b) {
     md_vec4 c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_mul_ps(a.mm128, b.mm128);
@@ -37,7 +37,7 @@ inline md_vec4 md_vec4_mul(const md_vec4 a, const md_vec4 b) {
     return c;
 }
 
-inline md_vec4 md_vec4_mul_f(const md_vec4 a, const float s) {
+static inline md_vec4 md_vec4_mul_f(const md_vec4 a, const float s) {
     md_vec4 c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_mul_ps(a.mm128, _mm_set1_ps(s));
@@ -50,7 +50,7 @@ inline md_vec4 md_vec4_mul_f(const md_vec4 a, const float s) {
     return c;
 }
 
-inline md_vec4 md_vec4_div(const md_vec4 a, const md_vec4 b) {
+static inline md_vec4 md_vec4_div(const md_vec4 a, const md_vec4 b) {
     md_vec4 c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_div_ps(a.mm128, b.mm128);
@@ -63,7 +63,7 @@ inline md_vec4 md_vec4_div(const md_vec4 a, const md_vec4 b) {
     return c;
 }
 
-inline md_vec4 vec4_div_f(const md_vec4 a, const float s) {
+static inline md_vec4 vec4_div_f(const md_vec4 a, const float s) {
     md_vec4 c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_div_ps(a.mm128, _mm_set1_ps(s));
@@ -76,7 +76,7 @@ inline md_vec4 vec4_div_f(const md_vec4 a, const float s) {
     return c;
 }
 
-inline md_vec4 md_vec4_add(const md_vec4 a, const md_vec4 b) {
+static inline md_vec4 md_vec4_add(const md_vec4 a, const md_vec4 b) {
     md_vec4 c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_add_ps(a.mm128, b.mm128);
@@ -89,7 +89,7 @@ inline md_vec4 md_vec4_add(const md_vec4 a, const md_vec4 b) {
     return c;
 }
 
-inline md_vec4 md_vec4_add_f(const md_vec4 a, const float s) {
+static inline md_vec4 md_vec4_add_f(const md_vec4 a, const float s) {
     md_vec4 c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_add_ps(a.mm128, _mm_set1_ps(s));
@@ -102,7 +102,7 @@ inline md_vec4 md_vec4_add_f(const md_vec4 a, const float s) {
     return c;
 }
 
-inline md_vec4 md_vec4_sub(const md_vec4 a, const md_vec4 b) {
+static inline md_vec4 md_vec4_sub(const md_vec4 a, const md_vec4 b) {
     md_vec4 c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_sub_ps(a.mm128, b.mm128);
@@ -115,7 +115,7 @@ inline md_vec4 md_vec4_sub(const md_vec4 a, const md_vec4 b) {
     return c;
 }
 
-inline md_vec4 md_vec4_sub_f(const md_vec4 a, const float s) {
+static inline md_vec4 md_vec4_sub_f(const md_vec4 a, const float s) {
     md_vec4 c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_sub_ps(a.mm128, _mm_set1_ps(s));
@@ -129,7 +129,7 @@ inline md_vec4 md_vec4_sub_f(const md_vec4 a, const float s) {
 }
 
 #if VEC_MATH_USE_SSE_H
-inline __m128 md_linear_combine_sse(__m128 a, md_mat4 B) {
+static inline __m128 md_linear_combine_sse(__m128 a, md_mat4 B) {
     __m128 res;
     res = _mm_mul_ps(_mm_shuffle_ps(a, a, 0x00), B.col[0].mm128);
     res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0x55), B.col[1].mm128));
@@ -139,7 +139,7 @@ inline __m128 md_linear_combine_sse(__m128 a, md_mat4 B) {
 }
 #endif
 
-inline md_mat4 md_mat4_mul(const md_mat4 A, const md_mat4 B) {
+static inline md_mat4 md_mat4_mul(const md_mat4 A, const md_mat4 B) {
     md_mat4 C;
 #if VEC_MATH_USE_SSE_H
     C.col[0].mm128 = md_linear_combine_sse(B.col[0].mm128, A);
@@ -173,7 +173,7 @@ inline md_mat4 md_mat4_mul(const md_mat4 A, const md_mat4 B) {
     return C;
 }
 
-inline md_vec4 md_mat4_mul_vec4(const md_mat4 M, const md_vec4 V) {
+static inline md_vec4 md_mat4_mul_vec4(const md_mat4 M, const md_vec4 V) {
     md_vec4 R;
 #if VEC_MATH_USE_SSE_H
     R.mm128 = md_linear_combine_sse(V.mm128, M);
@@ -183,7 +183,7 @@ inline md_vec4 md_mat4_mul_vec4(const md_mat4 M, const md_vec4 V) {
     return R;
 }
 
-inline md_mat4 md_mat4_mul_f(const md_mat4 M, float s) {
+static inline md_mat4 md_mat4_mul_f(const md_mat4 M, float s) {
     md_mat4 C;
 #if VEC_MATH_USE_SSE_H
     C.col[0] = md_vec4_mul_f(M.col[0], s);
@@ -214,11 +214,11 @@ inline md_mat4 md_mat4_mul_f(const md_mat4 M, float s) {
     return C;
 }
 
-inline md_mat4 md_mat4_ident() {
+static inline md_mat4 md_mat4_ident() {
     return (md_mat4) {.col[0] = {1,0,0,0}, .col[1] = {0,1,0,0}, .col[2] = {0,0,1,0}, .col[3] = {0,0,0,1}};
 }
 
-inline md_mat4 md_mat4_inverse(const md_mat4 M) {
+static inline md_mat4 md_mat4_inverse(const md_mat4 M) {
     const float c00 = M.elem[2][2] * M.elem[3][3] - M.elem[3][2] * M.elem[2][3];
     const float c02 = M.elem[1][2] * M.elem[3][3] - M.elem[3][2] * M.elem[1][3];
     const float c03 = M.elem[1][2] * M.elem[2][3] - M.elem[2][2] * M.elem[1][3];
@@ -275,7 +275,7 @@ inline md_mat4 md_mat4_inverse(const md_mat4 M) {
     return md_mat4_mul_f(I, 1.0f / (dot0.x + dot0.y + dot0.z + dot0.w));
 }
 
-inline md_mat4 md_mat4_transpose(const md_mat4 M) {
+static inline md_mat4 md_mat4_transpose(const md_mat4 M) {
     md_mat4 T;
 
 #if VEC_MATH_USE_SSE_H

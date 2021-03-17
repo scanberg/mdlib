@@ -61,20 +61,20 @@ typedef struct linear_allocator {
     uint64_t size;
 } linear_allocator;
 
-inline void linear_allocator_init(linear_allocator* alloc, void* mem, uint64_t size) {
+static inline void linear_allocator_init(linear_allocator* alloc, void* mem, uint64_t size) {
     alloc->mem = mem;
     alloc->offset = 0;
     alloc->size = size;
 }
 
-inline void* linear_allocator_alloc(linear_allocator* alloc, uint64_t size) {
+static inline void* linear_allocator_alloc(linear_allocator* alloc, uint64_t size) {
     ASSERT(alloc->offset + size <= alloc->size);
     void* res = (char*)alloc->mem + alloc->offset;
     alloc->offset += size;
     return res;
 }
 
-inline void linear_allocator_reset(linear_allocator* alloc) {
+static inline void linear_allocator_reset(linear_allocator* alloc) {
     alloc->offset = 0;
 }
 

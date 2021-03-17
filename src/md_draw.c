@@ -771,7 +771,7 @@ md_draw_error md_draw_context_free(md_draw_context* ext_ctx) {
     if (ext_ctx) {
         internal_ctx* ctx = (internal_ctx*)ext_ctx;
         if (ctx->vao) glDeleteVertexArrays(1, &ctx->vao);
-        if (ctx->fbo) glDeleteFramebuffers(2, ctx->fbo);
+        if (ctx->fbo[0]) glDeleteFramebuffers(2, ctx->fbo);
         if (ctx->ubo.id) glDeleteBuffers(1, &ctx->ubo.id);
         for (uint32_t i = 0; i < GL_TEXTURE_COUNT; ++i) {
             if (ctx->texture[i].id) glDeleteTextures(1, &ctx->texture[i].id);
