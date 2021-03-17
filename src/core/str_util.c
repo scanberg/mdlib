@@ -126,7 +126,6 @@ str_t load_textfile(const char* filename, uint32_t filename_len, struct md_alloc
         char* mem = md_alloc(alloc, file_size + 1);
         if (mem) {
             uint64_t read_size = md_file_read(file, mem, file_size);
-            md_file_close(file);
 
             ASSERT(read_size == file_size);
             mem[file_size] = '\0'; // Zero terminate as a nice guy
