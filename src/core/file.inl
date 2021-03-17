@@ -43,7 +43,7 @@ static FILE* md_file_open(const char* filename, uint64_t filename_len, const cha
     
     return _wfopen(w_file, w_mode);
 #else
-    return fopen(file, mode);
+    return fopen(filename, mode);
 #endif
 }
 

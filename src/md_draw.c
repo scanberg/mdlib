@@ -212,9 +212,9 @@ static const int ctx_size = sizeof(struct internal_ctx);
 static const int mol_size = sizeof(struct internal_mol);
 static const int rep_size = sizeof(struct internal_rep);
 
-static_assert(sizeof(internal_ctx) <= sizeof(md_draw_context), "Internal draw ctx does not fit into containing structure");
-static_assert(sizeof(internal_mol) <= sizeof(md_draw_molecule), "Internal draw mol does not fit into containing structure");
-static_assert(sizeof(internal_rep) <= sizeof(md_draw_representation), "Internal draw rep does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_ctx) <= sizeof(md_draw_context), "Internal draw ctx does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_mol) <= sizeof(md_draw_molecule), "Internal draw mol does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_rep) <= sizeof(md_draw_representation), "Internal draw rep does not fit into containing structure");
 
 internal inline gl_buffer gl_buffer_create(uint32_t num_bytes, const void* data, GLenum usage_hint) {
     gl_buffer buf = {0};

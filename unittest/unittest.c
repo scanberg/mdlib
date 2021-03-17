@@ -13,7 +13,6 @@
 #include "core/file.inl"
 #include "core/common.h"
 #include "core/bitop.h"
-#include "core/strpool.h"
 #include "core/str_util.h"
 #include "core/pool_allocator.h"
 #include "core/arena_allocator.h"
@@ -472,7 +471,7 @@ UTEST(filter, test) {
         EXPECT_FALSE(md_filter_apply("residue(1 ALA 8 1:8)", NULL));
     }
 }
-*/
+
 
 UTEST(strpool, test) {
     md_strpool pool;
@@ -560,6 +559,7 @@ UTEST(strpool, test) {
 
     EXPECT_LT((int)pool.entry.len, lines_read * 3);
 }
+*/
 
 UTEST(script, test) {
 

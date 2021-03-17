@@ -1,9 +1,22 @@
 #ifndef _MD_COMMON_H_
 #define _MD_COMMON_H_
 
+#include "compiler.h"
+
 #ifndef ASSERT
 #include <assert.h>
 #define ASSERT assert
+#define STATIC_ASSERT static_assert
+#endif
+
+#if MD_COMPILER_MSVC
+#ifndef THREAD_LOCAL
+#define THREAD_LOCAL __declspec(thread)
+#endif
+#else
+#ifndef THREAD_LOCAL
+#define THREAD_LOCAL __thread
+#endif
 #endif
 
 #define internal static

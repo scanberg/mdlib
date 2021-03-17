@@ -10,6 +10,8 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <stdint.h>
 
 #include "core/intrinsics.h"
 #include "core/arena_allocator.h"
@@ -184,8 +186,6 @@ struct ast_node_t {
     };
 };
 
-static_assert((sizeof(ast_node_t) & (sizeof(ast_node_t) - 1)) == 0, "ast_node_t size should be power of 2");
-
 struct lexer_t {
     const char* buff;
     uint32_t    buff_len;
@@ -329,8 +329,11 @@ static inline void* dec_rel_ptr(const int16_t* ptr) {
     return (uint8_t*)ptr + *ptr;
 }
 
-static void log_error(const char* msg) {
-     fprintf(stderr, "ERROR: %s\n", msg);
+static void log_error(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
 }
 
 static void log_error_with_context(const char* msg, const char* str, uint32_t len, str_slice_t carret) {

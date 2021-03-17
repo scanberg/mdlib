@@ -151,7 +151,7 @@ str_t alloc_str(uint64_t len, struct md_allocator_i* alloc) {
 
 void free_str(str_t str, struct md_allocator_i* alloc) {
     ASSERT(alloc);
-    md_free(alloc, str.ptr, str.len + 1);
+    md_free(alloc, (void*)str.ptr, str.len + 1);
 }
 
 str_t copy_str(const str_t str, struct md_allocator_i* alloc) {

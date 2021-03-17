@@ -1,5 +1,4 @@
 #include "md_allocator.h"
-#include "core/compiler.h"
 #include "core/common.h"
 #include <stdlib.h>
 
@@ -14,11 +13,7 @@ typedef struct ring_buffer {
     char mem[THREAD_LOCAL_RING_BUFFER_SIZE];
 } ring_buffer;
 
-#ifdef MD_COMPILER_MSVC
-__declspec(thread) ring_buffer ring;
-#else
-_Thread_local ring_buffer ring;
-#endif
+THREAD_LOCAL ring_buffer ring;
 
 internal void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;
