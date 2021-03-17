@@ -562,6 +562,8 @@ UTEST(strpool, test) {
 }
 
 UTEST(script, test) {
+
+    // Create molecule for evaulation
     uint32_t atom_count = 8;
     float x[] = {1,2,3,4,5,6,7,8};
     float y[] = {1,1,1,1,1,1,1,1};
@@ -613,6 +615,8 @@ UTEST(script, test) {
             .residue_range = c_rrange
         }
     };
+
+
 
     const char script_file[] = MD_UNITTEST_DATA_DIR "/script.txt";
     str_t script_text = load_textfile(script_file, ARRAY_SIZE(script_file), default_allocator);
