@@ -97,7 +97,6 @@ UTEST(core, intrinsics) {
     {
         static const uint32_t mask[5] = {0, 0xFFU, 0xFFFFU, 0xFFFFFFU, 0xFFFFFFFFU};
 
-        EXPECT_EQ(clz(mask[0]), 32);
         EXPECT_EQ(clz(mask[1]), 24);
         EXPECT_EQ(clz(mask[2]), 16);
         EXPECT_EQ(clz(mask[3]), 8);
@@ -123,7 +122,6 @@ UTEST(core, intrinsics) {
     EXPECT_EQ(next_power_of_two(3), 4);
     EXPECT_EQ(next_power_of_two(31), 32);
     EXPECT_EQ(next_power_of_two(32), 32);
-    EXPECT_EQ(next_power_of_two(1), 1);
     EXPECT_EQ(next_power_of_two(5), 8);
     EXPECT_EQ(next_power_of_two(8000), 8192);
 
