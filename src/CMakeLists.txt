@@ -41,7 +41,6 @@ else()
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCC)
-  set_property(TARGET mold PROPERTY C_EXTENSIONS ON)
   target_compile_definitions(mold PRIVATE _GNU_SOURCE)
   target_link_libraries(mold PUBLIC m)
 endif()
