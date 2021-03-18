@@ -8,10 +8,11 @@
 #include <md_molecule.h>
 #include <md_allocator.h>
 
-#include <string.h>
-#include <stdio.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "core/intrinsics.h"
 #include "core/arena_allocator.h"
