@@ -1869,7 +1869,7 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
                 MIN((uint32_t)((tmp_z[i] + max_range - aabb_min[2]) * inv_cell_ext[2]), GRID_RES - 1)
             };
 
-            uint32_t cc[3];
+            uint32_t cc[3] = {0};
             for (cc[2] = min_cell_coord[2]; cc[2] <= max_cell_coord[2]; ++cc[2]) {
                 for (cc[1] = min_cell_coord[1]; cc[1] <= max_cell_coord[1]; ++cc[1]) {
                     for (cc[0] = min_cell_coord[0]; cc[0] <= max_cell_coord[0]; ++cc[0]) {
@@ -1922,7 +1922,7 @@ void filter_func_within(float min_range, float max_range, const uint64_t* in_bit
                     MIN((uint32_t)((z[i] + max_range - aabb_min[2]) * inv_cell_ext[2]), GRID_RES - 1)
                 };
 
-                uint32_t cc[3];
+                uint32_t cc[3] = {0};
                 for (cc[2] = min_cell_coord[2]; cc[2] <= max_cell_coord[2]; ++cc[2]) {
                     for (cc[1] = min_cell_coord[1]; cc[1] <= max_cell_coord[1]; ++cc[1]) {
                         for (cc[0] = min_cell_coord[0]; cc[0] <= max_cell_coord[0]; ++cc[0]) {
