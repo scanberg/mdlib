@@ -1,6 +1,7 @@
-#ifdef _MSC_VER
+#include "core/compiler.h"
+
+#if MD_COMPILER_MSVC
 #define _CRT_SECURE_NO_WARNINGS
-//#pragma warning( disable : 4204)            // non-constant aggregate initialization (fully supported in proper c compilers)
 #endif
 
 #include "md_draw.h"

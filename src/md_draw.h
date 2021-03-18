@@ -10,7 +10,7 @@
 //  @TODO: Fill in
 
 #include <stdint.h>
-#include <md_molecule.h>
+#include "md_molecule.h"
 
 #ifdef __cplusplus
 extern "C" {
