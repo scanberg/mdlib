@@ -81,9 +81,6 @@ BAKE_FUNC_FARR__FARR(_arr_, fabsf)
 BAKE_FUNC_FARR__FARR(_arr_, floorf)
 BAKE_FUNC_FARR__FARR(_arr_, ceilf)
 
-
-
-
 // MACROS TO BAKE OPERATORS INTO CALLABLE FUNCTIONS
 #define BAKE_OP_UNARY_S(name, op, base_type) \
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
@@ -117,15 +114,6 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         return 0; \
     }
 
-#define BAKE_OP_S_M(name, op, base_type) \
-    static int name(data_t* dst, data_t[], eval_context_t* ctx) { \
-        (void)ctx; \
-        for (uint64_t i = 0; i < element_count(*dst); ++i) { \
-            ((base_type_t*)dst->ptr)[i] = ((base_type_t*)arg[0].ptr)[0] op ((base_type*)arg[1].ptr)[i]; \
-        } \
-        return 0; \
-    }
-
 #define BAKE_OP_M_M(name, op, base_type) \
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
@@ -147,13 +135,9 @@ BAKE_OP_UNARY_S(_op_neg_f, -, float)
 BAKE_OP_UNARY_M(_op_neg_farr, -, float)
 
 BAKE_OP_M_S(_op_add_farr_f, +, float)
-BAKE_OP_M_S(_op_add_f_farr, +, float)
 BAKE_OP_M_S(_op_sub_farr_f, -, float)
-BAKE_OP_M_S(_op_sub_f_farr, -, float)
 BAKE_OP_M_S(_op_mul_farr_f, *, float)
-BAKE_OP_M_S(_op_mul_f_farr, *, float)
 BAKE_OP_M_S(_op_div_farr_f, /, float)
-BAKE_OP_M_S(_op_div_f_farr, /, float)
 
 BAKE_OP_M_M(_op_add_farr_farr, +, float)
 BAKE_OP_M_M(_op_sub_farr_farr, -, float)
@@ -168,13 +152,9 @@ BAKE_OP_UNARY_S(_op_neg_i, -, int)
 BAKE_OP_UNARY_M(_op_neg_iarr, -, int)
 
 BAKE_OP_M_S(_op_add_iarr_i, +, int)
-BAKE_OP_M_S(_op_add_i_iarr, +, int)
 BAKE_OP_M_S(_op_sub_iarr_i, -, int)
-BAKE_OP_M_S(_op_sub_i_iarr, -, int)
 BAKE_OP_M_S(_op_mul_iarr_i, *, int)
-BAKE_OP_M_S(_op_mul_i_iarr, *, int)
 BAKE_OP_M_S(_op_div_iarr_i, /, int)
-BAKE_OP_M_S(_op_div_i_iarr, /, int)
 
 BAKE_OP_M_M(_op_add_iarr_iarr, +, int)
 BAKE_OP_M_M(_op_sub_iarr_iarr, -, int)
@@ -184,7 +164,7 @@ BAKE_OP_M_M(_op_div_iarr_iarr, /, int)
 // Forward declarations of functions
 // @TODO: Add your declarations here
 
-// Casts
+// Casts (Implicit ones)
 
 static int _cast_int_to_flt             (data_t*, data_t[], eval_context_t*);
 static int _cast_int_to_irng            (data_t*, data_t[], eval_context_t*);
@@ -193,6 +173,11 @@ static int _cast_int_arr_to_flt_arr     (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_bf_to_atom             (data_t*, data_t[], eval_context_t*);
 static int _cast_chain_to_res           (data_t*, data_t[], eval_context_t*);
+
+// Bitfield conversions
+static int _atoms       (data_t*, data_t[], eval_context_t*); // (bitfield) -> bitfield_atom
+static int _residues    (data_t*, data_t[], eval_context_t*); // (bitfield) -> bitfield_residue
+static int _chains      (data_t*, data_t[], eval_context_t*); // (bitfield) -> bitfield_chain
 
 // Logical operators for custom types
 static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -209,7 +194,7 @@ static int _within_flt  (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _within_frng (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _name    (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _element (data_t*, data_t[], eval_context_t*); // -> bitfield
-//static int _atom    (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _index   (data_t*, data_t[], eval_context_t*); // -> bitfield
 //static int _water   (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 // Residue level selectors
@@ -222,7 +207,10 @@ static int _chain_irng  (data_t*, data_t[], eval_context_t*); // (irange[]) -> b
 static int _chain_str   (data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
 
 // Property Compute
-static int _distance(data_t*, data_t[], eval_context_t*); // (int, int) -> float
+static int _distance_irng_irng  (data_t*, data_t[], eval_context_t*); // (irange, irange)   -> float
+static int _distance_irng_vec3  (data_t*, data_t[], eval_context_t*); // (irange, vec3)     -> float
+static int _distance_irng_bf    (data_t*, data_t[], eval_context_t*); // (irange, bitfield) -> float
+
 static int _angle   (data_t*, data_t[], eval_context_t*); // (int, int, int) -> float
 static int _dihedral(data_t*, data_t[], eval_context_t*); // (int, int, int, int) -> float
 
@@ -252,33 +240,33 @@ static int _vec4 (data_t*, data_t[], eval_context_t*); // (float, float, float, 
 
 
 // This is to mark that the procedure supports a varying length
-#define N -1
+#define ALL_LENGTHS -1
 #define ALL_LEVELS -1
 
 // Type info declaration helpers
 #define TI_BOOL         {TYPE_BOOL, {1}, 0}
 
 #define TI_FLOAT        {TYPE_FLOAT, {1}, 0}
-#define TI_FLOAT_ARR    {TYPE_FLOAT, {N}, 0}
+#define TI_FLOAT_ARR    {TYPE_FLOAT, {ALL_LENGTHS}, 0}
 #define TI_FLOAT2       {TYPE_FLOAT, {2,1}, 1}
 #define TI_FLOAT3       {TYPE_FLOAT, {3,1}, 1}
 #define TI_FLOAT4       {TYPE_FLOAT, {4,1}, 1}
 #define TI_FLOAT44      {TYPE_FLOAT, {4,4,1}, 2}
 
 #define TI_INT          {TYPE_INT, {1}, 0}
-#define TI_INT_ARR      {TYPE_INT, {N}, 0}
+#define TI_INT_ARR      {TYPE_INT, {ALL_LENGTHS}, 0}
 
 #define TI_FRANGE       {TYPE_FRANGE, {1}, 0}
-#define TI_FRANGE_ARR   {TYPE_FRANGE, {N}, 0}
+#define TI_FRANGE_ARR   {TYPE_FRANGE, {ALL_LENGTHS}, 0}
 
 #define TI_IRANGE       {TYPE_IRANGE, {1}, 0}
-#define TI_IRANGE_ARR   {TYPE_IRANGE, {N}, 0}
+#define TI_IRANGE_ARR   {TYPE_IRANGE, {ALL_LENGTHS}, 0}
 
 #define TI_STRING       {TYPE_STRING, {1}, 0}
-#define TI_STRING_ARR   {TYPE_STRING, {N}, 0}
+#define TI_STRING_ARR   {TYPE_STRING, {ALL_LENGTHS}, 0}
 
 #define TI_BITRANGE     {TYPE_BITRANGE, {1}, 0}
-#define TI_BITRANGE_ARR {TYPE_BITRANGE, {N}, 0}
+#define TI_BITRANGE_ARR {TYPE_BITRANGE, {ALL_LENGTHS}, 0}
 
 #define TI_BITFIELD         {TYPE_BITFIELD, {1}, 0, ALL_LEVELS}
 #define TI_BITFIELD_ATOM    {TYPE_BITFIELD, {1}, 0, LEVEL_ATOM}
@@ -319,39 +307,29 @@ static procedure_t operators[] = {
 
     // BITFIELD AND -> MAINTAIN THE HIGHEST LEVEL OF CONTEXT AMONG OPERANDS
     {{"and", 3},    TI_BITFIELD_ATOM,   2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_ATOM},      _and},
-    {{"and", 3},    TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_RESIDUE},   _and},
-    {{"and", 3},    TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_ATOM},      _and},
-    {{"and", 3},    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_CHAIN},     _and},
-    {{"and", 3},    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_ATOM},      _and},
-
-    {{"and", 3},    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_CHAIN},     _and},
-    {{"and", 3},    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_RESIDUE},   _and},
-
+    {{"and", 3},    TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_RESIDUE},   _and},
     {{"and", 3},    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_CHAIN},     _and},
 
+    {{"and", 3},    TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_RESIDUE},   _and,   FLAG_SYMMETRIC_ARGS},
+    {{"and", 3},    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_CHAIN},     _and,   FLAG_SYMMETRIC_ARGS},
+    {{"and", 3},    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_CHAIN},     _and,   FLAG_SYMMETRIC_ARGS},
 
-    {{"or", 2},    TI_BITFIELD_ATOM,    2,  {TI_BITFIELD,           TI_BITFIELD},           _or},
-    {{"or", 2},    TI_BITFIELD_ATOM,    2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_ATOM},      _or},
-    {{"or", 2},    TI_BITFIELD_ATOM,    2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_RESIDUE},   _or},
-    {{"or", 2},    TI_BITFIELD_ATOM,    2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_CHAIN},     _or},
-    {{"or", 2},    TI_BITFIELD_ATOM,    2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_ATOM},      _or},
-    {{"or", 2},    TI_BITFIELD_ATOM,    2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_ATOM},      _or},
+    {{"or", 2},     TI_BITFIELD_ATOM,   2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_ATOM},      _or},
+    {{"or", 2},     TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_RESIDUE},   _or},
+    {{"or", 2},     TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_CHAIN},     _or},
 
-    {{"or", 2},    TI_BITFIELD_RESIDUE, 2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_CHAIN},     _or},
-    {{"or", 2},    TI_BITFIELD_RESIDUE, 2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_RESIDUE},   _or},
-
-    {{"or", 2},    TI_BITFIELD_CHAIN,   2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_CHAIN},     _or},
+    {{"or", 2},     TI_BITFIELD_ATOM,   2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_RESIDUE},   _or,    FLAG_SYMMETRIC_ARGS},
+    {{"or", 2},     TI_BITFIELD_ATOM,   2,  {TI_BITFIELD_ATOM,      TI_BITFIELD_CHAIN},     _or,    FLAG_SYMMETRIC_ARGS},
+    {{"or", 2},     TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_CHAIN},     _or,    FLAG_SYMMETRIC_ARGS},
 
     // Binary add
     {{"+", 1},      TI_FLOAT,       2,  {TI_FLOAT,      TI_FLOAT},      _op_add_f_f},
-    {{"+", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_add_farr_f},
-    {{"+", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT,      TI_FLOAT_ARR},  _op_add_f_farr},
+    {{"+", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_add_farr_f,     FLAG_SYMMETRIC_ARGS},
     {{"+", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},  _op_add_farr_farr},
 
-    {{"+", 1},      {TYPE_INT,  1}, 2,  {TI_INT,        TI_INT},        _op_add_i_i},
-    {{"+", 1},      {TYPE_INT,  N}, 2,  {TI_INT_ARR,    TI_INT},        _op_add_iarr_i},
-    {{"+", 1},      {TYPE_INT,  N}, 2,  {TI_INT,        TI_INT_ARR},    _op_add_i_iarr},
-    {{"+", 1},      {TYPE_INT,  N}, 2,  {TI_INT_ARR,    TI_INT_ARR},    _op_add_iarr_iarr},
+    {{"+", 1},      TI_INT,         2,  {TI_INT,        TI_INT},        _op_add_i_i},
+    {{"+", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_add_iarr_i,     FLAG_SYMMETRIC_ARGS},
+    {{"+", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT_ARR},    _op_add_iarr_iarr},
 
     // Unary negation
     {{"-", 1},      TI_FLOAT,       1,  {TI_FLOAT},                     _op_neg_f},
@@ -359,37 +337,31 @@ static procedure_t operators[] = {
 
     // Binary sub
     {{"-", 1},      TI_FLOAT,       2,  {TI_FLOAT,      TI_FLOAT},      _op_sub_f_f},
-    {{"-", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_sub_farr_f},
-    {{"-", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT,      TI_FLOAT_ARR},  _op_sub_f_farr},
+    {{"-", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_sub_farr_f,     FLAG_SYMMETRIC_ARGS},
     {{"-", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},  _op_sub_farr_farr},
 
     {{"-", 1},      TI_INT,         1,  {TI_INT},                       _op_neg_i},
     {{"-", 1},      TI_INT_ARR,     1,  {TI_INT_ARR},                   _op_neg_iarr},
     {{"-", 1},      TI_INT,         2,  {TI_INT,        TI_INT},        _op_sub_i_i},
-    {{"-", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_sub_iarr_i},
-    {{"-", 1},      TI_INT_ARR,     2,  {TI_INT,        TI_INT_ARR},    _op_sub_i_iarr},
+    {{"-", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_sub_iarr_i,     FLAG_SYMMETRIC_ARGS},
     {{"-", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT_ARR},    _op_sub_iarr_iarr},
 
     // Binary mul
     {{"*", 1},      TI_FLOAT,       2,  {TI_FLOAT,      TI_FLOAT},      _op_mul_f_f},
-    {{"*", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_mul_farr_f},
-    {{"*", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT,      TI_FLOAT_ARR},  _op_mul_f_farr},
+    {{"*", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_mul_farr_f,     FLAG_SYMMETRIC_ARGS},
     {{"*", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},  _op_mul_farr_farr},
 
     {{"*", 1},      TI_INT,         2,  {TI_INT,        TI_INT},        _op_mul_i_i},
-    {{"*", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_mul_iarr_i},
-    {{"*", 1},      TI_INT_ARR,     2,  {TI_INT,        TI_INT_ARR},    _op_mul_i_iarr},
+    {{"*", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_mul_iarr_i,     FLAG_SYMMETRIC_ARGS},
     {{"*", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT_ARR},    _op_mul_iarr_iarr},
 
     // Binary div
     {{"/", 1},      TI_FLOAT,       2,  {TI_FLOAT,      TI_FLOAT},      _op_div_f_f},
-    {{"/", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_div_farr_f},
-    {{"/", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT,      TI_FLOAT_ARR},  _op_div_f_farr},
+    {{"/", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_div_farr_f,     FLAG_SYMMETRIC_ARGS},
     {{"/", 1},      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},  _op_div_farr_farr},
 
     {{"/", 1},      TI_INT,         2,  {TI_INT,        TI_INT},        _op_div_i_i},
-    {{"/", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_div_iarr_i},
-    {{"/", 1},      TI_INT_ARR,     2,  {TI_INT,        TI_INT_ARR},    _op_div_i_iarr},
+    {{"/", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_div_iarr_i,     FLAG_SYMMETRIC_ARGS},
     {{"/", 1},      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT_ARR},    _op_div_iarr_iarr},
 };
 
@@ -425,19 +397,24 @@ static procedure_t procedures[] = {
     {{"cross", 5},  TI_FLOAT3,  2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
     {{"mul", 3},    TI_FLOAT44, 2, {TI_FLOAT44,     TI_FLOAT44},    _mat4_mul_mat4},
     {{"mul", 3},    TI_FLOAT4,  2, {TI_FLOAT44,     TI_FLOAT4},     _mat4_mul_vec4},
+
     // CONSTRUCTORS
     {{"vec2", 4},   TI_FLOAT2,  2, {TI_FLOAT, TI_FLOAT},                       _vec2},
     {{"vec3", 4},   TI_FLOAT3,  3, {TI_FLOAT, TI_FLOAT, TI_FLOAT},             _vec3},
     {{"vec4", 4},   TI_FLOAT4,  4, {TI_FLOAT, TI_FLOAT, TI_FLOAT, TI_FLOAT},   _vec4},
 
+    // BITFIELD CONVERSION
+    {{"atoms", 5},      TI_BITFIELD_ATOM, 1, {TI_BITFIELD}, _atoms},
+    {{"residues", 8},   TI_BITFIELD_ATOM, 1, {TI_BITFIELD}, _residues},
+    {{"chains", 6},     TI_BITFIELD_ATOM, 1, {TI_BITFIELD}, _chains},
+
     // --- SELECTION ---
-    {{"all", 3},    TI_BITFIELD_ATOM, 0, {0},                _all},
-    {{"type", 4},   TI_BITFIELD_ATOM, 1, {TI_STRING_ARR},    _name},
-    {{"name", 4},   TI_BITFIELD_ATOM, 1, {TI_STRING_ARR},    _name},
-    {{"label", 5},  TI_BITFIELD_ATOM, 1, {TI_STRING_ARR},    _name},
-    {{"element", 7},TI_BITFIELD_ATOM, 1, {TI_STRING_ARR},    _element},
-//    {{"atom", 4},   {TYPE_BITFIELD}, 1, {{TYPE_INT},      {-1}},  _atom},
-//    {{"index", 4},  {TYPE_BITFIELD}, 1, {{TYPE_INT},      {-1}},  _atom},
+    {{"all", 3},    TI_BITFIELD_ATOM, 0, {0},               _all},
+    {{"type", 4},   TI_BITFIELD_ATOM, 1, {TI_STRING_ARR},   _name},
+    {{"name", 4},   TI_BITFIELD_ATOM, 1, {TI_STRING_ARR},   _name},
+    {{"label", 5},  TI_BITFIELD_ATOM, 1, {TI_STRING_ARR},   _name},
+    {{"element", 7},TI_BITFIELD_ATOM, 1, {TI_STRING_ARR},   _element},
+    {{"index", 5},  TI_BITFIELD_ATOM, 1, {TI_IRANGE_ARR},   _index},
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
     {{"x", 1},      TI_BITFIELD_ATOM, 1, {TI_FRANGE},  _x, FLAG_DYNAMIC},
@@ -451,15 +428,16 @@ static procedure_t procedures[] = {
     {{"residue", 7},TI_BITFIELD_RESIDUE, 1, {TI_IRANGE_ARR},    _residue},
 
     // --- PROPERTY COMPUTE ---
-    {{"distance", 8},   TI_FLOAT, 2, {TI_INT, TI_INT},                  _distance,  FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT, 2, {TI_IRANGE, TI_IRANGE},            _distance_irng_irng,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT, 2, {TI_IRANGE, TI_FLOAT3},            _distance_irng_vec3,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT, 2, {TI_IRANGE, TI_BITFIELD},          _distance_irng_bf,      FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
+
     {{"angle", 5},      TI_FLOAT, 3, {TI_INT, TI_INT, TI_INT},          _angle,     FLAG_DYNAMIC},
     {{"dihedral", 8},   TI_FLOAT, 4, {TI_INT, TI_INT, TI_INT, TI_INT},  _dihedral,  FLAG_DYNAMIC},
 
     {{"rmsd", 4},       TI_FLOAT, 1, {TI_IRANGE_ARR},                   _rmsd_irng, FLAG_DYNAMIC},
     {{"rmsd", 4},       TI_FLOAT, 1, {TI_BITFIELD},                     _rmsd_bf,   FLAG_DYNAMIC},
 };
-
-#undef N
 
 // Tables
 enum {
@@ -512,7 +490,7 @@ static inline bool compare_str_cstr(str_t str, const char* cstr) {
     return cstr[str.len] == '\0';
 }
 
-static inline bool name_exists_in_array(str_t name, const char** arr, uint64_t arr_len) {
+static inline bool name_exists_in_array(str_t name, const char* arr[], uint64_t arr_len) {
     for (uint64_t i = 0; i < arr_len; ++i) {
         if (compare_str_cstr(name, arr[i])) return true;
     }
@@ -529,11 +507,9 @@ static inline bool in_range(irange_t range, int idx) {
 // @TODO: Add more here
 
 static int _not  (data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
-    ASSERT(dst && dst->ptr);
-    ASSERT(arg[0].ptr);
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
-    ASSERT(compare_type_info(dst->type,   (type_info_t)TI_BITFIELD));
 
     bitfield_t* bf_dst = dst->ptr;
     bitfield_t* bf_src = arg[0].ptr;
@@ -545,13 +521,10 @@ static int _not  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _and  (data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
-    ASSERT(dst && dst->ptr);
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_BITFIELD));
-    ASSERT(compare_type_info(dst->type,   (type_info_t)TI_BITFIELD));
 
     bitfield_t* bf_dst = dst->ptr;
     bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
@@ -564,13 +537,10 @@ static int _and  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _or   (data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
-    ASSERT(dst && dst->ptr);
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(compare_type_info(dst->type,   (type_info_t)TI_BITFIELD));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_BITFIELD));
 
     bitfield_t* bf_dst = dst->ptr;
     bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
@@ -583,7 +553,9 @@ static int _or   (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _dot(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(compare_type_info(arg[0].type, arg[1].type));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
     float* a = (float*)arg[0].ptr;
     float* b = (float*)arg[1].ptr;
@@ -596,9 +568,9 @@ static int _dot(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cross(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT3));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT3));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT3));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT3));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT3));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT3));
     (void)ctx;
 
     float* a = (float*)arg[0].ptr;
@@ -608,32 +580,6 @@ static int _cross(data_t* dst, data_t arg[], eval_context_t* ctx) {
     c[1] = a[2]*b[0] - b[2]*a[0];
     c[2] = a[0]*b[1] - b[0]*a[1];
     return 0;
-}
-
-static inline void mat4_mul_mat4(float C[4][4], float A[4][4], float B[4][4]) {
-    // VECTORIZE IF SUPPORTED BY PLATFORM...
-#define MULT(col, row) \
-    A[0][row] * B[col][0] + A[1][row] * B[col][1] + A[2][row] * B[col][2] + A[3][row] * B[col][3]
-    C[0][0] = MULT(0, 0);
-    C[0][1] = MULT(0, 1);
-    C[0][2] = MULT(0, 2);
-    C[0][3] = MULT(0, 3);
-
-    C[1][0] = MULT(1, 0);
-    C[1][1] = MULT(1, 1);
-    C[1][2] = MULT(1, 2);
-    C[1][3] = MULT(1, 3);
-
-    C[2][0] = MULT(2, 0);
-    C[2][1] = MULT(2, 1);
-    C[2][2] = MULT(2, 2);
-    C[2][3] = MULT(2, 3);
-
-    C[3][0] = MULT(3, 0);
-    C[3][1] = MULT(3, 1);
-    C[3][2] = MULT(3, 2);
-    C[3][3] = MULT(3, 3);
-#undef MULT
 }
 
 static inline void mat4_mul_vec4(float res[4], float M[4][4], float v[4]) {
@@ -646,9 +592,9 @@ static inline void mat4_mul_vec4(float res[4], float M[4][4], float v[4]) {
 }
 
 static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT44));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT44));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT44));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT44));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT44));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT44));
     (void)ctx;
 
     // The type system should already have covered this, we are only reading data we know exists.
@@ -657,15 +603,13 @@ static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
     md_mat4* C = (md_mat4*) dst->ptr;
 
     *C = md_mat4_mul(*A, *B);
-
-    //mat4_mul_mat4(C, A, B);
     return 0;
 }
 
 static int _mat4_mul_vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(compare_type_info(dst->type,   (type_info_t)TI_FLOAT4));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT44));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT4));
+    ASSERT(dst && is_type_equivalent(dst->type,   (type_info_t)TI_FLOAT4));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT44));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT4));
     (void)ctx;
 
     // The type system should already have covered this, we are only reading data we know exists.
@@ -678,9 +622,9 @@ static int _mat4_mul_vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec2(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT2));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT2));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     float (*res) = (float*)dst->ptr;
@@ -690,10 +634,10 @@ static int _vec2(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT3));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[2].type, (type_info_t)TI_FLOAT));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT3));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     float (*res) = (float*)dst->ptr;
@@ -704,11 +648,11 @@ static int _vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT4));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[2].type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[3].type, (type_info_t)TI_FLOAT));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT4));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     float (*res) = (float*)dst->ptr;
@@ -720,7 +664,7 @@ static int _vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
     (void)arg;
     (void)ctx;
     bitfield_t result = *((bitfield_t*)dst->ptr);
@@ -728,9 +672,38 @@ static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+static int _index(data_t*dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    ASSERT(ctx && ctx->mol && ctx->mol->atom.name);
+
+    bitfield_t result = *((bitfield_t*)dst->ptr);
+
+    const str_t* str = as_string_arr(arg[0]);
+    const uint64_t num_str = (uint64_t)element_count(arg[0]);
+
+    const uint64_t blk_count = DIV_UP(ctx->mol->atom.count, 64);
+    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
+        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (ctx->mol->atom.count & 63);
+        uint64_t mask = 0;
+        for (uint64_t bit = 0; bit < bit_count; ++bit) {
+            const uint64_t idx = blk_idx * 64 + bit;
+            const char* atom_str = ctx->mol->atom.name[idx];
+            for (uint64_t i = 0; i < num_str; ++i) {
+                if (compare_str_cstr(str[i], atom_str)) {
+                    mask |= 1ULL << bit;
+                    break;
+                }
+            }
+        }
+        result.bits[blk_idx] = mask;
+    }
+    return 0;
+}
+
 static int _name(data_t*dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_STRING_ARR));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.name);
 
     bitfield_t result = *((bitfield_t*)dst->ptr);
@@ -758,8 +731,8 @@ static int _name(data_t*dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _element(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(arg[0].type.base_type == TYPE_STRING);
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.element);
     bitfield_t result = as_bitfield(*dst);
 
@@ -795,7 +768,8 @@ static int _element(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _x(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x);
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FRANGE));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     bitfield_t result = as_bitfield(*dst);
     const frange_t range = as_frange(arg[0]);
 
@@ -816,7 +790,8 @@ static int _x(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _y(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.y);
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FRANGE));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     bitfield_t result = as_bitfield(*dst);
     const frange_t range = as_frange(arg[0]);
 
@@ -837,8 +812,8 @@ static int _y(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _z(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FRANGE));
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     bitfield_t result = as_bitfield(*dst);
     const frange_t range = as_frange(arg[0]);
 
@@ -859,26 +834,26 @@ static int _z(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_ATOM));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_BITFIELD));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
 
     return 0;
 }
 
 static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_ATOM));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FRANGE));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_BITFIELD));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
 
     return 0;
 }
 
 static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->residue.name);
-    ASSERT(compare_type_info(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
-    ASSERT(dst->ptr);
+    ASSERT(dst && dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
     bitfield_t* bf = dst->ptr;
 
     const uint64_t num_str = element_count(arg[0]);
@@ -899,8 +874,9 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->residue.id);
-    ASSERT(dst && dst->ptr && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
+    ASSERT(ctx && ctx->mol && ctx->mol->residue.name);
+    ASSERT(dst && dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     bitfield_t* bf = dst->ptr;
 
     const uint64_t  num_rid = element_count(arg[0]);
@@ -921,8 +897,9 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->residue.id);
-    ASSERT(dst && dst->ptr && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
+    ASSERT(ctx && ctx->mol && ctx->mol->residue.name);
+    ASSERT(dst && dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     bitfield_t* bf = dst->ptr;
 
     const uint64_t  num_ranges = element_count(arg[0]);
@@ -947,13 +924,32 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // Property Compute
 
-// Simple version with int, int
-static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _distance_irng_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
     ASSERT(dst);
     ASSERT(compare_type_info(dst->type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_INT));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_INT));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_IRANGE));
+    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_IRANGE));
+
+    return 0;
+}
+
+static int _distance_irng_vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
+    ASSERT(dst);
+    ASSERT(compare_type_info(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_IRANGE));
+    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT3));
+
+    return 0;
+}
+
+static int _distance_irng_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
+    ASSERT(dst);
+    ASSERT(compare_type_info(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_IRANGE));
+    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_IRANGE));
 
     return 0;
 }
@@ -1071,6 +1067,7 @@ static int _cast_bf_to_atom(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     return 0;
 }
+
 static int _cast_chain_to_res(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_ATOM));
     ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
@@ -1080,5 +1077,34 @@ static int _cast_chain_to_res(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+static int _atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_ATOM));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
+    (void)dst;
+    (void)arg;
+    (void)ctx;
+    return 0;
+}
+
+static int _residues(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
+    (void)dst;
+    (void)arg;
+    (void)ctx;
+    return 0;
+}
+
+static int _chains(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_CHAIN));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
+    (void)dst;
+    (void)arg;
+    (void)ctx;
+    return 0;
+}
+
+#undef ALL_LENGTHS
+#undef ALL_LEVELS
 
 #endif

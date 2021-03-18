@@ -45,6 +45,7 @@ typedef enum token_type_t {
     TOKEN_IDENT = 128, // idenfitier
     TOKEN_LE, // '<='
     TOKEN_GE, // '>='
+    TOKEN_NE, // '!='
     TOKEN_EQ, // '=='
     TOKEN_AND,
     TOKEN_OR,
@@ -59,27 +60,27 @@ typedef enum token_type_t {
 
 typedef enum ast_type_t {
     AST_UNDEFINED = 0,
-    
     AST_EXPRESSION,         // Parenthesis wrapped expression, We need to have it up here to ensure its precedence over things
     AST_PROC_CALL,          // Procedure call, Operators are directly translated into procedure calls as well.
     AST_CONSTANT_VALUE,
     AST_IDENTIFIER,
     AST_ARRAY,              // This is also just to declare an array in tree form, the node tells us the types, the children contains the values... inefficient, yes.
     AST_ARRAY_SUBSCRIPT,    // [..]
-
     AST_CAST,
     AST_UNARY_NEG,
     AST_NOT,
-
     AST_MUL,
     AST_DIV,
-
     AST_ADD,
     AST_SUB,
-
+    AST_LT,
+    AST_GT,
+    AST_LE,
+    AST_GE,
+    AST_NE,
+    AST_EQ,
     AST_AND,
     AST_OR,
-
     AST_CONTEXT,
     AST_ASSIGNMENT,
 } ast_type_t;
@@ -102,7 +103,10 @@ typedef enum context_level_t {
 } context_level_t;
 
 typedef enum flags_t {
-    FLAG_DYNAMIC = 0x1,     // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependence on atomic positions)
+    FLAG_DYNAMIC                    = 0x1,      // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependence on atomic positions)
+    FLAG_SYMMETRIC_ARGS             = 0x2,      // Indicates that the arguments are symmetric
+    FLAG_ARGS_EQUAL_LENGTH          = 0x4,      // Arguments should have the same array length
+    FLAG_RET_AND_ARG_EQUAL_LENGTH   = 0x8,   // Return type array length matches argument arrays' length
 } flags_t;
 
 typedef struct token_t {
@@ -253,6 +257,47 @@ typedef struct parse_context_t {
 // ###   CORE FUNCTIONS   ###
 // ##########################
 
+static uint32_t operator_precedence(ast_type_t type) {
+    switch(type) {
+    case AST_EXPRESSION:
+    case AST_PROC_CALL:
+    case AST_CONSTANT_VALUE:
+    case AST_IDENTIFIER:
+    case AST_ARRAY:
+    case AST_ARRAY_SUBSCRIPT:
+        return 1;
+    case AST_CAST:
+    case AST_UNARY_NEG:
+    case AST_NOT:
+        return 2;
+    case AST_MUL:
+    case AST_DIV:
+        return 3;
+    case AST_ADD:
+    case AST_SUB:
+        return 4;
+    case AST_LT:
+    case AST_GT:
+    case AST_LE:
+    case AST_GE:
+        return 5;
+    case AST_NE:
+    case AST_EQ:
+        return 6;
+    case AST_AND:
+        return 7;
+    case AST_OR:
+        return 8;
+    case AST_CONTEXT:
+        return 9;
+    case AST_ASSIGNMENT:
+        return 10;
+    default:
+        ASSERT(false);
+    }
+    return 0;
+}
+
 static inline bool compare_type_info_dim(type_info_t a, type_info_t b) {
     return (memcmp(&a.dim, &b.dim, sizeof(a.dim)) == 0) && (a.len_dim == b.len_dim);
 }
@@ -281,6 +326,10 @@ static inline bool is_scalar(type_info_t ti) {
 
 static inline bool is_variable_length(type_info_t ti) {
     return ti.dim[ti.len_dim] == -1;
+}
+
+static inline bool is_incomplete_bitfield(type_info_t ti) {
+    return ti.base_type == TYPE_BITFIELD && ti.level == -1;
 }
 
 static inline uint64_t type_info_array_len(type_info_t ti) {
@@ -423,7 +472,8 @@ static inline bool is_number(token_type_t type) {
 
 static inline bool is_operator(ast_type_t type) {
     return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV ||
-        type == AST_AND || type == AST_OR || type == AST_NOT);
+            type == AST_AND || type == AST_OR || type == AST_NOT ||
+            type == AST_EQ || type == AST_NE || type == AST_LE || type == AST_GE || type == AST_LT || type == AST_GT);
 }
 
 static const char* get_token_type_str(token_type_t type) {
@@ -527,17 +577,6 @@ static uint64_t count_chains(bitfield_t mask, md_molecule* mol) {
 // ###   HELPER FUNCTIONS   ###
 // ############################
 
-static inline bool is_type_implicitly_convertible(type_info_t from, type_info_t to) {
-    for (uint64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
-        if (is_type_directly_compatible(casts[i].arg_type[0], from) &&
-            is_type_directly_compatible(casts[i].return_type, to)) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 // Returns if the value type can be operated on using logical operators
 static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
     return type == TYPE_BOOL || type == TYPE_BITFIELD;
@@ -610,7 +649,7 @@ static void fix_precedence(ast_node_t** node) {
         if (!child || md_array_size(child->children) == 0) return;
         ast_node_t* grand_child = child->children[0];
 
-        if (child->type > parent->type) { // type is sorted on precedence
+        if (operator_precedence(child->type) > operator_precedence(parent->type)) {
             child->children[0] = parent;
             parent->children[i] = grand_child;
             *node = child;
@@ -618,57 +657,44 @@ static void fix_precedence(ast_node_t** node) {
     }
 }
 
-static bool convert_node(ast_node_t* node, type_info_t new_type, md_script_ir* ir) {
-    // We need to support the following conversions
-    // Direct value conversions of Constant Value nodes, which are always scalar
-    // Cast conversions which are performed on results of expressions / operators / proc_calls where we cannot directly convert the nodes
+static bool is_type_implicitly_convertible(type_info_t from, type_info_t to) {
+    for (uint64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+        if (is_type_directly_compatible(casts[i].arg_type[0], from) &&
+            is_type_directly_compatible(casts[i].return_type, to)) {
+            return true;
+        }
+    }
+    return false;
+}
 
+static procedure_t* find_cast_procedure(type_info_t from, type_info_t to) {
+    for (uint64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+        if (is_type_directly_compatible(casts[i].arg_type[0], from) &&
+            is_type_directly_compatible(casts[i].return_type, to)) {
+            return &casts[i];
+        }
+    }
+    return NULL;
+}
+
+static bool convert_node(ast_node_t* node, type_info_t new_type, md_script_ir* ir) {
     const type_info_t from = node->data.type;
     const type_info_t to   = new_type;
 
-    if (is_scalar(from)) {
-        if (is_scalar(to)) {
-            if (node->type == AST_CONSTANT_VALUE) {
-                // If its a constant value, we modify the node directly
-                ASSERT(is_scalar(node->data.type)); // Constant value nodes should always be scalars
-                switch (to.base_type) {
-                case TYPE_FLOAT:
-                    ASSERT(from.base_type == TYPE_INT);
-                    node->value._float = (float)node->value._int;
-                    node->data.type.base_type = TYPE_FLOAT;
-                    return true;
-                case TYPE_FRANGE:
-                    ASSERT(from.base_type == TYPE_IRANGE);
-                    node->value._frange = (frange_t){(float)node->value._irange.beg, (float)node->value._irange.end};
-                    node->data.type.base_type = TYPE_FRANGE;
-                    return true;
-                case TYPE_IRANGE:
-                    ASSERT(from.base_type == TYPE_INT);
-                    node->value._irange = (irange_t){node->value._int, node->value._int};
-                    node->data.type.base_type = TYPE_IRANGE;
-                    return true;
-                default:
-                    ASSERT(false);
-                }
-            } else {
-                // We need to convert this node into a cast node and add the original node data as a child
-                ast_node_t* node_copy = create_node(ir, node->type, node->token);
-                memcpy(node_copy, node, sizeof(ast_node_t));
-                node->type = AST_CAST;
-                node->data.type = to;
-                node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
-                md_array_push(node->children, node_copy, ir->arena);
-                return true;
-            }
-        }
-    } else { // is_array(from)
-        if (is_array(to)) {
-            ASSERT(false);
-        }
+    procedure_t* cast_proc = find_cast_procedure(from, to);
+    if (cast_proc) {
+        // We need to convert this node into a cast node and add the original node data as a child
+        ast_node_t* node_copy = create_node(ir, node->type, node->token);
+        memcpy(node_copy, node, sizeof(ast_node_t));
+        node->type = AST_PROC_CALL;
+        node->data.type = to;
+        node->proc = cast_proc;
+        node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
+        md_array_push(node->children, node_copy, ir->arena);
+        return true;
     }
 
-    // Unsupported conversion
-    ASSERT(false); // Should not reach this since the implicit conversion check should have not allowed this
+    ASSERT(false);
     return false;
 }
 
@@ -721,13 +747,35 @@ static void create_error(md_script_ir* ir, token_t token, const char* format, ..
     }
 }
 
-static procedure_t* find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], uint64_t num_arg_types, procedure_t* candidates, uint64_t num_cantidates, bool allow_implicit_conversions) {
+typedef struct procedure_match_result_t {
+    bool success;
+    procedure_t* procedure;
+    uint32_t flags;
+} procedure_match_result_t;
+
+static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], uint64_t num_arg_types, procedure_t* candidates, uint64_t num_cantidates, bool allow_implicit_conversions) {
+    procedure_match_result_t res = {0};
+
     for (uint64_t i = 0; i < num_cantidates; ++i) {
         procedure_t* proc = &candidates[i];
         if (compare_str(proc->name, name)) {
             if (num_arg_types == proc->num_args) {
                 if (compare_type_info_array(arg_types, proc->arg_type, num_arg_types)) {
-                    return proc;
+                    res.success = true;
+                    res.procedure = proc;
+                    return res;
+                }
+                else if (proc->flags && FLAG_SYMMETRIC_ARGS) {
+                    // @TODO: Does this make sense for anything else than two arguments???
+                    // I cannot come up with such a scenario.
+                    ASSERT(proc->num_args == 2);
+                    type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
+                    if (compare_type_info_array(swapped_args, proc->arg_type, 2)) {
+                        res.success = true;
+                        res.procedure = proc;
+                        res.flags |= FLAG_SYMMETRIC_ARGS;   // Flag this match as symmetric
+                        return res;
+                    }
                 }
             }
         }
@@ -737,8 +785,10 @@ static procedure_t* find_procedure_supporting_arg_types_in_candidates(str_t name
         // Try using implicit casts on types where this is allowed.
         // int to float and irange to frange.
         // Store the best candidate with the lowest cost heuristic (number of conversions needed)
-        procedure_t* best_proc = NULL;
-        uint32_t     best_cost = 0xFFFFFFFFU;
+        procedure_t*    best_proc  = NULL;
+        uint32_t        best_flags = 0;
+        uint32_t        best_cost  = 0xFFFFFFFFU;
+
         for (uint64_t i = 0; i < num_cantidates; ++i) {
             procedure_t* proc = &candidates[i];
             if (compare_str(proc->name, name)) {
@@ -746,6 +796,7 @@ static procedure_t* find_procedure_supporting_arg_types_in_candidates(str_t name
                     // Same name and same number of args...
 
                     uint32_t cost = 0;
+                    uint32_t flags = 0;
                     for (uint64_t j = 0; j < proc->num_args; ++j) {
                         if (is_type_directly_compatible(arg_types[j], proc->arg_type[j])) {
                             // No conversion needed for this argument (0 cost)
@@ -763,31 +814,71 @@ static procedure_t* find_procedure_supporting_arg_types_in_candidates(str_t name
                     if (cost < best_cost) {
                         best_cost = cost;
                         best_proc = proc;
+                        best_flags = flags;
+                    }
+
+                    if (proc->flags & FLAG_SYMMETRIC_ARGS) {
+                        ASSERT(proc->num_args == 2);
+                        // Test if we can get a (better) result by swapping the arguments
+                        type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
+
+                        cost = 0;
+                        flags = FLAG_SYMMETRIC_ARGS;
+                        for (uint64_t j = 0; j < proc->num_args; ++j) {
+                            if (is_type_directly_compatible(swapped_args[j], proc->arg_type[j])) {
+                                // No conversion needed for this argument (0 cost)
+                            }
+                            else if (is_type_implicitly_convertible(swapped_args[j], proc->arg_type[j])) {
+                                ++cost;
+                            }
+                            else {
+                                // We are smoked.. This particular matching procedure cannot be resolved using implicit conversions...
+                                cost = 0xFFFFFFFFU;
+                                break;
+                            }
+                        }
+
+                        if (cost < best_cost) {
+                            best_cost = cost;
+                            best_proc = proc;
+                            best_flags = flags;
+                        }
                     }
                 }
             }
         }
-        return best_proc;
+        if (best_cost < 0xFFFFFFFFU) {
+            res.success = true;
+            res.procedure = best_proc;
+            res.flags = best_flags;
+        }
     }
 
-    return NULL;
+    return res;
 }
 
-static procedure_t* find_procedure_supporting_arg_types(str_t name, const type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
+static procedure_match_result_t find_procedure_supporting_arg_types(str_t name, const type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
     return find_procedure_supporting_arg_types_in_candidates(name, arg_types, num_arg_types, procedures, ARRAY_SIZE(procedures), allow_implicit_conversions);
 }
 
-static procedure_t* find_operator_supporting_arg_types(token_type_t op, const type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
+static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op, const type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
     // Map token type to string which we use to identify operator procedures
     str_t name = {0};
     switch(op) {
-    case '+': name.ptr = "+"; name.len = 1; break;
-    case '-': name.ptr = "-"; name.len = 1; break;
-    case '*': name.ptr = "*"; name.len = 1; break;
-    case '/': name.ptr = "/"; name.len = 1; break;
-    case TOKEN_AND: name.ptr = "and"; name.len = 3; break;
-    case TOKEN_OR:  name.ptr = "or";  name.len = 2; break;
-    case TOKEN_NOT: name.ptr = "not"; name.len = 3; break;
+    case AST_ADD: name.ptr = "+"; name.len = 1; break;
+    case AST_SUB: name.ptr = "-"; name.len = 1; break;
+    case AST_MUL: name.ptr = "*"; name.len = 1; break;
+    case AST_DIV: name.ptr = "/"; name.len = 1; break;
+    case AST_AND: name.ptr = "and"; name.len = 3; break;
+    case AST_OR:  name.ptr = "or";  name.len = 2; break;
+    case AST_NOT: name.ptr = "not"; name.len = 3; break;
+    case AST_EQ: name.ptr = "=="; name.len = 2; break;
+    case AST_NE: name.ptr = "!="; name.len = 2; break;
+    case AST_LT: name.ptr = "<"; name.len = 2; break;
+    case AST_GT: name.ptr = ">"; name.len = 2; break;
+    case AST_LE: name.ptr = "<="; name.len = 2; break;
+    case AST_GE: name.ptr = ">="; name.len = 2; break;
+
     default:
         ASSERT(false);
     }
@@ -1104,7 +1195,7 @@ static int print_type_info(char* buf, int buf_size, type_info_t info) {
 
 static void print_bitfield(FILE* file, bitfield_t bitfield) {
     const uint64_t max_bits = 64;
-    const uint64_t num_bits = MIN(bitfield.num_bits, max_bits); // Don't want to show more than the first 128 bits ...
+    const uint64_t num_bits = MIN(bitfield.num_bits, max_bits);
     fprintf(file, "[");
     for (uint64_t i = 0; i < num_bits; ++i) {
         fprintf(file, "%i", bit_test(bitfield.bits, i) ? 1 : 0);
@@ -1481,35 +1572,22 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
     ast_node_t* rhs = parse_expression(ctx);
     ast_node_t* node = 0;
 
-    if (!lhs) {
-        create_error(ctx->ir, token,
-            "Left hand side of operator '%s' did not evaluate to a proper expression.", get_token_type_str(token.type));
-        return NULL;
+    if (lhs && rhs) {
+        ast_type_t type = 0;
+        switch(token.type) {
+            case TOKEN_EQ: type = AST_EQ; break;
+            case TOKEN_NE: type = AST_NE; break;
+            case TOKEN_LE: type = AST_LE; break;
+            case TOKEN_GE: type = AST_GE; break;
+            case '<': type = AST_LT; break;
+            case '>': type = AST_GT; break;
+            default: ASSERT(false);
+        }
+        node = create_node(ctx->ir, type, token);
+        ast_node_t* args[2] = {lhs, rhs};
+        md_array_push_array(node->children, args, 2, ctx->ir->arena);
     }
-
-    if (!rhs) {
-        create_error(ctx->ir, token,
-            "Right hand side of operator '%s' did not evaluate to a proper expression.", get_token_type_str(token.type));
-        return NULL;
-    }
-
-    const type_info_t arg_type[2] = {lhs->data.type, rhs->data.type};
-    procedure_t* op = find_operator_supporting_arg_types(token.type, arg_type, 2, false);
-
-    if (op) {
-        node = create_node(ctx->ir, AST_PROC_CALL, token);
-        md_array_push(node->children, lhs, ctx->ir->arena);
-        md_array_push(node->children, rhs, ctx->ir->arena);
-        node->data.type = op->return_type;
-    } else {
-        char arg_type_str[2][64] = {0};
-        print_type_info(arg_type_str[0], ARRAY_SIZE(arg_type_str[0]), lhs->data.type);
-        print_type_info(arg_type_str[1], ARRAY_SIZE(arg_type_str[1]), rhs->data.type);
-        create_error(ctx->ir, token,
-            "Could not find supporting operator '%s' with left hand side type (%s) and right hand side type (%s)",
-            get_token_type_str(token.type), arg_type_str[0], arg_type_str[1]);
-    }
-
+   
     return node;
 }
 
@@ -1527,11 +1605,11 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
     if (lhs && rhs) {
         ast_type_t type = 0;
         switch(token.type) {
-        case '+': type = AST_ADD; break;
-        case '-': type = AST_SUB; break;
-        case '*': type = AST_MUL; break;
-        case '/': type = AST_DIV; break;
-        default: ASSERT(false);
+            case '+': type = AST_ADD; break;
+            case '-': type = AST_SUB; break;
+            case '*': type = AST_MUL; break;
+            case '/': type = AST_DIV; break;
+            default: ASSERT(false);
         }
         node = create_node(ctx->ir, type, token);
         ast_node_t* args[2] = {lhs, rhs};
@@ -1932,6 +2010,7 @@ static int evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_co
         ASSERT(false);
     }
 
+    ASSERT(elem_size == dst->size);
     const data_t src = {dst->type, (char*)arr_data.ptr + elem_size * offset, elem_size * length};
     copy_data(dst, &src);
 
@@ -2004,7 +2083,7 @@ typedef struct static_check_ctx_t {
 // This result is then used to deduce the full array type of our node.
 static type_info_t static_check_query_proc_result_type(ast_node_t* node, static_check_ctx_t* ctx) {
     ASSERT(node && node->proc);
-    eval_context_t eval_ctx;
+    eval_context_t eval_ctx = {0};
     eval_ctx.mol = ctx->mol;
     eval_ctx.temp_alloc = ctx->temp_alloc;
 
@@ -2058,21 +2137,23 @@ static bool static_check_operator(ast_node_t* node, static_check_ctx_t* ctx) {
 
     if (static_check_children(node, ctx)) {
         const uint64_t num_args = md_array_size(node->children);
-        ast_node_t* arg[2] = {0};
-        if (node->type == AST_NOT) {
-            ASSERT(num_args == 1);
-            arg[0] = node->children[0];
-        }
-        else {
-            ASSERT(num_args == 2);
-            arg[0] = node->children[0];
-            arg[1] = node->children[1];
-        }
+        ast_node_t** arg = node->children;
 
-        const type_info_t arg_type[2] = {arg[0]->data.type, num_args > 1 ? arg[1]->data.type : (type_info_t){0}};
-        procedure_t* op = find_operator_supporting_arg_types(node->token.type, arg_type, num_args, true);
+        type_info_t arg_type[2] = {arg[0]->data.type, num_args > 1 ? arg[1]->data.type : (type_info_t){0}};
+        procedure_match_result_t res = find_operator_supporting_arg_types(node->type, arg_type, num_args, true);
+        if (res.success) {
+            procedure_t* op = res.procedure;
 
-        if (op) {
+            if (res.flags & FLAG_SYMMETRIC_ARGS) {
+                // If the symmetric flag is set, we need to swap the arguments
+                ASSERT(num_args == 2);
+                ast_node_t* tmp_child = node->children[0];
+                node->children[0] = node->children[1];
+                node->children[1] = tmp_child;
+                arg_type[0] = arg[0]->data.type;
+                arg_type[1] = arg[1]->data.type;
+            }
+
             // Convert node into a proc call
             node->type = AST_PROC_CALL;
             node->proc = op;
@@ -2138,13 +2219,17 @@ static bool static_check_proc_call(ast_node_t* node, static_check_ctx_t* ctx) {
 
         if (num_args == 0) {
             // Zero arguments
-            procedure_t* proc = find_procedure_supporting_arg_types(proc_name, 0, 0, false);
-            if (proc) {
-                node->proc = proc;
-                if (is_variable_length(proc->return_type)) {
+            procedure_match_result_t res = find_procedure_supporting_arg_types(proc_name, 0, 0, false);
+            if (res.success) {
+                node->proc = res.procedure;
+
+                // Make sure this flag is set in the tree so it can be propagated upwards later
+                if (node->proc->flags & FLAG_DYNAMIC) node->flags |= FLAG_DYNAMIC;
+
+                if (is_variable_length(node->proc->return_type)) {
                     node->data.type = static_check_query_proc_result_type(node, ctx);
                 } else {
-                    node->data.type = proc->return_type;
+                    node->data.type = node->proc->return_type;
                 }
                 return true;
             }
@@ -2163,25 +2248,35 @@ static bool static_check_proc_call(ast_node_t* node, static_check_ctx_t* ctx) {
                 arg_type[i] = arg[i]->data.type;
             }
 
-            procedure_t* proc = find_procedure_supporting_arg_types(proc_name, arg_type, num_args, true);
-            if (proc) {
-                node->proc = proc;
+            procedure_match_result_t res = find_procedure_supporting_arg_types(proc_name, arg_type, num_args, true);
+            if (res.success) {
+                node->proc = res.procedure;
                 // Make sure this flag is set in the tree so it can be propagated upwards later
-                if (proc->flags & FLAG_DYNAMIC) node->flags |= FLAG_DYNAMIC;
+                if (node->proc->flags & FLAG_DYNAMIC) node->flags |= FLAG_DYNAMIC;
+
+                if (res.flags & FLAG_SYMMETRIC_ARGS) {
+                    // If the symmetric flag is set, we need to swap the arguments
+                    ASSERT(num_args == 2);
+                    ast_node_t* tmp_child = node->children[0];
+                    node->children[0] = node->children[1];
+                    node->children[1] = tmp_child;
+                    arg_type[0] = arg[0]->data.type;
+                    arg_type[1] = arg[1]->data.type;
+                }
 
                 // Make sure we cast the arguments into the expected types of the procedure.
                 for (uint64_t i = 0; i < num_args; ++i) {
-                    if (!is_type_directly_compatible(arg_type[i], proc->arg_type[i])) {
+                    if (!is_type_directly_compatible(arg_type[i], node->proc->arg_type[i])) {
                         // Types are not directly compatible, but should be implicitly convertible
-                        ASSERT(is_type_implicitly_convertible(arg_type[i], proc->arg_type[i]));
-                        convert_node(arg[i], proc->arg_type[i], ctx->ir);
+                        ASSERT(is_type_implicitly_convertible(arg_type[i], node->proc->arg_type[i]));
+                        convert_node(arg[i], node->proc->arg_type[i], ctx->ir);
                     }
                 }
 
-                if (is_variable_length(proc->return_type)) {
+                if (is_variable_length(node->proc->return_type)) {
                     node->data.type = static_check_query_proc_result_type(node, ctx);
                 } else {
-                    node->data.type = proc->return_type;
+                    node->data.type = node->proc->return_type;
                 }
 
                 return true;
@@ -2294,6 +2389,7 @@ static bool static_check_array_subscript(ast_node_t* node, static_check_ctx_t* c
     // In array subscripts, only integers and ranges should be allowed.
     // For now, we only support SINGLE integers or ranges
     // @TODO: In the future, se should expand this to support mixed integers and ranges and create a proper subset of the original data
+    // @TODO: evaluate the children in order to determine the length and values (to make sure they are in range)
 
     if (static_check_children(node, ctx)) {
         const uint64_t  num_elem = md_array_size(node->children);
@@ -2410,6 +2506,10 @@ static bool static_check_context(ast_node_t* node, static_check_ctx_t* ctx) {
         ast_node_t* lhs = node->children[0];
         ast_node_t* rhs = node->children[1];
 
+        if (lhs->proc && strncmp(lhs->proc->name.ptr, "dihedral", 8) == 0) {
+            while(0);
+        }
+
         if (rhs->data.type.base_type == TYPE_BITFIELD && rhs->data.type.level > 0) {
             if (!rhs->flags & FLAG_DYNAMIC) {
                 eval_context_t eval_ctx = {0};
@@ -2425,16 +2525,20 @@ static bool static_check_context(ast_node_t* node, static_check_ctx_t* ctx) {
                         default: ASSERT(false);
                     }
 
-                    type_info_t new_type = lhs->data.type;
-                    if (lhs->data.type.base_type == TYPE_BITFIELD) {
-                        new_type.level = rhs->data.type.level;
-                    } else {
-                        new_type = lhs->data.type;
-                        new_type.dim[new_type.len_dim] = (int32_t)count;
-                    }
+                    if (count > 0) {
+                        type_info_t new_type = lhs->data.type;
+                        if (lhs->data.type.base_type == TYPE_BITFIELD) {
+                            new_type.level = rhs->data.type.level;
+                        } else {
+                            new_type = lhs->data.type;
+                            new_type.dim[new_type.len_dim] = (int32_t)count;
+                        }
 
-                    node->data.type = new_type;
-                    return true;
+                        node->data.type = new_type;
+                        return true;
+                    } else {
+                        create_error(ctx->ir, node->token, "The context is empty.");
+                    }
                 } else {
                     create_error(ctx->ir, node->token, "Right hand side of 'in' failed to evaluate at compile time.");
                 }
@@ -2478,6 +2582,12 @@ static bool static_check(ast_node_t* node, static_check_ctx_t* ctx) {
     case AST_AND:
     case AST_OR:
     case AST_NOT:
+    case AST_EQ:
+    case AST_NE:
+    case AST_LE:
+    case AST_GE:
+    case AST_LT:
+    case AST_GT:
         return static_check_operator(node, ctx);
     case AST_CAST: // Should never happen since we insert casts here in type checking phase.
     default:
