@@ -6,7 +6,11 @@
 #ifndef ASSERT
 #include <assert.h>
 #define ASSERT assert
+#if MD_COMPILER_MSVC
 #define STATIC_ASSERT static_assert
+#else
+#define STATIC_ASSERT _Static_assert
+#endif
 #endif
 
 #if MD_COMPILER_MSVC
