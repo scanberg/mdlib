@@ -10,6 +10,8 @@ env:
 
 jobs:
   build:
+    # Keep running even if one job in the matrix fails
+    fail-fast: false
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
