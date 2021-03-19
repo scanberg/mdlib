@@ -325,17 +325,17 @@ static fio_size_t fio_ftell(fio_fd fd) {
 #else 
 
 /* Version for UNIX machines */
-#if defined(__linux)
+#if defined(__linux__)
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE            /* required for O_DIRECT */
 #endif
 #endif
-#include <unistd.h>
-#include <stdio.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 typedef int fio_fd;
 typedef off_t fio_size_t;      /* off_t is 64-bits with LFS builds */
@@ -353,7 +353,7 @@ typedef off_t fio_size_t;      /* off_t is 64-bits with LFS builds */
  * cases it is probably best not to use it at all, and to fall back to 
  * non-vectorized I/O APIs to avoid such extra copies.
  */
-#if defined(__sun) || defined(__APPLE_CC__) || defined(__linux)
+#if defined(__sun) || defined(__APPLE_CC__) || defined(__linux__)
 #define USE_KERNEL_READV 1
 #endif
 
@@ -385,7 +385,7 @@ static int fio_open(const char *filename, int mode, fio_fd *fd) {
   if (mode & FIO_WRITE) 
     oflag = O_WRONLY | O_CREAT | O_TRUNC;
 
-#if defined(__linux)
+#if defined(__linux__)
   /* enable direct I/O, requires block-aligned buffers and I/O sizes */
   if (mode & FIO_DIRECT)
     oflag |= O_DIRECT;

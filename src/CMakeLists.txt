@@ -1,9 +1,3 @@
-cmake_minimum_required(VERSION 3.0)
-
-project(libmold VERSION 0.1.1 LANGUAGES C)
-
-option(MD_USE_RELATIVE_PATHS OFF)
-
 file(GLOB SRC_FILES *)
 file(GLOB CORE_FILES core/*)
 file(GLOB SHADER_FILES shaders/*)
@@ -14,17 +8,16 @@ source_group("core" FILES ${CORE_FILES})
 source_group("ext" FILES ${EXT_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 
+add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
+
 if (MSVC)
     message(STATUS "MSVC configuration was used")
     add_compile_options(/MT /W4 /MP /GR- /fp:fast /MP /arch:AVX)# /arch:AVX2
 endif()
 
-add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
-
 target_include_directories(mold
-	PUBLIC
-		$<INSTALL_INTERFACE: ${CMAKE_CURRENT_SOURCE_DIR}>
-		$<BUILD_INTERFACE:   ${CMAKE_CURRENT_SOURCE_DIR}>
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 if (MD_USE_RELATIVE_PATHS)
@@ -47,9 +40,7 @@ else()
 	target_compile_definitions(mold PRIVATE MD_SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\")
 endif()
 
-if (CMAKE_COMPILER_IS_GNUCC)
-set_property(TARGET mold PROPERTY C_STANDARD 99)
-set_property(TARGET mold PROPERTY C_STANDARD_REQUIRED ON)
-target_compile_definitions(mold PRIVATE -D_GNU_SOURCE)
-target_link_libraries(mold m)
+if(CMAKE_COMPILER_IS_GNUCC)
+  target_compile_definitions(mold PRIVATE _GNU_SOURCE)
+  target_link_libraries(mold PUBLIC m)
 endif()
