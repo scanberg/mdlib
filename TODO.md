@@ -17,14 +17,18 @@
 ### Basic Script (2 Weeks) ### 
     [X] Tokenizer
     [X] Function calls
-    [X] Numerical Constants (E, PI), are these really needed? The user can just trivially define these whenever they are needed.
+    [X] Numerical Constants (E, PI, TAU)
     [X] Parse expressions sequentially -> AST for each expression.
     [X] Fix bug where tokenizer never stops if script ends with whitespace.
     [X] Support array types in arithmetic operators
-    [/] Resolve ambiguities within the syntax regarding expressions within a local scope vs. global, usage of keyword in
-        Partly solved by using keyword in to supply an explicit context for the operation.
+    [X] Resolve ambiguities within the syntax regarding expressions within a local scope vs. global
     [X] Fix the line bug in tokenizer
-    [ ] Compile time evaluate AST tree, evaluate EVERYTHING that can be evaluated at compile time. Propagate evaluated values back up.
+    [X] Implement FLAG_SYMMETRIC_ARGS to mark procedures where arguments are symmetric
+    [ ] Implement FLAG_ARG_TYPES_EQUAL_LENGTH to mark procedures where the input arguments should match in length
+    [ ] Implement FLAG_RET_TYPE_EQUAL_LENGTH to mark procedures that return a length equivalent to that of the input
+    [ ] Finalize static check for context nodes (determine the length)
+    [ ] Modify compatible_type() to support matching of float[4][1] to float[4].
+    [ ] Compile time evaluate AST tree, evaluate EVERYTHING that can be evaluated at compile time.
     [ ] Evaluate syntax tree
     [ ] Compute selections
     [ ] Compute properties

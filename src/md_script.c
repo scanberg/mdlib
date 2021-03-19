@@ -171,7 +171,9 @@ typedef struct type_info_t {
 typedef struct data_t {
     type_info_t type;
     void*       ptr;    // Pointer to the data
-    uint64_t    size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
+    // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
+    // The idea is that we pack everything sequentially in memory so we can do efficient memcpy using ptr and size.
+    uint64_t    size;
     str_t       unit;   // The unit of the particular data, e.g rad as in radians, or ° as in degrees, or Å as in Ångström (This is added as a suffix when displaying the data)
 } data_t;
 
@@ -1956,6 +1958,12 @@ static int evaluate_assignment(data_t* dst, const ast_node_t* node, eval_context
     // the data size could be zero if it is an array of length 0, in that case we don't need to allocate anything.
     // This should also be the conceptual entry point for all evaluations in this declarative language
 
+    if (evaluate_node(dst, rhs, ctx) >= 0) {
+        // Good stuff
+        lhs->ident->data = *dst;
+        return 0;
+    }
+
     return -1;
 }
 
@@ -2010,6 +2018,11 @@ static int evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_co
         ASSERT(false);
     }
 
+    // @TODO: Implement support for bitfield here.
+    // For bitfields we operate on the level of the bitfield (atoms, residues, chains)
+    // the index or range corresponds to the n'th atom / residue / chain
+    // mask these with an bit_and operation
+
     ASSERT(elem_size == dst->size);
     const data_t src = {dst->type, (char*)arr_data.ptr + elem_size * offset, elem_size * length};
     copy_data(dst, &src);
@@ -2023,13 +2036,15 @@ static int evaluate_cast(data_t* dst, const ast_node_t* node, eval_context_t* ct
     ASSERT(compare_type_info(dst->type, node->data.type));
     ASSERT(md_array_size(node->children) == 1);
 
-    
+    // @TODO: Implement
 
     return -1;
 }
 
 static int evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CONTEXT);
+
+    // @TODO: Implement
 
     return -1;
 }
@@ -2039,14 +2054,6 @@ static int evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* ct
 
     switch (node->type) {
         case AST_PROC_CALL:
-        case AST_NOT:
-        case AST_UNARY_NEG:
-        case AST_MUL:
-        case AST_DIV:
-        case AST_ADD:
-        case AST_SUB:
-        case AST_AND:
-        case AST_OR:
             return evaluate_proc_call(dst, node, ctx);
         case AST_ASSIGNMENT:
             return evaluate_assignment(dst, node, ctx);
@@ -2058,10 +2065,24 @@ static int evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* ct
             return evaluate_constant_value(dst, node, ctx);
         case AST_IDENTIFIER:
             return evaluate_identifier(dst, node, ctx);
-        case AST_CAST:
-            return evaluate_cast(dst, node, ctx);         // Should probably be baked into function calls
         case AST_CONTEXT:
             return evaluate_context(dst, node, ctx);
+
+        case AST_NOT:       // All operators should have been resolved during static check and converted into proc-calls
+        case AST_UNARY_NEG:
+        case AST_MUL:
+        case AST_DIV:
+        case AST_ADD:
+        case AST_SUB:
+        case AST_AND:
+        case AST_OR:
+        case AST_EQ:
+        case AST_NE:
+        case AST_LE:
+        case AST_GE:
+        case AST_LT:
+        case AST_GT:
+        case AST_CAST:      // Casts should have been resolved during static check and converted into a proc-call
         case AST_UNDEFINED:
         default:
             ASSERT(false);
@@ -2716,7 +2737,7 @@ static bool static_eval_node(ast_node_t* node, md_script_ir* ir, eval_context_t*
         // Allocate persistent data for the 'top' node within the tree/subtree which is saved for later evaluations.
         // Use temp malloc for everything within the subtree
         if (allocate_data(&node->data, ctx->mol, ir->arena)) {
-            result &= (evaluate_node(&node->data, node, ctx) > 0);
+            result &= (evaluate_node(&node->data, node, ctx) >= 0);
         } else {
             create_error(ir, node->token, "Could not allocate data for node during static evaluation");
         }
