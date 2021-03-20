@@ -54,24 +54,6 @@ void bit_clear(uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
     bits[end_idx] &= ~end_mask;
 }
 
-void bit_invert (uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
-    const uint64_t beg_idx = block_idx(bit_offset);
-    const uint64_t end_idx = block_idx(bit_offset + bit_count);
-    const uint64_t beg_mask = ~(bit_pattern(bit_offset) - 1);
-    const uint64_t end_mask = (bit_pattern(bit_offset + bit_count) - 1);
-
-    if (beg_idx == end_idx) {
-        const uint64_t mask = beg_mask & end_mask;
-        bits[beg_idx] = (~mask & bits[beg_idx]) | (mask & ~bits[beg_idx]);
-        return;
-    }
-    bits[beg_idx] = (~beg_mask & bits[beg_idx]) | (beg_mask & ~bits[beg_idx]);
-    for (uint64_t i = beg_idx + 1; i < end_idx; ++i) {
-        bits[i] = ~bits[i];
-    }
-    bits[end_idx] = (~end_mask & bits[end_idx]) | (end_mask & ~bits[end_idx]);
-}
-
 void bit_or(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count) {
     const uint64_t beg_idx = block_idx(bit_offset);
     const uint64_t end_idx = block_idx(bit_offset + bit_count);
@@ -213,6 +195,22 @@ uint64_t bit_count(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count
 bool bit_test(const uint64_t* bits, uint64_t idx) {
     const uint64_t block = bits[block_idx(idx)];
     return block & (1ULL << fast_mod(idx, BITS_PER_BLOCK));
+}
+
+bool bit_cmp(const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count) {
+    const uint64_t beg_idx = block_idx(bit_offset);
+    const uint64_t end_idx = block_idx(bit_offset + bit_count);
+    const uint64_t beg_mask = ~(bit_pattern(bit_offset) - 1);
+    const uint64_t end_mask = (bit_pattern(bit_offset + bit_count) - 1);
+    if (beg_idx == end_idx) {
+        const uint64_t mask = beg_mask & end_mask;
+        return (mask & src_a[beg_idx]) == (mask & src_b[beg_idx]);
+    }
+
+    if ((beg_mask & src_a[beg_idx]) != (beg_mask & src_b[beg_idx])) return false;
+    if ((end_idx - beg_idx) > 2 && (memcmp(src_a + beg_idx + 1, src_b + beg_idx + 1, ((end_idx - beg_idx) - 2) * sizeof(uint64_t)) != 0)) return false;
+    if ((end_mask & src_a[end_idx]) != (end_mask & src_b[end_idx])) return false;
+    return true;
 }
 
 /*

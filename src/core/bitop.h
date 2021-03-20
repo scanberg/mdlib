@@ -6,7 +6,6 @@
 
 void bit_set    (uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
 void bit_clear  (uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
-void bit_invert (uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
 
 void bit_or     (uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count);
 void bit_or_not (uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count);
@@ -22,6 +21,9 @@ uint64_t bit_count(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count
 
 // Test if single bit in field is set
 bool bit_test(const uint64_t* bits, uint64_t idx);
+
+// Test if bitfields are equivalent
+bool bit_cmp(const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count);
 
 // Finds the next bit set within the bitarray, if no bit is found -1 is returned (i.e. UINT64_MAX = 0xffffffffffffffff)
 //uint64_t find_next_bit_set(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
