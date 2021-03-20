@@ -415,7 +415,7 @@ static token_t get_next_token_from_buffer(lexer_t* lexer) {
     token_t t = {0};
     t.type = TOKEN_TYPE_UNDEFINED;
 
-    char* buf = lexer->buff;
+    const char* buf = lexer->buff;
     for (uint32_t i = lexer->at; buf[i]; ++i) {
         if (is_whitespace(buf[i])) {
             continue;
@@ -729,11 +729,11 @@ static ast_node_t* parse_number(parse_context_t* ctx, lexer_t* lexer) {
             }
             node->base_type = VALUE_TYPE_FLT;
             node->_value.type = VALUE_TYPE_FLT;
-            node->_value._flt = parse_float(ctx->expr_str + str.offset, str.length);
+            node->_value._flt = (float)parse_float(ctx->expr_str + str.offset, str.length);
         } else {
             node->base_type = VALUE_TYPE_INT;
             node->_value.type = VALUE_TYPE_INT;
-            node->_value._int = parse_int(ctx->expr_str + str.offset, str.length);
+            node->_value._int = (int32_t)parse_int(ctx->expr_str + str.offset, str.length);
         }
         return node;
     }
@@ -827,7 +827,6 @@ static ast_node_t* parse_expression(parse_context_t* ctx, lexer_t* lexer) {
             node->type = NODE_TYPE_NOT;
             node->base_type = VALUE_TYPE_BOOL;
 
-            token_t tok = peek_token(lexer);
             ast_node_t* arg_node = parse_expression(ctx, lexer);
             ctx->cur_node = node;
 
@@ -1233,7 +1232,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
         const ast_node_t* child = (ast_node_t*)dec_rel_ptr(&node->_child[0]);
         value_t res = evaluate(child, dst_bits, ctx);
         ASSERT(res.type == VALUE_TYPE_BOOL);
-        bit_invert(dst_bits, 0, ctx->bit_count);
+        bit_not(dst_bits, dst_bits,  0, ctx->bit_count);
         res.type = VALUE_TYPE_BOOL;
         res._bool = dst_bits;
         return res;
@@ -1350,7 +1349,7 @@ bool md_filter_apply(const char* expression, const md_filter_context* context) {
     }
 
     const char* expr_str = expression;
-    uint32_t    expr_len = strlen(expression);
+    uint32_t    expr_len = (uint32_t)strlen(expression);
 
     lexer_t lexer = {0};
     lexer.buff = expr_str;
@@ -1636,7 +1635,7 @@ void filter_func_atom(int min_range, int max_range, uint64_t* bits, const md_mol
 }
 
 void filter_func_atom_int(int val, uint64_t* bits, const md_molecule* mol) {
-    val = CLAMP(val, 0, mol->atom.count - 1);
+    val = CLAMP(val, 0, (int)mol->atom.count - 1);
     bit_set(bits, val, 1);
 }
 
@@ -1725,7 +1724,7 @@ void filter_func_chain_irng(int min_range, int max_range, uint64_t* bits, const 
 }
 
 void filter_func_chain_int(int idx, uint64_t* bits, const md_molecule* mol) {
-    idx = CLAMP(idx, 0, mol->chain.count - 1);
+    idx = CLAMP(idx, 0, (int)mol->chain.count - 1);
     const md_range range = mol->chain.atom_range[idx];
     const uint32_t range_ext = range.end - range.beg;
     bit_set(bits, range.beg, range_ext);
