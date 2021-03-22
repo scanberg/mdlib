@@ -221,15 +221,15 @@ uint64_t bit_scan(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count)
 
     if (beg_idx == end_idx) {
         const uint64_t mask = beg_mask & end_mask;
-        return bit_scan_forward(bits[beg_idx] & mask);
+        return bit_scan_forward64(bits[beg_idx] & mask);
     }
 
     uint64_t result = 0;
-    if (result = bit_scan_forward(beg_mask & bits[beg_idx])) return result;
+    if (result = bit_scan_forward64(beg_mask & bits[beg_idx])) return result;
     for (uint64_t i = beg_idx + 1; i < end_idx; ++i) {
-        if (result = bit_scan_forward(bits[beg_idx])) return result;
+        if (result = bit_scan_forward64(bits[beg_idx])) return result;
     }
-    if (result = bit_scan_forward(end_mask & bits[end_idx])) return result;
+    if (result = bit_scan_forward64(end_mask & bits[end_idx])) return result;
     
     return 0;
 }
