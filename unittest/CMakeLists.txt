@@ -67,10 +67,6 @@ function(discover_tests TARGET)
   set(ctest_file_base "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}[${counter}]")
   set(ctest_include_file "${ctest_file_base}_include.cmake")
   set(ctest_tests_file "${ctest_file_base}_tests.cmake")
-  get_property(crosscompiling_emulator
-    TARGET ${TARGET}
-    PROPERTY CROSSCOMPILING_EMULATOR
-  )
 
   add_custom_command(
     TARGET ${TARGET} POST_BUILD
@@ -99,10 +95,6 @@ function(discover_tests TARGET)
     APPEND PROPERTY TEST_INCLUDE_FILES "${ctest_include_file}"
   )
 endfunction()
-
-#add_test(
-#  NAME mytest
-#  COMMAND $<TARGET_FILE:md_unittest>)
 
 discover_tests(md_unittest
   PROPERTIES
