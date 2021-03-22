@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 
 project(mold VERSION 0.1.1 LANGUAGES C)
 
-option(MOLD_UNITTEST "Enable MOLD unittest" ON)
+option(MD_UNITTEST "Enable unittest" ON)
 option(MD_USE_RELATIVE_PATHS "Use relative paths" OFF)
 
 include(GNUInstallDirs)
@@ -19,7 +19,7 @@ endif()
 
 add_subdirectory(src)
 
-if(MOLD_UNITTEST)
+if(MD_UNITTEST)
   enable_testing()
   add_subdirectory(unittest)
 endif()
