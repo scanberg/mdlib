@@ -5,8 +5,6 @@
 #include <string.h>
 #include <stdint.h>
 
-#define DIV_UP(x, y) ((x + (y-1)) / y) // Round up division
-
 static uint64_t set_bits(uint64_t* bits, const char* bit_str) {    
     const uint64_t num_bits = strlen(bit_str);
     for (uint64_t i = 0; i < num_bits; i++) {
@@ -89,4 +87,8 @@ UTEST(bitop, test) {
     bit_xor(bf[2], bf[0], bf[1], 0, num_bits);
     set_bits(bf[3], "00100000000100000000010000000000000000000000100000000000010000000000");
     EXPECT_TRUE(bit_cmp(bf[2], bf[3], 0, num_bits));
+
+    // SCAN
+    EXPECT_EQ(bit_scan(bf[0], 0, num_bits), 3);
+    EXPECT_EQ(bit_scan(bf[1], 0, num_bits), 12);
 }
