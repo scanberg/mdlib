@@ -25,7 +25,8 @@ bool bit_test(const uint64_t* bits, uint64_t idx);
 // Test if bitfields are equivalent
 bool bit_cmp(const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count);
 
-// Finds the next bit set within the bitarray, if no bit is found -1 is returned (i.e. UINT64_MAX = 0xffffffffffffffff)
-//uint64_t find_next_bit_set(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
+// Bit scan forward, finds the first bit set from the given offset.
+// Returns 0 if no bit is found, otherwise it returns the offset to that bit (indexing starts at 1, posix convention)
+uint64_t bit_scan(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
 
 #endif

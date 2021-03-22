@@ -213,12 +213,7 @@ bool bit_cmp(const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, 
     return true;
 }
 
-/*
-uint64_t find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
-#ifdef ASSERT
-    ASSERT(bit_idx);
-#endif
-
+uint64_t bit_scan(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
     const uint64_t beg_idx = block_idx(bit_offset);
     const uint64_t end_idx = block_idx(bit_offset + bit_count);
     const uint64_t beg_mask = ~(bit_pattern(bit_offset) - 1);
@@ -226,24 +221,15 @@ uint64_t find_next_bit_set(uint64_t* bit_idx, const uint64_t* bits, uint64_t bit
 
     if (beg_idx == end_idx) {
         const uint64_t mask = beg_mask & end_mask;
-        return bit_scan_forward(bit_idx, bits[beg_idx] & mask);
+        return bit_scan_forward(bits[beg_idx] & mask);
     }
 
-    if (bit_scan_forward(bit_idx, beg_mask & bits[beg_idx])) {
-        *bit_idx += bit_offset;
-        return true;
+    uint64_t result = 0;
+    if (result = bit_scan_forward(beg_mask & bits[beg_idx])) return result;
+    for (uint64_t i = beg_idx + 1; i < end_idx; ++i) {
+        if (result = bit_scan_forward(bits[beg_idx])) return result;
     }
-    bit_offset += BITS_PER_BLOCK;
-    for (uint64_t i = beg_idx + 1; i < end_idx; ++i, bit_offset += BITS_PER_BLOCK) {
-        if (bit_scan_forward(bit_idx, bits[i])) {
-            *bit_idx += bit_offset;
-            return true;
-        }
-    }
-    if (bit_scan_forward(bit_idx, end_mask & bits[end_idx])) {
-        *bit_idx += bit_offset;
-        return true;
-    }
-    return false;
+    if (result = bit_scan_forward(end_mask & bits[end_idx])) return result;
+    
+    return 0;
 }
-*/
