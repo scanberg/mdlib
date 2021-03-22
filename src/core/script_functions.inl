@@ -211,6 +211,9 @@ static int _distance_irng_irng  (data_t*, data_t[], eval_context_t*); // (irange
 static int _distance_irng_vec3  (data_t*, data_t[], eval_context_t*); // (irange, vec3)     -> float
 static int _distance_irng_bf    (data_t*, data_t[], eval_context_t*); // (irange, bitfield) -> float
 
+static int _distance_vec4_vec3  (data_t*, data_t[], eval_context_t*); // (irange, bitfield) -> float
+
+
 static int _angle   (data_t*, data_t[], eval_context_t*); // (int, int, int) -> float
 static int _dihedral(data_t*, data_t[], eval_context_t*); // (int, int, int, int) -> float
 
@@ -220,7 +223,7 @@ static int _rmsd_bf     (data_t*, data_t[], eval_context_t*); // (bitfield) -> f
 static int _rdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield) -> float[128] (Histogram). The idea is that we use a fixed amount of bins, then we let the user choose some kernel to smooth it.
 static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
 
-// Geometric functions
+// Geometric operations
 static int _com_bf      (data_t*, data_t[], eval_context_t*); // (bitfield[N])  -> float[3][N]
 static int _com_irng    (data_t*, data_t[], eval_context_t*); // (int[])        -> float[3]
 
@@ -428,15 +431,24 @@ static procedure_t procedures[] = {
     {{"residue", 7},TI_BITFIELD_RESIDUE, 1, {TI_IRANGE_ARR},    _residue},
 
     // --- PROPERTY COMPUTE ---
-    {{"distance", 8},   TI_FLOAT, 2, {TI_IRANGE, TI_IRANGE},            _distance_irng_irng,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
-    {{"distance", 8},   TI_FLOAT, 2, {TI_IRANGE, TI_FLOAT3},            _distance_irng_vec3,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
-    {{"distance", 8},   TI_FLOAT, 2, {TI_IRANGE, TI_BITFIELD},          _distance_irng_bf,      FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT,   2,  {TI_IRANGE, TI_IRANGE},     _distance_irng_irng,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT,   2,  {TI_IRANGE, TI_FLOAT3},     _distance_irng_vec3,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT,   2,  {TI_IRANGE, TI_BITFIELD},   _distance_irng_bf,      FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
 
-    {{"angle", 5},      TI_FLOAT, 3, {TI_INT, TI_INT, TI_INT},          _angle,     FLAG_DYNAMIC},
-    {{"dihedral", 8},   TI_FLOAT, 4, {TI_INT, TI_INT, TI_INT, TI_INT},  _dihedral,  FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT,   2,  {TI_FLOAT4, TI_FLOAT3},     _distance_vec4_vec3,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
 
-    {{"rmsd", 4},       TI_FLOAT, 1, {TI_IRANGE_ARR},                   _rmsd_irng, FLAG_DYNAMIC},
-    {{"rmsd", 4},       TI_FLOAT, 1, {TI_BITFIELD},                     _rmsd_bf,   FLAG_DYNAMIC},
+    {{"angle", 5},      TI_FLOAT,   3,  {TI_INT, TI_INT, TI_INT},           _angle,     FLAG_DYNAMIC},
+    {{"dihedral", 8},   TI_FLOAT,   4,  {TI_INT, TI_INT, TI_INT, TI_INT},   _dihedral,  FLAG_DYNAMIC},
+
+    {{"rmsd", 4},       TI_FLOAT,   1,  {TI_IRANGE_ARR},    _rmsd_irng,     FLAG_DYNAMIC},
+    {{"rmsd", 4},       TI_FLOAT,   1,  {TI_BITFIELD},      _rmsd_bf,       FLAG_DYNAMIC},
+
+    // --- GEOMETRICAL OPERATIONS ---
+    {{"com", 3},        TI_FLOAT3,  1,  {TI_IRANGE_ARR},    _com_irng,      FLAG_DYNAMIC},
+    {{"com", 3},        TI_FLOAT3,  1,  {TI_BITFIELD},      _com_bf,        FLAG_DYNAMIC},
+
+    {{"plane", 5},      TI_FLOAT4,  1,  {TI_IRANGE_ARR},    _plane_irng,    FLAG_DYNAMIC},
+    {{"plane", 5},      TI_FLOAT4,  1,  {TI_BITFIELD},      _plane_bf,      FLAG_DYNAMIC},
 };
 
 // Tables
@@ -1077,7 +1089,11 @@ static int _cast_chain_to_res(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _atoms(data_t* dst, data_t arg[], eval_context_t* ctx) {
+
+
+
+
+static int _atoms   (data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_ATOM));
     ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
     (void)dst;
@@ -1095,9 +1111,45 @@ static int _residues(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _chains(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _chains  (data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_BITFIELD_CHAIN));
     ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
+    (void)dst;
+    (void)arg;
+    (void)ctx;
+    return 0;
+}
+
+static int _com_bf  (data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT3));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
+    (void)dst;
+    (void)arg;
+    (void)ctx;
+    return 0;
+}
+
+static int _com_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT3));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_IRANGE_ARR));
+    (void)dst;
+    (void)arg;
+    (void)ctx;
+    return 0;
+}
+
+static int _plane_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT4));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_BITFIELD));
+    (void)dst;
+    (void)arg;
+    (void)ctx;
+    return 0;
+}
+
+static int _plane_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && compare_type_info(dst->type, (type_info_t)TI_FLOAT4));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     (void)dst;
     (void)arg;
     (void)ctx;

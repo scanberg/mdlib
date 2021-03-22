@@ -767,7 +767,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                     res.procedure = proc;
                     return res;
                 }
-                else if (proc->flags && FLAG_SYMMETRIC_ARGS) {
+                else if (proc->flags & FLAG_SYMMETRIC_ARGS) {
                     // @TODO: Does this make sense for anything else than two arguments???
                     // I cannot come up with such a scenario.
                     ASSERT(proc->num_args == 2);
@@ -2532,7 +2532,7 @@ static bool static_check_context(ast_node_t* node, static_check_ctx_t* ctx) {
         }
 
         if (rhs->data.type.base_type == TYPE_BITFIELD && rhs->data.type.level > 0) {
-            if (!rhs->flags & FLAG_DYNAMIC) {
+            if (!(rhs->flags & FLAG_DYNAMIC)) {
                 eval_context_t eval_ctx = {0};
                 eval_ctx.mol = ctx->mol;
                 eval_ctx.temp_alloc = ctx->temp_alloc;
