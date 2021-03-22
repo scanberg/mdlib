@@ -966,6 +966,16 @@ static int _distance_irng_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+static int _distance_vec4_vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
+    ASSERT(dst);
+    ASSERT(compare_type_info(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT4));
+    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT3));
+
+    return 0;
+}
+
 static int _angle   (data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
     ASSERT(dst);
