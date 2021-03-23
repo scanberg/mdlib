@@ -75,14 +75,14 @@ static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args* arg
 }
 
 static inline bool is_helical(const md_util_secondary_structure_args* args, md_range res_range, int i) {
-    const float distances[] = { 5.45, 5.18, 6.37 };
-    const float delta = 2.1;
+    const float distances[] = { 5.45f, 5.18f, 6.37f };
+    const float delta = 2.1f;
     return zhang_skolnick_ss(args, res_range, i, distances, delta);
 }
 
 static inline bool is_sheet(const md_util_secondary_structure_args* args, md_range res_range, int i) {
-    const float distances[] = { 6.1, 10.4, 13.0 };
-    const float delta = 1.42;
+    const float distances[] = { 6.1f, 10.4f, 13.0f };
+    const float delta = 1.42f;
     return zhang_skolnick_ss(args, res_range, i, distances, delta);
 }
 

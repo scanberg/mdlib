@@ -86,7 +86,7 @@ double parse_float(str_t str) {
         sign = -1;
     }
     while (c != end && is_digit(*c)) {
-        val = val * 10 + (*c - '0');
+        val = val * 10 + ((int)(*c) - '0');
         ++c;
     }
     if (*c != '.' || c == end) return sign * val;
@@ -94,7 +94,7 @@ double parse_float(str_t str) {
     ++c; // skip '.'
     const uint32_t count = (uint32_t)(end - c);
     while (c < end) {
-        val = val * 10 + (*c - '0');
+        val = val * 10 + ((int)(*c) - '0');
         ++c;
     }
 
@@ -111,7 +111,7 @@ int64_t parse_int(str_t str) {
         sign = -1;
     }
     while (c != end && is_digit(*c)) {
-        val = val * 10 + (*c - '0');
+        val = val * 10 + ((int)(*c) - '0');
         ++c;
     }
     return sign * val;

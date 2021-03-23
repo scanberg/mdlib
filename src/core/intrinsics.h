@@ -88,7 +88,7 @@ static inline uint64_t bit_scan_reverse64(uint64_t mask) {
     if (mask == 0) return 0;
     unsigned long idx;
     _BitScanReverse64(&idx, mask);
-    return idx + 1;
+    return (uint64_t)idx + 1;
 } 
 
 // Scans for the first bit set, from least significant to most significant bit,
@@ -97,7 +97,7 @@ static inline uint64_t bit_scan_forward64(uint64_t mask) {
     if (mask == 0) return 0;
     unsigned long idx;
     _BitScanForward64(&idx, mask);
-    return idx + 1;
+    return (uint64_t)idx + 1;
 }
 
 #endif
