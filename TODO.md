@@ -24,14 +24,15 @@
     [X] Resolve ambiguities within the syntax regarding expressions within a local scope vs. global
     [X] Fix the line bug in tokenizer
     [X] Implement FLAG_SYMMETRIC_ARGS to mark procedures where arguments are symmetric
-    [ ] Implement FLAG_ARG_TYPES_EQUAL_LENGTH to mark procedures where the input arguments should match in length
-    [ ] Implement FLAG_RET_TYPE_EQUAL_LENGTH to mark procedures that return a length equivalent to that of the input
-    [ ] Finalize static check for context nodes (determine the length)
+    [ ] Implement full subset support in array [] operator.
+    [ ] Finalize static check for context nodes (determine the type and size)
     [ ] Modify compatible_type() to support matching of float[4][1] to float[4].
     [ ] Compile time evaluate AST tree, evaluate EVERYTHING that can be evaluated at compile time.
     [ ] Evaluate syntax tree
     [ ] Compute selections
     [ ] Compute properties
+    ([ ] Implement FLAG_RET_TYPE_EQUAL_LENGTH to mark procedures that return a length equivalent to that of the input)
+    ([ ] Implement FLAG_ARG_TYPES_EQUAL_LENGTH to mark procedures where the input arguments should match in length)
 
 #### Further improvements (much later on) ####
     [ ] Parallelize expression parsing.

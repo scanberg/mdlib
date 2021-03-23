@@ -211,8 +211,8 @@ static int _distance_irng_irng  (data_t*, data_t[], eval_context_t*); // (irange
 static int _distance_irng_vec3  (data_t*, data_t[], eval_context_t*); // (irange, vec3)     -> float
 static int _distance_irng_bf    (data_t*, data_t[], eval_context_t*); // (irange, bitfield) -> float
 
-static int _distance_vec4_vec3  (data_t*, data_t[], eval_context_t*); // (irange, bitfield) -> float
-
+static int _distance_vec3_vec4  (data_t*, data_t[], eval_context_t*); // (irange, bitfield) -> float
+static int _distance_vec3_bf  (data_t*, data_t[], eval_context_t*); // (irange, bitfield) -> float
 
 static int _angle   (data_t*, data_t[], eval_context_t*); // (int, int, int) -> float
 static int _dihedral(data_t*, data_t[], eval_context_t*); // (int, int, int, int) -> float
@@ -435,7 +435,8 @@ static procedure_t procedures[] = {
     {{"distance", 8},   TI_FLOAT,   2,  {TI_IRANGE, TI_FLOAT3},     _distance_irng_vec3,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
     {{"distance", 8},   TI_FLOAT,   2,  {TI_IRANGE, TI_BITFIELD},   _distance_irng_bf,      FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
 
-    {{"distance", 8},   TI_FLOAT,   2,  {TI_FLOAT4, TI_FLOAT3},     _distance_vec4_vec3,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT,   2,  {TI_FLOAT3, TI_FLOAT4},     _distance_vec3_vec4,    FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
+    {{"distance", 8},   TI_FLOAT,   2,  {TI_FLOAT3, TI_BITFIELD},   _distance_vec3_bf,      FLAG_SYMMETRIC_ARGS | FLAG_DYNAMIC},
 
     {{"angle", 5},      TI_FLOAT,   3,  {TI_INT, TI_INT, TI_INT},           _angle,     FLAG_DYNAMIC},
     {{"dihedral", 8},   TI_FLOAT,   4,  {TI_INT, TI_INT, TI_INT, TI_INT},   _dihedral,  FLAG_DYNAMIC},
@@ -966,12 +967,22 @@ static int _distance_irng_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _distance_vec4_vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _distance_vec3_vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
     ASSERT(dst);
     ASSERT(compare_type_info(dst->type, (type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT4));
-    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT3));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT3));
+    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_FLOAT4));
+
+    return 0;
+}
+
+static int _distance_vec3_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
+    ASSERT(dst);
+    ASSERT(compare_type_info(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(compare_type_info(arg[0].type, (type_info_t)TI_FLOAT3));
+    ASSERT(compare_type_info(arg[1].type, (type_info_t)TI_BITFIELD));
 
     return 0;
 }
