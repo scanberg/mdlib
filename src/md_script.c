@@ -685,15 +685,38 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, md_script_ir* i
 
     procedure_t* cast_proc = find_cast_procedure(from, to);
     if (cast_proc) {
-        // We need to convert this node into a cast node and add the original node data as a child
-        ast_node_t* node_copy = create_node(ir, node->type, node->token);
-        memcpy(node_copy, node, sizeof(ast_node_t));
-        node->type = AST_PROC_CALL;
-        node->data.type = to;
-        node->proc = cast_proc;
-        node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
-        md_array_push(node->children, node_copy, ir->arena);
-        return true;
+        if (node->type == AST_CONSTANT_VALUE) {
+            ASSERT(is_scalar(from));
+            // Convert node directly
+            switch (to.base_type) {
+            case TYPE_FLOAT:
+                ASSERT(from.base_type == TYPE_INT);
+                node->value._float = (float)node->value._int;
+                break;
+            case TYPE_IRANGE:
+                ASSERT(from.base_type == TYPE_INT);
+                node->value._irange = (irange_t){node->value._int, node->value._int};
+                break;
+            case TYPE_FRANGE:
+                ASSERT(from.base_type == TYPE_IRANGE);
+                node->value._frange = (frange_t){(float)node->value._irange.beg, (float)node->value._irange.end};
+                break;
+            default:
+                ASSERT(false);
+            }
+            node->data.type.base_type = to.base_type;
+            return true;
+        } else {
+            // We need to convert this node into a cast node and add the original node data as a child
+            ast_node_t* node_copy = create_node(ir, node->type, node->token);
+            memcpy(node_copy, node, sizeof(ast_node_t));
+            node->type = AST_PROC_CALL;
+            node->data.type = to;
+            node->proc = cast_proc;
+            node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
+            md_array_push(node->children, node_copy, ir->arena);
+            return true;
+        }
     }
 
     ASSERT(false);
@@ -1656,33 +1679,23 @@ ast_node_t* parse_value(parse_context_t* ctx) {
             node->data.type = (type_info_t)TI_FRANGE;
             node->value._frange.beg = (float)beg;
             node->value._frange.end = (float)end;
-            node->data.ptr = &node->value;
-            node->data.size = base_type_byte_size(node->data.type.base_type);
         } else {
             node->data.type = (type_info_t)TI_IRANGE;
             node->value._irange.beg = (beg == -FLT_MAX) ?  INT32_MIN : (int32_t)beg;
             node->value._irange.end = (end ==  FLT_MAX) ?  INT32_MAX : (int32_t)end;
-            node->data.ptr = &node->value;
-            node->data.size = base_type_byte_size(node->data.type.base_type);
         }
     }
     else if (token.type == TOKEN_FLOAT) {
         node->data.type = (type_info_t)TI_FLOAT;
         node->value._float = (float)parse_float(token.str);
-        node->data.ptr = &node->value;
-        node->data.size = base_type_byte_size(node->data.type.base_type);
     }
     else if (token.type == TOKEN_INT) {
         node->data.type = (type_info_t)TI_INT;
         node->value._int = (int32_t)parse_int(token.str);
-        node->data.ptr = &node->value;
-        node->data.size = base_type_byte_size(node->data.type.base_type);
     }
     else if (token.type == TOKEN_STRING) {
         node->data.type = (type_info_t)TI_STRING;
         node->value._string = copy_str(substr(token.str, 1, MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
-        node->data.ptr = &node->value;
-        node->data.size = base_type_byte_size(node->data.type.base_type);
     }
     else {
         ASSERT(false);
@@ -2326,6 +2339,9 @@ static bool static_check_constant_value(ast_node_t* node, static_check_ctx_t* ct
     ASSERT(node && node->type == AST_CONSTANT_VALUE);
     ASSERT(node->data.type.base_type != TYPE_UNDEFINED);
     ASSERT(is_scalar(node->data.type));
+
+    node->data.ptr = &node->value;
+    node->data.size = base_type_byte_size(node->data.type.base_type);
     
     return true;
 }
@@ -2349,7 +2365,7 @@ static bool static_check_array(ast_node_t* node, static_check_ctx_t* ctx) {
         
         // Pass 1: find a suitable base_type for the array
         for (uint64_t i = 0; i < num_elem; ++i) {
-            if (is_scalar(elem[i]->data.type)) {
+            //if (is_scalar(elem[i]->data.type)) {
                 if (array_type.base_type == TYPE_UNDEFINED) {
                     // Assign type from first element
                     array_type = elem[i]->data.type;
@@ -2380,11 +2396,11 @@ static bool static_check_array(ast_node_t* node, static_check_ctx_t* ctx) {
                         }
                     }
                 }
-            }
-            else {
-                create_error(ctx->ir, elem[i]->token, "Only scalar types are allowed within array construct");
-                return false;
-            }
+            //}
+            //else {
+            //    create_error(ctx->ir, elem[i]->token, "Only scalar types are allowed within array construct");
+            //    return false;
+            //}
         }
 
         // Pass 2: Perform implicit conversions of nodes if required
