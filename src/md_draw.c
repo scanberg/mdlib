@@ -1,16 +1,12 @@
-#include "core/compiler.h"
-
-#if MD_COMPILER_MSVC
-#define _CRT_SECURE_NO_WARNINGS
-#endif
 
 #include "md_draw.h"
 #include "md_util.h"
-#include "md_log.h"
 #include "ext/gl3w/gl3w.h"
-#include "core/vec_math.h"
-#include "core/common.h"
-#include "core/file.inl"
+#include <core/md_common.h>
+#include <core/md_compiler.h>
+#include <core/md_log.h>
+#include <core/md_vec_math.h>
+#include <core/md_file.h>
 
 #include <stdbool.h>
 #include <string.h>     // memset, memcpy
@@ -278,13 +274,14 @@ internal md_draw_error compile_shader_from_source(GLuint shader, const char* sha
             }
             src = endline;
         }
-        const char* sources[5];
-        sources[0] = version_str;
-        sources[1] = "\n";
-        sources[2] = defines;
-        sources[3] = "\n";
-        sources[4] = src;
-        glShaderSource(shader, 5, sources, 0);
+        const char* sources[5] = {
+            version_str,
+            "\n",
+            defines,
+            "\n",
+            src
+        };
+        glShaderSource(shader, ARRAY_SIZE(sources), sources, 0);
     } else {
         const char* c_src = shader_src;
         glShaderSource(shader, 1, &c_src, 0);
@@ -304,7 +301,7 @@ internal md_draw_error compile_shader_from_source(GLuint shader, const char* sha
 }
 
 internal md_draw_error compile_shader_from_file(GLuint shader, const char* filename, const char* defines) {
-    FILE* file = md_file_open(filename, (uint32_t)strlen(filename), "rb");
+    md_file_o* file = md_file_open((str_t){.ptr = filename, .len = strlen(filename)}, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         char buffer[MD_SHADER_BUF_SIZE] = {0};
         uint64_t file_size = md_file_size(file);
@@ -1037,11 +1034,11 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
         
     // Extract most potentially occluding structures first
     // Surface > Space Fill > Ribbons > Cartoon > Licorice
-    const internal_rep* draw_rep[64];
+    const internal_rep* draw_rep[64] = {0};
     uint32_t            draw_rep_count = 0;
         
-    const internal_mol* unique_mol_ptr[64];
-    uint32_t            unique_mol_flags[64];
+    const internal_mol* unique_mol_ptr[64] = {0};
+    uint32_t            unique_mol_flags[64] = {0};
     uint32_t            unique_mol_count = 0;
 
     const uint32_t MOL_FLAG_SPLINE = 1;
@@ -1123,7 +1120,7 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
     // If we have rendertargets -> setup and enable fbo
     if (desc->render_target) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctx->fbo[0]);
-        GLenum draw_buffers[4];
+        GLenum draw_buffers[4] = {0};
         uint32_t count = 0;
         if (desc->render_target->texture_depth) {
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, desc->render_target->texture_depth, 0);

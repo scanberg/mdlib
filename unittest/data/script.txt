@@ -7,13 +7,19 @@
 # Expressions
 # All text which is not a comment will be interpered as an expression (where we assign variables) and each expression is terminated by a semi-colon ';'.
 
+cool1 = not element("C") in resname("SOL");
+
+bla1 = angle(1, 2, 3) in resname("ALA")[1:5]; # Returns float[5]
+
+dist3 = distance(atom(1:7) in resname("PFT"), vec3(0,0,0)); # Distance between com of local atoms 1:7 in each residue named "PFT" and global coordinate (0,0,0)
+
 # Numbers
 number = sqrt(2.0) * 5 / (3 + 2 - 15.0) + pow(1.0, 2); # This is a standard expression which is constant
 
 fool1 = {1.0, 2.0, 3.0, 4.0} + {2.0, 3.0, 4.0, 5.0};
 fool2 = resname({"SOL", "GLY"});
 
-cool1 = not element("C") in resname("SOL");
+
 cool2 = (not element("C")) in resname("SOL");
 cool3 = not (element("C") in resname("SOL"));
 
@@ -53,49 +59,36 @@ v4 = v1;		# v4 is also a number, copied from v1.
 
 
 sel1 = resname("GLY") and not label("CA"); # resname("PFT") will return a bitrange
-#sel2 := x < 10.0;		# Select all atoms with x coordinates less than or equal to 10.0, equal to function call x([:10.0]) returns bitfield
-#sel3 = y in :10.0; 		# Select all atoms with y coordinates in range -infinity to 10.0 returns bitfield
+sel2 = x(0:10);
+sel3 = y(:10.0); 		# Select all atoms with y coordinates in range -infinity to 10.0 returns bitfield
 
-# sel4 = z[10.0:20.0];	# Using a range on a built in property, returns bitfield
-# This notation is a bit wierd, and I don't think we should allow it.
-# We should reserve brackets [] for more meaningful operations such as array subindexing and array like things.
 
 sel5 = residue(:); 		# Returns array of ranges for each residue in the dataset
 
-prop1 = distance_com(sel2, sel3); # Same as distance()
-prop2 = distance_min(sel2, sel3); # l
-prop3 = distance_max(sel2, sel3); # 
-prop3 = distance_pair(sel2, sel3); # Pairwise distance of everything
+prop1 = distance(com(sel2), com(sel3));
+prop2 = distance_min(sel2, sel3); # Should be allowed since it returns a single float even with dynamic inputs
+prop3 = distance_max(sel2, sel3); # Same as above
+prop4 = distance_pair(sel2, sel3); # This should not work for dynamic quieries such as this example since we cannot determine the length of the result at compile time
 
 sel = resname("VAL");
 
-bla1 = angle(1, 2, 3) in resname("ALA")[1 2 5:7]; # Returns float[5]
 # resname("ALA") returns bitrange[N] on which we can apply the operation localy: To compute the angle between local atom indices 1, 2, 3
 
-v1 = vec4(0, 1, 13, 5);
+v5 = vec4(0, 1, 13, 5);
 
-resname({"ALA", "GLY", "LYS"}); # Generate an array of strings from the arguments
-residue({1,2,5,4:9}); 		# Generate an array of indices from the arguments
+res_str_arr = resname({"ALA", "GLY", "LYS"}); # Generate an array of strings from the arguments
+res_idx_arr = residue({1,2,5,4:9}); 		# Generate an array of indices from the arguments
 
 # Select all atoms within 2.0 Ångström of Carbon or Iron atoms
-sel6 = within(2.0, element('C' 'Fe'));
+sel6 = within(2.0, element({'C','Fe'}));
 
 # Compute a plane for each resname called BLA -> float[4][N] where N is number of residues called BLA
 # Each plane is represented as a float[4] where the components represent (A,B,C,D) in the equation for a plane Ax + By + Cz + D = 0
-planes = plane(resname("BLA"));
-asdas = plane(1:7) in resname("BLA");
+planes = plane(resname("PFT"));
+asdas  = plane(1:4) in resname("SOL");
 
-str1 = "this is a string";
-str2 = 'this is also a string';
-
-dist1 = distance(resname("PFT"), vec3(0,0,0)); 	# Distance between com of each residue "PFT" and global coordinate (0,0,0)
-dist2 = distance(10, 11) in resname("PFT"); 	# Distance between local atoms 10 and 11 in each residue named "PFT"
-
-#dist3 = distance(atom(1:7) in resname("PFT"), vec3(0,0,0)); # Distance between com of local atoms 1:7 in each residue named "PFT" and global coordinate (0,0,0)
-
-# There is a conceptual difference between these two operations
-sel_a = element('C') and resname("PFT"); # bitfield AND bitrange returns bitfield, we loose the 'context' of resname("PFT")
-sel_b = element('C') in resname("PFT");  # bitfield IN  bitrange returns bitrange, we maintain the 'context' of resname("PFT"), we only add a filter to it
+dist1 = distance(com(resname("PFT")), vec3(0,0,0)); # Distance between com of each residue "PFT" and global coordinate (0,0,0)
+dist2 = distance(10, 11) in resname("PFT"); 	    # Distance between local atoms 10 and 11 in each residue named "PFT"
 
 # Operations inside a local context (all residues named PFT)
 # Note that these operations return float[N] where N is the count of residues named PFT.
@@ -109,16 +102,16 @@ PI_2 = PI / 2.0;
 
 # Compute a property as an expression of other properties
 # This has a dependency on d1, d2, d3 and d4, the result will be of same type as d1, d2, d3 and d4: float[N]
-#planarity =    abs((abs(d1) - PI_2)) / PI_2 +
-#               abs((abs(d2) - PI_2)) / PI_2 +
-#               abs((abs(d3) - PI_2)) / PI_2 +
-#               abs((abs(d4) - PI_2)) / PI_2;
+planarity = abs((abs(d1) - PI_2)) / PI_2 +
+            abs((abs(d2) - PI_2)) / PI_2 +
+            abs((abs(d3) - PI_2)) / PI_2 +
+            abs((abs(d4) - PI_2)) / PI_2;
 
 # radial distribution function from each carbon atom found in residues "PFT" with a distance to all atoms with element('C'), cutoff distance is 20 Ångström
 rdf1 = rdf(resname("PFT") and element('C'), element('O'), 20.0); # RETURNS distribution[N] where N is the number of carbon atoms within all residues named PFT
 
 # radial distribution function from each COM computed from carbons within each residue "PFT" to all atoms with element('C'), cutoff distance is 20 Ångström 
-rdf2 = rdf(element('C') in resname("PFT"), element('O'), 20.0); # RETURNS distribution[M] where M is the number of residues named PFT
+rdf2 = rdf(com(element('C')) in resname("PFT"), element('O'), 20.0); # RETURNS distribution[M] where M is the number of residues named PFT
 
 # Spatial distribution function: This is the operation we did in the article expressed in this syntax
 # Match all chains

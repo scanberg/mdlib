@@ -4,74 +4,85 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <core/md_str.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct md_molecule;
-struct md_trajectory;
+struct md_trajectory_i;
 struct md_allocator_i;
 
-struct md_script_ir;
-typedef struct md_script_ir md_script_ir;
+typedef struct md_script_o md_script_o;
+typedef struct md_script_error_t md_script_error_t;
+typedef struct md_script_data_t md_script_data_t;
+typedef struct md_script_property_t md_script_property_t;
+typedef enum md_script_unit_t md_script_unit_t;
 
-// COMPILE
-typedef struct md_script_error {
-    // Data for indicating where the error occured within the script string
-    uint32_t line;      // Line number
-    uint32_t offset;    // String pointer
-    uint32_t length;    // Length in characters
-
-    // Human readable error message
-    const char* str_ptr; // Is zero terminated
-    uint32_t    str_len;
-} md_script_error;
-
-typedef struct md_script_type_info {
-    int cool;
-} md_script_type_info;
-
-/*
-struct md_script_visualization_primitives {
-    struct md_allocator_i* _alloc;
-
-    uint32_t num_points;
-    float (*points)[3];
-
-    uint32_t num_lines;
-    float (*lines_beg)[3];
-    float (*lines_end)[3];
-
-    uint64_t num_bits;
-    uint64_t* bits;
+enum md_script_unit_t {
+    MD_SCRIPT_UNIT_NONE,
+    MD_SCRIPT_UNIT_ANGSTROM,
+    MD_SCRIPT_UNIT_DEGREES,
 };
 
-struct md_script_visualization_primitives* md_script_create_visualization_primitives(const char* ptr, uint32_t str_len, const struct md_script_context* ctx, struct md_allocator_i* alloc);
-void md_script_free_visualization_primitives(struct md_script_visualization_primitives* primitives);
-*/
+// Opaque script object
+struct md_script_o;
 
-// ### COMPILE THE SCRIPT ###
+struct md_script_error_t {
+    // Data for indicating where the error occured within the script string
+    int32_t line;      // Line number
+    int32_t offset;    // String pointer
+    int32_t length;    // Length in characters
 
-// Should always return something, even if the compilation is not successful, so you can extract the error messages
-md_script_ir* md_script_compile(const char* str, uint64_t len, struct md_molecule* mol, struct md_allocator_i* alloc);
-void md_script_free(md_script_ir* ir);
+    // Human readable error message
+    str_t error;
+};
 
-bool md_script_compile_success(const md_script_ir* ir);
+struct md_script_data_t {
+    // This gives you the length of the data in each dimension
+    int32_t dims[4];
+
+    // Flat access of the data
+    int64_t num_values;
+    float*  values;
+    float   min_value;
+    float   max_value;
+
+    float*  variance; // optional, only computed if the values are computed as an aggregate
+
+    md_script_unit_t unit;
+};
+
+struct md_script_property_t {
+    str_t ident;
+    struct md_script_data_t data;
+};
+
+// ### COMPILE ###
+// Should always return an object, even if the compilation is not successful, so you can extract the error messages
+md_script_o* md_script_compile(str_t src, const struct md_molecule* mol, struct md_allocator_i* alloc);
+
+bool md_script_compile_success(const md_script_o* ir);
 
 // ### ERROR MESSAGES ###
-uint64_t md_script_get_num_errors(const md_script_ir* ir);
-const md_script_error* md_script_get_error_data(const md_script_ir* ir); // Retreives all messages
+int64_t md_script_get_num_errors(const md_script_o* ir);
+const md_script_error_t* md_script_get_errors(const md_script_o* ir); // Retreives all messages
 
-// ### TYPE INFO ###
-// For providing syntax highlighting in text editor and providing human readable context data.
-uint64_t md_script_get_num_type_infos(const md_script_ir* ir);
-const md_script_type_info* md_script_get_type_info_data(const md_script_ir* ir); // Retreives all type infos
+// ### EVALUATE ###
+// This evaluates all frames
+bool md_script_evaluate(md_script_o* ir, const struct md_molecule* mol, const struct md_trajectory_i* traj, struct md_allocator_i* alloc);
 
+// This only evaluates the supplied subset of frames, represented in the bitmask
+bool md_script_evaluate_subset(md_script_o* ir, const struct md_molecule* mol, const struct md_trajectory_i* traj, uint64_t num_frame_mask_bits, uint64_t* frame_mask, struct md_allocator_i* alloc);
 
-// ### EXECUTE SCRIPT ###
-//struct md_script_res* md_script_execute(const struct md_script_ir* ir, struct md_allocator_i* alloc);
+// ### PROPERTIES ###
+int64_t md_script_get_num_properties(const md_script_o* ir);
+const md_script_property_t* md_script_get_properties(const md_script_o* ir);
 
-//void md_script_get_num_properties(const struct md_script_res* res);
+void md_script_free(md_script_o* ir);
+
+bool md_filter_evaluate(uint64_t* dst_bits, uint64_t num_bits, str_t expr, const struct md_molecule* mol);
 
 #ifdef __cplusplus
 }

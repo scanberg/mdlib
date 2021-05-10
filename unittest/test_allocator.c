@@ -1,42 +1,51 @@
 #include "utest.h"
 
-#include <md_allocator.h>
-#include <core/array.inl>
-#include <core/pool_allocator.h>
-#include <core/arena_allocator.h>
+#include <core/md_allocator.h>
+#include <core/md_array.inl>
+#include <core/md_pool_allocator.h>
+#include <core/md_arena_allocator.h>
 
-// @TODO: Implement this test case for all allocators using Fixtures?
-// It's vital that we test realloc properly since array is implemented using it.
+#define COMMON_ALLOCATOR_TEST_BODY \
+    void* mem = md_alloc(alloc, 16); \
+    EXPECT_NE(mem, NULL); \
+    EXPECT_EQ(md_free(alloc, mem, 16), NULL); \
+    \
+    uint64_t* arr = NULL; \
+    for (uint64_t i = 0; i < 1000; ++i) { \
+        md_array_push(arr, i, alloc); \
+    } \
+    \
+    for (uint64_t i = 0; i < 1000; ++i) { \
+        ASSERT_EQ(arr[i], i); \
+    } \
+    md_array_free(arr, alloc); \
+    \
+    uint64_t size[8] = {16, 7238, 1, 2, 7, 3, 2, 4}; \
+    for (uint64_t i = 0; i < 8; ++i) { \
+        uint64_t expected_alignment = size[i] > 2 ? 16 : size[i]; \
+        void* mem = md_alloc(alloc, size[i]); \
+        EXPECT_EQ((uint64_t)mem % expected_alignment, 0); \
+        md_free(alloc, mem, size[i]); \
+    }
+
+// COMMON TESTS
 UTEST(allocator, default) {
     md_allocator_i* alloc = default_allocator;
-
-    void* mem = md_alloc(alloc, 16);
-    EXPECT_NE(mem, NULL);
-    EXPECT_EQ(md_free(alloc, mem, 16), NULL);
-    
-    // This will use realloc, when it grows internally
-    uint64_t* arr = NULL;
-    for (uint64_t i = 0; i < 1000; ++i) {
-        md_array_push(arr, i, alloc);
-    }
-
-    // We now know what we expect to find within arr, this will catch if realloc is not implemented properly
-    for (uint64_t i = 0; i < 1000; ++i) {
-        ASSERT_EQ(arr[i], i);
-    }
-
-    md_array_free(arr, alloc);
+    COMMON_ALLOCATOR_TEST_BODY
 }
 
 UTEST(allocator, default_temp) {
     md_allocator_i* alloc = default_temp_allocator;
-
-    for (int j = 0; j < 1000; ++j) {
-        for (int i = 0; i < 1000; ++i) {
-           md_alloc(alloc, i);
-        }
-    }
+    COMMON_ALLOCATOR_TEST_BODY
 }
+
+UTEST(allocator, arena) {
+    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    COMMON_ALLOCATOR_TEST_BODY
+    md_arena_allocator_destroy(alloc);
+}
+
+// @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
 
 UTEST(allocator, pool) {
     md_allocator_i* pool = md_pool_allocator_create(default_allocator, sizeof(uint64_t));
@@ -70,7 +79,7 @@ UTEST(allocator, pool) {
     md_array_free(items, default_allocator);
 }
 
-UTEST(allocator, arena) {
+UTEST(allocator, arena_extended) {
     md_allocator_i* arena = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
 
     for (int j = 0; j < 1000; ++j) {

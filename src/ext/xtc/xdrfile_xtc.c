@@ -101,15 +101,19 @@ int read_xtc_natoms(const char* fn, int* natoms) {
 
 int read_xtc_header(const char* fn, int* natoms, int* nframes, int64_t** offsets) {
     XDRFILE* xd;
-    int i, result, est_nframes, framebytes;
+    int i, result, est_nframes, framebytes, step;
+    float time;
     int64_t filesize;
     *nframes = 0;
-
-    read_xtc_natoms(fn, natoms);
 
     xd = xdrfile_open(fn, "r");
     if (NULL == xd) {
         return exdrFILENOTFOUND;
+    }
+
+    if ((result = xtc_header(xd, natoms, &step, &time, true)) != exdrOK) {
+        xdrfile_close(xd);
+        return result;
     }
 
     /* Go to file end */

@@ -4,8 +4,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-void bit_set    (uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
-void bit_clear  (uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
+void bit_set        (uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
+void bit_set_idx    (uint64_t* bits, uint64_t bit_idx);
+void bit_clear      (uint64_t* bits, uint64_t bit_offset, uint64_t bit_count);
+void bit_clear_idx  (uint64_t* bits, uint64_t bit_idx);
 
 void bit_or     (uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count);
 void bit_or_not (uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count);

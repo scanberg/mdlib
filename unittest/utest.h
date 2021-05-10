@@ -998,6 +998,7 @@ int utest_main(int argc, const char *const argv[]) {
     errno = 0;
     utest_state.tests[index].func(&result, utest_state.tests[index].index);
     ns = utest_ns() - ns;
+    const double ms = (double)ns * 1.0e-6;
 
     if (utest_state.output) {
       fprintf(utest_state.output, "</testcase>\n");
@@ -1010,11 +1011,12 @@ int utest_main(int argc, const char *const argv[]) {
                             sizeof(size_t) * failed_testcases_length));
       failed_testcases[failed_testcase_index] = index;
       failed++;
-      printf("%s[  FAILED  ]%s %s (%" UTEST_PRId64 "ns)\n", colours[RED],
-             colours[RESET], utest_state.tests[index].name, ns);
+      
+      printf("%s[  FAILED  ]%s %s (%" UTEST_PRId64 "ns) (%.2f ms)\n", colours[RED],
+             colours[RESET], utest_state.tests[index].name, ns, ms);
     } else {
-      printf("%s[       OK ]%s %s (%" UTEST_PRId64 "ns)\n", colours[GREEN],
-             colours[RESET], utest_state.tests[index].name, ns);
+      printf("%s[       OK ]%s %s (%" UTEST_PRId64 "ns) (%.2f ms)\n", colours[GREEN],
+             colours[RESET], utest_state.tests[index].name, ns, ms);
     }
   }
 

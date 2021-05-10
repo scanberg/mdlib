@@ -53,6 +53,7 @@ int read_xtc(XDRFILE* xd, int* natoms, int* step, float* time, matrix box, rvec*
 /* Write a frame to xtc file */
 int write_xtc(XDRFILE* xd, int natoms, int step, float time, matrix box, rvec* x, float prec);
 
+
 /* XTC small header size (natoms<=9).
  *  > int(4) magic
  *  > int(4) natoms

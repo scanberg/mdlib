@@ -1,9 +1,11 @@
 #ifndef _MD_INTRINSICS_H_
 #define _MD_INTRINSICS_H_
 
+#include "md_common.h"
+#include "md_compiler.h"
+
 #include <stdint.h>
 #include <stdbool.h>
-#include "common.h"
 
 #if (MD_COMPILER_CLANG || MD_COMPILER_GCC)
 // count leading zeros
@@ -120,14 +122,12 @@ static inline uint64_t find_first_zero_byte64(uint64_t x) {
 }
 
 static inline uint32_t next_power_of_two(uint32_t x) {
-    if (x == 0) return 0;
-    if (x == 1) return 1; // avoid clz(0)
+    if (x < 2) return x;  // avoid clz(0)
     return 1UL << (sizeof(uint32_t) * 8 - clz(x-1));
 }
 
 static inline uint64_t next_power_of_two64 (uint64_t x) {
-    if (x == 0) return 0;
-    if (x == 1) return 1; // avoid clz(0)
+    if (x < 2) return x;  // avoid clz(0)
     return 1ULL << (sizeof(uint64_t) * 8 - clz64(x-1));
 }
 

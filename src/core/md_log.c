@@ -1,8 +1,6 @@
-#define _CRT_SECURE_NO_WARNINGS
-
 #include "md_log.h"
-#include "core/common.h"
-#include "core/compiler.h"
+#include "core/md_common.h"
+#include "core/md_compiler.h"
 #if MD_COMPILER_MSVC
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -45,7 +43,7 @@ static void _log(struct md_logger_o* inst, enum md_log_type log_type, const char
     tstruct = *localtime(&now);
 
     char time_buf[64];
-    uint64_t count = strftime(time_buf, ARRAY_SIZE(time_buf), "[%T]", &tstruct);
+    const uint64_t count = strftime(time_buf, ARRAY_SIZE(time_buf), "[%T]", &tstruct);
     ASSERT(count <= ARRAY_SIZE(time_buf)); // We should never have to trunkate the time string
 
     fprintf(stderr, "%.*s", (uint32_t)ARRAY_SIZE(time_buf), time_buf);

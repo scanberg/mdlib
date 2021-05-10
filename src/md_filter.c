@@ -1,12 +1,11 @@
-#if _MSC_VER && !__INTEL_COMPILER && !__clang__
-#define _CRT_SECURE_NO_WARNINGS
+#include <core/md_compiler.h>
+#if MD_COMPILER_MSVC
 #pragma warning( disable : 6011 26451 )
 #endif
 
 #include <md_filter.h>
-#include <md_log.h>
+
 #include <md_molecule.h>
-#include <md_allocator.h>
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -14,10 +13,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "core/intrinsics.h"
-#include "core/arena_allocator.h"
-#include "core/bitop.h"
-#include "core/common.h"
+#include <core/md_log.h>
+#include <core/md_allocator.h>
+#include <core/md_intrinsics.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_bitop.h>
+#include <core/md_common.h>
 
 #define DIV_UP(x, y) ((x + (y-1)) / y)
 #define MAX_FUNC_ARGS 2
@@ -108,10 +109,6 @@ void filter_func_radius(float min_range, float max_range, uint64_t* bits, const 
 void filter_func_radius_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
 void filter_func_mass(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
 void filter_func_mass_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
-void filter_func_bfactor(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
-void filter_func_bfactor_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
-void filter_func_occupancy(float min_range, float max_range, uint64_t* bits, const md_molecule* mol);
-void filter_func_occupancy_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
 void filter_func_atom(int min_range, int max_range, uint64_t* bits, const md_molecule* mol);
 void filter_func_atom_int(int val, uint64_t* bits, const md_molecule* mol);
 void filter_func_name(const char* str, uint64_t* bits, const md_molecule* mol);
@@ -257,7 +254,7 @@ internal inline int64_t parse_int(const char* str, uint32_t len) {
     const char* c = str;
     const char* end = str + len;
     while (c != end && is_digit(*c)) {
-        val = val * 10 + (*c - '0');
+        val = val * 10 + ((int64_t)*c - '0');
         ++c;
     }
     return val;
@@ -311,15 +308,11 @@ static const ident_t ident_table[] = {
     {"within",      6, NODE_TYPE_FUNC, FUNC_TYPE_INT_BOOL,  filter_func_within_int,     2, {VALUE_TYPE_INT, VALUE_TYPE_BOOL}},
     {"protein",     7, NODE_TYPE_FUNC, FUNC_TYPE_VOID,      filter_func_protein,        0},
     {"element",     7, NODE_TYPE_FUNC, FUNC_TYPE_STR,       filter_func_element,        1, VALUE_TYPE_STR},
-    {"bfactor",     7, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_bfactor,        1, VALUE_TYPE_FRNG},
-    {"bfactor",     7, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_bfactor_int,    1, VALUE_TYPE_IRNG},
     {"resname",     7, NODE_TYPE_FUNC, FUNC_TYPE_STR,       filter_func_resname,        1, VALUE_TYPE_STR},
     {"residue",     7, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_residue,        1, VALUE_TYPE_IRNG},
     {"residue",     7, NODE_TYPE_FUNC, FUNC_TYPE_INT,       filter_func_residue_int,    1, VALUE_TYPE_INT},
     {"fillres",     7, NODE_TYPE_FUNC, FUNC_TYPE_BOOL,      filter_func_fill_residue,   1, VALUE_TYPE_BOOL},
     {"fillchain",   9, NODE_TYPE_FUNC, FUNC_TYPE_BOOL,      filter_func_fill_chain,     1, VALUE_TYPE_BOOL},
-    {"occupancy",   9, NODE_TYPE_FUNC, FUNC_TYPE_FRNG,      filter_func_occupancy,      1, VALUE_TYPE_FRNG},
-    {"occupancy",   9, NODE_TYPE_FUNC, FUNC_TYPE_IRNG,      filter_func_occupancy_int,  1, VALUE_TYPE_IRNG},
 };
 
 static inline void enc_rel_ptr(int16_t* ptr, void* adress) {
@@ -690,7 +683,7 @@ static ast_node_t* parse_identifier(parse_context_t* ctx, lexer_t* lexer) {
         return node;
     }
     else {
-        value_type_t arg_types[64];
+        value_type_t arg_types[64] = {0};
         for (uint32_t i = 0; i < arg_count; ++i) {
             if (arg_lengths[i] != 1) {
                 log_error_with_context("Only one argument is allowed per slot in a multi-argument function call", ctx->expr_str, ctx->expr_len, ident_str);
@@ -1066,7 +1059,7 @@ static inline void swap_bit_buffers(eval_context_t* ctx) {
 #endif
 
 static value_t call_func(ident_t ident, const value_t* args, uint64_t* dst_bits, const md_molecule* mol, const char* expr_str) {
-    value_t res;
+    value_t res = {0};
     switch (ident.func_type)
     {
     case FUNC_TYPE_VOID:
@@ -1199,7 +1192,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
             break;
         }
         bit_and(dst_bits, res_a._bool, res_b._bool, 0, ctx->bit_count);
-        value_t res;
+        value_t res = {0};
         res.type = VALUE_TYPE_BOOL;
         res._bool = dst_bits;
         if (tmp_buf) free_tmp_buf(tmp_buf, ctx);
@@ -1221,7 +1214,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
             break;
         }
         bit_or(dst_bits, res_a._bool, res_b._bool, 0, ctx->bit_count);
-        value_t res;
+        value_t res = {0};
         res.type = VALUE_TYPE_BOOL;
         res._bool = dst_bits;
         if (tmp_buf) free_tmp_buf(tmp_buf, ctx);
@@ -1240,9 +1233,9 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
     case NODE_TYPE_FUNC:
     {
         ident_t ident = ident_table[node->_func.ident];
-        const ast_node_t* arg_nodes[MAX_FUNC_ARGS];
-        value_t           args[MAX_FUNC_ARGS];
-        uint64_t*         tmp_buf[MAX_FUNC_ARGS];
+        const ast_node_t* arg_nodes[MAX_FUNC_ARGS] = {0};
+        value_t           args[MAX_FUNC_ARGS] = {0};
+        uint64_t*         tmp_buf[MAX_FUNC_ARGS] = {0};
         decode_args(arg_nodes, ident.arg_count, dec_rel_ptr(&node->_func.args));
         for (uint32_t i = 0; i < ident.arg_count; ++i) {
             tmp_buf[i] = alloc_tmp_buf(ctx);
@@ -1290,7 +1283,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
         switch(node->_value.type) {
         case VALUE_TYPE_FLT:
         {
-            value_t res;
+            value_t res = {0};
             res.type = VALUE_TYPE_FLT;
             res._flt = node->_value._flt;
             return res;
@@ -1298,7 +1291,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
         }
         case VALUE_TYPE_INT:
         {
-            value_t res;
+            value_t res = {0};
             res.type = VALUE_TYPE_INT;
             res._int = node->_value._int;
             return res;
@@ -1306,7 +1299,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
         }
         case VALUE_TYPE_STR:
         {
-            value_t res;
+            value_t res = {0};
             res.type = VALUE_TYPE_STR;
             res._str = node->_value._str;
             return res;
@@ -1314,7 +1307,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
         }
         case VALUE_TYPE_FRNG:
         {
-            value_t res;
+            value_t res = {0};
             res.type = VALUE_TYPE_FRNG;
             res._frange = node->_value._frange;
             return res;
@@ -1322,7 +1315,7 @@ static value_t evaluate(const ast_node_t* node, uint64_t* dst_bits, eval_context
         }
         case VALUE_TYPE_IRNG:
         {
-            value_t res;
+            value_t res = {0};
             res.type = VALUE_TYPE_IRNG;
             res._irange = node->_value._irange;
             return res;
@@ -1589,44 +1582,6 @@ void filter_func_mass_int(int min_range, int max_range, uint64_t* bits, const md
     filter_func_mass((float)min_range, (float)max_range, bits, mol);
 }
 
-void filter_func_bfactor(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
-    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
-    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
-        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
-        uint64_t mask = 0;
-        for (uint64_t bit = 0; bit < bit_count; ++bit) {
-            const uint64_t i = blk_idx * 64 + bit;
-            if (min_range <= mol->atom.bfactor[i] && mol->atom.bfactor[i] <= max_range) {
-                mask |= 1ULL << bit;
-            }
-        }
-        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
-    }
-}
-
-void filter_func_bfactor_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
-    filter_func_bfactor((float)min_range, (float)max_range, bits, mol);
-}
-
-void filter_func_occupancy(float min_range, float max_range, uint64_t* bits, const md_molecule* mol) {
-    const uint64_t blk_count = DIV_UP(mol->atom.count, 64);
-    for (uint64_t blk_idx = 0; blk_idx < blk_count; ++blk_idx) {
-        const uint64_t bit_count = (blk_idx != (blk_count - 1)) ? 64 : (mol->atom.count & 63);
-        uint64_t mask = 0;
-        for (uint64_t bit = 0; bit < bit_count; ++bit) {
-            const uint64_t i = blk_idx * 64 + bit;
-            if (min_range <= mol->atom.occupancy[i] && mol->atom.occupancy[i] <= max_range) {
-                mask |= 1ULL << bit;
-            }
-        }
-        if (mask) bits[blk_idx] |= mask; // Only write back if we have data to write
-    }
-}
-
-void filter_func_occupancy_int(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
-    filter_func_occupancy((float)min_range, (float)max_range, bits, mol);
-}
-
 void filter_func_atom(int min_range, int max_range, uint64_t* bits, const md_molecule* mol) {
     min_range = MAX(min_range, 0);
     max_range = MIN(max_range, (int)mol->atom.count);
@@ -1757,7 +1712,7 @@ void filter_func_fill_chain(const uint64_t* in_bits, uint64_t* out_bits, const m
 }
 
 #define SPATIAL_GRID_MIN_SIZE 16
-#define GRID_RES 32
+#define GRID_RES 32LLU
 #define INIT_CELL_COORD(x,y,z) {((x) - aabb_min[0]) * inv_aabb_ext[0], ((y) - aabb_min[1]) * inv_aabb_ext[1], ((z) - aabb_min[2]) * inv_aabb_ext[2]}
 
 inline uint32_t compute_cell_idx(const uint32_t cc[3]) {

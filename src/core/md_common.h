@@ -1,7 +1,7 @@
 #ifndef _MD_COMMON_H_
 #define _MD_COMMON_H_
 
-#include "compiler.h"
+#include "md_compiler.h"
 
 #ifndef ASSERT
 #include <assert.h>
@@ -32,10 +32,10 @@
 #define ABS(x) ((x) > 0 ? (x) : -(x))
 #define CLAMP(val, _min, _max) MIN(MAX(val, _min), _max)
 
-#define DEG_TO_RAD(x) ((x)*(3.14159265f / 180.0f))
-#define RAD_TO_DEG(x) ((x)*(180.0f / 3.14159265f))
+#define DEG_TO_RAD(x) ((x)*(3.14159265 / 180.0))
+#define RAD_TO_DEG(x) ((x)*(180.0 / 3.14159265))
 
-#define KILOBYTES(x) (x * 1024)
-#define MEGABYTES(x) (x * 1024 * 1024)
+#define KILOBYTES(x) (x * 1024LL)
+#define MEGABYTES(x) (x * 1024LL * 1024LL)
 
 #endif

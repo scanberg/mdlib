@@ -9,6 +9,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_bitop.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intrinsics.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_script.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_pdb.c
   )
 
 # adapted from https://github.com/Kitware/CMake/blob/master/Modules/GoogleTest.cmake

@@ -9,6 +9,11 @@
 #include <xmmintrin.h>
 #endif
 
+#include "md_compiler.h"
+#if MD_COMPILER_MSVC
+#pragma warning( disable : 4201 ) // nameless structs
+#endif
+
 typedef union md_vec4 {
     struct {
         float x, y, z, w;
@@ -25,7 +30,7 @@ typedef union md_mat4 {
 } md_mat4;
 
 static inline md_vec4 md_vec4_mul(const md_vec4 a, const md_vec4 b) {
-    md_vec4 c;
+    md_vec4 c = {0};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_mul_ps(a.mm128, b.mm128);
 #else
@@ -38,7 +43,7 @@ static inline md_vec4 md_vec4_mul(const md_vec4 a, const md_vec4 b) {
 }
 
 static inline md_vec4 md_vec4_mul_f(const md_vec4 a, const float s) {
-    md_vec4 c;
+    md_vec4 c = {0};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_mul_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -51,7 +56,7 @@ static inline md_vec4 md_vec4_mul_f(const md_vec4 a, const float s) {
 }
 
 static inline md_vec4 md_vec4_div(const md_vec4 a, const md_vec4 b) {
-    md_vec4 c;
+    md_vec4 c = {0};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_div_ps(a.mm128, b.mm128);
 #else
@@ -64,7 +69,7 @@ static inline md_vec4 md_vec4_div(const md_vec4 a, const md_vec4 b) {
 }
 
 static inline md_vec4 vec4_div_f(const md_vec4 a, const float s) {
-    md_vec4 c;
+    md_vec4 c = {0};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_div_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -77,7 +82,7 @@ static inline md_vec4 vec4_div_f(const md_vec4 a, const float s) {
 }
 
 static inline md_vec4 md_vec4_add(const md_vec4 a, const md_vec4 b) {
-    md_vec4 c;
+    md_vec4 c = {0};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_add_ps(a.mm128, b.mm128);
 #else
@@ -90,7 +95,7 @@ static inline md_vec4 md_vec4_add(const md_vec4 a, const md_vec4 b) {
 }
 
 static inline md_vec4 md_vec4_add_f(const md_vec4 a, const float s) {
-    md_vec4 c;
+    md_vec4 c = {0};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_add_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -103,7 +108,7 @@ static inline md_vec4 md_vec4_add_f(const md_vec4 a, const float s) {
 }
 
 static inline md_vec4 md_vec4_sub(const md_vec4 a, const md_vec4 b) {
-    md_vec4 c;
+    md_vec4 c = {0};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_sub_ps(a.mm128, b.mm128);
 #else
@@ -116,7 +121,7 @@ static inline md_vec4 md_vec4_sub(const md_vec4 a, const md_vec4 b) {
 }
 
 static inline md_vec4 md_vec4_sub_f(const md_vec4 a, const float s) {
-    md_vec4 c;
+    md_vec4 c = {0};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_sub_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -140,7 +145,7 @@ static inline __m128 md_linear_combine_sse(__m128 a, md_mat4 B) {
 #endif
 
 static inline md_mat4 md_mat4_mul(const md_mat4 A, const md_mat4 B) {
-    md_mat4 C;
+    md_mat4 C = {0};
 #if VEC_MATH_USE_SSE_H
     C.col[0].mm128 = md_linear_combine_sse(B.col[0].mm128, A);
     C.col[1].mm128 = md_linear_combine_sse(B.col[1].mm128, A);
@@ -174,7 +179,7 @@ static inline md_mat4 md_mat4_mul(const md_mat4 A, const md_mat4 B) {
 }
 
 static inline md_vec4 md_mat4_mul_vec4(const md_mat4 M, const md_vec4 V) {
-    md_vec4 R;
+    md_vec4 R = {0};
 #if VEC_MATH_USE_SSE_H
     R.mm128 = md_linear_combine_sse(V.mm128, M);
 #else
@@ -184,7 +189,7 @@ static inline md_vec4 md_mat4_mul_vec4(const md_mat4 M, const md_vec4 V) {
 }
 
 static inline md_mat4 md_mat4_mul_f(const md_mat4 M, float s) {
-    md_mat4 C;
+    md_mat4 C = {0};
 #if VEC_MATH_USE_SSE_H
     C.col[0] = md_vec4_mul_f(M.col[0], s);
     C.col[1] = md_vec4_mul_f(M.col[1], s);
@@ -263,7 +268,7 @@ static inline md_mat4 md_mat4_inverse(const md_mat4 M) {
     const md_vec4 sign_a = {+1, -1, +1, -1};
     const md_vec4 sign_b = {-1, +1, -1, +1};
 
-    md_mat4 I;
+    md_mat4 I = {0};
     I.col[0] = md_vec4_mul(i0, sign_a);
     I.col[1] = md_vec4_mul(i1, sign_b);
     I.col[2] = md_vec4_mul(i2, sign_a);

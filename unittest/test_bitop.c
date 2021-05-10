@@ -1,6 +1,6 @@
 #include "utest.h"
-#include <md_allocator.h>
-#include <core/bitop.h>
+#include <core/md_allocator.h>
+#include <core/md_bitop.h>
 
 #include <string.h>
 #include <stdint.h>
@@ -90,5 +90,7 @@ UTEST(bitop, test) {
 
     // SCAN
     EXPECT_EQ(bit_scan(bf[0], 0, num_bits), 3);
+    EXPECT_EQ(bit_scan(bf[0], 3, num_bits-3), 26);
+
     EXPECT_EQ(bit_scan(bf[1], 0, num_bits), 12);
 }

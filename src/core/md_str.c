@@ -1,28 +1,11 @@
-#include "str_util.h"
+#include "md_str.h"
 
-#include "common.h"
-#include "file.inl"
-#include <md_allocator.h>
-#include <md_log.h>
+#include "md_common.h"
+#include "md_file.h"
+#include "md_allocator.h"
+#include "md_log.h"
 
 #include <string.h>
-
-bool compare_str(const str_t str_a, const str_t str_b) {
-    ASSERT(str_a.ptr && str_b.ptr);
-    if (str_a.len != str_b.len) return false;
-    for (uint64_t i = 0; i < str_a.len; ++i) {
-        if (str_a.ptr[i] != str_b.ptr[i]) return false;
-    }
-    return true;
-}
-
-str_t substr(str_t str, uint64_t offset, uint64_t length) {
-    if (offset > str.len) return (str_t){0};
-    if (offset + length > str.len) length = str.len - offset;
-    str.ptr = str.ptr + offset;
-    str.len = length;
-    return str;
-}
 
 bool skip_line(str_t* in_out_str) {
     ASSERT(in_out_str);
@@ -51,36 +34,56 @@ bool peek_line(str_t* out_line, const str_t* in_str) {
 bool extract_line(str_t* out_line, str_t* in_out_str) {
     ASSERT(out_line);
     ASSERT(in_out_str);
+    if (in_out_str->len == 0) return false;
+
     const char* beg = in_out_str->ptr;
-    if (skip_line(in_out_str)) {
-        out_line->ptr = beg;
-        out_line->len = in_out_str->ptr - beg;
+    const char* end = in_out_str->ptr + in_out_str->len;
+    const char* c = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
+    if (c) {
+        end = c + 1;
     }
-    return false;
+    else {
+        while(0);
+    }
+
+    out_line->ptr = beg;
+    out_line->len = end - beg;
+
+    in_out_str->len = in_out_str->ptr + in_out_str->len - end;
+    in_out_str->ptr = end;
+    
+    return true;
 }
 
-str_t trim_whitespace(str_t str) {
-    const char* beg = str.ptr;
-    const char* end = str.ptr + str.len;
-    while (beg != end && is_whitespace(*beg)) ++beg;
-    while (beg + 1 < end && is_whitespace(end[-1])) --end;
-    str.ptr = beg;
-    str.len = end - beg;
-    return str;
+int64_t find_char(str_t str, int c) {
+    // @TODO: Implement support for UTF encodings here.
+    // Identify the effective width used in c and search for that.
+    for (int64_t i = 0; i < (int64_t)str.len; ++i) {
+        if (str.ptr[i] == c) return i;
+    }
+    return -1;
+}
+
+int64_t rfind_char(str_t str, int c) {
+    for (int64_t i = str.len - 1; i >= 0; --i) {
+        if (str.ptr[i] == c) return i;
+    }
+    return -1;
 }
 
 double parse_float(str_t str) {
-    const double pow10[16] = {
+    static const double pow10[16] = {
         1e+0,  1e+1,  1e+2,  1e+3,
         1e+4,  1e+5,  1e+6,  1e+7,
         1e+8,  1e+9,  1e+10, 1e+11,
         1e+12, 1e+13, 1e+14, 1e+15
     };
 
-    double val = 0;
-    double sign = 1;
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
+
+    double val = 0;
+    double sign = 1;
     if (*c == '-') {
         ++c;
         sign = -1;
@@ -93,7 +96,7 @@ double parse_float(str_t str) {
 
     ++c; // skip '.'
     const uint32_t count = (uint32_t)(end - c);
-    while (c < end) {
+    while (c < end && is_digit(*c)) {
         val = val * 10 + ((int)(*c) - '0');
         ++c;
     }
@@ -117,9 +120,9 @@ int64_t parse_int(str_t str) {
     return sign * val;
 }
 
-str_t load_textfile(const char* filename, uint32_t filename_len, struct md_allocator_i* alloc) {
+str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     ASSERT(alloc);
-    FILE* file = md_file_open(filename, filename_len, "rb");
+    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     str_t result = {0,0};
     if (file) {
         uint64_t file_size = md_file_size(file);
@@ -139,6 +142,12 @@ str_t load_textfile(const char* filename, uint32_t filename_len, struct md_alloc
     }
     return result;
 }
+
+/*
+str_t make_cstr(const char* str) {
+    return (str_t){str, strlen(str)};
+}
+*/
 
 str_t alloc_str(uint64_t len, struct md_allocator_i* alloc) {
     ASSERT(alloc);
@@ -164,4 +173,60 @@ str_t copy_str(const str_t str, struct md_allocator_i* alloc) {
         result.len = str.len;
     }
     return result;
+}
+
+// c:/folder/file.ext -> ext
+str_t extract_ext(str_t path) {
+    int64_t pos = rfind_char(path, '.');
+
+    str_t res = {0};
+    if (pos) {
+        pos += 1; // skip '.'
+        res.ptr = path.ptr + pos;
+        res.len = path.len - pos;
+    }
+    return res;
+}
+
+// c:/folder/file.ext -> file.ext
+str_t extract_file(str_t path) {
+    int64_t pos = rfind_char(path, '/');
+    if (pos == -1) {
+        pos = rfind_char(path, '\\');
+    }
+
+    str_t res = {0};
+    if (pos) {
+        pos += 1; // skip slash or backslash
+        res.ptr = path.ptr + pos;
+        res.len = path.len - pos;
+    }
+    return res;
+}
+
+// c:/folder/file.ext -> c:/folder/file.
+str_t extract_path_without_ext(str_t path) {
+    const int64_t pos = rfind_char(path, '.');
+
+    str_t res = {0};
+    if (pos) {
+        res.ptr = path.ptr;
+        res.len = pos;
+    }
+    return res;
+}
+
+// c:/folder/file.ext -> c:/folder/
+str_t extract_path_without_file(str_t path) {
+    int64_t pos = rfind_char(path, '/');
+    if (pos == -1) {
+        pos = rfind_char(path, '\\');
+    }
+
+    str_t res = {0};
+    if (pos) {
+        res.ptr = path.ptr;
+        res.len = pos;
+    }
+    return res;
 }

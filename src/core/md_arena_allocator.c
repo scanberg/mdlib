@@ -1,7 +1,7 @@
-#include "arena_allocator.h"
+#include "md_arena_allocator.h"
 
-#include <md_allocator.h>
-#include "core/array.inl"
+#include "md_allocator.h"
+#include "md_array.inl"
 
 #define MAGIC_NUMBER 0xfdc1728d827856cb
 #define DEFAULT_ALIGNMENT (sizeof(void*)*2) // Should be 16 when compiled for x64
@@ -78,8 +78,6 @@ static inline void* arena_alloc(arena_t* arena, uint64_t size) {
 }
 
 static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
-    (void)ptr;
-    (void)old_size;
     (void)file;
     (void)line;
     arena_t* arena = (arena_t*)inst;
@@ -140,3 +138,4 @@ void md_arena_allocator_destroy(struct md_allocator_i* alloc) {
     arena_reset(arena);
     md_free(alloc, arena, sizeof(arena_t));
 }
+

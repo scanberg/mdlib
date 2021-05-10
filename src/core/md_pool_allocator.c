@@ -1,9 +1,9 @@
-#include "pool_allocator.h"
+#include "md_pool_allocator.h"
 
-#include <md_allocator.h>
-#include "common.h"
-#include "array.inl"
-#include "intrinsics.h"
+#include "md_allocator.h"
+#include "md_common.h"
+#include "md_array.inl"
+#include "md_intrinsics.h"
 
 #define MAGIC_NUMBER 0xf00b182c847bc69a
 #define PAGE_SLOT_CAPACITY 64
@@ -29,9 +29,10 @@ static inline void* page_slot_ptr(const page_t* page, uint64_t idx, uint64_t slo
 }
 
 static inline page_t* pool_new_page(pool_t* pool) {
-    page_t page;
-    page.free_slots = ~0ULL;
-    page.mem = md_alloc(pool->alloc, pool_page_size(pool));
+    page_t page = {
+        .free_slots = ~0ULL,
+        .mem = md_alloc(pool->alloc, pool_page_size(pool))
+    };
     ASSERT(page.mem);
     return md_array_push(pool->pages, page, pool->alloc);
 }

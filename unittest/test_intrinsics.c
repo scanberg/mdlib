@@ -1,6 +1,6 @@
 #include "utest.h"
 
-#include <core/intrinsics.h>
+#include <core/md_intrinsics.h>
 
 UTEST(intrinsics, test) {
     {

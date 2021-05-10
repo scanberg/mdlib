@@ -1,11 +1,11 @@
-#include "bitop.h"
-#include "intrinsics.h"
-#include "common.h"
-#include "compiler.h"
+#include "md_bitop.h"
+#include "md_intrinsics.h"
+#include "md_common.h"
+#include "md_compiler.h"
+
 #include <string.h> // memset
 
 #if MD_COMPILER_MSVC
-#define _CRT_SECURE_NO_WARNINGS
 #pragma warning( disable : 6011 )
 #endif
 
@@ -39,6 +39,11 @@ void bit_set(uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
     bits[end_idx] |= end_mask;
 }
 
+void bit_set_idx(uint64_t* bits, uint64_t bit_idx) {
+    const uint64_t blk_idx = block_idx(bit_idx);    
+    bits[blk_idx] |= bit_pattern(bit_idx);
+}
+
 void bit_clear(uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
     const uint64_t beg_idx = block_idx(bit_offset);
     const uint64_t end_idx = block_idx(bit_offset + bit_count);
@@ -52,6 +57,11 @@ void bit_clear(uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
     bits[beg_idx] &= ~beg_mask;
     memset(bits + beg_idx + 1, 0x00, (end_idx - beg_idx - 1) * sizeof(uint64_t));
     bits[end_idx] &= ~end_mask;
+}
+
+void bit_clear_idx(uint64_t* bits, uint64_t bit_idx) {
+    const uint64_t blk_idx = block_idx(bit_idx);    
+    bits[blk_idx] &= ~bit_pattern(bit_idx);
 }
 
 void bit_or(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, uint64_t bit_count) {
@@ -219,17 +229,18 @@ uint64_t bit_scan(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count)
     const uint64_t beg_mask = ~(bit_pattern(bit_offset) - 1);
     const uint64_t end_mask = (bit_pattern(bit_offset + bit_count) - 1);
 
+    uint64_t bit_idx = 0;
     if (beg_idx == end_idx) {
         const uint64_t mask = beg_mask & end_mask;
-        return bit_scan_forward64(bits[beg_idx] & mask);
+        if ((bit_idx = bit_scan_forward64(mask & bits[beg_idx])) != 0) return beg_idx * BITS_PER_BLOCK + bit_idx;
+        return 0;
     }
 
-    uint64_t result = 0;
-    if (result = bit_scan_forward64(beg_mask & bits[beg_idx])) return result;
+    if ((bit_idx = bit_scan_forward64(beg_mask & bits[beg_idx])) != 0) return beg_idx * BITS_PER_BLOCK + bit_idx;
     for (uint64_t i = beg_idx + 1; i < end_idx; ++i) {
-        if (result = bit_scan_forward64(bits[beg_idx])) return result;
+        if ((bit_idx = bit_scan_forward64(bits[i])) != 0) return i * BITS_PER_BLOCK + bit_idx;
     }
-    if (result = bit_scan_forward64(end_mask & bits[end_idx])) return result;
+    if ((bit_idx = bit_scan_forward64(end_mask & bits[end_idx])) != 0) return end_idx * BITS_PER_BLOCK + bit_idx;
     
     return 0;
 }
