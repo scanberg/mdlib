@@ -82,8 +82,6 @@ const md_script_property_t* md_script_get_properties(const md_script_o* ir);
 
 void md_script_free(md_script_o* ir);
 
-bool md_filter_evaluate(uint64_t* dst_bits, uint64_t num_bits, str_t expr, const struct md_molecule* mol);
-
 #ifdef __cplusplus
 }
 #endif

@@ -1,6 +1,7 @@
 #include "md_script.h"
 #include "md_molecule.h"
 #include "md_trajectory.h"
+#include "md_filter.h"
 
 #include "core/md_log.h"
 #include "core/md_allocator.h"
@@ -130,11 +131,6 @@ typedef struct token_t {
     int64_t line;
 } token_t;
 
-typedef struct bitfield_t {
-    uint64_t* bits;
-    int64_t   num_bits;
-} bitfield_t;
-
 typedef struct frange_t {
     float beg;
     float end;
@@ -198,7 +194,7 @@ typedef union value_t {
     frange_t    _frange;
     irange_t    _irange;
     bool        _bool;
-    bitfield_t  _bitfield;
+    md_bitfield_t  _bitfield;
 } value_t;
 
 typedef struct identifier_t {
@@ -386,7 +382,7 @@ static inline uint64_t base_type_element_byte_size(base_type_t type) {
     case TYPE_BOOL:     return sizeof(bool);        
     case TYPE_FRANGE:   return sizeof(frange_t);
     case TYPE_IRANGE:   return sizeof(irange_t);
-    case TYPE_BITFIELD: return sizeof(bitfield_t);
+    case TYPE_BITFIELD: return sizeof(md_bitfield_t);
     case TYPE_STRING:   return sizeof(str_t);
     default:            return 0;
     }
@@ -492,7 +488,7 @@ static bool allocate_data(data_t* data, const md_molecule* mol, md_allocator_i* 
 
     if (data->type.base_type == TYPE_BITFIELD) {
         // Configure bitfields to point in memory
-        bitfield_t* bf = data->ptr;
+        md_bitfield_t* bf = data->ptr;
         const uint64_t bf_data_stride = bitfield_byte_size(mol->atom.count);
         const uint64_t num_bits = mol->atom.count;
         for (int64_t i = 0; i < array_len; ++i) {
@@ -518,8 +514,8 @@ static inline void copy_data(data_t* dst, const data_t* src) {
 
     if (dst->type.base_type == TYPE_BITFIELD) {
         const uint64_t num_elem = element_count(*dst);
-        bitfield_t* dst_bf = dst->ptr;
-        const bitfield_t* src_bf = src->ptr;
+        md_bitfield_t* dst_bf = dst->ptr;
+        const md_bitfield_t* src_bf = src->ptr;
         // Set bit pointers into destination memory
         for (uint64_t i = 0; i < num_elem; ++i) {
             dst_bf->bits = (uint64_t*)((char*)dst->ptr + ((uint64_t)src_bf->bits - (uint64_t)src->ptr));
@@ -585,14 +581,14 @@ static const char* get_value_type_str(base_type_t type) {
     }
 }
 
-static int64_t count_atoms_in_mask(bitfield_t mask, const md_molecule* mol) {
+static int64_t count_atoms_in_mask(md_bitfield_t mask, const md_molecule* mol) {
     ASSERT(mol);
     ASSERT(mask.num_bits == mol->atom.count);
 
     return (int64_t)bit_count(mask.bits, 0, mask.num_bits);
 }
 
-static int64_t count_residues_in_mask(bitfield_t mask, const md_molecule* mol) {
+static int64_t count_residues_in_mask(md_bitfield_t mask, const md_molecule* mol) {
     ASSERT(mol);
     ASSERT(mask.num_bits == mol->atom.count);
     ASSERT(mol->atom.residue_idx);
@@ -609,7 +605,7 @@ static int64_t count_residues_in_mask(bitfield_t mask, const md_molecule* mol) {
     return count;
 }
 
-static int64_t count_chains_in_mask(bitfield_t mask, const md_molecule* mol) {
+static int64_t count_chains_in_mask(md_bitfield_t mask, const md_molecule* mol) {
     ASSERT(mol);
     ASSERT(mask.num_bits == mol->atom.count);
     ASSERT(mol->atom.chain_idx);
@@ -626,7 +622,7 @@ static int64_t count_chains_in_mask(bitfield_t mask, const md_molecule* mol) {
     return count;
 }
 
-static uint64_t* get_atom_indices_in_mask(bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
+static uint64_t* get_atom_indices_in_mask(md_bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(alloc);
     ASSERT(mask.num_bits == mol->atom.count);
@@ -640,7 +636,7 @@ static uint64_t* get_atom_indices_in_mask(bitfield_t mask, const md_molecule* mo
     return result;
 }
 
-static uint64_t* get_residue_indices_in_mask(bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
+static uint64_t* get_residue_indices_in_mask(md_bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(alloc);
     ASSERT(mask.num_bits == mol->atom.count);
@@ -658,7 +654,7 @@ static uint64_t* get_residue_indices_in_mask(bitfield_t mask, const md_molecule*
     return result;
 }
 
-static uint64_t* get_chain_indices_in_mask(bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
+static uint64_t* get_chain_indices_in_mask(md_bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(alloc);
     ASSERT(mask.num_bits == mol->atom.count);
@@ -676,7 +672,7 @@ static uint64_t* get_chain_indices_in_mask(bitfield_t mask, const md_molecule* m
     return result;
 }
 
-static mol_context_t* get_residue_contexts_in_mask(bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
+static mol_context_t* get_residue_contexts_in_mask(md_bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
     uint64_t* res_idx = get_residue_indices_in_mask(mask, mol, alloc);
     mol_context_t* res_ctx = NULL;
 
@@ -693,7 +689,7 @@ static mol_context_t* get_residue_contexts_in_mask(bitfield_t mask, const md_mol
     return res_ctx;
 }
 
-static mol_context_t* get_chain_contexts_in_mask(bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
+static mol_context_t* get_chain_contexts_in_mask(md_bitfield_t mask, const md_molecule* mol, md_allocator_i* alloc) {
     uint64_t* chain_idx = get_chain_indices_in_mask(mask, mol, alloc);
     mol_context_t* chain_ctx = NULL;
 
@@ -1314,7 +1310,7 @@ static int print_type_info(char* buf, int buf_size, type_info_t info) {
 
 #if MD_DEBUG
 
-static void print_bitfield(FILE* file, bitfield_t bitfield) {
+static void print_bitfield(FILE* file, md_bitfield_t bitfield) {
     const int64_t max_bits = 64;
     const int64_t num_bits = MIN(bitfield.num_bits, max_bits);
     fprintf(file, "[");
@@ -1356,7 +1352,7 @@ static void print_value(FILE* file, data_t data) {
         if (data.ptr) {
             switch(data.type.base_type) {
             case TYPE_BITFIELD:
-                print_bitfield(file, *(bitfield_t*)data.ptr);
+                print_bitfield(file, *(md_bitfield_t*)data.ptr);
                 break;
             case TYPE_BOOL:
                 fprintf(file, "%s", *(bool*)data.ptr ? "true" : "false");
@@ -2206,7 +2202,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     ASSERT(ctx_data.type.base_type == TYPE_BITFIELD);
     ASSERT(ctx_data.ptr);
 
-    bitfield_t ctx_bf = *((bitfield_t*)ctx_data.ptr);
+    md_bitfield_t ctx_bf = *((md_bitfield_t*)ctx_data.ptr);
 
     mol_context_t* mol_contexts = 0;
 
@@ -2236,8 +2232,8 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
         };
         if (!allocate_data(&tmp_data,  ctx->mol, ctx->temp_alloc)) return false;
 
-        bitfield_t dst_bf = *((bitfield_t*)dst->ptr);
-        bitfield_t tmp_bf = *((bitfield_t*)tmp_data.ptr);
+        md_bitfield_t dst_bf = *((md_bitfield_t*)dst->ptr);
+        md_bitfield_t tmp_bf = *((md_bitfield_t*)tmp_data.ptr);
 
         ASSERT(dst_bf.bits && dst_bf.num_bits);
         ASSERT(tmp_bf.bits && tmp_bf.num_bits == dst_bf.num_bits);
@@ -2329,10 +2325,13 @@ static bool finalize_proc_call(ast_node_t*, procedure_match_result_t*, static_ch
 
 static bool convert_node(ast_node_t* node, type_info_t new_type, static_check_context_t* ctx) {
     const type_info_t from = node->data.type;
-    const type_info_t to   = new_type;
+    type_info_t to   = new_type;
 
     procedure_match_result_t res = find_cast_procedure(from, to);
     if (res.success) {
+        // We need to update the return type here
+        to = res.procedure->return_type;
+
         // We need to check for the positiion flag here since that is not a true constant value, but a derived value.
         if (node->type == AST_CONSTANT_VALUE && !(res.procedure->flags & FLAG_POSITION)) {
             ASSERT(is_scalar(from));
@@ -2812,7 +2811,7 @@ static bool static_check_context(ast_node_t* node, static_check_context_t* ctx) 
                 };
                 allocate_data(&rhs->data, ctx->mol, ctx->temp_alloc);
                 if (evaluate_node(&rhs->data, rhs, &eval_ctx)) {
-                    bitfield_t bf = *((bitfield_t*)rhs->data.ptr);
+                    md_bitfield_t bf = *((md_bitfield_t*)rhs->data.ptr);
                     mol_context_t* mol_contexts = NULL;
                     switch(rhs->data.type.level) {
                         case LEVEL_RESIDUE: mol_contexts = get_residue_contexts_in_mask(bf, ctx->mol, ctx->temp_alloc); break;
@@ -3343,12 +3342,12 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule* mol, md_alloca
     return false;
 }
 
-bool md_filter_evaluate(uint64_t* dst_bits, int64_t num_bits, str_t expr, const md_molecule* mol) {
-    ASSERT(dst_bits);
-    ASSERT(num_bits);
-    ASSERT(mol);
-    
-    if (num_bits < mol->atom.count) {
+bool md_filter_evaluate(str_t expr, md_bitfield_t target, md_filter_context_t filter_ctx) {
+    ASSERT(target.bits);
+    ASSERT(target.num_bits);
+    ASSERT(filter_ctx.mol);
+
+    if (target.num_bits < filter_ctx.mol->atom.count) {
         md_print(MD_LOG_TYPE_ERROR, "Not enough bits to store result of filter evaluation");
         return false;
     }
@@ -3358,7 +3357,7 @@ bool md_filter_evaluate(uint64_t* dst_bits, int64_t num_bits, str_t expr, const 
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
 
-    parse_context_t ctx = {
+    parse_context_t parse_ctx = {
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
@@ -3368,36 +3367,59 @@ bool md_filter_evaluate(uint64_t* dst_bits, int64_t num_bits, str_t expr, const 
     ir->stage = "Filter evaluate";
     ir->record_errors = true;
 
-    ast_node_t* node = parse_expression(&ctx);
+    ast_node_t* node = parse_expression(&parse_ctx);
     if (node) {
-        if (node->data.type.base_type == TYPE_BITFIELD && is_scalar(node->data.type)) {
-            if (static_type_check(ir, mol)) {
-                bit_clear(dst_bits, 0, num_bits);
-                bitfield_t bf = {
-                    .bits = dst_bits,
-                    .num_bits = num_bits
-                };
+        identifier_t* stored_selections = 0;
+        for (int64_t i = 0; i < filter_ctx.selection.count; ++i) {
+            const md_filter_stored_selection_t sel = filter_ctx.selection.ptr[i];
+            identifier_t ident = {
+                .name = sel.ident,
+                .data = {
+                    .ptr = &sel.bitfield,
+                    .size = DIV_UP(sel.bitfield.num_bits, 64) * 8,
+                    .type = {.base_type = TYPE_BITFIELD, .dim = {1}},
+            },
+            };
+            md_array_push(stored_selections, ident, alloc);
+        }
+
+        for (int64_t i = 0; i < md_array_size(stored_selections); ++i) {
+            md_array_push(ir->identifiers, &stored_selections[i], alloc);
+        }
+
+        mol_context_t mol_ctx = {
+            .atom = { 0, (uint32_t)filter_ctx.mol->atom.count },
+            .residue = { 0, (uint32_t)filter_ctx.mol->residue.count },
+            .chain = { 0, (uint32_t)filter_ctx.mol->chain.count },
+        };
+
+        static_check_context_t static_ctx = {
+            .ir = ir,
+            .mol = filter_ctx.mol,
+            .mol_ctx = mol_ctx,
+            .temp_alloc = default_temp_allocator,
+        };
+
+        if (static_check_node(node, &static_ctx)) {
+            if (node->data.type.base_type == TYPE_BITFIELD && is_scalar(node->data.type)) {
+                bit_clear(target.bits, 0, target.num_bits);
                 data_t data = {
-                    .ptr = &bf,
-                    .size = DIV_UP(num_bits, 64) * 8,
-                    .type = node->type
+                    .ptr = &target,
+                    .size = DIV_UP(target.num_bits, 64) * 8,
+                    .type = node->data.type,
                 };
-                eval_context_t ctx = {
-                    .mol = mol,
-                    .mol_ctx = {
-                        .atom = { 0, (uint32_t)mol->atom.count },
-                        .residue = { 0, (uint32_t)mol->residue.count },
-                        .chain = { 0, (uint32_t)mol->chain.count },
-                    },
-                    .temp_alloc = default_temp_allocator
+                eval_context_t eval_ctx = {
+                    .mol = filter_ctx.mol,
+                    .mol_ctx = mol_ctx,
+                    .temp_alloc = default_temp_allocator,
                 };
 
-                if (evaluate_node(&data, node, &ctx)) {
+                if (evaluate_node(&data, node, &eval_ctx)) {
                     return true;
                 }
+            } else {
+                md_print(MD_LOG_TYPE_ERROR, "Filter did not evaluate to a bitfield");
             }
-        } else {
-            md_print(MD_LOG_TYPE_ERROR, "Filter did not evaluate to a bitfield");
         }
     }
     for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {

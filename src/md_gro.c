@@ -253,8 +253,6 @@ bool md_gro_molecule_init(struct md_gro_molecule_t* gro, const struct md_gro_dat
     gro->storage.arena = md_arena_allocator_create(alloc, 4096);
 
     int32_t cur_res_id = -1;
-    char cur_chain_id = -1;
-
     for (int64_t i = 0; i < num_atoms; ++i) {
         const float x = data->atom_data[i].x;
         const float y = data->atom_data[i].y;
@@ -278,7 +276,7 @@ bool md_gro_molecule_init(struct md_gro_molecule_t* gro, const struct md_gro_dat
 
             res_name = add_label(res_name, gro);
             md_residue_id id = res_id;
-            md_range atom_range = {gro->mol.atom.count, gro->mol.atom.count};
+            md_range atom_range = {(uint32_t)gro->mol.atom.count, (uint32_t)gro->mol.atom.count};
 
             gro->mol.residue.count += 1;
             md_array_push(gro->mol.residue.name, res_name.ptr, alloc);
@@ -376,7 +374,7 @@ bool md_gro_molecule_init(struct md_gro_molecule_t* gro, const struct md_gro_dat
                                     gro->mol.residue.complete_covalent_bond_range[res_idx+1])) {
                     const int64_t end_res_idx = res_idx;
                     const str_t chain_id = {.ptr = chain_labels[chain_idx], .len = 1};
-                    const md_range res_range  = {beg_res_idx, end_res_idx};
+                    const md_range res_range  = {(uint32_t)beg_res_idx, (uint32_t)end_res_idx};
                     const md_range atom_range = {gro->mol.residue.atom_range[beg_res_idx].beg, gro->mol.residue.atom_range[end_res_idx].end};
 
                     md_array_push(gro->mol.chain.id, add_label(chain_id, gro).ptr, alloc);
@@ -389,7 +387,7 @@ bool md_gro_molecule_init(struct md_gro_molecule_t* gro, const struct md_gro_dat
 
             const int64_t end_res_idx = gro->mol.residue.count;
             const str_t chain_id = {.ptr = chain_labels[chain_idx], .len = 1};
-            const md_range res_range  = {beg_res_idx, end_res_idx};
+            const md_range res_range  = {(uint32_t)beg_res_idx, (uint32_t)end_res_idx};
             const md_range atom_range = {gro->mol.residue.atom_range[beg_res_idx].beg, gro->mol.residue.atom_range[end_res_idx].end};
 
             md_array_push(gro->mol.chain.id, add_label(chain_id, gro).ptr, alloc);
@@ -401,7 +399,7 @@ bool md_gro_molecule_init(struct md_gro_molecule_t* gro, const struct md_gro_dat
             md_array_ensure(gro->mol.atom.chain_idx, gro->mol.chain.count, alloc);
             for (int64_t ci = 0; ci < gro->mol.chain.count; ++ci) {
                 for (int64_t ai = (int64_t)gro->mol.chain.atom_range[ci].beg; ai < (int64_t)gro->mol.chain.atom_range[ci].end; ++ai) {
-                    gro->mol.atom.chain_idx[ai] = ci;
+                    gro->mol.atom.chain_idx[ai] = (md_chain_idx)ci;
                 }
             }
         }

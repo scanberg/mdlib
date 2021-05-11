@@ -20,7 +20,7 @@
 #define as_bitrange(arg) (*((bitrange_t*)((arg).ptr)))
 #define as_bitrange_arr(arg) ((bitrange_t*)((arg).ptr))
 
-#define as_bitfield(arg) (*((bitfield_t*)((arg).ptr)))
+#define as_bitfield(arg) (*((md_bitfield_t*)((arg).ptr)))
 
 #define as_vec3(arg) (*((vec3*)((arg).ptr)))
 #define as_vec3_arr(arg) (((vec3*)((arg).ptr)))
@@ -588,8 +588,8 @@ static int _not  (data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
 
-    bitfield_t* bf_dst = dst->ptr;
-    bitfield_t* bf_src = arg[0].ptr;
+    md_bitfield_t* bf_dst = dst->ptr;
+    md_bitfield_t* bf_src = arg[0].ptr;
 
     ASSERT(bf_dst->num_bits == bf_src->num_bits);
 
@@ -603,8 +603,8 @@ static int _and  (data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
 
-    bitfield_t* bf_dst = dst->ptr;
-    bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
+    md_bitfield_t* bf_dst = dst->ptr;
+    md_bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
 
     ASSERT(bf_dst->num_bits == bf_src[0]->num_bits);
     ASSERT(bf_dst->num_bits == bf_src[1]->num_bits);
@@ -619,8 +619,8 @@ static int _or   (data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
 
-    bitfield_t* bf_dst = dst->ptr;
-    bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
+    md_bitfield_t* bf_dst = dst->ptr;
+    md_bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
 
     ASSERT(bf_dst->num_bits == bf_src[0]->num_bits);
     ASSERT(bf_dst->num_bits == bf_src[1]->num_bits);
@@ -736,9 +736,9 @@ static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
     (void)arg;
     (void)ctx;
-    bitfield_t result = *((bitfield_t*)dst->ptr);
-    bit_clear(result.bits, 0, result.num_bits);
-    bit_set(result.bits, ctx->mol_ctx.atom.beg, ctx->mol_ctx.atom.end - ctx->mol_ctx.atom.beg);
+    md_bitfield_t result = *((md_bitfield_t*)dst->ptr);
+    //bit_clear(result.bits, 0, result.num_bits);
+    bit_set(result.bits, (uint64_t)ctx->mol_ctx.atom.beg, (uint64_t)ctx->mol_ctx.atom.end - (uint64_t)ctx->mol_ctx.atom.beg);
     return 0;
 }
 
@@ -751,7 +751,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
-        bitfield_t result = *((bitfield_t*)dst->ptr);
+        md_bitfield_t result = *((md_bitfield_t*)dst->ptr);
 
         for (uint64_t i = ctx->mol_ctx.atom.beg; i < ctx->mol_ctx.atom.end; ++i) {
             const char* atom_str = ctx->mol->atom.name[i];
@@ -798,7 +798,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
-        bitfield_t result = as_bitfield(*dst);
+        md_bitfield_t result = as_bitfield(*dst);
 
         const uint64_t num_elem = md_array_size(elem_idx);
         for (uint64_t i = ctx->mol_ctx.atom.beg; i < ctx->mol_ctx.atom.end; ++i) {
@@ -837,7 +837,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.element);
 
-    bitfield_t result = as_bitfield(*dst);
+    md_bitfield_t result = as_bitfield(*dst);
     irange_t* ranges = as_irange_arr(arg[0]);
     const uint64_t num_ranges = element_count(arg[0]);
 
@@ -858,7 +858,7 @@ static int _atom(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     ASSERT(ctx && ctx->mol);
 
-    bitfield_t result = as_bitfield(*dst);
+    md_bitfield_t result = as_bitfield(*dst);
     irange_t* ranges = as_irange_arr(arg[0]);
     const uint64_t num_ranges = element_count(arg[0]);
 
@@ -877,7 +877,7 @@ static int _x(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x);
     ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
-    bitfield_t result = as_bitfield(*dst);
+    md_bitfield_t result = as_bitfield(*dst);
     const frange_t range = as_frange(arg[0]);
 
     for (uint64_t i = ctx->mol_ctx.atom.beg; i < ctx->mol_ctx.atom.end; ++i) {
@@ -893,7 +893,7 @@ static int _y(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.y);
     ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
-    bitfield_t result = as_bitfield(*dst);
+    md_bitfield_t result = as_bitfield(*dst);
     const frange_t range = as_frange(arg[0]);
 
     for (uint64_t i = ctx->mol_ctx.atom.beg; i < ctx->mol_ctx.atom.end; ++i) {
@@ -908,7 +908,7 @@ static int _z(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
     ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_ATOM));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
-    bitfield_t result = as_bitfield(*dst);
+    md_bitfield_t result = as_bitfield(*dst);
     const frange_t range = as_frange(arg[0]);
 
     for (uint64_t i = ctx->mol_ctx.atom.beg; i < ctx->mol_ctx.atom.end; ++i) {
@@ -945,7 +945,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->residue.name);
     ASSERT(dst && dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-    bitfield_t* bf = dst->ptr;
+    md_bitfield_t* bf = dst->ptr;
 
     const uint64_t num_str = element_count(arg[0]);
     const str_t*   str     = arg[0].ptr;
@@ -968,7 +968,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->residue.name);
     ASSERT(dst && dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    bitfield_t* bf = dst->ptr;
+    md_bitfield_t* bf = dst->ptr;
 
     const uint64_t  num_rid = element_count(arg[0]);
     const irange_t*     rid = arg[0].ptr;
@@ -991,7 +991,7 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->residue.name);
     ASSERT(dst && dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    bitfield_t* bf = dst->ptr;
+    md_bitfield_t* bf = dst->ptr;
 
     const uint64_t  num_ranges = element_count(arg[0]);
     const irange_t*     ranges = arg[0].ptr;
@@ -1014,7 +1014,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->chain.atom_range);
     ASSERT(dst && dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_CHAIN));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
-    bitfield_t* bf = dst->ptr;
+    md_bitfield_t* bf = dst->ptr;
 
     const uint64_t  num_ranges = element_count(arg[0]);
     const irange_t*     ranges = arg[0].ptr;
@@ -1037,7 +1037,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->chain.id && ctx->mol->chain.atom_range);
     ASSERT(dst && dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD_RESIDUE));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
-    bitfield_t* bf = dst->ptr;
+    md_bitfield_t* bf = dst->ptr;
 
     const uint64_t num_str = element_count(arg[0]);
     const str_t*   str     = arg[0].ptr;
@@ -1395,7 +1395,7 @@ static int _position_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _position_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
     ASSERT(arg[0].ptr);
-    const bitfield_t bf = as_bitfield(arg[0]);
+    const md_bitfield_t bf = as_bitfield(arg[0]);
     const uint64_t offset = ctx->mol_ctx.atom.beg;
     const uint64_t length = ctx->mol_ctx.atom.end - ctx->mol_ctx.atom.beg;
 

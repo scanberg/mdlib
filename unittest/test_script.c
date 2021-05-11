@@ -1,9 +1,10 @@
 #include "utest.h"
 #include <md_script.h>
 #include <md_molecule.h>
+#include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
-#include <core/md_common.h>
+#include <core/md_bitfield.h>
 
 #include <md_script.c>
 
@@ -58,11 +59,11 @@ static md_molecule mol = {
 
 
 
-static bool eval_selection(bitfield_t* bitfield, str_t expr, md_molecule* mol) {
+static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule* mol) {
     data_t data = {0};
     if (eval_expression(&data, expr, mol, default_temp_allocator)) {
         if (is_scalar(data.type) && data.type.base_type == TYPE_BITFIELD) {
-            bitfield_t* res = (bitfield_t*)data.ptr;
+            md_bitfield_t* res = (md_bitfield_t*)data.ptr;
             bitfield->bits = res->bits;
             bitfield->num_bits = res->num_bits;
             return true;
@@ -129,7 +130,7 @@ UTEST(script, basic_expressions) {
 #define TEST_SELECTION(expr, ref_bit_str) \
 { \
 uint64_t ref = make_bits(ref_bit_str); \
-bitfield_t bf = {0}; \
+md_bitfield_t bf = {0}; \
 ASSERT_TRUE(eval_selection(&bf, make_cstr(expr), &mol)); \
 bool cmp_res = bit_cmp(bf.bits, &ref, 0, ATOM_COUNT); \
 EXPECT_TRUE(cmp_res); \
@@ -147,7 +148,7 @@ UTEST(script, selection) {
     TEST_SELECTION("resname('SOL')",    "1110000000000000");
     TEST_SELECTION("element('C')",      "0000101000001010");
     TEST_SELECTION("label('CA')",       "0000001000000010");
-
+    TEST_SELECTION("atom(1) within resname('PFT')", "0000000010001000");
 }
 
 UTEST(script, compile_script) {

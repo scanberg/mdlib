@@ -8,7 +8,7 @@ struct md_allocator_i;
 
 typedef struct str_t {
     const char* ptr;
-    uint64_t    len;
+    int64_t     len;
 } str_t;
 
 #ifdef __cplusplus
@@ -56,7 +56,10 @@ static inline bool compare_str(const str_t str_a, const str_t str_b) {
 }
 
 static inline str_t substr(str_t str, uint64_t offset, uint64_t length) {
-    if (offset > str.len) return (str_t){0};
+    if (offset > str.len) {
+        str_t res = {0};
+        return res;   
+    }
     if (offset + length > str.len) length = str.len - offset;
     str.ptr = str.ptr + offset;
     str.len = length;

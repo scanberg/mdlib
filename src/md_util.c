@@ -314,8 +314,8 @@ md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args
         const int64_t post_internal_bond_count = md_array_size(bonds);
 
         if (args->residue.internal_bond_range) {
-            args->residue.internal_bond_range[ri].beg = pre_internal_bond_count;
-            args->residue.internal_bond_range[ri].end = post_internal_bond_count;
+            args->residue.internal_bond_range[ri].beg = (uint32_t)pre_internal_bond_count;
+            args->residue.internal_bond_range[ri].end = (uint32_t)post_internal_bond_count;
         }
 
         const int64_t rj = ri + 1;
@@ -334,15 +334,15 @@ md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args
             const int64_t post_external_bond_count = md_array_size(bonds);
 
             if (args->residue.complete_bond_range) {
-                args->residue.complete_bond_range[ri].end = post_external_bond_count;
-                args->residue.complete_bond_range[rj].beg = post_internal_bond_count;
+                args->residue.complete_bond_range[ri].end = (uint32_t)post_external_bond_count;
+                args->residue.complete_bond_range[rj].beg = (uint32_t)post_internal_bond_count;
             }
         }
     }
 
     if (args->residue.complete_bond_range) {
         args->residue.complete_bond_range[0].beg = 0;
-        md_array_last(args->residue.complete_bond_range)->end = md_array_size(bonds);
+        md_array_last(args->residue.complete_bond_range)->end = (uint32_t)md_array_size(bonds);
     }
 
     return bonds;

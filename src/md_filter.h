@@ -4,36 +4,29 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <core/md_str.h>
+#include <core/md_bitfield.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct md_log_i;
 struct md_molecule;
 
-typedef struct md_filter_context md_filter_context;
-typedef struct md_filter_stored_selection md_filter_stored_selection;
+typedef struct md_filter_stored_selection {
+    str_t           ident;
+    md_bitfield_t   bitfield;
+} md_filter_stored_selection_t;
 
-struct md_bitfield {
-    uint64_t* bits;
-    uint64_t bit_count;
-};
+typedef struct md_filter_context {
+    const struct md_molecule* mol;
+    struct {
+        int64_t count;
+        const md_filter_stored_selection_t* ptr;
+    } selection;
+} md_filter_context_t;
 
-struct md_filter_stored_selection {
-    const char*     ident;
-    const uint64_t* bits;
-};
-
-struct md_filter_context {
-    const struct md_molecule*         mol;
-    uint64_t                            bit_count;
-    uint64_t*                           bits;
-    uint32_t                            sel_count;
-    const md_filter_stored_selection* sel;
-    const struct md_log_i*            err_log;
-};
-
-bool md_filter_apply(const char* expression, const md_filter_context* context);
+bool md_filter_evaluate(str_t expression, md_bitfield_t target, md_filter_context_t ctx);
 
 #ifdef __cplusplus
 }

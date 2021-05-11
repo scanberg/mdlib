@@ -75,7 +75,7 @@ const char* md_util_name(md_element element);
 float md_util_vdw_radius(md_element element);
 float md_util_covalent_radius(md_element element);
 float md_util_atomic_mass(md_element element);
-float md_util_cpk_color(md_element element);
+uint32_t md_util_cpk_color(md_element element);
 
 /*
 TODO: implement these utility functions
