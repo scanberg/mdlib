@@ -84,18 +84,23 @@ struct md_draw_molecule_desc {
     struct {
         uint32_t count;
         const md_bond* atom_bond;
-    } bond;
+    } covalent_bond;
 
     struct {
         uint32_t count;
-        const md_range*               atom_range;
-        const md_backbone_atoms*      backbone_atoms;
-        const md_secondary_structure* secondary_structure;
+        const md_range* atom_range; // This is just for building AABBs for culling
     } residue;
 
     struct {
         uint32_t count;
-        const md_range* residue_range;
+        //const md_range*               atom_range;
+        const md_backbone_atoms*      atoms;
+        const md_secondary_structure* secondary_structure;
+    } backbone;
+
+    struct {
+        uint32_t count;
+        const md_range* backbone_range;
     } chain;
 };
 
@@ -107,7 +112,7 @@ md_draw_error md_draw_molecule_set_atom_position(md_draw_molecule* mol, uint32_t
 md_draw_error md_draw_molecule_set_atom_radius(md_draw_molecule* mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride);
 md_draw_error md_draw_molecule_set_atom_flags(md_draw_molecule* mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride);
 
-md_draw_error md_draw_molecule_set_residue_secondary_structure(md_draw_molecule* mol, uint32_t offset, uint32_t count, const md_secondary_structure* secondary_structure, uint32_t byte_stride);
+md_draw_error md_draw_molecule_set_backbone_secondary_structure(md_draw_molecule* mol, uint32_t offset, uint32_t count, const md_secondary_structure* secondary_structure, uint32_t byte_stride);
 
 // This is called to copy the atom position buffer to previous atom position
 // Usually just before calling md_draw_molecule_set_atom_position() to set a new current position

@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define THREAD_LOCAL_RING_BUFFER_SIZE MEGABYTES(4)
+#define THREAD_LOCAL_RING_BUFFER_SIZE MEGABYTES(16)
 #define MAX_TEMP_ALLOCATION_SIZE (THREAD_LOCAL_RING_BUFFER_SIZE / 2)
 #define DEFAULT_ALIGNMENT 16
 
@@ -12,10 +12,11 @@
 
 typedef struct ring_buffer {
     uint64_t curr;
+    uint64_t prev;
     char mem[THREAD_LOCAL_RING_BUFFER_SIZE];
 } ring_buffer;
 
-THREAD_LOCAL ring_buffer ring;
+THREAD_LOCAL ring_buffer ring = {0};
 
 internal void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;
@@ -38,6 +39,8 @@ internal inline void* ring_alloc_internal(uint64_t size) {
 
     const uint64_t alignment = (size <= 2) ? size : DEFAULT_ALIGNMENT;
 
+    ring.prev = ring.curr;
+
     if (ring.curr + size + alignment > sizeof(ring.mem)) {
         ring.curr = 0;
     }
@@ -58,6 +61,11 @@ internal void* ring_realloc_internal(struct md_allocator_o *inst, void* ptr, uin
 
     if (new_size == 0) {
         // free
+        // If this is the last allocation, then we move the pointer back
+        if (ptr == (&ring.mem[ring.prev])) {
+            ring.curr = ring.prev;
+        }
+
         return NULL;
     }
 
@@ -73,24 +81,25 @@ internal void* ring_realloc_internal(struct md_allocator_o *inst, void* ptr, uin
                 return ptr;
             }
         }
-        // ptr is not the last allocation or the new size did not fit into the existing page.
+        // ptr is not the last allocation or the new size did not fit into the buffer which is left
         void* new_ptr = ring_alloc_internal(new_size);
         memcpy(new_ptr, ptr, old_size);
         return new_ptr;
     }
     
+    // alloc
     return ring_alloc_internal(new_size);
 }
 
-static struct md_allocator_i _default_allocator = {
+static struct md_allocator _default_allocator = {
     NULL,
     realloc_internal
 };
 
-static struct md_allocator_i _default_temp_allocator = {
+static struct md_allocator _default_temp_allocator = {
     NULL,
     ring_realloc_internal
 };
 
-struct md_allocator_i* default_allocator = &_default_allocator;
-struct md_allocator_i* default_temp_allocator = &_default_temp_allocator;
+struct md_allocator* default_allocator = &_default_allocator;
+struct md_allocator* default_temp_allocator = &_default_temp_allocator;

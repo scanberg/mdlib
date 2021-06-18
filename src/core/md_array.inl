@@ -34,7 +34,7 @@ typedef struct md_array_header_t {
 #define md_array_push_array(a, items, n, alloc) ((n) ? ((md_array_ensure(a, md_array_size(a) + n, alloc), memcpy(a + md_array_size(a), items, n * sizeof(*(a))), md_array_header(a)->size += n), 0) : 0)
 #define md_array_free(a, alloc)         ((*(void **)&(a)) = md_array_set_capacity_internal((void *)a, 0, sizeof(*(a)), alloc, __FILE__, __LINE__))
 
-static inline void* md_array_set_capacity_internal(void* arr, int64_t new_cap, int64_t item_size, struct md_allocator_i* alloc, const char* file, uint32_t line) {
+static inline void* md_array_set_capacity_internal(void* arr, int64_t new_cap, int64_t item_size, struct md_allocator* alloc, const char* file, uint32_t line) {
     ASSERT(alloc);
     uint8_t* p = arr ? (uint8_t*)md_array_header(arr) : 0;
     const int64_t extra = sizeof(md_array_header_t);
@@ -61,7 +61,7 @@ static inline void* md_array_set_capacity_internal(void* arr, int64_t new_cap, i
     return new_arr;
 }
 
-static inline void* md_array_grow_internal(void* arr, int64_t n, int64_t item_size, struct md_allocator_i* alloc, const char* file, uint32_t line) {
+static inline void* md_array_grow_internal(void* arr, int64_t n, int64_t item_size, struct md_allocator* alloc, const char* file, uint32_t line) {
     const int64_t cap = arr ? md_array_capacity(arr) : 0;
     if (cap >= n) {
         // No need for growth

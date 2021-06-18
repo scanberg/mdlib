@@ -16,7 +16,7 @@ extern "C" {
 
 typedef struct md_allocator_o md_allocator_o;
 
-typedef struct md_allocator_i {
+typedef struct md_allocator {
     struct md_allocator_o* inst; // Opaque data associated with allocator
 
     // One function to rule them all
@@ -26,8 +26,8 @@ typedef struct md_allocator_i {
     void *(*realloc)(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line);
 } md_allocator_i;
 
-extern struct md_allocator_i* default_allocator;
-extern struct md_allocator_i* default_temp_allocator;
+extern struct md_allocator* default_allocator;
+extern struct md_allocator* default_temp_allocator;
 
 #ifdef __cplusplus
 }

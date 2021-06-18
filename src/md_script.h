@@ -5,31 +5,33 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
+#include <core/md_bitfield.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct md_molecule;
-struct md_trajectory_i;
-struct md_allocator_i;
+struct md_trajectory;
+struct md_allocator;
 
-typedef struct md_script_o md_script_o;
-typedef struct md_script_error_t md_script_error_t;
-typedef struct md_script_data_t md_script_data_t;
-typedef struct md_script_property_t md_script_property_t;
-typedef enum md_script_unit_t md_script_unit_t;
-
-enum md_script_unit_t {
+typedef enum md_script_unit {
     MD_SCRIPT_UNIT_NONE,
     MD_SCRIPT_UNIT_ANGSTROM,
     MD_SCRIPT_UNIT_DEGREES,
-};
+} md_script_unit_t;
 
-// Opaque script object
-struct md_script_o;
+typedef enum md_script_property_type {
+    MD_SCRIPT_TYPE_NONE,
+    MD_SCRIPT_TYPE_TEMPORAL,
+    MD_SCRIPT_TYPE_DISTRIBUTION,
+    MD_SCRIPT_TYPE_VOLUME
+} md_script_property_type_t;
 
-struct md_script_error_t {
+struct md_script_ir_o;
+struct md_script_eval_o;
+
+typedef struct md_script_error {
     // Data for indicating where the error occured within the script string
     int32_t line;      // Line number
     int32_t offset;    // String pointer
@@ -37,50 +39,95 @@ struct md_script_error_t {
 
     // Human readable error message
     str_t error;
-};
+} md_script_error_t;
 
-struct md_script_data_t {
-    // This gives you the length of the data in each dimension
-    int32_t dims[4];
+// Opaque immediate representation (compilation result)
+typedef struct md_script_ir {
+    struct md_script_ir_o* o; // opaque internal data
 
-    // Flat access of the data
+    int64_t num_errors;
+    const md_script_error_t* errors;
+} md_script_ir_t;
+
+typedef struct md_script_scalar {
     int64_t num_values;
-    float*  values;
+    float*  values;     // if the underlying type is an aggregation, this will be the mean
+    float*  variance;   // optional, only computed if the values are computed as an aggregate
+    
     float   min_value;
     float   max_value;
+} md_script_scalar_t;
 
-    float*  variance; // optional, only computed if the values are computed as an aggregate
+typedef struct md_script_distribution {
+    int64_t num_values;
+    float* values;
+    float* variance;
+    
+    float min_value;
+    float max_value;
 
-    md_script_unit_t unit;
-};
+    float min_range;
+    float max_range;
 
-struct md_script_property_t {
+} md_script_distribution_t;
+
+typedef struct md_script_volume {
+    // Extent of the volume
+    float ext[3];
+
+    int64_t num_values; // should be the same as dim[0] * dim[1] * dim[2]
+    float* values;
+    float* variance;    // Optional, only if aggregated, num_values in length
+    
+    float min_value;
+    float max_value;
+
+} md_script_volume_t;
+
+typedef struct md_script_property {
     str_t ident;
-    struct md_script_data_t data;
-};
+    md_script_property_type_t type;
+    md_script_unit_t unit;
+    int32_t dim[4];         // This gives the source data dimension
+
+    // These are optional, and one or more may be allocated depending on the type of the property.
+    md_script_scalar_t*         temporal;
+    md_script_distribution_t*   distribution;
+    md_script_volume_t*         volume;
+} md_script_property_t;
+
+// Opaque container for the evaluation result
+typedef struct md_script_eval_result {
+    struct md_script_eval_o* o; // opaque internal data
+
+    int64_t num_properties;
+    const md_script_property_t* properties;
+} md_script_eval_result_t;
 
 // ### COMPILE ###
-// Should always return an object, even if the compilation is not successful, so you can extract the error messages
-md_script_o* md_script_compile(str_t src, const struct md_molecule* mol, struct md_allocator_i* alloc);
+typedef struct md_script_ir_compile_args {
+    str_t src;
+    const struct md_molecule* mol;
+    struct md_allocator* alloc;
+} md_script_ir_compile_args_t;
 
-bool md_script_compile_success(const md_script_o* ir);
-
-// ### ERROR MESSAGES ###
-int64_t md_script_get_num_errors(const md_script_o* ir);
-const md_script_error_t* md_script_get_errors(const md_script_o* ir); // Retreives all messages
+bool md_script_ir_compile(struct md_script_ir* ir, struct md_script_ir_compile_args args);
+bool md_script_ir_free(struct md_script_ir* ir);
 
 // ### EVALUATE ###
-// This evaluates all frames
-bool md_script_evaluate(md_script_o* ir, const struct md_molecule* mol, const struct md_trajectory_i* traj, struct md_allocator_i* alloc);
+typedef struct md_script_eval_args {
+    const struct md_script_ir* ir;
+    const struct md_molecule* mol;
+    const struct md_trajectory* traj;
 
-// This only evaluates the supplied subset of frames, represented in the bitmask
-bool md_script_evaluate_subset(md_script_o* ir, const struct md_molecule* mol, const struct md_trajectory_i* traj, uint64_t num_frame_mask_bits, uint64_t* frame_mask, struct md_allocator_i* alloc);
+    // Optional, set to zero if all frames should be evaluated
+    md_bitfield_t* frame_mask;
 
-// ### PROPERTIES ###
-int64_t md_script_get_num_properties(const md_script_o* ir);
-const md_script_property_t* md_script_get_properties(const md_script_o* ir);
+    struct md_allocator* alloc;
+} md_script_eval_args_t;
 
-void md_script_free(md_script_o* ir);
+bool md_script_eval(struct md_script_eval_result* result, struct md_script_eval_args args);
+bool md_script_eval_free(struct md_script_eval_result* result);
 
 #ifdef __cplusplus
 }

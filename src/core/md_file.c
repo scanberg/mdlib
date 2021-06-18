@@ -20,7 +20,7 @@
 #pragma warning(disable:4063) // combined flags not valid for switch of enum
 
 struct md_file_o {
-    FILE* handle;
+    FILE handle;
 };
 
 md_file_o* md_file_open(str_t filename, md_file_flags_t flags) {
@@ -60,7 +60,7 @@ md_file_o* md_file_open(str_t filename, md_file_flags_t flags) {
         return NULL;
     }
     
-    return (md_file_o*)_wfopen(w_file, w_mode);
+    return (md_file_o*) _wfopen(w_file, w_mode);
 #else
     const char* mode = 0;
     switch (flags) {
@@ -104,8 +104,8 @@ int64_t md_file_tell(md_file_o* file) {
 }
 
 bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin) {
+    ASSERT(file);
 #if MD_PLATFORM_WINDOWS
-
     int o = 0;
     switch(origin) {
     case MD_FILE_BEG:
@@ -124,7 +124,7 @@ bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin)
 
     return _fseeki64((FILE*)file, offset, o) == 0;
 #else
-    return fseeko(file->handle, offset, o) == 0;
+    return fseeko((FILE*)file, offset, o) == 0;
 #endif
 }
 
@@ -134,7 +134,7 @@ int64_t md_file_size(md_file_o* file) {
     md_file_seek(file, 0, SEEK_END);
     int64_t end = md_file_tell(file);
     md_file_seek(file, cur, SEEK_SET);
-    return (uint32_t)end;
+    return end;
 }
 
 // Returns the number of successfully written/read bytes

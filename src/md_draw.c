@@ -57,9 +57,9 @@ enum {
     GL_BUFFER_MOL_RESIDUE_ATOM_RANGE,              // u32[2]   (beg, end)
     GL_BUFFER_MOL_RESIDUE_AABB,                    // vec3[2]  (aabb_min, aabb_max)
     GL_BUFFER_MOL_RESIDUE_VISIBLE,                 // int
-    GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE,     // u8       (0: Unknown, 1: Coil, 2: Helix, 3: Sheet)
     GL_BUFFER_MOL_BOND_ATOM_INDICES,               // u32[2]
     GL_BUFFER_MOL_BACKBONE_DATA,                   // u32[5] residue index, segment index, CA index, C index and O Index
+    GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE,    // u8[4]  (0: Unknown, 1: Coil, 2: Helix, 3: Sheet)
     GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA,     // Extracted control points before spline subdivision
     GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX,    // u32, LINE_STRIP_ADJACENCY Indices for spline subdivision, seperated by primitive restart index 0xFFFFFFFF
     GL_BUFFER_MOL_BACKBONE_SPLINE_DATA,            // Subdivided control points of spline
@@ -81,9 +81,9 @@ enum {
 
 #define MAX_SHADER_PERMUTATIONS 32
 
-internal inline bool is_ortho_proj_matrix(const md_mat4 M) { return M.elem[2][3] == 0.0f; }
+internal inline bool is_ortho_proj_matrix(const mat4_t M) { return M.elem[2][3] == 0.0f; }
 
-internal inline void extract_jitter_uv(float jitter[2], const md_mat4  M) {
+internal inline void extract_jitter_uv(float jitter[2], const mat4_t  M) {
     if (is_ortho_proj_matrix(M)) {
         jitter[0] = -M.elem[3][0] * 0.5f;
         jitter[1] = -M.elem[3][1] * 0.5f;
@@ -136,20 +136,20 @@ typedef struct gl_control_point {
 } gl_control_point;
 
 typedef struct gl_view_transform {
-    md_mat4 world_to_view;
-    md_mat4 world_to_view_normal;
-    md_mat4 world_to_clip;
-    md_mat4 view_to_clip;
-    md_mat4 view_to_world;
-    md_mat4 clip_to_view;
-    md_mat4 prev_world_to_clip;
-    md_mat4 curr_view_to_prev_clip;
+    mat4_t world_to_view;
+    mat4_t world_to_view_normal;
+    mat4_t world_to_clip;
+    mat4_t view_to_clip;
+    mat4_t view_to_world;
+    mat4_t clip_to_view;
+    mat4_t prev_world_to_clip;
+    mat4_t curr_view_to_prev_clip;
 } gl_view_transform;
 
 // Shared ubo data for all shaders
 typedef struct gl_ubo_base {
     gl_view_transform view_transform;
-    md_vec4 jitter_uv;
+    vec4_t jitter_uv;
     uint32_t atom_mask;
     uint32_t _pad[3];
 } gl_ubo_base;
@@ -182,7 +182,7 @@ struct internal_mol {
     uint32_t atom_count;
     uint32_t residue_count;
     uint32_t bond_count;
-    uint32_t backbone_data_count;    
+    uint32_t backbone_count;    
     uint32_t backbone_control_point_index_count;
     uint32_t backbone_spline_index_count;
 };
@@ -484,15 +484,15 @@ md_draw_error md_draw_molecule_set_atom_flags(md_draw_molecule* ext_mol, uint32_
     return MD_DRAW_ARGUMENT_IS_NULL;
 }
 
-md_draw_error md_draw_molecule_set_residue_secondary_structure(md_draw_molecule* ext_mol, uint32_t offset, uint32_t count, const md_secondary_structure* secondary_structure, uint32_t byte_stride) {
+md_draw_error md_draw_molecule_set_backbone_secondary_structure(md_draw_molecule* ext_mol, uint32_t offset, uint32_t count, const md_secondary_structure* secondary_structure, uint32_t byte_stride) {
     if (ext_mol && secondary_structure) {
         internal_mol* mol = (internal_mol*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE].id) {
+        if (!mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id) {
             return MD_DRAW_GL_INVALID_BUFFER;
         }
         byte_stride = MAX(sizeof(md_secondary_structure), byte_stride);
         if (byte_stride > sizeof(md_secondary_structure)) {
-            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE].id);
+            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
             md_secondary_structure* data = (md_secondary_structure*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (data) {
                 for (uint32_t i = 0; i < mol->atom_count; ++i) {
@@ -506,7 +506,7 @@ md_draw_error md_draw_molecule_set_residue_secondary_structure(md_draw_molecule*
             return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
         }
         else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE], offset * sizeof(md_secondary_structure), count * sizeof(md_secondary_structure), secondary_structure);
+            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE], offset * sizeof(md_secondary_structure), count * sizeof(md_secondary_structure), secondary_structure);
             return MD_DRAW_SUCCESS;
         }
     }
@@ -821,44 +821,60 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
         mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE]          = gl_buffer_create(mol->residue_count * sizeof(md_range),   NULL, GL_STATIC_DRAW);
         mol->buffer[GL_BUFFER_MOL_RESIDUE_AABB]                = gl_buffer_create(mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
         mol->buffer[GL_BUFFER_MOL_RESIDUE_VISIBLE]             = gl_buffer_create(mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
-        mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE] = gl_buffer_create(mol->residue_count * sizeof(md_secondary_structure), NULL, GL_DYNAMIC_DRAW);
 
         if (desc->residue.atom_range)           gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE], 0, mol->residue_count * sizeof(uint32_t) * 2, desc->residue.atom_range);
         //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
-        if (desc->residue.secondary_structure)  gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.secondary_structure);
 
-        if (desc->chain.count > 0 && desc->chain.residue_range && desc->residue.backbone_atoms && desc->residue.atom_range && desc->residue.secondary_structure) {
+        if (desc->chain.count > 0 && desc->chain.backbone_range && desc->backbone.atoms && desc->residue.atom_range && desc->backbone.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
             for (uint32_t i = 0; i < desc->chain.count; ++i) {
-                uint32_t res_count = desc->chain.residue_range[i].end - desc->chain.residue_range[i].beg;
+                uint32_t res_count = desc->chain.backbone_range[i].end - desc->chain.backbone_range[i].beg;
                 backbone_residue_count += res_count;
                 backbone_spline_count += (res_count - 1) * MD_SPLINE_MAX_SUBDIVISION_COUNT;
             }
 
-            const uint32_t backbone_data_count                = backbone_residue_count;
+            const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
             const uint32_t backbone_control_point_index_count = backbone_residue_count + desc->chain.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
             const uint32_t backbone_spline_index_count        = backbone_spline_count + desc->chain.count * (1); // primitive restart between each chain
 
-            mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA]                = gl_buffer_create(backbone_data_count                * sizeof(gl_backbone_data), NULL, GL_STATIC_DRAW);
+            mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data), NULL, GL_STATIC_DRAW);
+            mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure), NULL, GL_DYNAMIC_DRAW);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA]  = gl_buffer_create(backbone_control_point_data_count  * sizeof(gl_control_point), NULL, GL_DYNAMIC_COPY);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX] = gl_buffer_create(backbone_control_point_index_count * sizeof(uint32_t),         NULL, GL_STATIC_DRAW);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA]         = gl_buffer_create(backbone_spline_data_count         * sizeof(gl_control_point), NULL, GL_DYNAMIC_COPY);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX]        = gl_buffer_create(backbone_spline_index_count        * sizeof(uint32_t),         NULL, GL_STATIC_DRAW);
+
+            //gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE], 0, desc->backbone.count * sizeof(uint8_t) * 4, desc->backbone.secondary_structure);
 
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id);
             gl_backbone_data* backbone_data = (gl_backbone_data*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < desc->chain.count; ++i) {
-                    for (uint32_t j = desc->chain.residue_range[i].beg; j < desc->chain.residue_range[i].end; ++j) {
+                    for (uint32_t j = desc->chain.backbone_range[i].beg; j < desc->chain.backbone_range[i].end; ++j) {
                         backbone_data[idx].residue_idx = j;
-                        backbone_data[idx].segment_idx = j - desc->chain.residue_range[i].beg;
-                        backbone_data[idx].ca_idx = desc->residue.backbone_atoms[j].ca;
-                        backbone_data[idx].c_idx  = desc->residue.backbone_atoms[j].c;
-                        backbone_data[idx].o_idx  = desc->residue.backbone_atoms[j].o;
+                        backbone_data[idx].segment_idx = j - desc->chain.backbone_range[i].beg;
+                        backbone_data[idx].ca_idx = desc->backbone.atoms[j].ca;
+                        backbone_data[idx].c_idx  = desc->backbone.atoms[j].c;
+                        backbone_data[idx].o_idx  = desc->backbone.atoms[j].o;
+                        ++idx;
+                    }
+                }
+                glUnmapBuffer(GL_ARRAY_BUFFER);
+            } else {
+                return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+            }
+
+            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
+            uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            if (secondary_structure) {
+                uint32_t idx = 0;
+                for (uint32_t i = 0; i < desc->chain.count; ++i) {
+                    for (uint32_t j = desc->chain.backbone_range[i].beg; j < desc->chain.backbone_range[i].end; ++j) {
+                        secondary_structure[idx] = desc->backbone.secondary_structure[j];
                         ++idx;
                     }
                 }
@@ -874,7 +890,7 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
                 uint32_t len = 0;
                 for (uint32_t i = 0; i < desc->chain.count; ++i) {
                     control_point_index[len++] = idx;
-                    for (uint32_t j = desc->chain.residue_range[i].beg; j < desc->chain.residue_range[i].end; ++j) {
+                    for (uint32_t j = desc->chain.backbone_range[i].beg; j < desc->chain.backbone_range[i].end; ++j) {
                         control_point_index[len++] = idx++;
                     }
                     control_point_index[len++] = idx-1;
@@ -892,7 +908,7 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
                 uint32_t idx = 0;
                 uint32_t len = 0;
                 for (uint32_t i = 0; i < desc->chain.count; ++i) {
-                    uint32_t res_count = desc->chain.residue_range[i].end - desc->chain.residue_range[i].beg;
+                    uint32_t res_count = desc->chain.backbone_range[i].end - desc->chain.backbone_range[i].beg;
                     if (res_count > 0) {
                         for (uint32_t j = 0; j < (res_count - 1) * MD_SPLINE_MAX_SUBDIVISION_COUNT; ++j) {
                             spline_index[len++] = idx++;
@@ -909,13 +925,13 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
 
             mol->backbone_control_point_index_count = backbone_control_point_index_count;
             mol->backbone_spline_index_count = backbone_spline_index_count;
-            mol->backbone_data_count = backbone_data_count;
+            mol->backbone_count = backbone_count;
         }
 
-        mol->bond_count = desc->bond.count;
+        mol->bond_count = desc->covalent_bond.count;
         mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES] = gl_buffer_create(mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
 
-        if (desc->bond.atom_bond) gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], 0, mol->bond_count * sizeof(uint32_t) * 2, desc->bond.atom_bond);
+        if (desc->covalent_bond.atom_bond) gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], 0, mol->bond_count * sizeof(uint32_t) * 2, desc->covalent_bond.atom_bond);
        
         return MD_DRAW_SUCCESS;
     }
@@ -1012,18 +1028,18 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
     }
 
     gl_ubo_base ubo_data = {0};
-    memcpy(&ubo_data.view_transform.world_to_view, desc->view_transform.model_view_matrix, sizeof(md_mat4));
-    memcpy(&ubo_data.view_transform.view_to_clip,  desc->view_transform.projection_matrix, sizeof(md_mat4));
-    ubo_data.view_transform.world_to_clip = md_mat4_mul(ubo_data.view_transform.view_to_clip, ubo_data.view_transform.world_to_view);
-    ubo_data.view_transform.world_to_view_normal = md_mat4_transpose(md_mat4_inverse(ubo_data.view_transform.world_to_view));
-    ubo_data.view_transform.view_to_world = md_mat4_inverse(ubo_data.view_transform.world_to_view);
-    ubo_data.view_transform.clip_to_view = md_mat4_inverse(ubo_data.view_transform.view_to_clip);
+    memcpy(&ubo_data.view_transform.world_to_view, desc->view_transform.model_view_matrix, sizeof(mat4_t));
+    memcpy(&ubo_data.view_transform.view_to_clip,  desc->view_transform.projection_matrix, sizeof(mat4_t));
+    ubo_data.view_transform.world_to_clip = mat4_mul(ubo_data.view_transform.view_to_clip, ubo_data.view_transform.world_to_view);
+    ubo_data.view_transform.world_to_view_normal = mat4_transpose(mat4_inverse(ubo_data.view_transform.world_to_view));
+    ubo_data.view_transform.view_to_world = mat4_inverse(ubo_data.view_transform.world_to_view);
+    ubo_data.view_transform.clip_to_view = mat4_inverse(ubo_data.view_transform.view_to_clip);
 
     if (desc->view_transform.prev_model_view_matrix && desc->view_transform.projection_matrix) {
-        const md_mat4* prev_world_to_view = (const md_mat4*)desc->view_transform.prev_model_view_matrix;
-        const md_mat4* prev_view_to_clip  = (const md_mat4*)desc->view_transform.prev_projection_matrix;
-        ubo_data.view_transform.prev_world_to_clip = md_mat4_mul(*prev_view_to_clip, *prev_world_to_view);
-        ubo_data.view_transform.curr_view_to_prev_clip = md_mat4_mul(ubo_data.view_transform.prev_world_to_clip, ubo_data.view_transform.view_to_world);
+        const mat4_t* prev_world_to_view = (const mat4_t*)desc->view_transform.prev_model_view_matrix;
+        const mat4_t* prev_view_to_clip  = (const mat4_t*)desc->view_transform.prev_projection_matrix;
+        ubo_data.view_transform.prev_world_to_clip = mat4_mul(*prev_view_to_clip, *prev_world_to_view);
+        ubo_data.view_transform.curr_view_to_prev_clip = mat4_mul(ubo_data.view_transform.prev_world_to_clip, ubo_data.view_transform.view_to_world);
         extract_jitter_uv(&ubo_data.jitter_uv.x, ubo_data.view_transform.view_to_clip);
         extract_jitter_uv(&ubo_data.jitter_uv.z, *prev_view_to_clip);
     }
@@ -1510,7 +1526,7 @@ md_draw_error gl_compute_spline(const internal_ctx* ctx, const internal_mol* mol
 
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_BUFFER, ctx->texture[GL_TEXTURE_BUFFER_2].id);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, mol->buffer[GL_BUFFER_MOL_RESIDUE_SECONDARY_STRUCTURE].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
 
     GLuint program = ctx->program[GL_PROGRAM_EXTRACT_CONTROL_POINTS].id;
     const GLint buf_atom_pos_loc            = glGetUniformLocation(program, "u_buf_atom_pos");
@@ -1523,7 +1539,7 @@ md_draw_error gl_compute_spline(const internal_ctx* ctx, const internal_mol* mol
     glUniform1i(buf_secondary_structure_loc, 2);
     glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA].id);
     glBeginTransformFeedback(GL_POINTS);
-    glDrawArrays(GL_POINTS, 0, mol->backbone_data_count);
+    glDrawArrays(GL_POINTS, 0, mol->backbone_count);
     glEndTransformFeedback();
     glUseProgram(0);
 

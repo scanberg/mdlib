@@ -5,6 +5,9 @@
 #include <core/md_allocator.h>
 #include <core/md_array.inl>
 #include <core/md_log.h>
+#include <core/md_vec_math.h>
+
+#include <md_trajectory.h>
 
 #include <math.h>
 #include <string.h>
@@ -24,28 +27,34 @@ enum {
     Hs, Mt, Ds, Rg, Cn, Nh, Fl, Mc, Lv, Ts, Og, Num_Elements
 };
 
-static const char* element_symbols[] = {
-    "Xx", "H",  "He", "Li", "Be", "B",  "C",  "N",  "O",  "F",  "Ne", "Na", "Mg", "Al", "Si", "P",  "S",  "Cl", "Ar", "K",  "Ca", "Sc", "Ti", "V",
-    "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y",  "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag",
-    "Cd", "In", "Sn", "Sb", "Te", "I",  "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu",
-    "Hf", "Ta", "W",  "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U",  "Np", "Pu", "Am",
-    "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og" };
+#define bake(str) {str, ARRAY_SIZE(str)-1}
 
-static const char* element_names[] = {
-    "Unknown",     "Hydrogen",     "Helium",       "Lithium",     "Beryllium",   "Boron",         "Carbon",     "Nitrogen",   "Oxygen",
-    "Fluorine",    "Neon",         "Sodium",       "Magnesium",   "Aluminium",   "Silicon",       "Phosphorus", "Sulfur",     "Chlorine",
-    "Argon",       "Potassium",    "Calcium",      "Scandium",    "Titanium",    "Vanadium",      "Chromium",   "Manganese",  "Iron",
-    "Cobalt",      "Nickel",       "Copper",       "Zinc",        "Gallium",     "Germanium",     "Arsenic",    "Selenium",   "Bromine",
-    "Krypton",     "Rubidium",     "Strontium",    "Yttrium",     "Zirconium",   "Niobium",       "Molybdenum", "Technetium", "Ruthenium",
-    "Rhodium",     "Palladium",    "Silver",       "Cadmium",     "Indium",      "Tin",           "Antimony",   "Tellurium",  "Iodine",
-    "Xenon",       "Caesium",      "Barium",       "Lanthanum",   "Cerium",      "Praseodymium",  "Neodymium",  "Promethium", "Samarium",
-    "Europium",    "Gadolinium",   "Terbium",      "Dysprosium",  "Holmium",     "Erbium",        "Thulium",    "Ytterbium",  "Lutetium",
-    "Hafnium",     "Tantalum",     "Tungsten",     "Rhenium",     "Osmium",      "Iridium",       "Platinum",   "Gold",       "Mercury",
-    "Thallium",    "Lead",         "Bismuth",      "Polonium",    "Astatine",    "Radon",         "Francium",   "Radium",     "Actinium",
-    "Thorium",     "Protactinium", "Uranium",      "Neptunium",   "Plutonium",   "Americium",     "Curium",     "Berkelium",  "Californium",
-    "Einsteinium", "Fermium",      "Mendelevium",  "Nobelium",    "Lawrencium",  "Rutherfordium", "Dubnium",    "Seaborgium", "Bohrium",
-    "Hassium",     "Meitnerium",   "Darmstadtium", "Roentgenium", "Copernicium", "Nihonium",      "Flerovium",  "Moscovium",  "Livermorium",
-    "Tennessine",  "Oganesson"};
+static const str_t element_symbols[] = {
+    bake("Xx"), bake("H"),  bake("He"), bake("Li"), bake("Be"), bake("B"),  bake("C"),  bake("N"),  bake("O"),  bake("F"),  bake("Ne"), bake("Na"), bake("Mg"), bake("Al"), bake("Si"), bake("P"),  bake("S"),  bake("Cl"), bake("Ar"), bake("K"),  bake("Ca"), bake("Sc"), bake("Ti"), bake("V"),
+    bake("Cr"), bake("Mn"), bake("Fe"), bake("Co"), bake("Ni"), bake("Cu"), bake("Zn"), bake("Ga"), bake("Ge"), bake("As"), bake("Se"), bake("Br"), bake("Kr"), bake("Rb"), bake("Sr"), bake("Y"),  bake("Zr"), bake("Nb"), bake("Mo"), bake("Tc"), bake("Ru"), bake("Rh"), bake("Pd"), bake("Ag"),
+    bake("Cd"), bake("In"), bake("Sn"), bake("Sb"), bake("Te"), bake("I"),  bake("Xe"), bake("Cs"), bake("Ba"), bake("La"), bake("Ce"), bake("Pr"), bake("Nd"), bake("Pm"), bake("Sm"), bake("Eu"), bake("Gd"), bake("Tb"), bake("Dy"), bake("Ho"), bake("Er"), bake("Tm"), bake("Yb"), bake("Lu"),
+    bake("Hf"), bake("Ta"), bake("W"),  bake("Re"), bake("Os"), bake("Ir"), bake("Pt"), bake("Au"), bake("Hg"), bake("Tl"), bake("Pb"), bake("Bi"), bake("Po"), bake("At"), bake("Rn"), bake("Fr"), bake("Ra"), bake("Ac"), bake("Th"), bake("Pa"), bake("U"),  bake("Np"), bake("Pu"), bake("Am"),
+    bake("Cm"), bake("Bk"), bake("Cf"), bake("Es"), bake("Fm"), bake("Md"), bake("No"), bake("Lr"), bake("Rf"), bake("Db"), bake("Sg"), bake("Bh"), bake("Hs"), bake("Mt"), bake("Ds"), bake("Rg"), bake("Cn"), bake("Nh"), bake("Fl"), bake("Mc"), bake("Lv"), bake("Ts"), bake("Og"), };
+
+
+static const str_t element_names[] = {
+    bake("Unknown"),     bake("Hydrogen"),     bake("Helium"),       bake("Lithium"),     bake("Beryllium"),   bake("Boron"),         bake("Carbon"),     bake("Nitrogen"),   bake("Oxygen"),
+    bake("Fluorine"),    bake("Neon"),         bake("Sodium"),       bake("Magnesium"),   bake("Aluminium"),   bake("Silicon"),       bake("Phosphorus"), bake("Sulfur"),     bake("Chlorine"),
+    bake("Argon"),       bake("Potassium"),    bake("Calcium"),      bake("Scandium"),    bake("Titanium"),    bake("Vanadium"),      bake("Chromium"),   bake("Manganese"),  bake("Iron"),
+    bake("Cobalt"),      bake("Nickel"),       bake("Copper"),       bake("Zinc"),        bake("Gallium"),     bake("Germanium"),     bake("Arsenic"),    bake("Selenium"),   bake("Bromine"),
+    bake("Krypton"),     bake("Rubidium"),     bake("Strontium"),    bake("Yttrium"),     bake("Zirconium"),   bake("Niobium"),       bake("Molybdenum"), bake("Technetium"), bake("Ruthenium"),
+    bake("Rhodium"),     bake("Palladium"),    bake("Silver"),       bake("Cadmium"),     bake("Indium"),      bake("Tin"),           bake("Antimony"),   bake("Tellurium"),  bake("Iodine"),
+    bake("Xenon"),       bake("Caesium"),      bake("Barium"),       bake("Lanthanum"),   bake("Cerium"),      bake("Praseodymium"),  bake("Neodymium"),  bake("Promethium"), bake("Samarium"),
+    bake("Europium"),    bake("Gadolinium"),   bake("Terbium"),      bake("Dysprosium"),  bake("Holmium"),     bake("Erbium"),        bake("Thulium"),    bake("Ytterbium"),  bake("Lutetium"),
+    bake("Hafnium"),     bake("Tantalum"),     bake("Tungsten"),     bake("Rhenium"),     bake("Osmium"),      bake("Iridium"),       bake("Platinum"),   bake("Gold"),       bake("Mercury"),
+    bake("Thallium"),    bake("Lead"),         bake("Bismuth"),      bake("Polonium"),    bake("Astatine"),    bake("Radon"),         bake("Francium"),   bake("Radium"),     bake("Actinium"),
+    bake("Thorium"),     bake("Protactinium"), bake("Uranium"),      bake("Neptunium"),   bake("Plutonium"),   bake("Americium"),     bake("Curium"),     bake("Berkelium"),  bake("Californium"),
+    bake("Einsteinium"), bake("Fermium"),      bake("Mendelevium"),  bake("Nobelium"),    bake("Lawrencium"),  bake("Rutherfordium"), bake("Dubnium"),    bake("Seaborgium"), bake("Bohrium"),
+    bake("Hassium"),     bake("Meitnerium"),   bake("Darmstadtium"), bake("Roentgenium"), bake("Copernicium"), bake("Nihonium"),      bake("Flerovium"),  bake("Moscovium"),  bake("Livermorium"),
+    bake("Tennessine"),  bake("Oganesson"),                          
+};
+
+#undef bake
 
 // http://dx.doi.org/10.1039/b801115j
 static float element_covalent_radii[] = {
@@ -104,12 +113,42 @@ static const char* neutral[] = { "VAL", "PHE", "GLN", "TYR", "HIS", "CYS", "MET"
 static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4" };
 static const char* hydrophobic[] = { "ALA", "VAL", "ILE", "LEU", "MET", "PHE", "TYR", "TRP", "CYX" };
 
+static inline int64_t match_str_in_array(str_t str, const char* arr[], int64_t arr_len) {
+    for (int64_t i = 0; i < arr_len; ++i) {
+        if (compare_str_cstr(str, arr[i])) return i;
+    }
+    return -1;
+}
+
+bool md_util_is_resname_dna(str_t str) {
+    return match_str_in_array(str, dna, ARRAY_SIZE(dna)) != -1;
+}
+
+bool md_util_is_resname_amino_acid(str_t str) {
+    return match_str_in_array(str, amino_acids, ARRAY_SIZE(amino_acids)) != -1;
+}
+
 md_element md_util_lookup_element(str_t str) {
     if (str.len == 1 || str.len == 2) {
-        for (uint8_t i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
-            const char* sym = element_symbols[i];
-            if ((str.ptr[0] != sym[0]) || (str.len == 2 && str.ptr[1] != sym[1])) continue;
-            return i;
+        for (md_element i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
+            str_t sym = element_symbols[i];
+            if (compare_str(str, sym)) return i;
+        }
+    }
+    return 0;
+}
+
+static inline md_element lookup_element_ignore_case(str_t str) {
+    if (str.len == 1 || str.len == 2) {
+        for (md_element i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
+            str_t sym = element_symbols[i];
+            if (str.len == sym.len) {
+                if (str.len == 1) {
+                    if (to_upper(str.ptr[0]) == to_upper(sym.ptr[0])) return i;
+                } else {
+                    if (to_upper(str.ptr[0]) == to_upper(sym.ptr[0]) && to_upper(str.ptr[1]) == to_upper(sym.ptr[1])) return i;
+                }
+            }
         }
     }
     return 0;
@@ -122,41 +161,69 @@ md_element md_util_decode_element(str_t atom_name, str_t res_name) {
     const char* beg = atom_name.ptr;
     const char* end = atom_name.ptr + atom_name.len;
 
-    // TRIM
-    while (beg < end && *beg && (is_digit(*beg) || is_whitespace(*beg))) ++beg;
-    while (beg < end && (is_digit(end[-1]) || is_whitespace(*beg))) --end;
+    // Trim whitespace and digits
+    const char* c = beg;
+    while (c < end && *c && (is_digit(*c) || is_whitespace(*c))) ++c;
+    beg = c;
 
-    // @TODO: Implement
+    c = beg;
+    while (c < end && is_alpha(*c)) ++c;
+    end = c;
+
+    str_t str = {
+        .ptr = beg,
+        .len = end-beg
+    };
+
+    if (atom_name.len > 0) {
+        if (md_util_is_resname_amino_acid(trim_whitespace(res_name))) {
+            // EASY-PEASY, we just try to match against the first character
+            str.len = 1;
+            return lookup_element_ignore_case(str);
+        }
+        else {
+            // Try to match against several characters but ignore the case
+            if (str.len > 1) {
+                str.len = 2;
+                md_element elem = lookup_element_ignore_case(str);
+                if (elem) return elem;
+            }
+
+            // Last resort, try to match against single first character
+            str.len = 1;
+            return lookup_element_ignore_case(str);
+        }
+    }
 
     return 0;
 }
 
-const char* md_util_symbol(md_element element) {
+str_t md_util_element_symbol(md_element element) {
     ASSERT(element < Num_Elements);
     return element_symbols[element];
 }
 
-const char* md_util_name(md_element element) {
+str_t md_util_element_name(md_element element) {
     ASSERT(element < Num_Elements);
     return element_names[element];
 }
 
-float md_util_vdw_radius(md_element element) {
+float md_util_element_vdw_radius(md_element element) {
     ASSERT(element < Num_Elements);
     return element_vdw_radii[element];
 }
 
-float md_util_covalent_radius(md_element element) {
+float md_util_element_covalent_radius(md_element element) {
     ASSERT(element < Num_Elements);
     return element_covalent_radii[element];
 }
 
-float md_util_atomic_mass(md_element element) {
+float md_util_element_atomic_mass(md_element element) {
     ASSERT(element < Num_Elements);
     return element_atomic_mass[element];
 }
 
-uint32_t md_util_cpk_color(md_element element) {
+uint32_t md_util_element_cpk_color(md_element element) {
     ASSERT(element < Num_Elements);
     return element_cpk_colors[element];
 }
@@ -175,10 +242,10 @@ static inline bool cmp2(const char* str, const char* ref) {
     return str[0] == ref[0] && str[1] == ref[1] && str[2] == '\0';
 }
 
-static inline bool md_util_extract_backbone_atoms(md_backbone_atoms* backbone_atoms, const char** atom_names, md_range atom_range) {
+static inline bool extract_backbone_atoms(md_backbone_atoms* backbone_atoms, const char** atom_names, md_range atom_range) {
     uint32_t bits = 0;
     md_backbone_atoms bb = {0};
-    for (uint32_t i = atom_range.beg; i < atom_range.end; ++i) {
+    for (int32_t i = atom_range.beg; i < atom_range.end; ++i) {
         if (!(bits & 1) && cmp1(atom_names[i], "N"))  { bb.n  = i; bits |= 1;  continue; }
         if (!(bits & 2) && cmp2(atom_names[i], "CA")) { bb.ca = i; bits |= 2;  continue; }
         if (!(bits & 4) && cmp1(atom_names[i], "C"))  { bb.c  = i; bits |= 4;  continue; }
@@ -197,26 +264,27 @@ static inline bool md_util_extract_backbone_atoms(md_backbone_atoms* backbone_at
 }
 
 
-bool md_util_extract_backbone(md_backbone_atoms* backbone_atoms, const md_util_backbone_args_t* args) {
+bool md_util_extract_backbone_atoms(md_backbone_atoms backbone_atoms[], int64_t capacity, const md_util_backbone_args_t* args) {
     ASSERT(backbone_atoms);
     ASSERT(args);
     memset(backbone_atoms, 0, args->residue.count * sizeof(md_backbone_atoms));
     bool result = true;
     for (uint32_t i = 0; i < args->residue.count; ++i) {
-        if (!md_util_extract_backbone_atoms(&backbone_atoms[i], args->atom.name, args->residue.atom_range[i])) {
-            md_print(MD_LOG_TYPE_INFO, "Could not extract backbone of residue[%i], possible that the residue is not an amino acid");
+        ASSERT(i <= capacity);
+        if (!extract_backbone_atoms(&backbone_atoms[i], args->atom.name, args->residue.atom_range[i])) {
+            md_printf(MD_LOG_TYPE_INFO, "Could not extract backbone of residue[%i], possible that the residue is not an amino acid", i);
             result = false;
         }
     }
     return result;
 }
 
-static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args_t* args, md_range res_range, int i, const float distances[3], float delta) {
-    for (int j = MAX((int)res_range.beg, i - 2); j <= i; ++j) {
+static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args_t* args, md_range bb_range, int i, const float distances[3], float delta) {
+    for (int j = MAX((int)bb_range.beg, i - 2); j <= i; ++j) {
         for (int k = 2; k < 5; ++k) {
-            if (j + k >= (int)res_range.end) continue;
-            const int ca_j = args->residue.backbone_atoms[j].ca;
-            const int ca_k = args->residue.backbone_atoms[j + k].ca;
+            if (j + k >= (int)bb_range.end) continue;
+            const int ca_j = args->backbone.atoms[j].ca;
+            const int ca_k = args->backbone.atoms[j + k].ca;
             const float pos_j[3] = {args->atom.x[ca_j], args->atom.y[ca_j], args->atom.z[ca_j]};
             const float pos_k[3] = {args->atom.x[ca_k], args->atom.y[ca_k], args->atom.z[ca_k]};
             const float d = distance(pos_j, pos_k);
@@ -242,20 +310,26 @@ static inline bool is_sheet(const md_util_secondary_structure_args_t* args, md_r
 
 // TM-align: a protein structure alignment algorithm based on the Tm-score
 // doi:10.1093/nar/gki524
-bool md_util_compute_secondary_structure(md_secondary_structure* secondary_structure, const md_util_secondary_structure_args_t* args) {
+bool md_util_compute_secondary_structure(md_secondary_structure secondary_structure[], int64_t capacity, const md_util_secondary_structure_args_t* args) {
     ASSERT(args);
     ASSERT(args->atom.x);
     ASSERT(args->atom.y);
     ASSERT(args->atom.z);
-    ASSERT(args->residue.backbone_atoms);
-    ASSERT(args->chain.residue_range);
+    ASSERT(args->backbone.atoms);
+    ASSERT(args->chain.backbone_range);
+    ASSERT(secondary_structure);
 
-    for (uint32_t chain_idx = 0; chain_idx < args->chain.count; ++chain_idx) {
-        const md_range range = args->chain.residue_range[chain_idx];
-        if (range.end - range.beg < 4) continue;
+    for (int64_t chain_idx = 0; chain_idx < args->chain.count; ++chain_idx) {
+        const md_range range = args->chain.backbone_range[chain_idx];
+        ASSERT(range.end <= capacity);
+
+        if (range.end - range.beg < 4) {
+            memset(secondary_structure + range.beg, 0, (range.end - range.beg) * sizeof(md_secondary_structure));
+            continue;
+        }
 
         // Classify residues
-        for (uint32_t i = range.beg; i < range.end; ++i) {
+        for (int32_t i = range.beg; i < range.end; ++i) {
             md_secondary_structure ss = MD_SECONDARY_STRUCTURE_COIL;
             if (is_sheet(args, range, i)) {
                 ss = MD_SECONDARY_STRUCTURE_SHEET;
@@ -263,22 +337,63 @@ bool md_util_compute_secondary_structure(md_secondary_structure* secondary_struc
             else if (is_helical(args, range, i)) {
                 ss = MD_SECONDARY_STRUCTURE_HELIX;
             }
-
             secondary_structure[i] = ss;
         }
 
         // Set squished isolated structures to the surrounding (only for sheets and helices)
         md_secondary_structure* ss = secondary_structure;
-        for (uint32_t i = range.beg + 1; i < range.end - 1; ++i) {
+        for (int64_t i = range.beg + 1; i < range.end - 1; ++i) {
             if (ss[i-1] != MD_SECONDARY_STRUCTURE_COIL && ss[i] != ss[i-1] && ss[i-1] == ss[i+1]) ss[i] = ss[i-1];
         }
 
         // Set remaining isolated structures to coil
         if (ss[range.beg] != ss[range.beg + 1]) ss[range.beg] = MD_SECONDARY_STRUCTURE_COIL;
-        for (uint32_t i = range.beg + 1; i < range.end - 1; ++i) {
+        for (int64_t i = range.beg + 1; i < range.end - 1; ++i) {
             if (ss[i] != ss[i-1] && ss[i] != ss[i+1]) ss[i] = MD_SECONDARY_STRUCTURE_COIL;
         }
         if (ss[range.end - 1] != ss[range.end - 2]) ss[range.end - 1] = MD_SECONDARY_STRUCTURE_COIL;
+    }
+
+    return true;
+}
+
+static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
+    const vec3_t b1 = vec3_normalize(vec3_sub(p1, p0));
+    const vec3_t b2 = vec3_normalize(vec3_sub(p2, p1));
+    const vec3_t b3 = vec3_normalize(vec3_sub(p3, p2));
+    const vec3_t c1 = vec3_cross(b1, b2);
+    const vec3_t c2 = vec3_cross(b2, b3);
+    return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
+}
+
+bool md_util_compute_backbone_angles(md_backbone_angles backbone_angles[], int64_t capacity, const md_util_backbone_angle_args_t* args) {
+    ASSERT(args);
+    ASSERT(args->atom.x);
+    ASSERT(args->atom.y);
+    ASSERT(args->atom.z);
+    ASSERT(args->backbone.atoms);
+    ASSERT(args->chain.backbone_range);
+    ASSERT(backbone_angles);
+
+    memset(backbone_angles, 0, sizeof(md_backbone_angles) * args->backbone.count);
+    for (int64_t chain_idx = 0; chain_idx < args->chain.count; ++chain_idx) {
+        const md_range range = args->chain.backbone_range[chain_idx];
+        ASSERT(range.end <= capacity);
+
+        if (range.end - range.beg < 4) {
+            memset(backbone_angles + range.beg, 0, (range.end - range.beg) * sizeof(md_backbone_angles));
+            continue;
+        }
+
+        for (int64_t i = range.beg + 1; i < range.end - 1; ++i) {
+            vec3_t c_prev = { args->atom.x[args->backbone.atoms[i-1].c], args->atom.y[args->backbone.atoms[i-1].c], args->atom.z[args->backbone.atoms[i-1].c] };
+            vec3_t n      = { args->atom.x[args->backbone.atoms[i].n]  , args->atom.y[args->backbone.atoms[i].n]  , args->atom.z[args->backbone.atoms[i].n]   };
+            vec3_t ca     = { args->atom.x[args->backbone.atoms[i].ca] , args->atom.y[args->backbone.atoms[i].ca] , args->atom.z[args->backbone.atoms[i].ca]  };
+            vec3_t c      = { args->atom.x[args->backbone.atoms[i].c]  , args->atom.y[args->backbone.atoms[i].c]  , args->atom.z[args->backbone.atoms[i].c]   };
+            vec3_t n_next = { args->atom.x[args->backbone.atoms[i+1].n], args->atom.y[args->backbone.atoms[i+1].n], args->atom.z[args->backbone.atoms[i+1].n] };
+            backbone_angles[i].phi = dihedral_angle(c_prev, n, ca, c);
+            backbone_angles[i].psi = dihedral_angle(n, ca, c, n_next);
+        }
     }
 
     return true;
@@ -294,7 +409,7 @@ static inline bool covelent_bond_heuristic(float x0, float y0, float z0, md_elem
     return (d_min * d_min) < d2 && d2 < (d_max * d_max);
 }
 
-md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args, struct md_allocator_i* alloc) {
+md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args, struct md_allocator* alloc) {
     md_bond* bonds = 0;
 
     for (int64_t ri = 0; ri < args->residue.count; ++ri) {
@@ -305,7 +420,7 @@ md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args
             for (int64_t j = i + 1; j < args->residue.atom_range[ri].end; ++j) {
                 if (covelent_bond_heuristic(args->atom.x[i], args->atom.y[i], args->atom.z[i], args->atom.element[i],
                                             args->atom.x[j], args->atom.y[j], args->atom.z[j], args->atom.element[j])) {
-                    md_bond bond = {i, j};
+                    md_bond bond = {(int32_t)i, (int32_t)j};
                     md_array_push(bonds, bond, alloc);
                 }
             }
@@ -325,7 +440,7 @@ md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args
                 for (int64_t j = args->residue.atom_range[rj].beg; j < args->residue.atom_range[rj].end; ++j) {
                     if (covelent_bond_heuristic(args->atom.x[i], args->atom.y[i], args->atom.z[i], args->atom.element[i],
                         args->atom.x[j], args->atom.y[j], args->atom.z[j], args->atom.element[j])) {
-                        md_bond bond = {i, j};
+                        md_bond bond = {(int32_t)i, (int32_t)j};
                         md_array_push(bonds, bond, alloc);
                     }
                 }
@@ -346,6 +461,111 @@ md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args
     }
 
     return bonds;
+}
+
+bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, md_util_apply_pbc_args_t args) {
+    ASSERT(out_x);
+    ASSERT(out_y);
+    ASSERT(out_z);
+    ASSERT(args.atom.count == count);
+    ASSERT(args.residue.atom_range);
+
+    // @TODO: Assert that the box is orthogonal?
+    ASSERT(args.pbc.box->basis[0][0] > 0.0f);
+    ASSERT(args.pbc.box->basis[1][1] > 0.0f);
+    ASSERT(args.pbc.box->basis[2][2] > 0.0f);
+
+    vec3_t ext = {args.pbc.box->basis[0][0], args.pbc.box->basis[1][1], args.pbc.box->basis[2][2]};
+    vec3_t half_ext = vec3_mul_f(ext, 0.5f);
+
+    vec3_t* residue_com = 0;
+    if (args.chain.residue_range && args.chain.count) {
+        md_array_resize(residue_com, args.residue.count, default_temp_allocator);
+    }
+    
+    for (int64_t i = 0; i < args.residue.count; ++i) {
+        md_range atom_range = args.residue.atom_range[i];
+        vec3_t sum_pos = {args.atom.x[atom_range.beg], args.atom.y[atom_range.beg], args.atom.z[atom_range.beg]};
+        int32_t sum = 1;
+        for (int64_t j = atom_range.beg + 1; j < atom_range.end; ++j) {
+            vec3_t com = vec3_div_f(sum_pos, (float)sum);
+            vec3_t p = {args.atom.x[j], args.atom.y[j], args.atom.z[j]};
+            vec3_t delta = vec3_sub(com, p);
+            vec3_t v = {0,0,0};
+            if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
+            if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
+            if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
+            vec3_t dp = vec3_add(p, v);
+            sum_pos  = vec3_add(sum_pos, dp);
+            sum += 1;
+        }
+
+        vec3_t com = vec3_div_f(sum_pos, (float)sum);
+        if (com.x < 0.0f) com.x += ext.x; else if (com.x > ext.x) com.x -= ext.x;
+        if (com.y < 0.0f) com.y += ext.y; else if (com.y > ext.y) com.y -= ext.y; 
+        if (com.z < 0.0f) com.z += ext.z; else if (com.z > ext.z) com.z -= ext.z;
+
+        if (residue_com) {
+            residue_com[i] = com;
+        }
+
+        for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
+            vec3_t p = {args.atom.x[j], args.atom.y[j], args.atom.z[j]};
+            vec3_t delta = vec3_sub(com, p);
+            vec3_t v = {0,0,0};
+            if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
+            if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
+            if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
+            vec3_t dp = vec3_add(p, v);
+            out_x[j] = dp.x;
+            out_y[j] = dp.y;
+            out_z[j] = dp.z;
+        }
+    }
+
+    for (int64_t i = 0; i < args.chain.count; ++i) {
+        md_range res_range = args.chain.residue_range[i];
+        vec3_t sum_pos = residue_com[res_range.beg];
+        int32_t sum = 1;
+        for (int64_t j = res_range.beg + 1; j < res_range.end; ++j) {
+            vec3_t com = vec3_div_f(sum_pos, (float)sum);
+            vec3_t p = residue_com[j];
+            vec3_t delta = vec3_sub(com, p);
+            vec3_t v = {0,0,0};
+            if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
+            if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
+            if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
+            vec3_t dp = vec3_add(p, v);
+            sum_pos = vec3_add(sum_pos, dp);
+            sum += 1;
+        }
+
+        vec3_t com = vec3_div_f(sum_pos, (float)sum);
+        if (com.x < 0.0f) com.x += ext.x; else if (com.x > ext.x) com.x -= ext.x;
+        if (com.y < 0.0f) com.y += ext.y; else if (com.y > ext.y) com.y -= ext.y; 
+        if (com.z < 0.0f) com.z += ext.z; else if (com.z > ext.z) com.z -= ext.z;
+
+        for (int64_t j = res_range.beg; j < res_range.end; ++j) {
+            vec3_t p = residue_com[j];
+            vec3_t delta = vec3_sub(com, p);
+            vec3_t v = {0,0,0};
+            if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
+            if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
+            if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
+            
+            float d2 = vec3_dot(v,v);
+            if (d2 > 0.0f) {
+                md_range atom_range = args.residue.atom_range[j];
+                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
+                    out_x[k] += v.x;
+                    out_y[k] += v.y;
+                    out_z[k] += v.z;
+                }
+            }
+        }
+    }
+
+    return true;
 }
 
 #ifdef __cplusplus

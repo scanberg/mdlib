@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-struct md_allocator_i;
+struct md_allocator;
 
 typedef struct md_string_builder_t {
     struct md_string_builder_page_t {
@@ -18,10 +18,10 @@ typedef struct md_string_builder_t {
     struct md_string_builder_page_t base_page;
     md_string_builder_t* pages;
 
-    struct md_allocator_i* alloc;
+    struct md_allocator* alloc;
 } md_string_builder_t;
 
-bool md_string_builder_init(md_string_builder_t* sb, struct md_allocator_i* alloc);
+bool md_string_builder_init(md_string_builder_t* sb, struct md_allocator* alloc);
 void md_string_builder_free(md_string_builder_t* sb);
 
 void md_string_builder_append(md_string_builder_t* sb, const char* format, ...);

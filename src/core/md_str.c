@@ -72,6 +72,7 @@ int64_t rfind_char(str_t str, int c) {
 }
 
 double parse_float(str_t str) {
+    ASSERT(str.ptr);
     static const double pow10[16] = {
         1e+0,  1e+1,  1e+2,  1e+3,
         1e+4,  1e+5,  1e+6,  1e+7,
@@ -120,7 +121,7 @@ int64_t parse_int(str_t str) {
     return sign * val;
 }
 
-str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
+str_t load_textfile(str_t filename, struct md_allocator* alloc) {
     ASSERT(alloc);
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     str_t result = {0,0};
@@ -149,7 +150,7 @@ str_t make_cstr(const char* str) {
 }
 */
 
-str_t alloc_str(uint64_t len, struct md_allocator_i* alloc) {
+str_t alloc_str(uint64_t len, struct md_allocator* alloc) {
     ASSERT(alloc);
     char* mem = md_alloc(alloc, len + 1);
     memset(mem, 0, len + 1);
@@ -157,12 +158,12 @@ str_t alloc_str(uint64_t len, struct md_allocator_i* alloc) {
     return str;
 }
 
-void free_str(str_t str, struct md_allocator_i* alloc) {
+void free_str(str_t str, struct md_allocator* alloc) {
     ASSERT(alloc);
     md_free(alloc, (void*)str.ptr, str.len + 1);
 }
 
-str_t copy_str(const str_t str, struct md_allocator_i* alloc) {
+str_t copy_str(const str_t str, struct md_allocator* alloc) {
     ASSERT(alloc);
     str_t result = {0,0};
     if (str.ptr && str.len > 0) {

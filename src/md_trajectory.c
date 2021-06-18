@@ -11,14 +11,7 @@
 extern "C" {
 #endif
 
-bool md_trajectory_extract_header(const struct md_trajectory_i* traj, struct md_trajectory_header_t* header) {
-    ASSERT(traj);
-    ASSERT(header);
-    ASSERT(traj->extract_header);
-    return traj->extract_header(traj->inst, header);
-}
-
-bool md_trajectory_load_frame(const struct md_trajectory_i* traj, int64_t frame_idx, md_trajectory_field_flags_t requested_fields, md_trajectory_data_t* write_target) {
+bool md_trajectory_load_frame(const struct md_trajectory* traj, int64_t frame_idx, md_trajectory_field_flags_t requested_fields, md_trajectory_data_t* write_target) {
     ASSERT(traj);
     ASSERT(traj->inst);
 
@@ -28,7 +21,7 @@ bool md_trajectory_load_frame(const struct md_trajectory_i* traj, int64_t frame_
         void* frame_data = md_alloc(default_allocator, frame_size);
         const int64_t read_size = traj->extract_frame(traj->inst, frame_idx, frame_data);
         ASSERT(read_size == frame_size);
-        result = traj->decode_frame(frame_data, frame_size, requested_fields, write_target);
+        result = traj->decode_frame(traj->inst, frame_data, frame_size, requested_fields, write_target);
         md_free(default_allocator, frame_data, frame_size);
     }
 

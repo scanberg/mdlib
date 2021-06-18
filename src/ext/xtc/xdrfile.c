@@ -2270,3 +2270,7 @@ int xdr_seek(XDRFILE* xd, int64_t pos, int whence)
 
     return exdrOK;
 }
+
+int64_t xdr_read(XDRFILE* xd, void* ptr, int64_t num_bytes) {
+    return fread(ptr, 1, num_bytes, xd->fp);
+}

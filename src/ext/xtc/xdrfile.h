@@ -507,6 +507,7 @@ int xdrfile_decompress_coord_double(double* ptr, int* ncoord, double* precision,
 
 int64_t xdr_tell(XDRFILE* xd);
 int xdr_seek(XDRFILE* xd, int64_t pos, int whence);
+int64_t xdr_read(XDRFILE* xd, void* ptr, int64_t num_bytes);
 
 #ifdef __cplusplus
 }

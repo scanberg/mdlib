@@ -10,21 +10,24 @@
         [ ] Expose raw interface to avoid indirect function calls
     [ ] Stack allocator (Could be very useful for evaluating trees, where you can pop once a branch is evaluated)
     [ ] String builder
+    [X] Tracking allocator for tracking allocations making sure things are freed properly
 
 ### BITFIELD ###
-    [ ] Change interface from offset + length to beg + end
-    [ ] Fix bit-scan
-    [ ] Implement and mitigate to an opaque 'sparse-bitfield' type
+    [ ] Core API changes
+        [ ] Change interface from offset + length to beg + end
+        [ ] Fix bit-scan
+    [/] Implement and mitigate to an opaque 'semisparse-bitfield' type
 
 ### MOLECULE + TRAJECTORY (1 Week) ###
     [X] Revise trajectory interface (implement in mdlib)
         [X] Implement XTC
         [X] Implement PDB
-    [/] Molecule format and conversions from native data
+    [X] Molecule format and conversions from native data
         [X] PDB
-        [ ] GRO
+        [X] GRO
+    [ ] Support negative speed for playback
 
-### Basic Script (2 Weeks) ### 
+### Basic Script (--- Weeks) ### 
     [X] Tokenizer
     [X] Function calls
     [X] Numerical Constants (E, PI, TAU)
@@ -54,7 +57,7 @@
         [X] Int (Atom index)
         [X] Irange ()
         [X] Bitfield -> atoms
-    [ ] Implement fully the FLAG_QUERYABLE for length and validation
+    [X] Implement fully the FLAG_QUERYABLE for length and validation
     [ ] Implement full subset support in array [] operator.
     [/] Implement Geometric operations
         [X] com
@@ -66,10 +69,12 @@
         [X] distance_max
         [X] distance_pair
         [X] angle
-        [ ] dihedral
+        [X] dihedral
         [ ] rmsd
-    [ ] Expose simplified function for selection queries.
+        [X] rdf
+    [X] Expose simplified function for selection queries.
     [/] IMPLEMENTS TESTSSS!!!
+    [X] Implement proper context within evaluation to provide meaningful errors at compile time
 
 
 #### Further improvements (much later on) ####
@@ -79,8 +84,8 @@
     [ ] Construct expression dependency tree based on references to other identifiers. This is important to see what parts can be evaluated in parallel.
 
 ### Scripting Editor (1 Week) ###
-    [ ] Error messages in script
-    [ ] Syntax highlighting
+    [X] Error messages in script
+    [/] Syntax highlighting
     [ ] Context (Molecule structure) aware suggestions
         [ ] Map all unique residue names
         [ ] Map all unique atom labels == types
@@ -95,8 +100,8 @@
 
 ### Distributions (1 Week) ###
     [ ] Properly display periodic histograms (control which range is shown) (Possibly sync this offset among all distributions which are the same type)
-    [ ] Set histogram resolution
-    [ ] 
+    [ ] Apply adjustable kernel filter when rendering histogram (Do render as histogram to be transparent to the user in what has actually been computed)
+    [ ] Implement fixed increments on x-axis based on type (15 degree for angles)
 
 ### Volume Rendering (Spatial Distribution) (1 Week) ###
     [ ] Create a dedicated control window for volume rendering
@@ -116,3 +121,15 @@
     [ ] Possibly exchange TAA for SMAA ??? (Will simplify alot of things)
 
 ### BUG FIXING AND TWEAKS (3+ Weeks) ###
+
+    [X] Fix bug with unbounded chain and residue as context
+    [X] Fix bug where evaluation of subexpressions within large contexts (100+) runs out of temp memory and starts eating its own tail causing corruption.
+        Examle: atom(1:10) and element('O') in residue(:)
+        atom and element are both bitfields and will be allocated (in full!) for each residue during evaluation
+    [X] Fix bug with mold_draw init secondary structures writing or reading out of range. 
+    [ ] Why are functions which only take single values matched with arrays? example distance(residue(1), residue(2)) should never have been matched as a valid function since both arguments types are arrays of vec3...
+
+    [ ] Resolve the issue of some some node that are unable to get their types fully resolved since they are the result of some function call which produces a variable length.
+        - Propagate flags
+        - Yield the type checking if the flag is found on a node.
+        - Assert on evaluation that if the length is unknown (-1) then make sure that the flag is set (otherwise a bug).

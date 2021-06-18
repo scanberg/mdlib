@@ -4,15 +4,17 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <core/md_str.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-struct md_allocator_i;
-struct md_trajectory_i;
+struct md_allocator;
+struct md_trajectory;
 
-struct md_trajectory_i* md_xtc_trajectory_open(const char* filename_str, int64_t filename_len, struct md_allocator_i* alloc);
-void md_xtc_trajectory_close(struct md_trajectory_i* traj);
+bool md_xtc_trajectory_open(struct md_trajectory* traj, str_t filename, struct md_allocator* alloc);
+bool md_xtc_trajectory_close(struct md_trajectory* traj);
 
 #ifdef __cplusplus
 }

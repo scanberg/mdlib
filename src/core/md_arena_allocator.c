@@ -17,7 +17,7 @@ struct page_t {
 };
 
 struct arena_t {
-    struct md_allocator_i* alloc;
+    struct md_allocator* alloc;
     page_t *base_page;
     page_t *curr_page;
     uint64_t default_page_size;
@@ -106,7 +106,7 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_
     }
 }
 
-struct md_allocator_i* md_arena_allocator_create(struct md_allocator_i* backing, uint64_t page_size) {
+struct md_allocator* md_arena_allocator_create(struct md_allocator* backing, uint64_t page_size) {
     ASSERT(backing);
     arena_t* arena = (arena_t*)md_alloc(backing, sizeof(arena_t) + sizeof(md_allocator_i));
     arena->alloc = backing;
@@ -122,7 +122,7 @@ struct md_allocator_i* md_arena_allocator_create(struct md_allocator_i* backing,
     return arena_alloc;
 }
 
-void md_arena_allocator_reset(struct md_allocator_i* alloc) {
+void md_arena_allocator_reset(struct md_allocator* alloc) {
     ASSERT(alloc);
     ASSERT(alloc->inst);
     arena_t* arena = (arena_t*)alloc->inst;
@@ -130,12 +130,12 @@ void md_arena_allocator_reset(struct md_allocator_i* alloc) {
     arena_reset(arena);
 }
 
-void md_arena_allocator_destroy(struct md_allocator_i* alloc) {
+void md_arena_allocator_destroy(struct md_allocator* alloc) {
     ASSERT(alloc);
     ASSERT(alloc->inst);
     arena_t* arena = (arena_t*)alloc->inst;
     ASSERT(arena->magic == MAGIC_NUMBER);
     arena_reset(arena);
-    md_free(alloc, arena, sizeof(arena_t));
+    md_free(alloc, arena, sizeof(arena_t) + sizeof(md_allocator_i));
 }
 

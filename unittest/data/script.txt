@@ -119,3 +119,5 @@ sdf1 = sdf(chain(:), resname("PFT"), 30.0);
 
 # Should replicate the Paranitroaniline operation used in the paper.
 sdf2 = sdf(resname("PARA"), element("O"), 20.0);
+
+test = atom(1:2) in resname("PFT");

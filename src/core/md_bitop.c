@@ -224,6 +224,7 @@ bool bit_cmp(const uint64_t* src_a, const uint64_t* src_b, uint64_t bit_offset, 
 }
 
 uint64_t bit_scan(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
+
     const uint64_t beg_idx = block_idx(bit_offset);
     const uint64_t end_idx = block_idx(bit_offset + bit_count);
     const uint64_t beg_mask = ~(bit_pattern(bit_offset) - 1);
