@@ -6,7 +6,7 @@ Collection of molecule utility functions written in C
 ## mold_script
 Scripting language for defining selections, computing properties and evaulating expressions.
 
-## mold_draw
+## mold_gl
 OpenGL draw functionality for drawing molecular data.
 
 ## mold_util
