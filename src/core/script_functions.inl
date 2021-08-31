@@ -479,7 +479,7 @@ static procedure_t procedures[] = {
 
     // --- GEOMETRICAL OPERATIONS ---
     {cstr("com"),       TI_FLOAT3,      1,  {TI_FLOAT3_ARR},    _com,       FLAG_DYNAMIC | FLAG_VISUALIZE},
-    //{cstr("com"),       TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,    FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {cstr("com"),       TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _com_bf,    FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {cstr("plane"),     TI_FLOAT4,      1,  {TI_FLOAT3_ARR},    _plane,     FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
 
     {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH},
@@ -2287,16 +2287,17 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
-    (void)dst;
     (void)arg;
     (void)ctx;
+
+    if (dst || !ctx->vis) return 0;
 
     const md_exp_bitfield_t* bf_arr = as_bitfield(arg[0]);
     int64_t bf_count = element_count(arg[0]);
 
-    vec3_t* com = 0;
-    vec3_t* pos = 0;
-    irange_t* ranges = 0;
+    vec3_t* com_arr = 0;
+    vec3_t* pos_arr = 0;
+    irange_t* pos_ranges = 0;
 
     md_exp_bitfield_t tmp_bf = {0};
     md_bitfield_init(&tmp_bf, ctx->temp_alloc);
@@ -2309,47 +2310,57 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf = &tmp_bf;
         }
 
+        int64_t bit_count = md_bitfield_popcount(bf);
+        md_array_ensure(com_arr, md_array_size(com_arr) + 1, ctx->temp_alloc);
+        md_array_ensure(pos_ranges, md_array_size(pos_ranges) + 1, ctx->temp_alloc);
+        md_array_ensure(pos_arr, md_array_size(pos_arr) + bit_count, ctx->temp_alloc);
+
+        int64_t size = ROUND_UP(bit_count, md_simd_width);
+        int64_t mem_size = size * 4 * sizeof(float);
+        float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
+
+        float* x = mem_ptr + size * 0;
+        float* y = mem_ptr + size * 1;
+        float* z = mem_ptr + size * 2;
+        float* w = mem_ptr + size * 3;
+
+        extract_xyzw(x, y, z, w, ctx->current_configuration.x, ctx->current_configuration.y, ctx->current_configuration.z, ctx->mol->atom.mass, bf);
+
+        vec3_t com = md_util_compute_com(x,y,z,w, size);
+
         vec3_t weighted_pos = {0};
         float w_sum = 0;
 
-        int64_t pre_size = md_array_size(pos);
-
-        int64_t beg_bit = bf->beg_bit;
-        int64_t end_bit = bf->end_bit;
-        while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
-            const int64_t idx = beg_bit - 1;
-            ASSERT(0 <= idx && idx < ctx->mol->atom.count);
-            vec3_t xyz = {ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
-            float  w = ctx->mol->atom.mass[idx];
-                
-            weighted_pos = vec3_add(weighted_pos, vec3_mul_f(xyz, w));
-            w_sum += w;
-
-            md_array_push(pos, xyz, ctx->temp_alloc);
+        int64_t pos_pre_size = md_array_size(pos_arr);
+        for (int64_t i = 0; i < bit_count; ++i) {
+            vec3_t pos = {x[i], y[i], z[i]};
+            md_array_push(pos_arr, pos, ctx->temp_alloc);
         }
 
-        irange_t range = {(int32_t)pre_size, (int32_t)md_array_size(pos)};
-        md_array_push(ranges, range, ctx->temp_alloc);
-        md_array_push(com, vec3_div_f(weighted_pos, w_sum), ctx->temp_alloc);
+        md_free(ctx->temp_alloc, mem_ptr, mem_size);
+
+        irange_t range = {(int32_t)pos_pre_size, (int32_t)md_array_size(pos_arr)};
+        md_array_push(pos_ranges, range, ctx->temp_alloc);
+        md_array_push(com_arr, com, ctx->temp_alloc);
     }
 
     md_bitfield_free(&tmp_bf);
 
     if (dst) {
         ASSERT(compare_type_info(dst->type, (md_type_info_t)TI_FLOAT3));
-        ASSERT(md_array_size(com) == type_info_array_len(dst->type));
+        ASSERT(md_array_size(com_arr) == type_info_array_len(dst->type));
         ASSERT(dst->ptr);
-        memcpy(dst->ptr, com, md_array_size(com) * sizeof(vec3_t));
+        memcpy(dst->ptr, com_arr, md_array_size(com_arr) * sizeof(vec3_t));
     }
 
     if (ctx->vis) {
-        ASSERT(md_array_size(com) == md_array_size(ranges));
-        for (int64_t i = 0; i < md_array_size(com); ++i) {
-            uint16_t c = push_vertex(com[i], ctx->vis);
+        ASSERT(md_array_size(com_arr) == md_array_size(pos_ranges));
+        for (int64_t i = 0; i < md_array_size(com_arr); ++i) {
+            uint16_t c = push_vertex(com_arr[i], ctx->vis);
             push_point(c, ctx->vis);
-            irange_t range = ranges[i];
+            irange_t range = pos_ranges[i];
             for (int64_t j = range.beg; j < range.end; ++j) {
-                uint16_t v = push_vertex(pos[j], ctx->vis);
+                uint16_t v = push_vertex(pos_arr[j], ctx->vis);
                 push_line(v, c, ctx->vis);
             }
         }
