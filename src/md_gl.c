@@ -1,5 +1,5 @@
 
-#include "md_draw.h"
+#include "md_gl.h"
 #include "md_util.h"
 #include "ext/gl3w/gl3w.h"
 #include <core/md_common.h>
@@ -81,9 +81,9 @@ enum {
 
 #define MAX_SHADER_PERMUTATIONS 32
 
-internal inline bool is_ortho_proj_matrix(const mat4_t M) { return M.elem[2][3] == 0.0f; }
+static inline bool is_ortho_proj_matrix(const mat4_t M) { return M.elem[2][3] == 0.0f; }
 
-internal inline void extract_jitter_uv(float jitter[2], const mat4_t  M) {
+static inline void extract_jitter_uv(float jitter[2], const mat4_t  M) {
     if (is_ortho_proj_matrix(M)) {
         jitter[0] = -M.elem[3][0] * 0.5f;
         jitter[1] = -M.elem[3][1] * 0.5f;
@@ -94,7 +94,7 @@ internal inline void extract_jitter_uv(float jitter[2], const mat4_t  M) {
     }
 }
 
-internal inline uint32_t compute_mip_count(uint32_t width, uint32_t height) {
+static inline uint32_t compute_mip_count(uint32_t width, uint32_t height) {
     uint32_t mips = 1;
     uint32_t max_dim = MAX(width, height);
     while (max_dim >>= 1) ++mips;
@@ -166,11 +166,11 @@ typedef struct internal_ctx internal_ctx;
 
 struct internal_rep {
     const internal_mol* mol;
-    md_draw_representation_args  args;
-    md_draw_representation_type  type;
+    md_gl_representation_args  args;
+    md_gl_representation_type  type;
     uint32_t            mol_version;
     
-    //md_range visible_range;      // Minimal spanning visible range of atoms to draw
+    //md_range_t visible_range;      // Minimal spanning visible range of atoms to draw
     gl_buffer color;
 };
 
@@ -209,11 +209,11 @@ static const int ctx_size = sizeof(struct internal_ctx);
 static const int mol_size = sizeof(struct internal_mol);
 static const int rep_size = sizeof(struct internal_rep);
 
-STATIC_ASSERT(sizeof(internal_ctx) <= sizeof(md_draw_context), "Internal draw ctx does not fit into containing structure");
-STATIC_ASSERT(sizeof(internal_mol) <= sizeof(md_draw_molecule), "Internal draw mol does not fit into containing structure");
-STATIC_ASSERT(sizeof(internal_rep) <= sizeof(md_draw_representation), "Internal draw rep does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_ctx) <= sizeof(md_gl_context), "internal draw ctx does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_mol) <= sizeof(md_gl_molecule), "internal draw mol does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_rep) <= sizeof(md_gl_representation), "internal draw rep does not fit into containing structure");
 
-internal inline gl_buffer gl_buffer_create(uint32_t num_bytes, const void* data, GLenum usage_hint) {
+static inline gl_buffer gl_buffer_create(uint32_t num_bytes, const void* data, GLenum usage_hint) {
     gl_buffer buf = {0};
     glGenBuffers(1, &buf.id);
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
@@ -222,7 +222,7 @@ internal inline gl_buffer gl_buffer_create(uint32_t num_bytes, const void* data,
     return buf;
 }
 
-internal inline uint32_t gl_buffer_size(gl_buffer buf) {
+static inline uint32_t gl_buffer_size(gl_buffer buf) {
     GLint size;
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
     glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &size);
@@ -230,7 +230,7 @@ internal inline uint32_t gl_buffer_size(gl_buffer buf) {
     return (uint32_t)size;
 }
 
-internal inline void gl_buffer_conditional_delete(gl_buffer* buf) {
+static inline void gl_buffer_conditional_delete(gl_buffer* buf) {
     if (buf->id) {
         GLuint id = buf->id;
         glDeleteBuffers(1, &id);
@@ -238,13 +238,13 @@ internal inline void gl_buffer_conditional_delete(gl_buffer* buf) {
     }
 }
 
-internal inline void gl_buffer_set_sub_data(gl_buffer buf, uint32_t byte_offset, uint32_t byte_size, const void* data) {
+static inline void gl_buffer_set_sub_data(gl_buffer buf, uint32_t byte_offset, uint32_t byte_size, const void* data) {
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
     glBufferSubData(GL_ARRAY_BUFFER, byte_offset, byte_size, data);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-internal inline uint32_t gl_texture_width(gl_texture tex, uint32_t level) {
+static inline uint32_t gl_texture_width(gl_texture tex, uint32_t level) {
     GLint width;
     glBindTexture(GL_TEXTURE_2D, tex.id);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &width);
@@ -252,7 +252,7 @@ internal inline uint32_t gl_texture_width(gl_texture tex, uint32_t level) {
     return (uint32_t)width;
 }
 
-internal inline uint32_t gl_texture_height(gl_texture tex, uint32_t level) {
+static inline uint32_t gl_texture_height(gl_texture tex, uint32_t level) {
     GLint height;
     glBindTexture(GL_TEXTURE_2D, tex.id);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &height);
@@ -260,7 +260,7 @@ internal inline uint32_t gl_texture_height(gl_texture tex, uint32_t level) {
     return (uint32_t)height;
 }
 
-internal md_draw_error compile_shader_from_source(GLuint shader, const char* shader_src, const char* defines) {
+static bool compile_shader_from_source(GLuint shader, const char* shader_src, const char* defines) {
     if (defines) {
         const char* src = shader_src;
         char version_str[32] = {0};
@@ -294,13 +294,13 @@ internal md_draw_error compile_shader_from_source(GLuint shader, const char* sha
         char err_buf[256];
         glGetShaderInfoLog(shader, ARRAY_SIZE(err_buf), NULL, err_buf);
         md_printf(MD_LOG_TYPE_ERROR, "Shader compile error:\n%s\n", err_buf);
-        return MD_DRAW_GL_SHADER_COMPILE_ERROR;
+        return false;
     }
     
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-internal md_draw_error compile_shader_from_file(GLuint shader, const char* filename, const char* defines) {
+static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines) {
     md_file_o* file = md_file_open((str_t){.ptr = filename, .len = strlen(filename)}, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         char buffer[MD_SHADER_BUF_SIZE] = {0};
@@ -308,19 +308,17 @@ internal md_draw_error compile_shader_from_file(GLuint shader, const char* filen
         const uint64_t size = MIN(file_size, ARRAY_SIZE(buffer) - 1);
         md_file_read(file, buffer, size);
         md_printf(MD_LOG_TYPE_INFO, "compiling shader '%s'... ", filename);
-        md_draw_error err = compile_shader_from_source(shader, buffer, defines);
-        if (err == MD_DRAW_SUCCESS) {
-            md_print(MD_LOG_TYPE_INFO, "OK\n");
-        }
+        bool result = compile_shader_from_source(shader, buffer, defines);
+        if (result == true) md_print(MD_LOG_TYPE_INFO, "OK\n");
         md_file_close(file);
-        return err;
+        return result;
     } else {
         md_printf(MD_LOG_TYPE_ERROR, "Could not open file file '%s'", filename);
-        return MD_DRAW_FILE_NOT_FOUND;
+        return false;
     }
 }
 
-internal md_draw_error link_program(GLuint program, const GLuint shader[], uint32_t count) {
+static bool link_program(GLuint program, const GLuint shader[], uint32_t count) {
     ASSERT(program);
      
     for (uint32_t i = 0; i < count; i++) {
@@ -330,7 +328,7 @@ internal md_draw_error link_program(GLuint program, const GLuint shader[], uint3
             glAttachShader(program, shader[i]);
         } else {
             md_print(MD_LOG_TYPE_ERROR, "Program link error: One or more shaders are invalid\n");
-            return MD_DRAW_GL_PROGRAM_LINK_ERROR;
+            return false;
         }
     }
     
@@ -341,17 +339,17 @@ internal md_draw_error link_program(GLuint program, const GLuint shader[], uint3
         char err_buf[256];
         glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
         md_printf(MD_LOG_TYPE_ERROR, "Program link error:\n%s\n", err_buf);
-        return MD_DRAW_GL_PROGRAM_LINK_ERROR;
+        return false;
     }
     
     for (uint32_t i = 0; i < count; i++) {
         glDetachShader(program, shader[i]);
     }
     
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-internal md_draw_error link_program_transform_feedback(GLuint program, const GLuint shader[], uint32_t shader_count, const char* varying[],
+static bool link_program_transform_feedback(GLuint program, const GLuint shader[], uint32_t shader_count, const char* varying[],
                                             uint32_t varying_count, GLenum capture_mode) {
     ASSERT(program);
     ASSERT(capture_mode == GL_INTERLEAVED_ATTRIBS || capture_mode == GL_SEPARATE_ATTRIBS);
@@ -363,7 +361,7 @@ internal md_draw_error link_program_transform_feedback(GLuint program, const GLu
             glAttachShader(program, shader[i]);
         } else {
             md_print(MD_LOG_TYPE_ERROR, "One or more shaders are invalid");
-            return MD_DRAW_GL_PROGRAM_LINK_ERROR;
+            return false;
         }
     }
     
@@ -375,36 +373,38 @@ internal md_draw_error link_program_transform_feedback(GLuint program, const GLu
         char err_buf[256];
         glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
         md_printf(MD_LOG_TYPE_ERROR, "Program link error:\n%s\n", err_buf);
-        return MD_DRAW_GL_PROGRAM_LINK_ERROR;
+        return false;
     }
     
     for (uint32_t i = 0; i < shader_count; i++) {
         glDetachShader(program, shader[i]);
     }
     
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error validate_context(const internal_ctx* ctx) {
+static inline bool validate_context(const internal_ctx* ctx) {
     if (!ctx) {
-        fprintf(stderr, "Internal context has not been initialized"); // We don't have ctx and therefore no log_i
-        return MD_DRAW_CONTEXT_INVALID;
+        md_print(MD_LOG_TYPE_ERROR, "static context has not been initialized");
+        return false;
     }
     else if (ctx->version != GL_VERSION_330 && ctx->version != GL_VERSION_430) {
-        md_print(MD_LOG_TYPE_ERROR, "Internal Context has not been initialized");
-        return MD_DRAW_CONTEXT_INVALID;
+        md_print(MD_LOG_TYPE_ERROR, "static Context has not been initialized");
+        return false;
     }
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error md_draw_molecule_set_atom_position(md_draw_molecule* ext_mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
+bool md_gl_molecule_set_atom_position(md_gl_molecule* ext_mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
     if (ext_mol && x && y && z) {
         internal_mol* mol = (internal_mol*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
-            return MD_DRAW_GL_INVALID_BUFFER;
+            md_print(MD_LOG_TYPE_ERROR, "Molecule position buffer missing");
+            return false;
         }
         if (offset + count > mol->atom_count) {
-            return MD_DRAW_GL_ATTEMPTING_TO_WRITE_OUT_OF_BUFFER_RANGE;
+            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            return false;
         }
         byte_stride = MAX(sizeof(float), byte_stride);
         glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
@@ -418,19 +418,26 @@ md_draw_error md_draw_molecule_set_atom_position(md_draw_molecule* ext_mol, uint
             }
             glUnmapBuffer(GL_ARRAY_BUFFER);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-            return MD_DRAW_SUCCESS;
+            return true;
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+        md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule position buffer");
+        return false;
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    return false;
 }
 
-md_draw_error md_draw_molecule_set_atom_radius(md_draw_molecule* ext_mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride) {
+bool md_gl_molecule_set_atom_radius(md_gl_molecule* ext_mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride) {
     if (ext_mol && radius) {
         internal_mol* mol = (internal_mol*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id) {
-            return MD_DRAW_GL_INVALID_BUFFER;
+            md_print(MD_LOG_TYPE_ERROR, "Molecule radius buffer missing");
+            return false;
+        }
+        if (offset + count > mol->atom_count) {
+            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            return false;
         }
         byte_stride = MAX(sizeof(float), byte_stride);
         if (byte_stride > sizeof(float)) {
@@ -442,24 +449,31 @@ md_draw_error md_draw_molecule_set_atom_radius(md_draw_molecule* ext_mol, uint32
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
-                return MD_DRAW_SUCCESS;
+                return true;
             }
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-            return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+            md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule radius buffer");
+            return false;
         }
         else {
             gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS], offset * sizeof(float), count * sizeof(float), radius);
-            return MD_DRAW_SUCCESS;
+            return true;
         }
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    return false;
 }
 
-md_draw_error md_draw_molecule_set_atom_flags(md_draw_molecule* ext_mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride) {
+bool md_gl_molecule_set_atom_flags(md_gl_molecule* ext_mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride) {
     if (ext_mol && flags) {
         internal_mol* mol = (internal_mol*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id) {
-            return MD_DRAW_GL_INVALID_BUFFER;
+            md_print(MD_LOG_TYPE_ERROR, "Molecule flags buffer missing");
+            return false;
+        }
+        if (offset + count > mol->atom_count) {
+            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            return false;
         }
         byte_stride = MAX(sizeof(uint8_t), byte_stride);
         if (byte_stride > sizeof(uint8_t)) {
@@ -471,56 +485,65 @@ md_draw_error md_draw_molecule_set_atom_flags(md_draw_molecule* ext_mol, uint32_
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
-                return MD_DRAW_SUCCESS;
+                return true;
             }
+            md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule flags buffer");
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-            return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+            return false;
         }
         else {
             gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS], offset * sizeof(uint8_t), count * sizeof(uint8_t), flags);
-            return MD_DRAW_SUCCESS;
+            return true;
         }
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    return false;
 }
 
-md_draw_error md_draw_molecule_set_backbone_secondary_structure(md_draw_molecule* ext_mol, uint32_t offset, uint32_t count, const md_secondary_structure* secondary_structure, uint32_t byte_stride) {
+bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule* ext_mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
     if (ext_mol && secondary_structure) {
         internal_mol* mol = (internal_mol*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id) {
-            return MD_DRAW_GL_INVALID_BUFFER;
+            md_print(MD_LOG_TYPE_ERROR, "Molecule secondary structure buffer missing");
+            return false;
         }
-        byte_stride = MAX(sizeof(md_secondary_structure), byte_stride);
-        if (byte_stride > sizeof(md_secondary_structure)) {
+        if (offset + count > mol->backbone_count) {
+            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            return false;
+        }
+        byte_stride = MAX(sizeof(md_secondary_structure_t), byte_stride);
+        if (byte_stride > sizeof(md_secondary_structure_t)) {
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
-            md_secondary_structure* data = (md_secondary_structure*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            md_secondary_structure_t* data = (md_secondary_structure_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (data) {
                 for (uint32_t i = 0; i < mol->atom_count; ++i) {
                     data[i] = secondary_structure[byte_stride * i];
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
-                return MD_DRAW_SUCCESS;
+                return true;
             }
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-            return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+            md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule secondary structure buffer");
+            return false;
         }
         else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE], offset * sizeof(md_secondary_structure), count * sizeof(md_secondary_structure), secondary_structure);
-            return MD_DRAW_SUCCESS;
+            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE], offset * sizeof(md_secondary_structure_t), count * sizeof(md_secondary_structure_t), secondary_structure);
+            return true;
         }
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    return false;
 }
 
-md_draw_error md_draw_molecule_update_atom_previous_position(md_draw_molecule* ext_mol) {
+bool md_gl_molecule_update_atom_previous_position(md_gl_molecule* ext_mol) {
     if (ext_mol) {
         internal_mol* mol = (internal_mol*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
-            return MD_DRAW_GL_INVALID_BUFFER;
+            return false;
         }
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_PREV_POSITION].id) {
-            return MD_DRAW_GL_INVALID_BUFFER;
+            return false;
         }
         
         uint32_t size = gl_buffer_size(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]);
@@ -530,19 +553,19 @@ md_draw_error md_draw_molecule_update_atom_previous_position(md_draw_molecule* e
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    return false;
 }
 
 /*
-internal md_draw_error md_update_visible_atom_color_range(internal_rep* rep) {
-    if (!rep) return MD_DRAW_REPRESENTATION_INVALID;
-    if (!rep->mol) return MD_DRAW_MOLECULE_INVALID;
+static bool md_update_visible_atom_color_range(internal_rep* rep) {
+    if (!rep) return md_gl_REPRESENTATION_INVALID;
+    if (!rep->mol) return md_gl_MOLECULE_INVALID;
 
     glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);
     void* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_READ_ONLY);
     if (ptr) {
         uint32_t* col = (uint32_t*)ptr;
-        md_range range = {0xFFFFFFFF, 0};
+        md_range_t range = {0xFFFFFFFF, 0};
             
         for (uint32_t i = 0; i < rep->mol->atom_count; i++) {
             if (col[i] & 0xFF000000) {
@@ -560,27 +583,28 @@ internal md_draw_error md_update_visible_atom_color_range(internal_rep* rep) {
         rep->visible_range = range;
         glUnmapBuffer(GL_ARRAY_BUFFER);
     } else {
-        return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+        return false;
     }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 */
 
-md_draw_error md_draw_representation_set_type_and_args(md_draw_representation* ext_rep, md_draw_representation_type type, md_draw_representation_args args) {
+bool md_gl_representation_set_type_and_args(md_gl_representation* ext_rep, md_gl_representation_type type, md_gl_representation_args args) {
     internal_rep* rep = (internal_rep*)ext_rep;
     rep->type = type;
     rep->args = args;
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error md_draw_representation_set_color(md_draw_representation* ext_rep, uint32_t offset, uint32_t count, const uint32_t* color_data, uint32_t byte_stride) {
+bool md_gl_representation_set_color(md_gl_representation* ext_rep, uint32_t offset, uint32_t count, const uint32_t* color_data, uint32_t byte_stride) {
     if (ext_rep && color_data) {
         internal_rep* rep = (internal_rep*)ext_rep;
         if (rep->mol && glIsBuffer(rep->color.id)) {
             if (offset + count > rep->mol->atom_count) {
-                return MD_DRAW_GL_ATTEMPTING_TO_WRITE_OUT_OF_BUFFER_RANGE;
+                md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+                return false;
             }
 
             if (byte_stride) {
@@ -592,23 +616,26 @@ md_draw_error md_draw_representation_set_color(md_draw_representation* ext_rep, 
                     }
                     glUnmapBuffer(GL_ARRAY_BUFFER);
                     glBindBuffer(GL_ARRAY_BUFFER, 0);
-                    return MD_DRAW_SUCCESS;
+                    return true;
                 }
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
-                return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+                return false;
             }
             else {
                 gl_buffer_set_sub_data(rep->color, offset * sizeof(uint32_t), count * sizeof(uint32_t), color_data);
+                return true;
             }
             //md_update_visible_atom_color_range(rep);
         } else {
-            return MD_DRAW_GL_INVALID_BUFFER;
+            md_print(MD_LOG_TYPE_ERROR, "Representation's molecule is missing");
+            return false;
         }
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    return false;
 }
 
-md_draw_error create_permuted_program(gl_program* program_permutations, const char* vert_file, const char* geom_file, const char* frag_file) {
+bool create_permuted_program(gl_program* program_permutations, const char* vert_file, const char* geom_file, const char* frag_file) {
     GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
     GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
     GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
@@ -623,27 +650,26 @@ md_draw_error create_permuted_program(gl_program* program_permutations, const ch
         at += snprintf(define + at, ARRAY_SIZE(define) - at, "#define ATOM_VEL %i\n",  (int)((perm & PERMUTATION_BIT_VELOCITY) != 0));
         at += snprintf(define + at, ARRAY_SIZE(define) - at, "#define ATOM_IDX %i\n",  (int)((perm & PERMUTATION_BIT_INDEX) != 0));
 
-        md_draw_error err;
-        if (vert_file && ((err = compile_shader_from_file(vert_shader, vert_file, define)) != MD_DRAW_SUCCESS)) return err;
-        if (geom_file && ((err = compile_shader_from_file(geom_shader, geom_file, define)) != MD_DRAW_SUCCESS)) return err;
-        if (frag_file && ((err = compile_shader_from_file(frag_shader, frag_file, define)) != MD_DRAW_SUCCESS)) return err;
+        if (vert_file && compile_shader_from_file(vert_shader, vert_file, define) != true) return false;
+        if (geom_file && compile_shader_from_file(geom_shader, geom_file, define) != true) return false;
+        if (frag_file && compile_shader_from_file(frag_shader, frag_file, define) != true) return false;
 
         program_permutations[perm].id = glCreateProgram();
         const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
-        if ((err = link_program(program_permutations[perm].id, shaders, ARRAY_SIZE(shaders))) != MD_DRAW_SUCCESS) return err;
+        if (link_program(program_permutations[perm].id, shaders, ARRAY_SIZE(shaders)) != true) return false;
     }
 
     glDeleteShader(vert_shader);
     glDeleteShader(geom_shader);
     glDeleteShader(frag_shader);
 
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error md_draw_context_init(md_draw_context* ext_ctx) {
+bool md_gl_context_init(md_gl_context* ext_ctx) {
     if (!ext_ctx) {
         md_print(MD_LOG_TYPE_ERROR, "Supplied draw context is NULL");
-        return MD_DRAW_ARGUMENT_IS_NULL;
+        return false;
     }
 
     internal_ctx* ctx = (internal_ctx*)ext_ctx;
@@ -651,7 +677,7 @@ md_draw_error md_draw_context_init(md_draw_context* ext_ctx) {
 
     if (gl3wInit() != GL3W_OK) {
         md_print(MD_LOG_TYPE_ERROR, "Could not load OpenGL extensions");
-        return MD_DRAW_GL_VERSION_NOT_SUPPORTED;
+        return false;
     }
 
     GLint major, minor;
@@ -665,7 +691,7 @@ md_draw_error md_draw_context_init(md_draw_context* ext_ctx) {
     } else {
         ctx->version = GL_VERSION_UNKNOWN;
         md_printf(MD_LOG_TYPE_ERROR, "OpenGL version %i.%i is not supported", major, minor);
-        return MD_DRAW_GL_VERSION_NOT_SUPPORTED;
+        return false;
     }
 
     glGenVertexArrays(1, &ctx->vao);
@@ -677,23 +703,23 @@ md_draw_error md_draw_context_init(md_draw_context* ext_ctx) {
     }
 
     {
-        md_draw_error err;
-        if ((err = create_permuted_program(ctx->permuted_program.space_fill, MD_SHADER_DIR "/space_fill.vert", MD_SHADER_DIR "/space_fill.geom", MD_SHADER_DIR "/space_fill.frag")) != MD_DRAW_SUCCESS) return err;
-        if ((err = create_permuted_program(ctx->permuted_program.licorice,   MD_SHADER_DIR "/licorice.vert",   MD_SHADER_DIR "/licorice.geom",   MD_SHADER_DIR "/licorice.frag")) != MD_DRAW_SUCCESS) return err;
-        if ((err = create_permuted_program(ctx->permuted_program.ribbons,    MD_SHADER_DIR "/ribbons.vert",    MD_SHADER_DIR "/ribbons.geom",    MD_SHADER_DIR "/ribbons.frag")) != MD_DRAW_SUCCESS) return err;
-        if ((err = create_permuted_program(ctx->permuted_program.cartoon,    MD_SHADER_DIR "/cartoon.vert",    MD_SHADER_DIR "/cartoon.geom",    MD_SHADER_DIR "/cartoon.frag")) != MD_DRAW_SUCCESS) return err;
+        bool err;
+        if ((err = create_permuted_program(ctx->permuted_program.space_fill, MD_SHADER_DIR "/space_fill.vert", MD_SHADER_DIR "/space_fill.geom", MD_SHADER_DIR "/space_fill.frag")) != true) return err;
+        if ((err = create_permuted_program(ctx->permuted_program.licorice,   MD_SHADER_DIR "/licorice.vert",   MD_SHADER_DIR "/licorice.geom",   MD_SHADER_DIR "/licorice.frag")) != true) return err;
+        if ((err = create_permuted_program(ctx->permuted_program.ribbons,    MD_SHADER_DIR "/ribbons.vert",    MD_SHADER_DIR "/ribbons.geom",    MD_SHADER_DIR "/ribbons.frag")) != true) return err;
+        if ((err = create_permuted_program(ctx->permuted_program.cartoon,    MD_SHADER_DIR "/cartoon.vert",    MD_SHADER_DIR "/cartoon.geom",    MD_SHADER_DIR "/cartoon.frag")) != true) return err;
     }
 
     if (ctx->version == GL_VERSION_430) {
         GLuint comp_shader = glCreateShader(GL_COMPUTE_SHADER);
 
-        md_draw_error err;
-        if ((err = compile_shader_from_file(comp_shader, MD_SHADER_DIR "/compute_aabb.comp", NULL)) != MD_DRAW_SUCCESS) {
+        bool err;
+        if ((err = compile_shader_from_file(comp_shader, MD_SHADER_DIR "/compute_aabb.comp", NULL)) != true) {
             return err;
         }
         ctx->program[GL_PROGRAM_COMPUTE_AABB].id = glCreateProgram();
         const GLuint shaders[] = {comp_shader};
-        if ((err = link_program(ctx->program[GL_PROGRAM_COMPUTE_AABB].id, shaders, ARRAY_SIZE(shaders))) != MD_DRAW_SUCCESS) {
+        if ((err = link_program(ctx->program[GL_PROGRAM_COMPUTE_AABB].id, shaders, ARRAY_SIZE(shaders))) != true) {
             return err;
         }
 
@@ -705,15 +731,15 @@ md_draw_error md_draw_context_init(md_draw_context* ext_ctx) {
         GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
         GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
-        md_draw_error err;
-        if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/draw_aabb.vert", NULL)) != MD_DRAW_SUCCESS ||
-            (err = compile_shader_from_file(geom_shader, MD_SHADER_DIR "/draw_aabb.geom", NULL)) != MD_DRAW_SUCCESS ||
-            (err = compile_shader_from_file(frag_shader, MD_SHADER_DIR "/cull_aabb.frag", NULL)) != MD_DRAW_SUCCESS) {
+        bool err;
+        if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/draw_aabb.vert", NULL)) != true ||
+            (err = compile_shader_from_file(geom_shader, MD_SHADER_DIR "/draw_aabb.geom", NULL)) != true ||
+            (err = compile_shader_from_file(frag_shader, MD_SHADER_DIR "/cull_aabb.frag", NULL)) != true) {
             return err;
         }
         ctx->program[GL_PROGRAM_CULL_AABB].id = glCreateProgram();
         const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
-        if ((err = link_program(ctx->program[GL_PROGRAM_CULL_AABB].id, shaders, ARRAY_SIZE(shaders))) != MD_DRAW_SUCCESS) {
+        if ((err = link_program(ctx->program[GL_PROGRAM_CULL_AABB].id, shaders, ARRAY_SIZE(shaders))) != true) {
             return err;
         }
 
@@ -725,14 +751,14 @@ md_draw_error md_draw_context_init(md_draw_context* ext_ctx) {
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
 
-        md_draw_error err;
-        if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/extract_control_points.vert", NULL)) != MD_DRAW_SUCCESS) {
+        bool err;
+        if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/extract_control_points.vert", NULL)) != true) {
             return err;
         }
         ctx->program[GL_PROGRAM_EXTRACT_CONTROL_POINTS].id = glCreateProgram();
         const GLuint shaders[] = {vert_shader};
         const GLchar* varyings[] = {"out_position", "out_atom_idx", "out_velocity", "out_segment_t", "out_secondary_structure_and_flags", "out_support_and_tangent_vector"};
-        if ((err = link_program_transform_feedback(ctx->program[GL_PROGRAM_EXTRACT_CONTROL_POINTS].id, shaders, ARRAY_SIZE(shaders), varyings, ARRAY_SIZE(varyings), GL_INTERLEAVED_ATTRIBS)) != MD_DRAW_SUCCESS) {
+        if ((err = link_program_transform_feedback(ctx->program[GL_PROGRAM_EXTRACT_CONTROL_POINTS].id, shaders, ARRAY_SIZE(shaders), varyings, ARRAY_SIZE(varyings), GL_INTERLEAVED_ATTRIBS)) != true) {
             return err;
         }
 
@@ -746,15 +772,15 @@ md_draw_error md_draw_context_init(md_draw_context* ext_ctx) {
         char defines[32];
         snprintf(defines, ARRAY_SIZE(defines), "#define NUM_SUBDIVISIONS %i", MD_SPLINE_MAX_SUBDIVISION_COUNT);
 
-        md_draw_error err;
-        if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/compute_spline.vert", defines)) != MD_DRAW_SUCCESS ||
-            (err = compile_shader_from_file(geom_shader, MD_SHADER_DIR "/compute_spline.geom", defines)) != MD_DRAW_SUCCESS) {
+        bool err;
+        if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/compute_spline.vert", defines)) != true ||
+            (err = compile_shader_from_file(geom_shader, MD_SHADER_DIR "/compute_spline.geom", defines)) != true) {
             return err;
         }
         ctx->program[GL_PROGRAM_COMPUTE_SPLINE].id = glCreateProgram();
         const GLuint shaders[] = {vert_shader, geom_shader};
         const GLchar* varyings[] = {"out_position", "out_atom_idx", "out_velocity", "out_segment_t", "out_secondary_structure_and_flags", "out_support_and_tangent_vector"};
-        if ((err = link_program_transform_feedback(ctx->program[GL_PROGRAM_COMPUTE_SPLINE].id, shaders, ARRAY_SIZE(shaders), varyings, ARRAY_SIZE(varyings), GL_INTERLEAVED_ATTRIBS)) != MD_DRAW_SUCCESS) {
+        if ((err = link_program_transform_feedback(ctx->program[GL_PROGRAM_COMPUTE_SPLINE].id, shaders, ARRAY_SIZE(shaders), varyings, ARRAY_SIZE(varyings), GL_INTERLEAVED_ATTRIBS)) != true) {
             return err;
         }
 
@@ -762,10 +788,10 @@ md_draw_error md_draw_context_init(md_draw_context* ext_ctx) {
         glDeleteShader(geom_shader);
     }
 
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error md_draw_context_free(md_draw_context* ext_ctx) {
+bool md_gl_context_free(md_gl_context* ext_ctx) {
     if (ext_ctx) {
         internal_ctx* ctx = (internal_ctx*)ext_ctx;
         if (ctx->vao) glDeleteVertexArrays(1, &ctx->vao);
@@ -777,13 +803,13 @@ md_draw_error md_draw_context_free(md_draw_context* ext_ctx) {
         for (uint32_t i = 0; i < GL_PROGRAM_COUNT; ++i) {
             if (ctx->program[i].id) glDeleteProgram(ctx->program[i].id);
         }
-        return MD_DRAW_SUCCESS;
+        return true;
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    return false;
 }
 
 /*
-void md_draw_molecule_desc_extract(md_draw_molecule_desc* desc, const md_molecule* md_mol) {
+void md_gl_molecule_desc_extract(md_gl_molecule_desc* desc, const md_molecule* md_mol) {
     desc->atom.count     = md_mol->atom.count;
     desc->atom.x         = md_mol->atom.x;
     desc->atom.y         = md_mol->atom.y;
@@ -799,9 +825,9 @@ void md_draw_molecule_desc_extract(md_draw_molecule_desc* desc, const md_molecul
 }
 */
 
-md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_molecule_desc* desc) {
+bool md_gl_molecule_init(md_gl_molecule* ext_mol, const md_gl_molecule_desc* desc) {
     if (ext_mol && desc) {
-        md_draw_molecule_free(ext_mol);
+        md_gl_molecule_free(ext_mol);
         internal_mol* mol = (internal_mol*)ext_mol;
 
         mol->atom_count = desc->atom.count;
@@ -811,14 +837,14 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
         mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS]         = gl_buffer_create(mol->atom_count * sizeof(uint8_t),   NULL, GL_STATIC_DRAW);
 
         if (desc->atom.x && desc->atom.y && desc->atom.z) {
-            md_draw_molecule_set_atom_position(ext_mol, 0, mol->atom_count, desc->atom.x, desc->atom.y, desc->atom.z, 0);
-            md_draw_molecule_update_atom_previous_position(ext_mol);
+            md_gl_molecule_set_atom_position(ext_mol, 0, mol->atom_count, desc->atom.x, desc->atom.y, desc->atom.z, 0);
+            md_gl_molecule_update_atom_previous_position(ext_mol);
         }
-        if (desc->atom.radius)                              md_draw_molecule_set_atom_radius(ext_mol, 0, mol->atom_count, desc->atom.radius, 0);
-        if (desc->atom.flags)                               md_draw_molecule_set_atom_flags(ext_mol, 0, mol->atom_count, desc->atom.flags, 0);
+        if (desc->atom.radius)                              md_gl_molecule_set_atom_radius(ext_mol, 0, mol->atom_count, desc->atom.radius, 0);
+        if (desc->atom.flags)                               md_gl_molecule_set_atom_flags(ext_mol, 0, mol->atom_count, desc->atom.flags, 0);
 
         mol->residue_count = desc->residue.count;
-        mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE]          = gl_buffer_create(mol->residue_count * sizeof(md_range),   NULL, GL_STATIC_DRAW);
+        mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE]          = gl_buffer_create(mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
         mol->buffer[GL_BUFFER_MOL_RESIDUE_AABB]                = gl_buffer_create(mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
         mol->buffer[GL_BUFFER_MOL_RESIDUE_VISIBLE]             = gl_buffer_create(mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
 
@@ -841,7 +867,7 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
             const uint32_t backbone_spline_index_count        = backbone_spline_count + desc->chain.count * (1); // primitive restart between each chain
 
             mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data), NULL, GL_STATIC_DRAW);
-            mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure), NULL, GL_DYNAMIC_DRAW);
+            mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t), NULL, GL_DYNAMIC_DRAW);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA]  = gl_buffer_create(backbone_control_point_data_count  * sizeof(gl_control_point), NULL, GL_DYNAMIC_COPY);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX] = gl_buffer_create(backbone_control_point_index_count * sizeof(uint32_t),         NULL, GL_STATIC_DRAW);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA]         = gl_buffer_create(backbone_spline_data_count         * sizeof(gl_control_point), NULL, GL_DYNAMIC_COPY);
@@ -865,7 +891,7 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             } else {
-                return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+                return false;
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
@@ -880,7 +906,7 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             } else {
-                return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+                return false;
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX].id);
@@ -899,7 +925,7 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             }
             else {
-                return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+                return false;
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX].id);
@@ -918,7 +944,7 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             } else {
-                return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+                return false;
             }
 
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -933,28 +959,28 @@ md_draw_error md_draw_molecule_init(md_draw_molecule* ext_mol, const md_draw_mol
 
         if (desc->covalent_bond.atom_bond) gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], 0, mol->bond_count * sizeof(uint32_t) * 2, desc->covalent_bond.atom_bond);
        
-        return MD_DRAW_SUCCESS;
+        return true;
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    return false;
 }
 
-md_draw_error md_draw_molecule_free(md_draw_molecule* ext_mol) {
+bool md_gl_molecule_free(md_gl_molecule* ext_mol) {
     if (ext_mol) {
         internal_mol* mol = (internal_mol*)ext_mol;
         for (uint32_t i = 0; i < GL_BUFFER_MOL_COUNT; ++i) {
             gl_buffer_conditional_delete(&mol->buffer[i]);
         }
         uint32_t new_version = mol->version + 1;
-        memset(mol, 0, sizeof(md_draw_molecule));
+        memset(mol, 0, sizeof(md_gl_molecule));
         mol->version = new_version;
-        return MD_DRAW_SUCCESS;
+        return true;
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    return false;
 }
 
-md_draw_error md_draw_representation_init(md_draw_representation* ext_rep, const md_draw_molecule* ext_mol) {   
+bool md_gl_representation_init(md_gl_representation* ext_rep, const md_gl_molecule* ext_mol) {   
     if (ext_rep && ext_mol) {
-        md_draw_representation_free(ext_rep);
+        md_gl_representation_free(ext_rep);
         internal_rep* rep = (internal_rep*)ext_rep;
         memset(rep, 0, sizeof(internal_rep));
         rep->mol = (const internal_mol*)ext_mol;
@@ -970,45 +996,45 @@ md_draw_error md_draw_representation_init(md_draw_representation* ext_rep, const
             glUnmapBuffer(GL_ARRAY_BUFFER);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
             //md_update_visible_atom_color_range(rep);
-            return MD_DRAW_SUCCESS;
+            return true;
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        return MD_DRAW_GL_COULD_NOT_MAP_BUFFER;
+        return false;
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    return false;
 }
 
-md_draw_error md_draw_representation_free(md_draw_representation* ext_rep) {
+bool md_gl_representation_free(md_gl_representation* ext_rep) {
     if (ext_rep) {
         internal_rep* rep = (internal_rep*)ext_rep;
         gl_buffer_conditional_delete(&rep->color);
-        return MD_DRAW_SUCCESS;
+        return true;
     }
-    return MD_DRAW_ARGUMENT_IS_NULL;
+    return false;
 }
 
-md_draw_error gl_build_depth_mipmap(const internal_ctx* ctx, gl_texture dst, gl_texture src);
-md_draw_error gl_compute_residue_aabb(const internal_ctx* ctx, const internal_mol* mol);
-md_draw_error gl_cull_aabb(const internal_ctx* ctx, const internal_mol* mol);
-md_draw_error gl_compute_spline(const internal_ctx* ctx, const internal_mol* mol);
+static bool build_depth_mipmap(const internal_ctx* ctx, gl_texture dst, gl_texture src);
+static bool compute_residue_aabb(const internal_ctx* ctx, const internal_mol* mol);
+static bool cull_aabb(const internal_ctx* ctx, const internal_mol* mol);
+static bool compute_spline(const internal_ctx* ctx, const internal_mol* mol);
 
-md_draw_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
-md_draw_error gl_draw_licorice  (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
-md_draw_error gl_draw_ribbons   (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
-md_draw_error gl_draw_cartoon   (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
+static bool draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
+static bool draw_licorice  (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
+static bool draw_ribbons   (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
+static bool draw_cartoon   (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
 
-int compare_draw_rep(const void* elem1, const void* elem2) {
+static int compare_draw_rep(const void* elem1, const void* elem2) {
     const internal_rep* r1 = (const internal_rep*)elem1;
     const internal_rep* r2 = (const internal_rep*)elem2;
     
     return (r1->type - r2->type) * 2 + (int)(r1->mol - r2->mol);
 }
 
-md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
+bool md_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
     internal_ctx* ctx = (internal_ctx*)ext_ctx;
-    if (!desc) return MD_DRAW_ARGUMENT_IS_NULL;
-    md_draw_error err;
-    if ((err = validate_context(ctx)) != MD_DRAW_SUCCESS) return err;
+    if (!args) return false;
+    bool err;
+    if ((err = validate_context(ctx)) != true) return err;
 
     PUSH_GPU_SECTION("MOLD DRAW")
             
@@ -1028,22 +1054,22 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
     }
 
     gl_ubo_base ubo_data = {0};
-    memcpy(&ubo_data.view_transform.world_to_view, desc->view_transform.model_view_matrix, sizeof(mat4_t));
-    memcpy(&ubo_data.view_transform.view_to_clip,  desc->view_transform.projection_matrix, sizeof(mat4_t));
+    memcpy(&ubo_data.view_transform.world_to_view, args->view_transform.model_view_matrix, sizeof(mat4_t));
+    memcpy(&ubo_data.view_transform.view_to_clip,  args->view_transform.projection_matrix, sizeof(mat4_t));
     ubo_data.view_transform.world_to_clip = mat4_mul(ubo_data.view_transform.view_to_clip, ubo_data.view_transform.world_to_view);
     ubo_data.view_transform.world_to_view_normal = mat4_transpose(mat4_inverse(ubo_data.view_transform.world_to_view));
     ubo_data.view_transform.view_to_world = mat4_inverse(ubo_data.view_transform.world_to_view);
     ubo_data.view_transform.clip_to_view = mat4_inverse(ubo_data.view_transform.view_to_clip);
 
-    if (desc->view_transform.prev_model_view_matrix && desc->view_transform.projection_matrix) {
-        const mat4_t* prev_world_to_view = (const mat4_t*)desc->view_transform.prev_model_view_matrix;
-        const mat4_t* prev_view_to_clip  = (const mat4_t*)desc->view_transform.prev_projection_matrix;
+    if (args->view_transform.prev_model_view_matrix && args->view_transform.projection_matrix) {
+        const mat4_t* prev_world_to_view = (const mat4_t*)args->view_transform.prev_model_view_matrix;
+        const mat4_t* prev_view_to_clip  = (const mat4_t*)args->view_transform.prev_projection_matrix;
         ubo_data.view_transform.prev_world_to_clip = mat4_mul(*prev_view_to_clip, *prev_world_to_view);
         ubo_data.view_transform.curr_view_to_prev_clip = mat4_mul(ubo_data.view_transform.prev_world_to_clip, ubo_data.view_transform.view_to_world);
         extract_jitter_uv(&ubo_data.jitter_uv.x, ubo_data.view_transform.view_to_clip);
         extract_jitter_uv(&ubo_data.jitter_uv.z, *prev_view_to_clip);
     }
-    ubo_data.atom_mask = desc->mol_mask;
+    ubo_data.atom_mask = args->mol_mask;
 
     gl_buffer_set_sub_data(ctx->ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx->ubo.id);
@@ -1059,9 +1085,9 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
 
     const uint32_t MOL_FLAG_SPLINE = 1;
         
-    ASSERT(desc->representation.count < ARRAY_SIZE(draw_rep));
-    for (uint32_t i = 0; i < desc->representation.count; i++) {
-        const internal_rep* rep = (internal_rep*)desc->representation.data[i];
+    ASSERT(args->representation.count < ARRAY_SIZE(draw_rep));
+    for (uint32_t i = 0; i < args->representation.count; i++) {
+        const internal_rep* rep = (internal_rep*)args->representation.data[i];
         if (rep && rep->mol) {
             draw_rep[draw_rep_count] = rep;
             draw_rep_count++;
@@ -1078,13 +1104,13 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
                 unique_mol_ptr[unique_mol_idx] = rep->mol;
                 unique_mol_flags[unique_mol_idx] = 0;
             }
-            if (rep->type == MD_DRAW_REP_RIBBONS || rep->type == MD_DRAW_REP_CARTOON) {
+            if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {
                 unique_mol_flags[unique_mol_idx] |= MOL_FLAG_SPLINE;
             }
         }
     }
     
-    qsort((void*)draw_rep, draw_rep_count, sizeof(md_draw_representation*), compare_draw_rep);
+    qsort((void*)draw_rep, draw_rep_count, sizeof(md_gl_representation*), compare_draw_rep);
                
     // Compute residue AABBs for culling
     /*
@@ -1104,19 +1130,19 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
     PUSH_GPU_SECTION("COMPUTE SPLINE")
     for (uint32_t i = 0; i < unique_mol_count; i++) {
         if (unique_mol_flags[i] & MOL_FLAG_SPLINE) {
-            gl_compute_spline(ctx, unique_mol_ptr[i]);
+            compute_spline(ctx, unique_mol_ptr[i]);
         }
     }
     POP_GPU_SECTION()
         
 
-    // possibly resize internal depth buffer to match render_target size
+    // possibly resize static depth buffer to match render_target size
     gl_texture* max_tex = &ctx->texture[GL_TEXTURE_MAX_DEPTH];
     uint32_t max_tex_w = gl_texture_width(*max_tex, 0);
     uint32_t max_tex_h = gl_texture_height(*max_tex, 0);
-    if (max_tex_w != desc->render_target->width || max_tex_h != desc->render_target->height) {
-        max_tex_w = desc->render_target->width;
-        max_tex_h = desc->render_target->height;
+    if (max_tex_w != args->render_target->width || max_tex_h != args->render_target->height) {
+        max_tex_w = args->render_target->width;
+        max_tex_h = args->render_target->height;
         int mips = compute_mip_count(max_tex_w, max_tex_h);
         if (max_tex->id) glDeleteTextures(1, &max_tex->id);
         glGenTextures(1, &max_tex->id);
@@ -1134,51 +1160,51 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
     if (is_ortho_proj_matrix(ubo_data.view_transform.view_to_clip)) program_permutation |= PERMUTATION_BIT_ORTHO;
         
     // If we have rendertargets -> setup and enable fbo
-    if (desc->render_target) {
+    if (args->render_target) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctx->fbo[0]);
         GLenum draw_buffers[4] = {0};
         uint32_t count = 0;
-        if (desc->render_target->texture_depth) {
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, desc->render_target->texture_depth, 0);
+        if (args->render_target->texture_depth) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, args->render_target->texture_depth, 0);
         } else {
             using_internal_depth = true;
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, ctx->texture[GL_TEXTURE_MAX_DEPTH].id, 0);
         }
-        if (desc->render_target->texture_color) {
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, desc->render_target->texture_color, 0);
+        if (args->render_target->texture_color) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, args->render_target->texture_color, 0);
             draw_buffers[count++] = GL_COLOR_ATTACHMENT0;
             program_permutation |= PERMUTATION_BIT_COLOR;
         }
-        if (desc->render_target->texture_view_normal) {
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, desc->render_target->texture_view_normal, 0);
+        if (args->render_target->texture_view_normal) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, args->render_target->texture_view_normal, 0);
             draw_buffers[count++] = GL_COLOR_ATTACHMENT1;
             program_permutation |= PERMUTATION_BIT_NORMAL;
         }
-        if (desc->render_target->texture_view_velocity) {
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, desc->render_target->texture_view_velocity, 0);
+        if (args->render_target->texture_view_velocity) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, args->render_target->texture_view_velocity, 0);
             draw_buffers[count++] = GL_COLOR_ATTACHMENT2;
             program_permutation |= PERMUTATION_BIT_VELOCITY;
         }
-        if (desc->render_target->texture_atom_index) {
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, desc->render_target->texture_atom_index, 0);
+        if (args->render_target->texture_atom_index) {
+            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT3, GL_TEXTURE_2D, args->render_target->texture_atom_index, 0);
             draw_buffers[count++] = GL_COLOR_ATTACHMENT3;
             program_permutation |= PERMUTATION_BIT_INDEX;
         }
         glDrawBuffers(count, draw_buffers);
-        glViewport(0, 0, desc->render_target->width, desc->render_target->height);
+        glViewport(0, 0, args->render_target->width, args->render_target->height);
             
         GLenum fbo_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (fbo_status != GL_FRAMEBUFFER_COMPLETE) {
             switch (fbo_status) {
             case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:
                 md_print(MD_LOG_TYPE_ERROR, "Incomplete fbo attachment");
-                return MD_DRAW_GL_FRAMEBUFFER_ERROR;
+                return false;
             case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT:
                 md_print(MD_LOG_TYPE_ERROR, "Missing fbo attachment");
-                return MD_DRAW_GL_FRAMEBUFFER_ERROR;
+                return false;
             case GL_FRAMEBUFFER_UNSUPPORTED:
                 md_print(MD_LOG_TYPE_ERROR, "Unsupported fbo attachment format");
-                return MD_DRAW_GL_FRAMEBUFFER_ERROR;
+                return false;
             default:
                 break;
             };
@@ -1199,24 +1225,24 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
         
         for (uint32_t i = 0; i < draw_rep_count; i++) {
             switch (draw_rep[i]->type) {
-            case MD_DRAW_REP_SOLVENT_EXCLUDED_SURFACE:
+            case MD_GL_REP_SOLVENT_EXCLUDED_SURFACE:
                 break;
-            case MD_DRAW_REP_DEFAULT:
-            case MD_DRAW_REP_SPACE_FILL:
-                gl_draw_space_fill(ctx, draw_rep[i], program_permutation);
+            case MD_GL_REP_DEFAULT:
+            case MD_GL_REP_SPACE_FILL:
+                draw_space_fill(ctx, draw_rep[i], program_permutation);
                 break;
-            case MD_DRAW_REP_RIBBONS:
-                gl_draw_ribbons(ctx, draw_rep[i], program_permutation);
+            case MD_GL_REP_RIBBONS:
+                draw_ribbons(ctx, draw_rep[i], program_permutation);
                 break;
-            case MD_DRAW_REP_CARTOON:
-                gl_draw_cartoon(ctx, draw_rep[i], program_permutation);
+            case MD_GL_REP_CARTOON:
+                draw_cartoon(ctx, draw_rep[i], program_permutation);
                 break;
-            case MD_DRAW_REP_LICORICE:
-                gl_draw_licorice(ctx, draw_rep[i], program_permutation);
+            case MD_GL_REP_LICORICE:
+                draw_licorice(ctx, draw_rep[i], program_permutation);
                 break;
             default:
                 md_print(MD_LOG_TYPE_ERROR, "Representation had unexpected type");
-                return MD_DRAW_UNKNOWN_ERROR;
+                return false;
                 break;
             }
         }
@@ -1229,10 +1255,10 @@ md_draw_error md_draw(md_draw_context* ext_ctx, const md_draw_desc* desc) {
         
     POP_GPU_SECTION()
     
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
+static bool draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
     const float radius_scale = rep->args.space_fill.radius_scale;
     gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base), sizeof(radius_scale), &radius_scale);
 
@@ -1272,10 +1298,10 @@ md_draw_error gl_draw_space_fill(const internal_ctx* ctx, const internal_rep* re
     
     glBindVertexArray(0);
     
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error gl_draw_licorice(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
+static bool draw_licorice(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
     const float radius = rep->args.licorice.radius;
     gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base), sizeof(radius), &radius);
 
@@ -1314,14 +1340,14 @@ md_draw_error gl_draw_licorice(const internal_ctx* ctx, const internal_rep* rep,
 
     glBindVertexArray(0);
 
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error gl_draw_ribbons(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
+bool draw_ribbons(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
     ASSERT(rep->mol);
     if (!rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id) {
         md_print(MD_LOG_TYPE_ERROR, "No spline present for molecule, which is required for rendering ribbons representation");
-        return MD_DRAW_GL_INVALID_BUFFER;
+        return false;
     }
 
     float scale[2] = {
@@ -1385,14 +1411,14 @@ md_draw_error gl_draw_ribbons(const internal_ctx* ctx, const internal_rep* rep, 
 
     glBindVertexArray(0);
 
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error gl_draw_cartoon(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
+static bool draw_cartoon(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
     ASSERT(rep->mol);
     if (!rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id) {
         md_print(MD_LOG_TYPE_ERROR, "No spline present for molecule, which is required for rendering ribbons representation");
-        return MD_DRAW_GL_INVALID_BUFFER;
+        return false;
     }
 
     float scale[2] = {
@@ -1463,17 +1489,17 @@ md_draw_error gl_draw_cartoon(const internal_ctx* ctx, const internal_rep* rep, 
 
     glBindVertexArray(0);
 
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error gl_compute_residue_aabb(const internal_ctx* ctx, const internal_mol* mol) {   
+static bool compute_residue_aabb(const internal_ctx* ctx, const internal_mol* mol) {   
     (void)ctx;
     (void)mol;
 
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error gl_cull_aabb(const internal_ctx* ctx, const internal_mol* mol) {
+static bool cull_aabb(const internal_ctx* ctx, const internal_mol* mol) {
     (void)ctx;
     glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_RESIDUE_VISIBLE].id);
     void* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
@@ -1486,13 +1512,13 @@ md_draw_error gl_cull_aabb(const internal_ctx* ctx, const internal_mol* mol) {
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
     
-    return MD_DRAW_SUCCESS;
+    return true;
 }
 
-md_draw_error gl_compute_spline(const internal_ctx* ctx, const internal_mol* mol) {
+static bool compute_spline(const internal_ctx* ctx, const internal_mol* mol) {
     if (mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id == 0) {
         md_print(MD_LOG_TYPE_ERROR, "Backbone data buffer is zero, which is required to compute the backbone. Is the molecule missing a backbone?");
-        return MD_DRAW_GL_INVALID_BUFFER;
+        return false;
     }
 
     glEnable(GL_RASTERIZER_DISCARD);
@@ -1593,5 +1619,5 @@ md_draw_error gl_compute_spline(const internal_ctx* ctx, const internal_mol* mol
     glBindVertexArray(0);
     glDisable(GL_RASTERIZER_DISCARD);
 
-    return MD_DRAW_SUCCESS;
+    return true;
 }

@@ -9,7 +9,7 @@
 
 UTEST(pdb, parse_ordinary) {
     const str_t path = make_cstr(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
-    struct md_pdb_data pdb_data = {0};
+    md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(path, &pdb_data, default_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 0);
@@ -24,7 +24,7 @@ UTEST(pdb, parse_ordinary) {
 
 UTEST(pdb, parse_trajectory) {
     const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-    struct md_pdb_data pdb_data = {0};
+    md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(path, &pdb_data, default_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 38);
@@ -49,7 +49,7 @@ UTEST(pdb, parse_trajectory) {
 
 UTEST(pdb, trajectory_i) {
     const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-    struct md_trajectory traj = {0};
+    md_trajectory_i traj = {0};
     ASSERT_TRUE(md_pdb_trajectory_open(&traj, path, default_allocator));
 
     EXPECT_EQ(traj.num_atoms, 153);
@@ -60,20 +60,11 @@ UTEST(pdb, trajectory_i) {
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + traj.num_atoms * 1;
     float *z = (float*)mem_ptr + traj.num_atoms * 2;
-    float box[3][3] = {0};
-    double timestamp = 0;
 
-    md_trajectory_data_t write_target = {
-        .num_atoms = traj.num_atoms,
-        .x = x,
-        .y = y,
-        .z = z,
-        .box = box,
-        .timestamp = &timestamp
-    };
+    md_trajectory_frame_header_t header;
 
     for (int64_t i = 0; i < traj.num_frames; ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(&traj, i, MD_TRAJ_FIELD_XYZ | MD_TRAJ_FIELD_BOX | MD_TRAJ_FIELD_TIMESTAMP, &write_target));
+        EXPECT_TRUE(md_trajectory_load_frame(&traj, i, &header, x, y, z, traj.num_atoms));
     }
 
     md_free(default_temp_allocator, mem_ptr, mem_size);
@@ -85,10 +76,10 @@ UTEST(pdb, create_molecule) {
     const md_allocator_i* alloc = default_allocator;
     const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
 
-    struct md_pdb_data pdb_data = {0};
+    md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(path, &pdb_data, alloc));
 
-    md_molecule mol = {0};
+    md_molecule_t mol = {0};
     EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
     ASSERT_EQ(mol.atom.count, pdb_data.num_atom_coordinates);
 

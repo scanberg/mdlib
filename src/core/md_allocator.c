@@ -18,7 +18,7 @@ typedef struct ring_buffer {
 
 THREAD_LOCAL ring_buffer ring = {0};
 
-internal void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+static void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;
     (void)old_size;
     (void)file;
@@ -30,7 +30,7 @@ internal void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t
     return realloc(ptr, (size_t)new_size);
 }
 
-internal inline void* ring_alloc_internal(uint64_t size) {
+static inline void* ring_alloc_internal(uint64_t size) {
     // We want to make sure that we maintain some type of alignment for allocations
     // By default on x64, the alignment should be 16 bytes when using malloc or stack allocations (alloca)
     // For single byte and double byte allocations, we could skip this default alignment, but for 4 byte and above
@@ -53,7 +53,7 @@ internal inline void* ring_alloc_internal(uint64_t size) {
     return ring.mem + curr;
 }
 
-internal void* ring_realloc_internal(struct md_allocator_o *inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+static void* ring_realloc_internal(struct md_allocator_o *inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;    
     (void)file;
     (void)line;
@@ -91,15 +91,15 @@ internal void* ring_realloc_internal(struct md_allocator_o *inst, void* ptr, uin
     return ring_alloc_internal(new_size);
 }
 
-static struct md_allocator _default_allocator = {
+static struct md_allocator_i _default_allocator = {
     NULL,
     realloc_internal
 };
 
-static struct md_allocator _default_temp_allocator = {
+static struct md_allocator_i _default_temp_allocator = {
     NULL,
     ring_realloc_internal
 };
 
-struct md_allocator* default_allocator = &_default_allocator;
-struct md_allocator* default_temp_allocator = &_default_temp_allocator;
+struct md_allocator_i* default_allocator = &_default_allocator;
+struct md_allocator_i* default_temp_allocator = &_default_temp_allocator;

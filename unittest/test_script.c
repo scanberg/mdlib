@@ -1,6 +1,7 @@
 #include "utest.h"
 #include <md_script.h>
 #include <md_molecule.h>
+#include <md_trajectory.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
@@ -19,20 +20,20 @@ static float r[] = {1,2,3,4,4,4,5,1,1,2,3,4,4,4,5,1};
 static float m[] = {1,2,2,2,2,4,4,4,1,2,2,2,2,4,4,4};
 static uint8_t e[] = {1,8,1,2,6,8,6,8,1,8,1,2,6,7,6,8};
 static const char* n[] = {"H", "O", "H", "He", "C", "N", "CA", "O", "H", "O", "H", "He", "C", "N", "CA", "O"};
-static md_residue_idx r_idx[] = {0,0,0,1,1,1,1,1,2,2,2,2,3,3,3,3};
-static md_chain_idx c_idx[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+static md_residue_idx_t r_idx[] = {0,0,0,1,1,1,1,1,2,2,2,2,3,3,3,3};
+static md_chain_idx_t c_idx[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 #define RES_COUNT 4
 static const char* r_name[] = {"SOL", "LYS", "PFT", "PFT"};
-static md_residue_id r_id[] = {1, 2, 3, 4};
-static md_range r_range[] = {{0, 3}, {3, 8}, {8,12}, {12,16}};
+static md_residue_id_t r_id[] = {1, 2, 3, 4};
+static md_range_t r_range[] = {{0, 3}, {3, 8}, {8,12}, {12,16}};
 
 #define CHAIN_COUNT 1
 static const char* c_id[] = {"A"};
-static md_range c_arange[] = {0,16};
-static md_range c_rrange[] = {0,4};
+static md_range_t c_arange[] = {0,16};
+static md_range_t c_rrange[] = {0,4};
 
-static md_molecule mol = {
+md_molecule_t mol = {
     .atom = {
         .count = ATOM_COUNT,
         .x = x,
@@ -59,15 +60,17 @@ static md_molecule mol = {
 }
 };
 
-
-
-static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule* mol) {
+static bool eval_selection(md_exp_bitfield_t* bitfield, str_t expr, md_molecule_t* mol) {
+    ASSERT(bitfield);
+    ASSERT(mol);
     data_t data = {0};
     if (eval_expression(&data, expr, mol, default_temp_allocator)) {
-        if (is_scalar(data.type) && data.type.base_type == TYPE_BITFIELD) {
-            md_bitfield_t* res = (md_bitfield_t*)data.ptr;
-            bitfield->bits = res->bits;
-            bitfield->num_bits = res->num_bits;
+        if (data.type.base_type == TYPE_BITFIELD) {
+            md_exp_bitfield_t* res = (md_exp_bitfield_t*)data.ptr;
+            const int64_t len = type_info_array_len(data.type);
+            for (int64_t i = 0; i < len; ++i) {
+                md_bitfield_or(bitfield, bitfield, &res[i]);
+            }
             return true;
         }
     }
@@ -131,17 +134,19 @@ UTEST(script, basic_expressions) {
 #define TEST_SELECTION(expr, ref_bit_str) \
 { \
 uint64_t ref = make_bits(ref_bit_str); \
-md_bitfield_t bf = {0}; \
+md_exp_bitfield_t bf = {0}; \
+md_bitfield_init(&bf, default_temp_allocator); \
 ASSERT_TRUE(eval_selection(&bf, make_cstr(expr), &mol)); \
 bool cmp_res = bit_cmp(bf.bits, &ref, 0, ATOM_COUNT); \
 EXPECT_TRUE(cmp_res); \
 if (!cmp_res) { \
     printf("Got:\n"); \
-    print_bits(bf.bits, bf.num_bits); \
+    print_bits(bf.bits, ATOM_COUNT); \
     printf("\nExpected\n"); \
-    print_bits(&ref, bf.num_bits); \
+    print_bits(&ref, ATOM_COUNT); \
     printf("\n"); \
 } \
+md_bitfield_free(&bf); \
 }
 
 UTEST(script, selection) {
@@ -154,21 +159,26 @@ UTEST(script, selection) {
 }
 
 UTEST(script, compile_script) {
-    str_t script_src = load_textfile(make_cstr(MD_UNITTEST_DATA_DIR "/script.txt"), default_allocator);
+    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(64));
+    const str_t gro_file = make_cstr(MD_UNITTEST_DATA_DIR "/centered.gro");
+
+    md_gro_data_t gro_data = {0};
+    ASSERT_TRUE(md_gro_data_parse_file(gro_file, &gro_data, alloc));
+
+    md_molecule_t mol = {0};
+    ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
+
+    str_t script_src = load_textfile(make_cstr(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
     md_script_ir_compile_args_t args = {
         .src = script_src,
         .mol = &mol,
         .alloc = default_allocator
     };
-    struct md_script_ir ir = {0};
+    md_script_ir_t ir = {0};
     EXPECT_TRUE(md_script_ir_compile(&ir, args));
 
-    md_script_ir_free(&ir);
-    free_str(script_src, default_allocator);
+    md_arena_allocator_destroy(alloc);
 }
-
-#include <md_molecule.h>
-#include <md_trajectory.h>
 
 UTEST(script, selection_big) {
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(16));
@@ -181,16 +191,11 @@ UTEST(script, selection_big) {
     md_molecule_t mol = {0};
     ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
 
-    data_t data = {
-        .type = {
-            .base_type = TYPE_BITFIELD,
-            .dim = {1},
-        },
-    };
+    md_exp_bitfield_t bf = {0};
+    md_bitfield_init(&bf, alloc);
 
-    allocate_data(&data, mol.atom.count, alloc);
-    md_bitfield_t bf = as_bitfield(data);
     bool result = eval_selection(&bf, make_cstr("atom(1:20) and element('O') in chain(:)"), &mol);
+    EXPECT_TRUE(result);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -199,16 +204,16 @@ UTEST(script, property_compute) {
     md_allocator_i* alloc = default_allocator;
     const str_t pdb_file = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
-    struct md_pdb_data pdb_data = {0};
+    md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(pdb_file, &pdb_data, alloc));
 
-    struct md_molecule mol = {0};
+    md_molecule_t mol = {0};
     ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
 
-    struct md_trajectory traj = {0};
+    md_trajectory_i traj = {0};
     ASSERT_TRUE(md_pdb_trajectory_open(&traj, pdb_file, alloc));
 
-    struct md_script_ir ir = {0};
+    md_script_ir_t ir = {0};
     md_script_eval_result_t eval = {0};
     {
         md_script_ir_compile_args_t compile_args = {
@@ -228,10 +233,6 @@ UTEST(script, property_compute) {
         ASSERT_TRUE(md_script_eval(&eval, eval_args));
 
         EXPECT_EQ(eval.num_properties, 1);
-        const md_script_property_t* props = eval.properties;
-
-        //EXPECT_EQ(props->data.num_values, traj_header.num_frames);
-
     }
 
     {

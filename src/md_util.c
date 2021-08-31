@@ -6,6 +6,9 @@
 #include <core/md_array.inl>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
+#include <core/md_simd.h>
+
+#include <ext/svd3/svd3.h>
 
 #include <md_trajectory.h>
 
@@ -128,9 +131,9 @@ bool md_util_is_resname_amino_acid(str_t str) {
     return match_str_in_array(str, amino_acids, ARRAY_SIZE(amino_acids)) != -1;
 }
 
-md_element md_util_lookup_element(str_t str) {
+md_element_t md_util_lookup_element(str_t str) {
     if (str.len == 1 || str.len == 2) {
-        for (md_element i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
+        for (md_element_t i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
             str_t sym = element_symbols[i];
             if (compare_str(str, sym)) return i;
         }
@@ -138,9 +141,9 @@ md_element md_util_lookup_element(str_t str) {
     return 0;
 }
 
-static inline md_element lookup_element_ignore_case(str_t str) {
+static inline md_element_t lookup_element_ignore_case(str_t str) {
     if (str.len == 1 || str.len == 2) {
-        for (md_element i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
+        for (md_element_t i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
             str_t sym = element_symbols[i];
             if (str.len == sym.len) {
                 if (str.len == 1) {
@@ -154,7 +157,7 @@ static inline md_element lookup_element_ignore_case(str_t str) {
     return 0;
 }
 
-md_element md_util_decode_element(str_t atom_name, str_t res_name) {
+md_element_t md_util_decode_element(str_t atom_name, str_t res_name) {
     if (!atom_name.ptr || !atom_name.len) return 0;
     if (!res_name.ptr  || !res_name.len) return 0;
 
@@ -185,7 +188,7 @@ md_element md_util_decode_element(str_t atom_name, str_t res_name) {
             // Try to match against several characters but ignore the case
             if (str.len > 1) {
                 str.len = 2;
-                md_element elem = lookup_element_ignore_case(str);
+                md_element_t elem = lookup_element_ignore_case(str);
                 if (elem) return elem;
             }
 
@@ -198,32 +201,32 @@ md_element md_util_decode_element(str_t atom_name, str_t res_name) {
     return 0;
 }
 
-str_t md_util_element_symbol(md_element element) {
+str_t md_util_element_symbol(md_element_t element) {
     ASSERT(element < Num_Elements);
     return element_symbols[element];
 }
 
-str_t md_util_element_name(md_element element) {
+str_t md_util_element_name(md_element_t element) {
     ASSERT(element < Num_Elements);
     return element_names[element];
 }
 
-float md_util_element_vdw_radius(md_element element) {
+float md_util_element_vdw_radius(md_element_t element) {
     ASSERT(element < Num_Elements);
     return element_vdw_radii[element];
 }
 
-float md_util_element_covalent_radius(md_element element) {
+float md_util_element_covalent_radius(md_element_t element) {
     ASSERT(element < Num_Elements);
     return element_covalent_radii[element];
 }
 
-float md_util_element_atomic_mass(md_element element) {
+float md_util_element_atomic_mass(md_element_t element) {
     ASSERT(element < Num_Elements);
     return element_atomic_mass[element];
 }
 
-uint32_t md_util_element_cpk_color(md_element element) {
+uint32_t md_util_element_cpk_color(md_element_t element) {
     ASSERT(element < Num_Elements);
     return element_cpk_colors[element];
 }
@@ -242,9 +245,9 @@ static inline bool cmp2(const char* str, const char* ref) {
     return str[0] == ref[0] && str[1] == ref[1] && str[2] == '\0';
 }
 
-static inline bool extract_backbone_atoms(md_backbone_atoms* backbone_atoms, const char** atom_names, md_range atom_range) {
+static inline bool extract_backbone_atoms(md_backbone_atoms_t* backbone_atoms, const char** atom_names, md_range_t atom_range) {
     uint32_t bits = 0;
-    md_backbone_atoms bb = {0};
+    md_backbone_atoms_t bb = {0};
     for (int32_t i = atom_range.beg; i < atom_range.end; ++i) {
         if (!(bits & 1) && cmp1(atom_names[i], "N"))  { bb.n  = i; bits |= 1;  continue; }
         if (!(bits & 2) && cmp2(atom_names[i], "CA")) { bb.ca = i; bits |= 2;  continue; }
@@ -264,10 +267,10 @@ static inline bool extract_backbone_atoms(md_backbone_atoms* backbone_atoms, con
 }
 
 
-bool md_util_extract_backbone_atoms(md_backbone_atoms backbone_atoms[], int64_t capacity, const md_util_backbone_args_t* args) {
+bool md_util_extract_backbone_atoms(md_backbone_atoms_t backbone_atoms[], int64_t capacity, const md_util_backbone_args_t* args) {
     ASSERT(backbone_atoms);
     ASSERT(args);
-    memset(backbone_atoms, 0, args->residue.count * sizeof(md_backbone_atoms));
+    memset(backbone_atoms, 0, args->residue.count * sizeof(md_backbone_atoms_t));
     bool result = true;
     for (uint32_t i = 0; i < args->residue.count; ++i) {
         ASSERT(i <= capacity);
@@ -279,7 +282,7 @@ bool md_util_extract_backbone_atoms(md_backbone_atoms backbone_atoms[], int64_t 
     return result;
 }
 
-static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args_t* args, md_range bb_range, int i, const float distances[3], float delta) {
+static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args_t* args, md_range_t bb_range, int i, const float distances[3], float delta) {
     for (int j = MAX((int)bb_range.beg, i - 2); j <= i; ++j) {
         for (int k = 2; k < 5; ++k) {
             if (j + k >= (int)bb_range.end) continue;
@@ -296,13 +299,13 @@ static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args_t* a
     return true;
 }
 
-static inline bool is_helical(const md_util_secondary_structure_args_t* args, md_range res_range, int i) {
+static inline bool is_helical(const md_util_secondary_structure_args_t* args, md_range_t res_range, int i) {
     const float distances[] = { 5.45f, 5.18f, 6.37f };
     const float delta = 2.1f;
     return zhang_skolnick_ss(args, res_range, i, distances, delta);
 }
 
-static inline bool is_sheet(const md_util_secondary_structure_args_t* args, md_range res_range, int i) {
+static inline bool is_sheet(const md_util_secondary_structure_args_t* args, md_range_t res_range, int i) {
     const float distances[] = { 6.1f, 10.4f, 13.0f };
     const float delta = 1.42f;
     return zhang_skolnick_ss(args, res_range, i, distances, delta);
@@ -310,7 +313,7 @@ static inline bool is_sheet(const md_util_secondary_structure_args_t* args, md_r
 
 // TM-align: a protein structure alignment algorithm based on the Tm-score
 // doi:10.1093/nar/gki524
-bool md_util_compute_secondary_structure(md_secondary_structure secondary_structure[], int64_t capacity, const md_util_secondary_structure_args_t* args) {
+bool md_util_compute_secondary_structure(md_secondary_structure_t secondary_structure[], int64_t capacity, const md_util_secondary_structure_args_t* args) {
     ASSERT(args);
     ASSERT(args->atom.x);
     ASSERT(args->atom.y);
@@ -320,17 +323,17 @@ bool md_util_compute_secondary_structure(md_secondary_structure secondary_struct
     ASSERT(secondary_structure);
 
     for (int64_t chain_idx = 0; chain_idx < args->chain.count; ++chain_idx) {
-        const md_range range = args->chain.backbone_range[chain_idx];
+        const md_range_t range = args->chain.backbone_range[chain_idx];
         ASSERT(range.end <= capacity);
 
         if (range.end - range.beg < 4) {
-            memset(secondary_structure + range.beg, 0, (range.end - range.beg) * sizeof(md_secondary_structure));
+            memset(secondary_structure + range.beg, 0, (range.end - range.beg) * sizeof(md_secondary_structure_t));
             continue;
         }
 
         // Classify residues
         for (int32_t i = range.beg; i < range.end; ++i) {
-            md_secondary_structure ss = MD_SECONDARY_STRUCTURE_COIL;
+            md_secondary_structure_t ss = MD_SECONDARY_STRUCTURE_COIL;
             if (is_sheet(args, range, i)) {
                 ss = MD_SECONDARY_STRUCTURE_SHEET;
             }
@@ -341,7 +344,7 @@ bool md_util_compute_secondary_structure(md_secondary_structure secondary_struct
         }
 
         // Set squished isolated structures to the surrounding (only for sheets and helices)
-        md_secondary_structure* ss = secondary_structure;
+        md_secondary_structure_t* ss = secondary_structure;
         for (int64_t i = range.beg + 1; i < range.end - 1; ++i) {
             if (ss[i-1] != MD_SECONDARY_STRUCTURE_COIL && ss[i] != ss[i-1] && ss[i-1] == ss[i+1]) ss[i] = ss[i-1];
         }
@@ -366,7 +369,7 @@ static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
     return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
 }
 
-bool md_util_compute_backbone_angles(md_backbone_angles backbone_angles[], int64_t capacity, const md_util_backbone_angle_args_t* args) {
+bool md_util_compute_backbone_angles(md_backbone_angles_t backbone_angles[], int64_t capacity, const md_util_backbone_angle_args_t* args) {
     ASSERT(args);
     ASSERT(args->atom.x);
     ASSERT(args->atom.y);
@@ -375,13 +378,13 @@ bool md_util_compute_backbone_angles(md_backbone_angles backbone_angles[], int64
     ASSERT(args->chain.backbone_range);
     ASSERT(backbone_angles);
 
-    memset(backbone_angles, 0, sizeof(md_backbone_angles) * args->backbone.count);
+    memset(backbone_angles, 0, sizeof(md_backbone_angles_t) * args->backbone.count);
     for (int64_t chain_idx = 0; chain_idx < args->chain.count; ++chain_idx) {
-        const md_range range = args->chain.backbone_range[chain_idx];
+        const md_range_t range = args->chain.backbone_range[chain_idx];
         ASSERT(range.end <= capacity);
 
         if (range.end - range.beg < 4) {
-            memset(backbone_angles + range.beg, 0, (range.end - range.beg) * sizeof(md_backbone_angles));
+            memset(backbone_angles + range.beg, 0, (range.end - range.beg) * sizeof(md_backbone_angles_t));
             continue;
         }
 
@@ -399,7 +402,7 @@ bool md_util_compute_backbone_angles(md_backbone_angles backbone_angles[], int64
     return true;
 }
 
-static inline bool covelent_bond_heuristic(float x0, float y0, float z0, md_element e0, float x1, float y1, float z1, md_element e1) {
+static inline bool covelent_bond_heuristic(float x0, float y0, float z0, md_element_t e0, float x1, float y1, float z1, md_element_t e1) {
     ASSERT(e0 < Num_Elements);
     ASSERT(e1 < Num_Elements);
     const float d = element_covalent_radii[e0] + element_covalent_radii[e1];
@@ -409,8 +412,8 @@ static inline bool covelent_bond_heuristic(float x0, float y0, float z0, md_elem
     return (d_min * d_min) < d2 && d2 < (d_max * d_max);
 }
 
-md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args, struct md_allocator* alloc) {
-    md_bond* bonds = 0;
+md_bond_t* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args, struct md_allocator_i* alloc) {
+    md_bond_t* bonds = 0;
 
     for (int64_t ri = 0; ri < args->residue.count; ++ri) {
         const int64_t pre_internal_bond_count = md_array_size(bonds);
@@ -420,7 +423,7 @@ md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args
             for (int64_t j = i + 1; j < args->residue.atom_range[ri].end; ++j) {
                 if (covelent_bond_heuristic(args->atom.x[i], args->atom.y[i], args->atom.z[i], args->atom.element[i],
                                             args->atom.x[j], args->atom.y[j], args->atom.z[j], args->atom.element[j])) {
-                    md_bond bond = {(int32_t)i, (int32_t)j};
+                    md_bond_t bond = {(int32_t)i, (int32_t)j};
                     md_array_push(bonds, bond, alloc);
                 }
             }
@@ -440,7 +443,7 @@ md_bond* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args
                 for (int64_t j = args->residue.atom_range[rj].beg; j < args->residue.atom_range[rj].end; ++j) {
                     if (covelent_bond_heuristic(args->atom.x[i], args->atom.y[i], args->atom.z[i], args->atom.element[i],
                         args->atom.x[j], args->atom.y[j], args->atom.z[j], args->atom.element[j])) {
-                        md_bond bond = {(int32_t)i, (int32_t)j};
+                        md_bond_t bond = {(int32_t)i, (int32_t)j};
                         md_array_push(bonds, bond, alloc);
                     }
                 }
@@ -471,11 +474,11 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     ASSERT(args.residue.atom_range);
 
     // @TODO: Assert that the box is orthogonal?
-    ASSERT(args.pbc.box->basis[0][0] > 0.0f);
-    ASSERT(args.pbc.box->basis[1][1] > 0.0f);
-    ASSERT(args.pbc.box->basis[2][2] > 0.0f);
+    ASSERT(args.pbc.box[0][0] > 0.0f);
+    ASSERT(args.pbc.box[1][1] > 0.0f);
+    ASSERT(args.pbc.box[2][2] > 0.0f);
 
-    vec3_t ext = {args.pbc.box->basis[0][0], args.pbc.box->basis[1][1], args.pbc.box->basis[2][2]};
+    vec3_t ext = {args.pbc.box[0][0], args.pbc.box[1][1], args.pbc.box[2][2]};
     vec3_t half_ext = vec3_mul_f(ext, 0.5f);
 
     vec3_t* residue_com = 0;
@@ -484,7 +487,7 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     }
     
     for (int64_t i = 0; i < args.residue.count; ++i) {
-        md_range atom_range = args.residue.atom_range[i];
+        md_range_t atom_range = args.residue.atom_range[i];
         vec3_t sum_pos = {args.atom.x[atom_range.beg], args.atom.y[atom_range.beg], args.atom.z[atom_range.beg]};
         int32_t sum = 1;
         for (int64_t j = atom_range.beg + 1; j < atom_range.end; ++j) {
@@ -524,7 +527,7 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     }
 
     for (int64_t i = 0; i < args.chain.count; ++i) {
-        md_range res_range = args.chain.residue_range[i];
+        md_range_t res_range = args.chain.residue_range[i];
         vec3_t sum_pos = residue_com[res_range.beg];
         int32_t sum = 1;
         for (int64_t j = res_range.beg + 1; j < res_range.end; ++j) {
@@ -555,7 +558,7 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
             
             float d2 = vec3_dot(v,v);
             if (d2 > 0.0f) {
-                md_range atom_range = args.residue.atom_range[j];
+                md_range_t atom_range = args.residue.atom_range[j];
                 for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
                     out_x[k] += v.x;
                     out_y[k] += v.y;
@@ -566,6 +569,214 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     }
 
     return true;
+}
+
+vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
+    ASSERT(count > 0);
+
+    vec3_t res = {0,0,0};
+    if (w) {
+        vec3_t sum_pos = {0,0,0};
+        float  sum_w = 0;
+        for (int64_t i = 0; i < count; ++i) {
+            vec3_t pos = {x[i], y[i], z[i]};
+            sum_pos = vec3_add(sum_pos, vec3_mul_f(pos, w[i]));
+            sum_w += w[i];
+        }
+        res = vec3_div_f(sum_pos, sum_w);
+    } else {
+        vec3_t sum_pos = {0,0,0};
+        for (int64_t i = 0; i < count; ++i) {
+            vec3_t pos = {x[i], y[i], z[i]};
+            sum_pos = vec3_add(sum_pos, pos);
+        }
+        res = vec3_div_f(sum_pos, (float)count);
+    }
+
+    return res;
+}
+
+mat3_t md_util_compute_optimal_rotation(const float* x0, const float* y0, const float* z0, const float* x1, const float* y1, const float* z1, const float* w, int64_t count) {
+    ASSERT(x0 && y0 && z0);
+    ASSERT(x1 && y1 && z1);
+
+    if (count < 1) {
+        return mat3_ident();
+    }
+
+    vec3_t com0 = md_util_compute_com(x0, y0, z0, w, count);
+    vec3_t com1 = md_util_compute_com(x1, y1, z1, w, count);
+
+    mat3_t cov_mat = {0};
+
+    if (w) {
+        cov_mat = mat3_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, w, com0, com1, count);
+    } else {
+        cov_mat = mat3_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, com0, com1, count);
+    }
+
+    return mat3_extract_rotation(cov_mat);
+}
+
+double md_util_compute_rmsd(const float* x0, const float* y0, const float* z0, const float* x1, const float* y1, const float* z1, const float* w, int64_t count) {
+    vec3_t com0 = md_util_compute_com(x0, y0, z0, w, count);
+    vec3_t com1 = md_util_compute_com(x1, y1, z1, w, count);
+
+    mat3_t cov_mat = {0};
+    if (w) cov_mat = mat3_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, w, com0, com1, count);    
+    else   cov_mat = mat3_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, com0, com1, count);
+
+    mat3_t R = mat3_extract_rotation(cov_mat);
+
+    double d_sum = 0;
+    double w_sum = 0;
+    for (int64_t i = 0; i < count; ++i) {
+        vec3_t u = {x0[i] - com0.x, y0[i] - com0.y, z0[i] - com0.z};
+        vec3_t v = {x1[i] - com1.x, y1[i] - com1.y, z1[i] - com1.z};
+        vec3_t vp = mat3_mul_vec3(R, v);
+        vec3_t d = vec3_sub(u, vp);
+        float weight = w ? w[i] : 1.0f;
+        d_sum += weight * vec3_dot(d, d);
+        w_sum += weight;
+    }
+
+    return sqrt(d_sum / w_sum);
+}
+
+static inline md_simd_typef de_periodize(md_simd_typef pos, md_simd_typef ref_pos, md_simd_typef box_ext) {
+    md_simd_typef half_box = md_simd_mulf(box_ext, md_simd_set1f(0.5f));
+    md_simd_typef delta = md_simd_subf(pos, ref_pos);
+    md_simd_typef signed_mask = md_simd_mulf(md_simd_signf(delta), md_simd_stepf(half_box, md_simd_absf(delta)));
+    return md_simd_subf(pos, md_simd_mulf(box_ext, signed_mask));
+}
+
+static const float zero_box[3][3] = {0};
+
+void md_util_linear_interpolation(md_util_linear_interpolation_args_t args) {
+    bool use_pbc = memcmp(args.pbc.box, zero_box, sizeof(args.pbc.box)) != 0;
+
+    if (use_pbc) {
+        md_simd_typef box_ext_x = md_simd_set1f(args.pbc.box[0][0]);
+        md_simd_typef box_ext_y = md_simd_set1f(args.pbc.box[1][1]);
+        md_simd_typef box_ext_z = md_simd_set1f(args.pbc.box[2][2]);
+
+        for (int64_t i = 0; i < args.coord.count; i += md_simd_width) {
+            md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
+            md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
+            md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
+
+            md_simd_typef x1 = md_simd_loadf(args.coord.src[1].x + i);
+            md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
+            md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
+
+            x1 = de_periodize(x1, x0, box_ext_x);
+            y1 = de_periodize(y1, y0, box_ext_y);
+            z1 = de_periodize(z1, z0, box_ext_z);
+
+            md_simd_typef x = md_simd_lerpf(x0, x1, args.t);
+            md_simd_typef y = md_simd_lerpf(y0, y1, args.t);
+            md_simd_typef z = md_simd_lerpf(z0, z1, args.t);
+
+            md_simd_storef(args.coord.dst.x + i, x);
+            md_simd_storef(args.coord.dst.y + i, y);
+            md_simd_storef(args.coord.dst.z + i, z);
+        }
+    } else {
+        for (int64_t i = 0; i < args.coord.count; i += md_simd_width) {
+            md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
+            md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
+            md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
+
+            md_simd_typef x1 = md_simd_loadf(args.coord.src[1].x + i);
+            md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
+            md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
+
+            md_simd_typef x = md_simd_lerpf(x0, x1, args.t);
+            md_simd_typef y = md_simd_lerpf(y0, y1, args.t);
+            md_simd_typef z = md_simd_lerpf(z0, z1, args.t);
+
+            md_simd_storef(args.coord.dst.x + i, x);
+            md_simd_storef(args.coord.dst.y + i, y);
+            md_simd_storef(args.coord.dst.z + i, z);
+        }
+    }
+}
+
+void md_util_cubic_interpolation(md_util_cubic_interpolation_args_t args) {
+    bool use_pbc = memcmp(args.pbc.box, zero_box, sizeof(args.pbc.box)) != 0;
+
+    if (use_pbc) {
+        md_simd_typef box_ext_x = md_simd_set1f(args.pbc.box[0][0]);
+        md_simd_typef box_ext_y = md_simd_set1f(args.pbc.box[1][1]);
+        md_simd_typef box_ext_z = md_simd_set1f(args.pbc.box[2][2]);
+
+        for (int64_t i = 0; i < args.coord.count; i += md_simd_width) {
+            md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
+            md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
+            md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
+
+            md_simd_typef x1 = md_simd_loadf(args.coord.src[1].x + i);
+            md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
+            md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
+
+            md_simd_typef x2 = md_simd_loadf(args.coord.src[2].x + i);
+            md_simd_typef y2 = md_simd_loadf(args.coord.src[2].y + i);
+            md_simd_typef z2 = md_simd_loadf(args.coord.src[2].z + i);
+
+            md_simd_typef x3 = md_simd_loadf(args.coord.src[3].x + i);
+            md_simd_typef y3 = md_simd_loadf(args.coord.src[3].y + i);
+            md_simd_typef z3 = md_simd_loadf(args.coord.src[3].z + i);
+
+            x0 = de_periodize(x0, x1, box_ext_x);
+            x2 = de_periodize(x2, x1, box_ext_x);
+            x3 = de_periodize(x3, x2, box_ext_x);
+
+            y0 = de_periodize(y0, y1, box_ext_y);
+            y2 = de_periodize(y2, y1, box_ext_y);
+            y3 = de_periodize(y3, y2, box_ext_y);
+
+            z0 = de_periodize(z0, z1, box_ext_z);
+            z2 = de_periodize(z2, z1, box_ext_z);
+            z3 = de_periodize(z3, z2, box_ext_z);
+
+            md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, args.t, args.tension);
+            md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, args.t, args.tension);
+            md_simd_typef z = md_simd_cubic_splinef(z0, z1, z2, z3, args.t, args.tension);
+
+            md_simd_storef(args.coord.dst.x + i, x);
+            md_simd_storef(args.coord.dst.y + i, y);
+            md_simd_storef(args.coord.dst.z + i, z);
+        }
+    } else {
+        for (int64_t i = 0; i < args.coord.count; i += md_simd_width) {
+            md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
+            md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
+            md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
+
+            md_simd_typef x1 = md_simd_loadf(args.coord.src[1].x + i);
+            md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
+            md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
+
+            md_simd_typef x2 = md_simd_loadf(args.coord.src[2].x + i);
+            md_simd_typef y2 = md_simd_loadf(args.coord.src[2].y + i);
+            md_simd_typef z2 = md_simd_loadf(args.coord.src[2].z + i);
+
+            md_simd_typef x3 = md_simd_loadf(args.coord.src[3].x + i);
+            md_simd_typef y3 = md_simd_loadf(args.coord.src[3].y + i);
+            md_simd_typef z3 = md_simd_loadf(args.coord.src[3].z + i);
+
+            md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, args.t, args.tension);
+            md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, args.t, args.tension);
+            md_simd_typef z = md_simd_cubic_splinef(z0, z1, z2, z3, args.t, args.tension);
+
+            md_simd_storef(args.coord.dst.x + i, x);
+            md_simd_storef(args.coord.dst.y + i, y);
+            md_simd_storef(args.coord.dst.z + i, z);
+        }
+    }
 }
 
 #ifdef __cplusplus

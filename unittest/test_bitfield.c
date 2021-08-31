@@ -11,8 +11,7 @@ UTEST(bitfield, test) {
 
     md_exp_bitfield_t bf = {0};
     md_bitfield_init(&bf, alloc);
-
-    md_bitfield_set_range(&bf, 1000, 1100);
+    md_bitfield_set_range(&bf, 10000, 10100);
     EXPECT_EQ(md_bitfield_popcount(&bf), 100);
 
     md_bitfield_set_range(&bf, 500, 600);
@@ -110,8 +109,8 @@ UTEST(bitfield, test) {
         EXPECT_FALSE(md_bitfield_test_bit(&bf, i));
     }
 
-    md_bitfield_not(&bf, &mask, 0, 300);
-    EXPECT_EQ(md_bitfield_popcount(&bf), 200);
+    md_bitfield_not(&bf, &mask, 0, 1200);
+    EXPECT_EQ(md_bitfield_popcount(&bf), 1100);
 
     for (int64_t i = 0; i < 100; ++i) {
         EXPECT_TRUE(md_bitfield_test_bit(&bf, i));
@@ -119,9 +118,15 @@ UTEST(bitfield, test) {
     for (int64_t i = 100; i < 200; ++i) {
         EXPECT_FALSE(md_bitfield_test_bit(&bf, i));
     }
-    for (int64_t i = 200; i < 300; ++i) {
+    for (int64_t i = 200; i < 1200; ++i) {
         EXPECT_TRUE(md_bitfield_test_bit(&bf, i));
     }
+
+    md_bitfield_clear(&bf);
+    md_bitfield_set_range(&bf, 10000, 10001);
+    md_bitfield_not(&bf, &bf, 0, 12000);
+    int64_t count = md_bitfield_popcount(&bf);
+    EXPECT_EQ(count, 12000-1);
     
     md_bitfield_free(&mask);
     md_bitfield_free(&bf);

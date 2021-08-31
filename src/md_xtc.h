@@ -10,11 +10,11 @@
 extern "C" {
 #endif
 
-struct md_allocator;
-struct md_trajectory;
+struct md_allocator_i;
+struct md_trajectory_i;
 
-bool md_xtc_trajectory_open(struct md_trajectory* traj, str_t filename, struct md_allocator* alloc);
-bool md_xtc_trajectory_close(struct md_trajectory* traj);
+bool md_xtc_trajectory_open(struct md_trajectory_i* traj, str_t filename, struct md_allocator_i* alloc);
+bool md_xtc_trajectory_close(struct md_trajectory_i* traj);
 
 #ifdef __cplusplus
 }

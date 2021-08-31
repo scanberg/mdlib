@@ -17,7 +17,7 @@ typedef struct allocation {
 } allocation_t;
 
 typedef struct tracking {
-    struct md_allocator* backing;
+    struct md_allocator_i* backing;
     allocation_t* allocations;
     uint64_t magic;
 } tracking_t;
@@ -81,7 +81,7 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, uint64_t o
     }
 }
 
-struct md_allocator* md_tracking_allocator_create(struct md_allocator* backing) {
+struct md_allocator_i* md_tracking_allocator_create(struct md_allocator_i* backing) {
     ASSERT(backing);
     tracking_t* inst = (tracking_t*)md_alloc(backing, sizeof(tracking_t) + sizeof(md_allocator_i));
     inst->backing = backing;
@@ -95,7 +95,7 @@ struct md_allocator* md_tracking_allocator_create(struct md_allocator* backing) 
     return alloc;
 }
 
-void md_tracking_allocator_destroy(struct md_allocator* alloc) {
+void md_tracking_allocator_destroy(struct md_allocator_i* alloc) {
     ASSERT(alloc);
     ASSERT(alloc->inst);
     tracking_t* tracking = (tracking_t*)alloc->inst;

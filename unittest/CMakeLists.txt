@@ -11,6 +11,9 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intrinsics.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_script.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_pdb.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_xtc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_util.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/rmsd.c
   )
 
 # adapted from https://github.com/Kitware/CMake/blob/master/Modules/GoogleTest.cmake

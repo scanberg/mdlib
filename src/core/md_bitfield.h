@@ -2,20 +2,20 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef struct md_bitfield {
+typedef struct md_bitfield_t {
     uint64_t *bits;
     int64_t  num_bits;
 } md_bitfield_t;
 
-struct md_allocator;
+struct md_allocator_i;
 
-typedef struct md_exp_bitfield {
+typedef struct md_exp_bitfield_t {
     uint32_t magic;
     uint32_t flags;
     uint32_t beg_bit;
     uint32_t end_bit;
     void* bits;
-    struct md_allocator* alloc;
+    struct md_allocator_i* alloc;
 } md_exp_bitfield_t;
 
 #ifdef __cplusplus
@@ -25,8 +25,10 @@ extern "C" {
 // The bitfield type is a semi-dense bitfield which only needs to hold the range of bits which are set.
 // Because there is no explicit number of bits for the bitfield, some operations require explicit range parameters beg, end.
 
-void md_bitfield_init           (md_exp_bitfield_t* bf, struct md_allocator* alloc);
+void md_bitfield_init           (md_exp_bitfield_t* bf, struct md_allocator_i* alloc);
 bool md_bitfield_free           (md_exp_bitfield_t* bf);
+
+bool md_bitfield_empty          (const md_exp_bitfield_t* bf);
 
 void md_bitfield_set_range      (md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 void md_bitfield_set_bit        (md_exp_bitfield_t* bf, int64_t bit_idx);
@@ -45,6 +47,7 @@ void md_bitfield_copy           (md_exp_bitfield_t* dst, const md_exp_bitfield_t
 
 // Count number of bits set
 int64_t md_bitfield_popcount    (const md_exp_bitfield_t* bf);
+int64_t md_bitfield_popcount_range(const md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 
 // Test if single bit in field is set
 bool md_bitfield_test_bit   (const md_exp_bitfield_t* bf, int64_t idx);
@@ -66,8 +69,8 @@ bool md_bitfield_test_bit   (const md_exp_bitfield_t* bf, int64_t idx);
 
 int64_t md_bitfield_scan(const md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 
-// Extract the bitfield to a contigous byte array (md_array type)
-uint64_t* md_bitfield_to_array(const md_exp_bitfield_t* bf, int64_t beg, int64_t end, struct md_allocator* alloc);
+// Copy the contents of the bitfield into an external buffer
+bool md_bitfield_extract_u64(uint64_t* dst_ptr, int64_t num_bits, const md_exp_bitfield_t* src);
 
 //void md_bitfield_or            (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
 //void md_bitfield_or_range      (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b, int64_t beg, int64_t end);

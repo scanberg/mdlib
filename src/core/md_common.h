@@ -23,14 +23,31 @@
 #endif
 #endif
 
-#define internal static
+#if MD_COMPILER_MSVC
+#ifndef ALIGNAS
+#define ALIGNAS(x) __declspec(align(x))
+#endif
+#else
+#ifndef ALIGNAS
+#define ALIGNAS(x) __attribute__ ((aligned (x)))
+#endif
+#endif
 
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
+
+#define IS_ALIGNED(ptr, alignment) (((uintptr_t)ptr % alignment) == 0)
+#define NEXT_ALIGNED_ADRESS(ptr, alignment) ((char*)ptr + alignment - ((uint64_t)ptr & (alignment - 1)))
 
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define ABS(x) ((x) > 0 ? (x) : -(x))
 #define CLAMP(val, _min, _max) MIN(MAX(val, _min), _max)
+
+// Round up division
+#define DIV_UP(x, y) ((x + (y-1)) / y)
+
+// Rounds up x to nearest multiple of y
+#define ROUND_UP(x, y) (y * DIV_UP(x,y))
 
 #define DEG_TO_RAD(x) ((x)*(3.14159265 / 180.0))
 #define RAD_TO_DEG(x) ((x)*(180.0 / 3.14159265))

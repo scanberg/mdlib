@@ -103,7 +103,7 @@ int64_t md_file_tell(md_file_o* file) {
 #endif
 }
 
-bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin) {
+bool md_file_seek(md_file_o* file, int64_t col_beg, md_file_seek_origin_t origin) {
     ASSERT(file);
 #if MD_PLATFORM_WINDOWS
     int o = 0;
@@ -122,7 +122,7 @@ bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin)
         return false;
     }
 
-    return _fseeki64((FILE*)file, offset, o) == 0;
+    return _fseeki64((FILE*)file, col_beg, o) == 0;
 #else
     return fseeko((FILE*)file, offset, o) == 0;
 #endif

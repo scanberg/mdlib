@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-struct md_allocator;
+struct md_allocator_i;
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,8 +13,8 @@ extern "C" {
 // It internally allocates larger pages to restrict the strain on the backing allocator.
 // NOTE: YOU CAN ONLY ALLOCATE OBJECT_SIZE OR LESS FROM THIS ALLOCATOR, OTHERWISE ASSERTIONS WILL FIRE!
 
-struct md_allocator* md_pool_allocator_create(struct md_allocator* backing, uint32_t slot_size);
-void md_pool_allocator_destroy(struct md_allocator* a);
+struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, uint32_t slot_size);
+void md_pool_allocator_destroy(struct md_allocator_i* a);
 
 #ifdef __cplusplus
 }

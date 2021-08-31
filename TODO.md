@@ -12,11 +12,11 @@
     [ ] String builder
     [X] Tracking allocator for tracking allocations making sure things are freed properly
 
-### BITFIELD ###
+### BITFIELD / BITOP ###
     [ ] Core API changes
         [ ] Change interface from offset + length to beg + end
         [ ] Fix bit-scan
-    [/] Implement and mitigate to an opaque 'semisparse-bitfield' type
+    [X] Implement and mitigate to an opaque 'semisparse-bitfield' type
 
 ### MOLECULE + TRAJECTORY (1 Week) ###
     [X] Revise trajectory interface (implement in mdlib)
@@ -26,6 +26,7 @@
         [X] PDB
         [X] GRO
     [ ] Support negative speed for playback
+    [ ] Implement Frame offset caching for XTC (and PDB)
 
 ### Basic Script (--- Weeks) ### 
     [X] Tokenizer

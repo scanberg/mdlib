@@ -3,7 +3,7 @@
 #include <core/md_str.h>
 
 typedef struct md_file_o md_file_o;
-struct md_file_o;
+//struct md_file_o;
 
 typedef enum md_file_flags_t {
     MD_FILE_READ   = 1,

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-struct md_allocator;
+struct md_allocator_i;
 
 typedef struct str_t {
     const char* ptr;
@@ -63,13 +63,13 @@ static inline bool compare_str_cstr(str_t str, const char* cstr) {
     return cstr[str.len] == '\0';
 }
 
-static inline str_t substr(str_t str, int64_t offset, int64_t length) {
-    if (offset > str.len) {
+static inline str_t substr(str_t str, int64_t col_beg, int64_t length) {
+    if (col_beg > str.len) {
         str_t res = {0};
         return res;   
     }
-    if (offset + length > str.len) length = str.len - offset;
-    str.ptr = str.ptr + offset;
+    if (col_beg + length > str.len) length = str.len - col_beg;
+    str.ptr = str.ptr + col_beg;
     str.len = length;
     return str;
 }
@@ -88,10 +88,10 @@ int64_t parse_int(str_t str);
 
 // Will allocate one extra character for zero termination
 //str_t make_cstr(const char* str);
-str_t alloc_str(uint64_t len, struct md_allocator* alloc);
-void  free_str(str_t str, struct md_allocator* alloc);
-str_t copy_str(const str_t str, struct md_allocator* alloc);
-str_t load_textfile(str_t path, struct md_allocator* alloc);
+str_t alloc_str(uint64_t len, struct md_allocator_i* alloc);
+void  free_str(str_t str, struct md_allocator_i* alloc);
+str_t copy_str(const str_t str, struct md_allocator_i* alloc);
+str_t load_textfile(str_t path, struct md_allocator_i* alloc);
 
 // c:/folder/file.ext -> ext
 str_t extract_ext(str_t path);

@@ -6,23 +6,20 @@
 #define MAGIC_NUMBER 0xfdc1728d827856cb
 #define DEFAULT_ALIGNMENT (sizeof(void*)*2) // Should be 16 when compiled for x64
 
-typedef struct page_t page_t;
-typedef struct arena_t arena_t;
-
-struct page_t {
+typedef struct page_t {
     void* mem;
     uint64_t size;
     uint64_t curr; // current offset
-    page_t* next;
-};
+    struct page_t* next;
+} page_t;
 
-struct arena_t {
-    struct md_allocator* alloc;
+typedef struct arena_t {
+    struct md_allocator_i* alloc;
     page_t *base_page;
     page_t *curr_page;
     uint64_t default_page_size;
     uint64_t magic;
-};
+} arena_t;
 
 static inline void arena_reset(arena_t* arena) {
     page_t* p = arena->base_page;
@@ -71,10 +68,10 @@ static inline void* arena_alloc(arena_t* arena, uint64_t size) {
 
     const uint64_t addr = (uint64_t)p->mem + p->curr;
     const uint64_t mod = addr & (alignment - 1);      // modulo: addr % alignment, but fast for power of 2
-    const uint64_t curr = mod ? p->curr + alignment - mod : p->curr;
+    const uint64_t aligned_curr = mod ? p->curr + alignment - mod : p->curr;
 
-    p->curr = curr + size;
-    return (char*)p->mem + curr;
+    p->curr = aligned_curr + size;
+    return (char*)p->mem + aligned_curr;
 }
 
 static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
@@ -82,13 +79,18 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_
     (void)line;
     arena_t* arena = (arena_t*)inst;
     ASSERT(arena && arena->magic == MAGIC_NUMBER);
+
     if (new_size == 0) {
+        // Free
+        ASSERT(ptr);
+        ASSERT(old_size);
         return NULL;
     }
     if (ptr && old_size) {
-        int64_t diff = (int64_t)new_size - (int64_t)old_size;
-        if (ptr == (char*)arena->curr_page->mem + arena->curr_page->curr) {
+        // Realloc
+        if ((char*)ptr + old_size == (char*)arena->curr_page->mem + arena->curr_page->curr) {
             // This is the last allocation that occured, then we can shrink or grow that sucker
+            const int64_t diff = (int64_t)new_size - (int64_t)old_size;
             int64_t new_curr = (int64_t)arena->curr_page->curr + diff;
             ASSERT(new_curr > 0);
             if (new_curr < (int64_t)arena->curr_page->size) {
@@ -102,11 +104,12 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_
         return new_ptr;
     }
     else {
+        // Alloc
         return arena_alloc(arena, new_size);
     }
 }
 
-struct md_allocator* md_arena_allocator_create(struct md_allocator* backing, uint64_t page_size) {
+struct md_allocator_i* md_arena_allocator_create(struct md_allocator_i* backing, uint64_t page_size) {
     ASSERT(backing);
     arena_t* arena = (arena_t*)md_alloc(backing, sizeof(arena_t) + sizeof(md_allocator_i));
     arena->alloc = backing;
@@ -122,7 +125,7 @@ struct md_allocator* md_arena_allocator_create(struct md_allocator* backing, uin
     return arena_alloc;
 }
 
-void md_arena_allocator_reset(struct md_allocator* alloc) {
+void md_arena_allocator_reset(struct md_allocator_i* alloc) {
     ASSERT(alloc);
     ASSERT(alloc->inst);
     arena_t* arena = (arena_t*)alloc->inst;
@@ -130,7 +133,7 @@ void md_arena_allocator_reset(struct md_allocator* alloc) {
     arena_reset(arena);
 }
 
-void md_arena_allocator_destroy(struct md_allocator* alloc) {
+void md_arena_allocator_destroy(struct md_allocator_i* alloc) {
     ASSERT(alloc);
     ASSERT(alloc->inst);
     arena_t* arena = (arena_t*)alloc->inst;
