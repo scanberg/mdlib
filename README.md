@@ -1,5 +1,5 @@
 # MOLD
-Molecule Device
+Molecule Library of Doom
 
 Collection of molecule utility functions written in C
 
