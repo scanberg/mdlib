@@ -67,19 +67,19 @@ md_file_o* md_file_open(str_t filename, md_file_flags_t flags) {
     case MD_FILE_READ:
         mode = "r";
         break;
-    case (MD_FILE_READ & MD_FILE_BINARY):
+    case (MD_FILE_READ | MD_FILE_BINARY):
         mode = "rb";
         break;
     case MD_FILE_WRITE:
         mode = "w";
         break;
-    case (MD_FILE_WRITE & MD_FILE_BINARY):
+    case (MD_FILE_WRITE | MD_FILE_BINARY):
         mode = "wb";
         break;
     case MD_FILE_APPEND:
         mode = "a";
         break;
-    case (MD_FILE_APPEND & MD_FILE_BINARY):
+    case (MD_FILE_APPEND | MD_FILE_BINARY):
         mode = "ab";
         break;
     default:
@@ -87,7 +87,9 @@ md_file_o* md_file_open(str_t filename, md_file_flags_t flags) {
         return NULL;
     }
 
-    return (md_file_o*)fopen(filename, mode);
+    char file[1024] = {0};
+    strncpy(file, filename, ARRAY_SIZE(file)-1);
+    return (md_file_o*)fopen(file, mode);
 #endif
 }
 
@@ -99,13 +101,13 @@ int64_t md_file_tell(md_file_o* file) {
 #if MD_PLATFORM_WINDOWS
     return _ftelli64((FILE*)file);
 #else
-    return ftello(file->handle);
+    return ftello((FILE*)file);
 #endif
 }
 
 bool md_file_seek(md_file_o* file, int64_t col_beg, md_file_seek_origin_t origin) {
     ASSERT(file);
-#if MD_PLATFORM_WINDOWS
+
     int o = 0;
     switch(origin) {
     case MD_FILE_BEG:
@@ -122,6 +124,7 @@ bool md_file_seek(md_file_o* file, int64_t col_beg, md_file_seek_origin_t origin
         return false;
     }
 
+#if MD_PLATFORM_WINDOWS
     return _fseeki64((FILE*)file, col_beg, o) == 0;
 #else
     return fseeko((FILE*)file, offset, o) == 0;
