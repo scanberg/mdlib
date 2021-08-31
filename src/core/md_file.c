@@ -5,6 +5,8 @@
 #include "md_common.h"
 #include "md_log.h"
 
+#include <string.h>
+
 #if MD_PLATFORM_WINDOWS
 #ifndef VC_EXTRALEAN
 #define VC_EXTRALEAN
