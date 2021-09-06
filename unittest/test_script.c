@@ -33,7 +33,7 @@ static const char* c_id[] = {"A"};
 static md_range_t c_arange[] = {0,16};
 static md_range_t c_rrange[] = {0,4};
 
-md_molecule_t mol = {
+md_molecule_t test_mol = {
     .atom = {
         .count = ATOM_COUNT,
         .x = x,
@@ -102,28 +102,28 @@ static void print_bits(uint64_t* bits, uint64_t num_bits) {
 UTEST(script, basic_expressions) {
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, make_cstr("'this is a string'"), &mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, make_cstr("'this is a string'"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_STRING);
         EXPECT_STREQ(as_string(data).ptr, "this is a string");
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, make_cstr("2 + 5"), &mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, make_cstr("2 + 5"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_INT);
         EXPECT_EQ(as_int(data), 7);
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, make_cstr("2 + 5.0"), &mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, make_cstr("2 + 5.0"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
         EXPECT_EQ(as_float(data), 7.0);
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, make_cstr("{2,1} + {1,8}"), &mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, make_cstr("{2,1} + {1,8}"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_INT);
         EXPECT_EQ(data.type.dim[0], 2);
         EXPECT_EQ(as_int_arr(data)[0], 3);
@@ -136,7 +136,7 @@ UTEST(script, basic_expressions) {
 uint64_t ref = make_bits(ref_bit_str); \
 md_exp_bitfield_t bf = {0}; \
 md_bitfield_init(&bf, default_temp_allocator); \
-ASSERT_TRUE(eval_selection(&bf, make_cstr(expr), &mol)); \
+ASSERT_TRUE(eval_selection(&bf, make_cstr(expr), &test_mol)); \
 bool cmp_res = bit_cmp(bf.bits, &ref, 0, ATOM_COUNT); \
 EXPECT_TRUE(cmp_res); \
 if (!cmp_res) { \

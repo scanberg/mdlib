@@ -228,7 +228,7 @@ typedef struct eval_context {
     identifier_t* identifiers;          // Evaluated identifiers for references
                                       
     md_script_visualization_t* vis;  // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
-    md_script_sdf_metadata_t* sdf_meta;
+    md_script_sdf_meta_t* sdf_meta;
 
     struct {
         md_trajectory_frame_header_t* header;
@@ -1416,7 +1416,7 @@ static int print_type_info(char* buf, int buf_size, md_type_info_t info) {
     return result;
 }
 
-#define PRINT(fmt, ...) len += snprintf(buf + len, buf_size - len, fmt, __VA_ARGS__)
+#define PRINT(fmt, ...) len += snprintf(buf + len, buf_size - len, fmt, ##__VA_ARGS__)
 
 static int print_bitfield(char* buf, int buf_size, const md_exp_bitfield_t* bitfield) {
     ASSERT(bitfield);
@@ -3621,8 +3621,8 @@ static bool init_properties(md_script_property_t properties[], int64_t num_frame
         else if (is_volume_type(expr->node->data.type)) {
             prop.type = MD_SCRIPT_PROPERTY_TYPE_VOLUME;
             if (expr->node->flags & FLAG_SDF) {
-                prop.sdf_meta = md_alloc(alloc, sizeof(md_script_sdf_metadata_t));
-                memset(prop.sdf_meta, 0, sizeof(md_script_sdf_metadata_t));
+                prop.sdf_meta = md_alloc(alloc, sizeof(md_script_sdf_meta_t));
+                memset(prop.sdf_meta, 0, sizeof(md_script_sdf_meta_t));
             }
         }
         else {
@@ -3676,6 +3676,31 @@ static void compute_distribution(md_script_distribution_t* dist, const float* va
 }
 */
 
+static bool init_sdf_meta(md_script_sdf_meta_t* sdf_meta, ast_node_t* node, int64_t num_frames, eval_context_t* ctx) {
+    ASSERT(node && node->type == AST_ASSIGNMENT && md_array_size(node->children) == 2);
+    ASSERT(ctx->alloc);
+    // If we have sdf_meta, we want to allocate the internal data for it
+    // We do this by evaluating the node to get the count for the sdf meta.
+
+    // Just evaluate RHS of assignment
+    ctx->sdf_meta = sdf_meta;
+    evaluate_node(NULL, node->children[1], ctx);
+    ctx->sdf_meta = NULL;
+
+    /*
+    for (int64_t i = 0; i < sdf_meta->reference_structures.count; ++i) {
+        md_exp_bitfield_t bf = {0};
+        md_bitfield_init(&bf, ctx->alloc);
+        md_bitfield_copy(&bf, &ref_bitfields[i]);
+        md_array_push(ctx->sdf_meta->reference_structures.atom_masks, bf, ctx->alloc);
+
+        mat4_t* matrix_arr = 0;
+        md_array_grow(matrix_arr, )
+    }
+    */
+    return true;
+}
+
 static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, md_script_ir_o* ir) {
     ASSERT(mol);
     ASSERT(traj);
@@ -3697,8 +3722,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     const uint64_t STACK_RESET_POINT = md_stack_allocator_get_offset(&stack_alloc);
 
-    md_trajectory_frame_header_t init_header;
-    md_trajectory_frame_header_t curr_header;
+    md_trajectory_frame_header_t init_header = {0};
+    md_trajectory_frame_header_t curr_header = {0};
 
     float* init_x = init_coords + 0 * stride;
     float* init_y = init_coords + 1 * stride;
@@ -3718,7 +3743,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         .ir = ir,
         .mol = &mutable_mol,
         .temp_alloc = &temp_alloc,
-        .alloc = &temp_alloc,
+        .alloc = ir->arena,
         .initial_configuration = {
             .header = &init_header,
             .x = init_x,
@@ -3740,11 +3765,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     for (int64_t i = 0; i < num_props; ++i) {
         if (props[i].sdf_meta) {
-            // If we have sdf_meta, we want to allocate the internal data for it
-            ctx.sdf_meta = props[i].sdf_meta;
-            ASSERT(expr[i]->node && md_array_size(expr[i]->node->children) == 2);
-            evaluate_node(NULL, expr[i]->node->children[1], &ctx);
-            ctx.sdf_meta = NULL;
+            init_sdf_meta(props[i].sdf_meta, expr[i]->node, traj->num_frames, &ctx);
         }
     }
 
@@ -3930,7 +3951,7 @@ static md_script_ir_o* create_ir(md_allocator_i* alloc) {
     md_script_ir_o* ir = md_alloc(alloc, sizeof(md_script_ir_o));
     memset(ir, 0, sizeof(md_script_ir_o));
     ir->magic = SCRIPT_IR_MAGIC;
-    ir->arena = md_arena_allocator_create(alloc, KILOBYTES(16));
+    ir->arena = md_arena_allocator_create(alloc, MEGABYTES(1));
     
     return ir;
 }
@@ -4008,7 +4029,7 @@ bool md_script_ir_free(md_script_ir_t* ir) {
 static struct md_script_eval_o* create_eval(md_allocator_i* alloc) {
     md_script_eval_o* o = md_alloc(alloc, sizeof(md_script_eval_o));
     o->magic = SCRIPT_EVAL_MAGIC;
-    o->arena = md_arena_allocator_create(alloc, KILOBYTES(16));
+    o->arena = md_arena_allocator_create(alloc, MEGABYTES(1));
     o->properties = 0;
     return o;
 }
@@ -4123,7 +4144,7 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
     bool result = true;
 
     // We don't want to strain the default temporary allocator as we may allocate during evaluation.
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MEGABYTES(1));
     md_allocator_i* temp_alloc = alloc;
 
     md_script_ir_o* ir = create_ir(alloc);
@@ -4316,7 +4337,7 @@ bool md_script_tokens_init(md_script_tokens_t* tokens, const md_script_ir_t* ir,
         ASSERT(tokens->o->alloc);
         md_arena_allocator_reset(tokens->o->alloc);
     } else {
-        md_allocator_i* arena = md_arena_allocator_create(alloc, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+        md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
         tokens->o = md_alloc(arena, sizeof(md_script_tokens_o));
         memset(tokens->o, 0, sizeof(md_script_tokens_o));
         tokens->o->magic = TOK_MAGIC;
@@ -4385,7 +4406,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         ASSERT(vis->o->alloc);
         md_arena_allocator_reset(vis->o->alloc);
     } else {
-        md_allocator_i* arena = md_arena_allocator_create(args.alloc, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+        md_allocator_i* arena = md_arena_allocator_create(args.alloc, MEGABYTES(1));
         vis->o = md_alloc(arena, sizeof(md_script_visualization_o));
         memset(vis->o, 0, sizeof(md_script_visualization_o));
         vis->o->alloc = arena;

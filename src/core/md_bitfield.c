@@ -225,8 +225,8 @@ static inline bool validate_bitfield(const md_exp_bitfield_t* bf) {
 void md_bitfield_init(md_exp_bitfield_t* bf, struct md_allocator_i* alloc) {
     ASSERT(bf);
     ASSERT(alloc);
-    if (bf->bits != 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Initializing bitfield which is not zero, memory is potentially leaked here.");
+    if (bf->magic == MAGIC && bf->bits) {
+        md_bitfield_free(bf);
     }
     memset(bf, 0, sizeof(md_exp_bitfield_t));
     bf->magic = MAGIC;

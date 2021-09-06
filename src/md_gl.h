@@ -191,15 +191,15 @@ typedef struct md_gl_draw_args {
 
     const md_gl_rendertarget* render_target;     // [Optional] If NULL, then the global gl state of the viewport and framebuffer will be used
 
-    // If mol_mask is non-zero, the value is used as a mask and is ANDed with the atom flag of the molecule,
+    // If atom_mask is non-zero, the value is used as a mask and is ANDed with the atom flag of the molecule,
     // if the result after the operation is non-zero, the atom will be drawn.
     // Some representations (such as ribbons, cartoon) use spline segments derived from CA atoms, hide the CA atom => hide the segment
-    uint32_t mol_mask;
+    uint32_t atom_mask;
 
     md_gl_options options;
 } md_gl_draw_args_t;
 
-bool md_draw(md_gl_context* ctx, const md_gl_draw_args_t* args);
+bool md_gl_draw(md_gl_context* ctx, const md_gl_draw_args_t* args);
 
 #ifdef __cplusplus
 }

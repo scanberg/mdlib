@@ -6,6 +6,7 @@
 
 #include <core/md_str.h>
 #include <core/md_bitfield.h>
+#include <core/md_vec_math.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,7 +15,6 @@ extern "C" {
 struct md_molecule_t;
 struct md_trajectory_i;
 struct md_allocator_i;
-struct mat4_t;
 
 typedef enum md_script_unit_t {
     MD_SCRIPT_UNIT_NONE,
@@ -64,14 +64,14 @@ typedef struct md_script_property_data_t {
 
 // If we have a volume computed from a spatial distribution function, this will hold the metadata
 // Which is required to render the reference structures for the volume.
-typedef struct md_script_sdf_metadata_t {
+typedef struct md_script_sdf_meta_t {
     struct {
         int64_t count;
-        md_exp_bitfield_t* atoms;
-        struct mat4_t* model_to_volume_matrices;
+        md_exp_bitfield_t* atom_masks;
+        mat4_t** model_to_volume_matrices;
     } reference_structures;
     md_exp_bitfield_t* target_atoms;
-} md_script_sdf_metadata_t;
+} md_script_sdf_meta_t;
 
 typedef struct md_script_property_t {
     str_t ident;
@@ -79,7 +79,7 @@ typedef struct md_script_property_t {
     md_script_unit_t unit;
     int32_t dim[4];         // This gives the source data dimension
     md_script_property_data_t data;
-    md_script_sdf_metadata_t* sdf_meta; // This is only provided if the property involves a sdf computation
+    md_script_sdf_meta_t* sdf_meta; // This is only provided if the property involves a sdf computation
 } md_script_property_t;
 
 // Opaque container for the evaluation result

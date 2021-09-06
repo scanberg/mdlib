@@ -180,7 +180,7 @@ vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const
 // x1, y1, z1 -> position 1
 // w -> weight (is assumed to be constant)
 // count -> Length of all arrays
-mat3_t md_util_compute_optimal_rotation(const float* x0, const float* y0, const float* z0, const float* x1, const float* y1, const float* z1, const float* w, int64_t count);
+mat3_t md_util_compute_optimal_rotation(const float* x0, const float* y0, const float* z0, vec3_t com0, const float* x1, const float* y1, const float* z1, vec3_t com1, const float* w, int64_t count);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.

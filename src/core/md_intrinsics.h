@@ -8,6 +8,7 @@
 #include <stdbool.h>
 
 #if (MD_COMPILER_CLANG || MD_COMPILER_GCC)
+#include <x86intrin.h>
 
 // Population count: counts the number of bits set
 static inline uint32_t popcnt32(uint32_t x) {

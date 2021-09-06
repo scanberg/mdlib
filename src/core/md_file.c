@@ -18,6 +18,7 @@
 #endif
 
 #include <stdio.h>
+#include <string.h>
 
 #pragma warning(disable:4063) // combined flags not valid for switch of enum
 
@@ -25,7 +26,7 @@ struct md_file_o {
     FILE handle;
 };
 
-md_file_o* md_file_open(str_t filename, md_file_flags_t flags) {
+md_file_o* md_file_open(str_t filename, int flags) {
     if (!filename.ptr || !filename.len) return NULL;
 
 #if MD_PLATFORM_WINDOWS
@@ -90,7 +91,7 @@ md_file_o* md_file_open(str_t filename, md_file_flags_t flags) {
     }
 
     char file[1024] = {0};
-    strncpy(file, filename, ARRAY_SIZE(file)-1);
+    strncpy(file, filename.ptr, ARRAY_SIZE(file)-1);
     return (md_file_o*)fopen(file, mode);
 #endif
 }
@@ -107,7 +108,7 @@ int64_t md_file_tell(md_file_o* file) {
 #endif
 }
 
-bool md_file_seek(md_file_o* file, int64_t col_beg, md_file_seek_origin_t origin) {
+bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin) {
     ASSERT(file);
 
     int o = 0;
@@ -127,7 +128,7 @@ bool md_file_seek(md_file_o* file, int64_t col_beg, md_file_seek_origin_t origin
     }
 
 #if MD_PLATFORM_WINDOWS
-    return _fseeki64((FILE*)file, col_beg, o) == 0;
+    return _fseeki64((FILE*)file, offset, o) == 0;
 #else
     return fseeko((FILE*)file, offset, o) == 0;
 #endif

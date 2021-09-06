@@ -1,11 +1,16 @@
 #ifndef __MD_ARRAY_INL__
 #define __MD_ARRAY_INL__
 
-// THIS IS INSIRED BY OUR MACHINERYS IMPLEMENTATION OF MD ARRAY AT A PERVERTED LEVEL. 
+// THIS IS INSIRED BY OUR MACHINERY'S IMPLEMENTATION OF MD ARRAY AT A PERVERTED LEVEL. 
 // (https://ourmachinery.com)
 
 #include "md_allocator.h"
 #include "md_common.h"
+#include "md_compiler.h"
+
+#if MD_COMPILER_MSVC
+#pragma warning( disable : 6387 6011 )
+#endif
 
 #include <stdint.h>
 #include <string.h>
@@ -42,7 +47,7 @@ static inline void* md_array_set_capacity_internal(void* arr, int64_t new_cap, i
     const int64_t old_cap = md_array_capacity(arr);
     const int64_t bytes_before = arr ? item_size * old_cap + extra : 0;
     const int64_t bytes_after = new_cap ? item_size * new_cap + extra : 0;
-    if (p && !old_cap) {
+    if (p && old_cap == 0) {
         // This is to deal with the fact that an array can be statically allocated from the beginning and
         // would like to grow that sucker anyways. A statically allocated array will have capacity 0
         uint8_t* old_p = p;

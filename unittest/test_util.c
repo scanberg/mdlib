@@ -49,9 +49,11 @@ UTEST(util, rmsd) {
         xyz1[i * 3 + 2] = z1[i];
     }
 
+    // Reference
     double ref_rmsd;
     fast_rmsd((double(*)[3])xyz0, (double(*)[3])xyz1, (int)mol.atom.count, &ref_rmsd);
 
+    // Our implementation
     double rmsd = md_util_compute_rmsd(x0, y0, z0, x1, y1, z1, mol.atom.mass, mol.atom.count);
 
     md_pdb_molecule_free(&mol, alloc);

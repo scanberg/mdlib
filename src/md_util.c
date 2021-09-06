@@ -599,16 +599,13 @@ vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const
     return res;
 }
 
-mat3_t md_util_compute_optimal_rotation(const float* x0, const float* y0, const float* z0, const float* x1, const float* y1, const float* z1, const float* w, int64_t count) {
+mat3_t md_util_compute_optimal_rotation(const float* x0, const float* y0, const float* z0, vec3_t com0, const float* x1, const float* y1, const float* z1, vec3_t com1, const float* w, int64_t count) {
     ASSERT(x0 && y0 && z0);
     ASSERT(x1 && y1 && z1);
 
     if (count < 1) {
         return mat3_ident();
     }
-
-    vec3_t com0 = md_util_compute_com(x0, y0, z0, w, count);
-    vec3_t com1 = md_util_compute_com(x1, y1, z1, w, count);
 
     mat3_t cov_mat = {0};
 

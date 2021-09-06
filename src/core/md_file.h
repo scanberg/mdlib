@@ -18,7 +18,12 @@ typedef enum md_file_seek_origin_t {
     MD_FILE_END
 } md_file_seek_origin_t;
 
-md_file_o* md_file_open(str_t filename, md_file_flags_t access_flags);
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
+
+md_file_o* md_file_open(str_t filename, int file_access_flags);
 void md_file_close(md_file_o* file);
 
 int64_t md_file_tell(md_file_o* file);
@@ -27,3 +32,7 @@ int64_t md_file_size(md_file_o* file);
 
 int64_t md_file_read(md_file_o* file, void* ptr, int64_t num_bytes);
 int64_t md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes);
+
+#ifdef __cplusplus
+}
+#endif // __cplusplus

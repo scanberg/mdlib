@@ -4,11 +4,22 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifdef __cplusplus
+#define DEF_VAL(x) = x
+#else
+#define DEF_VAL(x)
+#endif
+
 struct md_allocator_i;
 
 typedef struct str_t {
     const char* ptr;
     int64_t     len;
+
+#ifdef __cplusplus
+    char operator[](int64_t idx)       { return ptr[idx]; }
+    char operator[](int64_t idx) const { return ptr[idx]; }
+#endif
 } str_t;
 
 #ifdef __cplusplus
@@ -23,7 +34,13 @@ strcpy(buffer,string "");}\
 while(0)
 #endif
 
-#define make_cstr(string) ((str_t) {.ptr = (string ""), .len = (sizeof(string)-1)})
+#ifdef __cplusplus
+#define make_cstr(string) {.ptr = (string ""), .len = (sizeof(string)-1)}
+#else
+#define make_cstr(string) (str_t){.ptr = (string ""), .len = (sizeof(string)-1)}
+#endif
+
+str_t str_from_cstr(const char* cstr);
 
 // Only for ASCII character set
 static inline int  char_to_digit(int c) { return c - '0'; }
@@ -55,6 +72,27 @@ static inline bool compare_str(const str_t str_a, const str_t str_b) {
     return true;
 }
 
+static inline bool compare_str_n(const str_t str_a, const str_t str_b, int64_t n) {
+    if (!str_a.ptr || !str_b.ptr) return false;
+    if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
+
+    // str_a & str_b have equal len.
+    n = n < str_a.len ? n : str_a.len;
+    for (int64_t i = 0; i < n; ++i) {
+        if (str_a.ptr[i] != str_b.ptr[i]) return false;
+    }
+    return true;
+}
+
+static inline bool compare_str_ignore_case(const str_t str_a, const str_t str_b) {
+    if (!str_a.ptr || !str_b.ptr) return false;
+    if (str_a.len != str_b.len) return false;
+    for (int64_t i = 0; i < str_a.len; ++i) {
+        if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
+    }
+    return true;
+}
+
 static inline bool compare_str_cstr(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
     for (int64_t i = 0; i < str.len; ++i) {
@@ -63,13 +101,32 @@ static inline bool compare_str_cstr(str_t str, const char* cstr) {
     return cstr[str.len] == '\0';
 }
 
-static inline str_t substr(str_t str, int64_t col_beg, int64_t length) {
-    if (col_beg > str.len) {
+// Compare str and cstr only up to n characters
+static inline bool compare_str_cstr_n(str_t str, const char* cstr, int64_t n) {
+    if (n < 0) return false;
+    if (!str.ptr || !str.len || !cstr) return false;
+    n = n < str.len ? n : str.len;
+    for (int64_t i = 0; i < n; ++i) {
+        if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
+    }
+    return true;
+}
+
+static inline bool compare_str_cstr_ignore_case(str_t str, const char* cstr) {
+    if (!str.ptr || !str.len || !cstr) return false;
+    for (int64_t i = 0; i < str.len; ++i) {
+        if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
+    }
+    return cstr[str.len] == '\0';
+}
+
+static inline str_t substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
+    if (offset > str.len) {
         str_t res = {0};
         return res;   
     }
-    if (col_beg + length > str.len) length = str.len - col_beg;
-    str.ptr = str.ptr + col_beg;
+    if (offset + length > str.len || length < 0) length = str.len - offset;
+    str.ptr = str.ptr + offset;
     str.len = length;
     return str;
 }
@@ -87,10 +144,9 @@ double parse_float(str_t str);
 int64_t parse_int(str_t str);
 
 // Will allocate one extra character for zero termination
-//str_t make_cstr(const char* str);
 str_t alloc_str(uint64_t len, struct md_allocator_i* alloc);
 void  free_str(str_t str, struct md_allocator_i* alloc);
-str_t copy_str(const str_t str, struct md_allocator_i* alloc);
+str_t copy_str(str_t str, struct md_allocator_i* alloc);
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
 
 // c:/folder/file.ext -> ext
@@ -104,6 +160,27 @@ str_t extract_path_without_ext(str_t path);
 
 // c:/folder/file.ext -> c:/folder/
 str_t extract_path_without_file(str_t path);
+
+// Converts Windows backslashes '\\' to forward slashes '/'
+static inline void convert_backslashes(char* str, int64_t len) {
+    for (char* c = str; c != str + len; ++c) {
+        if (*c == '\\') *c = '/';
+    }
+}
+
+static inline void convert_to_lower(char* str, int64_t len) {
+    for (char* c = str; c != str + len; ++c) {
+        *c = (char)to_lower(*c);
+    }
+}
+
+static inline void convert_to_upper(char* str, int64_t len) {
+    for (char* c = str; c != str + len; ++c) {
+        *c = (char)to_upper(*c);
+    }
+}
+
+bool extract_next_token(str_t* tok, str_t* str, char delim);
 
 #ifdef __cplusplus
 }

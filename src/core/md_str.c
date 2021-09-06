@@ -7,6 +7,11 @@
 
 #include <string.h>
 
+str_t str_from_cstr(const char* cstr) {
+    str_t str = {cstr, strlen(cstr)};
+    return str;
+}
+
 bool skip_line(str_t* in_out_str) {
     ASSERT(in_out_str);
     const char* c = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
@@ -144,12 +149,6 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     return result;
 }
 
-/*
-str_t make_cstr(const char* str) {
-    return (str_t){str, strlen(str)};
-}
-*/
-
 str_t alloc_str(uint64_t len, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char* mem = md_alloc(alloc, len + 1);
@@ -181,7 +180,7 @@ str_t extract_ext(str_t path) {
     int64_t pos = rfind_char(path, '.');
 
     str_t res = {0};
-    if (pos) {
+    if (pos > -1) {
         pos += 1; // skip '.'
         res.ptr = path.ptr + pos;
         res.len = path.len - pos;
@@ -197,7 +196,7 @@ str_t extract_file(str_t path) {
     }
 
     str_t res = {0};
-    if (pos) {
+    if (pos != -1) {
         pos += 1; // skip slash or backslash
         res.ptr = path.ptr + pos;
         res.len = path.len - pos;
@@ -230,4 +229,24 @@ str_t extract_path_without_file(str_t path) {
         res.len = pos;
     }
     return res;
+}
+
+bool extract_next_token(str_t* tok, str_t* str, char delim) {
+    ASSERT(tok);
+    ASSERT(str);
+    if (!str->ptr || str->len == 0) return false;
+
+    const char* beg = str->ptr;
+    const char* end = str->ptr + str->len;
+    const char* c = str->ptr;
+    while (c != end && *c != delim) {
+        ++c;
+    }
+    tok->ptr = beg;
+    tok->len = c - beg;
+
+    str->ptr = c != end ? c + 1 : end;
+    str->len = end - str->ptr;
+
+    return true;
 }

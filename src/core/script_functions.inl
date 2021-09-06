@@ -495,7 +495,7 @@ static inline void visualize_atom_range(irange_t range, md_script_visualization_
     md_bitfield_set_range(&vis->atom_mask, range.beg, range.end);
 }
 
-static inline void visualize_atom_index(int index, md_script_visualization_t* vis) {
+static inline void visualize_atom_index(int64_t index, md_script_visualization_t* vis) {
     ASSERT(vis);
     ASSERT(vis->o->alloc);
     md_bitfield_set_bit(&vis->atom_mask, index);
@@ -2328,12 +2328,9 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         vec3_t com = md_util_compute_com(x,y,z,w, size);
 
-        vec3_t weighted_pos = {0};
-        float w_sum = 0;
-
         int64_t pos_pre_size = md_array_size(pos_arr);
-        for (int64_t i = 0; i < bit_count; ++i) {
-            vec3_t pos = {x[i], y[i], z[i]};
+        for (int64_t j = 0; j < bit_count; ++j) {
+            vec3_t pos = {x[j], y[j], z[j]};
             md_array_push(pos_arr, pos, ctx->temp_alloc);
         }
 
@@ -2663,7 +2660,7 @@ static inline void populate_volume(float* vol, mat4_t M, const float* x, const f
 
     for (int64_t i = 0; i < num_pos; ++i) {
         vec3_t p = {x[i], y[i], z[i]};
-        p = mat4_mul_vec3(M, p);
+        p = mat4_mul_vec3(M, p, 1);
         int cx = (int)p.x;
         int cy = (int)p.y;
         int cz = (int)p.z;
@@ -2745,8 +2742,13 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // Fetch target positions
         extract_xyz(target_x, target_y, target_z, ctx->current_configuration.x, ctx->current_configuration.y, ctx->current_configuration.z, target_bitfield);
 
+        const vec3_t ref_com0 = md_util_compute_com(ref_x0, ref_y0, ref_z0, ref_w, ref_size);
+
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
-        mat4_t A = mat4_ident();
+        mat3_t eigen_vecs;
+        vec3_t eigen_vals;
+        mat3_eigen(mat3_covariance_matrix(ref_x0, ref_y0, ref_z0, ref_com0, ref_size), eigen_vecs.col, eigen_vals.elem);
+        mat4_t A = mat4_from_mat3(eigen_vecs);
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
         mat4_t V = compute_volume_matrix(cutoff);
@@ -2756,11 +2758,17 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 1; i < num_ref_bitfields; ++i) {
             const md_exp_bitfield_t* bf = &ref_bitfields[i];
             extract_xyz(ref_x, ref_y, ref_z, ctx->current_configuration.x, ctx->current_configuration.y, ctx->current_configuration.z, bf);
-            vec3_t com = md_util_compute_com(ref_x, ref_y, ref_z, ref_w, ref_size);
-            mat3_t R = md_util_compute_optimal_rotation(ref_x0, ref_y0, ref_z0, ref_x, ref_y, ref_z, ref_w, ref_size);
-            mat4_t T = mat4_mul(mat4_from_mat3(R), mat4_translate(-com.x, -com.y, -com.z));
+            vec3_t ref_com = md_util_compute_com(ref_x, ref_y, ref_z, ref_w, ref_size);
+            mat3_t R = md_util_compute_optimal_rotation(ref_x0, ref_y0, ref_z0, ref_com0, ref_x, ref_y, ref_z, ref_com, ref_w, ref_size);
+            mat4_t T = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com.x, -ref_com.y, -ref_com.z));
             mat4_t M = mat4_mul(VA, T);
             populate_volume(vol, M, target_x, target_y, target_z, target_size);
+
+            if (ctx->sdf_meta) {
+                ASSERT(ctx->sdf_meta->reference_structures.model_to_volume_matrices);
+                ASSERT(ctx->sdf_meta->reference_structures.model_to_volume_matrices[i]);
+                md_array_push(ctx->sdf_meta->reference_structures.model_to_volume_matrices[i], M, ctx->alloc);
+            }
         }
 
         md_free(ctx->temp_alloc, mem, mem_size);
@@ -2788,6 +2796,10 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (target_bit_count <= 0) {
             create_error(ctx->ir, ctx->arg_tokens[1], "The supplied target bitfield is empty");
             return -1;
+        }
+
+        if (ctx->sdf_meta) {
+            ctx->sdf_meta->reference_structures.count = num_ref_bitfields;
         }
     }
 

@@ -1030,7 +1030,7 @@ static int compare_draw_rep(const void* elem1, const void* elem2) {
     return (r1->type - r2->type) * 2 + (int)(r1->mol - r2->mol);
 }
 
-bool md_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
+bool md_gl_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
     internal_ctx* ctx = (internal_ctx*)ext_ctx;
     if (!args) return false;
     bool err;
@@ -1069,7 +1069,7 @@ bool md_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
         extract_jitter_uv(&ubo_data.jitter_uv.x, ubo_data.view_transform.view_to_clip);
         extract_jitter_uv(&ubo_data.jitter_uv.z, *prev_view_to_clip);
     }
-    ubo_data.atom_mask = args->mol_mask;
+    ubo_data.atom_mask = args->atom_mask;
 
     gl_buffer_set_sub_data(ctx->ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx->ubo.id);

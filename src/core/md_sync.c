@@ -111,9 +111,9 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 
 #include <pthread.h>
 
-md_thread_t* md_thread_create(md_thread_func func, const char* name, void* user_data) {
+md_thread_t* md_thread_create(md_thread_func fn, const char* name, void* user_data) {
 	pthread_t thread;
-	pthread_create(&thread, NULL, (void* (*)(void*))fn, udata);
+	pthread_create(&thread, NULL, (void* (*)(void*))fn, user_data);
 #if MD_PLATFORM_OSX
 	if (name) pthread_setname_np(thread, name);
 #else
