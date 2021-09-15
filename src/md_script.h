@@ -15,6 +15,10 @@ extern "C" {
 struct md_molecule_t;
 struct md_trajectory_i;
 struct md_allocator_i;
+struct md_frame_cache_t;
+
+// This is represents something which can be visualized
+struct md_script_vis_token_t;
 
 typedef enum md_script_unit_t {
     MD_SCRIPT_UNIT_NONE,
@@ -32,6 +36,17 @@ typedef enum md_script_property_type_t {
 struct md_script_ir_o;
 struct md_script_eval_o;
 
+typedef struct md_script_token_t {
+    const struct md_script_vis_token_t* vis_token;
+
+    int32_t line;
+    int32_t col_beg;
+    int32_t col_end;
+    int32_t depth;
+
+    str_t text;
+} md_script_token_t;
+
 typedef struct md_script_error_t {
     // Data for indicating where the error occured within the script string
     int32_t line;      // Line number
@@ -48,38 +63,39 @@ typedef struct md_script_ir_t {
 
     int64_t num_errors;
     const md_script_error_t* errors;
+
+    int64_t num_tokens;
+    const md_script_token_t* tokens;
 } md_script_ir_t;
 
-typedef struct md_script_property_data_t {
+typedef struct md_script_property_data_aggregate_t {
     int64_t num_values;
-    float*  values;     // if the underlying type is an aggregation, this will be the mean
-    float*  variance;   // optional, only computed if the values are computed as an aggregate
+    float*  mean;       
+    float*  variance;
+} md_script_property_data_aggregate_t;
+
+typedef struct md_script_property_data_t {
+    int32_t dim[4];     // Dimension of values, they are exposed packed in a linear array
+
+    int64_t num_values; // Raw 1D length of values
+    float*  values;     // Raw linear access to values, check dim for the dimensions of the data
+
+    md_script_property_data_aggregate_t* aggregate; // optional, only computed if the values are computed as an aggregate
     
     float   min_value;
     float   max_value;
 
-    float   min_range[3];
-    float   max_range[3];
+    float   min_range[4];   // min range in each dimension
+    float   max_range[4];   // max range in each dimension
 } md_script_property_data_t;
-
-// If we have a volume computed from a spatial distribution function, this will hold the metadata
-// Which is required to render the reference structures for the volume.
-typedef struct md_script_sdf_meta_t {
-    struct {
-        int64_t count;
-        md_exp_bitfield_t* atom_masks;
-        mat4_t** model_to_volume_matrices;
-    } reference_structures;
-    md_exp_bitfield_t* target_atoms;
-} md_script_sdf_meta_t;
 
 typedef struct md_script_property_t {
     str_t ident;
     md_script_property_type_t type;
     md_script_unit_t unit;
-    int32_t dim[4];         // This gives the source data dimension
     md_script_property_data_t data;
-    md_script_sdf_meta_t* sdf_meta; // This is only provided if the property involves a sdf computation
+
+    const struct md_script_vis_token_t* vis_token;
 } md_script_property_t;
 
 // Opaque container for the evaluation result
@@ -106,6 +122,9 @@ typedef struct md_script_eval_args_t {
     const struct md_molecule_t* mol;
     const struct md_trajectory_i* traj;
 
+    // Optional, if this is set, this will be used to load trajectory frames
+    struct md_frame_cache_t* frame_cache;
+
     // Optional, set this mask to mask out which frames should be evaluated.
     md_bitfield_t* frame_mask;
 
@@ -116,25 +135,6 @@ bool md_script_eval(md_script_eval_result_t* result, md_script_eval_args_t args)
 bool md_script_eval_free(md_script_eval_result_t* result);
 
 // ### VISUALIZE ###
-
-typedef struct md_script_token_t {
-    const void* o;
-
-    int32_t line;
-    int32_t col_beg;
-    int32_t col_end;
-    int32_t depth;
-
-    str_t text;
-} md_script_token_t;
-
-struct md_script_tokens_o;
-typedef struct md_script_tokens_t {
-    struct md_script_tokens_o* o;
-
-    int64_t num_tokens;
-    md_script_token_t* tokens;
-} md_script_tokens_t;
 
 struct md_script_visualization_o;
 typedef struct md_script_visualization_t {
@@ -162,19 +162,30 @@ typedef struct md_script_visualization_t {
 
     struct {
         int64_t count;
-        float* pos_rad; // xyzr xyzr
+        float* pos_rad;     // xyzr xyzr
     } sphere;
+
+    // This is a bit of a shoe-horn case where we want to visualize the superimposed structures and the atoms involved
+    // in computing an SDF, therefore this requires transformation matrices as well as the involved structures
+    struct {
+        int64_t count;
+        mat4_t* matrices;
+        md_exp_bitfield_t* structures;
+        float extent;
+    } sdf;
 
     md_exp_bitfield_t atom_mask;
 } md_script_visualization_t;
 
-bool md_script_tokens_init(md_script_tokens_t* tokens, const struct md_script_ir_t* ir, struct md_allocator_i* alloc);
-bool md_script_tokens_free(md_script_tokens_t* tokens);
-
 typedef struct md_script_visualization_args_t {
-    const struct md_script_token_t* token;
+    const struct md_script_vis_token_t* token;
     const struct md_script_ir_t* ir;
     const struct md_molecule_t* mol;
+    const struct md_trajectory_i* traj;
+
+    // Optional, if this is set, this will be used to load trajectory frames
+    struct md_frame_cache_t* frame_cache;
+
     struct md_allocator_i* alloc;
 } md_script_visualization_args_t;
 

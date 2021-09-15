@@ -49,8 +49,8 @@
 // Rounds up x to nearest multiple of y
 #define ROUND_UP(x, y) (y * DIV_UP(x,y))
 
-#define DEG_TO_RAD(x) ((x)*(3.14159265 / 180.0))
-#define RAD_TO_DEG(x) ((x)*(180.0 / 3.14159265))
+#define DEG_TO_RAD(x) ((x)*(3.1415926535897932 / 180.0))
+#define RAD_TO_DEG(x) ((x)*(180.0 / 3.1415926535897932))
 
 #define KILOBYTES(x) (x * 1024LL)
 #define MEGABYTES(x) (x * 1024LL * 1024LL)

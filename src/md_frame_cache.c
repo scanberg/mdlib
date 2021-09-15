@@ -18,21 +18,26 @@ typedef struct md_slot_header_t {
     uint32_t access_count;
 } md_slot_header_t;
 
-void md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allocator_i* alloc, int64_t cache_byte_size) {
+void md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allocator_i* alloc, int64_t num_cached_frames) {
     ASSERT(cache);
     ASSERT(traj);
+    ASSERT(num_cached_frames >= 0);
+
+    if (num_cached_frames == 0) {
+        num_cached_frames = traj->num_frames;
+    }
 
     // We want to ensure that there are enough padding for each frame to avoid overlap if one wants to do full-width simd stores.
     const int64_t num_atoms = ROUND_UP(traj->num_atoms, md_simd_width); 
-    const int64_t bytes_per_frame = sizeof(md_mutex_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
-    const int64_t aligned_cache_byte_size = cache_byte_size - CACHE_MEM_ALIGNMENT;
-    const int64_t num_slots = (aligned_cache_byte_size / bytes_per_frame) - (aligned_cache_byte_size / bytes_per_frame) % CACHE_ASSOCIATIVITY; // This needs to be divisible by N for N-way associativity.
+    const int64_t bytes_per_frame = sizeof(md_semaphore_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
+    const int64_t num_slots = ROUND_UP(num_cached_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
 
+    cache->traj = traj;
     cache->mem_bytes = num_slots * bytes_per_frame;
-    cache->mem_ptr = md_alloc(alloc, num_slots * bytes_per_frame);
+    cache->mem_ptr = md_alloc(alloc, num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT);
     ASSERT(cache->mem_ptr);
     cache->slot.count  = num_slots;
-    cache->slot.lock   = (md_mutex_t*)NEXT_ALIGNED_ADRESS(cache->mem_ptr, CACHE_MEM_ALIGNMENT);
+    cache->slot.lock   = (md_semaphore_t*)NEXT_ALIGNED_ADRESS(cache->mem_ptr, CACHE_MEM_ALIGNMENT);
     cache->slot.header = (md_slot_header_t*)(cache->slot.lock + num_slots);
     cache->slot.data   = (md_frame_data_t*)(cache->slot.header + num_slots);
 
@@ -66,13 +71,36 @@ void md_frame_cache_free(md_frame_cache_t* cache) {
     memset(cache, 0, sizeof(md_frame_cache_t));
 }
 
-static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** slot_data, md_semaphore_t** slot_lock) {
+#include <stdio.h>
+
+static inline void md_frame_cache_aquire_frame_lock(struct md_frame_cache_lock_t* lock) {
+    ASSERT(lock);
+    bool success = md_semaphore_aquire((md_semaphore_t*)lock);
+#if 0
+    char buf[512] = {0};
+    md_thread_id_t id = md_thread_id();
+    snprintf(buf, 512, "thread-id: %llu", id);
+    md_printf(MD_LOG_TYPE_DEBUG, "AQUIRE LOCK \t%llu: %s", (uint64_t)lock, buf);
+#endif
+    ASSERT(success);
+}
+
+void md_frame_cache_release_frame_lock(struct md_frame_cache_lock_t* lock) {
+    ASSERT(lock);
+    bool success = md_semaphore_release((md_semaphore_t*)lock);
+#if 0
+    md_printf(MD_LOG_TYPE_DEBUG, "RELEASE\t%llu\n", (uint64_t)lock);
+#endif
+    ASSERT(success);
+}
+
+static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** slot_data, struct md_frame_cache_lock_t** slot_lock) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
-    ASSERT(frame_idx > 0);
+    ASSERT(frame_idx >= 0);
 
-    const int64_t start_slot = frame_idx % cache->slot.count;
+    const int64_t start_slot = ((frame_idx % cache->slot.count) / CACHE_ASSOCIATIVITY) * CACHE_ASSOCIATIVITY;
 
     int64_t slot_idx = -1;
     int64_t max_count_idx = -1;
@@ -92,14 +120,18 @@ static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_id
 
     bool found = slot_idx != -1;
 
-    if (!found) {
+    if (slot_idx == -1) {
         slot_idx = max_count_idx;
     }
 
-    ASSERT(slot_idx);
+    ASSERT(slot_idx != -1);
 
-    md_semaphore_aquire(&cache->slot.lock[slot_idx]);
-    *slot_lock = &cache->slot.lock[slot_idx];
+    md_frame_cache_aquire_frame_lock((struct md_frame_cache_lock_t*)&cache->slot.lock[slot_idx]);
+
+    cache->slot.header[slot_idx].access_count = 0;
+    cache->slot.header[slot_idx].frame_index = (uint32_t)frame_idx;
+
+    *slot_lock = (struct md_frame_cache_lock_t*)&cache->slot.lock[slot_idx];
     if (slot_data) *slot_data = &cache->slot.data[slot_idx];
 
     return found;
@@ -123,15 +155,15 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
     ASSERT(0 <= frame_idx && frame_idx < cache->traj->num_frames);
 
     md_frame_data_t* data = NULL;
-    md_mutex_t* mutex = NULL;
-    if (!find_frame_or_reserve_slot(cache, frame_idx, &data, &mutex)) {
+    struct md_frame_cache_lock_t* lock = NULL;
+    if (!find_frame_or_reserve_slot(cache, frame_idx, &data, &lock)) {
         load_frame_data(cache->traj, frame_idx, data);
     }
 
     bool result = false;
     if (x || y || z || box || timestamp) {
         ASSERT(data);
-        ASSERT(mutex);
+        ASSERT(lock);
 
         if (x)   memcpy(x,   data->x,   data->num_atoms * sizeof(float));
         if (y)   memcpy(y,   data->y,   data->num_atoms * sizeof(float));
@@ -142,7 +174,7 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
         result = true;
     }
 
-    md_mutex_unlock(mutex);
+    md_frame_cache_release_frame_lock(lock);
     return result;
 }
 
@@ -153,12 +185,47 @@ bool md_frame_cache_fetch_frame(md_frame_cache_t* cache, int64_t frame_idx, md_f
     ASSERT(0 <= frame_idx && frame_idx < cache->traj->num_frames);
 
     md_frame_data_t* data = NULL;
-    md_mutex_t* mutex = NULL;
-    if (!find_frame_or_reserve_slot(cache, frame_idx, NULL, &mutex)) {
-        if (load_fn)
-            load_fn(cache->traj, frame_idx, data, user_data);
-        else
-            load_frame_data(cache->traj, frame_idx, data);
+    struct md_frame_cache_lock_t* lock = NULL;
+    bool result = true;
+    if (find_frame_or_reserve_slot(cache, frame_idx, &data, &lock)) {
+        // Nothing to do here!
+        md_frame_cache_release_frame_lock(lock);
     }
-    return false;
+    else {
+        if (load_fn) {
+            load_fn(cache->traj, frame_idx, data, (struct md_frame_cache_lock_t*)lock, user_data);
+        }
+        else {
+            load_frame_data(cache->traj, frame_idx, data);
+            md_frame_cache_release_frame_lock(lock);
+        }
+    }
+    return result;
+}
+
+bool md_frame_cache_fetch_frame_range(md_frame_cache_t* cache, int64_t frame_beg_idx, int64_t frame_end_idx, md_frame_cache_load_frame_fn* load_fn, void* user_data) {
+    ASSERT(cache);
+    ASSERT(cache->magic == CACHE_MAGIC);
+    ASSERT(cache->traj);
+    ASSERT(0 <= frame_beg_idx && frame_end_idx <= cache->traj->num_frames);
+
+    md_frame_data_t* data = NULL;
+    struct md_frame_cache_lock_t* lock = NULL;
+    bool result = true;
+    for (int64_t i = frame_beg_idx; i < frame_end_idx; ++i) {
+        if (find_frame_or_reserve_slot(cache, i, &data, &lock)) {
+            // Nothing to do here!
+            md_frame_cache_release_frame_lock(lock);
+        }
+        else {
+            if (load_fn) {
+                load_fn(cache->traj, i, data, (struct md_frame_cache_lock_t*)lock, user_data);
+            }
+            else {
+                load_frame_data(cache->traj, i, data);
+                md_frame_cache_release_frame_lock(lock);
+            }
+        }
+    }
+    return result;
 }

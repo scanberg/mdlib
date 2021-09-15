@@ -25,13 +25,13 @@ typedef struct label {
 } label_t;
 
 // The opaque blob
-typedef struct pdb_molecule {
+typedef struct pdb_molecule_t {
     uint64_t magic;
     label_t* labels;
     md_allocator_i* allocator;
 } pdb_molecule_t;
 
-typedef struct pdb_trajectory {
+typedef struct pdb_trajectory_t {
     uint64_t magic;
     md_file_o* file;
     uint64_t filesize;
@@ -226,13 +226,13 @@ int64_t pdb_extract_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, 
         return 0;
     }
 
-    if (frame_idx < 0 || (int64_t)md_array_size(pdb->frame_offsets) <= frame_idx) {
+    if (!(0 <= frame_idx && frame_idx < (int64_t)md_array_size(pdb->frame_offsets) - 1)) {
         md_print(MD_LOG_TYPE_ERROR, "Frame index is out of range");
         return 0;
     }
 
-    const int64_t beg = pdb->frame_offsets[frame_idx];
-    const int64_t end = frame_idx + 1 < (int64_t)md_array_size(pdb->frame_offsets) ? pdb->frame_offsets[frame_idx + 1] : (int64_t)pdb->filesize;
+    const int64_t beg = pdb->frame_offsets[frame_idx + 0];
+    const int64_t end = pdb->frame_offsets[frame_idx + 1];
     const uint64_t frame_size = end - beg;
 
     if (frame_data_ptr) {
@@ -346,10 +346,12 @@ bool pdb_decode_frame_coords(struct md_trajectory_o* inst, const float* frame_da
         }
     }
 
+    /*
     if (i != num_coords) {
         md_printf(MD_LOG_TYPE_ERROR, "The number of coordinates read (%lli) is inconsistent from provided number of coordinates (%lli)", i, num_coords);
         return false;
     }
+    */
 
     return true;
 }
@@ -793,6 +795,7 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
         for (int64_t i = 0; i < data.num_models; ++i) {
             md_array_push(frame_offsets, data.models[i].byte_offset, alloc);
         }
+        md_array_push(frame_offsets, filesize, alloc);
 
         if (data.num_cryst1 > 0) {
             if (data.num_cryst1 > 1) {
@@ -809,6 +812,14 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
         // @TODO: Write data to cache
     }
 
+    int64_t max_frame_size = 0;
+    for (int64_t i = 0; i < md_array_size(frame_offsets) - 1; ++i) {
+        const int64_t beg = frame_offsets[i + 0];
+        const int64_t end = frame_offsets[i + 1];
+        const int64_t frame_size = end - beg;
+        max_frame_size = MAX(max_frame_size, frame_size);
+    }
+
     pdb_trajectory_t* pdb = md_alloc(alloc, sizeof(pdb_trajectory_t));
     ASSERT(pdb);
     memset(pdb, 0, sizeof(pdb_trajectory_t));
@@ -822,7 +833,8 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
 
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->num_atoms = num_atoms;
-    traj->num_frames = md_array_size(pdb->frame_offsets);
+    traj->num_frames = md_array_size(pdb->frame_offsets) - 1;
+    traj->max_frame_data_size = max_frame_size;
     traj->extract_frame_data = pdb_extract_frame_data;
     traj->decode_frame_header = pdb_decode_frame_header;
     traj->decode_frame_coords = pdb_decode_frame_coords;

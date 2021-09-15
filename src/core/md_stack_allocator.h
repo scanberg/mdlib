@@ -48,6 +48,7 @@ static inline void* md_stack_allocator_alloc(md_stack_allocator_t* stack_alloc, 
 static inline void md_stack_allocator_free(md_stack_allocator_t* stack_alloc, void* mem, uint64_t size) {
     ASSERT(stack_alloc);
     ASSERT(stack_alloc->magic == MD_STACK_ALLOCATOR_MAGIC);
+    (void)size;
 
     if (mem == stack_alloc->buf + stack_alloc->prev) {
         // compare against aligned size

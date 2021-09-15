@@ -1,5 +1,4 @@
-#ifndef _MD_PLATFORM_H_
-#define _MD_PLATFORM_H_
+#pragma once
 
 #define MD_PLATFORM_WINDOWS 0
 #define MD_PLATFORM_LINUX   0
@@ -19,6 +18,4 @@
     #define MD_PLATFORM_LINUX 1
 #else
     #error "Platform Unknown"
-#endif
-
 #endif

@@ -13,6 +13,8 @@ typedef struct page_t {
     void* mem;
 } page_t;
 
+// TODO:
+// We need a free list for pages, where we insert pages that have one or more available slots.
 typedef struct pool_t {
     uint64_t magic_number;
     uint64_t slot_size;
@@ -71,9 +73,9 @@ static void pool_free_slot(pool_t* pool, void* mem) {
     ASSERT(false); // failed to find page
 }
 
-static void pool_init(pool_t* pool, md_allocator_i* alloc, uint32_t slot_size) {
+static void pool_init(pool_t* pool, md_allocator_i* alloc, int64_t slot_size) {
     pool->magic_number = MAGIC_NUMBER;
-    pool->slot_size = slot_size;
+    pool->slot_size = (uint64_t)slot_size;
     pool->pages = NULL;
     pool->alloc = alloc;
     pool_new_page(pool);
@@ -104,7 +106,9 @@ static void* pool_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_s
     return pool_new_slot(pool, new_size);
 }
 
-struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, uint32_t slot_size) {
+struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, int64_t slot_size) {
+    ASSERT(backing);
+    ASSERT(slot_size > 0);
     uint64_t mem_size = sizeof(md_allocator_i) + sizeof(pool_t);
     void* mem = md_alloc(backing, mem_size);
     memset(mem, 0, mem_size);

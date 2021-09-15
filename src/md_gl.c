@@ -101,30 +101,30 @@ static inline uint32_t compute_mip_count(uint32_t width, uint32_t height) {
     return mips;
 }
 
-typedef struct gl_aabb {
+typedef struct gl_aabb_t {
     float min[3];
     float max[3];
-} gl_aabb;
+} gl_aabb_t;
 
-typedef struct gl_buffer {
+typedef struct gl_buffer_t {
     GLuint id;
-} gl_buffer;
+} gl_buffer_t;
 
-typedef struct gl_texture {
+typedef struct gl_texture_t {
     GLuint id;
-} gl_texture;
+} gl_texture_t;
 
-typedef struct gl_program {
+typedef struct gl_program_t {
     GLuint id;
-} gl_program;
+} gl_program_t;
 
-typedef struct gl_backbone_data {
+typedef struct gl_backbone_data_t {
     uint32_t residue_idx;               // @NOTE: the residue index which the backbone segment originates from
     uint32_t segment_idx;               // @NOTE: the segment index for the backbone, local to each chain -> 0 to N-1 where N is the number of residues per chain
     uint32_t ca_idx, c_idx, o_idx;
-} gl_backbone_data;
+} gl_backbone_data_t;
 
-typedef struct gl_control_point {
+typedef struct gl_control_point_t {
     float position[3];
     uint32_t atom_idx;
     float velocity[3];
@@ -133,9 +133,9 @@ typedef struct gl_control_point {
     uint8_t flags;                      // @NOTE: Bitfield for setting flags, bits: [0] beg_chain, [1] end_chain, [2] beg_secondary_structure, [3] end_secondary_structure
     int16_t support_vector[3];
     int16_t tangent_vector[3];
-} gl_control_point;
+} gl_control_point_t;
 
-typedef struct gl_view_transform {
+typedef struct gl_view_transform_t {
     mat4_t world_to_view;
     mat4_t world_to_view_normal;
     mat4_t world_to_clip;
@@ -144,38 +144,38 @@ typedef struct gl_view_transform {
     mat4_t clip_to_view;
     mat4_t prev_world_to_clip;
     mat4_t curr_view_to_prev_clip;
-} gl_view_transform;
+} gl_view_transform_t;
 
 // Shared ubo data for all shaders
-typedef struct gl_ubo_base {
-    gl_view_transform view_transform;
+typedef struct gl_ubo_base_t {
+    gl_view_transform_t view_transform;
     vec4_t jitter_uv;
     uint32_t atom_mask;
     uint32_t _pad[3];
-} gl_ubo_base;
+} gl_ubo_base_t;
 
-static const int ubo_base_size = sizeof(gl_ubo_base);
+static const int ubo_base_size = sizeof(gl_ubo_base_t);
 
-typedef uint32_t gl_version;
+typedef uint32_t gl_version_t;
 
-static const int control_point_size = sizeof(gl_control_point);
+static const int control_point_size = sizeof(gl_control_point_t);
 
-typedef struct internal_rep internal_rep;
-typedef struct internal_mol internal_mol;
-typedef struct internal_ctx internal_ctx;
+typedef struct internal_rep_t internal_rep_t;
+typedef struct internal_mol_t internal_mol_t;
+typedef struct internal_ctx_t internal_ctx_t;
 
-struct internal_rep {
-    const internal_mol* mol;
-    md_gl_representation_args  args;
-    md_gl_representation_type  type;
+struct internal_rep_t {
+    const internal_mol_t* mol;
+    md_gl_representation_args_t  args;
+    md_gl_representation_type_t  type;
     uint32_t            mol_version;
     
     //md_range_t visible_range;      // Minimal spanning visible range of atoms to draw
-    gl_buffer color;
+    gl_buffer_t color;
 };
 
-struct internal_mol {
-    gl_buffer buffer[GL_BUFFER_MOL_COUNT];
+struct internal_mol_t {
+    gl_buffer_t buffer[GL_BUFFER_MOL_COUNT];
     uint32_t version;
     uint32_t flags;
 
@@ -187,34 +187,34 @@ struct internal_mol {
     uint32_t backbone_spline_index_count;
 };
 
-struct internal_ctx {
+struct internal_ctx_t {
     struct {
-        gl_program space_fill[MAX_SHADER_PERMUTATIONS];
-        gl_program licorice[MAX_SHADER_PERMUTATIONS];
-        gl_program ribbons[MAX_SHADER_PERMUTATIONS];
-        gl_program cartoon[MAX_SHADER_PERMUTATIONS];
+        gl_program_t space_fill[MAX_SHADER_PERMUTATIONS];
+        gl_program_t licorice[MAX_SHADER_PERMUTATIONS];
+        gl_program_t ribbons[MAX_SHADER_PERMUTATIONS];
+        gl_program_t cartoon[MAX_SHADER_PERMUTATIONS];
     } permuted_program;
 
-    gl_program program[GL_PROGRAM_COUNT];
-    gl_texture texture[GL_TEXTURE_COUNT];
-    gl_buffer  ubo;
+    gl_program_t program[GL_PROGRAM_COUNT];
+    gl_texture_t texture[GL_TEXTURE_COUNT];
+    gl_buffer_t  ubo;
 
     GLuint vao;
     GLuint fbo[2];
 
-    gl_version version;
+    gl_version_t version;
 };
 
-static const int ctx_size = sizeof(struct internal_ctx);
-static const int mol_size = sizeof(struct internal_mol);
-static const int rep_size = sizeof(struct internal_rep);
+static const int ctx_size = sizeof(struct internal_ctx_t);
+static const int mol_size = sizeof(struct internal_mol_t);
+static const int rep_size = sizeof(struct internal_rep_t);
 
-STATIC_ASSERT(sizeof(internal_ctx) <= sizeof(md_gl_context), "internal draw ctx does not fit into containing structure");
-STATIC_ASSERT(sizeof(internal_mol) <= sizeof(md_gl_molecule), "internal draw mol does not fit into containing structure");
-STATIC_ASSERT(sizeof(internal_rep) <= sizeof(md_gl_representation), "internal draw rep does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_ctx_t) <= sizeof(md_gl_context_t), "internal draw ctx does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_mol_t) <= sizeof(md_gl_molecule_t), "internal draw mol does not fit into containing structure");
+STATIC_ASSERT(sizeof(internal_rep_t) <= sizeof(md_gl_representation_t), "internal draw rep does not fit into containing structure");
 
-static inline gl_buffer gl_buffer_create(uint32_t num_bytes, const void* data, GLenum usage_hint) {
-    gl_buffer buf = {0};
+static inline gl_buffer_t gl_buffer_create(uint32_t num_bytes, const void* data, GLenum usage_hint) {
+    gl_buffer_t buf = {0};
     glGenBuffers(1, &buf.id);
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
     glBufferData(GL_ARRAY_BUFFER, num_bytes, data, usage_hint);
@@ -222,7 +222,7 @@ static inline gl_buffer gl_buffer_create(uint32_t num_bytes, const void* data, G
     return buf;
 }
 
-static inline uint32_t gl_buffer_size(gl_buffer buf) {
+static inline uint32_t gl_buffer_size(gl_buffer_t buf) {
     GLint size;
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
     glGetBufferParameteriv(GL_ARRAY_BUFFER, GL_BUFFER_SIZE, &size);
@@ -230,7 +230,7 @@ static inline uint32_t gl_buffer_size(gl_buffer buf) {
     return (uint32_t)size;
 }
 
-static inline void gl_buffer_conditional_delete(gl_buffer* buf) {
+static inline void gl_buffer_conditional_delete(gl_buffer_t* buf) {
     if (buf->id) {
         GLuint id = buf->id;
         glDeleteBuffers(1, &id);
@@ -238,13 +238,13 @@ static inline void gl_buffer_conditional_delete(gl_buffer* buf) {
     }
 }
 
-static inline void gl_buffer_set_sub_data(gl_buffer buf, uint32_t byte_offset, uint32_t byte_size, const void* data) {
+static inline void gl_buffer_set_sub_data(gl_buffer_t buf, uint32_t byte_offset, uint32_t byte_size, const void* data) {
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
     glBufferSubData(GL_ARRAY_BUFFER, byte_offset, byte_size, data);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-static inline uint32_t gl_texture_width(gl_texture tex, uint32_t level) {
+static inline uint32_t gl_texture_width(gl_texture_t tex, uint32_t level) {
     GLint width;
     glBindTexture(GL_TEXTURE_2D, tex.id);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_WIDTH, &width);
@@ -252,7 +252,7 @@ static inline uint32_t gl_texture_width(gl_texture tex, uint32_t level) {
     return (uint32_t)width;
 }
 
-static inline uint32_t gl_texture_height(gl_texture tex, uint32_t level) {
+static inline uint32_t gl_texture_height(gl_texture_t tex, uint32_t level) {
     GLint height;
     glBindTexture(GL_TEXTURE_2D, tex.id);
     glGetTexLevelParameteriv(GL_TEXTURE_2D, level, GL_TEXTURE_HEIGHT, &height);
@@ -383,7 +383,7 @@ static bool link_program_transform_feedback(GLuint program, const GLuint shader[
     return true;
 }
 
-static inline bool validate_context(const internal_ctx* ctx) {
+static inline bool validate_context(const internal_ctx_t* ctx) {
     if (!ctx) {
         md_print(MD_LOG_TYPE_ERROR, "static context has not been initialized");
         return false;
@@ -395,9 +395,9 @@ static inline bool validate_context(const internal_ctx* ctx) {
     return true;
 }
 
-bool md_gl_molecule_set_atom_position(md_gl_molecule* ext_mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
+bool md_gl_molecule_set_atom_position(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
     if (ext_mol && x && y && z) {
-        internal_mol* mol = (internal_mol*)ext_mol;
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
             md_print(MD_LOG_TYPE_ERROR, "Molecule position buffer missing");
             return false;
@@ -428,9 +428,9 @@ bool md_gl_molecule_set_atom_position(md_gl_molecule* ext_mol, uint32_t offset, 
     return false;
 }
 
-bool md_gl_molecule_set_atom_radius(md_gl_molecule* ext_mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride) {
+bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride) {
     if (ext_mol && radius) {
-        internal_mol* mol = (internal_mol*)ext_mol;
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id) {
             md_print(MD_LOG_TYPE_ERROR, "Molecule radius buffer missing");
             return false;
@@ -464,9 +464,9 @@ bool md_gl_molecule_set_atom_radius(md_gl_molecule* ext_mol, uint32_t offset, ui
     return false;
 }
 
-bool md_gl_molecule_set_atom_flags(md_gl_molecule* ext_mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride) {
+bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride) {
     if (ext_mol && flags) {
-        internal_mol* mol = (internal_mol*)ext_mol;
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id) {
             md_print(MD_LOG_TYPE_ERROR, "Molecule flags buffer missing");
             return false;
@@ -500,9 +500,9 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule* ext_mol, uint32_t offset, uin
     return false;
 }
 
-bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule* ext_mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
+bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
     if (ext_mol && secondary_structure) {
-        internal_mol* mol = (internal_mol*)ext_mol;
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id) {
             md_print(MD_LOG_TYPE_ERROR, "Molecule secondary structure buffer missing");
             return false;
@@ -536,9 +536,9 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule* ext_mol, ui
     return false;
 }
 
-bool md_gl_molecule_update_atom_previous_position(md_gl_molecule* ext_mol) {
+bool md_gl_molecule_update_atom_previous_position(md_gl_molecule_t* ext_mol) {
     if (ext_mol) {
-        internal_mol* mol = (internal_mol*)ext_mol;
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
             return false;
         }
@@ -557,7 +557,7 @@ bool md_gl_molecule_update_atom_previous_position(md_gl_molecule* ext_mol) {
 }
 
 /*
-static bool md_update_visible_atom_color_range(internal_rep* rep) {
+static bool md_update_visible_atom_color_range(internal_rep_t* rep) {
     if (!rep) return md_gl_REPRESENTATION_INVALID;
     if (!rep->mol) return md_gl_MOLECULE_INVALID;
 
@@ -591,16 +591,16 @@ static bool md_update_visible_atom_color_range(internal_rep* rep) {
 }
 */
 
-bool md_gl_representation_set_type_and_args(md_gl_representation* ext_rep, md_gl_representation_type type, md_gl_representation_args args) {
-    internal_rep* rep = (internal_rep*)ext_rep;
+bool md_gl_representation_set_type_and_args(md_gl_representation_t* ext_rep, md_gl_representation_type_t type, md_gl_representation_args_t args) {
+    internal_rep_t* rep = (internal_rep_t*)ext_rep;
     rep->type = type;
     rep->args = args;
     return true;
 }
 
-bool md_gl_representation_set_color(md_gl_representation* ext_rep, uint32_t offset, uint32_t count, const uint32_t* color_data, uint32_t byte_stride) {
+bool md_gl_representation_set_color(md_gl_representation_t* ext_rep, uint32_t offset, uint32_t count, const uint32_t* color_data, uint32_t byte_stride) {
     if (ext_rep && color_data) {
-        internal_rep* rep = (internal_rep*)ext_rep;
+        internal_rep_t* rep = (internal_rep_t*)ext_rep;
         if (rep->mol && glIsBuffer(rep->color.id)) {
             if (offset + count > rep->mol->atom_count) {
                 md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
@@ -635,7 +635,7 @@ bool md_gl_representation_set_color(md_gl_representation* ext_rep, uint32_t offs
     return false;
 }
 
-bool create_permuted_program(gl_program* program_permutations, const char* vert_file, const char* geom_file, const char* frag_file) {
+bool create_permuted_program(gl_program_t* program_permutations, const char* vert_file, const char* geom_file, const char* frag_file) {
     GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
     GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
     GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
@@ -666,14 +666,14 @@ bool create_permuted_program(gl_program* program_permutations, const char* vert_
     return true;
 }
 
-bool md_gl_context_init(md_gl_context* ext_ctx) {
+bool md_gl_context_init(md_gl_context_t* ext_ctx) {
     if (!ext_ctx) {
         md_print(MD_LOG_TYPE_ERROR, "Supplied draw context is NULL");
         return false;
     }
 
-    internal_ctx* ctx = (internal_ctx*)ext_ctx;
-    memset(ctx, 0, sizeof(internal_ctx));
+    internal_ctx_t* ctx = (internal_ctx_t*)ext_ctx;
+    memset(ctx, 0, sizeof(internal_ctx_t));
 
     if (gl3wInit() != GL3W_OK) {
         md_print(MD_LOG_TYPE_ERROR, "Could not load OpenGL extensions");
@@ -770,7 +770,7 @@ bool md_gl_context_init(md_gl_context* ext_ctx) {
         GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
 
         char defines[32];
-        snprintf(defines, ARRAY_SIZE(defines), "#define NUM_SUBDIVISIONS %i", MD_SPLINE_MAX_SUBDIVISION_COUNT);
+        snprintf(defines, ARRAY_SIZE(defines), "#define NUM_SUBDIVISIONS %i", MD_GL_SPLINE_MAX_SUBDIVISION_COUNT);
 
         bool err;
         if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/compute_spline.vert", defines)) != true ||
@@ -791,9 +791,9 @@ bool md_gl_context_init(md_gl_context* ext_ctx) {
     return true;
 }
 
-bool md_gl_context_free(md_gl_context* ext_ctx) {
+bool md_gl_context_free(md_gl_context_t* ext_ctx) {
     if (ext_ctx) {
-        internal_ctx* ctx = (internal_ctx*)ext_ctx;
+        internal_ctx_t* ctx = (internal_ctx_t*)ext_ctx;
         if (ctx->vao) glDeleteVertexArrays(1, &ctx->vao);
         if (ctx->fbo[0]) glDeleteFramebuffers(2, ctx->fbo);
         if (ctx->ubo.id) glDeleteBuffers(1, &ctx->ubo.id);
@@ -809,7 +809,7 @@ bool md_gl_context_free(md_gl_context* ext_ctx) {
 }
 
 /*
-void md_gl_molecule_desc_extract(md_gl_molecule_desc* desc, const md_molecule* md_mol) {
+void md_gl_molecule_desc_extract(md_gl_molecule_desc_t* desc, const md_molecule* md_mol) {
     desc->atom.count     = md_mol->atom.count;
     desc->atom.x         = md_mol->atom.x;
     desc->atom.y         = md_mol->atom.y;
@@ -825,10 +825,10 @@ void md_gl_molecule_desc_extract(md_gl_molecule_desc* desc, const md_molecule* m
 }
 */
 
-bool md_gl_molecule_init(md_gl_molecule* ext_mol, const md_gl_molecule_desc* desc) {
+bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_gl_molecule_desc_t* desc) {
     if (ext_mol && desc) {
         md_gl_molecule_free(ext_mol);
-        internal_mol* mol = (internal_mol*)ext_mol;
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
 
         mol->atom_count = desc->atom.count;
         mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]      = gl_buffer_create(mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_DRAW);
@@ -857,7 +857,7 @@ bool md_gl_molecule_init(md_gl_molecule* ext_mol, const md_gl_molecule_desc* des
             for (uint32_t i = 0; i < desc->chain.count; ++i) {
                 uint32_t res_count = desc->chain.backbone_range[i].end - desc->chain.backbone_range[i].beg;
                 backbone_residue_count += res_count;
-                backbone_spline_count += (res_count - 1) * MD_SPLINE_MAX_SUBDIVISION_COUNT;
+                backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_MAX_SUBDIVISION_COUNT;
             }
 
             const uint32_t backbone_count                     = backbone_residue_count;
@@ -866,17 +866,17 @@ bool md_gl_molecule_init(md_gl_molecule* ext_mol, const md_gl_molecule_desc* des
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
             const uint32_t backbone_spline_index_count        = backbone_spline_count + desc->chain.count * (1); // primitive restart between each chain
 
-            mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data), NULL, GL_STATIC_DRAW);
+            mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t), NULL, GL_STATIC_DRAW);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t), NULL, GL_DYNAMIC_DRAW);
-            mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA]  = gl_buffer_create(backbone_control_point_data_count  * sizeof(gl_control_point), NULL, GL_DYNAMIC_COPY);
+            mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA]  = gl_buffer_create(backbone_control_point_data_count  * sizeof(gl_control_point_t), NULL, GL_DYNAMIC_COPY);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX] = gl_buffer_create(backbone_control_point_index_count * sizeof(uint32_t),         NULL, GL_STATIC_DRAW);
-            mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA]         = gl_buffer_create(backbone_spline_data_count         * sizeof(gl_control_point), NULL, GL_DYNAMIC_COPY);
+            mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA]         = gl_buffer_create(backbone_spline_data_count         * sizeof(gl_control_point_t), NULL, GL_DYNAMIC_COPY);
             mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX]        = gl_buffer_create(backbone_spline_index_count        * sizeof(uint32_t),         NULL, GL_STATIC_DRAW);
 
             //gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE], 0, desc->backbone.count * sizeof(uint8_t) * 4, desc->backbone.secondary_structure);
 
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id);
-            gl_backbone_data* backbone_data = (gl_backbone_data*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < desc->chain.count; ++i) {
@@ -936,7 +936,7 @@ bool md_gl_molecule_init(md_gl_molecule* ext_mol, const md_gl_molecule_desc* des
                 for (uint32_t i = 0; i < desc->chain.count; ++i) {
                     uint32_t res_count = desc->chain.backbone_range[i].end - desc->chain.backbone_range[i].beg;
                     if (res_count > 0) {
-                        for (uint32_t j = 0; j < (res_count - 1) * MD_SPLINE_MAX_SUBDIVISION_COUNT; ++j) {
+                        for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_MAX_SUBDIVISION_COUNT; ++j) {
                             spline_index[len++] = idx++;
                         }
                     }
@@ -964,26 +964,26 @@ bool md_gl_molecule_init(md_gl_molecule* ext_mol, const md_gl_molecule_desc* des
     return false;
 }
 
-bool md_gl_molecule_free(md_gl_molecule* ext_mol) {
+bool md_gl_molecule_free(md_gl_molecule_t* ext_mol) {
     if (ext_mol) {
-        internal_mol* mol = (internal_mol*)ext_mol;
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
         for (uint32_t i = 0; i < GL_BUFFER_MOL_COUNT; ++i) {
             gl_buffer_conditional_delete(&mol->buffer[i]);
         }
         uint32_t new_version = mol->version + 1;
-        memset(mol, 0, sizeof(md_gl_molecule));
+        memset(mol, 0, sizeof(md_gl_molecule_t));
         mol->version = new_version;
         return true;
     }
     return false;
 }
 
-bool md_gl_representation_init(md_gl_representation* ext_rep, const md_gl_molecule* ext_mol) {   
+bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_molecule_t* ext_mol) {   
     if (ext_rep && ext_mol) {
         md_gl_representation_free(ext_rep);
-        internal_rep* rep = (internal_rep*)ext_rep;
-        memset(rep, 0, sizeof(internal_rep));
-        rep->mol = (const internal_mol*)ext_mol;
+        internal_rep_t* rep = (internal_rep_t*)ext_rep;
+        memset(rep, 0, sizeof(internal_rep_t));
+        rep->mol = (const internal_mol_t*)ext_mol;
         rep->mol_version = rep->mol->version;
         rep->color = gl_buffer_create(rep->mol->atom_count * sizeof(uint32_t), NULL, GL_STATIC_DRAW);
         const uint32_t color = (uint32_t)((255 << 24) | (127 << 16) | (127 << 8) | (127 << 0));
@@ -1004,34 +1004,64 @@ bool md_gl_representation_init(md_gl_representation* ext_rep, const md_gl_molecu
     return false;
 }
 
-bool md_gl_representation_free(md_gl_representation* ext_rep) {
+bool md_gl_representation_free(md_gl_representation_t* ext_rep) {
     if (ext_rep) {
-        internal_rep* rep = (internal_rep*)ext_rep;
+        internal_rep_t* rep = (internal_rep_t*)ext_rep;
         gl_buffer_conditional_delete(&rep->color);
         return true;
     }
     return false;
 }
 
-static bool build_depth_mipmap(const internal_ctx* ctx, gl_texture dst, gl_texture src);
-static bool compute_residue_aabb(const internal_ctx* ctx, const internal_mol* mol);
-static bool cull_aabb(const internal_ctx* ctx, const internal_mol* mol);
-static bool compute_spline(const internal_ctx* ctx, const internal_mol* mol);
+static bool build_depth_mipmap(const internal_ctx_t* ctx, gl_texture_t dst, gl_texture_t src);
+static bool compute_residue_aabb(const internal_ctx_t* ctx, const internal_mol_t* mol);
+static bool cull_aabb(const internal_ctx_t* ctx, const internal_mol_t* mol);
+static bool compute_spline(const internal_ctx_t* ctx, const internal_mol_t* mol);
 
-static bool draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
-static bool draw_licorice  (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
-static bool draw_ribbons   (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
-static bool draw_cartoon   (const internal_ctx* ctx, const internal_rep* rep, int program_permutation);
+static bool draw_space_fill(const internal_ctx_t* ctx, const internal_rep_t* rep, int program_permutation);
+static bool draw_licorice  (const internal_ctx_t* ctx, const internal_rep_t* rep, int program_permutation);
+static bool draw_ribbons   (const internal_ctx_t* ctx, const internal_rep_t* rep, int program_permutation);
+static bool draw_cartoon   (const internal_ctx_t* ctx, const internal_rep_t* rep, int program_permutation);
 
-static int compare_draw_rep(const void* elem1, const void* elem2) {
-    const internal_rep* r1 = (const internal_rep*)elem1;
-    const internal_rep* r2 = (const internal_rep*)elem2;
-    
-    return (r1->type - r2->type) * 2 + (int)(r1->mol - r2->mol);
+static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_args_t* args, const mat4_t* model_matrix) {
+    ASSERT(ubo_data);
+    ASSERT(args);
+
+    memcpy(&ubo_data->view_transform.world_to_view, args->view_transform.view_matrix, sizeof(mat4_t));
+    if (model_matrix) {
+        ubo_data->view_transform.world_to_view = mat4_mul(ubo_data->view_transform.world_to_view, *model_matrix);
+    }
+    memcpy(&ubo_data->view_transform.view_to_clip,  args->view_transform.projection_matrix, sizeof(mat4_t));
+
+    ubo_data->view_transform.world_to_clip = mat4_mul(ubo_data->view_transform.view_to_clip, ubo_data->view_transform.world_to_view);
+    ubo_data->view_transform.world_to_view_normal = mat4_transpose(mat4_inverse(ubo_data->view_transform.world_to_view));
+    ubo_data->view_transform.view_to_world = mat4_inverse(ubo_data->view_transform.world_to_view);
+    ubo_data->view_transform.clip_to_view = mat4_inverse(ubo_data->view_transform.view_to_clip);
+
+    if (args->view_transform.prev_view_matrix && args->view_transform.projection_matrix) {
+        const mat4_t* prev_world_to_view = (const mat4_t*)args->view_transform.prev_view_matrix;
+        const mat4_t* prev_view_to_clip  = (const mat4_t*)args->view_transform.prev_projection_matrix;
+        ubo_data->view_transform.prev_world_to_clip = mat4_mul(*prev_view_to_clip, *prev_world_to_view);
+        ubo_data->view_transform.curr_view_to_prev_clip = mat4_mul(ubo_data->view_transform.prev_world_to_clip, ubo_data->view_transform.view_to_world);
+        extract_jitter_uv(&ubo_data->jitter_uv.x, ubo_data->view_transform.view_to_clip);
+        extract_jitter_uv(&ubo_data->jitter_uv.z, *prev_view_to_clip);
+    }
+    ubo_data->atom_mask = args->atom_mask;
 }
 
-bool md_gl_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
-    internal_ctx* ctx = (internal_ctx*)ext_ctx;
+typedef struct draw_entity_t {
+    internal_rep_t* rep;
+    mat4_t* model_matrix;
+} draw_entity_t;
+
+static int compare_draw_ent(const void* elem1, const void* elem2) {
+    const draw_entity_t* e1 = (const draw_entity_t*)elem1;
+    const draw_entity_t* e2 = (const draw_entity_t*)elem2;
+    return (e1->rep->type - e2->rep->type) * 4 + (int)(e1->rep->mol - e1->rep->mol) * 2 + (int)(e1->model_matrix - e2->model_matrix);
+}
+
+bool md_gl_draw(md_gl_context_t* ext_ctx, const md_gl_draw_args_t* args) {
+    internal_ctx_t* ctx = (internal_ctx_t*)ext_ctx;
     if (!args) return false;
     bool err;
     if ((err = validate_context(ctx)) != true) return err;
@@ -1053,44 +1083,40 @@ bool md_gl_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
         }
     }
 
-    gl_ubo_base ubo_data = {0};
-    memcpy(&ubo_data.view_transform.world_to_view, args->view_transform.model_view_matrix, sizeof(mat4_t));
-    memcpy(&ubo_data.view_transform.view_to_clip,  args->view_transform.projection_matrix, sizeof(mat4_t));
-    ubo_data.view_transform.world_to_clip = mat4_mul(ubo_data.view_transform.view_to_clip, ubo_data.view_transform.world_to_view);
-    ubo_data.view_transform.world_to_view_normal = mat4_transpose(mat4_inverse(ubo_data.view_transform.world_to_view));
-    ubo_data.view_transform.view_to_world = mat4_inverse(ubo_data.view_transform.world_to_view);
-    ubo_data.view_transform.clip_to_view = mat4_inverse(ubo_data.view_transform.view_to_clip);
-
-    if (args->view_transform.prev_model_view_matrix && args->view_transform.projection_matrix) {
-        const mat4_t* prev_world_to_view = (const mat4_t*)args->view_transform.prev_model_view_matrix;
-        const mat4_t* prev_view_to_clip  = (const mat4_t*)args->view_transform.prev_projection_matrix;
-        ubo_data.view_transform.prev_world_to_clip = mat4_mul(*prev_view_to_clip, *prev_world_to_view);
-        ubo_data.view_transform.curr_view_to_prev_clip = mat4_mul(ubo_data.view_transform.prev_world_to_clip, ubo_data.view_transform.view_to_world);
-        extract_jitter_uv(&ubo_data.jitter_uv.x, ubo_data.view_transform.view_to_clip);
-        extract_jitter_uv(&ubo_data.jitter_uv.z, *prev_view_to_clip);
-    }
-    ubo_data.atom_mask = args->atom_mask;
+    gl_ubo_base_t ubo_data = {0};
+    init_ubo_base_data(&ubo_data, args, NULL);
 
     gl_buffer_set_sub_data(ctx->ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx->ubo.id);
         
     // Extract most potentially occluding structures first
     // Surface > Space Fill > Ribbons > Cartoon > Licorice
-    const internal_rep* draw_rep[64] = {0};
-    uint32_t            draw_rep_count = 0;
+#define DRAW_ENT_CAP 512
+    draw_entity_t         draw_ent[DRAW_ENT_CAP] = {0};
+    uint32_t              draw_ent_count = 0;
+
+    /*
+    const internal_rep_t* draw_rep_ptr[DRAW_REP_CAP] = {0};
+    const mat4_t*         draw_rep_mat[DRAW_REP_CAP] = {0};
+    uint32_t              draw_rep_count = 0;
+    */
+#undef  DRAW_REP_CAP
         
-    const internal_mol* unique_mol_ptr[64] = {0};
-    uint32_t            unique_mol_flags[64] = {0};
-    uint32_t            unique_mol_count = 0;
+#define UNIQUE_MOL_CAP 128
+    const internal_mol_t* unique_mol_ptr[UNIQUE_MOL_CAP] = {0};
+    uint32_t              unique_mol_flg[UNIQUE_MOL_CAP] = {0};
+    uint32_t              unique_mol_count = 0;
+#undef  UNIQUE_MOL_CAP
 
     const uint32_t MOL_FLAG_SPLINE = 1;
         
-    ASSERT(args->representation.count < ARRAY_SIZE(draw_rep));
+    ASSERT(args->representation.count < ARRAY_SIZE(draw_ent));
     for (uint32_t i = 0; i < args->representation.count; i++) {
-        const internal_rep* rep = (internal_rep*)args->representation.data[i];
+        const internal_rep_t* rep = (internal_rep_t*)args->representation.data[i];
         if (rep && rep->mol) {
-            draw_rep[draw_rep_count] = rep;
-            draw_rep_count++;
+            draw_ent[draw_ent_count].rep = rep;
+            draw_ent[draw_ent_count].model_matrix = args->representation.model_matrix ? (const mat4_t*)args->representation.model_matrix[i] : NULL;
+            draw_ent_count++;
                 
             uint32_t unique_mol_idx = (uint32_t)-1;
             for (uint32_t j = 0; j < unique_mol_count; j++) {
@@ -1100,17 +1126,18 @@ bool md_gl_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
                 }
             }
             if (unique_mol_idx == -1) {
+                ASSERT(unique_mol_count < ARRAY_SIZE(unique_mol_ptr));
                 unique_mol_idx = unique_mol_count++;
                 unique_mol_ptr[unique_mol_idx] = rep->mol;
-                unique_mol_flags[unique_mol_idx] = 0;
+                unique_mol_flg[unique_mol_idx] = 0;
             }
             if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {
-                unique_mol_flags[unique_mol_idx] |= MOL_FLAG_SPLINE;
+                unique_mol_flg[unique_mol_idx] |= MOL_FLAG_SPLINE;
             }
         }
     }
     
-    qsort((void*)draw_rep, draw_rep_count, sizeof(md_gl_representation*), compare_draw_rep);
+    qsort((void*)draw_ent, draw_ent_count, sizeof(draw_entity_t), compare_draw_ent);
                
     // Compute residue AABBs for culling
     /*
@@ -1129,37 +1156,18 @@ bool md_gl_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
             
     PUSH_GPU_SECTION("COMPUTE SPLINE")
     for (uint32_t i = 0; i < unique_mol_count; i++) {
-        if (unique_mol_flags[i] & MOL_FLAG_SPLINE) {
+        if (unique_mol_flg[i] & MOL_FLAG_SPLINE) {
             compute_spline(ctx, unique_mol_ptr[i]);
         }
     }
     POP_GPU_SECTION()
         
-
-    // possibly resize static depth buffer to match render_target size
-    gl_texture* max_tex = &ctx->texture[GL_TEXTURE_MAX_DEPTH];
-    uint32_t max_tex_w = gl_texture_width(*max_tex, 0);
-    uint32_t max_tex_h = gl_texture_height(*max_tex, 0);
-    if (max_tex_w != args->render_target->width || max_tex_h != args->render_target->height) {
-        max_tex_w = args->render_target->width;
-        max_tex_h = args->render_target->height;
-        int mips = compute_mip_count(max_tex_w, max_tex_h);
-        if (max_tex->id) glDeleteTextures(1, &max_tex->id);
-        glGenTextures(1, &max_tex->id);
-        glBindTexture(GL_TEXTURE_2D, max_tex->id);
-        glTexStorage2D(GL_TEXTURE_2D, mips, GL_DEPTH24_STENCIL8, max_tex_w, max_tex_h);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
     bool using_internal_depth = false;
 
     int program_permutation = 0;
     if (is_ortho_proj_matrix(ubo_data.view_transform.view_to_clip)) program_permutation |= PERMUTATION_BIT_ORTHO;
         
-    // If we have rendertargets -> setup and enable fbo
+    // If we have rendertargets -> setup and enable gbuffer
     if (args->render_target) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctx->fbo[0]);
         GLenum draw_buffers[4] = {0};
@@ -1167,8 +1175,26 @@ bool md_gl_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
         if (args->render_target->texture_depth) {
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, args->render_target->texture_depth, 0);
         } else {
-            using_internal_depth = true;
+            // possibly resize static depth buffer to match render_target size
+            gl_texture_t* max_tex = &ctx->texture[GL_TEXTURE_MAX_DEPTH];
+            uint32_t max_tex_w = gl_texture_width(*max_tex, 0);
+            uint32_t max_tex_h = gl_texture_height(*max_tex, 0);
+            if (max_tex_w != args->render_target->width || max_tex_h != args->render_target->height) {
+                max_tex_w = args->render_target->width;
+                max_tex_h = args->render_target->height;
+                int mips = compute_mip_count(max_tex_w, max_tex_h);
+                if (max_tex->id) glDeleteTextures(1, &max_tex->id);
+                glGenTextures(1, &max_tex->id);
+                glBindTexture(GL_TEXTURE_2D, max_tex->id);
+                glTexStorage2D(GL_TEXTURE_2D, mips, GL_DEPTH24_STENCIL8, max_tex_w, max_tex_h);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, ctx->texture[GL_TEXTURE_MAX_DEPTH].id, 0);
+            using_internal_depth = true;
         }
         if (args->render_target->texture_color) {
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, args->render_target->texture_color, 0);
@@ -1213,37 +1239,57 @@ bool md_gl_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
         if (using_internal_depth) {
             glClear(GL_DEPTH_BUFFER_BIT);
         }
+
+        if (args->options & (MD_GL_OPTION_CLEAR_COLOR_BUFFER | MD_GL_OPTION_CLEAR_DEPTH_BUFFER)) {
+            GLenum bits = 0;
+            bits |= (args->options & MD_GL_OPTION_CLEAR_COLOR_BUFFER) ? GL_COLOR_BUFFER_BIT : 0;
+            bits |= (args->options & MD_GL_OPTION_CLEAR_DEPTH_BUFFER) ? GL_DEPTH_BUFFER_BIT : 0;
+
+            glClearColor(1,1,1,1);
+            glClearDepth(1.0);
+            glClear(bits);
+        }
             
     }
         
     PUSH_GPU_SECTION("DRAW REP")
-    {
-        //glEnable(GL_DEPTH_TEST);
-        //glDepthFunc(GL_LESS);
-        //glColorMask(1,1,1,1);
-        //glDepthMask(1);
-        
-        for (uint32_t i = 0; i < draw_rep_count; i++) {
-            switch (draw_rep[i]->type) {
+    {       
+        for (uint32_t i = 0; i < draw_ent_count; i++) {
+            const internal_rep_t* rep  = draw_ent[i].rep;
+            const mat4_t* model_matrix = draw_ent[i].model_matrix;
+
+            if (model_matrix) {
+                // If we have a model matrix, we need to recompute the entire matrix stack...
+                gl_ubo_base_t tmp_ubo = {0};
+                init_ubo_base_data(&tmp_ubo, args, model_matrix);
+                gl_buffer_set_sub_data(ctx->ubo, 0, sizeof(tmp_ubo), &tmp_ubo);
+            }
+
+            switch (rep->type) {
             case MD_GL_REP_SOLVENT_EXCLUDED_SURFACE:
                 break;
             case MD_GL_REP_DEFAULT:
             case MD_GL_REP_SPACE_FILL:
-                draw_space_fill(ctx, draw_rep[i], program_permutation);
+                draw_space_fill(ctx, rep, program_permutation);
                 break;
             case MD_GL_REP_RIBBONS:
-                draw_ribbons(ctx, draw_rep[i], program_permutation);
+                draw_ribbons(ctx, rep, program_permutation);
                 break;
             case MD_GL_REP_CARTOON:
-                draw_cartoon(ctx, draw_rep[i], program_permutation);
+                draw_cartoon(ctx, rep, program_permutation);
                 break;
             case MD_GL_REP_LICORICE:
-                draw_licorice(ctx, draw_rep[i], program_permutation);
+                draw_licorice(ctx, rep, program_permutation);
                 break;
             default:
                 md_print(MD_LOG_TYPE_ERROR, "Representation had unexpected type");
                 return false;
                 break;
+            }
+
+            if (model_matrix) {
+                // Reset to default
+                gl_buffer_set_sub_data(ctx->ubo, 0, sizeof(ubo_data), &ubo_data);
             }
         }
     }
@@ -1258,9 +1304,9 @@ bool md_gl_draw(md_gl_context* ext_ctx, const md_gl_draw_args_t* args) {
     return true;
 }
 
-static bool draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
+static bool draw_space_fill(const internal_ctx_t* ctx, const internal_rep_t* rep, int program_permutation) {
     const float radius_scale = rep->args.space_fill.radius_scale;
-    gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base), sizeof(radius_scale), &radius_scale);
+    gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base_t), sizeof(radius_scale), &radius_scale);
 
     glBindVertexArray(ctx->vao);
 
@@ -1301,9 +1347,9 @@ static bool draw_space_fill(const internal_ctx* ctx, const internal_rep* rep, in
     return true;
 }
 
-static bool draw_licorice(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
+static bool draw_licorice(const internal_ctx_t* ctx, const internal_rep_t* rep, int program_permutation) {
     const float radius = rep->args.licorice.radius;
-    gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base), sizeof(radius), &radius);
+    gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base_t), sizeof(radius), &radius);
 
     glBindVertexArray(ctx->vao);
 
@@ -1343,7 +1389,7 @@ static bool draw_licorice(const internal_ctx* ctx, const internal_rep* rep, int 
     return true;
 }
 
-bool draw_ribbons(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
+bool draw_ribbons(const internal_ctx_t* ctx, const internal_rep_t* rep, int program_permutation) {
     ASSERT(rep->mol);
     if (!rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id) {
         md_print(MD_LOG_TYPE_ERROR, "No spline present for molecule, which is required for rendering ribbons representation");
@@ -1354,28 +1400,28 @@ bool draw_ribbons(const internal_ctx* ctx, const internal_rep* rep, int program_
         rep->args.ribbons.width_scale,
         rep->args.ribbons.thickness_scale * 0.1f
     };
-    gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base), sizeof(scale), &scale);
+    gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base_t), sizeof(scale), &scale);
 
     glBindVertexArray(ctx->vao);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, position));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, position));
 
     glEnableVertexAttribArray(1);
-    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, atom_idx));
+    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, atom_idx));
 
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, velocity));
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, velocity));
 
     glEnableVertexAttribArray(3);
-    glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, flags));
+    glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, flags));
 
     glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, support_vector));
+    glVertexAttribPointer(4, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, support_vector));
 
     glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, tangent_vector));
+    glVertexAttribPointer(5, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, tangent_vector));
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
@@ -1414,7 +1460,7 @@ bool draw_ribbons(const internal_ctx* ctx, const internal_rep* rep, int program_
     return true;
 }
 
-static bool draw_cartoon(const internal_ctx* ctx, const internal_rep* rep, int program_permutation) {
+static bool draw_cartoon(const internal_ctx_t* ctx, const internal_rep_t* rep, int program_permutation) {
     ASSERT(rep->mol);
     if (!rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id) {
         md_print(MD_LOG_TYPE_ERROR, "No spline present for molecule, which is required for rendering ribbons representation");
@@ -1425,34 +1471,34 @@ static bool draw_cartoon(const internal_ctx* ctx, const internal_rep* rep, int p
         rep->args.ribbons.width_scale,
         rep->args.ribbons.thickness_scale
     };
-    gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base), sizeof(scale), &scale);
+    gl_buffer_set_sub_data(ctx->ubo, sizeof(gl_ubo_base_t), sizeof(scale), &scale);
 
     glBindVertexArray(ctx->vao);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, position));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, position));
 
     glEnableVertexAttribArray(1);
-    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, atom_idx));
+    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, atom_idx));
 
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, velocity));
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, velocity));
 
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, segment_t));
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, segment_t));
 
     glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 3, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, secondary_structure));
+    glVertexAttribPointer(4, 3, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, secondary_structure));
 
     glEnableVertexAttribArray(5);
-    glVertexAttribIPointer(5, 1, GL_UNSIGNED_BYTE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, flags));
+    glVertexAttribIPointer(5, 1, GL_UNSIGNED_BYTE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, flags));
 
     glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, support_vector));
+    glVertexAttribPointer(6, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, support_vector));
 
     glEnableVertexAttribArray(7);
-    glVertexAttribPointer(7, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, tangent_vector));
+    glVertexAttribPointer(7, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, tangent_vector));
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
@@ -1492,14 +1538,14 @@ static bool draw_cartoon(const internal_ctx* ctx, const internal_rep* rep, int p
     return true;
 }
 
-static bool compute_residue_aabb(const internal_ctx* ctx, const internal_mol* mol) {   
+static bool compute_residue_aabb(const internal_ctx_t* ctx, const internal_mol_t* mol) {   
     (void)ctx;
     (void)mol;
 
     return true;
 }
 
-static bool cull_aabb(const internal_ctx* ctx, const internal_mol* mol) {
+static bool cull_aabb(const internal_ctx_t* ctx, const internal_mol_t* mol) {
     (void)ctx;
     glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_RESIDUE_VISIBLE].id);
     void* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
@@ -1515,7 +1561,7 @@ static bool cull_aabb(const internal_ctx* ctx, const internal_mol* mol) {
     return true;
 }
 
-static bool compute_spline(const internal_ctx* ctx, const internal_mol* mol) {
+static bool compute_spline(const internal_ctx_t* ctx, const internal_mol_t* mol) {
     if (mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id == 0) {
         md_print(MD_LOG_TYPE_ERROR, "Backbone data buffer is zero, which is required to compute the backbone. Is the molecule missing a backbone?");
         return false;
@@ -1528,19 +1574,19 @@ static bool compute_spline(const internal_ctx* ctx, const internal_mol* mol) {
     glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribIPointer(0, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data), (const void*)offsetof(gl_backbone_data, residue_idx));
+    glVertexAttribIPointer(0, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data_t), (const void*)offsetof(gl_backbone_data_t, residue_idx));
 
     glEnableVertexAttribArray(1);
-    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data), (const void*)offsetof(gl_backbone_data, segment_idx));
+    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data_t), (const void*)offsetof(gl_backbone_data_t, segment_idx));
 
     glEnableVertexAttribArray(2);
-    glVertexAttribIPointer(2, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data), (const void*)offsetof(gl_backbone_data, ca_idx));
+    glVertexAttribIPointer(2, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data_t), (const void*)offsetof(gl_backbone_data_t, ca_idx));
 
     glEnableVertexAttribArray(3);
-    glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data), (const void*)offsetof(gl_backbone_data, c_idx));
+    glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data_t), (const void*)offsetof(gl_backbone_data_t, c_idx));
 
     glEnableVertexAttribArray(4);
-    glVertexAttribIPointer(4, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data), (const void*)offsetof(gl_backbone_data, o_idx));
+    glVertexAttribIPointer(4, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data_t), (const void*)offsetof(gl_backbone_data_t, o_idx));
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, ctx->texture[GL_TEXTURE_BUFFER_0].id);
@@ -1573,25 +1619,25 @@ static bool compute_spline(const internal_ctx* ctx, const internal_mol* mol) {
     glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA].id);
 
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,        sizeof(gl_control_point), (const void*)offsetof(gl_control_point, position));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,        sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, position));
 
     glEnableVertexAttribArray(1);
-    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT,          sizeof(gl_control_point), (const void*)offsetof(gl_control_point, atom_idx));
+    glVertexAttribIPointer(1, 1, GL_UNSIGNED_INT,          sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, atom_idx));
 
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE,        sizeof(gl_control_point), (const void*)offsetof(gl_control_point, velocity));
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE,        sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, velocity));
 
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE,        sizeof(gl_control_point), (const void*)offsetof(gl_control_point, segment_t));
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE,        sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, segment_t));
 
     glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(gl_control_point), (const void*)offsetof(gl_control_point, secondary_structure));
+    glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, secondary_structure));
 
     glEnableVertexAttribArray(5);
-    glVertexAttribIPointer(5, 1, GL_UNSIGNED_BYTE,         sizeof(gl_control_point), (const void*)offsetof(gl_control_point, flags));
+    glVertexAttribIPointer(5, 1, GL_UNSIGNED_BYTE,         sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, flags));
 
     glEnableVertexAttribArray(6);
-    glVertexAttribPointer(6, 3, GL_SHORT, GL_TRUE,         sizeof(gl_control_point), (const void*)offsetof(gl_control_point, support_vector));
+    glVertexAttribPointer(6, 3, GL_SHORT, GL_TRUE,         sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, support_vector));
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX].id);

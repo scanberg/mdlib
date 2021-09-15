@@ -22,6 +22,7 @@ typedef struct md_trajectory_i {
 
 	int64_t num_atoms;
 	int64_t num_frames;
+	int64_t max_frame_data_size;
 
 	// Returns size in bytes of frame, frame_data_ptr is optional and if supplied, the frame data will be written to it.
 	int64_t (*extract_frame_data)(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr);

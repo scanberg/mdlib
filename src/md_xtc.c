@@ -399,6 +399,14 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
             return false;
         }
 
+        int64_t max_frame_size = 0;
+        for (int64_t i = 0; i < md_array_size(offsets) - 1; ++i) {
+            const int64_t beg = offsets[i + 0];
+            const int64_t end = offsets[i + 1];
+            const int64_t frame_size = end - beg;
+            max_frame_size = MAX(max_frame_size, frame_size);
+        }
+
         xdr_seek(file, 0, SEEK_END);
         const int64_t filesize = xdr_tell(file);
         xdr_seek(file, 0, SEEK_SET);
@@ -419,6 +427,7 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
         traj->inst = (struct md_trajectory_o*)xtc;
         traj->num_atoms = num_atoms;
         traj->num_frames = md_array_size(offsets) - 1;      // Last offset is filesize
+        traj->max_frame_data_size = max_frame_size;
         traj->extract_frame_data = xtc_extract_frame;
         traj->decode_frame_header = xtc_decode_frame_header;
         traj->decode_frame_coords = xtc_decode_frame_coords;

@@ -1,6 +1,7 @@
 #include "md_script.h"
 #include "md_molecule.h"
 #include "md_trajectory.h"
+#include "md_frame_cache.h"
 #include "md_filter.h"
 #include "md_util.h"
 
@@ -35,7 +36,7 @@
 // ###   TYPE DECLARATIONS   ###
 // #############################
 
-typedef enum token_type {
+typedef enum token_type_t {
     TOKEN_UNDEF = 0,
     // Reserve the first indices for character literals
     TOKEN_IDENT = 128, // idenfitier
@@ -54,7 +55,7 @@ typedef enum token_type {
     TOKEN_END     // End of tokenstream
 } token_type_t;
 
-typedef enum ast_type {
+typedef enum ast_type_t {
     AST_UNDEFINED = 0,
     AST_EXPRESSION,         // Parenthesis wrapped expression, We need to have it up here to ensure its precedence over things
     AST_PROC_CALL,          // Procedure call, Operators are directly translated into procedure calls as well.
@@ -81,7 +82,7 @@ typedef enum ast_type {
     AST_ASSIGNMENT,
 } ast_type_t;
 
-typedef enum base_type {
+typedef enum base_type_t {
     TYPE_UNDEFINED = 0,
     TYPE_FLOAT,
     TYPE_INT,
@@ -92,15 +93,7 @@ typedef enum base_type {
     TYPE_STRING,
 } base_type_t;
 
-/*
-typedef enum context_level {
-    LEVEL_ATOM,
-    LEVEL_RESIDUE,
-    LEVEL_CHAIN,
-} context_level_t;
-*/
-
-typedef enum flags {
+typedef enum flags_t {
     // Function Flags
     FLAG_SYMMETRIC_ARGS             = 0x002, // Indicates that the arguments are symmetric, meaning the arguments can be swapped
     FLAG_ARGS_EQUAL_LENGTH          = 0x004, // Arguments should have the same array length
@@ -118,7 +111,7 @@ typedef enum flags {
 
 static const uint32_t FLAG_PROPAGATION_MASK = ~0xFFFU;
 
-typedef struct token {
+typedef struct token_t {
     token_type_t type;
     int32_t line;
     int32_t col_beg;
@@ -126,25 +119,17 @@ typedef struct token {
     str_t str;
 } token_t;
 
-typedef struct frange {
+typedef struct frange_t {
     float beg;
     float end;
 } frange_t;
 
-typedef struct irange {
+typedef struct irange_t {
     int32_t beg;
     int32_t end;
 } irange_t;
 
-/*
-typedef struct mol_context {
-    irange_t atom;
-    irange_t residue;
-    irange_t chain;
-} mol_context_t;
-*/
-
-typedef struct md_type_info {
+typedef struct md_type_info_t {
     base_type_t  base_type;
 
     // This is how we encode the types dimensionality in dim
@@ -182,7 +167,7 @@ typedef struct md_type_info {
 // I.e. the array length should be part of the fundamental type. This only strenghtens the type-system
 
 // This is the struct which is passed as arguments into the procedures
-typedef struct data {
+typedef struct data_t {
     md_type_info_t      type;
     void*               ptr;    // Pointer to the data
     int64_t             size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
@@ -194,7 +179,7 @@ typedef struct data {
 } data_t;
 
 // This is data stored directly in the nodes to hold scalar values
-typedef union value {
+typedef union value_t {
     str_t       _string;
     float       _float;
     int32_t     _int;
@@ -204,7 +189,7 @@ typedef union value {
     md_exp_bitfield_t  _bitfield;
 } value_t;
 
-typedef struct identifier {
+typedef struct identifier_t {
     str_t       name;
     data_t      data;
     flags_t     flags;
@@ -220,15 +205,14 @@ typedef struct eval_context {
     const md_molecule_t* mol;
     const md_exp_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
 
-    md_stack_allocator_t* stack_alloc; // This is the same allocator as temp alloc, just with the raw interface
+    md_stack_allocator_t* stack_alloc;  // This is the same allocator as temp alloc, just with the raw interface
     md_allocator_i* temp_alloc;         // For allocating transient data
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
 
     token_t* arg_tokens;                // Tokens to arguments for contextual information when reporting errors
     identifier_t* identifiers;          // Evaluated identifiers for references
                                       
-    md_script_visualization_t* vis;  // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
-    md_script_sdf_meta_t* sdf_meta;
+    md_script_visualization_t* vis;     // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
 
     struct {
         md_trajectory_frame_header_t* header;
@@ -236,13 +220,6 @@ typedef struct eval_context {
         const float* y;
         const float* z;
     } initial_configuration;
-
-    struct {
-        md_trajectory_frame_header_t* header;
-        const float* x;
-        const float* y;
-        const float* z;
-    } current_configuration;
 } eval_context_t;
 
 typedef struct procedure {
@@ -268,7 +245,9 @@ typedef struct ast_node {
     procedure_t*    proc;           // Procedure reference
     identifier_t*   ident;          // Identifier reference
 
+    // CONTEXT
     md_type_info_t* lhs_context_types; // For static type checking
+    const md_exp_bitfield_t* context;  // Since contexts have to be statically known at compile time, we store a reference to it. This enables independent evaluation of a node without missing the context.
 } ast_node_t;
 
 typedef struct tokenizer {
@@ -298,14 +277,13 @@ typedef struct md_script_ir_o {
     identifier_t        **constant_identifiers;         // identifiers which can be evaluated at compile time.
     ast_node_t          **nodes;
 
-
     expression_t        **type_checked_expressions;     // List of expressions which passed type checking
     expression_t        **eval_targets;                 // List of dynamic expressions which needs to be evaluated per frame
     expression_t        **prop_expressions;             // List of expressions which are meant for exposure as properties
 
-
     // These are the final products which can be read through the public part of the structure
     md_script_error_t   *errors;
+    md_script_token_t   *tokens;
 
     bool record_errors; // This is to toggle if new errors should be registered... We don't want to flood the errors
     const char* stage;  // This is just to supply a context for the errors i.e. which stage the error occured
@@ -2294,15 +2272,15 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
 
 static bool evaluate_node(data_t*, const ast_node_t*, eval_context_t*);
 
-static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* eval_ctx) {
-    ASSERT(eval_ctx);
+static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(ctx);
     ASSERT(node && node->type == AST_PROC_CALL);
     ASSERT(node->proc);
 
     // This procedure can be called within the static check to 'query' the result of the procedure.
     // In such case, dst will be NULL.
 
-    if (dst == NULL && eval_ctx->vis) {
+    if (dst == NULL && ctx->vis) {
         // We are called within a visualization context, to visualize things
         // If our function is not marked as FLAG_VISUALIZE, we just stop here.
         if (!(node->proc->flags & FLAG_VISUALIZE)) {
@@ -2324,25 +2302,26 @@ static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context
         arg_tokens[i] = node->children[i]->token;
 
         if (is_variable_length(arg_data[i].type)) {
-            if (!finalize_type(&arg_data[i].type, node->children[i], eval_ctx)) {
+            if (!finalize_type(&arg_data[i].type, node->children[i], ctx)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to finalize dynamic type in procedure call");
                 return false;
             }
         }
 
-        allocate_data(&arg_data[i], eval_ctx->temp_alloc);
-        if (!evaluate_node(&arg_data[i], node->children[i], eval_ctx)) {
+        allocate_data(&arg_data[i], ctx->temp_alloc);
+        if (!evaluate_node(&arg_data[i], node->children[i], ctx)) {
             return false;
         }
     }
     
-    eval_context_t ctx = *eval_ctx;
-    ctx.arg_tokens = arg_tokens;
 
-    int result = node->proc->proc_ptr(dst, arg_data, &ctx);
+    token_t* old_arg_tokens = ctx->arg_tokens;
+    ctx->arg_tokens = arg_tokens;
+    int result = node->proc->proc_ptr(dst, arg_data, ctx);
+    ctx->arg_tokens = old_arg_tokens;
 
     for (int64_t i = num_args - 1; i >= 0; --i) {
-        free_data(&arg_data[i], eval_ctx->temp_alloc);
+        free_data(&arg_data[i], ctx->temp_alloc);
     }
 
     return result >= 0;
@@ -2436,17 +2415,21 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
     result = evaluate_node(&ident->data, rhs, ctx);
     }
     */
+    if (!ident) {
+        identifier_t ident = *lhs->ident;
+        allocate_data(&ident.data, ctx->temp_alloc);
+    }
+
     bool result = false;
-    if (dst) {
+    if (dst || ctx->vis) {
         result = evaluate_node(dst, rhs, ctx);
-        if (ident) {
+        if (ident && dst) {
             ident->data = *dst;
         }
     }
-    /*else if (ident) {
+    else {
         result = evaluate_node(&ident->data, rhs, ctx);
     }
-    */
 
     return result;
 }
@@ -2497,23 +2480,26 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     ASSERT(arr_data.ptr);
     ASSERT(idx_data.ptr);
 
-    int col_beg = 0;
+    int offset = 0;
     int length = 1;
     if (compare_type_info(idx_data.type, (md_type_info_t)TI_INT)) {
-        col_beg = *((int*)(idx_data.ptr));
+        offset = *((int*)(idx_data.ptr));
     } else if (compare_type_info(idx_data.type, (md_type_info_t)TI_IRANGE)) {
         irange_t range = *((irange_t*)(idx_data.ptr));
-        col_beg = range.beg;
+        offset = range.beg;
         length = range.end - range.beg + 1;
     } else {
         ASSERT(false);
     }
 
+    // We have front end notion of 1 based indexing to be coherent with the molecule conventions
+    offset -= 1;
+
     if (dst) {
         ASSERT(compare_type_info(dst->type, node->data.type));
         ASSERT(dst->ptr);
         const int64_t elem_size = type_info_byte_stride(arr_data.type);
-        const data_t src = {dst->type, (char*)arr_data.ptr + elem_size * col_beg, elem_size * length};
+        const data_t src = {dst->type, (char*)arr_data.ptr + elem_size * offset, elem_size * length};
         copy_data(dst, &src);
     }
 
@@ -2528,7 +2514,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     const ast_node_t* expr_node = node->children[0];
     const ast_node_t* ctx_node  = node->children[1];
 
-    // @TODO: No need to reevaluate CTX_NODE here since it has already been done during static type checking and its results should be stored in the data ptr
+    // No need to reevaluate CTX_NODE here since it has already been done during static type checking and its results should be stored in the data ptr
 
     ASSERT(ctx_node->data.type.base_type == TYPE_BITFIELD);
     ASSERT(ctx_node->data.ptr);
@@ -3072,7 +3058,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
                 } else {
                     range = arg->value._irange;
                 }
-                if (range.beg <= range.end && 0 <= range.beg && range.end < element_count(lhs->data)) {
+                if (range.beg <= range.end && 1 <= range.beg && range.end <= element_count(lhs->data)) {
                     ASSERT(lhs->data.type.dim[0] > 0);
                     // SUCCESS!
                     node->data.type = lhs->data.type;
@@ -3155,6 +3141,14 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     return false;
 }
 
+static inline void propagate_context(ast_node_t* node, const md_exp_bitfield_t* context) {
+    ASSERT(node);
+    node->context = context;
+    for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+        propagate_context(node->children[i], context);
+    }
+}
+
 static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CONTEXT && node->children && md_array_size(node->children) == 2);
 
@@ -3169,37 +3163,30 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     // WE MUST BE ABLE TO EVALUATE RHS EXPRESSION DURING COMPILE TIME IN ORDER TO KNOW THE LENGTH
     // If the RHS is a dynamic type, we need to push the 'length' type deduction to 'run-time'
 
-    if (node->token.line == 10) {
-        while(0);
-    }
-
     if (static_check_children(node, ctx)) {
         ast_node_t* lhs = node->children[0];
         ast_node_t* rhs = node->children[1];
-
         if (rhs->data.type.base_type == TYPE_BITFIELD) {
             if (!(rhs->flags & FLAG_DYNAMIC)) {
-                allocate_data(&rhs->data, ctx->ir->arena);
-                if (evaluate_node(&rhs->data, rhs, ctx)) {
-                    // The bitfields (RHS result) serve as our contexts for LHS operations
-                    const md_exp_bitfield_t* contexts = (const md_exp_bitfield_t*)rhs->data.ptr;
-                    const int64_t num_contexts = type_info_array_len(rhs->data.type);
-
-                    /*
-                    mol_context_t* mol_contexts = NULL;
-                    switch(rhs->data.type.level) {
-                        case LEVEL_RESIDUE: mol_contexts = get_residue_contexts_in_mask(bf, ctx->mol, ctx->temp_alloc); break;
-                        case LEVEL_CHAIN:   mol_contexts = get_chain_contexts_in_mask(bf, ctx->mol, ctx->temp_alloc); break;
-                        default: ASSERT(false);
+                const int64_t num_contexts = type_info_array_len(rhs->data.type);
+                if (num_contexts > 0) {
+                    // Store this persistently and set this as a context for all child nodes
+                    // Store as md_array so we can query its length later
+                    md_exp_bitfield_t* contexts = 0;
+                    md_array_resize(contexts, num_contexts, ctx->ir->arena);
+                    for (int64_t i = 0; i < num_contexts; ++i) {
+                        md_bitfield_init(&contexts[i], ctx->ir->arena);
                     }
-                    */
+                    rhs->data.ptr = contexts;
 
-                    if (num_contexts > 0) {
+                    ASSERT(md_array_size(contexts) == num_contexts);
+                    //allocate_data(&rhs->data, ctx->ir->arena);
+                    if (evaluate_node(&rhs->data, rhs, ctx)) {
+
                         // We differentiate here if the LHS is a bitfield or not
                         // if LHS is a bitfield of length 1, the resulting bitfield length is the same as RHS (M)
                         // if LHS is a bitfield of length N, the resulting bitfield length is (N*M), N may vary for each context.
-
-                        // ASSERT HERE?
+                        
                         node->lhs_context_types = 0;
                         int64_t arr_len = 0;
                         for (int64_t i = 0; i < num_contexts; ++i) {
@@ -3219,12 +3206,15 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                         node->data.type = lhs->data.type;
                         node->data.type.dim[node->data.type.len_dim] = (int32_t)arr_len;
 
+                        propagate_context(lhs, contexts);
+
                         return true;
+
                     } else {
-                        create_error(ctx->ir, node->token, "The context is empty.");
+                        create_error(ctx->ir, node->token, "Right hand side of 'in' failed to evaluate at compile time.");
                     }
                 } else {
-                    create_error(ctx->ir, node->token, "Right hand side of 'in' failed to evaluate at compile time.");
+                    create_error(ctx->ir, node->token, "The context is empty.");
                 }
             } else {
                 create_error(ctx->ir, node->token, "Right hand side of 'in' cannot be evaluated at compile time.");
@@ -3570,17 +3560,32 @@ static bool static_evaluation(md_script_ir_o* ir, const md_molecule_t* mol) {
     return result;
 }
 
-static bool allocate_property_data(md_script_property_t* prop, int64_t array_len, int64_t num_frames, md_allocator_i* alloc) {
+static bool allocate_property_data(md_script_property_t* prop, md_type_info_t type, int64_t num_frames, md_allocator_i* alloc) {
     int64_t num_values = 0;
+    memcpy(prop->data.dim, type.dim, sizeof(type.dim));
+
+    int64_t aggregate_size = 0;
+
     switch (prop->type) {
     case MD_SCRIPT_PROPERTY_TYPE_TEMPORAL:
-        num_values = num_frames;
+        // For temporal data, we store and expose all values, this enables filtering to be performed afterwards to create distributions
+        prop->data.dim[1] = num_frames;
+        num_values = prop->data.dim[0] * prop->data.dim[1];
+        aggregate_size = num_frames;
         break;
     case MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION:
+        // For distributions we only store and expose the aggregate
         num_values = DIST_BINS;
+        prop->data.dim[0] = DIST_BINS;
+        aggregate_size = num_values;
         break;
     case MD_SCRIPT_PROPERTY_TYPE_VOLUME:
+        // For volumes we only store and expose the aggregate
         num_values = VOL_DIM * VOL_DIM * VOL_DIM;
+        prop->data.dim[0] = VOL_DIM;
+        prop->data.dim[1] = VOL_DIM;
+        prop->data.dim[2] = VOL_DIM;
+        aggregate_size = num_values;
         break;
     default:
         ASSERT(false);
@@ -3590,16 +3595,32 @@ static bool allocate_property_data(md_script_property_t* prop, int64_t array_len
     memset(prop->data.values, 0, num_values * sizeof(float));
     prop->data.num_values = num_values;
 
-    if (array_len > 1) {
-        prop->data.variance = md_alloc(alloc, num_values * sizeof(float));
-        memset(prop->data.variance, 0, num_values * sizeof(float));
+    bool aggregate = type_info_array_len(type) > 1;
+    if (aggregate) {
+        prop->data.aggregate = md_alloc(alloc, sizeof(md_script_property_data_aggregate_t));
+
+        memset(prop->data.aggregate, 0, sizeof(md_script_property_data_aggregate_t));
+        prop->data.aggregate->num_values = aggregate_size;
+
+        if (aggregate_size != num_values) {
+            prop->data.aggregate->mean = md_alloc(alloc, aggregate_size * sizeof(float));
+            memset(prop->data.aggregate->mean, 0, aggregate_size * sizeof(float));
+        } else {
+            prop->data.aggregate->mean = prop->data.values;
+        }
+
+        prop->data.aggregate->variance = md_alloc(alloc, aggregate_size * sizeof(float));
+        memset(prop->data.aggregate->variance, 0, aggregate_size * sizeof(float));
     }
 
     return true;
 }
 
-static bool init_properties(md_script_property_t properties[], int64_t num_frames, const expression_t** expressions, int64_t num_expressions, md_allocator_i* alloc) {
+static bool create_properties(md_script_property_t** properties, int64_t num_frames, const expression_t** expressions, int64_t num_expressions, md_allocator_i* alloc) {
     ASSERT(properties);
+
+    md_script_property_t* props = NULL;
+
     for (int64_t i = 0; i < num_expressions; ++i) {
         const expression_t* expr = expressions[i];
         ASSERT(expr);
@@ -3609,7 +3630,8 @@ static bool init_properties(md_script_property_t properties[], int64_t num_frame
             .ident = copy_str(expr->ident->name, alloc),
             .type = 0,
             .unit = expr->node->data.unit,
-            .dim = {0},
+            .data = {0},
+            .vis_token = (struct md_script_vis_token_t*)expr->node,
         };
 
         if (is_temporal_type(expr->node->data.type)) {
@@ -3620,24 +3642,16 @@ static bool init_properties(md_script_property_t properties[], int64_t num_frame
         }
         else if (is_volume_type(expr->node->data.type)) {
             prop.type = MD_SCRIPT_PROPERTY_TYPE_VOLUME;
-            if (expr->node->flags & FLAG_SDF) {
-                prop.sdf_meta = md_alloc(alloc, sizeof(md_script_sdf_meta_t));
-                memset(prop.sdf_meta, 0, sizeof(md_script_sdf_meta_t));
-            }
         }
         else {
             ASSERT(false);
         }
 
-        ASSERT(ARRAY_SIZE(prop.dim) == ARRAY_SIZE(expr->node->data.type.dim));
-        ASSERT(sizeof(prop.dim) == sizeof(expr->node->data.type.dim));
-        memcpy(prop.dim, expr->node->data.type.dim, sizeof(prop.dim));
-
-        const int64_t array_len = type_info_array_len(expr->node->data.type);
-        allocate_property_data(&prop, array_len, num_frames, alloc),
-
-        properties[i] = prop;
+        allocate_property_data(&prop, expr->node->data.type, num_frames, alloc);
+        md_array_push(props, prop, alloc);
     }
+
+    *properties = props;
     return true;
 }
 
@@ -3654,54 +3668,30 @@ static void compute_min_max(float* min, float* max, const float* values, int64_t
     }
 }
 
-/*
-static void compute_distribution(md_script_distribution_t* dist, const float* values, int64_t num_values) {
-    ASSERT(dist);
+static void compute_distribution(float* bins, int64_t num_bins, float min_bin_range, float max_bin_range, const float* values, int64_t num_values) {
+    ASSERT(bins);
+    ASSERT(num_bins > 0);
+    ASSERT(max_bin_range >= min_bin_range);
     ASSERT(values);
 
-    const float bin_range = dist->max_range - dist->min_range;
-    const int32_t num_bins = (int32_t)dist->num_values;
+    memset(bins, 0, num_bins * sizeof(float));
+
+    const float bin_range = max_bin_range - min_bin_range;
     ASSERT(bin_range > 0.0f);
     for (int64_t i = 0; i < num_values; ++i) {
         const float val = values[i];
-        const int32_t bin = (int32_t)CLAMP(((val - dist->min_range) / bin_range) * num_bins, 0, num_bins);
-        if (0 <= bin && bin < num_bins) {
-            dist->values[bin] += 1;
-        }
+        const int32_t idx = (int32_t)CLAMP(((val - min_bin_range) / bin_range) * num_bins, 0, num_bins-1);
+        ASSERT(0 <= idx && idx < num_bins);
+        bins[idx] += 1;
     }
 
+    const float scl = 1.0f / (float)num_values;
     for (int64_t i = 0; i < num_bins; ++i) {
-        dist->values[i] /= (float)num_values;
+        bins[i] *= scl;
     }
 }
-*/
 
-static bool init_sdf_meta(md_script_sdf_meta_t* sdf_meta, ast_node_t* node, int64_t num_frames, eval_context_t* ctx) {
-    ASSERT(node && node->type == AST_ASSIGNMENT && md_array_size(node->children) == 2);
-    ASSERT(ctx->alloc);
-    // If we have sdf_meta, we want to allocate the internal data for it
-    // We do this by evaluating the node to get the count for the sdf meta.
-
-    // Just evaluate RHS of assignment
-    ctx->sdf_meta = sdf_meta;
-    evaluate_node(NULL, node->children[1], ctx);
-    ctx->sdf_meta = NULL;
-
-    /*
-    for (int64_t i = 0; i < sdf_meta->reference_structures.count; ++i) {
-        md_exp_bitfield_t bf = {0};
-        md_bitfield_init(&bf, ctx->alloc);
-        md_bitfield_copy(&bf, &ref_bitfields[i]);
-        md_array_push(ctx->sdf_meta->reference_structures.atom_masks, bf, ctx->alloc);
-
-        mat4_t* matrix_arr = 0;
-        md_array_grow(matrix_arr, )
-    }
-    */
-    return true;
-}
-
-static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, md_script_ir_o* ir) {
+static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_frame_cache_t* frame_cache, md_script_ir_o* ir) {
     ASSERT(mol);
     ASSERT(traj);
     ASSERT(ir);
@@ -3711,11 +3701,10 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     md_stack_allocator_t stack_alloc = {0};
     md_stack_allocator_init(&stack_alloc, mem, mem_size);
-
     md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc);
 
-    // Modifiable position xyz data for reading trajectory frames into
-    const int64_t stride = ROUND_UP(mol->atom.count, md_simd_width);    // Round up allocation size to simd width to 
+    // coordinate data for reading trajectory frames into
+    const int64_t stride = ROUND_UP(mol->atom.count, md_simd_width);    // Round up allocation size to simd width to allow for vectorized operations
     const int64_t coord_bytes = stride * 3 * sizeof(float);
     float* init_coords = md_alloc(&temp_alloc, coord_bytes);
     float* curr_coords = md_alloc(&temp_alloc, coord_bytes);
@@ -3733,7 +3722,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     float* curr_y = curr_coords + 1 * stride;
     float* curr_z = curr_coords + 2 * stride;
 
-    // We want a version which we can modify the atom coordinate section of
+    // We want a mutable molecule which we can modify the atom coordinate section of
     md_molecule_t mutable_mol = *mol;
     mutable_mol.atom.x = curr_x;
     mutable_mol.atom.y = curr_y;
@@ -3750,12 +3739,6 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             .y = init_y,
             .z = init_z,
         },
-        .current_configuration = {
-            .header = &curr_header,
-            .x = curr_x,
-            .y = curr_y,
-            .z = curr_z,
-        },
     };
 
     const int64_t num_expr = md_array_size(ir->eval_targets);
@@ -3763,23 +3746,26 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     ASSERT(md_array_size(ir->prop_expressions) == num_props);
 
-    for (int64_t i = 0; i < num_props; ++i) {
-        if (props[i].sdf_meta) {
-            init_sdf_meta(props[i].sdf_meta, expr[i]->node, traj->num_frames, &ctx);
-        }
-    }
-
     // Fill the data for the initial configuration (needed by rmsd and SDF as a 'reference')
-    md_trajectory_load_frame(traj, 0, &init_header, init_x, init_y, init_z, mol->atom.count);
+    if (frame_cache) {
+        md_frame_cache_load_frame_data(frame_cache, 0, init_x, init_y, init_z, init_header.box, NULL);
+    }
+    else {
+        md_trajectory_load_frame(traj, 0, &init_header, init_x, init_y, init_z, mol->atom.count);
+    }
 
     bool result = true;
 
     // We evaluate each frame, one at a time
     for (int64_t f_idx = 0; f_idx < traj->num_frames; ++f_idx) {
-        if (!md_trajectory_load_frame(traj, f_idx, NULL, mutable_mol.atom.x, mutable_mol.atom.y, mutable_mol.atom.z, mutable_mol.atom.count)) {
-            result = false;
-            goto done;
+        if (frame_cache) {
+            result = md_frame_cache_load_frame_data(frame_cache, f_idx, curr_x, curr_y, curr_z, curr_header.box, NULL);
         }
+        else {
+            result = md_trajectory_load_frame(traj, f_idx, NULL, curr_x, curr_y, curr_z, mutable_mol.atom.count);
+        }
+
+        if (!result) goto done;
 
         md_stack_allocator_set_offset(&stack_alloc, STACK_RESET_POINT);
         ctx.identifiers = 0;
@@ -3805,9 +3791,11 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             if (prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
                 ASSERT(prop->data.values);
                 
-                if (size > 1) {
-                    // Compute mean + variance!
-                    ASSERT(prop->data.variance);
+                if (prop->data.aggregate) {
+                    // Compute mean + variance values for this frame
+                    ASSERT(prop->data.aggregate->mean);
+                    ASSERT(prop->data.aggregate->variance);
+
                     float mean = 0;
                     for (int32_t i = 0 ; i < size; ++i) {
                         mean += values[i];
@@ -3820,20 +3808,20 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                         variance += x * x;
                     }
                     variance /= (float)size;
-                    prop->data.values[f_idx] = mean;
-                    prop->data.variance[f_idx] = variance;
+                    prop->data.aggregate->mean[f_idx] = mean;
+                    prop->data.aggregate->variance[f_idx] = variance;
                 }
-                else {
-                    prop->data.values[f_idx] = values[0];
-                }
+                memcpy(prop->data.values + f_idx * size, values, size * sizeof(float));
             }
             else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
                 // Accumulate values
                 ASSERT(prop->data.values);
 
-                if (size > 1) {
-                    // Compute mean + variance!
-                    ASSERT(prop->data.variance);
+                if (prop->data.aggregate) {
+                    // Compute mean + variance values for this frame
+                    ASSERT(prop->data.aggregate->mean);
+                    ASSERT(prop->data.aggregate->variance);
+
                     float mean[DIST_BINS] = {0};
                     for (int32_t i = 0 ; i < size; ++i) {
                         for (int32_t j = 0; j < DIST_BINS; ++j) {
@@ -3856,8 +3844,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                     }
 
                     for (int32_t i = 0; i < prop->data.num_values; ++i) {
-                        prop->data.values[i] = mean[i];
-                        prop->data.variance[i] = variance[i];
+                        prop->data.aggregate->mean[i] = mean[i];
+                        prop->data.aggregate->variance[i] = variance[i];
                     }
                 }
                 else {
@@ -3891,8 +3879,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         ast_node_t* node = ir->prop_expressions[p_idx]->node;
 
         if (prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+            // This is for the mean if the property is an aggregate
             compute_min_max(&prop->data.min_value, &prop->data.max_value, prop->data.values, prop->data.num_values);
-
             prop->data.min_range[0] = node->data.min_range == -FLT_MAX ? prop->data.min_value : node->data.min_range;
             prop->data.max_range[0] = node->data.max_range ==  FLT_MAX ? prop->data.max_value : node->data.max_range;
         }
@@ -3978,6 +3966,68 @@ static bool free_ir(md_script_ir_o* o) {
     return false;
 }
 
+static inline void create_tokens(md_script_ir_o* ir, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
+    md_script_token_t token = {0};
+
+    ASSERT(node->type != AST_UNDEFINED);
+
+    int len = 0;
+    char buf[256] = {0};
+
+    if (!(node->flags & FLAG_DYNAMIC)) {
+        if (node->data.type.base_type != TYPE_BITFIELD) {
+            char val_buf[128] = {0};
+            int val_len = print_value(val_buf, sizeof(val_buf), node->data);
+            len += snprintf(buf + len, sizeof(buf) - len, "%.*s ", val_len, val_buf);
+        }
+    } else {
+        len += snprintf(buf + len, sizeof(buf) - len, "[d] ");
+    }
+
+    char type_buf[128] = {0};
+    int type_len = print_type_info(type_buf, sizeof(type_buf), node->data.type);
+    len += snprintf(buf + len, sizeof(buf) - len, "(%.*s)", type_len, type_buf);
+
+    token.line = node->token.line;
+    token.col_beg = node->token.col_beg;
+    token.col_end = node->token.col_end;
+    token.depth = depth;
+    token.vis_token = (const struct md_script_vis_token_t*)(node_override ? node_override : node);
+    token.text = copy_str((str_t){.ptr = buf, .len = len}, ir->arena);
+
+    // Parent token should be last token added (unless empty)
+    md_script_token_t* last_token = md_array_last(ir->tokens);
+    if (last_token && token.line == last_token->line && token.col_beg == last_token->col_beg && token.col_end == last_token->col_end) {
+        // If the current token has the exact same line, col_beg and col_end, we only want to update the text, not the payload (the node)
+        // since we will evaluate that top down anyways. Otherwise, visualizations for position extraction casts will not be triggered.
+        last_token->text = token.text;
+    } else {
+        md_array_push(ir->tokens, token, ir->arena);
+    }
+
+    // Recurse and add children
+    const int64_t num_children = md_array_size(node->children);
+    if (node->type == AST_CONTEXT) {
+        ASSERT(num_children == 2);
+        create_tokens(ir, node->children[0], node, depth + 1);
+        create_tokens(ir, node->children[1], NULL, depth + 1);
+    } else {
+        for (int64_t i = 0; i < num_children; ++i) {
+            create_tokens(ir, node->children[i], NULL, depth + 1);
+        }
+    }
+}
+
+bool extract_tokens(md_script_ir_o* ir) {
+    const int64_t num_expr = md_array_size(ir->type_checked_expressions);
+    for (int64_t i = 0; i < num_expr; ++i) {
+        expression_t* expr = ir->type_checked_expressions[i];
+        create_tokens(ir, expr->node, NULL, 0);
+    }
+
+    return true;
+}
+
 bool md_script_ir_compile(md_script_ir_t* ir, md_script_ir_compile_args_t args) {
     ASSERT(ir);
     if (!args.src.ptr) {
@@ -4004,12 +4054,14 @@ bool md_script_ir_compile(md_script_ir_t* ir, md_script_ir_compile_args_t args) 
         static_type_check(ir->o, args.mol) &&
         static_evaluation(ir->o, args.mol) &&
         extract_dynamic_evaluation_targets(ir->o) &&
-        extract_property_expressions(ir->o);
+        extract_property_expressions(ir->o) &&
+        extract_tokens(ir->o);
 
     ir->errors = ir->o->errors;
     ir->num_errors = md_array_size(ir->o->errors);
 
-
+    ir->tokens = ir->o->tokens;
+    ir->num_tokens = md_array_size(ir->o->tokens);
 
 #if MD_DEBUG
     //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
@@ -4082,17 +4134,17 @@ bool md_script_eval(md_script_eval_result_t* eval, md_script_eval_args_t args) {
 
     bool result = false;
     
-    const int64_t num_props = md_array_size(args.ir->o->prop_expressions);
-    if (num_props) {
-        eval->properties = md_alloc(args.alloc, num_props * sizeof(md_script_property_t));
-        eval->num_properties = num_props;
-        result = init_properties(eval->properties, args.traj->num_frames, args.ir->o->prop_expressions, num_props, eval->o->arena) &&
-                 eval_properties(eval->properties, num_props, args.mol, args.traj, args.ir->o);
+    md_script_property_t* properties = NULL;
+
+    const int64_t num_prop_expr = md_array_size(args.ir->o->prop_expressions);
+    if (num_prop_expr > 0) {
+        result = create_properties(&properties, args.traj->num_frames, args.ir->o->prop_expressions, num_prop_expr, eval->o->arena) &&
+                 eval_properties(properties, num_prop_expr, args.mol, args.traj, args.frame_cache, args.ir->o);
     }
 
-    if (!result) {
-        eval->properties = 0;
-        eval->num_properties = 0;
+    if (result) {
+        eval->properties = properties;
+        eval->num_properties = md_array_size(properties);
     }
 
     return result;
@@ -4227,14 +4279,6 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
 }
 
 #define VIS_MAGIC 0xbc6169abd9628947
-#define TOK_MAGIC 0xbb81674bcbabc562
-
-typedef struct md_script_tokens_o {
-    uint64_t magic;
-    md_allocator_i* alloc;
-} md_script_tokens_o;
-
-
 
 static inline const md_range_t node_range(const ast_node_t* node) {
     md_range_t range = {node->token.col_beg, node->token.col_end};
@@ -4275,99 +4319,7 @@ static inline const ast_node_t* get_node(const ast_node_t* node, int32_t col) {
     return result;
 }
 
-static inline void create_tokens(md_script_tokens_t* tokens, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
-    md_script_token_t token = {0};
-
-    ASSERT(node->type != AST_UNDEFINED);
-
-    int len = 0;
-    char buf[256] = {0};
-
-    if (!(node->flags & FLAG_DYNAMIC)) {
-        if (node->data.type.base_type != TYPE_BITFIELD) {
-            char val_buf[128] = {0};
-            int val_len = print_value(val_buf, sizeof(val_buf), node->data);
-            len += snprintf(buf + len, sizeof(buf) - len, "%.*s ", val_len, val_buf);
-        }
-    } else {
-        len += snprintf(buf + len, sizeof(buf) - len, "[d] ");
-    }
-
-    char type_buf[128] = {0};
-    int type_len = print_type_info(type_buf, sizeof(type_buf), node->data.type);
-    len += snprintf(buf + len, sizeof(buf) - len, "(%.*s)", type_len, type_buf);
-
-    token.line = node->token.line;
-    token.col_beg = node->token.col_beg;
-    token.col_end = node->token.col_end;
-    token.depth = depth;
-    token.o = node_override ? node_override : node;
-    token.text = copy_str((str_t){.ptr = buf, .len = len}, tokens->o->alloc);
-
-    // Parent token should be last token added (unless empty)
-    md_script_token_t* last_token = md_array_last(tokens->tokens);
-    if (last_token && token.line == last_token->line && token.col_beg == last_token->col_beg && token.col_end == last_token->col_end) {
-        // If the current token has the exact same line, col_beg and col_end, we only want to update the text, not the payload (the node)
-        // since we will evaluate that top down anyways. Otherwise, visualizations for position extraction casts will not be triggered.
-        //last_token->text = token.text;
-    } else {
-        md_array_push(tokens->tokens, token, tokens->o->alloc);
-    }
-
-    // Recurse and add children
-    const int64_t num_children = md_array_size(node->children);
-    if (node->type == AST_CONTEXT) {
-        ASSERT(num_children == 2);
-        create_tokens(tokens, node->children[0], node, depth + 1);
-        create_tokens(tokens, node->children[1], NULL, depth + 1);
-    } else {
-        for (int64_t i = 0; i < num_children; ++i) {
-            create_tokens(tokens, node->children[i], NULL, depth + 1);
-        }
-    }
-}
-
-bool md_script_tokens_init(md_script_tokens_t* tokens, const md_script_ir_t* ir, md_allocator_i* alloc) {
-    ASSERT(tokens);
-    if (!ir) return false;
-    if (!validate_ir_o(ir->o)) return false;
-
-    if (tokens->o) {
-        ASSERT(tokens->o->magic == TOK_MAGIC);
-        ASSERT(tokens->o->alloc);
-        md_arena_allocator_reset(tokens->o->alloc);
-    } else {
-        md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
-        tokens->o = md_alloc(arena, sizeof(md_script_tokens_o));
-        memset(tokens->o, 0, sizeof(md_script_tokens_o));
-        tokens->o->magic = TOK_MAGIC;
-        tokens->o->alloc = arena;
-    }
-
-    const int64_t num_expr = md_array_size(ir->o->type_checked_expressions);
-    for (int64_t i = 0; i < num_expr; ++i) {
-        expression_t* expr = ir->o->type_checked_expressions[i];
-        create_tokens(tokens, expr->node, NULL, 0);
-    }
-
-    tokens->num_tokens = md_array_size(tokens->tokens);
-    return true;
-}
-
-bool md_script_tokens_free(md_script_tokens_t* tokens) {
-    ASSERT(tokens);
-    if (tokens->o) {
-        ASSERT(tokens->o->magic == TOK_MAGIC);
-        md_arena_allocator_destroy(tokens->o->alloc);
-    }
-
-    memset(tokens, 0, sizeof(md_script_tokens_t));
-    return true;
-}
-
-static inline void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(ctx->vis);
-
+static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
     if (node->data.type.base_type == TYPE_BITFIELD) {
         data_t data = { .type = node->data.type };
         allocate_data(&data, ctx->temp_alloc);
@@ -4382,6 +4334,20 @@ static inline void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
         free_data(&data, ctx->temp_alloc);
     } else {
         evaluate_node(NULL, node, ctx);
+    }
+}
+
+static inline void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node);
+    ASSERT(ctx->vis);
+    if (node->type != AST_CONTEXT && node->context) {
+        for (int64_t i = 0; i < md_array_size(node->context); ++i) {
+            ctx->mol_ctx = &node->context[i];
+            do_vis_eval(node, ctx);
+        }
+    }
+    else {
+        do_vis_eval(node, ctx);
     }
 
     /*
@@ -4400,6 +4366,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     if (!args.mol) return false;
     if (!args.ir) return false;
     if (!args.ir->o) return false;
+    if (!args.alloc) return false;
 
     if (vis->o) {
         ASSERT(vis->o->magic == VIS_MAGIC);
@@ -4413,17 +4380,41 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         vis->o->magic = VIS_MAGIC;
     }
 
+    const int64_t stack_size = MEGABYTES(32);
+    void* stack_ptr = md_alloc(default_allocator, stack_size);
+    md_stack_allocator_t stack = {0};
+    md_stack_allocator_init(&stack, stack_ptr, stack_size);
+    md_allocator_i stack_alloc = md_stack_allocator_create_interface(&stack);
+
+    float* x = md_stack_allocator_alloc(&stack, args.traj->num_atoms * sizeof(float));
+    float* y = md_stack_allocator_alloc(&stack, args.traj->num_atoms * sizeof(float));
+    float* z = md_stack_allocator_alloc(&stack, args.traj->num_atoms * sizeof(float));
+    
+    md_trajectory_frame_header_t header = { 0 };
+    if (args.frame_cache) {
+        md_frame_cache_load_frame_data(args.frame_cache, 0, x, y, z, header.box, NULL);
+    } else {
+        md_trajectory_load_frame(args.traj, 0, &header, x, y, z, args.traj->num_atoms);
+    }
+
     eval_context_t ctx = {
         .ir = args.ir->o,
         .mol = args.mol,
-        .temp_alloc = default_temp_allocator,
+        .temp_alloc = &stack_alloc,
         .vis = vis,
+        .initial_configuration = {
+            .header = &header,
+            .x = x,
+            .y = y,
+            .z = z
+        }
     };
-
-    ASSERT(args.token->o);
+    
     md_bitfield_init(&vis->atom_mask, vis->o->alloc);
 
-    visualize_node((ast_node_t*)args.token->o, &ctx);
+    visualize_node((ast_node_t*)args.token, &ctx);
+
+    md_free(default_allocator, stack_ptr, stack_size);
 
     return true;
 }

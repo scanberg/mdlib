@@ -17,18 +17,18 @@
 extern "C" {
 #endif
 
-#define MD_SPLINE_MAX_SUBDIVISION_COUNT 8
+#define MD_GL_SPLINE_MAX_SUBDIVISION_COUNT 8
 
 // ### CONTEXT ###
 //
 // The context holds the shared resources such as buffers, shaders and textures needed to draw molecules
-typedef struct md_gl_context md_gl_context;
-struct md_gl_context {
+typedef struct md_gl_context_t md_gl_context_t;
+struct md_gl_context_t {
     uint64_t _opaque[72];
 };
 
-bool md_gl_context_init(md_gl_context* ctx);
-bool md_gl_context_free(md_gl_context* ctx);
+bool md_gl_context_init(md_gl_context_t* ctx);
+bool md_gl_context_free(md_gl_context_t* ctx);
 
 
 // ### GL MOLECULE ###
@@ -49,13 +49,13 @@ bool md_gl_context_free(md_gl_context* ctx);
 //  - bond
 //      - bond : u32[2]
 
-typedef struct md_gl_molecule md_gl_molecule;
-struct md_gl_molecule {
+typedef struct md_gl_molecule_t md_gl_molecule_t;
+struct md_gl_molecule_t {
     uint64_t _mem[12];
 };
 
-typedef struct md_gl_molecule_desc md_gl_molecule_desc;
-struct md_gl_molecule_desc {
+typedef struct md_gl_molecule_desc_t md_gl_molecule_desc_t;
+struct md_gl_molecule_desc_t {
     struct {
         uint32_t count;
         const float*   x;
@@ -88,30 +88,30 @@ struct md_gl_molecule_desc {
     } chain;
 };
 
-bool md_gl_molecule_init(md_gl_molecule* mol, const md_gl_molecule_desc* desc);
-bool md_gl_molecule_free(md_gl_molecule* mol);
+bool md_gl_molecule_init(md_gl_molecule_t* mol, const md_gl_molecule_desc_t* desc);
+bool md_gl_molecule_free(md_gl_molecule_t* mol);
 
 // ### Update by modifying the dynamic data fields ###
-bool md_gl_molecule_set_atom_position(md_gl_molecule* mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride);
-bool md_gl_molecule_set_atom_radius(md_gl_molecule* mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride);
-bool md_gl_molecule_set_atom_flags(md_gl_molecule* mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride);
+bool md_gl_molecule_set_atom_position(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride);
+bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride);
+bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride);
 
-bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule* mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride);
+bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
 // This is called to copy the atom position buffer to previous atom position
 // Usually just before calling md_gl_molecule_set_atom_position() to set a new current position
-bool md_gl_molecule_update_atom_previous_position(md_gl_molecule* mol);
+bool md_gl_molecule_update_atom_previous_position(md_gl_molecule_t* mol);
 /*
  *  REPRESENTATIONS
  *  Interface for creating visual representations for molecules
  */
-typedef struct md_gl_representation md_gl_representation;
+typedef struct md_gl_representation_t md_gl_representation_t;
 
-struct md_gl_representation { // This is an opaque blob which matches the size of internal memory used by the structure
+struct md_gl_representation_t { // This is an opaque blob which matches the size of internal memory used by the structure
     uint64_t _mem[4];
 };
 
-typedef uint16_t md_gl_representation_type;
+typedef uint16_t md_gl_representation_type_t;
 enum {
     MD_GL_REP_DEFAULT                    = 0,
     MD_GL_REP_SPACE_FILL                 = 1,
@@ -121,7 +121,7 @@ enum {
     MD_GL_REP_LICORICE                   = 5
 };
 
-typedef union md_gl_representation_args {
+typedef union md_gl_representation_args_t {
     struct {
         float radius_scale;
     } space_fill;
@@ -143,13 +143,13 @@ typedef union md_gl_representation_args {
     struct {
         float probe_radius;
     } solvent_excluded_surface;
-} md_gl_representation_args;
+} md_gl_representation_args_t;
 
-bool md_gl_representation_init(md_gl_representation* rep, const md_gl_molecule* mol);
-bool md_gl_representation_free(md_gl_representation* rep);
+bool md_gl_representation_init(md_gl_representation_t* rep, const md_gl_molecule_t* mol);
+bool md_gl_representation_free(md_gl_representation_t* rep);
 
-bool md_gl_representation_set_type_and_args(md_gl_representation* rep, md_gl_representation_type type, md_gl_representation_args args);
-bool md_gl_representation_set_color(md_gl_representation* rep, uint32_t offset, uint32_t count, const uint32_t* color, uint32_t byte_stride);
+bool md_gl_representation_set_type_and_args(md_gl_representation_t* rep, md_gl_representation_type_t type, md_gl_representation_args_t args);
+bool md_gl_representation_set_color(md_gl_representation_t* rep, uint32_t offset, uint32_t count, const uint32_t* color, uint32_t byte_stride);
 
 /*
  *  DRAW
@@ -157,7 +157,7 @@ bool md_gl_representation_set_color(md_gl_representation* rep, uint32_t offset, 
  *
  */
 
-typedef struct md_gl_rendertarget {
+typedef struct md_gl_rendertarget_t {
     uint32_t width;
     uint32_t height;
     uint32_t texture_depth;
@@ -165,41 +165,44 @@ typedef struct md_gl_rendertarget {
     uint32_t texture_atom_index;        // [Optional] (0 = ignore)
     uint32_t texture_view_normal;       // [Optional] (0 = ignore)
     uint32_t texture_view_velocity;     // [Optional] (0 = ignore)
-} md_gl_rendertarget;
+} md_gl_rendertarget_t;
 
-typedef uint32_t md_gl_options;
+typedef uint32_t md_gl_options_t;
 enum {
-    md_gl_OPTION_NONE                      = 0,
-    md_gl_OPTION_RESIDUE_OCCLUSION_CULLING = 1,
+    MD_GL_OPTION_NONE                      = 0,
+    MD_GL_OPTION_RESIDUE_OCCLUSION_CULLING = 1,
+    MD_GL_OPTION_CLEAR_COLOR_BUFFER        = 2,
+    MD_GL_OPTION_CLEAR_DEPTH_BUFFER        = 4
 };
 
-typedef struct md_gl_draw_args {
+typedef struct md_gl_draw_args_t {
     struct {
         uint32_t count;
-        const md_gl_representation** data;
+        const md_gl_representation_t** data;
+        const float** model_matrix;
     } representation;
 
     struct {
         // @NOTE: Matrices are column major float[4][4]
-        const float* model_view_matrix;
+        const float* view_matrix;
         const float* projection_matrix;
 
-        // [Optional] These fields are only required if md_gl_rendertarget is used and a texture_view_velocity is present
-        const float* prev_model_view_matrix; 
+        // [Optional] These fields are only required if md_gl_rendertarget_t is used and a texture_view_velocity is present
+        const float* prev_view_matrix; 
         const float* prev_projection_matrix;
     } view_transform;
 
-    const md_gl_rendertarget* render_target;     // [Optional] If NULL, then the global gl state of the viewport and framebuffer will be used
+    const md_gl_rendertarget_t* render_target;     // [Optional] If NULL, then the global gl state of the viewport and framebuffer will be used
 
     // If atom_mask is non-zero, the value is used as a mask and is ANDed with the atom flag of the molecule,
     // if the result after the operation is non-zero, the atom will be drawn.
     // Some representations (such as ribbons, cartoon) use spline segments derived from CA atoms, hide the CA atom => hide the segment
     uint32_t atom_mask;
 
-    md_gl_options options;
+    md_gl_options_t options;
 } md_gl_draw_args_t;
 
-bool md_gl_draw(md_gl_context* ctx, const md_gl_draw_args_t* args);
+bool md_gl_draw(md_gl_context_t* ctx, const md_gl_draw_args_t* args);
 
 #ifdef __cplusplus
 }

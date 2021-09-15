@@ -13,7 +13,7 @@ extern "C" {
 // It internally allocates larger pages to restrict the strain on the backing allocator.
 // NOTE: YOU CAN ONLY ALLOCATE OBJECT_SIZE OR LESS FROM THIS ALLOCATOR, OTHERWISE ASSERTIONS WILL FIRE!
 
-struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, uint32_t slot_size);
+struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, int64_t slot_size_bytes);
 void md_pool_allocator_destroy(struct md_allocator_i* a);
 
 #ifdef __cplusplus
