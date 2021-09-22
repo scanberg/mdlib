@@ -82,8 +82,9 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_
 
     if (new_size == 0) {
         // Free
-        ASSERT(ptr);
-        ASSERT(old_size);
+        // We cannot assert here since new_size may be NULL in case of a new allocation of size 0 as well.
+        //ASSERT(ptr);
+        //ASSERT(old_size);
         return NULL;
     }
     if (ptr && old_size) {

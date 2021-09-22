@@ -159,7 +159,7 @@ UTEST(script, selection) {
 }
 
 UTEST(script, compile_script) {
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
     const str_t gro_file = make_cstr(MD_UNITTEST_DATA_DIR "/centered.gro");
 
     md_gro_data_t gro_data = {0};
@@ -181,7 +181,7 @@ UTEST(script, compile_script) {
 }
 
 UTEST(script, selection_big) {
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
 
     const str_t gro_file = make_cstr(MD_UNITTEST_DATA_DIR "/centered.gro");
 
@@ -214,7 +214,7 @@ UTEST(script, property_compute) {
     ASSERT_TRUE(md_pdb_trajectory_open(&traj, pdb_file, alloc));
 
     md_script_ir_t ir = {0};
-    md_script_eval_result_t eval = {0};
+    md_script_eval_t eval = {0};
     {
         md_script_ir_compile_args_t compile_args = {
             .src = make_cstr("prop1 = rdf(element('C'), element('O'), 20.0);"),
@@ -223,14 +223,14 @@ UTEST(script, property_compute) {
         };
         EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
 
+        EXPECT_TRUE(md_script_eval_alloc(&eval, traj.num_frames, &ir, alloc));
+
         md_script_eval_args_t eval_args = {
             .ir = &ir,
             .mol = &mol,
             .traj = &traj,
-            .frame_mask = 0,
-            .alloc = alloc,
         };
-        ASSERT_TRUE(md_script_eval(&eval, eval_args));
+        ASSERT_TRUE(md_script_eval_compute(&eval, eval_args));
 
         EXPECT_EQ(eval.num_properties, 1);
     }
@@ -246,20 +246,43 @@ UTEST(script, property_compute) {
         };
         EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
 
+        EXPECT_TRUE(md_script_eval_alloc(&eval, traj.num_frames, &ir, alloc));
+
         md_script_eval_args_t eval_args = {
             .ir = &ir,
             .mol = &mol,
             .traj = &traj,
-            .frame_mask = 0,
-            .alloc = alloc,
         };
-        ASSERT_TRUE(md_script_eval(&eval, eval_args));
+        ASSERT_TRUE(md_script_eval_compute(&eval, eval_args));
 
         EXPECT_EQ(eval.num_properties, 1);
         const md_script_property_t* props = eval.properties;
 
         //EXPECT_EQ(props->data.num_values, traj_header.num_frames);
+    }
 
+    {
+        md_script_ir_compile_args_t compile_args = {
+            .src = make_cstr(
+                "d1  = distance(10:2, 100);"
+            ),
+            .mol = &mol,
+            .alloc = alloc
+        };
+        EXPECT_FALSE(md_script_ir_compile(&ir, compile_args));
+    }
+
+    {
+        md_script_ir_compile_args_t compile_args = {
+            .src = make_cstr(
+                "s1 = residue(1:10);\n"
+                "s2 = residue(11:15);\n"
+                "s = {s1, s2};"
+            ),
+            .mol = &mol,
+            .alloc = alloc
+        };
+        EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
     }
 
     md_script_ir_free(&ir);

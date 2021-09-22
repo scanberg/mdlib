@@ -231,12 +231,6 @@ uint32_t md_util_element_cpk_color(md_element_t element) {
     return element_cpk_colors[element];
 }
 
-
-static inline float distance(const float v[3], const float u[3]) {
-    const float d[3] = {v[0] - u[0], v[1] - u[1], v[2] - u[2]};
-    return sqrtf(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
-}
-
 static inline bool cmp1(const char* str, const char* ref) {
     return str[0] == ref[0] && str[1] == '\0';
 }
@@ -288,9 +282,9 @@ static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args_t* a
             if (j + k >= (int)bb_range.end) continue;
             const int ca_j = args->backbone.atoms[j].ca;
             const int ca_k = args->backbone.atoms[j + k].ca;
-            const float pos_j[3] = {args->atom.x[ca_j], args->atom.y[ca_j], args->atom.z[ca_j]};
-            const float pos_k[3] = {args->atom.x[ca_k], args->atom.y[ca_k], args->atom.z[ca_k]};
-            const float d = distance(pos_j, pos_k);
+            const vec3_t pos_j = {args->atom.x[ca_j], args->atom.y[ca_j], args->atom.z[ca_j]};
+            const vec3_t pos_k = {args->atom.x[ca_k], args->atom.y[ca_k], args->atom.z[ca_k]};
+            const float d = vec3_distance(pos_j, pos_k);
             if (ABS(d - distances[k - 2]) > delta) {
                 return false;
             }

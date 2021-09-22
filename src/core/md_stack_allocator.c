@@ -17,7 +17,7 @@ void* stack_realloc(md_stack_allocator_t* stack_alloc, void* ptr, uint64_t old_s
         if (ptr == stack_alloc->buf + stack_alloc->prev) {
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
             const int64_t new_curr = stack_alloc->curr + diff;
-            ASSERT(0 <= new_curr && new_curr < stack_alloc->capacity);
+            ASSERT(0 <= new_curr && new_curr < (int64_t)stack_alloc->capacity);
             stack_alloc->curr = new_curr;
             return ptr;
         }

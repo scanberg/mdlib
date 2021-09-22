@@ -1094,12 +1094,6 @@ bool md_gl_draw(md_gl_context_t* ext_ctx, const md_gl_draw_args_t* args) {
 #define DRAW_ENT_CAP 512
     draw_entity_t         draw_ent[DRAW_ENT_CAP] = {0};
     uint32_t              draw_ent_count = 0;
-
-    /*
-    const internal_rep_t* draw_rep_ptr[DRAW_REP_CAP] = {0};
-    const mat4_t*         draw_rep_mat[DRAW_REP_CAP] = {0};
-    uint32_t              draw_rep_count = 0;
-    */
 #undef  DRAW_REP_CAP
         
 #define UNIQUE_MOL_CAP 128

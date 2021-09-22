@@ -19,3 +19,5 @@
 #else
     #error "Platform Unknown"
 #endif
+
+#define MD_PLATFORM_UNIX (MD_PLATFORM_LINUX || MD_PLATFORM_OSX)

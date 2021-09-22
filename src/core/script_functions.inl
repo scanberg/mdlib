@@ -225,7 +225,7 @@ static int _rdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield
 static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, float) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
 
 // Geometric operations
-static int _com     (data_t*, data_t[], eval_context_t*); // (float[3][]) -> float[3]
+static int _com_vec3(data_t*, data_t[], eval_context_t*); // (float[3][]) -> float[3]
 static int _com_bf  (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> float[3]
 static int _com_int (data_t*, data_t[], eval_context_t*); // (int[])      -> float[3]
 static int _com_irng(data_t*, data_t[], eval_context_t*); // (irange[])   -> float[3]
@@ -318,9 +318,9 @@ static procedure_t casts[] = {
     {cstr("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _cast_flatten_bf_arr},
 
     // This does the heavy lifting for implicitly converting every compatible argument into a position (vec3) if the procedure is marked with FLAG_POSITION
-    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_INT_ARR},       _com_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
-    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
-    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
+    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_INT_ARR},       _com_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
     {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
     {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
@@ -486,8 +486,10 @@ static procedure_t procedures[] = {
     {cstr("sdf"),       TI_VOLUME,          3,  {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},   _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE},
 
     // --- GEOMETRICAL OPERATIONS ---
-    {cstr("com"),       TI_FLOAT3,      1,  {TI_FLOAT3_ARR},    _com,       FLAG_DYNAMIC | FLAG_VISUALIZE},
-    {cstr("com"),       TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,    FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {cstr("com"),       TI_FLOAT3,      1,  {TI_INT_ARR},       _com_int,   FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("com"),       TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng,  FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("com"),       TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,    FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("com"),       TI_FLOAT3,      1,  {TI_FLOAT3_ARR},    _com_vec3,  FLAG_DYNAMIC | FLAG_VISUALIZE},
     {cstr("plane"),     TI_FLOAT4,      1,  {TI_FLOAT3_ARR},    _plane,     FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
 
     {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH},
@@ -907,12 +909,14 @@ static int _vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
-    (void)arg;
-    md_exp_bitfield_t* bf = (md_exp_bitfield_t*)dst->ptr;
-    md_bitfield_set_range(bf, 0, ctx->mol->atom.count);
-    if (ctx->mol_ctx) {
-        md_bitfield_and(bf, bf, ctx->mol_ctx);
+    if (dst) {
+        ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        (void)arg;
+        md_exp_bitfield_t* bf = (md_exp_bitfield_t*)dst->ptr;
+        md_bitfield_set_range(bf, 0, ctx->mol->atom.count);
+        if (ctx->mol_ctx) {
+            md_bitfield_and(bf, bf, ctx->mol_ctx);
+        }
     }
     return 0;
 }
@@ -1722,7 +1726,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
-        as_float(*dst) = vec3_dist(a, b);
+        as_float(*dst) = vec3_distance(a, b);
         dst->unit = MD_SCRIPT_UNIT_ANGSTROM;
         dst->min_range = -FLT_MAX;
         dst->max_range = FLT_MAX;
@@ -1746,7 +1750,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int64_t min_j = 0;
     for (int64_t i = 0; i < a_len; ++i) {
         for (int64_t j = 0; j < b_len; ++j) {
-            const float dist = vec3_dist(a_pos[i], b_pos[j]);
+            const float dist = vec3_distance(a_pos[i], b_pos[j]);
             if (dist < min_dist) {
                 min_dist = dist;
                 min_i = i;
@@ -1787,7 +1791,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int64_t max_j = 0;
     for (int64_t i = 0; i < a_len; ++i) {
         for (int64_t j = 0; j < b_len; ++j) {
-            const float dist = vec3_dist(a_pos[i], b_pos[j]);
+            const float dist = vec3_distance(a_pos[i], b_pos[j]);
             if (dist > max_dist) {
                 max_dist = dist;
                 max_i = i;
@@ -1832,7 +1836,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         for (int64_t i = 0; i < a_len; ++i) {
             for (int64_t j = 0; j < b_len; ++j) {
-                const float dist = vec3_dist(a_pos[i], b_pos[j]);
+                const float dist = vec3_distance(a_pos[i], b_pos[j]);
                 dst_arr[i * b_len + j] = dist;
             }
         }
@@ -2214,7 +2218,7 @@ static int _cast_bf_to_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 */
 
-static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _com_vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
     (void)dst;
     (void)arg;
@@ -2263,7 +2267,6 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const md_exp_bitfield_t* bf_arr = as_bitfield(arg[0]);
     int64_t bf_count = element_count(arg[0]);
 
-
     md_exp_bitfield_t tmp_bf = {0};
     md_bitfield_init(&tmp_bf, ctx->temp_alloc);
 
@@ -2278,38 +2281,45 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     int64_t bit_count = md_bitfield_popcount(&tmp_bf);
 
-    int64_t size = ROUND_UP(bit_count, md_simd_width);
-    int64_t mem_size = size * 4 * sizeof(float);
-    float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
+    if (dst || ctx->vis) {
+        int64_t size = ROUND_UP(bit_count, md_simd_width);
+        int64_t mem_size = size * 4 * sizeof(float);
+        float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
 
-    float* x = mem_ptr + size * 0;
-    float* y = mem_ptr + size * 1;
-    float* z = mem_ptr + size * 2;
-    float* w = mem_ptr + size * 3;
+        float* x = mem_ptr + size * 0;
+        float* y = mem_ptr + size * 1;
+        float* z = mem_ptr + size * 2;
+        float* w = mem_ptr + size * 3;
 
-    extract_xyzw(x, y, z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &tmp_bf);
-    vec3_t com = md_util_compute_com(x,y,z,w, size);
+        extract_xyzw(x, y, z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &tmp_bf);
+        vec3_t com = md_util_compute_com(x,y,z,w, size);
 
-    md_free(ctx->temp_alloc, mem_ptr, mem_size);
-    md_bitfield_free(&tmp_bf);
+        md_free(ctx->temp_alloc, mem_ptr, mem_size);
+        md_bitfield_free(&tmp_bf);
 
-    if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT3));
-        ASSERT(dst->ptr);
-        as_vec3(*dst) = com;
-    }
-
-    if (ctx->vis) {
-        if (bit_count > 1) {
-            uint16_t c = push_vertex(com, ctx->vis);
-            push_point(c, ctx->vis);
-            for (int64_t i = 0; i < bit_count; ++i) {
-                vec3_t pos = {x[i], y[i], z[i]};
-                uint16_t v = push_vertex(pos, ctx->vis);
-                push_line(v, c, ctx->vis);
-            }
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT3));
+            ASSERT(dst->ptr);
+            as_vec3(*dst) = com;
         }
-        visualize_atom_mask(&tmp_bf, ctx->vis);
+
+        if (ctx->vis) {
+            if (bit_count > 1) {
+                uint16_t c = push_vertex(com, ctx->vis);
+                push_point(c, ctx->vis);
+                for (int64_t i = 0; i < bit_count; ++i) {
+                    vec3_t pos = {x[i], y[i], z[i]};
+                    uint16_t v = push_vertex(pos, ctx->vis);
+                    push_line(v, c, ctx->vis);
+                }
+            }
+            visualize_atom_mask(&tmp_bf, ctx->vis);
+        }
+    } else {
+        if (bit_count <= 1) {
+            create_error(ctx->ir, ctx->arg_tokens[0], "The bitfield is empty");
+            return -1;
+        }
     }
 
     return 0;
@@ -2689,7 +2699,7 @@ static int _rdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         memset(bins, 0, num_bins * sizeof(float));
         for (int64_t i = 0; i < ref_size; ++i) {
             for (int64_t j = 0; j < target_size; ++j) {
-                const float d = vec3_dist(ref_pos[i], target_pos[j]);
+                const float d = vec3_distance(ref_pos[i], target_pos[j]);
                 if (d < cutoff) {
                     const int32_t bin_idx = (int32_t)((d / cutoff) * num_bins);
                     bins[bin_idx] += 1.0f;
@@ -2929,6 +2939,46 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     return result;
+}
+
+
+// This is some experimental future work, for matching structures using maximum overlapping subgraph
+typedef struct node_t {
+    md_element_t elem;
+} node_t;
+
+typedef struct edge_t {
+    int32_t idx[2];
+} edge_t;
+
+typedef struct graph_t {
+    node_t* nodes;
+    edge_t* edges;
+} graph_t;
+
+static int32_t greedy_align(const md_exp_bitfield_t* a, const md_exp_bitfield_t* b, const md_molecule_t* mol) {
+    const int64_t a_size = md_bitfield_popcount(a);
+    const int64_t b_size = md_bitfield_popcount(b);
+    const md_exp_bitfield_t *small, *big;
+    if (a_size < b_size) {
+        small = a;
+        big = b;
+    } else {
+        small = b;
+        big = a;
+    }
+
+    
+}
+
+static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
+
+    if (dst) {
+        ASSERT(dst->ptr);
+        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_INT_ARR));
+    }
 }
 
 #undef ANY_LENGTH

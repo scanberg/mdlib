@@ -599,8 +599,6 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
             md_array_push(mol->chain.id, chain_label.ptr, alloc);
             md_array_push(mol->chain.residue_range, residue_range, alloc);
             md_array_push(mol->chain.atom_range, atom_range, alloc);
-
-            if (mol->chain.residue_range) md_array_last(mol->chain.residue_range)->end += 1;
         }
 
         int32_t res_id = data->atom_coordinates[i].res_seq;
@@ -615,6 +613,8 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
             md_array_push(mol->residue.name, res_name.ptr, alloc);
             md_array_push(mol->residue.id, id, alloc);
             md_array_push(mol->residue.atom_range, atom_range, alloc);
+
+            if (mol->chain.residue_range) md_array_last(mol->chain.residue_range)->end += 1;
         }
 
         if (mol->residue.atom_range) md_array_last(mol->residue.atom_range)->end += 1;

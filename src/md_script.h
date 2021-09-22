@@ -60,6 +60,7 @@ typedef struct md_script_error_t {
 // Opaque immediate representation (compilation result)
 typedef struct md_script_ir_t {
     struct md_script_ir_o* o; // opaque internal data
+    uint64_t fingerprint; // Unique ID to compare against to see if your representation is up to date.
 
     int64_t num_errors;
     const md_script_error_t* errors;
@@ -95,16 +96,17 @@ typedef struct md_script_property_t {
     md_script_unit_t unit;
     md_script_property_data_t data;
 
-    const struct md_script_vis_token_t* vis_token;
+    const struct md_script_vis_token_t* vis_token; // For visualization of the property
 } md_script_property_t;
 
 // Opaque container for the evaluation result
-typedef struct md_script_eval_result_t {
+typedef struct md_script_eval_t {
     struct md_script_eval_o* o; // opaque internal data
+    uint64_t fingerprint; // Unique ID to compare against to see if your representation is up to date.
 
     int64_t num_properties;
     md_script_property_t* properties;
-} md_script_eval_result_t;
+} md_script_eval_t;
 
 // ### COMPILE ###
 typedef struct md_script_ir_compile_args_t {
@@ -122,17 +124,27 @@ typedef struct md_script_eval_args_t {
     const struct md_molecule_t* mol;
     const struct md_trajectory_i* traj;
 
-    // Optional, if this is set, this will be used to load trajectory frames
+    // Optional, if this is set, this will be used to load trajectory frames.
     struct md_frame_cache_t* frame_cache;
 
-    // Optional, set this mask to mask out which frames should be evaluated.
-    md_bitfield_t* frame_mask;
-
-    struct md_allocator_i* alloc;
+    // Optional, set this mask to mask out which frames that should be evaluated.
+    md_exp_bitfield_t* filter_mask;
 } md_script_eval_args_t;
 
-bool md_script_eval(md_script_eval_result_t* result, md_script_eval_args_t args);
-bool md_script_eval_free(md_script_eval_result_t* result);
+// Allocate the data for properties within the evaluation
+// We need to pass the number of frames we want the data to hold
+// Should be performed as soon as the IR has changed.
+bool md_script_eval_alloc(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
+
+// Compute properties
+// Must be performed after the properties has been allocated.
+bool md_script_eval_compute(md_script_eval_t* eval, md_script_eval_args_t args);
+
+bool md_script_eval_free(md_script_eval_t* eval);
+
+// These is meant to be used if the evaulation runs in its own thread (which is recommended)
+int md_script_eval_completed_frame_count(const md_script_eval_t* eval);
+void md_script_eval_interrupt(const md_script_eval_t* eval);
 
 // ### VISUALIZE ###
 
@@ -162,7 +174,7 @@ typedef struct md_script_visualization_t {
 
     struct {
         int64_t count;
-        float* pos_rad;     // xyzr xyzr
+        float* pos_rad;     // xyzr
     } sphere;
 
     // This is a bit of a shoe-horn case where we want to visualize the superimposed structures and the atoms involved
