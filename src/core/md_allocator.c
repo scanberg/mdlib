@@ -16,7 +16,7 @@ typedef struct ring_buffer {
     char mem[THREAD_LOCAL_RING_BUFFER_SIZE];
 } ring_buffer;
 
-THREAD_LOCAL ring_buffer ring = {};
+THREAD_LOCAL ring_buffer ring = {0,0};
 
 static void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;

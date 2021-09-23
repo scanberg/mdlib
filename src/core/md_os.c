@@ -23,6 +23,7 @@
 
 // If we need to explicitly link against some lib
 #pragma comment(lib, "User32.lib")
+#pragma comment(lib, "Shlwapi.lib")
 
 #define MD_MAX_PATH MAX_PATH
 
@@ -68,7 +69,7 @@ str_t md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
 
     SZBUF_FROM_STR(sz_path, path);
 
-    str_t canonical_str = {};
+    str_t canonical_str = {0};
     bool result = false;
 
 #if MD_PLATFORM_WINDOWS
@@ -94,11 +95,11 @@ str_t md_os_path_make_relative(str_t from, str_t to, struct md_allocator_i* allo
     SZBUF_FROM_STR(sz_from, from);
     SZBUF_FROM_STR(sz_to, to);
 
-    str_t relative_str = {};
+    str_t relative_str = {0};
     bool result = false;
 
 #if MD_PLATFORM_WINDOWS
-    bool result = PathRelativePathTo(sz_buf, sz_from, FILE_ATTRIBUTE_DIRECTORY, sz_to, FILE_ATTRIBUTE_NORMAL);
+    result = PathRelativePathTo(sz_buf, sz_from, FILE_ATTRIBUTE_DIRECTORY, sz_to, FILE_ATTRIBUTE_NORMAL);
 
 #elif MD_PLATFORM_UNIX
     // Make 2 canonical paths

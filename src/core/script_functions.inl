@@ -2509,7 +2509,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < num_pos; ++i) {
             com = vec3_add(com, in_pos[i]);
         }
-        com = vec3_div_f(com, num_pos);
+        com = vec3_div_f(com, (float)num_pos);
 
         vec3_t eigen_vec[3];
         float  eigen_val[3];
@@ -3000,6 +3000,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 
+/*
 // This is some experimental future work, for matching structures using maximum overlapping subgraph
 typedef struct node_t {
     md_element_t elem;
@@ -3017,7 +3018,9 @@ typedef struct graph_t {
 static int32_t greedy_align(const md_exp_bitfield_t* a, const md_exp_bitfield_t* b, const md_molecule_t* mol) {
     const int64_t a_size = md_bitfield_popcount(a);
     const int64_t b_size = md_bitfield_popcount(b);
-    const md_exp_bitfield_t *small, *big;
+    const md_exp_bitfield_t* small;
+    const md_exp_bitfield_t* big;
+
     if (a_size < b_size) {
         small = a;
         big = b;
@@ -3025,8 +3028,6 @@ static int32_t greedy_align(const md_exp_bitfield_t* a, const md_exp_bitfield_t*
         small = b;
         big = a;
     }
-
-    
 }
 
 static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -3038,6 +3039,7 @@ static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_INT_ARR));
     }
 }
+*/
 
 #undef ANY_LENGTH
 //#undef ANY_LEVEL

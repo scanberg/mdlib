@@ -141,7 +141,7 @@ static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_id
 }
 
 static inline bool load_frame_data(md_trajectory_i* traj, int64_t frame_idx, md_frame_data_t* frame_data) {
-    md_trajectory_frame_header_t header = {};
+    md_trajectory_frame_header_t header = {0};
     if (md_trajectory_load_frame(traj, frame_idx, &header, frame_data->x, frame_data->y, frame_data->z, frame_data->num_atoms)) {
         memcpy(&frame_data->box, header.box, sizeof(frame_data->box));
         frame_data->timestamp = header.timestamp;

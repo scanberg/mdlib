@@ -63,7 +63,7 @@ md_molecule_t test_mol = {
 static bool eval_selection(md_exp_bitfield_t* bitfield, str_t expr, md_molecule_t* mol) {
     ASSERT(bitfield);
     ASSERT(mol);
-    data_t data = {};
+    data_t data = {0};
     if (eval_expression(&data, expr, mol, default_temp_allocator)) {
         if (data.type.base_type == TYPE_BITFIELD) {
             md_exp_bitfield_t* res = (md_exp_bitfield_t*)data.ptr;

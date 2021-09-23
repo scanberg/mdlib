@@ -30,7 +30,7 @@ allocation_t* find_allocation(tracking_t* tracking, void* ptr) {
 }
 
 allocation_t* new_allocation(tracking_t* tracking) {
-    allocation_t item = {};
+    allocation_t item = {0,0,0,0};
     return md_array_push(tracking->allocations, item, default_allocator);
 }
 

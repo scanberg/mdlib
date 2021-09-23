@@ -375,7 +375,7 @@ static inline bool compare_type_info(md_type_info_t a, md_type_info_t b) {
 }
 
 static inline bool is_undefined_type(md_type_info_t ti) {
-    return memcmp(&ti, &(md_type_info_t){}, sizeof(md_type_info_t)) == 0;
+    return memcmp(&ti, &(md_type_info_t){0}, sizeof(md_type_info_t)) == 0;
 }
 
 static inline bool is_array(md_type_info_t ti) {
@@ -1858,7 +1858,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
             // Assignment, therefore a new identifier
             if (!get_identifier(ctx->ir, ident)) {
                 node = create_node(ctx->ir, AST_IDENTIFIER, token);
-                identifier_t* identifier = create_identifier(ctx->ir, ident);
+                create_identifier(ctx->ir, ident);
                 node->ident = copy_str(ident, ctx->ir->arena);
             }
             else {
@@ -2988,7 +2988,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
                         array_type = elem_type;
 
                         // Just to make sure, we recheck all elements up until this one
-                        for (uint64_t j = 0; j < i; ++j) {
+                        for (int64_t j = 0; j < i; ++j) {
                             if (!is_type_directly_compatible(elem_type, array_type) &&
                                 !is_type_implicitly_convertible(elem_type, array_type, 0)) {
                                 create_error(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
@@ -3008,7 +3008,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         // Pass 2: Perform implicit conversions of nodes if required
         for (int64_t i = 0; i < num_elem; ++i) {
             md_type_info_t converted_type = array_type;
-            converted_type.dim[converted_type.len_dim] = type_info_array_len(elem[i]->data.type);
+            converted_type.dim[converted_type.len_dim] = (int32_t)type_info_array_len(elem[i]->data.type);
 
             if (!is_type_directly_compatible(elem[i]->data.type, converted_type) &&
                 is_type_implicitly_convertible(elem[i]->data.type, converted_type, 0)) {
