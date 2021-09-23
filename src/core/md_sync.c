@@ -60,6 +60,7 @@ md_mutex_t md_mutex_create() {
 
 bool md_mutex_destroy(md_mutex_t* mutex) {
 	DeleteCriticalSection((CRITICAL_SECTION*)mutex);
+	return true;
 }
 
 bool md_mutex_lock(md_mutex_t* mutex) {
@@ -93,7 +94,7 @@ static inline bool semaphore_wait(md_semaphore_t* semaphore, DWORD milliseconds)
 }
 
 bool md_semaphore_destroy(md_semaphore_t* semaphore) {
-	CloseHandle((HANDLE)semaphore->_id);
+	return CloseHandle((HANDLE)semaphore->_id);
 }
 
 bool md_semaphore_aquire(md_semaphore_t* semaphore) {

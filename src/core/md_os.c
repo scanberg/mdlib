@@ -18,7 +18,7 @@
 #endif
 
 #include <Windows.h>
-#include "Shlwapi.h"
+#include <Shlwapi.h>
 #include <direct.h>
 
 // If we need to explicitly link against some lib
