@@ -670,6 +670,8 @@ mat3_t mat3_covariance_matrix(
     vec3_t com,
     int64_t count);
 
+mat3_t mat3_covariance_matrix_vec3(const vec3_t* xyz, vec3_t com, int64_t count);
+
 mat3_t mat3_cross_covariance_matrix(
     const float* x0, const float* y0, const float* z0,
     const float* x1, const float* y1, const float* z1,

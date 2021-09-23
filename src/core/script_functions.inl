@@ -22,6 +22,9 @@
 #define as_vec3(arg) (*((vec3_t*)((arg).ptr)))
 #define as_vec3_arr(arg) (((vec3_t*)((arg).ptr)))
 
+#define as_vec4(arg) (*((vec4_t*)((arg).ptr)))
+#define as_vec4_arr(arg) (((vec4_t*)((arg).ptr)))
+
 // Macros to bake standard functions into something callable through our interface
 #define BAKE_FUNC_F__F(prefix, func) \
     static int prefix##func(data_t* dst, data_t arg[], eval_context_t* ctx) { \
@@ -318,13 +321,15 @@ static procedure_t casts[] = {
     {cstr("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _cast_flatten_bf_arr},
 
     // This does the heavy lifting for implicitly converting every compatible argument into a position (vec3) if the procedure is marked with FLAG_POSITION
+    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _position_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+
     {cstr("extract com"),   TI_FLOAT3,      1,  {TI_INT_ARR},       _com_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
     {cstr("extract com"),   TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
     {cstr("extract com"),   TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
-    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
-    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
-    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _position_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+
 
 };
 
@@ -490,7 +495,8 @@ static procedure_t procedures[] = {
     {cstr("com"),       TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng,  FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
     {cstr("com"),       TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,    FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
     {cstr("com"),       TI_FLOAT3,      1,  {TI_FLOAT3_ARR},    _com_vec3,  FLAG_DYNAMIC | FLAG_VISUALIZE},
-    {cstr("plane"),     TI_FLOAT4,      1,  {TI_FLOAT3_ARR},    _plane,     FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
+
+    {cstr("plane"),     TI_FLOAT4,      1,  {TI_FLOAT3_ARR},    _plane,     FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
     {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH},
     {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH},
@@ -2488,13 +2494,65 @@ static int _com_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 
 static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (md_type_info_t)TI_FLOAT4));
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
-    (void)dst;
-    (void)arg;
     (void)ctx;
 
-    ASSERT(false);
+    const vec3_t* in_pos = as_vec3_arr(arg[0]);
+    const int64_t num_pos = element_count(arg[0]);
+
+    if (dst || ctx->vis) {
+        ASSERT(num_pos >= 3);
+        // Compute eigen vectors from covariance matrix
+        // normal should be the third axis (i.e. the smallest)
+
+        vec3_t com = {0,0,0};
+        for (int64_t i = 0; i < num_pos; ++i) {
+            com = vec3_add(com, in_pos[i]);
+        }
+        com = vec3_div_f(com, num_pos);
+
+        vec3_t eigen_vec[3];
+        float  eigen_val[3];
+        mat3_eigen(mat3_covariance_matrix_vec3(in_pos, com, num_pos), eigen_vec, eigen_val);
+
+        vec3_t normal = vec3_normalize(eigen_vec[2]);
+        float d = vec3_dot(normal, com);
+        vec4_t plane = {normal.x, normal.y, normal.z, d};
+
+        if (dst) {
+            ASSERT(compare_type_info(dst->type, (md_type_info_t)TI_FLOAT4));
+            as_vec4(*dst) = plane;
+        }
+
+        if (ctx->vis) {
+            vec3_t v = vec3_mul_f(eigen_vec[0], eigen_val[0]);
+            vec3_t u = vec3_mul_f(eigen_vec[1], eigen_val[1]);
+
+            // Draw something planish
+            uint16_t ci = push_vertex(com, ctx->vis);
+            uint16_t ni = push_vertex(vec3_add(com, normal), ctx->vis);
+
+            uint16_t corner[4] = {
+                push_vertex(vec3_sub(vec3_sub(com, v), u), ctx->vis),
+                push_vertex(vec3_sub(vec3_add(com, v), u), ctx->vis),
+                push_vertex(vec3_add(vec3_add(com, v), u), ctx->vis),
+                push_vertex(vec3_add(vec3_sub(com, v), u), ctx->vis),
+            };
+
+            push_line(corner[0], corner[1], ctx->vis);
+            push_line(corner[1], corner[2], ctx->vis);
+            push_line(corner[2], corner[3], ctx->vis);
+            push_line(corner[3], corner[0], ctx->vis);
+
+            push_line(ci, ni, ctx->vis);
+        }
+    } else {
+        if (num_pos < 3) {
+            create_error(ctx->ir, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
+            return -1;
+        }
+    }
+
     return 0;
 }
 

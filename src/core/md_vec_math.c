@@ -102,6 +102,27 @@ mat3_t mat3_covariance_matrix( const float* x, const float* y, const float* z, v
     return A;
 }
 
+mat3_t mat3_covariance_matrix_vec3(const vec3_t* xyz, vec3_t com, int64_t count) {
+    mat3_t A = {0};
+    for (int64_t i = 0; i < count; i++) {
+        const float px = xyz[i].x - com.x;
+        const float py = xyz[i].y - com.y;
+        const float pz = xyz[i].z - com.z;
+
+        A.elem[0][0] += px * px;
+        A.elem[0][1] += px * py;
+        A.elem[0][2] += px * pz;
+        A.elem[1][0] += py * px;
+        A.elem[1][1] += py * py;
+        A.elem[1][2] += py * pz;
+        A.elem[2][0] += pz * px;
+        A.elem[2][1] += pz * py;
+        A.elem[2][2] += pz * pz;
+    }
+
+    return A;
+}
+
 mat3_t mat3_weighted_covariance_matrix(const float* x, const float* y, const float* z, const float* weight, vec3_t com, int64_t count) {
     mat3_t A = {0};
     for (int64_t i = 0; i < count; i++) {
