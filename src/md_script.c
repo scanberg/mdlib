@@ -17,6 +17,7 @@
 #include "core/md_bitop.h"
 #include "core/md_vec_math.h"
 #include "core/md_simd.h"
+#include "core/md_platform.h"
 #include "core/md_os.h"
 
 #include <stdio.h>
@@ -25,7 +26,9 @@
 #include <math.h>
 #include <float.h>
 
+#if MD_PLATFORM_WINDOWS
 #pragma warning(disable:4063) // Single character tokens not being valid tokens
+#endif
 
 #define SCRIPT_IR_MAGIC 0x371bacfe8274910a
 #define SCRIPT_EVAL_MAGIC 0x89bca715287bcaff
@@ -372,7 +375,7 @@ static inline bool compare_type_info(md_type_info_t a, md_type_info_t b) {
 }
 
 static inline bool is_undefined_type(md_type_info_t ti) {
-    return memcmp(&ti, &(md_type_info_t){0}, sizeof(md_type_info_t)) == 0;
+    return memcmp(&ti, &(md_type_info_t){}, sizeof(md_type_info_t)) == 0;
 }
 
 static inline bool is_array(md_type_info_t ti) {

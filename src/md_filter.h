@@ -1,5 +1,4 @@
-#ifndef _MD_FILTER_H_
-#define _MD_FILTER_H_
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -30,6 +29,4 @@ bool md_filter_evaluate(str_t expression, struct md_exp_bitfield_t* target, md_f
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

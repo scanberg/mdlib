@@ -72,6 +72,16 @@ typedef uint64_t utest_uint64_t;
 #endif
 
 #if defined(_MSC_VER)
+// define UTEST_USE_OLD_QPC before #include "utest.h" to use old QueryPerformanceCounter
+#ifndef UTEST_USE_OLD_QPC
+#pragma warning(push, 0)
+#include <Windows.h>
+#pragma warning(pop)
+
+typedef LARGE_INTEGER utest_large_integer;
+#else 
+//use old QueryPerformanceCounter definitions (not sure is this needed in some edge cases or not)
+//on Win7 with VS2015 these extern declaration cause "second C linkage of overloaded function not allowed" error
 typedef union {
   struct {
     unsigned long LowPart;
@@ -88,6 +98,7 @@ UTEST_C_FUNC __declspec(dllimport) int __stdcall QueryPerformanceCounter(
     utest_large_integer *);
 UTEST_C_FUNC __declspec(dllimport) int __stdcall QueryPerformanceFrequency(
     utest_large_integer *);
+#endif
 #elif defined(__linux__)
 
 /*
@@ -205,9 +216,24 @@ UTEST_C_FUNC __declspec(dllimport) int __stdcall QueryPerformanceFrequency(
 #pragma warning(pop)
 #define UTEST_COLOUR_OUTPUT() (_isatty(_fileno(stdout)))
 #else
+#if  defined(__EMSCRIPTEN__)
+#include <emscripten/html5.h>
+#define UTEST_COLOUR_OUTPUT() false
+#else
 #include <unistd.h>
 #define UTEST_COLOUR_OUTPUT() (isatty(STDOUT_FILENO))
 #endif
+#endif
+
+static UTEST_INLINE void *utest_realloc(void *const pointer, size_t new_size) {
+  void *const new_pointer = realloc(pointer, new_size);
+
+  if (UTEST_NULL == new_pointer) {
+    free(new_pointer);
+  }
+
+  return new_pointer;
+}
 
 static UTEST_INLINE utest_int64_t utest_ns(void) {
 #ifdef _MSC_VER
@@ -234,6 +260,8 @@ static UTEST_INLINE utest_int64_t utest_ns(void) {
   return UTEST_CAST(utest_int64_t, ts.tv_sec) * 1000 * 1000 * 1000 + ts.tv_nsec;
 #elif __APPLE__
   return UTEST_CAST(utest_int64_t, mach_absolute_time());
+#elif __EMSCRIPTEN__	                                    
+	return emscripten_performance_now()*1000000.0; 
 #endif
 }
 
@@ -723,11 +751,11 @@ utest_type_printer(long long unsigned int i) {
     const char *name_part = #SET "." #NAME;                                    \
     const size_t name_size = strlen(name_part) + 1;                            \
     char *name = UTEST_PTR_CAST(char *, malloc(name_size));                    \
-    utest_state.tests =                                                        \
-        UTEST_PTR_CAST(struct utest_test_state_s *,                            \
-                       realloc(UTEST_PTR_CAST(void *, utest_state.tests),      \
-                               sizeof(struct utest_test_state_s) *             \
-                                   utest_state.tests_length));                 \
+    utest_state.tests = UTEST_PTR_CAST(                                        \
+        struct utest_test_state_s *,                                           \
+        utest_realloc(UTEST_PTR_CAST(void *, utest_state.tests),               \
+                      sizeof(struct utest_test_state_s) *                      \
+                          utest_state.tests_length));                          \
     utest_state.tests[index].func = &utest_##SET##_##NAME;                     \
     utest_state.tests[index].name = name;                                      \
     utest_state.tests[index].index = 0;                                        \
@@ -765,11 +793,11 @@ utest_type_printer(long long unsigned int i) {
     const char *name_part = #FIXTURE "." #NAME;                                \
     const size_t name_size = strlen(name_part) + 1;                            \
     char *name = UTEST_PTR_CAST(char *, malloc(name_size));                    \
-    utest_state.tests =                                                        \
-        UTEST_PTR_CAST(struct utest_test_state_s *,                            \
-                       realloc(UTEST_PTR_CAST(void *, utest_state.tests),      \
-                               sizeof(struct utest_test_state_s) *             \
-                                   utest_state.tests_length));                 \
+    utest_state.tests = UTEST_PTR_CAST(                                        \
+        struct utest_test_state_s *,                                           \
+        utest_realloc(UTEST_PTR_CAST(void *, utest_state.tests),               \
+                      sizeof(struct utest_test_state_s) *                      \
+                          utest_state.tests_length));                          \
     utest_state.tests[index].func = &utest_f_##FIXTURE##_##NAME;               \
     utest_state.tests[index].name = name;                                      \
     UTEST_SNPRINTF(name, name_size, "%s", name_part);                          \
@@ -807,11 +835,11 @@ utest_type_printer(long long unsigned int i) {
       const char *name_part = #FIXTURE "." #NAME;                              \
       const size_t name_size = strlen(name_part) + 32;                         \
       char *name = UTEST_PTR_CAST(char *, malloc(name_size));                  \
-      utest_state.tests =                                                      \
-          UTEST_PTR_CAST(struct utest_test_state_s *,                          \
-                         realloc(UTEST_PTR_CAST(void *, utest_state.tests),    \
-                                 sizeof(struct utest_test_state_s) *           \
-                                     utest_state.tests_length));               \
+      utest_state.tests = UTEST_PTR_CAST(                                      \
+          struct utest_test_state_s *,                                         \
+          utest_realloc(UTEST_PTR_CAST(void *, utest_state.tests),             \
+                        sizeof(struct utest_test_state_s) *                    \
+                            utest_state.tests_length));                        \
       utest_state.tests[index].func = &utest_i_##FIXTURE##_##NAME##_##INDEX;   \
       utest_state.tests[index].index = i;                                      \
       utest_state.tests[index].name = name;                                    \
@@ -916,6 +944,7 @@ int utest_main(int argc, const char *const argv[]) {
 
   const int use_colours = UTEST_COLOUR_OUTPUT();
   const char *colours[] = {"\033[0m", "\033[32m", "\033[31m"};
+
   if (!use_colours) {
     for (index = 0; index < sizeof colours / sizeof colours[0]; index++) {
       colours[index] = "";
@@ -956,7 +985,7 @@ int utest_main(int argc, const char *const argv[]) {
       return 0;
     }
   }
-
+  
   for (index = 0; index < utest_state.tests_length; index++) {
     if (utest_should_filter_test(filter, utest_state.tests[index].name)) {
       continue;
@@ -964,7 +993,6 @@ int utest_main(int argc, const char *const argv[]) {
 
     ran_tests++;
   }
-
   printf("%s[==========]%s Running %" UTEST_PRIu64 " test cases.\n",
          colours[GREEN], colours[RESET], UTEST_CAST(utest_uint64_t, ran_tests));
 
@@ -998,7 +1026,6 @@ int utest_main(int argc, const char *const argv[]) {
     errno = 0;
     utest_state.tests[index].func(&result, utest_state.tests[index].index);
     ns = utest_ns() - ns;
-    const double ms = (double)ns * 1.0e-6;
 
     if (utest_state.output) {
       fprintf(utest_state.output, "</testcase>\n");
@@ -1007,16 +1034,15 @@ int utest_main(int argc, const char *const argv[]) {
     if (0 != result) {
       const size_t failed_testcase_index = failed_testcases_length++;
       failed_testcases = UTEST_PTR_CAST(
-          size_t *, realloc(UTEST_PTR_CAST(void *, failed_testcases),
-                            sizeof(size_t) * failed_testcases_length));
+          size_t *, utest_realloc(UTEST_PTR_CAST(void *, failed_testcases),
+                                  sizeof(size_t) * failed_testcases_length));
       failed_testcases[failed_testcase_index] = index;
       failed++;
-      
-      printf("%s[  FAILED  ]%s %s (%" UTEST_PRId64 "ns) (%.2f ms)\n", colours[RED],
-             colours[RESET], utest_state.tests[index].name, ns, ms);
+      printf("%s[  FAILED  ]%s %s (%" UTEST_PRId64 "ns)\n", colours[RED],
+             colours[RESET], utest_state.tests[index].name, ns);
     } else {
-      printf("%s[       OK ]%s %s (%" UTEST_PRId64 "ns) (%.2f ms)\n", colours[GREEN],
-             colours[RESET], utest_state.tests[index].name, ns, ms);
+      printf("%s[       OK ]%s %s (%" UTEST_PRId64 "ns)\n", colours[GREEN],
+             colours[RESET], utest_state.tests[index].name, ns);
     }
   }
 

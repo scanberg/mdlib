@@ -30,7 +30,7 @@ allocation_t* find_allocation(tracking_t* tracking, void* ptr) {
 }
 
 allocation_t* new_allocation(tracking_t* tracking) {
-    allocation_t item = {0};
+    allocation_t item = {};
     return md_array_push(tracking->allocations, item, default_allocator);
 }
 
@@ -38,6 +38,7 @@ void delete_allocation(tracking_t* tracking, allocation_t* alloc) {
     ASSERT(find_allocation(tracking, alloc->ptr));
     int64_t idx = alloc - tracking->allocations;
     *alloc = *md_array_last(tracking->allocations);
+    tracking->allocations[idx] = *alloc;
     md_array_pop(tracking->allocations);
 }
 

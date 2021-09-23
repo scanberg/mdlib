@@ -767,7 +767,7 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
         filesize = md_file_size(file);
         md_file_close(file);
 
-        md_pdb_data_t data = {0};
+        md_pdb_data_t data = {};
         if (!md_pdb_data_parse_file(filename, &data, default_allocator)) {
             return false;
         }

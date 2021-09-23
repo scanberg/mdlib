@@ -338,7 +338,7 @@ static inline vec4_t vec4_from_vec3(vec3_t v, float w) {
 }
 
 static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {
-    vec4_t c = {0};
+    vec4_t c = {};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_mul_ps(a.mm128, b.mm128);
 #else
@@ -351,7 +351,7 @@ static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t vec4_mul_f(vec4_t a, float s) {
-    vec4_t c = {0};
+    vec4_t c = {};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_mul_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -364,7 +364,7 @@ static inline vec4_t vec4_mul_f(vec4_t a, float s) {
 }
 
 static inline vec4_t vec4_div(vec4_t a, vec4_t b) {
-    vec4_t c = {0};
+    vec4_t c = {};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_div_ps(a.mm128, b.mm128);
 #else
@@ -377,7 +377,7 @@ static inline vec4_t vec4_div(vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t vec4_div_f(vec4_t a, float s) {
-    vec4_t c = {0};
+    vec4_t c = {};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_div_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -390,7 +390,7 @@ static inline vec4_t vec4_div_f(vec4_t a, float s) {
 }
 
 static inline vec4_t vec4_add(vec4_t a, vec4_t b) {
-    vec4_t c = {0};
+    vec4_t c = {};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_add_ps(a.mm128, b.mm128);
 #else
@@ -403,7 +403,7 @@ static inline vec4_t vec4_add(vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t vec4_add_f(vec4_t a, float s) {
-    vec4_t c = {0};
+    vec4_t c = {};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_add_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -416,7 +416,7 @@ static inline vec4_t vec4_add_f(vec4_t a, float s) {
 }
 
 static inline vec4_t vec4_sub(vec4_t a, vec4_t b) {
-    vec4_t c = {0};
+    vec4_t c = {};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_sub_ps(a.mm128, b.mm128);
 #else
@@ -429,7 +429,7 @@ static inline vec4_t vec4_sub(vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t vec4_sub_f(vec4_t a, float s) {
-    vec4_t c = {0};
+    vec4_t c = {};
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_sub_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -465,7 +465,7 @@ static inline uint32_t u32_from_vec4(vec4_t v) {
 quat_t quat_angle_axis(float angle, vec3_t axis);
 
 static inline quat_t quat_mul(quat_t a, quat_t b) {
-    quat_t c = {0};
+    quat_t c = {};
     c.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
     c.y = a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z;
     c.z = a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x;
@@ -474,7 +474,7 @@ static inline quat_t quat_mul(quat_t a, quat_t b) {
 }
 
 static inline quat_t quat_mul_f(quat_t q, float s) {
-    quat_t c = {0};
+    quat_t c = {};
     c.x = q.x * s;
     c.y = q.y * s;
     c.z = q.z * s;
@@ -490,7 +490,7 @@ static inline vec3_t quat_mul_vec3(quat_t q, vec3_t v) {
 }
 
 static inline quat_t quat_conj(quat_t q) {
-    quat_t r = {0};
+    quat_t r = {};
     r.x = -q.x;
     r.y = -q.y;
     r.z = -q.z;
@@ -517,7 +517,7 @@ static inline __m128 linear_combine_sse(__m128 a, mat4_t B) {
 // MAT2
 static inline mat2_t mat2_ident() {
     mat2_t M = {
-        .col =  {
+        .col = {
             {1,0},
             {0,1}
         }
@@ -829,7 +829,7 @@ static inline mat4_t mat4_mul(mat4_t A, mat4_t B) {
 }
 
 static inline vec4_t mat4_mul_vec4(mat4_t M, vec4_t v) {
-    vec4_t r = {0};
+    vec4_t r = {};
 #if VEC_MATH_USE_SSE_H
     r.mm128 = linear_combine_sse(v.mm128, M);
 #else

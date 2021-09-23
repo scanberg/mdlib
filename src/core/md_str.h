@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "md_common.h"  // ASSERT, MIN, MAX
+
 #ifdef __cplusplus
 #define DEF_VAL(x) = x
 #else
@@ -35,9 +37,9 @@ while(0)
 #endif
 
 #ifdef __cplusplus
-#define make_cstr(string) {.ptr = (string ""), .len = (sizeof(string)-1)}
+#define make_cstr(string) {(string ""), (sizeof(string)-1)}
 #else
-#define make_cstr(string) (str_t){.ptr = (string ""), .len = (sizeof(string)-1)}
+#define make_cstr(string) (str_t){(string ""), (sizeof(string)-1)}
 #endif
 
 str_t str_from_cstr(const char* cstr);
@@ -51,6 +53,10 @@ static inline bool is_alpha(int c)      { return ('a' <= c && c <= 'z') || ('A' 
 static inline bool is_whitespace(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 static inline bool is_symbol(int c) {
     return (32 < c && c < 48) || (57 < c && c < 65) || (90 < c && c < 97) || (122 < c && c < 127);
+}
+
+static inline bool str_empty(str_t str) {
+    return str.ptr == 0 || str.len == 0;
 }
 
 static inline str_t trim_whitespace(str_t str) {
@@ -120,9 +126,27 @@ static inline bool compare_str_cstr_ignore_case(str_t str, const char* cstr) {
     return cstr[str.len] == '\0';
 }
 
+static inline int64_t str_count_equal_chars(str_t a, str_t b) {
+    if (!a.ptr || a.len <= 0 || !b.ptr || b.len <= 0) return 0;
+    int64_t i = 0;
+    for (; i < MIN(a.len, b.len); ++i) {
+        if (a.ptr[i] != b.ptr[i]) break;
+    }
+    return i;
+}
+
+static inline int64_t str_count_char_occur(str_t str, char character) {
+    if (!str.ptr || str.len <= 0) return 0;
+    int64_t count = 0;
+    for (int64_t i = 0; i < str.len; ++i) {
+        if (str.ptr[i] == character) count += 1;
+    }
+    return count;
+}
+
 static inline str_t substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
     if (offset > str.len) {
-        str_t res = {0};
+        str_t res = {};
         return res;   
     }
     if (offset + length > str.len || length < 0) length = str.len - offset;

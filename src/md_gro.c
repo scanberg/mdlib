@@ -46,7 +46,7 @@ static inline int64_t compute_position_field_width(str_t line) {
 }
 
 static inline bool parse_header(str_t* str, md_gro_data_t* data) {
-    str_t line = {0};
+    str_t line = {};
     if (!extract_line(&line, str)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to read title");
         return false;
@@ -74,16 +74,16 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
 }
 
 static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_field_width, int64_t* read_count, int64_t read_target, md_allocator_i* alloc) {
-    str_t line = {0};
+    str_t line = {};
     while (*read_count < read_target && extract_line(&line, &str)) {
         int64_t res_id  = parse_int(trim_whitespace(substr(line, 0, 5)));
         str_t res_name  = trim_whitespace(substr(line, 5, 5));
         str_t atom_name = trim_whitespace(substr(line, 10, 5));
-        double x = parse_float(trim_whitespace(substr(line, 20 + 0 * pos_field_width, pos_field_width))) * 10.0; // nm -> Å
+        double x = parse_float(trim_whitespace(substr(line, 20 + 0 * pos_field_width, pos_field_width))) * 10.0; // nm -> ï¿½
         double y = parse_float(trim_whitespace(substr(line, 20 + 1 * pos_field_width, pos_field_width))) * 10.0;
         double z = parse_float(trim_whitespace(substr(line, 20 + 2 * pos_field_width, pos_field_width))) * 10.0;
 
-        md_gro_atom_t atom = {0};
+        md_gro_atom_t atom = {};
         atom.res_id = (int32_t)res_id;
         strncpy(atom.res_name, res_name.ptr, MIN(res_name.len, ARRAY_SIZE(atom.res_name) - 1));
         strncpy(atom.atom_name, atom_name.ptr, MIN(atom_name.len, ARRAY_SIZE(atom.atom_name) - 1));
@@ -100,7 +100,7 @@ static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_
 static inline bool parse_unitcell(str_t str, md_gro_data_t* data) {
     ASSERT(data);
 
-    str_t line = {0};
+    str_t line = {};
     if (!extract_line(&line, &str)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to extract line for unit cell.");
         return false;

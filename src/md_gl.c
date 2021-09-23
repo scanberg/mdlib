@@ -1254,7 +1254,7 @@ bool md_gl_draw(md_gl_context_t* ext_ctx, const md_gl_draw_args_t* args) {
 
             if (model_matrix) {
                 // If we have a model matrix, we need to recompute the entire matrix stack...
-                gl_ubo_base_t tmp_ubo = {0};
+                gl_ubo_base_t tmp_ubo = {};
                 init_ubo_base_data(&tmp_ubo, args, model_matrix);
                 gl_buffer_set_sub_data(ctx->ubo, 0, sizeof(tmp_ubo), &tmp_ubo);
             }

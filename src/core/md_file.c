@@ -15,12 +15,12 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+
+#pragma warning(disable:4063) // combined flags not valid for switch of enum
 #endif
 
 #include <stdio.h>
 #include <string.h>
-
-#pragma warning(disable:4063) // combined flags not valid for switch of enum
 
 struct md_file_o {
     FILE handle;

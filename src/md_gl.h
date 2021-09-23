@@ -1,5 +1,4 @@
-#ifndef _MD_GL_H_
-#define _MD_GL_H_
+#pragma once
 
 //  MD GL - Molecule Dynamics GL
 //  Copyright 2020 Robin Skånberg
@@ -206,6 +205,4 @@ bool md_gl_draw(md_gl_context_t* ctx, const md_gl_draw_args_t* args);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

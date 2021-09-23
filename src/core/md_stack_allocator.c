@@ -1,9 +1,11 @@
 #include "md_stack_allocator.h"
 #include <string.h>
 
-void* stack_realloc(md_stack_allocator_t* stack_alloc, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+void* stack_realloc(struct md_allocator_o* alloc, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)file;
     (void)line;
+    md_stack_allocator_t* stack_alloc = (md_stack_allocator_t*)alloc;
+
     ASSERT(stack_alloc);
     ASSERT(stack_alloc->magic == MD_STACK_ALLOCATOR_MAGIC);
 

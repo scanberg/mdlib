@@ -17,7 +17,7 @@
 **  Modified to use some SSE2 intrinsics
 **  Minimal changes to support C through pointers and not references
 **  Changed interface to array types
-**  Robin Skånberg
+**  Robin Skï¿½nberg
 **  4 Aug 2021
 **************************************************************************/
 
@@ -40,8 +40,10 @@ static inline float rsqrt(float x) {
     return x;
 }
 
-inline float accurateSqrt(float x) {
-    return sqrtf(x);
+static inline float accurateSqrt(float x) {
+    __m128 res = _mm_sqrt_ss(_mm_set_ps1(x));
+    _mm_store1_ps(&x, res);
+    return x;
 }
 
 static inline void condSwap(bool c, float *X, float *Y) {

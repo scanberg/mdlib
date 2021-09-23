@@ -3,8 +3,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "md_common.h"
-
 typedef struct md_semaphore_t md_semaphore_t;
 typedef struct md_mutex_t md_mutex_t;
 typedef struct md_thread_t md_thread_t;
@@ -27,7 +25,7 @@ struct md_semaphore_t {
 };
 
 // Thread
-md_thread_t* md_thread_create(md_thread_func func, const char* name, void* user_data);
+md_thread_t* md_thread_create(md_thread_func func, void* user_data);
 
 void md_thread_detach(md_thread_t* thread);
 int  md_thread_join(md_thread_t* thread);

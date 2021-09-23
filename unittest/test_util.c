@@ -14,13 +14,13 @@ UTEST(util, rmsd) {
     md_allocator_i* alloc = default_allocator;
     const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
-    md_pdb_data_t pdb_data = {0};
+    md_pdb_data_t pdb_data = {};
     ASSERT_TRUE(md_pdb_data_parse_file(path, &pdb_data, alloc));
 
-    md_molecule_t mol = {0};
+    md_molecule_t mol = {};
     EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
 
-    md_trajectory_i traj = {0};
+    md_trajectory_i traj = {};
     EXPECT_TRUE(md_pdb_trajectory_open(&traj, path, alloc));
 
     const int64_t stride = mol.atom.count;

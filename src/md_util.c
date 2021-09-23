@@ -241,7 +241,7 @@ static inline bool cmp2(const char* str, const char* ref) {
 
 static inline bool extract_backbone_atoms(md_backbone_atoms_t* backbone_atoms, const char** atom_names, md_range_t atom_range) {
     uint32_t bits = 0;
-    md_backbone_atoms_t bb = {0};
+    md_backbone_atoms_t bb = {};
     for (int32_t i = atom_range.beg; i < atom_range.end; ++i) {
         if (!(bits & 1) && cmp1(atom_names[i], "N"))  { bb.n  = i; bits |= 1;  continue; }
         if (!(bits & 2) && cmp2(atom_names[i], "CA")) { bb.ca = i; bits |= 2;  continue; }

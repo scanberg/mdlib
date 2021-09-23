@@ -179,7 +179,7 @@ str_t copy_str(const str_t str, struct md_allocator_i* alloc) {
 str_t extract_ext(str_t path) {
     int64_t pos = rfind_char(path, '.');
 
-    str_t res = {0};
+    str_t res = {};
     if (pos > -1) {
         pos += 1; // skip '.'
         res.ptr = path.ptr + pos;
@@ -195,7 +195,7 @@ str_t extract_file(str_t path) {
         pos = rfind_char(path, '\\');
     }
 
-    str_t res = {0};
+    str_t res = {};
     if (pos != -1) {
         pos += 1; // skip slash or backslash
         res.ptr = path.ptr + pos;
@@ -208,7 +208,7 @@ str_t extract_file(str_t path) {
 str_t extract_path_without_ext(str_t path) {
     const int64_t pos = rfind_char(path, '.');
 
-    str_t res = {0};
+    str_t res = {};
     if (pos) {
         res.ptr = path.ptr;
         res.len = pos;
@@ -223,7 +223,7 @@ str_t extract_path_without_file(str_t path) {
         pos = rfind_char(path, '\\');
     }
 
-    str_t res = {0};
+    str_t res = {};
     if (pos) {
         res.ptr = path.ptr;
         res.len = pos;

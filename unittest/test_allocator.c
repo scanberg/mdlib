@@ -10,18 +10,18 @@
     EXPECT_NE(mem, NULL); \
     EXPECT_EQ(md_free(alloc, mem, 16), NULL); \
     \
-    uint64_t* arr = NULL; \
-    for (uint64_t i = 0; i < 1000; ++i) { \
+    int64_t* arr = NULL; \
+    for (int64_t i = 0; i < 1000; ++i) { \
         md_array_push(arr, i, alloc); \
     } \
     \
-    for (uint64_t i = 0; i < 1000; ++i) { \
+    for (int64_t i = 0; i < 1000; ++i) { \
         ASSERT_EQ(arr[i], i); \
     } \
     md_array_free(arr, alloc); \
     \
-    uint64_t size[8] = {16, 7238, 1, 2, 7, 3, 2, 4}; \
-    for (uint64_t i = 0; i < 8; ++i) { \
+    int64_t size[8] = {16, 7238, 1, 2, 7, 3, 2, 4}; \
+    for (int64_t i = 0; i < 8; ++i) { \
         uint64_t expected_alignment = size[i] > 2 ? 16 : size[i]; \
         void* mem = md_alloc(alloc, size[i]); \
         EXPECT_EQ((uint64_t)mem % expected_alignment, 0); \

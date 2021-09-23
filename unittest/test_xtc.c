@@ -11,7 +11,7 @@
 
 UTEST(xtc, trajectory_i) {
     const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
-    md_trajectory_i traj = {0};
+    md_trajectory_i traj = {};
 
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(16));
     ASSERT_TRUE(md_xtc_trajectory_open(&traj, path, alloc));

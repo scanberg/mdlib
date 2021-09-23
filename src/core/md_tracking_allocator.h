@@ -1,5 +1,4 @@
-#ifndef _MD_TRACKING_ALLOCATOR_H_
-#define _MD_TRACKING_ALLOCATOR_H_
+#pragma once
 
 #include <stdint.h>
 
@@ -15,6 +14,4 @@ void md_tracking_allocator_destroy(struct md_allocator_i* tracking_alloc);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

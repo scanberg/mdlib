@@ -308,7 +308,7 @@ static bool xtc_decode_frame_header(struct md_trajectory_o* inst, const void* fr
         header->num_atoms = natoms;
         header->step = step;
         header->timestamp = time;
-        for (int i = 0; i < 9; ++i) ((float*)box)[i] *= 10.0f; // nm -> Å
+        for (int i = 0; i < 9; ++i) ((float*)box)[i] *= 10.0f; // nm -> ï¿½
         memcpy(header->box, box, sizeof(box));
     }
 
@@ -353,7 +353,7 @@ static bool xtc_decode_frame_coords(struct md_trajectory_o* inst, const void* fr
             uint64_t size = num_coords * sizeof(rvec);
             rvec* pos = md_alloc(default_temp_allocator, size);
             if (xtc_coord(file, natoms, pos)) {
-                // nm -> Å
+                // nm -> ï¿½
                 for (int64_t i = 0; i < natoms; ++i) {
                     x[i] = pos[i][0] * 10.0f;
                     y[i] = pos[i][1] * 10.0f;
