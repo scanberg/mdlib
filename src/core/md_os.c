@@ -167,9 +167,9 @@ double md_os_time_delta_in_s(timestamp_t t0, timestamp_t t1) {
     start.QuadPart = t0;
     stop.QuadPart = t1;
     elapsed.QuadPart = stop.QuadPart - start.QuadPart;
-    elapsed.QuadPart *= 1000000;
-    double ms = ((double)elapsed.QuadPart / (double)frequency.QuadPart);
-    return ms;
+    elapsed.QuadPart *= 1;
+    double s = ((double)elapsed.QuadPart / (double)frequency.QuadPart);
+    return s;
 #elif MD_PLATFORM_UNIX
     return (t1 - t0) * 1.0e-9;
 #endif

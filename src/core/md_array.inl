@@ -12,6 +12,10 @@
 #pragma warning( disable : 6387 6011 )
 #endif
 
+#if MD_COMPILER_GCC
+#pragma GCC diagnostic ignored "-Wunused-value"
+#endif
+
 #include <stdint.h>
 #include <string.h>
 

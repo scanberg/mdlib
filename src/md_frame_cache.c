@@ -25,11 +25,11 @@ void md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     ASSERT(num_cached_frames >= 0);
 
     if (num_cached_frames == 0) {
-        num_cached_frames = traj->num_frames;
+        num_cached_frames = md_trajectory_num_frames(traj);
     }
 
     // We want to ensure that there are enough padding for each frame to avoid overlap if one wants to do full-width simd stores.
-    const int64_t num_atoms = ROUND_UP(traj->num_atoms, md_simd_width); 
+    const int64_t num_atoms = ROUND_UP(md_trajectory_num_atoms(traj), md_simd_width); 
     const int64_t bytes_per_frame = sizeof(md_semaphore_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
     const int64_t num_slots = ROUND_UP(num_cached_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
 
@@ -142,10 +142,10 @@ static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_id
 
 static inline bool load_frame_data(md_trajectory_i* traj, int64_t frame_idx, md_frame_data_t* frame_data) {
     md_trajectory_frame_header_t header = {0};
-    if (md_trajectory_load_frame(traj, frame_idx, &header, frame_data->x, frame_data->y, frame_data->z, frame_data->num_atoms)) {
+    if (traj->load_frame(traj, frame_idx, &header, frame_data->x, frame_data->y, frame_data->z)) {
         memcpy(&frame_data->box, header.box, sizeof(frame_data->box));
         frame_data->timestamp = header.timestamp;
-        frame_data->num_atoms = header.num_atoms;
+        frame_data->num_atoms = (int)header.num_atoms;
         frame_data->frame_index = (int)frame_idx;
         return true;
     }
@@ -157,7 +157,7 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
 
-    if (frame_idx < 0 || cache->traj->num_frames <= frame_idx) return false;
+    if (frame_idx < 0 || md_trajectory_num_frames(cache->traj) <= frame_idx) return false;
 
     md_frame_data_t* data = NULL;
     struct md_frame_cache_lock_t* lock = NULL;
@@ -190,7 +190,7 @@ bool md_frame_cache_reserve_frame(md_frame_cache_t* cache, int64_t frame_idx, md
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
-    ASSERT(0 <= frame_idx && frame_idx < cache->traj->num_frames);
+    ASSERT(0 <= frame_idx && frame_idx < md_trajectory_num_frames(cache->traj));
     ASSERT(frame_data);
     ASSERT(frame_lock);
 
@@ -212,7 +212,7 @@ bool md_frame_cache_fetch_frame_range(md_frame_cache_t* cache, int64_t frame_beg
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
-    ASSERT(0 <= frame_beg_idx && frame_end_idx <= cache->traj->num_frames);
+    ASSERT(0 <= frame_beg_idx && frame_end_idx <= md_trajectory_num_frames(cache->traj));
 
     md_frame_data_t* data = NULL;
     struct md_frame_cache_lock_t* lock = NULL;
@@ -234,4 +234,13 @@ bool md_frame_cache_fetch_frame_range(md_frame_cache_t* cache, int64_t frame_beg
         }
     }
     return result;
+}
+
+bool md_frame_cache_create_trajectory_interface(struct md_trajectory_i* traj, md_frame_cache_t* cache) {
+    ASSERT(cache);
+    ASSERT(cache->magic == CACHE_MAGIC);
+    ASSERT(cache->traj);
+
+    md_trajectory_i traj_interface = {0};
+
 }

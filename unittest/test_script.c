@@ -223,7 +223,7 @@ UTEST(script, property_compute) {
         };
         EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
 
-        EXPECT_TRUE(md_script_eval_alloc(&eval, traj.num_frames, &ir, alloc));
+        EXPECT_TRUE(md_script_eval_alloc(&eval, md_trajectory_num_frames(&traj), &ir, alloc));
 
         md_script_eval_args_t eval_args = {
             .ir = &ir,
@@ -246,7 +246,7 @@ UTEST(script, property_compute) {
         };
         EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
 
-        EXPECT_TRUE(md_script_eval_alloc(&eval, traj.num_frames, &ir, alloc));
+        EXPECT_TRUE(md_script_eval_alloc(&eval, md_trajectory_num_frames(&traj), &ir, alloc));
 
         md_script_eval_args_t eval_args = {
             .ir = &ir,

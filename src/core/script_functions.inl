@@ -1240,6 +1240,7 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
         const int64_t capacity = type_info_array_len(dst->type);
+        (void)capacity;
 
         md_exp_bitfield_t* bf = (md_exp_bitfield_t*)dst->ptr;
         int64_t dst_idx = 0;
@@ -2058,14 +2059,14 @@ static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* c
     ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
     (void)ctx;
-    const uint64_t dst_len = element_count(*dst);
-    const uint64_t arg_len = element_count(arg[0]);
+    const int64_t dst_len = element_count(*dst);
+    const int64_t arg_len = element_count(arg[0]);
     ASSERT(dst_len == arg_len);
 
     float* d = dst->ptr;
     int*   s = arg[0].ptr;
 
-    for (uint64_t i = 0; i < dst_len; ++i) {
+    for (int64_t i = 0; i < dst_len; ++i) {
         d[i] = (float)s[i]; 
     }
     return 0;
@@ -2074,14 +2075,14 @@ static int _cast_irng_arr_to_frng_arr(data_t* dst, data_t arg[], eval_context_t*
     ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FRANGE_ARR));
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
     (void)ctx;
-    const uint64_t dst_len = element_count(*dst);
-    const uint64_t arg_len = element_count(arg[0]);
+    const int64_t dst_len = element_count(*dst);
+    const int64_t arg_len = element_count(arg[0]);
     ASSERT(dst_len == arg_len);
 
     frange_t* d = dst->ptr;
     irange_t* s = arg[0].ptr;
 
-    for (uint64_t i = 0; i < dst_len; ++i) {
+    for (int64_t i = 0; i < dst_len; ++i) {
         d[i].beg = (float)s[i].beg;
         d[i].end = (float)s[i].end; 
     }

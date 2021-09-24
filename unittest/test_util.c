@@ -36,8 +36,8 @@ UTEST(util, rmsd) {
     double* xyz0 = (double*)(mem + stride * 6);
     double* xyz1 = (double*)(mem + stride * 12);
 
-    md_trajectory_load_frame(&traj, 0, NULL, x0, y0, z0, mol.atom.count);
-    md_trajectory_load_frame(&traj, 1, NULL, x1, y1, z1, mol.atom.count);
+    md_trajectory_load_frame(&traj, 0, NULL, x0, y0, z0);
+    md_trajectory_load_frame(&traj, 1, NULL, x1, y1, z1);
 
     for (int64_t i = 0; i < mol.atom.count; ++i) {
         xyz0[i * 3 + 0] = x0[i];

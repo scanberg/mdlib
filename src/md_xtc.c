@@ -8,6 +8,8 @@
 #include <md_trajectory.h>
 #include <ext/xtc/xdrfile.h>
 
+#include <core/md_sync.h>
+
 #include <string.h>
 #include <stdio.h>
 
@@ -49,14 +51,10 @@ typedef struct xtc_t {
     XDRFILE* file;
     int64_t filesize;
     int64_t* frame_offsets;
+    md_trajectory_header_t header;
     md_allocator_i* allocator;
+    md_mutex_t mutex;
 } xtc_t;
-
-typedef struct xtc_header_t {
-    bool success;
-    int num_atoms;
-    int64_t* frame_offsets;
-} xtc_header_t;
 
 static bool xtc_header(XDRFILE* xd, int* natoms, int* step, float* time, matrix box) {
     int result, magic;
@@ -186,63 +184,15 @@ static bool xtc_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
     return false;
 }
 
-/*
-static bool xtc_decode(XDRFILE* xd, md_trajectory_data_t* write_target) {
-    int natoms = 0, step = 0;
-    float time = 0;
-    float box[3][3] = {0};
+bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
+    xtc_t* xtc = (xtc_t*)inst;
+    ASSERT(xtc);
+    ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
+    ASSERT(header);
 
-    if (!xtc_header(xd, &natoms, &step, &time, box)) {
-        return false;
-    }
-
-    if (write_target->x || write_target->y || write_target->z) {
-        uint64_t size = natoms * sizeof(rvec);
-        rvec* pos = md_alloc(default_temp_allocator, size);
-        if (xtc_coord(xd, natoms, box, pos)) {
-            md_printf(MD_LOG_TYPE_ERROR, "The supplied number of atoms in write target (%i) is not enough to contain all atoms within the frame (%i).",
-                (int)write_target->num_atoms, (int)natoms);
-        }
-
-        if (write_target->x) {
-            for (int64_t i = 0; i < natoms; ++i) {
-                write_target->x[i] = pos[i][0] * 10.0f;
-            }
-        }
-
-        if (write_target->y) {
-            for (int64_t i = 0; i < natoms; ++i) {
-                write_target->y[i] = pos[i][1] * 10.0f;
-            }
-        }
-
-        if (write_target->z) {
-            for (int64_t i = 0; i < natoms; ++i) {
-                write_target->z[i] = pos[i][2] * 10.0f;
-            }
-        }
-        md_free(default_temp_allocator, pos, size);
-    }
-
-
-    box[0][0] *= 10.0f;
-    box[0][1] *= 10.0f;
-    box[0][2] *= 10.0f;
-
-    box[1][0] *= 10.0f;
-    box[1][1] *= 10.0f;
-    box[1][2] *= 10.0f;
-
-    box[2][0] *= 10.0f;
-    box[2][1] *= 10.0f;
-    box[2][2] *= 10.0f;
-
-    memcpy(write_target->box, box, sizeof(box));
-    write_target->timestamp = time;
-
+    *header = xtc->header;
     return true;
 }
-*/
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
 static int64_t xtc_extract_frame(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
@@ -276,53 +226,19 @@ static int64_t xtc_extract_frame(struct md_trajectory_o* inst, int64_t frame_idx
 
     if (frame_data_ptr) {
         ASSERT(xtc->file);
+        md_mutex_lock(&xtc->mutex);
         xdr_seek(xtc->file, beg, SEEK_SET);
         const int64_t bytes_read = xdr_read(xtc->file, frame_data_ptr, frame_size);
+        md_mutex_unlock(&xtc->mutex);
         ASSERT(frame_size == bytes_read);
     }
     return frame_size;
 }
 
-static bool xtc_decode_frame_header(struct md_trajectory_o* inst, const void* frame_data_ptr, int64_t frame_data_size, md_trajectory_frame_header_t* header) {
+static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, int64_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
     ASSERT(frame_data_ptr);
     ASSERT(frame_data_size);
-    ASSERT(header);
-
-    xtc_t* xtc = (xtc_t*)inst;
-    if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "Error when decoding frame header, xtc magic did not match");
-        return false;
-    }
-    
-    // There is a warning for ignoring const qualifier for frame_data_ptr, but it is ok since we only perform read operations "r" with the data.
-    XDRFILE* file = xdrfile_mem((void*)frame_data_ptr, frame_data_size, "r");
-    ASSERT(file);
-
-    int natoms = 0, step = 0;
-    float time = 0;
-    float box[3][3] = {0};
-
-    bool result = xtc_header(file, &natoms, &step, &time, box);
-    if (result) {
-        header->num_atoms = natoms;
-        header->step = step;
-        header->timestamp = time;
-        for (int i = 0; i < 9; ++i) ((float*)box)[i] *= 10.0f; // nm -> �
-        memcpy(header->box, box, sizeof(box));
-    }
-
-    xdrfile_close(file);
-
-    return result;
-}
-
-static bool xtc_decode_frame_coords(struct md_trajectory_o* inst, const void* frame_data_ptr, int64_t frame_data_size, float* x, float* y, float* z, int64_t num_coords) {
-    ASSERT(inst);
-    ASSERT(frame_data_ptr);
-    ASSERT(frame_data_size);
-    ASSERT(num_coords >= 0);
-    ASSERT(x && y && z);
 
     bool result = true;
 
@@ -336,32 +252,30 @@ static bool xtc_decode_frame_coords(struct md_trajectory_o* inst, const void* fr
     XDRFILE* file = xdrfile_mem((void*)frame_data_ptr, frame_data_size, "r");
     ASSERT(file);
 
-    // Get header (we want to compare against natoms)
+    // Get header
     int natoms = 0, step = 0;
     float time = 0;
     float box[3][3] = {0};
     result = xtc_header(file, &natoms, &step, &time, box);
     if (result) {
-
-        if (num_coords < (int64_t)natoms) {
-            md_printf(MD_LOG_TYPE_ERROR, "The supplied number of atoms in write target (%i) is not enough to contain all atoms within the frame (%i).",
-                (int)num_coords, (int)natoms);
-            result = false;
+        int64_t byte_size = natoms * sizeof(rvec);
+        rvec* pos = md_alloc(default_temp_allocator, byte_size);
+        if (xtc_coord(file, natoms, pos)) {
+            // nm -> Ångström
+            for (int64_t i = 0; i < natoms; ++i) {
+                if (x) x[i] = pos[i][0] * 10.0f;
+                if (y) y[i] = pos[i][1] * 10.0f;
+                if (z) z[i] = pos[i][2] * 10.0f;
+            }
         }
 
-        if (result) {
-            uint64_t size = num_coords * sizeof(rvec);
-            rvec* pos = md_alloc(default_temp_allocator, size);
-            if (xtc_coord(file, natoms, pos)) {
-                // nm -> �
-                for (int64_t i = 0; i < natoms; ++i) {
-                    x[i] = pos[i][0] * 10.0f;
-                    y[i] = pos[i][1] * 10.0f;
-                    z[i] = pos[i][2] * 10.0f;
-                }
-            }
+        md_free(default_temp_allocator, pos, byte_size);
 
-            md_free(default_temp_allocator, pos, size);
+        if (header) {
+            header->num_atoms = natoms;
+            header->step = step;
+            header->timestamp = time;
+            memcpy(header->box, box, sizeof(header->box));
         }
     }
 
@@ -423,14 +337,23 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
         xtc->file = file;
         xtc->filesize = filesize;
         xtc->frame_offsets = offsets;
+        xtc->mutex = md_mutex_create();
+
+        xtc->header = (md_trajectory_header_t) {
+            .num_frames = md_array_size(offsets) - 1,
+            .num_atoms = num_atoms,
+            .max_frame_data_size = max_frame_size
+        };
 
         traj->inst = (struct md_trajectory_o*)xtc;
-        traj->num_atoms = num_atoms;
-        traj->num_frames = md_array_size(offsets) - 1;      // Last offset is filesize
-        traj->max_frame_data_size = max_frame_size;
+        //md_trajectory_num_atoms(traj) = num_atoms;
+        //md_trajectory_num_frames(traj) = md_array_size(offsets) - 1;      // Last offset is filesize
+        //traj->max_frame_data_size = max_frame_size;
+
+        traj->get_header = xtc_get_header;
+        traj->load_frame = md_trajectory_default_load_frame;
         traj->extract_frame_data = xtc_extract_frame;
-        traj->decode_frame_header = xtc_decode_frame_header;
-        traj->decode_frame_coords = xtc_decode_frame_coords;
+        traj->decode_frame_data = xtc_decode_frame_data;
 
         return true;
     }
@@ -449,6 +372,7 @@ bool md_xtc_trajectory_close(md_trajectory_i* traj) {
 
     if (xtc->file) xdrfile_close(xtc->file);
     if (xtc->frame_offsets) md_array_free(xtc->frame_offsets, xtc->allocator);
+    md_mutex_destroy(&xtc->mutex);
     md_free(xtc->allocator, xtc, sizeof(xtc_t));
 
     memset(traj, 0, sizeof(md_trajectory_i));

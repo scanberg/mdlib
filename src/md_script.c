@@ -2014,7 +2014,7 @@ ast_node_t* parse_value(parse_context_t* ctx) {
     
     ast_node_t* node = create_node(ctx->ir, AST_CONSTANT_VALUE, token);
     
-    if (token.type == ':' || next.type == ':' && (is_number(token.type))) {
+    if (token.type == ':' || (next.type == ':' && (is_number(token.type)))) {
         // Expand the nodes token to contain the range
         node->token.col_end = next.col_end;
 
@@ -2714,7 +2714,7 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
 
     *type = node->data.type;
 
-    const ast_node_t** args = node->children;
+    const ast_node_t** const args = node->children;
     int64_t num_args = md_array_size(node->children);
 
     if (node->proc->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
@@ -3524,7 +3524,7 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     if (node->children) {
         int64_t offset = 0;
         if (node->type == AST_CONTEXT) offset = 1;  // We don't want to evaluate the lhs in a context on its own since then it will loose its context
-        for (int64_t i = offset; i < md_array_size(node->children); ++i) {
+        for (int64_t i = offset; i < num_children; ++i) {
             result &= static_eval_node(node->children[i], ctx);
         }
     }
@@ -3731,7 +3731,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     md_exp_bitfield_t tmp_bf = {0};
     if (!mask) {
         md_bitfield_init(&tmp_bf, &temp_alloc);
-        md_bitfield_set_range(&tmp_bf, 0, traj->num_frames);
+        md_bitfield_set_range(&tmp_bf, 0, md_trajectory_num_frames(traj));
         mask = &tmp_bf;
     }
 
@@ -3777,7 +3777,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         md_frame_cache_load_frame_data(frame_cache, 0, init_x, init_y, init_z, init_header.box, NULL, NULL, NULL);
     }
     else {
-        md_trajectory_load_frame(traj, 0, &init_header, init_x, init_y, init_z, mol->atom.count);
+        md_trajectory_load_frame(traj, 0, &init_header, init_x, init_y, init_z);
     }
 
     bool result = true;
@@ -3794,13 +3794,13 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         }
 
         int64_t f_idx = beg_bit - 1;
-        ASSERT(f_idx < traj->num_frames);
+        ASSERT(f_idx < md_trajectory_num_frames(traj));
 
         if (frame_cache) {
             result = md_frame_cache_load_frame_data(frame_cache, f_idx, curr_x, curr_y, curr_z, curr_header.box, NULL, NULL, NULL);
         }
         else {
-            result = md_trajectory_load_frame(traj, f_idx, NULL, curr_x, curr_y, curr_z, mutable_mol.atom.count);
+            result = md_trajectory_load_frame(traj, f_idx, NULL, curr_x, curr_y, curr_z);
         }
 
         if (!result) {
@@ -3933,13 +3933,13 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             prop->data.max_range[0] = node->data.max_range ==  FLT_MAX ? prop->data.max_value : node->data.max_range;
         }
         else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
-            const double scl = 1.0 / (double)traj->num_frames;
+            const double scl = 1.0 / (double)md_trajectory_num_frames(traj);
             for (int64_t i = 0; i < prop->data.num_values; ++i) {
                 prop->data.values[i] = (float)(prop->data.values[i] * scl);
             }
         }
         else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
-            const double scl = 1.0 / (double)traj->num_frames;
+            const double scl = 1.0 / (double)md_trajectory_num_frames(traj);
             for (int64_t i = 0; i < prop->data.num_values; ++i) {
                 prop->data.values[i] = (float)(prop->data.values[i] * scl);
             }
@@ -4193,7 +4193,7 @@ bool md_script_eval_compute(md_script_eval_t* eval, md_script_eval_args_t args) 
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was null");
         result = false;
     }
-    if (args.traj->num_frames == 0) {
+    if (md_trajectory_num_frames(args.traj) == 0) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was empty");
         result = false;
     }
@@ -4294,6 +4294,13 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
     ast_node_t* node = parse_expression(&parse_ctx);
     if (node) {
         prune_ast_expressions(node);
+
+        eval_context_t static_ctx = {
+            .ir = ir,
+            .mol = filter_ctx.mol,
+            .temp_alloc = temp_alloc,
+        };
+
         for (int64_t i = 0; i < filter_ctx.selection.count; ++i) {
             const md_filter_stored_selection_t sel = filter_ctx.selection.ptr[i];
             identifier_t ident = {
@@ -4305,13 +4312,8 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
                 },
                 .flags = FLAG_CONSTANT
             };
+            md_array_push(static_ctx.identifiers, ident, alloc);
         }
-
-        eval_context_t static_ctx = {
-            .ir = ir,
-            .mol = filter_ctx.mol,
-            .temp_alloc = temp_alloc,
-        };
 
         if (static_check_node(node, &static_ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
@@ -4355,7 +4357,7 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
 static inline const md_range_t node_range(const ast_node_t* node) {
     md_range_t range = {node->token.col_beg, node->token.col_end};
     const int64_t num_children = md_array_size(node->children);
-    const ast_node_t** children = node->children;
+    const ast_node_t** const children = node->children;
     for (int64_t i = 0; i < num_children; ++i) {
         md_range_t child_range = node_range(children[i]);
         range.beg = MIN(range.beg, child_range.beg);
@@ -4458,16 +4460,17 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     md_stack_allocator_init(&stack, stack_ptr, stack_size);
     md_allocator_i stack_alloc = md_stack_allocator_create_interface(&stack);
 
-    float* x = md_stack_allocator_alloc(&stack, args.traj->num_atoms * sizeof(float));
-    float* y = md_stack_allocator_alloc(&stack, args.traj->num_atoms * sizeof(float));
-    float* z = md_stack_allocator_alloc(&stack, args.traj->num_atoms * sizeof(float));
+    int64_t num_frames = md_trajectory_num_atoms(args.traj);
+    float* x = md_stack_allocator_alloc(&stack, num_frames * sizeof(float));
+    float* y = md_stack_allocator_alloc(&stack, num_frames * sizeof(float));
+    float* z = md_stack_allocator_alloc(&stack, num_frames * sizeof(float));
     
     md_trajectory_frame_header_t header = { 0 };
     if (args.traj->inst) {
         if (args.frame_cache) {
             md_frame_cache_load_frame_data(args.frame_cache, 0, x, y, z, header.box, NULL, NULL, NULL);
         } else {
-            md_trajectory_load_frame(args.traj, 0, &header, x, y, z, args.traj->num_atoms);
+            md_trajectory_load_frame(args.traj, 0, &header, x, y, z);
         }
     } else {
         x = args.mol->atom.x;

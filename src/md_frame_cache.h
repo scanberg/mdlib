@@ -73,6 +73,8 @@ bool md_frame_cache_reserve_frame(md_frame_cache_t* cache, int64_t frame_idx, md
 
 //bool md_frame_cache_fetch_frame_range(md_frame_cache_t* cache, int64_t frame_beg_idx, int64_t frame_end_idx, md_frame_cache_load_frame_fn* load_fn, void* user_data);
 
+bool md_frame_cache_create_trajectory_interface(struct md_trajectory_i* traj, md_frame_cache_t* cache);
+
 #ifdef __cplusplus
 }
 #endif
