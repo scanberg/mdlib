@@ -1,3 +1,4 @@
+[![CMake](https://github.com/scanberg/mold/actions/workflows/cmake.yml/badge.svg)](https://github.com/scanberg/mold/actions/workflows/cmake.yml)
 # MOLD
 Molecule Library of Doom
 
