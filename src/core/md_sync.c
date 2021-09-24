@@ -164,6 +164,8 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 #if MD_PLATFORM_LINUX
 #include <semaphore.h>
 
+STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit into md_semaphore_t!");
+
 // Semaphore
 bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 	ASSERT(semaphore);
@@ -200,6 +202,8 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 #include <mach/mach_init.h>
 #include <mach/task.h>
 #include <mach/semaphore.h>
+
+STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
 
 // Semaphore
 bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {

@@ -22,6 +22,7 @@ struct md_mutex_t {
 
 struct md_semaphore_t {
     void* _id;
+    void* _pad[3];
 };
 
 // Thread
