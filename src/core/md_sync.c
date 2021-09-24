@@ -203,7 +203,7 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 #include <mach/task.h>
 #include <mach/semaphore.h>
 
-STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
+STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
 
 // Semaphore
 bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
