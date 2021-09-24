@@ -65,17 +65,15 @@ str_t md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
     char sz_buf[MD_MAX_PATH] = "";
-    char sz_path[MD_MAX_PATH] = "";
-
-    SZBUF_FROM_STR(sz_path, path);
+    path = copy_str(path, default_temp_allocator);
 
     str_t canonical_str = {0};
     bool result = false;
 
 #if MD_PLATFORM_WINDOWS
-    result = PathCanonicalizeA(sz_buf, sz_path);
+    result = PathCanonicalizeA(sz_buf, path.ptr);
 #elif MD_PLATFORM_UNIX
-    result = realpath(sz_path, sz_buf) == sz_buf;
+    result = realpath(path.ptr, sz_buf) == sz_buf;
 #endif
 
     if (result) {
@@ -88,34 +86,32 @@ str_t md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
 }
 
 str_t md_os_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
-    char sz_from[MD_MAX_PATH] = "";
-    char sz_to[MD_MAX_PATH] = "";
     char sz_buf[MD_MAX_PATH] = "";
 
-    SZBUF_FROM_STR(sz_from, from);
-    SZBUF_FROM_STR(sz_to, to);
+    from = copy_str(from, default_temp_allocator);
+    to = copy_str(to, default_temp_allocator);
 
     str_t relative_str = {0};
     bool result = false;
 
 #if MD_PLATFORM_WINDOWS
-    result = PathRelativePathTo(sz_buf, sz_from, FILE_ATTRIBUTE_DIRECTORY, sz_to, FILE_ATTRIBUTE_NORMAL);
+    result = PathRelativePathTo(sz_buf, from.ptr, FILE_ATTRIBUTE_DIRECTORY, to.ptr, FILE_ATTRIBUTE_NORMAL);
 
 #elif MD_PLATFORM_UNIX
     // Make 2 canonical paths
-    str_t cfrom = md_os_path_make_canonical(from, default_temp_allocator);
-    str_t cto   = md_os_path_make_canonical(to,   default_temp_allocator);
+    from = md_os_path_make_canonical(from, default_temp_allocator);
+    to   = md_os_path_make_canonical(to,   default_temp_allocator);
 
     // Find the common base
-    int64_t count = str_count_equal_chars(cfrom, cto);
+    int64_t count = str_count_equal_chars(from, to);
     result = count > 0;
 
     if (result) {
         // Count number of folders as N in from and add N times '../'
-        str_t rfrom = substr(cfrom, count, -1);
-        str_t rto = substr(cto, count, -1);
+        str_t rfrom = substr(from, count, -1);
+        str_t rto = substr(to, count, -1);
 
-        int64_t folder_count = str_count_char_occur(rfrom, '/');
+        const int64_t folder_count = str_count_char_occur(rfrom, '/');
 
         str_t folder_up = make_cstr("../");
         int len = 0;

@@ -154,11 +154,11 @@ typedef struct gl_ubo_base_t {
     uint32_t _pad[3];
 } gl_ubo_base_t;
 
-static const int ubo_base_size = sizeof(gl_ubo_base_t);
+//static const int ubo_base_size = sizeof(gl_ubo_base_t);
 
 typedef uint32_t gl_version_t;
 
-static const int control_point_size = sizeof(gl_control_point_t);
+//static const int control_point_size = sizeof(gl_control_point_t);
 
 typedef struct internal_rep_t internal_rep_t;
 typedef struct internal_mol_t internal_mol_t;
@@ -205,9 +205,9 @@ struct internal_ctx_t {
     gl_version_t version;
 };
 
-static const int ctx_size = sizeof(struct internal_ctx_t);
-static const int mol_size = sizeof(struct internal_mol_t);
-static const int rep_size = sizeof(struct internal_rep_t);
+//static const int ctx_size = sizeof(struct internal_ctx_t);
+//static const int mol_size = sizeof(struct internal_mol_t);
+//static const int rep_size = sizeof(struct internal_rep_t);
 
 STATIC_ASSERT(sizeof(internal_ctx_t) <= sizeof(md_gl_context_t), "internal draw ctx does not fit into containing structure");
 STATIC_ASSERT(sizeof(internal_mol_t) <= sizeof(md_gl_molecule_t), "internal draw mol does not fit into containing structure");
@@ -309,7 +309,7 @@ static bool compile_shader_from_file(GLuint shader, const char* filename, const 
         md_file_read(file, buffer, size);
         md_printf(MD_LOG_TYPE_INFO, "compiling shader '%s'... ", filename);
         bool result = compile_shader_from_source(shader, buffer, defines);
-        if (result == true) md_print(MD_LOG_TYPE_INFO, "OK\n");
+        if (result == true) md_print(MD_LOG_TYPE_INFO, "OK");
         md_file_close(file);
         return result;
     } else {
@@ -1050,8 +1050,8 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
 }
 
 typedef struct draw_entity_t {
-    internal_rep_t* rep;
-    mat4_t* model_matrix;
+    const internal_rep_t* rep;
+    const mat4_t* model_matrix;
 } draw_entity_t;
 
 static int compare_draw_ent(const void* elem1, const void* elem2) {

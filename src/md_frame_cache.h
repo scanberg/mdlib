@@ -60,8 +60,6 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
 // This is essentially the same operation as load_frame_data, but without extracting any data
 // This also blocks the current thread from executing code. So this is more intended to be used in a parallel
 // thread to load 'upcomming' frame data into the cache while operating on other frames.
-// load_fn is an optional callback function and if set, it will be called when it is time to load the frame from the trajectory and store it into
-// the supplied frame_data pointer.
 
 // Each frame index has an individual lock associated with it in order to synchronize access.
 // It is crucial to release the lock when you are done operating on the frame_data.
@@ -70,10 +68,6 @@ void md_frame_cache_release_frame_lock(struct md_frame_cache_lock_t* lock);
 // Reserves a frame in the cache
 // Returns true if the data was not already in cache, the user can perform operations on the data, before releasing the frame lock.
 bool md_frame_cache_reserve_frame(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock);
-
-//bool md_frame_cache_fetch_frame_range(md_frame_cache_t* cache, int64_t frame_beg_idx, int64_t frame_end_idx, md_frame_cache_load_frame_fn* load_fn, void* user_data);
-
-bool md_frame_cache_create_trajectory_interface(struct md_trajectory_i* traj, md_frame_cache_t* cache);
 
 #ifdef __cplusplus
 }

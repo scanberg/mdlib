@@ -1014,7 +1014,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     } else {
         for (int64_t j = 0; j < num_elem; ++j) {
             bool found = false;
-            for (uint64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
+            for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (elem_idx[j] == ctx->mol->atom.element[i]) {
                     found = true;
                     break;

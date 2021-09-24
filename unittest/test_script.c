@@ -256,8 +256,7 @@ UTEST(script, property_compute) {
         ASSERT_TRUE(md_script_eval_compute(&eval, eval_args));
 
         EXPECT_EQ(eval.num_properties, 1);
-        const md_script_property_t* props = eval.properties;
-
+        //const md_script_property_t* props = eval.properties;
         //EXPECT_EQ(props->data.num_values, traj_header.num_frames);
     }
 

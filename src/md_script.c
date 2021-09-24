@@ -31,7 +31,7 @@
 #pragma warning(disable:4063) // Single character tokens not being valid tokens
 #endif
 
-#if MD_COMPILER_GCC
+#if MD_COMPILER_GCC || MD_COMPILER_CLANG
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #pragma GCC diagnostic ignored "-Wswitch"   // Single character tokens not part of enumeration
 #endif
@@ -853,7 +853,7 @@ static void create_error(md_script_ir_o* ir, token_t token, const char* format, 
     va_end(args);
 
     ASSERT(len > 0);
-    ASSERT(len < ARRAY_SIZE(buffer));
+    ASSERT(len < (int)ARRAY_SIZE(buffer));
 
     char* err_str = md_alloc(ir->arena, (uint64_t)len + 1);
     memcpy(err_str, buffer, len);
@@ -925,7 +925,7 @@ static ast_node_t* create_node(md_script_ir_o* ir, ast_type_t type, token_t toke
 }
 
 static identifier_t* get_identifier(md_script_ir_o* ir, str_t name) {
-    for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(constants); ++i) {
         if (compare_str(constants[i].name, name)) {
             return &constants[i];
         }
@@ -1306,7 +1306,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             // Match buf + i against the longest accepted symbol that we can find.
             if (n == 2) {
                 str_t str = {buf + i, 2};
-                for (int k = 0; k < ARRAY_SIZE(symbols_2); ++k) {
+                for (int k = 0; k < (int)ARRAY_SIZE(symbols_2); ++k) {
                     if (compare_str(str, (str_t){symbols_2[k].str, 2})) {
                         token.type = symbols_2[k].type;
                         j = i + 2;
@@ -1315,7 +1315,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
                 }
             }
             if (!token.type) {
-                for (int k = 0; k < ARRAY_SIZE(symbols_1); ++k) {
+                for (int k = 0; k < (int)ARRAY_SIZE(symbols_1); ++k) {
                     if (symbols_1[k] == buf[i]) {
                         // The character is the type
                         token.type = symbols_1[k];
@@ -2364,7 +2364,7 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
 static inline identifier_t* eval_find_identifier(str_t name, eval_context_t* ctx) {
     ASSERT(ctx);
     
-    for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(constants); ++i) {
         if (compare_str(name, constants[i].name)) {
             return &constants[i];
         }
@@ -2436,7 +2436,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
             ident->data = *dst;
         }
     }
-    else if (!ident->flags & FLAG_CONSTANT) {
+    else if ((ident->flags & FLAG_CONSTANT) == 0) {
         result = evaluate_node(&ident->data, rhs, ctx);
     }
 
@@ -2448,7 +2448,7 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
 
     // Even if we do not have a dst parameter we still want to propagate the evaluation to the children
     const int64_t num_args = md_array_size(node->children);
-    const ast_node_t** args = node->children;
+    ast_node_t** const args = node->children;
 
     if (dst) {
         ASSERT(compare_type_info(dst->type, node->data.type));
@@ -2714,7 +2714,7 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
 
     *type = node->data.type;
 
-    const ast_node_t** const args = node->children;
+    ast_node_t** const args = node->children;
     int64_t num_args = md_array_size(node->children);
 
     if (node->proc->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
@@ -3768,7 +3768,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     };
 
     const int64_t num_expr = md_array_size(ir->eval_targets);
-    const expression_t** expr = ir->eval_targets;
+    expression_t** const expr = ir->eval_targets;
 
     ASSERT(md_array_size(ir->prop_expressions) == num_props);
 
@@ -4354,10 +4354,10 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
 
 #define VIS_MAGIC 0xbc6169abd9628947
 
-static inline const md_range_t node_range(const ast_node_t* node) {
+static inline md_range_t node_range(const ast_node_t* node) {
     md_range_t range = {node->token.col_beg, node->token.col_end};
     const int64_t num_children = md_array_size(node->children);
-    const ast_node_t** const children = node->children;
+    ast_node_t** const children = node->children;
     for (int64_t i = 0; i < num_children; ++i) {
         md_range_t child_range = node_range(children[i]);
         range.beg = MIN(range.beg, child_range.beg);
@@ -4374,11 +4374,10 @@ static inline const ast_node_t* get_node(const ast_node_t* node, int32_t col) {
 
     const int64_t num_children = md_array_size(node->children);
     if (num_children > 0) {
-        const ast_node_t** children = node->children;
         for (int64_t i = 0; i < num_children; ++i) {
-            md_range_t child_range = node_range(children[i]);
+            md_range_t child_range = node_range(node->children[i]);
             if (child_range.beg <= col && col < child_range.end) {
-                result = get_node(children[i], col);
+                result = get_node(node->children[i], col);
             }
         }
     }

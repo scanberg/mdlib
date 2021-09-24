@@ -7,7 +7,7 @@
 
 #include <string.h>
 
-bool md_trajectory_default_load_frame(md_trajectory_i* traj, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+bool md_trajectory_default_load_frame(const md_trajectory_i* traj, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(traj);
 
     bool result = true;

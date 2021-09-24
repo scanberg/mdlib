@@ -42,7 +42,7 @@ typedef struct md_trajectory_i {
 } md_trajectory_i;
 
 // A convenient default option for load_frame if one does not want to do anything fancy when loading frame data.
-bool md_trajectory_default_load_frame(struct md_trajectory_i* traj, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
+bool md_trajectory_default_load_frame(const struct md_trajectory_i* traj, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 
 #ifdef __cplusplus
 }

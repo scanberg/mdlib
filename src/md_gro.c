@@ -353,8 +353,6 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     {
         // Compute artificial chains and label them A - Z
         if (mol->residue.complete_covalent_bond_range) {
-            const char* chain_labels[] = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"};
-            
             // Identify connected residues (through covalent bonds) if more than one, we store it as a chain
             md_range_t res_range = {0, 1};
             for (int64_t res_idx = 0; res_idx < mol->residue.count - 1; ++res_idx) {

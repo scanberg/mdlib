@@ -36,13 +36,13 @@
 
 static inline float rsqrt(float x) {
     __m128 res = _mm_rsqrt_ss(_mm_set_ps1(x));
-    _mm_store1_ps(&x, res);
+    _mm_store_ss(&x, res);
     return x;
 }
 
 static inline float accurateSqrt(float x) {
     __m128 res = _mm_sqrt_ss(_mm_set_ps1(x));
-    _mm_store1_ps(&x, res);
+    _mm_store_ss(&x, res);
     return x;
 }
 

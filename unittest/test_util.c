@@ -55,6 +55,8 @@ UTEST(util, rmsd) {
 
     // Our implementation
     double rmsd = md_util_compute_rmsd(x0, y0, z0, x1, y1, z1, mol.atom.mass, mol.atom.count);
+    
+    EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
     md_pdb_molecule_free(&mol, alloc);
     md_pdb_data_free(&pdb_data, alloc);

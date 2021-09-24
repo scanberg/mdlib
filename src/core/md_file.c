@@ -22,6 +22,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef MD_MAX_PATH
+#define MD_MAX_PATH 4096
+#endif
+
 struct md_file_o {
     FILE handle;
 };
@@ -30,7 +34,7 @@ md_file_o* md_file_open(str_t filename, int flags) {
     if (!filename.ptr || !filename.len) return NULL;
 
 #if MD_PLATFORM_WINDOWS
-    wchar_t w_file[1024];
+    wchar_t w_file[MD_MAX_PATH] = "";
     const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, ARRAY_SIZE(w_file));
     if (w_file_len >= ARRAY_SIZE(w_file)) {
         md_print(MD_LOG_TYPE_ERROR, "File path exceeds stupid limit!");
@@ -90,7 +94,7 @@ md_file_o* md_file_open(str_t filename, int flags) {
         return NULL;
     }
 
-    char file[1024] = {0};
+    char file[MD_MAX_PATH] = "";
     strncpy(file, filename.ptr, ARRAY_SIZE(file)-1);
     return (md_file_o*)fopen(file, mode);
 #endif
