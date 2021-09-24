@@ -264,7 +264,7 @@ UTEST(script, property_compute) {
     {
         md_script_ir_compile_args_t compile_args = {
             .src = make_cstr(
-                "d1  = distance(10:2, 100);"
+                "d1 = distance(10:2, 100);"
             ),
             .mol = &mol,
             .alloc = alloc

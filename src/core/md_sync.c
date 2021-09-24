@@ -110,7 +110,6 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 }
 
 #elif MD_PLATFORM_UNIX
-
 #include <pthread.h>
 
 md_thread_t* md_thread_create(md_thread_func fn, void* user_data) {
@@ -162,11 +161,41 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 	return true;
 }
 
+#if MD_PLATFORM_LINUX
+#include <semaphore.h>
+
+// Semaphore
+bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
+	ASSERT(semaphore);
+	return sem_init((sem_t*)&semaphore->_id, 0, (uint32_t)initial_count) == 0;
+}
+
+md_semaphore_t md_semaphore_create(int32_t initial_count) {
+	md_semaphore_t semaphore;
+	md_semaphore_init(&semaphore, initial_count);
+	return semaphore;
+}
+
+bool md_semaphore_destroy(md_semaphore_t* semaphore) {
+	return sem_destroy((sem_t*)semaphore->_id) == 0;
+}
+
+bool md_semaphore_aquire(md_semaphore_t* semaphore) {
+	return sem_wait((sem_t*)semaphore->_id) == 0;
+}
+
+bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
+	return sem_trywait((sem_t*)semaphore->_id) == 0;
+}
+
+bool md_semaphore_release(md_semaphore_t* semaphore) {
+	return sem_post((sem_t*)semaphore->_id) == 0;
+}
 #endif
 
-#if MD_PLATFORM_LINUX
+#endif
 
-#elif MD_PLATFORM_OSX
+#if MD_PLATFORM_OSX
 // MacOS deprecated pthreads semaphores
 #include <mach/mach_init.h>
 #include <mach/task.h>

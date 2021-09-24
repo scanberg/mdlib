@@ -466,20 +466,20 @@ quat_t quat_angle_axis(float angle, vec3_t axis);
 
 static inline quat_t quat_mul(quat_t a, quat_t b) {
     quat_t c = {
-        .x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-        .y = a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z,
-        .z = a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x,
-        .w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+        a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z,
+        a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x,
+        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
     };
     return c;
 }
 
 static inline quat_t quat_mul_f(quat_t q, float s) {
     quat_t c = {
-        .x = q.x * s,
-        .y = q.y * s,
-        .z = q.z * s,
-        .w = q.w * s
+        q.x * s,
+        q.y * s,
+        q.z * s,
+        q.w * s
     };
     return c;
 }
@@ -493,10 +493,10 @@ static inline vec3_t quat_mul_vec3(quat_t q, vec3_t v) {
 
 static inline quat_t quat_conj(quat_t q) {
     quat_t r = {
-        .x = -q.x,
-        .y = -q.y,
-        .z = -q.z,
-        .w =  q.w
+        -q.x,
+        -q.y,
+        -q.z,
+         q.w
     };
 
     return r;

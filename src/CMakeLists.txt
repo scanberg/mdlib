@@ -70,6 +70,7 @@ if (MSVC)
 endif()
 
 if (CMAKE_COMPILER_IS_GNUCC)
+find_package(Threads REQUIRED)
   target_compile_definitions(mold PRIVATE _GNU_SOURCE)
-  target_link_libraries(mold PUBLIC m)
+  target_link_libraries(mold PRIVATE m Threads::Threads)
 endif()

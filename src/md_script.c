@@ -18,6 +18,7 @@
 #include "core/md_vec_math.h"
 #include "core/md_simd.h"
 #include "core/md_platform.h"
+#include "core/md_compiler.h"
 #include "core/md_os.h"
 
 #include <stdio.h>
@@ -26,8 +27,13 @@
 #include <math.h>
 #include <float.h>
 
-#if MD_PLATFORM_WINDOWS
+#if MD_COMPILER_MSVC
 #pragma warning(disable:4063) // Single character tokens not being valid tokens
+#endif
+
+#if MD_COMPILER_GCC
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wswitch"   // Single character tokens not part of enumeration
 #endif
 
 #define SCRIPT_IR_MAGIC 0x371bacfe8274910a
@@ -276,14 +282,18 @@ typedef struct md_script_ir_o {
     str_t str;  // Original string containing the 'source'
     
     // These are resizable arrays
-    expression_t        **expressions;
-    identifier_t        **identifiers;                  // Known identifiers
-    identifier_t        **constant_identifiers;         // identifiers which can be evaluated at compile time.
     ast_node_t          **nodes;
-
+    expression_t        **expressions;
     expression_t        **type_checked_expressions;     // List of expressions which passed type checking
     expression_t        **eval_targets;                 // List of dynamic expressions which needs to be evaluated per frame
     expression_t        **prop_expressions;             // List of expressions which are meant for exposure as properties
+    
+    identifier_t        *identifiers;                   // List of identifiers, notice that the data in a const context should only be used if it is flagged as 
+
+    //identifier_definition_t* ident_definitions;         // List of identifiers and their definitions (type, flags)
+    //identifier_data_t*       ident_const_eval;          // If this identifier 
+    //identifier_t        **constant_identifiers;         // identifiers which can be evaluated at compile time.
+
 
     // These are the final products which can be read through the public part of the structure
     md_script_error_t   *errors;
@@ -915,10 +925,15 @@ static ast_node_t* create_node(md_script_ir_o* ir, ast_type_t type, token_t toke
 }
 
 static identifier_t* get_identifier(md_script_ir_o* ir, str_t name) {
-    const uint64_t num_identifiers = md_array_size(ir->identifiers);
-    for (uint64_t i = 0; i < num_identifiers; ++i) {
-        if (compare_str(ir->identifiers[i]->name, name)) {
-            return ir->identifiers[i];
+    for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+        if (compare_str(constants[i].name, name)) {
+            return &constants[i];
+        }
+    }
+
+    for (int64_t i = 0; i < md_array_size(ir->identifiers); ++i) {
+        if (compare_str(ir->identifiers[i].name, name)) {
+            return &ir->identifiers[i];
         }
     }
     return NULL;
@@ -927,11 +942,13 @@ static identifier_t* get_identifier(md_script_ir_o* ir, str_t name) {
 static identifier_t* create_identifier(md_script_ir_o* ir, str_t name) {
     ASSERT(get_identifier(ir, name) == NULL);
 
-    identifier_t* ident = md_alloc(ir->arena, sizeof(identifier_t));
-    memset(ident, 0, sizeof(identifier_t));
-    ident->name = copy_str(name, ir->arena);
-    md_array_push(ir->identifiers, ident, ir->arena);
-    return ident;
+    identifier_t ident = {
+        .name = copy_str(name, ir->arena),
+        .data = {0},
+        .flags = 0,
+    };
+
+    return md_array_push(ir->identifiers, ident, ir->arena);
 }
 
 static void fix_precedence(ast_node_t** node) {
@@ -2343,12 +2360,20 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
     return true;
 }
 
-static inline identifier_t* find_identifier(str_t name, eval_context_t* ctx) {
+// This should only called in an evaluation context
+static inline identifier_t* eval_find_identifier(str_t name, eval_context_t* ctx) {
     ASSERT(ctx);
+    
+    for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+        if (compare_str(name, constants[i].name)) {
+            return &constants[i];
+        }
+    }
 
     for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
-        if (compare_str(name, ctx->ir->identifiers[i]->name)) {
-            return ctx->ir->identifiers[i];
+        // Only return IR identifiers if they are constant
+        if (ctx->ir->identifiers[i].flags & FLAG_CONSTANT && compare_str(name, ctx->ir->identifiers[i].name)) {
+            return &ctx->ir->identifiers[i];
         }
     }
 
@@ -2367,7 +2392,7 @@ static bool evaluate_identifier_reference(data_t* dst, const ast_node_t* node, e
     
     // We assume in this context that we have a reference to the identifier, we copy the data
     if (dst) {
-        identifier_t* ident = find_identifier(node->ident, ctx);
+        identifier_t* ident = eval_find_identifier(node->ident, ctx);
         if (ident) {
             ASSERT(dst->ptr && dst->size >= ident->data.size); // Make sure we have the expected size
             copy_data(dst, &ident->data);
@@ -2392,7 +2417,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
     // the data size could be zero if it is an array of length 0, in that case we don't need to allocate anything.
     // This should also be the conceptual entry point for all evaluations in this declarative language
 
-    identifier_t* ident = find_identifier(lhs->ident, ctx);
+    identifier_t* ident = eval_find_identifier(lhs->ident, ctx);
 
     if (!ident && ctx->alloc) {
         identifier_t id = {
@@ -2945,6 +2970,15 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
 
     node->data.ptr = &node->value;
     node->data.size = base_type_element_byte_size(node->data.type.base_type);
+
+    if (node->data.type.base_type == TYPE_IRANGE) {
+        // Make sure this range is not negative
+        irange_t rng = node->value._irange;
+        if (rng.beg > rng.end) {
+            create_error(ctx->ir, node->token, "The range is invalid, a range must have an ascending format, did you mean '%i:%i'?", rng.end, rng.beg);
+            return false;
+        }
+    }
     
     return true;
 }
@@ -3122,28 +3156,27 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
 
     if (static_check_node(rhs, ctx)) {
         ASSERT(lhs->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
-        identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
+        ASSERT(rhs->data.type.base_type != TYPE_UNDEFINED);  // Right hand side type must be known
 
+        identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
         ASSERT(ident);
 
         if (!(rhs->flags & FLAG_DYNAMIC) && !rhs->data.ptr) {
+            // If it is not a dynamic node, we evaluate it directly and store the data.
             allocate_data(&rhs->data, ctx->alloc);
             evaluate_node(&rhs->data, rhs, ctx);
+            rhs->flags |= FLAG_CONSTANT;
         }
 
-        if (rhs->data.type.base_type != TYPE_UNDEFINED) {
-            node->data   = rhs->data;
-            node->flags  = rhs->flags;
+        node->data   = rhs->data;
+        node->flags  = rhs->flags;
 
-            lhs->data    = rhs->data;
-            lhs->flags   = rhs->flags;
+        lhs->data    = rhs->data;
+        lhs->flags   = rhs->flags;
 
-            ident->data  = rhs->data;
-            ident->flags = rhs->flags;
-            return true;
-        } else {
-            create_error(ctx->ir, node->token, "Right hand side of assignment has an unresolved type");
-        }
+        ident->data  = rhs->data;
+        ident->flags = rhs->flags;
+        return true;
     }
 
     return false;
@@ -3441,7 +3474,7 @@ static bool extract_property_expressions(md_script_ir_o* ir) {
     return true;
 }
 
-static bool static_eval_node(ast_node_t* node, eval_context_t* ctx);
+//static bool static_eval_node(ast_node_t* node, eval_context_t* ctx);
 
 /*
 static bool static_eval_context_node(ast_node_t* node, eval_context_t* ctx) {
@@ -3487,52 +3520,27 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     const int64_t num_children = md_array_size(node->children);
     bool result = true;
     
-    if (node->type == AST_ASSIGNMENT) {
-        ASSERT(num_children == 2);
-        ast_node_t* lhs = node->children[0];
-        ast_node_t* rhs = node->children[1];
-
-        result &= static_eval_node(rhs, ctx);
-        if (result) {
-            if (!(node->flags & FLAG_DYNAMIC)) {
-                ASSERT(lhs->ident.ptr && lhs->ident.len);
-                lhs->data = rhs->data;
-                node->data = rhs->data;
-
-                identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
-                ident->data = rhs->data;
-                ident->flags |= FLAG_CONSTANT;
-
-                md_array_push(ctx->ir->constant_identifiers, ident, ctx->ir->arena);
-            }
-        }
-        else {
-            create_error(ctx->ir, node->token, "Failed to evaluate node at compile time");
+    // Propagate the evaluation all the way down to the children.
+    if (node->children) {
+        int64_t offset = 0;
+        if (node->type == AST_CONTEXT) offset = 1;  // We don't want to evaluate the lhs in a context on its own since then it will loose its context
+        for (int64_t i = offset; i < md_array_size(node->children); ++i) {
+            result &= static_eval_node(node->children[i], ctx);
         }
     }
-    else {
-        // Propagate the evaluation all the way down to the children.
-        if (node->children) {
-            int64_t offset = 0;
-            if (node->type == AST_CONTEXT) offset = 1;  // We don't want to evaluate the lhs in a context on its own since then it will loose its context
-            for (int64_t i = offset; i < md_array_size(node->children); ++i) {
-                result &= static_eval_node(node->children[i], ctx);
-            }
-        }
 
-        // Only evaluate the node if it is not flagged as dynamic
-        // Only evaluate if data.ptr is not already set (which can happen during static check)
-        if (!(node->flags & FLAG_DYNAMIC) && !node->data.ptr) {
-            if (allocate_data(&node->data, ctx->ir->arena)) {
-                result &= evaluate_node(&node->data, node, ctx);
-                if (node->type == AST_CONTEXT) {
-                    ASSERT(node->children);
-                    // If its a context node, we copy the data to the child as well
-                    node->children[0]->data = node->data;
-                }
-            } else {
-                create_error(ctx->ir, node->token, "Could not allocate data for node during static evaluation");
+    // Only evaluate the node if it is not flagged as dynamic
+    // Only evaluate if data.ptr is not already set (which can happen during static check)
+    if (!(node->flags & FLAG_DYNAMIC) && !node->data.ptr) {
+        if (allocate_data(&node->data, ctx->ir->arena)) {
+            result &= evaluate_node(&node->data, node, ctx);
+            if (node->type == AST_CONTEXT) {
+                ASSERT(node->children);
+                // If its a context node, we copy the data to the child as well
+                node->children[0]->data = node->data;
             }
+        } else {
+            create_error(ctx->ir, node->token, "Could not allocate data for node during static evaluation");
         }
     }
 
@@ -3558,10 +3566,6 @@ static bool static_evaluation(md_script_ir_o* ir, const md_molecule_t* mol) {
 
     ir->stage = "Static Evaluation";
     bool result = true;
-
-    for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
-        md_array_push(ir->constant_identifiers, &constants[i], ir->arena);
-    }
 
     // Evaluate every node which is not flagged with FLAG_DYNAMIC and store its value.
     for (int64_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
@@ -4232,7 +4236,6 @@ void md_script_eval_interrupt(const md_script_eval_t* eval) {
     }
 }
 
-
 static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allocator_i* alloc) {
     md_script_ir_o* ir = create_ir(default_temp_allocator);
     init_ir(ir, expr);
@@ -4291,7 +4294,6 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
     ast_node_t* node = parse_expression(&parse_ctx);
     if (node) {
         prune_ast_expressions(node);
-        identifier_t* stored_selections = 0;
         for (int64_t i = 0; i < filter_ctx.selection.count; ++i) {
             const md_filter_stored_selection_t sel = filter_ctx.selection.ptr[i];
             identifier_t ident = {
@@ -4301,13 +4303,8 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
                     .size = sizeof(md_exp_bitfield_t),
                     .type = {.base_type = TYPE_BITFIELD, .dim = {1}},
                 },
-                .flags = 0
+                .flags = FLAG_CONSTANT
             };
-            md_array_push(stored_selections, ident, alloc);
-        }
-
-        for (int64_t i = 0; i < md_array_size(stored_selections); ++i) {
-            md_array_push(ir->identifiers, &stored_selections[i], alloc);
         }
 
         eval_context_t static_ctx = {

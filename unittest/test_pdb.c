@@ -35,7 +35,7 @@ UTEST(pdb, parse_trajectory) {
     EXPECT_EQ(pdb_data.num_sheets, 0);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    ASSERT_NE(file, NULL);
+    ASSERT_NE((FILE*)file, NULL);
     for (int64_t i = 0; i < pdb_data.num_models; ++i) {
         char data[6] = {0};
         md_file_seek(file, pdb_data.models[i].byte_offset, MD_FILE_BEG);

@@ -7,6 +7,8 @@
 
 #include <stdio.h>
 
+#define MD_MAX_PATH 4096
+
 #if MD_PLATFORM_WINDOWS
 
 #ifndef VC_EXTRALEAN
@@ -25,14 +27,12 @@
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Shlwapi.lib")
 
-#define MD_MAX_PATH MAX_PATH
-
 #elif MD_PLATFORM_UNIX
+
 #include <time.h>
 #include <unistd.h>
 #include <stdlib.h>
 
-#define MD_MAX_PATH PATH_MAX
 #endif
 
 #if MD_PLATFORM_OSX
