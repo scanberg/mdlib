@@ -8,7 +8,7 @@
 #include <core/md_file.h>
 
 UTEST(pdb, parse_ordinary) {
-    const str_t path = make_cstr(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
+    str_t path = make_cstr(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(path, &pdb_data, default_allocator);
     EXPECT_TRUE(result);
@@ -23,7 +23,7 @@ UTEST(pdb, parse_ordinary) {
 }
 
 UTEST(pdb, parse_trajectory) {
-    const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(path, &pdb_data, default_allocator);
     EXPECT_TRUE(result);
@@ -48,7 +48,7 @@ UTEST(pdb, parse_trajectory) {
 }
 
 UTEST(pdb, trajectory_i) {
-    const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_trajectory_i traj = {0};
     ASSERT_TRUE(md_pdb_trajectory_open(&traj, path, default_allocator));
 
@@ -73,8 +73,8 @@ UTEST(pdb, trajectory_i) {
 }
 
 UTEST(pdb, create_molecule) {
-    const md_allocator_i* alloc = default_allocator;
-    const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
+    md_allocator_i* alloc = default_allocator;
+    str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(path, &pdb_data, alloc));

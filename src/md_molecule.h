@@ -1,5 +1,4 @@
-#ifndef _MD_MOLECULE_H
-#define _MD_MOLECULE_H
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -111,6 +110,4 @@ struct md_macro_molecule {
         float               (*transform)[4][4];
     } instance;
 };
-#endif
-
 #endif

@@ -2,13 +2,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <md_trajectory.h>
 
 struct md_allocator_i;
-struct md_trajectory_i;
 struct md_frame_cache_lock_t;
 
 // This is a simple N-way associative cache set for loading trajectory frames.
@@ -16,13 +12,10 @@ struct md_frame_cache_lock_t;
 // The reasoning behind this is to avoid having frame cache evictions from when accessing frames in parallel.
 
 typedef struct md_frame_data_t {
-    int frame_index;
-    int num_atoms;
+    md_trajectory_frame_header_t header;
     float* x;
     float* y;
     float* z;
-    float box[3][3];
-    double timestamp;
 } md_frame_data_t;
 
 typedef void (md_frame_cache_load_frame_fn)(struct md_trajectory_i* traj, int64_t frame_idx, md_frame_data_t* frame_data, struct md_frame_cache_lock_t* frame_lock, void* user_data);
@@ -46,6 +39,10 @@ typedef struct md_frame_cache_t {
 
     uint64_t magic;
 } md_frame_cache_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 void md_frame_cache_init(md_frame_cache_t* cache, struct md_trajectory_i* traj, struct md_allocator_i* alloc, int64_t cache_byte_size);
 void md_frame_cache_free(md_frame_cache_t* cache);

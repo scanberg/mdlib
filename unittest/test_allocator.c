@@ -24,7 +24,7 @@
     for (int64_t i = 0; i < 8; ++i) { \
         uint64_t expected_alignment = size[i] > 2 ? 16 : size[i]; \
         void* mem = md_alloc(alloc, size[i]); \
-        EXPECT_EQ((uint64_t)mem % expected_alignment, 0); \
+        EXPECT_EQ((uint64_t)mem % expected_alignment, 0ULL); \
         md_free(alloc, mem, size[i]); \
     }
 
@@ -65,12 +65,12 @@ UTEST(allocator, pool) {
 
         int indices[10] = {1, 2, 5, 6, 70, 90, 18, 16, 12, 10};
 
-        for (int i = 0; i < ARRAY_SIZE(indices); ++i) {
+        for (int i = 0; i < (int)ARRAY_SIZE(indices); ++i) {
             const int idx = indices[i];
             md_free(pool, items[idx], sizeof(uint64_t));
         }
 
-        for (int i = 0; i < ARRAY_SIZE(indices); ++i) {
+        for (int i = 0; i < (int)ARRAY_SIZE(indices); ++i) {
             const int idx = indices[i];
             items[idx] = md_alloc(pool, sizeof(uint64_t));
         }
@@ -83,27 +83,27 @@ UTEST(allocator, arena_extended) {
     md_allocator_i* arena = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
 
     for (int j = 0; j < 1000; ++j) {
-        EXPECT_EQ((uint64_t)md_alloc(arena, 16) % 16, 0); // Expect to be aligned to 16 bytes
-        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
-        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
-        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
-        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
-        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
-        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);   // Expect to be aligned to 1 byte
-        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);   // Expect to be aligned to 1 byte
-        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);   // Expect to be aligned to 1 byte
-        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);   // Expect to be aligned to 1 byte
-        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);   // Expect to be aligned to 1 byte
-        EXPECT_EQ((uint64_t)md_alloc(arena, 2) % 2, 0);   // Expect to be aligned to 2 bytes
-        EXPECT_EQ((uint64_t)md_alloc(arena, 1) % 1, 0);   // Expect to be aligned to 1 byte
-        EXPECT_EQ((uint64_t)md_alloc(arena, 2) % 2, 0);   // Expect to be aligned to 2 bytes
-        EXPECT_EQ((uint64_t)md_alloc(arena, 4) % 16, 0);  // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 16) % 16, 0ULL); // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4)  % 16, 0ULL); // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4)  % 16, 0ULL); // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4)  % 16, 0ULL); // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4)  % 16, 0ULL); // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4)  % 16, 0ULL); // Expect to be aligned to 16 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1)  % 1,  0ULL); // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1)  % 1,  0ULL); // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1)  % 1,  0ULL); // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1)  % 1,  0ULL); // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1)  % 1,  0ULL); // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 2)  % 2,  0ULL); // Expect to be aligned to 2 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 1)  % 1,  0ULL); // Expect to be aligned to 1 byte
+        EXPECT_EQ((uint64_t)md_alloc(arena, 2)  % 2,  0ULL); // Expect to be aligned to 2 bytes
+        EXPECT_EQ((uint64_t)md_alloc(arena, 4)  % 16, 0ULL); // Expect to be aligned to 16 bytes
 
         EXPECT_NE(md_alloc(arena, 9000), NULL); // Exceeds page size, should still be good
 
         // Make sure we get some internal pages going.
         for (int i = 0; i < 20; ++i) {
-            EXPECT_EQ((uint64_t)md_alloc(arena, 1024) % 16, 0);
+            EXPECT_EQ((uint64_t)md_alloc(arena, 1024) % 16, 0ULL);
         }
 
         md_arena_allocator_reset(arena);

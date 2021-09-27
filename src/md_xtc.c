@@ -13,10 +13,6 @@
 #include <string.h>
 #include <stdio.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #define MD_XTC_TRAJ_MAGIC 0x162365dac721995
 
 #define XTC_MAGIC 1995
@@ -195,7 +191,7 @@ bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
 }
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
-static int64_t xtc_extract_frame(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
+static int64_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
     xtc_t* xtc = (xtc_t*)inst;
     ASSERT(xtc);
     ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
@@ -273,7 +269,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
 
         if (header) {
             header->num_atoms = natoms;
-            header->step = step;
+            header->index = step;
             header->timestamp = time;
             memcpy(header->box, box, sizeof(header->box));
         }
@@ -284,15 +280,40 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
     return result;
 }
 
+bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+    ASSERT(inst);
+
+    xtc_t* xtc = (xtc_t*)inst;
+    if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
+        md_print(MD_LOG_TYPE_ERROR, "Error when decoding frame coord, xtc magic did not match");
+        return false;
+    }
+
+    // Should this be exposed?
+    md_allocator_i* alloc = default_temp_allocator;
+
+    bool result = true;
+    const int64_t frame_size = xtc_fetch_frame_data(inst, frame_idx, NULL);
+    if (frame_size > 0) {
+        // This is a borderline case if one should use the default_temp_allocator as the raw frame size could potentially be several megabytes...
+        void* frame_data = md_alloc(alloc, frame_size);
+        const int64_t read_size = xtc_fetch_frame_data(inst, frame_idx, frame_data);
+        ASSERT(read_size == frame_size);
+
+        result = xtc_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
+
+        md_free(alloc, frame_data, frame_size);
+    }
+
+    return result;
+}
+
 bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_i* alloc) {
     ASSERT(traj);
     ASSERT(alloc);
-
-    char z_filename[512] = {0};
-    ASSERT(filename.len < ARRAY_SIZE(z_filename));
-    memcpy(z_filename, filename.ptr, filename.len);
-
-    XDRFILE* file = xdrfile_open(z_filename, "r");
+    
+    filename = copy_str(filename, default_temp_allocator);
+    XDRFILE* file = xdrfile_open(filename.ptr, "r");
 
     if (traj->inst) {
         md_print(MD_LOG_TYPE_DEBUG, "Trajectory instance data was zero, potentially leeking memory here");
@@ -346,13 +367,9 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
         };
 
         traj->inst = (struct md_trajectory_o*)xtc;
-        //md_trajectory_num_atoms(traj) = num_atoms;
-        //md_trajectory_num_frames(traj) = md_array_size(offsets) - 1;      // Last offset is filesize
-        //traj->max_frame_data_size = max_frame_size;
-
         traj->get_header = xtc_get_header;
-        traj->load_frame = md_trajectory_default_load_frame;
-        traj->extract_frame_data = xtc_extract_frame;
+        traj->load_frame = xtc_load_frame;
+        traj->fetch_frame_data = xtc_fetch_frame_data;
         traj->decode_frame_data = xtc_decode_frame_data;
 
         return true;
@@ -379,7 +396,3 @@ bool md_xtc_trajectory_close(md_trajectory_i* traj) {
 
     return true;
 }
-
-#ifdef __cplusplus
-}
-#endif

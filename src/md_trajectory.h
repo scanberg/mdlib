@@ -3,8 +3,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define md_trajectory_get_header(traj, header) ((traj)->get_header((traj)->inst, header))
+#define md_trajectory_load_frame(traj, idx, header, x, y, z) ((traj)->load_frame((traj)->inst, idx, header, x, y, z))
+#define md_trajectory_fetch_frame_data(traj, idx, data_ptr) ((traj)->fetch_frame_data((traj)->inst, idx, data_ptr))
+#define md_trajectory_decode_frame_data(traj, data_ptr, data_size, header, x, y, z) ((traj)->decode_frame_data((traj)->inst, data_ptr, data_size, header, x, y, z))
 
-
+struct md_allocator_i;
 struct md_trajectory_o;
 
 typedef struct md_trajectory_header_t {
@@ -15,7 +19,7 @@ typedef struct md_trajectory_header_t {
 
 typedef struct md_trajectory_frame_header_t {
 	int64_t num_atoms;
-	int64_t step;
+	int64_t index;
 	double  timestamp;
 	float	box[3][3];
 } md_trajectory_frame_header_t;
@@ -30,27 +34,19 @@ typedef struct md_trajectory_i {
 	bool (*get_header)(struct md_trajectory_o* inst, md_trajectory_header_t* header);
 
 	// --- EASY MODE ---
-	// This the parameters header, x, y, z are optional and if you provide those pointers, it is assumed that they have enough space to hold the data
-	bool (*load_frame)(const struct md_trajectory_i* traj, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
+	bool (*load_frame)(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 
-	// --- LOW LEVEL ---
+	// --- ADVANCED MODE ---
 	// Returns size in bytes of frame, frame_data_ptr is optional and if supplied, the frame data will be written to it.
-	int64_t (*extract_frame_data)(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr);
+	int64_t (*fetch_frame_data)(struct md_trajectory_o* inst, int64_t idx, void* data_ptr);
 
 	// Decodes the raw frame data
-	bool (*decode_frame_data)(struct md_trajectory_o* inst, const void* frame_data_ptr, int64_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
+	bool (*decode_frame_data)(struct md_trajectory_o* inst, const void* data_ptr, int64_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 } md_trajectory_i;
-
-// A convenient default option for load_frame if one does not want to do anything fancy when loading frame data.
-bool md_trajectory_default_load_frame(const struct md_trajectory_i* traj, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 
 #ifdef __cplusplus
 }
 #endif
-
-static inline bool md_trajectory_load_frame(const md_trajectory_i* traj, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-	return traj->load_frame(traj, frame_idx, header, x, y, z);
-}
 
 // Easy mode accessors
 static inline int64_t md_trajectory_num_frames(const md_trajectory_i* traj) {
@@ -76,5 +72,3 @@ static inline int64_t md_trajectory_max_frame_data_size(const md_trajectory_i* t
 	}
 	return 0;
 }
-
-

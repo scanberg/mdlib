@@ -43,7 +43,7 @@
 
 #define SZBUF_FROM_STR(buf, str) strncpy(buf, str.ptr, MIN(sizeof(buf)-1, str.len))
 
-char CWD[1024];
+static char CWD[1024];
 
 int64_t md_os_physical_ram_in_bytes() {
     ASSERT(false);
@@ -57,7 +57,7 @@ str_t md_os_current_working_directory() {
 #elif MD_PLATFORM_UNIX
     getcwd(CWD, sizeof(CWD));
 #endif
-    str_t res = {.ptr = CWD, .len = strnlen(CWD, sizeof(CWD))};
+    str_t res = {.ptr = CWD, .len = (int64_t)strnlen(CWD, sizeof(CWD))};
     return res;
 }
 

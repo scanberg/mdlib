@@ -1,13 +1,8 @@
-#ifndef _MD_UTIL_H_
-#define _MD_UTIL_H_
+#pragma once
 
 #include "md_molecule.h"
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 struct md_allocator_i;
 
@@ -89,6 +84,10 @@ typedef struct md_util_hydrogen_bond_args_t {
         const md_element_t* element;
     } atom;
 } md_util_hydrogen_bond_args_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // This assumes the string exactly matches the value within the look up table
 // The match is case sensitive and expects elements to be formatted with Big first letter and small second letter:
@@ -240,6 +239,4 @@ void md_util_cubic_interpolation(md_util_cubic_interpolation_args_t args);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

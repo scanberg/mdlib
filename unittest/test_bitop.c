@@ -37,8 +37,8 @@ UTEST(bitop, test) {
     EXPECT_TRUE (bit_cmp(bf[0], bf[0], 0, num_bits));
     EXPECT_FALSE(bit_cmp(bf[0], bf[1], 0, num_bits));
 
-    EXPECT_EQ(bit_count(bf[0], 0, num_bits), 4);
-    EXPECT_EQ(bit_count(bf[1], 0, num_bits), 5);
+    EXPECT_EQ(bit_count(bf[0], 0, num_bits), 4ULL);
+    EXPECT_EQ(bit_count(bf[1], 0, num_bits), 5ULL);
 
     // SET
     bit_set(bf[2], 0, num_bits);
@@ -89,8 +89,8 @@ UTEST(bitop, test) {
     EXPECT_TRUE(bit_cmp(bf[2], bf[3], 0, num_bits));
 
     // SCAN
-    EXPECT_EQ(bit_scan(bf[0], 0, num_bits), 3);
-    EXPECT_EQ(bit_scan(bf[0], 3, num_bits-3), 26);
+    EXPECT_EQ(bit_scan(bf[0], 0, num_bits), 3ULL);
+    EXPECT_EQ(bit_scan(bf[0], 3, num_bits-3), 26ULL);
 
-    EXPECT_EQ(bit_scan(bf[1], 0, num_bits), 12);
+    EXPECT_EQ(bit_scan(bf[1], 0, num_bits), 12ULL);
 }

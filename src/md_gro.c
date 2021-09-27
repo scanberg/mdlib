@@ -11,10 +11,6 @@
 
 #include <string.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #define MD_GRO_MOL_MAGIC  0xbabcebf677bfaf67
 
 typedef struct label {
@@ -242,7 +238,7 @@ static inline str_t add_label(str_t str, gro_molecule_t* inst) {
         }
     }
     label_t label = {0};
-    memcpy(label.str, str.ptr, MIN(str.len, ARRAY_SIZE(label.str) - 1));
+    memcpy(label.str, str.ptr, MIN(str.len, (int64_t)ARRAY_SIZE(label.str) - 1));
     return (str_t){md_array_push(inst->labels, label, inst->allocator)->str, str.len};
 }
 
@@ -482,7 +478,3 @@ bool md_gro_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* allo
 
     return true;
 }
-
-#ifdef __cplusplus
-}
-#endif

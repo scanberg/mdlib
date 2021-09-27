@@ -217,7 +217,7 @@ bool pdb_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
 // Returns size in bytes of frame, frame_data_ptr is optional and is the destination to write the frame data to.
-int64_t pdb_extract_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
+int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     ASSERT(pdb);
     ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
@@ -690,6 +690,34 @@ bool md_pdb_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     return true;
 }
 
+bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+    ASSERT(inst);
+
+    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
+    if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
+        md_print(MD_LOG_TYPE_ERROR, "Error when decoding frame coord, xtc magic did not match");
+        return false;
+    }
+
+    // Should this be exposed?
+    md_allocator_i* alloc = default_temp_allocator;
+
+    bool result = true;
+    const int64_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
+    if (frame_size > 0) {
+        // This is a borderline case if one should use the default_temp_allocator as the raw frame size could potentially be several megabytes...
+        void* frame_data = md_alloc(alloc, frame_size);
+        const int64_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
+        ASSERT(read_size == frame_size);
+
+        result = pdb_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
+
+        md_free(alloc, frame_data, frame_size);
+    }
+
+    return result;
+}
+
 bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_allocator_i* alloc) {
     int64_t* frame_offsets = 0;
     int64_t filesize = 0;
@@ -778,12 +806,8 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
     };
 
     traj->inst = (struct md_trajectory_o*)pdb;
-    //md_trajectory_num_atoms(traj) = num_atoms;
-    //md_trajectory_num_frames(traj) = md_array_size(pdb->frame_offsets) - 1;
-    //traj->max_frame_data_size = max_frame_size;
     traj->get_header = pdb_get_header;
-    traj->load_frame = md_trajectory_default_load_frame;
-    traj->extract_frame_data = pdb_extract_frame_data;
+    traj->fetch_frame_data = pdb_fetch_frame_data;
     traj->decode_frame_data = pdb_decode_frame_data;
 
     return true;

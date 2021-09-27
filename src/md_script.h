@@ -1,5 +1,4 @@
-#ifndef _MD_SCRIPT_H_
-#define _MD_SCRIPT_H_
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -8,14 +7,9 @@
 #include <core/md_bitfield.h>
 #include <core/md_vec_math.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 struct md_molecule_t;
 struct md_trajectory_i;
 struct md_allocator_i;
-struct md_frame_cache_t;
 
 // This is represents something which can be visualized
 struct md_script_vis_token_t;
@@ -108,45 +102,19 @@ typedef struct md_script_eval_t {
     md_script_property_t* properties;
 } md_script_eval_t;
 
-// ### COMPILE ###
 typedef struct md_script_ir_compile_args_t {
     str_t src;
     const struct md_molecule_t* mol;
     struct md_allocator_i* alloc;
 } md_script_ir_compile_args_t;
 
-bool md_script_ir_compile(md_script_ir_t* ir, md_script_ir_compile_args_t args);
-bool md_script_ir_free(md_script_ir_t* ir);
-
-// ### EVALUATE ###
 typedef struct md_script_eval_args_t {
     const struct md_script_ir_t* ir;
     const struct md_molecule_t* mol;
     const struct md_trajectory_i* traj;
-
-    // Optional, if this is set, this will be used to load trajectory frames.
-    struct md_frame_cache_t* frame_cache;
-
     // Optional, set this mask to mask out which frames that should be evaluated.
     md_exp_bitfield_t* filter_mask;
 } md_script_eval_args_t;
-
-// Allocate the data for properties within the evaluation
-// We need to pass the number of frames we want the data to hold
-// Should be performed as soon as the IR has changed.
-bool md_script_eval_alloc(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
-
-// Compute properties
-// Must be performed after the properties has been allocated.
-bool md_script_eval_compute(md_script_eval_t* eval, md_script_eval_args_t args);
-
-bool md_script_eval_free(md_script_eval_t* eval);
-
-// These is meant to be used if the evaulation runs in its own thread (which is recommended)
-int md_script_eval_completed_frame_count(const md_script_eval_t* eval);
-void md_script_eval_interrupt(const md_script_eval_t* eval);
-
-// ### VISUALIZE ###
 
 struct md_script_visualization_o;
 typedef struct md_script_visualization_t {
@@ -194,18 +162,38 @@ typedef struct md_script_visualization_args_t {
     const struct md_script_ir_t* ir;
     const struct md_molecule_t* mol;
     const struct md_trajectory_i* traj;
-
-    // Optional, if this is set, this will be used to load trajectory frames
-    struct md_frame_cache_t* frame_cache;
-
     struct md_allocator_i* alloc;
 } md_script_visualization_args_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// ### COMPILE ###
+bool md_script_ir_compile(md_script_ir_t* ir, md_script_ir_compile_args_t args);
+bool md_script_ir_free(md_script_ir_t* ir);
+
+// ### EVALUATE ###
+
+// Allocate the data for properties within the evaluation
+// We need to pass the number of frames we want the data to hold
+// Should be performed as soon as the IR has changed.
+bool md_script_eval_alloc(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
+
+// Compute properties
+// Must be performed after the properties has been allocated.
+bool md_script_eval_compute(md_script_eval_t* eval, md_script_eval_args_t args);
+
+bool md_script_eval_free(md_script_eval_t* eval);
+
+// These is meant to be used if the evaulation runs in its own thread (which is recommended)
+int md_script_eval_completed_frame_count(const md_script_eval_t* eval);
+void md_script_eval_interrupt(const md_script_eval_t* eval);
+
+// ### VISUALIZE ###
 bool md_script_visualization_init(md_script_visualization_t* vis, struct md_script_visualization_args_t args);
 bool md_script_visualization_free(md_script_visualization_t* vis);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

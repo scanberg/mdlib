@@ -3708,7 +3708,7 @@ static void compute_distribution(float* bins, int64_t num_bins, float min_bin_ra
     }
 }
 
-static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_frame_cache_t* frame_cache, const md_exp_bitfield_t* mask, md_script_ir_o* ir, md_script_eval_o* eval_o) {
+static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_exp_bitfield_t* mask, md_script_ir_o* ir, md_script_eval_o* eval_o) {
     ASSERT(props);
     ASSERT(mol);
     ASSERT(traj);
@@ -3773,12 +3773,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     ASSERT(md_array_size(ir->prop_expressions) == num_props);
 
     // Fill the data for the initial configuration (needed by rmsd and SDF as a 'reference')
-    if (frame_cache) {
-        md_frame_cache_load_frame_data(frame_cache, 0, init_x, init_y, init_z, init_header.box, NULL, NULL, NULL);
-    }
-    else {
-        md_trajectory_load_frame(traj, 0, &init_header, init_x, init_y, init_z);
-    }
+    md_trajectory_load_frame(traj, 0, &init_header, init_x, init_y, init_z);
 
     bool result = true;
 
@@ -3795,13 +3790,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
         int64_t f_idx = beg_bit - 1;
         ASSERT(f_idx < md_trajectory_num_frames(traj));
-
-        if (frame_cache) {
-            result = md_frame_cache_load_frame_data(frame_cache, f_idx, curr_x, curr_y, curr_z, curr_header.box, NULL, NULL, NULL);
-        }
-        else {
-            result = md_trajectory_load_frame(traj, f_idx, NULL, curr_x, curr_y, curr_z);
-        }
+        
+        result = md_trajectory_load_frame(traj, f_idx, NULL, curr_x, curr_y, curr_z);
 
         if (!result) {
             md_printf(MD_LOG_TYPE_ERROR, "Something went wrong when loading the frames during evaluation");
@@ -4197,17 +4187,13 @@ bool md_script_eval_compute(md_script_eval_t* eval, md_script_eval_args_t args) 
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was empty");
         result = false;
     }
-    if (args.frame_cache && !args.frame_cache->traj) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: Frame cache provided, but it lacks a valid trajectory");
-        result = false;
-    }
 
     if (result) {    
         if (eval->num_properties > 0) {
             ASSERT(eval->num_properties == md_array_size(args.ir->o->prop_expressions));
             eval->o->interrupt = false;
             eval->fingerprint = generate_fingerprint();
-            result = eval_properties(eval->properties, eval->num_properties, args.mol, args.traj, args.frame_cache, args.filter_mask, args.ir->o, eval->o);
+            result = eval_properties(eval->properties, eval->num_properties, args.mol, args.traj, args.filter_mask, args.ir->o, eval->o);
             eval->fingerprint = generate_fingerprint();
         }
     }
@@ -4466,11 +4452,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     
     md_trajectory_frame_header_t header = { 0 };
     if (args.traj->inst) {
-        if (args.frame_cache) {
-            md_frame_cache_load_frame_data(args.frame_cache, 0, x, y, z, header.box, NULL, NULL, NULL);
-        } else {
-            md_trajectory_load_frame(args.traj, 0, &header, x, y, z);
-        }
+        md_trajectory_load_frame(args.traj, 0, &header, x, y, z);
     } else {
         x = args.mol->atom.x;
         y = args.mol->atom.y;

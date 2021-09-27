@@ -52,7 +52,7 @@ void md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
         cache->slot.header[i].frame_index = 0xFFFFFFFF;
         cache->slot.header[i].access_count = 0;
 
-        cache->slot.data[i].num_atoms = (int)num_atoms;
+        cache->slot.data[i].header.num_atoms = (int)num_atoms;
         cache->slot.data[i].x = coord_data + (num_slots * num_atoms) * 0 + num_atoms * i;
         cache->slot.data[i].y = coord_data + (num_slots * num_atoms) * 1 + num_atoms * i;
         cache->slot.data[i].z = coord_data + (num_slots * num_atoms) * 2 + num_atoms * i;
@@ -132,7 +132,7 @@ static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_id
 
     cache->slot.header[slot_idx].access_count = 0;
     cache->slot.header[slot_idx].frame_index = (uint32_t)frame_idx;
-    cache->slot.data[slot_idx].frame_index = (int32_t)frame_idx;
+    cache->slot.data[slot_idx].header.index = (int32_t)frame_idx;
 
     *slot_lock = (struct md_frame_cache_lock_t*)&cache->slot.lock[slot_idx];
     if (slot_data) *slot_data = &cache->slot.data[slot_idx];
@@ -142,11 +142,8 @@ static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_id
 
 static inline bool load_frame_data(md_trajectory_i* traj, int64_t frame_idx, md_frame_data_t* frame_data) {
     md_trajectory_frame_header_t header = {0};
-    if (traj->load_frame(traj, frame_idx, &header, frame_data->x, frame_data->y, frame_data->z)) {
-        memcpy(&frame_data->box, header.box, sizeof(frame_data->box));
-        frame_data->timestamp = header.timestamp;
-        frame_data->num_atoms = (int)header.num_atoms;
-        frame_data->frame_index = (int)frame_idx;
+    if (md_trajectory_load_frame(traj, frame_idx, &frame_data->header, frame_data->x, frame_data->y, frame_data->z)) {
+        frame_data->header.index = frame_idx;
         return true;
     }
     return false;
@@ -168,18 +165,18 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
         if (postprocess_fn) {
             postprocess_fn(data, user_data);
         }
-        ASSERT(data && (int64_t)data->frame_index == frame_idx);
+        ASSERT(data && (int64_t)data->header.index == frame_idx);
     }
 
     if (x || y || z || box || timestamp) {
         ASSERT(data);
         ASSERT(lock);
 
-        if (x)   memcpy(x,   data->x,   data->num_atoms * sizeof(float));
-        if (y)   memcpy(y,   data->y,   data->num_atoms * sizeof(float));
-        if (z)   memcpy(z,   data->z,   data->num_atoms * sizeof(float));
-        if (box) memcpy(box, data->box, sizeof(data->box));
-        if (timestamp) *timestamp = data->timestamp;
+        if (x)   memcpy(x,   data->x,   data->header.num_atoms * sizeof(float));
+        if (y)   memcpy(y,   data->y,   data->header.num_atoms * sizeof(float));
+        if (z)   memcpy(z,   data->z,   data->header.num_atoms * sizeof(float));
+        if (box) memcpy(box, data->header.box, sizeof(data->header.box));
+        if (timestamp) *timestamp = data->header.timestamp;
     }
 
     md_frame_cache_release_frame_lock(lock);
@@ -240,7 +237,4 @@ bool md_frame_cache_create_trajectory_interface(struct md_trajectory_i* traj, md
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
-
-    md_trajectory_i traj_interface = {0};
-
 }
