@@ -67,7 +67,7 @@ static inline str_t internal_fullpath(str_t path) {
     int64_t len = (int64_t)GetFullPathName(path.ptr, sizeof(sz_buf), sz_buf, NULL);
 #elif MD_PLATFORM_UNIX
     int64_t len = 0;
-    if (realpath(path.ptr, sz_buf)) == sz_buf) {
+    if (realpath(path.ptr, sz_buf) == sz_buf) {
         len = (int64_t)strnlen(sz_buf, sizeof(sz_buf));
     }
 #endif
