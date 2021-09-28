@@ -96,7 +96,7 @@ void md_frame_cache_release_frame_lock(struct md_frame_cache_lock_t* lock) {
     ASSERT(success);
 }
 
-static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** slot_data, struct md_frame_cache_lock_t** slot_lock) {
+bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
@@ -134,22 +134,13 @@ static bool find_frame_or_reserve_slot(md_frame_cache_t* cache, int64_t frame_id
     cache->slot.header[slot_idx].frame_index = (uint32_t)frame_idx;
     cache->slot.data[slot_idx].header.index = (int32_t)frame_idx;
 
-    *slot_lock = (struct md_frame_cache_lock_t*)&cache->slot.lock[slot_idx];
-    if (slot_data) *slot_data = &cache->slot.data[slot_idx];
+    *frame_lock = (struct md_frame_cache_lock_t*)&cache->slot.lock[slot_idx];
+    if (frame_data) *frame_data = &cache->slot.data[slot_idx];
 
     return found;
 }
 
-static inline bool load_frame_data(md_trajectory_i* traj, int64_t frame_idx, md_frame_data_t* frame_data) {
-    md_trajectory_frame_header_t header = {0};
-    if (md_trajectory_load_frame(traj, frame_idx, &frame_data->header, frame_data->x, frame_data->y, frame_data->z)) {
-        frame_data->header.index = frame_idx;
-        return true;
-    }
-    return false;
-}
-
-bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, float box[3][3], double* timestamp, md_frame_cache_postprocess_frame_fn* postprocess_fn, void* user_data) {
+bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, float box[3][3], double* timestamp) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
@@ -158,12 +149,11 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
 
     md_frame_data_t* data = NULL;
     struct md_frame_cache_lock_t* lock = NULL;
-    bool in_cache = find_frame_or_reserve_slot(cache, frame_idx, &data, &lock);
+    bool in_cache = md_frame_cache_find_or_reserve(cache, frame_idx, &data, &lock);
     if (!in_cache) {
-        md_printf(MD_LOG_TYPE_INFO, "Frame %i not in cache!", (int)frame_idx);
-        load_frame_data(cache->traj, frame_idx, data);
-        if (postprocess_fn) {
-            postprocess_fn(data, user_data);
+        md_trajectory_frame_header_t header = {0};
+        if (md_trajectory_load_frame(cache->traj, frame_idx, &data->header, data->x, data->y, data->z)) {
+            data->header.index = frame_idx;
         }
         ASSERT(data && (int64_t)data->header.index == frame_idx);
     }
@@ -181,60 +171,4 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
 
     md_frame_cache_release_frame_lock(lock);
     return true;
-}
-
-bool md_frame_cache_reserve_frame(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock) {
-    ASSERT(cache);
-    ASSERT(cache->magic == CACHE_MAGIC);
-    ASSERT(cache->traj);
-    ASSERT(0 <= frame_idx && frame_idx < md_trajectory_num_frames(cache->traj));
-    ASSERT(frame_data);
-    ASSERT(frame_lock);
-
-    md_frame_data_t* data;
-    struct md_frame_cache_lock_t* lock;
-    if (find_frame_or_reserve_slot(cache, frame_idx, &data, &lock)) {
-        // Nothing to do here!
-        md_frame_cache_release_frame_lock(lock);
-        return false;
-    }
-    else {
-        *frame_data = data;
-        *frame_lock = lock;
-        return true;
-    }
-}
-
-bool md_frame_cache_fetch_frame_range(md_frame_cache_t* cache, int64_t frame_beg_idx, int64_t frame_end_idx, md_frame_cache_load_frame_fn* load_fn, void* user_data) {
-    ASSERT(cache);
-    ASSERT(cache->magic == CACHE_MAGIC);
-    ASSERT(cache->traj);
-    ASSERT(0 <= frame_beg_idx && frame_end_idx <= md_trajectory_num_frames(cache->traj));
-
-    md_frame_data_t* data = NULL;
-    struct md_frame_cache_lock_t* lock = NULL;
-    bool result = true;
-    for (int64_t i = frame_beg_idx; i < frame_end_idx; ++i) {
-        if (find_frame_or_reserve_slot(cache, i, &data, &lock)) {
-            // Frame already in cache, nothing for us to do.
-            md_frame_cache_release_frame_lock(lock);
-        }
-        else {
-            // Frame not found in cache.
-            if (load_fn) {
-                load_fn(cache->traj, i, data, (struct md_frame_cache_lock_t*)lock, user_data);
-            }
-            else {
-                load_frame_data(cache->traj, i, data);
-                md_frame_cache_release_frame_lock(lock);
-            }
-        }
-    }
-    return result;
-}
-
-bool md_frame_cache_create_trajectory_interface(struct md_trajectory_i* traj, md_frame_cache_t* cache) {
-    ASSERT(cache);
-    ASSERT(cache->magic == CACHE_MAGIC);
-    ASSERT(cache->traj);
 }

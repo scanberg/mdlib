@@ -18,10 +18,6 @@ typedef struct md_frame_data_t {
     float* z;
 } md_frame_data_t;
 
-typedef void (md_frame_cache_load_frame_fn)(struct md_trajectory_i* traj, int64_t frame_idx, md_frame_data_t* frame_data, struct md_frame_cache_lock_t* frame_lock, void* user_data);
-
-typedef void (md_frame_cache_postprocess_frame_fn)(md_frame_data_t* frame_data, void* user_data);
-
 struct md_slot_header_t;
 
 typedef struct md_frame_cache_t {
@@ -44,13 +40,13 @@ typedef struct md_frame_cache_t {
 extern "C" {
 #endif
 
-void md_frame_cache_init(md_frame_cache_t* cache, struct md_trajectory_i* traj, struct md_allocator_i* alloc, int64_t cache_byte_size);
+void md_frame_cache_init(md_frame_cache_t* cache, struct md_trajectory_i* traj, struct md_allocator_i* alloc, int64_t num_cached_frames);
 void md_frame_cache_free(md_frame_cache_t* cache);
 
 // This will load the data from a frame into the memory of the supplied pointers.
 // The pointers are each optional and if the value of NULL is passed for that pointer, then no data will be written to that adress.
 // If the frame is not already in the cache, it will be loaded into the cache and if the postprocess function is supplied, that will be called.
-bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, float box[3][3], double* timestamp, md_frame_cache_postprocess_frame_fn* postprocess_fn, void* user_data);
+bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, float box[3][3], double* timestamp);
 
 // ### DANGER ZONE ###
 // // These are operations which should be handled with care since they expose explicit locks for frames
@@ -62,9 +58,9 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
 // It is crucial to release the lock when you are done operating on the frame_data.
 void md_frame_cache_release_frame_lock(struct md_frame_cache_lock_t* lock);
 
-// Reserves a frame in the cache
-// Returns true if the data was not already in cache, the user can perform operations on the data, before releasing the frame lock.
-bool md_frame_cache_reserve_frame(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock);
+// Try to find a frame within the cache, if the frame is missing, it reserves space for the frame.
+// Returns True if the frame already exists
+bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock);
 
 #ifdef __cplusplus
 }
