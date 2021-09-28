@@ -19,8 +19,11 @@ typedef struct str_t {
     int64_t     len;
 
 #ifdef __cplusplus
-    char operator[](int64_t idx)       { return ptr[idx]; }
-    char operator[](int64_t idx) const { return ptr[idx]; }
+    constexpr char operator[](int64_t idx) noexcept       { return ptr[idx]; }
+    constexpr char operator[](int64_t idx) const noexcept { return ptr[idx]; }
+
+    constexpr const char* beg() noexcept { return ptr; }
+    constexpr const char* end() noexcept { return ptr + len; }
 #endif
 } str_t;
 

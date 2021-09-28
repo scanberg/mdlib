@@ -61,46 +61,57 @@ str_t md_os_current_working_directory() {
     return res;
 }
 
+static inline str_t internal_fullpath(str_t path) {
+    char sz_buf[MD_MAX_PATH] = "";
+#if MD_PLATFORM_WINDOWS
+    int64_t len = (int64_t)GetFullPathName(path.ptr, sizeof(sz_buf), sz_buf, NULL);
+#elif MD_PLATFORM_UNIX
+    int64_t len = 0;
+    if (realpath(path.ptr, sz_buf)) == sz_buf) {
+        len = (int64_t)strnlen(sz_buf, sizeof(sz_buf));
+    }
+#endif
+    str_t result = {0};
+    if (len > 0) {
+        result = copy_str((str_t){sz_buf, len}, default_temp_allocator);
+    }
+    return result;
+}
+
 str_t md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
-    char sz_buf[MD_MAX_PATH] = "";
     path = copy_str(path, default_temp_allocator);
+    path = internal_fullpath(path);
 
-    str_t canonical_str = {0};
-    bool result = false;
-
+    if (path.len > 0) {
 #if MD_PLATFORM_WINDOWS
-    result = PathCanonicalizeA(sz_buf, path.ptr);
-#elif MD_PLATFORM_UNIX
-    result = realpath(path.ptr, sz_buf) == sz_buf;
+        convert_backslashes(path.ptr, path.len);
 #endif
-
-    if (result) {
-        canonical_str = copy_str((str_t) {.ptr = sz_buf, .len = (int64_t)strnlen(sz_buf, sizeof(sz_buf))}, alloc);
     } else {
         md_print(MD_LOG_TYPE_ERROR, "Failed to create canonical path!");
     }
 
-    return canonical_str;
+    return path;
 }
 
 str_t md_os_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
     char sz_buf[MD_MAX_PATH] = "";
 
-    from = copy_str(from, default_temp_allocator);
-    to = copy_str(to, default_temp_allocator);
-
     str_t relative_str = {0};
     bool result = false;
 
+    // Make 2 canonical paths
+    from = copy_str(from, default_temp_allocator);
+    to   = copy_str(to,   default_temp_allocator);
+
+    from = internal_fullpath(from);
+    to   = internal_fullpath(to);
+
 #if MD_PLATFORM_WINDOWS
     result = PathRelativePathTo(sz_buf, from.ptr, FILE_ATTRIBUTE_DIRECTORY, to.ptr, FILE_ATTRIBUTE_NORMAL);
-
+    convert_backslashes(sz_buf, sizeof(sz_buf));
 #elif MD_PLATFORM_UNIX
-    // Make 2 canonical paths
-    from = md_os_path_make_canonical(from, default_temp_allocator);
-    to   = md_os_path_make_canonical(to,   default_temp_allocator);
 
     // Find the common base
     int64_t count = str_count_equal_chars(from, to);

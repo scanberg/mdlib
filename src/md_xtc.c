@@ -316,7 +316,7 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
     XDRFILE* file = xdrfile_open(filename.ptr, "r");
 
     if (traj->inst) {
-        md_print(MD_LOG_TYPE_DEBUG, "Trajectory instance data was zero, potentially leeking memory here");
+        md_print(MD_LOG_TYPE_DEBUG, "Trajectory instance data was not zero, potentially leeking memory here");
     }
 
     if (file) {

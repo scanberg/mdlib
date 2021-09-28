@@ -223,10 +223,10 @@ str_t extract_path_without_file(str_t path) {
         pos = rfind_char(path, '\\');
     }
 
-    str_t res = {0,0};
-    if (pos) {
+    str_t res = {0};
+    if (pos != -1) {
         res.ptr = path.ptr;
-        res.len = pos;
+        res.len = pos+1;    // include '/' or '\'
     }
     return res;
 }
