@@ -2566,7 +2566,9 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
                 .ptr = (char*)dst->ptr + elem_size * dst_idx,
                 .size = elem_size
             };
-            dst_idx += type_info_array_len(lhs_types[i]);
+            int64_t offset = type_info_array_len(lhs_types[i]);
+            ASSERT(offset > 0);
+            dst_idx += offset;
 
             if (!evaluate_node(&data, expr_node, &sub_ctx)) return false;
 
@@ -2919,18 +2921,6 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             }
         }
     }
-    else {
-        // We already have gotten the procedure now we just possibly want to statically check the function by querying
-        result = static_check_children(node, ctx);
-        /*
-        if (node->proc->flags & FLAG_QUERYABLE_LENGTH) {
-            result &= finalize_type(&node->data.type, node, ctx);
-        }
-        */
-        if ((node->proc->flags & FLAG_QUERYABLE_LENGTH) && !(node->proc->flags & FLAG_DYNAMIC)) {
-            result &= finalize_type(&node->data.type, node, ctx);
-        }
-    }
 
     if (result) {
         // Perform new child check here since children may have changed due to conversions etc.
@@ -3225,8 +3215,21 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                             if (!static_check_node(lhs, &local_ctx)) {
                                 return false;
                             }
-                            md_array_push(node->lhs_context_types, lhs->data.type, ctx->ir->arena);
-                            arr_len += type_info_array_len(lhs->data.type);
+
+                            md_type_info_t type = lhs->data.type;
+
+                            if (lhs->flags & FLAG_DYNAMIC_LENGTH) {
+                                if (!finalize_type(&type, lhs, &local_ctx)) {
+                                    create_error(ctx->ir, lhs->token, "Failed to deduce length of type which is required for determining type and size of context");
+                                    return false;
+                                }
+                            }
+
+                            int64_t len = type_info_array_len(type);
+                            ASSERT(len > 0);
+
+                            md_array_push(node->lhs_context_types, type, ctx->ir->arena);
+                            arr_len += len;
                         }
 
                         node->flags |= lhs->flags & FLAG_PROPAGATION_MASK;
