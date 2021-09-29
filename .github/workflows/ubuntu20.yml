@@ -2,6 +2,10 @@ name: Ubuntu 20.04 (GCC 9)
 
 on: [push]
 
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: Release
+
 jobs:
     ci:
         runs-on: ubuntu-20.04
