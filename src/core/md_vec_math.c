@@ -5,6 +5,15 @@
 
 #define SWAP(x, y) {int t = x; x = y; y = t;}
 
+void mat3_svd(const mat3_t M, mat3_t* U, mat3_t* S, mat3_t* V) {
+    mat3_t Mt = mat3_transpose(M);
+    // the external svd library uses row major matrix convention...
+    svd(Mt.elem, U->elem, S->elem, V->elem);
+    *U = mat3_transpose(*U);
+    *S = mat3_transpose(*S);
+    *V = mat3_transpose(*V);
+}
+
 quat_t quat_angle_axis(float angle, vec3_t axis) {
     float half_angle = angle * 0.5f;
     float sin_angle = sinf(half_angle);
@@ -60,7 +69,7 @@ quat_t quat_from_mat4(mat4_t M) {
 
 void mat3_eigen(mat3_t M, vec3_t vectors[3], float values[3]) {
     mat3_t U, S, V;
-    svd(M.elem, U.elem, S.elem, V.elem);
+    mat3_svd(M, &U, &S, &V);
 
     const float max_val = MAX(S.elem[0][0], MAX(S.elem[1][1], S.elem[2][2]));
     const float  e_val[] = {S.elem[0][0] / max_val, S.elem[1][1] / max_val, S.elem[2][2] / max_val};
@@ -208,15 +217,6 @@ mat3_t mat3_weighted_cross_covariance_matrix(
     }
 
     return A;
-}
-
-void mat3_svd(const mat3_t M, mat3_t* U, mat3_t* S, mat3_t* V) {
-    mat3_t Mt = mat3_transpose(M);
-    // the external svd library uses row major matrix convention...
-    svd(Mt.elem, U->elem, S->elem, V->elem);
-    *U = mat3_transpose(*U);
-    *S = mat3_transpose(*S);
-    *V = mat3_transpose(*V);
 }
 
 mat3_t mat3_extract_rotation(mat3_t M) {
