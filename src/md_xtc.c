@@ -315,6 +315,68 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return result;
 }
 
+#define OFFSET_MAGIC 0x828123727bcbabc
+static int64_t* try_read_offset_cache(str_t cache_file, md_allocator_i* alloc) {
+    md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
+    if (file) {
+        int64_t* offsets = 0;
+        int64_t read_bytes = 0;
+        int64_t num_frames = 0;
+        uint64_t magic = 0;
+
+        read_bytes = md_file_read(file, &magic, sizeof(magic));
+        if (read_bytes != sizeof(magic) || magic != OFFSET_MAGIC) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, magic was incorrect");
+            goto done;
+        }
+
+        read_bytes = md_file_read(file, &num_frames, sizeof(num_frames));
+        if (read_bytes != sizeof(num_frames) || num_frames == 0) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of frames was zero or corrupted");
+            goto done;
+        }
+
+        md_array_resize(offsets, num_frames, alloc);
+
+        read_bytes = md_file_read(file, offsets, num_frames * sizeof(int64_t));
+        if (read_bytes != num_frames * sizeof(int64_t)) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, offsets are incomplete");
+            md_array_free(offsets, alloc);
+            offsets = 0;
+            goto done;
+        }
+    done:
+        md_file_close(file);
+        return offsets;
+    }
+
+    md_printf(MD_LOG_TYPE_ERROR, "Failed to read offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    return 0;
+}
+
+static bool write_offset_cache(str_t cache_file, int64_t* offsets) {
+    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
+    if (file) {
+        int64_t num_offsets = md_array_size(offsets);
+        int64_t written_bytes = 0;
+        const uint64_t magic = OFFSET_MAGIC;
+        written_bytes = md_file_write(file, &magic, sizeof(magic));
+        ASSERT(written_bytes == sizeof(OFFSET_MAGIC));
+
+        written_bytes = md_file_write(file, &num_offsets, sizeof(num_offsets));
+        ASSERT(written_bytes == sizeof(num_offsets));
+
+        written_bytes = md_file_write(file, offsets, num_offsets * sizeof(int64_t));
+        ASSERT(written_bytes == num_offsets * sizeof(int64_t));
+
+        md_file_close(file);
+        return true;
+    }
+
+    md_printf(MD_LOG_TYPE_ERROR, "Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    return false;
+}
+
 bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_i* alloc) {
     ASSERT(traj);
     ASSERT(alloc);
@@ -335,10 +397,18 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
             return false;
         }
 
-        int64_t* offsets = 0;
-        if (!xtc_offsets(file, &offsets, alloc)) {
-            xdrfile_close(file);
-            return false;
+        char buf[1024] = "";
+        str_t path = extract_path_without_ext(filename);
+        int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)path.len, path.ptr);
+        str_t cache_file = {buf, len};
+
+        int64_t* offsets = try_read_offset_cache(cache_file, alloc);
+        if (!offsets) {
+            if (!xtc_offsets(file, &offsets, alloc)) {
+                xdrfile_close(file);
+                return false;
+            }
+            write_offset_cache(cache_file, offsets);
         }
 
         int64_t max_frame_size = 0;

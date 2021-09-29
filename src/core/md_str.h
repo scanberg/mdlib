@@ -182,7 +182,7 @@ str_t extract_ext(str_t path);
 // c:/folder/file.ext -> file.ext
 str_t extract_file(str_t path);
 
-// c:/folder/file.ext -> c:/folder/file.
+// c:/folder/file.ext -> c:/folder/file
 str_t extract_path_without_ext(str_t path);
 
 // c:/folder/file.ext -> c:/folder/

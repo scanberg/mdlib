@@ -13,6 +13,7 @@
 #include <md_util.h>
 
 #include <string.h> // memcpy
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -723,24 +724,115 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return result;
 }
 
+#define CACHE_MAGIC 0x8281123489172bab
+static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_atoms, float box[3][3], md_allocator_i* alloc) {
+    md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
+    if (file) {
+        int64_t read_bytes = 0;
+        int64_t num_offsets = 0;
+        uint64_t magic = 0;
+
+        bool result = true;
+
+        read_bytes = md_file_read(file, &magic, sizeof(uint64_t));
+        if (read_bytes != sizeof(uint64_t) || magic != CACHE_MAGIC) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, magic was incorrect or corrupt");
+            result = false;
+            goto done;
+        }
+
+        read_bytes = md_file_read(file, num_atoms, sizeof(int64_t));
+        if (read_bytes != sizeof(int64_t) || num_atoms == 0) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of atoms was zero or corrupt");
+            result = false;
+            goto done;
+        }
+
+        read_bytes = md_file_read(file, box, sizeof(float[3][3]));
+        if (read_bytes != sizeof(float[3][3])) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, box was corrupt");
+            result = false;
+            goto done;
+        }
+
+        read_bytes = md_file_read(file, &num_offsets, sizeof(int64_t));
+        if (read_bytes != sizeof(int64_t) || num_offsets == 0) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of frames was zero or corrupted");
+            result = false;
+            goto done;
+        }
+
+        int64_t* tmp_offsets = 0;
+        md_array_resize(tmp_offsets, num_offsets, alloc);
+
+        read_bytes = md_file_read(file, tmp_offsets, num_offsets * sizeof(int64_t));
+        if (read_bytes != num_offsets * sizeof(int64_t)) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, offsets are incomplete");
+            md_array_free(tmp_offsets, alloc);
+            result = false;
+            goto done;
+        }
+
+        *offsets = tmp_offsets;
+    done:
+        md_file_close(file);
+        return result;
+    }
+
+    md_printf(MD_LOG_TYPE_ERROR, "Failed to read offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    return false;
+}
+
+static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms, float box[3][3]) {
+    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
+    if (file) {
+        int64_t num_offsets = md_array_size(offsets);
+        int64_t written_bytes = 0;
+        const uint64_t magic = CACHE_MAGIC;
+
+        written_bytes = md_file_write(file, &magic, sizeof(uint64_t));
+        ASSERT(written_bytes == sizeof(uint64_t));
+
+        written_bytes = md_file_write(file, &num_atoms, sizeof(int64_t));
+        ASSERT(written_bytes == sizeof(int64_t));
+
+        written_bytes = md_file_write(file, box, sizeof(float[3][3]));
+        ASSERT(written_bytes == sizeof(float[3][3]));
+
+        written_bytes = md_file_write(file, &num_offsets, sizeof(int64_t));
+        ASSERT(written_bytes == sizeof(int64_t));
+
+        written_bytes = md_file_write(file, offsets, num_offsets * sizeof(int64_t));
+        ASSERT(written_bytes == num_offsets * sizeof(int64_t));
+
+        md_file_close(file);
+        return true;
+    }
+
+    md_printf(MD_LOG_TYPE_ERROR, "Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    return false;
+}
+
 bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_allocator_i* alloc) {
-    int64_t* frame_offsets = 0;
-    int64_t filesize = 0;
+    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    if (!file) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to open file for PDB trajectory");
+        return false;
+    }
+
+    int64_t filesize = md_file_size(file);
+    md_file_close(file);
+
+    char buf[1024] = "";
+    str_t path = extract_path_without_ext(filename);
+    int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)path.len, path.ptr);
+    str_t cache_file = {buf, len};
+
     float box[3][3] = {0};
     int64_t num_atoms = 0;
+    int64_t* offsets = 0;
 
-    // @TODO: try to read cache-file if it exists.
-
-    // Otherwise we fall back to this
-    {
-        md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
-        if (!file) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to open file for PDB trajectory");
-            return false;
-        }
-        filesize = md_file_size(file);
-        md_file_close(file);
-
+    if (!try_read_cache(cache_file, &offsets, &num_atoms, box, alloc)) {
         md_pdb_data_t data = {0};
         if (!md_pdb_data_parse_file(filename, &data, default_allocator)) {
             return false;
@@ -767,9 +859,9 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
         }
 
         for (int64_t i = 0; i < data.num_models; ++i) {
-            md_array_push(frame_offsets, data.models[i].byte_offset, alloc);
+            md_array_push(offsets, data.models[i].byte_offset, alloc);
         }
-        md_array_push(frame_offsets, filesize, alloc);
+        md_array_push(offsets, filesize, alloc);
 
         if (data.num_cryst1 > 0) {
             if (data.num_cryst1 > 1) {
@@ -783,13 +875,13 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
             box[2][2] = data.cryst1[0].c;
         }
 
-        // @TODO: Write data to cache
+        write_cache(cache_file, offsets, num_atoms, box);
     }
 
     int64_t max_frame_size = 0;
-    for (int64_t i = 0; i < md_array_size(frame_offsets) - 1; ++i) {
-        const int64_t beg = frame_offsets[i + 0];
-        const int64_t end = frame_offsets[i + 1];
+    for (int64_t i = 0; i < md_array_size(offsets) - 1; ++i) {
+        const int64_t beg = offsets[i + 0];
+        const int64_t end = offsets[i + 1];
         const int64_t frame_size = end - beg;
         max_frame_size = MAX(max_frame_size, frame_size);
     }
@@ -801,11 +893,11 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
     pdb->magic = MD_PDB_TRAJ_MAGIC;
     pdb->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     pdb->filesize = filesize;
-    pdb->frame_offsets = frame_offsets;
+    pdb->frame_offsets = offsets;
     pdb->allocator = alloc;
     pdb->mutex = md_mutex_create();
     pdb->header = (md_trajectory_header_t) {
-        .num_frames = md_array_size(frame_offsets) - 1,
+        .num_frames = md_array_size(offsets) - 1,
         .num_atoms = num_atoms,
         .max_frame_data_size = max_frame_size
     };
