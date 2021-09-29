@@ -988,8 +988,6 @@ static bool is_type_implicitly_convertible(md_type_info_t from, md_type_info_t t
     return false;
 }
 
-
-
 typedef struct procedure_match_result_t {
     bool success;
     procedure_t* procedure;
@@ -997,14 +995,24 @@ typedef struct procedure_match_result_t {
 } procedure_match_result_t;
 
 static procedure_match_result_t find_cast_procedure(md_type_info_t from, md_type_info_t to) {
+
     procedure_match_result_t res = {0};
+    uint32_t lowest_cost = ~0U;
+
+    // In the future, we might need to do two casts to actually get to the proper type.
 
     for (uint64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
-        if (is_type_directly_compatible(casts[i].arg_type[0], from) &&
+        if (is_type_directly_compatible(from, casts[i].arg_type[0]) &&
             is_type_directly_compatible(casts[i].return_type, to)) {
-            res.success = true;
-            res.procedure = &casts[i];
-            break;
+
+            uint32_t cost = 1;
+            if (type_info_array_len(casts[i].return_type) == -1) cost += 1; // Penalty for not being a perfect fit, there might be a better match which directly matches the array length
+
+            if (cost < lowest_cost) {
+                res.success = true;
+                res.procedure = &casts[i];
+                lowest_cost = cost;
+            }
         }
     }
 
@@ -4255,11 +4263,11 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
 bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context_t filter_ctx) {
     ASSERT(target);
     ASSERT(filter_ctx.mol);
+    ASSERT(filter_ctx.alloc);
 
     bool result = true;
 
-    // We don't want to strain the default temporary allocator as we may allocate during evaluation.
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(filter_ctx.alloc, MEGABYTES(1));
     md_allocator_i* temp_alloc = alloc;
 
     md_script_ir_o* ir = create_ir(alloc);
@@ -4335,6 +4343,7 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
     }
 
     md_arena_allocator_destroy(alloc);
+    
     return result;
 }
 

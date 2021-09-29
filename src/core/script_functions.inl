@@ -321,16 +321,13 @@ static procedure_t casts[] = {
     {cstr("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _cast_flatten_bf_arr},
 
     // This does the heavy lifting for implicitly converting every compatible argument into a position (vec3) if the procedure is marked with FLAG_POSITION
-    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
-    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
-    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _position_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
+    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _position_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
-    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_INT_ARR},       _com_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-
-
-
+    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_INT_ARR},       _com_int,       FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng,      FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {cstr("extract com"),   TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,        FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 };
 
 static procedure_t operators[] = {
@@ -498,9 +495,9 @@ static procedure_t procedures[] = {
 
     {cstr("plane"),     TI_FLOAT4,      1,  {TI_FLOAT3_ARR},    _plane,     FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
-    {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH},
-    {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH},
-    {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _position_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH},
+    {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_QUERYABLE_LENGTH},
+    {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_QUERYABLE_LENGTH},
+    {cstr("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _position_bf,   FLAG_DYNAMIC | FLAG_QUERYABLE_LENGTH},
 };
 
 #undef cstr

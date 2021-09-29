@@ -35,8 +35,8 @@ void md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
 
     cache->alloc = alloc;
     cache->traj = traj;
-    cache->mem_bytes = num_slots * bytes_per_frame;
-    cache->mem_ptr = md_alloc(alloc, num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT);
+    cache->mem_bytes = num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT;
+    cache->mem_ptr = md_alloc(alloc, cache->mem_bytes);
     ASSERT(cache->mem_ptr);
     cache->slot.count  = num_slots;
     cache->slot.lock   = (md_semaphore_t*)NEXT_ALIGNED_ADRESS(cache->mem_ptr, CACHE_MEM_ALIGNMENT);

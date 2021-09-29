@@ -268,6 +268,12 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
         md_free(default_temp_allocator, pos, byte_size);
 
         if (header) {
+            for (int i = 0; i < 3; ++i) {
+                for (int j = 0; j < 3; ++j) {
+                    box[i][j] *= 10.0f;
+                }
+            }
+
             header->num_atoms = natoms;
             header->index = step;
             header->timestamp = time;
