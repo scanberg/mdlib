@@ -7,6 +7,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
+#include <core/md_sync.h>
 #include <md_molecule.h>
 #include <md_trajectory.h>
 #include <md_util.h>
@@ -39,6 +40,7 @@ typedef struct pdb_trajectory_t {
     float box[3][3];                // For pdb trajectories we have a static box
     md_trajectory_header_t header;
     md_allocator_i* allocator;
+    md_mutex_t mutex;
 } pdb_trajectory_t;
 
 static inline bool compare_n(str_t str, const char* cstr, int64_t len) {
@@ -247,8 +249,11 @@ int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
     const uint64_t frame_size = end - beg;
 
     if (frame_data_ptr) {
+        ASSERT(pdb->file);
+        md_mutex_lock(&pdb->mutex);
         md_file_seek(pdb->file, beg, MD_FILE_BEG);
         const uint64_t bytes_read = md_file_read(pdb->file, frame_data_ptr, frame_size);
+        md_mutex_unlock(&pdb->mutex);
         ASSERT(frame_size == bytes_read);
     }
 
@@ -797,13 +802,14 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
     pdb->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     pdb->filesize = filesize;
     pdb->frame_offsets = frame_offsets;
-    memcpy(pdb->box, box, sizeof(box));
     pdb->allocator = alloc;
+    pdb->mutex = md_mutex_create();
     pdb->header = (md_trajectory_header_t) {
         .num_frames = md_array_size(frame_offsets) - 1,
         .num_atoms = num_atoms,
         .max_frame_data_size = max_frame_size
     };
+    memcpy(pdb->box, box, sizeof(box));
 
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;
@@ -825,6 +831,7 @@ bool md_pdb_trajectory_close(md_trajectory_i* traj) {
 
     if (pdb->file) md_file_close(pdb->file);
     if (pdb->frame_offsets) md_array_free(pdb->frame_offsets, pdb->allocator);
+    md_mutex_destroy(&pdb->mutex);
     md_free(pdb->allocator, traj->inst, sizeof(pdb_trajectory_t));
 
     memset(traj, 0, sizeof(*traj));

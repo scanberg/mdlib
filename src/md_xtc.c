@@ -5,10 +5,10 @@
 #include <core/md_file.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
-#include <md_trajectory.h>
-#include <ext/xtc/xdrfile.h>
-
 #include <core/md_sync.h>
+#include <md_trajectory.h>
+
+#include <ext/xtc/xdrfile.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -223,6 +223,7 @@ static int64_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_
     if (frame_data_ptr) {
         ASSERT(xtc->file);
         md_mutex_lock(&xtc->mutex);
+        // Seek and read must be an atomic operation to avoid race conditions
         xdr_seek(xtc->file, beg, SEEK_SET);
         const int64_t bytes_read = xdr_read(xtc->file, frame_data_ptr, frame_size);
         md_mutex_unlock(&xtc->mutex);
