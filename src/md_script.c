@@ -1006,7 +1006,8 @@ static procedure_match_result_t find_cast_procedure(md_type_info_t from, md_type
             is_type_directly_compatible(casts[i].return_type, to)) {
 
             uint32_t cost = 1;
-            if (type_info_array_len(casts[i].return_type) == -1) cost += 1; // Penalty for not being a perfect fit, there might be a better match which directly matches the array length
+            if (type_info_array_len(to) != -1 && type_info_array_len(casts[i].return_type) == -1) cost += 1; // Penalty for not being a perfect fit, there might be a better match which directly matches the array length
+            if (type_info_array_len(to) == -1 && type_info_array_len(casts[i].return_type) != -1) cost += 1; // Same as above
 
             if (cost < lowest_cost) {
                 res.success = true;
@@ -1452,30 +1453,30 @@ static int print_value(char* buf, int buf_size, data_t data) {
     if (is_variable_length(data.type)) return 0;
     if (buf_size <= 0) return 0;
 
-    if (is_array(data.type) && data.type.base_type != TYPE_BITFIELD) {
-        int64_t arr_len = data.type.dim[data.type.len_dim];
-        if (arr_len == 1) {
-            data.type.dim[data.type.len_dim] = 0;
-            data.type.len_dim = MAX(0, data.type.len_dim-1);
-            arr_len = data.type.dim[data.type.len_dim];
-        }
-        md_type_info_t type = type_info_element_type(data.type);
-        int64_t stride = type_info_byte_stride(data.type);
+    if (data.ptr) {
+        if (is_array(data.type) && data.type.base_type != TYPE_BITFIELD) {
+            int64_t arr_len = data.type.dim[data.type.len_dim];
+            if (arr_len == 1) {
+                data.type.dim[data.type.len_dim] = 0;
+                data.type.len_dim = MAX(0, data.type.len_dim-1);
+                arr_len = data.type.dim[data.type.len_dim];
+            }
+            md_type_info_t type = type_info_element_type(data.type);
+            int64_t stride = type_info_byte_stride(data.type);
 
-        PRINT("{");
-        for (int64_t i = 0; i < arr_len; ++i) {
-            data_t elem_data = {
-                .ptr = (char*)data.ptr + stride * i,
-                .size = data.size,
-                .type = type,
-                .unit = data.unit,
-            };
-            len += print_value(buf + len, buf_size - len, elem_data);
-            if (i < arr_len - 1) PRINT(",");
-        }
-        PRINT("}");
-    } else {
-        if (data.ptr) {
+            PRINT("{");
+            for (int64_t i = 0; i < arr_len; ++i) {
+                data_t elem_data = {
+                    .ptr = (char*)data.ptr + stride * i,
+                    .size = data.size,
+                    .type = type,
+                    .unit = data.unit,
+                };
+                len += print_value(buf + len, buf_size - len, elem_data);
+                if (i < arr_len - 1) PRINT(",");
+            }
+            PRINT("}");
+        } else {
             switch(data.type.base_type) {
             case TYPE_BITFIELD:
                 //print_bitfield(file, (md_exp_bitfield_t*)data.ptr);
@@ -1527,9 +1528,9 @@ static int print_value(char* buf, int buf_size, data_t data) {
                 ASSERT(false);
             }
         }
-        else {
-            PRINT("NULL");
-        }
+    }
+    else {
+        PRINT("NULL");
     }
     return len;
 }
@@ -2664,41 +2665,6 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
             if (res.procedure->proc_ptr(&node->data, &old, ctx) == 0) {
                 return true;
             }
-
-            /*
-            ASSERT(is_scalar(from));
-            ASSERT(is_scalar(to));
-            // Convert node directly
-            switch (to.base_type) {
-            case TYPE_FLOAT:
-                ASSERT(from.base_type == TYPE_INT);
-                node->value._float = (float)node->value._int;
-                node->data.size = sizeof(node->value._float);
-                break;
-            case TYPE_IRANGE:
-                ASSERT(from.base_type == TYPE_INT);
-                node->value._irange = (irange_t){node->value._int, node->value._int};
-                node->data.size = sizeof(node->value._irange);
-                break;
-            case TYPE_FRANGE:
-                ASSERT(from.base_type == TYPE_IRANGE);
-                node->value._frange = (frange_t){(float)node->value._irange.beg, (float)node->value._irange.end};
-                node->data.size = sizeof(node->value._frange);
-                break;
-            case TYPE_BITFIELD:
-                ASSERT(from.base_type == TYPE_INT || from.base_type == TYPE_IRANGE);
-
-                
-                irange_t range = node->value._irange;
-                md_bitfield_init(&node->value._bitfield, ctx->alloc);
-
-                break;
-            default:
-                ASSERT(false);
-            }
-            node->data.type.base_type = to.base_type;
-            return true;
-            */
         } else {
             // We need to convert this node into a cast node and add the original node data as a child
             ast_node_t* node_copy = create_node(ctx->ir, node->type, node->token);
@@ -2829,11 +2795,16 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
     node->flags |= node->proc->flags & FLAG_PROPAGATION_MASK;
 
     // Need to flag DYNAMIC_LENGTH if the node has QUERYABLE_LENGTH and depends on DYNAMIC arguments
+    // Or if the node is evaluated within a context and has QUERYABLE_LENGTH
     if (node->proc->flags & FLAG_QUERYABLE_LENGTH) {
-        for (int64_t i = 0; i < num_args; ++i) {
-            if (arg[i]->flags & FLAG_DYNAMIC) {
-                node->flags |= FLAG_DYNAMIC_LENGTH;
-                break;
+        if (ctx->mol_ctx)
+            node->flags |= FLAG_DYNAMIC_LENGTH;
+        else {
+            for (int64_t i = 0; i < num_args; ++i) {
+                if (arg[i]->flags & FLAG_DYNAMIC) {
+                    node->flags |= FLAG_DYNAMIC_LENGTH;
+                    break;
+                }
             }
         }
     }
@@ -2951,7 +2922,12 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     else {
         // We already have gotten the procedure now we just possibly want to statically check the function by querying
         result = static_check_children(node, ctx);
+        /*
         if (node->proc->flags & FLAG_QUERYABLE_LENGTH) {
+            result &= finalize_type(&node->data.type, node, ctx);
+        }
+        */
+        if ((node->proc->flags & FLAG_QUERYABLE_LENGTH) && !(node->proc->flags & FLAG_DYNAMIC)) {
             result &= finalize_type(&node->data.type, node, ctx);
         }
     }
@@ -3211,10 +3187,10 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     
     // WE MUST BE ABLE TO EVALUATE RHS EXPRESSION DURING COMPILE TIME IN ORDER TO KNOW THE LENGTH
     // If the RHS is a dynamic type, we need to push the 'length' type deduction to 'run-time'
+    ast_node_t* lhs = node->children[0];
+    ast_node_t* rhs = node->children[1];
 
-    if (static_check_children(node, ctx)) {
-        ast_node_t* lhs = node->children[0];
-        ast_node_t* rhs = node->children[1];
+    if (static_check_node(rhs, ctx)) {
         if (rhs->data.type.base_type == TYPE_BITFIELD) {
             if (!(rhs->flags & FLAG_DYNAMIC)) {
                 const int64_t num_contexts = type_info_array_len(rhs->data.type);
@@ -3253,6 +3229,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                             arr_len += type_info_array_len(lhs->data.type);
                         }
 
+                        node->flags |= lhs->flags & FLAG_PROPAGATION_MASK;
                         node->data.type = lhs->data.type;
                         node->data.type.dim[node->data.type.len_dim] = (int32_t)arr_len;
 
