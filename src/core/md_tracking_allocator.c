@@ -7,6 +7,11 @@
 #include "md_common.h"
 #include "md_log.h"
 
+#include "core/md_sync.h"
+
+// We need to protect this via a mutex lock since we don't know in which context this allocator is used.
+// Better safe than sorry.
+
 #define MAGIC_NUMBER 0xdc1728367bca6273
 
 typedef struct allocation {
@@ -19,6 +24,7 @@ typedef struct allocation {
 typedef struct tracking {
     struct md_allocator_i* backing;
     allocation_t* allocations;
+    md_mutex_t mutex;
     uint64_t magic;
 } tracking_t;
 
@@ -48,6 +54,9 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, uint64_t o
     tracking_t* tracking = (tracking_t*)inst;
     ASSERT(tracking && tracking->magic == MAGIC_NUMBER);
 
+    void* result = 0;
+
+    md_mutex_lock(&tracking->mutex);
     if (ptr && old_size) {
         // REALLOC OR FREE
         // MAKE SURE OLD PTR AND SIZE ARE REPRESENTED!
@@ -62,13 +71,12 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, uint64_t o
             alloc->size = new_size;
             alloc->file = file;
             alloc->line = line;
-
-            return alloc->ptr;
+            result = alloc->ptr;
         }
         else {
             // FREE
             delete_allocation(tracking, alloc);
-            return NULL;
+            result = NULL;
         }
     } else {
         // MALLOC
@@ -77,9 +85,10 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, uint64_t o
         alloc->size = new_size;
         alloc->file = file;
         alloc->line = line;
-
-        return alloc->ptr;
+        result = alloc->ptr;
     }
+    md_mutex_unlock(&tracking->mutex);
+    return result;
 }
 
 struct md_allocator_i* md_tracking_allocator_create(struct md_allocator_i* backing) {
@@ -87,6 +96,7 @@ struct md_allocator_i* md_tracking_allocator_create(struct md_allocator_i* backi
     tracking_t* inst = (tracking_t*)md_alloc(backing, sizeof(tracking_t) + sizeof(md_allocator_i));
     inst->backing = backing;
     inst->allocations = 0;
+    inst->mutex = md_mutex_create();
     inst->magic = MAGIC_NUMBER;
 
     md_allocator_i* alloc = (md_allocator_i*)((char*)inst + sizeof(tracking_t));
@@ -102,10 +112,14 @@ void md_tracking_allocator_destroy(struct md_allocator_i* alloc) {
     tracking_t* tracking = (tracking_t*)alloc->inst;
     ASSERT(tracking->magic == MAGIC_NUMBER);
 
+
+    md_mutex_lock(&tracking->mutex);
     int64_t size = md_array_size(tracking->allocations);
     for (int64_t i = 0; i < size; ++i) {
         md_printf(MD_LOG_TYPE_DEBUG, "Allocation never freed, in file '%s', at line '%i'.", tracking->allocations[i].file, tracking->allocations[i].line);
     }
+    md_mutex_unlock(&tracking->mutex);
+    md_mutex_destroy(&tracking->mutex);
 
     md_free(tracking->backing, tracking, sizeof(tracking_t) + sizeof(md_allocator_i));
 }

@@ -109,7 +109,7 @@ str_t md_os_path_make_relative(str_t from, str_t to, struct md_allocator_i* allo
     to   = internal_fullpath(to);
 
 #if MD_PLATFORM_WINDOWS
-    result = PathRelativePathTo(sz_buf, from.ptr, FILE_ATTRIBUTE_DIRECTORY, to.ptr, FILE_ATTRIBUTE_NORMAL);
+    result = PathRelativePathTo(sz_buf, from.ptr, FILE_ATTRIBUTE_NORMAL, to.ptr, FILE_ATTRIBUTE_NORMAL);
     convert_backslashes(sz_buf, sizeof(sz_buf));
 #elif MD_PLATFORM_UNIX
 
