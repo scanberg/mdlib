@@ -350,7 +350,6 @@ static int64_t* try_read_offset_cache(str_t cache_file, md_allocator_i* alloc) {
         return offsets;
     }
 
-    md_printf(MD_LOG_TYPE_ERROR, "Failed to read offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
     return 0;
 }
 
