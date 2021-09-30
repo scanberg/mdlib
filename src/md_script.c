@@ -605,7 +605,7 @@ static void free_data(data_t* data, md_allocator_i* alloc) {
     data->size = 0;
 }
 
-static inline void copy_data(data_t* dst, const data_t* src) {
+static void copy_data(data_t* dst, const data_t* src) {
     ASSERT(dst);
     ASSERT(src);
     ASSERT(src->size);
@@ -687,13 +687,6 @@ static const char* get_value_type_str(base_type_t type) {
     case TYPE_BITFIELD: return "bitfield";
     default: return "type out of range";
     }
-}
-
-static inline int64_t count_atoms_in_mask(const md_exp_bitfield_t* mask) {
-    //ASSERT(mol);
-    //ASSERT(mask.num_bits == mol->atom.count);
-
-    return md_bitfield_popcount(mask);
 }
 
 /*
@@ -1417,16 +1410,24 @@ static tokenizer_t tokenizer_init(str_t str) {
 // ####################
 
 static int print_type_info(char* buf, int buf_size, md_type_info_t info) {
-    int result = snprintf(buf, buf_size, "%s", get_value_type_str(info.base_type));
-    int i = 0;
-    while (info.dim[i] != 0 && i < MAX_SUPPORTED_TYPE_DIMS) {
-        if (info.dim[i] == -1)
-            result += snprintf(buf + result, buf_size, "[..]");
-        else if (info.dim[i] > 1)
-            result += snprintf(buf + result, buf_size, "[%i]", (int)info.dim[i]);
-        ++i;
+    int len = snprintf(buf, buf_size, "%s", get_value_type_str(info.base_type));
+
+    for (int i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
+        if (info.dim[i] == -1) {
+            len += snprintf(buf + len, MAX(0, buf_size - len), "[..]");
+        }
+        else if (info.dim[i] >= 1) {
+            len += snprintf(buf + len, MAX(0, buf_size - len), "[%i]", (int)info.dim[i]);
+        }
+        else if (info.dim[i] == 0) {
+            break;
+        }
+        else {
+            ASSERT(false);
+        }
     }
-    return result;
+
+    return len;
 }
 
 #define PRINT(fmt, ...) len += snprintf(buf + len, MAX(0, buf_size - len), fmt, ##__VA_ARGS__)
@@ -1773,7 +1774,7 @@ static void save_expressions_to_json(expression_t** expr, uint64_t num_expr, str
 // ###   PARSING   ###
 // ###################
 
-static inline void expand_node_token_range_with_children(ast_node_t* node) {
+static void expand_node_token_range_with_children(ast_node_t* node) {
     ASSERT(node);
     for (int64_t i = 0; i < md_array_size(node->children); ++i) {
         ASSERT(node->children[i]);
@@ -2370,7 +2371,7 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
 }
 
 // This should only called in an evaluation context
-static inline identifier_t* eval_find_identifier(str_t name, eval_context_t* ctx) {
+static identifier_t* eval_find_identifier(str_t name, eval_context_t* ctx) {
     ASSERT(ctx);
     
     for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(constants); ++i) {
@@ -3156,7 +3157,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     return false;
 }
 
-static inline void propagate_context(ast_node_t* node, const md_exp_bitfield_t* context) {
+static void propagate_context(ast_node_t* node, const md_exp_bitfield_t* context) {
     ASSERT(node);
     node->context = context;
     for (int64_t i = 0; i < md_array_size(node->children); ++i) {
@@ -3992,7 +3993,7 @@ static bool free_ir(md_script_ir_o* o) {
     return false;
 }
 
-static inline void create_tokens(md_script_ir_o* ir, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
+static void create_tokens(md_script_ir_o* ir, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
     md_script_token_t token = {0};
 
     ASSERT(node->type != AST_UNDEFINED);
@@ -4011,7 +4012,7 @@ static inline void create_tokens(md_script_ir_o* ir, const ast_node_t* node, con
     }
 
     char type_buf[128] = {0};
-    int type_len = print_type_info(type_buf, sizeof(type_buf), node->data.type);
+    int type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
     len += snprintf(buf + len, sizeof(buf) - len, "(%.*s)", type_len, type_buf);
 
     token.line = node->token.line;
@@ -4329,7 +4330,7 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
 
 #define VIS_MAGIC 0xbc6169abd9628947
 
-static inline md_range_t node_range(const ast_node_t* node) {
+static md_range_t node_range(const ast_node_t* node) {
     md_range_t range = {node->token.col_beg, node->token.col_end};
     const int64_t num_children = md_array_size(node->children);
     ast_node_t** const children = node->children;
@@ -4342,7 +4343,7 @@ static inline md_range_t node_range(const ast_node_t* node) {
     return range;
 }
 
-static inline const ast_node_t* get_node(const ast_node_t* node, int32_t col) {
+static const ast_node_t* get_node(const ast_node_t* node, int32_t col) {
     ASSERT(node);
 
     const ast_node_t* result = 0;
@@ -4385,7 +4386,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
     }
 }
 
-static inline void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
+static void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(ctx->vis);
     if (node->type != AST_CONTEXT && node->context) {
