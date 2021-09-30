@@ -4,6 +4,8 @@
 #include "md_log.h"
 #include "md_common.h"
 
+#include <string.h>
+
 #if MD_PLATFORM_WINDOWS
 
 #ifndef NOMINMAX
@@ -135,30 +137,32 @@ md_thread_id_t md_thread_id(void) {
 	return (md_thread_id_t)pthread_self();
 }
 
+STATIC_ASSERT(sizeof(pthread_mutex_t) <= sizeof(md_mutex_t), "pthread_mutex_t does not fit into md_mutex_t!");
+
+bool md_mutex_init(md_mutex_t* mutex) {
+	return pthread_mutex_init((pthread_mutex_t*)mutex, NULL) == 0;
+}
+
 md_mutex_t md_mutex_create() {
-	STATIC_ASSERT(sizeof(pthread_mutex_t) <= sizeof(md_mutex_t), "pthread_mutex_t does not fit into md_mutex_t!");
 	md_mutex_t mutex;
-	pthread_mutex_init((pthread_mutex_t*)&mutex, NULL);
+	md_mutex_init(&mutex);
 	return mutex;
 }
 
 bool md_mutex_destroy(md_mutex_t* mutex) {
-	pthread_mutex_destroy((pthread_mutex_t*)mutex);
-	return true;
+	return pthread_mutex_destroy((pthread_mutex_t*)mutex) == 0;
 }
 
 bool md_mutex_lock(md_mutex_t* mutex) {
-	pthread_mutex_lock((pthread_mutex_t*)mutex);
-	return true;
+	return pthread_mutex_lock((pthread_mutex_t*)mutex) == 0;
 }
 
 bool md_mutex_try_lock(md_mutex_t* mutex) {
-	return pthread_mutex_trylock((pthread_mutex_t*)mutex);
+	return pthread_mutex_trylock((pthread_mutex_t*)mutex) == 0;
 }
 
 bool md_mutex_unlock(md_mutex_t* mutex) {
-	pthread_mutex_unlock((pthread_mutex_t*)mutex);
-	return true;
+	return pthread_mutex_unlock((pthread_mutex_t*)mutex) == 0;
 }
 
 #if MD_PLATFORM_LINUX
@@ -169,7 +173,7 @@ STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit
 // Semaphore
 bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 	ASSERT(semaphore);
-	return sem_init((sem_t*)&semaphore->_id, 0, (uint32_t)initial_count) == 0;
+	return sem_init((sem_t*)semaphore, 0, (uint32_t)initial_count) == 0;
 }
 
 md_semaphore_t md_semaphore_create(int32_t initial_count) {
@@ -179,19 +183,19 @@ md_semaphore_t md_semaphore_create(int32_t initial_count) {
 }
 
 bool md_semaphore_destroy(md_semaphore_t* semaphore) {
-	return sem_destroy((sem_t*)semaphore->_id) == 0;
+	return sem_destroy((sem_t*)semaphore) == 0;
 }
 
 bool md_semaphore_aquire(md_semaphore_t* semaphore) {
-	return sem_wait((sem_t*)semaphore->_id) == 0;
+	return sem_wait((sem_t*)semaphore) == 0;
 }
 
 bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
-	return sem_trywait((sem_t*)semaphore->_id) == 0;
+	return sem_trywait((sem_t*)semaphore) == 0;
 }
 
 bool md_semaphore_release(md_semaphore_t* semaphore) {
-	return sem_post((sem_t*)semaphore->_id) == 0;
+	return sem_post((sem_t*)semaphore) == 0;
 }
 #endif
 
