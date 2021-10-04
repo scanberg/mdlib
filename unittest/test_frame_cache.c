@@ -65,7 +65,7 @@ int thread_func(void* user_data) {
     return 0;
 }
 
-UTEST(frame_cache, race_condition) {
+UTEST(frame_cache, parallel_workload) {
     md_molecule_t mol = {0};
     md_trajectory_i traj = {0};
     md_gro_data_t gro = {0};
@@ -96,7 +96,7 @@ UTEST(frame_cache, race_condition) {
     thread_data_t thread_data[NUM_THREADS] = {0};
     md_thread_t* threads[NUM_THREADS] = {0};
 
-    for (int passes = 0; passes < 100; ++passes) {
+    for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
             thread_data[i].cache = &cache;
             thread_data[i].ref_coords = ref_coords;

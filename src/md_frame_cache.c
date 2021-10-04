@@ -119,7 +119,7 @@ bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, 
             if (frame_data) *frame_data = &cache->slot.data[i];
             return true;
         }
-        
+
         cache->slot.header[i].access_count += 1;
         if (cache->slot.header[i].access_count > max_count) {
             max_count = cache->slot.header[i].access_count;
@@ -152,8 +152,7 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
 
     md_frame_data_t* data = NULL;
     struct md_frame_cache_lock_t* lock = NULL;
-    bool in_cache = md_frame_cache_find_or_reserve(cache, frame_idx, &data, &lock);
-    if (!in_cache) {
+    if (!md_frame_cache_find_or_reserve(cache, frame_idx, &data, &lock)) {
         md_trajectory_frame_header_t header = {0};
         if (md_trajectory_load_frame(cache->traj, frame_idx, &data->header, data->x, data->y, data->z)) {
             data->header.index = frame_idx;
