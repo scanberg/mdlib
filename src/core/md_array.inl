@@ -1,5 +1,5 @@
-#ifndef __MD_ARRAY_INL__
-#define __MD_ARRAY_INL__
+// We do not want any include guard:
+// This is only meant to be used directly inside translation units
 
 // THIS IS INSIRED BY OUR MACHINERY'S IMPLEMENTATION OF MD ARRAY AT A PERVERTED LEVEL. 
 // (https://ourmachinery.com)
@@ -80,5 +80,3 @@ static inline void* md_array_grow_internal(void* arr, int64_t n, int64_t item_si
     const int64_t new_cap = min_cap > n ? min_cap : n;
     return md_array_set_capacity_internal(arr, new_cap, item_size, alloc, file, line);
 }
-
-#endif

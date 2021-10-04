@@ -125,9 +125,7 @@ static inline uint64_t bit_scan_forward64(uint64_t mask) {
 // find first zero Byte
 static inline uint32_t find_first_zero_byte32(uint32_t x) {
     uint32_t y = (x - 0x01010101) & ~x & 0x80808080;
-    uint32_t res = ctz32(y);
-    res = res >> 3;
-    return res;
+    return ctz32(y) >> 3;
 }
 
 // find first zero Byte 64-bit
