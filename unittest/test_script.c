@@ -294,7 +294,7 @@ UTEST(script, property_compute) {
     md_pdb_data_free(&pdb_data, alloc);
 }
 
-#define NUM_THREADS 4
+#define NUM_THREADS 8
 
 typedef struct thread_data_t {
     const md_script_ir_t* ir;
@@ -362,7 +362,7 @@ UTEST(script, parallel_evaluation) {
     };
     ASSERT_TRUE(md_script_eval_compute(&ref_eval, eval_args));
 
-    for (int pass = 0; pass < 100; ++pass) {
+    for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
             md_script_eval_init(&eval[i], md_trajectory_num_frames(&traj), &ir, alloc);
         }
