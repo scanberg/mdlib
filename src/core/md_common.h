@@ -23,7 +23,7 @@
 #endif
 #else
 #ifndef THREAD_LOCAL
-#define THREAD_LOCAL __thread
+#define THREAD_LOCAL _Thread_local
 #endif
 #endif
 
