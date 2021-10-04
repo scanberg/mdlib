@@ -35,10 +35,9 @@ void md_thread_detach(md_thread_t* thread) {
 	CloseHandle((HANDLE)thread);
 }
 
-int md_thread_join(md_thread_t* thread) {
+bool md_thread_join(md_thread_t* thread) {
 	WaitForSingleObject((HANDLE)thread, INFINITE);
-	CloseHandle((HANDLE)thread);
-	return 1;
+	return CloseHandle((HANDLE)thread);
 }
 
 md_thread_id_t md_thread_get_id(md_thread_t* thread) {
@@ -115,8 +114,16 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 #include <pthread.h>
 
 md_thread_t* md_thread_create(md_thread_func fn, void* user_data) {
+#if 0
+	size_t stack_size;
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_getstacksize(&attr, &stack_size);
+	pthread_attr_destroy(&attr);
+	printf("Current stack size: %d\n", stack_size);
+#endif
 	pthread_t thread;
-	pthread_create(&thread, NULL, (void* (*)(void*))fn, user_data);
+	pthread_create(&thread, NULL, fn, user_data);
 	return (md_thread_t*)thread;
 }
 
@@ -124,9 +131,8 @@ void md_thread_detach(md_thread_t* thread) {
 	pthread_detach((pthread_t)thread);
 }
 
-int md_thread_join(md_thread_t* thread) {
-	pthread_join((pthread_t)thread, NULL);
-	return 1;
+bool md_thread_join(md_thread_t* thread) {
+	return pthread_join((pthread_t)thread, NULL) == 0;
 }
 
 md_thread_id_t md_thread_get_id(md_thread_t* thread) {

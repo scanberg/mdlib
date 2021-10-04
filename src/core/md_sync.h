@@ -7,7 +7,7 @@ typedef struct md_semaphore_t md_semaphore_t;
 typedef struct md_mutex_t md_mutex_t;
 typedef struct md_thread_t md_thread_t;
 typedef uint64_t md_thread_id_t;
-typedef int (md_thread_func)(void *user_data);
+typedef void (md_thread_func)(void *user_data);
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,7 +29,7 @@ struct md_semaphore_t {
 md_thread_t* md_thread_create(md_thread_func func, void* user_data);
 
 void md_thread_detach(md_thread_t* thread);
-int  md_thread_join(md_thread_t* thread);
+bool md_thread_join(md_thread_t* thread);
 
 md_thread_id_t md_thread_get_id(md_thread_t* thread);
 md_thread_id_t md_thread_id(void);
