@@ -103,31 +103,32 @@ bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, 
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
     ASSERT(frame_idx >= 0);
+    ASSERT(frame_lock);
 
     const int64_t start_slot = ((frame_idx % cache->slot.count) / CACHE_ASSOCIATIVITY) * CACHE_ASSOCIATIVITY;
 
-    int64_t slot_idx = -1;
     int64_t max_count_idx = -1;
     int64_t max_count = -1;
 
     // If the frame is already in cache -> return data
     for (int64_t i = start_slot; i < start_slot + CACHE_ASSOCIATIVITY; ++i) {
+        md_frame_cache_aquire_frame_lock((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);
+        if (cache->slot.header[i].frame_index == (uint32_t)frame_idx) {
+            cache->slot.header[i].access_count = 0;
+            *frame_lock = (struct md_frame_cache_lock_t*)&cache->slot.lock[i];
+            if (frame_data) *frame_data = &cache->slot.data[i];
+            return true;
+        }
+        
         cache->slot.header[i].access_count += 1;
         if (cache->slot.header[i].access_count > max_count) {
             max_count = cache->slot.header[i].access_count;
             max_count_idx = i;
         }
-        if (cache->slot.header[i].frame_index == (uint32_t)frame_idx) {
-            slot_idx = i;
-        }
+        md_frame_cache_release_frame_lock((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);
     }
 
-    bool found = slot_idx != -1;
-
-    if (slot_idx == -1) {
-        slot_idx = max_count_idx;
-    }
-
+    int64_t slot_idx = max_count_idx;
     ASSERT(slot_idx != -1);
 
     md_frame_cache_aquire_frame_lock((struct md_frame_cache_lock_t*)&cache->slot.lock[slot_idx]);
@@ -139,7 +140,7 @@ bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, 
     *frame_lock = (struct md_frame_cache_lock_t*)&cache->slot.lock[slot_idx];
     if (frame_data) *frame_data = &cache->slot.data[slot_idx];
 
-    return found;
+    return false;
 }
 
 bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, float box[3][3], double* timestamp) {
