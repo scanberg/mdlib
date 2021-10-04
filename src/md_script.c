@@ -553,9 +553,7 @@ static bool allocate_data(data_t* data, md_allocator_i* alloc) {
     ASSERT(array_len > -1);
 
     // Do the base type allocation (array)
-    //const int64_t extra_bytes = (data->type.base_type == TYPE_BITFIELD) ? bitfield_byte_size(atom_count) * array_len : 0;
-    const int64_t base_bytes = type_info_byte_stride(data->type) * array_len;
-    const int64_t bytes = base_bytes;// + extra_bytes;
+    const int64_t bytes = type_info_byte_stride(data->type) * array_len;
 
     if (bytes > 0) {
         data->ptr = md_alloc(alloc, bytes);
@@ -563,20 +561,14 @@ static bool allocate_data(data_t* data, md_allocator_i* alloc) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to allocate data in script!");
             return false;
         }
+        memset(data->ptr, 0, bytes);
     }
     data->size = bytes;
-    memset(data->ptr, 0, bytes);
 
     if (data->type.base_type == TYPE_BITFIELD) {
-        // Configure bitfields to point in memory
         md_exp_bitfield_t* bf = data->ptr;
-        
-        //const int64_t bf_data_stride = bitfield_byte_size(atom_count);
-        //const int64_t num_bits = atom_count;
         for (int64_t i = 0; i < array_len; ++i) {
             md_bitfield_init(&bf[i], alloc);
-            //bf[i].bits = (uint64_t*)((char*)data->ptr + base_bytes + bf_data_stride * i);
-            //bf[i].num_bits = num_bits;
         }
     }
 
@@ -2326,6 +2318,8 @@ static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context
         arg_data[i] = node->children[i]->data;
         arg_tokens[i] = node->children[i]->token;
 
+        arg_data[i].ptr = 0;
+
         if (is_variable_length(arg_data[i].type)) {
             if (!finalize_type(&arg_data[i].type, node->children[i], ctx)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to finalize dynamic type in procedure call");
@@ -2338,7 +2332,6 @@ static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context
             return false;
         }
     }
-    
 
     token_t* old_arg_tokens = ctx->arg_tokens;
     ctx->arg_tokens = arg_tokens;
@@ -2705,7 +2698,6 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
     } else {
         ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
 
-
         data_t arg_data[MAX_SUPPORTED_PROC_ARGS] = {0};
         token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
 
@@ -2713,12 +2705,30 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
             // We need to evaluate the argument nodes first before we make the proc call.
             // In this context we are not interested in storing any data (since it is only used to be passed as arguments)
             // so we can allocate the data required for the node with the temp alloc
+
+            arg_data[i] = node->children[i]->data;
+            arg_tokens[i] = node->children[i]->token;
+
+            if (!arg_data[i].ptr) {
+                if (is_variable_length(arg_data[i].type)) {
+                    if (!finalize_type(&arg_data[i].type, node->children[i], ctx)) {
+                        md_print(MD_LOG_TYPE_ERROR, "Failed to finalize dynamic type in procedure call");
+                        return false;
+                    }
+                }
+                allocate_data(&arg_data[i], ctx->temp_alloc);
+                if (!evaluate_node(&arg_data[i], node->children[i], ctx)) {
+                    return false;
+                }
+            }
+            /*
             arg_data[i].type = node->children[i]->data.type;
             arg_tokens[i] = node->children[i]->token;
             allocate_data(&arg_data[i], ctx->temp_alloc);
             if (!evaluate_node(&arg_data[i], node->children[i], ctx)) {
                 return false;
             }
+            */
         }
 
         eval_context_t eval_ctx = *ctx;
