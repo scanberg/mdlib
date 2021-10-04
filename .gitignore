@@ -33,3 +33,5 @@
 
 .ccls-cache/
 build*/
+.vscode/
+unittest/data/
