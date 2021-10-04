@@ -261,7 +261,7 @@ int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
     return frame_size;
 }
 
-bool pdb_decode_frame_data(struct md_trajectory_o* inst, const float* frame_data_ptr, int64_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, int64_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
     ASSERT(frame_data_ptr);
     ASSERT(frame_data_size);

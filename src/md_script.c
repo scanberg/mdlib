@@ -3918,7 +3918,6 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     // Postprocess the data
     for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
         md_script_property_t* prop = &props[p_idx];
-        ast_node_t* node = ir->prop_expressions[p_idx]->node;
 
         if (prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
             // This needs to be set to a lower number if we are evaluating a subset
@@ -3926,8 +3925,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
             // This is for the mean if the property is an aggregate
             compute_min_max(&prop->data.min_value, &prop->data.max_value, prop->data.values, prop->data.num_values);
-            prop->data.min_range[0] = node->data.min_range == -FLT_MAX ? prop->data.min_value : node->data.min_range;
-            prop->data.max_range[0] = node->data.max_range ==  FLT_MAX ? prop->data.max_value : node->data.max_range;
+            prop->data.min_range[0] = data[p_idx].min_range == -FLT_MAX ? prop->data.min_value : data[p_idx].min_range;
+            prop->data.max_range[0] = data[p_idx].max_range ==  FLT_MAX ? prop->data.max_value : data[p_idx].max_range;
         }
         else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
         }

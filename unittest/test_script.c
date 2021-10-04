@@ -305,7 +305,7 @@ typedef struct thread_data_t {
     int num_corrupt_values;
 } thread_data_t;
 
-int func(void* user_data) {
+void func(void* user_data) {
     thread_data_t* data = (thread_data_t*)user_data;
 
     md_script_eval_args_t eval_args = {
@@ -324,7 +324,6 @@ int func(void* user_data) {
             }
         }
     }
-    return 0;
 }
 
 UTEST(script, parallel_evaluation) {
