@@ -4,16 +4,23 @@
 
 #include <stdio.h>
 
-int function(void* data) {
-    int value = *((int*)data);
-    printf("printing value from ze other thread %i\n", value);
+void other_func(int* value) {
+    printf("Printing yo!");
+    *value = 10;
+}
+
+int function(void* user_data) {
+    int* value = (int*)user_data;
+    other_func(value);
+    *value = 5;
     return 0;
 }
 
 UTEST(sync, thread) {
     int value = 666;
     md_thread_t* thread = md_thread_create(function, &value);
-    md_thread_join(thread);
+    EXPECT_TRUE(md_thread_join(thread));
+    EXPECT_EQ(5, value);
 }
 
 // @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
