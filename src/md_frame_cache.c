@@ -18,7 +18,7 @@ typedef struct md_slot_header_t {
     uint32_t access_count;
 } md_slot_header_t;
 
-void md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allocator_i* alloc, int64_t num_cached_frames) {
+bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allocator_i* alloc, int64_t num_cached_frames) {
     ASSERT(cache);
     ASSERT(traj);
     ASSERT(alloc);
@@ -57,6 +57,8 @@ void md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
         cache->slot.data[i].y = coord_data + (num_slots * num_atoms) * 1 + num_atoms * i;
         cache->slot.data[i].z = coord_data + (num_slots * num_atoms) * 2 + num_atoms * i;
     }
+
+    return true;
 }
 
 void md_frame_cache_free(md_frame_cache_t* cache) {

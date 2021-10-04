@@ -40,7 +40,7 @@ typedef struct md_frame_cache_t {
 extern "C" {
 #endif
 
-void md_frame_cache_init(md_frame_cache_t* cache, struct md_trajectory_i* traj, struct md_allocator_i* alloc, int64_t num_cached_frames);
+bool md_frame_cache_init(md_frame_cache_t* cache, struct md_trajectory_i* traj, struct md_allocator_i* alloc, int64_t num_cached_frames);
 void md_frame_cache_free(md_frame_cache_t* cache);
 
 // This will load the data from a frame into the memory of the supplied pointers.

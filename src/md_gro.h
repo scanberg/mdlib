@@ -32,8 +32,8 @@ typedef struct md_gro_data_t {
 } md_gro_data_t;
 
 // Parse a text-blob as GRO
-bool md_gro_data_parse_str(str_t string, md_gro_data_t* data, struct md_allocator_i* alloc);
-bool md_gro_data_parse_file(str_t filename, md_gro_data_t* data, struct md_allocator_i* alloc);
+bool md_gro_data_parse_str(md_gro_data_t* data, str_t string, struct md_allocator_i* alloc);
+bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_allocator_i* alloc);
 
 void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc);
 

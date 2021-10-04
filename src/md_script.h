@@ -175,10 +175,10 @@ bool md_script_ir_free(md_script_ir_t* ir);
 
 // ### EVALUATE ###
 
-// Allocate the data for properties within the evaluation
+// Allocate and initialize the data for properties within the evaluation
 // We need to pass the number of frames we want the data to hold
 // Should be performed as soon as the IR has changed.
-bool md_script_eval_alloc(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
+bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
 
 // Compute properties
 // Must be performed after the properties has been allocated.

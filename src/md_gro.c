@@ -109,7 +109,7 @@ static inline bool parse_unitcell(str_t str, md_gro_data_t* data) {
     return true;
 }
 
-bool md_gro_data_parse_str(str_t str, md_gro_data_t* data, struct md_allocator_i* alloc) {
+bool md_gro_data_parse_str(md_gro_data_t* data, str_t str, struct md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
     
@@ -135,7 +135,7 @@ bool md_gro_data_parse_str(str_t str, md_gro_data_t* data, struct md_allocator_i
     return true;
 }
 
-bool md_gro_data_parse_file(str_t filename, md_gro_data_t* data, struct md_allocator_i* alloc) {
+bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         const uint64_t buf_size = KILOBYTES(64ULL);

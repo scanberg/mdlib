@@ -15,6 +15,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_util.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_os.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_sync.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_frame_cache.c
     ${CMAKE_CURRENT_SOURCE_DIR}/rmsd.c
   )
 

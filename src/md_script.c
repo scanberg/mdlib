@@ -288,12 +288,7 @@ typedef struct md_script_ir_o {
     expression_t        **eval_targets;                 // List of dynamic expressions which needs to be evaluated per frame
     expression_t        **prop_expressions;             // List of expressions which are meant for exposure as properties
     
-    identifier_t        *identifiers;                   // List of identifiers, notice that the data in a const context should only be used if it is flagged as 
-
-    //identifier_definition_t* ident_definitions;         // List of identifiers and their definitions (type, flags)
-    //identifier_data_t*       ident_const_eval;          // If this identifier 
-    //identifier_t        **constant_identifiers;         // identifiers which can be evaluated at compile time.
-
+    identifier_t        *identifiers;                   // List of identifiers, notice that the data in a const context should only be used if it is flagged as
 
     // These are the final products which can be read through the public part of the structure
     md_script_error_t   *errors;
@@ -3766,6 +3761,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     bool result = true;
 
+    const int64_t num_evaluated_frames = md_bitfield_popcount(mask);
+
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
 
@@ -3869,17 +3866,22 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                     }
                 }
                 else {
-                    for (int64_t i = 0; i < prop->data.num_values; ++i) {
-                        prop->data.values[i] += values[i];
+                    const md_simd_typef scl = md_simd_set1f(1.0f / (float)num_evaluated_frames);
+                    for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_width); i += md_simd_width) {
+                        md_simd_typef old_val = md_simd_loadf(prop->data.values + i);
+                        md_simd_typef new_val = md_simd_mulf(md_simd_loadf(values + i), scl);
+                        md_simd_storef(prop->data.values + i, md_simd_addf(old_val, new_val));
                     }
                 }
             }
             else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
                 // Accumulate values
                 ASSERT(prop->data.values);
+                const md_simd_typef scl = md_simd_set1f(1.0f / (float)num_evaluated_frames);
                 for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_width); i += md_simd_width) {
-                    const md_simd_typef val = md_simd_addf(md_simd_loadf(prop->data.values + i), md_simd_loadf(values + i));
-                    md_simd_storef(prop->data.values + i, val);
+                    md_simd_typef old_val = md_simd_loadf(prop->data.values + i);
+                    md_simd_typef new_val = md_simd_mulf(md_simd_loadf(values + i), scl);
+                    md_simd_storef(prop->data.values + i, md_simd_addf(old_val, new_val));
                 }
                 /*for (int64_t i = 0; i < prop->data.num_values; ++i) {
                     prop->data.values[i] += values[i];
@@ -3895,7 +3897,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         dst_idx += 1;
     }
 
-    const int64_t num_evaluated_frames = dst_idx;
+    ASSERT(dst_idx == num_evaluated_frames);
 
     // Postprocess the data
     for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
@@ -3912,16 +3914,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             prop->data.max_range[0] = node->data.max_range ==  FLT_MAX ? prop->data.max_value : node->data.max_range;
         }
         else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
-            const double scl = 1.0 / (double)md_trajectory_num_frames(traj);
-            for (int64_t i = 0; i < prop->data.num_values; ++i) {
-                prop->data.values[i] = (float)(prop->data.values[i] * scl);
-            }
         }
         else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
-            const double scl = 1.0 / (double)md_trajectory_num_frames(traj);
-            for (int64_t i = 0; i < prop->data.num_values; ++i) {
-                prop->data.values[i] = (float)(prop->data.values[i] * scl);
-            }
         }
         else {
             ASSERT(false);
@@ -4133,7 +4127,7 @@ static bool init_eval(md_script_eval_o* o) {
     return false;
 }
 
-bool md_script_eval_alloc(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, md_allocator_i* alloc) {
+bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, md_allocator_i* alloc) {
     ASSERT(eval);
     ASSERT(ir);
     ASSERT(alloc);
