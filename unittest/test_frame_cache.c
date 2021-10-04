@@ -13,11 +13,14 @@
 #include <core/md_sync.h>
 #include <core/md_vec_math.h>
 
+#define NUM_THREADS 8
+
 typedef struct thread_data_t {
     md_frame_cache_t* cache;
     float* ref_coords;
     mat3_t* ref_boxes;
     int corrupt_count;
+    int thread_rank;
 } thread_data_t;
 
 int thread_func(void* user_data) {
@@ -37,18 +40,21 @@ int thread_func(void* user_data) {
     float box[3][3];
 
     // Load frame by frame and memcmp to reference
-    for (int64_t i = 0; i < num_frames; ++i) {
-        md_frame_cache_load_frame_data(data->cache, i, x, y, z, box, NULL);
+    // Offset the frame_index 'randomly' so we really stress the cache
+    const int64_t offset = (int64_t)(md_thread_id() % num_frames);
+    for (int64_t i = 0; i < (int64_t)num_frames; ++i) {
+        int64_t frame_idx = (offset + i) % num_frames;
+        md_frame_cache_load_frame_data(data->cache, frame_idx, x, y, z, box, NULL);
 
-        const float* ref_x = data->ref_coords + frame_stride + i * num_atoms * 0;
-        const float* ref_y = data->ref_coords + frame_stride + i * num_atoms * 1;
-        const float* ref_z = data->ref_coords + frame_stride + i * num_atoms * 2;
+        const float* ref_x = data->ref_coords + frame_stride * frame_idx + num_atoms * 0;
+        const float* ref_y = data->ref_coords + frame_stride * frame_idx + num_atoms * 1;
+        const float* ref_z = data->ref_coords + frame_stride * frame_idx + num_atoms * 2;
 
         bool corrupt = false;
         if (memcmp(ref_x, x, num_atoms * sizeof(float)) != 0) corrupt = true;
         if (memcmp(ref_y, y, num_atoms * sizeof(float)) != 0) corrupt = true;
         if (memcmp(ref_z, z, num_atoms * sizeof(float)) != 0) corrupt = true;
-        if (memcmp(data->ref_boxes[i].elem, box, sizeof(box))) corrupt = true;
+        if (memcmp(data->ref_boxes[i].elem, box, sizeof(box)) != 0) corrupt = true;
 
         if (corrupt) {
             data->corrupt_count += 1;
@@ -73,7 +79,8 @@ UTEST(frame_cache, race_condition) {
 
     const int64_t num_atoms = md_trajectory_num_atoms(&traj);
     const int64_t num_frames = md_trajectory_num_frames(&traj);
-    ASSERT_TRUE(md_frame_cache_init(&cache, &traj, alloc, num_frames));
+    // We cache much less of the frames so we get some eviction and contention going
+    ASSERT_TRUE(md_frame_cache_init(&cache, &traj, alloc, num_frames / 8));
 
     const int64_t frame_stride = num_atoms * 3;
     float* ref_coords = md_alloc(alloc, num_frames * num_atoms * 3 * sizeof(float));
@@ -86,28 +93,27 @@ UTEST(frame_cache, race_condition) {
         EXPECT_TRUE(md_frame_cache_load_frame_data(&cache, i, ref_x, ref_y, ref_z, ref_boxes[i].elem, NULL));
     }
 
-#define NUM_THREADS 8
-
     thread_data_t thread_data[NUM_THREADS] = {0};
     md_thread_t* threads[NUM_THREADS] = {0};
 
-    for (int i = 0; i < NUM_THREADS; ++i) {
-        thread_data[i].cache = &cache;
-        thread_data[i].ref_coords = ref_coords;
-        thread_data[i].ref_boxes = ref_boxes;
-        thread_data[i].corrupt_count = 0;
-        threads[i] = md_thread_create(thread_func, &thread_data[i]);
-    }
+    for (int passes = 0; passes < 100; ++passes) {
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            thread_data[i].cache = &cache;
+            thread_data[i].ref_coords = ref_coords;
+            thread_data[i].ref_boxes = ref_boxes;
+            thread_data[i].corrupt_count = 0;
+            threads[i] = md_thread_create(thread_func, &thread_data[i]);
+        }
 
-    int corrupt_count = 0;
-    for (int i = 0; i < ARRAY_SIZE(threads); ++i) {
-        md_thread_join(threads[i]);
-        corrupt_count += thread_data[i].corrupt_count;
-    }
+        int corrupt_count = 0;
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            md_thread_join(threads[i]);
+            corrupt_count += thread_data[i].corrupt_count;
+        }
 
-    EXPECT_EQ(corrupt_count, 0);
+        EXPECT_EQ(0, corrupt_count);
+    }
 
     md_xtc_trajectory_close(&traj);
-
     md_arena_allocator_destroy(alloc);
 }
