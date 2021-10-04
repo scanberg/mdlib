@@ -2369,19 +2369,22 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
 static identifier_t* eval_find_identifier(str_t name, eval_context_t* ctx) {
     ASSERT(ctx);
     
+    // Constants
     for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(constants); ++i) {
         if (compare_str(name, constants[i].name)) {
             return &constants[i];
         }
     }
 
+    // Static Identifiers from Compilation
     for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
         // Only return IR identifiers if they are constant
-        if (ctx->ir->identifiers[i].flags & FLAG_CONSTANT && compare_str(name, ctx->ir->identifiers[i].name)) {
+        if ((ctx->ir->identifiers[i].flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
             return &ctx->ir->identifiers[i];
         }
     }
 
+    // Dynamic Identifiers from Evaluation
     for (int64_t i = 0; i < md_array_size(ctx->identifiers); ++i) {
         if (compare_str(name, ctx->identifiers[i].name)) {
             return &ctx->identifiers[i];
@@ -2437,7 +2440,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
     bool result = false;
     if (dst || ctx->vis) {
         result = evaluate_node(dst, rhs, ctx);
-        if (ident && !(ident->flags & FLAG_CONSTANT) && dst) {
+        if (ident && (ident->flags & FLAG_CONSTANT) == 0 && dst) {
             ident->data = *dst;
         }
     }

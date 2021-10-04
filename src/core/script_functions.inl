@@ -304,9 +304,9 @@ static const float _E   = 2.71828182845f;
 
 // @TODO: Add your values here
 static identifier_t constants[] = {
-    {cstr("PI"),     {TI_FLOAT, (void*)(&_PI),    sizeof(float)}},
-    {cstr("TAU"),    {TI_FLOAT, (void*)(&_TAU),   sizeof(float)}},
-    {cstr("E"),      {TI_FLOAT, (void*)(&_E),     sizeof(float)}},
+    {cstr("PI"),     {TI_FLOAT, (void*)(&_PI),    sizeof(float)}, FLAG_CONSTANT},
+    {cstr("TAU"),    {TI_FLOAT, (void*)(&_TAU),   sizeof(float)}, FLAG_CONSTANT},
+    {cstr("E"),      {TI_FLOAT, (void*)(&_E),     sizeof(float)}, FLAG_CONSTANT},
 };
 
 // IMPLICIT CASTS/CONVERSIONS

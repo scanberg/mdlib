@@ -1,11 +1,13 @@
 #include "utest.h"
-#include <md_script.h>
-#include <md_molecule.h>
-#include <md_trajectory.h>
+
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_bitfield.h>
+#include <core/md_sync.h>
+#include <md_script.h>
+#include <md_molecule.h>
+#include <md_trajectory.h>
 #include <md_gro.h>
 #include <md_pdb.h>
 
@@ -286,6 +288,111 @@ UTEST(script, property_compute) {
 
     md_script_ir_free(&ir);
     md_script_eval_free(&eval);
+
+    md_pdb_trajectory_close(&traj);
+    md_pdb_molecule_free(&mol, alloc);
+    md_pdb_data_free(&pdb_data, alloc);
+}
+
+#define NUM_THREADS 4
+
+typedef struct thread_data_t {
+    const md_script_ir_t* ir;
+    const md_molecule_t* mol;
+    const md_trajectory_i* traj;
+    const md_script_eval_t* ref_eval;
+    md_script_eval_t* eval;
+    int num_corrupt_values;
+} thread_data_t;
+
+int func(void* user_data) {
+    thread_data_t* data = (thread_data_t*)user_data;
+
+    md_script_eval_args_t eval_args = {
+        .ir = data->ir,
+        .mol = data->mol,
+        .traj = data->traj,
+    };
+    if (md_script_eval_compute(data->eval, eval_args)) {
+        ASSERT(data->eval->num_properties == data->ref_eval->num_properties);
+        for (int64_t p_idx = 0; p_idx < data->eval->num_properties; ++p_idx) {
+            ASSERT(data->eval->properties[p_idx].data.num_values == data->ref_eval->properties[p_idx].data.num_values);
+            for (int64_t i = 0; i < data->eval->properties[i].data.num_values; ++i) {
+                if (data->eval->properties[p_idx].data.values[i] != data->ref_eval->properties[p_idx].data.values[i]) {
+                    data->num_corrupt_values += 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+UTEST(script, parallel_evaluation) {
+    md_allocator_i* alloc = default_allocator;
+    const str_t pdb_file = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t script = make_cstr("p1 = distance(1,2);");
+
+    md_pdb_data_t pdb_data = {0};
+    ASSERT_TRUE(md_pdb_data_parse_file(pdb_file, &pdb_data, alloc));
+
+    md_molecule_t mol = {0};
+    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+
+    md_trajectory_i traj = {0};
+    ASSERT_TRUE(md_pdb_trajectory_open(&traj, pdb_file, alloc));
+
+    md_script_ir_t ir = {0};
+    md_script_eval_t ref_eval = {0};
+    md_script_eval_t eval[NUM_THREADS] = {0};
+    md_thread_t* threads[NUM_THREADS] = {0};
+    thread_data_t thread_data[NUM_THREADS] = {0};
+
+    md_script_ir_compile_args_t compile_args = {
+        .src = script,
+        .mol = &mol,
+        .alloc = alloc
+    };
+    EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
+    EXPECT_TRUE(md_script_eval_init(&ref_eval, md_trajectory_num_frames(&traj), &ir, alloc));
+
+    md_script_eval_args_t eval_args = {
+        .ir = &ir,
+        .mol = &mol,
+        .traj = &traj,
+    };
+    ASSERT_TRUE(md_script_eval_compute(&ref_eval, eval_args));
+
+    for (int pass = 0; pass < 100; ++pass) {
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            md_script_eval_init(&eval[i], md_trajectory_num_frames(&traj), &ir, alloc);
+        }
+
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            thread_data[i] = (thread_data_t) {
+                .ir = &ir,
+                .mol = &mol,
+                .traj = &traj,
+                .ref_eval = &ref_eval,
+                .eval = &eval[i],
+                .num_corrupt_values = 0
+            };
+            threads[i] = md_thread_create(func, &thread_data[i]);
+        }
+
+        int total_corrupt_values = 0;
+        for (int i = 0; i < NUM_THREADS; ++i) {
+            md_thread_join(threads[i]);
+            total_corrupt_values += thread_data[i].num_corrupt_values;
+            EXPECT_EQ(0, total_corrupt_values);
+        }
+    }
+
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        md_script_eval_free(&eval[i]);
+    }
+
+    md_script_ir_free(&ir);
+    md_script_eval_free(&ref_eval);
 
     md_pdb_trajectory_close(&traj);
     md_pdb_molecule_free(&mol, alloc);
