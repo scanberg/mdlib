@@ -3701,6 +3701,11 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     ASSERT(traj);
     ASSERT(ir);
     ASSERT(eval_o);
+    
+    const int64_t num_expr = md_array_size(ir->eval_targets);
+    expression_t** const expr = ir->eval_targets;
+    
+    ASSERT(md_array_size(ir->prop_expressions) == num_props);
 
     const int64_t mem_size = MEGABYTES(128);
     void* mem = md_alloc(default_allocator, mem_size);
@@ -3721,11 +3726,13 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         md_bitfield_set_range(&tmp_bf, 0, md_trajectory_num_frames(traj));
         mask = &tmp_bf;
     }
+    
+    // This data is meant to hold the evaluated expressions
+    data_t* data = md_stack_allocator_alloc(&stack_alloc, num_expr * sizeof(data_t));
 
     const uint64_t STACK_RESET_POINT = md_stack_allocator_get_offset(&stack_alloc);
 
     md_trajectory_frame_header_t init_header = {0};
-    md_trajectory_frame_header_t curr_header = {0};
 
     float* init_x = init_coords + 0 * stride;
     float* init_y = init_coords + 1 * stride;
@@ -3754,11 +3761,6 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         },
     };
 
-    const int64_t num_expr = md_array_size(ir->eval_targets);
-    expression_t** const expr = ir->eval_targets;
-
-    ASSERT(md_array_size(ir->prop_expressions) == num_props);
-
     // Fill the data for the initial configuration (needed by rmsd and SDF as a 'reference')
     md_trajectory_load_frame(traj, 0, &init_header, init_x, init_y, init_z);
 
@@ -3786,15 +3788,17 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             md_printf(MD_LOG_TYPE_ERROR, "Something went wrong when loading the frames during evaluation");
             goto done;
         }
-
+        
         md_stack_allocator_set_offset(&stack_alloc, STACK_RESET_POINT);
         ctx.identifiers = 0;
 
         for (int64_t i = 0; i < num_expr; ++i) {
-            allocate_data(&expr[i]->node->data, &temp_alloc);
-            expr[i]->node->data.min_range = -FLT_MAX;
-            expr[i]->node->data.max_range = FLT_MAX;
-            if (!evaluate_node(&expr[i]->node->data, expr[i]->node, &ctx)) {
+            data[i] = expr[i]->node->data;
+            data[i].ptr = 0;
+            allocate_data(&data[i], &temp_alloc);
+            data[i].min_range = -FLT_MAX;
+            data[i].max_range = FLT_MAX;
+            if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
                 // @TODO: Report error
                 md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating property '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
                 result = false;
@@ -3803,10 +3807,9 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         }
 
         for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
-            ast_node_t* node = ir->prop_expressions[p_idx]->node;
             md_script_property_t* prop = &props[p_idx];
-            const int32_t size = (int32_t)type_info_array_len(node->data.type);
-            float* values = (float*)node->data.ptr;
+            const int32_t size = (int32_t)type_info_array_len(data[p_idx].type);
+            float* values = (float*)data[p_idx].ptr;
 
             if (prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
                 ASSERT(prop->data.values);
