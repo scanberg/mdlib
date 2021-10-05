@@ -123,7 +123,7 @@ md_thread_t* md_thread_create(md_thread_func fn, void* user_data) {
 	printf("Current stack size: %d\n", stack_size);
 #endif
 	pthread_t thread;
-	pthread_create(&thread, NULL, &fn, user_data);
+	pthread_create(&thread, NULL, fn, user_data);
 	return (md_thread_t*)thread;
 }
 
