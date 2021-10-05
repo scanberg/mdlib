@@ -72,5 +72,8 @@ endif()
 if (CMAKE_COMPILER_IS_GNUCC)
 find_package(Threads REQUIRED)
   target_compile_definitions(mold PRIVATE _GNU_SOURCE)
-  target_link_libraries(mold PRIVATE m Threads::Threads)
+  list(APPEND MOLD_LIBS m Threads::Threads)
 endif()
+
+
+target_link_libraries(mold PRIVATE ${MOLD_LIBS} ${VIAMD_STDLIBS})

@@ -1,5 +1,6 @@
 add_executable(md_unittest unittest.c)
-target_link_libraries(md_unittest PRIVATE mold)
+target_link_libraries(md_unittest PRIVATE mold ${VIAMD_STDLIBS})
+
 target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\")
 
 target_sources(md_unittest
