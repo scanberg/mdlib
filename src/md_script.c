@@ -3783,6 +3783,24 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     int64_t dst_idx = 0;
 
+    // Preprocess the property data
+    for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
+        md_script_property_t* prop = &props[p_idx];
+        switch (prop->type) {
+        case MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION:
+        case MD_SCRIPT_PROPERTY_TYPE_VOLUME:
+            memset(prop->data.values, 0, prop->data.num_values * sizeof(float));
+            if (prop->data.aggregate) {
+                memset(prop->data.aggregate->mean, 0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->variance, 0, prop->data.aggregate->num_values * sizeof(float));
+            }
+        case MD_SCRIPT_PROPERTY_TYPE_TEMPORAL:
+            break;
+        default:
+            ASSERT(false);
+        }
+    }
+
     // We evaluate each frame, one at a time
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
         if (eval_o->interrupt) {
