@@ -2,6 +2,8 @@
 
 #include <core/md_intrinsics.h>
 
+#pragma GCC diagnostic ignored "-Wsign-compare"
+
 UTEST(intrinsics, test) {
     {
         static const uint32_t mask[5] = {0, 0xFFU, 0xFFFFU, 0xFFFFFFU, 0xFFFFFFFFU};

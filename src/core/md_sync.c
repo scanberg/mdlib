@@ -123,7 +123,7 @@ md_thread_t* md_thread_create(md_thread_func fn, void* user_data) {
 	printf("Current stack size: %d\n", stack_size);
 #endif
 	pthread_t thread;
-	pthread_create(&thread, NULL, fn, user_data);
+	pthread_create(&thread, NULL, (void* (*)(void*))fn, user_data);
 	return (md_thread_t*)thread;
 }
 
@@ -224,7 +224,7 @@ bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 	if (ret != KERN_SUCCESS) {
 		md_print(MD_LOG_TYPE_ERROR, "Failed to initialize semaphore");
 	}
-	semaphore->_id = (void*)sema;
+	semaphore->_id = (void*)(uint64_t)sema;
 	return ret == KERN_SUCCESS;
 }
 

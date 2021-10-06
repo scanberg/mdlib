@@ -108,8 +108,12 @@ float md_util_element_atomic_mass(md_element_t element);
 uint32_t md_util_element_cpk_color(md_element_t element);
 
 bool md_util_is_resname_dna(str_t str);
+bool md_util_is_resname_acidic(str_t str);
+bool md_util_is_resname_basic(str_t str);
+bool md_util_is_resname_neutral(str_t str);
+bool md_util_is_resname_water(str_t str);
+bool md_util_is_resname_hydrophobic(str_t str);
 bool md_util_is_resname_amino_acid(str_t str);
-
 
 /*
 TODO: implement these utility functions

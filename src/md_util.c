@@ -123,10 +123,37 @@ static inline int64_t match_str_in_array(str_t str, const char* arr[], int64_t a
     return -1;
 }
 
+static inline md_simd_typef simd_deperiodize(md_simd_typef pos, md_simd_typef ref, md_simd_typef box_ext) {
+    md_simd_typef half_box = md_simd_mulf(box_ext, md_simd_set1f(0.5f));
+    md_simd_typef delta = md_simd_subf(ref, pos);
+    md_simd_typef signed_mask = md_simd_mulf(md_simd_signf(delta), md_simd_stepf(half_box, md_simd_absf(delta)));
+    return md_simd_addf(pos, md_simd_mulf(box_ext, signed_mask));
+}
+    
 bool md_util_is_resname_dna(str_t str) {
     return match_str_in_array(str, dna, ARRAY_SIZE(dna)) != -1;
 }
+    
+bool md_util_is_resname_acidic(str_t str) {
+    return match_str_in_array(str, acidic, ARRAY_SIZE(acidic)) != -1;
+}
 
+bool md_util_is_resname_basic(str_t str) {
+    return match_str_in_array(str, basic, ARRAY_SIZE(basic)) != -1;
+}
+    
+bool md_util_is_resname_neutral(str_t str) {
+    return match_str_in_array(str, neutral, ARRAY_SIZE(neutral)) != -1;
+}
+    
+bool md_util_is_resname_water(str_t str) {
+    return match_str_in_array(str, water, ARRAY_SIZE(water)) != -1;
+}
+    
+bool md_util_is_resname_hydrophobic(str_t str) {
+    return match_str_in_array(str, hydrophobic, ARRAY_SIZE(hydrophobic)) != -1;
+}
+    
 bool md_util_is_resname_amino_acid(str_t str) {
     return match_str_in_array(str, amino_acids, ARRAY_SIZE(amino_acids)) != -1;
 }
@@ -565,25 +592,21 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     return true;
 }
 
-static inline float deperiodize(float x, float ref, float half_ext, float full_ext) {
-    float d = x - ref;
-    float step = half_ext < fabsf(d) ? 1.0f : 0.0f;
-    float mag = step * full_ext;
+static inline float deperiodize(float pos, float ref, float ext) {
+    float d = ref - pos;
+    float step = fabsf(d) < (ext * 0.5f) ? 1.0f : 0.0f;
+    float mag = step * ext;
     return copysignf(mag, d);
 }
 
 vec3_t md_util_compute_periodic_com(const float* x, const float* y, const float* z, const float* w, int64_t count, float box[3][3]) {
-    const float full_ext_x = box[0][0];
-    const float full_ext_y = box[1][1];
-    const float full_ext_z = box[2][2];
-
-    const float half_ext_x = box[0][0] * 0.5f;
-    const float half_ext_y = box[1][1] * 0.5f;
-    const float half_ext_z = box[2][2] * 0.5f;
+    const float ext_x = box[0][0];
+    const float ext_y = box[1][1];
+    const float ext_z = box[2][2];
     
-    float sum_x = x[0];
-    float sum_y = y[0];
-    float sum_z = z[0];
+    float sum_x = x[0] * w[0];
+    float sum_y = y[0] * w[0];
+    float sum_z = z[0] * w[0];
     float sum_w = w[0];
 
     for (int64_t i = 1; i < count; ++i) {
@@ -591,15 +614,14 @@ vec3_t md_util_compute_periodic_com(const float* x, const float* y, const float*
         float com_y = sum_y / sum_w;
         float com_z = sum_z / sum_w;
 
-        float dx = deperiodize(x[i], com_x, half_ext_x, full_ext_x);
-        float dy = deperiodize(y[i], com_y, half_ext_y, full_ext_y);
-        float dz = deperiodize(z[i], com_z, half_ext_z, full_ext_z);
+        float dx = deperiodize(x[i], com_x, ext_x);
+        float dy = deperiodize(y[i], com_y, ext_y);
+        float dz = deperiodize(z[i], com_z, ext_z);
 
-        float dw = w[i];
-        sum_x += dx * dw;
-        sum_y += dy * dw;
-        sum_z += dz * dw;
-        sum_w += dw;
+        sum_x += dx * w[i];
+        sum_y += dy * w[i];
+        sum_z += dz * w[i];
+        sum_w += w[i];
     }
 
     return (vec3_t){sum_x / sum_w, sum_y / sum_w, sum_z / sum_w};
@@ -677,12 +699,7 @@ double md_util_compute_rmsd(const float* x0, const float* y0, const float* z0, c
     return sqrt(d_sum / w_sum);
 }
 
-static inline md_simd_typef de_periodize(md_simd_typef pos, md_simd_typef ref_pos, md_simd_typef box_ext) {
-    md_simd_typef half_box = md_simd_mulf(box_ext, md_simd_set1f(0.5f));
-    md_simd_typef delta = md_simd_subf(pos, ref_pos);
-    md_simd_typef signed_mask = md_simd_mulf(md_simd_signf(delta), md_simd_stepf(half_box, md_simd_absf(delta)));
-    return md_simd_subf(pos, md_simd_mulf(box_ext, signed_mask));
-}
+
 
 static const float zero_box[3][3] = {0};
 
@@ -703,9 +720,9 @@ void md_util_linear_interpolation(md_util_linear_interpolation_args_t args) {
             md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
             md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
 
-            x1 = de_periodize(x1, x0, box_ext_x);
-            y1 = de_periodize(y1, y0, box_ext_y);
-            z1 = de_periodize(z1, z0, box_ext_z);
+            x1 = simd_deperiodize(x1, x0, box_ext_x);
+            y1 = simd_deperiodize(y1, y0, box_ext_y);
+            z1 = simd_deperiodize(z1, z0, box_ext_z);
 
             md_simd_typef x = md_simd_lerpf(x0, x1, args.t);
             md_simd_typef y = md_simd_lerpf(y0, y1, args.t);
@@ -761,17 +778,17 @@ void md_util_cubic_interpolation(md_util_cubic_interpolation_args_t args) {
             md_simd_typef y3 = md_simd_loadf(args.coord.src[3].y + i);
             md_simd_typef z3 = md_simd_loadf(args.coord.src[3].z + i);
 
-            x0 = de_periodize(x0, x1, box_ext_x);
-            x2 = de_periodize(x2, x1, box_ext_x);
-            x3 = de_periodize(x3, x2, box_ext_x);
+            x0 = simd_deperiodize(x0, x1, box_ext_x);
+            x2 = simd_deperiodize(x2, x1, box_ext_x);
+            x3 = simd_deperiodize(x3, x2, box_ext_x);
 
-            y0 = de_periodize(y0, y1, box_ext_y);
-            y2 = de_periodize(y2, y1, box_ext_y);
-            y3 = de_periodize(y3, y2, box_ext_y);
+            y0 = simd_deperiodize(y0, y1, box_ext_y);
+            y2 = simd_deperiodize(y2, y1, box_ext_y);
+            y3 = simd_deperiodize(y3, y2, box_ext_y);
 
-            z0 = de_periodize(z0, z1, box_ext_z);
-            z2 = de_periodize(z2, z1, box_ext_z);
-            z3 = de_periodize(z3, z2, box_ext_z);
+            z0 = simd_deperiodize(z0, z1, box_ext_z);
+            z2 = simd_deperiodize(z2, z1, box_ext_z);
+            z3 = simd_deperiodize(z3, z2, box_ext_z);
 
             md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, args.t, args.tension);
             md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, args.t, args.tension);

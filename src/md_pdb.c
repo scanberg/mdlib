@@ -766,7 +766,7 @@ static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_ato
         md_array_resize(tmp_offsets, num_offsets, alloc);
 
         read_bytes = md_file_read(file, tmp_offsets, num_offsets * sizeof(int64_t));
-        if (read_bytes != num_offsets * sizeof(int64_t)) {
+        if (read_bytes != (int64_t)(num_offsets * sizeof(int64_t))) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, offsets are incomplete");
             md_array_free(tmp_offsets, alloc);
             result = false;
@@ -802,7 +802,7 @@ static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms, f
         ASSERT(written_bytes == sizeof(int64_t));
 
         written_bytes = md_file_write(file, offsets, num_offsets * sizeof(int64_t));
-        ASSERT(written_bytes == num_offsets * sizeof(int64_t));
+        ASSERT(written_bytes == (int64_t)(num_offsets * sizeof(int64_t)));
 
         md_file_close(file);
         return true;

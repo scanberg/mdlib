@@ -170,6 +170,7 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
         if (md_trajectory_load_frame(cache->traj, frame_idx, &data->header, data->x, data->y, data->z)) {
             data->header.index = frame_idx;
         }
+        (void)header;
         ASSERT(data && (int64_t)data->header.index == frame_idx);
     }
 

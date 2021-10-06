@@ -9,11 +9,10 @@ void other_func(int* value) {
     *value = 10;
 }
 
-int function(void* user_data) {
+void function(void* user_data) {
     int* value = (int*)user_data;
     other_func(value);
     *value = 5;
-    return 0;
 }
 
 UTEST(sync, thread) {

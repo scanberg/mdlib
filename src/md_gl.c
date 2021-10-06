@@ -880,7 +880,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_gl_molecule_desc_t*
             if (backbone_data) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < desc->chain.count; ++i) {
-                    for (uint32_t j = desc->chain.backbone_range[i].beg; j < desc->chain.backbone_range[i].end; ++j) {
+                    for (uint32_t j = (uint32_t)desc->chain.backbone_range[i].beg; j < (uint32_t)desc->chain.backbone_range[i].end; ++j) {
                         backbone_data[idx].residue_idx = j;
                         backbone_data[idx].segment_idx = j - desc->chain.backbone_range[i].beg;
                         backbone_data[idx].ca_idx = desc->backbone.atoms[j].ca;
@@ -899,7 +899,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_gl_molecule_desc_t*
             if (secondary_structure) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < desc->chain.count; ++i) {
-                    for (uint32_t j = desc->chain.backbone_range[i].beg; j < desc->chain.backbone_range[i].end; ++j) {
+                    for (uint32_t j = (uint32_t)desc->chain.backbone_range[i].beg; j < (uint32_t)desc->chain.backbone_range[i].end; ++j) {
                         secondary_structure[idx] = desc->backbone.secondary_structure[j];
                         ++idx;
                     }
@@ -916,7 +916,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_gl_molecule_desc_t*
                 uint32_t len = 0;
                 for (uint32_t i = 0; i < desc->chain.count; ++i) {
                     control_point_index[len++] = idx;
-                    for (uint32_t j = desc->chain.backbone_range[i].beg; j < desc->chain.backbone_range[i].end; ++j) {
+                    for (uint32_t j = (uint32_t)desc->chain.backbone_range[i].beg; j < (uint32_t)desc->chain.backbone_range[i].end; ++j) {
                         control_point_index[len++] = idx++;
                     }
                     control_point_index[len++] = idx-1;
@@ -1112,14 +1112,14 @@ bool md_gl_draw(md_gl_context_t* ext_ctx, const md_gl_draw_args_t* args) {
             draw_ent[draw_ent_count].model_matrix = args->representation.model_matrix ? (const mat4_t*)args->representation.model_matrix[i] : NULL;
             draw_ent_count++;
                 
-            uint32_t unique_mol_idx = (uint32_t)-1;
+            uint32_t unique_mol_idx = 0xFFFFFFFFU;
             for (uint32_t j = 0; j < unique_mol_count; j++) {
                 if (unique_mol_ptr[j] == rep->mol) {
                     unique_mol_idx = j;
                     break;
                 }
             }
-            if (unique_mol_idx == -1) {
+            if (unique_mol_idx == 0xFFFFFFFFU) {
                 ASSERT(unique_mol_count < ARRAY_SIZE(unique_mol_ptr));
                 unique_mol_idx = unique_mol_count++;
                 unique_mol_ptr[unique_mol_idx] = rep->mol;

@@ -49,7 +49,7 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
     }
 
     line = trim_whitespace(line);
-    const int64_t len = MIN(ARRAY_SIZE(data->title) - 1, line.len);
+    const int64_t len = MIN((int64_t)ARRAY_SIZE(data->title) - 1, line.len);
     strncpy(data->title, line.ptr, len);
     data->title[len] = '\0';
 
@@ -81,8 +81,8 @@ static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_
 
         md_gro_atom_t atom = {0};
         atom.res_id = (int32_t)res_id;
-        strncpy(atom.res_name, res_name.ptr, MIN(res_name.len, ARRAY_SIZE(atom.res_name) - 1));
-        strncpy(atom.atom_name, atom_name.ptr, MIN(atom_name.len, ARRAY_SIZE(atom.atom_name) - 1));
+        strncpy(atom.res_name, res_name.ptr, MIN(res_name.len, (int64_t)ARRAY_SIZE(atom.res_name) - 1));
+        strncpy(atom.atom_name, atom_name.ptr, MIN(atom_name.len, (int64_t)ARRAY_SIZE(atom.atom_name) - 1));
         atom.x = (float)x;
         atom.y = (float)y;
         atom.z = (float)z;

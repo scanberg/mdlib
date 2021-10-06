@@ -3631,7 +3631,7 @@ static bool allocate_property_data(md_script_property_t* prop, md_type_info_t ty
     return true;
 }
 
-static void create_properties(md_script_property_t** properties, int64_t num_frames, const expression_t** expressions, int64_t num_expressions, md_allocator_i* alloc) {
+static void create_properties(md_script_property_t** properties, int64_t num_frames, expression_t** expressions, int64_t num_expressions, md_allocator_i* alloc) {
     ASSERT(properties);
 
     md_script_property_t* props = NULL;
@@ -4302,13 +4302,12 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
             .mol = filter_ctx.mol,
             .temp_alloc = temp_alloc,
         };
-
         for (int64_t i = 0; i < filter_ctx.selection.count; ++i) {
             const md_filter_stored_selection_t sel = filter_ctx.selection.ptr[i];
             identifier_t ident = {
                 .name = sel.ident,
                 .data = {
-                    .ptr = &sel.bitfield,
+                    .ptr = (void*)(&sel.bitfield),      // We are casting away const here, but internally this data is never modified because of the FLAG_CONSTANT
                     .size = sizeof(md_exp_bitfield_t),
                     .type = {.base_type = TYPE_BITFIELD, .dim = {1}},
                 },
@@ -4316,7 +4315,6 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
             };
             md_array_push(static_ctx.identifiers, ident, alloc);
         }
-
         if (static_check_node(node, &static_ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
                 md_bitfield_clear(target);

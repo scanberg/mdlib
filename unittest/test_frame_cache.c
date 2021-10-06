@@ -23,7 +23,7 @@ typedef struct thread_data_t {
     int thread_rank;
 } thread_data_t;
 
-int thread_func(void* user_data) {
+void thread_func(void* user_data) {
     ASSERT(user_data);
     thread_data_t* data = (thread_data_t*)user_data;
 
@@ -62,7 +62,6 @@ int thread_func(void* user_data) {
     }
 
     md_free(default_temp_allocator, mem_ptr, mem_size);
-    return 0;
 }
 
 UTEST(frame_cache, parallel_workload) {
