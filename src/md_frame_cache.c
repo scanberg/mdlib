@@ -98,6 +98,19 @@ void md_frame_cache_release_frame_lock(struct md_frame_cache_lock_t* lock) {
     ASSERT(success);
 }
 
+void md_frame_cache_clear(md_frame_cache_t* cache) {
+    ASSERT(cache);
+    ASSERT(cache->magic == CACHE_MAGIC);
+
+    // If the frame is already in cache -> return data
+    for (int64_t i = 0; i < cache->slot.count; ++i) {
+        md_frame_cache_aquire_frame_lock((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);
+        cache->slot.header[i].frame_index = 0xFFFFFFFFU;
+        cache->slot.header[i].access_count = 0;
+        md_frame_cache_release_frame_lock((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);
+    }
+}
+
 bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);

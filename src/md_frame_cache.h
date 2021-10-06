@@ -43,6 +43,9 @@ extern "C" {
 bool md_frame_cache_init(md_frame_cache_t* cache, struct md_trajectory_i* traj, struct md_allocator_i* alloc, int64_t num_cached_frames);
 void md_frame_cache_free(md_frame_cache_t* cache);
 
+// Clears the cache by whiping the headers
+void md_frame_cache_clear(md_frame_cache_t* cache);
+
 // This will load the data from a frame into the memory of the supplied pointers.
 // The pointers are each optional and if the value of NULL is passed for that pointer, then no data will be written to that adress.
 // If the frame is not already in the cache, it will be loaded into the cache and if the postprocess function is supplied, that will be called.
