@@ -37,6 +37,10 @@
 #endif
 #endif
 
+#ifndef RESTRICT
+#define RESTRICT __restrict
+#endif
+
 // Really GCC? REALLY? DO WE REALLY NEED TO INCLUDE stddef.h for this??????
 #ifndef NULL
 #define NULL 0

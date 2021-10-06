@@ -168,6 +168,9 @@ typedef struct md_util_apply_pbc_args_t {
 
 bool md_util_apply_pbc(float* x, float* y, float* z, int64_t count, md_util_apply_pbc_args_t args);
 
+// Computes the center of mass for a set of points with a given weight given in a periodic box
+vec3_t md_util_compute_periodic_com(const float* x, const float* y, const float* z, const float* w, int64_t count, float box[3][3]);
+
 // Computes the center of mass for a set of points with a given weight
 // x, y, z -> Arrays containing coordinates
 // w -> Array of weights (optional) set as NULL to use equal weights

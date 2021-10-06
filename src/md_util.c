@@ -565,6 +565,46 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     return true;
 }
 
+static inline float deperiodize(float x, float ref, float half_ext, float full_ext) {
+    float d = x - ref;
+    float step = half_ext < fabsf(d) ? 1.0f : 0.0f;
+    float mag = step * full_ext;
+    return copysignf(mag, d);
+}
+
+vec3_t md_util_compute_periodic_com(const float* x, const float* y, const float* z, const float* w, int64_t count, float box[3][3]) {
+    const float full_ext_x = box[0][0];
+    const float full_ext_y = box[1][1];
+    const float full_ext_z = box[2][2];
+
+    const float half_ext_x = box[0][0] * 0.5f;
+    const float half_ext_y = box[1][1] * 0.5f;
+    const float half_ext_z = box[2][2] * 0.5f;
+    
+    float sum_x = x[0];
+    float sum_y = y[0];
+    float sum_z = z[0];
+    float sum_w = w[0];
+
+    for (int64_t i = 1; i < count; ++i) {
+        float com_x = sum_x / sum_w;
+        float com_y = sum_y / sum_w;
+        float com_z = sum_z / sum_w;
+
+        float dx = deperiodize(x[i], com_x, half_ext_x, full_ext_x);
+        float dy = deperiodize(y[i], com_y, half_ext_y, full_ext_y);
+        float dz = deperiodize(z[i], com_z, half_ext_z, full_ext_z);
+
+        float dw = w[i];
+        sum_x += dx * dw;
+        sum_y += dy * dw;
+        sum_z += dz * dw;
+        sum_w += dw;
+    }
+
+    return (vec3_t){sum_x / sum_w, sum_y / sum_w, sum_z / sum_w};
+}
+
 vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {
     ASSERT(x);
     ASSERT(y);
