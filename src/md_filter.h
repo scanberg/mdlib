@@ -5,10 +5,6 @@
 
 #include <core/md_str.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 struct md_allocator_i;
 struct md_exp_bitfield_t;
 struct md_molecule_t;
@@ -29,7 +25,17 @@ typedef struct md_filter_context_t {
     } selection;
 } md_filter_context_t;
 
-bool md_filter_evaluate(str_t expression, struct md_exp_bitfield_t* target, md_filter_context_t ctx);
+typedef struct md_filter_additional_info_t {
+    bool*   is_dynamic;
+    char*   error_buf;
+    int64_t error_cap;
+} md_filter_additional_info_t;
+
+#ifdef __cplusplus
+    extern "C" {
+#endif
+
+bool md_filter_evaluate(str_t expression, struct md_exp_bitfield_t* target, const md_filter_context_t* ctx, md_filter_additional_info_t* additional);
 
 #ifdef __cplusplus
 }

@@ -1353,20 +1353,6 @@ static token_t tokenizer_peek_next(tokenizer_t* tokenizer) {
     return token;
 }
 
-static token_t tokenizer_expect(tokenizer_t* tokenizer, token_type_t type) {
-    token_t token = tokenizer_get_next_from_buffer(tokenizer);
-    if (token.type == type) {
-        if (token.str.ptr && token.str.len) {
-            // Advance current of tokenizer
-            tokenizer->cur = token.str.ptr + token.str.len - tokenizer->str.ptr;
-            tokenizer->line = token.line;
-            return token;
-        }
-        ASSERT(false);
-    }
-    ASSERT(false);
-}
-
 static token_t tokenizer_consume_until_type(tokenizer_t* tokenizer, token_type_t* types, uint64_t num_types) {
     token_t token = {0};
     while (token = tokenizer_get_next_from_buffer(tokenizer), token.type != TOKEN_END) {
@@ -1764,7 +1750,7 @@ static void save_expressions_to_json(expression_t** expr, uint64_t num_expr, str
 static void expand_node_token_range_with_children(ast_node_t* node) {
     ASSERT(node);
     for (int64_t i = 0; i < md_array_size(node->children); ++i) {
-        ASSERT(node->children[i]);
+        if (!node->children[i]) continue;
         expand_node_token_range_with_children(node->children[i]);
         node->token.col_beg = MIN(node->token.col_beg, node->children[i]->token.col_beg);
         node->token.col_end = MAX(node->token.col_end, node->children[i]->token.col_end);
@@ -2165,10 +2151,12 @@ ast_node_t* parse_parentheses(parse_context_t* ctx) {
     ast_node_t* node = create_node(ctx->ir, AST_EXPRESSION, token);
     md_array_push(node->children, expr, ctx->ir->arena);
     token_t next = tokenizer_consume_next(ctx->tokenizer);
-    expect_token_type(ctx->ir, next, ')');
-    // Expand token with ')'
-    node->token.col_end = next.col_end;
-    return node;
+    if (expect_token_type(ctx->ir, next, ')')) {
+        // Expand token with ')'
+        node->token.col_end = next.col_end;
+        return node;
+    }
+    return NULL;
 }
 
 static ast_node_t* parse_argument(parse_context_t* ctx) {
@@ -2370,10 +2358,12 @@ static identifier_t* eval_find_identifier(str_t name, eval_context_t* ctx) {
     }
 
     // Static Identifiers from Compilation
-    for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
-        // Only return IR identifiers if they are constant
-        if ((ctx->ir->identifiers[i].flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
-            return &ctx->ir->identifiers[i];
+    if (ctx->ir) {
+        for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
+            // Only return IR identifiers if they are constant
+            if ((ctx->ir->identifiers[i].flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
+                return &ctx->ir->identifiers[i];
+            }
         }
     }
 
@@ -2897,7 +2887,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 }
                 else {
                     create_error(ctx->ir, node->token,
-                        "Could not find matching procedure '.*s' which takes no arguments", (int)proc_name.len, proc_name.ptr);
+                        "Could not find matching procedure '%.*s' which takes no arguments", (int)proc_name.len, proc_name.ptr);
                 }
             }
             else {
@@ -3313,19 +3303,20 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 }
 
 // Prunes the tree from AST_EXPRESSION, since that is just an unnecessary indirection for sorting the tree correctly on precedence
-static void prune_ast_expressions(ast_node_t* node) {
-    ASSERT(node);
-    
-    for (int64_t i = 0; i < md_array_size(node->children); ++i) {
-        ast_node_t* child = node->children[i];
-        ASSERT(child != node);
-        prune_ast_expressions(child);
-
-        if (child && child->type == AST_EXPRESSION) {
-            ASSERT(child->children && md_array_size(child->children) == 1);
-            node->children[i] = child->children[0];
+static ast_node_t* prune_expressions(ast_node_t* node) {
+    if (node) {
+        for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+            if (node->children[i]) {
+                ASSERT(node->children[i] != node);
+                node->children[i] = prune_expressions(node->children[i]);
+            }
+        }
+        if (node->type == AST_EXPRESSION) {
+            ASSERT(node->children && md_array_size(node->children) == 1);
+            return node->children[0];
         }
     }
+    return node;
 }
 
 static bool parse_script(md_script_ir_o* ir) {
@@ -3352,6 +3343,7 @@ static bool parse_script(md_script_ir_o* ir) {
 
         ir->record_errors = true;   // We reset the error recording flag before each statement
         ast_node_t* node = parse_expression(&ctx);
+        node = prune_expressions(node);
         if (node) {
             tok = tokenizer_consume_next(ctx.tokenizer);
             if (tok.type != ';') {
@@ -3364,7 +3356,6 @@ static bool parse_script(md_script_ir_o* ir) {
 
             if (node->type == AST_ASSIGNMENT &&
                 md_array_size(node->children) == 2 && node->children[0]->type == AST_IDENTIFIER && node->children[0]->ident.ptr && node->children[1]) {
-                prune_ast_expressions(node);
                 identifier_t* ident = get_identifier(ir, node->children[0]->ident);
                 ASSERT(ident);
                 expression_t* expr = md_alloc(ir->arena, sizeof(expression_t));
@@ -4268,14 +4259,19 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
     return false;
 }
 
-bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context_t filter_ctx) {
+bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, const md_filter_context_t* filter_ctx, md_filter_additional_info_t* info) {
     ASSERT(target);
-    ASSERT(filter_ctx.mol);
-    ASSERT(filter_ctx.alloc);
+    ASSERT(filter_ctx);
+    ASSERT(filter_ctx->mol);
+    ASSERT(filter_ctx->alloc);
 
-    bool result = true;
+    bool result = false;
 
-    md_allocator_i* alloc = md_arena_allocator_create(filter_ctx.alloc, MEGABYTES(1));
+    if (info && info->error_buf) {
+        memset(info->error_buf, 0, info->error_cap);
+    }
+
+    md_allocator_i* alloc = md_arena_allocator_create(filter_ctx->alloc, MEGABYTES(1));
     md_allocator_i* temp_alloc = alloc;
 
     md_script_ir_o* ir = create_ir(alloc);
@@ -4290,20 +4286,30 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
         .temp_alloc = alloc,
     };
 
+    // @TODO: Find a way to copy the AST tree from the ir within filter_ctx and use that
+    if (filter_ctx->ir && filter_ctx->ir->o) {
+        if (filter_ctx->ir->o->identifiers) {
+            md_array_push_array(ir->identifiers, filter_ctx->ir->o->identifiers, md_array_size(filter_ctx->ir->o->identifiers), alloc);
+        }
+        if (filter_ctx->ir->o->eval_targets) {
+            md_array_push_array(ir->eval_targets, filter_ctx->ir->o->eval_targets, md_array_size(filter_ctx->ir->o->eval_targets), alloc);
+        }
+    }
+
     ir->stage = "Filter evaluate";
     ir->record_errors = true;
 
     ast_node_t* node = parse_expression(&parse_ctx);
+    node = prune_expressions(node);
     if (node) {
-        prune_ast_expressions(node);
-
         eval_context_t static_ctx = {
             .ir = ir,
-            .mol = filter_ctx.mol,
+            .mol = filter_ctx->mol,
             .temp_alloc = temp_alloc,
         };
-        for (int64_t i = 0; i < filter_ctx.selection.count; ++i) {
-            const md_filter_stored_selection_t sel = filter_ctx.selection.ptr[i];
+
+        for (int64_t i = 0; i < filter_ctx->selection.count; ++i) {
+            const md_filter_stored_selection_t sel = filter_ctx->selection.ptr[i];
             identifier_t ident = {
                 .name = sel.ident,
                 .data = {
@@ -4319,13 +4325,25 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
             if (node->data.type.base_type == TYPE_BITFIELD) {
                 md_bitfield_clear(target);
 
-                data_t data = {
-                    .type = node->data.type,
-                };
                 eval_context_t eval_ctx = {
-                    .mol = filter_ctx.mol,
+                    .ir = ir,
+                    .mol = filter_ctx->mol,
                     .temp_alloc = temp_alloc,
+                    .initial_configuration = {
+                        .x = filter_ctx->mol->atom.x,
+                        .y = filter_ctx->mol->atom.y,
+                        .z = filter_ctx->mol->atom.z,
+                    }
                 };
+
+                // Evaluate dynamic targets if available
+                for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
+                    data_t data = { .type = ir->eval_targets[i]->node->data.type };
+                    allocate_data(&data, alloc);
+                    evaluate_node(&data, ir->eval_targets[i]->node, &eval_ctx);
+                }
+
+                data_t data = { .type = node->data.type };
                 allocate_data(&data, alloc);
 
                 result = evaluate_node(&data, node, &eval_ctx);
@@ -4337,15 +4355,29 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, md_filter_context
                             md_bitfield_or(target, target, &bf_arr[i]);
                         }
                     }
+                    if (info) {
+                        if (info->is_dynamic) *info->is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
+                    }
                 }
-            } else {
-                md_print(MD_LOG_TYPE_ERROR, "Filter did not evaluate to a bitfield");
             }
         }
     }
+    if (!result) {
+        if (info && info->error_buf) {
+            snprintf(info->error_buf, info->error_cap, "Filter did not evaluate to a bitfield\n");
+        } else {
+            md_print(MD_LOG_TYPE_ERROR, "Filter did not evaluate to a bitfield");
+        }
+    }
 
+    int64_t len = 0;
     for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
-        md_printf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].error.len, ir->errors[i].error.ptr);
+        if (info && info->error_buf) {
+            int64_t space_left = MAX(0, info->error_cap - len);
+            if (space_left) len += snprintf(info->error_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
+        } else {
+            md_printf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].error.len, ir->errors[i].error.ptr);
+        }
     }
 
     md_arena_allocator_destroy(alloc);
