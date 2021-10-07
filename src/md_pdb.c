@@ -296,7 +296,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     if (header) {
         header->num_atoms = i;
-        header->timestamp = 0; // This information is missing from PDB trajectories
+        header->timestamp = (double)(step-1); // This information is missing from PDB trajectories
         memcpy(header->box, pdb->box, sizeof(header->box));
     }
 

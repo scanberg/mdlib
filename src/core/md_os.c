@@ -86,7 +86,7 @@ str_t md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
 
     if (path.len > 0) {
 #if MD_PLATFORM_WINDOWS
-        convert_backslashes(path.ptr, path.len);
+        convert_backslashes((char*)path.ptr, path.len);
 #endif
     } else {
         md_print(MD_LOG_TYPE_ERROR, "Failed to create canonical path!");

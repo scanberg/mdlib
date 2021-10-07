@@ -404,7 +404,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         int64_t bb_offset = 0;
         for (int64_t i = 0; i < mol->chain.count; ++i) {
             const int64_t res_count = mol->chain.residue_range[i].end - mol->chain.residue_range[i].beg;
-            md_range_t bb_range = {bb_offset, bb_offset + res_count};
+            md_range_t bb_range = {(int32_t)bb_offset, (int32_t)(bb_offset + res_count)};
             md_array_push(mol->chain.backbone_range, bb_range, alloc);
             bb_offset += res_count;
         }

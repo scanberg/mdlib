@@ -594,9 +594,8 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
 
 static inline float deperiodize(float pos, float ref, float ext) {
     float d = ref - pos;
-    float step = fabsf(d) < (ext * 0.5f) ? 1.0f : 0.0f;
-    float mag = step * ext;
-    return copysignf(mag, d);
+    float t = fabsf(d) > (ext * 0.5f) ? copysignf(ext, d) : 0.0f;
+    return pos + t;
 }
 
 vec3_t md_util_compute_periodic_com(const float* x, const float* y, const float* z, const float* w, int64_t count, float box[3][3]) {
@@ -614,17 +613,28 @@ vec3_t md_util_compute_periodic_com(const float* x, const float* y, const float*
         float com_y = sum_y / sum_w;
         float com_z = sum_z / sum_w;
 
-        float dx = deperiodize(x[i], com_x, ext_x);
-        float dy = deperiodize(y[i], com_y, ext_y);
-        float dz = deperiodize(z[i], com_z, ext_z);
+        float dx = com_x - x[i];
+        float dy = com_y - y[i];
+        float dz = com_z - z[i];
 
-        sum_x += dx * w[i];
-        sum_y += dy * w[i];
-        sum_z += dz * w[i];
+        float t_x = fabsf(dx) > (ext_x * 0.5f) ? copysignf(ext_x, dx) : 0.0f;
+        float t_y = fabsf(dy) > (ext_y * 0.5f) ? copysignf(ext_y, dy) : 0.0f;
+        float t_z = fabsf(dz) > (ext_z * 0.5f) ? copysignf(ext_z, dz) : 0.0f;
+
+        float dp_x = x[i] + t_x;
+        float dp_y = y[i] + t_y;
+        float dp_z = z[i] + t_z;
+
+        sum_x += dp_x * w[i];
+        sum_y += dp_y * w[i];
+        sum_z += dp_z * w[i];
         sum_w += w[i];
     }
 
-    return (vec3_t){sum_x / sum_w, sum_y / sum_w, sum_z / sum_w};
+    float com_x = sum_x / sum_w;
+    float com_y = sum_y / sum_w;
+    float com_z = sum_z / sum_w;
+    return (vec3_t){com_x, com_y, com_z};
 }
 
 vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {

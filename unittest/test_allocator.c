@@ -6,7 +6,8 @@
 #include <core/md_arena_allocator.h>
 
 #define COMMON_ALLOCATOR_TEST_BODY \
-    void* mem = md_alloc(alloc, 16); \
+    void* mem = 0; \
+    mem = md_alloc(alloc, 16); \
     EXPECT_NE(mem, NULL); \
     EXPECT_EQ(md_free(alloc, mem, 16), NULL); \
     \
@@ -20,10 +21,10 @@
     } \
     md_array_free(arr, alloc); \
     \
-    int64_t size[8] = {16, 7238, 1, 2, 7, 3, 2, 4}; \
-    for (int64_t i = 0; i < 8; ++i) { \
+    int64_t size[] = {16, 7238, 1, 2, 7, 3, 2, 4}; \
+    for (int64_t i = 0; i < ARRAY_SIZE(size); ++i) { \
         uint64_t expected_alignment = size[i] > 2 ? 16 : size[i]; \
-        void* mem = md_alloc(alloc, size[i]); \
+        mem = md_alloc(alloc, size[i]); \
         EXPECT_EQ((uint64_t)mem % expected_alignment, 0ULL); \
         md_free(alloc, mem, size[i]); \
     }

@@ -255,30 +255,31 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
     float box[3][3] = {0};
     result = xtc_header(file, &natoms, &step, &time, box);
     if (result) {
-        int64_t byte_size = natoms * sizeof(rvec);
-        rvec* pos = md_alloc(default_temp_allocator, byte_size);
-        if (xtc_coord(file, natoms, pos)) {
-            // nm -> Ångström
-            for (int64_t i = 0; i < natoms; ++i) {
-                if (x) x[i] = pos[i][0] * 10.0f;
-                if (y) y[i] = pos[i][1] * 10.0f;
-                if (z) z[i] = pos[i][2] * 10.0f;
-            }
-        }
-
-        md_free(default_temp_allocator, pos, byte_size);
-
         if (header) {
             for (int i = 0; i < 3; ++i) {
                 for (int j = 0; j < 3; ++j) {
                     box[i][j] *= 10.0f;
                 }
             }
-
             header->num_atoms = natoms;
             header->index = step;
             header->timestamp = time;
             memcpy(header->box, box, sizeof(header->box));
+        }
+
+        if (x || y || z) {
+            int64_t byte_size = natoms * sizeof(rvec);
+            rvec* pos = md_alloc(default_temp_allocator, byte_size);
+            result = xtc_coord(file, natoms, pos);
+            if (result) {            
+                // nm -> Ångström
+                for (int64_t i = 0; i < natoms; ++i) {
+                    if (x) x[i] = pos[i][0] * 10.0f;
+                    if (y) y[i] = pos[i][1] * 10.0f;
+                    if (z) z[i] = pos[i][2] * 10.0f;
+                }
+            }
+            md_free(default_temp_allocator, pos, byte_size);
         }
     }
 

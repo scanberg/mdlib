@@ -2867,7 +2867,7 @@ static mat4_t compute_volume_matrix(float radius) {
 }
 
 static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
+    ASSERT(ctx);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
@@ -2889,6 +2889,9 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(num_ref_bitfields > 0);
+        ASSERT(ctx->initial_configuration.x);
+        ASSERT(ctx->initial_configuration.y);
+        ASSERT(ctx->initial_configuration.z);
 
         float* vol = 0;
         if (dst) {
