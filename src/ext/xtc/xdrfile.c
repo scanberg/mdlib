@@ -29,6 +29,7 @@
 #define _LARGEFILE64_SOURCE
 #define _FILE_OFFSET_BITS 64
 
+#include <assert.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -1943,29 +1944,14 @@ static int xdr_string(XDR* xdrs, char** cpp, unsigned int maxsize) {
 /* Floating-point stuff */
 
 static int xdr_float(XDR* xdrs, float* fp) {
+    static_assert(sizeof(float) == sizeof(int32_t), "Invalid size of float, expected 4 bytes");
     switch (xdrs->x_op) {
-
     case XDR_ENCODE:
-        if (sizeof(float) == sizeof(int32_t)) {
-            return (xdr_putlong(xdrs, (int32_t*)fp));
-        } else if (sizeof(float) == sizeof(int)) {
-            int32_t tmp = *(int*)fp;
-            return (xdr_putlong(xdrs, &tmp));
-        }
+        return (xdr_putlong(xdrs, (int32_t*)fp));
         break;
-
     case XDR_DECODE:
-        if (sizeof(float) == sizeof(int32_t)) {
-            return (xdr_getlong(xdrs, (int32_t*)fp));
-        } else if (sizeof(float) == sizeof(int)) {
-            int32_t tmp;
-            if (xdr_getlong(xdrs, &tmp)) {
-                *(int*)fp = tmp;
-                return (1);
-            }
-        }
+        return (xdr_getlong(xdrs, (int32_t*)fp));
         break;
-
     case XDR_FREE:
         return (1);
     }
@@ -1973,6 +1959,7 @@ static int xdr_float(XDR* xdrs, float* fp) {
 }
 
 static int xdr_double(XDR* xdrs, double* dp) {
+    static_assert(sizeof(double) == 2*sizeof(int32_t), "Invalid size of float, expected 8 bytes");
     /* Gromacs detects floating-point stuff at compile time, which is faster */
 #ifdef GROMACS
 #ifndef FLOAT_FORMAT_IEEE754
@@ -2015,30 +2002,16 @@ static int xdr_double(XDR* xdrs, double* dp) {
     switch (xdrs->x_op) {
 
     case XDR_ENCODE:
-        if (2 * sizeof(int32_t) == sizeof(double)) {
+        {
             int32_t* lp = (int32_t*)dp;
             return (xdr_putlong(xdrs, lp + !LSW) && xdr_putlong(xdrs, lp + LSW));
-        } else if (2 * sizeof(int) == sizeof(double)) {
-            int* ip = (int*)dp;
-            int32_t tmp[2];
-            tmp[0] = ip[!LSW];
-            tmp[1] = ip[LSW];
-            return (xdr_putlong(xdrs, tmp) && xdr_putlong(xdrs, tmp + 1));
         }
         break;
 
     case XDR_DECODE:
-        if (2 * sizeof(int32_t) == sizeof(double)) {
+        {
             int32_t* lp = (int32_t*)dp;
             return (xdr_getlong(xdrs, lp + !LSW) && xdr_getlong(xdrs, lp + LSW));
-        } else if (2 * sizeof(int) == sizeof(double)) {
-            int* ip = (int*)dp;
-            int32_t tmp[2];
-            if (xdr_getlong(xdrs, tmp + !LSW) && xdr_getlong(xdrs, tmp + LSW)) {
-                ip[0] = tmp[0];
-                ip[1] = tmp[1];
-                return (1);
-            }
         }
         break;
 
