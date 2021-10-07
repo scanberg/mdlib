@@ -120,6 +120,7 @@ struct md_script_visualization_o;
 typedef struct md_script_visualization_t {
     struct md_script_visualization_o* o;
 
+    // Geometry
     struct {
         int64_t count;
         float* pos;         // Position xyz
@@ -154,8 +155,20 @@ typedef struct md_script_visualization_t {
         float extent;
     } sdf;
 
-    md_exp_bitfield_t atom_mask;
+    // Atoms
+    struct {
+        md_exp_bitfield_t* atom_masks;
+    } structures;
+
+    md_exp_bitfield_t* atom_mask;
+    
 } md_script_visualization_t;
+
+typedef enum md_script_visualization_flags_t {
+    MD_SCRIPT_VISUALIZE_DEFAULT     = 0, // Default is to visualize everything
+    MD_SCRIPT_VISUALIZE_GEOMETRY    = 1,
+    MD_SCRIPT_VISUALIZE_ATOMS       = 2,
+} md_script_visualization_flags_t;
 
 typedef struct md_script_visualization_args_t {
     const struct md_script_vis_token_t* token;
@@ -163,6 +176,7 @@ typedef struct md_script_visualization_args_t {
     const struct md_molecule_t* mol;
     const struct md_trajectory_i* traj;
     struct md_allocator_i* alloc;
+    md_script_visualization_flags_t flags;
 } md_script_visualization_args_t;
 
 #ifdef __cplusplus

@@ -504,30 +504,40 @@ static procedure_t procedures[] = {
 
 static inline void visualize_atom_mask(const md_exp_bitfield_t* mask, md_script_visualization_t* vis) {
     ASSERT(vis);
-    md_bitfield_or(&vis->atom_mask, &vis->atom_mask, mask);
+    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+        md_bitfield_or(vis->atom_mask, vis->atom_mask, mask);
+    }
 }
 
 static inline void visualize_atom_range(irange_t range, md_script_visualization_t* vis) {
     ASSERT(vis);
-    md_bitfield_set_range(&vis->atom_mask, range.beg, range.end);
+    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+        md_bitfield_set_range(vis->atom_mask, range.beg, range.end);
+    }
 }
 
 static inline void visualize_atom_index(int64_t index, md_script_visualization_t* vis) {
     ASSERT(vis);
-    md_bitfield_set_bit(&vis->atom_mask, index);
+    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+        md_bitfield_set_bit(vis->atom_mask, index);
+    }
 }
 
 static inline void visualize_atom_indices32(const int32_t* indices, int64_t num_indices, md_script_visualization_t* vis) {
     ASSERT(vis);
-    for (int64_t i = 0; i < num_indices; ++i) {
-        md_bitfield_set_bit(&vis->atom_mask, indices[i]);
+    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+        for (int64_t i = 0; i < num_indices; ++i) {
+            md_bitfield_set_bit(vis->atom_mask, indices[i]);
+        }
     }
 }
 
 static inline void visualize_atom_indices64(const int64_t* indices, int64_t num_indices, md_script_visualization_t* vis) {
     ASSERT(vis);
-    for (int64_t i = 0; i < num_indices; ++i) {
-        md_bitfield_set_bit(&vis->atom_mask, indices[i]);
+    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+        for (int64_t i = 0; i < num_indices; ++i) {
+            md_bitfield_set_bit(vis->atom_mask, indices[i]);
+        }
     }
 }
 

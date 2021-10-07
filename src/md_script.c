@@ -208,6 +208,8 @@ typedef struct identifier_t {
 typedef struct md_script_visualization_o {
     uint64_t magic;
     md_allocator_i* alloc;
+    md_exp_bitfield_t atom_mask; // Global atom mask outside of context
+    uint32_t flags;
 } md_script_visualization_o;
 
 typedef struct eval_context {
@@ -2560,6 +2562,14 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             }
         }
         else {
+            if (sub_ctx.vis) {
+                if (sub_ctx.vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+                    md_exp_bitfield_t bf = {0};
+                    md_bitfield_init(&bf, sub_ctx.vis->o->alloc);
+                    md_array_push(sub_ctx.vis->structures.atom_masks, bf, sub_ctx.vis->o->alloc);
+                    sub_ctx.vis->atom_mask = md_array_last(sub_ctx.vis->structures.atom_masks);
+                }
+            }
             if (!evaluate_node(NULL, expr_node, &sub_ctx)) return false;
         }
     }
@@ -4434,7 +4444,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         ASSERT(data.ptr);
         const md_exp_bitfield_t* bf_arr = data.ptr;
         for (int64_t i = 0; i < element_count(data); ++i) {
-            md_bitfield_or(&ctx->vis->atom_mask, &ctx->vis->atom_mask, &bf_arr[i]);
+            md_bitfield_or(ctx->vis->atom_mask, ctx->vis->atom_mask, &bf_arr[i]);
         }
 
         free_data(&data, ctx->temp_alloc);
@@ -4477,6 +4487,8 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     if (vis->o) {
         ASSERT(vis->o->magic == VIS_MAGIC);
         ASSERT(vis->o->alloc);
+        vis->o->flags = args.flags;
+        md_bitfield_clear(&vis->o->atom_mask);
         md_arena_allocator_reset(vis->o->alloc);
     } else {
         md_allocator_i* arena = md_arena_allocator_create(args.alloc, MEGABYTES(1));
@@ -4484,6 +4496,8 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         memset(vis->o, 0, sizeof(md_script_visualization_o));
         vis->o->alloc = arena;
         vis->o->magic = VIS_MAGIC;
+        vis->o->flags = args.flags;
+        md_bitfield_init(&vis->o->atom_mask, arena);
     }
 
     const int64_t stack_size = MEGABYTES(32);
@@ -4518,8 +4532,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
             .z = z
         }
     };
-    
-    md_bitfield_init(&vis->atom_mask, vis->o->alloc);
+    vis->atom_mask = &vis->o->atom_mask;
 
     visualize_node((ast_node_t*)args.token, &ctx);
 
