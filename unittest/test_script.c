@@ -171,13 +171,8 @@ UTEST(script, compile_script) {
     ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
 
     str_t script_src = load_textfile(make_cstr(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
-    md_script_ir_compile_args_t args = {
-        .src = script_src,
-        .mol = &mol,
-        .alloc = default_allocator
-    };
     md_script_ir_t ir = {0};
-    EXPECT_TRUE(md_script_ir_compile(&ir, args));
+    EXPECT_TRUE(md_script_ir_compile(&ir, script_src, &mol, alloc, NULL));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -218,72 +213,37 @@ UTEST(script, property_compute) {
     md_script_ir_t ir = {0};
     md_script_eval_t eval = {0};
     {
-        md_script_ir_compile_args_t compile_args = {
-            .src = make_cstr("prop1 = rdf(element('C'), element('O'), 20.0);"),
-            .mol = &mol,
-            .alloc = alloc
-        };
-        EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
-
+        EXPECT_TRUE(md_script_ir_compile(&ir, make_cstr("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, alloc, NULL));
         EXPECT_TRUE(md_script_eval_init(&eval, md_trajectory_num_frames(&traj), &ir, alloc));
-
-        md_script_eval_args_t eval_args = {
-            .ir = &ir,
-            .mol = &mol,
-            .traj = &traj,
-        };
-        ASSERT_TRUE(md_script_eval_compute(&eval, eval_args));
-
+        ASSERT_TRUE(md_script_eval_compute(&eval, &ir, &mol, &traj, NULL));
         EXPECT_EQ(eval.num_properties, 1);
     }
 
     {
-        md_script_ir_compile_args_t compile_args = {
-            .src = make_cstr(
-                "sel = x(0:10);\n"
-                "p1  = distance(com(sel), 100);"
-                ),
-            .mol = &mol,
-            .alloc = alloc
-        };
-        EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
-
+        str_t src = make_cstr(
+            "sel = x(0:10);\n"
+            "p1  = distance(com(sel), 100);"
+        );
+        EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
         EXPECT_TRUE(md_script_eval_init(&eval, md_trajectory_num_frames(&traj), &ir, alloc));
-
-        md_script_eval_args_t eval_args = {
-            .ir = &ir,
-            .mol = &mol,
-            .traj = &traj,
-        };
-        ASSERT_TRUE(md_script_eval_compute(&eval, eval_args));
-
+        ASSERT_TRUE(md_script_eval_compute(&eval, &ir, &mol, &traj, NULL));
         EXPECT_EQ(eval.num_properties, 1);
         //const md_script_property_t* props = eval.properties;
         //EXPECT_EQ(props->data.num_values, traj_header.num_frames);
     }
 
     {
-        md_script_ir_compile_args_t compile_args = {
-            .src = make_cstr(
-                "d1 = distance(10:2, 100);"
-            ),
-            .mol = &mol,
-            .alloc = alloc
-        };
-        EXPECT_FALSE(md_script_ir_compile(&ir, compile_args));
+        str_t src = make_cstr("d1 = distance(10:2, 100);");
+        EXPECT_FALSE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
     }
 
     {
-        md_script_ir_compile_args_t compile_args = {
-            .src = make_cstr(
-                "s1 = residue(1:10);\n"
-                "s2 = residue(11:15);\n"
-                "s = {s1, s2};"
-            ),
-            .mol = &mol,
-            .alloc = alloc
-        };
-        EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
+        str_t src = make_cstr(
+            "s1 = residue(1:10);\n"
+            "s2 = residue(11:15);\n"
+            "s = {s1, s2};"
+        );
+        EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
     }
 
     md_script_ir_free(&ir);
@@ -307,13 +267,7 @@ typedef struct thread_data_t {
 
 void func(void* user_data) {
     thread_data_t* data = (thread_data_t*)user_data;
-
-    md_script_eval_args_t eval_args = {
-        .ir = data->ir,
-        .mol = data->mol,
-        .traj = data->traj,
-    };
-    if (md_script_eval_compute(data->eval, eval_args)) {
+    if (md_script_eval_compute(data->eval, data->ir, data->mol, data->traj, NULL)) {
         ASSERT(data->eval->num_properties == data->ref_eval->num_properties);
         for (int64_t p_idx = 0; p_idx < data->eval->num_properties; ++p_idx) {
             ASSERT(data->eval->properties[p_idx].data.num_values == data->ref_eval->properties[p_idx].data.num_values);
@@ -346,20 +300,9 @@ UTEST(script, parallel_evaluation) {
     md_thread_t* threads[NUM_THREADS] = {0};
     thread_data_t thread_data[NUM_THREADS] = {0};
 
-    md_script_ir_compile_args_t compile_args = {
-        .src = script,
-        .mol = &mol,
-        .alloc = alloc
-    };
-    EXPECT_TRUE(md_script_ir_compile(&ir, compile_args));
+    EXPECT_TRUE(md_script_ir_compile(&ir, script, &mol, alloc, NULL));
     EXPECT_TRUE(md_script_eval_init(&ref_eval, md_trajectory_num_frames(&traj), &ir, alloc));
-
-    md_script_eval_args_t eval_args = {
-        .ir = &ir,
-        .mol = &mol,
-        .traj = &traj,
-    };
-    ASSERT_TRUE(md_script_eval_compute(&ref_eval, eval_args));
+    ASSERT_TRUE(md_script_eval_compute(&ref_eval, &ir, &mol, &traj, NULL));
 
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {

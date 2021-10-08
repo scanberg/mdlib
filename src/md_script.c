@@ -3632,6 +3632,35 @@ static bool allocate_property_data(md_script_property_t* prop, md_type_info_t ty
     return true;
 }
 
+static bool init_property(md_script_property_t* prop, int64_t num_frames, str_t ident, const ast_node_t* node, md_allocator_i* alloc) {
+    ASSERT(prop);
+    ASSERT(num_frames > 0);
+    ASSERT(ident.ptr && ident.len);
+    ASSERT(node);
+    ASSERT(alloc);
+
+    prop->ident = copy_str(ident, alloc);
+    prop->type = 0;
+    prop->unit = node->data.unit;
+    prop->data = (md_script_property_data_t){0};
+    prop->vis_token = (struct md_script_vis_token_t*)node;
+
+    if (is_temporal_type(node->data.type)) {
+        prop->type = MD_SCRIPT_PROPERTY_TYPE_TEMPORAL;
+    }
+    else if (is_distribution_type(node->data.type)) {
+        prop->type = MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION;
+    }
+    else if (is_volume_type(node->data.type)) {
+        prop->type = MD_SCRIPT_PROPERTY_TYPE_VOLUME;
+    }
+    else {
+        ASSERT(false);
+    }
+
+    return allocate_property_data(prop, node->data.type, num_frames, alloc);
+}
+
 static void create_properties(md_script_property_t** properties, int64_t num_frames, expression_t** expressions, int64_t num_expressions, md_allocator_i* alloc) {
     ASSERT(properties);
 
@@ -3999,14 +4028,25 @@ static md_script_ir_o* create_ir(md_allocator_i* alloc) {
     return ir;
 }
 
-static bool init_ir(md_script_ir_o* o, str_t str) {
-    if (validate_ir_o(o)) {
-        md_arena_allocator_reset(o->arena);
-        md_allocator_i* arena = o->arena;
-        memset(o, 0, sizeof(md_script_ir_o));
-        o->magic = SCRIPT_IR_MAGIC;
-        o->arena = arena;
-        o->str = copy_str(str, o->arena);
+static bool init_ir(md_script_ir_o* ir, str_t str, const md_script_ir_t* ctx_ir) {
+    if (validate_ir_o(ir)) {
+        md_arena_allocator_reset(ir->arena);
+        md_allocator_i* arena = ir->arena;
+        memset(ir, 0, sizeof(md_script_ir_o));
+        ir->magic = SCRIPT_IR_MAGIC;
+        ir->arena = arena;
+        ir->str = copy_str(str, ir->arena);
+
+        if (ctx_ir && ctx_ir->o) {
+            ASSERT(validate_ir_o(ctx_ir->o));
+            if (ctx_ir->o->identifiers) {
+                md_array_push_array(ir->identifiers, ctx_ir->o->identifiers, md_array_size(ctx_ir->o->identifiers), ir->arena);
+            }
+            if (ctx_ir->o->eval_targets) {
+                md_array_push_array(ir->eval_targets, ctx_ir->o->eval_targets, md_array_size(ctx_ir->o->eval_targets), ir->arena);
+            }
+        }
+
         return true;
     }
     return false;
@@ -4083,31 +4123,31 @@ bool extract_tokens(md_script_ir_o* ir) {
     return true;
 }
 
-bool md_script_ir_compile(md_script_ir_t* ir, md_script_ir_compile_args_t args) {
+bool md_script_ir_compile(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, md_allocator_i* alloc, const md_script_ir_t* ctx_ir) {
     ASSERT(ir);
-    if (!args.src.ptr) {
-        md_print(MD_LOG_TYPE_ERROR, "Script Compile: Source string was null");
+    if (!src.ptr || !src.len) {
+        md_print(MD_LOG_TYPE_ERROR, "Script Compile: Source string was empty");
         return false;
     }
 
-    if (!args.mol) {
+    if (!mol) {
         md_print(MD_LOG_TYPE_ERROR, "Script Compile: Molecule was null");
         return false;
     }
 
-    if (!args.alloc) {
+    if (!alloc) {
         md_print(MD_LOG_TYPE_ERROR, "Script Compile: Allocator was null");
         return false;
     }
 
     if (!ir->o) {
-        ir->o = create_ir(args.alloc);
+        ir->o = create_ir(alloc);
     }
-    init_ir(ir->o, args.src);
+    init_ir(ir->o, src, ctx_ir);
 
     bool result = parse_script(ir->o) &&
-        static_type_check(ir->o, args.mol) &&
-        static_evaluation(ir->o, args.mol) &&
+        static_type_check(ir->o, mol) &&
+        static_evaluation(ir->o, mol) &&
         extract_dynamic_evaluation_targets(ir->o) &&
         extract_property_expressions(ir->o) &&
         extract_tokens(ir->o);
@@ -4177,6 +4217,10 @@ bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_sc
 
     const int64_t num_prop_expr = md_array_size(ir->o->prop_expressions);
     if (num_prop_expr > 0) {
+        //md_array_resize(eval->properties, num_prop_expr, eval->o->arena);
+        /*for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
+            init_property(&eval->properties[i], num_frames, ir->o->prop_expressions[i]->ident, )
+        }*/
         create_properties(&eval->properties, num_frames, ir->o->prop_expressions, num_prop_expr, eval->o->arena);
         eval->num_properties = num_prop_expr;
     }
@@ -4184,33 +4228,33 @@ bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_sc
     return true;
 }
 
-bool md_script_eval_compute(md_script_eval_t* eval, md_script_eval_args_t args) {
+bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, md_exp_bitfield_t* filter_mask) {
     ASSERT(eval);
 
     bool result = true;
-    if (!args.ir) {
+    if (!ir) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Immediate representation was null");
         result = false;
     }
-    if (!args.mol) {
+    if (!mol) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Molecule was null");
         result = false;
     }
-    if (!args.traj) {
+    if (!traj) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was null");
         result = false;
     }
-    if (md_trajectory_num_frames(args.traj) == 0) {
+    if (md_trajectory_num_frames(traj) == 0) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was empty");
         result = false;
     }
 
     if (result) {    
         if (eval->num_properties > 0) {
-            ASSERT(eval->num_properties == md_array_size(args.ir->o->prop_expressions));
+            ASSERT(eval->num_properties == md_array_size(ir->o->prop_expressions));
             eval->o->interrupt = false;
             eval->fingerprint = generate_fingerprint();
-            result = eval_properties(eval->properties, eval->num_properties, args.mol, args.traj, args.filter_mask, args.ir->o, eval->o);
+            result = eval_properties(eval->properties, eval->num_properties, mol, traj, filter_mask, ir->o, eval->o);
             eval->fingerprint = generate_fingerprint();
         }
     }
@@ -4241,7 +4285,7 @@ void md_script_eval_interrupt(const md_script_eval_t* eval) {
 
 static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allocator_i* alloc) {
     md_script_ir_o* ir = create_ir(default_temp_allocator);
-    init_ir(ir, expr);
+    init_ir(ir, expr, NULL);
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = default_temp_allocator});
     if (node) {
@@ -4285,7 +4329,7 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, const md_filter_c
     md_allocator_i* temp_alloc = alloc;
 
     md_script_ir_o* ir = create_ir(alloc);
-    init_ir(ir, expr);
+    init_ir(ir, expr, filter_ctx->ir);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
 
@@ -4318,19 +4362,6 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, const md_filter_c
             .temp_alloc = temp_alloc,
         };
 
-        for (int64_t i = 0; i < filter_ctx->selection.count; ++i) {
-            const md_filter_stored_selection_t sel = filter_ctx->selection.ptr[i];
-            identifier_t ident = {
-                .name = sel.ident,
-                .data = {
-                    .ptr = (void*)(&sel.bitfield),      // We are casting away const here, but internally this data is never modified because of the FLAG_CONSTANT
-                    .size = sizeof(md_exp_bitfield_t),
-                    .type = {.base_type = TYPE_BITFIELD, .dim = {1}},
-                },
-                .flags = FLAG_CONSTANT
-            };
-            md_array_push(static_ctx.identifiers, ident, alloc);
-        }
         if (static_check_node(node, &static_ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
                 md_bitfield_clear(target);
@@ -4394,6 +4425,112 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, const md_filter_c
     
     return result;
 }
+
+/*
+bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const md_molecule_t* mol, md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap) {
+    ASSERT(prop);
+    ASSERT(mol);
+    ASSERT(alloc);
+
+    bool result = false;
+
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
+    md_allocator_i* temp_alloc = arena;
+
+    md_script_ir_o* ir = create_ir(arena);
+    init_ir(ir, expr, ctx_ir);
+
+    tokenizer_t tokenizer = tokenizer_init(ir->str);
+
+    parse_context_t parse_ctx = {
+        .ir = ir,
+        .tokenizer = &tokenizer,
+        .node = 0,
+        .temp_alloc = temp_alloc,
+    };
+
+    ir->stage = "Filter evaluate";
+    ir->record_errors = true;
+
+    ast_node_t* node = parse_expression(&parse_ctx);
+    node = prune_expressions(node);
+    if (node) {
+        eval_context_t static_ctx = {
+            .ir = ir,
+            .mol = mol,
+            .temp_alloc = temp_alloc,
+        };
+
+        if (static_check_node(node, &static_ctx)) {
+            if (node->data.type.base_type == TYPE_FLOAT && (node->data.type.dim[1] == 0 || node->data.type.dim[1] == 1)) {
+                eval_context_t eval_ctx = {
+                    .ir = ir,
+                    .mol = mol,
+                    .temp_alloc = temp_alloc,
+                    .initial_configuration = {
+                        .x = mol->atom.x,
+                        .y = mol->atom.y,
+                        .z = mol->atom.z,
+                }
+                };
+
+                // Evaluate dynamic targets if available
+                for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
+                    data_t data = { .type = ir->eval_targets[i]->node->data.type };
+                    allocate_data(&data, arena);
+                    evaluate_node(&data, ir->eval_targets[i]->node, &eval_ctx);
+                }
+
+                // Actual property
+                data_t data = { .type = node->data.type };
+                allocate_data(&data, arena);
+
+                result = evaluate_node(&data, node, &eval_ctx);
+                if (result) {
+                    str_t ident = make_cstr("prop");
+                    // Allocate data for property
+                    init_property(prop, 1, ident, node, alloc);
+
+                    // Copy data to property
+                    memcpy(prop->data.values, data.ptr, prop->data.num_values * sizeof(float));
+
+                    float min;
+                    float max;
+                    compute_min_max(&min, &max, prop->data.values, prop->data.num_values);
+
+                    prop->data.min_range[0] = data.min_range;
+                    prop->data.max_range[0] = data.max_range;
+
+
+                    // @TODO: Compute mean and variance
+
+                }
+            }
+        }
+    }
+    if (!result) {
+        if (err_str) {
+            snprintf(err_str, err_cap, "Filter did not evaluate to a property\n");
+        } else {
+            md_print(MD_LOG_TYPE_ERROR, "Filter did not evaluate to a property");
+        }
+    }
+
+    int64_t len = 0;
+    for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
+        if (err_str) {
+            int64_t space_left = MAX(0, err_cap - len);
+            if (space_left) len += snprintf(err_str + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
+        } else {
+            md_printf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].error.len, ir->errors[i].error.ptr);
+        }
+    }
+
+    md_arena_allocator_destroy(arena);
+
+    return result;
+}
+*/
 
 #define VIS_MAGIC 0xbc6169abd9628947
 

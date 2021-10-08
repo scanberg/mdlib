@@ -102,12 +102,6 @@ typedef struct md_script_eval_t {
     md_script_property_t* properties;
 } md_script_eval_t;
 
-typedef struct md_script_ir_compile_args_t {
-    str_t src;
-    const struct md_molecule_t* mol;
-    struct md_allocator_i* alloc;
-} md_script_ir_compile_args_t;
-
 typedef struct md_script_eval_args_t {
     const struct md_script_ir_t* ir;
     const struct md_molecule_t* mol;
@@ -184,7 +178,12 @@ extern "C" {
 #endif
 
 // ### COMPILE ###
-bool md_script_ir_compile(md_script_ir_t* ir, md_script_ir_compile_args_t args);
+// ir       : target to hold the compiled intermediate representation
+// src      : source code to compile
+// mol      : molecule
+// alloc    : allocator
+// ctx_ir   : provide a context of identifiers and expressions [optional]
+bool md_script_ir_compile(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir);
 bool md_script_ir_free(md_script_ir_t* ir);
 
 // ### EVALUATE ###
@@ -195,10 +194,18 @@ bool md_script_ir_free(md_script_ir_t* ir);
 bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
 
 // Compute properties
-// Must be performed after the properties has been allocated.
-bool md_script_eval_compute(md_script_eval_t* eval, md_script_eval_args_t args);
+// Must be performed after the eval_init
+// eval     : evaluation object to hold result
+// ir       : ir which holds the AST to be evaluated
+// mol      : molecule
+// traj     : trajectory
+// filter_mask [OPTIONAL]: A mask which holds the frames which should be evaluated. Supply this if only a subset should be evaluated.
+bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, md_exp_bitfield_t* filter_mask);
 
 bool md_script_eval_free(md_script_eval_t* eval);
+
+// Compile and evaluate a single property from a string
+//bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap);
 
 // These is meant to be used if the evaulation runs in its own thread (which is recommended)
 int md_script_eval_completed_frame_count(const md_script_eval_t* eval);

@@ -2276,8 +2276,6 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)arg;
     (void)ctx;
 
-    if (!dst || !ctx->vis) return 0;
-
     const md_exp_bitfield_t* bf_arr = as_bitfield(arg[0]);
     int64_t bf_count = element_count(arg[0]);
 
@@ -2306,7 +2304,7 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         float* w = mem_ptr + size * 3;
 
         extract_xyzw(x, y, z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &tmp_bf);
-        vec3_t com = md_util_compute_com(x,y,z,w, size);
+        vec3_t com = md_util_compute_com(x,y,z,w, bit_count);
 
         md_free(ctx->temp_alloc, mem_ptr, mem_size);
         md_bitfield_free(&tmp_bf);
