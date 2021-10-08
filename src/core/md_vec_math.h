@@ -113,7 +113,10 @@ typedef union mat4_t {
 } mat4_t;
 
 static inline float stepf(float edge, float x) { return (float)((x - edge) > 0.0f); }
+static inline double step(double edge, double x) { return (double)((x - edge) > 0.0f); }
+
 static inline float fractf(float x) { return x - (int32_t)x; }
+static inline double fract(double x) { return x - (int64_t)x; }
 
 static inline float lerpf(float a, float b, float t) {
     t = CLAMP(t, 0.0f, 1.0f);
