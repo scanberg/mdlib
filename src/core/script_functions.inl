@@ -2816,7 +2816,7 @@ static int _rdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static bool are_bitfields_equivalent(const md_exp_bitfield_t bitfields[], int64_t num_bitfields, const md_element_t atom_elements[]) {
+static inline bool are_bitfields_equivalent(const md_exp_bitfield_t bitfields[], int64_t num_bitfields, const md_element_t atom_elements[]) {
     // Number of bits should match.
     // The atomic element of each set bit should match.
 
@@ -2842,7 +2842,7 @@ static bool are_bitfields_equivalent(const md_exp_bitfield_t bitfields[], int64_
     return true;
 }
 
-static void populate_volume(float* vol, mat4_t M, const float* x, const float* y, const float* z, int64_t num_pos) {
+static inline void populate_volume(float* vol, mat4_t M, const float* x, const float* y, const float* z, int64_t num_pos) {
     // Transform each position by matrix M and increment volume
 
     for (int64_t i = 0; i < num_pos; ++i) {
@@ -2860,7 +2860,7 @@ static void populate_volume(float* vol, mat4_t M, const float* x, const float* y
     }
 }
 
-static mat4_t compute_volume_matrix(float radius) {
+static inline mat4_t compute_volume_matrix(float radius) {
     // We have the cutoff as a radius, meaning our volume radius has the length 'r' for each axis.
     // Thus this means the diameter is 2*r.
     // We have the resolution VOL_DIM for each axis, meaning each voxel has the extent of 2*r / VOL_RES units
@@ -2942,7 +2942,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         mat3_t eigen_vecs;
         vec3_t eigen_vals;
         mat3_eigen(mat3_covariance_matrix(ref_x0, ref_y0, ref_z0, ref_com0, ref_size), eigen_vecs.col, eigen_vals.elem);
-        mat4_t A = mat4_from_mat3(eigen_vecs);
+        mat4_t A = mat4_from_mat3(mat3_transpose(eigen_vecs));
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
         mat4_t V = compute_volume_matrix(cutoff);

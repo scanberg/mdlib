@@ -3735,12 +3735,12 @@ static void compute_distribution(float* bins, int64_t num_bins, float min_bin_ra
     }
 }
 
-static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_exp_bitfield_t* mask, md_script_ir_o* ir, md_script_eval_o* eval_o) {
+static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_exp_bitfield_t* mask, md_script_ir_o* ir, md_script_eval_t* eval) {
     ASSERT(props);
     ASSERT(mol);
     ASSERT(traj);
     ASSERT(ir);
-    ASSERT(eval_o);
+    ASSERT(eval);
     
     const int64_t num_expr = md_array_size(ir->eval_targets);
     expression_t** const expr = ir->eval_targets;
@@ -3833,7 +3833,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     // We evaluate each frame, one at a time
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-        if (eval_o->interrupt) {
+        if (eval->o->interrupt) {
             goto done;
         }
 
@@ -3930,10 +3930,11 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                     }
                 }
                 else {
-                    const md_simd_typef scl = md_simd_set1f(1.0f / (float)num_evaluated_frames);
+                    // Cumulative moving average
+                    const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
                     for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_width); i += md_simd_width) {
                         md_simd_typef old_val = md_simd_loadf(prop->data.values + i);
-                        md_simd_typef new_val = md_simd_mulf(md_simd_loadf(values + i), scl);
+                        md_simd_typef new_val = md_simd_mulf(md_simd_subf(md_simd_loadf(values + i), old_val), scl);
                         md_simd_storef(prop->data.values + i, md_simd_addf(old_val, new_val));
                     }
                 }
@@ -3941,16 +3942,15 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
                 // Accumulate values
                 ASSERT(prop->data.values);
-                const md_simd_typef scl = md_simd_set1f(1.0f / (float)num_evaluated_frames);
+                
+                // Cumulative moving average
+                const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
                 for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_width); i += md_simd_width) {
                     md_simd_typef old_val = md_simd_loadf(prop->data.values + i);
-                    md_simd_typef new_val = md_simd_mulf(md_simd_loadf(values + i), scl);
+                    md_simd_typef new_val = md_simd_mulf(md_simd_subf(md_simd_loadf(values + i), old_val), scl);
                     md_simd_storef(prop->data.values + i, md_simd_addf(old_val, new_val));
                 }
-                /*for (int64_t i = 0; i < prop->data.num_values; ++i) {
-                    prop->data.values[i] += values[i];
-                }
-                */
+                
                 // @TODO: Compute variance here as well for volumes
             }
             else {
@@ -3959,6 +3959,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         }
 
         dst_idx += 1;
+
+        if (dst_idx % 10 == 0) eval->fingerprint = generate_fingerprint();
     }
 
     ASSERT(dst_idx == num_evaluated_frames);
@@ -4253,8 +4255,7 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
         if (eval->num_properties > 0) {
             ASSERT(eval->num_properties == md_array_size(ir->o->prop_expressions));
             eval->o->interrupt = false;
-            eval->fingerprint = generate_fingerprint();
-            result = eval_properties(eval->properties, eval->num_properties, mol, traj, filter_mask, ir->o, eval->o);
+            result = eval_properties(eval->properties, eval->num_properties, mol, traj, filter_mask, ir->o, eval);
             eval->fingerprint = generate_fingerprint();
         }
     }
