@@ -3931,11 +3931,12 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 }
                 else {
                     // Cumulative moving average
+                    const md_simd_typef N = md_simd_set1f((float)(dst_idx));
                     const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
                     for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_width); i += md_simd_width) {
-                        md_simd_typef old_val = md_simd_loadf(prop->data.values + i);
-                        md_simd_typef new_val = md_simd_mulf(md_simd_subf(md_simd_loadf(values + i), old_val), scl);
-                        md_simd_storef(prop->data.values + i, md_simd_addf(old_val, new_val));
+                        md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
+                        md_simd_typef new_val = md_simd_loadf(values + i);
+                        md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
                     }
                 }
             }
@@ -3944,11 +3945,12 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 ASSERT(prop->data.values);
                 
                 // Cumulative moving average
+                const md_simd_typef N = md_simd_set1f((float)(dst_idx));
                 const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
                 for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_width); i += md_simd_width) {
-                    md_simd_typef old_val = md_simd_loadf(prop->data.values + i);
-                    md_simd_typef new_val = md_simd_mulf(md_simd_subf(md_simd_loadf(values + i), old_val), scl);
-                    md_simd_storef(prop->data.values + i, md_simd_addf(old_val, new_val));
+                    md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
+                    md_simd_typef new_val = md_simd_loadf(values + i);
+                    md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
                 }
                 
                 // @TODO: Compute variance here as well for volumes
