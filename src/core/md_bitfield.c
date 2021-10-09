@@ -75,6 +75,20 @@ static inline block_t block_or(block_t a, block_t b) {
     return res;
 }
 
+static inline block_t block_xor(block_t a, block_t b) {
+    block_t res = {
+        a.data[0] ^ b.data[0],
+        a.data[1] ^ b.data[1],
+        a.data[2] ^ b.data[2],
+        a.data[3] ^ b.data[3],
+        a.data[4] ^ b.data[4],
+        a.data[5] ^ b.data[5],
+        a.data[6] ^ b.data[6],
+        a.data[7] ^ b.data[7],
+    };
+    return res;
+}
+
 static inline block_t block_not(block_t blk) {
     block_t res = {
         ~blk.data[0],
@@ -281,46 +295,37 @@ void md_bitfield_clear_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
     }
 }
 
-/*
-void md_bitfield_or(md_exp_bitfield_t* target, const md_exp_bitfield_t* mask) {
-    ASSERT(target);
-    ASSERT(mask);
-
-    ensure_range(target, mask->beg_bit, mask->end_bit);
-
-    uint64_t* dst = (block_t*)target->bits + block_idx(mask->beg_bit);
-    bit_or(dst, dst, (const uint64_t*)mask->bits, 0, mask->end_bit - mask->beg_bit);
-}
-
-void md_bitfield_and(md_exp_bitfield_t* target, const md_exp_bitfield_t* mask) {
-    ASSERT(target);
-    ASSERT(mask);
-
-    ensure_range(target, mask->beg_bit, mask->end_bit);
-
-    md_bitfield_clear_range(target, target->beg_bit, mask->beg_bit);
-    md_bitfield_clear_range(target, mask->end_bit, target->end_bit);
-    uint64_t* dst = (block_t*)target->bits + block_idx(mask->beg_bit);
-    bit_and(dst, dst, (const uint64_t*)mask->bits, 0, mask->end_bit - mask->beg_bit);
-}
-*/
-
 void md_bitfield_or(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b) {
     validate_bitfield(dst);
     validate_bitfield(src_a);
     validate_bitfield(src_b);
 
+    ASSERT((dst != src_a && dst != src_b) && "dst is same as src_a or src_b, use inplace version instead!");
+
     int64_t beg_bit = MIN(src_a->beg_bit, src_b->beg_bit);
     int64_t end_bit = MAX(src_a->end_bit, src_b->end_bit);
 
-    if (dst == src_a || dst == src_b) {
-        ensure_range(dst, beg_bit, end_bit);
-    } else {
-        fit_to_range(dst, beg_bit, end_bit);
-    }
+    fit_to_range(dst, beg_bit, end_bit);
     if (dst->bits) {
         for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
             set_block(dst, i, block_or(get_block(src_a, i), get_block(src_b, i)));
+        }
+    }
+}
+
+void md_bitfield_or_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
+    validate_bitfield(a);
+    validate_bitfield(b);
+
+    if (a == b) return;
+
+    int64_t beg_bit = MIN(a->beg_bit, b->beg_bit);
+    int64_t end_bit = MAX(a->end_bit, b->end_bit);
+    ensure_range(a, beg_bit, end_bit);
+
+    if (a->bits) {
+        for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
+            set_block(a, i, block_or(get_block(a, i), get_block(b, i)));
         }
     }
 }
@@ -329,6 +334,8 @@ void md_bitfield_and(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, con
     validate_bitfield(dst);
     validate_bitfield(src_a);
     validate_bitfield(src_b);
+
+    ASSERT((dst != src_a && dst != src_b) && "dst is same as src_a or src_b, use inplace version instead!");
 
     int64_t beg_bit = MAX(src_a->beg_bit, src_b->beg_bit);
     int64_t end_bit = MIN(src_a->end_bit, src_b->end_bit);
@@ -339,14 +346,81 @@ void md_bitfield_and(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, con
         return;
     }
 
-    if (dst == src_a || dst == src_b) {
-        ensure_range(dst, beg_bit, end_bit);
-    } else {
-        fit_to_range(dst, beg_bit, end_bit);
-    }
+    fit_to_range(dst, beg_bit, end_bit);
     if (dst->bits) {
         for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
             set_block(dst, i, block_and(get_block(src_a, i), get_block(src_b, i)));
+        }
+    }
+}
+
+void md_bitfield_and_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
+    validate_bitfield(a);
+    validate_bitfield(b);
+
+    if (a == b) return;
+
+    int64_t beg_bit = MAX(a->beg_bit, b->beg_bit);
+    int64_t end_bit = MIN(a->end_bit, b->end_bit);
+
+    if (end_bit <= beg_bit) {
+        // Ranges do not overlap
+        md_bitfield_clear(a);
+        return;
+    }
+
+    ensure_range(a, beg_bit, end_bit);
+    if (a->bits) {
+        for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
+            set_block(a, i, block_and(get_block(a, i), get_block(b, i)));
+        }
+    }
+}
+
+
+void md_bitfield_xor(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b) {
+    validate_bitfield(dst);
+    validate_bitfield(src_a);
+    validate_bitfield(src_b);
+
+    ASSERT((dst != src_a && dst != src_b) && "dst is same as src_a or src_b, use inplace version instead!");
+
+    int64_t beg_bit = MAX(src_a->beg_bit, src_b->beg_bit);
+    int64_t end_bit = MIN(src_a->end_bit, src_b->end_bit);
+
+    if (end_bit <= beg_bit) {
+        // Ranges do not overlap
+        md_bitfield_clear(dst);
+        return;
+    }
+
+    fit_to_range(dst, beg_bit, end_bit);
+    if (dst->bits) {
+        for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
+            set_block(dst, i, block_xor(get_block(src_a, i), get_block(src_b, i)));
+        }
+    }
+}
+
+void md_bitfield_xor_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
+    validate_bitfield(a);
+    validate_bitfield(b);
+
+    if (a == b) return;
+
+    int64_t beg_bit = MAX(a->beg_bit, b->beg_bit);
+    int64_t end_bit = MIN(a->end_bit, b->end_bit);
+
+    if (end_bit <= beg_bit) {
+        // Ranges do not overlap
+        md_bitfield_clear(a);
+        return;
+    }
+
+    ensure_range(a, beg_bit, end_bit);
+    if (a->bits) {
+        for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
+            set_block(a, i, block_xor(get_block(a, i), get_block(b, i)));
         }
     }
 }
@@ -355,15 +429,25 @@ void md_bitfield_not(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src, int64
     validate_bitfield(dst);
     validate_bitfield(src);
 
-    if (dst == src) {
-        ensure_range(dst, beg, end);
-    } else {
-        fit_to_range(dst, beg, end);
-    }
+    ASSERT((dst != src) && "dst is same as src, use inplace version instead!");
+
+    fit_to_range(dst, beg, end);
 
     if (dst->bits) {
         for (int64_t i = block_idx(beg); i <= block_idx(end); ++i) {
             set_block(dst, i, block_not(get_block(src, i)));
+        }
+    }
+}
+
+void md_bitfield_not_inplace(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
+    validate_bitfield(bf);
+
+    ensure_range(bf, beg, end);
+
+    if (bf->bits) {
+        for (int64_t i = block_idx(beg); i <= block_idx(end); ++i) {
+            set_block(bf, i, block_not(get_block(bf, i)));
         }
     }
 }
@@ -400,16 +484,6 @@ int64_t md_bitfield_popcount_range(const md_exp_bitfield_t* bf, int64_t beg, int
     if (count == 0) return 0;
     return bit_count((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), count);
 }
-
-/*
-int64_t md_bitfield_count_range(const md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
-    beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
-    end = CLAMP(end, bf->beg_bit, bf->end_bit);
-    const int64_t count = end - beg;
-    if (count == 0) return 0;
-    return bit_count((uint64_t*)bf->bits, beg - bf->beg_bit, count);
-}
-*/
 
 // Test if single bit in field is set
 bool md_bitfield_test_bit(const md_exp_bitfield_t* bf, int64_t idx) {

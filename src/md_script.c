@@ -4396,7 +4396,7 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, const md_filter_c
                     const md_exp_bitfield_t* bf_arr = data.ptr;
                     if (bf_arr) {
                         for (int64_t i = 0; i < len; ++i) {
-                            md_bitfield_or(target, target, &bf_arr[i]);
+                            md_bitfield_or_inplace(target, &bf_arr[i]);
                         }
                     }
                     if (info) {
@@ -4584,7 +4584,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         ASSERT(data.ptr);
         const md_exp_bitfield_t* bf_arr = data.ptr;
         for (int64_t i = 0; i < element_count(data); ++i) {
-            md_bitfield_or(ctx->vis->atom_mask, ctx->vis->atom_mask, &bf_arr[i]);
+            md_bitfield_or_inplace(ctx->vis->atom_mask, &bf_arr[i]);
         }
 
         free_data(&data, ctx->temp_alloc);
