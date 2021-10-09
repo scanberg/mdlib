@@ -3,7 +3,7 @@
 #include <core/md_compiler.h>
 #include <core/md_intrinsics.h>
 
-#if MD_COMPILER_GCC || MD_COMPILER_CLANG
+#if (MD_COMPILER_GCC || MD_COMPILER_CLANG)
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #endif
 

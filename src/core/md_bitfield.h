@@ -38,10 +38,17 @@ void md_bitfield_clear_range    (md_exp_bitfield_t* bf, int64_t beg, int64_t end
 void md_bitfield_clear_bit      (md_exp_bitfield_t* bf, int64_t bit_idx);
 
 void md_bitfield_or             (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
+void md_bitfield_or_inplace     (md_exp_bitfield_t* a,   const md_exp_bitfield_t* b);
+
 void md_bitfield_and            (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
+void md_bitfield_and_inplace    (md_exp_bitfield_t* a, const md_exp_bitfield_t* b);
+
+void md_bitfield_xor            (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
+void md_bitfield_xor_inplace    (md_exp_bitfield_t* a, const md_exp_bitfield_t* b);
 
 // We need an explicit range or something here to 
 void md_bitfield_not            (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src, int64_t beg, int64_t end);
+void md_bitfield_not_inplace    (md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 
 void md_bitfield_copy           (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src);
 
@@ -71,43 +78,6 @@ int64_t md_bitfield_scan(const md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 
 // Copy the contents of the bitfield into an external buffer
 bool md_bitfield_extract_u64(uint64_t* dst_ptr, int64_t num_bits, const md_exp_bitfield_t* src);
-
-//void md_bitfield_or            (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
-//void md_bitfield_or_range      (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b, int64_t beg, int64_t end);
-
-/*
-void md_bitfield_or_not        (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
-void md_bitfield_or_not_range  (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b, int64_t beg, int64_t end);
-*/
-
-//void md_bitfield_and           (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
-//void md_bitfield_and_range     (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b, int64_t beg, int64_t end);
-
-/*
-void md_bitfield_and_not       (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
-void md_bitfield_and_not_range (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b, int64_t beg, int64_t end);
-*/
-
-//void md_bitfield_xor           (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
-//void md_bitfield_xor_range     (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b, int64_t beg, int64_t end);
-
-//void md_bitfield_not           (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src);
-//void md_bitfield_not_range     (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src, int64_t beg, int64_t end);
-
-
-//void md_bitfield_copy_range(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src, int64_t beg, int64_t end);
-
-
-// Counts the number of bits set
-//int64_t md_bitfield_count_range (const md_exp_bitfield_t* bf, int64_t beg, int64_t end);
-
-
-
-// Test if bitfields are equivalent
-//bool md_bitfield_cmp        (const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
-//bool md_bitfield_cmp_range  (const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b, int64_t beg, int64_t end);
-
-
 
 #ifdef __cplusplus
 }

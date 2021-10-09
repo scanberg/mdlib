@@ -71,7 +71,7 @@ static bool eval_selection(md_exp_bitfield_t* bitfield, str_t expr, md_molecule_
             md_exp_bitfield_t* res = (md_exp_bitfield_t*)data.ptr;
             const int64_t len = type_info_array_len(data.type);
             for (int64_t i = 0; i < len; ++i) {
-                md_bitfield_or(bitfield, bitfield, &res[i]);
+                md_bitfield_or_inplace(bitfield, &res[i]);
             }
             return true;
         }
@@ -221,7 +221,7 @@ UTEST(script, property_compute) {
 
     {
         str_t src = make_cstr(
-            "sel = x(0:10);\n"
+            "sel = x(0:50);\n"
             "p1  = distance(com(sel), 100);"
         );
         EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
