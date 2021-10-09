@@ -2507,14 +2507,36 @@ static int64_t extract_xyz_from_arg(vec3_t** xyz, data_t arg, eval_context_t* ct
         return element_count(arg);
     }
     else if (is_type_directly_compatible(arg.type, (md_type_info_t)TI_BITFIELD_ARR)) {
-        const md_exp_bitfield_t* bf = as_bitfield(arg);
+        const md_exp_bitfield_t* bf_arr = as_bitfield(arg);
+        int64_t count = 0;
+        md_exp_bitfield_t tmp_bf = {0};
+        md_bitfield_init(&tmp_bf, ctx->temp_alloc);
         for (int64_t i = 0; i < element_count(arg); ++i) {
-            int64_t popcount = md_bitfield_popcount(&bf[0]);
+            const md_exp_bitfield_t* bf = &bf_arr[0];
+            if (ctx->mol_ctx) {
+                md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                bf = &tmp_bf;
+            }
+            int64_t popcount = md_bitfield_popcount(bf);
+            if (popcount) {
+                md_array_ensure(*xyz, md_array_size(*xyz) + popcount, ctx->temp_alloc);
+                count += popcount;
+                int64_t beg_bit = bf->beg_bit;
+                int64_t end_bit = bf->end_bit;
+                while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
+                    int64_t idx = beg_bit - 1;
+                    vec3_t p = {ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
+                    md_array_push(*xyz, p, ctx->temp_alloc);
+                }
+            }
         }
     }
     else if (is_type_directly_compatible(arg.type, (md_type_info_t)TI_INT_ARR)) {
+        int32_t* indices = as_int_arr(arg);
         for (int64_t i = 0; i < element_count(arg); ++i) {
-            
+            int32_t idx = indices[i];
+            vec3_t p = {ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
+            md_array_push(*xyz, p, ctx->temp_alloc);
         }
     }
     else if (is_type_directly_compatible(arg.type, (md_type_info_t)TI_IRANGE_ARR)) {

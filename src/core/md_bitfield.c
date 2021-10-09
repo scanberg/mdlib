@@ -485,16 +485,6 @@ int64_t md_bitfield_popcount_range(const md_exp_bitfield_t* bf, int64_t beg, int
     return bit_count((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), count);
 }
 
-/*
-int64_t md_bitfield_count_range(const md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
-    beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
-    end = CLAMP(end, bf->beg_bit, bf->end_bit);
-    const int64_t count = end - beg;
-    if (count == 0) return 0;
-    return bit_count((uint64_t*)bf->bits, beg - bf->beg_bit, count);
-}
-*/
-
 // Test if single bit in field is set
 bool md_bitfield_test_bit(const md_exp_bitfield_t* bf, int64_t idx) {
     validate_bitfield(bf);
