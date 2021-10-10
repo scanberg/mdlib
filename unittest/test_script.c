@@ -272,9 +272,11 @@ void func(void* user_data) {
         for (int64_t p_idx = 0; p_idx < data->eval->num_properties; ++p_idx) {
             ASSERT(data->eval->properties[p_idx].data.num_values == data->ref_eval->properties[p_idx].data.num_values);
             for (int64_t i = 0; i < data->eval->properties[i].data.num_values; ++i) {
-                if (data->eval->properties[p_idx].data.values[i] != data->ref_eval->properties[p_idx].data.values[i]) {
+                float exp = data->ref_eval->properties[p_idx].data.values[i];
+                float val = data->eval->properties[p_idx].data.values[i];
+                if (val != exp) {
                     data->num_corrupt_values += 1;
-                    printf("Corruption occured in thread %llu at frame %lli\n", md_thread_id(), i);
+                    printf("Corruption occured in thread %llu at frame %lli, expected: '%g', got: '%g'\n", md_thread_id(), i, exp, val);
                 }
             }
         }
