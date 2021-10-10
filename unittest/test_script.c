@@ -271,7 +271,7 @@ void func(void* user_data) {
         ASSERT(data->eval->num_properties == data->ref_eval->num_properties);
         for (int64_t p_idx = 0; p_idx < data->eval->num_properties; ++p_idx) {
             ASSERT(data->eval->properties[p_idx].data.num_values == data->ref_eval->properties[p_idx].data.num_values);
-            for (int64_t i = 0; i < data->eval->properties[i].data.num_values; ++i) {
+            for (int64_t i = 0; i < data->eval->properties[p_idx].data.num_values; ++i) {
                 float exp = data->ref_eval->properties[p_idx].data.values[i];
                 float val = data->eval->properties[p_idx].data.values[i];
                 if (val != exp) {
