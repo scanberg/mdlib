@@ -10,7 +10,7 @@ Collection of molecule utility functions written in C
 Scripting language for defining selections, computing properties and evaulating expressions.
 
 ## mold_gl
-OpenGL draw functionality for drawing molecular data.
+OpenGL draw functionality for drawing moleculecules under different representations.
 
 ## mold_util
-Utilities for computing secondary structures and such
+Utilities for computing secondary structures, com, rmsd, internal reference frame (rotation), covalent bonds, etc.
