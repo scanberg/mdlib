@@ -274,6 +274,7 @@ void func(void* user_data) {
             for (int64_t i = 0; i < data->eval->properties[i].data.num_values; ++i) {
                 if (data->eval->properties[p_idx].data.values[i] != data->ref_eval->properties[p_idx].data.values[i]) {
                     data->num_corrupt_values += 1;
+                    printf("Corruption found in frame %lli\n", i);
                 }
             }
         }
