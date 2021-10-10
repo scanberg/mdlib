@@ -274,7 +274,7 @@ void func(void* user_data) {
             for (int64_t i = 0; i < data->eval->properties[i].data.num_values; ++i) {
                 if (data->eval->properties[p_idx].data.values[i] != data->ref_eval->properties[p_idx].data.values[i]) {
                     data->num_corrupt_values += 1;
-                    printf("Corruption found in frame %lli\n", i);
+                    printf("Corruption occured in thread %llu at frame %lli\n", md_thread_id(), i);
                 }
             }
         }
@@ -326,8 +326,8 @@ UTEST(script, parallel_evaluation) {
         for (int i = 0; i < NUM_THREADS; ++i) {
             md_thread_join(threads[i]);
             total_corrupt_values += thread_data[i].num_corrupt_values;
-            EXPECT_EQ(0, total_corrupt_values);
         }
+        EXPECT_EQ(0, total_corrupt_values);
     }
 
     for (int i = 0; i < NUM_THREADS; ++i) {
