@@ -286,7 +286,7 @@ void func(void* user_data) {
 UTEST(script, parallel_evaluation) {
     md_allocator_i* alloc = default_allocator;
     const str_t pdb_file = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-    const str_t script = make_cstr("p1 = distance(1,2);");
+    const str_t script = make_cstr("p1 = distance(1,10);");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(pdb_file, &pdb_data, alloc));
@@ -303,13 +303,23 @@ UTEST(script, parallel_evaluation) {
     md_thread_t* threads[NUM_THREADS] = {0};
     thread_data_t thread_data[NUM_THREADS] = {0};
 
+    int64_t num_frames = md_trajectory_num_frames(&traj);
+
     EXPECT_TRUE(md_script_ir_compile(&ir, script, &mol, alloc, NULL));
-    EXPECT_TRUE(md_script_eval_init(&ref_eval, md_trajectory_num_frames(&traj), &ir, alloc));
+    EXPECT_TRUE(md_script_eval_init(&ref_eval, num_frames, &ir, alloc));
     ASSERT_TRUE(md_script_eval_compute(&ref_eval, &ir, &mol, &traj, NULL));
+
+    ASSERT_EQ(1, ref_eval.num_properties);
+    ASSERT_EQ(num_frames, ref_eval.properties[0].data.num_values);
+
+    printf("Ref Values:\n");
+    for (int64_t i = 0; i < ref_eval.properties[0].data.num_values; ++i) {
+        printf("[%lli]: %g\n", i, ref_eval.properties[0].data.values[i]);
+    }
 
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
-            md_script_eval_init(&eval[i], md_trajectory_num_frames(&traj), &ir, alloc);
+            md_script_eval_init(&eval[i], num_frames, &ir, alloc);
         }
 
         for (int i = 0; i < NUM_THREADS; ++i) {
