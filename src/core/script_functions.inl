@@ -3044,7 +3044,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Test for equivalence
         if (!are_bitfields_equivalent(ref_bitfields, num_ref_bitfields, ctx->mol->atom.element)) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfields are not 'equivalent': the number of atoms and their corresponding elements do not match between all supplied bitfields");
+            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfields are not identical: the number of atoms and their corresponding elements do not match between all supplied bitfields");
             return -1;
         }
 

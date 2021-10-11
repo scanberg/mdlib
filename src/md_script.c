@@ -3068,6 +3068,11 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
         ast_node_t* lhs = elem[0];
         ast_node_t* arg = elem[1];
 
+        if (arg->flags & FLAG_DYNAMIC) {
+            create_error(ctx->ir, arg->token, "Only static expressions are allowed within array subscript");
+            return false;
+        }
+
         if (is_scalar(arg->data.type)) {
             if (arg->data.type.base_type == TYPE_INT || arg->data.type.base_type == TYPE_IRANGE) {
                 irange_t range = {0};
@@ -3076,6 +3081,14 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
                     range.end = arg->value._int;
                 } else {
                     range = arg->value._irange;
+                    if (range.beg == INT32_MIN) {
+                        range.beg = 1;
+                        arg->value._irange.beg = 1;
+                    }
+                    if (range.end == INT32_MAX) {
+                        range.end = (int32_t)element_count(lhs->data);
+                        arg->value._irange.end = range.end;
+                    }
                 }
                 if (range.beg <= range.end && 1 <= range.beg && range.end <= element_count(lhs->data)) {
                     ASSERT(lhs->data.type.dim[0] > 0);
