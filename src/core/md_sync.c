@@ -80,22 +80,16 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 
 // Semaphore
 bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
-	semaphore->_id = CreateSemaphoreA(NULL, (LONG)initial_count, MAXLONG, NULL);
-	return semaphore->_id != NULL;
-}
-
-md_semaphore_t md_semaphore_create(int32_t initial_count) {
-	md_semaphore_t semaphore;
-	md_semaphore_init(&semaphore, initial_count);
-	return semaphore;
+	semaphore->_data[0] = CreateSemaphoreA(NULL, (LONG)initial_count, MAXLONG, NULL);
+	return semaphore != NULL;
 }
 
 static inline bool semaphore_wait(md_semaphore_t* semaphore, DWORD milliseconds) {
-	return WaitForSingleObjectEx(semaphore->_id, milliseconds, FALSE) == WAIT_OBJECT_0;
+	return WaitForSingleObjectEx((HANDLE)semaphore->_data[0], milliseconds, FALSE) == WAIT_OBJECT_0;
 }
 
 bool md_semaphore_destroy(md_semaphore_t* semaphore) {
-	return CloseHandle((HANDLE)semaphore->_id);
+	return CloseHandle((HANDLE)semaphore->_data[0]);
 }
 
 bool md_semaphore_aquire(md_semaphore_t* semaphore) {
@@ -107,7 +101,7 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
 }
 
 bool md_semaphore_release(md_semaphore_t* semaphore) {
-	return ReleaseSemaphore(semaphore->_id, 1, NULL);
+	return ReleaseSemaphore((HANDLE)semaphore->_data[0], 1, NULL);
 }
 
 #elif MD_PLATFORM_UNIX
@@ -182,12 +176,6 @@ bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 	return sem_init((sem_t*)semaphore, 0, (uint32_t)initial_count) == 0;
 }
 
-md_semaphore_t md_semaphore_create(int32_t initial_count) {
-	md_semaphore_t semaphore;
-	md_semaphore_init(&semaphore, initial_count);
-	return semaphore;
-}
-
 bool md_semaphore_destroy(md_semaphore_t* semaphore) {
 	return sem_destroy((sem_t*)semaphore) == 0;
 }
@@ -228,12 +216,6 @@ bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 	return ret == KERN_SUCCESS;
 }
 
-md_semaphore_t md_semaphore_create(int32_t initial_count) {
-	md_semaphore_t semaphore;
-	md_semaphore_init(&semaphore, initial_count);
-	return semaphore;
-}
-
 bool md_semaphore_destroy(md_semaphore_t* semaphore) {
 	mach_port_t self = mach_task_self();
 	return semaphore_destroy(self, (semaphore_t)semaphore->_id) == KERN_SUCCESS;
@@ -255,3 +237,30 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 }
 
 #endif
+
+md_semaphore_t md_semaphore_create(int32_t initial_count) {
+	md_semaphore_t semaphore;
+	md_semaphore_init(&semaphore, initial_count);
+	return semaphore;
+}
+
+bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, int32_t count) {
+	ASSERT(count > 0);
+	int32_t aquired_count = 0;
+	for (int32_t i = 0; i < count; ++i) {
+		aquired_count += md_semaphore_try_aquire(semaphore) == true ? 1 : 0;
+	}
+	if (aquired_count == count) {
+		return true;
+	}
+	md_semaphore_release_n(semaphore, aquired_count);
+	return false;
+}
+
+bool md_semaphore_release_n(md_semaphore_t* semaphore, int32_t count) {
+	bool result = true;
+	for (int32_t i = 0; i < count; ++i) {
+		result |= md_semaphore_release(semaphore);
+	}
+	return result;
+}
