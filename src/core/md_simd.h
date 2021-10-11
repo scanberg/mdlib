@@ -1,5 +1,4 @@
-#ifndef _MD_SIMD_H_
-#define _MD_SIMD_H_
+#pragma once
 
 #include "md_intrinsics.h"
 
@@ -195,9 +194,10 @@ static inline __m128i md_simd_set_i128(int x, int y, int z, int w) { return _mm_
 
 static inline __m128i md_simd_zero_i128() { return _mm_setzero_si128(); }
 
+
+#ifdef __AVX__
 // 256-bit wide
 // float operations
-
 
 static inline __m256 md_simd_set1_f256(float x) { return _mm256_set1_ps(x); }
 static inline __m256 md_simd_set_f256(float x0, float y0, float z0, float w0, float x1, float y1, float z1, float w1) { return _mm256_set_ps(w1, z1, y1, x1, w0, z0, y0, x0); }
