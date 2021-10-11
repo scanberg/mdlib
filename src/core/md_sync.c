@@ -212,28 +212,28 @@ bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 	if (ret != KERN_SUCCESS) {
 		md_print(MD_LOG_TYPE_ERROR, "Failed to initialize semaphore");
 	}
-	semaphore->_id = (void*)(uint64_t)sema;
+	semaphore->_data[0] = (void*)(uint64_t)sema;
 	return ret == KERN_SUCCESS;
 }
 
 bool md_semaphore_destroy(md_semaphore_t* semaphore) {
 	mach_port_t self = mach_task_self();
-	return semaphore_destroy(self, (semaphore_t)semaphore->_id) == KERN_SUCCESS;
+	return semaphore_destroy(self, (semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
 }
 
 bool md_semaphore_aquire(md_semaphore_t* semaphore) {
-	return semaphore_wait((semaphore_t)semaphore->_id) == KERN_SUCCESS;
+	return semaphore_wait((semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
 }
 
 bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
 	mach_timespec_t mts;
 	mts.tv_sec = 0;
 	mts.tv_nsec = 0;
-	return semaphore_timedwait((semaphore_t)semaphore->_id, mts) == KERN_SUCCESS;
+	return semaphore_timedwait((semaphore_t)semaphore->_data[0], mts) == KERN_SUCCESS;
 }
 
 bool md_semaphore_release(md_semaphore_t* semaphore) {
-	return semaphore_signal((semaphore_t)semaphore->_id) == KERN_SUCCESS;
+	return semaphore_signal((semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
 }
 
 #endif
