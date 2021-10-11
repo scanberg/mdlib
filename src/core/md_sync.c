@@ -8,6 +8,8 @@
 
 #if MD_PLATFORM_WINDOWS
 
+#pragma comment(lib, "ntdll.lib")
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -21,6 +23,22 @@
 #endif
 
 #include <Windows.h>
+
+// Want to query the current semaphore count, this is exposed through ntdll
+typedef long NTSTATUS;
+
+typedef struct _SEMAINFO {
+	UINT		Count;		// current semaphore count
+	UINT		Limit;		// max semaphore count
+} SEMAINFO, *PSEMAINFO;
+
+NTSTATUS WINAPI NtQuerySemaphore(
+	HANDLE Handle, 
+	UINT InfoClass, 
+	PSEMAINFO SemaInfo, 
+	UINT InfoSize,
+	PUINT RetLen 
+);
 
 STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SECTION does not fit into md_mutex_t!");
 
@@ -100,6 +118,20 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
 	return semaphore_wait(semaphore, 0);
 }
 
+bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count) {
+	ASSERT(semaphore);
+	ASSERT(count);
+
+	SEMAINFO			info;
+	UINT				value;
+	if (NtQuerySemaphore((HANDLE)semaphore->_data[0], 0, &info, sizeof(info), &value) >= 0) {
+		*count = (int32_t)info.Count;
+		return true;
+	}
+
+	return false;
+}
+
 bool md_semaphore_release(md_semaphore_t* semaphore) {
 	return ReleaseSemaphore((HANDLE)semaphore->_data[0], 1, NULL);
 }
@@ -177,18 +209,28 @@ bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 }
 
 bool md_semaphore_destroy(md_semaphore_t* semaphore) {
+	ASSERT(semaphore);
 	return sem_destroy((sem_t*)semaphore) == 0;
 }
 
 bool md_semaphore_aquire(md_semaphore_t* semaphore) {
+	ASSERT(semaphore);
 	return sem_wait((sem_t*)semaphore) == 0;
 }
 
 bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
+	ASSERT(semaphore);
 	return sem_trywait((sem_t*)semaphore) == 0;
 }
 
+bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count) {
+	ASSERT(semaphore);
+	ASSERT(count);
+	return sem_getvalue((sem_t*)semaphore, count) == 0;
+}
+
 bool md_semaphore_release(md_semaphore_t* semaphore) {
+	ASSERT(semaphore);
 	return sem_post((sem_t*)semaphore) == 0;
 }
 #endif

@@ -52,6 +52,8 @@ bool md_semaphore_aquire(md_semaphore_t* semaphore);
 bool md_semaphore_try_aquire(md_semaphore_t* semaphore);
 bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, int32_t count);
 
+bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count);
+
 bool md_semaphore_release(md_semaphore_t* semaphore);
 bool md_semaphore_release_n(md_semaphore_t* semaphore, int32_t count);
 
