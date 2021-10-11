@@ -10,23 +10,19 @@ struct md_exp_bitfield_t;
 struct md_molecule_t;
 struct md_script_ir_t;
 
-typedef struct md_filter_context_t {
-    const struct md_script_ir_t* ir;
-    const struct md_molecule_t* mol;
-    struct md_allocator_i* alloc;
-} md_filter_context_t;
-
-typedef struct md_filter_additional_info_t {
-    bool*   is_dynamic;
-    char*   error_buf;
-    int64_t error_cap;
-} md_filter_additional_info_t;
+typedef struct md_filter_result_t {
+    int64_t num_bitfields;
+    md_exp_bitfield_t* bitfields;
+    char error_buf[256];
+    bool is_dynamic;
+} md_filter_result_t;
 
 #ifdef __cplusplus
     extern "C" {
 #endif
 
-bool md_filter_evaluate(str_t expression, struct md_exp_bitfield_t* target, const md_filter_context_t* ctx, md_filter_additional_info_t* additional);
+bool md_filter_evaluate(md_filter_result_t* result, str_t expression, const struct md_molecule_t* mol, const struct md_script_ir_t* ir, struct md_allocator_i* alloc);
+bool md_filter_free(md_filter_result_t* result, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

@@ -4333,23 +4333,18 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
     return false;
 }
 
-bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, const md_filter_context_t* filter_ctx, md_filter_additional_info_t* info) {
-    ASSERT(target);
-    ASSERT(filter_ctx);
-    ASSERT(filter_ctx->mol);
-    ASSERT(filter_ctx->alloc);
+bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecule_t* mol, const md_script_ir_t* ctx_ir, md_allocator_i* alloc) {
+    ASSERT(result);
+    ASSERT(mol);
+    ASSERT(alloc);
 
-    bool result = false;
+    bool success = false;
 
-    if (info && info->error_buf) {
-        memset(info->error_buf, 0, info->error_cap);
-    }
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
+    md_allocator_i* temp_alloc = arena;
 
-    md_allocator_i* alloc = md_arena_allocator_create(filter_ctx->alloc, MEGABYTES(1));
-    md_allocator_i* temp_alloc = alloc;
-
-    md_script_ir_o* ir = create_ir(alloc);
-    init_ir(ir, expr, filter_ctx->ir);
+    md_script_ir_o* ir = create_ir(arena);
+    init_ir(ir, expr, ctx_ir);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
 
@@ -4357,18 +4352,8 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, const md_filter_c
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
-        .temp_alloc = alloc,
+        .temp_alloc = arena,
     };
-
-    // @TODO: Find a way to copy the AST tree from the ir within filter_ctx and use that
-    if (filter_ctx->ir && filter_ctx->ir->o) {
-        if (filter_ctx->ir->o->identifiers) {
-            md_array_push_array(ir->identifiers, filter_ctx->ir->o->identifiers, md_array_size(filter_ctx->ir->o->identifiers), alloc);
-        }
-        if (filter_ctx->ir->o->eval_targets) {
-            md_array_push_array(ir->eval_targets, filter_ctx->ir->o->eval_targets, md_array_size(filter_ctx->ir->o->eval_targets), alloc);
-        }
-    }
 
     ir->stage = "Filter evaluate";
     ir->record_errors = true;
@@ -4378,72 +4363,74 @@ bool md_filter_evaluate(str_t expr, md_exp_bitfield_t* target, const md_filter_c
     if (node) {
         eval_context_t static_ctx = {
             .ir = ir,
-            .mol = filter_ctx->mol,
+            .mol = mol,
             .temp_alloc = temp_alloc,
         };
 
         if (static_check_node(node, &static_ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
-                md_bitfield_clear(target);
 
                 eval_context_t eval_ctx = {
                     .ir = ir,
-                    .mol = filter_ctx->mol,
+                    .mol = mol,
                     .temp_alloc = temp_alloc,
                     .initial_configuration = {
-                        .x = filter_ctx->mol->atom.x,
-                        .y = filter_ctx->mol->atom.y,
-                        .z = filter_ctx->mol->atom.z,
+                        .x = mol->atom.x,
+                        .y = mol->atom.y,
+                        .z = mol->atom.z,
                     }
                 };
 
                 // Evaluate dynamic targets if available
                 for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
                     data_t data = { .type = ir->eval_targets[i]->node->data.type };
-                    allocate_data(&data, alloc);
+                    allocate_data(&data, arena);
                     evaluate_node(&data, ir->eval_targets[i]->node, &eval_ctx);
                 }
 
                 data_t data = { .type = node->data.type };
-                allocate_data(&data, alloc);
+                allocate_data(&data, arena);
 
-                result = evaluate_node(&data, node, &eval_ctx);
-                if (result) {
+                if (evaluate_node(&data, node, &eval_ctx)) {
+                    result->bitfields = NULL;
                     const int64_t len = type_info_array_len(data.type);
                     const md_exp_bitfield_t* bf_arr = data.ptr;
                     if (bf_arr) {
                         for (int64_t i = 0; i < len; ++i) {
-                            md_bitfield_or_inplace(target, &bf_arr[i]);
+                            md_exp_bitfield_t bf = {0};
+                            md_bitfield_init(&bf, alloc);
+                            md_bitfield_copy(&bf, &bf_arr[i]);
+                            md_array_push(result->bitfields, bf, alloc);
                         }
                     }
-                    if (info) {
-                        if (info->is_dynamic) *info->is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
-                    }
+                    result->num_bitfields = md_array_size(result->bitfields);
+                    result->is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
+                    success = true;
                 }
             }
         }
     }
-    if (!result) {
-        if (info && info->error_buf) {
-            snprintf(info->error_buf, info->error_cap, "Filter did not evaluate to a bitfield\n");
-        } else {
-            md_print(MD_LOG_TYPE_ERROR, "Filter did not evaluate to a bitfield");
-        }
+    if (!success) {
+        snprintf(result->error_buf, sizeof(result->error_buf), "Filter did not evaluate to a bitfield\n");
     }
 
     int64_t len = 0;
     for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
-        if (info && info->error_buf) {
-            int64_t space_left = MAX(0, info->error_cap - len);
-            if (space_left) len += snprintf(info->error_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
-        } else {
-            md_printf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].error.len, ir->errors[i].error.ptr);
-        }
+        int64_t space_left = MAX(0, sizeof(result->error_buf) - len);
+        if (space_left) len += snprintf(result->error_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
     }
 
-    md_arena_allocator_destroy(alloc);
+    md_arena_allocator_destroy(arena);
     
-    return result;
+    return success;
+}
+
+bool md_filter_free(md_filter_result_t* result, struct md_allocator_i* alloc) {
+    ASSERT(result);
+    ASSERT(alloc);
+    md_array_free(result->bitfields, alloc);
+    memset(result, 0, sizeof(md_filter_result_t));
+    return true;
 }
 
 /*
