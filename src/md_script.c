@@ -4236,9 +4236,12 @@ bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_sc
             result |= init_property(&eval->properties[i], num_frames, ir->o->prop_expressions[i]->ident->name, ir->o->prop_expressions[i]->node, eval->o->arena);
             if (!result) break;
         }
+
     }
 
-    if (!result) {
+    if (result) {
+        eval->num_properties = md_array_size(eval->properties);
+    } else {
         eval->num_properties = 0;
         eval->properties = NULL;
     }

@@ -312,10 +312,12 @@ UTEST(script, parallel_evaluation) {
     ASSERT_EQ(1, ref_eval.num_properties);
     ASSERT_EQ(num_frames, ref_eval.properties[0].data.num_values);
 
+#if 0
     printf("Ref Values:\n");
     for (int64_t i = 0; i < ref_eval.properties[0].data.num_values; ++i) {
         printf("[%lli]: %g\n", i, ref_eval.properties[0].data.values[i]);
     }
+#endif
 
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
