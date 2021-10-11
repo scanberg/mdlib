@@ -93,7 +93,7 @@ typedef struct md_script_property_t {
     const struct md_script_vis_token_t* vis_token; // For visualization of the property
 } md_script_property_t;
 
-// Opaque container for the evaluation result
+// Container for the evaluation result
 typedef struct md_script_eval_t {
     struct md_script_eval_o* o; // opaque internal data
     uint64_t fingerprint; // Unique ID to compare against to see if your representation is up to date.
@@ -102,14 +102,6 @@ typedef struct md_script_eval_t {
     md_script_property_t* properties;
 } md_script_eval_t;
 
-typedef struct md_script_eval_args_t {
-    const struct md_script_ir_t* ir;
-    const struct md_molecule_t* mol;
-    const struct md_trajectory_i* traj;
-    // Optional, set this mask to mask out which frames that should be evaluated.
-    md_exp_bitfield_t* filter_mask;
-} md_script_eval_args_t;
-
 struct md_script_visualization_o;
 typedef struct md_script_visualization_t {
     struct md_script_visualization_o* o;
@@ -117,7 +109,7 @@ typedef struct md_script_visualization_t {
     // Geometry
     struct {
         int64_t count;
-        float* pos;         // Position xyz
+        vec3_t* pos;         // Position xyz
     } vertex;
 
     struct {
@@ -137,7 +129,7 @@ typedef struct md_script_visualization_t {
 
     struct {
         int64_t count;
-        float* pos_rad;     // xyzr
+        vec4_t* pos_rad;     // xyzr
     } sphere;
 
     // This is a bit of a shoe-horn case where we want to visualize the superimposed structures and the atoms involved
@@ -196,7 +188,7 @@ bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_sc
 // Compute properties
 // Must be performed after the eval_init
 // eval     : evaluation object to hold result
-// ir       : ir which holds the AST to be evaluated
+// ir       : holds an IR of the script to be evaluated
 // mol      : molecule
 // traj     : trajectory
 // filter_mask [OPTIONAL]: A mask which holds the frames which should be evaluated. Supply this if only a subset should be evaluated.

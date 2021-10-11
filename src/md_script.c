@@ -212,7 +212,7 @@ typedef struct md_script_visualization_o {
     uint32_t flags;
 } md_script_visualization_o;
 
-typedef struct eval_context {
+typedef struct eval_context_t {
     struct md_script_ir_o* ir;
     const md_molecule_t* mol;
     const md_exp_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
@@ -234,7 +234,7 @@ typedef struct eval_context {
     } initial_configuration;
 } eval_context_t;
 
-typedef struct procedure {
+typedef struct procedure_t {
     str_t name;
     md_type_info_t return_type;
     int64_t num_args;
@@ -243,14 +243,14 @@ typedef struct procedure {
     flags_t flags;
 } procedure_t;
 
-typedef struct ast_node {
+typedef struct ast_node_t {
     // @OPTIMIZE: Make specific types for each type of Ast_node, where the first member is the type which we can use and cast after.
     ast_type_t      type;    
     token_t         token;          // Corresponding token from which the node was created (used to tie errors back into src)
     flags_t         flags;
 
     // PAYLOAD
-    struct ast_node**   children;       // For AND, OR, NOT, procedure arguments etc.
+    struct ast_node_t**   children;       // For AND, OR, NOT, procedure arguments etc.
     value_t             value;          // Scalar values for storing data directly inside the node
     data_t              data;           // Structure for passing as argument into procedure. (Holds pointer, length and type)
 
@@ -262,16 +262,16 @@ typedef struct ast_node {
     const md_exp_bitfield_t* context;  // Since contexts have to be statically known at compile time, we store a reference to it. This enables independent evaluation of a node without missing the context.
 } ast_node_t;
 
-typedef struct tokenizer {
+typedef struct tokenizer_t {
     str_t str;
     int64_t cur;
     int64_t line;
     int64_t line_offset;
 } tokenizer_t;
 
-typedef struct expression {
+typedef struct expression_t {
     ast_node_t*   node;     
-    identifier_t* ident;    // Every expression should end up being assigned to an identifier. This is that identifier
+    identifier_t* ident;
     str_t str;
 } expression_t;
 
@@ -3352,8 +3352,7 @@ static bool parse_script(md_script_ir_o* ir) {
         const char* beg = tok.str.ptr;
 
         ir->record_errors = true;   // We reset the error recording flag before each statement
-        ast_node_t* node = parse_expression(&ctx);
-        node = prune_expressions(node);
+        ast_node_t* node = prune_expressions(parse_expression(&ctx));
         if (node) {
             tok = tokenizer_consume_next(ctx.tokenizer);
             if (tok.type != ';') {
@@ -3364,24 +3363,30 @@ static bool parse_script(md_script_ir_o* ir) {
             const char* end = tok.str.ptr + tok.str.len;
             str_t expr_str = {beg, (uint64_t)(end - beg)};
 
-            if (node->type == AST_ASSIGNMENT &&
-                md_array_size(node->children) == 2 && node->children[0]->type == AST_IDENTIFIER && node->children[0]->ident.ptr && node->children[1]) {
-                identifier_t* ident = get_identifier(ir, node->children[0]->ident);
-                ASSERT(ident);
+            //if (node->type == AST_ASSIGNMENT &&
+                //md_array_size(node->children) == 2 && node->children[0]->type == AST_IDENTIFIER && node->children[0]->ident.ptr && node->children[1]) {
+                identifier_t* ident = NULL;
+                if (node->type == AST_ASSIGNMENT) {
+                    ASSERT(md_array_size(node->children) == 2);
+                    ASSERT(node->children[0]->type == AST_IDENTIFIER);
+                    ident = get_identifier(ir, node->children[0]->ident);
+                    ASSERT(ident);
+                    
+                }
                 expression_t* expr = md_alloc(ir->arena, sizeof(expression_t));
                 memset(expr, 0, sizeof(expression_t));
                 expr->ident = ident;
                 expr->node = node;
                 expr->str = expr_str;
                 md_array_push(ir->expressions, expr, ir->arena);
-            }
-            else {
-                create_error(ir, node->token, "Every parsed expression should end up being assigned to a unique identifier.");
-                result = false;
-            }
+            //}
+            //else {
+            //    create_error(ir, node->token, "Every parsed expression should end up being assigned to a unique identifier.");
+            //    result = false;
+            //}
         } else {
             token_type_t types[1] = {';'};
-            tokenizer_consume_until_type(ctx.tokenizer, types, ARRAY_SIZE(types)); // Goto next expression
+            tokenizer_consume_until_type(ctx.tokenizer, types, ARRAY_SIZE(types)); // Goto next statement
             tokenizer_consume_next(ctx.tokenizer); 
             result = false;
         }
@@ -3464,7 +3469,7 @@ static bool extract_property_expressions(md_script_ir_o* ir) {
         expression_t* expr = ir->eval_targets[i];
         ASSERT(expr);
         ASSERT(expr->node);
-        if (is_property_type(expr->node->data.type)) {
+        if (expr->ident && is_property_type(expr->node->data.type)) {
             md_array_push(ir->prop_expressions, expr, ir->arena);
         }
     }
@@ -3661,6 +3666,7 @@ static bool init_property(md_script_property_t* prop, int64_t num_frames, str_t 
     return allocate_property_data(prop, node->data.type, num_frames, alloc);
 }
 
+/*
 static void create_properties(md_script_property_t** properties, int64_t num_frames, expression_t** expressions, int64_t num_expressions, md_allocator_i* alloc) {
     ASSERT(properties);
 
@@ -3670,6 +3676,7 @@ static void create_properties(md_script_property_t** properties, int64_t num_fra
         const expression_t* expr = expressions[i];
         ASSERT(expr);
         ASSERT(expr->node);
+        if (!expr->ident) continue;
 
         md_script_property_t prop = {
             .ident = copy_str(expr->ident->name, alloc),
@@ -3698,6 +3705,7 @@ static void create_properties(md_script_property_t** properties, int64_t num_fra
 
     *properties = props;
 }
+*/
 
 static void compute_min_max(float* min, float* max, const float* values, int64_t num_values) {
     ASSERT(min);
@@ -4211,22 +4219,28 @@ bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_sc
     ASSERT(alloc);
 
     // Set these to zero until we have initialized the memory for the new properties
-    eval->properties = NULL;
     eval->num_properties = 0;
+    eval->properties = NULL;
 
     if (!eval->o) {
         eval->o = create_eval(alloc);
     }
     init_eval(eval->o);
 
+    bool result = true;
     const int64_t num_prop_expr = md_array_size(ir->o->prop_expressions);
     if (num_prop_expr > 0) {
-        //md_array_resize(eval->properties, num_prop_expr, eval->o->arena);
-        /*for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
-            init_property(&eval->properties[i], num_frames, ir->o->prop_expressions[i]->ident, )
-        }*/
-        create_properties(&eval->properties, num_frames, ir->o->prop_expressions, num_prop_expr, eval->o->arena);
-        eval->num_properties = num_prop_expr;
+        md_array_resize(eval->properties, num_prop_expr, eval->o->arena);
+        for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
+            ASSERT(ir->o->prop_expressions[i]->ident);
+            result |= init_property(&eval->properties[i], num_frames, ir->o->prop_expressions[i]->ident->name, ir->o->prop_expressions[i]->node, eval->o->arena);
+            if (!result) break;
+        }
+    }
+
+    if (!result) {
+        eval->num_properties = 0;
+        eval->properties = NULL;
     }
 
     return true;

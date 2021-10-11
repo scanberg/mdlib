@@ -545,7 +545,7 @@ static inline uint16_t push_vertex(vec3_t pos, md_script_visualization_t* vis) {
     ASSERT(vis);
     ASSERT(vis->o->alloc);
     const int64_t idx = vis->vertex.count;
-    md_array_push_array(vis->vertex.pos, &pos.x, 3, vis->o->alloc);
+    md_array_push(vis->vertex.pos, pos, vis->o->alloc);
     vis->vertex.count += 1;
     ASSERT(idx < UINT16_MAX);
     return (uint16_t)idx;
@@ -579,7 +579,7 @@ static inline void push_triangle(uint16_t v0, uint16_t v1, uint16_t v2, md_scrip
 static inline void push_sphere(vec4_t pos_rad, md_script_visualization_t* vis) {
     ASSERT(vis);
     ASSERT(vis->o->alloc);
-    md_array_push_array(vis->sphere.pos_rad, &pos_rad.x, 4, vis->o->alloc);
+    md_array_push(vis->sphere.pos_rad, pos_rad, vis->o->alloc);
     vis->sphere.count += 1;
 }
 
