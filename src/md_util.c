@@ -487,6 +487,18 @@ md_bond_t* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* ar
     return bonds;
 }
 
+static inline float deperiodize(float pos, float ref, float ext) {
+    float d = ref - pos;
+    float t = fabsf(d) > (ext * 0.5f) ? copysignf(ext, d) : 0.0f;
+    return pos + t;
+}
+
+static inline float apply_pbc(float pos, float ext) {
+    if (pos < 0.0f) return pos + ext;
+    else if (pos > ext) return pos - ext;
+    return pos;
+}
+
 bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, md_util_apply_pbc_args_t args) {
     ASSERT(out_x);
     ASSERT(out_y);
@@ -500,76 +512,89 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     ASSERT(args.pbc.box[2][2] > 0.0f);
 
     vec3_t ext = {args.pbc.box[0][0], args.pbc.box[1][1], args.pbc.box[2][2]};
-    vec3_t half_ext = vec3_mul_f(ext, 0.5f);
+//    vec3_t half_ext = vec3_mul_f(ext, 0.5f);
 
-    vec3_t* residue_com = 0;
+    float* residue_com_x = 0;
+    float* residue_com_y = 0;
+    float* residue_com_z = 0;
+
     if (args.chain.residue_range && args.chain.count) {
-        md_array_resize(residue_com, args.residue.count, default_temp_allocator);
+        int64_t stride = ROUND_UP(args.residue.count, md_simd_width);
+        float* mem = md_alloc(default_temp_allocator, stride * sizeof(float) * 3);
+        residue_com_x = mem + stride * 0;
+        residue_com_y = mem + stride * 1;
+        residue_com_z = mem + stride * 2;
     }
     
     for (int64_t i = 0; i < args.residue.count; ++i) {
         md_range_t atom_range = args.residue.atom_range[i];
-        vec3_t sum_pos = {args.atom.x[atom_range.beg], args.atom.y[atom_range.beg], args.atom.z[atom_range.beg]};
-        int32_t sum = 1;
-        for (int64_t j = atom_range.beg + 1; j < atom_range.end; ++j) {
-            vec3_t com = vec3_div_f(sum_pos, (float)sum);
-            vec3_t p = {args.atom.x[j], args.atom.y[j], args.atom.z[j]};
-            vec3_t delta = vec3_sub(com, p);
-            vec3_t v = {0,0,0};
-            if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
-            if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
-            if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
-            vec3_t dp = vec3_add(p, v);
-            sum_pos  = vec3_add(sum_pos, dp);
-            sum += 1;
-        }
+        vec3_t com = md_util_compute_periodic_com(args.atom.x + atom_range.beg, args.atom.y + atom_range.beg, args.atom.z + atom_range.beg, NULL, atom_range.end - atom_range.beg, args.pbc.box);
 
-        vec3_t com = vec3_div_f(sum_pos, (float)sum);
-        if (com.x < 0.0f) com.x += ext.x; else if (com.x > ext.x) com.x -= ext.x;
-        if (com.y < 0.0f) com.y += ext.y; else if (com.y > ext.y) com.y -= ext.y; 
-        if (com.z < 0.0f) com.z += ext.z; else if (com.z > ext.z) com.z -= ext.z;
-
-        if (residue_com) {
-            residue_com[i] = com;
+        if (residue_com_x) {
+            ASSERT(residue_com_y);
+            ASSERT(residue_com_z);
+            residue_com_x[i] = com.x;
+            residue_com_y[i] = com.y;
+            residue_com_z[i] = com.z;
         }
 
         for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
-            vec3_t p = {args.atom.x[j], args.atom.y[j], args.atom.z[j]};
-            vec3_t delta = vec3_sub(com, p);
-            vec3_t v = {0,0,0};
-            if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
-            if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
-            if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
-            vec3_t dp = vec3_add(p, v);
-            out_x[j] = dp.x;
-            out_y[j] = dp.y;
-            out_z[j] = dp.z;
+            out_x[j] = deperiodize(args.atom.x[j], com.x, ext.x);
+            out_y[j] = deperiodize(args.atom.y[j], com.y, ext.y);
+            out_z[j] = deperiodize(args.atom.z[j], com.z, ext.z);
         }
     }
 
     for (int64_t i = 0; i < args.chain.count; ++i) {
         md_range_t res_range = args.chain.residue_range[i];
-        vec3_t sum_pos = residue_com[res_range.beg];
-        int32_t sum = 1;
-        for (int64_t j = res_range.beg + 1; j < res_range.end; ++j) {
-            vec3_t com = vec3_div_f(sum_pos, (float)sum);
-            vec3_t p = residue_com[j];
+
+        vec3_t com = md_util_compute_periodic_com(residue_com_x, residue_com_y, residue_com_z, NULL, res_range.end - res_range.beg, args.pbc.box);
+
+        com.x = apply_pbc(com.x, ext.x);
+        com.y = apply_pbc(com.y, ext.y);
+        com.z = apply_pbc(com.z, ext.z);
+
+        for (int64_t j = res_range.beg; j < res_range.end; ++j) {
+            /*
+            vec3_t p = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
             vec3_t delta = vec3_sub(com, p);
             vec3_t v = {0,0,0};
             if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
             if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
             if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
-            vec3_t dp = vec3_add(p, v);
-            sum_pos = vec3_add(sum_pos, dp);
-            sum += 1;
-        }
 
-        vec3_t com = vec3_div_f(sum_pos, (float)sum);
-        if (com.x < 0.0f) com.x += ext.x; else if (com.x > ext.x) com.x -= ext.x;
-        if (com.y < 0.0f) com.y += ext.y; else if (com.y > ext.y) com.y -= ext.y; 
-        if (com.z < 0.0f) com.z += ext.z; else if (com.z > ext.z) com.z -= ext.z;
+            float d2 = vec3_dot(v,v);
+            if (d2 > 0.0f) {
+                md_range_t atom_range = args.residue.atom_range[j];
+                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
+                    out_x[k] += v.x;
+                    out_y[k] += v.y;
+                    out_z[k] += v.z;
+                }
+            }
+            */
+            
+            float x = deperiodize(residue_com_x[j], com.x, ext.x);
+            float y = deperiodize(residue_com_y[j], com.y, ext.y);
+            float z = deperiodize(residue_com_z[j], com.z, ext.z);
 
-        for (int64_t j = res_range.beg; j < res_range.end; ++j) {
+            vec3_t d = vec3_sub((vec3_t){x, y, z}, (vec3_t){residue_com_x[j], residue_com_y[j], residue_com_z[j]});
+            //vec3_t v = {0,0,0};
+            //if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
+            //if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
+            //if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
+
+            if (vec3_dot(d,d) > 0.0001f) {
+                md_range_t atom_range = args.residue.atom_range[j];
+                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
+                    out_x[k] += d.x;
+                    out_y[k] += d.y;
+                    out_z[k] += d.z;
+                }
+            }
+            
+
+            /*
             vec3_t p = residue_com[j];
             vec3_t delta = vec3_sub(com, p);
             vec3_t v = {0,0,0};
@@ -586,54 +611,48 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
                     out_z[k] += v.z;
                 }
             }
+            */
+            
         }
     }
 
     return true;
 }
 
-static inline float deperiodize(float pos, float ref, float ext) {
-    float d = ref - pos;
-    float t = fabsf(d) > (ext * 0.5f) ? copysignf(ext, d) : 0.0f;
-    return pos + t;
-}
-
-vec3_t md_util_compute_periodic_com(const float* x, const float* y, const float* z, const float* w, int64_t count, float box[3][3]) {
+vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, float box[3][3]) {
     const float ext_x = box[0][0];
     const float ext_y = box[1][1];
     const float ext_z = box[2][2];
     
-    float sum_x = x[0] * w[0];
-    float sum_y = y[0] * w[0];
-    float sum_z = z[0] * w[0];
-    float sum_w = w[0];
+    float w = in_w ? in_w[0] : 1.0f;
+    float sum_x = in_x[0] * w;
+    float sum_y = in_y[0] * w;
+    float sum_z = in_z[0] * w;
+    float sum_w = w;
 
     for (int64_t i = 1; i < count; ++i) {
         float com_x = sum_x / sum_w;
         float com_y = sum_y / sum_w;
         float com_z = sum_z / sum_w;
 
-        float dx = com_x - x[i];
-        float dy = com_y - y[i];
-        float dz = com_z - z[i];
+        float x = deperiodize(in_x[i], com_x, ext_x);
+        float y = deperiodize(in_y[i], com_y, ext_y);
+        float z = deperiodize(in_z[i], com_z, ext_z);
 
-        float t_x = fabsf(dx) > (ext_x * 0.5f) ? copysignf(ext_x, dx) : 0.0f;
-        float t_y = fabsf(dy) > (ext_y * 0.5f) ? copysignf(ext_y, dy) : 0.0f;
-        float t_z = fabsf(dz) > (ext_z * 0.5f) ? copysignf(ext_z, dz) : 0.0f;
-
-        float dp_x = x[i] + t_x;
-        float dp_y = y[i] + t_y;
-        float dp_z = z[i] + t_z;
-
-        sum_x += dp_x * w[i];
-        sum_y += dp_y * w[i];
-        sum_z += dp_z * w[i];
-        sum_w += w[i];
+        if (in_w) w = in_w[i];
+        sum_x += x * w;
+        sum_y += y * w;
+        sum_z += z * w;
+        sum_w += w;
     }
 
     float com_x = sum_x / sum_w;
     float com_y = sum_y / sum_w;
     float com_z = sum_z / sum_w;
+    //float com_x = apply_pbc(sum_x / sum_w, ext_x);
+    //float com_y = apply_pbc(sum_y / sum_w, ext_y);
+    //float com_z = apply_pbc(sum_z / sum_w, ext_z);
+
     return (vec3_t){com_x, com_y, com_z};
 }
 
