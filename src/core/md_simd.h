@@ -3,7 +3,8 @@
 #include "md_intrinsics.h"
 
 #ifdef __AVX__
-    #define md_simd_width 8
+// Float
+    #define md_simd_widthf 8
     #define md_simd_typef __m256
     #define md_simd_loadf  md_simd_load_f256
     #define md_simd_storef md_simd_store_f256
@@ -42,8 +43,17 @@
     #define md_simd_stepf         md_simd_step_f256
     #define md_simd_lerpf         md_simd_lerp_f256
     #define md_simd_cubic_splinef md_simd_cubic_spline_f256
+// Int
+    #define md_simd_widthi 8
+    #define md_simd_typei __m256i
+    #define md_simd_ori     md_simd_or_i256
+    #define md_simd_andi    md_simd_and_i256
+    #define md_simd_andnoti md_simd_andnot_i256
+    #define md_simd_xori    md_simd_xor_i256
+    #define md_simd_noti    md_simd_not_i256
+
 #else
-    #define md_simd_width 4
+    #define md_simd_widthf 4
     #define md_simd_typef __m128
     #define md_simd_loadf  md_simd_load_f128
     #define md_simd_storef md_simd_store_f128
@@ -188,12 +198,16 @@ static inline __m128 md_simd_cubic_spline_f128(__m128 p0, __m128 p1, __m128 p2, 
     return _mm_add_ps(r0, r1);
 }
 
-// int operations (fill this in when the need comes)
+// Int operations
 static inline __m128i md_simd_set1_i128(int x) { return _mm_set1_epi32(x); }
 static inline __m128i md_simd_set_i128(int x, int y, int z, int w) { return _mm_set_epi32(w, z, y, x); }
-
 static inline __m128i md_simd_zero_i128() { return _mm_setzero_si128(); }
 
+static inline __m128i md_simd_or_i128(__m128i a, __m128i b)     { return _mm_or_si128(a, b); }
+static inline __m128i md_simd_and_i128(__m128i a, __m128i b)    { return _mm_and_si128(a, b); }
+static inline __m128i md_simd_andnot_i128(__m128i a, __m128i b) { return _mm_andnot_si128(a, b); }
+static inline __m128i md_simd_xor_i128(__m128i a, __m128i b)    { return _mm_xor_si128(a, b); }
+static inline __m128i md_simd_not_i128(__m128i a)               { return _mm_andnot_si128(_mm_set1_epi64x(-1), a); }
 
 #ifdef __AVX__
 // 256-bit wide
@@ -300,5 +314,17 @@ static inline __m256 md_simd_cubic_spline_f256(__m256 p0, __m256 p1, __m256 p2, 
     __m256 r1 = _mm256_add_ps(_mm256_mul_ps(v0, s1), p1);
     return _mm256_add_ps(r0, r1);
 }
+
+// Int operations
+
+static inline __m256i md_simd_set1_i256(int x) { return _mm256_set1_epi32(x); }
+static inline __m256i md_simd_set_i256(int x0, int y0, int z0, int w0, int x1, int y1, int z1, int w1) { return _mm256_set_epi32(w1, z1, y1, x1, w0, z0, y0, x0); }
+static inline __m256i md_simd_zero_i256() { return _mm256_setzero_si256(); }
+
+static inline __m256i md_simd_or_i256(__m256i a, __m256i b)     { return _mm256_or_si256(a, b); }
+static inline __m256i md_simd_and_i256(__m256i a, __m256i b)    { return _mm256_and_si256(a, b); }
+static inline __m256i md_simd_andnot_i256(__m256i a, __m256i b) { return _mm256_andnot_si256(a, b); }
+static inline __m256i md_simd_xor_i256(__m256i a, __m256i b)    { return _mm256_xor_si256(a, b); }
+static inline __m256i md_simd_not_i256(__m256i x)               { return _mm256_andnot_si256(x, _mm256_set1_epi64x(-1)); }
 
 #endif

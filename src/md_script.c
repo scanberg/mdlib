@@ -20,6 +20,7 @@
 #include "core/md_platform.h"
 #include "core/md_compiler.h"
 #include "core/md_os.h"
+#include "core/md_spatial_hash.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -117,6 +118,7 @@ typedef enum flags_t {
     FLAG_DYNAMIC                    = 0x1000, // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependency on atomic positions)
     FLAG_SDF                        = 0x2000, // Indicates that the expression involves an sdf computation
     FLAG_VISUALIZE                  = 0x4000, // Hints that a procedure can produce visualizations
+    FLAG_SPATIAL_QUERY              = 0x8000, // This means that the expression involves some form of spatial query. If we have this, we can pre-compute a spatial hash acceleration structure and provide it through the context
 } flags_t;
 
 static const uint32_t FLAG_PROPAGATION_MASK = ~0xFFFU;
@@ -225,6 +227,8 @@ typedef struct eval_context_t {
     identifier_t* identifiers;          // Evaluated identifiers for references
                                       
     md_script_visualization_t* vis;     // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
+
+    md_spatial_hash_t* spatial_hash;
 
     struct {
         md_trajectory_frame_header_t* header;
@@ -889,7 +893,7 @@ static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
 }
 
 static inline bool is_identifier_procedure(str_t ident) {
-    for (uint64_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+    for (int64_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
         if (compare_str(ident, procedures[i].name)) {
             return true;
         }
@@ -959,7 +963,7 @@ static void fix_precedence(ast_node_t** node) {
 
 static bool is_type_implicitly_convertible(md_type_info_t from, md_type_info_t to, flags_t flags) {
     flags &= FLAG_POSITION; // This is the only flag we care about from the perspective of matching casting procedures
-    for (uint64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+    for (int64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
         // if (flags && !(casts[i].flags & flags)) continue;
         if ((casts[i].flags & FLAG_POSITION) && !(flags & FLAG_POSITION)) continue; // Make sure we only consider casts which are marked with POSITION when the procedure is marked with POSITION
         if (is_type_directly_compatible(from, casts[i].arg_type[0]) &&
@@ -983,7 +987,7 @@ static procedure_match_result_t find_cast_procedure(md_type_info_t from, md_type
 
     // In the future, we might need to do two casts to actually get to the proper type.
 
-    for (uint64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+    for (int64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
         if (is_type_directly_compatible(from, casts[i].arg_type[0]) &&
             is_type_directly_compatible(casts[i].return_type, to)) {
 
@@ -1136,7 +1140,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
 }
 
 static identifier_t* find_constant(str_t name) {
-    for (uint64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+    for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
         if (compare_str(constants[i].name, name)) {
             return &constants[i];
         }
@@ -3452,7 +3456,8 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_o* ir) {
         expression_t* expr = ir->type_checked_expressions[i];
         ASSERT(expr);
         ASSERT(expr->node);
-        if (expr->node->flags & FLAG_DYNAMIC) {
+        if (expr->node->flags & FLAG_DYNAMIC && expr->ident) {
+            // If it does not have an identifier, it cannot be reference and thus we don't need to evaluate it dynamcally
             md_array_push(ir->eval_targets, ir->type_checked_expressions[i], ir->arena);
         }
     }
@@ -3776,7 +3781,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc);
 
     // coordinate data for reading trajectory frames into
-    const int64_t stride = ROUND_UP(mol->atom.count, md_simd_width);    // Round up allocation size to simd width to allow for vectorized operations
+    const int64_t stride = ROUND_UP(mol->atom.count, md_simd_widthf);    // Round up allocation size to simd width to allow for vectorized operations
     const int64_t coord_bytes = stride * 3 * sizeof(float);
     float* init_coords = md_alloc(&temp_alloc, coord_bytes);
     float* curr_coords = md_alloc(&temp_alloc, coord_bytes);
@@ -3954,7 +3959,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                     // Cumulative moving average
                     const md_simd_typef N = md_simd_set1f((float)(dst_idx));
                     const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
-                    for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_width); i += md_simd_width) {
+                    for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_widthf); i += md_simd_widthf) {
                         md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
                         md_simd_typef new_val = md_simd_loadf(values + i);
                         md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
@@ -3968,7 +3973,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 // Cumulative moving average
                 const md_simd_typef N = md_simd_set1f((float)(dst_idx));
                 const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
-                for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_width); i += md_simd_width) {
+                for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_widthf); i += md_simd_widthf) {
                     md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
                     md_simd_typef new_val = md_simd_loadf(values + i);
                     md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));

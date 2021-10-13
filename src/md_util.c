@@ -480,8 +480,9 @@ md_bond_t* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* ar
     }
 
     if (args->residue.complete_bond_range) {
+        ASSERT(args->residue.count > 0);
         args->residue.complete_bond_range[0].beg = 0;
-        md_array_last(args->residue.complete_bond_range)->end = (uint32_t)md_array_size(bonds);
+        args->residue.complete_bond_range[args->residue.count - 1].end = (uint32_t)md_array_size(bonds);
     }
 
     return bonds;
@@ -519,7 +520,7 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     float* residue_com_z = 0;
 
     if (args.chain.residue_range && args.chain.count) {
-        int64_t stride = ROUND_UP(args.residue.count, md_simd_width);
+        int64_t stride = ROUND_UP(args.residue.count, md_simd_widthf);
         float* mem = md_alloc(default_temp_allocator, stride * sizeof(float) * 3);
         residue_com_x = mem + stride * 0;
         residue_com_y = mem + stride * 1;
@@ -538,6 +539,10 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
             residue_com_z[i] = com.z;
         }
 
+        com.x = apply_pbc(com.x, ext.x);
+        com.y = apply_pbc(com.y, ext.y);
+        com.z = apply_pbc(com.z, ext.z);
+
         for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
             out_x[j] = deperiodize(args.atom.x[j], com.x, ext.x);
             out_y[j] = deperiodize(args.atom.y[j], com.y, ext.y);
@@ -554,26 +559,7 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
         com.y = apply_pbc(com.y, ext.y);
         com.z = apply_pbc(com.z, ext.z);
 
-        for (int64_t j = res_range.beg; j < res_range.end; ++j) {
-            /*
-            vec3_t p = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
-            vec3_t delta = vec3_sub(com, p);
-            vec3_t v = {0,0,0};
-            if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
-            if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
-            if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
-
-            float d2 = vec3_dot(v,v);
-            if (d2 > 0.0f) {
-                md_range_t atom_range = args.residue.atom_range[j];
-                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
-                    out_x[k] += v.x;
-                    out_y[k] += v.y;
-                    out_z[k] += v.z;
-                }
-            }
-            */
-            
+        for (int64_t j = res_range.beg; j < res_range.end; ++j) {           
             float x = deperiodize(residue_com_x[j], com.x, ext.x);
             float y = deperiodize(residue_com_y[j], com.y, ext.y);
             float z = deperiodize(residue_com_z[j], com.z, ext.z);
@@ -740,7 +726,7 @@ void md_util_linear_interpolation(md_util_linear_interpolation_args_t args) {
         md_simd_typef box_ext_y = md_simd_set1f(args.pbc.box[1][1]);
         md_simd_typef box_ext_z = md_simd_set1f(args.pbc.box[2][2]);
 
-        for (int64_t i = 0; i < args.coord.count; i += md_simd_width) {
+        for (int64_t i = 0; i < args.coord.count; i += md_simd_widthf) {
             md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
             md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
             md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
@@ -762,7 +748,7 @@ void md_util_linear_interpolation(md_util_linear_interpolation_args_t args) {
             md_simd_storef(args.coord.dst.z + i, z);
         }
     } else {
-        for (int64_t i = 0; i < args.coord.count; i += md_simd_width) {
+        for (int64_t i = 0; i < args.coord.count; i += md_simd_widthf) {
             md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
             md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
             md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
@@ -790,7 +776,7 @@ void md_util_cubic_interpolation(md_util_cubic_interpolation_args_t args) {
         md_simd_typef box_ext_y = md_simd_set1f(args.pbc.box[1][1]);
         md_simd_typef box_ext_z = md_simd_set1f(args.pbc.box[2][2]);
 
-        for (int64_t i = 0; i < args.coord.count; i += md_simd_width) {
+        for (int64_t i = 0; i < args.coord.count; i += md_simd_widthf) {
             md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
             md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
             md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
@@ -828,7 +814,7 @@ void md_util_cubic_interpolation(md_util_cubic_interpolation_args_t args) {
             md_simd_storef(args.coord.dst.z + i, z);
         }
     } else {
-        for (int64_t i = 0; i < args.coord.count; i += md_simd_width) {
+        for (int64_t i = 0; i < args.coord.count; i += md_simd_widthf) {
             md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
             md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
             md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);

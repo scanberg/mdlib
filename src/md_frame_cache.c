@@ -29,7 +29,7 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     }
 
     // We want to ensure that there are enough padding for each frame to avoid overlap if one wants to do full-width simd stores.
-    const int64_t num_atoms = ROUND_UP(md_trajectory_num_atoms(traj), md_simd_width); 
+    const int64_t num_atoms = ROUND_UP(md_trajectory_num_atoms(traj), md_simd_widthf); 
     const int64_t bytes_per_frame = sizeof(md_semaphore_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
     const int64_t num_slots = ROUND_UP(num_cached_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
 

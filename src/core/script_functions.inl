@@ -1,7 +1,3 @@
-#ifndef __MD_SCRIPT_FUNCTIONS_INL__
-#define __MD_SCRIPT_FUNCTIONS_INL__
-
-
 #define as_float(arg) (*((float*)((arg).ptr)))
 #define as_float_arr(arg) ((float*)((arg).ptr))
 
@@ -1141,14 +1137,54 @@ static int _z(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return coordinate_range(dst, arg, ctx, ctx->mol->atom.z);
 }
 
-// @TODO: Implement spatial hashing for these
+static bool spatial_hash_iter_set_bit(uint32_t idx, vec3_t pos, void* user_data) {
+    (void)pos;
+    md_exp_bitfield_t* bf = (md_exp_bitfield_t*)user_data;
+    md_bitfield_set_bit(bf, (int64_t)idx);
+    return true;
+}
+
 static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
 
-    ASSERT(false);
+    const float radius = as_float(arg[0]);
+    const vec3_t* in_pos = as_vec3_arr(arg[1]);
+    const int64_t num_pos = element_count(arg[1]);
+
+    if (dst || ctx->vis) {
+        md_spatial_hash_t spatial_hash = {0};
+        float cell_ext = radius / 3.0f;
+        md_spatial_hash_init(&spatial_hash, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.count, cell_ext, ctx->temp_alloc);
+
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+            md_exp_bitfield_t* dst_bf = as_bitfield(*dst);
+            for (int64_t i = 0; i < num_pos; ++i) {
+                vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, radius};
+                md_spatial_hash_query(&spatial_hash, pos_rad, spatial_hash_iter_set_bit, dst_bf);
+            }
+        } else {
+            // Visualize
+            md_exp_bitfield_t* dst_bf = ctx->vis->atom_mask;
+            for (int64_t i = 0; i < num_pos; ++i) {
+                vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, radius};
+                push_sphere(pos_rad, ctx->vis);
+                md_spatial_hash_query(&spatial_hash, pos_rad, spatial_hash_iter_set_bit, dst_bf);
+            }
+        }
+    }
+    else {
+        if (radius <= 0) {
+            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
+            return -1;
+        }
+        if (num_pos == 0) {
+            create_error(ctx->ir, ctx->arg_tokens[1], "No supplied positions");
+            return -1;
+        }
+    }
 
     return 0;
 }
@@ -1984,7 +2020,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 max_count = MAX(max_count, count);
             }
 
-            const int64_t stride = ROUND_UP(max_count, md_simd_width);
+            const int64_t stride = ROUND_UP(max_count, md_simd_widthf);
             const int64_t coord_bytes = stride * 7 * sizeof(float);
             float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
             float* x0 = coord_data + stride * 0;
@@ -2294,7 +2330,7 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int64_t bit_count = md_bitfield_popcount(&tmp_bf);
 
     if (dst || ctx->vis) {
-        int64_t size = ROUND_UP(bit_count, md_simd_width);
+        int64_t size = ROUND_UP(bit_count, md_simd_widthf);
         int64_t mem_size = size * 4 * sizeof(float);
         float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
 
@@ -2350,7 +2386,7 @@ static int _com_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int64_t num_idx = element_count(arg[0]);
 
     if (dst || ctx->vis) {
-        int64_t size = ROUND_UP(num_idx, md_simd_width);
+        int64_t size = ROUND_UP(num_idx, md_simd_widthf);
         int64_t mem_size = size * 4 * sizeof(float);
         float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
 
@@ -2440,7 +2476,7 @@ static int _com_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         const int64_t count = md_array_size(indices);
-        const int64_t size = ROUND_UP(count, md_simd_width);
+        const int64_t size = ROUND_UP(count, md_simd_widthf);
         const int64_t mem_size = size * 4 * sizeof(float);
         float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
 
@@ -2750,39 +2786,40 @@ static int _position_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     int result = 0;
 
-    // @TODO: THIS NOW SUPPORTS MULTIPLE BITFIELDS. EXTRACT ALL OF THE POSITIONS FROM THEM...
+    const md_exp_bitfield_t* in_bf = as_bitfield(arg[0]);
+    const int64_t num_bf = element_count(arg[0]);
 
-    const md_exp_bitfield_t* bf = as_bitfield(arg[0]);
-    md_exp_bitfield_t tmp_bf = {0};
+    md_exp_bitfield_t bf = {0};
+    md_bitfield_init(&bf, ctx->temp_alloc);
+
+    for (int64_t i = 0; i < num_bf; ++i) {
+        md_bitfield_or_inplace(&bf, &in_bf[i]);
+    }
     if (ctx->mol_ctx) {
-        md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-        md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
-        bf = &tmp_bf;
+        md_bitfield_and_inplace(&bf, ctx->mol_ctx);
     }
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT3_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT3_ARR));
         vec3_t* position = as_vec3_arr(*dst);
         const int64_t capacity = type_info_array_len(dst->type);
         ASSERT(capacity >= 0);
         if (capacity > 0) {
             int64_t dst_idx = 0;
-            int64_t beg_idx = bf->beg_bit;
-            int64_t end_idx = bf->end_bit;
+            int64_t beg_idx = bf.beg_bit;
+            int64_t end_idx = bf.end_bit;
 
-            while ((beg_idx = md_bitfield_scan(bf, beg_idx, end_idx)) != 0) {
+            while ((beg_idx = md_bitfield_scan(&bf, beg_idx, end_idx)) != 0) {
                 int64_t src_idx = beg_idx - 1;
                 ASSERT(dst_idx < capacity);
                 position[dst_idx++] = (vec3_t){ctx->mol->atom.x[src_idx], ctx->mol->atom.y[src_idx], ctx->mol->atom.z[src_idx]};
             }
         }
     } else {
-        result = (int)md_bitfield_popcount(bf);
+        result = (int)md_bitfield_popcount(&bf);
     }
 
-    if (ctx->mol_ctx) {
-        md_bitfield_free(&tmp_bf);
-    }
+    md_bitfield_free(&bf);
 
     return result;
 }
@@ -3102,5 +3139,3 @@ static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 #undef ANY_LENGTH
 //#undef ANY_LEVEL
-
-#endif
