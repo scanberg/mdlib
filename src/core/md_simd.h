@@ -92,6 +92,14 @@
     #define md_simd_stepf         md_simd_step_f128
     #define md_simd_lerpf         md_simd_lerp_f128
     #define md_simd_cubic_splinef md_simd_cubic_spline_f128
+// Int
+    #define md_simd_widthi 4
+    #define md_simd_typei __m128i
+    #define md_simd_ori     md_simd_or_i128
+    #define md_simd_andi    md_simd_and_i128
+    #define md_simd_andnoti md_simd_andnot_i128
+    #define md_simd_xori    md_simd_xor_i128
+    #define md_simd_noti    md_simd_not_i128
 #endif
 
 // 128-bit wide
