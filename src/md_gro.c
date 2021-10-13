@@ -334,13 +334,13 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
                 .y = mol->atom.y,
                 .z = mol->atom.z,
                 .element = mol->atom.element
-        },
+            },
             .residue = {
                 .count = mol->residue.count,
                 .atom_range = mol->residue.atom_range,
                 .internal_bond_range = mol->residue.internal_covalent_bond_range,
                 .complete_bond_range = mol->residue.complete_covalent_bond_range,
-        },
+            },
         };
         mol->covalent_bond.bond = md_util_extract_covalent_bonds(&args, alloc);
         mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
@@ -477,4 +477,17 @@ bool md_gro_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* allo
     memset(mol, 0, sizeof(md_molecule_t));
 
     return true;
+}
+
+md_allocator_i* md_gro_molecule_internal_allocator(md_molecule_t* mol) {
+    ASSERT(mol);
+    ASSERT(mol->inst);
+
+    gro_molecule_t* inst = (gro_molecule_t*)mol->inst;
+    if (inst->magic != MD_GRO_MOL_MAGIC) {
+        md_print(MD_LOG_TYPE_ERROR, "GRO magic did not match!");
+        return NULL;
+    }
+
+    return inst->allocator;
 }

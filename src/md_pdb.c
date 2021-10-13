@@ -486,7 +486,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
     memset(inst, 0, sizeof(pdb_molecule_t));
     
     inst->magic = MD_PDB_MOL_MAGIC;
-    inst->allocator = md_arena_allocator_create(alloc, KILOBYTES(16));
+    inst->allocator = md_arena_allocator_create(alloc, KILOBYTES(64));
     inst->labels = 0;
 
     const int64_t num_atoms = end_atom_index - beg_atom_index;
@@ -612,8 +612,8 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                     .name = mol->atom.name,
                 },
                 .residue = {
-                        .count = res_count,
-                        .atom_range = mol->residue.atom_range + res_offset,
+                    .count = res_count,
+                    .atom_range = mol->residue.atom_range + res_offset,
                 },
             };
             md_util_extract_backbone_atoms(mol->backbone.atoms + backbone_idx, mol->backbone.count, &bb_args);
@@ -629,12 +629,12 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                 .z = mol->atom.z,
             },
             .backbone = {
-                    .count = mol->backbone.count,
-                    .atoms = mol->backbone.atoms,
+                .count = mol->backbone.count,
+                .atoms = mol->backbone.atoms,
             },
             .chain = {
-                    .count = mol->chain.count,
-                    .backbone_range = mol->chain.backbone_range,
+                .count = mol->chain.count,
+                .backbone_range = mol->chain.backbone_range,
             }
         };
         md_util_compute_secondary_structure(mol->backbone.secondary_structure, mol->backbone.count, &ss_args);
@@ -672,7 +672,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                 .complete_bond_range = mol->residue.complete_covalent_bond_range,
             },
         };
-        mol->covalent_bond.bond = md_util_extract_covalent_bonds(&args, alloc);
+        mol->covalent_bond.bond = md_util_extract_covalent_bonds(&args, default_temp_allocator);
         mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
     }
     return true;
@@ -694,6 +694,19 @@ bool md_pdb_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     memset(mol, 0, sizeof(md_molecule_t));
 
     return true;
+}
+
+md_allocator_i* md_pdb_molecule_internal_allocator(md_molecule_t* mol) {
+    ASSERT(mol);
+    ASSERT(mol->inst);
+
+    pdb_molecule_t* inst = (pdb_molecule_t*)mol->inst;
+    if (inst->magic != MD_PDB_MOL_MAGIC) {
+        md_print(MD_LOG_TYPE_ERROR, "PDB magic did not match!");
+        return NULL;
+    }
+
+    return inst->allocator;
 }
 
 bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
