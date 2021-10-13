@@ -4,12 +4,12 @@
 
 #include <stdio.h>
 
-void other_func(int* value) {
+static void other_func(int* value) {
     printf("Printing yo!");
     *value = 10;
 }
 
-void function(void* user_data) {
+static void function(void* user_data) {
     int* value = (int*)user_data;
     other_func(value);
     *value = 5;
@@ -21,8 +21,6 @@ UTEST(sync, thread) {
     EXPECT_TRUE(md_thread_join(thread));
     EXPECT_EQ(5, value);
 }
-
-// @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
 
 UTEST(sync, mutex) {
     md_mutex_t mutex;

@@ -6,12 +6,12 @@
 #include "md_common.h"
 #include "md_bitop.h"
 #include "md_intrinsics.h"
+#include "md_simd.h"
 
 #include <string.h>
 
-#define DIV_UP(x,y) ((x + (y-1)) / y)
-
 #define MAGIC 0xcad86278
+#define ALIGNMENT sizeof(block_t)
 
 /*
 
@@ -22,12 +22,13 @@ We don't really have to care about the block values outside of the range and can
 
 */
 
-enum {
-    BITFIELD_FLAG_INVERTED = 1
-};
-
-typedef struct block {
+typedef union block {
     uint64_t data[8];
+#if md_simd_widthi == 8
+    md_simd_typei mm256[2];
+#else
+    md_simd_typei mm128[4];
+#endif
 } block_t;
 
 #define BITS_PER_BLOCK (sizeof(block_t) * 8)
@@ -48,6 +49,17 @@ static inline int64_t num_blocks(int64_t beg_bit, int64_t end_bit) {
 }
 
 static inline block_t block_and(block_t a, block_t b) {
+    block_t res;
+#ifdef __AVX__
+    res.mm256[0] = md_simd_andi(a.mm256[0], b.mm256[0]);
+    res.mm256[1] = md_simd_andi(a.mm256[1], b.mm256[1]);
+#else
+    res.mm128[0] = md_simd_andi(a.mm128[0], b.mm128[0]);
+    res.mm128[1] = md_simd_andi(a.mm128[1], b.mm128[1]);
+    res.mm128[2] = md_simd_andi(a.mm128[2], b.mm128[2]);
+    res.mm128[3] = md_simd_andi(a.mm128[3], b.mm128[3]);
+#endif
+    /*
     block_t res = {
         a.data[0] & b.data[0],
         a.data[1] & b.data[1],
@@ -58,10 +70,48 @@ static inline block_t block_and(block_t a, block_t b) {
         a.data[6] & b.data[6],
         a.data[7] & b.data[7],
     };
+    */
+    return res;
+}
+
+static inline block_t block_andnot(block_t a, block_t b) {
+    block_t res;
+#ifdef __AVX__
+    res.mm256[0] = md_simd_andnoti(a.mm256[0], b.mm256[0]);
+    res.mm256[1] = md_simd_andnoti(a.mm256[1], b.mm256[1]);
+#else
+    res.mm128[0] = md_simd_andnoti(a.mm128[0], b.mm128[0]);
+    res.mm128[1] = md_simd_andnoti(a.mm128[1], b.mm128[1]);
+    res.mm128[2] = md_simd_andnoti(a.mm128[2], b.mm128[2]);
+    res.mm128[3] = md_simd_andnoti(a.mm128[3], b.mm128[3]);
+#endif
+    /*
+    block_t res = {
+        a.data[0] & ~b.data[0],
+        a.data[1] & ~b.data[1],
+        a.data[2] & ~b.data[2],
+        a.data[3] & ~b.data[3],
+        a.data[4] & ~b.data[4],
+        a.data[5] & ~b.data[5],
+        a.data[6] & ~b.data[6],
+        a.data[7] & ~b.data[7],
+    };
+    */
     return res;
 }
 
 static inline block_t block_or(block_t a, block_t b) {
+    block_t res;
+#ifdef __AVX__
+    res.mm256[0] = md_simd_ori(a.mm256[0], b.mm256[0]);
+    res.mm256[1] = md_simd_ori(a.mm256[1], b.mm256[1]);
+#else
+    res.mm128[0] = md_simd_ori(a.mm128[0], b.mm128[0]);
+    res.mm128[1] = md_simd_ori(a.mm128[1], b.mm128[1]);
+    res.mm128[2] = md_simd_ori(a.mm128[2], b.mm128[2]);
+    res.mm128[3] = md_simd_ori(a.mm128[3], b.mm128[3]);
+#endif
+    /*
     block_t res = {
         a.data[0] | b.data[0],
         a.data[1] | b.data[1],
@@ -72,10 +122,22 @@ static inline block_t block_or(block_t a, block_t b) {
         a.data[6] | b.data[6],
         a.data[7] | b.data[7],
     };
+    */
     return res;
 }
 
 static inline block_t block_xor(block_t a, block_t b) {
+    block_t res;
+#ifdef __AVX__
+    res.mm256[0] = md_simd_xori(a.mm256[0], b.mm256[0]);
+    res.mm256[1] = md_simd_xori(a.mm256[1], b.mm256[1]);
+#else
+    res.mm128[0] = md_simd_xori(a.mm128[0], b.mm128[0]);
+    res.mm128[1] = md_simd_xori(a.mm128[1], b.mm128[1]);
+    res.mm128[2] = md_simd_xori(a.mm128[2], b.mm128[2]);
+    res.mm128[3] = md_simd_xori(a.mm128[3], b.mm128[3]);
+#endif
+    /*
     block_t res = {
         a.data[0] ^ b.data[0],
         a.data[1] ^ b.data[1],
@@ -86,10 +148,22 @@ static inline block_t block_xor(block_t a, block_t b) {
         a.data[6] ^ b.data[6],
         a.data[7] ^ b.data[7],
     };
+    */
     return res;
 }
 
 static inline block_t block_not(block_t blk) {
+    block_t res;
+#ifdef __AVX__
+    res.mm256[0] = md_simd_noti(blk.mm256[0]);
+    res.mm256[1] = md_simd_noti(blk.mm256[1]);
+#else
+    res.mm128[0] = md_simd_noti(blk.mm128[0]);
+    res.mm128[1] = md_simd_noti(blk.mm128[1]);
+    res.mm128[2] = md_simd_noti(blk.mm128[2]);
+    res.mm128[3] = md_simd_noti(blk.mm128[3]);
+#endif
+    /*
     block_t res = {
         ~blk.data[0],
         ~blk.data[1],
@@ -100,9 +174,13 @@ static inline block_t block_not(block_t blk) {
         ~blk.data[6],
         ~blk.data[7],
     };
+    */
     return res;
 }
 
+// According to this source: http://0x80.pl/articles/sse-popcount.html
+// There is very little benefit to move beyond the popcnt intrinsic
+// Only AVX512 have a popcnt intrinsic for vector registers.
 static inline int64_t block_count_bits(block_t blk) {
     int64_t count =
         popcnt64(blk.data[0]) +
@@ -129,14 +207,13 @@ static inline block_t get_block(const md_exp_bitfield_t* bf, int64_t idx) {
     const int64_t end_blk = block_idx(bf->end_bit);
     if (bf->bits && beg_blk <= idx && idx <= end_blk)
         return ((block_t*)bf->bits)[idx - beg_blk];
-    block_t empty_block = {0};
-    return empty_block;
+    return (block_t) {0};
 }
 
 static inline void free_blocks(md_exp_bitfield_t* bf) {
     ASSERT(bf);
     ASSERT(bf->bits != NULL);
-    md_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
     bf->bits = NULL;
 }
 
@@ -145,7 +222,7 @@ static inline void allocate_blocks(md_exp_bitfield_t* bf, int64_t num_blocks) {
     ASSERT(bf->bits == NULL);
     ASSERT(bf->alloc);
     if (num_blocks > 0) {
-        bf->bits = md_alloc(bf->alloc, num_blocks * sizeof(block_t));
+        bf->bits = md_aligned_alloc(bf->alloc, num_blocks * sizeof(block_t), ALIGNMENT);
     }
 }
 
@@ -210,7 +287,7 @@ static inline void ensure_range(md_exp_bitfield_t* bf, int64_t beg_bit, int64_t 
     if (new_beg_blk < cur_beg_blk || cur_end_blk < new_end_blk) {
         // Grow!
         const int64_t new_num_blk = num_blocks(new_beg_bit, new_end_bit);
-        block_t* new_bits = md_alloc(bf->alloc, new_num_blk * sizeof(block_t));
+        block_t* new_bits = md_aligned_alloc(bf->alloc, new_num_blk * sizeof(block_t), ALIGNMENT);
         ASSERT(new_bits);
         memset(new_bits, 0, new_num_blk * sizeof(block_t));
 
@@ -220,7 +297,7 @@ static inline void ensure_range(md_exp_bitfield_t* bf, int64_t beg_bit, int64_t 
             const int64_t offset_old_in_new = cur_beg_blk - new_beg_blk;
             ASSERT(offset_old_in_new >= 0);
             memcpy(new_bits + offset_old_in_new, bf->bits, cur_num_blk * sizeof(block_t));
-            md_free(bf->alloc, bf->bits, cur_num_blk * sizeof(block_t));
+            md_aligned_free(bf->alloc, bf->bits, cur_num_blk * sizeof(block_t));
         }
 
         bf->bits = new_bits;
@@ -250,7 +327,7 @@ void md_bitfield_init(md_exp_bitfield_t* bf, struct md_allocator_i* alloc) {
 bool md_bitfield_free(md_exp_bitfield_t* bf) {
     validate_bitfield(bf);
 
-    if (bf->bits) md_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    if (bf->bits) md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
     memset(bf, 0, sizeof(md_exp_bitfield_t));
     return true;
 }
@@ -369,7 +446,6 @@ void md_bitfield_and_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
         return;
     }
 
-    ensure_range(a, beg_bit, end_bit);
     if (a->bits) {
         for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
             set_block(a, i, block_and(get_block(a, i), get_block(b, i)));
@@ -377,6 +453,62 @@ void md_bitfield_and_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
     }
 }
 
+void md_bitfield_andnot(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b) {
+    validate_bitfield(dst);
+    validate_bitfield(src_a);
+    validate_bitfield(src_b);
+
+    ASSERT((dst != src_a && dst != src_b) && "dst is same as src_a or src_b, use inplace version instead!");
+
+    if (src_a == src_b) {
+        md_bitfield_clear(dst);
+        return;
+    }
+
+    int64_t beg_bit = MAX(src_a->beg_bit, src_b->beg_bit);
+    int64_t end_bit = MIN(src_a->end_bit, src_b->end_bit);
+    
+    md_bitfield_copy(dst, src_a);
+
+    if (end_bit <= beg_bit) {
+        // Ranges do not overlap, done.
+        return;
+    }
+
+    ensure_range(dst, beg_bit, end_bit);
+    if (dst->bits) {
+        for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
+            set_block(dst, i, block_andnot(get_block(src_a, i), get_block(src_b, i)));
+        }
+    }
+}
+
+void md_bitfield_andnot_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
+    validate_bitfield(a);
+    validate_bitfield(b);
+
+    if (a == b) {
+        md_bitfield_clear(a);
+        return;
+    }
+
+    int64_t beg_bit = MAX(a->beg_bit, b->beg_bit);
+    int64_t end_bit = MIN(a->end_bit, b->end_bit);
+
+    if (end_bit <= beg_bit) {
+        // Ranges do not overlap, done.
+        return;
+    }
+
+    // The only place we need to modify is where the two ranges overlap.
+    // ensure_range(a, beg_bit, end_bit);
+
+    if (a->bits) {
+        for (int64_t i = block_idx(beg_bit); i <= block_idx(end_bit); ++i) {
+            set_block(a, i, block_andnot(get_block(a, i), get_block(b, i)));
+        }
+    }
+}
 
 void md_bitfield_xor(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b) {
     validate_bitfield(dst);
@@ -470,6 +602,9 @@ int64_t md_bitfield_popcount(const md_exp_bitfield_t* bf) {
 
     const int64_t count = (int64_t)bf->end_bit - (int64_t)bf->beg_bit;
     if (count == 0) return 0;
+
+    // If we can find a way to efficiently generating a mask for a block we should use the block_popcount proc instead...
+
     return bit_count((uint64_t*)bf->bits, bf->beg_bit - block_bit(bf->beg_bit), count);
 }
 

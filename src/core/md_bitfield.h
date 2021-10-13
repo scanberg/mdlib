@@ -43,6 +43,9 @@ void md_bitfield_or_inplace     (md_exp_bitfield_t* a,   const md_exp_bitfield_t
 void md_bitfield_and            (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
 void md_bitfield_and_inplace    (md_exp_bitfield_t* a, const md_exp_bitfield_t* b);
 
+void md_bitfield_andnot         (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
+void md_bitfield_andnot_inplace (md_exp_bitfield_t* a, const md_exp_bitfield_t* b);
+
 void md_bitfield_xor            (md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b);
 void md_bitfield_xor_inplace    (md_exp_bitfield_t* a, const md_exp_bitfield_t* b);
 
