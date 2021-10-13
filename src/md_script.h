@@ -154,6 +154,7 @@ typedef enum md_script_visualization_flags_t {
     MD_SCRIPT_VISUALIZE_DEFAULT     = 0, // Default is to visualize everything
     MD_SCRIPT_VISUALIZE_GEOMETRY    = 1,
     MD_SCRIPT_VISUALIZE_ATOMS       = 2,
+    MD_SCRIPT_VISUALIZE_SDF         = 3,
 } md_script_visualization_flags_t;
 
 typedef struct md_script_visualization_args_t {

@@ -263,7 +263,7 @@ typedef struct ast_node_t {
 
     // CONTEXT
     md_type_info_t* lhs_context_types; // For static type checking
-    const md_exp_bitfield_t* context;  // Since contexts have to be statically known at compile time, we store a reference to it. This enables independent evaluation of a node without missing the context.
+    const md_exp_bitfield_t* context;  // Since contexts have to be statically known at compile time, we store a reference to it.
 } ast_node_t;
 
 typedef struct tokenizer_t {
@@ -2566,6 +2566,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             }
         }
         else {
+            md_exp_bitfield_t* prev_vis_atom_mask = sub_ctx.vis->atom_mask;
             if (sub_ctx.vis) {
                 if (sub_ctx.vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
                     md_exp_bitfield_t bf = {0};
@@ -2574,7 +2575,15 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
                     sub_ctx.vis->atom_mask = md_array_last(sub_ctx.vis->structures.atom_masks);
                 }
             }
+
             if (!evaluate_node(NULL, expr_node, &sub_ctx)) return false;
+
+            if (sub_ctx.vis) {
+                // Reset atom mask
+                if (sub_ctx.vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+                    sub_ctx.vis->atom_mask = prev_vis_atom_mask;
+                }
+            }
         }
     }
 
@@ -4646,6 +4655,8 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     if (!args.ir->o) return false;
     if (!args.alloc) return false;
 
+    if (args.flags == 0) args.flags = 0xFFFFFFFF;
+
     if (vis->o) {
         ASSERT(vis->o->magic == VIS_MAGIC);
         ASSERT(vis->o->alloc);
@@ -4697,6 +4708,13 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     vis->atom_mask = &vis->o->atom_mask;
 
     visualize_node((ast_node_t*)args.token, &ctx);
+
+    // This just to see that we conceptually did not make any errors when evaluating sub_contexts
+    ASSERT(vis->atom_mask == &vis->o->atom_mask);
+
+    for (int64_t i = 0; i < md_array_size(vis->structures.atom_masks); ++i) {
+        md_bitfield_or_inplace(vis->atom_mask, &vis->structures.atom_masks[i]);
+    }
 
     md_free(default_allocator, stack_ptr, stack_size);
 

@@ -1768,18 +1768,20 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const vec3_t a = as_vec3(arg[0]);
     const vec3_t b = as_vec3(arg[1]);
 
-    if (ctx->vis) {
-        uint16_t va = push_vertex(a, ctx->vis);
-        uint16_t vb = push_vertex(b, ctx->vis);
-        push_line(va, vb, ctx->vis);
-    }
-
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
         as_float(*dst) = vec3_distance(a, b);
         dst->unit = MD_SCRIPT_UNIT_ANGSTROM;
         dst->min_range = -FLT_MAX;
         dst->max_range = FLT_MAX;
+    }
+
+    if (ctx->vis) {
+        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            uint16_t va = push_vertex(a, ctx->vis);
+            uint16_t vb = push_vertex(b, ctx->vis);
+            push_line(va, vb, ctx->vis);
+        }
     }
 
     return 0;
@@ -1818,9 +1820,11 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (ctx->vis) {
-        uint16_t va = push_vertex(a_pos[min_i], ctx->vis);
-        uint16_t vb = push_vertex(b_pos[min_j], ctx->vis);
-        push_line(va, vb, ctx->vis);
+        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            uint16_t va = push_vertex(a_pos[min_i], ctx->vis);
+            uint16_t vb = push_vertex(b_pos[min_j], ctx->vis);
+            push_line(va, vb, ctx->vis);
+        }
     }
 
     return 0;
@@ -1859,9 +1863,11 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (ctx->vis) {
-        uint16_t va = push_vertex(a_pos[max_i], ctx->vis);
-        uint16_t vb = push_vertex(b_pos[max_j], ctx->vis);
-        push_line(va, vb, ctx->vis);
+        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            uint16_t va = push_vertex(a_pos[max_i], ctx->vis);
+            uint16_t vb = push_vertex(b_pos[max_j], ctx->vis);
+            push_line(va, vb, ctx->vis);
+        }
     }
 
     return 0;
@@ -1899,11 +1905,13 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (ctx->vis) {
-        for (int64_t i = 0; i < a_len; ++i) {
-            uint16_t va = push_vertex(a_pos[i], ctx->vis);
-            for (int64_t j = 0; j < b_len; ++j) {
-                uint16_t vb = push_vertex(b_pos[j], ctx->vis);
-                push_line(va, vb, ctx->vis);
+        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            for (int64_t i = 0; i < a_len; ++i) {
+                uint16_t va = push_vertex(a_pos[i], ctx->vis);
+                for (int64_t j = 0; j < b_len; ++j) {
+                    uint16_t vb = push_vertex(b_pos[j], ctx->vis);
+                    push_line(va, vb, ctx->vis);
+                }
             }
         }
     }
@@ -1931,19 +1939,21 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (ctx->vis) {
-        uint16_t va = push_vertex(a, ctx->vis);
-        uint16_t vb = push_vertex(b, ctx->vis);
-        uint16_t vc = push_vertex(c, ctx->vis);
+        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            uint16_t va = push_vertex(a, ctx->vis);
+            uint16_t vb = push_vertex(b, ctx->vis);
+            uint16_t vc = push_vertex(c, ctx->vis);
 
-        push_line(va, vb, ctx->vis);
-        push_line(vb, vc, ctx->vis);
+            push_line(va, vb, ctx->vis);
+            push_line(vb, vc, ctx->vis);
 
-        // This is the angle arc
-        // @TODO: Insert more vertices here and make it a bit smoother
-        uint16_t vd = push_vertex(vec3_lerp(b,a, 0.3f), ctx->vis);
-        uint16_t ve = push_vertex(vec3_lerp(b,c, 0.3f), ctx->vis);
+            // This is the angle arc
+            // @TODO: Insert more vertices here and make it a bit smoother
+            uint16_t vd = push_vertex(vec3_lerp(b,a, 0.3f), ctx->vis);
+            uint16_t ve = push_vertex(vec3_lerp(b,c, 0.3f), ctx->vis);
 
-        push_triangle(vb, vd, ve, ctx->vis);
+            push_triangle(vb, vd, ve, ctx->vis);
+        }
     }
 
     return 0;
@@ -1972,14 +1982,16 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // No need to validate, since it is positions which have been validated by its implicit conversion.
 
         if (ctx->vis) {
-            uint16_t va = push_vertex(a, ctx->vis);
-            uint16_t vb = push_vertex(b, ctx->vis);
-            uint16_t vc = push_vertex(c, ctx->vis);
-            uint16_t vd = push_vertex(d, ctx->vis);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                uint16_t va = push_vertex(a, ctx->vis);
+                uint16_t vb = push_vertex(b, ctx->vis);
+                uint16_t vc = push_vertex(c, ctx->vis);
+                uint16_t vd = push_vertex(d, ctx->vis);
 
-            push_line(va, vb, ctx->vis);
-            push_line(vb, vc, ctx->vis);
-            push_line(vc, vd, ctx->vis);
+                push_line(va, vb, ctx->vis);
+                push_line(vb, vc, ctx->vis);
+                push_line(vc, vd, ctx->vis);
+            }
 
             // @TODO: Draw planes and the angle between them
         }
@@ -2294,12 +2306,14 @@ static int _com_vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     if (ctx->vis) {
-        if (pos_size > 1) {
-            uint16_t c = push_vertex(com, ctx->vis);
-            push_point(c, ctx->vis);
-            for (int64_t i = 0; i < pos_size; ++i) {
-                uint16_t v = push_vertex(pos[i], ctx->vis);
-                push_line(v, c, ctx->vis);
+        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (pos_size > 1) {
+                uint16_t c = push_vertex(com, ctx->vis);
+                push_point(c, ctx->vis);
+                for (int64_t i = 0; i < pos_size; ++i) {
+                    uint16_t v = push_vertex(pos[i], ctx->vis);
+                    push_line(v, c, ctx->vis);
+                }
             }
         }
     }
@@ -2352,13 +2366,15 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->vis) {
-            if (bit_count > 1) {
-                uint16_t c = push_vertex(com, ctx->vis);
-                push_point(c, ctx->vis);
-                for (int64_t i = 0; i < bit_count; ++i) {
-                    vec3_t pos = {x[i], y[i], z[i]};
-                    uint16_t v = push_vertex(pos, ctx->vis);
-                    push_line(v, c, ctx->vis);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                if (bit_count > 1) {
+                    uint16_t c = push_vertex(com, ctx->vis);
+                    push_point(c, ctx->vis);
+                    for (int64_t i = 0; i < bit_count; ++i) {
+                        vec3_t pos = {x[i], y[i], z[i]};
+                        uint16_t v = push_vertex(pos, ctx->vis);
+                        push_line(v, c, ctx->vis);
+                    }
                 }
             }
             visualize_atom_mask(&tmp_bf, ctx->vis);
@@ -2415,14 +2431,16 @@ static int _com_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->vis) {
-            if (num_idx > 1) {
-                // Only show the support graphics if it is a proper aggregate (size > 1)
-                uint16_t c = push_vertex(com, ctx->vis);
-                push_point(c, ctx->vis);
-                for (int64_t i = 0; i < num_idx; ++i) {
-                    vec3_t pos = {x[i], y[i], z[i]};
-                    uint16_t v = push_vertex(pos, ctx->vis);
-                    push_line(v, c, ctx->vis);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                if (num_idx > 1) {
+                    // Only show the support graphics if it is a proper aggregate (size > 1)
+                    uint16_t c = push_vertex(com, ctx->vis);
+                    push_point(c, ctx->vis);
+                    for (int64_t i = 0; i < num_idx; ++i) {
+                        vec3_t pos = {x[i], y[i], z[i]};
+                        uint16_t v = push_vertex(pos, ctx->vis);
+                        push_line(v, c, ctx->vis);
+                    }
                 }
             }
             visualize_atom_indices32(remapped_indices, md_array_size(remapped_indices), ctx->vis);
@@ -2501,13 +2519,15 @@ static int _com_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->vis) {
-            if (count > 1) {
-                uint16_t c = push_vertex(com, ctx->vis);
-                push_point(c, ctx->vis);
-                for (int64_t i = 0; i < count; ++i) {
-                    vec3_t pos = {x[i], y[i], z[i]};
-                    uint16_t v = push_vertex(pos, ctx->vis);
-                    push_line(v, c, ctx->vis);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                if (count > 1) {
+                    uint16_t c = push_vertex(com, ctx->vis);
+                    push_point(c, ctx->vis);
+                    for (int64_t i = 0; i < count; ++i) {
+                        vec3_t pos = {x[i], y[i], z[i]};
+                        uint16_t v = push_vertex(pos, ctx->vis);
+                        push_line(v, c, ctx->vis);
+                    }
                 }
             }
             visualize_atom_indices32(indices, count, ctx->vis);
@@ -2616,7 +2636,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
             as_vec4(*dst) = plane;
         }
 
-        if (ctx->vis) {
+        if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
             vec3_t v = vec3_mul_f(eigen_vec[0], eigen_val[0]);
             vec3_t u = vec3_mul_f(eigen_vec[1], eigen_val[1]);
 
@@ -2884,7 +2904,7 @@ static int _rdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const float cutoff2 = cutoff * cutoff;
 
         // Visualize
-        if (ctx->vis) {
+        if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
             for (int64_t i = 0; i < ref_size; ++i) {
                 uint16_t ref_v = push_vertex(ref_pos[i], ctx->vis);
                 push_point(ref_v, ctx->vis);
@@ -3035,7 +3055,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         mat4_t V = compute_volume_matrix(cutoff);
         mat4_t VA = mat4_mul(V, A);
 
-        if (ctx->vis) {
+        if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_SDF) {
             ctx->vis->sdf.count = num_ref_bitfields;
             ctx->vis->sdf.extent = cutoff;
         }
@@ -3052,7 +3072,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 mat4_t VART = mat4_mul(VA, RT);
                 populate_volume(vol, VART, target_x, target_y, target_z, target_size);
             }
-            if (ctx->vis) {
+            if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_SDF) {
                 md_allocator_i* alloc = ctx->vis->o->alloc;
                 md_exp_bitfield_t bf_cpy = {0};
                 md_bitfield_init(&bf_cpy, alloc);
