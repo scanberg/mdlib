@@ -215,7 +215,7 @@ static inline __m128i md_simd_or_i128(__m128i a, __m128i b)     { return _mm_or_
 static inline __m128i md_simd_and_i128(__m128i a, __m128i b)    { return _mm_and_si128(a, b); }
 static inline __m128i md_simd_andnot_i128(__m128i a, __m128i b) { return _mm_andnot_si128(a, b); }
 static inline __m128i md_simd_xor_i128(__m128i a, __m128i b)    { return _mm_xor_si128(a, b); }
-static inline __m128i md_simd_not_i128(__m128i a)               { return _mm_andnot_si128(_mm_set1_epi64x(-1), a); }
+static inline __m128i md_simd_not_i128(__m128i x)               { return _mm_andnot_si128(x, _mm_set1_epi64x(-1)); }
 
 #ifdef __AVX__
 // 256-bit wide
