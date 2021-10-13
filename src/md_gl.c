@@ -500,6 +500,42 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
     return false;
 }
 
+bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride) {
+    if (ext_mol && bonds) {
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
+        if (!mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id) {
+            md_print(MD_LOG_TYPE_ERROR, "Molecule bond buffer buffer missing");
+            return false;
+        }
+        if (offset + count > mol->bond_count) {
+            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            return false;
+        }
+        byte_stride = MAX(sizeof(md_bond_t), byte_stride);
+        if (byte_stride > sizeof(md_bond_t)) {
+            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
+            md_bond_t* bond_data = (md_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            if (bond_data) {
+                for (uint32_t i = 0; i < mol->atom_count; ++i) {
+                    bond_data[i] = *(const md_bond_t*)((const uint8_t*)bond_data + byte_stride * i);
+                }
+                glUnmapBuffer(GL_ARRAY_BUFFER);
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                return true;
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule bond buffer");
+            return false;
+        }
+        else {
+            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], offset * sizeof(md_bond_t), count * sizeof(md_bond_t), bonds);
+            return true;
+        }
+    }
+    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    return false;
+}
+
 bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
     if (ext_mol && secondary_structure) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;

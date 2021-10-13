@@ -95,6 +95,7 @@ bool md_gl_molecule_set_atom_position(md_gl_molecule_t* mol, uint32_t offset, ui
 bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride);
 bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride);
 
+bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride);
 bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
 // This is called to copy the atom position buffer to previous atom position
