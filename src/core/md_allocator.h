@@ -4,9 +4,9 @@
 
 // THIS IS MASSIVELY INSPIRED BY THE API WHICH IS USED AT OURMACHINERY (https://ourmachinery.com/) 
 
-#define md_alloc(a, sz) (a)->realloc((a)->inst, NULL, 0, sz, __FILE__, __LINE__)
+#define md_alloc(a, sz) (a)->realloc((a)->inst, 0, 0, sz, __FILE__, __LINE__)
 #define md_realloc(a, ptr, old_sz, new_sz) (a)->realloc((a)->inst, ptr, old_sz, new_sz, __FILE__, __LINE__)
-#define md_alloc_at(a, sz, file, line) (a)->realloc((a)->inst, NULL, 0, sz, file, line)
+#define md_alloc_at(a, sz, file, line) (a)->realloc((a)->inst, 0, 0, sz, file, line)
 #define md_free(a, p, sz) (a)->realloc((a)->inst, p, sz, 0, __FILE__, __LINE__)
 
 typedef struct md_allocator_o md_allocator_o;
@@ -24,7 +24,7 @@ typedef struct md_allocator_i {
 static inline void* md_aligned_alloc(struct md_allocator_i* alloc, uint64_t size, uint64_t alignment) {
     uint64_t offset = alignment - 1 + sizeof(void*) + sizeof(uint64_t);
     void* p1 = md_alloc(alloc, size + offset);
-    if (!p1) return NULL;
+    if (!p1) return 0;
     void** p2 = (void**)(((uint64_t)(p1) + offset) & ~(alignment - 1));
     p2[-1] = p1;
     p2[-2] = (void*)(size + offset); // store real allocation size
