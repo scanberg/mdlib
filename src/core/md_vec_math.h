@@ -318,6 +318,11 @@ static inline float vec3_distance(vec3_t a, vec3_t b) {
     return vec3_length(d);
 }
 
+static inline float vec3_distance_squared(vec3_t a, vec3_t b) {
+    vec3_t d = vec3_sub(a, b);
+    return vec3_dot(d, d);
+}
+
 static inline vec3_t vec3_normalize(vec3_t v) {
     float len = vec3_length(v);
     if (len > 1.0e-5) {
