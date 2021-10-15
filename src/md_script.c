@@ -43,6 +43,14 @@
 #define MAX_SUPPORTED_PROC_ARGS 8
 #define MAX_SUPPORTED_TYPE_DIMS 4
 
+#define SETUP_STACK(backing_allocator, size) \
+    md_allocator_i* _backing = backing_allocator; \
+    md_stack_allocator_t stack_alloc = {0}; \
+    md_stack_allocator_init(&stack_alloc, md_alloc(backing_allocator, size), size); \
+    md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc)
+
+#define FREE_STACK() md_free(_backing, stack_alloc.buf, stack_alloc.cap)
+
 // #############################
 // ###   TYPE DECLARATIONS   ###
 // #############################
@@ -183,7 +191,6 @@ typedef struct data_t {
     md_type_info_t      type;
     void*               ptr;    // Pointer to the data
     int64_t             size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
-    md_script_unit_t    unit;
 
     // Only used for distributions
     float               min_range;
@@ -550,16 +557,17 @@ static void* allocate_type(md_type_info_t type, md_allocator_i* alloc) {
     return data;
 }
 
-static bool allocate_data(data_t* data, md_allocator_i* alloc) {
-    ASSERT(data && !is_undefined_type(data->type));
+static bool allocate_data(data_t* data, md_type_info_t type, md_allocator_i* alloc) {
+    ASSERT(data);
+    ASSERT(!is_undefined_type(type));
     ASSERT(alloc);
     
     // The convention should be that we only allocate data for known lengths
-    const int64_t array_len = type_info_array_len(data->type);
+    const int64_t array_len = type_info_array_len(type);
     ASSERT(array_len > -1);
 
     // Do the base type allocation (array)
-    const int64_t bytes = type_info_byte_stride(data->type) * array_len;
+    const int64_t bytes = type_info_byte_stride(type) * array_len;
 
     if (bytes > 0) {
         data->ptr = md_alloc(alloc, bytes);
@@ -570,8 +578,11 @@ static bool allocate_data(data_t* data, md_allocator_i* alloc) {
         memset(data->ptr, 0, bytes);
     }
     data->size = bytes;
+    data->type = type;
+    data->min_range = -FLT_MAX;
+    data->max_range = FLT_MAX;
 
-    if (data->type.base_type == TYPE_BITFIELD) {
+    if (type.base_type == TYPE_BITFIELD) {
         md_exp_bitfield_t* bf = data->ptr;
         for (int64_t i = 0; i < array_len; ++i) {
             md_bitfield_init(&bf[i], alloc);
@@ -607,7 +618,6 @@ static void copy_data(data_t* dst, const data_t* src) {
     ASSERT(dst->size == src->size);
 
     dst->type = src->type;
-    dst->unit = src->unit;
 
     if (dst->type.base_type == TYPE_BITFIELD) {
         const uint64_t num_elem = element_count(*dst);
@@ -1450,7 +1460,6 @@ static int print_value(char* buf, int buf_size, data_t data) {
                     .ptr = (char*)data.ptr + stride * i,
                     .size = data.size,
                     .type = type,
-                    .unit = data.unit,
                 };
                 len += print_value(buf + len, buf_size - len, elem_data);
                 if (i < arr_len - 1) PRINT(",");
@@ -2280,24 +2289,19 @@ done:
 // ####################
 
 static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx);
-
 static bool evaluate_node(data_t*, const ast_node_t*, eval_context_t*);
 
-static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(node && node->type == AST_PROC_CALL);
     ASSERT(node->proc);
 
-    // This procedure can be called within the static check to 'query' the result of the procedure.
-    // In such case, dst will be NULL.
-
-    if (dst == NULL && ctx->vis) {
-        // We are called within a visualization context, to visualize things
-        // If our function is not marked as FLAG_VISUALIZE, we just stop here.
-        if (!(node->proc->flags & FLAG_VISUALIZE)) {
-            return true;
-        }
+    if (node->token.line == 1 && node->token.col_beg == 12 && compare_str_cstr(node->token.str, "element")) {
+        while(0) {};
     }
+
+    const bool only_visualize = dst == NULL && ctx->vis;
+    int result = 0;
 
     const int64_t num_args = md_array_size(node->children);
     ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
@@ -2305,38 +2309,59 @@ static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context
     data_t arg_data[MAX_SUPPORTED_PROC_ARGS] = {0};
     token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
 
+    //uint64_t stack_reset_point = md_stack_allocator_get_offset(ctx->stack_alloc);
+
     for (int64_t i = 0; i < num_args; ++i) {
         // We need to evaluate the argument nodes first before we make the proc call.
         // In this context we are not interested in storing any data (since it is only used to be passed as arguments)
         // so we can allocate the data required for the node with the temp alloc
-        arg_data[i] = node->children[i]->data;
+
         arg_tokens[i] = node->children[i]->token;
+        md_type_info_t arg_type = node->children[i]->data.type;
 
-        arg_data[i].ptr = 0;
-
-        if (is_variable_length(arg_data[i].type)) {
-            if (!finalize_type(&arg_data[i].type, node->children[i], ctx)) {
+        if (is_variable_length(arg_type)) {
+            if (!finalize_type(&arg_type, node->children[i], ctx)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to finalize dynamic type in procedure call");
-                return false;
+                result = -1;
+                goto done;
             }
         }
 
-        allocate_data(&arg_data[i], ctx->temp_alloc);
+        allocate_data(&arg_data[i], arg_type, ctx->temp_alloc);
         if (!evaluate_node(&arg_data[i], node->children[i], ctx)) {
-            return false;
+            result = -1;
+            goto done;
         }
     }
 
-    token_t* old_arg_tokens = ctx->arg_tokens;
-    ctx->arg_tokens = arg_tokens;
-    int result = node->proc->proc_ptr(dst, arg_data, ctx);
-    ctx->arg_tokens = old_arg_tokens;
+    if (only_visualize && !(node->proc->flags & FLAG_VISUALIZE)) {
+        // We are called within a visualization context, to visualize things
+        // If our function is not marked as FLAG_VISUALIZE, we just stop here.
+        // The arguments have alread been evaluated
+    } else {
+        token_t* old_arg_tokens = ctx->arg_tokens;
+        ctx->arg_tokens = arg_tokens;
+        result = node->proc->proc_ptr(dst, arg_data, ctx);
+        ctx->arg_tokens = old_arg_tokens;
+    }
 
+done:
+    
     for (int64_t i = num_args - 1; i >= 0; --i) {
         free_data(&arg_data[i], ctx->temp_alloc);
     }
+    // @NODE: We are currently not able to reset the stack pointer here:
+    // The bitfields are initialized as arguments, but no real data is allocated until they are modified within the nested procedure calls.
+    // And then, the stack pointer might have already been changed by other temp allocations for other other arguments.
+    // This results in the bitfield block data ending up being allocated among the nested temp allocations for arguments
+    // And is then lost when that stack pointer is reset within that procedure call.
+    // How this can be solved remains a conundrum.
+    // md_stack_allocator_set_offset(ctx->stack_alloc, stack_reset_point);
+    return result;
+}
 
-    return result >= 0;
+static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+    return do_proc_call(dst, node, ctx) >= 0;
 }
 
 static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
@@ -2419,11 +2444,10 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
     if (!ident && ctx->alloc) {
         identifier_t id = {
             .name = lhs->ident,
-            .data = lhs->data,
             .flags = lhs->flags
         };
         ident = md_array_push(ctx->identifiers, id, ctx->alloc);
-        allocate_data(&ident->data, ctx->alloc);
+        allocate_data(&ident->data, lhs->data.type, ctx->alloc);
     }
 
     bool result = false;
@@ -2482,11 +2506,11 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     const ast_node_t* arr = node->children[0];
     const ast_node_t* idx = node->children[1];
 
-    data_t arr_data = {arr->data.type};
-    data_t idx_data = {idx->data.type};
+    data_t arr_data = {0};
+    data_t idx_data = {0};
 
-    if (!allocate_data(&arr_data, ctx->temp_alloc)) return false;
-    if (!allocate_data(&idx_data, ctx->temp_alloc)) return false;
+    if (!allocate_data(&arr_data, arr->data.type, ctx->temp_alloc)) return false;
+    if (!allocate_data(&idx_data, idx->data.type, ctx->temp_alloc)) return false;
 
     if (!evaluate_node(&arr_data, arr, ctx)) return false;
     if (!evaluate_node(&idx_data, idx, ctx)) return false;
@@ -2676,6 +2700,7 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
             // We need to convert this node into a cast node and add the original node data as a child
             ast_node_t* node_copy = create_node(ctx->ir, node->type, node->token);
             memcpy(node_copy, node, sizeof(ast_node_t));
+            node->data = (data_t){0};
             node->type = AST_PROC_CALL;
             node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
             md_array_push(node->children, node_copy, ctx->ir->arena);
@@ -2711,6 +2736,7 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
     } else {
         ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
 
+#if 0
         data_t arg_data[MAX_SUPPORTED_PROC_ARGS] = {0};
         token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
 
@@ -2729,7 +2755,7 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
                         return false;
                     }
                 }
-                allocate_data(&arg_data[i], ctx->temp_alloc);
+                allocate_data(&arg_data[i], arg_data[i].type, ctx->temp_alloc);
                 if (!evaluate_node(&arg_data[i], node->children[i], ctx)) {
                     return false;
                 }
@@ -2754,6 +2780,10 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
         for (int64_t i = num_args - 1 ; i >= 0; --i) {
             free_data(&arg_data[i], ctx->temp_alloc);
         }
+#endif
+
+        // Perform the call
+        int query_result = do_proc_call(NULL, node, ctx);
 
         if (query_result >= 0) { // Zero length is valid
             type->dim[type->len_dim] = query_result;
@@ -3172,7 +3202,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
 
         if (!(rhs->flags & FLAG_DYNAMIC) && !rhs->data.ptr) {
             // If it is not a dynamic node, we evaluate it directly and store the data.
-            allocate_data(&rhs->data, ctx->alloc);
+            allocate_data(&rhs->data, rhs->data.type, ctx->alloc);
             evaluate_node(&rhs->data, rhs, ctx);
             rhs->flags |= FLAG_CONSTANT;
         }
@@ -3241,12 +3271,9 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                         node->lhs_context_types = 0;
                         int64_t arr_len = 0;
                         for (int64_t i = 0; i < num_contexts; ++i) {
-                            eval_context_t local_ctx = {
-                                .ir = ctx->ir,
-                                .mol = ctx->mol,
-                                .mol_ctx = &contexts[i],
-                                .temp_alloc = ctx->temp_alloc
-                            };
+                            eval_context_t local_ctx = *ctx;
+                            local_ctx.mol_ctx = &contexts[i];
+
                             if (!static_check_node(lhs, &local_ctx)) {
                                 return false;
                             }
@@ -3427,16 +3454,11 @@ static bool static_type_check(md_script_ir_o* ir, const md_molecule_t* mol) {
 
     bool result = true;
 
-    const int64_t mem_size = MEGABYTES(64);
-    void* mem = md_alloc(default_allocator, mem_size);
+    SETUP_STACK(default_allocator, MEGABYTES(64));
 
-    md_stack_allocator_t stack_alloc = {0};
-    md_stack_allocator_init(&stack_alloc, mem, mem_size);
-
-    md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc);
-
-    eval_context_t static_check_ctx = {
+    eval_context_t ctx = {
         .ir = ir,
+        .stack_alloc = &stack_alloc,
         .temp_alloc = &temp_alloc,
         .alloc = ir->arena,
         .mol = mol,
@@ -3445,14 +3467,14 @@ static bool static_type_check(md_script_ir_o* ir, const md_molecule_t* mol) {
 
     for (int64_t i = 0; i < md_array_size(ir->expressions); ++i) {
         ir->record_errors = true;   // We reset the error recording flag before each statement
-        if (static_check_node(ir->expressions[i]->node, &static_check_ctx)) {
+        if (static_check_node(ir->expressions[i]->node, &ctx)) {
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
         } else {
             result = false;
         }
     }
 
-    md_free(default_allocator, mem, mem_size);
+    FREE_STACK();
 
     return result;
 }
@@ -3562,7 +3584,7 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     // Only evaluate the node if it is not flagged as dynamic
     // Only evaluate if data.ptr is not already set (which can happen during static check)
     if (!(node->flags & FLAG_DYNAMIC) && !node->data.ptr) {
-        if (allocate_data(&node->data, ctx->ir->arena)) {
+        if (allocate_data(&node->data, node->data.type, ctx->ir->arena)) {
             result &= evaluate_node(&node->data, node, ctx);
             if (node->type == AST_CONTEXT) {
                 ASSERT(node->children);
@@ -3580,17 +3602,12 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
 static bool static_evaluation(md_script_ir_o* ir, const md_molecule_t* mol) {
     ASSERT(mol);
 
-    const int64_t mem_size = MEGABYTES(64);
-    void* mem = md_alloc(default_allocator, mem_size);
-
-    md_stack_allocator_t stack_alloc = {0};
-    md_stack_allocator_init(&stack_alloc, mem, mem_size);
-
-    md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc);
+    SETUP_STACK(default_allocator, MEGABYTES(64));
 
     eval_context_t ctx = {
         .ir = ir,
         .mol = mol,
+        .stack_alloc = &stack_alloc,
         .temp_alloc = &temp_alloc,
     };
 
@@ -3603,7 +3620,7 @@ static bool static_evaluation(md_script_ir_o* ir, const md_molecule_t* mol) {
         md_stack_allocator_reset(&stack_alloc);
     }
 
-    md_free(default_allocator, mem, mem_size);
+    FREE_STACK();
 
     return result;
 }
@@ -3673,7 +3690,7 @@ static bool init_property(md_script_property_t* prop, int64_t num_frames, str_t 
 
     prop->ident = copy_str(ident, alloc);
     prop->type = 0;
-    prop->unit = node->data.unit;
+    prop->flags = 0;
     prop->data = (md_script_property_data_t){0};
     prop->vis_token = (struct md_script_vis_token_t*)node;
 
@@ -3782,12 +3799,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     
     ASSERT(md_array_size(ir->prop_expressions) == num_props);
 
-    const int64_t mem_size = MEGABYTES(128);
-    void* mem = md_alloc(default_allocator, mem_size);
-
-    md_stack_allocator_t stack_alloc = {0};
-    md_stack_allocator_init(&stack_alloc, mem, mem_size);
-    md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc);
+    SETUP_STACK(default_allocator, MEGABYTES(128));
 
     // coordinate data for reading trajectory frames into
     const int64_t stride = ROUND_UP(mol->atom.count, md_simd_widthf);    // Round up allocation size to simd width to allow for vectorized operations
@@ -3826,6 +3838,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     eval_context_t ctx = {
         .ir = ir,
         .mol = &mutable_mol,
+        .stack_alloc = &stack_alloc,
         .temp_alloc = &temp_alloc,
         .alloc = &temp_alloc,
         .initial_configuration = {
@@ -3886,9 +3899,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         ctx.identifiers = 0;
 
         for (int64_t i = 0; i < num_expr; ++i) {
-            data[i] = expr[i]->node->data;
-            data[i].ptr = 0;
-            allocate_data(&data[i], &temp_alloc);
+            allocate_data(&data[i], expr[i]->node->data.type, &temp_alloc);
             data[i].min_range = -FLT_MAX;
             data[i].max_range = FLT_MAX;
             if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
@@ -4025,7 +4036,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     }
 
 done:
-    md_free(default_allocator, mem, mem_size);
+    FREE_STACK();
 
     return result;
 }
@@ -4334,17 +4345,20 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
     md_script_ir_o* ir = create_ir(default_temp_allocator);
     init_ir(ir, expr, NULL);
     tokenizer_t tokenizer = tokenizer_init(ir->str);
-    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = default_temp_allocator});
+
+    SETUP_STACK(default_allocator, MEGABYTES(32));
+
+    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = &temp_alloc});
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .temp_alloc = default_temp_allocator,
+            .stack_alloc = &stack_alloc,
+            .temp_alloc = &temp_alloc,
         };
 
         if (static_check_node(node, &ctx)) {
-            dst->type = node->data.type;
-            allocate_data(dst, alloc);
+            allocate_data(dst, node->data.type, alloc);
             if (evaluate_node(dst, node, &ctx)) {
                 return true;
             }
@@ -4357,6 +4371,8 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
         }
     }
 
+    FREE_STACK();
+
     return false;
 }
 
@@ -4367,10 +4383,9 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
 
     bool success = false;
 
-    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
-    md_allocator_i* temp_alloc = arena;
+    SETUP_STACK(default_allocator, MEGABYTES(32));
 
-    md_script_ir_o* ir = create_ir(arena);
+    md_script_ir_o* ir = create_ir(&temp_alloc);
     init_ir(ir, expr, ctx_ir);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
@@ -4379,7 +4394,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
-        .temp_alloc = arena,
+        .temp_alloc = &temp_alloc,
     };
 
     ir->stage = "Filter evaluate";
@@ -4388,37 +4403,31 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
     ast_node_t* node = parse_expression(&parse_ctx);
     node = prune_expressions(node);
     if (node) {
-        eval_context_t static_ctx = {
+        eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .temp_alloc = temp_alloc,
+            .stack_alloc = &stack_alloc,
+            .temp_alloc = &temp_alloc,
+            .initial_configuration = {
+                .x = mol->atom.x,
+                .y = mol->atom.y,
+                .z = mol->atom.z,
+            }
         };
 
-        if (static_check_node(node, &static_ctx)) {
+        if (static_check_node(node, &ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
-
-                eval_context_t eval_ctx = {
-                    .ir = ir,
-                    .mol = mol,
-                    .temp_alloc = temp_alloc,
-                    .initial_configuration = {
-                        .x = mol->atom.x,
-                        .y = mol->atom.y,
-                        .z = mol->atom.z,
-                    }
-                };
-
                 // Evaluate dynamic targets if available
                 for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
-                    data_t data = { .type = ir->eval_targets[i]->node->data.type };
-                    allocate_data(&data, arena);
-                    evaluate_node(&data, ir->eval_targets[i]->node, &eval_ctx);
+                    data_t data = {0};
+                    allocate_data(&data, ir->eval_targets[i]->node->data.type, &temp_alloc);
+                    evaluate_node(&data, ir->eval_targets[i]->node, &ctx);
                 }
 
-                data_t data = { .type = node->data.type };
-                allocate_data(&data, arena);
+                data_t data = {0};
+                allocate_data(&data, node->data.type, &temp_alloc);
 
-                if (evaluate_node(&data, node, &eval_ctx)) {
+                if (evaluate_node(&data, node, &ctx)) {
                     result->bitfields = NULL;
                     const int64_t len = type_info_array_len(data.type);
                     const md_exp_bitfield_t* bf_arr = data.ptr;
@@ -4447,7 +4456,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
         if (space_left) len += snprintf(result->error_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
     }
 
-    md_arena_allocator_destroy(arena);
+    FREE_STACK();
     
     return success;
 }
@@ -4608,8 +4617,8 @@ static const ast_node_t* get_node(const ast_node_t* node, int32_t col) {
 
 static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
     if (node->data.type.base_type == TYPE_BITFIELD) {
-        data_t data = { .type = node->data.type };
-        allocate_data(&data, ctx->temp_alloc);
+        data_t data = {0};
+        allocate_data(&data, node->data.type, ctx->temp_alloc);
         evaluate_node(&data, node, ctx);
 
         ASSERT(data.ptr);
@@ -4673,16 +4682,14 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         md_bitfield_init(&vis->o->atom_mask, arena);
     }
 
-    const int64_t stack_size = MEGABYTES(32);
-    void* stack_ptr = md_alloc(default_allocator, stack_size);
-    md_stack_allocator_t stack = {0};
-    md_stack_allocator_init(&stack, stack_ptr, stack_size);
-    md_allocator_i stack_alloc = md_stack_allocator_create_interface(&stack);
+    md_stack_allocator_t stack_alloc = {0};
+    md_stack_allocator_init(&stack_alloc, md_alloc(default_allocator, MEGABYTES(32)), MEGABYTES(32));
+    md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc);
 
     int64_t num_frames = md_trajectory_num_atoms(args.traj);
-    float* x = md_stack_allocator_alloc(&stack, num_frames * sizeof(float));
-    float* y = md_stack_allocator_alloc(&stack, num_frames * sizeof(float));
-    float* z = md_stack_allocator_alloc(&stack, num_frames * sizeof(float));
+    float* x = md_stack_allocator_alloc(&stack_alloc, num_frames * sizeof(float));
+    float* y = md_stack_allocator_alloc(&stack_alloc, num_frames * sizeof(float));
+    float* z = md_stack_allocator_alloc(&stack_alloc, num_frames * sizeof(float));
     
     md_trajectory_frame_header_t header = { 0 };
     if (args.traj->inst) {
@@ -4696,7 +4703,8 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     eval_context_t ctx = {
         .ir = args.ir->o,
         .mol = args.mol,
-        .temp_alloc = &stack_alloc,
+        .stack_alloc = &stack_alloc,
+        .temp_alloc = &temp_alloc,
         .vis = vis,
         .initial_configuration = {
             .header = &header,
@@ -4716,7 +4724,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         md_bitfield_or_inplace(vis->atom_mask, &vis->structures.atom_masks[i]);
     }
 
-    md_free(default_allocator, stack_ptr, stack_size);
+    md_free(default_allocator, stack_alloc.buf, stack_alloc.cap);
 
     return true;
 }

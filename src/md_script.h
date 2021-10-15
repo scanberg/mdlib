@@ -14,14 +14,16 @@ struct md_allocator_i;
 // This is represents something which can be visualized
 struct md_script_vis_token_t;
 
-typedef enum md_script_unit_t {
-    MD_SCRIPT_UNIT_NONE,
-    MD_SCRIPT_UNIT_ANGSTROM,
-    MD_SCRIPT_UNIT_DEGREES,
-} md_script_unit_t;
+typedef enum md_script_property_flags_t {
+    MD_SCRIPT_PROPERTY_FLAG_ANGSTROM    = 0x0001,
+    MD_SCRIPT_PROPERTY_FLAG_DEGREES     = 0x0002,
+
+    MD_SCRIPT_PROPERTY_FLAG_PERIODIC    = 0x0004,
+    MD_SCRIPT_PROPERTY_FLAG_SDF         = 0x0008,
+} md_script_property_flags_t;
 
 typedef enum md_script_property_type_t {
-    MD_SCRIPT_PROPERTY_TYPE_NONE,
+    MD_SCRIPT_PROPERTY_TYPE_INVALID = 0,
     MD_SCRIPT_PROPERTY_TYPE_TEMPORAL,
     MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION,
     MD_SCRIPT_PROPERTY_TYPE_VOLUME
@@ -87,7 +89,7 @@ typedef struct md_script_property_data_t {
 typedef struct md_script_property_t {
     str_t ident;
     md_script_property_type_t type;
-    md_script_unit_t unit;
+    md_script_property_flags_t flags;
     md_script_property_data_t data;
 
     const struct md_script_vis_token_t* vis_token; // For visualization of the property
