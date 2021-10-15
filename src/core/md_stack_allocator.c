@@ -16,11 +16,11 @@ void* stack_realloc(struct md_allocator_o* alloc, void* ptr, uint64_t old_size, 
 
     if (old_size) {
         ASSERT(ptr);
-        if (ptr == stack_alloc->buf + stack_alloc->prev) {
+        if (ptr == stack_alloc->buf + stack_alloc->prv) {
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
-            const int64_t new_curr = stack_alloc->curr + diff;
-            ASSERT(0 <= new_curr && new_curr < (int64_t)stack_alloc->capacity);
-            stack_alloc->curr = new_curr;
+            const int64_t new_cur = stack_alloc->cur + diff;
+            ASSERT(0 <= new_cur && new_cur < (int64_t)stack_alloc->cap);
+            stack_alloc->cur = new_cur;
             return ptr;
         }
         void* new_ptr = md_stack_allocator_alloc(stack_alloc, new_size);
