@@ -125,6 +125,46 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         return 0; \
     }
 
+#define BAKE_SIMDF_OP_M_M(name, op) \
+    static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
+        (void)ctx; \
+        ASSERT(dst); \
+        ASSERT(dst->type.base_type == TYPE_FLOAT); \
+        ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
+        ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
+        int64_t count_a = type_info_element_stride_count(arg[0].type); \
+        int64_t count_b = type_info_element_stride_count(arg[1].type); \
+        ASSERT(count_a == count_b); \
+        ASSERT(count_a % md_simd_widthf == 0); \
+        const float* src_a = as_float_arr(arg[0]); \
+        const float* src_b = as_float_arr(arg[1]); \
+        float* dst_arr = as_float_arr(*dst); \
+        for (int64_t i = 0; i < count_a; i += md_simd_widthf) { \
+            md_simd_typef a = md_simd_loadf(src_a + i); \
+            md_simd_typef b = md_simd_loadf(src_b + i); \
+            md_simd_storef(dst_arr + i, op(a, b)); \
+        } \
+        return 0; \
+    }
+
+#define BAKE_SIMDF_OP_M_S(name, op) \
+    static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
+        (void)ctx; \
+        ASSERT(dst); \
+        ASSERT(dst->type.base_type == TYPE_FLOAT); \
+        ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
+        ASSERT(is_type_equivalent(arg[1].type, (md_type_info_t){TYPE_FLOAT})); \
+        int64_t count = type_info_element_stride_count(arg[0].type); \
+        ASSERT(count % md_simd_widthf == 0); \
+        const float* src_arr = as_float_arr(arg[0]); \
+        float* dst_arr = as_float_arr(*dst); \
+        md_simd_typef s = md_simd_set1f(as_float(arg[1])); \
+        for (int64_t i = 0; i < count; i += md_simd_widthf) { \
+            md_simd_storef(dst_arr + i, op(md_simd_loadf(src_arr + i), s)); \
+        } \
+        return 0; \
+    }
+
 BAKE_OP_S_S(_op_and_b_b, &&,  bool)
 BAKE_OP_S_S(_op_or_b_b,  ||,  bool)
 BAKE_OP_UNARY_S(_op_not_b, !, bool)
@@ -162,6 +202,18 @@ BAKE_OP_M_M(_op_add_iarr_iarr, +, int)
 BAKE_OP_M_M(_op_sub_iarr_iarr, -, int)
 BAKE_OP_M_M(_op_mul_iarr_iarr, *, int)
 BAKE_OP_M_M(_op_div_iarr_iarr, /, int)
+
+BAKE_SIMDF_OP_M_M(_op_simd_add_farr_farr, md_simd_addf)
+BAKE_SIMDF_OP_M_S(_op_simd_add_farr_f,    md_simd_addf)
+
+BAKE_SIMDF_OP_M_M(_op_simd_sub_farr_farr, md_simd_subf)
+BAKE_SIMDF_OP_M_S(_op_simd_sub_farr_f,    md_simd_subf)
+
+BAKE_SIMDF_OP_M_M(_op_simd_mul_farr_farr, md_simd_mulf)
+BAKE_SIMDF_OP_M_S(_op_simd_mul_farr_f,    md_simd_mulf)
+
+BAKE_SIMDF_OP_M_M(_op_simd_div_farr_farr, md_simd_divf)
+BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    md_simd_divf)
 
 // Forward declarations of functions
 // @TODO: Add your declarations here
@@ -248,6 +300,20 @@ static int _vec2 (data_t*, data_t[], eval_context_t*); // (float, float) -> floa
 static int _vec3 (data_t*, data_t[], eval_context_t*); // (float, float, float) -> float[4]
 static int _vec4 (data_t*, data_t[], eval_context_t*); // (float, float, float, float) -> float[4]
 
+static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    int64_t total_count = type_info_element_stride_count(arg[0].type);
+    ASSERT(total_count % md_simd_widthf == 0);
+    const float* src_arr = as_float_arr(arg[0]);
+    float* dst_arr = as_float_arr(arg[0]);
+
+    for (int64_t i = 0; i < total_count; i += md_simd_widthf) {
+        md_simd_typef val = md_simd_loadf(src_arr + i);
+        md_simd_storef(dst_arr + i, md_simd_subf(md_simd_zerof(), val));
+    }
+    return 0;
+}
 
 // This is to mark that the procedure supports a varying length
 #define ANY_LENGTH -1
@@ -287,9 +353,6 @@ static int _vec4 (data_t*, data_t[], eval_context_t*); // (float, float, float, 
 
 #define TI_BITFIELD         {TYPE_BITFIELD, {1}, 0}
 #define TI_BITFIELD_ARR     {TYPE_BITFIELD, {ANY_LENGTH}, 0}
-//#define TI_BITFIELD    {TYPE_BITFIELD, {1}, 0, LEVEL_ATOM}
-//#define TI_BITFIELD_RESIDUE {TYPE_BITFIELD, {1}, 0, LEVEL_RESIDUE}
-//#define TI_BITFIELD_CHAIN   {TYPE_BITFIELD, {1}, 0, LEVEL_CHAIN}
 
 // Predefined constants
 static const float _PI  = 3.14159265358f;
@@ -336,28 +399,16 @@ static procedure_t operators[] = {
     {cstr("and"),    TI_BITFIELD,   2,  {TI_BITFIELD, TI_BITFIELD}, _and},
     {cstr("or"),     TI_BITFIELD,   2,  {TI_BITFIELD, TI_BITFIELD}, _or},
 
-    //{cstr("not"),    TI_BITFIELD_RESIDUE,1,  {TI_BITFIELD_RESIDUE},  _not},
-    //{cstr("not"),    TI_BITFIELD_CHAIN,  1,  {TI_BITFIELD_CHAIN},    _not},
-
-    // BITFIELD AND -> MAINTAIN THE HIGHEST LEVEL OF CONTEXT AMONG OPERANDS
-    //{cstr("and"),    TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_RESIDUE},   _and},
-    //{cstr("and"),    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_CHAIN},     _and},
-
-    //{cstr("and"),    TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD,      TI_BITFIELD_RESIDUE},   _and,   FLAG_SYMMETRIC_ARGS},
-    //{cstr("and"),    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD,      TI_BITFIELD_CHAIN},     _and,   FLAG_SYMMETRIC_ARGS},
-    //{cstr("and"),    TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_CHAIN},     _and,   FLAG_SYMMETRIC_ARGS},
-
-    //{cstr("or"),     TI_BITFIELD,   2,  {TI_BITFIELD,      TI_BITFIELD},      _or},
-    //{cstr("or"),     TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_RESIDUE},   _or},
-    //{cstr("or"),     TI_BITFIELD_CHAIN,  2,  {TI_BITFIELD_CHAIN,     TI_BITFIELD_CHAIN},     _or},
-
-    //{cstr("or"),     TI_BITFIELD,   2,  {TI_BITFIELD,      TI_BITFIELD_CHAIN},     _or,    FLAG_SYMMETRIC_ARGS},
-    //{cstr("or"),     TI_BITFIELD_RESIDUE,2,  {TI_BITFIELD_RESIDUE,   TI_BITFIELD_CHAIN},     _or,    FLAG_SYMMETRIC_ARGS},
-
     // Binary add
     {cstr("+"),      TI_FLOAT,       2,  {TI_FLOAT,      TI_FLOAT},      _op_add_f_f},
     {cstr("+"),      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_add_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
     {cstr("+"),      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},  _op_add_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+
+    {cstr("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_add_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {cstr("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_add_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+
+    {cstr("+"),      TI_VOLUME, 2,  {TI_VOLUME,  TI_VOLUME},    _op_simd_add_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {cstr("+"),      TI_VOLUME, 2,  {TI_VOLUME,  TI_FLOAT},     _op_simd_add_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
     {cstr("+"),      TI_INT,         2,  {TI_INT,        TI_INT},        _op_add_i_i},
     {cstr("+"),      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_add_iarr_i,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
@@ -370,10 +421,20 @@ static procedure_t operators[] = {
     {cstr("-"),      TI_INT,         1,  {TI_INT},                       _op_neg_i},
     {cstr("-"),      TI_INT_ARR,     1,  {TI_INT_ARR},                   _op_neg_iarr,       FLAG_RET_AND_ARG_EQUAL_LENGTH},
 
+    {cstr("-"),      TI_DISTRIBUTION,   1,  {TI_DISTRIBUTION},           _op_simd_neg_farr,     FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {cstr("-"),      TI_VOLUME,         1,  {TI_DISTRIBUTION},           _op_simd_neg_farr,     FLAG_RET_AND_ARG_EQUAL_LENGTH},
+
+
     // Binary sub
     {cstr("-"),      TI_FLOAT,       2,  {TI_FLOAT,      TI_FLOAT},      _op_sub_f_f},
     {cstr("-"),      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_sub_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
     {cstr("-"),      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},  _op_sub_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+
+    {cstr("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_sub_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {cstr("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_sub_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+
+    {cstr("-"),      TI_VOLUME, 2,  {TI_VOLUME,  TI_VOLUME},    _op_simd_sub_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {cstr("-"),      TI_VOLUME, 2,  {TI_VOLUME,  TI_FLOAT},     _op_simd_sub_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
     {cstr("-"),      TI_INT,         2,  {TI_INT,        TI_INT},        _op_sub_i_i},
     {cstr("-"),      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_sub_iarr_i,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
@@ -384,6 +445,12 @@ static procedure_t operators[] = {
     {cstr("*"),      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_mul_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
     {cstr("*"),      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},  _op_mul_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
+    {cstr("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {cstr("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+
+    {cstr("*"),      TI_VOLUME,     2,  {TI_VOLUME,  TI_VOLUME},    _op_simd_mul_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {cstr("*"),      TI_VOLUME,     2,  {TI_VOLUME,  TI_FLOAT},     _op_simd_mul_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+
     {cstr("*"),      TI_INT,         2,  {TI_INT,        TI_INT},        _op_mul_i_i},
     {cstr("*"),      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_mul_iarr_i,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
     {cstr("*"),      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT_ARR},    _op_mul_iarr_iarr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
@@ -392,6 +459,12 @@ static procedure_t operators[] = {
     {cstr("/"),      TI_FLOAT,       2,  {TI_FLOAT,      TI_FLOAT},      _op_div_f_f},
     {cstr("/"),      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT},      _op_div_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
     {cstr("/"),      TI_FLOAT_ARR,   2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},  _op_div_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+
+    {cstr("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {cstr("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+
+    {cstr("/"),      TI_VOLUME, 2,  {TI_VOLUME,  TI_VOLUME},    _op_simd_div_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {cstr("/"),      TI_VOLUME, 2,  {TI_VOLUME,  TI_FLOAT},     _op_simd_div_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
     {cstr("/"),      TI_INT,         2,  {TI_INT,        TI_INT},        _op_div_i_i},
     {cstr("/"),      TI_INT_ARR,     2,  {TI_INT_ARR,    TI_INT},        _op_div_iarr_i,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
@@ -478,7 +551,7 @@ static procedure_t procedures[] = {
     {cstr("angle"),     TI_FLOAT,   3,  {TI_FLOAT3, TI_FLOAT3, TI_FLOAT3},              _angle,     FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
     {cstr("dihedral"),  TI_FLOAT,   4,  {TI_FLOAT3, TI_FLOAT3, TI_FLOAT3, TI_FLOAT3},   _dihedral,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
 
-    {cstr("rmsd"),      TI_FLOAT_ARR,   1,  {TI_BITFIELD_ARR},    _rmsd,     FLAG_DYNAMIC | FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {cstr("rmsd"),      TI_FLOAT,   1,  {TI_BITFIELD},    _rmsd,     FLAG_DYNAMIC | FLAG_RET_AND_ARG_EQUAL_LENGTH},
 
     {cstr("rdf"),       TI_DISTRIBUTION,    3,  {TI_FLOAT3_ARR,   TI_FLOAT3_ARR, TI_FLOAT}, _rdf,  FLAG_DYNAMIC | FLAG_POSITION},
     {cstr("sdf"),       TI_VOLUME,          3,  {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},   _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE},
@@ -1137,7 +1210,7 @@ static int _z(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return coordinate_range(dst, arg, ctx, ctx->mol->atom.z);
 }
 
-static bool spatial_hash_iter_set_bit(uint32_t idx, vec3_t pos, void* user_data) {
+static bool within_float_iter(uint32_t idx, vec3_t pos, void* user_data) {
     (void)pos;
     md_exp_bitfield_t* bf = (md_exp_bitfield_t*)user_data;
     md_bitfield_set_bit(bf, (int64_t)idx);
@@ -1163,7 +1236,7 @@ static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_exp_bitfield_t* dst_bf = as_bitfield(*dst);
             for (int64_t i = 0; i < num_pos; ++i) {
                 vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, radius};
-                md_spatial_hash_query(&spatial_hash, pos_rad, spatial_hash_iter_set_bit, dst_bf);
+                md_spatial_hash_query(&spatial_hash, pos_rad, within_float_iter, dst_bf);
             }
         } else {
             // Visualize
@@ -1171,7 +1244,7 @@ static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (int64_t i = 0; i < num_pos; ++i) {
                 vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, radius};
                 push_sphere(pos_rad, ctx->vis);
-                md_spatial_hash_query(&spatial_hash, pos_rad, spatial_hash_iter_set_bit, dst_bf);
+                md_spatial_hash_query(&spatial_hash, pos_rad, within_float_iter, dst_bf);
             }
         }
     }
@@ -1189,13 +1262,73 @@ static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+typedef struct within_frng_payload_t {
+    md_exp_bitfield_t* bf;
+    frange_t rad_range;
+    vec3_t ref_pos;
+} within_frng_payload_t;
+
+static bool within_frng_iter(uint32_t idx, vec3_t pos, void* user_data) {
+    (void)pos;
+    within_frng_payload_t* data = (within_frng_payload_t*)user_data;
+    float d2 = vec3_distance_squared(data->ref_pos, pos);
+    if (data->rad_range.beg * data->rad_range.beg < d2 && d2 < data->rad_range.end * data->rad_range.end) {
+        md_bitfield_set_bit(data->bf, (int64_t)idx);
+    }
+    return true;
+}
+
 static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
 
-    ASSERT(false);
+    const frange_t rad_range = as_frange(arg[0]);
+    const vec3_t* in_pos = as_vec3_arr(arg[1]);
+    const int64_t num_pos = element_count(arg[1]);
+
+    if (dst || ctx->vis) {
+        md_spatial_hash_t spatial_hash = {0};
+        float cell_ext = rad_range.end / 3.0f;
+        md_spatial_hash_init(&spatial_hash, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.count, cell_ext, ctx->temp_alloc);
+
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+            md_exp_bitfield_t* dst_bf = as_bitfield(*dst);
+            within_frng_payload_t payload = {
+                .bf = dst_bf,
+                .rad_range = rad_range,
+            };
+            for (int64_t i = 0; i < num_pos; ++i) {
+                vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, rad_range.end};
+                payload.ref_pos = (vec3_t) {in_pos[i].x, in_pos[i].y, in_pos[i].z};
+                md_spatial_hash_query(&spatial_hash, pos_rad, within_frng_iter, &payload);
+            }
+        } else {
+            // Visualize
+            md_exp_bitfield_t* dst_bf = ctx->vis->atom_mask;
+            within_frng_payload_t payload = {
+                .bf = dst_bf,
+                .rad_range = rad_range,
+            };
+            for (int64_t i = 0; i < num_pos; ++i) {
+                vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, rad_range.end};
+                payload.ref_pos = (vec3_t) {in_pos[i].x, in_pos[i].y, in_pos[i].z};
+                md_spatial_hash_query(&spatial_hash, pos_rad, within_frng_iter, &payload);
+                push_sphere(pos_rad, ctx->vis);
+            }
+        }
+    }
+    else {
+        if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
+            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
+            return -1;
+        }
+        if (num_pos == 0) {
+            create_error(ctx->ir, ctx->arg_tokens[1], "No supplied positions");
+            return -1;
+        }
+    }
 
     return 0;
 }
@@ -1771,7 +1904,6 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
         as_float(*dst) = vec3_distance(a, b);
-        dst->unit = MD_SCRIPT_UNIT_ANGSTROM;
         dst->min_range = -FLT_MAX;
         dst->max_range = FLT_MAX;
     }
@@ -1814,7 +1946,6 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
         as_float(*dst) = min_dist;
-        dst->unit = MD_SCRIPT_UNIT_ANGSTROM;
         dst->min_range = -FLT_MAX;
         dst->max_range = FLT_MAX;
     }
@@ -1857,7 +1988,6 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
         as_float(*dst) = max_dist;
-        dst->unit = MD_SCRIPT_UNIT_ANGSTROM;
         dst->min_range = -FLT_MAX;
         dst->max_range = FLT_MAX;
     }
@@ -1897,7 +2027,6 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
 
-        dst->unit = MD_SCRIPT_UNIT_ANGSTROM;
         dst->min_range = -FLT_MAX;
         dst->max_range = FLT_MAX;
     } else {
@@ -1933,7 +2062,6 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
         as_float(*dst) = (float)RAD_TO_DEG(acosf(vec3_dot(v0, v1)));
-        dst->unit = MD_SCRIPT_UNIT_DEGREES;
         dst->min_range = 0.0f;
         dst->max_range = 180.0f;
     }
@@ -1973,7 +2101,6 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
         as_float(*dst) = (float)RAD_TO_DEG(dihedral_angle(a,b,c,d));
-        dst->unit = MD_SCRIPT_UNIT_DEGREES;
         dst->min_range = -180.0f;
         dst->max_range = 180.0f;
     }
@@ -2001,68 +2128,44 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_equivalent(arg[0].type, (md_type_info_t)TI_BITFIELD));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.mass);
 
     bool result = 0;
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
-        ASSERT(!is_variable_length(dst->type));
+        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
         ASSERT(dst->ptr);
-        float* dst_arr = as_float_arr(*dst);
-        const int64_t dst_count = element_count(*dst);
 
-        if (ctx->initial_configuration.header && ctx->initial_configuration.x && ctx->initial_configuration.y && ctx->initial_configuration.z) {
-            const md_exp_bitfield_t* bf_arr = as_bitfield(arg[0]);
-            const int64_t bf_count = element_count(arg[0]);
-            ASSERT(dst_count == bf_count);
+        ASSERT(ctx->initial_configuration.x && ctx->initial_configuration.y && ctx->initial_configuration.z);
 
-            md_exp_bitfield_t tmp_bf = {0};
+        const md_exp_bitfield_t* bf = as_bitfield(arg[0]);
+        md_exp_bitfield_t tmp_bf = {0};
+
+        if (ctx->mol_ctx) {
             md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-
-            int64_t max_count = 0;
-            for (int64_t i = 0; i < bf_count; ++i) {
-                const md_exp_bitfield_t* bf = &bf_arr[i];
-                if (ctx->mol_ctx) {
-                    md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
-                    bf = &tmp_bf;
-                }
-                const int64_t count = md_bitfield_popcount(bf);
-                max_count = MAX(max_count, count);
-            }
-
-            const int64_t stride = ROUND_UP(max_count, md_simd_widthf);
-            const int64_t coord_bytes = stride * 7 * sizeof(float);
-            float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
-            float* x0 = coord_data + stride * 0;
-            float* y0 = coord_data + stride * 1;
-            float* z0 = coord_data + stride * 2;
-            float* x  = coord_data + stride * 3;
-            float* y  = coord_data + stride * 4;
-            float* z  = coord_data + stride * 5;
-            float* w  = coord_data + stride * 6;
-
-            for (int64_t i = 0; i < bf_count; ++i) {
-                const md_exp_bitfield_t* bf = &bf_arr[i];
-                if (ctx->mol_ctx) {
-                    md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
-                    bf = &tmp_bf;
-                }
-
-                const int64_t count = md_bitfield_popcount(bf);
-                ASSERT(count <= max_count);
-                extract_xyz (x0, y0, z0,    ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, bf);
-                extract_xyzw(x,  y,  z,  w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
-
-                double rmsd = md_util_compute_rmsd(x0, y0, z0, x, y, z, w, count);
-
-                dst_arr[i] = (float)rmsd;
-            }
-
-            md_free(ctx->temp_alloc, coord_data, coord_bytes);
-            md_bitfield_free(&tmp_bf);
+            md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+            bf = &tmp_bf;
         }
+        const int64_t count = md_bitfield_popcount(bf);
+
+        const int64_t stride = ROUND_UP(count, md_simd_widthf);
+        const int64_t coord_bytes = stride * 7 * sizeof(float);
+        float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
+        float* x0 = coord_data + stride * 0;
+        float* y0 = coord_data + stride * 1;
+        float* z0 = coord_data + stride * 2;
+        float* x  = coord_data + stride * 3;
+        float* y  = coord_data + stride * 4;
+        float* z  = coord_data + stride * 5;
+        float* w  = coord_data + stride * 6;
+
+        extract_xyz (x0, y0, z0,    ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, bf);
+        extract_xyzw(x,  y,  z,  w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+
+        as_float(*dst) = (float)md_util_compute_rmsd(x0, y0, z0, x, y, z, w, count);
+
+        // No need to free anything, this will be taken care of in the procedure call
     }
     else {
         // Validate args
@@ -2071,11 +2174,6 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Visualize
         // I don't think we need another visualization than the bitfield highlighting the atoms involved...
-        /*
-        if (ctx->vis) {
-            ASSERT(ctx->vis->o->alloc);
-        }
-        */
     }
 
     return result;
@@ -2380,7 +2478,7 @@ static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             visualize_atom_mask(&tmp_bf, ctx->vis);
         }
     } else {
-        if (bit_count <= 1) {
+        if (bit_count < 1) {
             create_error(ctx->ir, ctx->arg_tokens[0], "The bitfield is empty");
             // In a static check, the argument may be of a type that is dynamic, i.e. x(0:10), and yield a zero bitfield.
             // The question is what we do then?
