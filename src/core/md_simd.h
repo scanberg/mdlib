@@ -329,10 +329,54 @@ static inline __m256i md_simd_set1_i256(int x) { return _mm256_set1_epi32(x); }
 static inline __m256i md_simd_set_i256(int x0, int y0, int z0, int w0, int x1, int y1, int z1, int w1) { return _mm256_set_epi32(w1, z1, y1, x1, w0, z0, y0, x0); }
 static inline __m256i md_simd_zero_i256() { return _mm256_setzero_si256(); }
 
+static inline __m128i md_simd_extract_lo_i256(__m256i x) { return _mm256_castsi256_si128(x); }
+static inline __m128i md_simd_extract_hi_i256(__m256i x) { return _mm256_extractf128_si256(x, 1); }
+
+#ifdef __AVX2__
 static inline __m256i md_simd_or_i256(__m256i a, __m256i b)     { return _mm256_or_si256(a, b); }
 static inline __m256i md_simd_and_i256(__m256i a, __m256i b)    { return _mm256_and_si256(a, b); }
 static inline __m256i md_simd_andnot_i256(__m256i a, __m256i b) { return _mm256_andnot_si256(a, b); }
 static inline __m256i md_simd_xor_i256(__m256i a, __m256i b)    { return _mm256_xor_si256(a, b); }
 static inline __m256i md_simd_not_i256(__m256i x)               { return _mm256_andnot_si256(x, _mm256_set1_epi64x(-1)); }
+#else
+// Fallback in case AVX2 is not supported
+static inline __m256i md_simd_or_i256(__m256i a, __m256i b) {
+    __m128i a_lo = md_simd_extract_lo_i256(a);
+    __m128i a_hi = md_simd_extract_hi_i256(a);
+    __m128i b_lo = md_simd_extract_lo_i256(b);
+    __m128i b_hi = md_simd_extract_hi_i256(b);
+    return _mm256_set_m128i(md_simd_or_i128(a_hi, b_hi), md_simd_or_i128(a_lo, b_lo));
+}
+
+static inline __m256i md_simd_and_i256(__m256i a, __m256i b) {
+    __m128i a_lo = md_simd_extract_lo_i256(a);
+    __m128i a_hi = md_simd_extract_hi_i256(a);
+    __m128i b_lo = md_simd_extract_lo_i256(b);
+    __m128i b_hi = md_simd_extract_hi_i256(b);
+    return _mm256_set_m128i(md_simd_and_i128(a_hi, b_hi), md_simd_and_i128(a_lo, b_lo));
+}
+
+static inline __m256i md_simd_andnot_i256(__m256i a, __m256i b) {
+    __m128i a_lo = md_simd_extract_lo_i256(a);
+    __m128i a_hi = md_simd_extract_hi_i256(a);
+    __m128i b_lo = md_simd_extract_lo_i256(b);
+    __m128i b_hi = md_simd_extract_hi_i256(b);
+    return _mm256_set_m128i(md_simd_andnot_i128(a_hi, b_hi), md_simd_andnot_i128(a_lo, b_lo));
+}
+
+static inline __m256i md_simd_xor_i256(__m256i a, __m256i b) {
+    __m128i a_lo = md_simd_extract_lo_i256(a);
+    __m128i a_hi = md_simd_extract_hi_i256(a);
+    __m128i b_lo = md_simd_extract_lo_i256(b);
+    __m128i b_hi = md_simd_extract_hi_i256(b);
+    return _mm256_set_m128i(md_simd_xor_i128(a_hi, b_hi), md_simd_xor_i128(a_lo, b_lo));
+}
+
+static inline __m256i md_simd_not_i256(__m256i x) {
+    __m128i x_lo = md_simd_extract_lo_i256(x);
+    __m128i x_hi = md_simd_extract_hi_i256(x);
+    return _mm256_set_m128i(md_simd_not_i128(x_hi), md_simd_not_i128(x_lo));
+}
+#endif
 
 #endif
