@@ -268,7 +268,9 @@ static inline void ensure_range(md_exp_bitfield_t* bf, int64_t beg_bit, int64_t 
 
     // If the bitfield is empty, we need to set the bits for min max to work
     if (bf->beg_bit == 0 && bf->end_bit == 0) {
-        ASSERT(bf->bits == NULL);
+        if (bf->bits) {
+            free_blocks(bf);
+        }
         bf->beg_bit = (uint32_t)beg_bit;
         bf->end_bit = (uint32_t)end_bit;
         int64_t num_blk = num_blocks(beg_bit, end_bit);
@@ -395,6 +397,10 @@ void md_bitfield_or_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
     validate_bitfield(b);
 
     if (a == b) return;
+    if (a->bits == 0) {
+        md_bitfield_copy(a, b);
+        return;
+    }
 
     int64_t beg_bit = MIN(a->beg_bit, b->beg_bit);
     int64_t end_bit = MAX(a->end_bit, b->end_bit);
