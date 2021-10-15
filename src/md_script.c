@@ -527,36 +527,6 @@ static inline int64_t bitfield_byte_size(int64_t num_bits) {
     return DIV_UP(num_bits, 64) * sizeof(int64_t);
 }
 
-static void* allocate_type(md_type_info_t type, md_allocator_i* alloc) {
-    ASSERT(!is_undefined_type(type));
-    ASSERT(alloc);
-
-    void* data = 0;
-
-    // The convention should be that we only allocate data for known lengths
-    const int64_t array_len = type_info_array_len(type);
-    ASSERT(array_len > -1);
-
-    const int64_t bytes = type_info_byte_stride(type) * array_len;
-    if (bytes > 0) {
-        data = md_alloc(alloc, bytes);
-        if (!data) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to allocate data in script!");
-            return NULL;
-        }
-        memset(data, 0, bytes);
-
-        if (type.base_type == TYPE_BITFIELD) {
-            md_exp_bitfield_t* bf = data;
-            for (int64_t i = 0; i < array_len; ++i) {
-                md_bitfield_init(&bf[i], alloc);
-            }
-        }
-    }
-
-    return data;
-}
-
 static bool allocate_data(data_t* data, md_type_info_t type, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(!is_undefined_type(type));
@@ -691,152 +661,6 @@ static const char* get_value_type_str(base_type_t type) {
     default: return "type out of range";
     }
 }
-
-/*
-static int64_t count_residues_in_mask(md_bitfield_t mask, const md_molecule* mol) {
-    ASSERT(mol);
-    ASSERT(mask.num_bits == mol->atom.count);
-    ASSERT(mol->atom.residue_idx);
-    ASSERT(mol->residue.atom_range);
-
-    int64_t count = 0;
-    uint64_t idx = 0;
-    while (idx = bit_scan(mask.bits, idx, mask.num_bits - idx)) {
-        ++count;
-        const int64_t i = idx - 1;
-        idx = mol->residue.atom_range[mol->atom.residue_idx[i]].end;
-    }
-
-    return count;
-}
-
-static int64_t count_chains_in_mask(md_bitfield_t mask, const md_molecule* mol) {
-    ASSERT(mol);
-    ASSERT(mask.num_bits == mol->atom.count);
-    ASSERT(mol->atom.chain_idx);
-    ASSERT(mol->chain.atom_range);
-
-    int64_t count = 0;
-    uint64_t idx = 0;
-    while (idx = bit_scan(mask.bits, idx, mask.num_bits - idx)) {
-        ++count;
-        const int64_t i = idx - 1;
-        idx = mol->chain.atom_range[mol->atom.chain_idx[i]].end;
-    }
-
-    return count;
-}
-*/
-
-/*
-static int64_t* get_atom_indices_in_mask(const md_exp_bitfield_t* mask, const md_molecule* mol, md_allocator_i* alloc) {
-    ASSERT(mask);
-    ASSERT(mol);
-    ASSERT(alloc);
-    ASSERT(mask->end_bit <= mol->atom.count);
-
-    int64_t* result = NULL;
-
-    int64_t beg_bit = mask->beg_bit;
-    int64_t end_bit = mask->end_bit;
-    while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-        const int64_t idx = beg_bit - 1;
-        md_array_push(result, idx, alloc);
-    }
-    return result;
-}
-
-static int64_t* get_residue_indices_in_mask(const md_exp_bitfield_t* mask, const md_molecule* mol, md_allocator_i* alloc) {
-    ASSERT(mask);
-    ASSERT(mol);
-    ASSERT(alloc);
-    ASSERT(mask->end_bit <= mol->atom.count);
-    ASSERT(mol->atom.residue_idx);
-    ASSERT(mol->residue.atom_range);
-
-    int64_t* result = NULL;
-
-    int64_t beg_bit = mask->beg_bit;
-    int64_t end_bit = mask->end_bit;
-    while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-        const int64_t atom_idx = beg_bit - 1;
-        int64_t res_idx = mol->atom.residue_idx[atom_idx];
-        md_array_push(result, res_idx, alloc);
-        // Skip to end of residue
-        beg_bit = mol->residue.atom_range[res_idx].end;
-    }
-    return result;
-}
-
-static int64_t* get_chain_indices_in_mask(const md_exp_bitfield_t* mask, const md_molecule* mol, md_allocator_i* alloc) {
-    ASSERT(mask);
-    ASSERT(mol);
-    ASSERT(alloc);
-    ASSERT(mask->end_bit <= mol->atom.count);
-    ASSERT(mol->atom.chain_idx);
-    ASSERT(mol->chain.atom_range);
-
-    int64_t* result = NULL;
-
-    int64_t beg_bit = mask->beg_bit;
-    int64_t end_bit = mask->end_bit;
-    while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-        const int64_t atom_idx = beg_bit - 1;
-        int64_t chain_idx = mol->atom.chain_idx[atom_idx];
-        md_array_push(result, chain_idx, alloc);
-        // skip to end of chain
-        beg_bit = mol->chain.atom_range[chain_idx].end;
-    }
-    return result;
-}
-*/
-
-/*
-static mol_context_t* get_residue_contexts_in_mask(const md_exp_bitfield_t* mask, const md_molecule* mol, md_allocator_i* alloc) {
-    ASSERT(mask);
-    ASSERT(mol);
-    ASSERT(alloc);
-    ASSERT(mol->residue.atom_range);    
-
-    int64_t* res_idx = get_residue_indices_in_mask(mask, mol, alloc);
-    mol_context_t* res_ctx = NULL;
-
-    for (int64_t i = 0; i < md_array_size(res_idx); ++i) {
-        const int64_t idx = res_idx[i];
-        mol_context_t ctx = {
-            .atom = {mol->residue.atom_range[idx].beg, mol->residue.atom_range[idx].end},
-            .residue = {(uint32_t)idx, (uint32_t)idx+1},
-            .chain = {0},
-        };
-        md_array_push(res_ctx, ctx, alloc);
-    }
-
-    return res_ctx;
-}
-
-static mol_context_t* get_chain_contexts_in_mask(const md_exp_bitfield_t* mask, const md_molecule* mol, md_allocator_i* alloc) {
-    ASSERT(mask);
-    ASSERT(mol);
-    ASSERT(alloc);
-    ASSERT(mol->chain.atom_range);
-    ASSERT(mol->chain.residue_range);
-
-    int64_t* chain_idx = get_chain_indices_in_mask(mask, mol, alloc);
-    mol_context_t* chain_ctx = NULL;
-
-    for (int64_t i = 0; i < md_array_size(chain_idx); ++i) {
-        const int64_t idx = chain_idx[i];
-        mol_context_t ctx = {
-            .atom = {mol->chain.atom_range[idx].beg, mol->chain.atom_range[idx].end},
-            .residue = {mol->chain.residue_range[idx].beg, mol->chain.residue_range[idx].end},
-            .chain = {(uint32_t)idx, (uint32_t)idx+1},
-        };
-        md_array_push(chain_ctx, ctx, alloc);
-    }
-
-    return chain_ctx;
-}
-*/
 
 static void create_error(md_script_ir_o* ir, token_t token, const char* format, ...) {
     if (!ir->record_errors) return;
@@ -2736,52 +2560,6 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
     } else {
         ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
 
-#if 0
-        data_t arg_data[MAX_SUPPORTED_PROC_ARGS] = {0};
-        token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
-
-        for (int64_t i = 0; i < num_args; ++i) {
-            // We need to evaluate the argument nodes first before we make the proc call.
-            // In this context we are not interested in storing any data (since it is only used to be passed as arguments)
-            // so we can allocate the data required for the node with the temp alloc
-
-            arg_data[i] = node->children[i]->data;
-            arg_tokens[i] = node->children[i]->token;
-
-            if (!arg_data[i].ptr) {
-                if (is_variable_length(arg_data[i].type)) {
-                    if (!finalize_type(&arg_data[i].type, node->children[i], ctx)) {
-                        md_print(MD_LOG_TYPE_ERROR, "Failed to finalize dynamic type in procedure call");
-                        return false;
-                    }
-                }
-                allocate_data(&arg_data[i], arg_data[i].type, ctx->temp_alloc);
-                if (!evaluate_node(&arg_data[i], node->children[i], ctx)) {
-                    return false;
-                }
-            }
-            /*
-            arg_data[i].type = node->children[i]->data.type;
-            arg_tokens[i] = node->children[i]->token;
-            allocate_data(&arg_data[i], ctx->temp_alloc);
-            if (!evaluate_node(&arg_data[i], node->children[i], ctx)) {
-                return false;
-            }
-            */
-        }
-
-        eval_context_t eval_ctx = *ctx;
-        eval_ctx.arg_tokens = arg_tokens;
-
-        // Perform the call
-        int query_result = node->proc->proc_ptr(NULL, arg_data, &eval_ctx);
-
-        // Free
-        for (int64_t i = num_args - 1 ; i >= 0; --i) {
-            free_data(&arg_data[i], ctx->temp_alloc);
-        }
-#endif
-
         // Perform the call
         int query_result = do_proc_call(NULL, node, ctx);
 
@@ -3526,44 +3304,6 @@ static bool extract_property_expressions(md_script_ir_o* ir) {
     return true;
 }
 
-//static bool static_eval_node(ast_node_t* node, eval_context_t* ctx);
-
-/*
-static bool static_eval_context_node(ast_node_t* node, eval_context_t* ctx) {
-    // We need to make a special case here because if we want to statically evaluate a node which is a context node.
-    // Then we properly need to supply a context i.e. mol_context and all that before evaluating those nodes...
-
-    ASSERT(ctx);
-    ASSERT(node && node->type == AST_CONTEXT);
-    ASSERT(md_array_size(node->children) == 2);
-
-    const ast_node_t* expr_node = node->children[0];
-    const ast_node_t* ctx_node  = node->children[1];
-
-    if (!static_eval_node(ctx_node, ctx)) return false;
-
-    // These should be available by now...
-    ASSERT(ctx_node->data.type.base_type == TYPE_BITFIELD);
-    ASSERT(ctx_node->data.ptr);
-
-    const int64_t num_ctx = type_info_array_len(ctx_node->data.type);
-    const md_exp_bitfield_t* ctx_bf = (const md_exp_bitfield_t*)ctx_node->data.ptr;
-
-    ASSERT(node->lhs_context_types);
-    const md_type_info_t* lhs_types = node->lhs_context_types;
-    ASSERT(md_array_size(lhs_types) == num_ctx);
-
-    // Evaluate the expression within each context.
-    for (int64_t i = 0; i < num_ctx; ++i) {
-        eval_context_t sub_ctx = *ctx;
-        sub_ctx.mol_ctx = &ctx_bf[i];
-        if (!static_eval_node(expr_node, &sub_ctx)) return false;
-    }
-
-    return true;
-}
-*/
-
 static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(ctx);
@@ -3709,47 +3449,6 @@ static bool init_property(md_script_property_t* prop, int64_t num_frames, str_t 
 
     return allocate_property_data(prop, node->data.type, num_frames, alloc);
 }
-
-/*
-static void create_properties(md_script_property_t** properties, int64_t num_frames, expression_t** expressions, int64_t num_expressions, md_allocator_i* alloc) {
-    ASSERT(properties);
-
-    md_script_property_t* props = NULL;
-
-    for (int64_t i = 0; i < num_expressions; ++i) {
-        const expression_t* expr = expressions[i];
-        ASSERT(expr);
-        ASSERT(expr->node);
-        if (!expr->ident) continue;
-
-        md_script_property_t prop = {
-            .ident = copy_str(expr->ident->name, alloc),
-            .type = 0,
-            .unit = expr->node->data.unit,
-            .data = {0},
-            .vis_token = (struct md_script_vis_token_t*)expr->node,
-        };
-
-        if (is_temporal_type(expr->node->data.type)) {
-            prop.type = MD_SCRIPT_PROPERTY_TYPE_TEMPORAL;
-        }
-        else if (is_distribution_type(expr->node->data.type)) {
-            prop.type = MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION;
-        }
-        else if (is_volume_type(expr->node->data.type)) {
-            prop.type = MD_SCRIPT_PROPERTY_TYPE_VOLUME;
-        }
-        else {
-            ASSERT(false);
-        }
-
-        allocate_property_data(&prop, expr->node->data.type, num_frames, alloc);
-        md_array_push(props, prop, alloc);
-    }
-
-    *properties = props;
-}
-*/
 
 static void compute_min_max(float* min, float* max, const float* values, int64_t num_values) {
     ASSERT(min);
