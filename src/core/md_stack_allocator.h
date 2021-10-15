@@ -12,7 +12,7 @@ extern "C" {
 #define MD_STACK_ALLOCATOR_MAGIC 0x8a7ccbba81980234
 
 // This is a small, efficient linear allocator which just pushes a pointer offset within a buffer
-// For simplicity, all allocations are aligned to 16 bytes
+// For simplicity, all allocations are aligned to 16 bytes, which is default on x64 systems anyways
 typedef struct md_stack_allocator_t {
     uint8_t* buf;
     uint64_t cap;

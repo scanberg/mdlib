@@ -221,7 +221,7 @@ UTEST(script, property_compute) {
 
     {
         str_t src = make_cstr(
-            "sel = x(0:50);\n"
+            "sel = x(0:100);\n"
             "p1  = distance(com(sel), 100);"
         );
         EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));

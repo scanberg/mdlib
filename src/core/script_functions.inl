@@ -287,8 +287,6 @@ static int _position_int    (data_t*, data_t[], eval_context_t*);   // (int)    
 static int _position_irng   (data_t*, data_t[], eval_context_t*);   // (irange)   -> float[3][]
 static int _position_bf     (data_t*, data_t[], eval_context_t*);   // (bitfield) -> float[3][]
 
-static int _ref_frame_bf    (data_t*, data_t[], eval_context_t*);   // (bitfield) -> float[4][4][]
-
 // Linear algebra
 static int _dot           (data_t*, data_t[], eval_context_t*); // (float[], float[]) -> float
 static int _cross         (data_t*, data_t[], eval_context_t*); // (float[3], float[3]) -> float[3]
