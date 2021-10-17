@@ -76,6 +76,39 @@ int64_t rfind_char(str_t str, int c) {
     return -1;
 }
 
+str_t str_find_str(str_t haystack, str_t needle) {
+    const char* h_beg = haystack.ptr;
+    const char* h_end = haystack.ptr + haystack.len;
+    str_t result = {0};
+
+    if (haystack.len == 0) goto done;
+    if (needle.len == 0) goto done;
+    if (needle.len > haystack.len) {
+        md_print(MD_LOG_TYPE_ERROR, "Trying to find 'needle' which is larger than supplied 'haystack'");
+        goto done;
+    }
+
+    int64_t i = 0;
+    const char* n_beg = 0;
+    for (const char* c = h_beg; c != h_end; ++c) {
+        if (*c == needle.ptr[i]) {
+            if (i == 0) n_beg = c;
+            ++i;
+        } else {
+            i = 0;
+        }
+
+        if (i == needle.len) {
+            result.ptr = n_beg;
+            result.len = needle.len;
+            goto done;
+        }
+    }
+
+done:
+    return result;
+}
+
 double parse_float(str_t str) {
     ASSERT(str.ptr);
     static const double pow10[16] = {

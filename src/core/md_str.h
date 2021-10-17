@@ -165,6 +165,8 @@ bool extract_line(str_t* out_line, str_t* in_out_str);
 int64_t find_char(str_t str, int c);
 int64_t rfind_char(str_t str, int c);
 
+str_t str_find_str(str_t str, str_t str_to_find);
+
 // Make sure you ave trimmed all whitespace before using these!
 // They are lean and mean
 double parse_float(str_t str);
