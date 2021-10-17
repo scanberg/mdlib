@@ -531,6 +531,10 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
         md_range_t atom_range = args.residue.atom_range[i];
         vec3_t com = md_util_compute_periodic_com(args.atom.x + atom_range.beg, args.atom.y + atom_range.beg, args.atom.z + atom_range.beg, NULL, atom_range.end - atom_range.beg, args.pbc.box);
 
+        com.x = apply_pbc(com.x, ext.x);
+        com.y = apply_pbc(com.y, ext.y);
+        com.z = apply_pbc(com.z, ext.z);
+
         if (residue_com_x) {
             ASSERT(residue_com_y);
             ASSERT(residue_com_z);
@@ -539,9 +543,7 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
             residue_com_z[i] = com.z;
         }
 
-        com.x = apply_pbc(com.x, ext.x);
-        com.y = apply_pbc(com.y, ext.y);
-        com.z = apply_pbc(com.z, ext.z);
+
 
         for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
             out_x[j] = deperiodize(args.atom.x[j], com.x, ext.x);
@@ -549,6 +551,8 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
             out_z[j] = deperiodize(args.atom.z[j], com.z, ext.z);
         }
     }
+
+    //return true;
 
     for (int64_t i = 0; i < args.chain.count; ++i) {
         md_range_t res_range = args.chain.residue_range[i];

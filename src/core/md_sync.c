@@ -8,7 +8,7 @@
 
 #if MD_PLATFORM_WINDOWS
 
-#pragma comment(lib, "ntdll.lib")
+//#pragma comment(lib, "ntdll.lib")
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -24,21 +24,20 @@
 
 #include <Windows.h>
 
-// Want to query the current semaphore count, this is exposed through ntdll
-typedef long NTSTATUS;
+typedef LONG NTSTATUS;
 
-typedef struct _SEMAINFO {
-	UINT		Count;		// current semaphore count
-	UINT		Limit;		// max semaphore count
-} SEMAINFO, *PSEMAINFO;
+typedef NTSTATUS (NTAPI *_NtQuerySemaphore)(
+	HANDLE SemaphoreHandle, 
+	DWORD SemaphoreInformationClass, /* Would be SEMAPHORE_INFORMATION_CLASS */
+	PVOID SemaphoreInformation,      /* but this is to much to dump here     */
+	ULONG SemaphoreInformationLength, 
+	PULONG ReturnLength OPTIONAL
+); 
 
-NTSTATUS WINAPI NtQuerySemaphore(
-	HANDLE Handle, 
-	UINT InfoClass, 
-	PSEMAINFO SemaInfo, 
-	UINT InfoSize,
-	PUINT RetLen 
-);
+typedef struct _SEMAPHORE_BASIC_INFORMATION {   
+	ULONG CurrentCount; 
+	ULONG MaximumCount;
+} SEMAPHORE_BASIC_INFORMATION;
 
 STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SECTION does not fit into md_mutex_t!");
 
@@ -122,11 +121,19 @@ bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count) {
 	ASSERT(semaphore);
 	ASSERT(count);
 
-	SEMAINFO			info;
-	UINT				value;
-	if (NtQuerySemaphore((HANDLE)semaphore->_data[0], 0, &info, sizeof(info), &value) >= 0) {
-		*count = (int32_t)info.Count;
-		return true;
+	_NtQuerySemaphore NtQuerySemaphore;
+	SEMAPHORE_BASIC_INFORMATION BasicInfo;
+	NTSTATUS Status;
+
+	NtQuerySemaphore = (_NtQuerySemaphore)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQuerySemaphore");
+
+	if (NtQuerySemaphore) {
+		Status = NtQuerySemaphore ((HANDLE)semaphore->_data[0], 0 /*SemaphoreBasicInformation*/, 
+			&BasicInfo, sizeof (SEMAPHORE_BASIC_INFORMATION), NULL);
+		if (Status == ERROR_SUCCESS) {
+			*count = BasicInfo.CurrentCount;
+			return true;
+		}
 	}
 
 	return false;
