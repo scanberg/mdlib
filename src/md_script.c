@@ -226,6 +226,7 @@ typedef struct eval_context_t {
     const md_molecule_t* mol;
     const md_exp_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
 
+    int64_t max_stack_size;
     md_stack_allocator_t* stack_alloc;  // This is the same allocator as temp alloc, just with the raw interface
     md_allocator_i* temp_alloc;         // For allocating transient data
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
@@ -2120,10 +2121,6 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
     ASSERT(node && node->type == AST_PROC_CALL);
     ASSERT(node->proc);
 
-    if (node->token.line == 1 && node->token.col_beg == 12 && compare_str_cstr(node->token.str, "element")) {
-        while(0) {};
-    }
-
     const bool only_visualize = dst == NULL && ctx->vis;
     int result = 0;
 
@@ -2133,7 +2130,7 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
     data_t arg_data[MAX_SUPPORTED_PROC_ARGS] = {0};
     token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
 
-    //uint64_t stack_reset_point = md_stack_allocator_get_offset(ctx->stack_alloc);
+    uint64_t stack_reset_point = md_stack_allocator_get_offset(ctx->stack_alloc);
 
     for (int64_t i = 0; i < num_args; ++i) {
         // We need to evaluate the argument nodes first before we make the proc call.
@@ -2156,6 +2153,21 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
             result = -1;
             goto done;
         }
+        
+        if (arg_type.base_type == TYPE_BITFIELD) {
+            // Bitfields are internally allocated on demand, this means that it may be allocated among other arguments in nested calls.
+            // To make sure the data persists beyond the scope in which it was allocated, we copy it out here.
+            ASSERT(arg_type.len_dim == 0);
+
+            int64_t len = type_info_array_len(arg_type);
+            md_exp_bitfield_t* bf_arr = (md_exp_bitfield_t*)arg_data[i].ptr;
+            for (int64_t i = 0; i < len; ++i) {
+                md_exp_bitfield_t bf = {0};
+                md_bitfield_init(&bf, ctx->temp_alloc);
+                md_bitfield_copy(&bf, &bf_arr[i]);
+                bf_arr[i] = bf;
+            }
+        }
     }
 
     if (only_visualize && !(node->proc->flags & FLAG_VISUALIZE)) {
@@ -2170,17 +2182,8 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
     }
 
 done:
-    
-    for (int64_t i = num_args - 1; i >= 0; --i) {
-        free_data(&arg_data[i], ctx->temp_alloc);
-    }
-    // @NODE: We are currently not able to reset the stack pointer here:
-    // The bitfields are initialized as arguments, but no real data is allocated until they are modified within the nested procedure calls.
-    // And then, the stack pointer might have already been changed by other temp allocations for other other arguments.
-    // This results in the bitfield block data ending up being allocated among the nested temp allocations for arguments
-    // And is then lost when that stack pointer is reset within that procedure call.
-    // How this can be solved remains a conundrum.
-    // md_stack_allocator_set_offset(ctx->stack_alloc, stack_reset_point);
+    ctx->max_stack_size = MAX(ctx->max_stack_size, ctx->stack_alloc->cur);
+    md_stack_allocator_set_offset(ctx->stack_alloc, stack_reset_point);
     return result;
 }
 
@@ -3251,6 +3254,8 @@ static bool static_type_check(md_script_ir_o* ir, const md_molecule_t* mol) {
             result = false;
         }
     }
+
+    md_printf(MD_LOG_TYPE_INFO, "Max stack size: %li KB", ctx.max_stack_size / KILOBYTES(1));
 
     FREE_STACK();
 
