@@ -285,6 +285,13 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 	return semaphore_signal((semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
 }
 
+bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count) {
+	(void)semaphore;
+	(void)count;
+	// Not supported
+	return false;
+}
+
 #endif
 
 md_semaphore_t md_semaphore_create(int32_t initial_count) {
