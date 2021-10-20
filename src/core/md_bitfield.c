@@ -23,7 +23,8 @@ We don't really have to care about the block values outside of the range and can
 */
 
 typedef union block {
-    uint64_t data[8];
+    uint64_t u64[8];
+    uint32_t u32[16];
 #if md_simd_widthi == 8
     md_simd_typei mm256[2];
 #else
@@ -61,14 +62,14 @@ static inline block_t block_and(block_t a, block_t b) {
 #endif
     /*
     block_t res = {
-        a.data[0] & b.data[0],
-        a.data[1] & b.data[1],
-        a.data[2] & b.data[2],
-        a.data[3] & b.data[3],
-        a.data[4] & b.data[4],
-        a.data[5] & b.data[5],
-        a.data[6] & b.data[6],
-        a.data[7] & b.data[7],
+        a.u64[0] & b.u64[0],
+        a.u64[1] & b.u64[1],
+        a.u64[2] & b.u64[2],
+        a.u64[3] & b.u64[3],
+        a.u64[4] & b.u64[4],
+        a.u64[5] & b.u64[5],
+        a.u64[6] & b.u64[6],
+        a.u64[7] & b.u64[7],
     };
     */
     return res;
@@ -87,14 +88,14 @@ static inline block_t block_andnot(block_t a, block_t b) {
 #endif
     /*
     block_t res = {
-        a.data[0] & ~b.data[0],
-        a.data[1] & ~b.data[1],
-        a.data[2] & ~b.data[2],
-        a.data[3] & ~b.data[3],
-        a.data[4] & ~b.data[4],
-        a.data[5] & ~b.data[5],
-        a.data[6] & ~b.data[6],
-        a.data[7] & ~b.data[7],
+        a.u64[0] & ~b.u64[0],
+        a.u64[1] & ~b.u64[1],
+        a.u64[2] & ~b.u64[2],
+        a.u64[3] & ~b.u64[3],
+        a.u64[4] & ~b.u64[4],
+        a.u64[5] & ~b.u64[5],
+        a.u64[6] & ~b.u64[6],
+        a.u64[7] & ~b.u64[7],
     };
     */
     return res;
@@ -113,14 +114,14 @@ static inline block_t block_or(block_t a, block_t b) {
 #endif
     /*
     block_t res = {
-        a.data[0] | b.data[0],
-        a.data[1] | b.data[1],
-        a.data[2] | b.data[2],
-        a.data[3] | b.data[3],
-        a.data[4] | b.data[4],
-        a.data[5] | b.data[5],
-        a.data[6] | b.data[6],
-        a.data[7] | b.data[7],
+        a.u64[0] | b.u64[0],
+        a.u64[1] | b.u64[1],
+        a.u64[2] | b.u64[2],
+        a.u64[3] | b.u64[3],
+        a.u64[4] | b.u64[4],
+        a.u64[5] | b.u64[5],
+        a.u64[6] | b.u64[6],
+        a.u64[7] | b.u64[7],
     };
     */
     return res;
@@ -139,42 +140,54 @@ static inline block_t block_xor(block_t a, block_t b) {
 #endif
     /*
     block_t res = {
-        a.data[0] ^ b.data[0],
-        a.data[1] ^ b.data[1],
-        a.data[2] ^ b.data[2],
-        a.data[3] ^ b.data[3],
-        a.data[4] ^ b.data[4],
-        a.data[5] ^ b.data[5],
-        a.data[6] ^ b.data[6],
-        a.data[7] ^ b.data[7],
+        a.u64[0] ^ b.u64[0],
+        a.u64[1] ^ b.u64[1],
+        a.u64[2] ^ b.u64[2],
+        a.u64[3] ^ b.u64[3],
+        a.u64[4] ^ b.u64[4],
+        a.u64[5] ^ b.u64[5],
+        a.u64[6] ^ b.u64[6],
+        a.u64[7] ^ b.u64[7],
     };
     */
     return res;
 }
 
 static inline block_t block_not(block_t blk) {
+#if 0
     block_t res;
 #ifdef __AVX__
     res.mm256[0] = md_simd_noti(blk.mm256[0]);
     res.mm256[1] = md_simd_noti(blk.mm256[1]);
-#else
+#elif (defined(_M_AMD64) || defined(_M_X64))
     res.mm128[0] = md_simd_noti(blk.mm128[0]);
     res.mm128[1] = md_simd_noti(blk.mm128[1]);
     res.mm128[2] = md_simd_noti(blk.mm128[2]);
     res.mm128[3] = md_simd_noti(blk.mm128[3]);
 #endif
-    /*
+#endif
     block_t res = {
-        ~blk.data[0],
-        ~blk.data[1],
-        ~blk.data[2],
-        ~blk.data[3],
-        ~blk.data[4],
-        ~blk.data[5],
-        ~blk.data[6],
-        ~blk.data[7],
+        ~blk.u64[0],
+        ~blk.u64[1],
+        ~blk.u64[2],
+        ~blk.u64[3],
+        ~blk.u64[4],
+        ~blk.u64[5],
+        ~blk.u64[6],
+        ~blk.u64[7],
     };
-    */
+    return res;
+}
+
+// Generate mask for all bits lower than the specified index
+static inline block_t block_mask_lo(uint64_t idx) {
+    ASSERT(idx < BITS_PER_BLOCK);
+    block_t res;
+    uint64_t j = idx / 64;
+    for (uint64_t i = 0; i < j; ++i) res.u64[0] = (uint64_t)~0;
+    res.u64[j] = (uint64_t)1 << (idx & 63);
+    for (uint64_t i = j + 1; i < ARRAY_SIZE(res.u64); ++i) res.u64[0] = 0;
+
     return res;
 }
 
@@ -183,16 +196,17 @@ static inline block_t block_not(block_t blk) {
 // Only AVX512 have a popcnt intrinsic for vector registers.
 static inline int64_t block_count_bits(block_t blk) {
     int64_t count =
-        popcnt64(blk.data[0]) +
-        popcnt64(blk.data[1]) +
-        popcnt64(blk.data[2]) +
-        popcnt64(blk.data[3]) +
-        popcnt64(blk.data[4]) +
-        popcnt64(blk.data[5]) +
-        popcnt64(blk.data[6]) +
-        popcnt64(blk.data[7]);
+        popcnt64(blk.u64[0]) +
+        popcnt64(blk.u64[1]) +
+        popcnt64(blk.u64[2]) +
+        popcnt64(blk.u64[3]) +
+        popcnt64(blk.u64[4]) +
+        popcnt64(blk.u64[5]) +
+        popcnt64(blk.u64[6]) +
+        popcnt64(blk.u64[7]);
     return count;
 }
+
 
 static inline void set_block(md_exp_bitfield_t* bf, int64_t idx, block_t blk) {
     ASSERT(bf->bits);
@@ -350,6 +364,18 @@ void md_bitfield_set_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
 
     ensure_range(bf, bit_idx, bit_idx + 1);
     bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
+}
+
+void md_bitfield_set_indices_u32(md_exp_bitfield_t* bf, uint32_t* indices, int64_t num_indices) {
+    validate_bitfield(bf);
+    ASSERT(indices);
+    ASSERT(num_indices >= 0);
+
+    for (int64_t i = 0; i < num_indices; ++i) {
+        int64_t bit_idx = (int64_t)indices[i];
+        ensure_range(bf, bit_idx, bit_idx + 1);
+        bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
+    }
 }
 
 void md_bitfield_clear(md_exp_bitfield_t* bf) {
@@ -694,4 +720,41 @@ bool md_bitfield_extract_u64(uint64_t* dst_ptr, int64_t num_bits, const md_exp_b
     }
     
     return true;
+}
+
+uint32_t* md_bitfield_extract_indices_u32(const md_exp_bitfield_t* bf, md_allocator_i* alloc) {
+    ASSERT(bf);
+    ASSERT(alloc);
+    validate_bitfield(bf);
+
+    uint32_t* indices = 0;
+
+    int64_t beg_bit = bf->beg_bit;
+    int64_t end_bit = bf->end_bit;
+    while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
+        uint32_t bit_idx = (uint32_t)(beg_bit - 1);
+        md_array_push(indices, bit_idx, alloc);
+    }
+
+    return indices;
+}
+
+uint32_t* md_bitfield_extract_bits_u32(const md_exp_bitfield_t* bf, struct md_allocator_i* alloc) {
+    ASSERT(bf);
+    ASSERT(alloc);
+    validate_bitfield(bf);
+
+    uint32_t* bits = 0;
+
+    int64_t block_count = num_blocks(bf->beg_bit, bf->end_bit);
+    if (block_count) {
+        for (int64_t i = block_idx(bf->beg_bit); i <= block_idx(bf->end_bit); ++i) {
+            block_t block = get_block(bf, i);
+            for (int64_t j = 0; j < ARRAY_SIZE(block.u32); ++j) {
+                md_array_push(bits, block.u32[j], alloc);
+            }
+        }
+    }
+
+    return bits;
 }

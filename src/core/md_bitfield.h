@@ -32,6 +32,7 @@ bool md_bitfield_empty          (const md_exp_bitfield_t* bf);
 
 void md_bitfield_set_range      (md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 void md_bitfield_set_bit        (md_exp_bitfield_t* bf, int64_t bit_idx);
+void md_bitfield_set_indices_u32(md_exp_bitfield_t* bf, uint32_t* indices, int64_t num_indices);
 
 void md_bitfield_clear          (md_exp_bitfield_t* bf);
 void md_bitfield_clear_range    (md_exp_bitfield_t* bf, int64_t beg, int64_t end);
@@ -80,7 +81,13 @@ bool md_bitfield_test_bit   (const md_exp_bitfield_t* bf, int64_t idx);
 int64_t md_bitfield_scan(const md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 
 // Copy the contents of the bitfield into an external buffer
-bool md_bitfield_extract_u64(uint64_t* dst_ptr, int64_t num_bits, const md_exp_bitfield_t* src);
+//bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_exp_bitfield_t* src);
+
+// Will create an md_array of uint32_t containing the indices of all set bits.
+// The md_array is allocated using the supplied allocator.
+// User is responsible for freeing the memory of the returned array (md_array_free).
+uint32_t* md_bitfield_extract_indices_u32(const md_exp_bitfield_t* bf, struct md_allocator_i* alloc);
+uint32_t* md_bitfield_extract_bits_u32(const md_exp_bitfield_t* bf, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }
