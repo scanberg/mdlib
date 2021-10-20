@@ -2130,7 +2130,7 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
     data_t arg_data[MAX_SUPPORTED_PROC_ARGS] = {0};
     token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
 
-    uint64_t stack_reset_point = md_stack_allocator_get_offset(ctx->stack_alloc);
+    //uint64_t stack_reset_point = md_stack_allocator_get_offset(ctx->stack_alloc);
 
     for (int64_t i = 0; i < num_args; ++i) {
         // We need to evaluate the argument nodes first before we make the proc call.
@@ -2153,21 +2153,6 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
             result = -1;
             goto done;
         }
-        
-        if (arg_type.base_type == TYPE_BITFIELD) {
-            // Bitfields are internally allocated on demand, this means that it may be allocated among other arguments in nested calls.
-            // To make sure the data persists beyond the scope in which it was allocated, we copy it out here.
-            ASSERT(arg_type.len_dim == 0);
-
-            int64_t len = type_info_array_len(arg_type);
-            md_exp_bitfield_t* bf_arr = (md_exp_bitfield_t*)arg_data[i].ptr;
-            for (int64_t i = 0; i < len; ++i) {
-                md_exp_bitfield_t bf = {0};
-                md_bitfield_init(&bf, ctx->temp_alloc);
-                md_bitfield_copy(&bf, &bf_arr[i]);
-                bf_arr[i] = bf;
-            }
-        }
     }
 
     if (only_visualize && !(node->proc->flags & FLAG_VISUALIZE)) {
@@ -2182,8 +2167,19 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
     }
 
 done:
-    ctx->max_stack_size = MAX(ctx->max_stack_size, ctx->stack_alloc->cur);
-    md_stack_allocator_set_offset(ctx->stack_alloc, stack_reset_point);
+    ctx->max_stack_size = MAX(ctx->max_stack_size, (int64_t)ctx->stack_alloc->cur);
+
+    for (int64_t i = num_args - 1; i >= 0; --i) {
+        free_data(&arg_data[i], ctx->temp_alloc);
+    }
+
+    // @NOTE(Robin): We cannot simply reset the stack since bitfields are lazily allocated, meaning they allocate data on demand.
+    // This means that they will most likely allocate data deeply nested within the calling scope of another procedure call with another reset point for its stack
+    // Thus, the data for the bitfields will be reset with that reset point and we will overwrite it later.
+    // To solve it I think we need another 'specific' allocator for just the bitfields which may outlive the other stack variables and can be reset separately.
+    // Conceptually we could use the top end of the stack for this and have two different stack pointers.
+    // 
+    //md_stack_allocator_set_offset(ctx->stack_alloc, stack_reset_point);
     return result;
 }
 
