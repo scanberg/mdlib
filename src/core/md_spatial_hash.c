@@ -9,6 +9,7 @@
 
 #define MD_SPATIAL_HASH_MAGIC 0xF67cbab672578178
 #define MD_SPATIAL_HASH_DEFAULT_CELL_EXT 6.0
+#define MD_SPATIAL_HASH_MIN_CELL_EXT 3.0
 
 typedef struct md_spatial_hash_cell_t {
     uint32_t offset : 22; // ~4.2 M
@@ -53,6 +54,7 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const float* in_x, const floa
     }
 
     if (cell_ext == 0) cell_ext = MD_SPATIAL_HASH_DEFAULT_CELL_EXT;
+    cell_ext = MAX(cell_ext, MD_SPATIAL_HASH_MIN_CELL_EXT);
 
     if (hash->coords != 0 || hash->cells != 0) {
         md_print(MD_LOG_TYPE_ERROR, "Spatial Hash structure is not set to zero, leaking potential memory here.");
