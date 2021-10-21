@@ -413,7 +413,7 @@ void md_bitfield_set_range(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
 void md_bitfield_set_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
     validate_bitfield(bf);
 
-    ensure_range(bf, bit_idx, bit_idx);
+    ensure_range(bf, bit_idx, bit_idx+1);
     bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
 }
 
@@ -424,7 +424,7 @@ void md_bitfield_set_indices_u32(md_exp_bitfield_t* bf, uint32_t* indices, int64
 
     for (int64_t i = 0; i < num_indices; ++i) {
         int64_t bit_idx = (int64_t)indices[i];
-        ensure_range(bf, bit_idx, bit_idx);
+        ensure_range(bf, bit_idx, bit_idx+1);
         bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
     }
 }
@@ -815,7 +815,7 @@ int64_t md_bitfield_serialize_size_in_bytes(const md_exp_bitfield_t* bf) {
     return MAX(66, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t) * 1.10);
 }
 
-#define BLOCK_IDX_FLAG_ALL_SET (0x10000)
+#define BLOCK_IDX_FLAG_ALL_SET (0x8000)
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
@@ -867,7 +867,7 @@ int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
     }
 
     int lz_bytes = fastlz_compress_level(2, data, md_array_size(data) * sizeof(uint16_t), dst);
-    printf("LZ:\t%lli number of bits compressed into %i bytes\n", md_bitfield_popcount(bf), lz_bytes);
+    md_printf(MD_LOG_TYPE_INFO, "LZ:\t%lli number of bits compressed into %i bytes\n", md_bitfield_popcount(bf), lz_bytes);
 
     md_array_free(data, alloc);
 
@@ -879,8 +879,8 @@ bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num
     validate_bitfield(bf);
     ASSERT(src);
 
-    // This is to make sure we don't run out of bytes to decompress into.
-    // The current compressor is no where near 100:1 compression ratio.
+    // Temporary buffer to decompress into.
+    // The current compression is no where near 100:1 ratio.
     const int64_t mem_bytes = num_bytes * 100;
     void* mem = md_alloc(default_allocator, mem_bytes);
 
@@ -896,26 +896,25 @@ bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num
     const uint16_t* block_indices = data + 1;
     const block_t* block_data = (const block_t*)(block_indices + block_count);
 
-    // Set some conservative estimate first to allocate the data
     uint16_t beg_blk_idx = block_indices[0];
     uint16_t end_blk_idx = block_indices[block_count - 1];
 
-    // Grow to ensure the blocks
-    fit_to_range(bf, beg_blk_idx * 512, end_blk_idx * 512);
+    // Allocate the blocks
+    fit_to_range(bf, beg_blk_idx * 512, end_blk_idx * 512 + 511);
+    memset(bf->bits, 0, num_blocks(beg_blk_idx * 512, end_blk_idx * 512) * sizeof(block_t));
 
     // Fetch block_data and store
     block_t* dst_block = (block_t*)bf->bits;
-    int64_t dst_offset = 0;
     int64_t src_offset = 0;
     for (int64_t i = 0; i < block_count; ++i) {
         uint16_t blk_idx = block_indices[i];
         if (blk_idx & BLOCK_IDX_FLAG_ALL_SET) {
-            memset(dst_block + dst_offset, 0xFFFFFFFF, sizeof(block_t));
+            blk_idx &= ~BLOCK_IDX_FLAG_ALL_SET;
+            memset(dst_block + blk_idx, 0xFFFFFFFF, sizeof(block_t));
         } else {
-            dst_block[dst_offset] = block_data[src_offset];
+            dst_block[blk_idx] = block_data[src_offset];
             src_offset += 1;
         }
-        dst_offset += 1;
     }
 
     // Now we have the data, compute the true beg_bit and end_bit
@@ -923,7 +922,7 @@ bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num
     int64_t end_bit = block_scan_reverse(get_block(bf, end_blk_idx));
 
     bf->beg_bit = beg_blk_idx * 512 + (beg_bit ? beg_bit - 1 : 0);
-    bf->end_bit = end_blk_idx * 512 + (end_bit ? end_bit - 1 : 0);
+    bf->end_bit = end_blk_idx * 512 + (end_bit ? end_bit : 0);
 
     md_free(default_allocator, mem, mem_bytes);
 

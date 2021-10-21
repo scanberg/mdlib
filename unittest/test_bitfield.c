@@ -146,6 +146,7 @@ UTEST(bitfield, serialization) {
     md_bitfield_set_bit(&a, 600);
     md_bitfield_set_bit(&a, 700);
     md_bitfield_set_bit(&a, 11992);
+    md_bitfield_set_range(&a, 1000, 2000);
     md_bitfield_set_bit(&a, 1 << 16);
 
     int64_t est_bytes = md_bitfield_serialize_size_in_bytes(&a);
@@ -158,7 +159,26 @@ UTEST(bitfield, serialization) {
     EXPECT_TRUE(md_bitfield_deserialize(&b, mem, real_bytes));
 
     for (int64_t i = 0; i < 70000; ++i) {
-        ASSERT_TRUE(md_bitfield_test_bit(&a, i) == md_bitfield_test_bit(&b, i));
+        bool bit_a = md_bitfield_test_bit(&a, i);
+        bool bit_b = md_bitfield_test_bit(&b, i);
+        ASSERT_TRUE(bit_a == bit_b);
     }
 
+    md_exp_bitfield_t c = {0};
+    md_bitfield_init(&c, alloc);
+    md_bitfield_set_bit(&c, 0);
+
+    real_bytes = md_bitfield_serialize(mem, &c);
+
+    md_bitfield_clear(&b);
+    EXPECT_TRUE(md_bitfield_deserialize(&b, mem, real_bytes));
+    for (int64_t i = 0; i < 100; ++i) {
+        bool bit_c = md_bitfield_test_bit(&c, i);
+        bool bit_b = md_bitfield_test_bit(&b, i);
+        ASSERT_TRUE(bit_c == bit_b);
+    }
+
+    md_bitfield_free(&a);
+    md_bitfield_free(&b);
+    md_bitfield_free(&c);
 }
