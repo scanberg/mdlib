@@ -178,6 +178,7 @@ UTEST(bitfield, serialization) {
         ASSERT_TRUE(bit_c == bit_b);
     }
 
+    md_free(alloc, mem, est_bytes);
     md_bitfield_free(&a);
     md_bitfield_free(&b);
     md_bitfield_free(&c);

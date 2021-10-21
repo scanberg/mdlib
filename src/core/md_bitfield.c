@@ -810,31 +810,17 @@ uint32_t* md_bitfield_extract_bits_u32(const md_exp_bitfield_t* bf, struct md_al
     return bits;
 }
 
-// Returns the maximum serialization size in bytes of a bitfield
-int64_t md_bitfield_serialize_size_in_bytes(const md_exp_bitfield_t* bf) {
-    return MAX(66, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t) * 1.10);
-}
-
 #define BLOCK_IDX_FLAG_ALL_SET (0x8000)
 
-// Serializes a bitfield into a destination buffer
-// It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
-int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
-    md_allocator_i* alloc = default_temp_allocator;
+uint16_t* get_serialization_block_indices(const md_exp_bitfield_t* bf, md_allocator_i* alloc) {
+    uint16_t* indices = 0;
 
-    uint16_t* data = 0;
-    md_array_push(data, 0, alloc);// This is just a placeholder for block_count and will be updated when we have the exact figure
-
-    uint16_t block_count = 0;
-    int64_t beg_blk = block_idx(bf->beg_bit);
-    int64_t end_blk = block_idx(bf->end_bit);
-
-    // Iterate over all blocks
-    for (int64_t i = beg_blk; i <= end_blk; ++i) {
-        // Add indices to all non empty blocks
+    int64_t beg_blk_idx = block_idx(bf->beg_bit);
+    int64_t end_blk_idx = block_idx(bf->end_bit);
+    for (int64_t i = beg_blk_idx; i <= end_blk_idx; ++i) {
         block_t blk = get_block(bf, i);
-        if (i == beg_blk) block_and(blk, block_mask_hi(bf->beg_bit & 511));
-        if (i == end_blk) block_and(blk, block_mask_lo(bf->end_bit & 511));
+        if (i == beg_blk_idx) block_and(blk, block_mask_hi(bf->beg_bit & 511));
+        if (i == beg_blk_idx) block_and(blk, block_mask_lo(bf->end_bit & 511));
 
         bool empty = true;
         bool all_set = true;
@@ -842,16 +828,41 @@ int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
             if (blk.u64[j] != 0) empty = false;
             if (blk.u64[j] != 0xFFFFFFFFFFFFFFFF) all_set = false;
         }
-    
+
         if (empty) continue;
-        block_count += 1;
 
         // Store non empty block indices with additional flag to see if it is empty or not
-        md_array_push(data, (uint16_t)i | (all_set ? BLOCK_IDX_FLAG_ALL_SET : 0), alloc);
+        md_array_push(indices, (uint16_t)i | (all_set ? BLOCK_IDX_FLAG_ALL_SET : 0), alloc);
     }
+    return indices;
+}
+
+// Returns the maximum serialization size in bytes of a bitfield
+int64_t md_bitfield_serialize_size_in_bytes(const md_exp_bitfield_t* bf) {
+    uint64_t size = sizeof(uint16_t);
+    uint16_t* indices = get_serialization_block_indices(bf, default_temp_allocator);
+    for (int64_t i = 0; i < md_array_size(indices); ++i) {
+        if (indices[i] & BLOCK_IDX_FLAG_ALL_SET) continue;
+        size += sizeof(indices[i]) + sizeof(block_t);
+    }
+
+    return MAX(66, size);
+}
+
+// Serializes a bitfield into a destination buffer
+// It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
+int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
+    md_allocator_i* alloc = default_temp_allocator;
+
+    uint16_t* indices = get_serialization_block_indices(bf, alloc);
+    uint16_t* data = 0;
+
+    uint16_t block_count = (uint16_t)md_array_size(indices);
+    int64_t beg_blk = block_idx(bf->beg_bit);
+    int64_t end_blk = block_idx(bf->end_bit);
     
-    // Update number of blocks
-    data[0] = block_count;
+    md_array_push(data, block_count, alloc);
+    md_array_push_array(data, indices, block_count, alloc);
 
     // Add actual block data from the blocks (if not all bits set within block)
     for (int64_t i = 0; i < block_count; ++i) {
@@ -870,6 +881,7 @@ int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
     md_printf(MD_LOG_TYPE_INFO, "LZ:\t%lli number of bits compressed into %i bytes\n", md_bitfield_popcount(bf), lz_bytes);
 
     md_array_free(data, alloc);
+    md_array_free(indices, alloc);
 
     return lz_bytes;
 }
