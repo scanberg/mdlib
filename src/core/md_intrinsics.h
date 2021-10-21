@@ -1,5 +1,4 @@
-#ifndef _MD_INTRINSICS_H_
-#define _MD_INTRINSICS_H_
+#pragma once
 
 #include "md_common.h"
 #include "md_compiler.h"
@@ -143,6 +142,3 @@ static inline uint64_t next_power_of_two64 (uint64_t x) {
     if (x < 2) return x;  // avoid clz(0)
     return 1ULL << (sizeof(uint64_t) * 8 - clz64(x-1));
 }
-
-#endif
-
