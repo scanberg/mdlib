@@ -908,12 +908,17 @@ bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num
     const uint16_t* block_indices = data + 1;
     const block_t* block_data = (const block_t*)(block_indices + block_count);
 
+    if (block_count == 0) {
+        md_printf(MD_LOG_TYPE_ERROR, "Block count was zero");
+        return false;
+    }
+
     uint16_t beg_blk_idx = block_indices[0];
     uint16_t end_blk_idx = block_indices[block_count - 1];
 
     // Allocate the blocks
     fit_to_range(bf, beg_blk_idx * 512, end_blk_idx * 512 + 511);
-    memset(bf->bits, 0, num_blocks(beg_blk_idx * 512, end_blk_idx * 512) * sizeof(block_t));
+    memset(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
 
     // Fetch block_data and store
     block_t* dst_block = (block_t*)bf->bits;
@@ -924,7 +929,7 @@ bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num
             blk_idx &= ~BLOCK_IDX_FLAG_ALL_SET;
             memset(dst_block + blk_idx, 0xFFFFFFFF, sizeof(block_t));
         } else {
-            dst_block[blk_idx] = block_data[src_offset];
+            memcpy(dst_block + blk_idx, block_data + src_offset, sizeof(block_t));
             src_offset += 1;
         }
     }
