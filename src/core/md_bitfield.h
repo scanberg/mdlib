@@ -2,11 +2,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef struct md_bitfield_t {
-    uint64_t *bits;
-    int64_t  num_bits;
-} md_bitfield_t;
-
 struct md_allocator_i;
 
 typedef struct md_exp_bitfield_t {
@@ -75,10 +70,10 @@ bool md_bitfield_test_bit   (const md_exp_bitfield_t* bf, int64_t idx);
      int64_t bit_idx = beg_idx - 1;   // beg_idx has a start index of 1 so we have to subtract one to get the 'real' index
      do_something(bit_idx);
  }
-
 */
-
 int64_t md_bitfield_scan(const md_exp_bitfield_t* bf, int64_t beg, int64_t end);
+
+int64_t md_bitfield_scan_reverse(const md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 
 // Copy the contents of the bitfield into an external buffer
 //bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_exp_bitfield_t* src);
@@ -88,6 +83,17 @@ int64_t md_bitfield_scan(const md_exp_bitfield_t* bf, int64_t beg, int64_t end);
 // User is responsible for freeing the memory of the returned array (md_array_free).
 uint32_t* md_bitfield_extract_indices_u32(const md_exp_bitfield_t* bf, struct md_allocator_i* alloc);
 uint32_t* md_bitfield_extract_bits_u32(const md_exp_bitfield_t* bf, struct md_allocator_i* alloc);
+
+// Returns the maximum serialization size in bytes of a bitfield
+int64_t md_bitfield_serialize_size_in_bytes(const md_exp_bitfield_t* bf);
+
+// Serializes a bitfield into a destination buffer
+// It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
+int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf);
+
+// Deserializes a compressed buffer into a bitfield.
+// User must ensure that the bitfield is properly initialized with an allocator
+bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num_bytes);
 
 #ifdef __cplusplus
 }

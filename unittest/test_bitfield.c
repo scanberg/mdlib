@@ -133,3 +133,32 @@ UTEST(bitfield, test) {
 
     md_tracking_allocator_destroy(alloc);
 }
+
+UTEST(bitfield, serialization) {
+    md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
+
+    md_exp_bitfield_t a = {0};
+    md_bitfield_init(&a, alloc);
+
+    md_bitfield_set_bit(&a, 100);
+    md_bitfield_set_bit(&a, 110);
+    md_bitfield_set_bit(&a, 510);
+    md_bitfield_set_bit(&a, 600);
+    md_bitfield_set_bit(&a, 700);
+    md_bitfield_set_bit(&a, 11992);
+    md_bitfield_set_bit(&a, 1 << 16);
+
+    int64_t est_bytes = md_bitfield_serialize_size_in_bytes(&a);
+    void* mem = md_alloc(alloc, est_bytes);
+    int64_t real_bytes = md_bitfield_serialize(mem, &a);
+
+    md_exp_bitfield_t b = {0};
+    md_bitfield_init(&b, alloc);
+
+    EXPECT_TRUE(md_bitfield_deserialize(&b, mem, real_bytes));
+
+    for (int64_t i = 0; i < 70000; ++i) {
+        ASSERT_TRUE(md_bitfield_test_bit(&a, i) == md_bitfield_test_bit(&b, i));
+    }
+
+}

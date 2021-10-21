@@ -9,6 +9,7 @@
 #include "md_simd.h"
 
 #include <string.h>
+#include <ext/fastlz/fastlz.h>
 
 #define MAGIC 0xcad86278
 #define ALIGNMENT sizeof(block_t)
@@ -22,9 +23,11 @@ We don't really have to care about the block values outside of the range and can
 
 */
 
-typedef union block {
+typedef union block_t {
     uint64_t u64[8];
     uint32_t u32[16];
+    uint16_t u16[32];
+    uint8_t   u8[64];
 #if md_simd_widthi == 8
     md_simd_typei mm256[2];
 #else
@@ -179,15 +182,44 @@ static inline block_t block_not(block_t blk) {
     return res;
 }
 
-// Generate mask for all bits lower than the specified index
-static inline block_t block_mask_lo(uint64_t idx) {
-    ASSERT(idx < BITS_PER_BLOCK);
+// Creates a mask where all the bits less than index (0-512) is set
+block_t block_mask_lo(uint32_t idx) {
     block_t res;
-    uint64_t j = idx / 64;
-    for (uint64_t i = 0; i < j; ++i) res.u64[0] = (uint64_t)~0;
-    res.u64[j] = (uint64_t)1 << (idx & 63);
-    for (uint64_t i = j + 1; i < ARRAY_SIZE(res.u64); ++i) res.u64[0] = 0;
+#if __AVX2__
+    __m256i eq_idx = _mm256_set1_epi32(idx / 32);
+    __m256i eq_bits = _mm256_set1_epi32((1UL << (idx & 31)) - 1);
 
+    __m256i lo_idx = _mm256_set_epi32( 7,  6,  5,  4,  3,  2,  1,  0);
+    __m256i hi_idx = _mm256_set_epi32(15, 14, 13, 12, 11, 10,  9,  8);
+
+    res.mm256[0] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(eq_idx, lo_idx), eq_bits, _mm256_cmpeq_epi32(lo_idx, eq_idx));
+    res.mm256[1] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(eq_idx, hi_idx), eq_bits, _mm256_cmpeq_epi32(hi_idx, eq_idx));
+#else
+    memset(&res, 0, sizeof(block_t));
+    for (uint64_t i = 0; i < idx / 64; ++i) res.u64[i] = ~0;
+    res.u64[idx / 64] = ((uint64_t)1 << (idx & 63)) - 1;
+#endif
+    return res;
+}
+
+// Creates a mask where all the bits greater or equal to the index (0-511) is set
+block_t block_mask_hi(uint32_t idx) {
+    block_t res;
+
+#if __AVX2__
+    __m256i eq_idx = _mm256_set1_epi32(idx / 32);
+    __m256i eq_bit = _mm256_set1_epi32(~((1UL << (idx & 31)) - 1));
+
+    __m256i lo_idx = _mm256_set_epi32( 7,  6,  5,  4,  3,  2,  1,  0);
+    __m256i hi_idx = _mm256_set_epi32(15, 14, 13, 12, 11, 10,  9,  8);
+
+    res.mm256[0] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(lo_idx, eq_idx), eq_bit, _mm256_cmpeq_epi32(lo_idx, eq_idx));
+    res.mm256[1] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(hi_idx, eq_idx), eq_bit, _mm256_cmpeq_epi32(hi_idx, eq_idx));
+#else
+    memset(&res, 0, sizeof(block_t));
+    res.u64[idx / 64] = ~(((uint64_t)1 << (idx & 63)) - 1);
+    for (uint64_t i = idx / 64 + 1; i < 8; ++i) res.u64[i] = ~0;
+#endif
     return res;
 }
 
@@ -207,6 +239,25 @@ static inline int64_t block_count_bits(block_t blk) {
     return count;
 }
 
+// Posix convention, returns 0 if no bit is set
+// otherwise it returns the index of the first set bit in the interval (1-512)
+static inline int64_t block_scan_forward(block_t blk) {
+    for (int64_t i = 0; i < ARRAY_SIZE(blk.u64); ++i) {
+        uint64_t res = bit_scan_forward64(blk.u64[i]);
+        if (res) return res + i * 64;
+    }
+    return 0;
+}
+
+// Posix convention, returns 0 if no bit is set
+// otherwise it returns the index of the last set bit in the interval (1-512)
+static inline int64_t block_scan_reverse(block_t blk) {
+    for (int64_t i = ARRAY_SIZE(blk.u64) - 1; i >= 0; --i) {
+        uint64_t res = bit_scan_reverse64(blk.u64[i]);
+        if (res) return res + i * 64;
+    }
+    return 0;
+}
 
 static inline void set_block(md_exp_bitfield_t* bf, int64_t idx, block_t blk) {
     ASSERT(bf->bits);
@@ -362,7 +413,7 @@ void md_bitfield_set_range(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
 void md_bitfield_set_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
     validate_bitfield(bf);
 
-    ensure_range(bf, bit_idx, bit_idx + 1);
+    ensure_range(bf, bit_idx, bit_idx);
     bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
 }
 
@@ -373,7 +424,7 @@ void md_bitfield_set_indices_u32(md_exp_bitfield_t* bf, uint32_t* indices, int64
 
     for (int64_t i = 0; i < num_indices; ++i) {
         int64_t bit_idx = (int64_t)indices[i];
-        ensure_range(bf, bit_idx, bit_idx + 1);
+        ensure_range(bf, bit_idx, bit_idx);
         bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
     }
 }
@@ -757,4 +808,124 @@ uint32_t* md_bitfield_extract_bits_u32(const md_exp_bitfield_t* bf, struct md_al
     }
 
     return bits;
+}
+
+// Returns the maximum serialization size in bytes of a bitfield
+int64_t md_bitfield_serialize_size_in_bytes(const md_exp_bitfield_t* bf) {
+    return MAX(66, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t) * 1.10);
+}
+
+#define BLOCK_IDX_FLAG_ALL_SET (0x10000)
+
+// Serializes a bitfield into a destination buffer
+// It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
+int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
+    md_allocator_i* alloc = default_temp_allocator;
+
+    uint16_t* data = 0;
+    md_array_push(data, 0, alloc);// This is just a placeholder for block_count and will be updated when we have the exact figure
+
+    uint16_t block_count = 0;
+    int64_t beg_blk = block_idx(bf->beg_bit);
+    int64_t end_blk = block_idx(bf->end_bit);
+
+    // Iterate over all blocks
+    for (int64_t i = beg_blk; i <= end_blk; ++i) {
+        // Add indices to all non empty blocks
+        block_t blk = get_block(bf, i);
+        if (i == beg_blk) block_and(blk, block_mask_hi(bf->beg_bit & 511));
+        if (i == end_blk) block_and(blk, block_mask_lo(bf->end_bit & 511));
+
+        bool empty = true;
+        bool all_set = true;
+        for (int j = 0; j < ARRAY_SIZE(blk.u64); ++j) {
+            if (blk.u64[j] != 0) empty = false;
+            if (blk.u64[j] != 0xFFFFFFFFFFFFFFFF) all_set = false;
+        }
+    
+        if (empty) continue;
+        block_count += 1;
+
+        // Store non empty block indices with additional flag to see if it is empty or not
+        md_array_push(data, (uint16_t)i | (all_set ? BLOCK_IDX_FLAG_ALL_SET : 0), alloc);
+    }
+    
+    // Update number of blocks
+    data[0] = block_count;
+
+    // Add actual block data from the blocks (if not all bits set within block)
+    for (int64_t i = 0; i < block_count; ++i) {
+        int64_t blk_idx = data[1 + i];
+        bool    all_set = data[1 + i] & BLOCK_IDX_FLAG_ALL_SET;
+
+        if (!all_set) {
+            block_t blk = get_block(bf, blk_idx);
+            if (blk_idx == beg_blk) block_and(blk, block_mask_hi(bf->beg_bit & 511));
+            if (blk_idx == end_blk) block_and(blk, block_mask_lo(bf->end_bit & 511));
+            md_array_push_array(data, blk.u16, ARRAY_SIZE(blk.u16), alloc);
+        }
+    }
+
+    int lz_bytes = fastlz_compress_level(2, data, md_array_size(data) * sizeof(uint16_t), dst);
+    printf("LZ:\t%lli number of bits compressed into %i bytes\n", md_bitfield_popcount(bf), lz_bytes);
+
+    md_array_free(data, alloc);
+
+    return lz_bytes;
+}
+
+bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num_bytes) {
+    ASSERT(bf);
+    validate_bitfield(bf);
+    ASSERT(src);
+
+    // This is to make sure we don't run out of bytes to decompress into.
+    // The current compressor is no where near 100:1 compression ratio.
+    const int64_t mem_bytes = num_bytes * 100;
+    void* mem = md_alloc(default_allocator, mem_bytes);
+
+    int size = fastlz_decompress(src, num_bytes, mem, mem_bytes);
+
+    if (size == 0) {
+        md_printf(MD_LOG_TYPE_ERROR, "Failed, to decompress bitfield.");
+        return false;
+    }
+
+    const uint16_t* data = (const uint16_t*)mem;
+    uint16_t block_count = data[0];
+    const uint16_t* block_indices = data + 1;
+    const block_t* block_data = (const block_t*)(block_indices + block_count);
+
+    // Set some conservative estimate first to allocate the data
+    uint16_t beg_blk_idx = block_indices[0];
+    uint16_t end_blk_idx = block_indices[block_count - 1];
+
+    // Grow to ensure the blocks
+    fit_to_range(bf, beg_blk_idx * 512, end_blk_idx * 512);
+
+    // Fetch block_data and store
+    block_t* dst_block = (block_t*)bf->bits;
+    int64_t dst_offset = 0;
+    int64_t src_offset = 0;
+    for (int64_t i = 0; i < block_count; ++i) {
+        uint16_t blk_idx = block_indices[i];
+        if (blk_idx & BLOCK_IDX_FLAG_ALL_SET) {
+            memset(dst_block + dst_offset, 0xFFFFFFFF, sizeof(block_t));
+        } else {
+            dst_block[dst_offset] = block_data[src_offset];
+            src_offset += 1;
+        }
+        dst_offset += 1;
+    }
+
+    // Now we have the data, compute the true beg_bit and end_bit
+    int64_t beg_bit = block_scan_forward(get_block(bf, beg_blk_idx));
+    int64_t end_bit = block_scan_reverse(get_block(bf, end_blk_idx));
+
+    bf->beg_bit = beg_blk_idx * 512 + (beg_bit ? beg_bit - 1 : 0);
+    bf->end_bit = end_blk_idx * 512 + (end_bit ? end_bit - 1 : 0);
+
+    md_free(default_allocator, mem, mem_bytes);
+
+    return true;
 }
