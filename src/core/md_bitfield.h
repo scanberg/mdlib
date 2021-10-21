@@ -58,6 +58,7 @@ int64_t md_bitfield_popcount_range(const md_exp_bitfield_t* bf, int64_t beg, int
 // Test if single bit in field is set
 bool md_bitfield_test_bit   (const md_exp_bitfield_t* bf, int64_t idx);
 
+/*
 static inline uint32_t md_bitfield_beg_bit    (const md_exp_bitfield_t* bf) {
     ASSERT(bf);
     return bf->beg_bit;
@@ -67,6 +68,7 @@ static inline uint32_t md_bitfield_end_bit    (const md_exp_bitfield_t* bf) {
     ASSERT(bf);
     return bf->end_bit;
 }
+*/
 
 /*
  Bit scan forward, finds the first bit set within a given range (beg, end)
