@@ -45,10 +45,20 @@ static inline uint32_t bit_scan_forward32(uint32_t x) {
     return __builtin_ffs(x);
 }
 
+static inline uint32_t bit_scan_reverse32(uint32_t x) {
+    if (x == 0) return 0;
+    return 32 - __builtin_clz(x);
+}
+
 // Scans for the first bit set, from least significant to most significant bit,
 // indexing starts at 1, returns 0 if no bit is set 
 static inline uint64_t bit_scan_forward64(uint64_t x) {
     return __builtin_ffsll(x);
+}
+
+static inline uint64_t bit_scan_reverse64(uint64_t x) {
+    if (x == 0) return 0;
+    return 64 - __builtin_clzll(x);
 }
 
 #elif MD_COMPILER_MSVC

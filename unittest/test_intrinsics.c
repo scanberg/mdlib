@@ -31,6 +31,12 @@ UTEST(intrinsics, test) {
         EXPECT_EQ(bit_scan_forward32(mask[2]), 17);
         EXPECT_EQ(bit_scan_forward32(mask[3]), 25);
         EXPECT_EQ(bit_scan_forward32(mask[4]), 32);
+
+        EXPECT_EQ(bit_scan_reverse32(mask[0]), 0);
+        EXPECT_EQ(bit_scan_reverse32(mask[1]), 9);
+        EXPECT_EQ(bit_scan_forward32(mask[2]), 17);
+        EXPECT_EQ(bit_scan_forward32(mask[3]), 25);
+        EXPECT_EQ(bit_scan_forward32(mask[4]), 32);
     }
 
     EXPECT_EQ(next_power_of_two32(3), 4);
