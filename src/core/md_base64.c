@@ -3,6 +3,10 @@
 #include "md_log.h"
 #include <stdint.h>
 
+#ifndef NULL
+#define NULL 0
+#endif
+
 // Base implementation from here: https://www.mycplus.com/source-code/c-source-code/base64-encode-decode/
 // Modified interface to avoid malloc
 // Modified decode table to avoid malloc and also check for invalid characters
@@ -92,15 +96,15 @@ int md_base64_decode(void* output, const char *input, int input_length) {
     char* out_bytes = (char*)output;
 
     for (int i = 0, j = 0; i < input_length;) {
-        uint32_t a = decode_character(input[i++]);
-        uint32_t b = decode_character(input[i++]);
-        uint32_t c = decode_character(input[i++]);
-        uint32_t d = decode_character(input[i++]);
+        char a = decode_character(input[i++]);
+        char b = decode_character(input[i++]);
+        char c = decode_character(input[i++]);
+        char d = decode_character(input[i++]);
         if (a == -1 || b == -1 || c == -1 || d == -1) {
             md_print(MD_LOG_TYPE_ERROR, "Encountered invalid character in sequence.");
             return 0;
         }
-        uint32_t triple = (a << 18) + (b << 12) + (c << 6) + d;
+        uint32_t triple = ((uint32_t)a << 18) + ((uint32_t)b << 12) + ((uint32_t)c << 6) + (uint32_t)d;
         if (j < output_length) out_bytes[j++] = (triple >> 16) & 0xFF;
         if (j < output_length) out_bytes[j++] = (triple >>  8) & 0xFF;
         if (j < output_length) out_bytes[j++] = (triple >>  0) & 0xFF;
