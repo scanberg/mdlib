@@ -22,7 +22,7 @@ static char encoding_table[64] = {
     '4', '5', '6', '7', '8', '9', '+', '/'};
 
 static char decoding_table[] = {
-    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,  0, -1, -1,  0, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, 62, -1, 63,
     52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1,  0, -1, -1,
@@ -45,11 +45,20 @@ int md_base64_encode_size_in_bytes(int input_length) {
 // 
 int md_base64_encode(char* output, const void* input, int input_length) {
     if (output == NULL) {
-        md_print(MD_LOG_TYPE_ERROR, "Supplied output buffer was NULL");
+        md_print(MD_LOG_TYPE_ERROR, "Base64: Supplied output buffer was NULL");
         return 0;
     }
 
-    const char* in_bytes = (const char*)input;
+    if (input == NULL) {
+        md_print(MD_LOG_TYPE_ERROR, "Base64: Supplied input buffer was NULL");
+        return 0;
+    }
+
+    if (input_length == 0) {
+        return 0;
+    }
+
+    const unsigned char* in_bytes = (const unsigned char*)input;
 
     for (int i =0, j =0; i < input_length;) {
         uint32_t a = i < input_length ? in_bytes[i++] : 0;
@@ -80,31 +89,45 @@ int md_base64_decode_size_in_bytes(int input_length) {
 
 int md_base64_decode(void* output, const char *input, int input_length) {
     if (output == NULL) {
-        md_print(MD_LOG_TYPE_ERROR, "Supplied output buffer was NULL");
+        md_print(MD_LOG_TYPE_ERROR, "Base64: Supplied output buffer was NULL");
         return 0;
     }
 
-    if (input_length % 4 != 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Supplied input length was not a multiple of 4");
+    if (input == NULL) {
+        md_print(MD_LOG_TYPE_ERROR, "Base64: Supplied input buffer was NULL");
+        return 0;
+    }
+
+    if (input_length == 0) {
         return 0;
     }
 
     int output_length = md_base64_decode_size_in_bytes(input_length);
-    if (input[input_length - 1] == '=' || input[input_length - 1] == '.') output_length--;
-    if (input[input_length - 2] == '=' || input[input_length - 2] == '.') output_length--;
+
+    if (input[input_length - 1] == '=' || input[input_length - 1] == '.') output_length -= 1;
+    if (input[input_length - 2] == '=' || input[input_length - 2] == '.') output_length -= 1;
 
     char* out_bytes = (char*)output;
 
     for (int i = 0, j = 0; i < input_length;) {
-        char a = decode_character(input[i++]);
-        char b = decode_character(input[i++]);
-        char c = decode_character(input[i++]);
-        char d = decode_character(input[i++]);
-        if (a == -1 || b == -1 || c == -1 || d == -1) {
-            md_print(MD_LOG_TYPE_ERROR, "Encountered invalid character in sequence.");
-            return 0;
+        // Read and and decode 4 bytes at a time
+        uint32_t byte[4];
+        for (int k = 0; k < 4; ++k, ++i) {
+            while (i < input_length && (input[i] == '\r' || input[i] == '\n')) i += 1;
+            if (i == input_length) {
+                md_print(MD_LOG_TYPE_ERROR, "Base64: Failed to read and decode 4 consecutive bytes in input");
+                return 0;
+            }
+            char c = decode_character(input[i]);
+            if (c < 0) {
+                md_print(MD_LOG_TYPE_ERROR, "Base64: Encountered invalid character in sequence.");
+                return 0;
+            }
+            byte[k] = (uint32_t)c;
         }
-        uint32_t triple = ((uint32_t)a << 18) + ((uint32_t)b << 12) + ((uint32_t)c << 6) + (uint32_t)d;
+
+        // Write 3 bytes
+        uint32_t triple = (byte[0] << 18) + (byte[1] << 12) + (byte[2] << 6) + byte[3];
         if (j < output_length) out_bytes[j++] = (triple >> 16) & 0xFF;
         if (j < output_length) out_bytes[j++] = (triple >>  8) & 0xFF;
         if (j < output_length) out_bytes[j++] = (triple >>  0) & 0xFF;

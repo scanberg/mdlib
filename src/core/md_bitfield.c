@@ -812,6 +812,27 @@ uint32_t* md_bitfield_extract_bits_u32(const md_exp_bitfield_t* bf, struct md_al
 
 #define BLOCK_IDX_FLAG_ALL_SET (0x8000)
 
+uint32_t* get_non_empty_block_indices(const md_exp_bitfield_t* bf, md_allocator_i* alloc) {
+    uint32_t* indices = 0;
+
+    int64_t beg_blk_idx = block_idx(bf->beg_bit);
+    int64_t end_blk_idx = block_idx(bf->end_bit);
+    for (int64_t i = beg_blk_idx; i <= end_blk_idx; ++i) {
+        block_t blk = get_block(bf, i);
+        if (i == beg_blk_idx) block_and(blk, block_mask_hi(bf->beg_bit & 511));
+        if (i == beg_blk_idx) block_and(blk, block_mask_lo(bf->end_bit & 511));
+
+        bool empty = true;
+        for (int j = 0; j < ARRAY_SIZE(blk.u64); ++j) {
+            if (blk.u64[j] != 0) empty = false;
+        }
+        if (empty) continue;
+        md_array_push(indices, (uint32_t)i, alloc);
+    }
+
+    return indices;
+}
+
 uint16_t* get_serialization_block_indices(const md_exp_bitfield_t* bf, md_allocator_i* alloc) {
     uint16_t* indices = 0;
 
@@ -848,6 +869,14 @@ int64_t md_bitfield_serialize_size_in_bytes(const md_exp_bitfield_t* bf) {
 
     return MAX(66, size);
 }
+
+typedef union block_idx_t {
+    uint16_t u16;
+    struct {
+        uint8_t occupancy;
+        uint8_t offset_to_next;
+    };
+} block_idx_t;
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
