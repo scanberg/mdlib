@@ -61,13 +61,13 @@ UTEST(base64, enc_with_new_line) {
 UTEST(base64, not_multiple_of_four) {
     const char enc[] = "VGhpyBp";
     char dec_buf[256];
-    int dec_len = md_base64_decode(dec_buf, enc, strlen(enc));
+    int dec_len = md_base64_decode(dec_buf, enc, (int)strlen(enc));
     EXPECT_EQ(0, dec_len);
 }
 
 UTEST(base64, invalid_character) {
     const char enc[] = "VGhpcyBp!ÅÄÖ";
     char dec_buf[256];
-    int dec_len = md_base64_decode(dec_buf, enc, strlen(enc));
+    int dec_len = md_base64_decode(dec_buf, enc, (int)strlen(enc));
     EXPECT_EQ(0, dec_len);
 }

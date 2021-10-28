@@ -78,12 +78,14 @@ typedef struct md_script_property_data_t {
     float*  values;     // Raw linear access to values, check dim for the dimensions of the data
 
     md_script_property_data_aggregate_t* aggregate; // optional, only computed if the values are computed as an aggregate
-    
+
     float   min_value;
     float   max_value;
 
     float   min_range[4];   // min range in each dimension
     float   max_range[4];   // max range in each dimension
+
+    uint64_t fingerprint; // Unique ID to compare against to see if your version is up to date. The data may be changing async.
 } md_script_property_data_t;
 
 typedef struct md_script_property_t {
@@ -98,7 +100,6 @@ typedef struct md_script_property_t {
 // Container for the evaluation result
 typedef struct md_script_eval_t {
     struct md_script_eval_o* o; // opaque internal data
-    uint64_t fingerprint; // Unique ID to compare against to see if your representation is up to date.
 
     int64_t num_properties;
     md_script_property_t* properties;
@@ -152,12 +153,14 @@ typedef struct md_script_visualization_t {
     
 } md_script_visualization_t;
 
-typedef enum md_script_visualization_flags_t {
-    MD_SCRIPT_VISUALIZE_DEFAULT     = 0, // Default is to visualize everything
+enum {
+    MD_SCRIPT_VISUALIZE_DEFAULT     = 0, // Default is to visualize everything, equivalent to all flags
     MD_SCRIPT_VISUALIZE_GEOMETRY    = 1,
     MD_SCRIPT_VISUALIZE_ATOMS       = 2,
-    MD_SCRIPT_VISUALIZE_SDF         = 3,
-} md_script_visualization_flags_t;
+    MD_SCRIPT_VISUALIZE_SDF         = 4,
+};
+
+typedef uint32_t md_script_visualization_flags_t;
 
 typedef struct md_script_visualization_args_t {
     const struct md_script_vis_token_t* token;

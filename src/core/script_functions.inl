@@ -165,6 +165,22 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         return 0; \
     }
 
+#define BAKE_SIMDF_OP_M(name, op) \
+    static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
+        (void)ctx; \
+        ASSERT(dst); \
+        ASSERT(dst->type.base_type == TYPE_FLOAT); \
+        ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
+        int64_t count = type_info_element_stride_count(arg[0].type); \
+        ASSERT(count % md_simd_widthf == 0); \
+        const float* src_arr = as_float_arr(arg[0]); \
+        float* dst_arr = as_float_arr(*dst); \
+        for (int64_t i = 0; i < count; i += md_simd_widthf) { \
+            md_simd_storef(dst_arr + i, op(md_simd_loadf(src_arr + i))); \
+        } \
+        return 0; \
+    }
+
 BAKE_OP_S_S(_op_and_b_b, &&,  bool)
 BAKE_OP_S_S(_op_or_b_b,  ||,  bool)
 BAKE_OP_UNARY_S(_op_not_b, !, bool)
@@ -215,6 +231,8 @@ BAKE_SIMDF_OP_M_S(_op_simd_mul_farr_f,    md_simd_mulf)
 BAKE_SIMDF_OP_M_M(_op_simd_div_farr_farr, md_simd_divf)
 BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    md_simd_divf)
 
+BAKE_SIMDF_OP_M(_op_simd_abs_farr, md_simd_absf)
+
 // Forward declarations of functions
 // @TODO: Add your declarations here
 
@@ -227,9 +245,7 @@ static int _cast_int_arr_to_flt_arr     (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
-
-static int _cast_flatten_bf_arr (data_t*, data_t[], eval_context_t*);
-
+static int _cast_flatten_bf_arr         (data_t*, data_t[], eval_context_t*);
 
 // Logical operators for custom types
 static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -247,7 +263,8 @@ static int _within_frng (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _name    (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _element_str (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _element_irng(data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _atom    (data_t*, data_t[], eval_context_t*);   // -> bitfield
+static int _atom_irng    (data_t*, data_t[], eval_context_t*);   // -> bitfield
+static int _atom_int     (data_t*, data_t[], eval_context_t*);   // -> bitfield
 
 // Residue level selectors
 static int _water   (data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -496,6 +513,9 @@ static procedure_t procedures[] = {
     {cstr("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {cstr("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_RET_AND_ARG_EQUAL_LENGTH},
 
+    // VECTORIZED VERSIONS FOR ARRAYS OF BIGGER DATA
+    {cstr("abs"),    TI_VOLUME, 1,  {TI_VOLUME}, _op_simd_abs_farr},
+
     // LINEAR ALGEBRA
     {cstr("dot"),    TI_FLOAT,   2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
     {cstr("cross"),  TI_FLOAT3,  2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
@@ -511,13 +531,14 @@ static procedure_t procedures[] = {
     // --- SELECTORS ---
 
     // Atom level
-    {cstr("all"),       TI_BITFIELD, 0, {0},               _all},
-    {cstr("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},   _name,              FLAG_STATIC_VALIDATION},
-    {cstr("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},   _name,              FLAG_STATIC_VALIDATION},
-    {cstr("label"),     TI_BITFIELD, 1, {TI_STRING_ARR},   _name,              FLAG_STATIC_VALIDATION},
-    {cstr("element"),   TI_BITFIELD, 1, {TI_STRING_ARR},   _element_str,       FLAG_STATIC_VALIDATION},
-    {cstr("element"),   TI_BITFIELD, 1, {TI_IRANGE_ARR},   _element_irng,      FLAG_STATIC_VALIDATION},
-    {cstr("atom"),      TI_BITFIELD, 1, {TI_IRANGE_ARR},   _atom,              FLAG_STATIC_VALIDATION},
+    {cstr("all"),       TI_BITFIELD, 0, {0},                _all},
+    {cstr("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
+    {cstr("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
+    {cstr("label"),     TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
+    {cstr("element"),   TI_BITFIELD, 1, {TI_STRING_ARR},    _element_str,       FLAG_STATIC_VALIDATION},
+    {cstr("element"),   TI_BITFIELD, 1, {TI_IRANGE_ARR},    _element_irng,      FLAG_STATIC_VALIDATION},
+    {cstr("atom"),      TI_BITFIELD, 1, {TI_IRANGE_ARR},    _atom_irng,         FLAG_STATIC_VALIDATION},
+    {cstr("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},       _atom_int,          FLAG_STATIC_VALIDATION},
 
     // Residue level
     {cstr("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
@@ -650,7 +671,7 @@ static inline void push_sphere(vec4_t pos_rad, md_script_visualization_t* vis) {
     vis->sphere.count += 1;
 }
 
-static inline bool in_range(irange_t range, int idx) {
+static inline bool idx_in_range(int idx, irange_t range) {
     // I think a range should be inclusive in this context... Since we should be 1 based and not 0 based on indices
     return range.beg <= idx && idx <= range.end;
 }
@@ -1118,9 +1139,8 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             for (int64_t j = 0; j < num_ranges; ++j) {
-                if (in_range(ranges[j], ctx->mol->atom.element[i])) {
+                if (idx_in_range(ctx->mol->atom.element[i], ranges[j])) {
                     md_bitfield_set_bit(bf, i);
-                    //bit_set_idx(result.bits, i);
                     break;
                 }
             }
@@ -1131,7 +1151,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                if (in_range(ranges[j], ctx->mol->atom.element[i])) {
+                if (idx_in_range(ctx->mol->atom.element[i], ranges[j])) {
                     match = true;
                     break;
                 }
@@ -1351,25 +1371,23 @@ static inline irange_t remap_range_to_context(irange_t range, irange_t context) 
     return range;
 }
 
+static inline int32_t remap_index_to_context(int32_t index, irange_t context) {
+    return context.beg + index - 1;
+}
+
 static inline irange_t clamp_range(irange_t range, irange_t context) {
     range.beg = CLAMP(range.beg, context.beg, context.end);
     range.end = CLAMP(range.end, context.beg, context.end);
     return range;
 }
 
-static int _atom(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
     ASSERT(ctx && ctx->mol);
 
     const int64_t num_ranges = element_count(arg[0]);
     const irange_t* ranges = as_irange_arr(arg[0]);
-
-    irange_t ctx_range = {0, (int32_t)ctx->mol->atom.count};
-    if (ctx->mol_ctx) {
-        ctx_range.beg = ctx->mol_ctx->beg_bit;
-        ctx_range.end = ctx->mol_ctx->end_bit;
-    }
-    const int32_t ctx_size = ctx_range.end - ctx_range.beg;
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(dst->ptr && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
@@ -1378,7 +1396,6 @@ static int _atom(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < num_ranges; ++i) {
             irange_t range = remap_range_to_context(ranges[i], ctx_range);
             range = clamp_range(range, ctx_range);
-            //bit_set(result.bits, range.beg, range.end-range.beg);
             if (range.beg < range.end) {
                 md_bitfield_set_range(bf, range.beg, range.end);
             }
@@ -1394,7 +1411,38 @@ static int _atom(data_t* dst, data_t arg[], eval_context_t* ctx) {
             irange_t range = ranges[i];
             if (!range_in_range(remap_range_to_context(range, ctx_range), ctx_range)) {
                 create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
-                    range.beg, range.end, 1, ctx_size);
+                    range.beg, range.end, 1, ctx_range.end - ctx_range.beg);
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
+    ASSERT(ctx && ctx->mol);
+
+    const int64_t num_indices = element_count(arg[0]);
+    const int* indices = as_int_arr(arg[0]);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+
+    if (dst) {
+        ASSERT(dst->ptr && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        md_exp_bitfield_t* bf = as_bitfield(*dst);
+        for (int64_t i = 0; i < num_indices; ++i) {
+            int idx = indices[i] + ctx_range.beg;
+            ASSERT(idx_in_range(idx, ctx_range));
+            md_bitfield_set_bit(bf, idx);
+        }
+    }
+    else {
+        ASSERT(ctx->arg_tokens);
+        for (int64_t i = 0; i < num_indices; ++i) {
+            if (!idx_in_range(remap_index_to_context(indices[i], ctx_range), ctx_range)) {
+                create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)",
+                    indices[i], 1, ctx_range.end - ctx_range.beg);
                 return -1;
             }
         }
@@ -1736,7 +1784,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             const int64_t res_idx = res_indices[i];
             for (int64_t j = 0; j < num_rid; ++j) {
-                if (in_range(rid[j], (int)ctx->mol->residue.id[res_idx])) {
+                if (idx_in_range((int)ctx->mol->residue.id[res_idx], rid[j])) {
                     //uint64_t offset = ctx->mol->residue.atom_range[i].beg;
                     //uint64_t length = ctx->mol->residue.atom_range[i].end - ctx->mol->residue.atom_range[i].beg;
                     //bit_set(bf->bits, offset, length);
@@ -1759,7 +1807,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (in_range(rid[j], (int)ctx->mol->residue.id[res_idx])) {
+                if (idx_in_range((int)ctx->mol->residue.id[res_idx], rid[j])) {
                     count += 1;
                     match = true;
                 }
@@ -3110,8 +3158,6 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_VOLUME));
             vol = as_float_arr(*dst);
         }
-
-        //memset(vol, 0, sizeof(float) * VOL_DIM * VOL_DIM * VOL_DIM);
 
         const int64_t target_size = md_bitfield_popcount(target_bitfield);
         ASSERT(target_size > 0);

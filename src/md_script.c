@@ -192,7 +192,7 @@ typedef struct data_t {
     void*               ptr;    // Pointer to the data
     int64_t             size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
 
-    // Only used for distributions
+    // Only used for distributions and volumes (So far volumes are uniform in its size so this will do)
     float               min_range;
     float               max_range;
 } data_t;
@@ -3464,6 +3464,7 @@ static void compute_min_max(float* min, float* max, const float* values, int64_t
     }
 }
 
+/*
 static void compute_distribution(float* bins, int64_t num_bins, float min_bin_range, float max_bin_range, const float* values, int64_t num_values) {
     ASSERT(bins);
     ASSERT(num_bins > 0);
@@ -3486,6 +3487,7 @@ static void compute_distribution(float* bins, int64_t num_bins, float min_bin_ra
         bins[i] *= scl;
     }
 }
+*/
 
 static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_exp_bitfield_t* mask, md_script_ir_o* ir, md_script_eval_t* eval) {
     ASSERT(props);
@@ -3573,6 +3575,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 memset(prop->data.aggregate->variance, 0, prop->data.aggregate->num_values * sizeof(float));
             }
         case MD_SCRIPT_PROPERTY_TYPE_TEMPORAL:
+            prop->data.min_value = FLT_MAX;
+            prop->data.max_value = -FLT_MAX;
             break;
         default:
             ASSERT(false);
@@ -3639,6 +3643,17 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                     prop->data.aggregate->variance[dst_idx] = variance;
                 }
                 memcpy(prop->data.values + dst_idx * size, values, size * sizeof(float));
+
+                // Determine min max values
+                float min_val = 0;
+                float max_val = 0;
+                compute_min_max(&min_val, &max_val, values, size);
+                prop->data.min_value = MIN(prop->data.min_value, min_val);
+                prop->data.max_value = MAX(prop->data.max_value, max_val);
+
+                // Update range if not explicitly set
+                prop->data.min_range[0] = (data[p_idx].min_range == -FLT_MAX) ? prop->data.min_value : data[p_idx].min_range;
+                prop->data.max_range[0] = (data[p_idx].max_range ==  FLT_MAX) ? prop->data.max_value : data[p_idx].max_range;
             }
             else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
                 // Accumulate values
@@ -3708,36 +3723,18 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
         dst_idx += 1;
 
-        if (dst_idx % 10 == 0) eval->fingerprint = generate_fingerprint();
+        // How frequently should we invalidate the data?
+        if (dst_idx % 10 == 0) {
+            uint64_t fingerprint = generate_fingerprint();
+            for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
+                props[p_idx].data.fingerprint = fingerprint;
+            }
+        }
     }
 
     ASSERT(dst_idx == num_evaluated_frames);
-
-    // Postprocess the data
-    for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
-        md_script_property_t* prop = &props[p_idx];
-
-        if (prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
-            // This needs to be set to a lower number if we are evaluating a subset
-            prop->data.num_values = num_evaluated_frames * prop->data.dim[0];
-
-            // This is for the mean if the property is an aggregate
-            compute_min_max(&prop->data.min_value, &prop->data.max_value, prop->data.values, prop->data.num_values);
-            prop->data.min_range[0] = data[p_idx].min_range == -FLT_MAX ? prop->data.min_value : data[p_idx].min_range;
-            prop->data.max_range[0] = data[p_idx].max_range ==  FLT_MAX ? prop->data.max_value : data[p_idx].max_range;
-        }
-        else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
-        }
-        else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
-        }
-        else {
-            ASSERT(false);
-        }
-    }
-
 done:
     FREE_STACK();
-
     return result;
 }
 
@@ -4013,7 +4010,11 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
             ASSERT(eval->num_properties == md_array_size(ir->o->prop_expressions));
             eval->o->interrupt = false;
             result = eval_properties(eval->properties, eval->num_properties, mol, traj, filter_mask, ir->o, eval);
-            eval->fingerprint = generate_fingerprint();
+
+            uint64_t fingerprint = generate_fingerprint();
+            for (int64_t i = 0; i < eval->num_properties; ++i) {
+                eval->properties[i].data.fingerprint = fingerprint;
+            }
         }
     }
 
@@ -4382,9 +4383,8 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         md_bitfield_init(&vis->o->atom_mask, arena);
     }
 
-    md_stack_allocator_t stack_alloc = {0};
-    md_stack_allocator_init(&stack_alloc, md_alloc(default_allocator, MEGABYTES(32)), MEGABYTES(32));
-    md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc);
+
+    SETUP_STACK(default_allocator, MEGABYTES(32));
 
     int64_t num_frames = md_trajectory_num_atoms(args.traj);
     float* x = md_stack_allocator_alloc(&stack_alloc, num_frames * sizeof(float));
@@ -4392,7 +4392,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     float* z = md_stack_allocator_alloc(&stack_alloc, num_frames * sizeof(float));
     
     md_trajectory_frame_header_t header = { 0 };
-    if (args.traj->inst) {
+    if (args.traj) {
         md_trajectory_load_frame(args.traj, 0, &header, x, y, z);
     } else {
         x = args.mol->atom.x;
@@ -4424,7 +4424,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         md_bitfield_or_inplace(vis->atom_mask, &vis->structures.atom_masks[i]);
     }
 
-    md_free(default_allocator, stack_alloc.buf, stack_alloc.cap);
+    FREE_STACK();
 
     return true;
 }
