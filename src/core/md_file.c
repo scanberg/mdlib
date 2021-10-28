@@ -5,7 +5,6 @@
 #include "md_common.h"
 #include "md_log.h"
 
-#include <string.h>
 
 #if MD_PLATFORM_WINDOWS
 #ifndef VC_EXTRALEAN
@@ -19,8 +18,9 @@
 #pragma warning(disable:4063) // combined flags not valid for switch of enum
 #endif
 
-#include <stdio.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
 
 #ifndef MD_MAX_PATH
 #define MD_MAX_PATH 4096
@@ -156,4 +156,13 @@ int64_t md_file_read(md_file_o* file, void* ptr, int64_t num_bytes) {
 int64_t md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes) {
     ASSERT(file);
     return fwrite(ptr, 1, num_bytes, (FILE*)file);
+}
+
+int64_t md_file_printf(md_file_o* file, const char* format, ...) {
+    ASSERT(file);
+    va_list args;
+    va_start (args, format);
+    int res = vfprintf((FILE*)file, format, args);
+    va_end (args);
+    return res;
 }

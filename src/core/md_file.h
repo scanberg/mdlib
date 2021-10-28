@@ -33,6 +33,8 @@ int64_t md_file_size(md_file_o* file);
 int64_t md_file_read(md_file_o* file, void* ptr, int64_t num_bytes);
 int64_t md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes);
 
+int64_t md_file_printf(md_file_o* file, const char* format, ...);
+
 #ifdef __cplusplus
 }
 #endif // __cplusplus
