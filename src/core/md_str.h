@@ -177,6 +177,7 @@ str_t alloc_str(uint64_t len, struct md_allocator_i* alloc);
 void  free_str(str_t str, struct md_allocator_i* alloc);
 str_t copy_str(str_t str, struct md_allocator_i* alloc);
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
+str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...);
 
 // c:/folder/file.ext -> ext
 str_t extract_ext(str_t path);

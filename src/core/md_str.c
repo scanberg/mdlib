@@ -6,6 +6,8 @@
 #include "md_log.h"
 
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 
 str_t str_from_cstr(const char* cstr) {
     str_t str = {cstr, strlen(cstr)};
@@ -206,6 +208,16 @@ str_t copy_str(const str_t str, struct md_allocator_i* alloc) {
         result.len = str.len;
     }
     return result;
+}
+
+str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    int len = vsnprintf(NULL, 0, format, args);
+    char* buf = md_alloc(alloc, len + 1);
+    vsnprintf(buf, len + 1, format, args);
+    va_end(args);
+    return (str_t) {buf, len};
 }
 
 // c:/folder/file.ext -> ext
