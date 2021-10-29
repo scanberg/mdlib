@@ -1432,7 +1432,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(dst->ptr && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
         md_exp_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = 0; i < num_indices; ++i) {
-            int idx = indices[i] + ctx_range.beg;
+            int32_t idx = remap_index_to_context(indices[i], ctx_range);
             ASSERT(idx_in_range(idx, ctx_range));
             md_bitfield_set_bit(bf, idx);
         }
