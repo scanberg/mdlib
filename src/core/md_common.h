@@ -79,9 +79,14 @@
 #define DIV_UP(x, y) ((x + (y-1)) / y)
 #endif
 
-// Rounds up x to nearest multiple of y, not the weed-killer
+// Rounds up x to nearest multiple of y. Not the weed-killer
 #ifndef ROUND_UP
 #define ROUND_UP(x, y) (y * DIV_UP(x,y))
+#endif
+
+// Rounds down x to nearest multiple of y.
+#ifndef ROUND_DOWN
+#define ROUND_DOWN(x, y) (y * (x / y))
 #endif
 
 #ifndef DEG_TO_RAD

@@ -236,8 +236,6 @@ typedef struct eval_context_t {
                                       
     md_script_visualization_t* vis;     // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
 
-    md_spatial_hash_t* spatial_hash;
-
     struct {
         md_trajectory_frame_header_t* header;
         const float* x;

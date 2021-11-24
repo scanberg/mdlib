@@ -56,6 +56,18 @@ typedef struct md_util_backbone_angle_args_t {
     } chain;
 } md_util_backbone_angle_args_t;
 
+typedef struct md_util_classify_ramachandran_args_t {
+    struct {
+        int64_t count;
+        const char** name;
+    } residue;
+
+    struct {
+        int64_t count;
+        const md_residue_idx_t* res_idx;
+    } backbone;
+} md_util_classify_ramachandran_args_t;
+
 typedef struct md_util_covalent_bond_args_t {
     struct {
         int64_t count;
@@ -107,40 +119,31 @@ float md_util_element_covalent_radius(md_element_t element);
 float md_util_element_atomic_mass(md_element_t element);
 uint32_t md_util_element_cpk_color(md_element_t element);
 
-bool md_util_is_resname_dna(str_t str);
-bool md_util_is_resname_acidic(str_t str);
-bool md_util_is_resname_basic(str_t str);
-bool md_util_is_resname_neutral(str_t str);
-bool md_util_is_resname_water(str_t str);
-bool md_util_is_resname_hydrophobic(str_t str);
-bool md_util_is_resname_amino_acid(str_t str);
+bool md_util_resname_dna(str_t str);
+bool md_util_resname_acidic(str_t str);
+bool md_util_resname_basic(str_t str);
+bool md_util_resname_neutral(str_t str);
+bool md_util_resname_water(str_t str);
+bool md_util_resname_hydrophobic(str_t str);
+bool md_util_resname_amino_acid(str_t str);
 
-/*
-TODO: implement these utility functions
-
-// RESIDUE FUNCTIONS BASED ON RESIDUE NAMES
-bool is_amino_acid(const char* str_ptr, int64_t str_len);
-bool is_acidic(const char* str_ptr, int64_t str_len);
-bool is_basic(const char* str_ptr, int64_t str_len);
-bool is_neutral(const char* str_ptr, int64_t str_len);
-bool is_water(const char* str_ptr, int64_t str_len);
-bool is_hydrophobic(const char* str_ptr, int64_t str_len);
-*/
-
-static inline bool md_util_protein_backbone_atoms_valid(md_backbone_atoms_t prot) {
+static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);
 }
 
 // Extracts the indices which make up the backbone from the supplied atom names within corresponding residues
-bool md_util_extract_backbone_atoms(md_backbone_atoms_t backbone_atoms[], int64_t capacity, const md_util_backbone_args_t* args);
+bool md_util_backbone_atoms_extract(md_backbone_atoms_t backbone_atoms[], int64_t capacity, const md_util_backbone_args_t* args);
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as args->backbone.count
-bool md_util_compute_secondary_structure(md_secondary_structure_t secondary_structures[], int64_t capacity, const md_util_secondary_structure_args_t* args);
+bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structures[], int64_t capacity, const md_util_secondary_structure_args_t* args);
 
 // Computes backbone angles from backbone atoms
 // Does not allocate any data, assumes that backbone_angles has the same length as args->backbone.count
-bool md_util_compute_backbone_angles(md_backbone_angles_t backbone_angles[], int64_t capacity, const md_util_backbone_angle_args_t* args);
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int64_t capacity, const md_util_backbone_angle_args_t* args);
+
+// Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
+bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const md_util_classify_ramachandran_args_t* args);
 
 // the result is an md_array allocated using the supplied allocator, since we cannot determine how many bonds will be formed.
 md_bond_t* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args, struct md_allocator_i* alloc);

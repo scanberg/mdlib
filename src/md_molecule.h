@@ -16,6 +16,7 @@ typedef int32_t                     md_molecule_idx_t;
 typedef uint32_t                    md_secondary_structure_t;
 typedef uint8_t                     md_flag_t;
 typedef uint8_t                     md_element_t;
+typedef uint8_t                     md_ramachandran_type_t;
 //typedef struct md_molecule_o        md_molecule_o;
 
 // We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
@@ -24,6 +25,14 @@ enum {
     MD_SECONDARY_STRUCTURE_COIL    = 0x000000FF,
     MD_SECONDARY_STRUCTURE_HELIX   = 0x0000FF00,
     MD_SECONDARY_STRUCTURE_SHEET   = 0x00FF0000
+};
+
+enum {
+    MD_RAMACHANDRAN_TYPE_UNKNOWN    = 0,
+    MD_RAMACHANDRAN_TYPE_GENERAL    = 1,
+    MD_RAMACHANDRAN_TYPE_GLYCINE    = 2,
+    MD_RAMACHANDRAN_TYPE_PROLINE    = 3,
+    MD_RAMACHANDRAN_TYPE_PREPROL    = 4,
 };
 
 // Open ended range of indices (e.g. range(0,4) -> [0,1,2,3])
@@ -76,18 +85,19 @@ typedef struct md_molecule_t {
     } residue;
 
     struct {
-        int64_t         count;
-        const char**    id;
+        int64_t           count;
+        const char**      id;
         md_range_t*       residue_range;
         md_range_t*       atom_range;
         md_range_t*       backbone_range;
     } chain;
 
     struct {
-        int64_t                 count;
+        int64_t                   count;
         md_backbone_atoms_t*      atoms;
         md_backbone_angles_t*     angle;
         md_secondary_structure_t* secondary_structure;
+        md_ramachandran_type_t*   ramachandran_type;
         md_residue_idx_t*         residue_idx;            // Index to the residue which contains the backbone
     } backbone;
 

@@ -123,6 +123,7 @@ static inline int64_t match_str_in_array(str_t str, const char* arr[], int64_t a
     return -1;
 }
 
+// This only works if we are within 1 period away from the reference
 static inline md_simd_typef simd_deperiodize(md_simd_typef pos, md_simd_typef ref, md_simd_typef box_ext) {
     md_simd_typef half_box = md_simd_mulf(box_ext, md_simd_set1f(0.5f));
     md_simd_typef delta = md_simd_subf(ref, pos);
@@ -130,31 +131,31 @@ static inline md_simd_typef simd_deperiodize(md_simd_typef pos, md_simd_typef re
     return md_simd_addf(pos, md_simd_mulf(box_ext, signed_mask));
 }
     
-bool md_util_is_resname_dna(str_t str) {
+bool md_util_resname_dna(str_t str) {
     return match_str_in_array(str, dna, ARRAY_SIZE(dna)) != -1;
 }
     
-bool md_util_is_resname_acidic(str_t str) {
+bool md_util_resname_acidic(str_t str) {
     return match_str_in_array(str, acidic, ARRAY_SIZE(acidic)) != -1;
 }
 
-bool md_util_is_resname_basic(str_t str) {
+bool md_util_resname_basic(str_t str) {
     return match_str_in_array(str, basic, ARRAY_SIZE(basic)) != -1;
 }
     
-bool md_util_is_resname_neutral(str_t str) {
+bool md_util_resname_neutral(str_t str) {
     return match_str_in_array(str, neutral, ARRAY_SIZE(neutral)) != -1;
 }
     
-bool md_util_is_resname_water(str_t str) {
+bool md_util_resname_water(str_t str) {
     return match_str_in_array(str, water, ARRAY_SIZE(water)) != -1;
 }
     
-bool md_util_is_resname_hydrophobic(str_t str) {
+bool md_util_resname_hydrophobic(str_t str) {
     return match_str_in_array(str, hydrophobic, ARRAY_SIZE(hydrophobic)) != -1;
 }
     
-bool md_util_is_resname_amino_acid(str_t str) {
+bool md_util_resname_amino_acid(str_t str) {
     return match_str_in_array(str, amino_acids, ARRAY_SIZE(amino_acids)) != -1;
 }
 
@@ -206,7 +207,7 @@ md_element_t md_util_decode_element(str_t atom_name, str_t res_name) {
     };
 
     if (atom_name.len > 0) {
-        if (md_util_is_resname_amino_acid(trim_whitespace(res_name))) {
+        if (md_util_resname_amino_acid(trim_whitespace(res_name))) {
             // EASY-PEASY, we just try to match against the first character
             str.len = 1;
             return lookup_element_ignore_case(str);
@@ -288,7 +289,7 @@ static inline bool extract_backbone_atoms(md_backbone_atoms_t* backbone_atoms, c
 }
 
 
-bool md_util_extract_backbone_atoms(md_backbone_atoms_t backbone_atoms[], int64_t capacity, const md_util_backbone_args_t* args) {
+bool md_util_backbone_atoms_extract(md_backbone_atoms_t backbone_atoms[], int64_t capacity, const md_util_backbone_args_t* args) {
     ASSERT(backbone_atoms);
     ASSERT(args);
     memset(backbone_atoms, 0, args->residue.count * sizeof(md_backbone_atoms_t));
@@ -334,7 +335,7 @@ static inline bool is_sheet(const md_util_secondary_structure_args_t* args, md_r
 
 // TM-align: a protein structure alignment algorithm based on the Tm-score
 // doi:10.1093/nar/gki524
-bool md_util_compute_secondary_structure(md_secondary_structure_t secondary_structure[], int64_t capacity, const md_util_secondary_structure_args_t* args) {
+bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structure[], int64_t capacity, const md_util_secondary_structure_args_t* args) {
     ASSERT(args);
     ASSERT(args->atom.x);
     ASSERT(args->atom.y);
@@ -390,7 +391,7 @@ static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
     return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
 }
 
-bool md_util_compute_backbone_angles(md_backbone_angles_t backbone_angles[], int64_t capacity, const md_util_backbone_angle_args_t* args) {
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int64_t capacity, const md_util_backbone_angle_args_t* args) {
     ASSERT(args);
     ASSERT(args->atom.x);
     ASSERT(args->atom.y);
@@ -417,6 +418,35 @@ bool md_util_compute_backbone_angles(md_backbone_angles_t backbone_angles[], int
             vec3_t n_next = { args->atom.x[args->backbone.atoms[i+1].n], args->atom.y[args->backbone.atoms[i+1].n], args->atom.z[args->backbone.atoms[i+1].n] };
             backbone_angles[i].phi = dihedral_angle(c_prev, n, ca, c);
             backbone_angles[i].psi = dihedral_angle(n, ca, c, n_next);
+        }
+    }
+
+    return true;
+}
+
+bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const md_util_classify_ramachandran_args_t* args) {
+    ASSERT(args);
+
+    memset(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
+
+    if (args->backbone.count == 0) return false;
+    if (args->residue.count == 0) return false;
+
+    ASSERT(args->residue.name);
+    ASSERT(args->backbone.res_idx);
+
+    for (int64_t i = 0; i < args->backbone.count; ++i) {
+        int64_t res_idx = args->backbone.res_idx[i];
+        ASSERT(res_idx < args->residue.count);
+
+        const char* resname = args->residue.name[res_idx];
+        if (strncmp(resname, "GLY", 3) == 0) {
+            ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GLYCINE;
+        } else if (strncmp(resname, "PRO", 3) == 0) {
+            ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_PROLINE;
+            ramachandran_types[i - 1] = MD_RAMACHANDRAN_TYPE_PREPROL;
+        } else {
+            ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GENERAL;
         }
     }
 
@@ -488,18 +518,6 @@ md_bond_t* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* ar
     return bonds;
 }
 
-static inline float deperiodize(float pos, float ref, float ext) {
-    float d = ref - pos;
-    float t = fabsf(d) > (ext * 0.5f) ? copysignf(ext, d) : 0.0f;
-    return pos + t;
-}
-
-static inline float apply_pbc(float pos, float ext) {
-    if (pos < 0.0f) return pos + ext;
-    else if (pos > ext) return pos - ext;
-    return pos;
-}
-
 bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, md_util_apply_pbc_args_t args) {
     ASSERT(out_x);
     ASSERT(out_y);
@@ -529,11 +547,17 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     
     for (int64_t i = 0; i < args.residue.count; ++i) {
         md_range_t atom_range = args.residue.atom_range[i];
-        vec3_t com = md_util_compute_periodic_com(args.atom.x + atom_range.beg, args.atom.y + atom_range.beg, args.atom.z + atom_range.beg, NULL, atom_range.end - atom_range.beg, args.pbc.box);
+        vec3_t com = md_util_compute_periodic_com(
+            args.atom.x + atom_range.beg,
+            args.atom.y + atom_range.beg,
+            args.atom.z + atom_range.beg,
+            NULL,
+            atom_range.end - atom_range.beg,
+            args.pbc.box);
 
-        com.x = apply_pbc(com.x, ext.x);
-        com.y = apply_pbc(com.y, ext.y);
-        com.z = apply_pbc(com.z, ext.z);
+        com.x = deperiodize(com.x, ext.x * 0.5f, ext.x);
+        com.y = deperiodize(com.y, ext.y * 0.5f, ext.y);
+        com.z = deperiodize(com.z, ext.z * 0.5f, ext.z);
 
         if (residue_com_x) {
             ASSERT(residue_com_y);
@@ -543,8 +567,6 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
             residue_com_z[i] = com.z;
         }
 
-
-
         for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
             out_x[j] = deperiodize(args.atom.x[j], com.x, ext.x);
             out_y[j] = deperiodize(args.atom.y[j], com.y, ext.y);
@@ -552,57 +574,40 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
         }
     }
 
-    //return true;
-
     for (int64_t i = 0; i < args.chain.count; ++i) {
         md_range_t res_range = args.chain.residue_range[i];
+        vec3_t chain_com = md_util_compute_periodic_com(
+            residue_com_x + res_range.beg,
+            residue_com_y + res_range.beg,
+            residue_com_z + res_range.beg,
+            NULL,
+            res_range.end - res_range.beg,
+            args.pbc.box);
 
-        vec3_t com = md_util_compute_periodic_com(residue_com_x, residue_com_y, residue_com_z, NULL, res_range.end - res_range.beg, args.pbc.box);
+        // Ensure that the chain com is within the period of the bounding box
+        chain_com.x = deperiodize(chain_com.x, ext.x * 0.5f, ext.x);
+        chain_com.y = deperiodize(chain_com.y, ext.y * 0.5f, ext.y);
+        chain_com.z = deperiodize(chain_com.z, ext.z * 0.5f, ext.z);
 
-        com.x = apply_pbc(com.x, ext.x);
-        com.y = apply_pbc(com.y, ext.y);
-        com.z = apply_pbc(com.z, ext.z);
+        for (int64_t j = res_range.beg; j < res_range.end; ++j) {
+            vec3_t res_com = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
 
-        for (int64_t j = res_range.beg; j < res_range.end; ++j) {           
-            float x = deperiodize(residue_com_x[j], com.x, ext.x);
-            float y = deperiodize(residue_com_y[j], com.y, ext.y);
-            float z = deperiodize(residue_com_z[j], com.z, ext.z);
+            // Ensire that the residue is within the period of the chain
+            res_com.x = deperiodize(res_com.x, chain_com.x, ext.x);
+            res_com.y = deperiodize(res_com.y, chain_com.y, ext.y);
+            res_com.z = deperiodize(res_com.z, chain_com.z, ext.z);
 
-            vec3_t d = vec3_sub((vec3_t){x, y, z}, (vec3_t){residue_com_x[j], residue_com_y[j], residue_com_z[j]});
-            //vec3_t v = {0,0,0};
-            //if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
-            //if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
-            //if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
+            vec3_t d = vec3_sub(res_com, (vec3_t){residue_com_x[j], residue_com_y[j], residue_com_z[j]});
+            const float d2 = vec3_dot(d,d);
 
-            if (vec3_dot(d,d) > 0.0001f) {
+            if (d2 > 0) {
                 md_range_t atom_range = args.residue.atom_range[j];
                 for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
                     out_x[k] += d.x;
                     out_y[k] += d.y;
                     out_z[k] += d.z;
                 }
-            }
-            
-
-            /*
-            vec3_t p = residue_com[j];
-            vec3_t delta = vec3_sub(com, p);
-            vec3_t v = {0,0,0};
-            if (fabsf(delta.x) > half_ext.x) v.x = copysignf(ext.x, delta.x);
-            if (fabsf(delta.y) > half_ext.y) v.y = copysignf(ext.y, delta.y);
-            if (fabsf(delta.z) > half_ext.z) v.z = copysignf(ext.z, delta.z);
-            
-            float d2 = vec3_dot(v,v);
-            if (d2 > 0.0f) {
-                md_range_t atom_range = args.residue.atom_range[j];
-                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
-                    out_x[k] += v.x;
-                    out_y[k] += v.y;
-                    out_z[k] += v.z;
-                }
-            }
-            */
-            
+            }            
         }
     }
 
@@ -639,9 +644,6 @@ vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const 
     float com_x = sum_x / sum_w;
     float com_y = sum_y / sum_w;
     float com_z = sum_z / sum_w;
-    //float com_x = apply_pbc(sum_x / sum_w, ext_x);
-    //float com_y = apply_pbc(sum_y / sum_w, ext_y);
-    //float com_z = apply_pbc(sum_z / sum_w, ext_z);
 
     return (vec3_t){com_x, com_y, com_z};
 }

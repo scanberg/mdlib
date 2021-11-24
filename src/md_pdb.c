@@ -595,6 +595,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         md_array_resize(mol->backbone.atoms, mol->backbone.count, alloc);
         md_array_resize(mol->backbone.angle, mol->backbone.count, alloc);
         md_array_resize(mol->backbone.secondary_structure, mol->backbone.count, alloc);
+        md_array_resize(mol->backbone.ramachandran_type, mol->backbone.count, alloc);
         md_array_resize(mol->backbone.residue_idx, mol->backbone.count, alloc);
 
         int64_t backbone_idx = 0;
@@ -616,7 +617,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                     .atom_range = mol->residue.atom_range + res_offset,
                 },
             };
-            md_util_extract_backbone_atoms(mol->backbone.atoms + backbone_idx, mol->backbone.count, &bb_args);
+            md_util_backbone_atoms_extract(mol->backbone.atoms + backbone_idx, mol->backbone.count, &bb_args);
 
             backbone_idx += res_count;
         }
@@ -637,7 +638,19 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                 .backbone_range = mol->chain.backbone_range,
             }
         };
-        md_util_compute_secondary_structure(mol->backbone.secondary_structure, mol->backbone.count, &ss_args);
+        md_util_backbone_secondary_structure_compute(mol->backbone.secondary_structure, mol->backbone.count, &ss_args);
+
+        md_util_classify_ramachandran_args_t rama_args = {
+            .residue = {
+                .count = mol->residue.count,
+                .name  = mol->residue.name,
+            },
+            .backbone = {
+                .count = mol->backbone.count,
+                .res_idx = mol->backbone.residue_idx,
+            }
+        };
+        md_util_backbone_ramachandran_classify(mol->backbone.ramachandran_type, mol->backbone.count, &rama_args);
     }
 
     {
