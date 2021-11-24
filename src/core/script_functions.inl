@@ -1246,23 +1246,33 @@ static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         md_spatial_hash_t spatial_hash = {0};
-        float cell_ext = radius / 3.0f;
-        md_spatial_hash_init(&spatial_hash, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.count, cell_ext, ctx->temp_alloc);
+        md_spatial_hash_args_t args = {
+            .coords = {
+                .count = ctx->mol->atom.count,
+                .x = ctx->mol->atom.x,
+                .y = ctx->mol->atom.y,
+                .z = ctx->mol->atom.z,
+            },
+            .cell_ext = radius / 1.5f,
+            .alloc = ctx->temp_alloc,
+            .temp_alloc = ctx->temp_alloc
+        };
+        md_spatial_hash_init(&spatial_hash, &args);
 
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
             md_exp_bitfield_t* dst_bf = as_bitfield(*dst);
             for (int64_t i = 0; i < num_pos; ++i) {
-                vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, radius};
-                md_spatial_hash_query(&spatial_hash, pos_rad, within_float_iter, dst_bf);
+                vec3_t pos = {in_pos[i].x, in_pos[i].y, in_pos[i].z};
+                md_spatial_hash_query(&spatial_hash, pos, radius, within_float_iter, dst_bf);
             }
         } else {
             // Visualize
             md_exp_bitfield_t* dst_bf = ctx->vis->atom_mask;
             for (int64_t i = 0; i < num_pos; ++i) {
-                vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, radius};
-                push_sphere(pos_rad, ctx->vis);
-                md_spatial_hash_query(&spatial_hash, pos_rad, within_float_iter, dst_bf);
+                vec3_t pos = {in_pos[i].x, in_pos[i].y, in_pos[i].z};
+                push_sphere(vec4_from_vec3(pos, radius), ctx->vis);
+                md_spatial_hash_query(&spatial_hash, pos, radius, within_float_iter, dst_bf);
             }
         }
     }
@@ -1307,8 +1317,18 @@ static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         md_spatial_hash_t spatial_hash = {0};
-        float cell_ext = rad_range.end / 3.0f;
-        md_spatial_hash_init(&spatial_hash, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.count, cell_ext, ctx->temp_alloc);
+        md_spatial_hash_args_t args = {
+            .coords = {
+                .count = ctx->mol->atom.count,
+                .x = ctx->mol->atom.x,
+                .y = ctx->mol->atom.y,
+                .z = ctx->mol->atom.z,
+            },
+            .cell_ext = rad_range.end / 1.5f,
+            .alloc = ctx->temp_alloc,
+            .temp_alloc = ctx->temp_alloc
+        };
+        md_spatial_hash_init(&spatial_hash, &args);
 
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
@@ -1318,9 +1338,10 @@ static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 .rad_range = rad_range,
             };
             for (int64_t i = 0; i < num_pos; ++i) {
-                vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, rad_range.end};
+                vec3_t pos = {in_pos[i].x, in_pos[i].y, in_pos[i].z};
+                float  rad = rad_range.end;
                 payload.ref_pos = (vec3_t) {in_pos[i].x, in_pos[i].y, in_pos[i].z};
-                md_spatial_hash_query(&spatial_hash, pos_rad, within_frng_iter, &payload);
+                md_spatial_hash_query(&spatial_hash, pos, rad, within_frng_iter, &payload);
             }
         } else {
             // Visualize
@@ -1330,10 +1351,11 @@ static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 .rad_range = rad_range,
             };
             for (int64_t i = 0; i < num_pos; ++i) {
-                vec4_t pos_rad = {in_pos[i].x, in_pos[i].y, in_pos[i].z, rad_range.end};
+                vec3_t pos = {in_pos[i].x, in_pos[i].y, in_pos[i].z};
+                float  rad = rad_range.end;
                 payload.ref_pos = (vec3_t) {in_pos[i].x, in_pos[i].y, in_pos[i].z};
-                md_spatial_hash_query(&spatial_hash, pos_rad, within_frng_iter, &payload);
-                push_sphere(pos_rad, ctx->vis);
+                md_spatial_hash_query(&spatial_hash, pos, rad, within_frng_iter, &payload);
+                push_sphere(vec4_from_vec3(pos, rad), ctx->vis);
             }
         }
     }
@@ -1519,7 +1541,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             int64_t ri = res_indices[i];
             str_t str = {.ptr = ctx->mol->residue.name[ri], .len = strlen(ctx->mol->residue.name[ri])};
-            if (md_util_is_resname_amino_acid(str)) {
+            if (md_util_resname_amino_acid(str)) {
                 md_range_t range = ctx->mol->residue.atom_range[ri];
                 //bit_set(result.bits, (uint64_t)range.beg, (uint64_t)range.end - (uint64_t)range.beg);
                 
@@ -1533,7 +1555,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             int64_t ri = res_indices[i];
             str_t str = {.ptr = ctx->mol->residue.name[ri], .len = strlen(ctx->mol->residue.name[ri])};
-            if (md_util_is_resname_amino_acid(str)) {
+            if (md_util_resname_amino_acid(str)) {
                 count += 1;
             }
         }
@@ -3093,15 +3115,11 @@ static inline bool are_bitfields_equivalent(const md_exp_bitfield_t bitfields[],
     return true;
 }
 
-static inline void populate_volume(float* vol, mat4_t M, const float* x, const float* y, const float* z, int64_t num_pos) {
-    // Transform each position by matrix M and increment volume
-
+static inline void populate_volume(float* vol, const float* x, const float* y, const float* z, int64_t num_pos) {
     for (int64_t i = 0; i < num_pos; ++i) {
-        vec3_t p = {x[i], y[i], z[i]};
-        p = mat4_mul_vec3(M, p, 1);
-        int cx = (int)p.x;
-        int cy = (int)p.y;
-        int cz = (int)p.z;
+        int cx = (int)x[i];
+        int cy = (int)y[i];
+        int cz = (int)z[i];
 
         if (cx < 0 || cx >= VOL_DIM) continue;
         if (cy < 0 || cy >= VOL_DIM) continue;
@@ -3212,7 +3230,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             if (vol) {
                 mat4_t VART = mat4_mul(VA, RT);
-                populate_volume(vol, VART, target_x, target_y, target_z, target_size);
+                mat4_batch_transform(target_x, target_y, target_z, 1.0f, target_size, VART);
+                populate_volume(vol, target_x, target_y, target_z, target_size);
             }
             if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_SDF) {
                 md_allocator_i* alloc = ctx->vis->o->alloc;

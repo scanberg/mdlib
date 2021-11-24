@@ -21,17 +21,27 @@ UTEST(spatial_hash, small) {
     float z[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     md_spatial_hash_t spatial_hash = {0};
-    ASSERT_TRUE(md_spatial_hash_init(&spatial_hash, x, y, z, 10, 0, default_allocator));
+    md_spatial_hash_args_t args = {
+        .coords = {
+            .count = 10,
+            .x = x,
+            .y = y,
+            .z = z,
+        },
+        .alloc = default_allocator
+    };
+    ASSERT_TRUE(md_spatial_hash_init(&spatial_hash, &args));
 
-    vec4_t pos_rad = {5, 0, 0, 1.5f};
+    vec3_t pos = {5, 0, 0};
+    float  rad = 1.5f;
     uint32_t count = 0;
-    EXPECT_TRUE(md_spatial_hash_query(&spatial_hash, pos_rad, func, &count));
+    EXPECT_TRUE(md_spatial_hash_query(&spatial_hash, pos, rad, func, &count));
 
     EXPECT_EQ(3, count);
 }
 
 UTEST(spatial_hash, big) {
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
+    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(64));
     const str_t pdb_file = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
@@ -41,11 +51,21 @@ UTEST(spatial_hash, big) {
     ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
 
     md_spatial_hash_t spatial_hash = {0};
-    ASSERT_TRUE(md_spatial_hash_init(&spatial_hash, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 0, alloc));
+    md_spatial_hash_args_t args = {
+        .coords = {
+            .count = mol.atom.count,
+            .x = mol.atom.x,
+            .y = mol.atom.y,
+            .z = mol.atom.z,
+        },
+        .alloc = default_allocator
+    };
+    ASSERT_TRUE(md_spatial_hash_init(&spatial_hash, &args));
 
-    vec4_t pos_rad = {24, 48, 24, 10.0f};
+    vec3_t pos = {24, 48, 24};
+    float  rad = 10.0f;
     uint32_t count = 0;
-    EXPECT_TRUE(md_spatial_hash_query(&spatial_hash, pos_rad, func, &count));
+    EXPECT_TRUE(md_spatial_hash_query(&spatial_hash, pos, rad, func, &count));
 
     EXPECT_LT(0, count);
 

@@ -286,3 +286,188 @@ mat4_t mat4_inverse(mat4_t M) {
 
     return mat4_mul_f(I, 1.0f / (dot0.x + dot0.y + dot0.z + dot0.w));
 }
+
+
+void vec3_batch_translate(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, int64_t count, vec3_t translation) {
+    int64_t i = 0;
+
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_widthf);
+    if (simd_count > 0) {
+        md_simd_typef t_x = md_simd_set1f(translation.x);
+        md_simd_typef t_y = md_simd_set1f(translation.y);
+        md_simd_typef t_z = md_simd_set1f(translation.z);
+
+        for (; i < simd_count; i += md_simd_widthf) {
+            md_simd_typef x = md_simd_loadf(in_out_x + i);
+            md_simd_typef y = md_simd_loadf(in_out_y + i);
+            md_simd_typef z = md_simd_loadf(in_out_z + i);
+
+            x = md_simd_addf(x, t_x);
+            y = md_simd_addf(y, t_y);
+            z = md_simd_addf(z, t_z);
+
+            md_simd_storef(in_out_x + i, x);
+            md_simd_storef(in_out_y + i, y);
+            md_simd_storef(in_out_z + i, z);
+        }
+    }
+
+    for (; i < count; i++) {
+        in_out_x[i] += translation.x;
+        in_out_y[i] += translation.y;
+        in_out_z[i] += translation.z;
+    }
+}
+
+void vec3_batch_translate2(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation) {
+    int64_t i = 0;
+
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_widthf);
+    if (simd_count > 0) {
+        md_simd_typef t_x = md_simd_set1f(translation.x);
+        md_simd_typef t_y = md_simd_set1f(translation.y);
+        md_simd_typef t_z = md_simd_set1f(translation.z);
+
+        for (; i < simd_count; i += md_simd_widthf) {
+            md_simd_typef p_x = md_simd_loadf(in_x + i);
+            md_simd_typef p_y = md_simd_loadf(in_y + i);
+            md_simd_typef p_z = md_simd_loadf(in_z + i);
+
+            p_x = md_simd_addf(p_x, t_x);
+            p_y = md_simd_addf(p_y, t_y);
+            p_z = md_simd_addf(p_z, t_z);
+
+            md_simd_storef(out_x + i, p_x);
+            md_simd_storef(out_y + i, p_y);
+            md_simd_storef(out_z + i, p_z);
+        }
+    }
+
+    for (; i < count; i++) {
+        out_x[i] += translation.x;
+        out_y[i] += translation.y;
+        out_z[i] += translation.z;
+    }
+}
+
+void mat4_batch_transform(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, float w_comp, int64_t count, mat4_t M) {
+    const md_simd_typef m11 = md_simd_set1f(M.elem[0][0]);
+    const md_simd_typef m12 = md_simd_set1f(M.elem[0][1]);
+    const md_simd_typef m13 = md_simd_set1f(M.elem[0][2]);
+
+    const md_simd_typef m21 = md_simd_set1f(M.elem[1][0]);
+    const md_simd_typef m22 = md_simd_set1f(M.elem[1][1]);
+    const md_simd_typef m23 = md_simd_set1f(M.elem[1][2]);
+
+    const md_simd_typef m31 = md_simd_set1f(M.elem[2][0]);
+    const md_simd_typef m32 = md_simd_set1f(M.elem[2][1]);
+    const md_simd_typef m33 = md_simd_set1f(M.elem[2][2]);
+
+    const md_simd_typef m41 = md_simd_set1f(M.elem[3][0]);
+    const md_simd_typef m42 = md_simd_set1f(M.elem[3][1]);
+    const md_simd_typef m43 = md_simd_set1f(M.elem[3][2]);
+
+    const md_simd_typef w = md_simd_set1f(w_comp);
+
+    int64_t i = 0;
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_widthf);
+    for (; i < simd_count; i += md_simd_widthf) {
+        const md_simd_typef x = md_simd_loadf(in_out_x + i);
+        const md_simd_typef y = md_simd_loadf(in_out_y + i);
+        const md_simd_typef z = md_simd_loadf(in_out_z + i);
+
+        const md_simd_typef m11x = md_simd_mulf(m11, x);
+        const md_simd_typef m21y = md_simd_mulf(m21, y);
+        const md_simd_typef m31z = md_simd_mulf(m31, z);
+        const md_simd_typef m41w = md_simd_mulf(m41, w);
+
+        const md_simd_typef m12x = md_simd_mulf(m12, x);
+        const md_simd_typef m22y = md_simd_mulf(m22, y);
+        const md_simd_typef m32z = md_simd_mulf(m32, z);
+        const md_simd_typef m42w = md_simd_mulf(m42, w);
+
+        const md_simd_typef m13x = md_simd_mulf(m13, x);
+        const md_simd_typef m23y = md_simd_mulf(m23, y);
+        const md_simd_typef m33z = md_simd_mulf(m33, z);
+        const md_simd_typef m43w = md_simd_mulf(m43, w);
+
+        const md_simd_typef res_x = md_simd_addf(md_simd_addf(m11x, m21y), md_simd_addf(m31z, m41w));
+        const md_simd_typef res_y = md_simd_addf(md_simd_addf(m12x, m22y), md_simd_addf(m32z, m42w));
+        const md_simd_typef res_z = md_simd_addf(md_simd_addf(m13x, m23y), md_simd_addf(m33z, m43w));
+
+        md_simd_storef(in_out_x + i, res_x);
+        md_simd_storef(in_out_y + i, res_y);
+        md_simd_storef(in_out_z + i, res_z);
+    }
+
+    for (; i < count; i++) {
+        const float x = in_out_x[i];
+        const float y = in_out_y[i];
+        const float z = in_out_z[i];
+
+        in_out_x[i] = x * M.elem[0][0] + y * M.elem[1][0] + z * M.elem[2][0] + w_comp * M.elem[3][0];
+        in_out_y[i] = x * M.elem[0][1] + y * M.elem[1][1] + z * M.elem[2][1] + w_comp * M.elem[3][1];
+        in_out_z[i] = x * M.elem[0][2] + y * M.elem[1][2] + z * M.elem[2][2] + w_comp * M.elem[3][2];
+    }
+}
+
+void mat4_batch_transform2(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t M) {
+    const md_simd_typef m11 = md_simd_set1f(M.elem[0][0]);
+    const md_simd_typef m12 = md_simd_set1f(M.elem[0][1]);
+    const md_simd_typef m13 = md_simd_set1f(M.elem[0][2]);
+
+    const md_simd_typef m21 = md_simd_set1f(M.elem[1][0]);
+    const md_simd_typef m22 = md_simd_set1f(M.elem[1][1]);
+    const md_simd_typef m23 = md_simd_set1f(M.elem[1][2]);
+
+    const md_simd_typef m31 = md_simd_set1f(M.elem[2][0]);
+    const md_simd_typef m32 = md_simd_set1f(M.elem[2][1]);
+    const md_simd_typef m33 = md_simd_set1f(M.elem[2][2]);
+
+    const md_simd_typef m41 = md_simd_set1f(M.elem[3][0]);
+    const md_simd_typef m42 = md_simd_set1f(M.elem[3][1]);
+    const md_simd_typef m43 = md_simd_set1f(M.elem[3][2]);
+
+    const md_simd_typef w = md_simd_set1f(w_comp);
+
+    int64_t i = 0;
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_widthf);
+    for (; i < simd_count; i += md_simd_widthf) {
+        const md_simd_typef x = md_simd_loadf(in_x + i);
+        const md_simd_typef y = md_simd_loadf(in_y + i);
+        const md_simd_typef z = md_simd_loadf(in_z + i);
+
+        const md_simd_typef m11x = md_simd_mulf(m11, x);
+        const md_simd_typef m21y = md_simd_mulf(m21, y);
+        const md_simd_typef m31z = md_simd_mulf(m31, z);
+        const md_simd_typef m41w = md_simd_mulf(m41, w);
+
+        const md_simd_typef m12x = md_simd_mulf(m12, x);
+        const md_simd_typef m22y = md_simd_mulf(m22, y);
+        const md_simd_typef m32z = md_simd_mulf(m32, z);
+        const md_simd_typef m42w = md_simd_mulf(m42, w);
+
+        const md_simd_typef m13x = md_simd_mulf(m13, x);
+        const md_simd_typef m23y = md_simd_mulf(m23, y);
+        const md_simd_typef m33z = md_simd_mulf(m33, z);
+        const md_simd_typef m43w = md_simd_mulf(m43, w);
+
+        const md_simd_typef res_x = md_simd_addf(md_simd_addf(m11x, m21y), md_simd_addf(m31z, m41w));
+        const md_simd_typef res_y = md_simd_addf(md_simd_addf(m12x, m22y), md_simd_addf(m32z, m42w));
+        const md_simd_typef res_z = md_simd_addf(md_simd_addf(m13x, m23y), md_simd_addf(m33z, m43w));
+
+        md_simd_storef(out_x + i, res_x);
+        md_simd_storef(out_y + i, res_y);
+        md_simd_storef(out_z + i, res_z);
+    }
+
+    for (; i < count; i++) {
+        const float x = in_x[i];
+        const float y = in_y[i];
+        const float z = in_z[i];
+
+        out_x[i] = x * M.elem[0][0] + y * M.elem[1][0] + z * M.elem[2][0] + w_comp * M.elem[3][0];
+        out_y[i] = x * M.elem[0][1] + y * M.elem[1][1] + z * M.elem[2][1] + w_comp * M.elem[3][1];
+        out_z[i] = x * M.elem[0][2] + y * M.elem[1][2] + z * M.elem[2][2] + w_comp * M.elem[3][2];
+    }
+}

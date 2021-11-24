@@ -5,7 +5,7 @@
 #endif
 
 #ifdef VEC_MATH_USE_SSE_H
-#include <xmmintrin.h>
+#include "md_simd.h"
 #endif
 
 #include "md_compiler.h"
@@ -112,11 +112,28 @@ typedef union mat4_t {
 #endif
 } mat4_t;
 
-static inline float stepf(float edge, float x) { return (float)((x - edge) > 0.0f); }
-static inline double step(double edge, double x) { return (double)((x - edge) > 0.0f); }
+static inline float stepf(float edge, float x) { return (float)((x - edge) > 0); }
+static inline double step(double edge, double x) { return (double)((x - edge) > 0); }
 
 static inline float fractf(float x) { return x - (int32_t)x; }
 static inline double fract(double x) { return x - (int64_t)x; }
+
+static inline float signf(float x)  { return (float)((x > 0) - (x < 0)); }
+static inline double sign(double x) { return (double)((x > 0) - (x < 0)); }
+
+static inline float deperiodizef(float val, float ref, float period) {
+    float d = (val - ref) / period;
+    d = fractf(d);
+    d = d - signf(d) * (float)(fabsf(d) > 0.5f);
+    return d * period + ref;
+}
+
+static inline double deperiodize(double val, double ref, double period) {
+    double d = (val - ref) / period;
+    d = fract(d);
+    d = d - sign(d) * (double)(fabs(d) > 0.5);
+    return d * period + ref;
+}
 
 static inline float lerpf(float a, float b, float t) {
     t = CLAMP(t, 0.0f, 1.0f);
@@ -161,6 +178,11 @@ static inline vec2_t vec2_mul(vec2_t a, vec2_t b) {
 
 static inline vec2_t vec2_mul_f(vec2_t a, float s) {
     vec2_t res = {a.x * s, a.y * s};
+    return res;
+}
+
+static inline vec2_t vec2_madd(vec2_t a, vec2_t b, vec2_t c) {
+    vec2_t res = {a.x * b.x + c.x, a.y * b.y + c.y};
     return res;
 }
 
@@ -340,6 +362,32 @@ static inline vec3_t vec3_lerp(vec3_t a, vec3_t b, float t) {
 }
 
 // VEC4 OPERATIONS
+static inline vec4_t vec4_zero() {
+    vec4_t res;
+#if VEC_MATH_USE_SSE_H
+    res.mm128 = _mm_setzero_ps();
+#else
+    res.x = 0;
+    res.y = 0;
+    res.z = 0;
+    res.w = 0;
+#endif
+    return res;
+}
+
+static inline vec4_t vec4_from_float(float v) {
+    vec4_t res;
+#if VEC_MATH_USE_SSE_H
+    res.mm128 = _mm_set1_ps(v);
+#else
+    res.x = v;
+    res.y = v;
+    res.z = v;
+    res.w = v;
+#endif
+    return res;
+}
+
 static inline vec4_t vec4_from_vec3(vec3_t v, float w) {
     vec4_t r = {v.x, v.y, v.z, w};
     return r;
@@ -437,7 +485,7 @@ static inline vec4_t vec4_sub(vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t vec4_sub_f(vec4_t a, float s) {
-    vec4_t c = {0,0,0,0};
+    vec4_t c;
 #if VEC_MATH_USE_SSE_H
     c.mm128 = _mm_sub_ps(a.mm128, _mm_set1_ps(s));
 #else
@@ -449,9 +497,58 @@ static inline vec4_t vec4_sub_f(vec4_t a, float s) {
     return c;
 }
 
+static inline float vec4_dot(vec4_t a, vec4_t b) {
+    vec4_t res = vec4_mul(a, b);
+    return res.x + res.y + res.z + res.w;
+}
+
+static inline float vec4_distance_squared(vec4_t a, vec4_t b) {
+    vec4_t d = vec4_sub(a, b);
+    return vec4_dot(d, d);
+}
+
 static inline vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
     t = CLAMP(t, 0.0f, 1.0f);
     vec4_t r = vec4_add(vec4_mul_f(a, 1.0f - t), vec4_mul_f(b, t));
+    return r;
+}
+
+static inline vec4_t vec4_min(vec4_t a, vec4_t b) {
+    vec4_t c;
+#if VEC_MATH_USE_SSE_H
+    c.mm128 = _mm_min_ps(a.mm128, b.mm128);
+#else
+    c.x = MIN(a.x, b.x);
+    c.y = MIN(a.y, b.y);
+    c.z = MIN(a.z, b.z);
+    c.w = MIN(a.w, b.w);
+#endif
+    return c;
+}
+
+static inline vec4_t vec4_max(vec4_t a, vec4_t b) {
+    vec4_t c;
+#if VEC_MATH_USE_SSE_H
+    c.mm128 = _mm_max_ps(a.mm128, b.mm128);
+#else
+    c.x = MAX(a.x, b.x);
+    c.y = MAX(a.y, b.y);
+    c.z = MAX(a.z, b.z);
+    c.w = MAX(a.w, b.w);
+#endif
+    return c;
+}
+
+static inline vec4_t vec4_abs(vec4_t v) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE_H
+    r.mm128 = md_simd_abs_f128(v.mm128);
+#else
+    c.x = ABS(a.x, b.x);
+    c.y = ABS(a.y, b.y);
+    c.z = ABS(a.z, b.z);
+    c.w = ABS(a.w, b.w);
+#endif
     return r;
 }
 
@@ -932,6 +1029,13 @@ static inline vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_m
 
     return vec3_from_vec4(obj);
 }
+
+// These are routines for performing the same operation on many items
+void vec3_batch_translate(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, int64_t count, vec3_t translation);
+void vec3_batch_translate2(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation);
+
+void mat4_batch_transform(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, float w_comp, int64_t count, mat4_t transform);
+void mat4_batch_transform2(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t transform);
 
 #ifdef __cplusplus
 }
