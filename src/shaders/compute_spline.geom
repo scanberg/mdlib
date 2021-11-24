@@ -70,16 +70,20 @@ vec3 catmull_rom_tangent(in vec3 p0, in vec3 p1, in vec3 p2, in vec3 p3, float s
 // https://www.it.uu.se/edu/course/homepage/grafik1/ht07/examples/curves.cpp
 float b3(float t) {
     float at = abs(t);
-    float t1 = pow(-at + 1.0, 3) * 2.0 / 3.0;
-    float t2 = pow(-at + 2.0, 3) / 6.0;
+    float at1 = -at + 1.0;
+    float at2 = -at + 2.0;
+    float t1 = at1 * at1 * at1 * (2.0 / 3.0);
+    float t2 = at2 * at2 * at2 / 6.0;
     return mix(t2 - t1, t2, step(1.0, at));
 }
 
 // b-spline tangent -> 1st derivative
 float b3_t(float t) {
     float at = abs(t);
-    float t1 = -sign(t) * pow(-at + 1.0, 2) * 2.0;
-    float t2 = -sign(t) * pow(-at + 2.0, 2) * 0.5;
+    float at1 = -at + 1.0;
+    float at2 = -at + 2.0;
+    float t1 = -sign(t) * at1 * at1 * 2.0;
+    float t2 = -sign(t) * at2 * at2 * 0.5;
     return mix(t2 - t1, t2, step(1.0, at));
 }
 

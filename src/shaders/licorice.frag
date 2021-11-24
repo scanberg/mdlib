@@ -40,7 +40,7 @@ layout (std140) uniform ubo {
 };
 
 in Fragment {
-    flat vec4 view_velocity[2];
+    flat vec3 view_velocity[2];
     flat uint picking_idx[2];
     flat vec4 color[2];
     flat vec4 capsule_center_radius;
@@ -138,10 +138,9 @@ void main() {
     vec4 curr_clip_coord = u_view_to_clip * vec4(view_coord, 1);
 
     gl_FragDepth = (curr_clip_coord.z / curr_clip_coord.w) * 0.5 + 0.5;
-
 #if ATOM_VEL
-    vec4 view_velocity = mix(in_frag.view_velocity[0], in_frag.view_velocity[1], seg_t);
-    vec3 prev_view_coord = view_coord - view_velocity.xyz;
+    vec3 view_velocity = mix(in_frag.view_velocity[0], in_frag.view_velocity[1], seg_t);
+    vec3 prev_view_coord = view_coord - view_velocity;
     vec4 prev_clip_coord = u_curr_view_to_prev_clip * vec4(prev_view_coord, 1);
 
     // Remove jitter from samples to provide the actual velocity
