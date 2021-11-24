@@ -196,7 +196,7 @@ block_t block_mask_lo(uint32_t idx) {
     res.mm256[1] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(eq_idx, hi_idx), eq_bits, _mm256_cmpeq_epi32(hi_idx, eq_idx));
 #else
     memset(&res, 0, sizeof(block_t));
-    for (uint64_t i = 0; i < idx / 64; ++i) res.u64[i] = ~0;
+    for (uint64_t i = 0; i < idx / 64; ++i) res.u64[i] = ~0ULL;
     res.u64[idx / 64] = ((uint64_t)1 << (idx & 63)) - 1;
 #endif
     return res;
@@ -218,7 +218,7 @@ block_t block_mask_hi(uint32_t idx) {
 #else
     memset(&res, 0, sizeof(block_t));
     res.u64[idx / 64] = ~(((uint64_t)1 << (idx & 63)) - 1);
-    for (uint64_t i = idx / 64 + 1; i < 8; ++i) res.u64[i] = ~0;
+    for (uint64_t i = idx / 64 + 1; i < 8; ++i) res.u64[i] = ~0ULL;
 #endif
     return res;
 }
@@ -237,6 +237,16 @@ static inline int64_t block_count_bits(block_t blk) {
         popcnt64(blk.u64[6]) +
         popcnt64(blk.u64[7]);
     return count;
+}
+
+static inline void block_set_bit(block_t* blk, int64_t bit_idx) {
+    ASSERT(0 <= bit_idx && bit_idx < BITS_PER_BLOCK);
+    blk->u64[bit_idx / 64] |= (1ULL << (bit_idx & 63));
+}
+
+static inline bool block_test_bit(block_t blk, int64_t bit_idx) {
+    ASSERT(0 <= bit_idx && bit_idx < BITS_PER_BLOCK);
+    return blk.u64[bit_idx / 64] & (1ULL << (bit_idx & 63));
 }
 
 // Posix convention, returns 0 if no bit is set
@@ -267,12 +277,19 @@ static inline void set_block(md_exp_bitfield_t* bf, int64_t idx, block_t blk) {
     ((block_t*)bf->bits)[idx - beg_blk] = blk;
 }
 
-static inline block_t get_block(const md_exp_bitfield_t* bf, int64_t idx) {
+static inline block_t get_block(const md_exp_bitfield_t* bf, int64_t blk_idx) {
     const int64_t beg_blk = block_idx(bf->beg_bit);
     const int64_t end_blk = block_idx(bf->end_bit);
-    if (bf->bits && beg_blk <= idx && idx <= end_blk)
-        return ((block_t*)bf->bits)[idx - beg_blk];
+    if (bf->bits && beg_blk <= blk_idx && blk_idx <= end_blk)
+        return ((block_t*)bf->bits)[blk_idx - beg_blk];
     return (block_t) {0};
+}
+
+static inline block_t* get_block_ptr(md_exp_bitfield_t* bf, int64_t blk_idx) {
+    const int64_t beg_blk = block_idx(bf->beg_bit);
+    const int64_t end_blk = block_idx(bf->end_bit);
+    ASSERT(bf->bits && beg_blk <= blk_idx && blk_idx <= end_blk);
+    return &((block_t*)bf->bits)[blk_idx - beg_blk];
 }
 
 static inline void free_blocks(md_exp_bitfield_t* bf) {
@@ -414,7 +431,8 @@ void md_bitfield_set_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
     validate_bitfield(bf);
 
     ensure_range(bf, bit_idx, bit_idx+1);
-    bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
+    block_set_bit(get_block_ptr(bf, block_idx(bit_idx)), bit_idx - block_bit(bit_idx));
+    //bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
 }
 
 void md_bitfield_set_indices_u32(md_exp_bitfield_t* bf, uint32_t* indices, int64_t num_indices) {
@@ -440,6 +458,7 @@ void md_bitfield_clear_range(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
         
     beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
     end = CLAMP(end, bf->beg_bit, bf->end_bit);
+    if (end-beg == 0) return;
     bit_clear((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), end - beg);
 }
 
@@ -708,7 +727,8 @@ bool md_bitfield_test_bit(const md_exp_bitfield_t* bf, int64_t idx) {
     validate_bitfield(bf);
 
     if (idx < bf->beg_bit || bf->end_bit <= idx) return false;
-    return bit_test((uint64_t*)bf->bits, idx - block_bit(bf->beg_bit));
+    return block_test_bit(get_block(bf, block_idx(idx)), idx - block_bit(idx));
+    //return bit_test((uint64_t*)bf->bits, idx - block_bit(bf->beg_bit));
 }
 
 // Test if bitfields are equivalent
@@ -906,7 +926,7 @@ int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
         }
     }
 
-    int lz_bytes = fastlz_compress_level(2, data, md_array_size(data) * sizeof(uint16_t), dst);
+    int lz_bytes = fastlz_compress_level(2, data, (int)(md_array_size(data) * sizeof(uint16_t)), dst);
     md_printf(MD_LOG_TYPE_INFO, "LZ:\t%lli number of bits compressed into %i bytes\n", md_bitfield_popcount(bf), lz_bytes);
 
     md_array_free(data, alloc);
@@ -925,7 +945,7 @@ bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num
     const int64_t mem_bytes = num_bytes * 100;
     void* mem = md_alloc(default_allocator, mem_bytes);
 
-    int size = fastlz_decompress(src, num_bytes, mem, mem_bytes);
+    int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);
 
     if (size == 0) {
         md_printf(MD_LOG_TYPE_ERROR, "Failed, to decompress bitfield.");
@@ -967,8 +987,8 @@ bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num
     int64_t beg_bit = block_scan_forward(get_block(bf, beg_blk_idx));
     int64_t end_bit = block_scan_reverse(get_block(bf, end_blk_idx));
 
-    bf->beg_bit = beg_blk_idx * 512 + (beg_bit ? beg_bit - 1 : 0);
-    bf->end_bit = end_blk_idx * 512 + (end_bit ? end_bit : 0);
+    bf->beg_bit = (uint32_t)(beg_blk_idx * 512 + (beg_bit ? beg_bit - 1 : 0));
+    bf->end_bit = (uint32_t)(end_blk_idx * 512 + (end_bit ? end_bit : 0));
 
     md_free(default_allocator, mem, mem_bytes);
 
