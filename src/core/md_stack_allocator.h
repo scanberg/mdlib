@@ -67,7 +67,7 @@ static inline void md_stack_allocator_reset(md_stack_allocator_t* stack_alloc) {
 static inline void md_stack_allocator_set_offset(md_stack_allocator_t* stack_alloc, uint64_t offset) {
     ASSERT(stack_alloc);
     ASSERT(stack_alloc->magic == MD_STACK_ALLOCATOR_MAGIC);
-    ASSERT(0 <= offset && offset < stack_alloc->cap);
+    ASSERT(offset < stack_alloc->cap);
     stack_alloc->cur = offset;
     stack_alloc->prv = offset;
 }
