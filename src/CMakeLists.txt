@@ -20,21 +20,16 @@ add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
 if (MSVC)
     message(STATUS "MSVC configuration was used")
     target_compile_options(mold PRIVATE /W4 /MP /GR- /fp:fast /arch:AVX)
-    #add_compile_options(/W4 /MP /GR- /fp:fast /arch:AVX)# /arch:AVX2
-
+    
     if (MD_PROFILE_COMPILE_TIMES)
         message(STATUS "MSVC compile time profiling enabled")
-        #add_compile_options(/Bt+ /d1reportTime /d2cgsummary)
         add_compile_options(/d2cgsummary)
-        #add_link_options(/time+)
     endif()
     add_compile_options_config(RELEASE /MT /Oi /GS-)
     add_compile_options_config(DEBUG /MTd)
 else()
     message(STATUS "Assumed GCC or CLANG configuration was used")
-    add_compile_options(
-        -Wall -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types -mavx #-maes
-    )
+    target_compile_options(mold PRIVATE -Wall -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types -march=native)
     if (MD_PROFILE_COMPILE_TIMES)
         add_compile_options(-ftime-trace)
     endif()

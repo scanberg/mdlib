@@ -11,7 +11,7 @@ string(APPEND CMAKE_C_FLAGS_BETATEST " -g")
 project(mold VERSION 0.1.1 LANGUAGES C)
 
 option(MD_UNITTEST "Enable unittest" ON)
-option(MD_USE_RELATIVE_PATHS "Use relative paths" OFF)
+option(MD_USE_RELATIVE_PATHS "Use relative paths" ON)
 option(MD_PROFILE_COMPILE_TIMES "Enable compile time profiling" OFF)
 
 include(GNUInstallDirs)
