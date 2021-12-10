@@ -80,14 +80,15 @@ static inline block_t block_and(block_t a, block_t b) {
 
 static inline block_t block_andnot(block_t a, block_t b) {
     block_t res;
+    // The arguments are flipped here because it is the first operand in the intrinsic that is bitwise NOT
 #ifdef __AVX__
-    res.mm256[0] = md_simd_andnoti(a.mm256[0], b.mm256[0]);
-    res.mm256[1] = md_simd_andnoti(a.mm256[1], b.mm256[1]);
+    res.mm256[0] = md_simd_andnoti(b.mm256[0], a.mm256[0]);
+    res.mm256[1] = md_simd_andnoti(b.mm256[1], a.mm256[1]);
 #else
-    res.mm128[0] = md_simd_andnoti(a.mm128[0], b.mm128[0]);
-    res.mm128[1] = md_simd_andnoti(a.mm128[1], b.mm128[1]);
-    res.mm128[2] = md_simd_andnoti(a.mm128[2], b.mm128[2]);
-    res.mm128[3] = md_simd_andnoti(a.mm128[3], b.mm128[3]);
+    res.mm128[0] = md_simd_andnoti(b.mm128[0], a.mm128[0]);
+    res.mm128[1] = md_simd_andnoti(b.mm128[1], a.mm128[1]);
+    res.mm128[2] = md_simd_andnoti(b.mm128[2], a.mm128[2]);
+    res.mm128[3] = md_simd_andnoti(b.mm128[3], a.mm128[3]);
 #endif
     /*
     block_t res = {
