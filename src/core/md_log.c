@@ -19,6 +19,7 @@
 #endif
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -28,14 +29,93 @@
 
 #define ANSI_COLOR_RED     "\x1b[31m"
 #define ANSI_COLOR_GREEN   "\x1b[32m"
-#define ANSI_COLOR_YELLOW  "\x1b[33m"
 #define ANSI_COLOR_BLUE    "\x1b[34m"
+#define ANSI_COLOR_YELLOW  "\x1b[33m"
 #define ANSI_COLOR_MAGENTA "\x1b[35m"
 #define ANSI_COLOR_CYAN    "\x1b[36m"
 #define ANSI_COLOR_RESET   "\x1b[0m"
 
+typedef enum console_color_t {
+  COLOR_DEFAULT = 0,
+  COLOR_RED,
+  COLOR_GREEN,
+  COLOR_BLUE,
+  COLOR_YELLOW,
+  COLOR_MAGENTA,
+  COLOR_CYAN,
+} console_color_t;
 
-static void _log(struct md_logger_o* inst, enum md_log_type log_type, const char* msg) {
+// Taken from Ghoul (thanks Alex!) (https://github.com/OpenSpace/Ghoul/blob/master/src/logging/consolelog.cpp#L151)
+static void set_console_text_color(console_color_t color, bool intense) {
+#ifdef WIN32
+    WORD fg_color = 0;
+
+    switch (color) {
+    case COLOR_RED:
+        fg_color = FOREGROUND_RED;
+        break;
+    case COLOR_GREEN:
+        fg_color = FOREGROUND_GREEN;
+        break;
+    case COLOR_BLUE:
+        fg_color = FOREGROUND_BLUE;
+        break;
+    case COLOR_YELLOW:
+        fg_color = FOREGROUND_RED | FOREGROUND_GREEN;
+        break;
+    case COLOR_MAGENTA:
+        fg_color = FOREGROUND_RED | FOREGROUND_BLUE;
+        break;
+    case COLOR_CYAN:
+        fg_color = FOREGROUND_GREEN | FOREGROUND_BLUE;
+        break;
+    case COLOR_DEFAULT:
+        fg_color = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
+        break;
+    default:
+        ASSERT(false);
+    }
+
+    fg_color |= intense ? FOREGROUND_INTENSITY : 0;
+
+    HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
+    // Get the old color information
+    CONSOLE_SCREEN_BUFFER_INFO info = { 0 };
+    GetConsoleScreenBufferInfo(console, &info);
+    // Or-ing the new foreground color with the old values for the background
+    const WORD bg_color = BACKGROUND_BLUE | BACKGROUND_GREEN | BACKGROUND_RED | BACKGROUND_INTENSITY;
+    SetConsoleTextAttribute(console, fg_color | (info.wAttributes & bg_color));
+#else
+    switch (color) {
+    case COLOR_RED:
+        fprintf(stderr, ANSI_COLOR_RED);
+        break;
+    case COLOR_GREEN:
+        fprintf(stderr, ANSI_COLOR_GREEN);
+        break;
+    case COLOR_BLUE:
+        fprintf(stderr, ANSI_COLOR_BLUE);
+        break;
+    case COLOR_YELLOW:
+        fprintf(stderr, ANSI_COLOR_YELLOW);
+        break;
+    case COLOR_MAGENTA:
+        fprintf(stderr, ANSI_COLOR_MAGENTA);
+        break;
+    case COLOR_CYAN:
+        fprintf(stderr, ANSI_COLOR_CYAN);
+        break;
+    case COLOR_DEFAULT:
+        fprintf(stderr, ANSI_COLOR_RESET);
+        break;
+    default:
+        ASSERT(false);
+    }
+    
+#endif
+}
+
+static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
     (void)inst;
 
     time_t now = time(0);
@@ -50,18 +130,24 @@ static void _log(struct md_logger_o* inst, enum md_log_type log_type, const char
 
     switch (log_type) {
     case MD_LOG_TYPE_INFO:
-        fprintf(stderr, ANSI_COLOR_GREEN "[info]" ANSI_COLOR_RESET);
+        set_console_text_color(COLOR_GREEN, true);
+        fprintf(stderr, "[info]:  ");
         break;
     case MD_LOG_TYPE_DEBUG:
-        fprintf(stderr, ANSI_COLOR_MAGENTA "[debug]" ANSI_COLOR_RESET);
+        set_console_text_color(COLOR_MAGENTA, true);
+        fprintf(stderr, "[debug]: ");
         break;
     case MD_LOG_TYPE_ERROR:
-        fprintf(stderr, ANSI_COLOR_RED "[error]" ANSI_COLOR_RESET);
+        set_console_text_color(COLOR_RED, true);
+        fprintf(stderr, "[error]: ");
         break;
     default:
+        ASSERT(false);
         break;
     }
-    fprintf(stderr, " %s\n",  msg);
+    set_console_text_color(COLOR_DEFAULT, false);
+
+    fprintf(stderr, "%s\n",  msg);
 
 #if MD_COMPILER_MSVC
     OutputDebugString(msg);
@@ -96,14 +182,14 @@ void md_remove_logger(const md_logger_i* logger) {
     md_print(MD_LOG_TYPE_ERROR, "Failed to remove logger, logger was not registered.");
 }
 
-int md_print(enum md_log_type log_type, const char* msg) {
+int md_print(md_log_type_t log_type, const char* msg) {
     for (int i = 0; i < num_loggers; ++i) {
         loggers[i]->log(loggers[i]->inst, log_type, msg);
     }
     return (int)strlen(msg);
 }
 
-int md_printf(enum md_log_type log_type, const char* format, ...) {
+int md_printf(md_log_type_t log_type, const char* format, ...) {
     char msg[512] = {0};
     va_list args;
     va_start(args, format);
