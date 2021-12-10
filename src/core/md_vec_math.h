@@ -1313,7 +1313,7 @@ static inline bool operator != (mat4_t A, mat4_t B) {
 
 template<typename T, typename V>
 T lerp (T a, T b, V t) {
-    return (1.0f - t) * a + t * b;
+    return (1 - t) * a + t * b;
 }
 
 template <typename T, typename V>

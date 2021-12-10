@@ -76,7 +76,6 @@ struct md_gl_molecule_desc_t {
 
     struct {
         uint32_t count;
-        //const md_range_t*               atom_range;
         const md_backbone_atoms_t*      atoms;
         const md_secondary_structure_t* secondary_structure;
     } backbone;
