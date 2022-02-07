@@ -3010,6 +3010,23 @@ static int _position_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
+typedef struct {
+    vec3_t pos;
+    float cutoff;
+    float* bins;
+    int32_t num_bins;
+} rdf_payload_t;
+
+bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
+    rdf_payload_t* data = user_param;
+    const float d = vec3_distance(coord, data->pos);
+    if (d < data->cutoff) {
+        const int32_t bin_idx = (int32_t)((d / data->cutoff) * data->num_bins);
+        data->bins[bin_idx] += 1.0f;
+    }
+    return true;
+}
+
 static int _rdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
@@ -3028,12 +3045,53 @@ static int _rdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const float cutoff = as_float(arg[2]);
     const int32_t num_bins = DIST_BINS;
 
-    if (dst) {
+    const int64_t sum = ref_size * target_size;
+
+    if (dst && sum > 0) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_DISTRIBUTION));
         ASSERT(dst->ptr);
 
         float* bins = as_float_arr(*dst);
-        memset(bins, 0, num_bins * sizeof(float));
+
+        md_spatial_hash_args_t args = {
+            .alloc = ctx->temp_alloc,
+            .temp_alloc = ctx->temp_alloc,
+            .cell_ext = CLAMP(cutoff / 1.5f, 1.0f, 16.0f),
+            .coords = {
+                .count = target_size,
+                .stride = sizeof(vec3_t),
+                .x = &target_pos->x,
+                .y = &target_pos->y,
+                .z = &target_pos->z,
+            },
+        };
+
+        md_spatial_hash_t hash = {0};
+        md_spatial_hash_init(&hash, &args);
+
+        rdf_payload_t payload = {
+            .cutoff = cutoff,
+            .bins = bins,
+            .num_bins = num_bins,
+        };
+
+        if (ctx->frame_header) {
+            vec3_t min_box = { 0, 0, 0 };
+            vec3_t max_box = { ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2] };
+
+            for (int64_t i = 0; i < ref_size; ++i) {
+                payload.pos = ref_pos[i];
+                md_spatial_hash_query_periodic(&hash, ref_pos[i], cutoff, min_box, max_box, rdf_iter, &payload);
+            }
+        } else {
+            for (int64_t i = 0; i < ref_size; ++i) {
+                payload.pos = ref_pos[i];
+                md_spatial_hash_query(&hash, ref_pos[i], cutoff, rdf_iter, &payload);
+            }
+        }
+
+
+        /*
         for (int64_t i = 0; i < ref_size; ++i) {
             for (int64_t j = 0; j < target_size; ++j) {
                 const float d = vec3_distance(ref_pos[i], target_pos[j]);
@@ -3043,9 +3101,10 @@ static int _rdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
         }
+        */
 
         // Normalize the distribution
-        const float scl = 1.0f / num_bins;
+        const float scl = 1.0f / sum;
         for (int64_t i = 0; i < num_bins; ++i) {
             bins[i] *= scl;
         }

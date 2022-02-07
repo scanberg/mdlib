@@ -235,6 +235,7 @@ typedef struct eval_context_t {
     identifier_t* identifiers;          // Evaluated identifiers for references
                                       
     md_script_visualization_t* vis;     // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
+    md_trajectory_frame_header_t* frame_header;
 
     struct {
         md_trajectory_frame_header_t* header;
@@ -3519,7 +3520,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     const uint64_t STACK_RESET_POINT = md_stack_allocator_get_offset(&stack_alloc);
 
-    md_trajectory_frame_header_t init_header = {0};
+    md_trajectory_frame_header_t init_header = { 0 };
+    md_trajectory_frame_header_t curr_header = { 0 };
 
     float* init_x = init_coords + 0 * stride;
     float* init_y = init_coords + 1 * stride;
@@ -3541,6 +3543,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         .stack_alloc = &stack_alloc,
         .temp_alloc = &temp_alloc,
         .alloc = &temp_alloc,
+        .frame_header = &curr_header,
         .initial_configuration = {
             .header = &init_header,
             .x = init_x,
@@ -3590,7 +3593,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         int64_t f_idx = beg_bit - 1;
         ASSERT(f_idx < md_trajectory_num_frames(traj));
         
-        result = md_trajectory_load_frame(traj, f_idx, NULL, curr_x, curr_y, curr_z);
+        result = md_trajectory_load_frame(traj, f_idx, &curr_header, curr_x, curr_y, curr_z);
 
         if (!result) {
             md_printf(MD_LOG_TYPE_ERROR, "Something went wrong when loading the frames during evaluation");
@@ -3698,6 +3701,17 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                         md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
                     }
                 }
+
+                // Determine min max values
+                float min_val = 0;
+                float max_val = 0;
+                compute_min_max(&min_val, &max_val, values, size);
+                prop->data.min_value = MIN(prop->data.min_value, min_val);
+                prop->data.max_value = MAX(prop->data.max_value, max_val);
+
+                // Update range if not explicitly set
+                prop->data.min_range[0] = (data[p_idx].min_range == -FLT_MAX) ? prop->data.min_value : data[p_idx].min_range;
+                prop->data.max_range[0] = (data[p_idx].max_range == FLT_MAX) ? prop->data.max_value : data[p_idx].max_range;
             }
             else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
                 // Accumulate values
@@ -4111,7 +4125,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
                 .x = mol->atom.x,
                 .y = mol->atom.y,
                 .z = mol->atom.z,
-            }
+            },
         };
 
         if (static_check_node(node, &ctx)) {

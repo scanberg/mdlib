@@ -425,7 +425,7 @@ bool md_spatial_hash_query_periodic(const md_spatial_hash_t* hash, vec3_t in_pos
                 uint32_t cell_idx = cell_coord[2] * cell_dim[1] * cell_dim[0] + cell_coord[1] * cell_dim[0] + cell_coord[0];
                 md_spatial_hash_cell_t cell = hash->cells[cell_idx];
                 vec4_t local_cell_min = vec4_add(cell_min, (vec4_t){cell_coord[0] * cell_ext, cell_coord[1] * cell_ext, cell_coord[2] * cell_ext, 0});
-                for (uint32_t i = cell.offset; i < cell.offset + cell.length; ++i) {
+                for (uint32_t i = cell.offset; i < cell.offset + cell.length; ++i) { 
                     md_spatial_hash_coord_t local_coord = {0,0,0,0};
                     memcpy(&local_coord, hash->coords + i * dim, dim * sizeof(uint16_t));
                     vec4_t p = vec4_deperiodize(decompress_coord(local_coord, local_cell_min, cell_ext), xyz, pbc_ext);
