@@ -2,7 +2,7 @@
 
 layout(early_fragment_tests) in;
 layout(std430,binding=0) buffer visiblity_buffer {
-  int visible[];
+  uint visible[];
 };
 
 flat in uint id;

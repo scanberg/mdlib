@@ -1,17 +1,5 @@
 #version 150 core
 
-#ifndef ATOM_COL
-#define ATOM_COL 1
-#endif
-
-#ifndef ATOM_VEL
-#define ATOM_VEL 0
-#endif
-
-#ifndef ATOM_IDX
-#define ATOM_IDX 1
-#endif
-
 layout (std140) uniform ubo {
     mat4 u_world_to_view;
     mat4 u_world_to_view_normal;
@@ -33,38 +21,32 @@ layout (lines) in;
 layout (triangle_strip, max_vertices = 24) out;
 
 in Vertex {
-#if ATOM_VEL
-    flat vec3 view_velocity;
-#endif
-#if ATOM_IDX
+    flat vec3 view_vel;
     flat uint picking_idx;
-#endif
-#if ATOM_COL
     flat vec4 color;
-#endif
     flat uint flags;
 } in_vert[];
 
 out Fragment {
-    flat vec3 view_velocity[2];
     flat uint picking_idx[2];
     flat vec4 color[2];
     flat vec4 capsule_center_radius;
     flat vec4 capsule_axis_length;
+    smooth vec3 view_vel;
     smooth vec3 view_pos;
 } out_frag;
 
 vec4 view_vertices[8];
 vec4 proj_vertices[8];
 
-void emit_vertex(int i){
+void emit_vertex(int i) {
+    out_frag.view_vel = in_vert[i/4].view_vel;
     out_frag.view_pos = view_vertices[i].xyz;
     gl_Position = proj_vertices[i];
     EmitVertex();
 }
 
-void emit(int a, int b, int c, int d)
-{
+void emit(int a, int b, int c, int d) {
     emit_vertex(a);
     emit_vertex(b);
     emit_vertex(c);
@@ -72,7 +54,7 @@ void emit(int a, int b, int c, int d)
     EndPrimitive(); 
 }
 
-vec3 get_ortho_vec(vec3 v, vec3 A, vec3 B){
+vec3 get_ortho_vec(vec3 v, vec3 A, vec3 B) {
     if(abs(1-dot(v,A))>0.001){
         return normalize(cross(v,A));
     }else{
@@ -80,18 +62,15 @@ vec3 get_ortho_vec(vec3 v, vec3 A, vec3 B){
     }
 }
 
-void main()
-{
+void main() {
     if ((in_vert[0].flags & u_atom_mask) != u_atom_mask ||
         (in_vert[1].flags & u_atom_mask) != u_atom_mask) {
         return;
     }
 
-#if ATOM_COL
     if (in_vert[0].color.a == 0 || in_vert[1].color.a == 0) {
         return;
     }
-#endif
 
     // Compute orientation vectors for the two connecting faces:
     vec3 p0 = gl_in[0].gl_Position.xyz;
@@ -101,20 +80,11 @@ void main()
     vec3 a = (p1 - p0) / l;
     vec3 c = (p0 + p1) * 0.5;
 
-#if ATOM_VEL
-    out_frag.view_velocity[0] = in_vert[0].view_velocity;
-    out_frag.view_velocity[1] = in_vert[1].view_velocity;
-#endif
-
-#if ATOM_COL
     out_frag.color[0] = in_vert[0].color;
     out_frag.color[1] = in_vert[1].color;
-#endif
 
-#if ATOM_IDX
     out_frag.picking_idx[0] = in_vert[0].picking_idx;
     out_frag.picking_idx[1] = in_vert[1].picking_idx;
-#endif
 
     out_frag.capsule_center_radius = vec4(c, r);
     out_frag.capsule_axis_length = vec4(a, l);

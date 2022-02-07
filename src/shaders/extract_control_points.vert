@@ -2,7 +2,7 @@
 #extension GL_ARB_shading_language_packing : enable
 
 uniform samplerBuffer u_buf_atom_pos;
-uniform samplerBuffer u_buf_atom_prev_pos; 
+uniform samplerBuffer u_buf_atom_vel; 
 uniform samplerBuffer u_buf_secondary_structure;
 
 layout (location = 0) in uint in_residue_idx;
@@ -32,7 +32,7 @@ uint packUnorm4x8(in vec4 v) {
 
 void main() {
     vec3 ca   = texelFetch(u_buf_atom_pos, 		int(in_atom_ca)).xyz;
-    vec3 ca_p = texelFetch(u_buf_atom_prev_pos, int(in_atom_ca)).xyz;
+    vec3 ca_v = texelFetch(u_buf_atom_vel,      int(in_atom_ca)).xyz;
     vec3 c    = texelFetch(u_buf_atom_pos, 		int(in_atom_c)).xyz;
     vec3 o    = texelFetch(u_buf_atom_pos, 		int(in_atom_o)).xyz;
     vec4 ss   = texelFetch(u_buf_secondary_structure, int(in_residue_idx));
@@ -43,7 +43,7 @@ void main() {
 
     out_position = ca;
     out_atom_idx = in_atom_ca;
-    out_velocity = ca - ca_p;
+    out_velocity = ca_v;
     out_segment_t = float(in_segment_idx);
     out_secondary_structure_and_flags = (f << 24U) | (packUnorm4x8(ss) & 0x00FFFFFFU);
     out_support_and_tangent_vector[0] = packSnorm2x16(v.xy);

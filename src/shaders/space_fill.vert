@@ -1,34 +1,16 @@
 #version 330 core
 
-#ifndef ATOM_COL
-#define ATOM_COL 1
-#endif
-
-#ifndef ATOM_VEL
-#define ATOM_VEL 0
-#endif
-
-#ifndef ATOM_IDX
-#define ATOM_IDX 1
-#endif
-
 layout (location = 0) in vec3  in_atom_pos;
-layout (location = 1) in vec3  in_atom_prev_pos;
+layout (location = 1) in vec3  in_atom_vel;
 layout (location = 2) in float in_atom_rad;
 layout (location = 3) in uint  in_atom_flags;
 layout (location = 4) in vec4  in_atom_col;
 
 out VS_GS {
     flat vec4 view_sphere;
-#if ATOM_VEL
     flat vec3 view_velocity;
-#endif
-#if ATOM_COL
     flat vec4 color;
-#endif
-#if ATOM_IDX
     flat uint atom_idx;
-#endif
 } out_vert;
 
 layout (std140) uniform ubo {
@@ -58,13 +40,7 @@ void main() {
 	vec4 view_sphere = vec4(view_pos, rad);
 
 	out_vert.view_sphere = view_sphere;
-#if ATOM_VEL
-	out_vert.view_velocity = vec3(u_world_to_view * vec4(in_atom_pos - in_atom_prev_pos, 0));
-#endif
-#if ATOM_COL
+	out_vert.view_velocity = vec3(u_world_to_view * vec4(in_atom_vel, 0));
 	out_vert.color = col;
-#endif
-#if ATOM_IDX
 	out_vert.atom_idx = uint(gl_VertexID);
-#endif
 }

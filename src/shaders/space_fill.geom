@@ -1,17 +1,5 @@
 #version 330 core
 
-#ifndef ATOM_VEL
-#define ATOM_VEL 1
-#endif
-
-#ifndef ATOM_COL
-#define ATOM_COL 1
-#endif
-
-#ifndef ATOM_IDX
-#define ATOM_IDX 1
-#endif
-
 #ifndef ORTHO
 #define ORTHO 0
 #endif
@@ -21,32 +9,18 @@ layout (triangle_strip, max_vertices = 4) out;
 
 in VS_GS {
     flat vec4 view_sphere;
-#if ATOM_VEL
     flat vec3 view_velocity;
-#endif
-#if ATOM_COL
     flat vec4 color;
-#endif
-#if ATOM_IDX
     flat uint atom_idx;
-#endif
 } in_vert[];
 
 out GS_FS {
     smooth vec3 view_coord;
     flat vec4 view_sphere;
-#if ATOM_VEL
     flat vec3 view_velocity;
-#endif
-#if ATOM_COL
     flat vec4 color;
-#endif
-#if ATOM_IDX
     flat uint atom_idx;
-#endif
-#if ORTHO
     smooth vec2 uv;
-#endif
 } out_frag;
 
 layout (std140) uniform ubo {
@@ -66,7 +40,6 @@ layout (std140) uniform ubo {
     float u_radius_scale;
 };
 
-#if ORTHO
 void emit_vertex_ortho(vec2 uv) {
     vec3  pos = in_vert[0].view_sphere.xyz;
     float rad = in_vert[0].view_sphere.w;
@@ -75,14 +48,13 @@ void emit_vertex_ortho(vec2 uv) {
     gl_Position = u_view_to_clip * vec4(out_frag.view_coord + vec3(0,0,rad), 1.0);
     EmitVertex();
 }
-#else
+
 void emit_vertex_persp(vec4 clip_coord) {
     vec4 view_coord = u_clip_to_view * clip_coord;
     out_frag.view_coord = view_coord.xyz / view_coord.w;
     gl_Position = clip_coord;
     EmitVertex();
 }
-#endif
 
 // From Inigo Quilez!
 void proj_sphere(in vec4 sphere, 
@@ -108,23 +80,15 @@ void main()
         EndPrimitive();
         return;
     }
-#if ATOM_COL
     if (in_vert[0].color.a == 0) {
         EndPrimitive();
         return;
     }
-#endif
 
     out_frag.view_sphere = in_vert[0].view_sphere;
-#if ATOM_VEL
     out_frag.view_velocity = in_vert[0].view_velocity;
-#endif
-#if ATOM_COL
     out_frag.color = in_vert[0].color;
-#endif
-#if ATOM_IDX
     out_frag.atom_idx = in_vert[0].atom_idx;
-#endif
 
 #if ORTHO
     emit_vertex_ortho(vec2(-1, -1));

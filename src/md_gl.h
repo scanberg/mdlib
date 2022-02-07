@@ -4,9 +4,6 @@
 //  Copyright 2020 Robin Skånberg
 // 
 //  LICENSE: see license file
-// 
-//  Example use case:
-//  @TODO: Fill in
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -16,18 +13,35 @@
 extern "C" {
 #endif
 
-#define MD_GL_SPLINE_MAX_SUBDIVISION_COUNT 8
+// ### MD GL ###
+// Initialize the GL module and its resources
 
-// ### CONTEXT ###
-//
-// The context holds the shared resources such as buffers, shaders and textures needed to draw molecules
-typedef struct md_gl_context_t md_gl_context_t;
-struct md_gl_context_t {
-    uint64_t _opaque[72];
-};
+bool md_gl_initialize();
+void md_gl_shutdown();
 
-bool md_gl_context_init(md_gl_context_t* ctx);
-bool md_gl_context_free(md_gl_context_t* ctx);
+/*
+
+In order to interface with your application, the shaders have a customizable output.
+A function called 'write_fragment' is called in the fragment shader to finalize and write the fragments to the respective outputs.
+This part is customizable by providing a snipped which controls what parameters to write and to which channels of the framebuffer.
+
+If no custom_shader_snippet is supplied to md_gl_context_init, then a default_shader_snippet is used which is listed bellow:
+
+layout(location = 0) out vec4 out_color;
+
+void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {
+   out_color  = color;
+}
+*/
+
+// The shaders are customizable in their output as mentioned in the comment above.
+// You could have multiple versions of shaders each compiled for a specific output.
+typedef struct md_gl_shaders_t {
+    uint64_t _opaque[4];
+} md_gl_shaders_t;
+
+bool md_gl_shaders_init(md_gl_shaders_t* shaders, const char* custom_shader_snippet);
+bool md_gl_shaders_free(md_gl_shaders_t* shaders);
 
 
 // ### GL MOLECULE ###
@@ -57,10 +71,17 @@ typedef struct md_gl_molecule_desc_t md_gl_molecule_desc_t;
 struct md_gl_molecule_desc_t {
     struct {
         uint32_t count;
-        const float*   x;
-        const float*   y;
-        const float*   z;
-        const float*   radius;
+        struct {
+            const float*   x;
+            const float*   y;
+            const float*   z;
+        } pos;
+        struct {
+            const float* x;
+            const float* y;
+            const float* z;
+        } vel;
+        const float* radius;
         const uint8_t* flags;
     } atom;
 
@@ -71,7 +92,7 @@ struct md_gl_molecule_desc_t {
 
     struct {
         uint32_t count;
-        const md_range_t* atom_range; // This is just for building AABBs for culling
+        const md_range_t* atom_range; // This is just for building hierarchical AABBs for culling
     } residue;
 
     struct {
@@ -89,17 +110,26 @@ struct md_gl_molecule_desc_t {
 bool md_gl_molecule_init(md_gl_molecule_t* mol, const md_gl_molecule_desc_t* desc);
 bool md_gl_molecule_free(md_gl_molecule_t* mol);
 
-// ### Update by modifying the dynamic data fields ###
-bool md_gl_molecule_set_atom_position(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride);
-bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride);
-bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride);
+// ### Set molecule data fields ###
+bool md_gl_molecule_set_atom_position(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
+bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
+bool md_gl_molecule_set_atom_radius  (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* radius, uint32_t byte_stride);
+bool md_gl_molecule_set_atom_flags   (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const uint8_t* flags, uint32_t byte_stride);
+
+// Call this function after setting new atomic positions to update velocities
+// It will compute a new velocity as the difference between new and old atomic positions
+// 
+// pbc_ext is an optional parameter which corresponds to the extent of the periodic boundry conditions.
+// If supplied, it will make sure to deperiodize the atomic positions before computing the velocity,
+// which is crucial in order to resolve an accrucate velocity in a periodic domain.
+bool md_gl_molecule_compute_velocity(md_gl_molecule_t* mol, const float pbc_ext[3]);
+
+// Clear the velocity to zero.
+bool md_gl_molecule_zero_velocity(md_gl_molecule_t* mol);
 
 bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride);
 bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
-// This is called to copy the atom position buffer to previous atom position
-// Usually just before calling md_gl_molecule_set_atom_position() to set a new current position
-bool md_gl_molecule_update_atom_previous_position(md_gl_molecule_t* mol);
 /*
  *  REPRESENTATIONS
  *  Interface for creating visual representations for molecules
@@ -156,25 +186,15 @@ bool md_gl_representation_set_color(md_gl_representation_t* rep, uint32_t offset
  *
  */
 
-typedef struct md_gl_rendertarget_t {
-    uint32_t width;
-    uint32_t height;
-    uint32_t texture_depth;
-    uint32_t texture_color;             // [Optional] (0 = ignore)
-    uint32_t texture_atom_index;        // [Optional] (0 = ignore)
-    uint32_t texture_view_normal;       // [Optional] (0 = ignore)
-    uint32_t texture_view_velocity;     // [Optional] (0 = ignore)
-} md_gl_rendertarget_t;
-
 typedef uint32_t md_gl_options_t;
 enum {
     MD_GL_OPTION_NONE                      = 0,
     MD_GL_OPTION_RESIDUE_OCCLUSION_CULLING = 1,
-    MD_GL_OPTION_CLEAR_COLOR_BUFFER        = 2,
-    MD_GL_OPTION_CLEAR_DEPTH_BUFFER        = 4
 };
 
 typedef struct md_gl_draw_args_t {
+    md_gl_shaders_t* shaders;
+
     struct {
         uint32_t count;
         const md_gl_representation_t** data;
@@ -191,8 +211,6 @@ typedef struct md_gl_draw_args_t {
         const float* prev_projection_matrix;
     } view_transform;
 
-    const md_gl_rendertarget_t* render_target;     // [Optional] If NULL, then the global gl state of the viewport and framebuffer will be used
-
     // If atom_mask is non-zero, the value is used as a mask and is ANDed with the atom flag of the molecule,
     // if the result after the operation is non-zero, the atom will be drawn.
     // Some representations (such as ribbons, cartoon) use spline segments derived from CA atoms, hide the CA atom => hide the segment
@@ -201,7 +219,7 @@ typedef struct md_gl_draw_args_t {
     md_gl_options_t options;
 } md_gl_draw_args_t;
 
-bool md_gl_draw(md_gl_context_t* ctx, const md_gl_draw_args_t* args);
+bool md_gl_draw(const md_gl_draw_args_t* args);
 
 #ifdef __cplusplus
 }

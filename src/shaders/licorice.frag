@@ -1,22 +1,5 @@
 #version 330 core
 #extension GL_ARB_conservative_depth : enable
-#extension GL_ARB_shading_language_packing : enable
-
-#ifndef ATOM_COL
-#define ATOM_COL 1
-#endif
-
-#ifndef ATOM_VEL
-#define ATOM_VEL 0
-#endif
-
-#ifndef ATOM_IDX
-#define ATOM_IDX 1
-#endif
-
-#ifndef VIEW_NORM
-#define VIEW_NORM 1
-#endif
 
 #ifndef ORTHO
 #define ORTHO 0
@@ -40,21 +23,13 @@ layout (std140) uniform ubo {
 };
 
 in Fragment {
-    flat vec3 view_velocity[2];
     flat uint picking_idx[2];
     flat vec4 color[2];
     flat vec4 capsule_center_radius;
     flat vec4 capsule_axis_length;
+    smooth vec3 view_vel;
     smooth vec3 view_pos;
 } in_frag;
-
-#ifdef GL_EXT_conservative_depth
-layout (depth_greater) out float gl_FragDepth;
-#endif
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec4 out_normal;
-layout(location = 2) out vec4 out_ss_vel;
-layout(location = 3) out vec4 out_picking;
 
 // Source from Ingo Quilez (https://www.shadertoy.com/view/Xt3SzX)
 float intersect_capsule(in vec3 ro, in vec3 rd, in vec3 cc, in vec3 ca, float cr,
@@ -97,20 +72,11 @@ float intersect_capsule(in vec3 ro, in vec3 rd, in vec3 cc, in vec3 ca, float cr
     return -1.0;
 }
 
-vec4 encode_normal (vec3 n) {
-    float p = sqrt(n.z*8+8);
-    return vec4(n.xy/p + 0.5,0,0);
-}
-
-#ifndef GL_ARB_shading_language_packing
-vec4 unpackUnorm4x8(in uint data) {
-    return vec4(
-        (data & 0x000000FFU) >> 0U,
-        (data & 0x0000FF00U) >> 8U,
-        (data & 0x00FF0000U) >> 16U,
-        (data & 0xFF000000U) >> 24U) / 255.0;
-}
+#ifdef GL_EXT_conservative_depth
+layout (depth_greater) out float gl_FragDepth;
 #endif
+
+#pragma EXTRA_SRC
 
 void main() {
 #if ORTHO
@@ -135,31 +101,12 @@ void main() {
 
     int side = int(seg_t + 0.5);
     vec3 view_coord = rd * t;
-    vec4 curr_clip_coord = u_view_to_clip * vec4(view_coord, 1);
+    vec4 clip_coord = u_view_to_clip * vec4(view_coord, 1);
+    gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
 
-    gl_FragDepth = (curr_clip_coord.z / curr_clip_coord.w) * 0.5 + 0.5;
-#if ATOM_VEL
-    vec3 view_velocity = mix(in_frag.view_velocity[0], in_frag.view_velocity[1], seg_t);
-    vec3 prev_view_coord = view_coord - view_velocity;
-    vec4 prev_clip_coord = u_curr_view_to_prev_clip * vec4(prev_view_coord, 1);
+    vec4 color = in_frag.color[side];
+    vec3 view_velocity = in_frag.view_vel;
+    uint atom_index = in_frag.picking_idx[side];
 
-    // Remove jitter from samples to provide the actual velocity
-    // This is crucial for the temporal reprojection to work properly
-    // Otherwise the velocity will push the samples outside of the "reprojection" region
-    vec2 curr_ndc = curr_clip_coord.xy / curr_clip_coord.w;
-    vec2 prev_ndc = prev_clip_coord.xy / prev_clip_coord.w;
-    vec2 ss_vel = (curr_ndc - prev_ndc) * 0.5 + (u_jitter_uv.xy - u_jitter_uv.zw);
-
-    out_ss_vel  = vec4(ss_vel, 0, 0);
-#endif
-
-#if ATOM_COL
-    out_color   = in_frag.color[side];
-#endif
-#if VIEW_NORM
-    out_normal  = encode_normal(view_normal);
-#endif
-#if ATOM_IDX
-    out_picking = unpackUnorm4x8(in_frag.picking_idx[side]);
-#endif
+    write_fragment(view_coord, view_velocity, view_normal, color, atom_index);
 }
