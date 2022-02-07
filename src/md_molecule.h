@@ -3,8 +3,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-struct md_allocator_i;
-
 typedef struct md_molecule_o md_molecule_o; // Opaque data blob
 
 typedef int32_t                     md_atom_idx_t;
@@ -17,7 +15,6 @@ typedef uint32_t                    md_secondary_structure_t;
 typedef uint8_t                     md_flag_t;
 typedef uint8_t                     md_element_t;
 typedef uint8_t                     md_ramachandran_type_t;
-//typedef struct md_molecule_o        md_molecule_o;
 
 // We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
 enum {
@@ -62,34 +59,34 @@ typedef struct md_molecule_t {
     md_molecule_o* inst;
 
     struct {
-        int64_t         count;
-        float*          x;
-        float*          y;
-        float*          z;
-        float*          radius;
-        float*          mass;
-        md_element_t*     element;
-        const char**    name;
-        md_flag_t*        flags;       // Auxillary bit buffer for flagging individual atoms
-        md_residue_idx_t* residue_idx;
-        md_chain_idx_t*   chain_idx;
+        int64_t             count;
+        float*              x;
+        float*              y;
+        float*              z;
+        float*              radius;
+        float*              mass;
+        md_element_t*       element;
+        const char**        name;
+        md_flag_t*          flags;                          // Auxillary bit buffer for flagging individual atoms
+        md_residue_idx_t*   residue_idx;
+        md_chain_idx_t*     chain_idx;
     } atom;
 
     struct {
-        int64_t                 count;
-        const char**            name;
-        md_residue_id_t*          id;
-        md_range_t*               atom_range;
-        md_range_t*               internal_covalent_bond_range;   // Range of covalent bonds within the resuidue
-        md_range_t*               complete_covalent_bond_range;   // Range of covalent bonds that in anyway is part of the residue
+        int64_t             count;
+        const char**        name;
+        md_residue_id_t*    id;
+        md_range_t*         atom_range;
+        md_range_t*         internal_covalent_bond_range;   // Range of covalent bonds within the resuidue
+        md_range_t*         complete_covalent_bond_range;   // Range of covalent bonds that in anyway is part of the residue
     } residue;
 
     struct {
-        int64_t           count;
-        const char**      id;
-        md_range_t*       residue_range;
-        md_range_t*       atom_range;
-        md_range_t*       backbone_range;
+        int64_t       count;
+        const char**  id;
+        md_range_t*   residue_range;
+        md_range_t*   atom_range;
+        md_range_t*   backbone_range;
     } chain;
 
     struct {
@@ -108,7 +105,7 @@ typedef struct md_molecule_t {
 } md_molecule_t;
 
 #if 0
-// This is not really well defined yet since it has no real use case.
+// This is not really well defined yet since it has no real use case so far.
 struct md_macro_molecule {
     int64_t num_molecules;
     md_molecule* molecules;

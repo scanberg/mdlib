@@ -110,6 +110,8 @@
 #define CONCAT(x, y) CONCAT_INTERNAL(x, y)
 #endif
 
+#define MAKE_STR(str) {str, ARRAY_SIZE(str) - 1}
+
 #ifdef  __cplusplus
 
 struct ExitScopeHelp {
