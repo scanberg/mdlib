@@ -377,6 +377,14 @@ static bool write_offset_cache(str_t cache_file, int64_t* offsets) {
     return false;
 }
 
+void xtc_free(struct md_trajectory_o* inst) {
+    xtc_t* xtc = (xtc_t*)inst;
+    if (xtc->file) xdrfile_close(xtc->file);
+    if (xtc->frame_offsets) md_array_free(xtc->frame_offsets, xtc->allocator);
+    md_mutex_destroy(&xtc->mutex);
+    md_free(xtc->allocator, xtc, sizeof(xtc_t));
+}
+
 bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_i* alloc) {
     ASSERT(traj);
     ASSERT(alloc);
@@ -444,6 +452,7 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
         };
 
         traj->inst = (struct md_trajectory_o*)xtc;
+        traj->free = xtc_free;
         traj->get_header = xtc_get_header;
         traj->load_frame = xtc_load_frame;
         traj->fetch_frame_data = xtc_fetch_frame_data;
@@ -464,12 +473,7 @@ bool md_xtc_trajectory_close(md_trajectory_i* traj) {
         return false;
     }
 
-    if (xtc->file) xdrfile_close(xtc->file);
-    if (xtc->frame_offsets) md_array_free(xtc->frame_offsets, xtc->allocator);
-    md_mutex_destroy(&xtc->mutex);
-    md_free(xtc->allocator, xtc, sizeof(xtc_t));
-
-    memset(traj, 0, sizeof(md_trajectory_i));
+    md_trajectory_free(traj);
 
     return true;
 }

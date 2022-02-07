@@ -838,6 +838,14 @@ static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms, f
     return false;
 }
 
+void pdb_trajectory_free(struct trajectory_o* inst) {
+    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
+    if (pdb->file) md_file_close(pdb->file);
+    if (pdb->frame_offsets) md_array_free(pdb->frame_offsets, pdb->allocator);
+    md_mutex_destroy(&pdb->mutex);
+    md_free(pdb->allocator, inst, sizeof(pdb_trajectory_t));
+}
+
 bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
@@ -929,6 +937,7 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
     memcpy(pdb->box, box, sizeof(box));
 
     traj->inst = (struct md_trajectory_o*)pdb;
+    traj->free = pdb_trajectory_free;
     traj->get_header = pdb_get_header;
     traj->load_frame = pdb_load_frame;
     traj->fetch_frame_data = pdb_fetch_frame_data;
@@ -946,12 +955,7 @@ bool md_pdb_trajectory_close(md_trajectory_i* traj) {
         return false;
     }
 
-    if (pdb->file) md_file_close(pdb->file);
-    if (pdb->frame_offsets) md_array_free(pdb->frame_offsets, pdb->allocator);
-    md_mutex_destroy(&pdb->mutex);
-    md_free(pdb->allocator, traj->inst, sizeof(pdb_trajectory_t));
-
-    memset(traj, 0, sizeof(*traj));
+    md_trajectory_free(traj);
 
     return true;
 }

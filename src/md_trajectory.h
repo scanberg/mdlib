@@ -8,7 +8,6 @@
 #define md_trajectory_fetch_frame_data(traj, idx, data_ptr) ((traj)->fetch_frame_data((traj)->inst, idx, data_ptr))
 #define md_trajectory_decode_frame_data(traj, data_ptr, data_size, header, x, y, z) ((traj)->decode_frame_data((traj)->inst, data_ptr, data_size, header, x, y, z))
 
-struct md_allocator_i;
 struct md_trajectory_o;
 
 typedef struct md_trajectory_header_t {
@@ -32,6 +31,8 @@ typedef struct md_trajectory_i {
 	struct md_trajectory_o* inst; // Opaque trajectory data
 
 	bool (*get_header)(struct md_trajectory_o* inst, md_trajectory_header_t* header);
+
+	void (*free)(struct md_trajectory_o* inst);
 
 	// --- EASY MODE ---
 	bool (*load_frame)(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
@@ -71,4 +72,15 @@ static inline int64_t md_trajectory_max_frame_data_size(const md_trajectory_i* t
 		return header.max_frame_data_size;
 	}
 	return 0;
+}
+
+static inline void md_trajectory_free(md_trajectory_i* traj) {
+	if (traj && traj->free) {
+		traj->free(traj->inst);
+#ifdef __cplusplus
+		*traj = {0};
+#else
+		*traj = (md_trajectory_i){0};
+#endif
+	}
 }
