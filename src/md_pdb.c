@@ -368,6 +368,7 @@ bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* data, struct md_allocator_i
 bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* data, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
+        bool success = false;
         const int64_t buf_size = KILOBYTES(64ULL);
         char* buf = md_alloc(default_temp_allocator, buf_size);
 
@@ -377,18 +378,21 @@ bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* data, struct md_alloc
         while ((bytes_read = md_file_read(file, buf + buf_offset, buf_size - buf_offset)) > 0) {
             str_t str = {.ptr = buf, .len = buf_offset + bytes_read};
 
-            // We want to make sure we send complete lines for parsing so we locate the last '\n'
-            const int64_t last_new_line = rfind_char(str, '\n');
-            if (last_new_line == -1) {
-                break;
+            // If we read a complete block, that means the buffer is cut-off
+            if (bytes_read == buf_size - buf_offset) {
+                // make sure we send complete lines for parsing so we locate the last '\n'
+                const int64_t last_new_line = rfind_char(str, '\n');
+                if (last_new_line == -1) {
+                    md_print(MD_LOG_TYPE_ERROR, "Could not locate new line character when parsing PDB file");
+                    goto done;
+                }
+                ASSERT(str.ptr[last_new_line] == '\n');
+                str.len = last_new_line + 1;
             }
-            ASSERT(str.ptr[last_new_line] == '\n');
-            str.len = last_new_line + 1;
 
             const int64_t pre_num_models = data->num_models;
             if (!md_pdb_data_parse_str(str, data, alloc)) {
-                md_file_close(file);
-                return false;
+                goto done;
             }
 
             for (int64_t i = pre_num_models; i < data->num_models; ++i) {
@@ -400,7 +404,8 @@ bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* data, struct md_alloc
             memcpy(buf, str.ptr + str.len, buf_offset);
             file_offset += buf_size - buf_offset;
         }
-
+        success = true;
+done:
         md_file_close(file);
         return true;
     }
