@@ -3,10 +3,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/*
 #define md_trajectory_get_header(traj, header) ((traj)->get_header((traj)->inst, header))
 #define md_trajectory_load_frame(traj, idx, header, x, y, z) ((traj)->load_frame((traj)->inst, idx, header, x, y, z))
 #define md_trajectory_fetch_frame_data(traj, idx, data_ptr) ((traj)->fetch_frame_data((traj)->inst, idx, data_ptr))
 #define md_trajectory_decode_frame_data(traj, data_ptr, data_size, header, x, y, z) ((traj)->decode_frame_data((traj)->inst, data_ptr, data_size, header, x, y, z))
+*/
 
 struct md_trajectory_o;
 
@@ -74,13 +76,44 @@ static inline int64_t md_trajectory_max_frame_data_size(const md_trajectory_i* t
 	return 0;
 }
 
-static inline void md_trajectory_free(md_trajectory_i* traj) {
-	if (traj && traj->free) {
+// Easy mode operations
+static inline bool md_trajectory_free(md_trajectory_i* traj) {
+	if (traj && traj->inst && traj->free) {
 		traj->free(traj->inst);
 #ifdef __cplusplus
 		*traj = {0};
 #else
 		*traj = (md_trajectory_i){0};
 #endif
+		return true;
 	}
+	return false;
+}
+
+static inline bool md_trajectory_get_header(const md_trajectory_i* traj, md_trajectory_header_t* header) {
+	if (traj && traj->inst && traj->get_header) {
+		return traj->get_header(traj->inst, header);
+	}
+	return false;
+}
+
+static inline bool md_trajectory_load_frame(const md_trajectory_i* traj, int64_t idx, md_trajectory_frame_header_t* frame_header, float* x, float* y, float* z) {
+	if (traj && traj->inst && traj->load_frame) {
+		return traj->load_frame(traj->inst, idx, frame_header, x, y, z);
+	}
+	return false;
+}
+
+static inline int64_t md_trajectory_fetch_frame_data(const md_trajectory_i* traj, int64_t idx, void* data_ptr) {
+	if (traj && traj->inst && traj->fetch_frame_data) {
+		return traj->fetch_frame_data(traj->inst, idx, data_ptr);
+	}
+	return 0;
+}
+
+static inline bool md_trajectory_decode_frame_data(const md_trajectory_i* traj, const void* data_ptr, int64_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+	if (traj && traj->inst && traj->decode_frame_data) {
+		return traj->decode_frame_data(traj->inst, data_ptr, data_size, header, x, y, z);
+	}
+	return false;
 }

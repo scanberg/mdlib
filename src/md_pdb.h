@@ -13,6 +13,7 @@ extern "C" {
 struct md_molecule_t;
 struct md_allocator_i;
 struct md_trajectory_i;
+struct md_molecule_loader_i;
 
 typedef enum md_pdb_helix_class_t {
     Helix_Unknown           = 0,
@@ -143,15 +144,13 @@ typedef struct md_pdb_data_t {
 // This will append to the supplied pdb_data so make sure the data is in a valid state or zero
 bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* pdb_data, struct md_allocator_i* alloc);
 bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* pdb_data, struct md_allocator_i* alloc);
-
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
 bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* pdb_data, struct md_allocator_i* alloc);
 bool md_pdb_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
-// Returns the internal allocator for the molecule, which should be used if one wants to append or modify data and have that be freed by molecule_free
-struct md_allocator_i* md_pdb_molecule_internal_allocator(struct md_molecule_t* mol);
+struct md_molecule_loader_i* md_pdb_molecule_loader();
 
 // TRAJECTORY
 bool md_pdb_trajectory_open(struct md_trajectory_i* traj, str_t filename, struct md_allocator_i* alloc);

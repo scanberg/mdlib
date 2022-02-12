@@ -11,7 +11,7 @@ struct md_molecule_t;
 struct md_trajectory_i;
 struct md_allocator_i;
 
-// This is represents something which can be visualized
+// This is represents an opaque token of something which can be visualized
 struct md_script_vis_token_t;
 
 typedef enum md_script_property_flags_t {
@@ -46,7 +46,7 @@ typedef struct md_script_token_t {
 typedef struct md_script_error_t {
     // Data for indicating where the error occured within the script string
     int32_t line;      // Line number
-    int32_t col_beg;    // String pointer
+    int32_t col_beg;   // Column offset
     int32_t length;    // Length in characters
 
     // Human readable error message
@@ -206,7 +206,7 @@ bool md_script_eval_free(md_script_eval_t* eval);
 //bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap);
 
 // These is meant to be used if the evaulation runs in its own thread (which is recommended)
-int md_script_eval_completed_frame_count(const md_script_eval_t* eval);
+float md_script_eval_completed_fraction(const md_script_eval_t* eval);
 void md_script_eval_interrupt(const md_script_eval_t* eval);
 
 // ### VISUALIZE ###

@@ -12,6 +12,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_molecule_t;
+struct md_molecule_loader_i;
 
 typedef struct md_gro_atom_t {
     int32_t res_id;
@@ -34,16 +35,13 @@ typedef struct md_gro_data_t {
 // Parse a text-blob as GRO
 bool md_gro_data_parse_str(md_gro_data_t* data, str_t string, struct md_allocator_i* alloc);
 bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_allocator_i* alloc);
-
 void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc);
-
 
 // Molecule
 bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* gro_data, struct md_allocator_i* alloc);
 bool md_gro_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
-// Returns the internal allocator for the molecule, which should be used if one wants to append or modify data and have that be freed by molecule_free
-struct md_allocator_i* md_gro_molecule_internal_allocator(struct md_molecule_t* mol);
+struct md_molecule_loader_i* md_gro_molecule_loader();
 
 #ifdef __cplusplus
 }

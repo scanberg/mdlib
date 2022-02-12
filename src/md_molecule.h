@@ -2,6 +2,10 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <core/md_str.h>
+
+// Forward declarations
+struct md_allocator_i;
 
 typedef struct md_molecule_o md_molecule_o; // Opaque data blob
 
@@ -117,4 +121,29 @@ struct md_macro_molecule {
         float               (*transform)[4][4];
     } instance;
 };
+#endif
+
+
+/*
+
+The molecule loader is just a convenience API for abstracing the functionality of initializing and freeing molecule data
+
+The reason for providing a distinct function for initializing from file is that some molecule files can
+also contain their trajectories, such as PDB files. In such case, the whole file would have to be read and passed, but for
+molecule data only the first part of the file is used.
+
+*/
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct md_molecule_loader_i {
+    bool (*init_from_str) (md_molecule_t* mol, str_t string,   struct md_allocator_i* alloc);
+    bool (*init_from_file)(md_molecule_t* mol, str_t filename, struct md_allocator_i* alloc);
+    bool (*free)(md_molecule_t* mol, struct md_allocator_i* alloc);
+} md_molecule_loader_i;
+
+#ifdef __cplusplus
+}
 #endif

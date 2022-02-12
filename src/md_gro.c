@@ -71,7 +71,7 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
 
 static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_field_width, int64_t* read_count, int64_t read_target, md_allocator_i* alloc) {
     str_t line = {0};
-    while (*read_count < read_target && extract_line(&line, &str)) {
+    while ((*read_count < read_target) && extract_line(&line, &str)) {
         int64_t res_id  = parse_int(trim_whitespace(substr(line, 0, 5)));
         str_t res_name  = trim_whitespace(substr(line, 5, 5));
         str_t atom_name = trim_whitespace(substr(line, 10, 5));
@@ -102,9 +102,9 @@ static inline bool parse_unitcell(str_t str, md_gro_data_t* data) {
         return false;
     }
 
-    data->unit_cell[0] = (float)parse_float(trim_whitespace(substr(str, 0, 10)));
-    data->unit_cell[1] = (float)parse_float(trim_whitespace(substr(str, 10, 10)));
-    data->unit_cell[2] = (float)parse_float(trim_whitespace(substr(str, 20, 10)));
+    data->unit_cell[0] = (float)parse_float(trim_whitespace(substr(line, 0, 10)));
+    data->unit_cell[1] = (float)parse_float(trim_whitespace(substr(line, 10, 10)));
+    data->unit_cell[2] = (float)parse_float(trim_whitespace(substr(line, 20, 10)));
 
     return true;
 }
@@ -138,86 +138,82 @@ bool md_gro_data_parse_str(md_gro_data_t* data, str_t str, struct md_allocator_i
 bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        const uint64_t buf_size = KILOBYTES(64ULL);
-        char* buf_ptr = md_alloc(default_temp_allocator, buf_size);
+        bool success = false;
+        const int64_t buf_size = KILOBYTES(64ULL);
+        char* buf = md_alloc(default_temp_allocator, buf_size);
         
         int64_t pos_field_width = 0;
         int64_t num_atoms_read = 0;
 
-        uint64_t file_offset = 0;
-        uint64_t bytes_read = 0;
-        uint64_t read_offset = 0;
-        uint64_t read_size = buf_size;
-
         // Read header explicitly
         {
-            const int64_t header_read_size = KILOBYTES(1);
-            bytes_read = md_file_read(file, buf_ptr + read_offset, header_read_size);
-            str_t str = {.ptr = buf_ptr, .len = bytes_read};
+            const int64_t header_size = KILOBYTES(1);
+            str_t str = {.ptr = buf, .len = md_file_read(file, buf, header_size) };
 
             if (!parse_header(&str, data)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to parse gro header!");
-                md_file_close(file);
-                return false;
+                goto done;
             }
 
             pos_field_width = compute_position_field_width(str);
             if (!pos_field_width) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to determine position field width");
-                md_file_close(file);
-                return false;
+                goto done;
             }
 
             // Once we have read the header, we set the file position to just after the header
-            const int64_t seek_target = str.ptr - buf_ptr;
+            const int64_t seek_target = str.ptr - buf;
             if (!md_file_seek(file, seek_target, MD_FILE_BEG)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to seek in file");
-                md_file_close(file);
-                return false;
+                goto done;
             }
         }
 
+        int64_t bytes_read = 0;
+        int64_t buf_offset = 0;
+        str_t str = {.ptr = buf};
+
         // Read fields in chunks
-        while ((bytes_read = md_file_read(file, buf_ptr + read_offset, read_size)) == read_size) {
-            str_t str = {.ptr = buf_ptr, .len = bytes_read};
+        while ((bytes_read = md_file_read(file, buf + buf_offset, buf_size - buf_offset)) > 0) {
+            str.len = bytes_read + buf_offset;
 
             // We want to make sure we send complete lines for parsing so we locate the last '\n'
             const int64_t last_new_line = rfind_char(str, '\n');
             if (last_new_line == -1) {
                 md_print(MD_LOG_TYPE_ERROR, "Unexpected structure within gro file, missing new lines?");
-                md_file_close(file);
-                return false;
+                goto done;
             }
             ASSERT(str.ptr[last_new_line] == '\n');
             str.len = last_new_line + 1;
 
-            parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
+
+            // Have we read all bytes in file?
+            if (bytes_read < buf_size - buf_offset) {
+                str = parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
+                break;
+            } else {
+                parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
+            }
 
             // Copy remainder to beginning of buffer
-            read_offset = buf_size - str.len;
-            memcpy(buf_ptr, str.ptr + str.len, read_offset);
-            read_size = buf_size - read_offset;
-            file_offset += read_size;
+            buf_offset = buf_size - str.len;
+            memcpy(buf, str.ptr + str.len, buf_offset);
         }
-
-        // Handle remainder
-        str_t str = {.ptr = buf_ptr, .len = bytes_read + read_offset}; // add read_offset here since we also have some portion which was copied
-        parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
 
         if (num_atoms_read != data->num_atoms) {
             md_printf(MD_LOG_TYPE_ERROR, "There was a descrepancy between the number of atoms read (%lli) compared to the number of atoms specified in the header (%lli)", num_atoms_read, data->num_atoms);
-            md_file_close(file);
-            return false;
+            goto done;
         }
 
         if (!parse_unitcell(str, data)) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to parse unitcell in gro file");
-            md_file_close(file);
-            return false;
+            goto done;
         }
 
+        success = true;
+done:
         md_file_close(file);
-        return true;
+        return success;
     }
     md_printf(MD_LOG_TYPE_ERROR, "Could not open file '%.*s'", filename.len, filename.ptr);
     return false;
@@ -492,15 +488,34 @@ bool md_gro_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* allo
     return true;
 }
 
-md_allocator_i* md_gro_molecule_internal_allocator(md_molecule_t* mol) {
-    ASSERT(mol);
-    ASSERT(mol->inst);
-
-    gro_molecule_t* inst = (gro_molecule_t*)mol->inst;
-    if (inst->magic != MD_GRO_MOL_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "GRO magic did not match!");
-        return NULL;
+static bool gro_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
+    md_gro_data_t data = {0};
+    bool success = false;
+    if (md_gro_data_parse_str(&data, str, default_allocator)) {
+        success = md_gro_molecule_init(mol, &data, alloc);
     }
+    md_gro_data_free(&data, default_allocator);
 
-    return inst->allocator;
+    return success;
+}
+
+static bool gro_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
+    md_gro_data_t data = {0};
+    bool success = false;
+    if (md_gro_data_parse_file(&data, filename, default_allocator)) {
+        success = md_gro_molecule_init(mol, &data, alloc);
+    }
+    md_gro_data_free(&data, default_allocator);
+
+    return success;
+}
+
+static md_molecule_loader_i gro_loader = {
+    gro_init_from_str,
+    gro_init_from_file,
+    md_gro_molecule_free,
+};
+
+md_molecule_loader_i* md_gro_molecule_loader() {
+    return &gro_loader;
 }

@@ -90,5 +90,18 @@ UTEST(pdb, create_molecule) {
     }
 
     md_pdb_molecule_free(&mol, alloc);
+    
+    /*
+    
+    EXPECT_TRUE(md_pdb_molecule_loader()->init_from_file(&mol, path, alloc));
+
+    for (int64_t i = 0; i < mol.atom.count; ++i) {
+        EXPECT_EQ(mol.atom.x[i], pdb_data.atom_coordinates[i].x);
+        EXPECT_EQ(mol.atom.y[i], pdb_data.atom_coordinates[i].y);
+        EXPECT_EQ(mol.atom.z[i], pdb_data.atom_coordinates[i].z);
+    }
+
+    EXPECT_TRUE(md_pdb_molecule_loader()->free(&mol, alloc));
+    */
     md_pdb_data_free(&pdb_data, alloc);
 }

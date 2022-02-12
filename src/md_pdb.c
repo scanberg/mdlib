@@ -368,29 +368,22 @@ bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* data, struct md_allocator_i
 bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* data, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        const uint64_t file_size = md_file_size(file);
-        const uint64_t buf_size = KILOBYTES(64ULL);
-        char* buf_ptr = md_alloc(default_temp_allocator, buf_size);
-        uint64_t file_offset = 0;
-        uint64_t bytes_read = 0;
-        uint64_t read_offset = 0;
-        uint64_t read_size = buf_size;
-        while ((bytes_read = md_file_read(file, buf_ptr + read_offset, read_size)) == read_size) {
-            str_t str = {.ptr = buf_ptr, .len = read_offset + bytes_read};
+        const int64_t buf_size = KILOBYTES(64ULL);
+        char* buf = md_alloc(default_temp_allocator, buf_size);
 
-            bool done = (file_offset + read_offset + bytes_read == file_size);
+        int64_t file_offset = 0;
+        int64_t bytes_read = 0;
+        int64_t buf_offset = 0;
+        while ((bytes_read = md_file_read(file, buf + buf_offset, buf_size - buf_offset)) > 0) {
+            str_t str = {.ptr = buf, .len = buf_offset + bytes_read};
 
-            if (!done) {
-                // We want to make sure we send complete lines for parsing so we locate the last '\n'
-                const int64_t last_new_line = rfind_char(str, '\n');
-                ASSERT(str.ptr[last_new_line] == '\n');
-                if (last_new_line == -1) {
-                    md_print(MD_LOG_TYPE_ERROR, "Unexpected structure within pdb file, missing new lines???");
-                    md_file_close(file);
-                    return false;
-                }
-                str.len = last_new_line + 1;
+            // We want to make sure we send complete lines for parsing so we locate the last '\n'
+            const int64_t last_new_line = rfind_char(str, '\n');
+            if (last_new_line == -1) {
+                break;
             }
+            ASSERT(str.ptr[last_new_line] == '\n');
+            str.len = last_new_line + 1;
 
             const int64_t pre_num_models = data->num_models;
             if (!md_pdb_data_parse_str(str, data, alloc)) {
@@ -403,21 +396,9 @@ bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* data, struct md_alloc
             }
 
             // Copy remainder to beginning of buffer
-            read_offset = buf_size - str.len;
-            memcpy(buf_ptr, str.ptr + str.len, read_offset);
-            read_size = buf_size - read_offset;
-            file_offset += read_size;
-        }
-
-        const int64_t pre_num_models = data->num_models;
-        const str_t str = {.ptr = buf_ptr, .len = bytes_read + read_offset}; // add read_offset here since we also have some portion which was copied
-        if (!md_pdb_data_parse_str(str, data, alloc)) {
-            md_file_close(file);
-            return false;
-        }
-
-        for (int64_t i = pre_num_models; i < data->num_models; ++i) {
-            data->models[i].byte_offset += file_offset;
+            buf_offset = buf_size - str.len;
+            memcpy(buf, str.ptr + str.len, buf_offset);
+            file_offset += buf_size - buf_offset;
         }
 
         md_file_close(file);
@@ -457,22 +438,11 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
     int64_t beg_atom_index = 0;
     int64_t end_atom_index = data->num_atom_coordinates;
 
-    // if we have models and they have the same size, interperet it as a trajectory and only load the first model
+    // if we have more than one model, interperet it as a trajectory and only load the first model
     if (data->num_models > 0) {
-        bool is_trajectory = true;
-        const int64_t ref_size = data->models[0].end_atom_index - data->models[0].beg_atom_index;
-        for (int64_t i = 1; i < data->num_models; ++i) {
-            if ((data->models[i].end_atom_index - data->models[i].beg_atom_index) != ref_size) {
-                is_trajectory = false;
-                break;
-            }
-        }
-
-        if (is_trajectory) {
-            // Limit the scope of atom coordinate entries if we have a trajectory (only consider first model)
-            beg_atom_index = data->models[0].beg_atom_index;
-            end_atom_index = data->models[0].end_atom_index;
-        }
+        // Limit the scope of atom coordinate entries if we have a trajectory (only consider first model)
+        beg_atom_index = data->models[0].beg_atom_index;
+        end_atom_index = data->models[0].end_atom_index;
     }
 
     if (mol->inst) {
@@ -709,17 +679,73 @@ bool md_pdb_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     return true;
 }
 
-md_allocator_i* md_pdb_molecule_internal_allocator(md_molecule_t* mol) {
-    ASSERT(mol);
-    ASSERT(mol->inst);
+static bool pdb_init_from_str(md_molecule_t* mol, str_t string, md_allocator_i* alloc) {
+    md_pdb_data_t data = {0};
 
-    pdb_molecule_t* inst = (pdb_molecule_t*)mol->inst;
-    if (inst->magic != MD_PDB_MOL_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "PDB magic did not match!");
-        return NULL;
+    bool success = md_pdb_data_parse_str(string, &data, default_allocator);
+    if (success) {
+        success = md_pdb_molecule_init(mol, &data, alloc);
     }
+    md_pdb_data_free(&data, default_allocator);
+    
+    return success;
+}
 
-    return inst->allocator;
+static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
+    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    if (file) {
+        bool success = true;
+        md_pdb_data_t data = {0};
+
+        const int64_t buf_size = KILOBYTES(64);
+        char* buf = md_alloc(default_temp_allocator, buf_size);
+        int64_t bytes_read = 0;
+        int64_t buf_offset = 0;
+        while ((bytes_read = md_file_read(file, buf + buf_offset, buf_size - buf_offset)) > 0) {
+            str_t str = { .ptr = buf, .len = buf_offset + bytes_read };
+
+            // Make sure we send complete lines for parsing so we locate the last '\n'
+            const int64_t last_new_line = rfind_char(str, '\n');
+            if (last_new_line == -1) break;
+
+            ASSERT(str.ptr[last_new_line] == '\n');
+            str.len = last_new_line + 1;
+
+            if (!md_pdb_data_parse_str(str, &data, default_allocator)) {
+                success = false;
+                break;
+            }
+
+            if (data.num_models > 1) {
+                // We only need 1 model to derive the molecule data. We consider the rest as trajectory data.
+                break;
+            }
+
+            // Copy remainder to beginning of buffer
+            buf_offset = buf_size - str.len;
+            memcpy(buf, str.ptr + str.len, buf_offset);
+        }
+        md_file_close(file);
+
+        if (success) {
+            success = md_pdb_molecule_init(mol, &data, alloc);
+        }
+        md_pdb_data_free(&data, default_allocator);
+
+        return success;
+    }
+    md_printf(MD_LOG_TYPE_ERROR, "Could not open file '%.*s'", filename.len, filename.ptr);
+    return false;
+}
+
+static md_molecule_loader_i pdb_loader = {
+    pdb_init_from_str,
+    pdb_init_from_file,
+    md_pdb_molecule_free
+};
+
+md_molecule_loader_i* md_pdb_molecule_loader() {
+    return &pdb_loader;
 }
 
 bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
@@ -838,7 +864,7 @@ static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms, f
     return false;
 }
 
-void pdb_trajectory_free(struct trajectory_o* inst) {
+void pdb_trajectory_free(struct md_trajectory_o* inst) {
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     if (pdb->file) md_file_close(pdb->file);
     if (pdb->frame_offsets) md_array_free(pdb->frame_offsets, pdb->allocator);

@@ -555,9 +555,9 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
             atom_range.end - atom_range.beg,
             args.pbc.box);
 
-        com.x = deperiodize(com.x, ext.x * 0.5f, ext.x);
-        com.y = deperiodize(com.y, ext.y * 0.5f, ext.y);
-        com.z = deperiodize(com.z, ext.z * 0.5f, ext.z);
+        com.x = deperiodizef(com.x, ext.x * 0.5f, ext.x);
+        com.y = deperiodizef(com.y, ext.y * 0.5f, ext.y);
+        com.z = deperiodizef(com.z, ext.z * 0.5f, ext.z);
 
         if (residue_com_x) {
             ASSERT(residue_com_y);
@@ -568,9 +568,9 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
         }
 
         for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
-            out_x[j] = deperiodize(args.atom.x[j], com.x, ext.x);
-            out_y[j] = deperiodize(args.atom.y[j], com.y, ext.y);
-            out_z[j] = deperiodize(args.atom.z[j], com.z, ext.z);
+            out_x[j] = deperiodizef(args.atom.x[j], com.x, ext.x);
+            out_y[j] = deperiodizef(args.atom.y[j], com.y, ext.y);
+            out_z[j] = deperiodizef(args.atom.z[j], com.z, ext.z);
         }
     }
 
@@ -585,17 +585,17 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
             args.pbc.box);
 
         // Ensure that the chain com is within the period of the bounding box
-        chain_com.x = deperiodize(chain_com.x, ext.x * 0.5f, ext.x);
-        chain_com.y = deperiodize(chain_com.y, ext.y * 0.5f, ext.y);
-        chain_com.z = deperiodize(chain_com.z, ext.z * 0.5f, ext.z);
+        chain_com.x = deperiodizef(chain_com.x, ext.x * 0.5f, ext.x);
+        chain_com.y = deperiodizef(chain_com.y, ext.y * 0.5f, ext.y);
+        chain_com.z = deperiodizef(chain_com.z, ext.z * 0.5f, ext.z);
 
         for (int64_t j = res_range.beg; j < res_range.end; ++j) {
             vec3_t res_com = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
 
             // Ensire that the residue is within the period of the chain
-            res_com.x = deperiodize(res_com.x, chain_com.x, ext.x);
-            res_com.y = deperiodize(res_com.y, chain_com.y, ext.y);
-            res_com.z = deperiodize(res_com.z, chain_com.z, ext.z);
+            res_com.x = deperiodizef(res_com.x, chain_com.x, ext.x);
+            res_com.y = deperiodizef(res_com.y, chain_com.y, ext.y);
+            res_com.z = deperiodizef(res_com.z, chain_com.z, ext.z);
 
             vec3_t d = vec3_sub(res_com, (vec3_t){residue_com_x[j], residue_com_y[j], residue_com_z[j]});
             const float d2 = vec3_dot(d,d);
@@ -630,9 +630,9 @@ vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const 
         float com_y = sum_y / sum_w;
         float com_z = sum_z / sum_w;
 
-        float x = deperiodize(in_x[i], com_x, ext_x);
-        float y = deperiodize(in_y[i], com_y, ext_y);
-        float z = deperiodize(in_z[i], com_z, ext_z);
+        float x = deperiodizef(in_x[i], com_x, ext_x);
+        float y = deperiodizef(in_y[i], com_y, ext_y);
+        float z = deperiodizef(in_z[i], com_z, ext_z);
 
         if (in_w) w = in_w[i];
         sum_x += x * w;

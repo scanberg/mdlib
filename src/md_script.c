@@ -315,7 +315,8 @@ typedef struct md_script_eval_o {
     uint64_t magic;
 
     struct md_allocator_i *arena;
-    int num_frames_completed;
+    uint32_t num_frames_completed;
+    uint32_t num_frames_total;
     volatile bool interrupt;
 
     md_script_property_t    *properties;
@@ -3557,7 +3558,9 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     bool result = true;
 
-    const int64_t num_evaluated_frames = md_bitfield_popcount(mask);
+    const int64_t num_frames = md_bitfield_popcount(mask);
+    eval->o->num_frames_total = (uint32_t)num_frames;
+    eval->o->num_frames_completed = 0;
 
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
@@ -3608,7 +3611,6 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             data[i].min_range = -FLT_MAX;
             data[i].max_range = FLT_MAX;
             if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
-                // @TODO: Report error
                 md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating property '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
                 result = false;
                 goto done;
@@ -3734,8 +3736,9 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         }
 
         dst_idx += 1;
+        eval->o->num_frames_completed = (uint32_t)dst_idx;
 
-        // How frequently should we invalidate the data?
+        // @TODO: Decide how frequently should we invalidate the data? and Propagate the changes back to the GUI
         if (dst_idx % 10 == 0) {
             uint64_t fingerprint = generate_fingerprint();
             for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
@@ -3744,7 +3747,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         }
     }
 
-    ASSERT(dst_idx == num_evaluated_frames);
+    ASSERT(dst_idx == num_frames);
 done:
     FREE_STACK();
     return result;
@@ -4042,9 +4045,10 @@ bool md_script_eval_free(md_script_eval_t* eval) {
     return result;
 }
 
-int md_script_eval_completed_frame_count(const md_script_eval_t* eval) {
-    if (eval && eval->o)
-        return eval->o->num_frames_completed;
+float md_script_eval_completed_fraction(const md_script_eval_t* eval) {
+    if (eval && eval->o) {
+        return (float)eval->o->num_frames_completed / (float)eval->o->num_frames_total;
+    }
     return 0;
 }
 

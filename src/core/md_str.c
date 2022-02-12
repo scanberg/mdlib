@@ -49,9 +49,6 @@ bool extract_line(str_t* out_line, str_t* in_out_str) {
     if (c) {
         end = c + 1;
     }
-    else {
-        while(0);
-    }
 
     out_line->ptr = beg;
     out_line->len = end - beg;
