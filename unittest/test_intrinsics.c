@@ -49,7 +49,7 @@ UTEST(intrinsics, test) {
 
 
 
-    uint32_t res = 0;
+    uint64_t res = 0;
     res = find_first_zero_byte64(65280);
     res = find_first_zero_byte64(255);
     res = find_first_zero_byte64(65535);
