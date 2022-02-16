@@ -289,7 +289,10 @@ static int _dihedral(data_t*, data_t[], eval_context_t*); // (float[3], float[3]
 
 static int _rmsd    (data_t*, data_t[], eval_context_t*); // (float[3][]) -> float
 
-static int _rdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, float) -> float[128] (Histogram). The idea is that we use a fixed amount of bins, then we let the user choose some kernel to smooth it.
+// Radial distribution function: The idea is that we use a fixed (high) amount of bins, then we let the user choose some kernel to smooth it.
+static int _rdf_flt (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, float)  -> float[1024] (Histogram).
+static int _rdf_frng(data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, frange) -> float[1024] (Histogram).
+
 static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, float) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
 
 // Geometric operations
@@ -572,7 +575,8 @@ static procedure_t procedures[] = {
 
     {cstr("rmsd"),      TI_FLOAT,   1,  {TI_BITFIELD},    _rmsd,     FLAG_DYNAMIC | FLAG_RET_AND_ARG_EQUAL_LENGTH},
 
-    {cstr("rdf"),       TI_DISTRIBUTION,    3,  {TI_FLOAT3_ARR,   TI_FLOAT3_ARR, TI_FLOAT}, _rdf,  FLAG_DYNAMIC | FLAG_POSITION},
+    {cstr("rdf"),       TI_DISTRIBUTION,    3,  {TI_FLOAT3_ARR,   TI_FLOAT3_ARR, TI_FLOAT},  _rdf_flt,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {cstr("rdf"),       TI_DISTRIBUTION,    3,  {TI_FLOAT3_ARR,   TI_FLOAT3_ARR, TI_FRANGE}, _rdf_frng,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
     {cstr("sdf"),       TI_VOLUME,          3,  {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},   _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE},
 
     // --- GEOMETRICAL OPERATIONS ---
@@ -3012,22 +3016,149 @@ static int _position_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 typedef struct {
     vec3_t pos;
-    float cutoff;
+    float min_cutoff;
+    float max_cutoff;
+    float inv_max_cutoff;
     float* bins;
     int32_t num_bins;
+    uint32_t idx;
 } rdf_payload_t;
 
 bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
     rdf_payload_t* data = user_param;
     const float d = vec3_distance(coord, data->pos);
-    if (d < data->cutoff) {
-        const int32_t bin_idx = (int32_t)((d / data->cutoff) * data->num_bins);
+    if (d == 0) {
+        while(0);
+    }
+    if (data->min_cutoff < d && d < data->max_cutoff) {
+        int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_max_cutoff) * data->num_bins);
+        bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
+        if (bin_idx == 0) {
+            while(0);
+        }
         data->bins[bin_idx] += 1.0f;
     }
     return true;
 }
 
-static int _rdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
+#define RDF_BRUTE_FORCE_LIMIT 1000
+
+static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_t ref_size, const vec3_t* target_pos, int64_t target_size, float min_cutoff, float max_cutoff, vec3_t pbc_ext, md_allocator_i* alloc) {
+    const int64_t sum = ref_size * target_size;
+    const float inv_max_cutoff = 1.0f / max_cutoff;
+
+    if (sum < RDF_BRUTE_FORCE_LIMIT) {
+        for (int64_t i = 0; i < ref_size; ++i) {
+            for (int64_t j = 0; j < target_size; ++j) {
+                const float d = vec3_distance(ref_pos[i], target_pos[j]);
+                if (d == 0) {
+                    while (0);
+                }
+                if (min_cutoff < d && d < max_cutoff) {
+                    int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_max_cutoff) * num_bins);
+                    bin_idx = CLAMP(bin_idx, 0, num_bins - 1);
+                    bins[bin_idx] += 1.0f;
+                }
+            }
+        }
+    }
+    else {
+        md_spatial_hash_args_t args = {
+            .alloc = alloc,
+            .temp_alloc = alloc,
+            .cell_ext = CLAMP(max_cutoff / 1.5f, 1.0f, 16.0f),
+            .coords = {
+                .count = target_size,
+                .stride = sizeof(vec3_t),
+                .x = &target_pos->x,
+                .y = &target_pos->y,
+                .z = &target_pos->z,
+            },
+        };
+
+        md_spatial_hash_t hash = { 0 };
+        md_spatial_hash_init(&hash, &args);
+
+        rdf_payload_t payload = {
+            .min_cutoff = min_cutoff,
+            .max_cutoff = max_cutoff,
+            .inv_max_cutoff = inv_max_cutoff,
+            .bins = bins,
+            .num_bins = num_bins,
+        };
+
+        if (vec3_dot(pbc_ext, pbc_ext) > 0) {
+            vec3_t min_box = { 0, 0, 0 };
+            vec3_t max_box = pbc_ext;
+
+            for (int64_t i = 0; i < ref_size; ++i) {
+                payload.pos = ref_pos[i];
+                payload.idx = (uint32_t)i;
+                md_spatial_hash_query_periodic(&hash, ref_pos[i], max_cutoff, min_box, max_box, rdf_iter, &payload);
+            }
+        }
+        else {
+            for (int64_t i = 0; i < ref_size; ++i) {
+                payload.pos = ref_pos[i];
+                payload.idx = (uint32_t)i;
+                md_spatial_hash_query(&hash, ref_pos[i], max_cutoff, rdf_iter, &payload);
+            }
+        }
+    }
+
+
+    // Normalize the distribution
+    const float scl = 1.0f / sum;
+    for (int64_t i = 0; i < num_bins; ++i) {
+        bins[i] *= scl;
+    }
+}
+
+static int validate_or_visualize_rdf(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* target_pos, int64_t target_size, float min_cutoff, float max_cutoff, eval_context_t* ctx) {
+    // Validate input
+    if (ref_size <= 0) {
+        create_error(ctx->ir, ctx->arg_tokens[0], "supplied reference positions size is 0");
+        return -1;
+    }
+    if (target_size <= 0) {
+        create_error(ctx->ir, ctx->arg_tokens[1], "supplied target positions size is 0");
+        return -1;
+    }
+    if (min_cutoff < 0.0f || max_cutoff <= min_cutoff) {
+        create_error(ctx->ir, ctx->arg_tokens[2], "Invalid cutoff");
+        return -1;
+    }
+
+    const float min_cutoff2 = min_cutoff * min_cutoff;
+    const float max_cutoff2 = max_cutoff * max_cutoff;
+
+    // Visualize
+    if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+        const int64_t max_vertices = 10000;
+        int64_t vertex_count = 0;
+
+        for (int64_t i = 0; i < ref_size; ++i) {
+            uint16_t r_v = push_vertex(ref_pos[i], ctx->vis);
+            vertex_count += 1;
+            push_point(r_v, ctx->vis);
+            for (int64_t j = 0; j < target_size; ++j) {
+                const vec3_t d = vec3_sub(ref_pos[i], target_pos[j]);
+                const float d2 = vec3_dot(d, d);
+                if (min_cutoff2 < d2 && d2 < max_cutoff2) {
+                    uint16_t t_v = push_vertex(target_pos[j], ctx->vis);
+                    vertex_count += 1;
+                    push_line(r_v, t_v, ctx->vis);
+                    if (vertex_count > max_vertices) return 0;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+
+static int _rdf_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
@@ -3045,104 +3176,66 @@ static int _rdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const float cutoff = as_float(arg[2]);
     const int32_t num_bins = DIST_BINS;
 
-    const int64_t sum = ref_size * target_size;
-
-    if (dst && sum > 0) {
+    if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_DISTRIBUTION));
         ASSERT(dst->ptr);
-
+        ASSERT(num_bins > 0);
         float* bins = as_float_arr(*dst);
 
-        md_spatial_hash_args_t args = {
-            .alloc = ctx->temp_alloc,
-            .temp_alloc = ctx->temp_alloc,
-            .cell_ext = CLAMP(cutoff / 1.5f, 1.0f, 16.0f),
-            .coords = {
-                .count = target_size,
-                .stride = sizeof(vec3_t),
-                .x = &target_pos->x,
-                .y = &target_pos->y,
-                .z = &target_pos->z,
-            },
-        };
-
-        md_spatial_hash_t hash = {0};
-        md_spatial_hash_init(&hash, &args);
-
-        rdf_payload_t payload = {
-            .cutoff = cutoff,
-            .bins = bins,
-            .num_bins = num_bins,
-        };
-
-        if (ctx->frame_header) {
-            vec3_t min_box = { 0, 0, 0 };
-            vec3_t max_box = { ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2] };
-
-            for (int64_t i = 0; i < ref_size; ++i) {
-                payload.pos = ref_pos[i];
-                md_spatial_hash_query_periodic(&hash, ref_pos[i], cutoff, min_box, max_box, rdf_iter, &payload);
+        if (ref_size > 0 && target_size > 0) {
+            vec3_t pbc_ext = {0,0,0};
+            if (ctx->frame_header) {
+                pbc_ext = (vec3_t) { ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2] };
             }
-        } else {
-            for (int64_t i = 0; i < ref_size; ++i) {
-                payload.pos = ref_pos[i];
-                md_spatial_hash_query(&hash, ref_pos[i], cutoff, rdf_iter, &payload);
-            }
-        }
-
-
-        /*
-        for (int64_t i = 0; i < ref_size; ++i) {
-            for (int64_t j = 0; j < target_size; ++j) {
-                const float d = vec3_distance(ref_pos[i], target_pos[j]);
-                if (d < cutoff) {
-                    const int32_t bin_idx = (int32_t)((d / cutoff) * num_bins);
-                    bins[bin_idx] += 1.0f;
-                }
-            }
-        }
-        */
-
-        // Normalize the distribution
-        const float scl = 1.0f / sum;
-        for (int64_t i = 0; i < num_bins; ++i) {
-            bins[i] *= scl;
+            compute_rdf(bins, num_bins, ref_pos, ref_size, target_pos, target_size, 0.0f, cutoff, pbc_ext, ctx->temp_alloc);
         }
 
         dst->min_range = 0.0f;
         dst->max_range = cutoff;
     } else {
-        // Validate input
-        if (ref_size <= 0) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "supplied reference positions size is 0");
-            return -1;
-        }
-        if (target_size <= 0) {
-            create_error(ctx->ir, ctx->arg_tokens[1], "supplied target positions size is 0");
-            return -1;
-        }
-        if (cutoff <= 0.0f) {
-            create_error(ctx->ir, ctx->arg_tokens[2], "Invalid cutoff");
-            return -1;
-        }
+        return validate_or_visualize_rdf(ref_pos, ref_size, target_pos, target_size, 0.0f, cutoff, ctx);
+    }
 
-        const float cutoff2 = cutoff * cutoff;
+    return 0;
+}
 
-        // Visualize
-        if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            for (int64_t i = 0; i < ref_size; ++i) {
-                uint16_t ref_v = push_vertex(ref_pos[i], ctx->vis);
-                push_point(ref_v, ctx->vis);
-                for (int64_t j = 0; j < target_size; ++j) {
-                    const vec3_t d = vec3_sub(ref_pos[i], target_pos[j]);
-                    const float d2 = vec3_dot(d, d);
-                    if (d2 < cutoff2) {
-                        uint16_t v = push_vertex(target_pos[j], ctx->vis);
-                        push_line(ref_v, v, ctx->vis);
-                    }
-                }
+static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FRANGE));
+    ASSERT(arg[0].ptr);
+    ASSERT(arg[1].ptr);
+    ASSERT(arg[2].ptr);
+
+    const vec3_t* ref_pos = as_vec3_arr(arg[0]);
+    const int64_t ref_size = element_count(arg[0]);
+
+    const vec3_t* target_pos = as_vec3_arr(arg[1]);
+    const int64_t target_size = element_count(arg[1]);
+
+    const frange_t cutoff = as_frange(arg[2]);
+    const int32_t num_bins = DIST_BINS;
+
+    if (dst) {
+        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_DISTRIBUTION));
+        ASSERT(dst->ptr);
+        ASSERT(num_bins > 0);
+        float* bins = as_float_arr(*dst);
+
+        if (ref_size > 0 && target_size > 0) {
+            vec3_t pbc_ext = { 0,0,0 };
+            if (ctx->frame_header) {
+                pbc_ext = (vec3_t){ ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2] };
             }
+            compute_rdf(bins, num_bins, ref_pos, ref_size, target_pos, target_size, cutoff.beg, cutoff.end, pbc_ext, ctx->temp_alloc);
         }
+
+        dst->min_range = cutoff.beg;
+        dst->max_range = cutoff.end;
+    }
+    else {
+        return validate_or_visualize_rdf(ref_pos, ref_size, target_pos, target_size, cutoff.beg, cutoff.end, ctx);
     }
 
     return 0;

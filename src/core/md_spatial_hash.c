@@ -15,6 +15,7 @@ typedef struct md_spatial_hash_cell_t {
     uint32_t length;
 } md_spatial_hash_cell_t;
 
+/*
 // Store as relative cell-coordinates quantized to 16 bits: Über precision
 typedef union md_spatial_hash_coord_t {
     struct {
@@ -26,9 +27,9 @@ typedef union md_spatial_hash_coord_t {
     uint16_t elem[4];
 } md_spatial_hash_coord_t;
 
-static inline vec4_t decompress_coord(const md_spatial_hash_coord_t in_coord, vec4_t cell_min, float cell_ext) {
+static inline vec4_t decompress_coord(const uint16_t compressed_coord[4], vec4_t cell_min, float cell_ext) {
     const float scl = cell_ext / (1 << 16);
-    vec4_t coord = {.mm128 = md_simd_set_f128((float)in_coord.x, (float)in_coord.y, (float)in_coord.z, (float)in_coord.w)};
+    vec4_t coord = {.mm128 = md_simd_set_f128(compressed_coord[0], compressed_coord[1], compressed_coord[2], compressed_coord[3])};
     return vec4_add(cell_min, vec4_mul_f(coord, scl));
 }
 
@@ -39,6 +40,20 @@ static inline md_spatial_hash_coord_t compress_coord(vec4_t coord, vec4_t cell_m
     coord = vec4_add_f(coord, 0.5f);
     return (md_spatial_hash_coord_t){(uint16_t)coord.x, (uint16_t)coord.y, (uint16_t)coord.z, (uint16_t)coord.w};
 }
+*/
+
+static inline float get_coord(const float* in_coord, int64_t stride, int64_t idx) {
+    return *(const float*)((const char*)in_coord + stride * idx);
+}
+
+static inline vec4_t get_vec4(const float* in_coords[3], int64_t stride, int64_t idx) {
+    return (vec4_t) {
+        *(const float*)((const char*)in_coords[0] + stride * idx),
+        in_coords[1] ? *(const float*)((const char*)in_coords[1] + stride * idx) : 0,
+        in_coords[2] ? *(const float*)((const char*)in_coords[2] + stride * idx) : 0,
+        0,
+    };
+}
 
 bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t* args) {
     ASSERT(hash);
@@ -48,16 +63,21 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t*
     md_allocator_i* alloc = args->alloc;
     md_allocator_i* temp_alloc = args->temp_alloc ? args->temp_alloc : default_temp_allocator;
 
+    const float* in_coords[3] = {
+        args->coords.x,
+        args->coords.y,
+        args->coords.z,
+    };
     int64_t stride = args->coords.stride;
     int64_t count = args->coords.count;
     int dim = 0;
     float cell_ext = args->cell_ext;
 
-    if (args->coords.x != NULL) {
+    if (in_coords[0] != NULL) {
         dim = 1;
-        if (args->coords.y != NULL) {
+        if (in_coords[1] != NULL) {
             dim = 2;
-            if (args->coords.z != NULL) {
+            if (in_coords[1] != NULL) {
                 dim = 3;
             }
         }
@@ -97,39 +117,14 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t*
     }
 
     if (hash->coords != 0 || hash->cells != 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Spatial Hash structure is not set to zero, leaking potential memory here.");
+        md_print(MD_LOG_TYPE_ERROR, "Spatial Hash structure is not cleared, potentially leaking memory here.");
     }
 
     vec4_t aabb_min = vec4_from_float( FLT_MAX);
     vec4_t aabb_max = vec4_from_float(-FLT_MAX);
 
-    const float* in_coord[3] = {0};
-
-    if (stride == 4) {
-        in_coord[0] = args->coords.x;
-        in_coord[1] = args->coords.y;
-        in_coord[2] = args->coords.z;
-    } else {
-        float* mem = md_alloc(default_temp_allocator, count * dim * sizeof(float));
-        float* coord[4] = {0};
-        for (int i = 0; i < dim; ++i) {
-            coord[i] = mem + count * i;
-            in_coord[i] = coord[i];
-        }
-
-        const float *src_coord[3] = {args->coords.x, args->coords.y, args->coords.z};
-        for (int64_t i = 0; i < count; ++i) {
-            for (int j = 0; j < dim; ++j) {
-                coord[j][i] = *((const float*)((const char*)src_coord[j] + stride * i));
-            }
-        }
-    }
-
     for (int64_t i = 0; i < count; ++i) {
-        vec4_t c = vec4_zero();
-        for (int j = 0; j < dim; ++j) {
-            c.elem[j] = in_coord[j][i];
-        }
+        vec4_t c = get_vec4(in_coords, stride, i);
         aabb_min = vec4_min(aabb_min, c);
         aabb_max = vec4_max(aabb_max, c);
     }
@@ -188,7 +183,7 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t*
 
     // Allocate needed data
     md_spatial_hash_cell_t* cells = 0;
-    uint16_t* coords = 0;
+    float* coords = 0;
     uint32_t* original_idx = 0;
     md_array_resize(cells, cell_count, alloc);
     md_array_resize(coords, count * dim, alloc);
@@ -206,7 +201,7 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t*
     switch (dim) {
     case 1:
         for (uint32_t i = 0; i < (uint32_t)count; ++i) {
-            uint32_t idx = (uint32_t)((in_coord[0][i] - cell_min.x) * inv_cell_ext);
+            uint32_t idx = (uint32_t)((get_coord(in_coords[0], stride, i) - cell_min.x) * inv_cell_ext);
             cell_idx[i]  = idx;
             local_idx[i] = cells[idx].length++;
             ASSERT(cells[idx].length != 0 && "hash cell has wrapped, too many entities per cell");
@@ -215,8 +210,8 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t*
     case 2:
         for (uint32_t i = 0; i < (uint32_t)count; ++i) {
             uint32_t cell_coord[2] = {
-                (uint32_t)((in_coord[0][i] - cell_min.x) * inv_cell_ext),
-                (uint32_t)((in_coord[1][i] - cell_min.y) * inv_cell_ext),
+                (uint32_t)((get_coord(in_coords[0], stride, i) - cell_min.x) * inv_cell_ext),
+                (uint32_t)((get_coord(in_coords[1], stride, i) - cell_min.y) * inv_cell_ext),
             };
 
             uint32_t idx = cell_coord[1] * cell_dim[0] + cell_coord[0];
@@ -228,9 +223,9 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t*
     case 3:
         for (uint32_t i = 0; i < (uint32_t)count; ++i) {
             uint32_t cell_coord[3] = {
-                (uint32_t)((in_coord[0][i] - cell_min.x) * inv_cell_ext),
-                (uint32_t)((in_coord[1][i] - cell_min.y) * inv_cell_ext),
-                (uint32_t)((in_coord[2][i] - cell_min.z) * inv_cell_ext),
+                (uint32_t)((get_coord(in_coords[0], stride, i) - cell_min.x) * inv_cell_ext),
+                (uint32_t)((get_coord(in_coords[1], stride, i) - cell_min.y) * inv_cell_ext),
+                (uint32_t)((get_coord(in_coords[2], stride, i) - cell_min.z) * inv_cell_ext),
             };
 
             uint32_t idx = cell_coord[2] * cell_dim[0] * cell_dim[1] + cell_coord[1] * cell_dim[0] + cell_coord[0];
@@ -251,57 +246,14 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t*
     ASSERT(cell);
     ASSERT(cell->offset + cell->length == count);
 
-    switch (dim) {
-    case 1:
-        for (uint32_t i = 0; i < (uint32_t)count; ++i) {
-            uint32_t dst_idx = cells[cell_idx[i]].offset + local_idx[i];
-            uint32_t cell_coord = {
-                (uint32_t)((in_coord[0][i] - cell_min.x) * inv_cell_ext)
-            };
-            vec4_t coord = {in_coord[0][i], 0, 0, 0};
-            vec4_t local_cell_min = vec4_add(cell_min, (vec4_t){cell_coord * cell_ext, 0, 0, 0});
+    for (int64_t i = 0; i < count; ++i) {
+        uint32_t dst_idx = cells[cell_idx[i]].offset + local_idx[i];
+        ASSERT(dst_idx < count);
 
-            ASSERT(dst_idx < count);
-            md_spatial_hash_coord_t local_coord = compress_coord(coord, local_cell_min, cell_ext);
-            coords[dst_idx] = local_coord.x;
-            original_idx[dst_idx] = i;
+        for (int j = 0; j < dim; ++j) {
+            coords[dst_idx * dim + j] = get_coord(in_coords[j], stride, i);
         }
-        break;
-    case 2:
-        for (uint32_t i = 0; i < (uint32_t)count; ++i) {
-            uint32_t dst_idx = cells[cell_idx[i]].offset + local_idx[i];
-            uint32_t cell_coord[2] = {
-                (uint32_t)((in_coord[0][i] - cell_min.x) * inv_cell_ext),
-                (uint32_t)((in_coord[1][i] - cell_min.y) * inv_cell_ext),
-            };
-            vec4_t coord = {in_coord[0][i], in_coord[1][i], 0, 0};
-            vec4_t local_cell_min = vec4_add(cell_min, (vec4_t){cell_coord[0] * cell_ext, cell_coord[1] * cell_ext, 0, 0});
-
-            ASSERT(dst_idx < count);
-            md_spatial_hash_coord_t local_coord = compress_coord(coord, local_cell_min, cell_ext);
-            memcpy(coords + dst_idx * dim, &local_coord, sizeof(uint16_t) * dim);
-            original_idx[dst_idx] = i;
-        }
-        break;
-    case 3:
-        for (uint32_t i = 0; i < (uint32_t)count; ++i) {
-            uint32_t dst_idx = cells[cell_idx[i]].offset + local_idx[i];
-            uint32_t cell_coord[3] = {
-                (uint32_t)((in_coord[0][i] - cell_min.x) * inv_cell_ext),
-                (uint32_t)((in_coord[1][i] - cell_min.y) * inv_cell_ext),
-                (uint32_t)((in_coord[2][i] - cell_min.z) * inv_cell_ext),
-            };
-            vec4_t coord = {in_coord[0][i], in_coord[1][i], in_coord[2][i], 0};
-            vec4_t local_cell_min = vec4_add(cell_min, (vec4_t){cell_coord[0] * cell_ext, cell_coord[1] * cell_ext, cell_coord[2] * cell_ext, 0});
-
-            ASSERT(dst_idx < count);
-            md_spatial_hash_coord_t local_coord = compress_coord(coord, local_cell_min, cell_ext);
-            memcpy(coords + dst_idx * dim, &local_coord, sizeof(uint16_t) * dim);
-            original_idx[dst_idx] = i;
-        }
-        break;
-    default:
-        ASSERT(false);
+        original_idx[dst_idx] = (uint32_t)i;
     }
 
     md_array_free(local_idx, temp_alloc);
@@ -363,11 +315,11 @@ bool md_spatial_hash_query(const md_spatial_hash_t* hash, vec3_t pos, float radi
             for (cell_coord[0] = min_coord[0]; cell_coord[0] <= max_coord[0]; ++cell_coord[0]) {
                 uint32_t cell_idx = cell_coord[2] * cell_dim[1] * cell_dim[0] + cell_coord[1] * cell_dim[0] + cell_coord[0];
                 md_spatial_hash_cell_t cell = hash->cells[cell_idx];
-                vec4_t local_cell_min = vec4_add(cell_min, (vec4_t){cell_coord[0] * cell_ext, cell_coord[1] * cell_ext, cell_coord[2] * cell_ext, 0});
+                //vec4_t local_cell_min = vec4_add(cell_min, (vec4_t){cell_coord[0] * cell_ext, cell_coord[1] * cell_ext, cell_coord[2] * cell_ext, 0});
                 for (uint32_t i = cell.offset; i < cell.offset + cell.length; ++i) {
-                    md_spatial_hash_coord_t local_coord = {0,0,0,0};
-                    memcpy(&local_coord, hash->coords + i * dim, dim * sizeof(uint16_t));
-                    vec4_t p = decompress_coord(local_coord, local_cell_min, cell_ext);
+                    //vec4_t p = decompress_coord(hash->coords + i * dim, local_cell_min, cell_ext);
+                    vec4_t p = {0};
+                    memcpy(p.elem, hash->coords + i * dim, sizeof(float) * dim);
                     if (vec4_distance_squared(p, xyz) < rad2) {
                         if (!iter(hash->indices[i], vec3_from_vec4(p), user_param)) {
                             return false;
@@ -424,11 +376,11 @@ bool md_spatial_hash_query_periodic(const md_spatial_hash_t* hash, vec3_t in_pos
             for (cell_coord[0] = min_coord[0]; cell_coord[0] <= max_coord[0]; ++cell_coord[0]) {
                 uint32_t cell_idx = cell_coord[2] * cell_dim[1] * cell_dim[0] + cell_coord[1] * cell_dim[0] + cell_coord[0];
                 md_spatial_hash_cell_t cell = hash->cells[cell_idx];
-                vec4_t local_cell_min = vec4_add(cell_min, (vec4_t){cell_coord[0] * cell_ext, cell_coord[1] * cell_ext, cell_coord[2] * cell_ext, 0});
+                //vec4_t local_cell_min = vec4_add(cell_min, (vec4_t){cell_coord[0] * cell_ext, cell_coord[1] * cell_ext, cell_coord[2] * cell_ext, 0});
                 for (uint32_t i = cell.offset; i < cell.offset + cell.length; ++i) { 
-                    md_spatial_hash_coord_t local_coord = {0,0,0,0};
-                    memcpy(&local_coord, hash->coords + i * dim, dim * sizeof(uint16_t));
-                    vec4_t p = vec4_deperiodize(decompress_coord(local_coord, local_cell_min, cell_ext), xyz, pbc_ext);
+                    //vec4_t p = vec4_deperiodize(decompress_coord(hash->coords + i * dim, local_cell_min, cell_ext), xyz, pbc_ext);
+                    vec4_t p = { 0 };
+                    memcpy(p.elem, hash->coords + i * dim, sizeof(float)* dim);
                     if (vec4_distance_squared(p, xyz) < rad2) {
                         if (!iter(hash->indices[i], vec3_from_vec4(p), user_param)) {
                             return false;

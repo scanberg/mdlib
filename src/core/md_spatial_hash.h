@@ -12,7 +12,7 @@ typedef bool (*md_spatial_hash_iterator_fn)(uint32_t idx, vec3_t coord, void* us
 
 typedef struct md_spatial_hash_t {
     struct md_spatial_hash_cell_t*  cells;
-    uint16_t*                       coords;     // 16-bit local coordinates relative to the cell
+    float*                          coords;
     uint32_t*                       indices;    // original given index
     struct md_allocator_i*          alloc;
     vec3_t   cell_min;
