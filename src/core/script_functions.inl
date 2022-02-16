@@ -3018,7 +3018,7 @@ typedef struct {
     vec3_t pos;
     float min_cutoff;
     float max_cutoff;
-    float inv_max_cutoff;
+    float inv_cutoff_range;
     float* bins;
     int32_t num_bins;
     uint32_t idx;
@@ -3031,7 +3031,7 @@ bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
         while(0);
     }
     if (data->min_cutoff < d && d < data->max_cutoff) {
-        int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_max_cutoff) * data->num_bins);
+        int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
         bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
         if (bin_idx == 0) {
             while(0);
@@ -3045,7 +3045,7 @@ bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
 
 static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_t ref_size, const vec3_t* target_pos, int64_t target_size, float min_cutoff, float max_cutoff, vec3_t pbc_ext, md_allocator_i* alloc) {
     const int64_t sum = ref_size * target_size;
-    const float inv_max_cutoff = 1.0f / max_cutoff;
+    const float inv_cutoff_range = 1.0f / (max_cutoff - min_cutoff);
 
     if (sum < RDF_BRUTE_FORCE_LIMIT) {
         for (int64_t i = 0; i < ref_size; ++i) {
@@ -3055,7 +3055,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
                     while (0);
                 }
                 if (min_cutoff < d && d < max_cutoff) {
-                    int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_max_cutoff) * num_bins);
+                    int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_cutoff_range) * num_bins);
                     bin_idx = CLAMP(bin_idx, 0, num_bins - 1);
                     bins[bin_idx] += 1.0f;
                 }
@@ -3082,7 +3082,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
         rdf_payload_t payload = {
             .min_cutoff = min_cutoff,
             .max_cutoff = max_cutoff,
-            .inv_max_cutoff = inv_max_cutoff,
+            .inv_cutoff_range = inv_cutoff_range,
             .bins = bins,
             .num_bins = num_bins,
         };
