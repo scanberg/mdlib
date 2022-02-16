@@ -123,12 +123,11 @@ static inline int64_t match_str_in_array(str_t str, const char* arr[], int64_t a
     return -1;
 }
 
-// This only works if we are within 1 period away from the reference
-static inline md_simd_typef simd_deperiodize(md_simd_typef pos, md_simd_typef ref, md_simd_typef box_ext) {
-    md_simd_typef half_box = md_simd_mulf(box_ext, md_simd_set1f(0.5f));
-    md_simd_typef delta = md_simd_subf(ref, pos);
-    md_simd_typef signed_mask = md_simd_mulf(md_simd_signf(delta), md_simd_stepf(half_box, md_simd_absf(delta)));
-    return md_simd_addf(pos, md_simd_mulf(box_ext, signed_mask));
+static inline md_simd_typef simd_deperiodize(md_simd_typef x, md_simd_typef r, md_simd_typef period) {
+    md_simd_typef d = md_simd_subf(x, r);
+    md_simd_typef dx = md_simd_divf(d, period);
+    dx = md_simd_subf(dx, md_simd_roundf(dx));
+    return md_simd_addf(r, md_simd_mulf(dx, period));
 }
     
 bool md_util_resname_dna(str_t str) {
@@ -634,7 +633,7 @@ vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const 
         float y = deperiodizef(in_y[i], com_y, ext_y);
         float z = deperiodizef(in_z[i], com_z, ext_z);
 
-        if (in_w) w = in_w[i];
+        w = in_w ? in_w[i] : 1.0f;
         sum_x += x * w;
         sum_y += y * w;
         sum_z += z * w;

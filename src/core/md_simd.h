@@ -35,6 +35,8 @@
     #define md_simd_maxf    md_simd_max_f256
     #define md_simd_signf   md_simd_sign_f256
     #define md_simd_signcopyf   md_simd_signcopy_f256
+    #define md_simd_fractf  md_simd_fract_f256
+    #define md_simd_roundf  md_simd_round_f256
     #define md_simd_blendf  md_simd_blend_f256
 
     #define md_simd_horizontal_minf md_simd_horizontal_min_f256
@@ -85,8 +87,9 @@
     #define md_simd_maxf    md_simd_max_f128
     #define md_simd_signf   md_simd_sign_f128
     #define md_simd_signcopyf   md_simd_signcopy_f128
+    #define md_simd_fractf  md_simd_fract_f128
+    #define md_simd_roundf  md_simd_round_f128
     #define md_simd_blendf  md_simd_blend_f128
-
 
     #define md_simd_horizontal_minf md_simd_horizontal_min_f128
     #define md_simd_horizontal_maxf md_simd_horizontal_max_f128
@@ -154,6 +157,14 @@ static inline __m128 md_simd_sign_f128(__m128 x) {
 static inline __m128 md_simd_copysign_f128(__m128 mag, __m128 sign) {
     __m128 const mask = _mm_set1_ps(-0.0f);
     return _mm_or_ps(_mm_and_ps(mask, mag), _mm_andnot_ps(mask, sign));
+}
+
+static inline __m128 md_simd_fract_f128(__m128 x) {
+    return _mm_sub_ps(x, _mm_round_ps(x, _MM_FROUND_TRUNC | _MM_FROUND_NO_EXC));
+}
+
+static inline __m128 md_simd_round_f128(__m128 x) {
+    return _mm_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
 }
 
 static inline __m128 md_simd_blend_f128(__m128 a, __m128 b, __m128 mask) {
@@ -274,6 +285,14 @@ static inline __m256 md_simd_sign_f256(__m256 x) {
 static inline __m256 md_simd_copysign_f256(__m256 mag, __m256 sign) {
     __m256 const mask = _mm256_set1_ps(-0.0f);
     return _mm256_or_ps(_mm256_and_ps(mask, mag), _mm256_andnot_ps(mask, sign));
+}
+
+static inline __m256 md_simd_fract_f256(__m256 x) {
+    return _mm256_sub_ps(x, _mm256_round_ps(x, _MM_FROUND_TRUNC | _MM_FROUND_NO_EXC));
+}
+
+static inline __m256 md_simd_round_f256(__m256 x) {
+    return _mm256_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
 }
 
 static inline __m256 md_simd_blend_f256(__m256 a, __m256 b, __m256 mask) {
