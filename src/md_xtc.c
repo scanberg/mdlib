@@ -45,7 +45,6 @@
 typedef struct xtc_t {
     uint64_t magic;
     XDRFILE* file;
-    int64_t filesize;
     int64_t* frame_offsets;
     md_trajectory_header_t header;
     md_allocator_i* allocator;
@@ -196,15 +195,6 @@ static int64_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_
     ASSERT(xtc);
     ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
 
-    const int64_t beg = xtc->frame_offsets[frame_idx];
-    const int64_t end = frame_idx + 1 < (int64_t)md_array_size(xtc->frame_offsets) ? xtc->frame_offsets[frame_idx + 1] : (int64_t)xtc->filesize;
-    const int64_t frame_size = end - beg;
-
-    if (!xtc->filesize) {
-        md_print(MD_LOG_TYPE_ERROR, "File size is zero");
-        return 0;
-    }
-
     if (!xtc->file) {
         md_print(MD_LOG_TYPE_ERROR, "File handle is NULL");
         return 0;
@@ -215,10 +205,14 @@ static int64_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_
         return 0;
     }
 
-    if (frame_idx < 0 || (int64_t)md_array_size(xtc->frame_offsets) <= frame_idx) {
+    if (frame_idx < 0 || md_array_size(xtc->frame_offsets) <= frame_idx + 1) {
         md_print(MD_LOG_TYPE_ERROR, "Frame index is out of range");
         return 0;
     }
+
+    const int64_t beg = xtc->frame_offsets[frame_idx];
+    const int64_t end = xtc->frame_offsets[frame_idx + 1];
+    const int64_t frame_size = end - beg;
 
     if (frame_data_ptr) {
         ASSERT(xtc->file);
@@ -382,19 +376,14 @@ void xtc_free(struct md_trajectory_o* inst) {
     if (xtc->file) xdrfile_close(xtc->file);
     if (xtc->frame_offsets) md_array_free(xtc->frame_offsets, xtc->allocator);
     md_mutex_destroy(&xtc->mutex);
-    md_free(xtc->allocator, xtc, sizeof(xtc_t));
 }
 
-bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_i* alloc) {
-    ASSERT(traj);
+md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc) {
     ASSERT(alloc);
-    
+
+    // Ensure that filename is zero terminated
     filename = copy_str(filename, default_temp_allocator);
     XDRFILE* file = xdrfile_open(filename.ptr, "r");
-
-    if (traj->inst) {
-        md_print(MD_LOG_TYPE_DEBUG, "Trajectory instance data was not zero, potentially leeking memory here");
-    }
 
     if (file) {
         int num_atoms, step;
@@ -405,7 +394,7 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
             return false;
         }
 
-        char buf[1024] = "";
+        char buf[1024];
         str_t path = extract_path_without_ext(filename);
         int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)path.len, path.ptr);
         str_t cache_file = {buf, len};
@@ -426,22 +415,20 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
             const int64_t frame_size = end - beg;
             max_frame_size = MAX(max_frame_size, frame_size);
         }
-
-        xdr_seek(file, 0, SEEK_END);
-        const int64_t filesize = xdr_tell(file);
-        xdr_seek(file, 0, SEEK_SET);
         
         ASSERT(offsets);
         ASSERT(num_atoms > 0);
 
-        xtc_t* xtc = md_alloc(alloc, sizeof(xtc_t));
-        ASSERT(xtc);
-        memset(xtc, 0, sizeof(xtc_t));
+        void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(xtc_t));
+        ASSERT(mem);
+        memset(mem, 0, sizeof(md_trajectory_i) + sizeof(xtc_t));
+
+        md_trajectory_i* traj = mem;
+        xtc_t* xtc = (xtc_t*)(traj + 1);
 
         xtc->magic = MD_XTC_TRAJ_MAGIC;
         xtc->allocator = alloc;
         xtc->file = file;
-        xtc->filesize = filesize;
         xtc->frame_offsets = offsets;
         xtc->mutex = md_mutex_create();
 
@@ -452,28 +439,37 @@ bool md_xtc_trajectory_open(md_trajectory_i* traj, str_t filename, md_allocator_
         };
 
         traj->inst = (struct md_trajectory_o*)xtc;
-        traj->free = xtc_free;
         traj->get_header = xtc_get_header;
         traj->load_frame = xtc_load_frame;
         traj->fetch_frame_data = xtc_fetch_frame_data;
         traj->decode_frame_data = xtc_decode_frame_data;
 
-        return true;
+        return traj;
     }
     
-    return false;
+    return NULL;
 }
 
-bool md_xtc_trajectory_close(md_trajectory_i* traj) {
+void md_xtc_trajectory_free(md_trajectory_i* traj) {
     ASSERT(traj);
     ASSERT(traj->inst);
     xtc_t* xtc = (xtc_t*)traj->inst;
     if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
         md_printf(MD_LOG_TYPE_ERROR, "Trajectory is not a valid XTC trajectory.");
-        return false;
+        ASSERT(false);
+        return;
     }
 
-    md_trajectory_free(traj);
+    md_allocator_i* alloc = xtc->allocator;
+    xtc_free(traj->inst);
+    md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(xtc_t));
+}
 
-    return true;
+static md_trajectory_api xtc_api = {
+    md_xtc_trajectory_create,
+    md_xtc_trajectory_free,
+};
+
+md_trajectory_api* md_xtc_trajectory_api(void) {
+    return &xtc_api;
 }

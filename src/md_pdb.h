@@ -13,7 +13,8 @@ extern "C" {
 struct md_molecule_t;
 struct md_allocator_i;
 struct md_trajectory_i;
-struct md_molecule_loader_i;
+struct md_trajectory_api;
+struct md_molecule_api;
 
 typedef enum md_pdb_helix_class_t {
     Helix_Unknown           = 0,
@@ -150,11 +151,13 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* pdb_data, struct md_allocator_i* alloc);
 bool md_pdb_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
-struct md_molecule_loader_i* md_pdb_molecule_loader();
+struct md_molecule_api* md_pdb_molecule_api();
 
 // TRAJECTORY
-bool md_pdb_trajectory_open(struct md_trajectory_i* traj, str_t filename, struct md_allocator_i* alloc);
-bool md_pdb_trajectory_close(struct md_trajectory_i* traj);
+struct md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* alloc);
+void md_pdb_trajectory_free(struct md_trajectory_i* traj);
+
+struct md_trajectory_api* md_pdb_trajectory_api();
 
 #ifdef __cplusplus
 }

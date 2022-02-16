@@ -20,8 +20,8 @@ UTEST(util, rmsd) {
     md_molecule_t mol = {0};
     EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
 
-    md_trajectory_i traj = {0};
-    EXPECT_TRUE(md_pdb_trajectory_open(&traj, path, alloc));
+    md_trajectory_i* traj = md_pdb_trajectory_create(path, alloc);
+    EXPECT_TRUE(traj);
 
     const int64_t stride = mol.atom.count;
     const int64_t mem_size = stride * 6 * sizeof(float) + stride * 6 * sizeof(double);
@@ -36,8 +36,8 @@ UTEST(util, rmsd) {
     double* xyz0 = (double*)(mem + stride * 6);
     double* xyz1 = (double*)(mem + stride * 12);
 
-    md_trajectory_load_frame(&traj, 0, NULL, x0, y0, z0);
-    md_trajectory_load_frame(&traj, 1, NULL, x1, y1, z1);
+    md_trajectory_load_frame(traj, 0, NULL, x0, y0, z0);
+    md_trajectory_load_frame(traj, 1, NULL, x1, y1, z1);
 
     for (int64_t i = 0; i < mol.atom.count; ++i) {
         xyz0[i * 3 + 0] = x0[i];
@@ -59,5 +59,6 @@ UTEST(util, rmsd) {
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
     md_pdb_molecule_free(&mol, alloc);
+    md_pdb_trajectory_free(traj);
     md_pdb_data_free(&pdb_data, alloc);
 }

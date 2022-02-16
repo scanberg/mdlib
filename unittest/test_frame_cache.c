@@ -65,21 +65,21 @@ void thread_func(void* user_data) {
 }
 
 UTEST(frame_cache, parallel_workload) {
+    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MEGABYTES(1));
+
     md_molecule_t mol = {0};
-    md_trajectory_i traj = {0};
     md_gro_data_t gro = {0};
     md_frame_cache_t cache = {0};
-
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MEGABYTES(1));
+    md_trajectory_i* traj = md_xtc_trajectory_create(make_cstr(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), alloc);
 
     ASSERT_TRUE(md_gro_data_parse_file(&gro, make_cstr(MD_UNITTEST_DATA_DIR "/catalyst.gro"), alloc));
     ASSERT_TRUE(md_gro_molecule_init(&mol, &gro, alloc));
-    ASSERT_TRUE(md_xtc_trajectory_open(&traj, make_cstr(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), alloc));
+    ASSERT_TRUE(traj);
 
-    const int64_t num_atoms = md_trajectory_num_atoms(&traj);
-    const int64_t num_frames = md_trajectory_num_frames(&traj);
+    const int64_t num_atoms = md_trajectory_num_atoms(traj);
+    const int64_t num_frames = md_trajectory_num_frames(traj);
     // We cache much less of the frames so we get some eviction and contention going
-    ASSERT_TRUE(md_frame_cache_init(&cache, &traj, alloc, num_frames / 8));
+    ASSERT_TRUE(md_frame_cache_init(&cache, traj, alloc, num_frames / 8));
 
     const int64_t frame_stride = num_atoms * 3;
     float* ref_coords = md_alloc(alloc, num_frames * num_atoms * 3 * sizeof(float));
@@ -113,6 +113,6 @@ UTEST(frame_cache, parallel_workload) {
         EXPECT_EQ(0, corrupt_count);
     }
 
-    md_xtc_trajectory_close(&traj);
+    md_xtc_trajectory_free(traj);
     md_arena_allocator_destroy(alloc);
 }

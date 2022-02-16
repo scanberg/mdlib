@@ -48,28 +48,27 @@ UTEST(pdb, parse_trajectory) {
 }
 
 UTEST(pdb, trajectory_i) {
-    str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-    md_trajectory_i traj = {0};
-    ASSERT_TRUE(md_pdb_trajectory_open(&traj, path, default_allocator));
+    const str_t path = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    md_trajectory_i* traj = md_pdb_trajectory_create(path, default_allocator);
+    ASSERT_TRUE(traj);
 
-    EXPECT_EQ(md_trajectory_num_atoms(&traj), 153);
-    EXPECT_EQ(md_trajectory_num_frames(&traj), 38);
+    EXPECT_EQ(md_trajectory_num_atoms(traj), 153);
+    EXPECT_EQ(md_trajectory_num_frames(traj), 38);
 
-    const int64_t mem_size = md_trajectory_num_atoms(&traj) * 3 * sizeof(float);
+    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
     void* mem_ptr = md_alloc(default_temp_allocator, mem_size);
     float *x = (float*)mem_ptr;
-    float *y = (float*)mem_ptr + md_trajectory_num_atoms(&traj) * 1;
-    float *z = (float*)mem_ptr + md_trajectory_num_atoms(&traj) * 2;
+    float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
+    float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
 
     md_trajectory_frame_header_t header;
 
-    for (int64_t i = 0; i < md_trajectory_num_frames(&traj); ++i) {
-        EXPECT_TRUE(md_trajectory_load_frame(&traj, i, &header, x, y, z));
+    for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
     }
 
     md_free(default_temp_allocator, mem_ptr, mem_size);
-
-    md_pdb_trajectory_close(&traj);
+    md_pdb_trajectory_free(traj);
 }
 
 UTEST(pdb, create_molecule) {

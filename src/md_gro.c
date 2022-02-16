@@ -510,12 +510,12 @@ static bool gro_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     return success;
 }
 
-static md_molecule_loader_i gro_loader = {
+static md_molecule_api gro_api = {
     gro_init_from_str,
     gro_init_from_file,
     md_gro_molecule_free,
 };
 
-md_molecule_loader_i* md_gro_molecule_loader() {
-    return &gro_loader;
+md_molecule_api* md_gro_molecule_api() {
+    return &gro_api;
 }

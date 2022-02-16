@@ -743,14 +743,14 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     return false;
 }
 
-static md_molecule_loader_i pdb_loader = {
+static md_molecule_api pdb_molecule_api = {
     pdb_init_from_str,
     pdb_init_from_file,
     md_pdb_molecule_free
 };
 
-md_molecule_loader_i* md_pdb_molecule_loader() {
-    return &pdb_loader;
+md_molecule_api* md_pdb_molecule_api() {
+    return &pdb_molecule_api;
 }
 
 bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
@@ -870,14 +870,14 @@ static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms, f
 }
 
 void pdb_trajectory_free(struct md_trajectory_o* inst) {
+    ASSERT(inst);
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     if (pdb->file) md_file_close(pdb->file);
     if (pdb->frame_offsets) md_array_free(pdb->frame_offsets, pdb->allocator);
     md_mutex_destroy(&pdb->mutex);
-    md_free(pdb->allocator, inst, sizeof(pdb_trajectory_t));
 }
 
-bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_allocator_i* alloc) {
+md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to open file for PDB trajectory");
@@ -950,9 +950,12 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
         max_frame_size = MAX(max_frame_size, frame_size);
     }
 
-    pdb_trajectory_t* pdb = md_alloc(alloc, sizeof(pdb_trajectory_t));
-    ASSERT(pdb);
-    memset(pdb, 0, sizeof(pdb_trajectory_t));
+    void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
+    ASSERT(mem);
+    memset(mem, 0, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
+
+    md_trajectory_i* traj = mem;
+    pdb_trajectory_t* pdb = (pdb_trajectory_t*)(traj + 1);
 
     pdb->magic = MD_PDB_TRAJ_MAGIC;
     pdb->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
@@ -968,27 +971,36 @@ bool md_pdb_trajectory_open(md_trajectory_i* traj, str_t filename, struct md_all
     memcpy(pdb->box, box, sizeof(box));
 
     traj->inst = (struct md_trajectory_o*)pdb;
-    traj->free = pdb_trajectory_free;
     traj->get_header = pdb_get_header;
     traj->load_frame = pdb_load_frame;
     traj->fetch_frame_data = pdb_fetch_frame_data;
     traj->decode_frame_data = pdb_decode_frame_data;
 
-    return true;
+    return traj;
 }
 
-bool md_pdb_trajectory_close(md_trajectory_i* traj) {
+void md_pdb_trajectory_free(md_trajectory_i* traj) {
     ASSERT(traj);
     ASSERT(traj->inst);
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)traj->inst;
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
         md_printf(MD_LOG_TYPE_ERROR, "Trajectory is not a valid PDB trajectory.");
-        return false;
+        ASSERT(false);
+        return;
     }
+    
+    md_allocator_i* alloc = pdb->allocator;
+    pdb_trajectory_free(traj->inst);
+    md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
+}
 
-    md_trajectory_free(traj);
+static md_trajectory_api pdb_traj_api = {
+    md_pdb_trajectory_create,
+    md_pdb_trajectory_free,
+};
 
-    return true;
+md_trajectory_api* md_pdb_trajectory_api() {
+    return &pdb_traj_api;
 }
 
 #ifdef __cplusplus

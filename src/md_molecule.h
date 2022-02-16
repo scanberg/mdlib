@@ -138,11 +138,11 @@ molecule data only the first part of the file is used.
 extern "C" {
 #endif
 
-typedef struct md_molecule_loader_i {
+typedef struct md_molecule_api {
     bool (*init_from_str) (md_molecule_t* mol, str_t string,   struct md_allocator_i* alloc);
     bool (*init_from_file)(md_molecule_t* mol, str_t filename, struct md_allocator_i* alloc);
     bool (*free)(md_molecule_t* mol, struct md_allocator_i* alloc);
-} md_molecule_loader_i;
+} md_molecule_api;
 
 #ifdef __cplusplus
 }
