@@ -16,7 +16,7 @@ typedef int32_t                     md_residue_id_t;
 typedef int32_t                     md_chain_idx_t;
 typedef int32_t                     md_molecule_idx_t;
 typedef uint32_t                    md_secondary_structure_t;
-typedef uint8_t                     md_flag_t;
+typedef uint8_t                     md_flags_t;
 typedef uint8_t                     md_element_t;
 typedef uint8_t                     md_ramachandran_type_t;
 
@@ -59,53 +59,70 @@ typedef struct md_backbone_angles_t {
     float psi;
 } md_backbone_angles_t;
 
+typedef struct md_label_t {
+    char    buf[7];
+    uint8_t len;
+
+#ifdef __cplusplus
+    constexpr operator str_t() { return {buf, len}; }
+#endif
+} md_label_t;
+
+typedef struct md_molecule_atom_data_t {
+    int64_t count;
+    float* x;
+    float* y;
+    float* z;
+    float* radius;
+    float* mass;
+    md_element_t* element;
+    md_label_t* name;
+    md_flags_t* flags;                          // Auxillary bit buffer for flagging individual atoms
+    md_residue_idx_t* residue_idx;
+    md_chain_idx_t* chain_idx;
+} md_molecule_atom_data_t;
+
+typedef struct md_molecule_residue_data_t {
+    int64_t count;
+    md_label_t* name;
+    md_residue_id_t* id;
+    md_range_t* atom_range;
+    md_range_t* internal_covalent_bond_range;   // Range of covalent bonds within the resuidue
+    md_range_t* complete_covalent_bond_range;   // Range of covalent bonds that in anyway is part of the residue
+} md_molecule_residue_data_t;
+
+typedef struct md_molecule_chain_data_t {
+    int64_t count;
+    md_label_t* id;
+    md_range_t* residue_range;
+    md_range_t* atom_range;
+    md_range_t* backbone_range;
+} md_molecule_chain_data_t;
+
+typedef struct md_molecule_backbone_data_t {
+    int64_t count;
+    md_backbone_atoms_t* atoms;
+    md_backbone_angles_t* angle;
+    md_secondary_structure_t* secondary_structure;
+    md_ramachandran_type_t* ramachandran_type;
+    md_residue_idx_t* residue_idx;            // Index to the residue which contains the backbone
+} md_molecule_backbone_data_t;
+
+typedef struct md_molecule_bond_data_t {
+    int64_t count;
+    md_bond_t* bond;
+} md_molecule_bond_data_t;
+
 typedef struct md_molecule_t {
     md_molecule_o* inst;
 
-    struct {
-        int64_t             count;
-        float*              x;
-        float*              y;
-        float*              z;
-        float*              radius;
-        float*              mass;
-        md_element_t*       element;
-        const char**        name;
-        md_flag_t*          flags;                          // Auxillary bit buffer for flagging individual atoms
-        md_residue_idx_t*   residue_idx;
-        md_chain_idx_t*     chain_idx;
-    } atom;
+    md_molecule_atom_data_t atom;
+    md_molecule_residue_data_t residue;
+    md_molecule_chain_data_t chain;
+    md_molecule_backbone_data_t backbone;
+    md_molecule_bond_data_t covalent_bond;
+    md_molecule_bond_data_t hydrogen_bond;
 
-    struct {
-        int64_t             count;
-        const char**        name;
-        md_residue_id_t*    id;
-        md_range_t*         atom_range;
-        md_range_t*         internal_covalent_bond_range;   // Range of covalent bonds within the resuidue
-        md_range_t*         complete_covalent_bond_range;   // Range of covalent bonds that in anyway is part of the residue
-    } residue;
-
-    struct {
-        int64_t       count;
-        const char**  id;
-        md_range_t*   residue_range;
-        md_range_t*   atom_range;
-        md_range_t*   backbone_range;
-    } chain;
-
-    struct {
-        int64_t                   count;
-        md_backbone_atoms_t*      atoms;
-        md_backbone_angles_t*     angle;
-        md_secondary_structure_t* secondary_structure;
-        md_ramachandran_type_t*   ramachandran_type;
-        md_residue_idx_t*         residue_idx;            // Index to the residue which contains the backbone
-    } backbone;
-
-    struct {
-        int64_t  count;
-        md_bond_t* bond;
-    } covalent_bond;
 } md_molecule_t;
 
 #if 0
@@ -126,7 +143,7 @@ struct md_macro_molecule {
 
 /*
 
-The molecule loader is just a convenience API for abstracing the functionality of initializing and freeing molecule data
+The molecule api is just a convenience API for abstracing the functionality of initializing and freeing molecule data
 
 The reason for providing a distinct function for initializing from file is that some molecule files can
 also contain their trajectories, such as PDB files. In such case, the whole file would have to be read and passed, but for
@@ -143,6 +160,26 @@ typedef struct md_molecule_api {
     bool (*init_from_file)(md_molecule_t* mol, str_t filename, struct md_allocator_i* alloc);
     bool (*free)(md_molecule_t* mol, struct md_allocator_i* alloc);
 } md_molecule_api;
+
+#define MAKE_LABEL(cstr) {cstr"", sizeof(cstr)-1}
+
+static inline md_label_t make_label(str_t str) {
+    md_label_t lbl = {0};
+    if (str.ptr) {
+        const int64_t len = MIN(str.len, sizeof(lbl.buf) - 1);
+        for (int64_t i = 0; i < len; ++i) {
+            lbl.buf[i] = str.ptr[i];
+        }
+        lbl.len = (uint8_t)len;
+    }
+    return lbl;
+}
+
+static inline str_t label_to_str(const md_label_t* lbl) {
+    ASSERT(lbl);
+    str_t str = {lbl->buf, lbl->len};
+    return str;
+}
 
 #ifdef __cplusplus
 }

@@ -24,6 +24,7 @@ typedef struct str_t {
 
     constexpr const char* beg() noexcept { return ptr; }
     constexpr const char* end() noexcept { return ptr + len; }
+    constexpr operator bool() noexcept { return ptr != nullptr; }
 #endif
 } str_t;
 

@@ -21,17 +21,34 @@ static float z[] = {2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2};
 static float r[] = {1,2,3,4,4,4,5,1,1,2,3,4,4,4,5,1};
 static float m[] = {1,2,2,2,2,4,4,4,1,2,2,2,2,4,4,4};
 static uint8_t e[] = {1,8,1,2,6,8,6,8,1,8,1,2,6,7,6,8};
-static const char* n[] = {"H", "O", "H", "He", "C", "N", "CA", "O", "H", "O", "H", "He", "C", "N", "CA", "O"};
+static md_label_t n[] = {
+    MAKE_LABEL("H"),
+    MAKE_LABEL("O"),
+    MAKE_LABEL("H"),
+    MAKE_LABEL("He"),
+    MAKE_LABEL("C"),
+    MAKE_LABEL("N"),
+    MAKE_LABEL("CA"),
+    MAKE_LABEL("O"),
+    MAKE_LABEL("H"),
+    MAKE_LABEL("O"),
+    MAKE_LABEL("H"),
+    MAKE_LABEL("He"),
+    MAKE_LABEL("C"),
+    MAKE_LABEL("N"),
+    MAKE_LABEL("CA"),
+    MAKE_LABEL("O")
+};
 static md_residue_idx_t r_idx[] = {0,0,0,1,1,1,1,1,2,2,2,2,3,3,3,3};
 static md_chain_idx_t c_idx[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 #define RES_COUNT 4
-static const char* r_name[] = {"SOL", "LYS", "PFT", "PFT"};
+static md_label_t r_name[] = {MAKE_LABEL("SOL"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT"), MAKE_LABEL("PFT")};
 static md_residue_id_t r_id[] = {1, 2, 3, 4};
 static md_range_t r_range[] = {{0, 3}, {3, 8}, {8,12}, {12,16}};
 
 #define CHAIN_COUNT 1
-static const char* c_id[] = {"A"};
+static md_label_t c_id[] = {MAKE_LABEL("A")};
 static md_range_t c_arange[] = {0,16};
 static md_range_t c_rrange[] = {0,4};
 

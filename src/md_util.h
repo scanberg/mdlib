@@ -9,7 +9,7 @@ struct md_allocator_i;
 typedef struct md_util_backbone_args_t {
     struct {
         int64_t count;
-        const char** name;
+        const md_label_t* name;
     } atom;
 
     struct {
@@ -59,7 +59,7 @@ typedef struct md_util_backbone_angle_args_t {
 typedef struct md_util_classify_ramachandran_args_t {
     struct {
         int64_t count;
-        const char** name;
+        const md_label_t* name;
     } residue;
 
     struct {
@@ -149,6 +149,8 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 md_bond_t* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args, struct md_allocator_i* alloc);
 md_bond_t* md_util_extract_hydrogen_bonds(const md_util_hydrogen_bond_args_t* args, struct md_allocator_i* alloc);
 
+// Generates missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
+bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
 typedef struct md_util_apply_pbc_args_t {
     struct {

@@ -225,6 +225,7 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {
     memset(data, 0, sizeof(md_gro_data_t));
 }
 
+/*
 static inline str_t add_label(str_t str, gro_molecule_t* inst) {
     ASSERT(inst);
     for (int64_t i = 0; i < md_array_size(inst->labels); ++i) {
@@ -237,6 +238,7 @@ static inline str_t add_label(str_t str, gro_molecule_t* inst) {
     memcpy(label.str, str.ptr, MIN(str.len, (int64_t)ARRAY_SIZE(label.str) - 1));
     return (str_t){md_array_push(inst->labels, label, inst->allocator)->str, str.len};
 }
+*/
 
 bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, struct md_allocator_i* alloc) {
     ASSERT(mol);
@@ -277,11 +279,9 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         const float y = data->atom_data[i].y;
         const float z = data->atom_data[i].z;
         str_t atom_name = (str_t){data->atom_data[i].atom_name, strnlen(data->atom_data[i].atom_name, ARRAY_SIZE(data->atom_data[i].atom_name))};
-        atom_name = add_label(atom_name, inst);
-
         str_t res_name = (str_t){data->atom_data[i].res_name, strnlen(data->atom_data[i].res_name, ARRAY_SIZE(data->atom_data[i].res_name))};
-
         md_element_t element = md_util_decode_element(atom_name, res_name);
+
         if (element == 0) {
             md_printf(MD_LOG_TYPE_INFO, "Failed to decode element with atom name '%s' and residue name '%s'", data->atom_data[i].atom_name, data->atom_data[i].res_name);
         }
@@ -292,13 +292,11 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         int32_t res_id = data->atom_data[i].res_id;
         if (res_id != cur_res_id) {
             cur_res_id = res_id;
-
-            res_name = add_label(res_name, inst);
             md_residue_id_t id = res_id;
             md_range_t atom_range = {(uint32_t)mol->atom.count, (uint32_t)mol->atom.count};
 
             mol->residue.count += 1;
-            md_array_push(mol->residue.name, res_name.ptr, alloc);
+            md_array_push(mol->residue.name, make_label(res_name), alloc);
             md_array_push(mol->residue.id, id, alloc);
             md_array_push(mol->residue.atom_range, atom_range, alloc);
         }
@@ -310,7 +308,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         md_array_push(mol->atom.y, y, alloc);
         md_array_push(mol->atom.z, z, alloc);
         md_array_push(mol->atom.element, element, alloc);
-        md_array_push(mol->atom.name, atom_name.ptr, alloc);
+        md_array_push(mol->atom.name, make_label(atom_name), alloc);
         md_array_push(mol->atom.radius, radius, alloc);
         md_array_push(mol->atom.mass, mass, alloc);
         md_array_push(mol->atom.flags, 0, alloc);
@@ -318,154 +316,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
     }
 
-    {
-        md_array_ensure(mol->residue.internal_covalent_bond_range, mol->residue.count, alloc);
-        md_array_ensure(mol->residue.complete_covalent_bond_range, mol->residue.count, alloc);
-
-        // Use heuristical method of finding covalent bonds
-        md_util_covalent_bond_args_t args = {
-            .atom = {
-                .count = mol->atom.count,
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
-                .element = mol->atom.element
-            },
-            .residue = {
-                .count = mol->residue.count,
-                .atom_range = mol->residue.atom_range,
-                .internal_bond_range = mol->residue.internal_covalent_bond_range,
-                .complete_bond_range = mol->residue.complete_covalent_bond_range,
-            },
-        };
-        mol->covalent_bond.bond = md_util_extract_covalent_bonds(&args, alloc);
-        mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
-    }
-
-    {
-        // Compute artificial chains and label them A - Z
-        if (mol->residue.complete_covalent_bond_range) {
-            // Identify connected residues (through covalent bonds) if more than one, we store it as a chain
-            md_range_t res_range = {0, 1};
-            for (int64_t res_idx = 0; res_idx < mol->residue.count - 1; ++res_idx) {
-                if (ranges_overlap(mol->residue.complete_covalent_bond_range[res_idx],
-                                   mol->residue.complete_covalent_bond_range[res_idx+1])) {
-                    res_range.end += 1;
-                }
-                else {
-                    if (res_range.end - res_range.beg > 1) {
-                        md_array_push(mol->chain.residue_range, res_range, alloc);
-                    }
-                    res_range.beg = (int32_t)res_idx + 1;
-                    res_range.end = (int32_t)res_idx + 2;
-                }
-            }
-
-            mol->chain.count = md_array_size(mol->chain.residue_range);
-            if (mol->chain.count) {
-                const char* id_arr[] = {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"};
-                
-                // Add labels
-                md_array_resize(mol->chain.id, mol->chain.count, alloc);
-                for (int64_t i = 0; i < mol->chain.count; ++i) {
-                    str_t id = {.ptr = id_arr[i % ARRAY_SIZE(id_arr)], .len = 1};
-                    mol->chain.id[i] = add_label(id, inst).ptr;
-                }
-
-                // Add atom ranges
-                md_array_resize(mol->chain.atom_range, mol->chain.count, alloc);
-                for (int64_t i = 0; i < mol->chain.count; ++i) {
-                    md_range_t range = mol->chain.residue_range[i];
-                    mol->chain.atom_range[i].beg = mol->residue.atom_range[range.beg].beg;
-                    mol->chain.atom_range[i].end = mol->residue.atom_range[range.end - 1].end;
-                }
-
-                // Set atom chain indices
-                md_array_resize(mol->atom.chain_idx, mol->atom.count, alloc);
-                for (int64_t i = 0 ; i < mol->atom.count; ++i) {
-                    mol->atom.chain_idx[i] = -1;
-                }
-
-                for (int64_t ci = 0; ci < mol->chain.count; ++ci) {
-                    for (int64_t ai = (int64_t)mol->chain.atom_range[ci].beg; ai < (int64_t)mol->chain.atom_range[ci].end; ++ai) {
-                        mol->atom.chain_idx[ai] = (md_chain_idx_t)ci;
-                    }
-                }
-            }
-        }
-    }
-
-    if (mol->chain.count) {
-        // Compute backbone data
-        int64_t bb_offset = 0;
-        for (int64_t i = 0; i < mol->chain.count; ++i) {
-            const int64_t res_count = mol->chain.residue_range[i].end - mol->chain.residue_range[i].beg;
-            md_range_t bb_range = {(int32_t)bb_offset, (int32_t)(bb_offset + res_count)};
-            md_array_push(mol->chain.backbone_range, bb_range, alloc);
-            bb_offset += res_count;
-        }
-
-        mol->backbone.count = bb_offset;
-        md_array_resize(mol->backbone.atoms, mol->backbone.count, alloc);
-        md_array_resize(mol->backbone.angle, mol->backbone.count, alloc);
-        md_array_resize(mol->backbone.secondary_structure, mol->backbone.count, alloc);
-        md_array_resize(mol->backbone.ramachandran_type, mol->backbone.count, alloc);
-        md_array_resize(mol->backbone.residue_idx, mol->backbone.count, alloc);
-
-        int64_t backbone_idx = 0;
-        for (int64_t i = 0; i < mol->chain.count; ++i) {
-            const int64_t res_count = mol->chain.residue_range[i].end - mol->chain.residue_range[i].beg;
-            const int64_t res_offset = mol->chain.residue_range[i].beg;
-
-            for (int64_t j = 0; j < res_count; ++j) {
-                mol->backbone.residue_idx[backbone_idx + j] = (md_residue_idx_t)(res_offset + j);
-            }
-
-            md_util_backbone_args_t bb_args = {
-                .atom = {
-                    .count = mol->atom.count,
-                    .name = mol->atom.name,
-                },
-                .residue = {
-                    .count = res_count,
-                    .atom_range = mol->residue.atom_range + res_offset,
-                },
-            };
-            md_util_backbone_atoms_extract(mol->backbone.atoms + backbone_idx, mol->backbone.count, &bb_args);
-
-            backbone_idx += res_count;
-        }
-
-        md_util_secondary_structure_args_t ss_args = {
-            .atom = {
-                .count = mol->atom.count,
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
-            },
-            .backbone = {
-                .count = mol->backbone.count,
-                .atoms = mol->backbone.atoms,
-            },
-            .chain = {
-                .count = mol->chain.count,
-                .backbone_range = mol->chain.backbone_range,
-            }
-        };
-        md_util_backbone_secondary_structure_compute(mol->backbone.secondary_structure, mol->backbone.count, &ss_args);
-
-        md_util_classify_ramachandran_args_t rama_args = {
-            .residue = {
-                .count = mol->residue.count,
-                .name  = mol->residue.name,
-            },
-            .backbone = {
-                .count = mol->backbone.count,
-                .res_idx = mol->backbone.residue_idx,
-            }
-        };
-        md_util_backbone_ramachandran_classify(mol->backbone.ramachandran_type, mol->backbone.count, &rama_args);
-    }
+    md_util_postprocess_molecule(mol, alloc);
 
     return true;
 }

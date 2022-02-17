@@ -44,14 +44,6 @@ typedef struct pdb_trajectory_t {
     md_mutex_t mutex;
 } pdb_trajectory_t;
 
-static inline bool compare_n(str_t str, const char* cstr, int64_t len) {
-    if (str.len < len) return false;
-    for (int64_t i = 0; i < len; ++i) {
-        if (str.ptr[i] != cstr[i]) return false;
-    }
-    return true;
-}
-
 static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64_t beg, int64_t end) {
     if (line.len < end) {
         ASSERT(dst_size > 0);
@@ -95,12 +87,12 @@ static inline md_pdb_coordinate_t extract_coord(str_t line) {
         .temp_factor = extract_float(line, 61, 66),
         .element = {0},
         .charge = {0},
-        .is_hetatm = compare_n(line, "HETATM", 6),
+        .is_hetatm = compare_str_cstr_n(line, "HETATM", 6),
     };
-    copy_str_field(coord.atom_name, ARRAY_SIZE(coord.atom_name),    line, 13, 16);
-    copy_str_field(coord.res_name,  ARRAY_SIZE(coord.res_name),     line, 18, 20);
-    copy_str_field(coord.element,   ARRAY_SIZE(coord.element),      line, 77, 78);
-    copy_str_field(coord.charge,    ARRAY_SIZE(coord.charge),       line, 79, 80);
+    copy_str_field(coord.atom_name, sizeof(coord.atom_name),    line, 13, 16);
+    copy_str_field(coord.res_name,  sizeof(coord.res_name),     line, 18, 20);
+    copy_str_field(coord.element,   sizeof(coord.element),      line, 77, 78);
+    copy_str_field(coord.charge,    sizeof(coord.charge),       line, 79, 80);
     return coord;
 }
 
@@ -120,10 +112,10 @@ static inline md_pdb_helix_t extract_helix(str_t line) {
         .comment = {0},
         .length = extract_int(line, 72, 76),
     };
-    copy_str_field(helix.id,            ARRAY_SIZE(helix.id),               line, 12, 14);
-    copy_str_field(helix.init_res_name, ARRAY_SIZE(helix.init_res_name),    line, 16, 18);
-    copy_str_field(helix.end_res_name,  ARRAY_SIZE(helix.end_res_name),     line, 28, 30);
-    copy_str_field(helix.comment,       ARRAY_SIZE(helix.comment),          line, 41, 70);
+    copy_str_field(helix.id,            sizeof(helix.id),               line, 12, 14);
+    copy_str_field(helix.init_res_name, sizeof(helix.init_res_name),    line, 16, 18);
+    copy_str_field(helix.end_res_name,  sizeof(helix.end_res_name),     line, 28, 30);
+    copy_str_field(helix.comment,       sizeof(helix.comment),          line, 41, 70);
     return helix;
 }
 
@@ -152,13 +144,13 @@ static inline md_pdb_sheet_t extract_sheet(str_t line) {
         .prev_res_seq = extract_int(line, 66, 69),
         .prev_res_i_code = extract_char(line, 70),
     };
-    copy_str_field(sheet.id,            ARRAY_SIZE(sheet.id),               line, 12, 14);
-    copy_str_field(sheet.init_res_name, ARRAY_SIZE(sheet.init_res_name),    line, 18, 20);
-    copy_str_field(sheet.end_res_name,  ARRAY_SIZE(sheet.end_res_name),     line, 29, 31);
-    copy_str_field(sheet.cur_atom_name, ARRAY_SIZE(sheet.cur_atom_name),    line, 42, 45);
-    copy_str_field(sheet.cur_res_name,  ARRAY_SIZE(sheet.cur_res_name),     line, 46, 48);
-    copy_str_field(sheet.prev_atom_name,ARRAY_SIZE(sheet.prev_atom_name),   line, 57, 60);
-    copy_str_field(sheet.prev_res_name, ARRAY_SIZE(sheet.prev_res_name),    line, 61, 63);
+    copy_str_field(sheet.id,            sizeof(sheet.id),               line, 12, 14);
+    copy_str_field(sheet.init_res_name, sizeof(sheet.init_res_name),    line, 18, 20);
+    copy_str_field(sheet.end_res_name,  sizeof(sheet.end_res_name),     line, 29, 31);
+    copy_str_field(sheet.cur_atom_name, sizeof(sheet.cur_atom_name),    line, 42, 45);
+    copy_str_field(sheet.cur_res_name,  sizeof(sheet.cur_res_name),     line, 46, 48);
+    copy_str_field(sheet.prev_atom_name,sizeof(sheet.prev_atom_name),   line, 57, 60);
+    copy_str_field(sheet.prev_res_name, sizeof(sheet.prev_res_name),    line, 61, 63);
     return sheet;
 }
 
@@ -201,7 +193,7 @@ static inline int32_t count_pdb_coordinate_entries(str_t str) {
     str_t line;
     while (extract_line(&line, &str)) {
         if (line.len < 6) continue;
-        if ((compare_n(line, "ATOM", 4) || compare_n(line, "HETATM", 6))) {
+        if ((compare_str_cstr_n(line, "ATOM", 4) || compare_str_cstr_n(line, "HETATM", 6))) {
             count += 1;
         }
     }
@@ -277,7 +269,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     int32_t step = 0;
     if (extract_line(&line, &str)) {
-        if (compare_n(line, "MODEL", 5)) {
+        if (compare_str_cstr_n(line, "MODEL", 5)) {
             step = (int32_t)parse_int(substr(line, 10, 4));
         }
     }
@@ -285,7 +277,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     int64_t i = 0;
     while (extract_line(&line, &str) && i < pdb->header.num_atoms) {
         if (line.len < 6) continue;
-        if (compare_n(line, "ATOM", 4) || compare_n(line, "HETATM", 6)) {
+        if (compare_str_cstr_n(line, "ATOM", 4) || compare_str_cstr_n(line, "HETATM", 6)) {
             if (x) { x[i] = extract_float(line, 31, 38); }
             if (y) { y[i] = extract_float(line, 39, 46); }
             if (z) { z[i] = extract_float(line, 47, 54); }
@@ -310,19 +302,19 @@ bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* data, struct md_allocator_i
     const char* base_offset = str.ptr;
     while (extract_line(&line, &str)) {
         if (line.len < 6) continue;
-        if (compare_n(line, "ATOM", 4) || compare_n(line, "HETATM", 6)) {
+        if (compare_str_cstr_n(line, "ATOM", 4) || compare_str_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
             md_array_push(data->atom_coordinates, coord, alloc);
         }
-        else if (compare_n(line, "HELIX", 5)) {
+        else if (compare_str_cstr_n(line, "HELIX", 5)) {
             md_pdb_helix_t helix = extract_helix(line);
             md_array_push(data->helices, helix, alloc);
         }
-        else if (compare_n(line, "SHEET", 5)) {
+        else if (compare_str_cstr_n(line, "SHEET", 5)) {
             md_pdb_sheet_t sheet = extract_sheet(line);
             md_array_push(data->sheets, sheet, alloc);
         }
-        else if (compare_n(line, "CONECT", 6)) {
+        else if (compare_str_cstr_n(line, "CONECT", 6)) {
             md_pdb_connect_t connect = extract_connect(line);
             md_pdb_connect_t* last = md_array_last(data->connections);
             if (last && last->atom_serial[0] == connect.atom_serial[0]) {
@@ -332,7 +324,7 @@ bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* data, struct md_allocator_i
                 md_array_push(data->connections, connect, alloc);
             }
         }
-        else if (compare_n(line, "MODEL", 5)) {
+        else if (compare_str_cstr_n(line, "MODEL", 5)) {
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
             md_pdb_model_t model = {
                 .serial = (int32_t)parse_int(substr(line, 10, 4)),
@@ -342,14 +334,14 @@ bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* data, struct md_allocator_i
             };
             md_array_push(data->models, model, alloc);
         }
-        else if (compare_n(line, "ENDMDL", 6)) {
+        else if (compare_str_cstr_n(line, "ENDMDL", 6)) {
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
             md_pdb_model_t* model = md_array_last(data->models);
             ASSERT(model);
             model->end_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1;
             model->end_atom_index = num_coords;
         }
-        else if (compare_n(line, "CRYST1", 6)) {
+        else if (compare_str_cstr_n(line, "CRYST1", 6)) {
             md_pdb_cryst1_t cryst1 = extract_cryst1(line);
             md_array_push(data->cryst1, cryst1, alloc);
         }
@@ -472,11 +464,12 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
     md_array_ensure(mol->atom.x, num_atoms, alloc);
     md_array_ensure(mol->atom.y, num_atoms, alloc);
     md_array_ensure(mol->atom.z, num_atoms, alloc);
-    md_array_ensure(mol->atom.element, num_atoms, alloc);
-    md_array_ensure(mol->atom.name, num_atoms, alloc);
     md_array_ensure(mol->atom.radius, num_atoms, alloc);
     md_array_ensure(mol->atom.mass, num_atoms, alloc);
+    md_array_ensure(mol->atom.element, num_atoms, alloc);
+    md_array_ensure(mol->atom.name, num_atoms, alloc);
     md_array_ensure(mol->atom.flags, num_atoms, alloc);
+    md_array_ensure(mol->atom.residue_idx, num_atoms, alloc);
 
     int32_t cur_res_id = -1;
     char cur_chain_id = -1;
@@ -486,7 +479,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         float y = data->atom_coordinates[i].y;
         float z = data->atom_coordinates[i].z;
         str_t atom_name = (str_t){data->atom_coordinates[i].atom_name, strnlen(data->atom_coordinates[i].atom_name, ARRAY_SIZE(data->atom_coordinates[i].atom_name))};
-        atom_name = add_label(atom_name, inst);
+        //atom_name = add_label(atom_name, inst);
 
         str_t res_name = (str_t){data->atom_coordinates[i].res_name, strnlen(data->atom_coordinates[i].res_name, ARRAY_SIZE(data->atom_coordinates[i].res_name))};
 
@@ -509,16 +502,16 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         float mass = md_util_element_atomic_mass(element);
 
         char chain_id = data->atom_coordinates[i].chain_id;
-        if (chain_id != cur_chain_id) {
+        if (chain_id != ' ' && chain_id != cur_chain_id) {
             cur_chain_id = chain_id;
             
-            str_t chain_label = { &data->atom_coordinates[i].chain_id, 1 };
-            chain_label = add_label(chain_label, inst);
+            str_t chain_str = { &data->atom_coordinates[i].chain_id, 1 };
+            //chain_label = add_label(chain_label, inst);
             md_range_t residue_range = {(uint32_t)mol->residue.count, (uint32_t)mol->residue.count};
             md_range_t atom_range = {(uint32_t)mol->atom.count, (uint32_t)mol->atom.count};
             
             mol->chain.count += 1;
-            md_array_push(mol->chain.id, chain_label.ptr, alloc);
+            md_array_push(mol->chain.id, make_label(chain_str), alloc);
             md_array_push(mol->chain.residue_range, residue_range, alloc);
             md_array_push(mol->chain.atom_range, atom_range, alloc);
         }
@@ -527,12 +520,12 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         if (res_id != cur_res_id) {
             cur_res_id = res_id;
 
-            res_name = add_label(res_name, inst);
+            //res_name = add_label(res_name, inst);
             md_residue_id_t id = res_id;
             md_range_t atom_range = {(uint32_t)mol->atom.count, (uint32_t)mol->atom.count};
 
             mol->residue.count += 1;
-            md_array_push(mol->residue.name, res_name.ptr, alloc);
+            md_array_push(mol->residue.name, make_label(res_name), alloc);
             md_array_push(mol->residue.id, id, alloc);
             md_array_push(mol->residue.atom_range, atom_range, alloc);
 
@@ -547,7 +540,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         md_array_push(mol->atom.y, y, alloc);
         md_array_push(mol->atom.z, z, alloc);
         md_array_push(mol->atom.element, element, alloc);
-        md_array_push(mol->atom.name, atom_name.ptr, alloc);
+        md_array_push(mol->atom.name, make_label(atom_name), alloc);
         md_array_push(mol->atom.radius, radius, alloc);
         md_array_push(mol->atom.mass, mass, alloc);
         md_array_push(mol->atom.flags, 0, alloc);
@@ -556,113 +549,20 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         if (mol->chain.count)   md_array_push(mol->atom.chain_idx, (md_chain_idx_t)(mol->chain.count - 1), alloc);
     }
 
-    {
-        // Compute backbone data
-        int64_t bb_offset = 0;
-        for (int64_t i = 0; i < mol->chain.count; ++i) {
-            const int64_t res_count = mol->chain.residue_range[i].end - mol->chain.residue_range[i].beg;
-            md_range_t bb_range = {(int32_t)bb_offset, (int32_t)(bb_offset + res_count)};
-            md_array_push(mol->chain.backbone_range, bb_range, alloc);
-            bb_offset += res_count;
-        }
-
-        mol->backbone.count = bb_offset;
-        md_array_resize(mol->backbone.atoms, mol->backbone.count, alloc);
-        md_array_resize(mol->backbone.angle, mol->backbone.count, alloc);
-        md_array_resize(mol->backbone.secondary_structure, mol->backbone.count, alloc);
-        md_array_resize(mol->backbone.ramachandran_type, mol->backbone.count, alloc);
-        md_array_resize(mol->backbone.residue_idx, mol->backbone.count, alloc);
-
-        int64_t backbone_idx = 0;
-        for (int64_t i = 0; i < mol->chain.count; ++i) {
-            const int64_t res_count = mol->chain.residue_range[i].end - mol->chain.residue_range[i].beg;
-            const int64_t res_offset = mol->chain.residue_range[i].beg;
-
-            for (int64_t j = 0; j < res_count; ++j) {
-                mol->backbone.residue_idx[backbone_idx + j] = (md_residue_idx_t)(res_offset + j);
-            }
-
-            md_util_backbone_args_t bb_args = {
-                .atom = {
-                    .count = mol->atom.count,
-                    .name = mol->atom.name,
-                },
-                .residue = {
-                    .count = res_count,
-                    .atom_range = mol->residue.atom_range + res_offset,
-                },
-            };
-            md_util_backbone_atoms_extract(mol->backbone.atoms + backbone_idx, mol->backbone.count, &bb_args);
-
-            backbone_idx += res_count;
-        }
-
-        md_util_secondary_structure_args_t ss_args = {
-            .atom = {
-                .count = mol->atom.count,
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
-            },
-            .backbone = {
-                .count = mol->backbone.count,
-                .atoms = mol->backbone.atoms,
-            },
-            .chain = {
-                .count = mol->chain.count,
-                .backbone_range = mol->chain.backbone_range,
-            }
-        };
-        md_util_backbone_secondary_structure_compute(mol->backbone.secondary_structure, mol->backbone.count, &ss_args);
-
-        md_util_classify_ramachandran_args_t rama_args = {
-            .residue = {
-                .count = mol->residue.count,
-                .name  = mol->residue.name,
-            },
-            .backbone = {
-                .count = mol->backbone.count,
-                .res_idx = mol->backbone.residue_idx,
-            }
-        };
-        md_util_backbone_ramachandran_classify(mol->backbone.ramachandran_type, mol->backbone.count, &rama_args);
-    }
-
-    {
 #if 0
-        // Compute/Extract covalent bonds
-        if (data->num_connections > 0) {
-            // Convert given connections
-            ASSERT(data->connections);
-            for (int64_t i = 0; i < data->num_connections; ++i) {
-                data->connections[i];
-            }
+    // Compute/Extract covalent bonds
+    if (data->num_connections > 0) {
+        // Convert given connections
+        ASSERT(data->connections);
+        for (int64_t i = 0; i < data->num_connections; ++i) {
+            data->connections[i];
         }
-        else {
-        }
-#endif
-        md_array_ensure(mol->residue.internal_covalent_bond_range, mol->residue.count, alloc);
-        md_array_ensure(mol->residue.complete_covalent_bond_range, mol->residue.count, alloc);
-
-        // Use heuristical method of finding covalent bonds
-        md_util_covalent_bond_args_t args = {
-            .atom = {
-                .count = mol->atom.count,
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
-                .element = mol->atom.element
-            },
-            .residue = {
-                .count = mol->residue.count,
-                .atom_range = mol->residue.atom_range,
-                .internal_bond_range = mol->residue.internal_covalent_bond_range,
-                .complete_bond_range = mol->residue.complete_covalent_bond_range,
-            },
-        };
-        mol->covalent_bond.bond = md_util_extract_covalent_bonds(&args, default_temp_allocator);
-        mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
     }
+    else {
+    }
+#endif
+    md_util_postprocess_molecule(mol, alloc);
+
     return true;
 }
 

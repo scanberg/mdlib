@@ -1825,6 +1825,12 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
         node = create_node(ctx->ir, type, token);
         ast_node_t* args[2] = {lhs, rhs};
         md_array_push_array(node->children, args, 2, ctx->ir->arena);
+    } else {
+        if (!lhs) {
+            create_error(ctx->ir, token, "Invalid artihmetic expression, left operand is undefined.");
+        } else if (!rhs) {
+            create_error(ctx->ir, token, "Invalid artihmetic expression, right operand is undefined.");
+        }
     }
     
     return node;
@@ -3181,6 +3187,7 @@ static bool parse_script(md_script_ir_o* ir) {
     while (tok = tokenizer_peek_next(ctx.tokenizer), tok.type != TOKEN_END) {
         const char* beg = tok.str.ptr;
 
+        ctx.node = 0;
         ir->record_errors = true;   // We reset the error recording flag before each statement
         ast_node_t* node = prune_expressions(parse_expression(&ctx));
         if (node) {

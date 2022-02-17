@@ -241,6 +241,7 @@ BAKE_SIMDF_OP_M(_op_simd_abs_farr, md_simd_absf)
 static int _cast_int_to_flt             (data_t*, data_t[], eval_context_t*);
 static int _cast_int_to_irng            (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_to_frng           (data_t*, data_t[], eval_context_t*);
+static int _cast_int_arr_to_irng_arr    (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_flt_arr     (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
@@ -391,6 +392,7 @@ static procedure_t casts[] = {
     {cstr("cast"),    TI_FLOAT,         1,  {TI_INT},           _cast_int_to_flt},
     {cstr("cast"),    TI_IRANGE,        1,  {TI_INT},           _cast_int_to_irng},
     {cstr("cast"),    TI_FRANGE,        1,  {TI_IRANGE},        _cast_irng_to_frng},
+    {cstr("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr, FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {cstr("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {cstr("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {cstr("cast"),    TI_BITFIELD,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
@@ -1041,7 +1043,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             
-            const char* atom_str = ctx->mol->atom.name[i];
+            const char* atom_str = ctx->mol->atom.name[i].buf;
             for (int64_t j = 0; j < num_str; ++j) {
                 if (compare_str_cstr(str[j], atom_str)) {
                     md_bitfield_set_bit(bf, i);
@@ -1054,7 +1056,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                const char* atom_str = ctx->mol->atom.name[i];
+                const char* atom_str = ctx->mol->atom.name[i].buf;
                 if (compare_str_cstr(str[j], atom_str)) {
                     match = true;
                     break;
@@ -1544,7 +1546,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             int64_t ri = res_indices[i];
-            str_t str = {.ptr = ctx->mol->residue.name[ri], .len = strlen(ctx->mol->residue.name[ri])};
+            str_t str = label_to_str(&ctx->mol->residue.name[ri]);
             if (md_util_resname_amino_acid(str)) {
                 md_range_t range = ctx->mol->residue.atom_range[ri];
                 //bit_set(result.bits, (uint64_t)range.beg, (uint64_t)range.end - (uint64_t)range.beg);
@@ -1558,7 +1560,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             int64_t ri = res_indices[i];
-            str_t str = {.ptr = ctx->mol->residue.name[ri], .len = strlen(ctx->mol->residue.name[ri])};
+            str_t str = label_to_str(&ctx->mol->residue.name[ri]);
             if (md_util_resname_amino_acid(str)) {
                 count += 1;
             }
@@ -1746,7 +1748,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < res_count; ++i) {
             const int64_t res_idx = res_indices[i];
             for (int64_t j = 0; j < num_str; ++j) {
-                if (compare_str_cstr(str[j], ctx->mol->residue.name[res_idx])) {
+                if (compare_str(str[j], label_to_str(&ctx->mol->residue.name[res_idx]))) {
                     //uint64_t offset = ctx->mol->residue.atom_range[i].beg;
                     //uint64_t length = ctx->mol->residue.atom_range[i].end - ctx->mol->residue.atom_range[i].beg;
                     //bit_set(result.bits, offset, length);
@@ -1771,7 +1773,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (compare_str_cstr(str[j], ctx->mol->residue.name[res_idx])) {
+                if (compare_str(str[j], label_to_str(&ctx->mol->residue.name[res_idx]))) {
                     count += 1;
                     match = true;
                 }
@@ -1922,7 +1924,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int64_t dst_idx = 0;
         for (int64_t i = 0; i < md_array_size(chain_indices); ++i) {
             for (int64_t j = 0; j < num_str; ++j) {
-                if (compare_str_cstr(str[j], ctx->mol->chain.id[i])) {
+                if (compare_str(str[j], label_to_str(&ctx->mol->chain.id[i]))) {
                     //uint64_t offset = ctx->mol->chain.atom_range[i].beg;
                     //uint64_t length = ctx->mol->chain.atom_range[i].end - ctx->mol->chain.atom_range[i].beg;
                     //bit_set(bf->bits, offset, length);
@@ -1944,7 +1946,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t j = 0; j < num_str; ++j) {
             bool match = false;
             for (int64_t i = 0; i < md_array_size(chain_indices); ++i) {
-                if (compare_str_cstr(str[j], ctx->mol->chain.id[i])) {
+                if (compare_str(str[j], label_to_str(&ctx->mol->chain.id[i]))) {
                     match = true;
                     break;
                 }
@@ -2280,6 +2282,24 @@ static int _cast_irng_to_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
+static int _cast_int_arr_to_irng_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_IRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
+    (void)ctx;
+    const int64_t dst_len = element_count(*dst);
+    const int64_t arg_len = element_count(arg[0]);
+    ASSERT(dst_len == arg_len);
+
+    irange_t* d = dst->ptr;
+    int*      s = arg[0].ptr;
+
+    for (int64_t i = 0; i < dst_len; ++i) {
+        d[i].beg = s[i];
+        d[i].end = s[i];
+    }
+    return 0;
+}
+
 static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
@@ -2296,6 +2316,7 @@ static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* c
     }
     return 0;
 }
+
 static int _cast_irng_arr_to_frng_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FRANGE_ARR));
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
