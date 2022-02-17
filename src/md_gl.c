@@ -1299,7 +1299,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     qsort((void*)draw_ent, draw_ent_count, sizeof(draw_entity_t), compare_draw_ent);
                
     // Compute residue AABBs for culling
-    if (ctx.version >= 430 && args->options | MD_GL_OPTION_RESIDUE_OCCLUSION_CULLING) {
+    if (ctx.version >= 430 && (args->options & MD_GL_OPTION_RESIDUE_OCCLUSION_CULLING)) {
         PUSH_GPU_SECTION("COMPUTE RESIDUE AABB")
         for (uint32_t i = 0; i < unique_mol_count; i++) {
             compute_residue_aabb(unique_mol_ptr[i]);
