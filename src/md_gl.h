@@ -46,8 +46,7 @@ bool md_gl_shaders_free(md_gl_shaders_t* shaders);
 
 // ### GL MOLECULE ###
 //
-// The gl molecule represents the state of a single molecule which can be drawn
-// Its data can either be initialized from a md_molecule or the data fields can be set individually
+// The gl molecule represents the state of a single molecule which can be drawn.
 // The required fields depends on the visual representation applied to the molecule, but to cover all cases the following fields are used:
 //  - atom
 //      - x      : f32
@@ -56,59 +55,19 @@ bool md_gl_shaders_free(md_gl_shaders_t* shaders);
 //      - radius : f32
 //      - flags  : u8
 //  - residue
-//      - atom_range          : u32[2]
-//      - backbone_atoms      : u32[4] (N, CA, C, O)
-//      - secondary_structure : u32
+//      - atom_range : u32[2]
 //  - bond
-//      - bond : u32[2]
+//      - bond : md_bond_t = u32[2]
+//  - backbone
+//      - backbone_atoms      : md_backbone_atoms_t = u32[4] (N, CA, C, O)
+//      - secondary_structure : md_secondary_structure_t = u8[4]
 
-typedef struct md_gl_molecule_t md_gl_molecule_t;
-struct md_gl_molecule_t {
+typedef struct md_gl_molecule_t {
     uint64_t _mem[12];
-};
+} md_gl_molecule_t;
 
-typedef struct md_gl_molecule_desc_t md_gl_molecule_desc_t;
-struct md_gl_molecule_desc_t {
-    struct {
-        uint32_t count;
-        struct {
-            const float*   x;
-            const float*   y;
-            const float*   z;
-        } pos;
-        struct {
-            const float* x;
-            const float* y;
-            const float* z;
-        } vel;
-        const float* radius;
-        const uint8_t* flags;
-    } atom;
-
-    struct {
-        uint32_t count;
-        const md_bond_t* atom_bond;
-    } covalent_bond;
-
-    struct {
-        uint32_t count;
-        const md_range_t* atom_range; // This is just for building hierarchical AABBs for culling
-    } residue;
-
-    struct {
-        uint32_t count;
-        const md_backbone_atoms_t*      atoms;
-        const md_secondary_structure_t* secondary_structure;
-    } backbone;
-
-    struct {
-        uint32_t count;
-        const md_range_t* backbone_range;
-    } chain;
-};
-
-bool md_gl_molecule_init(md_gl_molecule_t* mol, const md_gl_molecule_desc_t* desc);
-bool md_gl_molecule_free(md_gl_molecule_t* mol);
+bool md_gl_molecule_init(md_gl_molecule_t* gl_mol, const md_molecule_t* mol);
+bool md_gl_molecule_free(md_gl_molecule_t* gl_mol);
 
 // ### Set molecule data fields ###
 bool md_gl_molecule_set_atom_position(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
