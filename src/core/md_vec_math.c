@@ -14,59 +14,6 @@ void mat3_svd(const mat3_t M, mat3_t* U, mat3_t* S, mat3_t* V) {
     *V = mat3_transpose(*V);
 }
 
-quat_t quat_angle_axis(float angle, vec3_t axis) {
-    float half_angle = angle * 0.5f;
-    float sin_angle = sinf(half_angle);
-
-    quat_t q;
-    q.x = axis.x * sin_angle;
-    q.y = axis.y * sin_angle;
-    q.z = axis.z * sin_angle;
-    q.w = cosf(half_angle);
-    return q;
-}
-
-quat_t quat_normalize(quat_t q) {
-    quat_t r = q;
-
-    float mag2 = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
-    if (mag2 != 0.0f && (fabsf(mag2 - 1.0f) > 0.000001)) {
-        float mag = 1.0f / sqrtf(mag2);
-        r.x = q.x * mag;
-        r.y = q.y * mag;
-        r.z = q.z * mag;
-        r.w = q.w * mag;
-    }
-
-    return r;
-}
-
-quat_t quat_from_mat3(mat3_t M) {
-    quat_t q;
-    q.w = sqrtf( MAX(0, 1 + M.elem[0][0] + M.elem[1][1] + M.elem[2][2]) ) * 0.5f;
-    q.x = sqrtf( MAX(0, 1 + M.elem[0][0] - M.elem[1][1] - M.elem[2][2]) ) * 0.5f;
-    q.y = sqrtf( MAX(0, 1 - M.elem[0][0] + M.elem[1][1] - M.elem[2][2]) ) * 0.5f;
-    q.z = sqrtf( MAX(0, 1 - M.elem[0][0] - M.elem[1][1] + M.elem[2][2]) ) * 0.5f;
-
-    q.x = copysignf( q.x, M.elem[2][1] - M.elem[1][2] );
-    q.y = copysignf( q.y, M.elem[0][2] - M.elem[2][0] );
-    q.z = copysignf( q.z, M.elem[1][0] - M.elem[0][1] );
-    return q;
-}
-
-quat_t quat_from_mat4(mat4_t M) {
-    quat_t q;
-    q.w = sqrtf( MAX(0, 1 + M.elem[0][0] + M.elem[1][1] + M.elem[2][2]) ) * 0.5f;
-    q.x = sqrtf( MAX(0, 1 + M.elem[0][0] - M.elem[1][1] - M.elem[2][2]) ) * 0.5f;
-    q.y = sqrtf( MAX(0, 1 - M.elem[0][0] + M.elem[1][1] - M.elem[2][2]) ) * 0.5f;
-    q.z = sqrtf( MAX(0, 1 - M.elem[0][0] - M.elem[1][1] + M.elem[2][2]) ) * 0.5f;
-
-    q.x = copysignf( q.x, M.elem[2][1] - M.elem[1][2] );
-    q.y = copysignf( q.y, M.elem[0][2] - M.elem[2][0] );
-    q.z = copysignf( q.z, M.elem[1][0] - M.elem[0][1] );
-    return q;
-}
-
 void mat3_eigen(mat3_t M, vec3_t vectors[3], float values[3]) {
     mat3_t U, S, V;
     mat3_svd(M, &U, &S, &V);

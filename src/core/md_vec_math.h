@@ -567,7 +567,11 @@ static inline uint32_t u32_from_vec4(vec4_t v) {
 }
 
 // quat
-quat_t quat_angle_axis(float angle, vec3_t axis);
+static inline float quat_dot(quat_t a, quat_t b) {
+    float x = a.x * b.x + a.y * b.y;
+    float y = a.z * b.z + a.w * b.w;
+    return x + y;
+}
 
 static inline quat_t quat_mul(quat_t a, quat_t b) {
     quat_t c = {
@@ -603,14 +607,95 @@ static inline quat_t quat_conj(quat_t q) {
         -q.z,
          q.w
     };
+    return r;
+}
+
+static inline quat_t quat_angle_axis(float angle, vec3_t axis) {
+    float half_angle = angle * 0.5f;
+    float sin_angle = sinf(half_angle);
+
+    quat_t q;
+    q.x = axis.x * sin_angle;
+    q.y = axis.y * sin_angle;
+    q.z = axis.z * sin_angle;
+    q.w = cosf(half_angle);
+    return q;
+}
+
+static inline quat_t quat_normalize(quat_t q) {
+    quat_t r = q;
+
+    float mag2 = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
+    if (mag2 != 0.0f && (fabsf(mag2 - 1.0f) > 0.000001)) {
+        float mag = 1.0f / sqrtf(mag2);
+        r.x = q.x * mag;
+        r.y = q.y * mag;
+        r.z = q.z * mag;
+        r.w = q.w * mag;
+    }
 
     return r;
 }
 
-quat_t quat_normalize(quat_t q);
+// https://www.euclideanspace.com/maths/algebra/realNormedAlgebra/quaternions/slerp/index.htm
+static inline quat_t quat_slerp(quat_t qa, quat_t qb, float t) {
+    quat_t qm;
 
-quat_t quat_from_mat3(mat3_t M);
-quat_t quat_from_mat4(mat4_t M);
+    // Calculate angle between them.
+    float cosHalfTheta = quat_dot(qa, qb);
+
+    // if qa=qb or qa=-qb then theta = 0 and we can return qa
+    if (fabsf(cosHalfTheta) >= 1.0) {
+        qm.w = qa.w; qm.x = qa.x; qm.y = qa.y; qm.z = qa.z;
+        return qm;
+    }
+    // Calculate temporary values.
+    float halfTheta = acosf(cosHalfTheta);
+    float sinHalfTheta = sqrtf(1.0f - cosHalfTheta * cosHalfTheta);
+    // if theta = 180 degrees then result is not fully defined
+    // we could rotate around any axis normal to qa or qb
+    if (fabsf(sinHalfTheta) < 0.001f) { // fabs is floating point absolute
+        qm.w = (qa.w * 0.5f + qb.w * 0.5f);
+        qm.x = (qa.x * 0.5f + qb.x * 0.5f);
+        qm.y = (qa.y * 0.5f + qb.y * 0.5f);
+        qm.z = (qa.z * 0.5f + qb.z * 0.5f);
+        return qm;
+    }
+    float ratioA = sinf((1 - t) * halfTheta) / sinHalfTheta;
+    float ratioB = sinf(t * halfTheta) / sinHalfTheta;
+    //calculate Quaternion.
+    qm.w = (qa.w * ratioA + qb.w * ratioB);
+    qm.x = (qa.x * ratioA + qb.x * ratioB);
+    qm.y = (qa.y * ratioA + qb.y * ratioB);
+    qm.z = (qa.z * ratioA + qb.z * ratioB);
+    return qm;
+}
+
+static inline quat_t quat_from_mat3(mat3_t M) {
+    quat_t q;
+    q.w = sqrtf(MAX(0, 1 + M.elem[0][0] + M.elem[1][1] + M.elem[2][2])) * 0.5f;
+    q.x = sqrtf(MAX(0, 1 + M.elem[0][0] - M.elem[1][1] - M.elem[2][2])) * 0.5f;
+    q.y = sqrtf(MAX(0, 1 - M.elem[0][0] + M.elem[1][1] - M.elem[2][2])) * 0.5f;
+    q.z = sqrtf(MAX(0, 1 - M.elem[0][0] - M.elem[1][1] + M.elem[2][2])) * 0.5f;
+
+    q.x = copysignf(q.x, M.elem[2][1] - M.elem[1][2]);
+    q.y = copysignf(q.y, M.elem[0][2] - M.elem[2][0]);
+    q.z = copysignf(q.z, M.elem[1][0] - M.elem[0][1]);
+    return q;
+}
+
+static inline quat_t quat_from_mat4(mat4_t M) {
+    quat_t q;
+    q.w = sqrtf(MAX(0, 1 + M.elem[0][0] + M.elem[1][1] + M.elem[2][2])) * 0.5f;
+    q.x = sqrtf(MAX(0, 1 + M.elem[0][0] - M.elem[1][1] - M.elem[2][2])) * 0.5f;
+    q.y = sqrtf(MAX(0, 1 - M.elem[0][0] + M.elem[1][1] - M.elem[2][2])) * 0.5f;
+    q.z = sqrtf(MAX(0, 1 - M.elem[0][0] - M.elem[1][1] + M.elem[2][2])) * 0.5f;
+
+    q.x = copysignf(q.x, M.elem[2][1] - M.elem[1][2]);
+    q.y = copysignf(q.y, M.elem[0][2] - M.elem[2][0]);
+    q.z = copysignf(q.z, M.elem[1][0] - M.elem[0][1]);
+    return q;
+}
 
 #if VEC_MATH_USE_SSE_H
 static inline __m128 linear_combine_sse(__m128 a, mat4_t B) {
