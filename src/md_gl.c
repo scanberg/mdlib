@@ -1000,10 +1000,14 @@ bool md_gl_shaders_free(md_gl_shaders_t* ext_shaders) {
 
 bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
     if (ext_mol && mol) {
+        if (mol->atom.count == 0) {
+            md_print(MD_LOG_TYPE_ERROR, "The supplied molecule has no atoms.");
+            return false;
+        }
         md_gl_molecule_free(ext_mol);
         internal_mol_t* gl_mol = (internal_mol_t*)ext_mol;
 
-        gl_mol->atom_count = mol->atom.count;
+        gl_mol->atom_count = (uint32_t)mol->atom.count;
         gl_mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_DRAW);
         gl_mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV]   = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
         gl_mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
@@ -1018,7 +1022,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         if (mol->atom.radius) md_gl_molecule_set_atom_radius(ext_mol, 0, gl_mol->atom_count, mol->atom.radius, 0);
         if (mol->atom.flags)  md_gl_molecule_set_atom_flags(ext_mol,  0, gl_mol->atom_count, mol->atom.flags, 0);
 
-        gl_mol->residue_count = mol->residue.count;
+        gl_mol->residue_count = (uint32_t)mol->residue.count;
         gl_mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
         gl_mol->buffer[GL_BUFFER_MOL_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
         gl_mol->buffer[GL_BUFFER_MOL_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
@@ -1029,7 +1033,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         if (mol->chain.count > 0 && mol->chain.backbone_range && mol->backbone.atoms && mol->residue.atom_range && mol->backbone.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
-            for (uint32_t i = 0; i < mol->chain.count; ++i) {
+            for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
                 uint32_t res_count = mol->chain.backbone_range[i].end - mol->chain.backbone_range[i].beg;
                 backbone_residue_count += res_count;
                 backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_MAX_SUBDIVISION_COUNT;
@@ -1037,9 +1041,9 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
 
             const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
-            const uint32_t backbone_control_point_index_count = backbone_residue_count + mol->chain.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
+            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->chain.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + mol->chain.count * (1); // primitive restart between each chain
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->chain.count * (1); // primitive restart between each chain
 
             gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
@@ -1054,7 +1058,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < mol->chain.count; ++i) {
+                for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
                     for (uint32_t j = (uint32_t)mol->chain.backbone_range[i].beg; j < (uint32_t)mol->chain.backbone_range[i].end; ++j) {
                         backbone_data[idx].residue_idx = j;
                         backbone_data[idx].segment_idx = j - mol->chain.backbone_range[i].beg;
@@ -1073,7 +1077,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (secondary_structure) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < mol->chain.count; ++i) {
+                for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
                     for (uint32_t j = (uint32_t)mol->chain.backbone_range[i].beg; j < (uint32_t)mol->chain.backbone_range[i].end; ++j) {
                         secondary_structure[idx] = mol->backbone.secondary_structure[j];
                         ++idx;
@@ -1089,7 +1093,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (control_point_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < mol->chain.count; ++i) {
+                for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
                     control_point_index[len++] = idx;
                     for (uint32_t j = (uint32_t)mol->chain.backbone_range[i].beg; j < (uint32_t)mol->chain.backbone_range[i].end; ++j) {
                         control_point_index[len++] = idx++;
@@ -1108,7 +1112,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (spline_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < mol->chain.count; ++i) {
+                for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
                     uint32_t res_count = mol->chain.backbone_range[i].end - mol->chain.backbone_range[i].beg;
                     if (res_count > 0) {
                         for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_MAX_SUBDIVISION_COUNT; ++j) {
@@ -1129,11 +1133,12 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_mol->backbone_count = backbone_count;
         }
 
-        gl_mol->bond_count = mol->covalent_bond.count;
+        gl_mol->bond_count = (uint32_t)mol->covalent_bond.count;
         gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES] = gl_buffer_create(gl_mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
 
         if (mol->covalent_bond.bond) gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], 0, gl_mol->bond_count * sizeof(uint32_t) * 2, mol->covalent_bond.bond);
        
+        gl_mol->magic = MD_GL_MAGIC;
         return true;
     }
     return false;
@@ -1155,6 +1160,16 @@ bool md_gl_molecule_free(md_gl_molecule_t* ext_mol) {
 
 bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_molecule_t* ext_mol) {   
     if (ext_rep && ext_mol) {
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
+        if (mol->atom_count == 0) {
+            md_print(MD_LOG_TYPE_ERROR, "Supplied molecule has no atoms.");
+            return false;
+        }
+        if (mol->magic != MD_GL_MAGIC) {
+            md_print(MD_LOG_TYPE_ERROR, "Supplied molecule is corrupt.");
+            return false;
+        }
+
         md_gl_representation_free(ext_rep);
         internal_rep_t* rep = (internal_rep_t*)ext_rep;
         memset(rep, 0, sizeof(internal_rep_t));
@@ -1174,7 +1189,6 @@ bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_mole
             return true;
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        return false;
     }
     return false;
 }
