@@ -44,6 +44,8 @@ static inline void md_aligned_free(struct md_allocator_i* alloc, void* ptr, uint
 extern "C" {
 #endif
 
+int64_t default_temp_allocator_max_allocation_size();
+
 extern struct md_allocator_i* default_allocator;
 extern struct md_allocator_i* default_temp_allocator;
 

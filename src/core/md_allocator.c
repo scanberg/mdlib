@@ -7,6 +7,10 @@
 #define MAX_TEMP_ALLOCATION_SIZE (THREAD_LOCAL_RING_BUFFER_SIZE / 2)
 #define DEFAULT_ALIGNMENT 16
 
+int64_t default_temp_allocator_max_allocation_size() {
+    return MAX_TEMP_ALLOCATION_SIZE;
+}
+
 // @NOTE: Perhaps going through thread local storage for this type of default temporary allocator is bat-shit insane.
 // This should be properly profiled and tested accross platforms and compilers to see what the performance implications are.
 
