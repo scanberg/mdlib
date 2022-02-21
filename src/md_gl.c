@@ -13,8 +13,8 @@
 #include <stdlib.h>     // qsort
 #include <stdio.h>      // printf etc
 
-#define MD_GL_MAGIC 0xfacb8172U
-#define MD_GL_SPLINE_MAX_SUBDIVISION_COUNT 8
+#define MAGIC 0xfacb8172U
+#define SPLINE_MAX_SUBDIVISION_COUNT 8
 
 #define PUSH_GPU_SECTION(lbl)                                                                   \
 {                                                                                               \
@@ -25,8 +25,8 @@
     if (glPopDebugGroup) glPopDebugGroup(); \
 }
 
-#define MD_UBO_SIZE (1 << 10)
-#define MD_SHADER_BUF_SIZE KILOBYTES(14)
+#define UBO_SIZE (1 << 10)
+#define SHADER_BUF_SIZE KILOBYTES(14)
 
 static const char* default_shader_output = 
 "layout(location = 0) out vec4 out_color;\n"
@@ -79,6 +79,10 @@ enum {
 
 enum {
     PERMUTATION_BIT_ORTHO = 1
+};
+
+enum {
+    MOL_FLAG_HAS_BACKBONE = 1
 };
 
 #define MAX_SHADER_PERMUTATIONS 2
@@ -330,7 +334,7 @@ static bool compile_shader_from_source(GLuint shader, char* shader_src, const ch
 static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const char* extra_src) {
     md_file_o* file = md_file_open((str_t){.ptr = filename, .len = strlen(filename)}, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        char buffer[MD_SHADER_BUF_SIZE] = {0};
+        char buffer[SHADER_BUF_SIZE] = {0};
         uint64_t file_size = md_file_size(file);
         const uint64_t size = MIN(file_size, ARRAY_SIZE(buffer) - 1);
         md_file_read(file, buffer, size);
@@ -848,7 +852,7 @@ bool md_gl_initialize() {
     }
 
     glGenFramebuffers(1, &ctx.fbo);
-    ctx.ubo = gl_buffer_create(MD_UBO_SIZE, NULL, GL_DYNAMIC_DRAW);
+    ctx.ubo = gl_buffer_create(UBO_SIZE, NULL, GL_DYNAMIC_DRAW);
 
     for (uint32_t i = 0; i < GL_TEXTURE_COUNT; ++i) {
         glGenTextures(1, &ctx.texture[i].id);
@@ -929,7 +933,7 @@ bool md_gl_initialize() {
         GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
 
         char defines[64];
-        snprintf(defines, sizeof(defines), "#define NUM_SUBDIVISIONS %i", MD_GL_SPLINE_MAX_SUBDIVISION_COUNT);
+        snprintf(defines, sizeof(defines), "#define NUM_SUBDIVISIONS %i", SPLINE_MAX_SUBDIVISION_COUNT);
 
         bool err;
         if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/compute_spline.vert", defines, NULL)) != true ||
@@ -1036,7 +1040,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
                 uint32_t res_count = mol->chain.backbone_range[i].end - mol->chain.backbone_range[i].beg;
                 backbone_residue_count += res_count;
-                backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_MAX_SUBDIVISION_COUNT;
+                backbone_spline_count += (res_count - 1) * SPLINE_MAX_SUBDIVISION_COUNT;
             }
 
             const uint32_t backbone_count                     = backbone_residue_count;
@@ -1115,7 +1119,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
                 for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
                     uint32_t res_count = mol->chain.backbone_range[i].end - mol->chain.backbone_range[i].beg;
                     if (res_count > 0) {
-                        for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_MAX_SUBDIVISION_COUNT; ++j) {
+                        for (uint32_t j = 0; j < (res_count - 1) * SPLINE_MAX_SUBDIVISION_COUNT; ++j) {
                             spline_index[len++] = idx++;
                         }
                     }
@@ -1131,6 +1135,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_mol->backbone_control_point_index_count = backbone_control_point_index_count;
             gl_mol->backbone_spline_index_count = backbone_spline_index_count;
             gl_mol->backbone_count = backbone_count;
+            gl_mol->flags |= MOL_FLAG_HAS_BACKBONE;
         }
 
         gl_mol->bond_count = (uint32_t)mol->covalent_bond.count;
@@ -1138,7 +1143,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
 
         if (mol->covalent_bond.bond) gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], 0, gl_mol->bond_count * sizeof(uint32_t) * 2, mol->covalent_bond.bond);
        
-        gl_mol->magic = MD_GL_MAGIC;
+        gl_mol->magic = MAGIC;
         return true;
     }
     return false;
@@ -1165,7 +1170,7 @@ bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_mole
             md_print(MD_LOG_TYPE_ERROR, "Supplied molecule has no atoms.");
             return false;
         }
-        if (mol->magic != MD_GL_MAGIC) {
+        if (mol->magic != MAGIC) {
             md_print(MD_LOG_TYPE_ERROR, "Supplied molecule is corrupt.");
             return false;
         }
@@ -1281,12 +1286,19 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     uint32_t              unique_mol_count = 0;
 #undef  UNIQUE_MOL_CAP
 
-    const uint32_t MOL_FLAG_SPLINE = 1;
+    const uint32_t MOL_FLAG_COMPUTE_SPLINE = 1;
         
     ASSERT(args->representation.count < ARRAY_SIZE(draw_ent));
     for (uint32_t i = 0; i < args->representation.count; i++) {
         const internal_rep_t* rep = (internal_rep_t*)args->representation.data[i];
         if (rep && rep->mol) {
+            if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {
+                if (!(rep->mol->flags & MOL_FLAG_HAS_BACKBONE)) {
+                    md_print(MD_LOG_TYPE_ERROR, "Molecule is missing a backbone, therefore the chosen representation cannot be drawn");
+                    continue;
+                }
+            }
+
             draw_ent[draw_ent_count].rep = rep;
             draw_ent[draw_ent_count].model_matrix = args->representation.model_matrix ? (const mat4_t*)args->representation.model_matrix[i] : NULL;
             draw_ent_count++;
@@ -1304,8 +1316,9 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 unique_mol_ptr[unique_mol_idx] = rep->mol;
                 unique_mol_flg[unique_mol_idx] = 0;
             }
+
             if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {
-                unique_mol_flg[unique_mol_idx] |= MOL_FLAG_SPLINE;
+                unique_mol_flg[unique_mol_idx] |= MOL_FLAG_COMPUTE_SPLINE;
             }
         }
     }
@@ -1329,7 +1342,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             
     PUSH_GPU_SECTION("COMPUTE SPLINE")
     for (uint32_t i = 0; i < unique_mol_count; i++) {
-        if (unique_mol_flg[i] & MOL_FLAG_SPLINE) {
+        if (unique_mol_flg[i] & MOL_FLAG_COMPUTE_SPLINE) {
             compute_spline(unique_mol_ptr[i]);
         }
     }
@@ -1675,8 +1688,8 @@ static bool cull_aabb(const internal_mol_t* mol) {
 
 static bool compute_spline(const internal_mol_t* mol) {
     ASSERT(ctx.program[GL_PROGRAM_COMPUTE_SPLINE].id);
-
     ASSERT(mol);
+
     ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id);
     ASSERT(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
     ASSERT(mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
