@@ -59,7 +59,7 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
 
 // Each frame index has an individual lock associated with it in order to synchronize access.
 // It is crucial to release the lock when you are done operating on the frame_data.
-void md_frame_cache_release_frame_lock(struct md_frame_cache_lock_t* lock);
+void md_frame_cache_frame_lock_release(struct md_frame_cache_lock_t* lock);
 
 // Try to find a frame within the cache, if the frame is missing, it reserves space for the frame.
 // Returns True if the frame already exists

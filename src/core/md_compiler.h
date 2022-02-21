@@ -6,17 +6,6 @@
 #define MD_COMPILER_MSVC    0
 #define MD_COMPILER_UNKNOWN 0
 
-#define MD_DEBUG            0
-#define MD_RELEASE          0
-
-#ifdef NDEBUG
-#undef MD_RELEASE
-#define MD_RELEASE 1
-#else
-#undef MD_DEBUG
-#define MD_DEBUG 1
-#endif // NDEBUG
-
 #if defined(__clang__)
 #	undef  MD_COMPILER_CLANG
 #	define MD_COMPILER_CLANG (__clang_major__ * 10000 + __clang_minor__ * 100 + __clang_patchlevel__)

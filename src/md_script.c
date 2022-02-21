@@ -953,19 +953,19 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     // Map token type to string which we use to identify operator procedures
     str_t name = {0};
     switch(op) {
-    case AST_ADD: name = make_cstr("+");   break;
-    case AST_SUB: name = make_cstr("-");   break;
-    case AST_MUL: name = make_cstr("*");   break;
-    case AST_DIV: name = make_cstr("/");   break;
-    case AST_AND: name = make_cstr("and"); break;
-    case AST_OR:  name = make_cstr("or");  break;
-    case AST_NOT: name = make_cstr("not"); break;
-    case AST_EQ:  name = make_cstr("==");  break;
-    case AST_NE:  name = make_cstr("!=");  break;
-    case AST_LT:  name = make_cstr("<");   break;
-    case AST_GT:  name = make_cstr(">");   break;
-    case AST_LE:  name = make_cstr("<=");  break;
-    case AST_GE:  name = make_cstr(">=");  break;
+    case AST_ADD: name = MAKE_STR("+");   break;
+    case AST_SUB: name = MAKE_STR("-");   break;
+    case AST_MUL: name = MAKE_STR("*");   break;
+    case AST_DIV: name = MAKE_STR("/");   break;
+    case AST_AND: name = MAKE_STR("and"); break;
+    case AST_OR:  name = MAKE_STR("or");  break;
+    case AST_NOT: name = MAKE_STR("not"); break;
+    case AST_EQ:  name = MAKE_STR("==");  break;
+    case AST_NE:  name = MAKE_STR("!=");  break;
+    case AST_LT:  name = MAKE_STR("<");   break;
+    case AST_GT:  name = MAKE_STR(">");   break;
+    case AST_LE:  name = MAKE_STR("<=");  break;
+    case AST_GE:  name = MAKE_STR(">=");  break;
 
     default:
         ASSERT(false);

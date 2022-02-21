@@ -43,8 +43,19 @@
 
 // Really GCC? REALLY? DO WE REALLY NEED TO INCLUDE stddef.h for this??????
 #ifndef NULL
-#define NULL 0
+#define NULL (void*)0
 #endif
+
+#define DEBUG   0
+#define RELEASE 0
+
+#ifdef NDEBUG
+#undef  RELEASE
+#define RELEASE 1
+#else
+#undef  DEBUG
+#define DEBUG 1
+#endif // NDEBUG
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(x) ((int64_t)(sizeof(x)/sizeof(x[0])))
@@ -109,8 +120,6 @@
 #define CONCAT_INTERNAL(x, y) x##y
 #define CONCAT(x, y) CONCAT_INTERNAL(x, y)
 #endif
-
-#define MAKE_STR(str) {str, ARRAY_SIZE(str) - 1}
 
 #ifdef  __cplusplus
 

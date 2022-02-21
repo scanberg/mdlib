@@ -123,10 +123,9 @@ static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
     tstruct = *localtime(&now);
 
     char time_buf[64];
-    const uint64_t count = strftime(time_buf, ARRAY_SIZE(time_buf), "[%T]", &tstruct);
-    ASSERT(count <= ARRAY_SIZE(time_buf)); // We should never have to trunkate the time string
+    const uint64_t count = strftime(time_buf, sizeof(time_buf), "[%T]", &tstruct);
 
-    fprintf(stderr, "%.*s", (uint32_t)ARRAY_SIZE(time_buf), time_buf);
+    fprintf(stderr, "%.*s", (int)sizeof(time_buf), time_buf);
 
     switch (log_type) {
     case MD_LOG_TYPE_INFO:
@@ -190,14 +189,15 @@ int md_print(md_log_type_t log_type, const char* msg) {
 }
 
 int md_printf(md_log_type_t log_type, const char* format, ...) {
-    char msg[512] = {0};
+    char buf[1024];
+
     va_list args;
     va_start(args, format);
-    int res = vsnprintf(msg, ARRAY_SIZE(msg), format, args);
+    int res = vsnprintf(buf, sizeof(buf), format, args);
     va_end(args);
 
     for (int i = 0; i < num_loggers; ++i) {
-        loggers[i]->log(loggers[i]->inst, log_type, msg);
+        loggers[i]->log(loggers[i]->inst, log_type, buf);
     }
 
     return res;

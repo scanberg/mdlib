@@ -70,9 +70,9 @@ UTEST(frame_cache, parallel_workload) {
     md_molecule_t mol = {0};
     md_gro_data_t gro = {0};
     md_frame_cache_t cache = {0};
-    md_trajectory_i* traj = md_xtc_trajectory_create(make_cstr(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), alloc);
+    md_trajectory_i* traj = md_xtc_trajectory_create(MAKE_STR(MD_UNITTEST_DATA_DIR "/catalyst.xtc"), alloc);
 
-    ASSERT_TRUE(md_gro_data_parse_file(&gro, make_cstr(MD_UNITTEST_DATA_DIR "/catalyst.gro"), alloc));
+    ASSERT_TRUE(md_gro_data_parse_file(&gro, MAKE_STR(MD_UNITTEST_DATA_DIR "/catalyst.gro"), alloc));
     ASSERT_TRUE(md_gro_molecule_init(&mol, &gro, alloc));
     ASSERT_TRUE(traj);
 

@@ -209,11 +209,17 @@ str_t copy_str(const str_t str, struct md_allocator_i* alloc) {
 
 str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
     va_list args;
+
     va_start(args, format);
     int len = vsnprintf(NULL, 0, format, args);
+    va_end(args);
+
     char* buf = md_alloc(alloc, len + 1);
+
+    va_start(args, format);
     vsnprintf(buf, len + 1, format, args);
     va_end(args);
+
     return (str_t) {buf, len};
 }
 

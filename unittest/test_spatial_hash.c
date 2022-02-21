@@ -42,7 +42,7 @@ UTEST(spatial_hash, small) {
 
 UTEST(spatial_hash, big) {
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(64));
-    const str_t pdb_file = make_cstr(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t pdb_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(pdb_file, &pdb_data, alloc));

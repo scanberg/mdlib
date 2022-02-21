@@ -1,5 +1,4 @@
-#ifndef _MD_STR_UTIL_H
-#define _MD_STR_UTIL_H
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -29,21 +28,13 @@ typedef struct str_t {
 } str_t;
 
 #ifdef __cplusplus
-extern "C" {
-#endif
-
-#if 0
-// This is just neat, used for inspiration
-#define set(buffer, string) do {\
-_Static_assert(sizeof(buffer)>=sizeof(string), "buffer to small");\
-strcpy(buffer,string "");}\
-while(0)
+#define MAKE_STR(cstr) {(cstr""), (sizeof(cstr)-1)}
+#else
+#define MAKE_STR(cstr) (str_t){(cstr ""), (sizeof(cstr)-1)}
 #endif
 
 #ifdef __cplusplus
-#define make_cstr(string) {(string ""), (sizeof(string)-1)}
-#else
-#define make_cstr(string) (str_t){(string ""), (sizeof(string)-1)}
+extern "C" {
 #endif
 
 str_t str_from_cstr(const char* cstr);
@@ -150,8 +141,8 @@ static inline int64_t str_count_char_occur(str_t str, char character) {
 
 static inline str_t substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
     if (offset > str.len) {
-        str_t res = {0,0};
-        return res;   
+        str_t res = {0, 0};
+        return res;
     }
     if (offset + length > str.len || length < 0) length = str.len - offset;
     str.ptr = str.ptr + offset;
@@ -215,6 +206,4 @@ bool extract_next_token(str_t* tok, str_t* str, char delim);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

@@ -1270,7 +1270,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo.id);
         
-#define DRAW_ENT_CAP 512
+#define DRAW_ENT_CAP 2048
     draw_entity_t         draw_ent[DRAW_ENT_CAP] = {0};
     uint32_t              draw_ent_count = 0;
 #undef  DRAW_REP_CAP
@@ -1387,6 +1387,17 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 }
 
 static bool draw_space_fill(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation) {
+    ASSERT(shaders);
+    ASSERT(shaders->space_fill[program_permutation].id);
+
+    ASSERT(rep);
+    ASSERT(rep->mol);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    ASSERT(rep->color.id);
+
     const float radius_scale = rep->args.space_fill.radius_scale;
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(radius_scale), &radius_scale);
 
@@ -1430,6 +1441,17 @@ static bool draw_space_fill(const internal_shaders_t* shaders, const internal_re
 }
 
 static bool draw_licorice(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation) {
+    ASSERT(shaders);
+    ASSERT(shaders->licorice[program_permutation].id);
+
+    ASSERT(rep);
+    ASSERT(rep->mol);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
+    ASSERT(rep->color.id);
+
     const float radius = rep->args.licorice.radius;
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(radius), &radius);
 
@@ -1472,11 +1494,15 @@ static bool draw_licorice(const internal_shaders_t* shaders, const internal_rep_
 }
 
 bool draw_ribbons(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation) {
+    ASSERT(shaders);
+    ASSERT(shaders->ribbons[program_permutation].id);
+
+    ASSERT(rep);
     ASSERT(rep->mol);
-    if (!rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id) {
-        md_print(MD_LOG_TYPE_ERROR, "No spline present for molecule, which is required for rendering ribbons representation");
-        return false;
-    }
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    ASSERT(rep->color.id);
 
     float scale[2] = {
         rep->args.ribbons.width_scale,
@@ -1543,11 +1569,15 @@ bool draw_ribbons(const internal_shaders_t* shaders, const internal_rep_t* rep, 
 }
 
 static bool draw_cartoon(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation) {
+    ASSERT(shaders);
+    ASSERT(shaders->cartoon[program_permutation].id);
+
+    ASSERT(rep);
     ASSERT(rep->mol);
-    if (!rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id) {
-        md_print(MD_LOG_TYPE_ERROR, "No spline present for molecule, which is required for rendering ribbons representation");
-        return false;
-    }
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    ASSERT(rep->color.id);
 
     float scale[2] = {
         rep->args.ribbons.width_scale,
@@ -1644,6 +1674,17 @@ static bool cull_aabb(const internal_mol_t* mol) {
 }
 
 static bool compute_spline(const internal_mol_t* mol) {
+    ASSERT(ctx.program[GL_PROGRAM_COMPUTE_SPLINE].id);
+
+    ASSERT(mol);
+    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id);
+    ASSERT(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+    ASSERT(mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
+    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
+    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA].id);
+    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX].id);
+    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
+
     if (mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id == 0) {
         md_print(MD_LOG_TYPE_ERROR, "Backbone data buffer is zero, which is required to compute the backbone. Is the molecule missing a backbone?");
         return false;
