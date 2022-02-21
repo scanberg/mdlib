@@ -198,7 +198,8 @@ typedef struct internal_rep_t {
     internal_mol_t* mol;
     md_gl_representation_args_t  args;
     md_gl_representation_type_t  type;
-    uint32_t            mol_version;
+    uint32_t mol_version;
+    uint32_t magic;
     
     //md_range_t visible_range;      // Minimal spanning visible range of atoms to draw
     gl_buffer_t color;
@@ -1180,6 +1181,7 @@ bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_mole
         memset(rep, 0, sizeof(internal_rep_t));
         rep->mol = (internal_mol_t*)ext_mol;
         rep->mol_version = rep->mol->version;
+        rep->magic = MAGIC;
         rep->color = gl_buffer_create(rep->mol->atom_count * sizeof(uint32_t), NULL, GL_STATIC_DRAW);
         const uint32_t color = (uint32_t)((255 << 24) | (127 << 16) | (127 << 8) | (127 << 0));
         glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);
@@ -1292,6 +1294,16 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     for (uint32_t i = 0; i < args->representation.count; i++) {
         const internal_rep_t* rep = (internal_rep_t*)args->representation.data[i];
         if (rep && rep->mol) {
+            if (rep->magic != MAGIC) {
+                md_print(MD_LOG_TYPE_ERROR, "Representation is corrupt");
+                continue;
+            }
+
+            if (rep->mol_version != rep->mol->version) {
+                md_print(MD_LOG_TYPE_ERROR, "Representation was not created for the current molecule");
+                continue;
+            }
+
             if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {
                 if (!(rep->mol->flags & MOL_FLAG_HAS_BACKBONE)) {
                     md_print(MD_LOG_TYPE_ERROR, "Molecule is missing a backbone, therefore the chosen representation cannot be drawn");
