@@ -273,8 +273,7 @@ static inline int64_t block_scan_reverse(block_t blk) {
 static inline void set_block(md_exp_bitfield_t* bf, int64_t idx, block_t blk) {
     ASSERT(bf->bits);
     const int64_t beg_blk = block_idx(bf->beg_bit);
-    const int64_t end_blk = block_idx(bf->end_bit);
-    ASSERT(beg_blk <= idx && idx <= end_blk);
+    ASSERT(beg_blk <= idx && idx <= block_idx(bf->end_bit));
     ((block_t*)bf->bits)[idx - beg_blk] = blk;
 }
 
@@ -393,6 +392,7 @@ static inline void ensure_range(md_exp_bitfield_t* bf, int64_t beg_bit, int64_t 
 }
 
 static inline bool validate_bitfield(const md_exp_bitfield_t* bf) {
+    (void)bf;
     ASSERT(bf);
     ASSERT(bf->magic == MAGIC);
     return true;

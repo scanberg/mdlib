@@ -3046,6 +3046,7 @@ typedef struct {
 } rdf_payload_t;
 
 bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
+    (void)idx;
     rdf_payload_t* data = user_param;
     const float d = vec3_distance(coord, data->pos);
     if (d == 0) {

@@ -1360,7 +1360,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     }
     POP_GPU_SECTION()
         
-    bool using_internal_depth = false;
+    //bool using_internal_depth = false;
 
     int program_permutation = 0;
     if (is_ortho_proj_matrix(ubo_data.view_transform.view_to_clip)) program_permutation |= PERMUTATION_BIT_ORTHO;

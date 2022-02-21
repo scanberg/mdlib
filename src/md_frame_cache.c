@@ -4,6 +4,7 @@
 #include "core/md_simd.h"
 #include "core/md_log.h"
 #include "core/md_sync.h"
+#include "core/md_array.inl"
 #include "md_trajectory.h"
 #include "md_util.h"
 
@@ -32,14 +33,14 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     const int64_t num_atoms = ROUND_UP(md_trajectory_num_atoms(traj), md_simd_widthf); 
     const int64_t bytes_per_frame = sizeof(md_semaphore_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
     const int64_t num_slots = ROUND_UP(num_cached_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
+    const int64_t total_bytes = num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT;
 
     cache->alloc = alloc;
     cache->traj = traj;
-    cache->mem_bytes = num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT;
-    cache->mem_ptr = md_alloc(alloc, cache->mem_bytes);
-    ASSERT(cache->mem_ptr);
+    md_array_resize(cache->buf, total_bytes, alloc);
+    ASSERT(cache->buf);
     cache->slot.count  = num_slots;
-    cache->slot.lock   = (md_semaphore_t*)NEXT_ALIGNED_ADRESS(cache->mem_ptr, CACHE_MEM_ALIGNMENT);
+    cache->slot.lock   = (md_semaphore_t*)NEXT_ALIGNED_ADRESS(cache->buf, CACHE_MEM_ALIGNMENT);
     cache->slot.header = (md_slot_header_t*)(cache->slot.lock + num_slots);
     cache->slot.data   = (md_frame_data_t*)(cache->slot.header + num_slots);
 
@@ -64,13 +65,13 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
 void md_frame_cache_free(md_frame_cache_t* cache) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
-    if (cache->mem_ptr) {
+    if (cache->buf) {
         for (int64_t i = 0; i < cache->slot.count; ++i) {
             md_semaphore_destroy(&cache->slot.lock[i]);
         }
 
         ASSERT(cache->alloc);
-        md_free(cache->alloc, cache->mem_ptr, cache->mem_bytes);
+        md_array_free(cache->buf, cache->alloc);
     }
     memset(cache, 0, sizeof(md_frame_cache_t));
 }

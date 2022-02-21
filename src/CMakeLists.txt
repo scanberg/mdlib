@@ -8,18 +8,18 @@ endfunction()
 file(GLOB SRC_FILES *)
 file(GLOB CORE_FILES core/*)
 file(GLOB SHADER_FILES shaders/*)
-file(GLOB_RECURSE EXT_FILES ext/*)
 
 source_group("src" FILES ${SRC_FILES})
 source_group("core" FILES ${CORE_FILES})
-source_group("ext" FILES ${EXT_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 
 add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
+set(MOLD_WARNING_FLAGS "")
 
 if (MSVC)
     message(STATUS "MSVC configuration was used")
-    target_compile_options(mold PRIVATE /W4 /MP /GR- /fp:fast /arch:AVX)
+    set(MOLD_WARNING_FLAGS "/W4")
+    target_compile_options(mold PRIVATE /MP /GR- /fp:fast /arch:AVX)
     
     if (MD_PROFILE_COMPILE_TIMES)
         message(STATUS "MSVC compile time profiling enabled")
@@ -29,11 +29,14 @@ if (MSVC)
     add_compile_options_config(DEBUG /MTd)
 else()
     message(STATUS "Assumed GCC or CLANG configuration was used")
-    target_compile_options(mold PRIVATE -Wall -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types -march=native)
+    set(MOLD_WARNING_FLAGS "-Wall -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types")
+    target_compile_options(mold PRIVATE -march=native)
     if (MD_PROFILE_COMPILE_TIMES)
         add_compile_options(-ftime-trace)
     endif()
 endif()
+
+add_subdirectory(ext)
 
 target_include_directories(mold
   PUBLIC
@@ -66,9 +69,10 @@ endif()
 
 if (CMAKE_COMPILER_IS_GNUCC)
 find_package(Threads REQUIRED)
-  target_compile_definitions(mold PRIVATE _GNU_SOURCE)
-  list(APPEND MOLD_LIBS m Threads::Threads)
+    target_compile_definitions(mold PRIVATE _GNU_SOURCE)
+    list(APPEND MOLD_LIBS m Threads::Threads)
 endif()
 
+target_compile_options(mold PRIVATE ${MOLD_WARNING_FLAGS})
 
-target_link_libraries(mold PRIVATE ${MOLD_LIBS} ${VIAMD_STDLIBS})
+target_link_libraries(mold PRIVATE mold_ext ${MOLD_LIBS} ${VIAMD_STDLIBS})

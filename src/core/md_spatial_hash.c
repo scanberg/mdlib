@@ -350,7 +350,7 @@ bool md_spatial_hash_query_periodic(const md_spatial_hash_t* hash, vec3_t in_pos
     float rad = in_rad;
     float rad2 = rad * rad;
 
-    vec4_t pbc_ext = vec4_sub(vec4_from_vec3(in_pbc_max, 0), vec4_from_vec3(in_pbc_min, 0));
+    //vec4_t pbc_ext = vec4_sub(vec4_from_vec3(in_pbc_max, 0), vec4_from_vec3(in_pbc_min, 0));
 
     vec4_t cell_min = vec4_from_vec3(hash->cell_min, 0);
     float  cell_ext = hash->cell_ext;

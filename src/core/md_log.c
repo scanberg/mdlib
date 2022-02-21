@@ -123,9 +123,9 @@ static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
     tstruct = *localtime(&now);
 
     char time_buf[64];
-    const uint64_t count = strftime(time_buf, sizeof(time_buf), "[%T]", &tstruct);
+    const uint64_t time_len = strftime(time_buf, sizeof(time_buf), "[%T]", &tstruct);
 
-    fprintf(stderr, "%.*s", (int)sizeof(time_buf), time_buf);
+    fprintf(stderr, "%.*s", (int)time_len, time_buf);
 
     switch (log_type) {
     case MD_LOG_TYPE_INFO:

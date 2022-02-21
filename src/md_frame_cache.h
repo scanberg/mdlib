@@ -30,8 +30,7 @@ typedef struct md_frame_cache_t {
 
     struct md_trajectory_i* traj;
     struct md_allocator_i* alloc;
-    void*   mem_ptr;
-    int64_t mem_bytes;
+    char* buf;
 
     uint64_t magic;
 } md_frame_cache_t;
