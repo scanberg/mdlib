@@ -35,4 +35,4 @@ endif()
 
 
 target_link_libraries(mold_ext PRIVATE ${MOLD_LIBS} ${VIAMD_STDLIBS})
-target_compile_features(imgui PRIVATE c_std_11)
+target_compile_features(mold_ext PRIVATE c_std_11)
