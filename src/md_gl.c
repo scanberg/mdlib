@@ -1249,7 +1249,6 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
 
 typedef struct draw_mol_t {
     const internal_mol_t* mol;
-    md_bitfield_t atom_mask;
     uint32_t flags;
 } draw_mol_t;
 
