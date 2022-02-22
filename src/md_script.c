@@ -205,7 +205,7 @@ typedef union value_t {
     frange_t    _frange;
     irange_t    _irange;
     bool        _bool;
-    md_exp_bitfield_t  _bitfield;
+    md_bitfield_t  _bitfield;
 } value_t;
 
 typedef struct identifier_t {
@@ -217,14 +217,14 @@ typedef struct identifier_t {
 typedef struct md_script_visualization_o {
     uint64_t magic;
     md_allocator_i* alloc;
-    md_exp_bitfield_t atom_mask; // Global atom mask outside of context
+    md_bitfield_t atom_mask; // Global atom mask outside of context
     uint32_t flags;
 } md_script_visualization_o;
 
 typedef struct eval_context_t {
     struct md_script_ir_o* ir;
     const md_molecule_t* mol;
-    const md_exp_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
+    const md_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
 
     int64_t max_stack_size;
     md_stack_allocator_t* stack_alloc;  // This is the same allocator as temp alloc, just with the raw interface
@@ -270,7 +270,7 @@ typedef struct ast_node_t {
 
     // CONTEXT
     md_type_info_t* lhs_context_types; // For static type checking
-    const md_exp_bitfield_t* context;  // Since contexts have to be statically known at compile time, we store a reference to it.
+    const md_bitfield_t* context;  // Since contexts have to be statically known at compile time, we store a reference to it.
 } ast_node_t;
 
 typedef struct tokenizer_t {
@@ -443,7 +443,7 @@ static inline uint64_t base_type_element_byte_size(base_type_t type) {
     case TYPE_BOOL:     return sizeof(bool);        
     case TYPE_FRANGE:   return sizeof(frange_t);
     case TYPE_IRANGE:   return sizeof(irange_t);
-    case TYPE_BITFIELD: return sizeof(md_exp_bitfield_t);
+    case TYPE_BITFIELD: return sizeof(md_bitfield_t);
     case TYPE_STRING:   return sizeof(str_t);
     default:            return 0;
     }
@@ -554,7 +554,7 @@ static bool allocate_data(data_t* data, md_type_info_t type, md_allocator_i* all
     data->max_range = FLT_MAX;
 
     if (type.base_type == TYPE_BITFIELD) {
-        md_exp_bitfield_t* bf = data->ptr;
+        md_bitfield_t* bf = data->ptr;
         for (int64_t i = 0; i < array_len; ++i) {
             md_bitfield_init(&bf[i], alloc);
         }
@@ -568,7 +568,7 @@ static void free_data(data_t* data, md_allocator_i* alloc) {
     ASSERT(alloc);    
     if (data->ptr && data->size) {
         if (data->type.base_type == TYPE_BITFIELD) {
-            md_exp_bitfield_t* bf = data->ptr;
+            md_bitfield_t* bf = data->ptr;
             const uint64_t num_elem = element_count(*data);
             for (uint64_t i = 0; i < num_elem; ++i) {
                 md_bitfield_free(&bf[i]);
@@ -593,8 +593,8 @@ static void copy_data(data_t* dst, const data_t* src) {
     if (dst->type.base_type == TYPE_BITFIELD) {
         const uint64_t num_elem = element_count(*dst);
 
-        md_exp_bitfield_t* dst_bf = dst->ptr;
-        const md_exp_bitfield_t* src_bf = src->ptr;
+        md_bitfield_t* dst_bf = dst->ptr;
+        const md_bitfield_t* src_bf = src->ptr;
         // Set bit pointers into destination memory
         for (uint64_t i = 0; i < num_elem; ++i) {
             md_bitfield_copy(&dst_bf[i], &src_bf[i]);
@@ -1211,10 +1211,10 @@ end:
 }
 
 static tokenizer_t tokenizer_init(str_t str) {
-    tokenizer_t tokenizer = {0};
-    tokenizer.str = str;
-    tokenizer.cur = 0;
-    tokenizer.line = 1; // We start on line 1 not 0
+    tokenizer_t tokenizer = {
+        .str = str,
+        .line = 1
+    };
     return tokenizer;
 }
 
@@ -1246,7 +1246,7 @@ static int print_type_info(char* buf, int buf_size, md_type_info_t info) {
 
 #define PRINT(fmt, ...) len += snprintf(buf + len, MAX(0, buf_size - len), fmt, ##__VA_ARGS__)
 
-static int print_bitfield(char* buf, int buf_size, const md_exp_bitfield_t* bitfield) {
+static int print_bitfield(char* buf, int buf_size, const md_bitfield_t* bitfield) {
     ASSERT(bitfield);
     if (buf_size <= 0) return 0;
 
@@ -1293,7 +1293,7 @@ static int print_value(char* buf, int buf_size, data_t data) {
         } else {
             switch(data.type.base_type) {
             case TYPE_BITFIELD:
-                //print_bitfield(file, (md_exp_bitfield_t*)data.ptr);
+                //print_bitfield(file, (md_bitfield_t*)data.ptr);
                 break;
             case TYPE_BOOL:
                 PRINT("%s", *(bool*)data.ptr ? "true" : "false");
@@ -1383,7 +1383,7 @@ static void print_value(FILE* file, data_t data) {
         if (data.ptr) {
             switch(data.type.base_type) {
             case TYPE_BITFIELD:
-                print_bitfield(file, (md_exp_bitfield_t*)data.ptr);
+                print_bitfield(file, (md_bitfield_t*)data.ptr);
                 break;
             case TYPE_BOOL:
                 fprintf(file, "%s", *(bool*)data.ptr ? "true" : "false");
@@ -1590,6 +1590,7 @@ static void save_expressions_to_json(expression_t** expr, uint64_t num_expr, str
 static void expand_node_token_range_with_children(ast_node_t* node) {
     ASSERT(node);
     for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+        ASSERT(node->children[i] != node);
         if (!node->children[i]) continue;
         expand_node_token_range_with_children(node->children[i]);
         node->token.col_beg = MIN(node->token.col_beg, node->children[i]->token.col_beg);
@@ -1723,34 +1724,31 @@ ast_node_t* parse_logical(parse_context_t* ctx) {
     ASSERT(token.type == TOKEN_AND || token.type == TOKEN_OR || token.type == TOKEN_NOT);
 
     ast_type_t type = 0;
-    int num_args = 0;
 
     switch (token.type) {
-    case TOKEN_AND: type = AST_AND; num_args = 2; break;
-    case TOKEN_OR:  type = AST_OR;  num_args = 2; break;
-    case TOKEN_NOT: type = AST_NOT; num_args = 1; break;
+    case TOKEN_AND: type = AST_AND; break;
+    case TOKEN_OR:  type = AST_OR;  break;
+    case TOKEN_NOT: type = AST_NOT; break;
     default:
         ASSERT(false);
     }
 
-    ast_node_t* node = create_node(ctx->ir, type, token);
     ast_node_t* lhs = ctx->node;
-    if (num_args == 2) {
-        if (!lhs) {
-            create_error(ctx->ir, token, "Left hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
-            return NULL;
-        }
-        md_array_push(node->children, lhs, ctx->ir->arena);
-    }
-
-    ctx->node = node;
+    ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
+
+    if (type != AST_NOT && !lhs) {
+        create_error(ctx->ir, token, "Left hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
+        return NULL;
+    }
 
     if (!rhs) {
         create_error(ctx->ir, token, "Right hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
         return NULL;
     }
 
+    ast_node_t* node = create_node(ctx->ir, type, token);
+    if (type != AST_NOT) md_array_push(node->children, lhs, ctx->ir->arena);
     md_array_push(node->children, rhs, ctx->ir->arena);
     
     return node;
@@ -2403,7 +2401,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     ASSERT(ctx_node->data.ptr);
 
     const int64_t num_ctx = type_info_array_len(ctx_node->data.type);
-    const md_exp_bitfield_t* ctx_bf = (const md_exp_bitfield_t*)ctx_node->data.ptr;
+    const md_bitfield_t* ctx_bf = (const md_bitfield_t*)ctx_node->data.ptr;
 
     ASSERT(node->lhs_context_types);
     const md_type_info_t* lhs_types = node->lhs_context_types;
@@ -2435,10 +2433,10 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             }
         }
         else {
-            md_exp_bitfield_t* prev_vis_atom_mask = sub_ctx.vis->atom_mask;
+            md_bitfield_t* prev_vis_atom_mask = sub_ctx.vis->atom_mask;
             if (sub_ctx.vis) {
                 if (sub_ctx.vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
-                    md_exp_bitfield_t bf = {0};
+                    md_bitfield_t bf = {0};
                     md_bitfield_init(&bf, sub_ctx.vis->o->alloc);
                     md_array_push(sub_ctx.vis->structures.atom_masks, bf, sub_ctx.vis->o->alloc);
                     sub_ctx.vis->atom_mask = md_array_last(sub_ctx.vis->structures.atom_masks);
@@ -3020,7 +3018,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     return false;
 }
 
-static void propagate_context(ast_node_t* node, const md_exp_bitfield_t* context) {
+static void propagate_context(ast_node_t* node, const md_bitfield_t* context) {
     ASSERT(node);
     node->context = context;
     for (int64_t i = 0; i < md_array_size(node->children); ++i) {
@@ -3051,13 +3049,13 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                 if (num_contexts > 0) {
                     // Store this persistently and set this as a context for all child nodes
                     // Store as md_array so we can query its length later
-                    md_exp_bitfield_t* contexts = 0;
+                    md_bitfield_t* contexts = 0;
                     md_array_resize(contexts, num_contexts, ctx->ir->arena);
                     for (int64_t i = 0; i < num_contexts; ++i) {
                         md_bitfield_init(&contexts[i], ctx->ir->arena);
                     }
                     rhs->data.ptr = contexts;
-                    rhs->data.size = num_contexts * sizeof(md_exp_bitfield_t);
+                    rhs->data.size = num_contexts * sizeof(md_bitfield_t);
 
                     ASSERT(md_array_size(contexts) == num_contexts);
                     //allocate_data(&rhs->data, ctx->ir->arena);
@@ -3511,7 +3509,7 @@ static void compute_distribution(float* bins, int64_t num_bins, float min_bin_ra
 }
 */
 
-static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_exp_bitfield_t* mask, md_script_ir_o* ir, md_script_eval_t* eval) {
+static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_bitfield_t* mask, md_script_ir_o* ir, md_script_eval_t* eval) {
     ASSERT(props);
     ASSERT(mol);
     ASSERT(traj);
@@ -3531,7 +3529,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     float* init_coords = md_alloc(&temp_alloc, coord_bytes);
     float* curr_coords = md_alloc(&temp_alloc, coord_bytes);
 
-    md_exp_bitfield_t tmp_bf = {0};
+    md_bitfield_t tmp_bf = {0};
     if (!mask) {
         md_bitfield_init(&tmp_bf, &temp_alloc);
         md_bitfield_set_range(&tmp_bf, 0, md_trajectory_num_frames(traj));
@@ -4021,7 +4019,7 @@ bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_sc
     return true;
 }
 
-bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, md_exp_bitfield_t* filter_mask) {
+bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, md_bitfield_t* filter_mask) {
     ASSERT(eval);
 
     bool result = true;
@@ -4169,10 +4167,10 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
                 if (evaluate_node(&data, node, &ctx)) {
                     result->bitfields = NULL;
                     const int64_t len = type_info_array_len(data.type);
-                    const md_exp_bitfield_t* bf_arr = data.ptr;
+                    const md_bitfield_t* bf_arr = data.ptr;
                     if (bf_arr) {
                         for (int64_t i = 0; i < len; ++i) {
-                            md_exp_bitfield_t bf = {0};
+                            md_bitfield_t bf = {0};
                             md_bitfield_init(&bf, alloc);
                             md_bitfield_copy(&bf, &bf_arr[i]);
                             md_array_push(result->bitfields, bf, alloc);
@@ -4361,7 +4359,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         evaluate_node(&data, node, ctx);
 
         ASSERT(data.ptr);
-        const md_exp_bitfield_t* bf_arr = data.ptr;
+        const md_bitfield_t* bf_arr = data.ptr;
         for (int64_t i = 0; i < element_count(data); ++i) {
             md_bitfield_or_inplace(ctx->vis->atom_mask, &bf_arr[i]);
         }

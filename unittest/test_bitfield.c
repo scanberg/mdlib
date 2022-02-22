@@ -9,7 +9,7 @@
 UTEST(bitfield, test) {
     md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
 
-    md_exp_bitfield_t bf = {0};
+    md_bitfield_t bf = {0};
     md_bitfield_init(&bf, alloc);
     md_bitfield_set_range(&bf, 10000, 10100);
     EXPECT_EQ(md_bitfield_popcount(&bf), 100);
@@ -91,7 +91,7 @@ UTEST(bitfield, test) {
     md_bitfield_clear(&bf);
     EXPECT_EQ(md_bitfield_popcount(&bf), 0);
 
-    md_exp_bitfield_t mask = {0};
+    md_bitfield_t mask = {0};
     md_bitfield_init(&mask, default_allocator);
     md_bitfield_set_range(&mask, 100, 200);
     EXPECT_EQ(md_bitfield_popcount(&mask), 100);
@@ -137,7 +137,7 @@ UTEST(bitfield, test) {
 UTEST(bitfield, serialization) {
     md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
 
-    md_exp_bitfield_t a = {0};
+    md_bitfield_t a = {0};
     md_bitfield_init(&a, alloc);
 
     md_bitfield_set_bit(&a, 100);
@@ -153,7 +153,7 @@ UTEST(bitfield, serialization) {
     void* mem = md_alloc(alloc, est_bytes);
     int64_t real_bytes = md_bitfield_serialize(mem, &a);
 
-    md_exp_bitfield_t b = {0};
+    md_bitfield_t b = {0};
     md_bitfield_init(&b, alloc);
 
     EXPECT_TRUE(md_bitfield_deserialize(&b, mem, real_bytes));
@@ -164,7 +164,7 @@ UTEST(bitfield, serialization) {
         ASSERT_TRUE(bit_a == bit_b);
     }
 
-    md_exp_bitfield_t c = {0};
+    md_bitfield_t c = {0};
     md_bitfield_init(&c, alloc);
     md_bitfield_set_bit(&c, 0);
 

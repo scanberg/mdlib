@@ -140,16 +140,16 @@ typedef struct md_script_visualization_t {
     struct {
         int64_t count;
         mat4_t* matrices;
-        md_exp_bitfield_t* structures;
+        md_bitfield_t* structures;
         float extent;
     } sdf;
 
     // Atoms
     struct {
-        md_exp_bitfield_t* atom_masks;
+        md_bitfield_t* atom_masks;
     } structures;
 
-    md_exp_bitfield_t* atom_mask;
+    md_bitfield_t* atom_mask;
     
 } md_script_visualization_t;
 
@@ -198,7 +198,7 @@ bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_sc
 // mol      : molecule
 // traj     : trajectory
 // filter_mask [OPTIONAL]: A mask which holds the frames which should be evaluated. Supply this if only a subset should be evaluated.
-bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, md_exp_bitfield_t* filter_mask);
+bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, md_bitfield_t* filter_mask);
 
 bool md_script_eval_free(md_script_eval_t* eval);
 

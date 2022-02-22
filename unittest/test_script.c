@@ -79,13 +79,13 @@ md_molecule_t test_mol = {
 }
 };
 
-static bool eval_selection(md_exp_bitfield_t* bitfield, str_t expr, md_molecule_t* mol) {
+static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule_t* mol) {
     ASSERT(bitfield);
     ASSERT(mol);
     data_t data = {0};
     if (eval_expression(&data, expr, mol, default_temp_allocator)) {
         if (data.type.base_type == TYPE_BITFIELD) {
-            md_exp_bitfield_t* res = (md_exp_bitfield_t*)data.ptr;
+            md_bitfield_t* res = (md_bitfield_t*)data.ptr;
             const int64_t len = type_info_array_len(data.type);
             for (int64_t i = 0; i < len; ++i) {
                 md_bitfield_or_inplace(bitfield, &res[i]);
@@ -153,7 +153,7 @@ UTEST(script, basic_expressions) {
 #define TEST_SELECTION(expr, ref_bit_str) \
 { \
 uint64_t ref = make_bits(ref_bit_str); \
-md_exp_bitfield_t bf = {0}; \
+md_bitfield_t bf = {0}; \
 md_bitfield_init(&bf, default_temp_allocator); \
 ASSERT_TRUE(eval_selection(&bf, MAKE_STR(expr), &test_mol)); \
 bool cmp_res = bit_cmp(bf.bits, &ref, 0, ATOM_COUNT); \
@@ -218,7 +218,7 @@ UTEST(script, selection_big) {
     md_molecule_t mol = {0};
     ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
 
-    md_exp_bitfield_t bf = {0};
+    md_bitfield_t bf = {0};
     md_bitfield_init(&bf, alloc);
 
     bool result = eval_selection(&bf, MAKE_STR("atom(1:20) and element('O') in chain(:)"), &mol);

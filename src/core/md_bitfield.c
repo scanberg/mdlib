@@ -270,14 +270,14 @@ static inline int64_t block_scan_reverse(block_t blk) {
     return 0;
 }
 
-static inline void set_block(md_exp_bitfield_t* bf, int64_t idx, block_t blk) {
+static inline void set_block(md_bitfield_t* bf, int64_t idx, block_t blk) {
     ASSERT(bf->bits);
     const int64_t beg_blk = block_idx(bf->beg_bit);
     ASSERT(beg_blk <= idx && idx <= block_idx(bf->end_bit));
     ((block_t*)bf->bits)[idx - beg_blk] = blk;
 }
 
-static inline block_t get_block(const md_exp_bitfield_t* bf, int64_t blk_idx) {
+static inline block_t get_block(const md_bitfield_t* bf, int64_t blk_idx) {
     const int64_t beg_blk = block_idx(bf->beg_bit);
     const int64_t end_blk = block_idx(bf->end_bit);
     if (bf->bits && beg_blk <= blk_idx && blk_idx <= end_blk)
@@ -285,21 +285,21 @@ static inline block_t get_block(const md_exp_bitfield_t* bf, int64_t blk_idx) {
     return (block_t) {0};
 }
 
-static inline block_t* get_block_ptr(md_exp_bitfield_t* bf, int64_t blk_idx) {
+static inline block_t* get_block_ptr(md_bitfield_t* bf, int64_t blk_idx) {
     const int64_t beg_blk = block_idx(bf->beg_bit);
     const int64_t end_blk = block_idx(bf->end_bit);
     ASSERT(bf->bits && beg_blk <= blk_idx && blk_idx <= end_blk);
     return &((block_t*)bf->bits)[blk_idx - beg_blk];
 }
 
-static inline void free_blocks(md_exp_bitfield_t* bf) {
+static inline void free_blocks(md_bitfield_t* bf) {
     ASSERT(bf);
     ASSERT(bf->bits != NULL);
     md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
     bf->bits = NULL;
 }
 
-static inline void allocate_blocks(md_exp_bitfield_t* bf, int64_t num_blocks) {
+static inline void allocate_blocks(md_bitfield_t* bf, int64_t num_blocks) {
     ASSERT(bf);
     ASSERT(bf->bits == NULL);
     ASSERT(bf->alloc);
@@ -310,7 +310,7 @@ static inline void allocate_blocks(md_exp_bitfield_t* bf, int64_t num_blocks) {
 
 // This fits the range of the bitfield to a bit interval.
 // This does not clear the memory so make sure you write to it later
-static inline void fit_to_range(md_exp_bitfield_t* bf, int64_t beg_bit, int64_t end_bit) {
+static inline void fit_to_range(md_bitfield_t* bf, int64_t beg_bit, int64_t end_bit) {
     ASSERT(bf);
     ASSERT(beg_bit >= 0);
     ASSERT(beg_bit <= end_bit);
@@ -339,7 +339,7 @@ static inline void fit_to_range(md_exp_bitfield_t* bf, int64_t beg_bit, int64_t 
 
 // This ensures that the bits are represented by the bitfield and will grow it if necessary.
 // In case of growth, the bits are preserved.
-static inline void ensure_range(md_exp_bitfield_t* bf, int64_t beg_bit, int64_t end_bit) {
+static inline void ensure_range(md_bitfield_t* bf, int64_t beg_bit, int64_t end_bit) {
     ASSERT(bf);
     ASSERT(beg_bit >= 0);
     ASSERT(beg_bit <= end_bit);
@@ -391,44 +391,44 @@ static inline void ensure_range(md_exp_bitfield_t* bf, int64_t beg_bit, int64_t 
     bf->end_bit = (uint32_t)new_end_bit;
 }
 
-static inline bool validate_bitfield(const md_exp_bitfield_t* bf) {
+static inline bool validate_bitfield(const md_bitfield_t* bf) {
     (void)bf;
     ASSERT(bf);
     ASSERT(bf->magic == MAGIC);
     return true;
 }
 
-void md_bitfield_init(md_exp_bitfield_t* bf, struct md_allocator_i* alloc) {
+void md_bitfield_init(md_bitfield_t* bf, struct md_allocator_i* alloc) {
     ASSERT(bf);
     ASSERT(alloc);
     if (bf->magic == MAGIC && bf->bits) {
         md_bitfield_free(bf);
     }
-    memset(bf, 0, sizeof(md_exp_bitfield_t));
+    memset(bf, 0, sizeof(md_bitfield_t));
     bf->magic = MAGIC;
     bf->alloc = alloc;
 }
 
-bool md_bitfield_free(md_exp_bitfield_t* bf) {
+bool md_bitfield_free(md_bitfield_t* bf) {
     validate_bitfield(bf);
 
     if (bf->bits) md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
-    memset(bf, 0, sizeof(md_exp_bitfield_t));
+    memset(bf, 0, sizeof(md_bitfield_t));
     return true;
 }
 
-bool md_bitfield_empty(const md_exp_bitfield_t* bf) {
+bool md_bitfield_empty(const md_bitfield_t* bf) {
     return bf->bits == NULL || (bf->beg_bit == bf->end_bit);
 }
 
-void md_bitfield_set_range(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
+void md_bitfield_set_range(md_bitfield_t* bf, int64_t beg, int64_t end) {
     validate_bitfield(bf);
 
     ensure_range(bf, beg, end);
     bit_set((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), end - beg);
 }
 
-void md_bitfield_set_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
+void md_bitfield_set_bit(md_bitfield_t* bf, int64_t bit_idx) {
     validate_bitfield(bf);
 
     ensure_range(bf, bit_idx, bit_idx+1);
@@ -436,7 +436,7 @@ void md_bitfield_set_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
     //bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
 }
 
-void md_bitfield_set_indices_u32(md_exp_bitfield_t* bf, uint32_t* indices, int64_t num_indices) {
+void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, int64_t num_indices) {
     validate_bitfield(bf);
     ASSERT(indices);
     ASSERT(num_indices >= 0);
@@ -448,13 +448,13 @@ void md_bitfield_set_indices_u32(md_exp_bitfield_t* bf, uint32_t* indices, int64
     }
 }
 
-void md_bitfield_clear(md_exp_bitfield_t* bf) {
+void md_bitfield_clear(md_bitfield_t* bf) {
     validate_bitfield(bf);
 
     memset(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
 }
 
-void md_bitfield_clear_range(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
+void md_bitfield_clear_range(md_bitfield_t* bf, int64_t beg, int64_t end) {
     validate_bitfield(bf);
         
     beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
@@ -463,7 +463,7 @@ void md_bitfield_clear_range(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
     bit_clear((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), end - beg);
 }
 
-void md_bitfield_clear_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
+void md_bitfield_clear_bit(md_bitfield_t* bf, int64_t bit_idx) {
     validate_bitfield(bf);
 
     if (bf->beg_bit <= bit_idx && bit_idx < bf->end_bit) {
@@ -471,7 +471,7 @@ void md_bitfield_clear_bit(md_exp_bitfield_t* bf, int64_t bit_idx) {
     }
 }
 
-void md_bitfield_or(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b) {
+void md_bitfield_or(md_bitfield_t* dst, const md_bitfield_t* src_a, const md_bitfield_t* src_b) {
     validate_bitfield(dst);
     validate_bitfield(src_a);
     validate_bitfield(src_b);
@@ -489,7 +489,7 @@ void md_bitfield_or(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, cons
     }
 }
 
-void md_bitfield_or_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
+void md_bitfield_or_inplace(md_bitfield_t* a, const md_bitfield_t* b) {
     validate_bitfield(a);
     validate_bitfield(b);
 
@@ -510,7 +510,7 @@ void md_bitfield_or_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
     }
 }
 
-void md_bitfield_and(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b) {
+void md_bitfield_and(md_bitfield_t* dst, const md_bitfield_t* src_a, const md_bitfield_t* src_b) {
     validate_bitfield(dst);
     validate_bitfield(src_a);
     validate_bitfield(src_b);
@@ -534,7 +534,7 @@ void md_bitfield_and(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, con
     }
 }
 
-void md_bitfield_and_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
+void md_bitfield_and_inplace(md_bitfield_t* a, const md_bitfield_t* b) {
     validate_bitfield(a);
     validate_bitfield(b);
 
@@ -556,7 +556,7 @@ void md_bitfield_and_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
     }
 }
 
-void md_bitfield_andnot(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b) {
+void md_bitfield_andnot(md_bitfield_t* dst, const md_bitfield_t* src_a, const md_bitfield_t* src_b) {
     validate_bitfield(dst);
     validate_bitfield(src_a);
     validate_bitfield(src_b);
@@ -586,7 +586,7 @@ void md_bitfield_andnot(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, 
     }
 }
 
-void md_bitfield_andnot_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
+void md_bitfield_andnot_inplace(md_bitfield_t* a, const md_bitfield_t* b) {
     validate_bitfield(a);
     validate_bitfield(b);
 
@@ -613,7 +613,7 @@ void md_bitfield_andnot_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b
     }
 }
 
-void md_bitfield_xor(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, const md_exp_bitfield_t* src_b) {
+void md_bitfield_xor(md_bitfield_t* dst, const md_bitfield_t* src_a, const md_bitfield_t* src_b) {
     validate_bitfield(dst);
     validate_bitfield(src_a);
     validate_bitfield(src_b);
@@ -637,7 +637,7 @@ void md_bitfield_xor(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src_a, con
     }
 }
 
-void md_bitfield_xor_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
+void md_bitfield_xor_inplace(md_bitfield_t* a, const md_bitfield_t* b) {
     validate_bitfield(a);
     validate_bitfield(b);
 
@@ -660,7 +660,7 @@ void md_bitfield_xor_inplace(md_exp_bitfield_t* a, const md_exp_bitfield_t* b) {
     }
 }
 
-void md_bitfield_not(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src, int64_t beg, int64_t end) {
+void md_bitfield_not(md_bitfield_t* dst, const md_bitfield_t* src, int64_t beg, int64_t end) {
     validate_bitfield(dst);
     validate_bitfield(src);
 
@@ -675,7 +675,7 @@ void md_bitfield_not(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src, int64
     }
 }
 
-void md_bitfield_not_inplace(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
+void md_bitfield_not_inplace(md_bitfield_t* bf, int64_t beg, int64_t end) {
     validate_bitfield(bf);
 
     ensure_range(bf, beg, end);
@@ -687,7 +687,7 @@ void md_bitfield_not_inplace(md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
     }
 }
 
-void md_bitfield_copy(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src) {
+void md_bitfield_copy(md_bitfield_t* dst, const md_bitfield_t* src) {
     validate_bitfield(dst);
     validate_bitfield(src);
     if (dst == src) return;
@@ -700,7 +700,7 @@ void md_bitfield_copy(md_exp_bitfield_t* dst, const md_exp_bitfield_t* src) {
 }
 
 // Counts the number of bits set
-int64_t md_bitfield_popcount(const md_exp_bitfield_t* bf) {
+int64_t md_bitfield_popcount(const md_bitfield_t* bf) {
     validate_bitfield(bf);
 
     const int64_t count = (int64_t)bf->end_bit - (int64_t)bf->beg_bit;
@@ -711,7 +711,7 @@ int64_t md_bitfield_popcount(const md_exp_bitfield_t* bf) {
     return bit_count((uint64_t*)bf->bits, bf->beg_bit - block_bit(bf->beg_bit), count);
 }
 
-int64_t md_bitfield_popcount_range(const md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
+int64_t md_bitfield_popcount_range(const md_bitfield_t* bf, int64_t beg, int64_t end) {
     ASSERT(beg <= end);
     validate_bitfield(bf);
 
@@ -724,7 +724,7 @@ int64_t md_bitfield_popcount_range(const md_exp_bitfield_t* bf, int64_t beg, int
 }
 
 // Test if single bit in field is set
-bool md_bitfield_test_bit(const md_exp_bitfield_t* bf, int64_t idx) {
+bool md_bitfield_test_bit(const md_bitfield_t* bf, int64_t idx) {
     validate_bitfield(bf);
 
     if (idx < bf->beg_bit || bf->end_bit <= idx) return false;
@@ -738,7 +738,7 @@ bool md_bitfield_test_bit(const md_exp_bitfield_t* bf, int64_t idx) {
 
 // Bit scan forward, finds the first bit set from the given offset.
 // Returns 0 if no bit is found, otherwise it returns the offset to that bit (indexing starts at 1, posix convention)
-int64_t md_bitfield_scan(const md_exp_bitfield_t* bf, int64_t beg, int64_t end) {
+int64_t md_bitfield_scan(const md_bitfield_t* bf, int64_t beg, int64_t end) {
     validate_bitfield(bf);
 
     beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
@@ -755,7 +755,7 @@ static inline uint64_t bit_pattern(uint64_t bit_idx) {
     return 1LLU << (bit_idx & 63);
 }
 
-static inline uint64_t get_u64(const md_exp_bitfield_t* bf, int64_t idx_u64) {
+static inline uint64_t get_u64(const md_bitfield_t* bf, int64_t idx_u64) {
     if (!bf->bits) return 0;
 
     const int64_t beg_u64 = bf->beg_bit / 64;
@@ -779,7 +779,7 @@ static inline uint64_t get_u64(const md_exp_bitfield_t* bf, int64_t idx_u64) {
     return result;
 }
 
-bool md_bitfield_extract_u64(uint64_t* dst_ptr, int64_t num_bits, const md_exp_bitfield_t* src) {
+bool md_bitfield_extract_u64(uint64_t* dst_ptr, int64_t num_bits, const md_bitfield_t* src) {
     ASSERT(dst_ptr);
     ASSERT(num_bits >= 0);
     validate_bitfield(src);
@@ -794,7 +794,7 @@ bool md_bitfield_extract_u64(uint64_t* dst_ptr, int64_t num_bits, const md_exp_b
     return true;
 }
 
-uint32_t* md_bitfield_extract_indices_u32(const md_exp_bitfield_t* bf, md_allocator_i* alloc) {
+uint32_t* md_bitfield_extract_indices_u32(const md_bitfield_t* bf, md_allocator_i* alloc) {
     ASSERT(bf);
     ASSERT(alloc);
     validate_bitfield(bf);
@@ -811,7 +811,7 @@ uint32_t* md_bitfield_extract_indices_u32(const md_exp_bitfield_t* bf, md_alloca
     return indices;
 }
 
-uint32_t* md_bitfield_extract_bits_u32(const md_exp_bitfield_t* bf, struct md_allocator_i* alloc) {
+uint32_t* md_bitfield_extract_bits_u32(const md_bitfield_t* bf, struct md_allocator_i* alloc) {
     ASSERT(bf);
     ASSERT(alloc);
     validate_bitfield(bf);
@@ -833,7 +833,7 @@ uint32_t* md_bitfield_extract_bits_u32(const md_exp_bitfield_t* bf, struct md_al
 
 #define BLOCK_IDX_FLAG_ALL_SET (0x8000)
 
-uint32_t* get_non_empty_block_indices(const md_exp_bitfield_t* bf, md_allocator_i* alloc) {
+uint32_t* get_non_empty_block_indices(const md_bitfield_t* bf, md_allocator_i* alloc) {
     uint32_t* indices = 0;
 
     int64_t beg_blk_idx = block_idx(bf->beg_bit);
@@ -854,7 +854,7 @@ uint32_t* get_non_empty_block_indices(const md_exp_bitfield_t* bf, md_allocator_
     return indices;
 }
 
-uint16_t* get_serialization_block_indices(const md_exp_bitfield_t* bf, md_allocator_i* alloc) {
+uint16_t* get_serialization_block_indices(const md_bitfield_t* bf, md_allocator_i* alloc) {
     uint16_t* indices = 0;
 
     int64_t beg_blk_idx = block_idx(bf->beg_bit);
@@ -880,7 +880,7 @@ uint16_t* get_serialization_block_indices(const md_exp_bitfield_t* bf, md_alloca
 }
 
 // Returns the maximum serialization size in bytes of a bitfield
-int64_t md_bitfield_serialize_size_in_bytes(const md_exp_bitfield_t* bf) {
+int64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf) {
     uint64_t size = sizeof(uint16_t);
     uint16_t* indices = get_serialization_block_indices(bf, default_temp_allocator);
     for (int64_t i = 0; i < md_array_size(indices); ++i) {
@@ -901,7 +901,7 @@ typedef union block_idx_t {
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
-int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
+int64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
     md_allocator_i* alloc = default_temp_allocator;
 
     uint16_t* indices = get_serialization_block_indices(bf, alloc);
@@ -936,7 +936,7 @@ int64_t md_bitfield_serialize(void* dst, const md_exp_bitfield_t* bf) {
     return lz_bytes;
 }
 
-bool md_bitfield_deserialize(md_exp_bitfield_t* bf, const void* src, int64_t num_bytes) {
+bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, int64_t num_bytes) {
     ASSERT(bf);
     validate_bitfield(bf);
     ASSERT(src);
