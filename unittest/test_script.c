@@ -194,6 +194,19 @@ UTEST(script, compile_script) {
     md_arena_allocator_destroy(alloc);
 }
 
+UTEST(script, semantic) {
+    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
+
+    md_molecule_t mol = { 0 };
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, MAKE_STR(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
+
+    md_script_ir_t ir = { 0 };
+    bool result = md_script_ir_compile(&ir, MAKE_STR("p1 = resname('ALA') resname('GLY');"), &mol, alloc, NULL);
+    EXPECT_FALSE(result);
+
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(script, selection_big) {
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
 

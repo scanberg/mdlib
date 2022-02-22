@@ -1607,7 +1607,8 @@ static ast_node_t** parse_comma_separated_arguments_until_token(parse_context_t*
         if (next.type == ',') {
             create_error(ctx->ir, next, "Empty argument in argument list");
             return NULL;
-        } 
+        }
+        ctx->node = 0;
         ast_node_t* arg = parse_expression(ctx);
         next = tokenizer_peek_next(ctx->tokenizer);
         if (arg && (next.type == ',' || next.type == token_type)) {
@@ -1656,6 +1657,11 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
 ast_node_t* parse_identifier(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
     ASSERT(token.type == TOKEN_IDENT);
+
+    if (ctx->node && (ctx->node->token.type == TOKEN_IDENT)) {
+        create_error(ctx->ir, token, "Invalid syntax, identifiers must be separated by operation");
+        return NULL;
+    }
     
     const str_t ident = token.str;
     ast_node_t* node = 0;
@@ -1715,32 +1721,37 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
 ast_node_t* parse_logical(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
     ASSERT(token.type == TOKEN_AND || token.type == TOKEN_OR || token.type == TOKEN_NOT);
-    
-    ast_node_t* arg[2] = {ctx->node, parse_expression(ctx)};   // lhs and rhs
-    static const char* label[2] = {"Left hand side", "Right hand side"};
-    const int num_operands = (token.type == TOKEN_NOT) ? 1 : 2;
-    const int col_beg = (2 - num_operands);
-    ast_node_t* node = 0;
-    
-    for (int i = col_beg; i < 2; ++i) {
-        if (!arg[i]) {
-            create_error(ctx->ir, token,
-                         "%s of token '%s' did not evaluate to a valid expression.", label[i], get_token_type_str(token.type));
-            return NULL;
-        }
-    }
 
     ast_type_t type = 0;
+    int num_args = 0;
+
     switch (token.type) {
-    case TOKEN_AND: type = AST_AND; break;
-    case TOKEN_OR:  type = AST_OR;  break;
-    case TOKEN_NOT: type = AST_NOT; break;
+    case TOKEN_AND: type = AST_AND; num_args = 2; break;
+    case TOKEN_OR:  type = AST_OR;  num_args = 2; break;
+    case TOKEN_NOT: type = AST_NOT; num_args = 1; break;
     default:
         ASSERT(false);
     }
 
-    node = create_node(ctx->ir, type, token);
-    md_array_push_array(node->children, arg + col_beg, num_operands, ctx->ir->arena);
+    ast_node_t* node = create_node(ctx->ir, type, token);
+    ast_node_t* lhs = ctx->node;
+    if (num_args == 2) {
+        if (!lhs) {
+            create_error(ctx->ir, token, "Left hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
+            return NULL;
+        }
+        md_array_push(node->children, lhs, ctx->ir->arena);
+    }
+
+    ctx->node = node;
+    ast_node_t* rhs = parse_expression(ctx);
+
+    if (!rhs) {
+        create_error(ctx->ir, token, "Right hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
+        return NULL;
+    }
+
+    md_array_push(node->children, rhs, ctx->ir->arena);
     
     return node;
 }
@@ -1750,6 +1761,7 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
     ASSERT(token.type == '=');
     
     ast_node_t* lhs = ctx->node;
+    ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
     
     if (!lhs || lhs->type != AST_IDENTIFIER) {
@@ -1810,6 +1822,7 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
     // If it is for a constant number, it is already baked into the number.
     
     ast_node_t* lhs = ctx->node;
+    ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
     ast_node_t* node = 0;
    
@@ -1972,6 +1985,7 @@ ast_node_t* parse_in(parse_context_t* ctx) {
     ASSERT(token.type == TOKEN_IN);
     
     ast_node_t* lhs = ctx->node;
+    ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
     ast_node_t* node = 0;
 
@@ -2005,6 +2019,7 @@ ast_node_t* parse_parentheses(parse_context_t* ctx) {
     return NULL;
 }
 
+/*
 static ast_node_t* parse_argument(parse_context_t* ctx) {
     token_t next = tokenizer_peek_next(ctx->tokenizer);
     switch (next.type) {
@@ -2042,6 +2057,7 @@ static ast_node_t* parse_argument(parse_context_t* ctx) {
     }
     return ctx->node;
 }
+*/
 
 ast_node_t* parse_expression(parse_context_t* ctx) {
     token_t token = {0};
@@ -3211,9 +3227,8 @@ static bool parse_script(md_script_ir_o* ir) {
                     
                 }
                 expression_t* expr = md_alloc(ir->arena, sizeof(expression_t));
-                memset(expr, 0, sizeof(expression_t));
-                expr->ident = ident;
                 expr->node = node;
+                expr->ident = ident;
                 expr->str = expr_str;
                 md_array_push(ir->expressions, expr, ir->arena);
             //}
