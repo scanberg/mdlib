@@ -7,6 +7,8 @@
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 #include <core/md_file.h>
+#include <core/md_allocator.h>
+#include <core/md_array.inl>
 
 #include <stdbool.h>
 #include <string.h>     // memset, memcpy
@@ -1009,7 +1011,6 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             md_print(MD_LOG_TYPE_ERROR, "The supplied molecule has no atoms.");
             return false;
         }
-        md_gl_molecule_free(ext_mol);
         internal_mol_t* gl_mol = (internal_mol_t*)ext_mol;
 
         gl_mol->atom_count = (uint32_t)mol->atom.count;
@@ -1153,6 +1154,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
 bool md_gl_molecule_free(md_gl_molecule_t* ext_mol) {
     if (ext_mol) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
+        ASSERT(mol->magic == MAGIC);
         for (uint32_t i = 0; i < GL_BUFFER_MOL_COUNT; ++i) {
             gl_buffer_conditional_delete(&mol->buffer[i]);
         }
@@ -1176,7 +1178,6 @@ bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_mole
             return false;
         }
 
-        md_gl_representation_free(ext_rep);
         internal_rep_t* rep = (internal_rep_t*)ext_rep;
         memset(rep, 0, sizeof(internal_rep_t));
         rep->mol = (internal_mol_t*)ext_mol;
@@ -1203,6 +1204,7 @@ bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_mole
 bool md_gl_representation_free(md_gl_representation_t* ext_rep) {
     if (ext_rep) {
         internal_rep_t* rep = (internal_rep_t*)ext_rep;
+        ASSERT(rep->magic == MAGIC);
         gl_buffer_conditional_delete(&rep->color);
         return true;
     }
@@ -1245,16 +1247,11 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
     ubo_data->atom_mask = args->atom_mask;
 }
 
-typedef struct draw_entity_t {
-    const internal_rep_t* rep;
-    const mat4_t* model_matrix;
-} draw_entity_t;
-
-static int compare_draw_ent(const void* elem1, const void* elem2) {
-    const draw_entity_t* e1 = (const draw_entity_t*)elem1;
-    const draw_entity_t* e2 = (const draw_entity_t*)elem2;
-    return (e1->rep->type - e2->rep->type) * 4 + (int)(e1->rep->mol - e1->rep->mol) * 2 + (int)(e1->model_matrix - e2->model_matrix);
-}
+typedef struct draw_mol_t {
+    const internal_mol_t* mol;
+    md_bitfield_t atom_mask;
+    uint32_t flags;
+} draw_mol_t;
 
 bool md_gl_draw(const md_gl_draw_args_t* args) {
     if (!args) {
@@ -1277,22 +1274,16 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo.id);
         
-#define DRAW_ENT_CAP 2048
-    draw_entity_t         draw_ent[DRAW_ENT_CAP] = {0};
-    uint32_t              draw_ent_count = 0;
-#undef  DRAW_REP_CAP
-        
-#define UNIQUE_MOL_CAP 128
-    const internal_mol_t* unique_mol_ptr[UNIQUE_MOL_CAP] = {0};
-    uint32_t              unique_mol_flg[UNIQUE_MOL_CAP] = {0};
-    uint32_t              unique_mol_count = 0;
-#undef  UNIQUE_MOL_CAP
-
     const uint32_t MOL_FLAG_COMPUTE_SPLINE = 1;
+
+    md_gl_draw_op_t const** draw_ops = 0;
+    draw_mol_t* draw_mols = 0;
+
+    md_allocator_i* alloc = default_temp_allocator;
         
-    ASSERT(args->representation.count < ARRAY_SIZE(draw_ent));
-    for (uint32_t i = 0; i < args->representation.count; i++) {
-        const internal_rep_t* rep = (internal_rep_t*)args->representation.data[i];
+    for (uint32_t i = 0; i < args->draw_operations.count; i++) {
+        const md_gl_draw_op_t* draw_op = &args->draw_operations.ops[i];
+        const internal_rep_t* rep = (internal_rep_t*)draw_op->rep;
         if (rep && rep->mol) {
             if (rep->magic != MAGIC) {
                 md_print(MD_LOG_TYPE_ERROR, "Representation is corrupt");
@@ -1311,51 +1302,48 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 }
             }
 
-            draw_ent[draw_ent_count].rep = rep;
-            draw_ent[draw_ent_count].model_matrix = args->representation.model_matrix ? (const mat4_t*)args->representation.model_matrix[i] : NULL;
-            draw_ent_count++;
+            md_array_push(draw_ops, draw_op, default_temp_allocator);
                 
-            uint32_t unique_mol_idx = 0xFFFFFFFFU;
-            for (uint32_t j = 0; j < unique_mol_count; j++) {
-                if (unique_mol_ptr[j] == rep->mol) {
-                    unique_mol_idx = j;
+            int64_t mol_idx = -1;
+            for (int64_t j = 0; j < md_array_size(draw_mols); j++) {
+                if (draw_mols[j].mol == rep->mol) {
+                    mol_idx = j;
                     break;
                 }
             }
-            if (unique_mol_idx == 0xFFFFFFFFU) {
-                ASSERT(unique_mol_count < ARRAY_SIZE(unique_mol_ptr));
-                unique_mol_idx = unique_mol_count++;
-                unique_mol_ptr[unique_mol_idx] = rep->mol;
-                unique_mol_flg[unique_mol_idx] = 0;
+            // Not found
+            if (mol_idx == -1) {
+                mol_idx = md_array_size(draw_mols);
+                md_array_push(draw_mols, ((draw_mol_t){ rep->mol, 0 }), default_temp_allocator);
             }
 
             if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {
-                unique_mol_flg[unique_mol_idx] |= MOL_FLAG_COMPUTE_SPLINE;
+                draw_mols[mol_idx].flags |= MOL_FLAG_COMPUTE_SPLINE;
             }
         }
     }
     
-    qsort((void*)draw_ent, draw_ent_count, sizeof(draw_entity_t), compare_draw_ent);
+    //qsort((void*)draw_ent, draw_ent_count, sizeof(draw_entity_t), compare_draw_ent);
                
     // Compute residue AABBs for culling
     if (ctx.version >= 430 && (args->options & MD_GL_OPTION_RESIDUE_OCCLUSION_CULLING)) {
         PUSH_GPU_SECTION("COMPUTE RESIDUE AABB")
-        for (uint32_t i = 0; i < unique_mol_count; i++) {
-            compute_residue_aabb(unique_mol_ptr[i]);
+        for (int64_t i = 0; i < md_array_size(draw_mols); i++) {
+            compute_residue_aabb(draw_mols[i].mol);
         }
         POP_GPU_SECTION()
             
         PUSH_GPU_SECTION("CULL RESIDUE AABB")
-        for (uint32_t i = 0; i < unique_mol_count; i++) {
-            cull_aabb(unique_mol_ptr[i]);
+        for (uint32_t i = 0; i < md_array_size(draw_mols); i++) {
+            cull_aabb(draw_mols[i].mol);
         }
         POP_GPU_SECTION()
     }
             
     PUSH_GPU_SECTION("COMPUTE SPLINE")
-    for (uint32_t i = 0; i < unique_mol_count; i++) {
-        if (unique_mol_flg[i] & MOL_FLAG_COMPUTE_SPLINE) {
-            compute_spline(unique_mol_ptr[i]);
+    for (uint32_t i = 0; i < md_array_size(draw_mols); i++) {
+        if (draw_mols[i].flags & MOL_FLAG_COMPUTE_SPLINE) {
+            compute_spline(draw_mols[i].mol);
         }
     }
     POP_GPU_SECTION()
@@ -1366,9 +1354,9 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     if (is_ortho_proj_matrix(ubo_data.view_transform.view_to_clip)) program_permutation |= PERMUTATION_BIT_ORTHO;
         
     PUSH_GPU_SECTION("DRAW REPRESENTATIONS")
-    for (uint32_t i = 0; i < draw_ent_count; i++) {
-        const internal_rep_t* rep  = draw_ent[i].rep;
-        const mat4_t* model_matrix = draw_ent[i].model_matrix;
+    for (int64_t i = 0; i < md_array_size(draw_ops); i++) {
+        const internal_rep_t* rep  = (const internal_rep_t*)draw_ops[i]->rep;
+        const mat4_t* model_matrix = (const mat4_t*)draw_ops[i]->model_matrix;
 
         if (model_matrix) {
             // If we have a model matrix, we need to recompute the entire matrix stack...

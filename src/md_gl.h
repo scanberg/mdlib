@@ -151,30 +151,30 @@ enum {
     MD_GL_OPTION_RESIDUE_OCCLUSION_CULLING = 1,
 };
 
+typedef struct md_gl_draw_op_t {
+    const md_gl_representation_t* rep;
+    const float* model_matrix;              // Column major float[4][4]
+} md_gl_draw_op_t;
+
 typedef struct md_gl_draw_args_t {
     md_gl_shaders_t* shaders;
 
     struct {
         uint32_t count;
-        const md_gl_representation_t** data;
-        const float** model_matrix;
-    } representation;
+        md_gl_draw_op_t* ops;
+    } draw_operations;
 
     struct {
         // @NOTE: Matrices are column major float[4][4]
         const float* view_matrix;
         const float* projection_matrix;
 
-        // [Optional] These fields are only required if md_gl_rendertarget_t is used and a texture_view_velocity is present
+        // [Optional] These fields are only used to compute screen space velocity
         const float* prev_view_matrix; 
         const float* prev_projection_matrix;
     } view_transform;
 
-    // If atom_mask is non-zero, the value is used as a mask and is ANDed with the atom flag of the molecule,
-    // if the result after the operation is non-zero, the atom will be drawn.
-    // Some representations (such as ribbons, cartoon) use spline segments derived from CA atoms, hide the CA atom => hide the segment
     uint32_t atom_mask;
-
     md_gl_options_t options;
 } md_gl_draw_args_t;
 
