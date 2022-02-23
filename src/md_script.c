@@ -114,7 +114,7 @@ typedef enum base_type_t {
 
 typedef enum flags_t {
     // Function Flags
-    FLAG_SYMMETRIC_ARGS             = 0x002, // Indicates that the arguments are symmetric, meaning the arguments can be swapped
+    FLAG_SYMMETRIC_ARGS             = 0x002, // Indicates that the first two arguments are symmetric, meaning they can be swapped
     FLAG_ARGS_EQUAL_LENGTH          = 0x004, // Arguments should have the same array length
     FLAG_RET_AND_ARG_EQUAL_LENGTH   = 0x008, // Return type array length matches argument arrays' length
     FLAG_DYNAMIC_LENGTH             = 0x010, // Return type has a varying length which is not constant over frames
@@ -855,8 +855,8 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                 }
                 else if (proc->flags & FLAG_SYMMETRIC_ARGS) {
                     // @TODO: Does this make sense for anything else than two arguments???
-                    // I cannot come up with such a scenario.
-                    ASSERT(proc->num_args == 2);
+                    // Note, the only exception here is the RDF function which should be symmetric on the first two, and then have the third cutoff parameter.
+                    ASSERT(proc->num_args >= 2);
                     md_type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
                     if (compare_type_info_array(swapped_args, proc->arg_type, 2)) {
                         res.success = true;
@@ -906,13 +906,13 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                     }
 
                     if (proc->flags & FLAG_SYMMETRIC_ARGS) {
-                        ASSERT(proc->num_args == 2);
+                        ASSERT(proc->num_args >= 2);
                         // Test if we can get a (better) result by swapping the arguments
                         md_type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
 
                         cost = 0;
                         flags = FLAG_SYMMETRIC_ARGS;
-                        for (int64_t j = 0; j < proc->num_args; ++j) {
+                        for (int64_t j = 0; j < 2; ++j) {
                             if (is_type_directly_compatible(swapped_args[j], proc->arg_type[j])) {
                                 // No conversion needed for this argument (0 cost)
                             }
@@ -2610,7 +2610,7 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
     if (num_args > 0) {
         if (res->flags & FLAG_SYMMETRIC_ARGS) {
             // If the symmetric flag is set, we need to swap the arguments
-            ASSERT(num_args == 2);
+            ASSERT(num_args >= 2);
             ast_node_t* tmp_child = node->children[0];
             node->children[0] = node->children[1];
             node->children[1] = tmp_child;

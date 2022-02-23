@@ -2,10 +2,13 @@
 
 #include "md_intrinsics.h"
 
+#define md_simd_f128_t __m128
+#define md_simd_f256_t __m256
+
 #ifdef __AVX__
 // Float
     #define md_simd_widthf 8
-    #define md_simd_typef __m256
+    #define md_simd_typef  md_simd_f256_t
     #define md_simd_loadf  md_simd_load_f256
     #define md_simd_storef md_simd_store_f256
 
