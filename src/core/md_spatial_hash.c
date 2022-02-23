@@ -242,9 +242,11 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const md_spatial_hash_args_t*
         cells[i].offset = cells[i-1].offset + cells[i-1].length;
     }
 
+#if DEBUG
     md_spatial_hash_cell_t* cell = md_array_last(cells);
     ASSERT(cell);
     ASSERT(cell->offset + cell->length == count);
+#endif
 
     for (int64_t i = 0; i < count; ++i) {
         uint32_t dst_idx = cells[cell_idx[i]].offset + local_idx[i];

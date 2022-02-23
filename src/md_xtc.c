@@ -134,7 +134,7 @@ static bool xtc_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
         framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
         nframes = (int)(filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
         for (i = 0; i < nframes; i++) {
-            md_array_push(arr, i * framebytes, alloc);
+            md_array_push(arr, (int64_t)i * (int64_t)framebytes, alloc);
         }
     } else {
         /* Go back to the beginning of the file */

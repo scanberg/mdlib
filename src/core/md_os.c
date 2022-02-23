@@ -83,7 +83,9 @@ str_t md_os_current_working_directory() {
     return res;
 }
 
-static inline str_t internal_fullpath(str_t path) {
+static inline str_t internal_fullpath(str_t path, md_allocator_i* alloc) {
+    path = copy_str(path, default_temp_allocator); // Zero terminate
+
     char sz_buf[MD_MAX_PATH] = "";
 #if MD_PLATFORM_WINDOWS
     int64_t len = (int64_t)GetFullPathName(path.ptr, sizeof(sz_buf), sz_buf, NULL);
@@ -111,7 +113,7 @@ static inline str_t internal_fullpath(str_t path) {
 #endif
     str_t result = { 0 };
     if (len > 0) {
-        result = copy_str((str_t) { sz_buf, len }, default_temp_allocator);
+        result = copy_str((str_t) { sz_buf, len }, alloc);
     }
     return result;
 }
@@ -119,8 +121,7 @@ static inline str_t internal_fullpath(str_t path) {
 str_t md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
-    path = copy_str(path, default_temp_allocator);
-    path = internal_fullpath(path);
+    path = internal_fullpath(path, alloc);
 
     if (path.len > 0) {
 #if MD_PLATFORM_WINDOWS
@@ -141,11 +142,8 @@ str_t md_os_path_make_relative(str_t from, str_t to, struct md_allocator_i* allo
     bool result = false;
 
     // Make 2 canonical paths
-    from = copy_str(from, default_temp_allocator);
-    to = copy_str(to, default_temp_allocator);
-
-    from = internal_fullpath(from);
-    to = internal_fullpath(to);
+    from = internal_fullpath(from, default_temp_allocator);
+    to = internal_fullpath(to, default_temp_allocator);
 
 #if MD_PLATFORM_WINDOWS
     result = PathRelativePathTo(sz_buf, from.ptr, FILE_ATTRIBUTE_NORMAL, to.ptr, FILE_ATTRIBUTE_NORMAL);

@@ -38,7 +38,11 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     cache->alloc = alloc;
     cache->traj = traj;
     md_array_resize(cache->buf, total_bytes, alloc);
-    ASSERT(cache->buf);
+    if (!cache->buf) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to allocate requested memory for frame_cache.");
+        memset(cache, 0, sizeof(md_frame_cache_t));
+        return false;
+    }
     cache->slot.count  = num_slots;
     cache->slot.lock   = (md_semaphore_t*)NEXT_ALIGNED_ADRESS(cache->buf, CACHE_MEM_ALIGNMENT);
     cache->slot.header = (md_slot_header_t*)(cache->slot.lock + num_slots);

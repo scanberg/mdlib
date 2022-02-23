@@ -163,16 +163,18 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     str_t result = {0,0};
     if (file) {
-        uint64_t file_size = md_file_size(file);
+        int64_t file_size = md_file_size(file);
         char* mem = md_alloc(alloc, file_size + 1);
         if (mem) {
-            uint64_t read_size = md_file_read(file, mem, file_size);
-
-            ASSERT(read_size == file_size);
-            mem[file_size] = '\0'; // Zero terminate as a nice guy
-
-            result.ptr = mem;
-            result.len = file_size;
+            int64_t read_size = md_file_read(file, mem, file_size);
+            if (read_size == file_size) {
+                mem[file_size] = '\0'; // Zero terminate as a nice guy
+                result.ptr = mem;
+                result.len = file_size;
+            }
+            else {
+                md_print(MD_LOG_TYPE_ERROR, "Failed to read full textfile");
+            }
         } else {
             md_printf(MD_LOG_TYPE_ERROR, "Could not allocate memory for file %d", 10);
         }

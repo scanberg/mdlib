@@ -118,8 +118,8 @@ static inline double step(double edge, double x) { return (double)((x - edge) > 
 static inline float fractf(float x) { return x - (int32_t)x; }
 static inline double fract(double x) { return x - (int64_t)x; }
 
-static inline float signf(float x)  { return (float)((x > 0) - (x < 0)); }
-static inline double sign(double x) { return (double)((x > 0) - (x < 0)); }
+static inline float signf(float x)  { return (float)((x > 0.0f) - (x < 0.0f)); }
+static inline double sign(double x) { return (double)((x > 0.0) - (x < 0.0)); }
 
 static inline float deperiodizef(float val, float ref, float period) {
     float d = (val - ref) / period;

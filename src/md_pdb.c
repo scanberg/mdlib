@@ -239,13 +239,13 @@ int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
 
     const int64_t beg = pdb->frame_offsets[frame_idx + 0];
     const int64_t end = pdb->frame_offsets[frame_idx + 1];
-    const uint64_t frame_size = end - beg;
+    const int64_t frame_size = end - beg;
 
     if (frame_data_ptr) {
         ASSERT(pdb->file);
         md_mutex_lock(&pdb->mutex);
         md_file_seek(pdb->file, beg, MD_FILE_BEG);
-        const uint64_t bytes_read = md_file_read(pdb->file, frame_data_ptr, frame_size);
+        const int64_t bytes_read = md_file_read(pdb->file, frame_data_ptr, frame_size);
         md_mutex_unlock(&pdb->mutex);
         ASSERT(frame_size == bytes_read);
     }
@@ -671,10 +671,13 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         // This is a borderline case if one should use the default_temp_allocator as the raw frame size could potentially be several megabytes...
         void* frame_data = md_alloc(alloc, frame_size);
         const int64_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
-        ASSERT(read_size == frame_size);
+        if (read_size != frame_size) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read the expected size");
+            md_free(alloc, frame_data, frame_size);
+            return false;
+        }
 
         result = pdb_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-
         md_free(alloc, frame_data, frame_size);
     }
 

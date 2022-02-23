@@ -40,6 +40,7 @@ static inline page_t* pool_new_page(pool_t* pool) {
 }
 
 static void* pool_new_slot(pool_t* pool, uint64_t size) {
+    (void)size;
     ASSERT(size <= pool->slot_size);
     
     page_t* page = NULL;

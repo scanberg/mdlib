@@ -1277,8 +1277,6 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 
     md_gl_draw_op_t const** draw_ops = 0;
     draw_mol_t* draw_mols = 0;
-
-    md_allocator_i* alloc = default_temp_allocator;
         
     for (uint32_t i = 0; i < args->draw_operations.count; i++) {
         const md_gl_draw_op_t* draw_op = &args->draw_operations.ops[i];
