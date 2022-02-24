@@ -225,6 +225,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
 
 BAKE_OP_S_S(_op_and_b_b, &&,  bool)
 BAKE_OP_S_S(_op_or_b_b,  ||,  bool)
+BAKE_OP_S_S(_op_xor_b_b, ^, bool)
 BAKE_OP_UNARY_S(_op_not_b, !, bool)
 
 BAKE_OP_S_S(_op_add_f_f, +, float)
@@ -294,6 +295,7 @@ static int _cast_flatten_bf_arr         (data_t*, data_t[], eval_context_t*);
 static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _and  (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _or   (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _xor  (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 // Selectors
 // Atomic level selectors
@@ -399,12 +401,14 @@ static procedure_t casts[] = {
 static procedure_t operators[] = {
     {CSTR("not"),    TI_BOOL,            1,  {TI_BOOL},              _op_not_b},
     {CSTR("or"),     TI_BOOL,            2,  {TI_BOOL,   TI_BOOL},   _op_or_b_b},
+    {CSTR("xor"),    TI_BOOL,            2,  {TI_BOOL,   TI_BOOL},   _op_xor_b_b},
     {CSTR("and"),    TI_BOOL,            2,  {TI_BOOL,   TI_BOOL},   _op_and_b_b},
 
     // BITFIELD NOT
     {CSTR("not"),    TI_BITFIELD,   1,  {TI_BITFIELD},  _not},
     {CSTR("and"),    TI_BITFIELD,   2,  {TI_BITFIELD, TI_BITFIELD}, _and},
     {CSTR("or"),     TI_BITFIELD,   2,  {TI_BITFIELD, TI_BITFIELD}, _or},
+    {CSTR("xor"),    TI_BITFIELD,   2,  {TI_BITFIELD, TI_BITFIELD}, _xor},
 
     // Binary add
     {CSTR("+"),      TI_FLOAT,       2,  {TI_FLOAT,      TI_FLOAT},      _op_add_f_f},
@@ -1250,9 +1254,6 @@ static int _and  (data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_and_inplace(bf_dst, ctx->mol_ctx);
     }
 
-    //ASSERT(bf_dst->num_bits == bf_src[0]->num_bits);
-    //ASSERT(bf_dst->num_bits == bf_src[1]->num_bits);
-    //bit_and(bf_dst->bits, bf_src[0]->bits, bf_src[1]->bits, 0, bf_dst->num_bits);
     return 0;
 }
 
@@ -1270,9 +1271,22 @@ static int _or   (data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_and_inplace(bf_dst, ctx->mol_ctx);
     }
 
-    //ASSERT(bf_dst->num_bits == bf_src[0]->num_bits);
-    //ASSERT(bf_dst->num_bits == bf_src[1]->num_bits);
-    //bit_or(bf_dst->bits, bf_src[0]->bits, bf_src[1]->bits, 0, bf_dst->num_bits);
+    return 0;
+}
+
+static int _xor(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
+    (void)ctx;
+
+    md_bitfield_t* bf_dst = dst->ptr;
+    md_bitfield_t* bf_src[2] = { arg[0].ptr, arg[1].ptr };
+
+    md_bitfield_xor(bf_dst, bf_src[0], bf_src[1]);
+    if (ctx->mol_ctx) {
+        md_bitfield_and_inplace(bf_dst, ctx->mol_ctx);
+    }
 
     return 0;
 }

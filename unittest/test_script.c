@@ -242,6 +242,12 @@ UTEST(script, property_compute) {
 
     md_script_ir_t ir = {0};
     md_script_eval_t eval = {0};
+
+    {
+        str_t src = MAKE_STR("d1 = 1:5 in residue(1:3);");
+        EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
+    }
+
     {
         EXPECT_TRUE(md_script_ir_compile(&ir, MAKE_STR("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, alloc, NULL));
         EXPECT_TRUE(md_script_eval_init(&eval, md_trajectory_num_frames(traj), &ir, alloc));
@@ -258,11 +264,6 @@ UTEST(script, property_compute) {
         EXPECT_TRUE(md_script_eval_init(&eval, md_trajectory_num_frames(traj), &ir, alloc));
         ASSERT_TRUE(md_script_eval_compute(&eval, &ir, &mol, traj, NULL));
         EXPECT_EQ(eval.num_properties, 1);
-    }
-
-    {
-        str_t src = MAKE_STR("d1 = distance(vec3(0,0,0), 1);");
-        EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
     }
 
     {

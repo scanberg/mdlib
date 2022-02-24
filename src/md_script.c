@@ -64,6 +64,7 @@ typedef enum token_type_t {
     TOKEN_NE, // '!='
     TOKEN_EQ, // '=='
     TOKEN_AND,
+    TOKEN_XOR,
     TOKEN_OR,
     TOKEN_NOT,
     TOKEN_OF,     // Reserved
@@ -96,6 +97,7 @@ typedef enum ast_type_t {
     AST_NE,
     AST_EQ,
     AST_AND,
+    AST_XOR,
     AST_OR,
     AST_CONTEXT,
     AST_ASSIGNMENT,
@@ -367,12 +369,14 @@ static uint32_t operator_precedence(ast_type_t type) {
         return 6;
     case AST_AND:
         return 7;
-    case AST_OR:
+    case AST_XOR:
         return 8;
-    case AST_CONTEXT:
+    case AST_OR:
         return 9;
-    case AST_ASSIGNMENT:
+    case AST_CONTEXT:
         return 10;
+    case AST_ASSIGNMENT:
+        return 11;
     default:
         ASSERT(false);
     }
@@ -630,7 +634,7 @@ static inline bool is_number(token_type_t type) {
 
 static inline bool is_operator(ast_type_t type) {
     return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV ||
-            type == AST_AND || type == AST_OR || type == AST_NOT ||
+            type == AST_AND || type == AST_OR || type == AST_XOR || type == AST_NOT ||
             type == AST_EQ || type == AST_NE || type == AST_LE || type == AST_GE || type == AST_LT || type == AST_GT);
 }
 
@@ -657,6 +661,7 @@ static const char* get_token_type_str(token_type_t type) {
     case TOKEN_EQ: return "== (equals)";
     case TOKEN_AND: return "and";
     case TOKEN_OR: return "or";
+    case TOKEN_XOR: return "xor";
     case TOKEN_NOT: return "not";
     case TOKEN_OF: return "of";
     case TOKEN_IN: return "in";
@@ -975,6 +980,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     case AST_DIV: name = MAKE_STR("/");   break;
     case AST_AND: name = MAKE_STR("and"); break;
     case AST_OR:  name = MAKE_STR("or");  break;
+    case AST_XOR: name = MAKE_STR("xor");  break;
     case AST_NOT: name = MAKE_STR("not"); break;
     case AST_EQ:  name = MAKE_STR("==");  break;
     case AST_NE:  name = MAKE_STR("!=");  break;
@@ -1058,23 +1064,26 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             const int64_t n = j - i;
             if (n == 2) {
                 str_t str = {buf+i, 2};
-                if (compare_str(str, (str_t){"or", 2})) {
+                if (compare_str(str, MAKE_STR("or"))) {
                     token.type = TOKEN_OR;
                 }
-                else if (compare_str(str, (str_t){"in", 2})) {
+                else if (compare_str(str, MAKE_STR("in"))) {
                     token.type = TOKEN_IN;
                 }
-                else if (compare_str(str, (str_t){"of", 2})) {
+                else if (compare_str(str, MAKE_STR("of"))) {
                     token.type = TOKEN_OF;
                 }
             }
             else if (n == 3) {
                 str_t str = {buf+i, 3};
-                if (compare_str(str, (str_t){"and", 3})) {
+                if (compare_str(str, MAKE_STR("and"))) {
                     token.type = TOKEN_AND;
                 }
-                else if (compare_str(str, (str_t){"not", 3})) {
+                else if (compare_str(str, MAKE_STR("not"))) {
                     token.type = TOKEN_NOT;
+                }
+                else if (compare_str(str, MAKE_STR("xor"))) {
+                    token.type = TOKEN_XOR;
                 }
             }
             
@@ -1737,7 +1746,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
 
 ast_node_t* parse_logical(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
-    ASSERT(token.type == TOKEN_AND || token.type == TOKEN_OR || token.type == TOKEN_NOT);
+    ASSERT(token.type == TOKEN_AND || token.type == TOKEN_OR || token.type == TOKEN_NOT || token.type == TOKEN_XOR);
 
     ast_type_t type = 0;
 
@@ -1745,6 +1754,7 @@ ast_node_t* parse_logical(parse_context_t* ctx) {
     case TOKEN_AND: type = AST_AND; break;
     case TOKEN_OR:  type = AST_OR;  break;
     case TOKEN_NOT: type = AST_NOT; break;
+    case TOKEN_XOR: type = AST_XOR; break;
     default:
         ASSERT(false);
     }
@@ -2079,6 +2089,7 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
         switch (token.type) {
             case TOKEN_AND:
             case TOKEN_OR:
+            case TOKEN_XOR:
             case TOKEN_NOT:
             ctx->node = parse_logical(ctx);
             fix_precedence(&ctx->node);
@@ -2499,6 +2510,7 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
         case AST_ADD:
         case AST_SUB:
         case AST_AND:
+        case AST_XOR:
         case AST_OR:
         case AST_EQ:
         case AST_NE:
@@ -3179,6 +3191,7 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     case AST_MUL:
     case AST_DIV:
     case AST_AND:
+    case AST_XOR:
     case AST_OR:
     case AST_NOT:
     case AST_EQ:
