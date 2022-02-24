@@ -258,13 +258,11 @@ UTEST(script, property_compute) {
         EXPECT_TRUE(md_script_eval_init(&eval, md_trajectory_num_frames(traj), &ir, alloc));
         ASSERT_TRUE(md_script_eval_compute(&eval, &ir, &mol, traj, NULL));
         EXPECT_EQ(eval.num_properties, 1);
-        //const md_script_property_t* props = eval.properties;
-        //EXPECT_EQ(props->data.num_values, traj_header.num_frames);
     }
 
     {
-        str_t src = MAKE_STR("d1 = distance(10:2, 100);");
-        EXPECT_FALSE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
+        str_t src = MAKE_STR("d1 = distance(vec3(0,0,0), 1);");
+        EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
     }
 
     {

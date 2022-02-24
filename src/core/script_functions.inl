@@ -34,8 +34,11 @@
 #define TI_STRING       {TYPE_STRING, {1}, 0}
 #define TI_STRING_ARR   {TYPE_STRING, {ANY_LENGTH}, 0}
 
-#define TI_BITFIELD         {TYPE_BITFIELD, {1}, 0}
-#define TI_BITFIELD_ARR     {TYPE_BITFIELD, {ANY_LENGTH}, 0}
+#define TI_BITFIELD     {TYPE_BITFIELD, {1}, 0}
+#define TI_BITFIELD_ARR {TYPE_BITFIELD, {ANY_LENGTH}, 0}
+
+#define TI_POSITION {TYPE_POSITION, {1}, 0}
+#define TI_POSITION_ARR {TYPE_POSITION, {ANY_LENGTH}, 0}
 
 #define as_float(arg) (*((float*)((arg).ptr)))
 #define as_float_arr(arg) ((float*)((arg).ptr))
@@ -319,39 +322,26 @@ static int _chain_irng  (data_t*, data_t[], eval_context_t*); // (irange[]) -> b
 static int _chain_str   (data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
 
 // Property Compute
-static int _distance        (data_t*, data_t[], eval_context_t*); // (float[3], float[3])   -> float
-static int _distance_min    (data_t*, data_t[], eval_context_t*); // (float[3][], float[3][]) -> float
-static int _distance_max    (data_t*, data_t[], eval_context_t*); // (float[3][], float[3][]) -> float
-static int _distance_pair   (data_t*, data_t[], eval_context_t*); // (float[3][], float[3][]) -> float
+static int _distance        (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
+static int _distance_min    (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
+static int _distance_max    (data_t*, data_t[], eval_context_t*); // (position[], position[]) -> float
+static int _distance_pair   (data_t*, data_t[], eval_context_t*); // (position[N], position[M]) -> float[N*M]
 
-static int _angle   (data_t*, data_t[], eval_context_t*); // (float[3], float[3], float[3]) -> float
-static int _dihedral(data_t*, data_t[], eval_context_t*); // (float[3], float[3], float[3], float[3]) -> float
+static int _angle   (data_t*, data_t[], eval_context_t*); // (position[], position[], position[]) -> float
+static int _dihedral(data_t*, data_t[], eval_context_t*); // (position[], position[], position[]), position[]) -> float
 
-static int _rmsd    (data_t*, data_t[], eval_context_t*); // (float[3][]) -> float
+static int _rmsd    (data_t*, data_t[], eval_context_t*); // (bitfield) -> float
 
 // Radial distribution function: The idea is that we use a fixed (high) amount of bins, then we let the user choose some kernel to smooth it.
-static int _rdf_bf_bf_flt (data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield[], float)  -> float[1024] (Histogram).
-static int _rdf_bf_bf_frng(data_t*, data_t[], eval_context_t*); // (bitfield[], bitfield[], frange) -> float[1024] (Histogram).
-
-static int _rdf_bf_pos_flt (data_t*, data_t[], eval_context_t*); // (bitfield[], vec3[], float)  -> float[1024] (Histogram).
-static int _rdf_bf_pos_frng(data_t*, data_t[], eval_context_t*); // (bitfield[], vec3[], frange) -> float[1024] (Histogram).
-
-static int _rdf_pos_pos_flt (data_t*, data_t[], eval_context_t*); // (vec3[], vec3[], float)  -> float[1024] (Histogram).
-static int _rdf_pos_pos_frng(data_t*, data_t[], eval_context_t*); // (vec3[], vec3[], frange) -> float[1024] (Histogram).
+static int _rdf_flt (data_t*, data_t[], eval_context_t*); // (position[], position[], float)  -> float[1024] (Histogram).
+static int _rdf_frng(data_t*, data_t[], eval_context_t*); // (position[], position[], frange) -> float[1024] (Histogram).
 
 static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield, float) -> float[128][128][128]. This one cannot be stored explicitly as one copy per frame, but is rather accumulated.
 
 // Geometric operations
-static int _com_vec3(data_t*, data_t[], eval_context_t*); // (float[3][]) -> float[3]
-static int _com_bf  (data_t*, data_t[], eval_context_t*); // (bitfield[]) -> float[3]
-static int _com_int (data_t*, data_t[], eval_context_t*); // (int[])      -> float[3]
-static int _com_irng(data_t*, data_t[], eval_context_t*); // (irange[])   -> float[3]
-
-static int _plane   (data_t*, data_t[], eval_context_t*);  // (float[3][]) -> float[4]
-
-static int _position_int    (data_t*, data_t[], eval_context_t*);   // (int)      -> float[3]
-static int _position_irng   (data_t*, data_t[], eval_context_t*);   // (irange)   -> float[3][]
-static int _position_bf     (data_t*, data_t[], eval_context_t*);   // (bitfield) -> float[3][]
+static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
+static int _plane   (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[4]
+static int _position(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3][]
 
 // Linear algebra
 static int _dot           (data_t*, data_t[], eval_context_t*); // (float[], float[]) -> float
@@ -404,15 +394,6 @@ static procedure_t casts[] = {
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _cast_flatten_bf_arr},
-
-    // This does the heavy lifting for implicitly converting every compatible argument into a position (vec3) if the procedure is marked with FLAG_POSITION
-    {CSTR("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {CSTR("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {CSTR("extract pos"),   TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _position_bf,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-
-    {CSTR("extract com"),   TI_FLOAT3,      1,  {TI_INT_ARR},       _com_int,       FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {CSTR("extract com"),   TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng,      FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {CSTR("extract com"),   TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,        FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 };
 
 static procedure_t operators[] = {
@@ -569,41 +550,30 @@ static procedure_t procedures[] = {
     {CSTR("x"),         TI_BITFIELD, 1, {TI_FRANGE},                   _x,             FLAG_DYNAMIC},
     {CSTR("y"),         TI_BITFIELD, 1, {TI_FRANGE},                   _y,             FLAG_DYNAMIC},
     {CSTR("z"),         TI_BITFIELD, 1, {TI_FRANGE},                   _z,             FLAG_DYNAMIC},
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT,  TI_FLOAT3_ARR},    _within_flt,    FLAG_DYNAMIC | FLAG_POSITION},
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_FRANGE, TI_FLOAT3_ARR},    _within_frng,   FLAG_DYNAMIC | FLAG_POSITION},
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT,  TI_POSITION_ARR},  _within_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_FRANGE, TI_POSITION_ARR},  _within_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // --- PROPERTY COMPUTE ---
-    {CSTR("distance"),      TI_FLOAT,       2,  {TI_FLOAT3, TI_FLOAT3},         _distance,      FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
-    {CSTR("distance_min"),  TI_FLOAT,       2,  {TI_FLOAT3_ARR, TI_FLOAT3_ARR}, _distance_min,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
-    {CSTR("distance_max"),  TI_FLOAT,       2,  {TI_FLOAT3_ARR, TI_FLOAT3_ARR}, _distance_max,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
-    {CSTR("distance_pair"), TI_FLOAT_ARR,   2,  {TI_FLOAT3_ARR, TI_FLOAT3_ARR}, _distance_pair, FLAG_QUERYABLE_LENGTH | FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
+    {CSTR("distance"),      TI_FLOAT,       2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("distance_min"),  TI_FLOAT,       2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance_min,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("distance_max"),  TI_FLOAT,       2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance_max,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("distance_pair"), TI_FLOAT_ARR,   2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance_pair, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH},
 
-    {CSTR("angle"),     TI_FLOAT,   3,  {TI_FLOAT3, TI_FLOAT3, TI_FLOAT3},              _angle,     FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
-    {CSTR("dihedral"),  TI_FLOAT,   4,  {TI_FLOAT3, TI_FLOAT3, TI_FLOAT3, TI_FLOAT3},   _dihedral,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE},
+    {CSTR("angle"),     TI_FLOAT,   3,  {TI_POSITION_ARR, TI_POSITION_ARR, TI_POSITION_ARR},                    _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("dihedral"),  TI_FLOAT,   4,  {TI_POSITION_ARR, TI_POSITION_ARR, TI_POSITION_ARR, TI_POSITION_ARR},   _dihedral,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
-    {CSTR("rmsd"),      TI_FLOAT,   1,  {TI_BITFIELD},    _rmsd,     FLAG_DYNAMIC | FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {CSTR("rmsd"),      TI_FLOAT,   1,  {TI_BITFIELD},    _rmsd,     FLAG_DYNAMIC},
 
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_BITFIELD_ARR, TI_BITFIELD_ARR, TI_FLOAT},  _rdf_bf_bf_flt,    FLAG_DYNAMIC | FLAG_POSITION | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_BITFIELD_ARR, TI_BITFIELD_ARR, TI_FRANGE}, _rdf_bf_bf_frng,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_BITFIELD_ARR, TI_FLOAT3_ARR,   TI_FLOAT},  _rdf_bf_pos_flt,   FLAG_DYNAMIC | FLAG_POSITION | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_BITFIELD_ARR, TI_FLOAT3_ARR,   TI_FRANGE}, _rdf_bf_pos_frng,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_FLOAT3_ARR,   TI_FLOAT3_ARR,   TI_FLOAT},  _rdf_pos_pos_flt,  FLAG_DYNAMIC | FLAG_POSITION | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_FLOAT3_ARR,   TI_FLOAT3_ARR,   TI_FRANGE}, _rdf_pos_pos_frng, FLAG_DYNAMIC | FLAG_POSITION | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_POSITION_ARR, TI_POSITION_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_POSITION_ARR, TI_POSITION_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
-
-    {CSTR("sdf"),       TI_VOLUME,          3,  {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},   _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE},
+    {CSTR("sdf"),       TI_VOLUME, 3, {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE},
 
     // --- GEOMETRICAL OPERATIONS ---
-    {CSTR("com"),       TI_FLOAT3,      1,  {TI_INT_ARR},       _com_int,   FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {CSTR("com"),       TI_FLOAT3,      1,  {TI_IRANGE_ARR},    _com_irng,  FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {CSTR("com"),       TI_FLOAT3,      1,  {TI_BITFIELD_ARR},  _com_bf,    FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-    {CSTR("com"),       TI_FLOAT3,      1,  {TI_FLOAT3_ARR},    _com_vec3,  FLAG_DYNAMIC | FLAG_VISUALIZE},
+    {CSTR("com"),       TI_FLOAT3,      1,  {TI_POSITION_ARR},  _com,       FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
+    {CSTR("plane"),     TI_FLOAT4,      1,  {TI_POSITION_ARR},  _plane,     FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
-    {CSTR("plane"),     TI_FLOAT4,      1,  {TI_FLOAT3_ARR},    _plane,     FLAG_DYNAMIC | FLAG_POSITION | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
-
-    {CSTR("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_INT_ARR},       _position_int,  FLAG_DYNAMIC | FLAG_QUERYABLE_LENGTH},
-    {CSTR("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_IRANGE_ARR},    _position_irng, FLAG_DYNAMIC | FLAG_QUERYABLE_LENGTH},
-    {CSTR("atom_pos"),   TI_FLOAT3_ARR,  1,  {TI_BITFIELD_ARR},  _position_bf,   FLAG_DYNAMIC | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position"),  TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 };
 
 #undef CSTR
@@ -788,6 +758,35 @@ static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, flo
     return count;
 }
 
+// @TODO: All these have poor names
+
+static inline irange_t remap_range_to_context(irange_t range, irange_t context) {
+    if (range.beg == INT32_MIN)
+        range.beg = 0;
+    else
+        range.beg = range.beg - 1;
+
+    if (range.end == INT32_MAX)
+        range.end = context.end - context.beg;
+    else
+        range.end = range.end;
+
+    range.beg = context.beg + range.beg;
+    range.end = context.beg + range.end;
+
+    return range;
+}
+
+static inline int32_t remap_index_to_context(int32_t index, irange_t context) {
+    return context.beg + index - 1;
+}
+
+static inline irange_t clamp_range(irange_t range, irange_t context) {
+    range.beg = CLAMP(range.beg, context.beg, context.end);
+    range.end = CLAMP(range.end, context.beg, context.end);
+    return range;
+}
+
 static int64_t* get_residue_indices_in_context(const md_molecule_t* mol, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(mol->atom.residue_idx);
@@ -805,7 +804,8 @@ static int64_t* get_residue_indices_in_context(const md_molecule_t* mol, const m
             md_array_push(arr, res_idx, alloc);
             beg = mol->residue.atom_range[res_idx].end;
         }
-    } else {
+    }
+    else {
         for (int64_t i = 0; i < mol->residue.count; ++i) {
             md_array_push(arr, i, alloc);
         }
@@ -830,7 +830,8 @@ static int64_t* get_chain_indices_in_context(const md_molecule_t* mol, const md_
             md_array_push(arr, chain_idx, alloc);
             beg = mol->chain.atom_range[chain_idx].end;
         }
-    } else {
+    }
+    else {
         for (int64_t i = 0; i < mol->chain.count; ++i) {
             md_array_push(arr, i, alloc);
         }
@@ -841,7 +842,7 @@ static int64_t* get_chain_indices_in_context(const md_molecule_t* mol, const md_
 
 static inline irange_t get_atom_range_in_context(const md_molecule_t* mol, const md_bitfield_t* mol_ctx) {
     ASSERT(mol);
-    irange_t range = {0, (int32_t)mol->atom.count};
+    irange_t range = { 0, (int32_t)mol->atom.count };
     if (mol_ctx) {
         range.beg = mol_ctx->beg_bit;
         range.end = mol_ctx->end_bit;
@@ -851,10 +852,10 @@ static inline irange_t get_atom_range_in_context(const md_molecule_t* mol, const
 
 static inline irange_t get_residue_range_in_context(const md_molecule_t* mol, const md_bitfield_t* mol_ctx) {
     ASSERT(mol);
-    irange_t range = {0, (int32_t)mol->residue.count};
+    irange_t range = { 0, (int32_t)mol->residue.count };
     if (mol_ctx) {
         int64_t first = CLAMP((int64_t)mol_ctx->beg_bit, 0, mol->atom.count - 1);
-        int64_t last  = CLAMP((int64_t)mol_ctx->end_bit - 1, first, mol->atom.count - 1);
+        int64_t last = CLAMP((int64_t)mol_ctx->end_bit - 1, first, mol->atom.count - 1);
         range.beg = mol->atom.residue_idx[first];
         range.end = mol->atom.residue_idx[last] + 1;
     }
@@ -863,14 +864,343 @@ static inline irange_t get_residue_range_in_context(const md_molecule_t* mol, co
 
 static inline irange_t get_chain_range_in_context(const md_molecule_t* mol, const md_bitfield_t* mol_ctx) {
     ASSERT(mol);
-    irange_t range = {0, (int32_t)mol->chain.count};
+    irange_t range = { 0, (int32_t)mol->chain.count };
     if (mol_ctx) {
         int64_t first = CLAMP((int64_t)mol_ctx->beg_bit, 0, mol->atom.count - 1);
-        int64_t last  = CLAMP((int64_t)mol_ctx->end_bit - 1, first, mol->atom.count - 1);
+        int64_t last = CLAMP((int64_t)mol_ctx->end_bit - 1, first, mol->atom.count - 1);
         range.beg = mol->atom.chain_idx[first];
         range.end = mol->atom.chain_idx[last] + 1;
     }
     return range;
+}
+
+static int position_validate(data_t arg, eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
+    if (element_count(arg) == 0) return 0;
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const int64_t ctx_size = ctx_range.end - ctx_range.beg;
+
+    switch (arg.type.base_type) {
+    case TYPE_FLOAT:
+        ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
+        return (int)type_info_array_len(arg.type);
+    case TYPE_INT: {
+        int* indices = as_int_arr(arg);
+        int count = 0;
+        for (int64_t i = 0; i < element_count(arg); ++i) {
+            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
+
+            if (!(ctx_range.beg <= idx && idx < ctx_range.end)) {
+                create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)",
+                    (int)idx, 1, ctx_size);
+                return -1;
+            }
+            if (ctx->mol_ctx) {
+                if (!md_bitfield_test_bit(ctx->mol_ctx, idx)) {
+                    create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not represented within the supplied context", (int)idx);
+                    return -1;
+                }
+            }
+            count += 1;
+        }
+        return count;
+    }
+    case TYPE_BITFIELD:
+    {
+        if (element_count(arg) == 1) {
+            return (int)md_bitfield_popcount(as_bitfield(arg));
+        }
+        else {
+            return (int)type_info_array_len(arg.type);
+        }
+    }
+    case TYPE_IRANGE:
+    {
+        irange_t* ranges = as_irange_arr(arg);
+        int count = 0;
+        for (int64_t i = 0; i < element_count(arg); ++i) {
+            irange_t range = remap_range_to_context(ranges[i], ctx_range);
+            if (range_in_range(range, ctx_range)) {
+                if (ctx->mol_ctx) {
+                    count += (int)md_bitfield_popcount_range(ctx->mol_ctx, range.beg, range.end);
+                }
+                else {
+                    count += range.end - range.beg;
+                }
+            }
+            else {
+                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
+                    ranges[i].beg, ranges[i].end, 1, ctx_size);
+                return -1;
+            }
+        }
+        return count;
+    }
+    default:
+        ASSERT(false);
+        return -1;
+    }
+}
+
+static void position_visualize(data_t arg, eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(ctx->vis);
+
+    if (element_count(arg) == 0) return;
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+
+    switch (arg.type.base_type) {
+    case TYPE_FLOAT:
+        ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
+        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            const vec3_t* pos = as_vec3_arr(arg);
+            const int64_t len = element_count(arg);
+            for (int64_t i = 0; i < len; ++i) {
+                uint16_t v = push_vertex(pos[i], ctx->vis);
+                push_point(v, ctx->vis);
+            }
+        }
+        break;
+    case TYPE_INT: {
+        int* indices = as_int_arr(arg);
+        const int64_t len = element_count(arg);
+        for (int64_t i = 0; i < len; ++i) {
+            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
+            visualize_atom_index(idx, ctx->vis);
+        }
+        break;
+    }
+    case TYPE_BITFIELD:
+    {
+        md_bitfield_t tmp_bf = {0};
+        const md_bitfield_t* in_bf = as_bitfield(arg);
+
+        if (ctx->mol_ctx) {
+            md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+        }
+
+        for (int64_t i = 0; i < element_count(arg); ++i) {
+            md_bitfield_t* bf = &in_bf[i];
+            if (ctx->mol_ctx) {
+                md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                bf = &tmp_bf;
+            }
+            visualize_atom_mask(bf, ctx->vis);
+        }
+
+        if (ctx->mol_ctx) {
+            md_bitfield_free(&tmp_bf);
+        }
+        break;
+    }
+    case TYPE_IRANGE:
+    {
+        irange_t* ranges = as_irange_arr(arg);
+        for (int64_t i = 0; i < element_count(arg); ++i) {
+            irange_t range = remap_range_to_context(ranges[i], ctx_range);
+            if (range_in_range(range, ctx_range)) {
+                if (ctx->mol_ctx) {
+                    int64_t beg_bit = range.beg;
+                    int64_t end_bit = range.end;
+                    while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
+                        const int64_t idx = beg_bit - 1;
+                        visualize_atom_index(idx, ctx->vis);
+                    }
+                }
+                else {
+                    visualize_atom_range(range, ctx->vis);
+                }
+            }
+        }
+        break;
+    }
+    default:
+        ASSERT(false);
+    }
+}
+
+static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
+    vec3_t* positions = 0;
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+
+    switch (arg.type.base_type) {
+    case TYPE_FLOAT:
+        ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
+        md_array_push_array(positions, as_vec3_arr(arg), element_count(arg), ctx->temp_alloc);
+        break;
+    case TYPE_INT:
+        int* indices = as_int_arr(arg);
+        int64_t num_idx = element_count(arg);
+        for (int64_t i = 0; i < num_idx; ++i) {
+            // Shift here since we use 1 based indices for atoms
+            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
+            vec3_t pos = { ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx] };
+            md_array_push(positions, pos, ctx->temp_alloc);
+        }
+        break;
+    case TYPE_IRANGE: {
+        irange_t* ranges = as_irange_arr(arg);
+        int64_t num_ranges = element_count(arg);
+        for (int64_t i = 0; i < num_ranges; ++i) {
+            irange_t range = remap_range_to_context(ranges[i], ctx_range);
+            range = clamp_range(range, ctx_range);
+
+            if (ctx->mol_ctx) {
+                int64_t beg_bit = range.beg;
+                int64_t end_bit = range.end;
+                while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
+                    const int64_t idx = beg_bit - 1;
+                    vec3_t pos = { ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx] };
+                    md_array_push(positions, pos, ctx->temp_alloc);
+                }
+            }
+            else {
+                for (int64_t j = range.beg; j < range.end; ++j) {
+                    vec3_t pos = { ctx->mol->atom.x[j], ctx->mol->atom.y[j], ctx->mol->atom.z[j] };
+                    md_array_push(positions, pos, ctx->temp_alloc);
+                }
+            }
+        }
+        break;
+    }
+    case TYPE_BITFIELD: {
+        md_bitfield_t tmp_bf = { 0 };
+        if (ctx->mol_ctx) {
+            md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+        }
+
+        md_bitfield_t* bf_arr = as_bitfield(arg);
+        int64_t num_bf = element_count(arg);
+
+        if (num_bf == 1) {
+            md_bitfield_t* bf = bf_arr;
+            if (ctx->mol_ctx) {
+                md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+                md_bitfield_and(&tmp_bf, bf_arr, ctx->mol_ctx);
+                bf = &tmp_bf;
+            }
+            positions = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, bf, ctx->temp_alloc);
+        }
+        else {
+            for (int64_t i = 0; i < num_bf; ++i) {
+                md_bitfield_t* bf = &bf_arr[i];
+                if (ctx->mol_ctx) {
+                    md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                    bf = &tmp_bf;
+                }
+                vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+                md_array_push(positions, com, ctx->temp_alloc);
+            }
+            ASSERT(num_bf == md_array_size(positions));
+        }
+
+        if (ctx->mol_ctx) {
+            md_bitfield_free(&tmp_bf);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    return positions;
+}
+
+static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
+    vec4_t sum = { 0 };
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+
+    switch (arg.type.base_type) {
+    case TYPE_FLOAT: {
+        ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
+        vec3_t* positions = as_vec3_arr(arg);
+        for (int64_t i = 0; i < element_count(arg); ++i) {
+            vec4_add(sum, vec4_from_vec3(positions[i], 1.0f));
+        }
+        break;
+    }
+    case TYPE_INT: {
+        int* indices = as_int_arr(arg);
+        int64_t num_idx = element_count(arg);
+        for (int64_t i = 0; i < num_idx; ++i) {
+            // Shift here since we use 1 based indices for atoms
+            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
+            vec4_t xyzw = { ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], 1.0f };
+            xyzw = vec4_mul_f(xyzw, ctx->mol->atom.mass[idx]);
+            sum = vec4_add(sum, xyzw);
+        }
+        break;
+    }
+    case TYPE_IRANGE: {
+        irange_t* ranges = as_irange_arr(arg);
+        int64_t num_ranges = element_count(arg);
+        for (int64_t i = 0; i < num_ranges; ++i) {
+            irange_t range = remap_range_to_context(ranges[i], ctx_range);
+            range = clamp_range(range, ctx_range);
+
+            if (ctx->mol_ctx) {
+                int64_t beg_bit = range.beg;
+                int64_t end_bit = range.end;
+                while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
+                    const int64_t idx = beg_bit - 1;
+                    vec4_t xyzw = { ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], 1.0f };
+                    xyzw = vec4_mul_f(xyzw, ctx->mol->atom.mass[idx]);
+                    sum = vec4_add(sum, xyzw);
+                }
+            }
+            else {
+                for (int64_t j = range.beg; j < range.end; ++j) {
+                    vec4_t xyzw = { ctx->mol->atom.x[j], ctx->mol->atom.y[j], ctx->mol->atom.z[j], 1.0f };
+                    xyzw = vec4_mul_f(xyzw, ctx->mol->atom.mass[j]);
+                    sum = vec4_add(sum, xyzw);
+                }
+            }
+        }
+        break;
+    }
+    case TYPE_BITFIELD: {
+        md_bitfield_t tmp_bf = { 0 };
+        if (ctx->mol_ctx) {
+            md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+        }
+
+        md_bitfield_t* bf_arr = as_bitfield(arg);
+        int64_t num_bf = element_count(arg);
+
+        if (num_bf == 1) {
+            md_bitfield_t* bf = bf_arr;
+            if (ctx->mol_ctx) {
+                md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+                md_bitfield_and(&tmp_bf, bf_arr, ctx->mol_ctx);
+                bf = &tmp_bf;
+            }
+            vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+            sum = vec4_from_vec3(com, 1.0f);
+        }
+        else {
+            for (int64_t i = 0; i < num_bf; ++i) {
+                md_bitfield_t* bf = &bf_arr[i];
+                if (ctx->mol_ctx) {
+                    md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                    bf = &tmp_bf;
+                }
+                vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+                sum = vec4_add(sum, vec4_from_vec3(com, 1.0f));
+            }
+        }
+
+        if (ctx->mol_ctx) {
+            md_bitfield_free(&tmp_bf);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    return vec3_div_f(vec3_from_vec4(sum), sum.w ? sum.w : 1.0f);
 }
 
 static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
@@ -1295,13 +1625,14 @@ static bool within_float_iter(uint32_t idx, vec3_t pos, void* user_data) {
 static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
 
     const float radius = as_float(arg[0]);
-    const vec3_t* in_pos = as_vec3_arr(arg[1]);
-    const int64_t num_pos = element_count(arg[1]);
 
     if (dst || ctx->vis) {
+        const vec3_t* in_pos = position_extract(arg[1], ctx);
+        const int64_t num_pos = md_array_size(in_pos);
+
         md_spatial_hash_t spatial_hash = {0};
         md_spatial_hash_args_t args = {
             .coords = {
@@ -1320,26 +1651,23 @@ static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             for (int64_t i = 0; i < num_pos; ++i) {
-                vec3_t pos = {in_pos[i].x, in_pos[i].y, in_pos[i].z};
-                md_spatial_hash_query(&spatial_hash, pos, radius, within_float_iter, dst_bf);
+                md_spatial_hash_query(&spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
             }
         } else {
+            ASSERT(ctx->vis);
+            position_visualize(arg[1], ctx);
             // Visualize
             md_bitfield_t* dst_bf = ctx->vis->atom_mask;
             for (int64_t i = 0; i < num_pos; ++i) {
-                vec3_t pos = {in_pos[i].x, in_pos[i].y, in_pos[i].z};
-                push_sphere(vec4_from_vec3(pos, radius), ctx->vis);
-                md_spatial_hash_query(&spatial_hash, pos, radius, within_float_iter, dst_bf);
+                push_sphere(vec4_from_vec3(in_pos[i], radius), ctx->vis);
+                md_spatial_hash_query(&spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
             }
         }
     }
     else {
+        if (position_validate(arg[1], ctx) < 0) return -1;
         if (radius <= 0) {
             create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
-            return -1;
-        }
-        if (num_pos == 0) {
-            create_error(ctx->ir, ctx->arg_tokens[1], "No supplied positions");
             return -1;
         }
     }
@@ -1366,13 +1694,14 @@ static bool within_frng_iter(uint32_t idx, vec3_t pos, void* user_data) {
 static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
 
     const frange_t rad_range = as_frange(arg[0]);
-    const vec3_t* in_pos = as_vec3_arr(arg[1]);
-    const int64_t num_pos = element_count(arg[1]);
 
     if (dst || ctx->vis) {
+        const vec3_t* in_pos = as_vec3_arr(arg[1]);
+        const int64_t num_pos = element_count(arg[1]);
+
         md_spatial_hash_t spatial_hash = {0};
         md_spatial_hash_args_t args = {
             .coords = {
@@ -1395,10 +1724,9 @@ static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 .rad_range = rad_range,
             };
             for (int64_t i = 0; i < num_pos; ++i) {
-                vec3_t pos = {in_pos[i].x, in_pos[i].y, in_pos[i].z};
                 float  rad = rad_range.end;
-                payload.ref_pos = (vec3_t) {in_pos[i].x, in_pos[i].y, in_pos[i].z};
-                md_spatial_hash_query(&spatial_hash, pos, rad, within_frng_iter, &payload);
+                payload.ref_pos = in_pos[i];
+                md_spatial_hash_query(&spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
             }
         } else {
             // Visualize
@@ -1408,56 +1736,22 @@ static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 .rad_range = rad_range,
             };
             for (int64_t i = 0; i < num_pos; ++i) {
-                vec3_t pos = {in_pos[i].x, in_pos[i].y, in_pos[i].z};
                 float  rad = rad_range.end;
-                payload.ref_pos = (vec3_t) {in_pos[i].x, in_pos[i].y, in_pos[i].z};
-                md_spatial_hash_query(&spatial_hash, pos, rad, within_frng_iter, &payload);
-                push_sphere(vec4_from_vec3(pos, rad), ctx->vis);
+                payload.ref_pos = in_pos[i];
+                md_spatial_hash_query(&spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                push_sphere(vec4_from_vec3(in_pos[i], rad), ctx->vis);
             }
         }
     }
     else {
+        if (position_validate(arg[0], ctx) < 0) return -1;
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
             create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
-            return -1;
-        }
-        if (num_pos == 0) {
-            create_error(ctx->ir, ctx->arg_tokens[1], "No supplied positions");
             return -1;
         }
     }
 
     return 0;
-}
-
-
-// @TODO: All these have poor names
-
-static inline irange_t remap_range_to_context(irange_t range, irange_t context) {
-    if (range.beg == INT32_MIN)
-        range.beg = 0;
-    else 
-        range.beg = range.beg - 1;
-
-    if (range.end == INT32_MAX)
-        range.end = context.end - context.beg;
-    else 
-        range.end = range.end;
-
-    range.beg = context.beg + range.beg;
-    range.end = context.beg + range.end;
-
-    return range;
-}
-
-static inline int32_t remap_index_to_context(int32_t index, irange_t context) {
-    return context.beg + index - 1;
-}
-
-static inline irange_t clamp_range(irange_t range, irange_t context) {
-    range.beg = CLAMP(range.beg, context.beg, context.end);
-    range.end = CLAMP(range.end, context.beg, context.end);
-    return range;
 }
 
 static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -2020,25 +2314,36 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_equivalent(arg[0].type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_equivalent(arg[1].type, (md_type_info_t)TI_FLOAT3));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
 
-    const vec3_t a = as_vec3(arg[0]);
-    const vec3_t b = as_vec3(arg[1]);
+    if (dst || ctx->vis) {
+        vec3_t a = position_extract_com(arg[0], ctx);
+        vec3_t b = position_extract_com(arg[1], ctx);
 
-    if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
-        as_float(*dst) = vec3_distance(a, b);
-        dst->min_range = -FLT_MAX;
-        dst->max_range = FLT_MAX;
-    }
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+            as_float(*dst) = vec3_distance(a, b);
+            dst->min_range = -FLT_MAX;
+            dst->max_range = FLT_MAX;
+        } else {
+            ASSERT(ctx->vis);
+            position_visualize(arg[0], ctx);
+            position_visualize(arg[1], ctx);
 
-    if (ctx->vis) {
-        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            uint16_t va = push_vertex(a, ctx->vis);
-            uint16_t vb = push_vertex(b, ctx->vis);
-            push_line(va, vb, ctx->vis);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                uint16_t va = push_vertex(a, ctx->vis);
+                uint16_t vb = push_vertex(b, ctx->vis);
+                push_line(va, vb, ctx->vis);
+            }
         }
+    }
+    else {
+        int res_a = position_validate(arg[0], ctx);
+        int res_b = position_validate(arg[1], ctx);
+        if (res_a < 0) return res_a;
+        if (res_b < 0) return res_b;
+        return 1;
     }
 
     return 0;
@@ -2046,41 +2351,53 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
 
-    const vec3_t* a_pos = as_vec3_arr(arg[0]);
-    const vec3_t* b_pos = as_vec3_arr(arg[1]);
-    const int64_t a_len = element_count(arg[0]);
-    const int64_t b_len = element_count(arg[1]);
+    if (dst || ctx->vis) {
+        const vec3_t* a_pos = position_extract(arg[0], ctx);
+        const vec3_t* b_pos = position_extract(arg[1], ctx);
+        const int64_t a_len = md_array_size(a_pos);
+        const int64_t b_len = md_array_size(b_pos);
 
-    float min_dist = a_len > 0 ? FLT_MAX : 0.0f;
-    int64_t min_i = 0;
-    int64_t min_j = 0;
-    for (int64_t i = 0; i < a_len; ++i) {
-        for (int64_t j = 0; j < b_len; ++j) {
-            const float dist = vec3_distance(a_pos[i], b_pos[j]);
-            if (dist < min_dist) {
-                min_dist = dist;
-                min_i = i;
-                min_j = j;
+        float min_dist = FLT_MAX;
+        int64_t max_i = 0;
+        int64_t max_j = 0;
+        for (int64_t i = 0; i < a_len; ++i) {
+            for (int64_t j = 0; j < b_len; ++j) {
+                const float dist = vec3_distance(a_pos[i], b_pos[j]);
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    max_i = i;
+                    max_j = j;
+                }
+            }
+        }
+
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+            as_float(*dst) = min_dist;
+            dst->min_range = -FLT_MAX;
+            dst->max_range = FLT_MAX;
+        }
+        else {
+            ASSERT(ctx->vis);
+            position_visualize(arg[0], ctx);
+            position_visualize(arg[1], ctx);
+
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                uint16_t va = push_vertex(a_pos[max_i], ctx->vis);
+                uint16_t vb = push_vertex(b_pos[max_j], ctx->vis);
+                push_line(va, vb, ctx->vis);
             }
         }
     }
-
-    if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
-        as_float(*dst) = min_dist;
-        dst->min_range = -FLT_MAX;
-        dst->max_range = FLT_MAX;
-    }
-
-    if (ctx->vis) {
-        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            uint16_t va = push_vertex(a_pos[min_i], ctx->vis);
-            uint16_t vb = push_vertex(b_pos[min_j], ctx->vis);
-            push_line(va, vb, ctx->vis);
-        }
+    else {
+        int res_a = position_validate(arg[0], ctx);
+        int res_b = position_validate(arg[1], ctx);
+        if (res_a < 0) return res_a;
+        if (res_b < 0) return res_b;
+        return 1;
     }
 
     return 0;
@@ -2088,111 +2405,140 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
 
-    const vec3_t* a_pos = as_vec3_arr(arg[0]);
-    const vec3_t* b_pos = as_vec3_arr(arg[1]);
-    const int64_t a_len = element_count(arg[0]);
-    const int64_t b_len = element_count(arg[1]);
+    if (dst || ctx->vis) {
+        const vec3_t* a_pos = position_extract(arg[0], ctx);
+        const vec3_t* b_pos = position_extract(arg[1], ctx);
+        const int64_t a_len = md_array_size(a_pos);
+        const int64_t b_len = md_array_size(b_pos);
 
-    float max_dist = 0;
-    int64_t max_i = 0;
-    int64_t max_j = 0;
-    for (int64_t i = 0; i < a_len; ++i) {
-        for (int64_t j = 0; j < b_len; ++j) {
-            const float dist = vec3_distance(a_pos[i], b_pos[j]);
-            if (dist > max_dist) {
-                max_dist = dist;
-                max_i = i;
-                max_j = j;
+        float max_dist = 0;
+        int64_t max_i = 0;
+        int64_t max_j = 0;
+        for (int64_t i = 0; i < a_len; ++i) {
+            for (int64_t j = 0; j < b_len; ++j) {
+                const float dist = vec3_distance(a_pos[i], b_pos[j]);
+                if (dist > max_dist) {
+                    max_dist = dist;
+                    max_i = i;
+                    max_j = j;
+                }
             }
         }
-    }
 
-    if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
-        as_float(*dst) = max_dist;
-        dst->min_range = -FLT_MAX;
-        dst->max_range = FLT_MAX;
-    }
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+            as_float(*dst) = max_dist;
+            dst->min_range = -FLT_MAX;
+            dst->max_range = FLT_MAX;
+        } else {
+            ASSERT(ctx->vis);
+            position_visualize(arg[0], ctx);
+            position_visualize(arg[1], ctx);
 
-    if (ctx->vis) {
-        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            uint16_t va = push_vertex(a_pos[max_i], ctx->vis);
-            uint16_t vb = push_vertex(b_pos[max_j], ctx->vis);
-            push_line(va, vb, ctx->vis);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                uint16_t va = push_vertex(a_pos[max_i], ctx->vis);
+                uint16_t vb = push_vertex(b_pos[max_j], ctx->vis);
+                push_line(va, vb, ctx->vis);
+            }
         }
+    } else {
+        int res_a = position_validate(arg[0], ctx);
+        int res_b = position_validate(arg[1], ctx);
+        if (res_a < 0) return res_a;
+        if (res_b < 0) return res_b;
+        return 1;
     }
 
     return 0;
 }
 
 static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
-
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    
     int result = 0;
-
-    const vec3_t* a_pos = as_vec3_arr(arg[0]);
-    const int64_t a_len = element_count(arg[0]);
-    const vec3_t* b_pos = as_vec3_arr(arg[1]);
-    const int64_t b_len = element_count(arg[1]);
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
+
+        vec3_t* a_pos = position_extract(arg[0], ctx);
+        vec3_t* b_pos = position_extract(arg[1], ctx);
+        const int64_t a_len = md_array_size(a_pos);
+        const int64_t b_len = md_array_size(b_pos);
+
         float* dst_arr = as_float_arr(*dst);
         const int64_t dst_len = element_count(*dst);
         ASSERT(dst_len == a_len * b_len);
 
-        for (int64_t i = 0; i < a_len; ++i) {
-            for (int64_t j = 0; j < b_len; ++j) {
+        for (int64_t i = 0; i < md_array_size(a_pos); ++i) {
+            for (int64_t j = 0; j < md_array_size(b_pos); ++j) {
                 const float dist = vec3_distance(a_pos[i], b_pos[j]);
-                dst_arr[i * b_len + j] = dist;
+                dst_arr[i * md_array_size(b_pos) + j] = dist;
             }
         }
 
         dst->min_range = -FLT_MAX;
         dst->max_range = FLT_MAX;
-    } else {
-        result = (int)(a_len * b_len);
-    }
+    } else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+        position_visualize(arg[1], ctx);
 
-    if (ctx->vis) {
         if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            vec3_t* a_pos = position_extract(arg[0], ctx);
+            vec3_t* b_pos = position_extract(arg[1], ctx);
+            const int64_t a_len = md_array_size(a_pos);
+            const int64_t b_len = md_array_size(b_pos);
+
             for (int64_t i = 0; i < a_len; ++i) {
                 uint16_t va = push_vertex(a_pos[i], ctx->vis);
+                push_point(va, ctx->vis);
                 for (int64_t j = 0; j < b_len; ++j) {
                     uint16_t vb = push_vertex(b_pos[j], ctx->vis);
+                    push_point(vb, ctx->vis);
                     push_line(va, vb, ctx->vis);
                 }
             }
         }
+    } else {
+        int res0 = position_validate(arg[0], ctx);
+        int res1 = position_validate(arg[1], ctx);
+        if (res0 < 0) return res0;
+        if (res1 < 0) return res1;
+        result = res0 * res1;
     }
 
     return result;
 }
 
 static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_equivalent(arg[0].type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_equivalent(arg[1].type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_equivalent(arg[2].type, (md_type_info_t)TI_FLOAT3));
-    
-    const vec3_t a = as_vec3(arg[0]);
-    const vec3_t b = as_vec3(arg[1]);
-    const vec3_t c = as_vec3(arg[2]);
-    const vec3_t v0 = vec3_normalize(vec3_sub(a, b));
-    const vec3_t v1 = vec3_normalize(vec3_sub(c, b));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_POSITION_ARR));
     
     if (dst) {
+        const vec3_t a = position_extract_com(arg[0], ctx);
+        const vec3_t b = position_extract_com(arg[1], ctx);
+        const vec3_t c = position_extract_com(arg[2], ctx);
+        const vec3_t v0 = vec3_normalize(vec3_sub(a, b));
+        const vec3_t v1 = vec3_normalize(vec3_sub(c, b));
+
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
         as_float(*dst) = (float)RAD_TO_DEG(acosf(vec3_dot(v0, v1)));
         dst->min_range = 0.0f;
         dst->max_range = 180.0f;
-    }
+    } else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+        position_visualize(arg[1], ctx);
+        position_visualize(arg[2], ctx);
 
-    if (ctx->vis) {
         if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            const vec3_t a = position_extract_com(arg[0], ctx);
+            const vec3_t b = position_extract_com(arg[1], ctx);
+            const vec3_t c = position_extract_com(arg[2], ctx);
+
             uint16_t va = push_vertex(a, ctx->vis);
             uint16_t vb = push_vertex(b, ctx->vis);
             uint16_t vc = push_vertex(c, ctx->vis);
@@ -2202,51 +2548,67 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             // This is the angle arc
             // @TODO: Insert more vertices here and make it a bit smoother
-            uint16_t vd = push_vertex(vec3_lerp(b,a, 0.3f), ctx->vis);
-            uint16_t ve = push_vertex(vec3_lerp(b,c, 0.3f), ctx->vis);
+            uint16_t vd = push_vertex(vec3_lerp(b, a, 0.3f), ctx->vis);
+            uint16_t ve = push_vertex(vec3_lerp(b, c, 0.3f), ctx->vis);
 
             push_triangle(vb, vd, ve, ctx->vis);
         }
+    } else {
+        // Validate input
+        if (position_validate(arg[0], ctx) < 0) return -1;
+        if (position_validate(arg[1], ctx) < 0) return -1;
+        if (position_validate(arg[2], ctx) < 0) return -1;
     }
 
     return 0;
 }
 
 static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_equivalent(arg[0].type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_equivalent(arg[1].type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_equivalent(arg[2].type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_equivalent(arg[3].type, (md_type_info_t)TI_FLOAT3));
-
-    const vec3_t a = as_vec3(arg[0]);
-    const vec3_t b = as_vec3(arg[1]);
-    const vec3_t c = as_vec3(arg[2]);
-    const vec3_t d = as_vec3(arg[3]);
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[3].type, (md_type_info_t)TI_POSITION_ARR));
 
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+        const vec3_t a = position_extract_com(arg[0], ctx);
+        const vec3_t b = position_extract_com(arg[1], ctx);
+        const vec3_t c = position_extract_com(arg[2], ctx);
+        const vec3_t d = position_extract_com(arg[3], ctx);
+
         as_float(*dst) = (float)RAD_TO_DEG(dihedral_angle(a,b,c,d));
         dst->min_range = -180.0f;
         dst->max_range = 180.0f;
     }
-    else {
-        // Validate input
-        // No need to validate, since it is positions which have been validated by its implicit conversion.
+    else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+        position_visualize(arg[1], ctx);
+        position_visualize(arg[2], ctx);
+        position_visualize(arg[3], ctx);
 
-        if (ctx->vis) {
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                uint16_t va = push_vertex(a, ctx->vis);
-                uint16_t vb = push_vertex(b, ctx->vis);
-                uint16_t vc = push_vertex(c, ctx->vis);
-                uint16_t vd = push_vertex(d, ctx->vis);
+        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            const vec3_t a = position_extract_com(arg[0], ctx);
+            const vec3_t b = position_extract_com(arg[1], ctx);
+            const vec3_t c = position_extract_com(arg[2], ctx);
+            const vec3_t d = position_extract_com(arg[3], ctx);
 
-                push_line(va, vb, ctx->vis);
-                push_line(vb, vc, ctx->vis);
-                push_line(vc, vd, ctx->vis);
-            }
+            uint16_t va = push_vertex(a, ctx->vis);
+            uint16_t vb = push_vertex(b, ctx->vis);
+            uint16_t vc = push_vertex(c, ctx->vis);
+            uint16_t vd = push_vertex(d, ctx->vis);
+
+            push_line(va, vb, ctx->vis);
+            push_line(vb, vc, ctx->vis);
+            push_line(vc, vd, ctx->vis);
 
             // @TODO: Draw planes and the angle between them
         }
+    } else {
+        // Validate input
+        if (position_validate(arg[0], ctx) < 0) return -1;
+        if (position_validate(arg[1], ctx) < 0) return -1;
+        if (position_validate(arg[2], ctx) < 0) return -1;
+        if (position_validate(arg[3], ctx) < 0) return -1;
     }
 
     return 0;
@@ -2493,308 +2855,27 @@ static int _cast_flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) 
     return 0;
 }
 
-/*
-static int _cast_bf_to_atom(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(compare_type_info(arg[0].type, (md_type_info_t)TI_BITFIELD));
-    (void)dst;
-    (void)arg;
-    (void)ctx;
-    return 0;
-}
-
-static int _cast_bf_to_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (md_type_info_t)TI_BITFIELD_RESIDUE));
-    ASSERT(compare_type_info(arg[0].type, (md_type_info_t)TI_BITFIELD));
-    (void)dst;
-    (void)arg;
-    (void)ctx;
-    return 0;
-}
-
-static int _cast_bf_to_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (md_type_info_t)TI_BITFIELD_CHAIN));
-    ASSERT(compare_type_info(arg[0].type, (md_type_info_t)TI_BITFIELD));
-    (void)dst;
-    (void)arg;
-    (void)ctx;
-    return 0;
-}
-*/
-
-static int _com_vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
-    (void)dst;
-    (void)arg;
-    (void)ctx;
-
-    const vec3_t* pos = as_vec3_arr(arg[0]);
-    const int64_t pos_size = element_count(arg[0]);
-
-    vec3_t com = {0};
-    if (pos_size > 0) {
-        for (int64_t i = 0; i < pos_size; ++i) {
-            com = vec3_add(com, pos[i]);
-        }
-        const double scl = 1.0 / (double)pos_size;
-        com.x = (float)(com.x * scl);
-        com.y = (float)(com.y * scl);
-        com.z = (float)(com.z * scl);
-    }
+static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
 
     if (dst) {
         ASSERT(compare_type_info(dst->type, (md_type_info_t)TI_FLOAT3));
-        as_vec3(*dst) = com;
-    }
-
-    if (ctx->vis) {
+        as_vec3(*dst) = position_extract_com(arg[0], ctx);
+    } else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
         if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            if (pos_size > 1) {
-                uint16_t c = push_vertex(com, ctx->vis);
-                push_point(c, ctx->vis);
-                for (int64_t i = 0; i < pos_size; ++i) {
-                    uint16_t v = push_vertex(pos[i], ctx->vis);
-                    push_line(v, c, ctx->vis);
-                }
+            vec3_t com = position_extract_com(arg[0], ctx);
+            vec3_t* pos = position_extract(arg[0], ctx);
+            uint16_t c = push_vertex(com, ctx->vis);
+            push_point(c, ctx->vis);
+            for (int64_t i = 0; i < md_array_size(pos); ++i) {
+                uint16_t v = push_vertex(pos[i], ctx->vis);
+                push_line(c, v, ctx->vis);
             }
-        }
-    }
-
-    return 0;
-}
-
-static int _com_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
-    (void)arg;
-    (void)ctx;
-
-    const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
-    int64_t bf_count = element_count(arg[0]);
-
-    md_bitfield_t tmp_bf = {0};
-    md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-
-    for (int64_t i = 0; i < bf_count; ++i) {
-        const md_bitfield_t* bf = &bf_arr[i];
-        md_bitfield_or_inplace(&tmp_bf, bf);
-    }
-
-    if (ctx->mol_ctx) {
-        md_bitfield_and_inplace(&tmp_bf, ctx->mol_ctx);
-    }
-
-    int64_t bit_count = md_bitfield_popcount(&tmp_bf);
-
-    if (dst || ctx->vis) {
-        int64_t size = ROUND_UP(bit_count, md_simd_widthf);
-        int64_t mem_size = size * 4 * sizeof(float);
-        float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
-
-        float* x = mem_ptr + size * 0;
-        float* y = mem_ptr + size * 1;
-        float* z = mem_ptr + size * 2;
-        float* w = mem_ptr + size * 3;
-
-        extract_xyzw(x, y, z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &tmp_bf);
-        vec3_t com = md_util_compute_com(x,y,z,w, bit_count);
-
-        if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT3));
-            ASSERT(dst->ptr);
-            as_vec3(*dst) = com;
-        }
-
-        if (ctx->vis) {
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                if (bit_count > 1) {
-                    uint16_t c = push_vertex(com, ctx->vis);
-                    push_point(c, ctx->vis);
-                    for (int64_t i = 0; i < bit_count; ++i) {
-                        vec3_t pos = {x[i], y[i], z[i]};
-                        uint16_t v = push_vertex(pos, ctx->vis);
-                        push_line(v, c, ctx->vis);
-                    }
-                }
-            }
-            visualize_atom_mask(&tmp_bf, ctx->vis);
-        }
-
-        md_free(ctx->temp_alloc, mem_ptr, mem_size);
-        md_bitfield_free(&tmp_bf);
-    } else {
-        if (bit_count < 1) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "The bitfield is empty");
-            // In a static check, the argument may be of a type that is dynamic, i.e. x(0:10), and yield a zero bitfield.
-            // The question is what we do then?
-            //return -1;
-        }
-    }
-
-    return 0;
-}
-
-static int _com_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
-    (void)arg;
-    (void)ctx;
-
-    const int32_t* indices = as_int_arr(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int64_t ctx_size = ctx_range.end - ctx_range.beg;
-    const int64_t num_idx = element_count(arg[0]);
-
-    if (dst || ctx->vis) {
-        int64_t size = ROUND_UP(num_idx, md_simd_widthf);
-        int64_t mem_size = size * 4 * sizeof(float);
-        float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
-
-        float* x = mem_ptr + size * 0;
-        float* y = mem_ptr + size * 1;
-        float* z = mem_ptr + size * 2;
-        float* w = mem_ptr + size * 3;
-
-        int32_t* remapped_indices = 0;
-
-        for (int64_t i = 0; i < num_idx; ++i) {
-            const int32_t idx = ctx_range.beg + indices[i] - 1;
-            ASSERT(ctx_range.beg <= idx && idx < ctx_range.end);
-            x[i] = ctx->mol->atom.x[idx];
-            y[i] = ctx->mol->atom.y[idx];
-            z[i] = ctx->mol->atom.z[idx];
-            w[i] = ctx->mol->atom.mass[idx];
-            md_array_push(remapped_indices, idx, ctx->temp_alloc);
-        }
-
-        const vec3_t com = md_util_compute_com(x, y, z, w, num_idx);
-
-        if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT3));
-            as_vec3(*dst) = com;
-        }
-
-        if (ctx->vis) {
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                if (num_idx > 1) {
-                    // Only show the support graphics if it is a proper aggregate (size > 1)
-                    uint16_t c = push_vertex(com, ctx->vis);
-                    push_point(c, ctx->vis);
-                    for (int64_t i = 0; i < num_idx; ++i) {
-                        vec3_t pos = {x[i], y[i], z[i]};
-                        uint16_t v = push_vertex(pos, ctx->vis);
-                        push_line(v, c, ctx->vis);
-                    }
-                }
-            }
-            visualize_atom_indices32(remapped_indices, md_array_size(remapped_indices), ctx->vis);
         }
     } else {
-        for (int64_t i = 0; i < num_idx; ++i) {
-            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
-            if (!(ctx_range.beg <= idx && idx < ctx_range.end)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)",
-                    (int)idx, 1, ctx_size);
-                return -1;
-            }
-            if (ctx->mol_ctx) {
-                if (!md_bitfield_test_bit(ctx->mol_ctx, idx)) {
-                    create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not represented within the supplied context", (int)idx);
-                    return -1;
-                }
-            }
-        }
+        return position_validate(arg[0], ctx);
     }
-
-    return 0;
-}
-
-static int _com_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
-    (void)arg;
-    (void)ctx;
-
-    const int64_t num_ranges = element_count(arg[0]);
-    const irange_t* ranges = as_irange_arr(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int32_t ctx_size = ctx_range.end - ctx_range.beg;
-
-    if (dst || ctx->vis) {
-        int32_t* indices = 0;
-        for (int64_t i = 0; i < num_ranges; ++i) {
-            irange_t range = clamp_range(remap_range_to_context(ranges[i], ctx_range), ctx_range);
-            if (ctx->mol_ctx) {
-                int64_t beg_bit = range.beg;
-                int64_t end_bit = range.end;
-                while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
-                    int32_t idx = (int32_t)beg_bit - 1;
-                    md_array_push(indices, idx, ctx->temp_alloc);
-                }
-            } else {
-                for (int32_t j = range.beg; j < range.end; ++j) {
-                    md_array_push(indices, j, ctx->temp_alloc);
-                }
-            }
-        }
-
-        const int64_t count = md_array_size(indices);
-        const int64_t size = ROUND_UP(count, md_simd_widthf);
-        const int64_t mem_size = size * 4 * sizeof(float);
-        float* mem_ptr = md_alloc(ctx->temp_alloc, mem_size);
-
-        float* x = mem_ptr + size * 0;
-        float* y = mem_ptr + size * 1;
-        float* z = mem_ptr + size * 2;
-        float* w = mem_ptr + size * 3;
-
-        for (int64_t i = 0; i < count; ++i) {
-            const int64_t idx = indices[i];
-            x[i] = ctx->mol->atom.x[idx];
-            y[i] = ctx->mol->atom.y[idx];
-            z[i] = ctx->mol->atom.z[idx];
-            w[i] = ctx->mol->atom.mass[idx];
-        }
-
-        const vec3_t com = md_util_compute_com(x, y, z, w, count);
-
-        if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT3));
-            as_vec3(*dst) = com;
-        }
-
-        if (ctx->vis) {
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                if (count > 1) {
-                    uint16_t c = push_vertex(com, ctx->vis);
-                    push_point(c, ctx->vis);
-                    for (int64_t i = 0; i < count; ++i) {
-                        vec3_t pos = {x[i], y[i], z[i]};
-                        uint16_t v = push_vertex(pos, ctx->vis);
-                        push_line(v, c, ctx->vis);
-                    }
-                }
-            }
-            visualize_atom_indices32(indices, count, ctx->vis);
-        }
-    } else {
-        for (int64_t i = 0; i < num_ranges; ++i) {
-            irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (range.beg == range.end) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is empty",
-                    ranges[i].beg, ranges[i].end);
-                return -1;
-            }
-            if (range.end <= range.beg) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not valid",
-                    ranges[i].beg, ranges[i].end);
-                return -1;
-            }
-            if (!range_in_range(range, ctx_range)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
-                    ranges[i].beg, ranges[i].end, 1, ctx_size);
-                return -1;
-            }
-        }
-    }
-
     return 0;
 }
 
@@ -2848,16 +2929,16 @@ static int64_t extract_xyz_from_arg(vec3_t** xyz, data_t arg, eval_context_t* ct
 }
 
 static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
     (void)ctx;
 
-    const vec3_t* in_pos = as_vec3_arr(arg[0]);
-    const int64_t num_pos = element_count(arg[0]);
+    const vec3_t* in_pos = position_extract(arg[0], ctx);
+    const int64_t num_pos = md_array_size(in_pos);
 
     if (dst || ctx->vis) {
         ASSERT(num_pos >= 3);
         // Compute eigen vectors from covariance matrix
-        // normal should be the third axis (i.e. the smallest)
+        // normal should be the third axis (i.e. the smallest eigen value)
 
         vec3_t com = {0,0,0};
         for (int64_t i = 0; i < num_pos; ++i) {
@@ -2878,29 +2959,33 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
             as_vec4(*dst) = plane;
         }
 
-        if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            vec3_t v = vec3_mul_f(eigen_vec[0], eigen_val[0]);
-            vec3_t u = vec3_mul_f(eigen_vec[1], eigen_val[1]);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                vec3_t v = vec3_mul_f(eigen_vec[0], eigen_val[0]);
+                vec3_t u = vec3_mul_f(eigen_vec[1], eigen_val[1]);
 
-            // Draw something planish
-            uint16_t ci = push_vertex(com, ctx->vis);
-            uint16_t ni = push_vertex(vec3_add(com, normal), ctx->vis);
+                // Draw something plane-ish
+                uint16_t ci = push_vertex(com, ctx->vis);
+                uint16_t ni = push_vertex(vec3_add(com, normal), ctx->vis);
 
-            uint16_t corner[4] = {
-                push_vertex(vec3_sub(vec3_sub(com, v), u), ctx->vis),
-                push_vertex(vec3_sub(vec3_add(com, v), u), ctx->vis),
-                push_vertex(vec3_add(vec3_add(com, v), u), ctx->vis),
-                push_vertex(vec3_add(vec3_sub(com, v), u), ctx->vis),
-            };
+                uint16_t corner[4] = {
+                    push_vertex(vec3_sub(vec3_sub(com, v), u), ctx->vis),
+                    push_vertex(vec3_sub(vec3_add(com, v), u), ctx->vis),
+                    push_vertex(vec3_add(vec3_add(com, v), u), ctx->vis),
+                    push_vertex(vec3_add(vec3_sub(com, v), u), ctx->vis),
+                };
 
-            push_line(corner[0], corner[1], ctx->vis);
-            push_line(corner[1], corner[2], ctx->vis);
-            push_line(corner[2], corner[3], ctx->vis);
-            push_line(corner[3], corner[0], ctx->vis);
+                push_line(corner[0], corner[1], ctx->vis);
+                push_line(corner[1], corner[2], ctx->vis);
+                push_line(corner[2], corner[3], ctx->vis);
+                push_line(corner[3], corner[0], ctx->vis);
 
-            push_line(ci, ni, ctx->vis);
+                push_line(ci, ni, ctx->vis);
+            }
         }
     } else {
+        if (position_validate(arg[0], ctx) < 0) return -1;
         if (num_pos < 3) {
             create_error(ctx->ir, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
             return -1;
@@ -2910,180 +2995,21 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _position_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
-    ASSERT(arg[0].ptr);
-
-    int result = 0;
-
-    const int32_t* indices = as_int_arr(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int64_t ctx_size = ctx_range.end - ctx_range.beg;
-    const int64_t num_idx = element_count(arg[0]);
-
-    // The idea here is that if we have a context, we only make sure to add the indices which are represented within the context.
-
-    if (dst) {
-        ASSERT(element_count(*dst) == element_count(arg[0]));
-        ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT3_ARR));
-        vec3_t* position = as_vec3_arr(*dst);
-        const int64_t capacity = type_info_array_len(dst->type);
-        ASSERT(capacity >= 0);
-        if (capacity > 0) {
-            int64_t dst_idx = 0;
-            for (int64_t i = 0; i < num_idx; ++i) {
-                // Shift here since we use 1 based indices for atoms
-                const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
-                if (ctx->mol_ctx) {
-                    ASSERT(md_bitfield_test_bit(ctx->mol_ctx, idx));
-                }
-                ASSERT(ctx_range.beg <= idx && idx < ctx_range.end);
-                ASSERT(dst_idx < capacity);
-                position[dst_idx++] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
-            }
-        }
-    } else {
-        int count = 0;
-        for (int64_t i = 0; i < num_idx; ++i) {
-            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
-
-            if (!(ctx_range.beg <= idx && idx < ctx_range.end)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)",
-                    (int)idx, 1, ctx_size);
-                return -1;
-            }
-            if (ctx->mol_ctx) {
-                if (!md_bitfield_test_bit(ctx->mol_ctx, idx)) {
-                    create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not represented within the supplied context", (int)idx);
-                    return -1;
-                }
-            }
-            count += 1;
-            if (ctx->vis) {
-                visualize_atom_index(idx, ctx->vis);
-            }
-        }
-        result = count;
-    }
-
-    return result;
-}
-
-static int _position_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
-    ASSERT(arg[0].ptr);
-
-    int result = 0;
-
-    const int64_t num_ranges = element_count(arg[0]);
-    const irange_t* ranges = as_irange_arr(arg[0]);
-    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int32_t ctx_size = ctx_range.end - ctx_range.beg;
-
-    if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT3_ARR));
-        vec3_t* position = as_vec3_arr(*dst);
-        const int64_t capacity = type_info_array_len(dst->type);
-        ASSERT(capacity >= 0);
-        if (capacity > 0) {
-            int64_t dst_idx = 0;
-            for (int64_t i = 0; i < num_ranges; ++i) {
-                irange_t range = remap_range_to_context(ranges[i], ctx_range);
-                range = clamp_range(range, ctx_range);
-
-                if (ctx->mol_ctx) {
-                    int64_t beg_bit = range.beg;
-                    int64_t end_bit = range.end;
-                    while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
-                        const int64_t idx = beg_bit - 1;
-                        ASSERT(dst_idx < capacity);
-                        position[dst_idx++] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
-                    }
-                }
-                else {
-                    for (int64_t j = range.beg; j < range.end; ++j) {
-                        ASSERT(dst_idx < capacity);
-                        position[dst_idx++] = (vec3_t){ctx->mol->atom.x[j], ctx->mol->atom.y[j], ctx->mol->atom.z[j]};
-                    }
-                }
-            }
-        }
-    } else {
-        int count = 0;
-        for (int64_t i = 0; i < num_ranges; ++i) {
-            irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (range_in_range(range, ctx_range)) {
-                if (ctx->mol_ctx) {
-                    count += (int)md_bitfield_popcount_range(ctx->mol_ctx, range.beg, range.end);
-                    if (ctx->vis) {
-                        int64_t beg_bit = range.beg;
-                        int64_t end_bit = range.end;
-                        while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
-                            const int64_t idx = beg_bit - 1;
-                            visualize_atom_index(idx, ctx->vis);
-                        }
-                    }
-                }
-                else {
-                    count += range.end - range.beg;
-                    if (ctx->vis) {
-                        visualize_atom_range(range, ctx->vis);
-                    }
-                }
-            } else {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
-                    ranges[i].beg, ranges[i].end, 1, ctx_size);
-                return -1;
-            }
-        }
-        result = count;
-    }
-
-    return result;
-}
-
-static int _position_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
-    ASSERT(arg[0].ptr);
-
-    int result = 0;
-
-    const md_bitfield_t* in_bf = as_bitfield(arg[0]);
-    const int64_t num_bf = element_count(arg[0]);
-
-    md_bitfield_t bf = {0};
-    md_bitfield_init(&bf, ctx->temp_alloc);
-
-    for (int64_t i = 0; i < num_bf; ++i) {
-        md_bitfield_or_inplace(&bf, &in_bf[i]);
-    }
-    if (ctx->mol_ctx) {
-        md_bitfield_and_inplace(&bf, ctx->mol_ctx);
-    }
+static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT3_ARR));
-        vec3_t* position = as_vec3_arr(*dst);
-        const int64_t capacity = type_info_array_len(dst->type);
-        ASSERT(capacity >= 0);
-        if (capacity > 0) {
-            int64_t dst_idx = 0;
-            int64_t beg_idx = bf.beg_bit;
-            int64_t end_idx = bf.end_bit;
-
-            while ((beg_idx = md_bitfield_scan(&bf, beg_idx, end_idx)) != 0) {
-                int64_t src_idx = beg_idx - 1;
-                ASSERT(dst_idx < capacity);
-                position[dst_idx++] = (vec3_t){ctx->mol->atom.x[src_idx], ctx->mol->atom.y[src_idx], ctx->mol->atom.z[src_idx]};
-            }
-        }
-    } else {
-        result = (int)md_bitfield_popcount(&bf);
+        const vec3_t* pos = position_extract(arg[0], ctx);
+        ASSERT(element_count(*dst) == md_array_size(pos));
+        memcpy(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
     }
-
-    md_bitfield_free(&bf);
-
-    return result;
+    else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+    } else {
+        return position_validate(arg[0], ctx);
+    }
+    return 0;
 }
 
 typedef struct {
@@ -3259,195 +3185,59 @@ static int internal_rdf(data_t* dst, const vec3_t* ref_pos, int64_t ref_size, co
     return 0;
 }
 
-static int _rdf_bf_bf_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD_ARR));
+static int _rdf_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
     ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(arg[2].ptr);
-
-    const md_bitfield_t* ref_bf = as_bitfield(arg[0]);
-    int64_t ref_size = element_count(arg[0]);
-
-    const md_bitfield_t* trg_bf = as_bitfield(arg[1]);
-    int64_t trg_size = element_count(arg[1]);
-    
-    const float cutoff = as_float(arg[2]);
-
-    vec3_t* ref_pos = 0;
-    vec3_t* trg_pos = 0;
-
-    if (ref_size == 1) {
-        ref_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ref_bf, ctx->temp_alloc);
-        ref_size = md_array_size(ref_pos);
-    } else {
-        for (int64_t i = 0; i < ref_size; ++i) {
-            vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &ref_bf[i]);
-            md_array_push(ref_pos, com, ctx->temp_alloc);
-        }
-        ASSERT(ref_size == md_array_size(ref_pos));
-    }
-
-    if (trg_size == 1) {
-        trg_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_bf, ctx->temp_alloc);
-        trg_size = md_array_size(trg_pos);
-    } else {
-        for (int64_t i = 0; i < trg_size; ++i) {
-            vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &trg_bf[i]);
-            md_array_push(trg_pos, com, ctx->temp_alloc);
-        }
-        ASSERT(trg_size == md_array_size(trg_pos));
-    }
-
-    return internal_rdf(dst, ref_pos, ref_size, trg_pos, trg_size, 0.0f, cutoff, ctx);
-}
-
-static int _rdf_bf_pos_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(arg[2].ptr);
-
-    const md_bitfield_t* ref_bf = as_bitfield(arg[0]);
-    const int64_t ref_size = element_count(arg[0]);
-
-    const vec3_t* trg_pos = as_vec3_arr(arg[1]);
-    const int64_t trg_size = element_count(arg[1]);
 
     const float cutoff = as_float(arg[2]);
 
-    vec3_t* ref_pos = 0;
+    if (dst || ctx->vis) {
+        const vec3_t* ref_pos = position_extract(arg[0], ctx);
+        const int64_t ref_len = md_array_size(ref_pos);
 
-    if (ref_size == 1) {
-        ref_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ref_bf, ctx->temp_alloc);
-    }
-    else {
-        for (int64_t i = 0; i < ref_size; ++i) {
-            vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &ref_bf[i]);
-            md_array_push(ref_pos, com, ctx->temp_alloc);
+        const vec3_t* trg_pos = position_extract(arg[1], ctx);
+        const int64_t trg_len = md_array_size(trg_pos);
+
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+            position_visualize(arg[1], ctx);
         }
-        ASSERT(ref_size == md_array_size(ref_pos));
+        internal_rdf(dst, ref_pos, ref_len, trg_pos, trg_len, 0.0f, cutoff, ctx);
+    } else {
+        if (!position_validate(arg[0], ctx)) return -1;
+        if (!position_validate(arg[1], ctx)) return -1;
     }
 
-    return internal_rdf(dst, ref_pos, ref_size, trg_pos, trg_size, 0.0f, cutoff, ctx);
+    return 0;
 }
 
-static int _rdf_bf_bf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FRANGE));
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(arg[2].ptr);
-
-    const md_bitfield_t* ref_bf = as_bitfield(arg[0]);
-    const int64_t ref_size = element_count(arg[0]);
-
-    const md_bitfield_t* trg_bf = as_bitfield(arg[1]);
-    const int64_t trg_size = element_count(arg[1]);
 
     const frange_t cutoff = as_frange(arg[2]);
 
-    vec3_t* ref_pos = 0;
-    vec3_t* trg_pos = 0;
+    if (dst || ctx->vis) {
+        const vec3_t* ref_pos = position_extract(arg[0], ctx);
+        const int64_t ref_len = md_array_size(ref_pos);
 
-    if (ref_size == 1) {
-        ref_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ref_bf, ctx->temp_alloc);
+        const vec3_t* trg_pos = position_extract(arg[1], ctx);
+        const int64_t trg_len = md_array_size(trg_pos);
+
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+            position_visualize(arg[1], ctx);
+        }
+        internal_rdf(dst, ref_pos, ref_len, trg_pos, trg_len, cutoff.beg, cutoff.end, ctx);
     }
     else {
-        for (int64_t i = 0; i < ref_size; ++i) {
-            vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &ref_bf[i]);
-            md_array_push(ref_pos, com, ctx->temp_alloc);
-        }
-        ASSERT(ref_size == md_array_size(ref_pos));
+        if (!position_validate(arg[0], ctx)) return -1;
+        if (!position_validate(arg[1], ctx)) return -1;
     }
 
-    if (trg_size == 1) {
-        trg_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_bf, ctx->temp_alloc);
-    }
-    else {
-        for (int64_t i = 0; i < trg_size; ++i) {
-            vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &trg_bf[i]);
-            md_array_push(trg_pos, com, ctx->temp_alloc);
-        }
-        ASSERT(trg_size == md_array_size(trg_pos));
-    }
-
-    return internal_rdf(dst, ref_pos, ref_size, trg_pos, trg_size, cutoff.beg, cutoff.end, ctx);
-}
-
-static int _rdf_bf_pos_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FRANGE));
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(arg[2].ptr);
-
-    const md_bitfield_t* ref_bf = as_bitfield(arg[0]);
-    const int64_t ref_size = element_count(arg[0]);
-
-    const vec3_t* trg_pos = as_vec3_arr(arg[1]);
-    const int64_t trg_size = element_count(arg[1]);
-
-    const frange_t cutoff = as_frange(arg[2]);
-
-    vec3_t* ref_pos = 0;
-
-    if (ref_size == 1) {
-        ref_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ref_bf, ctx->temp_alloc);
-    }
-    else {
-        for (int64_t i = 0; i < ref_size; ++i) {
-            vec3_t com = extract_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &ref_bf[i]);
-            md_array_push(ref_pos, com, ctx->temp_alloc);
-        }
-        ASSERT(ref_size == md_array_size(ref_pos));
-    }
-
-    return internal_rdf(dst, ref_pos, ref_size, trg_pos, trg_size, cutoff.beg, cutoff.end, ctx);
-}
-
-static int _rdf_pos_pos_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(arg[2].ptr);
-
-    const vec3_t* ref_pos = as_vec3_arr(arg[0]);
-    const int64_t ref_size = element_count(arg[0]);
-
-    const vec3_t* trg_pos = as_vec3_arr(arg[1]);
-    const int64_t trg_size = element_count(arg[1]);
-
-    const float cutoff = as_float(arg[2]);
-
-    return internal_rdf(dst, ref_pos, ref_size, trg_pos, trg_size, 0.0f, cutoff, ctx);
-}
-
-static int _rdf_pos_pos_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FRANGE));
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(arg[2].ptr);
-
-    const vec3_t* ref_pos = as_vec3_arr(arg[0]);
-    const int64_t ref_size = element_count(arg[0]);
-
-    const vec3_t* trg_pos = as_vec3_arr(arg[1]);
-    const int64_t trg_size = element_count(arg[1]);
-
-    const frange_t cutoff = as_frange(arg[2]);
-
-    return internal_rdf(dst, ref_pos, ref_size, trg_pos, trg_size, cutoff.beg, cutoff.end, ctx);
+    return 0;
 }
 
 static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int64_t num_bitfields, const md_element_t atom_elements[]) {

@@ -108,8 +108,9 @@ typedef enum base_type_t {
     TYPE_BOOL,
     TYPE_FRANGE,
     TYPE_IRANGE,
-    TYPE_BITFIELD,      // Bitfield used to represent a selection of atoms, also contains a level which indicates the context (atom, residue, chain)
+    TYPE_BITFIELD,      // Bitfield used to represent a selection of atoms
     TYPE_STRING,
+    TYPE_POSITION,      // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a position (INT, IRANGE, BITFIELD or float[3])
 } base_type_t;
 
 typedef enum flags_t {
@@ -120,7 +121,6 @@ typedef enum flags_t {
     FLAG_DYNAMIC_LENGTH             = 0x010, // Return type has a varying length which is not constant over frames
     FLAG_QUERYABLE_LENGTH           = 0x020, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
     FLAG_STATIC_VALIDATION          = 0x040, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
-    FLAG_POSITION                   = 0x080, // Hints that float3 argument(s) is atomic position(s), this means we can implicitly compute this from alot of input types using the position procedure
     FLAG_CONSTANT                   = 0x100, // Hints that the identifier is constant and should not be modified.
     // Flags from 0x1000 and upwards are automatically propagated upwards the AST_TREE
     FLAG_DYNAMIC                    = 0x1000, // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependency on atomic positions)
@@ -478,7 +478,26 @@ static inline bool is_type_equivalent(md_type_info_t a, md_type_info_t b) {
     return memcmp(&a, &b, sizeof(md_type_info_t)) == 0;
 }
 
+static inline bool is_type_position_compatible(md_type_info_t type) {
+    switch(type.base_type) {
+        case TYPE_INT: return true;
+        case TYPE_IRANGE: return true;
+        case TYPE_BITFIELD: return true;
+        case TYPE_FLOAT: return type.dim[0] == 3;
+        default: return false;
+    }
+}
+
 static inline bool is_type_directly_compatible(md_type_info_t from, md_type_info_t to) {
+    if (to.base_type == TYPE_POSITION && is_type_position_compatible(from)) {
+        to.base_type = from.base_type;
+        if (from.base_type == TYPE_FLOAT) {
+            to.dim[1] = to.dim[0];
+            to.dim[0] = 3;
+            to.len_dim = 1;
+        }
+    }
+
     if (compare_type_info(from, to)) return true;
 
     if (from.base_type == to.base_type) {
@@ -796,11 +815,8 @@ static void fix_precedence(ast_node_t** node) {
     }
 }
 
-static bool is_type_implicitly_convertible(md_type_info_t from, md_type_info_t to, flags_t flags) {
-    flags &= FLAG_POSITION; // This is the only flag we care about from the perspective of matching casting procedures
+static bool is_type_implicitly_convertible(md_type_info_t from, md_type_info_t to) {
     for (int64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
-        // if (flags && !(casts[i].flags & flags)) continue;
-        if ((casts[i].flags & FLAG_POSITION) && !(flags & FLAG_POSITION)) continue; // Make sure we only consider casts which are marked with POSITION when the procedure is marked with POSITION
         if (is_type_directly_compatible(from, casts[i].arg_type[0]) &&
             is_type_directly_compatible(casts[i].return_type, to)) {
             return true;
@@ -889,7 +905,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                         if (is_type_directly_compatible(arg_types[j], proc->arg_type[j])) {
                             // No conversion needed for this argument (0 cost)
                         }
-                        else if (is_type_implicitly_convertible(arg_types[j], proc->arg_type[j], proc->flags)) {
+                        else if (is_type_implicitly_convertible(arg_types[j], proc->arg_type[j])) {
                             ++cost;
                         }
                         else {
@@ -916,7 +932,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                             if (is_type_directly_compatible(swapped_args[j], proc->arg_type[j])) {
                                 // No conversion needed for this argument (0 cost)
                             }
-                            else if (is_type_implicitly_convertible(swapped_args[j], proc->arg_type[j], proc->flags)) {
+                            else if (is_type_implicitly_convertible(swapped_args[j], proc->arg_type[j])) {
                                 ++cost;
                             }
                             else {
@@ -2515,14 +2531,32 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
         // We need to update the return type here
         to = res.procedure->return_type;
 
-        // We need to check for the position flag here since that is not a true constant value, but a derived value.
-        if (node->type == AST_CONSTANT_VALUE && !(res.procedure->flags & FLAG_POSITION)) {
+        if (node->type == AST_CONSTANT_VALUE) {
             value_t val = node->value;
             data_t old = {
                 .type = node->data.type,
                 .size = node->data.size,
                 .ptr = &val,
             };
+
+            if (type_info_array_len(to) == -1) {
+                if (res.procedure->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
+                    to.dim[to.len_dim] = (int)type_info_array_len(from);
+                } else {
+                    ASSERT(res.procedure->flags & FLAG_QUERYABLE_LENGTH);
+
+                    // Perform the call to get length
+                    int query_result = res.procedure->proc_ptr(NULL, &old, ctx);
+
+                    if (query_result >= 0) { // Zero length is valid
+                        to.dim[to.len_dim] = query_result;
+                    }
+                    else {
+                        create_error(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
+                        return false;
+                    }
+                }
+            }
 
             ASSERT(type_info_array_len(to) > -1);
 
@@ -2620,7 +2654,7 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
         for (int64_t i = 0; i < num_args; ++i) {
             if (!is_type_directly_compatible(arg[i]->data.type, node->proc->arg_type[i])) {
                 // Types are not directly compatible, but should be implicitly convertible (otherwise the match should never have been found)
-                ASSERT(is_type_implicitly_convertible(arg[i]->data.type, node->proc->arg_type[i], node->proc->flags));
+                ASSERT(is_type_implicitly_convertible(arg[i]->data.type, node->proc->arg_type[i]));
                 if (!convert_node(arg[i], node->proc->arg_type[i], ctx)) {
                     return false;
                 }
@@ -2836,10 +2870,10 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
             }
             else {
                 if (!is_type_directly_compatible(elem_type, array_type)) {
-                    if (is_type_implicitly_convertible(elem[i]->data.type, array_type, 0)) {
+                    if (is_type_implicitly_convertible(elem[i]->data.type, array_type)) {
                         // We can convert the element to the array type.   
                     }
-                    else if (is_type_implicitly_convertible(array_type, elem_type, 0)) {
+                    else if (is_type_implicitly_convertible(array_type, elem_type)) {
                         // Option 2: We can convert the array type into the elements type (e.g int to float)
                         // Promote the type of the array
                         array_type = elem_type;
@@ -2847,7 +2881,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
                         // Just to make sure, we recheck all elements up until this one
                         for (int64_t j = 0; j < i; ++j) {
                             if (!is_type_directly_compatible(elem_type, array_type) &&
-                                !is_type_implicitly_convertible(elem_type, array_type, 0)) {
+                                !is_type_implicitly_convertible(elem_type, array_type)) {
                                 create_error(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
                                 return false;
                             }
@@ -2868,7 +2902,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
             converted_type.dim[converted_type.len_dim] = (int32_t)type_info_array_len(elem[i]->data.type);
 
             if (!is_type_directly_compatible(elem[i]->data.type, converted_type) &&
-                is_type_implicitly_convertible(elem[i]->data.type, converted_type, 0)) {
+                is_type_implicitly_convertible(elem[i]->data.type, converted_type)) {
                 if (!convert_node(elem[i], converted_type, ctx)) {
                     return false;
                 }
