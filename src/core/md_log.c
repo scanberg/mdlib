@@ -86,6 +86,7 @@ static void set_console_text_color(console_color_t color, bool intense) {
     const WORD bg_color = BACKGROUND_BLUE | BACKGROUND_GREEN | BACKGROUND_RED | BACKGROUND_INTENSITY;
     SetConsoleTextAttribute(console, fg_color | (info.wAttributes & bg_color));
 #else
+(void)intense;
     switch (color) {
     case COLOR_RED:
         fprintf(stderr, ANSI_COLOR_RED);

@@ -35,7 +35,7 @@ typedef union block_t {
 #endif
 } block_t;
 
-#define BITS_PER_BLOCK (sizeof(block_t) * 8)
+#define BITS_PER_BLOCK (int64_t)(sizeof(block_t) * 8)
 
 static inline int64_t block_idx(int64_t bit_idx) {
     return bit_idx / BITS_PER_BLOCK;

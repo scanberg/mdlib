@@ -652,7 +652,7 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, 
 }
 
 bool md_gl_molecule_compute_velocity(md_gl_molecule_t* ext_mol, const float pbc_ext[3]) {
-    if (!validate_context(&ctx)) {
+    if (!validate_context()) {
         return false;
     }
 

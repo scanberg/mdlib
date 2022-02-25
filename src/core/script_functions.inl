@@ -984,7 +984,7 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
         }
 
         for (int64_t i = 0; i < element_count(arg); ++i) {
-            md_bitfield_t* bf = &in_bf[i];
+            const md_bitfield_t* bf = &in_bf[i];
             if (ctx->mol_ctx) {
                 md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
                 bf = &tmp_bf;

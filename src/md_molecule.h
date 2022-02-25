@@ -166,7 +166,7 @@ typedef struct md_molecule_api {
 static inline md_label_t make_label(str_t str) {
     md_label_t lbl = {0};
     if (str.ptr) {
-        const int64_t len = MIN(str.len, sizeof(lbl.buf) - 1);
+        const int64_t len = MIN(str.len, (int64_t)sizeof(lbl.buf) - 1);
         for (int64_t i = 0; i < len; ++i) {
             lbl.buf[i] = str.ptr[i];
         }
