@@ -1033,7 +1033,7 @@ static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
         md_array_push_array(positions, as_vec3_arr(arg), element_count(arg), ctx->temp_alloc);
         break;
-    case TYPE_INT:
+    case TYPE_INT: {
         int* indices = as_int_arr(arg);
         int64_t num_idx = element_count(arg);
         for (int64_t i = 0; i < num_idx; ++i) {
@@ -1043,6 +1043,7 @@ static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
             md_array_push(positions, pos, ctx->temp_alloc);
         }
         break;
+    }
     case TYPE_IRANGE: {
         irange_t* ranges = as_irange_arr(arg);
         int64_t num_ranges = element_count(arg);
