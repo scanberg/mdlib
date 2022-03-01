@@ -404,9 +404,10 @@ void md_bitfield_init(md_bitfield_t* bf, struct md_allocator_i* alloc) {
     if (bf->magic == MAGIC && bf->bits) {
         md_bitfield_free(bf);
     }
-    memset(bf, 0, sizeof(md_bitfield_t));
-    bf->magic = MAGIC;
-    bf->alloc = alloc;
+    *bf = (md_bitfield_t){
+        .magic = MAGIC,
+        .alloc = alloc,
+    };
 }
 
 bool md_bitfield_free(md_bitfield_t* bf) {
