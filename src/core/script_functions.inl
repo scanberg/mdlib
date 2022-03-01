@@ -3281,15 +3281,27 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
     return true;
 }
 
-static inline void populate_volume(float* vol, const float* x, const float* y, const float* z, int64_t num_pos, vec3_t max_ext) {
+static inline void populate_volume(float* vol, const float* x, const float* y, const float* z, int64_t num_pos, vec4_t max) {
     for (int64_t i = 0; i < num_pos; ++i) {
-        vec4_t v = {x[i], y[i], z[i], 0.0f};
+        const md_simd_f128_t min = md_simd_zero_f128();
+        const md_simd_f128_t val = md_simd_set_f128(x[i], y[i], z[i], 0.0f);
 
-        if ((0 < x[i] && x[i] < max_ext.x) &&
-            (0 < y[i] && y[i] < max_ext.y) &&
-            (0 < z[i] && z[i] < max_ext.z)) {
+        md_simd_f128_t a = md_simd_cmp_lt_f128(min, val);
+        md_simd_f128_t b = md_simd_cmp_lt_f128(val, max.mm128);
+        md_simd_f128_t c = md_simd_and_f128(a, b);
+
+        int res = _mm_movemask_ps(c);
+        if (res == 0x7) {
             vol[(int)z[i] * VOL_DIM * VOL_DIM + (int)y[i] * VOL_DIM + (int)x[i]] += 1.0f;
         }
+
+        /*
+        if ((0 < x[i] && x[i] < max.x) &&
+            (0 < y[i] && y[i] < max.y) &&
+            (0 < z[i] && z[i] < max.z)) {
+            
+        }
+        */
     }
 }
 
@@ -3387,7 +3399,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->vis->sdf.extent = cutoff;
         }
 
-        const vec3_t max_ext = {VOL_DIM, VOL_DIM, VOL_DIM};
+        const vec4_t max_ext = {VOL_DIM, VOL_DIM, VOL_DIM, VOL_DIM};
 
         for (int64_t i = 0; i < num_ref_bitfields; ++i) {
             const md_bitfield_t* bf = &ref_bitfields[i];
