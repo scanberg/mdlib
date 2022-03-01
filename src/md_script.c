@@ -569,6 +569,7 @@ static bool allocate_data(data_t* data, md_type_info_t type, md_allocator_i* all
             md_print(MD_LOG_TYPE_ERROR, "Failed to allocate data in script!");
             return false;
         }
+        // @NOTE (Robin): This could be a very wasteful operation most times as the memory will be overwritten anyways.
         memset(data->ptr, 0, bytes);
     }
     data->size = bytes;
