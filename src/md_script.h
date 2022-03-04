@@ -4,9 +4,9 @@
 #include <stdbool.h>
 
 #include <core/md_str.h>
-#include <core/md_bitfield.h>
 #include <core/md_vec_math.h>
 
+struct md_bitfield_t;
 struct md_molecule_t;
 struct md_trajectory_i;
 struct md_allocator_i;
@@ -15,22 +15,12 @@ struct md_allocator_i;
 struct md_script_vis_token_t;
 
 typedef enum md_script_property_flags_t {
-    MD_SCRIPT_PROPERTY_FLAG_ANGSTROM    = 0x0001,
-    MD_SCRIPT_PROPERTY_FLAG_DEGREES     = 0x0002,
-
-    MD_SCRIPT_PROPERTY_FLAG_PERIODIC    = 0x0004,
-    MD_SCRIPT_PROPERTY_FLAG_SDF         = 0x0008,
+    MD_SCRIPT_PROPERTY_FLAG_TEMPORAL        = 0x0001,
+    MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION    = 0x0002,
+    MD_SCRIPT_PROPERTY_FLAG_VOLUME          = 0x0004,
+    MD_SCRIPT_PROPERTY_FLAG_PERIODIC        = 0x0008,
+    MD_SCRIPT_PROPERTY_FLAG_SDF             = 0x0010,
 } md_script_property_flags_t;
-
-typedef enum md_script_property_type_t {
-    MD_SCRIPT_PROPERTY_TYPE_INVALID = 0,
-    MD_SCRIPT_PROPERTY_TYPE_TEMPORAL,
-    MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION,
-    MD_SCRIPT_PROPERTY_TYPE_VOLUME
-} md_script_property_type_t;
-
-struct md_script_ir_o;
-struct md_script_eval_o;
 
 typedef struct md_script_token_t {
     const struct md_script_vis_token_t* vis_token;
@@ -53,17 +43,11 @@ typedef struct md_script_error_t {
     str_t error;
 } md_script_error_t;
 
-// Opaque immediate representation (compilation result)
-typedef struct md_script_ir_t {
-    struct md_script_ir_o* o; // opaque internal data
-    uint64_t fingerprint; // Unique ID to compare against to see if your representation is up to date.
+// Opaque Immediate Representation (compilation result)
+typedef struct md_script_ir_t md_script_ir_t;
 
-    int64_t num_errors;
-    const md_script_error_t* errors;
-
-    int64_t num_tokens;
-    const md_script_token_t* tokens;
-} md_script_ir_t;
+// Opaque object for evaluation result
+typedef struct md_script_eval_t md_script_eval_t;
 
 typedef struct md_script_property_data_aggregate_t {
     int64_t num_values;
@@ -85,25 +69,17 @@ typedef struct md_script_property_data_t {
     float   min_range[4];   // min range in each dimension
     float   max_range[4];   // max range in each dimension
 
-    uint64_t fingerprint; // Unique ID to compare against to see if your version is up to date. The data may be changing async.
+    uint64_t fingerprint; // Unique ID to compare against to see if your version is up to date.
 } md_script_property_data_t;
 
 typedef struct md_script_property_t {
     str_t ident;
-    md_script_property_type_t type;
+    
     md_script_property_flags_t flags;
-    md_script_property_data_t data;
+    md_script_property_data_t  data;
 
     const struct md_script_vis_token_t* vis_token; // For visualization of the property
 } md_script_property_t;
-
-// Container for the evaluation result
-typedef struct md_script_eval_t {
-    struct md_script_eval_o* o; // opaque internal data
-
-    int64_t num_properties;
-    md_script_property_t* properties;
-} md_script_eval_t;
 
 struct md_script_visualization_o;
 typedef struct md_script_visualization_t {
@@ -112,7 +88,7 @@ typedef struct md_script_visualization_t {
     // Geometry
     struct {
         int64_t count;
-        vec3_t* pos;         // Position xyz
+        vec3_t* pos;        // Position xyz
     } vertex;
 
     struct {
@@ -140,16 +116,16 @@ typedef struct md_script_visualization_t {
     struct {
         int64_t count;
         mat4_t* matrices;
-        md_bitfield_t* structures;
+        struct md_bitfield_t* structures;
         float extent;
     } sdf;
 
     // Atoms
     struct {
-        md_bitfield_t* atom_masks;
+        struct md_bitfield_t* atom_masks;
     } structures;
 
-    md_bitfield_t* atom_mask;
+    struct md_bitfield_t* atom_mask;
     
 } md_script_visualization_t;
 
@@ -175,21 +151,30 @@ typedef struct md_script_visualization_args_t {
 extern "C" {
 #endif
 
-// ### COMPILE ###
-// ir       : target to hold the compiled intermediate representation
+// ### IR ###
 // src      : source code to compile
 // mol      : molecule
 // alloc    : allocator
 // ctx_ir   : provide a context of identifiers and expressions [optional]
-bool md_script_ir_compile(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir);
-bool md_script_ir_free(md_script_ir_t* ir);
+md_script_ir_t* md_script_ir_create(str_t src, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir);
+void md_script_ir_free(md_script_ir_t* ir);
+
+int64_t md_script_ir_num_errors(const md_script_ir_t* ir);
+const md_script_error_t* md_script_ir_errors(const md_script_ir_t* ir);
+
+int64_t md_script_ir_num_tokens(const md_script_ir_t* ir);
+const md_script_token_t* md_script_ir_tokens(const md_script_ir_t* ir);
+
+bool md_script_ir_valid(const md_script_ir_t* ir);
 
 // ### EVALUATE ###
 
 // Allocate and initialize the data for properties within the evaluation
 // We need to pass the number of frames we want the data to hold
 // Should be performed as soon as the IR has changed.
-bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
+md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
+
+void md_script_eval_free(md_script_eval_t* eval);
 
 // Compute properties
 // Must be performed after the eval_init
@@ -197,17 +182,18 @@ bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_sc
 // ir       : holds an IR of the script to be evaluated
 // mol      : molecule
 // traj     : trajectory
-// filter_mask [OPTIONAL]: A mask which holds the frames which should be evaluated. Supply this if only a subset should be evaluated.
-bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, md_bitfield_t* filter_mask);
+// frame_mask [OPTIONAL] : A mask which holds the frames which should be evaluated. Supply this if only a subset should be evaluated.
+bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const struct md_bitfield_t* frame_mask);
 
-bool md_script_eval_free(md_script_eval_t* eval);
+int64_t md_script_eval_num_properties(const md_script_eval_t* eval);
+const md_script_property_t* md_script_eval_properties(const md_script_eval_t* eval);
 
 // Compile and evaluate a single property from a string
 //bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap);
 
 // These is meant to be used if the evaulation runs in its own thread (which is recommended)
 float md_script_eval_completed_fraction(const md_script_eval_t* eval);
-void md_script_eval_interrupt(const md_script_eval_t* eval);
+void md_script_eval_interrupt(md_script_eval_t* eval);
 
 // ### VISUALIZE ###
 bool md_script_visualization_init(md_script_visualization_t* vis, struct md_script_visualization_args_t args);

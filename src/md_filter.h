@@ -5,7 +5,7 @@
 #include <core/md_str.h>
 
 struct md_allocator_i;
-struct md_exp_bitfield_t;
+struct md_bitfield_t;
 struct md_molecule_t;
 struct md_script_ir_t;
 

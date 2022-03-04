@@ -5,6 +5,7 @@
 #include "md_filter.h"
 #include "md_util.h"
 
+#include "core/md_bitfield.h"
 #include "core/md_log.h"
 #include "core/md_allocator.h"
 #include "core/md_common.h"
@@ -224,7 +225,7 @@ typedef struct md_script_visualization_o {
 } md_script_visualization_o;
 
 typedef struct eval_context_t {
-    struct md_script_ir_o* ir;
+    md_script_ir_t* ir;
     const md_molecule_t* mol;
     const md_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
 
@@ -288,7 +289,7 @@ typedef struct expression_t {
     str_t str;
 } expression_t;
 
-typedef struct md_script_ir_o {
+struct md_script_ir_t {
     uint64_t magic;
 
     // We could use a direct raw interface here to save some function pointer indirections
@@ -309,11 +310,12 @@ typedef struct md_script_ir_o {
     md_script_error_t   *errors;
     md_script_token_t   *tokens;
 
-    bool record_errors; // This is to toggle if new errors should be registered... We don't want to flood the errors
     const char* stage;  // This is just to supply a context for the errors i.e. which stage the error occured
-} md_script_ir_o;
+    bool record_errors; // This is to toggle if new errors should be registered... We don't want to flood the errors
+    bool compile_success;
+};
 
-typedef struct md_script_eval_o {
+struct md_script_eval_t {
     uint64_t magic;
 
     struct md_allocator_i *arena;
@@ -322,10 +324,10 @@ typedef struct md_script_eval_o {
     volatile bool interrupt;
 
     md_script_property_t    *properties;
-} md_script_eval_o;
+};
 
 typedef struct parse_context_t {
-    md_script_ir_o*    ir;
+    md_script_ir_t* ir;
     tokenizer_t*    tokenizer;
     ast_node_t*     node;   // This represents the current root node in the tree
     md_allocator_i* temp_alloc;
@@ -688,7 +690,7 @@ static const char* get_value_type_str(base_type_t type) {
     }
 }
 
-static void create_error(md_script_ir_o* ir, token_t token, const char* format, ...) {
+static void create_error(md_script_ir_t* ir, token_t token, const char* format, ...) {
     if (!ir->record_errors) return;
     ir->record_errors = false;
 
@@ -761,7 +763,7 @@ static inline bool is_identifier_procedure(str_t ident) {
     return false;
 }
 
-static ast_node_t* create_node(md_script_ir_o* ir, ast_type_t type, token_t token) {
+static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t token) {
     ast_node_t* node = md_alloc(ir->arena, sizeof(ast_node_t));
     memset(node, 0, sizeof(ast_node_t));
     node->type = type;
@@ -770,7 +772,7 @@ static ast_node_t* create_node(md_script_ir_o* ir, ast_type_t type, token_t toke
     return node;
 }
 
-static identifier_t* get_identifier(md_script_ir_o* ir, str_t name) {
+static identifier_t* get_identifier(md_script_ir_t* ir, str_t name) {
     for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(constants); ++i) {
         if (compare_str(constants[i].name, name)) {
             return &constants[i];
@@ -785,7 +787,7 @@ static identifier_t* get_identifier(md_script_ir_o* ir, str_t name) {
     return NULL;
 }
 
-static identifier_t* create_identifier(md_script_ir_o* ir, str_t name) {
+static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
     ASSERT(get_identifier(ir, name) == NULL);
 
     identifier_t ident = {
@@ -1010,7 +1012,7 @@ static inline bool is_token_type_comparison(token_type_t type) {
     return type == '<' || type == TOKEN_LE || type == '>' || type == TOKEN_GE || type == TOKEN_EQ;
 }
 
-static bool expect_token_type(md_script_ir_o* ir, token_t token, token_type_t type) {
+static bool expect_token_type(md_script_ir_t* ir, token_t token, token_type_t type) {
     if (token.type != type) {
         create_error(ir, token, "Unexpected token '%.*s', expected token '%s'", token.str.len, token.str.ptr, get_token_type_str(type));
         return false;
@@ -3227,7 +3229,7 @@ static ast_node_t* prune_expressions(ast_node_t* node) {
     return node;
 }
 
-static bool parse_script(md_script_ir_o* ir) {
+static bool parse_script(md_script_ir_t* ir) {
     ASSERT(ir);
 
     bool result = true;
@@ -3293,7 +3295,7 @@ static bool parse_script(md_script_ir_o* ir) {
     return result;
 }
 
-static bool static_type_check(md_script_ir_o* ir, const md_molecule_t* mol) {
+static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol) {
     ASSERT(ir);
     ASSERT(mol);
 
@@ -3326,7 +3328,7 @@ static bool static_type_check(md_script_ir_o* ir, const md_molecule_t* mol) {
     return result;
 }
 
-static bool extract_dynamic_evaluation_targets(md_script_ir_o* ir) {
+static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
     ASSERT(ir);
 
     // Check all type checked expressions for dynamic flag
@@ -3358,7 +3360,7 @@ static inline bool is_property_type(md_type_info_t ti) {
     return is_temporal_type(ti) || is_distribution_type(ti) || is_volume_type(ti);
 }
 
-static bool extract_property_expressions(md_script_ir_o* ir) {
+static bool extract_property_expressions(md_script_ir_t* ir) {
     ASSERT(ir);
 
     for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
@@ -3408,7 +3410,7 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     return result;
 }
 
-static bool static_evaluation(md_script_ir_o* ir, const md_molecule_t* mol) {
+static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     ASSERT(mol);
 
     SETUP_STACK(default_allocator, MEGABYTES(64));
@@ -3434,34 +3436,42 @@ static bool static_evaluation(md_script_ir_o* ir, const md_molecule_t* mol) {
     return result;
 }
 
-static bool allocate_property_data(md_script_property_t* prop, md_type_info_t type, int64_t num_frames, md_allocator_i* alloc) {
+static void allocate_property_data(md_script_property_t* prop, md_type_info_t type, int64_t num_frames, md_allocator_i* alloc) {
     int64_t num_values = 0;
     memcpy(prop->data.dim, type.dim, sizeof(type.dim));
 
     int64_t aggregate_size = 0;
 
-    switch (prop->type) {
-    case MD_SCRIPT_PROPERTY_TYPE_TEMPORAL:
+    if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) == 0);
+        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) == 0);
+
         // For temporal data, we store and expose all values, this enables filtering to be performed afterwards to create distributions
         prop->data.dim[1] = (int32_t)num_frames;
         num_values = prop->data.dim[0] * prop->data.dim[1];
-        aggregate_size = (int32_t)num_frames;
-        break;
-    case MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION:
+        aggregate_size = num_frames;
+    }
+    else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) == 0);
+        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) == 0);
+
         // For distributions we only store and expose the aggregate
         num_values = DIST_BINS;
         prop->data.dim[0] = DIST_BINS;
         aggregate_size = num_values;
-        break;
-    case MD_SCRIPT_PROPERTY_TYPE_VOLUME:
+    }
+    else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
+        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) == 0);
+        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) == 0);
+
         // For volumes we only store and expose the aggregate
         num_values = VOL_DIM * VOL_DIM * VOL_DIM;
         prop->data.dim[0] = VOL_DIM;
         prop->data.dim[1] = VOL_DIM;
         prop->data.dim[2] = VOL_DIM;
         aggregate_size = num_values;
-        break;
-    default:
+    }
+    else {
         ASSERT(false);
     }
 
@@ -3469,8 +3479,8 @@ static bool allocate_property_data(md_script_property_t* prop, md_type_info_t ty
     memset(prop->data.values, 0, num_values * sizeof(float));
     prop->data.num_values = num_values;
 
-    bool aggregate = type_info_array_len(type) > 1;
-    if (aggregate) {
+    if (type_info_array_len(type) > 1) {
+        // Need to allocate data for aggregate as well.
         prop->data.aggregate = md_alloc(alloc, sizeof(md_script_property_data_aggregate_t));
 
         memset(prop->data.aggregate, 0, sizeof(md_script_property_data_aggregate_t));
@@ -3486,11 +3496,9 @@ static bool allocate_property_data(md_script_property_t* prop, md_type_info_t ty
         prop->data.aggregate->variance = md_alloc(alloc, aggregate_size * sizeof(float));
         memset(prop->data.aggregate->variance, 0, aggregate_size * sizeof(float));
     }
-
-    return true;
 }
 
-static bool init_property(md_script_property_t* prop, int64_t num_frames, str_t ident, const ast_node_t* node, md_allocator_i* alloc) {
+static void init_property(md_script_property_t* prop, int64_t num_frames, str_t ident, const ast_node_t* node, md_allocator_i* alloc) {
     ASSERT(prop);
     ASSERT(num_frames > 0);
     ASSERT(ident.ptr && ident.len);
@@ -3498,66 +3506,76 @@ static bool init_property(md_script_property_t* prop, int64_t num_frames, str_t 
     ASSERT(alloc);
 
     prop->ident = copy_str(ident, alloc);
-    prop->type = 0;
     prop->flags = 0;
     prop->data = (md_script_property_data_t){0};
     prop->vis_token = (struct md_script_vis_token_t*)node;
 
     if (is_temporal_type(node->data.type)) {
-        prop->type = MD_SCRIPT_PROPERTY_TYPE_TEMPORAL;
+        prop->flags |= MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
     }
     else if (is_distribution_type(node->data.type)) {
-        prop->type = MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION;
+        prop->flags |= MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION;
     }
     else if (is_volume_type(node->data.type)) {
-        prop->type = MD_SCRIPT_PROPERTY_TYPE_VOLUME;
+        prop->flags |= MD_SCRIPT_PROPERTY_FLAG_VOLUME;
     }
     else {
         ASSERT(false);
     }
 
-    return allocate_property_data(prop, node->data.type, num_frames, alloc);
+    allocate_property_data(prop, node->data.type, num_frames, alloc);
 }
 
-static void compute_min_max(float* min, float* max, const float* values, int64_t num_values) {
-    ASSERT(min);
-    ASSERT(max);
-    ASSERT(values);
+void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_mean, float* out_var, const float* data, int count) {
+    ASSERT(out_min);
+    ASSERT(out_max);
+    ASSERT(out_mean);
+    ASSERT(out_var);
+    ASSERT(data);
 
-    *min = FLT_MAX;
-    *max = -FLT_MAX;
-    for (int64_t i = 0; i < num_values; ++i) {
-        *min = MIN(*min, values[i]);
-        *max = MAX(*max, values[i]);
+    const float N = (float)count;
+    float min = FLT_MAX;
+    float max = -FLT_MAX;
+    float s1 = 0;
+    float s2 = 0;
+    int i = 0;
+
+    if (count > md_simd_widthf) {
+        md_simd_typef vmin = md_simd_set1f(FLT_MAX);
+        md_simd_typef vmax = md_simd_set1f(-FLT_MAX);
+        md_simd_typef v1 = md_simd_zerof();
+        md_simd_typef v2 = md_simd_zerof();
+
+        const int simd_count = (count / md_simd_widthf) * md_simd_widthf;
+        for (; i < simd_count; i += md_simd_widthf) {
+            md_simd_typef val = md_simd_loadf(data + i);
+            vmin = md_simd_minf(vmin, val);
+            vmax = md_simd_minf(vmax, val);
+            v1 = md_simd_addf(v1, val);
+            v2 = md_simd_addf(v2, md_simd_mulf(val, val));
+        }
+
+        s1 = md_simd_horizontal_addf(v1);
+        s2 = md_simd_horizontal_addf(v2);
+        min = md_simd_horizontal_minf(vmin);
+        max = md_simd_horizontal_maxf(vmax);
     }
+
+    for (; i < count; ++i) {
+        float val = data[i];
+        min = MIN(min, val);
+        max = MAX(max, val);
+        s1 += val;
+        s2 += val * val;
+    }
+
+    *out_min  = min;
+    *out_max  = max;
+    *out_mean = s1 / N;
+    *out_var  = ((N * s2) - (s1 * s1)) / (N*N);
 }
 
-/*
-static void compute_distribution(float* bins, int64_t num_bins, float min_bin_range, float max_bin_range, const float* values, int64_t num_values) {
-    ASSERT(bins);
-    ASSERT(num_bins > 0);
-    ASSERT(max_bin_range >= min_bin_range);
-    ASSERT(values);
-
-    memset(bins, 0, num_bins * sizeof(float));
-
-    const float bin_range = max_bin_range - min_bin_range;
-    ASSERT(bin_range > 0.0f);
-    for (int64_t i = 0; i < num_values; ++i) {
-        const float val = values[i];
-        const int32_t idx = (int32_t)CLAMP(((val - min_bin_range) / bin_range) * num_bins, 0, num_bins-1);
-        ASSERT(0 <= idx && idx < num_bins);
-        bins[idx] += 1;
-    }
-
-    const float scl = 1.0f / (float)num_values;
-    for (int64_t i = 0; i < num_bins; ++i) {
-        bins[i] *= scl;
-    }
-}
-*/
-
-static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_bitfield_t* mask, md_script_ir_o* ir, md_script_eval_t* eval) {
+static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_bitfield_t* mask, const md_script_ir_t* ir, md_script_eval_t* eval) {
     ASSERT(props);
     ASSERT(mol);
     ASSERT(traj);
@@ -3607,7 +3625,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     mutable_mol.atom.z = curr_z;
 
     eval_context_t ctx = {
-        .ir = ir,
+        .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
         .mol = &mutable_mol,
         .stack_alloc = &stack_alloc,
         .temp_alloc = &temp_alloc,
@@ -3627,8 +3645,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     bool result = true;
 
     const int64_t num_frames = md_bitfield_popcount(mask);
-    eval->o->num_frames_total = (uint32_t)num_frames;
-    eval->o->num_frames_completed = 0;
+    eval->num_frames_total = (uint32_t)num_frames;
+    eval->num_frames_completed = 0;
 
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
@@ -3638,26 +3656,20 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     // Preprocess the property data
     for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
         md_script_property_t* prop = &props[p_idx];
-        switch (prop->type) {
-        case MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION:
-        case MD_SCRIPT_PROPERTY_TYPE_VOLUME:
+        if (!(prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL)) {
             memset(prop->data.values, 0, prop->data.num_values * sizeof(float));
             if (prop->data.aggregate) {
-                memset(prop->data.aggregate->mean, 0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->mean,     0, prop->data.aggregate->num_values * sizeof(float));
                 memset(prop->data.aggregate->variance, 0, prop->data.aggregate->num_values * sizeof(float));
             }
-        case MD_SCRIPT_PROPERTY_TYPE_TEMPORAL:
-            prop->data.min_value = FLT_MAX;
-            prop->data.max_value = -FLT_MAX;
-            break;
-        default:
-            ASSERT(false);
         }
+        prop->data.min_value = FLT_MAX;
+        prop->data.max_value = -FLT_MAX;
     }
 
     // We evaluate each frame, one at a time
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
-        if (eval->o->interrupt) {
+        if (eval->interrupt) {
             goto done;
         }
 
@@ -3677,7 +3689,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         for (int64_t i = 0; i < num_expr; ++i) {
             allocate_data(&data[i], expr[i]->node->data.type, &temp_alloc);
             data[i].min_range = -FLT_MAX;
-            data[i].max_range = FLT_MAX;
+            data[i].max_range = +FLT_MAX;
             if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
                 md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating property '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
                 result = false;
@@ -3690,100 +3702,50 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             const int32_t size = (int32_t)type_info_array_len(data[p_idx].type);
             float* values = (float*)data[p_idx].ptr;
 
-            if (prop->type == MD_SCRIPT_PROPERTY_TYPE_TEMPORAL) {
+            if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 ASSERT(prop->data.values);
                 
-                if (prop->data.aggregate) {
-                    // Compute mean + variance values for this frame
-                    ASSERT(prop->data.aggregate->mean);
-                    ASSERT(prop->data.aggregate->variance);
-
-                    float mean = 0;
-                    for (int32_t i = 0 ; i < size; ++i) {
-                        mean += values[i];
-                    }
-                    mean /= (float)size;
-
-                    float variance = 0;
-                    for (int32_t i = 0 ; i < size; ++i) {
-                        const float x = values[i] - mean;
-                        variance += x * x;
-                    }
-                    variance /= (float)size;
-                    prop->data.aggregate->mean[dst_idx] = mean;
-                    prop->data.aggregate->variance[dst_idx] = variance;
-                }
                 memcpy(prop->data.values + dst_idx * size, values, size * sizeof(float));
 
                 // Determine min max values
-                float min_val = 0;
-                float max_val = 0;
-                compute_min_max(&min_val, &max_val, values, size);
-                prop->data.min_value = MIN(prop->data.min_value, min_val);
-                prop->data.max_value = MAX(prop->data.max_value, max_val);
+                float min, max, mean, var;
+                compute_min_max_mean_variance(&min, &max, &mean, &var, values, size);
+                prop->data.min_value = MIN(prop->data.min_value, min);
+                prop->data.max_value = MAX(prop->data.max_value, max);
+
+                if (prop->data.aggregate) {
+                    prop->data.aggregate->mean[dst_idx] = mean;
+                    prop->data.aggregate->variance[dst_idx] = var;
+                }
 
                 // Update range if not explicitly set
                 prop->data.min_range[0] = (data[p_idx].min_range == -FLT_MAX) ? prop->data.min_value : data[p_idx].min_range;
-                prop->data.max_range[0] = (data[p_idx].max_range ==  FLT_MAX) ? prop->data.max_value : data[p_idx].max_range;
+                prop->data.max_range[0] = (data[p_idx].max_range == +FLT_MAX) ? prop->data.max_value : data[p_idx].max_range;
             }
-            else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_DISTRIBUTION) {
+            else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
                 // Accumulate values
                 ASSERT(prop->data.values);
 
-                if (prop->data.aggregate) {
-                    // Compute mean + variance values for this frame
-                    ASSERT(prop->data.aggregate->mean);
-                    ASSERT(prop->data.aggregate->variance);
-
-                    float mean[DIST_BINS] = {0};
-                    for (int32_t i = 0 ; i < size; ++i) {
-                        for (int32_t j = 0; j < DIST_BINS; ++j) {
-                            mean[j] += values[i * DIST_BINS + j];                    
-                        }
-                    }
-                    for (int32_t i = 0; i < DIST_BINS; ++i) {
-                        mean[i] /= (float)size;
-                    }
-
-                    float variance[DIST_BINS] = {0};
-                    for (int32_t i = 0 ; i < size; ++i) {
-                        for (int32_t j = 0; j < DIST_BINS; ++j) {
-                            const float x = values[i * DIST_BINS + j] - mean[j];
-                            variance[j] += x * x;
-                        }
-                    }
-                    for (int32_t i = 0; i < DIST_BINS; ++i) {
-                        variance[i] /= (float)size;
-                    }
-
-                    for (int32_t i = 0; i < prop->data.num_values; ++i) {
-                        prop->data.aggregate->mean[i] = mean[i];
-                        prop->data.aggregate->variance[i] = variance[i];
-                    }
-                }
-                else {
-                    // Cumulative moving average
-                    const md_simd_typef N = md_simd_set1f((float)(dst_idx));
-                    const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
-                    for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_widthf); i += md_simd_widthf) {
-                        md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
-                        md_simd_typef new_val = md_simd_loadf(values + i);
-                        md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
-                    }
+                // Cumulative moving average
+                const md_simd_typef N = md_simd_set1f((float)(dst_idx));
+                const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
+                for (int64_t i = 0; i < ROUND_UP(prop->data.num_values, md_simd_widthf); i += md_simd_widthf) {
+                    md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
+                    md_simd_typef new_val = md_simd_loadf(values + i);
+                    md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
                 }
 
                 // Determine min max values
-                float min_val = 0;
-                float max_val = 0;
-                compute_min_max(&min_val, &max_val, values, size);
-                prop->data.min_value = MIN(prop->data.min_value, min_val);
-                prop->data.max_value = MAX(prop->data.max_value, max_val);
+                float min, max, mean, var;
+                compute_min_max_mean_variance(&min, &max, &mean, &var, values, size);
+                prop->data.min_value = MIN(prop->data.min_value, min);
+                prop->data.max_value = MAX(prop->data.max_value, max);
 
                 // Update range if not explicitly set
                 prop->data.min_range[0] = (data[p_idx].min_range == -FLT_MAX) ? prop->data.min_value : data[p_idx].min_range;
-                prop->data.max_range[0] = (data[p_idx].max_range == FLT_MAX) ? prop->data.max_value : data[p_idx].max_range;
+                prop->data.max_range[0] = (data[p_idx].max_range == +FLT_MAX) ? prop->data.max_value : data[p_idx].max_range;
             }
-            else if (prop->type == MD_SCRIPT_PROPERTY_TYPE_VOLUME) {
+            else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                 // Accumulate values
                 ASSERT(prop->data.values);
                 
@@ -3795,8 +3757,6 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                     md_simd_typef new_val = md_simd_loadf(values + i);
                     md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
                 }
-                
-                // @TODO: Compute variance here as well for volumes
             }
             else {
                 ASSERT(false);
@@ -3804,7 +3764,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         }
 
         dst_idx += 1;
-        eval->o->num_frames_completed = (uint32_t)dst_idx;
+        eval->num_frames_completed = (uint32_t)dst_idx;
 
         // @TODO: Decide how frequently should we invalidate the data? and Propagate the changes back to the GUI
         if (dst_idx % 10 == 0) {
@@ -3821,13 +3781,13 @@ done:
     return result;
 }
 
-static inline bool validate_ir_o(const md_script_ir_o* o) {
-    if (!o) {
+static inline bool validate_ir(const md_script_ir_t* ir) {
+    if (!ir) {
         md_print(MD_LOG_TYPE_ERROR, "Script object is NULL.");
         return false;
     }
 
-    if (o->magic != SCRIPT_IR_MAGIC) {
+    if (ir->magic != SCRIPT_IR_MAGIC) {
         md_print(MD_LOG_TYPE_ERROR, "Script object is corrupt or invalid.");
         return false;
     }
@@ -3835,13 +3795,13 @@ static inline bool validate_ir_o(const md_script_ir_o* o) {
     return true;
 }
 
-static inline bool validate_eval_o(const md_script_eval_o* o) {
-    if (!o) {
+static inline bool validate_eval(const md_script_eval_t* eval) {
+    if (!eval) {
         md_print(MD_LOG_TYPE_ERROR, "Eval object is NULL.");
         return false;
     }
 
-    if (o->magic != SCRIPT_EVAL_MAGIC) {
+    if (eval->magic != SCRIPT_EVAL_MAGIC) {
         md_print(MD_LOG_TYPE_ERROR, "Eval object is corrupt or invalid.");
         return false;
     }
@@ -3849,49 +3809,30 @@ static inline bool validate_eval_o(const md_script_eval_o* o) {
     return true;
 }
 
-static md_script_ir_o* create_ir(md_allocator_i* alloc) {
-    md_script_ir_o* ir = md_alloc(alloc, sizeof(md_script_ir_o));
-    memset(ir, 0, sizeof(md_script_ir_o));
+static md_script_ir_t* create_ir(str_t str, md_allocator_i* alloc, const md_script_ir_t* ctx_ir) {
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
+    md_script_ir_t* ir = md_alloc(arena, sizeof(md_script_ir_t));
+    memset(ir, 0, sizeof(md_script_ir_t));
     ir->magic = SCRIPT_IR_MAGIC;
-    ir->arena = md_arena_allocator_create(alloc, MEGABYTES(1));
-    
+    ir->arena = arena;
+    ir->str = copy_str(str, ir->arena);
+
+    if (ctx_ir) {
+        // If we have an IR context, we want to extract identifiers and subexpressions to be used so we can reference it.
+        md_array_push_array(ir->identifiers,  ctx_ir->identifiers,  md_array_size(ctx_ir->identifiers),  ir->arena);
+        md_array_push_array(ir->eval_targets, ctx_ir->eval_targets, md_array_size(ctx_ir->eval_targets), ir->arena);
+    }
+
     return ir;
 }
 
-static bool init_ir(md_script_ir_o* ir, str_t str, const md_script_ir_t* ctx_ir) {
-    if (validate_ir_o(ir)) {
-        md_arena_allocator_reset(ir->arena);
-        md_allocator_i* arena = ir->arena;
-        memset(ir, 0, sizeof(md_script_ir_o));
-        ir->magic = SCRIPT_IR_MAGIC;
-        ir->arena = arena;
-        ir->str = copy_str(str, ir->arena);
-
-        if (ctx_ir && ctx_ir->o) {
-            ASSERT(validate_ir_o(ctx_ir->o));
-            if (ctx_ir->o->identifiers) {
-                md_array_push_array(ir->identifiers, ctx_ir->o->identifiers, md_array_size(ctx_ir->o->identifiers), ir->arena);
-            }
-            if (ctx_ir->o->eval_targets) {
-                md_array_push_array(ir->eval_targets, ctx_ir->o->eval_targets, md_array_size(ctx_ir->o->eval_targets), ir->arena);
-            }
-        }
-
-        return true;
+static void free_ir(md_script_ir_t* ir) {
+    if (validate_ir(ir)) {
+        md_arena_allocator_destroy(ir->arena);
     }
-    return false;
 }
 
-static bool free_ir(md_script_ir_o* o) {
-    if (validate_ir_o(o)) {
-        md_arena_allocator_destroy(o->arena);
-        memset(o, 0, sizeof(md_script_ir_o));
-        return true;
-    }
-    return false;
-}
-
-static void create_tokens(md_script_ir_o* ir, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
+static void create_tokens(md_script_ir_t* ir, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
     md_script_token_t token = {0};
 
     ASSERT(node->type != AST_UNDEFINED);
@@ -3943,7 +3884,7 @@ static void create_tokens(md_script_ir_o* ir, const ast_node_t* node, const ast_
     }
 }
 
-bool extract_tokens(md_script_ir_o* ir) {
+bool extract_tokens(md_script_ir_t* ir) {
     const int64_t num_expr = md_array_size(ir->type_checked_expressions);
     for (int64_t i = 0; i < num_expr; ++i) {
         expression_t* expr = ir->type_checked_expressions[i];
@@ -3953,9 +3894,8 @@ bool extract_tokens(md_script_ir_o* ir) {
     return true;
 }
 
-bool md_script_ir_compile(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, md_allocator_i* alloc, const md_script_ir_t* ctx_ir) {
-    ASSERT(ir);
-    if (!src.ptr || !src.len) {
+md_script_ir_t* md_script_ir_create(str_t src, const md_molecule_t* mol, md_allocator_i* alloc, const md_script_ir_t* ctx_ir) {
+    if (str_empty(src)) {
         md_print(MD_LOG_TYPE_ERROR, "Script Compile: Source string was empty");
         return false;
     }
@@ -3970,104 +3910,107 @@ bool md_script_ir_compile(md_script_ir_t* ir, str_t src, const md_molecule_t* mo
         return false;
     }
 
-    if (!ir->o) {
-        ir->o = create_ir(alloc);
-    }
-    init_ir(ir->o, src, ctx_ir);
+    md_script_ir_t* ir = create_ir(src, alloc, ctx_ir);
 
-    bool result = parse_script(ir->o) &&
-        static_type_check(ir->o, mol) &&
-        static_evaluation(ir->o, mol) &&
-        extract_dynamic_evaluation_targets(ir->o) &&
-        extract_property_expressions(ir->o) &&
-        extract_tokens(ir->o);
-
-    ir->errors = ir->o->errors;
-    ir->num_errors = md_array_size(ir->o->errors);
-
-    ir->tokens = ir->o->tokens;
-    ir->num_tokens = md_array_size(ir->o->tokens);
-
-    ir->fingerprint = generate_fingerprint();
+    ir->compile_success = parse_script(ir) &&
+        static_type_check(ir, mol) &&
+        static_evaluation(ir, mol) &&
+        extract_dynamic_evaluation_targets(ir) &&
+        extract_property_expressions(ir) &&
+        extract_tokens(ir);
 
 #if MD_DEBUG
-    //save_expressions_to_json(ir->o->expressions, md_array_size(ir->o->expressions), make_cstr("tree.json"));
+    //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
 #endif
-    return result;
+
+    return ir;
 }
 
-bool md_script_ir_free(md_script_ir_t* ir) {
-    bool result = false;
-    if (ir) {
-        result = ir->o ? free_ir(ir->o) : true;
-        memset(ir, 0, sizeof(md_script_ir_t));
+void md_script_ir_free(md_script_ir_t* ir) {
+    if (validate_ir(ir)) {
+        free_ir(ir);
     }
-    return result;
 }
 
-static struct md_script_eval_o* create_eval(md_allocator_i* alloc) {
-    md_script_eval_o* o = md_alloc(alloc, sizeof(md_script_eval_o));
-    o->magic = SCRIPT_EVAL_MAGIC;
-    o->arena = md_arena_allocator_create(alloc, MEGABYTES(1));
-    o->properties = 0;
-    return o;
-}
-
-static bool free_eval(md_script_eval_o* o) {
-    if (validate_eval_o(o)) {
-        md_arena_allocator_destroy(o->arena);
-        memset(o, 0, sizeof(md_script_eval_o));
-        return true;
+int64_t md_script_ir_num_errors(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return 0;
     }
-    return false;
+    return md_array_size(ir->errors);
 }
 
-static bool init_eval(md_script_eval_o* o) {
-    if (validate_eval_o(o)) {
-        md_arena_allocator_reset(o->arena);
-        o->properties = NULL;
-        return true;
+const md_script_error_t* md_script_ir_errors(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return NULL;
     }
-    return false;
+    return ir->errors;
 }
 
-bool md_script_eval_init(md_script_eval_t* eval, int64_t num_frames, const md_script_ir_t* ir, md_allocator_i* alloc) {
-    ASSERT(eval);
-    ASSERT(ir);
-    ASSERT(alloc);
-
-    // Set these to zero until we have initialized the memory for the new properties
-    eval->num_properties = 0;
-    eval->properties = NULL;
-
-    if (!eval->o) {
-        eval->o = create_eval(alloc);
+int64_t md_script_ir_num_tokens(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return 0;
     }
-    init_eval(eval->o);
+    return md_array_size(ir->tokens);
+}
 
-    bool result = true;
-    const int64_t num_prop_expr = md_array_size(ir->o->prop_expressions);
+const md_script_token_t* md_script_ir_tokens(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return NULL;
+    }
+    return ir->tokens;
+}
+
+bool md_script_ir_valid(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return false;
+    }
+    return ir->compile_success;
+}
+
+static md_script_eval_t* create_eval(md_allocator_i* alloc) {
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
+    md_script_eval_t* eval = md_alloc(arena, sizeof(md_script_eval_t));
+    memset(eval, 0, sizeof(md_script_eval_t));
+    eval->magic = SCRIPT_EVAL_MAGIC;
+    eval->arena = arena;
+    return eval;
+}
+
+static void free_eval(md_script_eval_t* eval) {
+    if (validate_eval(eval)) {
+        md_arena_allocator_destroy(eval->arena);
+    }
+}
+
+md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, md_allocator_i* alloc) {
+    if (num_frames == 0) {
+        md_print(MD_LOG_TYPE_ERROR, "Script eval: Number of frames was 0");
+        return NULL;
+    }
+    if (!ir) {
+        md_print(MD_LOG_TYPE_ERROR, "Script eval: Immediate representation was null");
+        return NULL;
+    }
+    if (!alloc) {
+        md_print(MD_LOG_TYPE_ERROR, "Script eval: Allocator was null");
+        return NULL;
+    }
+
+    md_script_eval_t* eval = create_eval(alloc);
+
+    const int64_t num_prop_expr = md_array_size(ir->prop_expressions);
     if (num_prop_expr > 0) {
-        md_array_resize(eval->properties, num_prop_expr, eval->o->arena);
+        md_array_resize(eval->properties, num_prop_expr, eval->arena);
         for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
-            ASSERT(ir->o->prop_expressions[i]->ident);
-            result |= init_property(&eval->properties[i], num_frames, ir->o->prop_expressions[i]->ident->name, ir->o->prop_expressions[i]->node, eval->o->arena);
-            if (!result) break;
+            ASSERT(ir->prop_expressions[i]->ident);
+            init_property(&eval->properties[i], num_frames, ir->prop_expressions[i]->ident->name, ir->prop_expressions[i]->node, eval->arena);
         }
-
     }
 
-    if (result) {
-        eval->num_properties = md_array_size(eval->properties);
-    } else {
-        eval->num_properties = 0;
-        eval->properties = NULL;
-    }
-
-    return true;
+    return eval;
 }
 
-bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, md_bitfield_t* filter_mask) {
+bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const struct md_bitfield_t* filter_mask) {
     ASSERT(eval);
 
     bool result = true;
@@ -4088,14 +4031,15 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
         result = false;
     }
 
-    if (result) {    
-        if (eval->num_properties > 0) {
-            ASSERT(eval->num_properties == md_array_size(ir->o->prop_expressions));
-            eval->o->interrupt = false;
-            result = eval_properties(eval->properties, eval->num_properties, mol, traj, filter_mask, ir->o, eval);
+    if (result) {
+        const int64_t num_properties = md_array_size(eval->properties);
+        if (num_properties > 0) {
+            ASSERT(num_properties == md_array_size(ir->prop_expressions));
+            eval->interrupt = false;
+            result = eval_properties(eval->properties, num_properties, mol, traj, filter_mask, ir, eval);
 
             uint64_t fingerprint = generate_fingerprint();
-            for (int64_t i = 0; i < eval->num_properties; ++i) {
+            for (int64_t i = 0; i < num_properties; ++i) {
                 eval->properties[i].data.fingerprint = fingerprint;
             }
         }
@@ -4104,32 +4048,43 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
     return result;
 }
 
-bool md_script_eval_free(md_script_eval_t* eval) {
-    bool result = false;
-    if (eval) {
-        result = eval->o ? free_eval(eval->o) : true;
-        memset(eval, 0, sizeof(md_script_eval_t));
+void md_script_eval_free(md_script_eval_t* eval) {
+    if (validate_eval(eval)) {
+        free_eval(eval);
     }
-    return result;
 }
 
-float md_script_eval_completed_fraction(const md_script_eval_t* eval) {
-    if (eval && eval->o) {
-        return (float)eval->o->num_frames_completed / (float)eval->o->num_frames_total;
+int64_t md_script_eval_num_properties(const md_script_eval_t* eval) {
+    if (validate_eval(eval)) {        
+        return md_array_size(eval->properties);
     }
     return 0;
 }
 
-void md_script_eval_interrupt(const md_script_eval_t* eval) {
-    if (eval && eval->o) {
-        eval->o->interrupt = true;
+const md_script_property_t* md_script_eval_properties(const md_script_eval_t* eval) {
+    if (validate_eval(eval)) {
+        return eval->properties;
+    }
+    return NULL;
+}
+
+float md_script_eval_completed_fraction(const md_script_eval_t* eval) {
+    if (validate_eval(eval)) {
+        return (float)eval->num_frames_completed / (float)eval->num_frames_total;
+    }
+    return 0;
+}
+
+void md_script_eval_interrupt(md_script_eval_t* eval) {
+    if (validate_eval(eval)) {
+        eval->interrupt = true;
     }
 }
 
 static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allocator_i* alloc) {
-    md_script_ir_o* ir = create_ir(default_temp_allocator);
-    init_ir(ir, expr, NULL);
+    md_script_ir_t* ir = create_ir(expr, default_temp_allocator, NULL);
     tokenizer_t tokenizer = tokenizer_init(ir->str);
+    bool result = false;
 
     SETUP_STACK(default_allocator, MEGABYTES(32));
 
@@ -4145,7 +4100,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
         if (static_check_node(node, &ctx)) {
             allocate_data(dst, node->data.type, alloc);
             if (evaluate_node(dst, node, &ctx)) {
-                return true;
+                result = true;
             }
         }
     }
@@ -4158,7 +4113,9 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
 
     FREE_STACK();
 
-    return false;
+    free_ir(ir);
+
+    return result;
 }
 
 bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecule_t* mol, const md_script_ir_t* ctx_ir, md_allocator_i* alloc) {
@@ -4170,8 +4127,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
 
     SETUP_STACK(default_allocator, MEGABYTES(32));
 
-    md_script_ir_o* ir = create_ir(&temp_alloc);
-    init_ir(ir, expr, ctx_ir);
+    md_script_ir_t* ir = create_ir(expr, &temp_alloc, ctx_ir);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
 
@@ -4242,7 +4198,6 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
     }
 
     FREE_STACK();
-    
     return success;
 }
 
@@ -4265,7 +4220,7 @@ bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr,
     md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
     md_allocator_i* temp_alloc = arena;
 
-    md_script_ir_o* ir = create_ir(arena);
+    md_script_ir_t* ir = create_ir(arena);
     init_ir(ir, expr, ctx_ir);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
@@ -4446,7 +4401,6 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     if (!args.token) return false;
     if (!args.mol) return false;
     if (!args.ir) return false;
-    if (!args.ir->o) return false;
     if (!args.alloc) return false;
 
     if (args.flags == 0) args.flags = 0xFFFFFFFF;
@@ -4485,7 +4439,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     }
 
     eval_context_t ctx = {
-        .ir = args.ir->o,
+        .ir = (md_script_ir_t*)args.ir,
         .mol = args.mol,
         .stack_alloc = &stack_alloc,
         .temp_alloc = &temp_alloc,

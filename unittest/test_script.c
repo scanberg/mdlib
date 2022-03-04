@@ -188,8 +188,8 @@ UTEST(script, compile_script) {
     ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
 
     str_t script_src = load_textfile(MAKE_STR(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
-    md_script_ir_t ir = {0};
-    EXPECT_TRUE(md_script_ir_compile(&ir, script_src, &mol, alloc, NULL));
+    md_script_ir_t* ir = md_script_ir_create(script_src, &mol, alloc, NULL);
+    EXPECT_TRUE(md_script_ir_valid(ir));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -200,9 +200,8 @@ UTEST(script, semantic) {
     md_molecule_t mol = { 0 };
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, MAKE_STR(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
 
-    md_script_ir_t ir = { 0 };
-    bool result = md_script_ir_compile(&ir, MAKE_STR("p1 = resname('ALA') resname('GLY');"), &mol, alloc, NULL);
-    EXPECT_FALSE(result);
+    md_script_ir_t* ir = md_script_ir_create(MAKE_STR("p1 = resname('ALA') resname('GLY');"), &mol, alloc, NULL);
+    EXPECT_FALSE(md_script_ir_valid(ir));
 
     md_arena_allocator_destroy(alloc);
 }
@@ -240,19 +239,25 @@ UTEST(script, property_compute) {
     md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
     ASSERT_TRUE(traj);
 
-    md_script_ir_t ir = {0};
-    md_script_eval_t eval = {0};
-
     {
         str_t src = MAKE_STR("d1 = 1:5 in residue(1:3);");
-        EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
+        md_script_ir_t* ir = md_script_ir_create(src, &mol, alloc, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+        md_script_ir_free(ir);
     }
 
     {
-        EXPECT_TRUE(md_script_ir_compile(&ir, MAKE_STR("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, alloc, NULL));
-        EXPECT_TRUE(md_script_eval_init(&eval, md_trajectory_num_frames(traj), &ir, alloc));
-        ASSERT_TRUE(md_script_eval_compute(&eval, &ir, &mol, traj, NULL));
-        EXPECT_EQ(eval.num_properties, 1);
+        str_t src = MAKE_STR("prop1 = rdf(element('C'), element('O'), 20.0);");
+        md_script_ir_t* ir = md_script_ir_create(src, &mol, alloc, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
+        EXPECT_NE(0, eval);
+        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
+
+        md_script_eval_free(eval);
+        md_script_ir_free(ir);
     }
 
     {
@@ -260,10 +265,16 @@ UTEST(script, property_compute) {
             "sel = x(0:100);\n"
             "p1  = distance(com(sel), 100);"
         );
-        EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
-        EXPECT_TRUE(md_script_eval_init(&eval, md_trajectory_num_frames(traj), &ir, alloc));
-        ASSERT_TRUE(md_script_eval_compute(&eval, &ir, &mol, traj, NULL));
-        EXPECT_EQ(eval.num_properties, 1);
+        md_script_ir_t* ir = md_script_ir_create(src, &mol, alloc, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
+        EXPECT_NE(0, eval);
+        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
+
+        md_script_eval_free(eval);
+        md_script_ir_free(ir);
     }
 
     {
@@ -272,11 +283,10 @@ UTEST(script, property_compute) {
             "s2 = residue(11:15);\n"
             "s = {s1, s2};"
         );
-        EXPECT_TRUE(md_script_ir_compile(&ir, src, &mol, alloc, NULL));
+        md_script_ir_t* ir = md_script_ir_create(src, &mol, alloc, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+        md_script_ir_free(ir);
     }
-
-    md_script_ir_free(&ir);
-    md_script_eval_free(&eval);
 
     md_pdb_trajectory_free(traj);
     md_pdb_molecule_free(&mol, alloc);
@@ -296,16 +306,20 @@ typedef struct thread_data_t {
 
 void func(void* user_data) {
     thread_data_t* data = (thread_data_t*)user_data;
+    const int64_t num_cur_prop = md_script_eval_num_properties(data->eval);
+    const md_script_property_t* cur_prop = md_script_eval_properties(data->eval);
+
+    const int64_t num_ref_prop = md_script_eval_num_properties(data->ref_eval);
+    const md_script_property_t* ref_prop = md_script_eval_properties(data->ref_eval);
+
+    ASSERT(num_cur_prop == num_ref_prop);
     if (md_script_eval_compute(data->eval, data->ir, data->mol, data->traj, NULL)) {
-        ASSERT(data->eval->num_properties == data->ref_eval->num_properties);
-        for (int64_t p_idx = 0; p_idx < data->eval->num_properties; ++p_idx) {
-            ASSERT(data->eval->properties[p_idx].data.num_values == data->ref_eval->properties[p_idx].data.num_values);
-            for (int64_t i = 0; i < data->eval->properties[p_idx].data.num_values; ++i) {
-                float exp = data->ref_eval->properties[p_idx].data.values[i];
-                float val = data->eval->properties[p_idx].data.values[i];
-                if (val != exp) {
+        for (int64_t p_idx = 0; p_idx < num_cur_prop; ++p_idx) {
+            ASSERT(cur_prop[p_idx].data.num_values == ref_prop[p_idx].data.num_values);
+            for (int64_t i = 0; i < cur_prop[p_idx].data.num_values; ++i) {
+                if (cur_prop[p_idx].data.values[i] != ref_prop[p_idx].data.values[i]) {
                     data->num_corrupt_values += 1;
-                    printf("Corruption occured in thread %llu at frame %lli, expected: '%g', got: '%g'\n", md_thread_id(), i, exp, val);
+                    fprintf(stderr, "Corruption occured in thread %llu at frame %lli, expected: '%g', got: '%g'\n", md_thread_id(), i, ref_prop[p_idx].data.values[i], cur_prop[p_idx].data.values[i]);
                 }
             }
         }
@@ -326,20 +340,20 @@ UTEST(script, parallel_evaluation) {
     md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
     ASSERT_TRUE(traj);
 
-    md_script_ir_t ir = {0};
-    md_script_eval_t ref_eval = {0};
-    md_script_eval_t eval[NUM_THREADS] = {0};
+    md_script_eval_t* eval[NUM_THREADS] = {0};
     md_thread_t* threads[NUM_THREADS] = {0};
     thread_data_t thread_data[NUM_THREADS] = {0};
 
     int64_t num_frames = md_trajectory_num_frames(traj);
 
-    EXPECT_TRUE(md_script_ir_compile(&ir, script, &mol, alloc, NULL));
-    EXPECT_TRUE(md_script_eval_init(&ref_eval, num_frames, &ir, alloc));
-    ASSERT_TRUE(md_script_eval_compute(&ref_eval, &ir, &mol, traj, NULL));
+    md_script_ir_t* ir = md_script_ir_create(script, &mol, alloc, NULL);
+    EXPECT_TRUE(md_script_ir_valid(ir));
 
-    ASSERT_EQ(1, ref_eval.num_properties);
-    ASSERT_EQ(num_frames, ref_eval.properties[0].data.num_values);
+    md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, alloc);
+    ASSERT_TRUE(md_script_eval_compute(ref_eval, ir, &mol, traj, NULL));
+
+    ASSERT_EQ(1, md_script_eval_num_properties(ref_eval));
+    ASSERT_EQ(num_frames, md_script_eval_properties(ref_eval)[0].data.num_values);
 
 #if 0
     printf("Ref Values:\n");
@@ -350,16 +364,17 @@ UTEST(script, parallel_evaluation) {
 
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
-            md_script_eval_init(&eval[i], num_frames, &ir, alloc);
+            eval[i] = md_script_eval_create(num_frames, ir, alloc);
+            EXPECT_NE(0, eval[i]);
         }
 
         for (int i = 0; i < NUM_THREADS; ++i) {
             thread_data[i] = (thread_data_t) {
-                .ir = &ir,
+                .ir = ir,
                 .mol = &mol,
                 .traj = traj,
-                .ref_eval = &ref_eval,
-                .eval = &eval[i],
+                .ref_eval = ref_eval,
+                .eval = eval[i],
                 .num_corrupt_values = 0
             };
             threads[i] = md_thread_create(func, &thread_data[i]);
@@ -374,11 +389,11 @@ UTEST(script, parallel_evaluation) {
     }
 
     for (int i = 0; i < NUM_THREADS; ++i) {
-        md_script_eval_free(&eval[i]);
+        md_script_eval_free(eval[i]);
     }
 
-    md_script_ir_free(&ir);
-    md_script_eval_free(&ref_eval);
+    md_script_ir_free(ir);
+    md_script_eval_free(ref_eval);
 
     md_pdb_trajectory_free(traj);
     md_pdb_molecule_free(&mol, alloc);
