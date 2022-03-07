@@ -1,11 +1,10 @@
-#ifndef _MD_ARENA_ALLOCATOR_H_
-#define _MD_ARENA_ALLOCATOR_H_
+#pragma once
 
 #include <stdint.h>
 
 struct md_allocator_i;
 
-#define MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE 4096
+#define MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE (1<<14)
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,6 +18,4 @@ void md_arena_allocator_destroy(struct md_allocator_i* arena);
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

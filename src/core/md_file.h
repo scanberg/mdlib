@@ -3,7 +3,6 @@
 #include <core/md_str.h>
 
 typedef struct md_file_o md_file_o;
-//struct md_file_o;
 
 typedef enum md_file_flags_t {
     MD_FILE_READ   = 1,
@@ -21,7 +20,6 @@ typedef enum md_file_seek_origin_t {
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
-
 
 md_file_o* md_file_open(str_t filename, int file_access_flags);
 void md_file_close(md_file_o* file);

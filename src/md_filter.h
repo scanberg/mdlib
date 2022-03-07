@@ -16,7 +16,7 @@ typedef struct md_filter_result_t {
     bool is_dynamic;
 } md_filter_result_t;
 
-#ifdef __cplusplus
+#ifdef __cplusplus 
     extern "C" {
 #endif
 

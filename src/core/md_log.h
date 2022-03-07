@@ -1,9 +1,4 @@
-#ifndef _MD_LOGGER_H_
-#define _MD_LOGGER_H_
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+#pragma once
 
 typedef struct md_logger_o md_logger_o;
 
@@ -18,15 +13,17 @@ typedef struct md_logger_i {
     void (*log)(struct md_logger_o* inst, enum md_log_type_t log_type, const char* msg);
 } md_logger_i;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void md_add_logger(const md_logger_i* logger);
 void md_remove_logger(const md_logger_i* logger);
-int  md_print(enum md_log_type_t log_type, const char* msg);
-int  md_printf(enum md_log_type_t log_type, const char* format, ...);
+int  md_print(md_log_type_t log_type, const char* msg);
+int  md_printf(md_log_type_t log_type, const char* format, ...);
 
 extern struct md_logger_i* default_logger;
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

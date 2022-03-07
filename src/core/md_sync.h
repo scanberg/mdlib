@@ -9,10 +9,6 @@ typedef struct md_thread_t md_thread_t;
 typedef uint64_t md_thread_id_t;
 typedef void (md_thread_func)(void *user_data);
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 struct md_mutex_t {
     union {
         void* _align;
@@ -23,6 +19,10 @@ struct md_mutex_t {
 struct md_semaphore_t {
     void* _data[4];
 };
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // Thread
 md_thread_t* md_thread_create(md_thread_func func, void* user_data);

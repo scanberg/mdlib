@@ -1,7 +1,5 @@
 #pragma once
 
-#include <stdint.h>
-
 struct md_allocator_i;
 
 #ifdef __cplusplus
