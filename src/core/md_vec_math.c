@@ -8,7 +8,7 @@
 void mat3_svd(const mat3_t M, mat3_t* U, mat3_t* S, mat3_t* V) {
     mat3_t Mt = mat3_transpose(M);
     // the external svd library uses row major matrix convention...
-    svd(Mt.elem, U->elem, S->elem, V->elem);
+    svd((const float(*)[3])Mt.elem, U->elem, S->elem, V->elem);
     *U = mat3_transpose(*U);
     *S = mat3_transpose(*S);
     *V = mat3_transpose(*V);

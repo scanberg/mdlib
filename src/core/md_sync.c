@@ -6,6 +6,11 @@
 
 #include <string.h>
 
+#if MD_COMPILER_GCC
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
+
 #if MD_PLATFORM_WINDOWS
 
 //#pragma comment(lib, "ntdll.lib")
@@ -320,3 +325,7 @@ bool md_semaphore_release_n(md_semaphore_t* semaphore, int32_t count) {
 	}
 	return result;
 }
+
+#if MD_COMPILER_GCC
+#pragma GCC diagnostic pop
+#endif

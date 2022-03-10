@@ -1,5 +1,8 @@
 #include "utest.h"
 
+#define __STDC_FORMAT_MACROS 1
+#include <inttypes.h>
+
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
@@ -252,7 +255,7 @@ UTEST(script, property_compute) {
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
-        EXPECT_NE(0, eval);
+        EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
         ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
 
@@ -269,7 +272,7 @@ UTEST(script, property_compute) {
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
-        EXPECT_NE(0, eval);
+        EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
         ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
 
@@ -319,7 +322,7 @@ void func(void* user_data) {
             for (int64_t i = 0; i < cur_prop[p_idx].data.num_values; ++i) {
                 if (cur_prop[p_idx].data.values[i] != ref_prop[p_idx].data.values[i]) {
                     data->num_corrupt_values += 1;
-                    fprintf(stderr, "Corruption occured in thread %llu at frame %lli, expected: '%g', got: '%g'\n", md_thread_id(), i, ref_prop[p_idx].data.values[i], cur_prop[p_idx].data.values[i]);
+                    fprintf(stderr, "Corruption occured in thread %"PRIu64" at frame %i, expected: '%g', got: '%g'\n", md_thread_id(), (int)i, ref_prop[p_idx].data.values[i], cur_prop[p_idx].data.values[i]);
                 }
             }
         }
@@ -365,7 +368,7 @@ UTEST(script, parallel_evaluation) {
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
             eval[i] = md_script_eval_create(num_frames, ir, alloc);
-            EXPECT_NE(0, eval[i]);
+            EXPECT_NE(NULL, eval[i]);
         }
 
         for (int i = 0; i < NUM_THREADS; ++i) {

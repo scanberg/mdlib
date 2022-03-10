@@ -7,6 +7,7 @@ typedef struct md_semaphore_t md_semaphore_t;
 typedef struct md_mutex_t md_mutex_t;
 typedef struct md_thread_t md_thread_t;
 typedef uint64_t md_thread_id_t;
+
 typedef void (md_thread_func)(void *user_data);
 
 struct md_mutex_t {

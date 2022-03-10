@@ -10,7 +10,7 @@ UTEST(string_builder, all) {
 
 	str = md_string_builder_to_string(&sb);
 
-	EXPECT_EQ(0, str.ptr);
+	EXPECT_EQ(NULL, str.ptr);
 	EXPECT_EQ(0, str.len);
 
 	md_string_builder_print(&sb, "Hej");

@@ -4038,7 +4038,7 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
             eval->interrupt = false;
             result = eval_properties(eval->properties, num_properties, mol, traj, filter_mask, ir, eval);
 
-            uint64_t fingerprint = generate_fingerprint();
+            const uint64_t fingerprint = generate_fingerprint();
             for (int64_t i = 0; i < num_properties; ++i) {
                 eval->properties[i].data.fingerprint = fingerprint;
             }
@@ -4193,7 +4193,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
 
     int64_t len = 0;
     for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
-        int64_t space_left = MAX(0, sizeof(result->error_buf) - len);
+        int64_t space_left = MAX(0, (int64_t)sizeof(result->error_buf) - len);
         if (space_left) len += snprintf(result->error_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
     }
 

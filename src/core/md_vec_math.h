@@ -711,7 +711,7 @@ static inline __m128 linear_combine_sse(__m128 a, mat4_t B) {
 // MAT2
 static inline mat2_t mat2_ident() {
     mat2_t M = {
-        .col = {
+        {
             {1,0},
             {0,1}
         }
@@ -722,7 +722,7 @@ static inline mat2_t mat2_ident() {
 // MAT3
 static inline mat3_t mat3_ident() {
     mat3_t M = {
-        .col = {
+        {
             {1,0,0},
             {0,1,0},
             {0,0,1}
@@ -889,7 +889,7 @@ mat3_t mat3_weighted_cross_covariance_matrix(
 // MAT4
 static inline mat4_t mat4_ident() {
     mat4_t M = {
-        .col = {
+        {
             {1,0,0,0},
             {0,1,0,0},
             {0,0,1,0},
@@ -901,7 +901,7 @@ static inline mat4_t mat4_ident() {
 
 static inline mat4_t mat4_from_mat3(const mat3_t M) {
     mat4_t R = {
-        .col = {
+        {
             {M.col[0].x, M.col[0].y, M.col[0].z, 0},
             {M.col[1].x, M.col[1].y, M.col[1].z, 0},
             {M.col[2].x, M.col[2].y, M.col[2].z, 0},
@@ -943,7 +943,7 @@ static inline mat4_t mat4_from_quat(quat_t q) {
 // Create mat4 scaling matrix from scalars x, y, z which dictates the corresponding scaling factor for each axis
 static inline mat4_t mat4_scale(float x, float y, float z) {
     mat4_t M = {
-        .col = {
+        {
             {x,0,0,0},
             {0,y,0,0},
             {0,0,z,0},
@@ -956,7 +956,7 @@ static inline mat4_t mat4_scale(float x, float y, float z) {
 // Create mat4 translation matrix from scalars x, y, z which dictates the corresponding translation for each axis
 static inline mat4_t mat4_translate(float x, float y, float z) {
     mat4_t M = {
-        .col = {
+        {
             {1,0,0,0},
             {0,1,0,0},
             {0,0,1,0},
@@ -967,31 +967,26 @@ static inline mat4_t mat4_translate(float x, float y, float z) {
 }
 
 static inline mat4_t mat4_add(mat4_t A, mat4_t B) {
-    mat4_t M = {
-        .col = {
-            vec4_add(A.col[0], B.col[0]),
-            vec4_add(A.col[1], B.col[1]),
-            vec4_add(A.col[2], B.col[2]),
-            vec4_add(A.col[3], B.col[3]),
-    }
-    };
+    mat4_t M;
+    M.col[0] = vec4_add(A.col[0], B.col[0]);
+    M.col[1] = vec4_add(A.col[1], B.col[1]);
+    M.col[2] = vec4_add(A.col[2], B.col[2]);
+    M.col[3] = vec4_add(A.col[3], B.col[3]);
     return M;
 }
 
 static inline mat4_t mat4_sub(mat4_t A, mat4_t B) {
-    mat4_t M = {
-        .col = {
-            vec4_sub(A.col[0], B.col[0]),
-            vec4_sub(A.col[1], B.col[1]),
-            vec4_sub(A.col[2], B.col[2]),
-            vec4_sub(A.col[3], B.col[3]),
-    }
-    };
+    mat4_t M;
+    M.col[0] = vec4_sub(A.col[0], B.col[0]);
+    M.col[1] = vec4_sub(A.col[1], B.col[1]);
+    M.col[2] = vec4_sub(A.col[2], B.col[2]);
+    M.col[3] = vec4_sub(A.col[3], B.col[3]);
+    return M;
     return M;
 }
 
 static inline mat4_t mat4_mul(mat4_t A, mat4_t B) {
-    mat4_t C = {0};
+    mat4_t C;
 #if VEC_MATH_USE_SSE_H
     C.col[0].mm128 = linear_combine_sse(B.col[0].mm128, A);
     C.col[1].mm128 = linear_combine_sse(B.col[1].mm128, A);
@@ -1025,10 +1020,14 @@ static inline mat4_t mat4_mul(mat4_t A, mat4_t B) {
 }
 
 static inline vec4_t mat4_mul_vec4(mat4_t M, vec4_t v) {
-    vec4_t r = {0,0,0,0};
+    vec4_t r;
 #if VEC_MATH_USE_SSE_H
     r.mm128 = linear_combine_sse(v.mm128, M);
 #else
+    r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z + M.elem[3][0] * v.w;
+    r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z + M.elem[3][1] * v.w;
+    r.z = M.elem[0][2] * v.x + M.elem[1][2] * v.y + M.elem[2][2] * v.z + M.elem[3][2] * v.w;
+    r.w = M.elem[0][3] * v.x + M.elem[1][3] * v.y + M.elem[2][3] * v.z + M.elem[3][3] * v.w;
     ASSERT(false);
 #endif
     return r;
