@@ -208,7 +208,7 @@ double md_os_time_as_milliseconds(timestamp_t t) {
     QueryPerformanceFrequency(&frequency);
     return (double)(t * 1000) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
-    return (t1 - t0) * 1.0e-6;
+    return t * 1.0e-6;
 #endif
 }
 
@@ -218,7 +218,7 @@ double md_os_time_as_seconds(timestamp_t t) {
     QueryPerformanceFrequency(&frequency);
     return (double)(t * 1000) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
-    return (t1 - t0) * 1.0e-9;
+    return t * 1.0e-9;
 #endif
 }
 
