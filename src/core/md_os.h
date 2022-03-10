@@ -3,8 +3,8 @@
 #include <stdint.h>
 #include "md_str.h"
 
-struct md_allocator_i;
-typedef uint64_t timestamp_t;
+struct  md_allocator_i;
+typedef int64_t timestamp_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,8 +19,9 @@ str_t       md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc);
 str_t       md_os_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
 
 timestamp_t md_os_time_current();
-double      md_os_time_delta_in_ms(timestamp_t t0, timestamp_t t1);
-double      md_os_time_delta_in_s (timestamp_t t0, timestamp_t t1);
+timestamp_t md_os_time_from_milliseconds(int64_t milliseconds);
+double      md_os_time_as_milliseconds(timestamp_t t);
+double      md_os_time_as_seconds(timestamp_t t);
 
 void        md_os_sleep(int64_t milliseconds);
 

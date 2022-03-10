@@ -9,6 +9,8 @@
 
 #define MD_MAX_PATH 4096
 
+#include <time.h>
+
 #if MD_PLATFORM_WINDOWS
 
 #ifndef VC_EXTRALEAN
@@ -190,31 +192,31 @@ timestamp_t md_os_time_current() {
 #endif
 }
 
-double md_os_time_delta_in_ms(timestamp_t t0, timestamp_t t1) {
+timestamp_t md_os_time_from_milliseconds(int64_t ms) {
 #if MD_PLATFORM_WINDOWS
-    LARGE_INTEGER start, stop, elapsed, frequency;
+    LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    start.QuadPart = t0;
-    stop.QuadPart = t1;
-    elapsed.QuadPart = stop.QuadPart - start.QuadPart;
-    elapsed.QuadPart *= 1000;
-    double ms = ((double)elapsed.QuadPart / (double)frequency.QuadPart);
-    return ms;
+    return (ms * 3000) / frequency.QuadPart;
+#elif MD_PLATFORM_UNIX
+    return ms * 1.0e-6;
+#endif
+}
+
+double md_os_time_as_milliseconds(timestamp_t t) {
+#if MD_PLATFORM_WINDOWS
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    return (double)(t * 1000) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
     return (t1 - t0) * 1.0e-6;
 #endif
 }
 
-double md_os_time_delta_in_s(timestamp_t t0, timestamp_t t1) {
+double md_os_time_as_seconds(timestamp_t t) {
 #if MD_PLATFORM_WINDOWS
-    LARGE_INTEGER start, stop, elapsed, frequency;
+    LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    start.QuadPart = t0;
-    stop.QuadPart = t1;
-    elapsed.QuadPart = stop.QuadPart - start.QuadPart;
-    elapsed.QuadPart *= 1;
-    double s = ((double)elapsed.QuadPart / (double)frequency.QuadPart);
-    return s;
+    return (double)(t * 1000) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
     return (t1 - t0) * 1.0e-9;
 #endif
