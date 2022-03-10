@@ -100,12 +100,20 @@
 #define ROUND_DOWN(x, y) (y * (x / y))
 #endif
 
+#ifndef PI
+#define PI 3.1415926535897932
+#endif
+
+#ifndef TWO_PI
+#define TWO_PI 2.0 * PI
+#endif
+
 #ifndef DEG_TO_RAD
-#define DEG_TO_RAD(x) ((x)*(3.1415926535897932 / 180.0))
+#define DEG_TO_RAD(x) ((x)*(PI / 180.0))
 #endif
 
 #ifndef RAD_TO_DEG
-#define RAD_TO_DEG(x) ((x)*(180.0 / 3.1415926535897932))
+#define RAD_TO_DEG(x) ((x)*(180.0 / PI))
 #endif
 
 #ifndef KILOBYTES
