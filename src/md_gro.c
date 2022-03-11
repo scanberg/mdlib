@@ -177,21 +177,19 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
         while ((bytes_read = md_file_read(file, buf + buf_offset, buf_size - buf_offset)) > 0) {
             str.len = bytes_read + buf_offset;
 
-            // We want to make sure we send complete lines for parsing so we locate the last '\n'
-            const int64_t last_new_line = rfind_char(str, '\n');
-            if (last_new_line == -1) {
-                md_print(MD_LOG_TYPE_ERROR, "Unexpected structure within gro file, missing new lines?");
-                goto done;
-            }
-            ASSERT(str.ptr[last_new_line] == '\n');
-            str.len = last_new_line + 1;
-
-
             // Have we read all bytes in file?
             if (bytes_read < buf_size - buf_offset) {
                 str = parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
                 break;
             } else {
+                // We want to make sure we send complete lines for parsing so we locate the last '\n'
+                const int64_t last_new_line = rfind_char(str, '\n');
+                if (last_new_line == -1) {
+                    md_print(MD_LOG_TYPE_ERROR, "Unexpected structure within gro file, missing new lines?");
+                    goto done;
+                }
+                ASSERT(str.ptr[last_new_line] == '\n');
+                str.len = last_new_line + 1;
                 parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
             }
 
