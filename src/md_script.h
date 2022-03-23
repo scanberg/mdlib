@@ -49,11 +49,19 @@ typedef struct md_script_ir_t md_script_ir_t;
 // Opaque object for evaluation result
 typedef struct md_script_eval_t md_script_eval_t;
 
-typedef struct md_script_property_data_aggregate_t {
+typedef struct md_script_aggregate_t {
     int64_t num_values;
-    float*  mean;       
-    float*  variance;
-} md_script_property_data_aggregate_t;
+    float*  population_mean;
+    float*  population_var;
+    float*  population_min;
+    float*  population_max;
+} md_script_aggregate_t;
+
+/*
+typedef struct md_script_distribution_t {
+    uint32_t num_bins;
+} md_script_distribution_t;
+*/
 
 typedef struct md_script_property_data_t {
     int32_t dim[4];     // Dimension of values, they are exposed packed in a linear array
@@ -61,13 +69,15 @@ typedef struct md_script_property_data_t {
     int64_t num_values; // Raw 1D length of values
     float*  values;     // Raw linear access to values, check dim for the dimensions of the data
 
-    md_script_property_data_aggregate_t* aggregate; // optional, only computed if the values are computed as an aggregate
+    md_script_aggregate_t* aggregate; // optional, only computed if the values are computed as an aggregate
 
-    float   min_value;
-    float   max_value;
+    float   min_value;      // min total value
+    float   max_value;      // max total value
 
     float   min_range[4];   // min range in each dimension
     float   max_range[4];   // max range in each dimension
+
+    char    unit[32];
 
     uint64_t fingerprint; // Unique ID to compare against to see if your version is up to date.
 } md_script_property_data_t;
@@ -191,9 +201,10 @@ const md_script_property_t* md_script_eval_properties(const md_script_eval_t* ev
 // Compile and evaluate a single property from a string
 //bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap);
 
-// These is meant to be used if the evaulation runs in its own thread (which is recommended)
-float md_script_eval_completed_fraction(const md_script_eval_t* eval);
-void md_script_eval_interrupt(md_script_eval_t* eval);
+
+uint32_t md_script_eval_num_completed_frames(const md_script_eval_t* eval);
+float    md_script_eval_completed_fraction(const md_script_eval_t* eval);
+void     md_script_eval_interrupt(md_script_eval_t* eval);
 
 // ### VISUALIZE ###
 bool md_script_visualization_init(md_script_visualization_t* vis, struct md_script_visualization_args_t args);

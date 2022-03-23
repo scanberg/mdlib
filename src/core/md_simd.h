@@ -41,6 +41,9 @@
     #define md_simd_fractf  md_simd_fract_f256
     #define md_simd_roundf  md_simd_round_f256
     #define md_simd_blendf  md_simd_blend_f256
+    #define md_simd_sqrtf   md_simd_sqrtf_f256
+
+    #define md_simd_deperiodizef md_simd_deperiodize_f256
 
     #define md_simd_horizontal_minf md_simd_horizontal_min_f256
     #define md_simd_horizontal_maxf md_simd_horizontal_max_f256
@@ -174,6 +177,9 @@ static inline __m128 md_simd_blend_f128(__m128 a, __m128 b, __m128 mask) {
     return _mm_blendv_ps(a, b, mask);
 }
 
+static inline __m128 md_simd_sqrt_f128(__m128 x) {
+    return _mm_sqrt_ps(x);
+}
 static inline __m128 md_simd_min_f128(__m128 a, __m128 b) { return _mm_min_ps(a, b); }
 static inline __m128 md_simd_max_f128(__m128 a, __m128 b) { return _mm_max_ps(a, b); }
 

@@ -203,8 +203,15 @@ UTEST(script, semantic) {
     md_molecule_t mol = { 0 };
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, MAKE_STR(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
 
-    md_script_ir_t* ir = md_script_ir_create(MAKE_STR("p1 = resname('ALA') resname('GLY');"), &mol, alloc, NULL);
-    EXPECT_FALSE(md_script_ir_valid(ir));
+    {
+        md_script_ir_t* ir = md_script_ir_create(MAKE_STR("p1 = resname('ALA') resname('GLY');"), &mol, alloc, NULL);
+        EXPECT_FALSE(md_script_ir_valid(ir));
+    }
+
+    {
+        md_script_ir_t* ir = md_script_ir_create(MAKE_STR("p1 = resname('ALA') resname('GLY');"), &mol, alloc, NULL);
+        EXPECT_FALSE(md_script_ir_valid(ir));
+    }
 
     md_arena_allocator_destroy(alloc);
 }
@@ -241,6 +248,20 @@ UTEST(script, property_compute) {
 
     md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
     ASSERT_TRUE(traj);
+
+    {
+        str_t src = MAKE_STR("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
+        md_script_ir_t* ir = md_script_ir_create(src, &mol, alloc, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
+        EXPECT_NE(NULL, eval);
+        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
+
+        md_script_eval_free(eval);
+        md_script_ir_free(ir);
+    }
 
     {
         str_t src = MAKE_STR("d1 = 1:5 in residue(1:3);");

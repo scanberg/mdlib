@@ -1,10 +1,10 @@
 #pragma once
 
-#ifndef VEC_MATH_USE_SSE_H
-#define VEC_MATH_USE_SSE_H 1
+#ifndef VEC_MATH_USE_SSE
+#define VEC_MATH_USE_SSE 1
 #endif
 
-#ifdef VEC_MATH_USE_SSE_H
+#if VEC_MATH_USE_SSE
 #include "md_simd.h"
 #endif
 
@@ -53,8 +53,8 @@ typedef union vec4_t {
             float x, y, z, w;
         };
         float elem[4];
-#if VEC_MATH_USE_SSE_H
-        __m128 mm128;
+#if VEC_MATH_USE_SSE
+        md_simd_f128_t f128;
 #endif
     //};
 #ifdef __cplusplus
@@ -69,8 +69,8 @@ typedef union quat_t {
             float x, y, z, w;
         };
         float elem[4];
-#if VEC_MATH_USE_SSE_H
-        __m128 mm128;
+#if VEC_MATH_USE_SSE
+        __m128 f128;
 #endif
     //};
 #ifdef __cplusplus
@@ -203,7 +203,7 @@ static inline float vec2_dot(vec2_t a, vec2_t b) {
 static inline float vec2_length(vec2_t v) {
     float l2 = vec2_dot(v,v);
     vec4_t r = {
-        .mm128 = _mm_sqrt_ss(_mm_set1_ps(l2))
+        .f128 = _mm_sqrt_ss(_mm_set1_ps(l2))
     };
     return r.x;
 }
@@ -329,10 +329,14 @@ static inline float vec3_dot(vec3_t a, vec3_t b) {
 
 static inline float vec3_length(vec3_t v) {
     float l2 = vec3_dot(v,v);
+#if VEC_MATH_USE_SSE
     vec4_t r = {
-        .mm128 = _mm_sqrt_ss(_mm_set1_ps(l2))
+        .f128 = _mm_sqrt_ss(_mm_set1_ps(l2))
     };
     return r.x;
+#else
+    return sqrtf(l2);
+#endif
 }
 
 static inline float vec3_distance(vec3_t a, vec3_t b) {
@@ -364,8 +368,8 @@ static inline vec3_t vec3_lerp(vec3_t a, vec3_t b, float t) {
 // VEC4 OPERATIONS
 static inline vec4_t vec4_zero() {
     vec4_t res;
-#if VEC_MATH_USE_SSE_H
-    res.mm128 = _mm_setzero_ps();
+#if VEC_MATH_USE_SSE
+    res.f128 = _mm_setzero_ps();
 #else
     res.x = 0;
     res.y = 0;
@@ -377,8 +381,8 @@ static inline vec4_t vec4_zero() {
 
 static inline vec4_t vec4_from_float(float v) {
     vec4_t res;
-#if VEC_MATH_USE_SSE_H
-    res.mm128 = _mm_set1_ps(v);
+#if VEC_MATH_USE_SSE
+    res.f128 = _mm_set1_ps(v);
 #else
     res.x = v;
     res.y = v;
@@ -395,8 +399,8 @@ static inline vec4_t vec4_from_vec3(vec3_t v, float w) {
 
 static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {
     vec4_t c = {0,0,0,0};
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_mul_ps(a.mm128, b.mm128);
+#if VEC_MATH_USE_SSE
+    c.f128 = _mm_mul_ps(a.f128, b.f128);
 #else
     c.x = a.x * b.x;
     c.y = a.y * b.y;
@@ -408,8 +412,8 @@ static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {
 
 static inline vec4_t vec4_mul_f(vec4_t a, float s) {
     vec4_t c = {0,0,0,0};
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_mul_ps(a.mm128, _mm_set1_ps(s));
+#if VEC_MATH_USE_SSE
+    c.f128 = _mm_mul_ps(a.f128, _mm_set1_ps(s));
 #else
     c.x = a.x * s;
     c.y = a.y * s;
@@ -421,8 +425,8 @@ static inline vec4_t vec4_mul_f(vec4_t a, float s) {
 
 static inline vec4_t vec4_div(vec4_t a, vec4_t b) {
     vec4_t c = {0,0,0,0};
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_div_ps(a.mm128, b.mm128);
+#if VEC_MATH_USE_SSE
+    c.f128 = _mm_div_ps(a.f128, b.f128);
 #else
     c.x = a.x / b.x;
     c.y = a.y / b.y;
@@ -434,8 +438,8 @@ static inline vec4_t vec4_div(vec4_t a, vec4_t b) {
 
 static inline vec4_t vec4_div_f(vec4_t a, float s) {
     vec4_t c = {0,0,0,0};
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_div_ps(a.mm128, _mm_set1_ps(s));
+#if VEC_MATH_USE_SSE
+    c.f128 = _mm_div_ps(a.f128, _mm_set1_ps(s));
 #else
     c.x = a.x / s;
     c.y = a.y / s;
@@ -447,8 +451,8 @@ static inline vec4_t vec4_div_f(vec4_t a, float s) {
 
 static inline vec4_t vec4_add(vec4_t a, vec4_t b) {
     vec4_t c = {0,0,0,0};
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_add_ps(a.mm128, b.mm128);
+#if VEC_MATH_USE_SSE
+    c.f128 = _mm_add_ps(a.f128, b.f128);
 #else
     c.x = a.x + b.x;
     c.y = a.y + b.y;
@@ -460,8 +464,8 @@ static inline vec4_t vec4_add(vec4_t a, vec4_t b) {
 
 static inline vec4_t vec4_add_f(vec4_t a, float s) {
     vec4_t c = {0,0,0,0};
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_add_ps(a.mm128, _mm_set1_ps(s));
+#if VEC_MATH_USE_SSE
+    c.f128 = _mm_add_ps(a.f128, _mm_set1_ps(s));
 #else
     c.x = a.x + s;
     c.y = a.y + s;
@@ -473,8 +477,8 @@ static inline vec4_t vec4_add_f(vec4_t a, float s) {
 
 static inline vec4_t vec4_sub(vec4_t a, vec4_t b) {
     vec4_t c = {0,0,0,0};
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_sub_ps(a.mm128, b.mm128);
+#if VEC_MATH_USE_SSE
+    c.f128 = _mm_sub_ps(a.f128, b.f128);
 #else
     c.x = a.x - b.x;
     c.y = a.y - b.y;
@@ -486,8 +490,8 @@ static inline vec4_t vec4_sub(vec4_t a, vec4_t b) {
 
 static inline vec4_t vec4_sub_f(vec4_t a, float s) {
     vec4_t c;
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_sub_ps(a.mm128, _mm_set1_ps(s));
+#if VEC_MATH_USE_SSE
+    c.f128 = _mm_sub_ps(a.f128, _mm_set1_ps(s));
 #else
     c.x = a.x - s;
     c.y = a.y - s;
@@ -499,12 +503,33 @@ static inline vec4_t vec4_sub_f(vec4_t a, float s) {
 
 static inline float vec4_dot(vec4_t a, vec4_t b) {
     vec4_t res = vec4_mul(a, b);
-    return res.x + res.y + res.z + res.w;
+#if VEC_MATH_USE_SSE
+    return md_simd_horizontal_add_f128(res.f128);
+#else
+    return (res.x + res.y) + (res.z + res.w);
+#endif
 }
 
 static inline float vec4_distance_squared(vec4_t a, vec4_t b) {
     vec4_t d = vec4_sub(a, b);
     return vec4_dot(d, d);
+}
+
+static inline float vec4_distance(vec4_t a, vec4_t b) {
+    return sqrtf(vec4_distance_squared(a,b));
+}
+
+static inline float vec4_length(vec4_t v) {
+    float result;
+    float dp = vec4_dot(v,v);
+#if VEC_MATH_USE_SSE
+    vec4_t l;
+    l.f128 = md_simd_sqrt_f128(md_simd_set1_f128(dp));
+    result = l.x;
+#else
+    result = sqrtf(dp);
+#endif
+    return result;
 }
 
 static inline vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
@@ -514,42 +539,112 @@ static inline vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
 }
 
 static inline vec4_t vec4_min(vec4_t a, vec4_t b) {
-    vec4_t c;
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_min_ps(a.mm128, b.mm128);
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_min_f128(a.f128, b.f128);
 #else
-    c.x = MIN(a.x, b.x);
-    c.y = MIN(a.y, b.y);
-    c.z = MIN(a.z, b.z);
-    c.w = MIN(a.w, b.w);
+    r.x = MIN(a.x, b.x);
+    r.y = MIN(a.y, b.y);
+    r.z = MIN(a.z, b.z);
+    r.w = MIN(a.w, b.w);
 #endif
-    return c;
+    return r;
 }
 
 static inline vec4_t vec4_max(vec4_t a, vec4_t b) {
-    vec4_t c;
-#if VEC_MATH_USE_SSE_H
-    c.mm128 = _mm_max_ps(a.mm128, b.mm128);
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_max_f128(a.f128, b.f128);
 #else
-    c.x = MAX(a.x, b.x);
-    c.y = MAX(a.y, b.y);
-    c.z = MAX(a.z, b.z);
-    c.w = MAX(a.w, b.w);
+    r.x = MAX(a.x, b.x);
+    r.y = MAX(a.y, b.y);
+    r.z = MAX(a.z, b.z);
+    r.w = MAX(a.w, b.w);
 #endif
-    return c;
+    return r;
 }
 
 static inline vec4_t vec4_abs(vec4_t v) {
     vec4_t r;
-#if VEC_MATH_USE_SSE_H
-    r.mm128 = md_simd_abs_f128(v.mm128);
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_abs_f128(v.f128);
 #else
-    c.x = ABS(a.x, b.x);
-    c.y = ABS(a.y, b.y);
-    c.z = ABS(a.z, b.z);
-    c.w = ABS(a.w, b.w);
+    r.x = ABS(v.x);
+    r.y = ABS(v.y);
+    r.z = ABS(v.z);
+    r.w = ABS(v.w);
 #endif
     return r;
+}
+
+static inline vec4_t vec4_fract(vec4_t v) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_fract_f128(v.f128);
+#else
+    r.x = fractf(v.x);
+    r.y = fractf(v.y);
+    r.z = fractf(v.z);
+    r.w = fractf(v.w);
+#endif
+    return r;
+}
+
+static inline vec4_t vec4_sign(vec4_t v) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_sign_f128(v.f128);
+#else
+    r.x = signf(v.x);
+    r.y = signf(v.y);
+    r.z = signf(v.z);
+    r.w = signf(v.w);
+#endif
+    return r;
+}
+
+static inline vec4_t vec4_round(vec4_t v) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_round_f128(v.f128);
+#else
+    r.x = signf(v.x);
+    r.y = signf(v.y);
+    r.z = signf(v.z);
+    r.w = signf(v.w);
+#endif
+    return r;
+}
+
+/*
+
+float d = (val - ref) / period;
+d = fractf(d);
+d = d - signf(d) * (float)(fabsf(d) > 0.5f);
+return d * period + ref;
+
+*/
+
+static inline vec4_t vec4_deperiodize(vec4_t val, vec4_t ref, vec4_t period) {
+    vec4_t result;
+#if VEC_MATH_USE_SSE
+    result.f128 = md_simd_deperiodize_f128(val.f128, ref.f128, period.f128);
+#else
+    vec4_t d = vec4_div(vec4_sub(val, ref), period);
+    vec4_t f = vec4_fract(d);
+    vec4_t s = vec4_sign(d);
+    vec4_t a = vec4_abs(d);
+    f = vec4_sub(f, vec4_mul(s, a));
+    return vec4_add(vec4_mul(f, period), ref);
+#endif
+    return result;
+}
+
+static inline float vec4_periodic_distance(vec4_t a, vec4_t b, vec4_t period) {
+    vec4_t dx = vec4_sub(a, b);
+    vec4_t d  = vec4_sub(dx, vec4_mul(vec4_round(vec4_div(dx, period)), period));
+    float result = vec4_length(d);
+    return result;
 }
 
 static inline vec4_t vec4_from_u32(uint32_t rgba) {
@@ -697,13 +792,13 @@ static inline quat_t quat_from_mat4(mat4_t M) {
     return q;
 }
 
-#if VEC_MATH_USE_SSE_H
+#if VEC_MATH_USE_SSE
 static inline __m128 linear_combine_sse(__m128 a, mat4_t B) {
     __m128 res;
-    res = _mm_mul_ps(_mm_shuffle_ps(a, a, 0x00), B.col[0].mm128);
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0x55), B.col[1].mm128));
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xaa), B.col[2].mm128));
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xff), B.col[3].mm128));
+    res = _mm_mul_ps(_mm_shuffle_ps(a, a, 0x00), B.col[0].f128);
+    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0x55), B.col[1].f128));
+    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xaa), B.col[2].f128));
+    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xff), B.col[3].f128));
     return res;
 }
 #endif
@@ -987,11 +1082,11 @@ static inline mat4_t mat4_sub(mat4_t A, mat4_t B) {
 
 static inline mat4_t mat4_mul(mat4_t A, mat4_t B) {
     mat4_t C;
-#if VEC_MATH_USE_SSE_H
-    C.col[0].mm128 = linear_combine_sse(B.col[0].mm128, A);
-    C.col[1].mm128 = linear_combine_sse(B.col[1].mm128, A);
-    C.col[2].mm128 = linear_combine_sse(B.col[2].mm128, A);
-    C.col[3].mm128 = linear_combine_sse(B.col[3].mm128, A);
+#if VEC_MATH_USE_SSE
+    C.col[0].f128 = linear_combine_sse(B.col[0].f128, A);
+    C.col[1].f128 = linear_combine_sse(B.col[1].f128, A);
+    C.col[2].f128 = linear_combine_sse(B.col[2].f128, A);
+    C.col[3].f128 = linear_combine_sse(B.col[3].f128, A);
 #else
 #define MULT(col, row) \
     A.elem[0][row] * B.elem[col][0] + A.elem[1][row] * B.elem[col][1] + A.elem[2][row] * B.elem[col][2] + A.elem[3][row] * B.elem[col][3]
@@ -1021,8 +1116,8 @@ static inline mat4_t mat4_mul(mat4_t A, mat4_t B) {
 
 static inline vec4_t mat4_mul_vec4(mat4_t M, vec4_t v) {
     vec4_t r;
-#if VEC_MATH_USE_SSE_H
-    r.mm128 = linear_combine_sse(v.mm128, M);
+#if VEC_MATH_USE_SSE
+    r.f128 = linear_combine_sse(v.f128, M);
 #else
     r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z + M.elem[3][0] * v.w;
     r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z + M.elem[3][1] * v.w;
@@ -1041,7 +1136,7 @@ static inline vec3_t mat4_mul_vec3(mat4_t M, vec3_t v, float w) {
 
 static inline mat4_t mat4_mul_f(mat4_t M, float s) {
     mat4_t C = {0};
-#if VEC_MATH_USE_SSE_H
+#if VEC_MATH_USE_SSE
     C.col[0] = vec4_mul_f(M.col[0], s);
     C.col[1] = vec4_mul_f(M.col[1], s);
     C.col[2] = vec4_mul_f(M.col[2], s);
@@ -1075,9 +1170,9 @@ mat4_t mat4_inverse(mat4_t M);
 static inline mat4_t mat4_transpose(mat4_t M) {
     mat4_t T;
 
-#if VEC_MATH_USE_SSE_H
+#if VEC_MATH_USE_SSE
     T = M;
-    _MM_TRANSPOSE4_PS(T.col[0].mm128, T.col[1].mm128, T.col[2].mm128, T.col[3].mm128);
+    _MM_TRANSPOSE4_PS(T.col[0].f128, T.col[1].f128, T.col[2].f128, T.col[3].f128);
 #else
     T.elem[0][0] = M.elem[0][0];
     T.elem[0][1] = M.elem[1][0];

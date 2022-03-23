@@ -1,4 +1,4 @@
-#include "md_script.h"
+﻿#include "md_script.h"
 #include "md_molecule.h"
 #include "md_trajectory.h"
 #include "md_frame_cache.h"
@@ -22,6 +22,7 @@
 #include "core/md_compiler.h"
 #include "core/md_os.h"
 #include "core/md_spatial_hash.h"
+#include "core/md_unit.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -122,8 +123,9 @@ typedef enum flags_t {
     FLAG_ARGS_EQUAL_LENGTH          = 0x004, // Arguments should have the same array length
     FLAG_RET_AND_ARG_EQUAL_LENGTH   = 0x008, // Return type array length matches argument arrays' length
     FLAG_DYNAMIC_LENGTH             = 0x010, // Return type has a varying length which is not constant over frames
-    FLAG_QUERYABLE_LENGTH           = 0x020, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
-    FLAG_STATIC_VALIDATION          = 0x040, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
+    //FLAG_STATIC_LENGTH              = 0x020, // Marks a procedure as having a statically determined length in its return type
+    FLAG_QUERYABLE_LENGTH           = 0x040, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
+    FLAG_STATIC_VALIDATION          = 0x080, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
     FLAG_CONSTANT                   = 0x100, // Hints that the identifier is constant and should not be modified.
     // Flags from 0x1000 and upwards are automatically propagated upwards the AST_TREE
     FLAG_DYNAMIC                    = 0x1000, // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependency on atomic positions)
@@ -177,8 +179,8 @@ typedef struct md_type_info_t {
     // as input arguments to procedures which operate on arrays of varying length.
     // 
     // Procedures encode their support of varying length in arguments and return values by encoding that particular dimension with -1
-    // dim = [-1][0][0][0] Would mean that this argument accepts arrays of base_type of any length
-    // dim = [4][-1][0][0] Would mean that this argument accepts arrays of base_type[4] of any length
+    // dim = [-1][0][0][0] Would sample_mean that this argument accepts arrays of base_type of any length
+    // dim = [4][-1][0][0] Would sample_mean that this argument accepts arrays of base_type[4] of any length
 
     int32_t     dim[MAX_SUPPORTED_TYPE_DIMS]; // The dimensionality of a single element, each entry in dim represents a multidimensional length
     int32_t     len_dim;                      // Tells us which dimension in dim that encodes the length
@@ -195,9 +197,8 @@ typedef struct data_t {
     void*               ptr;    // Pointer to the data
     int64_t             size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
 
-    // Only used for distributions and volumes (So far volumes are uniform in its size so this will do)
-    float               min_range;
-    float               max_range;
+    frange_t            value_range;
+    md_unit_t           unit;
 } data_t;
 
 // This is data stored directly in the nodes to hold scalar values
@@ -211,11 +212,20 @@ typedef union value_t {
     md_bitfield_t  _bitfield;
 } value_t;
 
+struct ast_node_t;
+
 typedef struct identifier_t {
-    str_t       name;
-    data_t      data;
-    flags_t     flags;
+    str_t              name;
+    struct ast_node_t* node;    // This is the node to evaluate in order to generate the data for the identifier
+    data_t*            data;    // This is the data to fill in...
+    //data_t      data;
+    //flags_t     flags;
 } identifier_t;
+
+typedef struct constant_t {
+    str_t  name;
+    data_t data;
+} constant_t;
 
 typedef struct md_script_visualization_o {
     uint64_t magic;
@@ -223,6 +233,12 @@ typedef struct md_script_visualization_o {
     md_bitfield_t atom_mask; // Global atom mask outside of context
     uint32_t flags;
 } md_script_visualization_o;
+
+typedef struct static_backchannel_t {
+    flags_t  flags;
+    md_unit_t   unit;
+    frange_t value_range;
+} static_backchannel_t;
 
 typedef struct eval_context_t {
     md_script_ir_t* ir;
@@ -234,8 +250,12 @@ typedef struct eval_context_t {
     md_allocator_i* temp_alloc;         // For allocating transient data
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
 
+    // Contextual information for static checking 
+    token_t  op_token;                  // Token for the operation which is evaluated
     token_t* arg_tokens;                // Tokens to arguments for contextual information when reporting errors
+    flags_t* arg_flags;                 // Flags of arguments
     identifier_t* identifiers;          // Evaluated identifiers for references
+
                                       
     md_script_visualization_t* vis;     // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
     md_trajectory_frame_header_t* frame_header;
@@ -246,6 +266,9 @@ typedef struct eval_context_t {
         const float* y;
         const float* z;
     } initial_configuration;
+
+    // This is information which is only present in the static check and serves as a backchannel for the procedure in order to deduce value range, units, flags and such
+    static_backchannel_t* backchannel;
 } eval_context_t;
 
 typedef struct procedure_t {
@@ -576,8 +599,8 @@ static bool allocate_data(data_t* data, md_type_info_t type, md_allocator_i* all
     }
     data->size = bytes;
     data->type = type;
-    data->min_range = -FLT_MAX;
-    data->max_range = FLT_MAX;
+    data->value_range = (frange_t){0, 0};
+    data->unit = (md_unit_t){0};
 
     if (type.base_type == TYPE_BITFIELD) {
         md_bitfield_t* bf = data->ptr;
@@ -772,13 +795,9 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
     return node;
 }
 
-static identifier_t* get_identifier(md_script_ir_t* ir, str_t name) {
-    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(constants); ++i) {
-        if (compare_str(constants[i].name, name)) {
-            return &constants[i];
-        }
-    }
 
+
+static identifier_t* get_identifier(md_script_ir_t* ir, str_t name) {
     for (int64_t i = 0; i < md_array_size(ir->identifiers); ++i) {
         if (compare_str(ir->identifiers[i].name, name)) {
             return &ir->identifiers[i];
@@ -792,8 +811,8 @@ static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
 
     identifier_t ident = {
         .name = copy_str(name, ir->arena),
-        .data = {0},
-        .flags = 0,
+        .node = 0,
+        .data = 0,
     };
 
     return md_array_push(ir->identifiers, ident, ir->arena);
@@ -999,7 +1018,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     return find_procedure_supporting_arg_types_in_candidates(name, arg_types, num_arg_types, operators, ARRAY_SIZE(operators), allow_implicit_conversions);
 }
 
-static identifier_t* find_constant(str_t name) {
+static constant_t* find_constant(str_t name) {
     for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
         if (compare_str(constants[i].name, name)) {
             return &constants[i];
@@ -1374,6 +1393,9 @@ static int print_value(char* buf, int buf_size, data_t data) {
     else {
         PRINT("NULL");
     }
+    if (!unit_empty(data.unit)) {
+        len += unit_print(buf, MAX(0, (int)sizeof(buf) - len), data.unit);
+    }
     return len;
 }
 
@@ -1694,15 +1716,15 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
     
     const str_t ident = token.str;
     ast_node_t* node = 0;
-    identifier_t* c = 0;
+    constant_t* c = 0;
     
     if (is_identifier_procedure(ident)) {
         // The identifier has matched some procedure name
         node = parse_procedure_call(ctx, token);
     } else if ((c = find_constant(ident)) != 0) {
-        node = create_node(ctx->ir, AST_IDENTIFIER, token);
-        //node->ident =;
+        node = create_node(ctx->ir, AST_CONSTANT_VALUE, token);
         node->data = c->data;
+        node->flags |= FLAG_CONSTANT;
     } else {
         // Identifier
         token_t next = tokenizer_peek_next(ctx->tokenizer);
@@ -1731,13 +1753,16 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         }
         else if (next.type == '=') {
             // Assignment, therefore a new identifier
-            if (!get_identifier(ctx->ir, ident)) {
+            if (find_constant(ident)) {
+                create_error(ctx->ir, token, "The identifier is occupied by a constant and cannot be assigned.");
+            }
+            else if (get_identifier(ctx->ir, ident)) {
+                create_error(ctx->ir, token, "The identifier is already taken. Variables cannot be reassigned.");
+            }
+            else {
                 node = create_node(ctx->ir, AST_IDENTIFIER, token);
                 create_identifier(ctx->ir, ident);
                 node->ident = copy_str(ident, ctx->ir->arena);
-            }
-            else {
-                create_error(ctx->ir, token, "The identifier is already taken. Variables cannot be reassigned.");
             }
         } else {
             // Identifier reference, resolve this later in the static check
@@ -2177,8 +2202,9 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
     const int64_t num_args = md_array_size(node->children);
     ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
 
-    data_t arg_data[MAX_SUPPORTED_PROC_ARGS] = {0};
+    data_t  arg_data  [MAX_SUPPORTED_PROC_ARGS] = {0};
     token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
+    flags_t arg_flags [MAX_SUPPORTED_PROC_ARGS] = {0};
 
     //uint64_t stack_reset_point = md_stack_allocator_get_offset(ctx->stack_alloc);
 
@@ -2188,6 +2214,7 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
         // so we can allocate the data required for the node with the temp alloc
 
         arg_tokens[i] = node->children[i]->token;
+        arg_flags[i] = node->children[i]->flags;
         md_type_info_t arg_type = node->children[i]->data.type;
 
         if (is_variable_length(arg_type)) {
@@ -2210,10 +2237,20 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
         // If our function is not marked as FLAG_VISUALIZE, we just stop here.
         // The arguments have alread been evaluated
     } else {
+        flags_t* old_arg_flags  = ctx->arg_flags;
         token_t* old_arg_tokens = ctx->arg_tokens;
+        token_t  old_op_token   = ctx->op_token;
+        // Set
+        ctx->op_token   = node->token;
         ctx->arg_tokens = arg_tokens;
+        ctx->arg_flags  = arg_flags;
+
         result = node->proc->proc_ptr(dst, arg_data, ctx);
+
+        // Reset
+        ctx->arg_flags  = old_arg_flags;
         ctx->arg_tokens = old_arg_tokens;
+        ctx->op_token   = old_op_token;
     }
 
 done:
@@ -2250,26 +2287,25 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
     return true;
 }
 
-// This should only called in an evaluation context
-static identifier_t* eval_find_identifier(str_t name, eval_context_t* ctx) {
+static identifier_t* find_static_identifier(str_t name, eval_context_t* ctx) {
     ASSERT(ctx);
-    
-    // Constants
-    for (int64_t i = 0; i < (int64_t)ARRAY_SIZE(constants); ++i) {
-        if (compare_str(name, constants[i].name)) {
-            return &constants[i];
-        }
-    }
 
     // Static Identifiers from Compilation
     if (ctx->ir) {
         for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
             // Only return IR identifiers if they are constant
-            if ((ctx->ir->identifiers[i].flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
+            if ((ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
                 return &ctx->ir->identifiers[i];
             }
         }
     }
+
+    return NULL;
+}
+
+// This should only called in an evaluation context
+static identifier_t* find_dynamic_identifier(str_t name, eval_context_t* ctx) {
+    ASSERT(ctx);
 
     // Dynamic Identifiers from Evaluation
     for (int64_t i = 0; i < md_array_size(ctx->identifiers); ++i) {
@@ -2283,15 +2319,19 @@ static identifier_t* eval_find_identifier(str_t name, eval_context_t* ctx) {
 
 static bool evaluate_identifier_reference(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_IDENTIFIER);
+    ASSERT(md_array_size(node->children) == 1 && node->children[0]);
     (void)ctx;
     
-    // We assume in this context that we have a reference to the identifier, we copy the data
     if (dst) {
-        identifier_t* ident = eval_find_identifier(node->ident, ctx);
-        if (ident) {
-            ASSERT(dst->ptr && dst->size >= ident->data.size); // Make sure we have the expected size
-            copy_data(dst, &ident->data);
+        // Only copy data if the node is constant
+        if (node->flags & FLAG_CONSTANT) {
+            ASSERT(dst->ptr && node->data.ptr && dst->size >= node->data.size);
+            copy_data(dst, &node->data);
+        } else {
+            evaluate_node(dst, node->children[0], ctx);
         }
+    } else if (ctx->vis) {
+        evaluate_node(NULL, node->children[0], ctx);
     }
 
     return true;
@@ -2312,29 +2352,37 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
     // the data size could be zero if it is an array of length 0, in that case we don't need to allocate anything.
     // This should also be the conceptual entry point for all evaluations in this declarative language
 
-    identifier_t* ident = eval_find_identifier(lhs->ident, ctx);
+    if (!dst && ctx->vis) {
+        identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
+        ASSERT(ident);
+        return evaluate_node(NULL, ident->node, ctx);
+    }
 
+    identifier_t* ident = find_static_identifier(lhs->ident, ctx);
+    if (ident) {
+        ASSERT(ident->node->flags & FLAG_CONSTANT);
+        if (dst) {
+            copy_data(dst, ident->data);
+            return true;
+        } else if (ctx->vis) {
+            return evaluate_node(NULL, rhs, ctx);
+        }
+    }
+
+    ident = find_dynamic_identifier(lhs->ident, ctx);
     if (!ident && ctx->alloc) {
         identifier_t id = {
             .name = lhs->ident,
-            .flags = lhs->flags
+            .node = rhs,
+            .data = dst,
         };
         ident = md_array_push(ctx->identifiers, id, ctx->alloc);
-        allocate_data(&ident->data, lhs->data.type, ctx->alloc);
+        return evaluate_node(dst, rhs, ctx);
+
     }
 
-    bool result = false;
-    if (dst || ctx->vis) {
-        result = evaluate_node(dst, rhs, ctx);
-        if (ident && (ident->flags & FLAG_CONSTANT) == 0 && dst) {
-            ident->data = *dst;
-        }
-    }
-    else if ((ident->flags & FLAG_CONSTANT) == 0) {
-        result = evaluate_node(&ident->data, rhs, ctx);
-    }
-
-    return result;
+    ASSERT(false);
+    return false;
 }
 
 static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
@@ -2449,18 +2497,15 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             data_t data = {
                 .type = lhs_types[i],
                 .ptr = (char*)dst->ptr + elem_size * dst_idx,
-                .size = elem_size
+                .size = elem_size,
+                .unit = expr_node->data.unit,
+                .value_range = expr_node->data.value_range,
             };
             int64_t offset = type_info_array_len(lhs_types[i]);
             ASSERT(offset > 0);
             dst_idx += offset;
 
             if (!evaluate_node(&data, expr_node, &sub_ctx)) return false;
-
-            if (i == 0) {
-                dst->min_range = data.min_range;
-                dst->max_range = data.max_range;
-            }
         }
         else {
             md_bitfield_t* prev_vis_atom_mask = sub_ctx.vis->atom_mask;
@@ -2633,15 +2678,11 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
 
         if (query_result >= 0) { // Zero length is valid
             type->dim[type->len_dim] = query_result;
-        } else if (query_result == 0) {
-            create_error(ctx->ir, node->token, "The supplied argument is of zero length.", query_result);
-            return false;
         } else {
             create_error(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
             return false;
         }
     }
-
     return true;
 }
 
@@ -2654,7 +2695,7 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
     node->data.type = node->proc->return_type;
 
     const int64_t num_args = md_array_size(node->children);
-    ast_node_t** arg = node->children;
+    ast_node_t** args = node->children;
 
     if (num_args > 0) {
         if (res->flags & FLAG_SYMMETRIC_ARGS) {
@@ -2667,22 +2708,22 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
 
         // Make sure we cast the arguments into the expected types of the procedure.
         for (int64_t i = 0; i < num_args; ++i) {
-            if (!is_type_directly_compatible(arg[i]->data.type, node->proc->arg_type[i])) {
+            if (!is_type_directly_compatible(args[i]->data.type, node->proc->arg_type[i])) {
                 // Types are not directly compatible, but should be implicitly convertible (otherwise the match should never have been found)
-                ASSERT(is_type_implicitly_convertible(arg[i]->data.type, node->proc->arg_type[i]));
-                if (!convert_node(arg[i], node->proc->arg_type[i], ctx)) {
+                ASSERT(is_type_implicitly_convertible(args[i]->data.type, node->proc->arg_type[i]));
+                if (!convert_node(args[i], node->proc->arg_type[i], ctx)) {
                     return false;
                 }
-                node->flags |= arg[i]->flags & FLAG_PROPAGATION_MASK;
+                node->flags |= args[i]->flags & FLAG_PROPAGATION_MASK;
             }
         }
 
         if (node->proc->flags & FLAG_ARGS_EQUAL_LENGTH) {
             ASSERT(num_args > 1); // This flag should only be set for procedures with multiple arguments
                                   // Make sure that the input arrays are of equal length. Otherwise create an error.
-            const int64_t expected_len = type_info_array_len(arg[0]->data.type);
+            const int64_t expected_len = type_info_array_len(args[0]->data.type);
             for (int64_t i = 1; i < num_args; ++i) {
-                int64_t len = type_info_array_len(arg[i]->data.type);
+                int64_t len = type_info_array_len(args[i]->data.type);
                 if (len != expected_len) {
                     create_error(ctx->ir, node->token, "Expected array-length of arguments to match. arg 0 has length %i, arg %i has length %i.", (int)expected_len, (int)i, (int)len);
                     return false;
@@ -2694,32 +2735,50 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
     // Propagate procedure flags
     node->flags |= node->proc->flags & FLAG_PROPAGATION_MASK;
 
-    // Need to flag DYNAMIC_LENGTH if the node has QUERYABLE_LENGTH and depends on DYNAMIC arguments
-    // Or if the node is evaluated within a context and has QUERYABLE_LENGTH
-    if (node->proc->flags & FLAG_QUERYABLE_LENGTH) {
-        if (ctx->mol_ctx)
-            node->flags |= FLAG_DYNAMIC_LENGTH;
-        else {
-            for (int64_t i = 0; i < num_args; ++i) {
-                if (arg[i]->flags & FLAG_DYNAMIC) {
-                    node->flags |= FLAG_DYNAMIC_LENGTH;
-                    break;
-                }
-            }
-        }
+    // Need to flag with DYNAMIC_LENGTH if we evaluate within a context sincTormeke the return type length may depend on its context.
+    if (ctx->mol_ctx && (node->proc->flags & FLAG_QUERYABLE_LENGTH)) {
+        node->flags |= FLAG_DYNAMIC_LENGTH;
+        return true;
     }
 
     if (is_variable_length(node->data.type)) {
-        // The nodes type has a variable length. We would like to resolve it statically in order to determine the type
-        if (node->flags & FLAG_DYNAMIC_LENGTH) {
-            // This node has been marked as returning a variable length, which means it has a dependency on something which cannot be resolved statically during compile time.
-            // Therefore we cannot deduce the length of the type statically and we need to yield this operation until evaluation.
-            // This is conceptually fine for intermediate values, but should never be stored into actual properties.
-            // Example: distance(com(x(1:10)), vec3(1,0,0));
+        if (node->proc->flags & FLAG_QUERYABLE_LENGTH) {
+            // Try to resolve length by calling the procedure
+            static_backchannel_t channel;
+            static_backchannel_t* prev_channel = ctx->backchannel;
+            ctx->backchannel = &channel;
+            int query_result = do_proc_call(NULL, node, ctx);
+            ctx->backchannel = prev_channel;
+
+            if (channel.flags & FLAG_DYNAMIC_LENGTH) {
+                // If we fail to deduce the length it is still valid in this scenario
+                // We just postpone the length-evaluation to run-time
+                node->flags |= FLAG_DYNAMIC_LENGTH;
+                return true;
+            }
+
+            if (query_result >= 0) { // Zero length is valid
+                node->data.type.dim[node->data.type.len_dim] = query_result;
+                return true;
+            } else {
+                create_error(ctx->ir, node->token, "Failed to determine length of procedure return type!");
+                return false;
+            }
+        } else if (node->proc->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
+            // We can deduce the length of the array from the input length. Use take the largest of the arguments.
+            ASSERT(num_args > 0);
+
+            int64_t max_len = 0;
+            for (int64_t i = 0; i < num_args; ++i) {
+                int64_t len = (int32_t)type_info_array_len(args[i]->data.type);
+                ASSERT(len > -1);
+                max_len = MAX(len, max_len);
+            }
+            node->data.type.dim[node->data.type.len_dim] = (int32_t)max_len;
             return true;
-        }
-        else {
-            return finalize_type(&node->data.type, node, ctx);
+        } else {
+            create_error(ctx->ir, node->token, "Procedure returns variable length, but its length cannot be determined.");
+            return false;
         }
     }
 
@@ -2751,6 +2810,17 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
         md_type_info_t arg_type[2] = {arg[0]->data.type, num_args > 1 ? arg[1]->data.type : (md_type_info_t){0}};
         procedure_match_result_t res = find_operator_supporting_arg_types(node->type, arg_type, num_args, true);
         if (res.success) {
+            if (num_args == 2) {
+                switch (node->type) {
+                // These are the only operators which potentially modify or conserve units.
+                case AST_ADD: node->data.unit = unit_add(arg[0]->data.unit, arg[1]->data.unit); break;
+                case AST_SUB: node->data.unit = unit_sub(arg[0]->data.unit, arg[1]->data.unit); break;
+                case AST_MUL: node->data.unit = unit_mul(arg[0]->data.unit, arg[1]->data.unit); break;
+                case AST_DIV: node->data.unit = unit_div(arg[0]->data.unit, arg[1]->data.unit); break;
+                default: break;
+                }
+            }
+
             node->type = AST_PROC_CALL;
             return finalize_proc_call(node, &res, ctx);
         } else {
@@ -2827,7 +2897,13 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         ASSERT(node->proc);
         // Perform static validation by evaluating with NULL ptr
         if (node->proc->flags & FLAG_STATIC_VALIDATION) {
+            static_backchannel_t* prev_channel = ctx->backchannel;
+            static_backchannel_t channel = {0};
+            ctx->backchannel = &channel;
             result &= evaluate_proc_call(NULL, node, ctx);
+            node->data.unit = channel.unit;
+            node->data.value_range = channel.value_range;
+            ctx->backchannel = prev_channel;
         }
     }
 
@@ -2867,8 +2943,8 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
     if (static_check_children(node, ctx)) {
 
-        const int64_t  num_elem = md_array_size(node->children);
-        ast_node_t**        elem = node->children;
+        const int64_t num_elem = md_array_size(node->children);
+        ast_node_t**      elem = node->children;
 
         md_type_info_t array_type = {0};
         int64_t array_len = 0;
@@ -2938,6 +3014,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
 
     // In array subscripts, only integers and ranges should be allowed.
     // For now, we only support SINGLE integers or ranges
+    // If the node has a dynamic length, then we produce an error.
     // @TODO: In the future, se should expand this to support mixed integers and ranges and create a proper subset of the original data
     // @TODO: evaluate the children in order to determine the length and values (to make sure they are in range)
 
@@ -2956,6 +3033,11 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
 
         ast_node_t* lhs = elem[0];
         ast_node_t* arg = elem[1];
+
+        if (is_variable_length(lhs->data.type)) {
+            create_error(ctx->ir, lhs->token, "Array subscript operator can only be applied to expressions which have a static length");
+            return false;
+        }
 
         if (arg->flags & FLAG_DYNAMIC) {
             create_error(ctx->ir, arg->token, "Only static expressions are allowed within array subscript");
@@ -3005,20 +3087,24 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
 static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_IDENTIFIER);
     
-    if (!node->ident.ptr) {
+    if (str_empty(node->ident)) {
         node->ident = node->token.str;
     }
 
     identifier_t* ident = get_identifier(ctx->ir, node->ident);
-
     if (ident) {
-        node->data = ident->data;
-        node->flags |= ident->flags & FLAG_PROPAGATION_MASK;    // This means it has a dependency on an identifier, and that identifier might be dynamic... we need to propagate flags
+        ASSERT(ident->node);
 
-        if (ident->data.type.base_type != TYPE_UNDEFINED) {
-            return true;
-        } else {
+        if (ident->node->data.type.base_type == TYPE_UNDEFINED) {
             create_error(ctx->ir, node->token, "Identifier (%.*s) has an unresolved type", ident->name.len, ident->name.ptr);
+        } else {
+            if (ident->data) {
+                node->data = *ident->data;
+            }
+            if (!node->children) {
+                md_array_push(node->children, ident->node, ctx->alloc);
+            }
+            return true;
         }
     } else {
         create_error(ctx->ir, node->token, "Unresolved reference to identifier (%.*s)", node->ident.len, node->ident.ptr);
@@ -3033,7 +3119,6 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
 
     ASSERT(lhs && lhs->ident.ptr);
 
-    // We don't statically check lhs here since it is an assignment and the identifiers type is deduced from rhs.
     if (lhs->type != AST_IDENTIFIER) {
         create_error(ctx->ir, node->token, "Left hand side of assignment is not an identifier");
         return false;
@@ -3045,6 +3130,11 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
 
         identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
         ASSERT(ident);
+
+        if (is_variable_length(rhs->data.type)) {
+            create_error(ctx->ir, rhs->token, "Right hand side of assignment has variable length, assignments can only be made with arguments of known length");
+            return false;
+        }
 
         if (!(rhs->flags & FLAG_DYNAMIC) && !rhs->data.ptr) {
             // If it is not a dynamic node, we evaluate it directly and store the data.
@@ -3059,9 +3149,10 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
         lhs->data    = rhs->data;
         lhs->flags   = rhs->flags;
 
-        ident->data  = rhs->data;
-        ident->flags = rhs->flags;
-        return true;
+        ident->data  = &rhs->data;
+        ident->node  = rhs;
+
+        return static_check_node(lhs, ctx);
     }
 
     return false;
@@ -3143,6 +3234,8 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                         node->flags |= lhs->flags & FLAG_PROPAGATION_MASK;
                         node->data.type = lhs->data.type;
                         node->data.type.dim[node->data.type.len_dim] = (int32_t)arr_len;
+                        node->data.unit = lhs->data.unit;
+                        node->data.value_range = lhs->data.value_range;
 
                         propagate_context(lhs, contexts);
 
@@ -3337,7 +3430,7 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
         ASSERT(expr);
         ASSERT(expr->node);
         if (expr->node->flags & FLAG_DYNAMIC && expr->ident) {
-            // If it does not have an identifier, it cannot be reference and thus we don't need to evaluate it dynamcally
+            // If it does not have an identifier, it cannot be referenced and therefore we don't need to evaluate it dynamcally
             md_array_push(ir->eval_targets, ir->type_checked_expressions[i], ir->arena);
         }
     }
@@ -3481,20 +3574,26 @@ static void allocate_property_data(md_script_property_t* prop, md_type_info_t ty
 
     if (type_info_array_len(type) > 1) {
         // Need to allocate data for aggregate as well.
-        prop->data.aggregate = md_alloc(alloc, sizeof(md_script_property_data_aggregate_t));
+        prop->data.aggregate = md_alloc(alloc, sizeof(md_script_aggregate_t));
 
-        memset(prop->data.aggregate, 0, sizeof(md_script_property_data_aggregate_t));
+        memset(prop->data.aggregate, 0, sizeof(md_script_aggregate_t));
         prop->data.aggregate->num_values = aggregate_size;
 
         if (aggregate_size != num_values) {
-            prop->data.aggregate->mean = md_alloc(alloc, aggregate_size * sizeof(float));
-            memset(prop->data.aggregate->mean, 0, aggregate_size * sizeof(float));
+            prop->data.aggregate->population_mean = md_alloc(alloc, aggregate_size * sizeof(float));
+            memset(prop->data.aggregate->population_mean, 0, aggregate_size * sizeof(float));
         } else {
-            prop->data.aggregate->mean = prop->data.values;
+            prop->data.aggregate->population_mean = prop->data.values;
         }
 
-        prop->data.aggregate->variance = md_alloc(alloc, aggregate_size * sizeof(float));
-        memset(prop->data.aggregate->variance, 0, aggregate_size * sizeof(float));
+        prop->data.aggregate->population_var = md_alloc(alloc, aggregate_size * sizeof(float));
+        memset(prop->data.aggregate->population_var, 0, aggregate_size * sizeof(float));
+
+        prop->data.aggregate->population_min = md_alloc(alloc, aggregate_size * sizeof(float));
+        memset(prop->data.aggregate->population_min, 0, aggregate_size * sizeof(float));
+
+        prop->data.aggregate->population_max = md_alloc(alloc, aggregate_size * sizeof(float));
+        memset(prop->data.aggregate->population_max, 0, aggregate_size * sizeof(float));
     }
 }
 
@@ -3509,6 +3608,7 @@ static void init_property(md_script_property_t* prop, int64_t num_frames, str_t 
     prop->flags = 0;
     prop->data = (md_script_property_data_t){0};
     prop->vis_token = (struct md_script_vis_token_t*)node;
+    unit_print(prop->data.unit, sizeof(prop->data.unit), node->data.unit);
 
     if (is_temporal_type(node->data.type)) {
         prop->flags |= MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;
@@ -3540,6 +3640,25 @@ void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_me
     float s2 = 0;
     int i = 0;
 
+    for (i = 0; i < count; ++i) {
+        s1 += data[i];
+        min = MIN(min, data[i]);
+        max = MAX(max, data[i]);
+    }
+
+    s1 = s1 / N;
+
+    for (i = 0; i < count; ++i) {
+        s2 += (data[i] - s1) * (data[i] - s1);
+    }
+    s2 = s2 / N;
+
+    *out_min = min;
+    *out_max = max;
+    *out_mean = s1;
+    *out_var = s2;
+
+    /*
     if (count > md_simd_widthf) {
         md_simd_typef vmin = md_simd_set1f(FLT_MAX);
         md_simd_typef vmax = md_simd_set1f(-FLT_MAX);
@@ -3572,7 +3691,8 @@ void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_me
     *out_min  = min;
     *out_max  = max;
     *out_mean = s1 / N;
-    *out_var  = ((N * s2) - (s1 * s1)) / (N*N);
+    *out_var  = fabsf((N * s2) - (s1 * s1)) / (N*N);
+    * */
 }
 
 static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_bitfield_t* mask, const md_script_ir_t* ir, md_script_eval_t* eval) {
@@ -3659,11 +3779,13 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         if (!(prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL)) {
             memset(prop->data.values, 0, prop->data.num_values * sizeof(float));
             if (prop->data.aggregate) {
-                memset(prop->data.aggregate->mean,     0, prop->data.aggregate->num_values * sizeof(float));
-                memset(prop->data.aggregate->variance, 0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->population_mean,     0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->population_var, 0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->population_min,      0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->population_max,      0, prop->data.aggregate->num_values * sizeof(float));
             }
         }
-        prop->data.min_value = FLT_MAX;
+        prop->data.min_value = +FLT_MAX;
         prop->data.max_value = -FLT_MAX;
     }
 
@@ -3687,11 +3809,16 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         ctx.identifiers = 0;
 
         for (int64_t i = 0; i < num_expr; ++i) {
+            if (is_variable_length(expr[i]->node->data.type)) {
+                md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s', identifier has variable length", expr[i]->ident->name.len, expr[i]->ident->name.ptr);
+                result = false;
+                goto done;
+            }
             allocate_data(&data[i], expr[i]->node->data.type, &temp_alloc);
-            data[i].min_range = -FLT_MAX;
-            data[i].max_range = +FLT_MAX;
+            data[i].unit = expr[i]->node->data.unit;
+            data[i].value_range = expr[i]->node->data.value_range;
             if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
-                md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating property '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
+                md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
                 result = false;
                 goto done;
             }
@@ -3704,7 +3831,6 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
             if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 ASSERT(prop->data.values);
-                
                 memcpy(prop->data.values + dst_idx * size, values, size * sizeof(float));
 
                 // Determine min max values
@@ -3714,13 +3840,15 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 prop->data.max_value = MAX(prop->data.max_value, max);
 
                 if (prop->data.aggregate) {
-                    prop->data.aggregate->mean[dst_idx] = mean;
-                    prop->data.aggregate->variance[dst_idx] = var;
+                    prop->data.aggregate->population_mean[dst_idx] = mean;
+                    prop->data.aggregate->population_var[dst_idx] = var;
+                    prop->data.aggregate->population_min[dst_idx] = min;
+                    prop->data.aggregate->population_max[dst_idx] = max;
                 }
 
                 // Update range if not explicitly set
-                prop->data.min_range[0] = (data[p_idx].min_range == -FLT_MAX) ? prop->data.min_value : data[p_idx].min_range;
-                prop->data.max_range[0] = (data[p_idx].max_range == +FLT_MAX) ? prop->data.max_value : data[p_idx].max_range;
+                prop->data.min_range[0] = (data[p_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[p_idx].value_range.beg;
+                prop->data.max_range[0] = (data[p_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[p_idx].value_range.end;
             }
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
                 // Accumulate values
@@ -3742,8 +3870,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 prop->data.max_value = MAX(prop->data.max_value, max);
 
                 // Update range if not explicitly set
-                prop->data.min_range[0] = (data[p_idx].min_range == -FLT_MAX) ? prop->data.min_value : data[p_idx].min_range;
-                prop->data.max_range[0] = (data[p_idx].max_range == +FLT_MAX) ? prop->data.max_value : data[p_idx].max_range;
+                prop->data.min_range[0] = (data[p_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[p_idx].value_range.beg;
+                prop->data.max_range[0] = (data[p_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[p_idx].value_range.end;
             }
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                 // Accumulate values
@@ -3766,12 +3894,9 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         dst_idx += 1;
         eval->num_frames_completed = (uint32_t)dst_idx;
 
-        // @TODO: Decide how frequently should we invalidate the data? and Propagate the changes back to the GUI
-        if (dst_idx % 10 == 0) {
-            uint64_t fingerprint = generate_fingerprint();
-            for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
-                props[p_idx].data.fingerprint = fingerprint;
-            }
+        uint64_t fingerprint = generate_fingerprint();
+        for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
+            props[p_idx].data.fingerprint = fingerprint;
         }
     }
 
@@ -3850,9 +3975,15 @@ static void create_tokens(md_script_ir_t* ir, const ast_node_t* node, const ast_
         len += snprintf(buf + len, sizeof(buf) - len, "[d] ");
     }
 
-    char type_buf[128] = {0};
+    char type_buf[128];
+    char unit_buf[128];
     int type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
-    len += snprintf(buf + len, sizeof(buf) - len, "(%.*s)", type_len, type_buf);
+    int unit_len = unit_print_long(unit_buf, (int)sizeof(unit_buf), node->data.unit);
+    if (unit_len == 0) {
+        len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "(%.*s) ", type_len, type_buf);
+    } else {
+        len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "(%.*s, %.*s)", type_len, type_buf, unit_len, unit_buf);
+    }
 
     token.line = node->token.line;
     token.col_beg = node->token.col_beg;
@@ -4285,7 +4416,7 @@ bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr,
                     prop->data.max_range[0] = data.max_range;
 
 
-                    // @TODO: Compute mean and variance
+                    // @TODO: Compute sample_mean and variance
 
                 }
             }

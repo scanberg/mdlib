@@ -334,12 +334,14 @@ bool md_spatial_hash_query(const md_spatial_hash_t* hash, vec3_t pos, float radi
     return true;
 }
 
+/*
 static inline vec4_t vec4_deperiodize(vec4_t pos, vec4_t ref, vec4_t pbc_ext) {
     vec4_t d = vec4_sub(ref, pos);
     vec4_t m = (vec4_t){ .mm128 = md_simd_cmp_gt_f128(md_simd_abs_f128(d.mm128), md_simd_mul_f128(pbc_ext.mm128, md_simd_set1_f128(0.5f))) };
     vec4_t t = (vec4_t){ .mm128 = md_simd_blend_f128(md_simd_copysign_f128(pbc_ext.mm128, d.mm128), md_simd_zero_f128(), m.mm128) };
     return vec4_add(pos, t);
 }
+*/
 
 bool md_spatial_hash_query_periodic(const md_spatial_hash_t* hash, vec3_t in_pos, float in_rad, vec3_t in_pbc_min, vec3_t in_pbc_max, md_spatial_hash_iterator_fn iter, void* user_param) {
     ASSERT(hash);

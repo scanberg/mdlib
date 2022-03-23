@@ -5,6 +5,8 @@
 #define DIST_BINS 1024
 #define VOL_DIM 128
 
+#define STATIC_VALIDATION_ERROR -2
+
 // Type info declaration helpers
 #define TI_BOOL         {TYPE_BOOL, {1}, 0}
 
@@ -223,27 +225,10 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         return 0; \
     }
 
-BAKE_OP_S_S(_op_and_b_b, &&,  bool)
-BAKE_OP_S_S(_op_or_b_b,  ||,  bool)
-BAKE_OP_S_S(_op_xor_b_b, ^, bool)
+BAKE_OP_S_S(_op_and_b_b,  &&, bool)
+BAKE_OP_S_S(_op_or_b_b,   ||, bool)
+BAKE_OP_S_S(_op_xor_b_b,   ^, bool)
 BAKE_OP_UNARY_S(_op_not_b, !, bool)
-
-BAKE_OP_S_S(_op_add_f_f, +, float)
-BAKE_OP_S_S(_op_sub_f_f, -, float)
-BAKE_OP_S_S(_op_mul_f_f, *, float)
-BAKE_OP_S_S(_op_div_f_f, /, float)
-BAKE_OP_UNARY_S(_op_neg_f, -, float)
-BAKE_OP_UNARY_M(_op_neg_farr, -, float)
-
-BAKE_OP_M_S(_op_add_farr_f, +, float)
-BAKE_OP_M_S(_op_sub_farr_f, -, float)
-BAKE_OP_M_S(_op_mul_farr_f, *, float)
-BAKE_OP_M_S(_op_div_farr_f, /, float)
-
-BAKE_OP_M_M(_op_add_farr_farr, +, float)
-BAKE_OP_M_M(_op_sub_farr_farr, -, float)
-BAKE_OP_M_M(_op_mul_farr_farr, *, float)
-BAKE_OP_M_M(_op_div_farr_farr, /, float)
 
 BAKE_OP_S_S(_op_add_i_i, +, int)
 BAKE_OP_S_S(_op_sub_i_i, -, int)
@@ -276,6 +261,255 @@ BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    md_simd_divf)
 
 BAKE_SIMDF_OP_M(_op_simd_abs_farr, md_simd_absf)
 
+BAKE_OP_S_S(_op_add_f_f,        +, float)
+BAKE_OP_S_S(_op_sub_f_f,        -, float)
+BAKE_OP_S_S(_op_mul_f_f,        *, float)
+BAKE_OP_S_S(_op_div_f_f,        /, float)
+BAKE_OP_UNARY_S(_op_neg_f,      -, float)
+BAKE_OP_UNARY_M(_op_neg_farr,   -, float)
+
+BAKE_OP_M_S(_op_add_farr_f, +, float)
+BAKE_OP_M_S(_op_sub_farr_f, -, float)
+BAKE_OP_M_S(_op_mul_farr_f, *, float)
+BAKE_OP_M_S(_op_div_farr_f, /, float)
+
+BAKE_OP_M_M(_op_add_farr_farr, +, float)
+BAKE_OP_M_M(_op_sub_farr_farr, -, float)
+BAKE_OP_M_M(_op_mul_farr_farr, *, float)
+BAKE_OP_M_M(_op_div_farr_farr, /, float)
+
+/*
+static int _op_add_f_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    as_float(*dst) = as_float(arg[0]) + as_float(arg[1]);
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_add_farr_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    ASSERT(element_count(*dst) == element_count(arg[0]));
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] + as_float(arg[1]);
+    }
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_add_farr_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    ASSERT(element_count(*dst) == element_count(arg[0]));
+    ASSERT(element_count(*dst) == element_count(arg[1]));
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] + as_float_arr(arg[1])[i];
+    }
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_sub_f_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    as_float(*dst) = as_float(arg[0]) - as_float(arg[1]);
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_sub_farr_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    ASSERT(element_count(*dst) == element_count(arg[0]));
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] - as_float(arg[1]);
+    }
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_sub_farr_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    ASSERT(element_count(*dst) == element_count(arg[0]));
+    ASSERT(element_count(*dst) == element_count(arg[1]));
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] - as_float_arr(arg[1])[i];
+    }
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_mul_f_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    as_float(*dst) = as_float(arg[0]) * as_float(arg[1]);
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+        // @TODO: The dimension of the unit should be squared here
+    }
+    else if (arg[0].unit && !arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    else if (!arg[0].unit && arg[1].unit) {
+        dst->unit = arg[1].unit;
+    }
+    return 0;
+}
+
+static int _op_mul_farr_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    ASSERT(element_count(*dst) == element_count(arg[0]));
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] * as_float(arg[1]);
+    }
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+        // @TODO: The dimension of the unit should be squared here
+    }
+    else if (arg[0].unit && !arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    else if (!arg[0].unit && arg[1].unit) {
+        dst->unit = arg[1].unit;
+    }
+    return 0;
+}
+
+static int _op_mul_farr_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    ASSERT(element_count(*dst) == element_count(arg[0]));
+    ASSERT(element_count(*dst) == element_count(arg[1]));
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] * as_float_arr(arg[1])[i];
+    }
+    if (arg[0].unit == arg[1].unit) {
+        dst->unit = arg[0].unit;
+        // @TODO: The dimension of the unit should be squared here
+    }
+    else if (arg[0].unit && !arg[1].unit) {
+        dst->unit = arg[0].unit;
+    }
+    else if (!arg[0].unit && arg[1].unit) {
+        dst->unit = arg[1].unit;
+    }
+    return 0;
+}
+
+static int _op_div_f_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    as_float(*dst) = as_float(arg[0]) * as_float(arg[1]);
+    if (arg[0].unit && !arg[1].unit) {
+        // The only condition in which we currently propagate the unit is if the dividend has a unit and not the divisor
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_div_farr_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    ASSERT(element_count(*dst) == element_count(arg[0]));
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] / as_float(arg[1]);
+    }
+    if (arg[0].unit && !arg[1].unit) {
+        // The only condition in which we currently propagate the unit is if the dividend has a unit and not the divisor
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_div_farr_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
+    ASSERT(element_count(*dst) == element_count(arg[0]));
+    ASSERT(element_count(*dst) == element_count(arg[1]));
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] / as_float_arr(arg[1])[i];
+    }
+    if (arg[0].unit && !arg[1].unit) {
+        // The only condition in which we currently propagate the unit is if the dividend has a unit and not the divisor
+        dst->unit = arg[0].unit;
+    }
+    return 0;
+}
+
+static int _op_neg_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    as_float(*dst) = -as_float(arg[0]);
+    dst->unit = arg[0].unit;
+    return 0;
+}
+
+static int _op_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) { \
+    (void)ctx;
+    ASSERT(dst);
+    ASSERT(dst->type.base_type == TYPE_FLOAT);
+    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
+    for (int64_t i = 0; i < element_count(*dst); ++i) {
+        as_float_arr(*dst)[i] = -as_float_arr(arg[0])[i];
+    }
+    dst->unit = arg[0].unit;
+    return 0;
+}
+*/
+
 // Forward declarations of functions
 // @TODO: Add your declarations here
 
@@ -289,7 +523,7 @@ static int _cast_int_arr_to_flt_arr     (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
-static int _cast_flatten_bf_arr         (data_t*, data_t[], eval_context_t*);
+static int _flatten_bf_arr         (data_t*, data_t[], eval_context_t*);
 
 // Logical operators for custom types
 static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -303,8 +537,10 @@ static int _all     (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _x       (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _y       (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _z       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_flt  (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_frng (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_expl_flt  (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_expl_frng (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_impl_flt  (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_impl_frng (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _name    (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _element_str (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _element_irng(data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -379,10 +615,10 @@ static const float _E   = 2.71828182845f;
 #define CSTR(cstr) {cstr"", sizeof(cstr)-1}
 
 // @TODO: Add your values here
-static identifier_t constants[] = {
-    {CSTR("PI"),     {TI_FLOAT, (void*)(&_PI),    sizeof(float)}, FLAG_CONSTANT},
-    {CSTR("TAU"),    {TI_FLOAT, (void*)(&_TAU),   sizeof(float)}, FLAG_CONSTANT},
-    {CSTR("E"),      {TI_FLOAT, (void*)(&_E),     sizeof(float)}, FLAG_CONSTANT},
+static constant_t constants[] = {
+    {CSTR("PI"),     {TI_FLOAT, (void*)(&_PI),    sizeof(float)}},
+    {CSTR("TAU"),    {TI_FLOAT, (void*)(&_TAU),   sizeof(float)}},
+    {CSTR("E"),      {TI_FLOAT, (void*)(&_E),     sizeof(float)}},
 };
 
 // IMPLICIT CASTS/CONVERSIONS
@@ -390,12 +626,14 @@ static procedure_t casts[] = {
     {CSTR("cast"),    TI_FLOAT,         1,  {TI_INT},           _cast_int_to_flt},
     {CSTR("cast"),    TI_IRANGE,        1,  {TI_INT},           _cast_int_to_irng},
     {CSTR("cast"),    TI_FRANGE,        1,  {TI_IRANGE},        _cast_irng_to_frng},
-    {CSTR("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr, FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {CSTR("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {CSTR("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {CSTR("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
-    {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _cast_flatten_bf_arr},
+    {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _flatten_bf_arr},
+
+    {CSTR("cast"),    TI_FLOAT3_ARR,    1,  {TI_POSITION_ARR},  _position, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_DYNAMIC_LENGTH},
 };
 
 static procedure_t operators[] = {
@@ -551,11 +789,13 @@ static procedure_t procedures[] = {
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
     // Also have variable result (well its a single bitfield, but the number of atoms within is not fixed)
-    {CSTR("x"),         TI_BITFIELD, 1, {TI_FRANGE},                   _x,             FLAG_DYNAMIC},
-    {CSTR("y"),         TI_BITFIELD, 1, {TI_FRANGE},                   _y,             FLAG_DYNAMIC},
-    {CSTR("z"),         TI_BITFIELD, 1, {TI_FRANGE},                   _z,             FLAG_DYNAMIC},
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT,  TI_POSITION_ARR},  _within_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_FRANGE, TI_POSITION_ARR},  _within_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("x"),         TI_BITFIELD, 1, {TI_FRANGE},                    _x,                 FLAG_DYNAMIC},
+    {CSTR("y"),         TI_BITFIELD, 1, {TI_FRANGE},                    _y,                 FLAG_DYNAMIC},
+    {CSTR("z"),         TI_BITFIELD, 1, {TI_FRANGE},                    _z,                 FLAG_DYNAMIC},
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT,  TI_POSITION_ARR},   _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_FRANGE, TI_POSITION_ARR},   _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("within"),    TI_BITFIELD, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
+    {CSTR("within"),    TI_BITFIELD, 1, {TI_FRANGE},                    _within_impl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // --- PROPERTY COMPUTE ---
     {CSTR("distance"),      TI_FLOAT,       2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
@@ -578,6 +818,10 @@ static procedure_t procedures[] = {
     {CSTR("plane"),     TI_FLOAT4,      1,  {TI_POSITION_ARR},  _plane,     FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
     {CSTR("position"),  TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+
+    // --- MISC ---
+    {CSTR("flatten"),   TI_BITFIELD,    1,  {TI_BITFIELD_ARR},  _flatten_bf_arr},
+
 };
 
 #undef CSTR
@@ -878,7 +1122,7 @@ static inline irange_t get_chain_range_in_context(const md_molecule_t* mol, cons
     return range;
 }
 
-static int position_validate(data_t arg, eval_context_t* ctx) {
+static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
     if (element_count(arg) == 0) return 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
@@ -895,14 +1139,14 @@ static int position_validate(data_t arg, eval_context_t* ctx) {
             const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
 
             if (!(ctx_range.beg <= idx && idx < ctx_range.end)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)",
+                create_error(ctx->ir, ctx->arg_tokens[arg_idx], "supplied index (%i) is not within expected range (%i:%i)",
                     (int)idx, 1, ctx_size);
-                return -1;
+                return STATIC_VALIDATION_ERROR;
             }
             if (ctx->mol_ctx) {
                 if (!md_bitfield_test_bit(ctx->mol_ctx, idx)) {
-                    create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not represented within the supplied context", (int)idx);
-                    return -1;
+                    create_error(ctx->ir, ctx->arg_tokens[arg_idx], "supplied index (%i) is not represented within the supplied context", (int)idx);
+                    return STATIC_VALIDATION_ERROR;
                 }
             }
             count += 1;
@@ -911,6 +1155,10 @@ static int position_validate(data_t arg, eval_context_t* ctx) {
     }
     case TYPE_BITFIELD:
     {
+        if (ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
+            ASSERT(ctx->backchannel);
+            ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+        }
         if (element_count(arg) == 1) {
             return (int)md_bitfield_popcount(as_bitfield(arg));
         }
@@ -920,6 +1168,10 @@ static int position_validate(data_t arg, eval_context_t* ctx) {
     }
     case TYPE_IRANGE:
     {
+        if (ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
+            ASSERT(ctx->backchannel);
+            ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+        }
         irange_t* ranges = as_irange_arr(arg);
         int count = 0;
         for (int64_t i = 0; i < element_count(arg); ++i) {
@@ -935,14 +1187,14 @@ static int position_validate(data_t arg, eval_context_t* ctx) {
             else {
                 create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
                     ranges[i].beg, ranges[i].end, 1, ctx_size);
-                return -1;
+                return STATIC_VALIDATION_ERROR;
             }
         }
         return count;
     }
     default:
         ASSERT(false);
-        return -1;
+        return STATIC_VALIDATION_ERROR;
     }
 }
 
@@ -1637,8 +1889,8 @@ static bool within_float_iter(uint32_t idx, vec3_t pos, void* user_data) {
     return true;
 }
 
-static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
+static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
     ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
 
@@ -1680,9 +1932,67 @@ static int _within_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (position_validate(arg[1], ctx) < 0) return -1;
+        if (position_validate(arg[1], 1, ctx) < 0) return -1;
         if (radius <= 0) {
             create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
+
+    const float radius = as_float(arg[0]);
+
+    if (dst || ctx->vis) {
+        ASSERT(ctx->mol_ctx);
+
+        vec3_t* in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
+        const int64_t num_pos = md_array_size(in_pos);
+
+        md_spatial_hash_t spatial_hash = { 0 };
+        md_spatial_hash_args_t args = {
+            .coords = {
+                .count = ctx->mol->atom.count,
+                .x = ctx->mol->atom.x,
+                .y = ctx->mol->atom.y,
+                .z = ctx->mol->atom.z,
+            },
+            .cell_ext = radius / 1.5f,
+            .alloc = ctx->temp_alloc,
+            .temp_alloc = ctx->temp_alloc
+        };
+        md_spatial_hash_init(&spatial_hash, &args);
+
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+            md_bitfield_t* dst_bf = as_bitfield(*dst);
+            for (int64_t i = 0; i < num_pos; ++i) {
+                md_spatial_hash_query(&spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+            }
+        }
+        else {
+            // Visualize
+            ASSERT(ctx->vis);
+            visualize_atom_mask(ctx->mol_ctx, ctx->vis);
+            md_bitfield_t* dst_bf = ctx->vis->atom_mask;
+            for (int64_t i = 0; i < num_pos; ++i) {
+                push_sphere(vec4_from_vec3(in_pos[i], radius), ctx->vis);
+                md_spatial_hash_query(&spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+            }
+        }
+    }
+    else {
+        if (radius <= 0) {
+            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
+            return -1;
+        }
+        if (!ctx->mol_ctx) {
+            create_error(ctx->ir, ctx->op_token, "The operation is missing its context");
             return -1;
         }
     }
@@ -1706,7 +2016,7 @@ static bool within_frng_iter(uint32_t idx, vec3_t pos, void* user_data) {
     return true;
 }
 
-static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
     ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
@@ -1759,9 +2069,76 @@ static int _within_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (position_validate(arg[0], ctx) < 0) return -1;
+        if (position_validate(arg[0], 0, ctx) < 0) return -1;
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
             create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
+
+    const frange_t rad_range = as_frange(arg[0]);
+
+    if (dst || ctx->vis) {
+        ASSERT(ctx->mol_ctx);
+        vec3_t* in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
+        const int64_t num_pos = md_array_size(in_pos);
+
+        md_spatial_hash_t spatial_hash = { 0 };
+        md_spatial_hash_args_t args = {
+            .coords = {
+                .count = ctx->mol->atom.count,
+                .x = ctx->mol->atom.x,
+                .y = ctx->mol->atom.y,
+                .z = ctx->mol->atom.z,
+            },
+            .cell_ext = rad_range.end / 1.5f,
+            .alloc = ctx->temp_alloc,
+            .temp_alloc = ctx->temp_alloc
+        };
+        md_spatial_hash_init(&spatial_hash, &args);
+
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+            md_bitfield_t* dst_bf = as_bitfield(*dst);
+            within_frng_payload_t payload = {
+                .bf = dst_bf,
+                .rad_range = rad_range,
+            };
+            for (int64_t i = 0; i < num_pos; ++i) {
+                float  rad = rad_range.end;
+                payload.ref_pos = in_pos[i];
+                md_spatial_hash_query(&spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+            }
+        }
+        else {
+            // Visualize
+            md_bitfield_t* dst_bf = ctx->vis->atom_mask;
+            within_frng_payload_t payload = {
+                .bf = dst_bf,
+                .rad_range = rad_range,
+            };
+            for (int64_t i = 0; i < num_pos; ++i) {
+                float  rad = rad_range.end;
+                payload.ref_pos = in_pos[i];
+                md_spatial_hash_query(&spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                push_sphere(vec4_from_vec3(in_pos[i], rad), ctx->vis);
+            }
+        }
+    }
+    else {
+        if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
+            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
+            return -1;
+        }
+        if (!ctx->mol_ctx) {
+            create_error(ctx->ir, ctx->op_token, "The operation is missing its context");
             return -1;
         }
     }
@@ -2337,10 +2714,15 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec3_t b = position_extract_com(arg[1], ctx);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
-            as_float(*dst) = vec3_distance(a, b);
-            dst->min_range = -FLT_MAX;
-            dst->max_range = FLT_MAX;
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));            
+            if (ctx->frame_header) {
+                vec4_t vp = {ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2], 1.0f};
+                vec4_t va = vec4_from_vec3(a, 0.0f);
+                vec4_t vb = vec4_from_vec3(b, 0.0f);
+                as_float(*dst) = vec4_periodic_distance(va, vb, vp);
+            } else {
+                as_float(*dst) = vec3_distance(a, b);
+            }
         } else {
             ASSERT(ctx->vis);
             position_visualize(arg[0], ctx);
@@ -2354,10 +2736,14 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        int res_a = position_validate(arg[0], ctx);
-        int res_b = position_validate(arg[1], ctx);
+        int res_a = position_validate(arg[0], 0, ctx);
+        int res_b = position_validate(arg[1], 1, ctx);
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
+        if (ctx->backchannel) {
+            ctx->backchannel->unit = (md_unit_t){ .dim.length = 1};
+            ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
+        }
         return 1;
     }
 
@@ -2392,8 +2778,6 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
             as_float(*dst) = min_dist;
-            dst->min_range = -FLT_MAX;
-            dst->max_range = FLT_MAX;
         }
         else {
             ASSERT(ctx->vis);
@@ -2408,10 +2792,14 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        int res_a = position_validate(arg[0], ctx);
-        int res_b = position_validate(arg[1], ctx);
+        int res_a = position_validate(arg[0], 0, ctx);
+        int res_b = position_validate(arg[1], 1, ctx);
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
+        if (ctx->backchannel) {
+            ctx->backchannel->unit = (md_unit_t){ .dim.length = 1 };
+            ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
+        }
         return 1;
     }
 
@@ -2446,8 +2834,6 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
             as_float(*dst) = max_dist;
-            dst->min_range = -FLT_MAX;
-            dst->max_range = FLT_MAX;
         } else {
             ASSERT(ctx->vis);
             position_visualize(arg[0], ctx);
@@ -2460,10 +2846,14 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
     } else {
-        int res_a = position_validate(arg[0], ctx);
-        int res_b = position_validate(arg[1], ctx);
+        int res_a = position_validate(arg[0], 0, ctx);
+        int res_b = position_validate(arg[1], 1, ctx);
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
+        if (ctx->backchannel) {
+            ctx->backchannel->unit = (md_unit_t){ .dim.length = 1};
+            ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
+        }
         return 1;
     }
 
@@ -2494,9 +2884,6 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 dst_arr[i * md_array_size(b_pos) + j] = dist;
             }
         }
-
-        dst->min_range = -FLT_MAX;
-        dst->max_range = FLT_MAX;
     } else if (ctx->vis) {
         position_visualize(arg[0], ctx);
         position_visualize(arg[1], ctx);
@@ -2518,10 +2905,14 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
     } else {
-        int res0 = position_validate(arg[0], ctx);
-        int res1 = position_validate(arg[1], ctx);
+        int res0 = position_validate(arg[0], 0, ctx);
+        int res1 = position_validate(arg[1], 1, ctx);
         if (res0 < 0) return res0;
         if (res1 < 0) return res1;
+        if (ctx->backchannel) {
+            ctx->backchannel->unit = (md_unit_t){ .dim.length = 1};
+            ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
+        }
         result = res0 * res1;
     }
 
@@ -2541,9 +2932,7 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const vec3_t v1 = vec3_normalize(vec3_sub(c, b));
 
         ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
-        as_float(*dst) = (float)RAD_TO_DEG(acosf(vec3_dot(v0, v1)));
-        dst->min_range = 0.0f;
-        dst->max_range = 180.0f;
+        as_float(*dst) = acosf(vec3_dot(v0, v1));
     } else if (ctx->vis) {
         position_visualize(arg[0], ctx);
         position_visualize(arg[1], ctx);
@@ -2570,9 +2959,13 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     } else {
         // Validate input
-        if (position_validate(arg[0], ctx) < 0) return -1;
-        if (position_validate(arg[1], ctx) < 0) return -1;
-        if (position_validate(arg[2], ctx) < 0) return -1;
+        if (position_validate(arg[0], 0, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (position_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (position_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (ctx->backchannel) {
+            ctx->backchannel->unit = (md_unit_t){ .dim.angle = 1};
+            ctx->backchannel->value_range = (frange_t){0, PI};
+        }
     }
 
     return 0;
@@ -2591,9 +2984,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const vec3_t c = position_extract_com(arg[2], ctx);
         const vec3_t d = position_extract_com(arg[3], ctx);
 
-        as_float(*dst) = (float)RAD_TO_DEG(dihedral_angle(a,b,c,d));
-        dst->min_range = -180.0f;
-        dst->max_range = 180.0f;
+        as_float(*dst) = (float)dihedral_angle(a,b,c,d);
     }
     else if (ctx->vis) {
         position_visualize(arg[0], ctx);
@@ -2620,10 +3011,14 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     } else {
         // Validate input
-        if (position_validate(arg[0], ctx) < 0) return -1;
-        if (position_validate(arg[1], ctx) < 0) return -1;
-        if (position_validate(arg[2], ctx) < 0) return -1;
-        if (position_validate(arg[3], ctx) < 0) return -1;
+        if (position_validate(arg[0], 0, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (position_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (position_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (position_validate(arg[3], 3, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (ctx->backchannel) {
+            ctx->backchannel->unit = (md_unit_t){.dim.angle = 1};
+            ctx->backchannel->value_range = (frange_t){-PI, PI};
+        }
     }
 
     return 0;
@@ -2854,7 +3249,7 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
     return result;
 }
 
-static int _cast_flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
@@ -2889,7 +3284,7 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
     } else {
-        return position_validate(arg[0], ctx);
+        return position_validate(arg[0], 0, ctx);
     }
     return 0;
 }
@@ -3000,7 +3395,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
     } else {
-        if (position_validate(arg[0], ctx) < 0) return -1;
+        if (position_validate(arg[0], 0, ctx) < 0) return -1;
         if (num_pos < 3) {
             create_error(ctx->ir, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
             return -1;
@@ -3022,7 +3417,7 @@ static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else if (ctx->vis) {
         position_visualize(arg[0], ctx);
     } else {
-        return position_validate(arg[0], ctx);
+        return position_validate(arg[0], 0, ctx);
     }
     return 0;
 }
@@ -3035,6 +3430,7 @@ typedef struct {
     float* bins;
     int32_t num_bins;
     uint32_t idx;
+    int32_t total_count;
 } rdf_payload_t;
 
 bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
@@ -3047,23 +3443,28 @@ bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
     if (data->min_cutoff < d && d < data->max_cutoff) {
         int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
         bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
-        if (bin_idx == 0) {
-            while(0);
-        }
         data->bins[bin_idx] += 1.0f;
+        data->total_count += 1;
     }
     return true;
 }
 
 #define RDF_BRUTE_FORCE_LIMIT 1000
 
+static inline double spherical_shell_volume(double r_inner, double r_outer) {
+    return (4.0f / 3.0f) * PI * (r_outer * r_outer * r_outer - r_inner * r_inner * r_inner);
+}
+
 static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_t ref_size, const vec3_t* target_pos, int64_t target_size, float min_cutoff, float max_cutoff, vec3_t pbc_ext, md_allocator_i* alloc) {
     const int64_t sum = ref_size * target_size;
     const float inv_cutoff_range = 1.0f / (max_cutoff - min_cutoff);
 
+    int total_count = 0;
+
     if (sum < RDF_BRUTE_FORCE_LIMIT) {
         for (int64_t i = 0; i < ref_size; ++i) {
             for (int64_t j = 0; j < target_size; ++j) {
+
                 const float d = vec3_distance(ref_pos[i], target_pos[j]);
                 if (d == 0) {
                     while (0);
@@ -3072,6 +3473,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
                     int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_cutoff_range) * num_bins);
                     bin_idx = CLAMP(bin_idx, 0, num_bins - 1);
                     bins[bin_idx] += 1.0f;
+                    total_count += 1;
                 }
             }
         }
@@ -3099,6 +3501,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
             .inv_cutoff_range = inv_cutoff_range,
             .bins = bins,
             .num_bins = num_bins,
+            .total_count = 0,
         };
 
         if (vec3_dot(pbc_ext, pbc_ext) > 0) {
@@ -3110,6 +3513,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
                 payload.idx = (uint32_t)i;
                 md_spatial_hash_query_periodic(&hash, ref_pos[i], max_cutoff, min_box, max_box, rdf_iter, &payload);
             }
+            total_count = payload.total_count;
         }
         else {
             for (int64_t i = 0; i < ref_size; ++i) {
@@ -3117,14 +3521,22 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
                 payload.idx = (uint32_t)i;
                 md_spatial_hash_query(&hash, ref_pos[i], max_cutoff, rdf_iter, &payload);
             }
+            total_count = payload.total_count;
         }
     }
 
+    // Reference rho
+    const double ref_rho = total_count / spherical_shell_volume(min_cutoff, max_cutoff);
 
-    // Normalize the distribution
-    const float scl = 1.0f / sum;
+    // Normalize bins
+    // With respect to the nominal distribution rho
+    // Each bin is normalized with respect to the nominal distribution
+    const double dr = (max_cutoff - min_cutoff) / (float)num_bins;
     for (int64_t i = 0; i < num_bins; ++i) {
-        bins[i] *= scl;
+        const double r_inner = min_cutoff + (i + 0) * dr;
+        const double r_outer = min_cutoff + (i + 1) * dr;
+        const double rho = bins[i] / spherical_shell_volume(r_inner, r_outer);
+        bins[i] = (float)(rho / ref_rho);
     }
 }
 
@@ -3157,44 +3569,56 @@ static int rdf_visualize(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* 
     return 0;
 }
 
-static int internal_rdf(data_t* dst, const vec3_t* ref_pos, int64_t ref_size, const vec3_t* trg_pos, int64_t trg_size, float min_cutoff, float max_cutoff, eval_context_t* ctx) {
-    if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_DISTRIBUTION));
-        ASSERT(dst->ptr);
+static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
+    if (dst || ctx->vis) {
         const int num_bins = DIST_BINS;
+
+        const vec3_t* ref_pos = position_extract(arg[0], ctx);
+        const int64_t ref_len = md_array_size(ref_pos);
+
+        const vec3_t* trg_pos = position_extract(arg[1], ctx);
+        const int64_t trg_len = md_array_size(trg_pos);
         
-        float* bins = as_float_arr(*dst);
-
-        if (ref_size > 0 && trg_size > 0) {
-            vec3_t pbc_ext = { 0,0,0 };
-            if (ctx->frame_header) {
-                pbc_ext = (vec3_t){ ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2] };
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_DISTRIBUTION));
+            ASSERT(dst->ptr);
+            float* bins = as_float_arr(*dst);
+            if (ref_len > 0 && trg_len > 0) {
+                vec3_t pbc_ext = { 0,0,0 };
+                if (ctx->frame_header) {
+                    pbc_ext = (vec3_t){ ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2] };
+                }
+                compute_rdf(bins, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, pbc_ext, ctx->temp_alloc);
             }
-            compute_rdf(bins, num_bins, ref_pos, ref_size, trg_pos, trg_size, min_cutoff, max_cutoff, pbc_ext, ctx->temp_alloc);
+        } else {
+            return rdf_visualize(ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, ctx);
         }
-
-        dst->min_range = 0.0f;
-        dst->max_range = max_cutoff;
         return 0;
     }
     else {
-        if (ctx->vis) {
-            return rdf_visualize(ref_pos, ref_size, trg_pos, trg_size, min_cutoff, max_cutoff, ctx);
+        int ref_len = position_validate(arg[0], 0, ctx);
+        int trg_len = position_validate(arg[1], 1, ctx);
+
+        // Validate input
+        if (ref_len <= 0) {
+            create_error(ctx->ir, ctx->arg_tokens[0], "empty reference positions");
+            return STATIC_VALIDATION_ERROR;
         }
-        else {
-            // Validate input
-            if (ref_size <= 0) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "empty reference positions");
-                return -1;
-            }
-            if (trg_size <= 0) {
-                create_error(ctx->ir, ctx->arg_tokens[1], "empty target positions");
-                return -1;
-            }
-            if (min_cutoff < 0.0f || max_cutoff <= min_cutoff) {
-                create_error(ctx->ir, ctx->arg_tokens[2], "Invalid cutoff");
-                return -1;
-            }
+        if (trg_len <= 0) {
+            create_error(ctx->ir, ctx->arg_tokens[1], "empty target positions");
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (min_cutoff < 0.0f || max_cutoff <= min_cutoff) {
+            create_error(ctx->ir, ctx->arg_tokens[2], "Invalid cutoff");
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (ctx->arg_flags[2] & FLAG_DYNAMIC) {
+            create_error(ctx->ir, ctx->arg_tokens[2], "Cutoff needs to have a static value in order to determine the upper bound if the distribution");
+            return STATIC_VALIDATION_ERROR;
+        }
+        if (ctx->backchannel) {
+            ctx->backchannel->unit = (md_unit_t){ 0 };
+            ctx->backchannel->value_range = (frange_t){min_cutoff, max_cutoff};
         }
     }
     return 0;
@@ -3206,25 +3630,7 @@ static int _rdf_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
 
     const float cutoff = as_float(arg[2]);
-
-    if (dst || ctx->vis) {
-        const vec3_t* ref_pos = position_extract(arg[0], ctx);
-        const int64_t ref_len = md_array_size(ref_pos);
-
-        const vec3_t* trg_pos = position_extract(arg[1], ctx);
-        const int64_t trg_len = md_array_size(trg_pos);
-
-        if (ctx->vis) {
-            position_visualize(arg[0], ctx);
-            position_visualize(arg[1], ctx);
-        }
-        internal_rdf(dst, ref_pos, ref_len, trg_pos, trg_len, 0.0f, cutoff, ctx);
-    } else {
-        if (!position_validate(arg[0], ctx)) return -1;
-        if (!position_validate(arg[1], ctx)) return -1;
-    }
-
-    return 0;
+    return internal_rdf(dst, arg, 0, cutoff, ctx);
 }
 
 static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -3233,26 +3639,7 @@ static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FRANGE));
 
     const frange_t cutoff = as_frange(arg[2]);
-
-    if (dst || ctx->vis) {
-        const vec3_t* ref_pos = position_extract(arg[0], ctx);
-        const int64_t ref_len = md_array_size(ref_pos);
-
-        const vec3_t* trg_pos = position_extract(arg[1], ctx);
-        const int64_t trg_len = md_array_size(trg_pos);
-
-        if (ctx->vis) {
-            position_visualize(arg[0], ctx);
-            position_visualize(arg[1], ctx);
-        }
-        internal_rdf(dst, ref_pos, ref_len, trg_pos, trg_len, cutoff.beg, cutoff.end, ctx);
-    }
-    else {
-        if (!position_validate(arg[0], ctx)) return -1;
-        if (!position_validate(arg[1], ctx)) return -1;
-    }
-
-    return 0;
+    return internal_rdf(dst, arg, cutoff.beg, cutoff.end, ctx);
 }
 
 static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int64_t num_bitfields, const md_element_t atom_elements[]) {
@@ -3287,7 +3674,7 @@ static inline void populate_volume(float* vol, const float* x, const float* y, c
         const md_simd_f128_t val = md_simd_set_f128(x[i], y[i], z[i], 0.0f);
 
         md_simd_f128_t a = md_simd_cmp_lt_f128(min, val);
-        md_simd_f128_t b = md_simd_cmp_lt_f128(val, max.mm128);
+        md_simd_f128_t b = md_simd_cmp_lt_f128(val, max.f128);
         md_simd_f128_t c = md_simd_and_f128(a, b);
 
         int res = _mm_movemask_ps(c);
@@ -3451,6 +3838,11 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (target_bit_count <= 0) {
             create_error(ctx->ir, ctx->arg_tokens[1], "The supplied target bitfield is empty");
             return -1;
+        }
+
+        if (ctx->backchannel) {
+            ctx->backchannel->unit = (md_unit_t){ .dim = {.count = 1, .length = -3} };
+            ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
     }
 
