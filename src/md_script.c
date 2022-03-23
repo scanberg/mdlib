@@ -224,7 +224,8 @@ typedef struct identifier_t {
 
 typedef struct constant_t {
     str_t  name;
-    data_t data;
+    float  value;
+    md_unit_t unit;
 } constant_t;
 
 typedef struct md_script_visualization_o {
@@ -1723,7 +1724,11 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         node = parse_procedure_call(ctx, token);
     } else if ((c = find_constant(ident)) != 0) {
         node = create_node(ctx->ir, AST_CONSTANT_VALUE, token);
-        node->data = c->data;
+        node->value._float = c->value;
+        node->data.unit = c->unit;
+        node->data.ptr = &node->value._float;
+        node->data.size = sizeof(float);
+        node->data.type = (md_type_info_t)TI_FLOAT;
         node->flags |= FLAG_CONSTANT;
     } else {
         // Identifier
@@ -3098,6 +3103,7 @@ static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* 
         if (ident->node->data.type.base_type == TYPE_UNDEFINED) {
             create_error(ctx->ir, node->token, "Identifier (%.*s) has an unresolved type", ident->name.len, ident->name.ptr);
         } else {
+            node->flags = ident->node->flags;
             if (ident->data) {
                 node->data = *ident->data;
             }

@@ -608,17 +608,17 @@ static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 // Predefined constants
-static const float _PI  = 3.14159265358f;
-static const float _TAU = 6.28318530718f;
-static const float _E   = 2.71828182845f;
+#define _PI  3.14159265358f
+#define _TAU 6.28318530718f
+#define _E   2.71828182845f
 
 #define CSTR(cstr) {cstr"", sizeof(cstr)-1}
 
 // @TODO: Add your values here
 static constant_t constants[] = {
-    {CSTR("PI"),     {TI_FLOAT, (void*)(&_PI),    sizeof(float)}},
-    {CSTR("TAU"),    {TI_FLOAT, (void*)(&_TAU),   sizeof(float)}},
-    {CSTR("E"),      {TI_FLOAT, (void*)(&_E),     sizeof(float)}},
+    {CSTR("PI"),     _PI,  {.dim.angle = 1 }},
+    {CSTR("TAU"),    _TAU, {.dim.angle = 1 }},
+    {CSTR("E"),      _E},
 };
 
 // IMPLICIT CASTS/CONVERSIONS
