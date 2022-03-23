@@ -2,6 +2,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <core/md_str.h>
+
+struct md_allocator_i;
 
 /*
 
@@ -22,16 +25,19 @@ Not the most flexible solution, but gets the job done.
 enum {
     UNIT_LENGTH_ANGSTROM   = 0,
     UNIT_LENGTH_NANOMETER  = 1,
+    UNIT_LENGTH_COUNT      = 2,
 };
 
 enum {
     UNIT_TIME_PIKOSECONDS  = 0,
     UNIT_TIME_NANOSECONDS  = 1,
+    UNIT_TIME_COUNT        = 2,
 };
 
 enum {
     UNIT_ANGLE_RADIANS     = 0,
     UNIT_ANGLE_DEGREES     = 1,
+    UNIT_ANGLE_COUNT       = 2,
 };
 
 typedef union md_unit_base_t {
@@ -63,13 +69,17 @@ typedef union md_unit_dim_t {
 } md_unit_dim_t;
 
 typedef struct md_unit_t {
-    md_unit_dim_t  dim;
     md_unit_base_t base;
+    md_unit_dim_t  dim;
 } md_unit_t;
 
 static inline bool unit_empty(md_unit_t unit) {
     return unit.dim.raw_bits == 0 && unit.base.raw_bits == 0;
 }
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 md_unit_t unit_mul(md_unit_t a, md_unit_t b);
 md_unit_t unit_div(md_unit_t a, md_unit_t b);
@@ -81,3 +91,7 @@ void unit_convert_f(float*  values, int64_t num_values, md_unit_t* unit, md_unit
 
 int unit_print_long (char* buf, int cap, md_unit_t unit);
 int unit_print      (char* buf, int cap, md_unit_t unit);
+
+#ifdef __cplusplus
+}
+#endif

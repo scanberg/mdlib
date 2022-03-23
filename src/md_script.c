@@ -4280,6 +4280,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
             .mol = mol,
             .stack_alloc = &stack_alloc,
             .temp_alloc = &temp_alloc,
+            .alloc = &temp_alloc,
             .initial_configuration = {
                 .x = mol->atom.x,
                 .y = mol->atom.y,

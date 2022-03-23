@@ -178,7 +178,7 @@ int unit_print_long(char* buf, int cap, md_unit_t unit) {
         len += print_exponent(buf + len, MAX(0, cap - len), unit.dim.mass);
     }
     if (unit.dim.time > 0) {
-        switch (unit.base.length) {
+        switch (unit.base.time) {
         case UNIT_TIME_PIKOSECONDS: PRINT(u8"Picoseconds"); break;
         case UNIT_TIME_NANOSECONDS: PRINT(u8"Nanoseconds"); break;
         default:
@@ -199,7 +199,7 @@ int unit_print_long(char* buf, int cap, md_unit_t unit) {
         len += print_exponent(buf + len, MAX(0, cap - len), unit.dim.count); // Should we print exponent here???
     }
     if (unit.dim.angle > 0) {
-        switch (unit.base.length) {
+        switch (unit.base.angle) {
         case UNIT_ANGLE_RADIANS: PRINT(u8"Radians"); break;
         case UNIT_ANGLE_DEGREES: PRINT(u8"Degrees"); break;
         default:
@@ -222,7 +222,7 @@ int unit_print_long(char* buf, int cap, md_unit_t unit) {
             len += print_exponent(buf + len, MAX(0, cap - len), -unit.dim.length);
         }
         if (unit.dim.mass < 0) {
-            switch (unit.base.length) {
+            switch (unit.base.mass) {
             case UNIT_LENGTH_ANGSTROM:  PRINT(u8"Kilogram");  break;
             default:
                 ASSERT(false);
@@ -230,7 +230,7 @@ int unit_print_long(char* buf, int cap, md_unit_t unit) {
             len += print_exponent(buf + len, MAX(0, cap - len), -unit.dim.mass);
         }
         if (unit.dim.time < 0) {
-            switch (unit.base.length) {
+            switch (unit.base.time) {
             case UNIT_TIME_PIKOSECONDS: PRINT(u8"Picoseconds"); break;
             case UNIT_TIME_NANOSECONDS: PRINT(u8"Nanoseconds"); break;
             default:
@@ -251,7 +251,7 @@ int unit_print_long(char* buf, int cap, md_unit_t unit) {
             len += print_exponent(buf + len, MAX(0, cap - len), -unit.dim.count); // Should we print exponent here???
         }
         if (unit.dim.angle < 0) {
-            switch (unit.base.length) {
+            switch (unit.base.angle) {
             case UNIT_ANGLE_RADIANS: PRINT(u8"Radians"); break;
             case UNIT_ANGLE_DEGREES: PRINT(u8"Degrees"); break;
             default:
@@ -324,7 +324,7 @@ int unit_print(char* buf, int cap, md_unit_t unit) {
             len += print_exponent(buf + len, MAX(0, cap - len), -unit.dim.mass);
         }
         if (unit.dim.time < 0) {
-            switch (unit.base.length) {
+            switch (unit.base.time) {
             case UNIT_TIME_PIKOSECONDS: PRINT(u8"ps"); break;
             case UNIT_TIME_NANOSECONDS: PRINT(u8"ns"); break;
             default:
@@ -341,7 +341,7 @@ int unit_print(char* buf, int cap, md_unit_t unit) {
             len += print_exponent(buf + len, MAX(0, cap - len), -unit.dim.temp);
         }
         if (unit.dim.angle < 0) {
-            switch (unit.base.length) {
+            switch (unit.base.angle) {
             case UNIT_ANGLE_RADIANS: PRINT(u8"rad"); break;
             case UNIT_ANGLE_DEGREES: PRINT(u8"°"); break;
             default:
@@ -351,4 +351,4 @@ int unit_print(char* buf, int cap, md_unit_t unit) {
         }
     }
     return len;
-} 
+}

@@ -2400,6 +2400,7 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 count += 1;
             }
         }
+        result = count;
     }
 
     md_array_free(res_indices, ctx->temp_alloc);
