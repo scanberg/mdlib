@@ -3614,7 +3614,7 @@ static void init_property(md_script_property_t* prop, int64_t num_frames, str_t 
     prop->flags = 0;
     prop->data = (md_script_property_data_t){0};
     prop->vis_token = (struct md_script_vis_token_t*)node;
-    unit_print(prop->data.unit, sizeof(prop->data.unit), node->data.unit);
+    prop->data.unit = node->data.unit;
 
     if (is_temporal_type(node->data.type)) {
         prop->flags |= MD_SCRIPT_PROPERTY_FLAG_TEMPORAL;

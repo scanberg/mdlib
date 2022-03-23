@@ -5,6 +5,7 @@
 
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
+#include <core/md_unit.h>
 
 struct md_bitfield_t;
 struct md_molecule_t;
@@ -77,7 +78,7 @@ typedef struct md_script_property_data_t {
     float   min_range[4];   // min range in each dimension
     float   max_range[4];   // max range in each dimension
 
-    char    unit[32];
+    md_unit_t unit;
 
     uint64_t fingerprint; // Unique ID to compare against to see if your version is up to date.
 } md_script_property_data_t;
