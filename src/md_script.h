@@ -203,8 +203,8 @@ const md_script_property_t* md_script_eval_properties(const md_script_eval_t* ev
 //bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap);
 
 
-uint32_t md_script_eval_num_completed_frames(const md_script_eval_t* eval);
-float    md_script_eval_completed_fraction(const md_script_eval_t* eval);
+uint32_t md_script_eval_num_frames_completed(const md_script_eval_t* eval);
+uint32_t md_script_eval_num_frames_total(const md_script_eval_t* eval);
 void     md_script_eval_interrupt(md_script_eval_t* eval);
 
 // ### VISUALIZE ###

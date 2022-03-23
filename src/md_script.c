@@ -4205,9 +4205,16 @@ const md_script_property_t* md_script_eval_properties(const md_script_eval_t* ev
     return NULL;
 }
 
-float md_script_eval_completed_fraction(const md_script_eval_t* eval) {
+uint32_t md_script_eval_num_frames_completed(const md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        return (float)eval->num_frames_completed / (float)eval->num_frames_total;
+        return eval->num_frames_completed;
+    }
+    return 0;
+}
+
+uint32_t md_script_eval_num_frames_total(const md_script_eval_t* eval) {
+    if (validate_eval(eval)) {
+        return eval->num_frames_total;
     }
     return 0;
 }
