@@ -16,16 +16,18 @@ source_group("shaders" FILES ${SHADER_FILES})
 add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
 set(MOLD_WARNING_FLAGS "")
 
-if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
+if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(MOLD_WARNING_FLAGS -Wall -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types)
   target_compile_options(mold PRIVATE -march=native)
   if (MD_PROFILE_COMPILE_TIMES)
     add_compile_options(-ftime-trace)
   endif()
-  if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
+  if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
     message(STATUS "MOLD: MSVC-Clang configuration was used")
-  elseif (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU") # clang native
+    elseif (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU") # clang native
     message(STATUS "MOLD: Clang configuration was used")
+    endif()
   endif()
 elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     message(STATUS "MOLD: GCC configuration was used")
