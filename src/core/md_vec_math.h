@@ -625,6 +625,7 @@ return d * period + ref;
 
 */
 
+/*
 static inline vec4_t vec4_deperiodize(vec4_t val, vec4_t ref, vec4_t period) {
     vec4_t result;
 #if VEC_MATH_USE_SSE
@@ -639,6 +640,7 @@ static inline vec4_t vec4_deperiodize(vec4_t val, vec4_t ref, vec4_t period) {
 #endif
     return result;
 }
+*/
 
 static inline float vec4_periodic_distance(vec4_t a, vec4_t b, vec4_t period) {
     vec4_t dx = vec4_sub(a, b);
