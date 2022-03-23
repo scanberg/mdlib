@@ -153,30 +153,37 @@ UTEST(script, basic_expressions) {
     }
 }
 
-#define TEST_SELECTION(expr, ref_bit_str) \
-{ \
-uint64_t ref = make_bits(ref_bit_str); \
-md_bitfield_t bf = {0}; \
-md_bitfield_init(&bf, default_temp_allocator); \
-ASSERT_TRUE(eval_selection(&bf, MAKE_STR(expr), &test_mol)); \
-bool cmp_res = bit_cmp(bf.bits, &ref, 0, ATOM_COUNT); \
-EXPECT_TRUE(cmp_res); \
-if (!cmp_res) { \
-    printf("Got:\n"); \
-    print_bits(bf.bits, ATOM_COUNT); \
-    printf("\nExpected\n"); \
-    print_bits(&ref, ATOM_COUNT); \
-    printf("\n"); \
-} \
-md_bitfield_free(&bf); \
+static bool test_selection(const char* expr, const char* ref_bit_str) {
+    bool result = false;
+    uint64_t ref = make_bits(ref_bit_str);
+    md_bitfield_t bf = {0};
+    md_bitfield_init(&bf, default_temp_allocator);
+
+    if (!eval_selection(&bf, str_from_cstr(expr), &test_mol)) {
+        printf("Failed evaluation of expression: '%s'\n", expr);
+        goto done;
+    }
+    bool cmp_res = bit_cmp(bf.bits, &ref, 0, ATOM_COUNT);
+    if (!cmp_res) {
+        printf("Got:\n");
+        print_bits(bf.bits, ATOM_COUNT);
+        printf("\nExpected\n");
+        print_bits(&ref, ATOM_COUNT);
+        printf("\n");
+        goto done;
+    }
+    result = true;
+done:
+    md_bitfield_free(&bf);
+    return result;
 }
 
 UTEST(script, selection) {
-    TEST_SELECTION("all",               "1111111111111111");
-    TEST_SELECTION("resname('SOL')",    "1110000000000000");
-    TEST_SELECTION("element('C')",      "0000101000001010");
-    TEST_SELECTION("label('CA')",       "0000001000000010");
-    TEST_SELECTION("atom(1) in resname('PFT')", "0000000010001000");
+    EXPECT_TRUE(test_selection("all",               "1111111111111111"));
+    EXPECT_TRUE(test_selection("resname('SOL')",    "1110000000000000"));
+    EXPECT_TRUE(test_selection("element('C')",      "0000101000001010"));
+    EXPECT_TRUE(test_selection("label('CA')",       "0000001000000010"));
+    EXPECT_TRUE(test_selection("atom(1) in resname('PFT')", "0000000010001000"));
     //TEST_SELECTION("atom(1:2) or element('O') in residue(:)", "1001000010001000");
 }
 

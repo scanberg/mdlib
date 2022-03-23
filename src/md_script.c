@@ -2740,7 +2740,7 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
     // Propagate procedure flags
     node->flags |= node->proc->flags & FLAG_PROPAGATION_MASK;
 
-    // Need to flag with DYNAMIC_LENGTH if we evaluate within a context sincTormeke the return type length may depend on its context.
+    // Need to flag with DYNAMIC_LENGTH if we evaluate within a context since the return type length may depend on its context.
     if (ctx->mol_ctx && (node->proc->flags & FLAG_QUERYABLE_LENGTH)) {
         node->flags |= FLAG_DYNAMIC_LENGTH;
         return true;
@@ -2749,7 +2749,7 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
     if (is_variable_length(node->data.type)) {
         if (node->proc->flags & FLAG_QUERYABLE_LENGTH) {
             // Try to resolve length by calling the procedure
-            static_backchannel_t channel;
+            static_backchannel_t channel = {0};
             static_backchannel_t* prev_channel = ctx->backchannel;
             ctx->backchannel = &channel;
             int query_result = do_proc_call(NULL, node, ctx);
@@ -2925,7 +2925,7 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
     node->data.size = base_type_element_byte_size(node->data.type.base_type);
 
     if (node->data.type.base_type == TYPE_IRANGE) {
-        // Make sure this range is not negative
+        // Make sure the range is given in an ascending format, lo:hi
         irange_t rng = node->value._irange;
         if (rng.beg > rng.end) {
             create_error(ctx->ir, node->token, "The range is invalid, a range must have an ascending format, did you mean '%i:%i'?", rng.end, rng.beg);

@@ -68,7 +68,7 @@ sel5 = residue(:); 		# Returns array of ranges for each residue in the dataset
 prop1 = distance(com(sel2), com(sel3));
 prop2 = distance_min(sel2, sel3); # Should be allowed since it returns a single float even with dynamic inputs
 prop3 = distance_max(sel2, sel3); # Same as above
-prop4 = distance_pair(sel2, sel3); # This should not work for dynamic quieries such as this example since we cannot determine the length of the result at compile time
+#prop4 = distance_pair(sel2, sel3); # This should not work for dynamic quieries such as this example since we cannot determine the length of the result at compile time
 
 sel = resname("VAL");
 
