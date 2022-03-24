@@ -1395,7 +1395,7 @@ static int print_value(char* buf, int buf_size, data_t data) {
         PRINT("NULL");
     }
     if (!unit_empty(data.unit)) {
-        len += unit_print(buf, MAX(0, (int)sizeof(buf) - len), data.unit);
+        len += unit_print(buf + len, MAX(0, (int)sizeof(buf) - len), data.unit);
     }
     return len;
 }
@@ -3111,9 +3111,7 @@ static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* 
     }
 
     identifier_t* ident = get_identifier(ctx->ir, node->ident);
-    if (ident) {
-        ASSERT(ident->node);
-
+    if (ident && ident->node) {
         if (ident->node->data.type.base_type == TYPE_UNDEFINED) {
             create_error(ctx->ir, node->token, "Identifier (%.*s) has an unresolved type", ident->name.len, ident->name.ptr);
         } else {
