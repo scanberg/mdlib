@@ -1,6 +1,8 @@
 #include "utest.h"
 
-#define __STDC_FORMAT_MACROS 1
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
 #include <inttypes.h>
 
 #include <core/md_common.h>

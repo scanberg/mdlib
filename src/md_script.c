@@ -24,11 +24,16 @@
 #include "core/md_spatial_hash.h"
 #include "core/md_unit.h"
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 #include <math.h>
 #include <float.h>
+#include <inttypes.h>
 
 #if MD_COMPILER_MSVC
 #pragma warning(disable:4063) // Single character tokens not being valid tokens

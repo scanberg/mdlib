@@ -2914,7 +2914,12 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->backchannel->unit = (md_unit_t){ .dim.length = 1};
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
-        result = res0 * res1;
+        int64_t count = (int64_t)res0 * (int64_t)res1;
+        if (count > 1000000) {
+            create_error(ctx->ir, ctx->op_token, "The size produced by the operation is %"PRId64", which exceeds the upper limit of 1000000", count);
+            return STATIC_VALIDATION_ERROR;
+        }
+        result = (int)count;
     }
 
     return result;
