@@ -857,7 +857,8 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     pdb->header = (md_trajectory_header_t) {
         .num_frames = md_array_size(offsets) - 1,
         .num_atoms = num_atoms,
-        .max_frame_data_size = max_frame_size
+        .max_frame_data_size = max_frame_size,
+        .time_unit = {0},
     };
     memcpy(pdb->box, box, sizeof(box));
 

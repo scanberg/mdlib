@@ -21,7 +21,7 @@ Not the most flexible solution, but gets the job done.
 
 */
 
-// TODO (Robin): Fill in more units over time and cover the equivalent cases in the convert function.
+// TODO (Robin): Fill in more units over time and cover the equivalent cases in the convert and print function.
 enum {
     UNIT_LENGTH_ANGSTROM   = 0,
     UNIT_LENGTH_NANOMETER  = 1,
@@ -75,6 +75,10 @@ typedef struct md_unit_t {
 
 static inline bool unit_empty(md_unit_t unit) {
     return unit.dim.raw_bits == 0 && unit.base.raw_bits == 0;
+}
+
+static inline bool unit_compare(md_unit_t a, md_unit_t b) {
+    return a.base.raw_bits == b.base.raw_bits && a.dim.raw_bits == b.dim.raw_bits;
 }
 
 #ifdef __cplusplus

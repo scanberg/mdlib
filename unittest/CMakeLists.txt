@@ -2,14 +2,14 @@ project(md_unittest VERSION 0.1 LANGUAGES C)
 
 add_executable(md_unittest unittest.c)
 
-if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
+if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   target_compile_options(md_unittest PRIVATE -march=native)
 elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
-    target_compile_options(md_unittest PRIVATE -march=native)
+  target_compile_options(md_unittest PRIVATE -march=native)
 elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
-    target_compile_options(md_unittest PRIVATE /MP /GR- /fp:fast /arch:AVX)
-    add_compile_options_config(RELEASE /MT /Oi /GS-)
-    add_compile_options_config(DEBUG /MTd)
+  target_compile_options(md_unittest PRIVATE /MP /GR- /fp:fast /arch:AVX)
+  add_compile_options_config(RELEASE /MT /Oi /GS-)
+  add_compile_options_config(DEBUG /MTd)
 endif()
 
 target_link_libraries(md_unittest PRIVATE mold ${VIAMD_STDLIBS})

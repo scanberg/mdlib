@@ -2298,6 +2298,7 @@ static identifier_t* find_static_identifier(str_t name, eval_context_t* ctx) {
     // Static Identifiers from Compilation
     if (ctx->ir) {
         for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
+            ASSERT(ctx->ir->identifiers[i].node);
             // Only return IR identifiers if they are constant
             if ((ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
                 return &ctx->ir->identifiers[i];
@@ -2951,8 +2952,9 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         const int64_t num_elem = md_array_size(node->children);
         ast_node_t**      elem = node->children;
 
-        md_type_info_t array_type = {0};
         int64_t array_len = 0;
+        md_type_info_t array_type = {0};
+        md_unit_t array_unit = {0};
         
         // Pass 1: find a suitable base_type for the array
         for (int64_t i = 0; i < num_elem; ++i) {
@@ -2961,7 +2963,6 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
             if (array_type.base_type == TYPE_UNDEFINED) {
                 // Assign type from first element
-                //array_type = elem[i]->data.type;
                 array_type = elem_type;
             }
             else {
@@ -3005,9 +3006,21 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
             }
         }
 
+        // Pass 3: Deduce the unit, if applicable, and the same.
+        if (num_elem > 0) {
+            array_unit = elem[0]->data.unit;
+            for (int64_t i = 1; i < num_elem; ++i) {
+                if (!unit_compare(elem[i]->data.unit, array_unit)) {
+                    array_unit = (md_unit_t){0};
+                    break;
+                }
+            }
+        }
+
         // Finalize the type for the array
         array_type.dim[array_type.len_dim] = (int32_t)array_len;
         node->data.type = array_type;
+        node->data.unit = array_unit;
 
         return true;
     }
@@ -3071,6 +3084,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
                     // SUCCESS!
                     node->data.type = lhs->data.type;
                     node->data.type.dim[node->data.type.len_dim] = range.end - range.beg + 1;
+                    node->data.unit = lhs->data.unit;
                     return true;
                 } else {
                     create_error(ctx->ir, arg->token, "Invalid Array subscript range");

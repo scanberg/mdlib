@@ -435,7 +435,8 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
         xtc->header = (md_trajectory_header_t) {
             .num_frames = md_array_size(offsets) - 1,
             .num_atoms = num_atoms,
-            .max_frame_data_size = max_frame_size
+            .max_frame_data_size = max_frame_size,
+            .time_unit = {.base = {.time = UNIT_TIME_PIKOSECONDS}, .dim = {.time = 1}},
         };
 
         traj->inst = (struct md_trajectory_o*)xtc;

@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <core/md_str.h>
+#include <core/md_unit.h>
 
 struct md_trajectory_o;
 
@@ -10,6 +11,7 @@ typedef struct md_trajectory_header_t {
 	int64_t num_frames;
 	int64_t num_atoms;
 	int64_t max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
+	md_unit_t time_unit;
 } md_trajectory_header_t;
 
 typedef struct md_trajectory_frame_header_t {
@@ -71,6 +73,15 @@ static inline int64_t md_trajectory_max_frame_data_size(const md_trajectory_i* t
 		return header.max_frame_data_size;
 	}
 	return 0;
+}
+
+static inline md_unit_t md_trajectory_time_unit(const md_trajectory_i* traj) {
+	md_trajectory_header_t header;
+	if (traj && traj->get_header && traj->get_header(traj->inst, &header)) {
+		return header.time_unit;
+	}
+	md_unit_t unit = {0};
+	return unit;
 }
 
 // Easy mode operations
