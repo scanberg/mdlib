@@ -278,238 +278,6 @@ BAKE_OP_M_M(_op_sub_farr_farr, -, float)
 BAKE_OP_M_M(_op_mul_farr_farr, *, float)
 BAKE_OP_M_M(_op_div_farr_farr, /, float)
 
-/*
-static int _op_add_f_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    as_float(*dst) = as_float(arg[0]) + as_float(arg[1]);
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_add_farr_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    ASSERT(element_count(*dst) == element_count(arg[0]));
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] + as_float(arg[1]);
-    }
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_add_farr_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    ASSERT(element_count(*dst) == element_count(arg[0]));
-    ASSERT(element_count(*dst) == element_count(arg[1]));
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] + as_float_arr(arg[1])[i];
-    }
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_sub_f_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    as_float(*dst) = as_float(arg[0]) - as_float(arg[1]);
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_sub_farr_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    ASSERT(element_count(*dst) == element_count(arg[0]));
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] - as_float(arg[1]);
-    }
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_sub_farr_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    ASSERT(element_count(*dst) == element_count(arg[0]));
-    ASSERT(element_count(*dst) == element_count(arg[1]));
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] - as_float_arr(arg[1])[i];
-    }
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_mul_f_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    as_float(*dst) = as_float(arg[0]) * as_float(arg[1]);
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-        // @TODO: The dimension of the unit should be squared here
-    }
-    else if (arg[0].unit && !arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    else if (!arg[0].unit && arg[1].unit) {
-        dst->unit = arg[1].unit;
-    }
-    return 0;
-}
-
-static int _op_mul_farr_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    ASSERT(element_count(*dst) == element_count(arg[0]));
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] * as_float(arg[1]);
-    }
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-        // @TODO: The dimension of the unit should be squared here
-    }
-    else if (arg[0].unit && !arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    else if (!arg[0].unit && arg[1].unit) {
-        dst->unit = arg[1].unit;
-    }
-    return 0;
-}
-
-static int _op_mul_farr_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    ASSERT(element_count(*dst) == element_count(arg[0]));
-    ASSERT(element_count(*dst) == element_count(arg[1]));
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] * as_float_arr(arg[1])[i];
-    }
-    if (arg[0].unit == arg[1].unit) {
-        dst->unit = arg[0].unit;
-        // @TODO: The dimension of the unit should be squared here
-    }
-    else if (arg[0].unit && !arg[1].unit) {
-        dst->unit = arg[0].unit;
-    }
-    else if (!arg[0].unit && arg[1].unit) {
-        dst->unit = arg[1].unit;
-    }
-    return 0;
-}
-
-static int _op_div_f_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    as_float(*dst) = as_float(arg[0]) * as_float(arg[1]);
-    if (arg[0].unit && !arg[1].unit) {
-        // The only condition in which we currently propagate the unit is if the dividend has a unit and not the divisor
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_div_farr_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    ASSERT(element_count(*dst) == element_count(arg[0]));
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] / as_float(arg[1]);
-    }
-    if (arg[0].unit && !arg[1].unit) {
-        // The only condition in which we currently propagate the unit is if the dividend has a unit and not the divisor
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_div_farr_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    ASSERT(arg[1].type.base_type == TYPE_FLOAT);
-    ASSERT(element_count(*dst) == element_count(arg[0]));
-    ASSERT(element_count(*dst) == element_count(arg[1]));
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = as_float_arr(arg[0])[i] / as_float_arr(arg[1])[i];
-    }
-    if (arg[0].unit && !arg[1].unit) {
-        // The only condition in which we currently propagate the unit is if the dividend has a unit and not the divisor
-        dst->unit = arg[0].unit;
-    }
-    return 0;
-}
-
-static int _op_neg_f(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    as_float(*dst) = -as_float(arg[0]);
-    dst->unit = arg[0].unit;
-    return 0;
-}
-
-static int _op_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) { \
-    (void)ctx;
-    ASSERT(dst);
-    ASSERT(dst->type.base_type == TYPE_FLOAT);
-    ASSERT(arg[0].type.base_type == TYPE_FLOAT);
-    for (int64_t i = 0; i < element_count(*dst); ++i) {
-        as_float_arr(*dst)[i] = -as_float_arr(arg[0])[i];
-    }
-    dst->unit = arg[0].unit;
-    return 0;
-}
-*/
-
 // Forward declarations of functions
 // @TODO: Add your declarations here
 
@@ -523,7 +291,11 @@ static int _cast_int_arr_to_flt_arr     (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
-static int _flatten_bf_arr         (data_t*, data_t[], eval_context_t*);
+static int _flatten_bf_arr              (data_t*, data_t[], eval_context_t*);
+
+// Basic operations
+static int _min_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
+static int _max_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
 
 // Logical operators for custom types
 static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -749,6 +521,9 @@ static procedure_t procedures[] = {
 
     // VECTORIZED VERSIONS FOR ARRAYS OF BIGGER DATA
     {CSTR("abs"),    TI_VOLUME, 1,  {TI_VOLUME}, _op_simd_abs_farr},
+
+    {CSTR("min"),    TI_FLOAT,  1, {TI_FLOAT_ARR}, _min_farr},
+    {CSTR("max"),    TI_FLOAT,  1, {TI_FLOAT_ARR}, _max_farr},    
 
     // LINEAR ALGEBRA
     {CSTR("dot"),    TI_FLOAT,   2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
@@ -1471,6 +1246,44 @@ static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
 
 // IMPLEMENTATIONS
 // @TODO: Add more here
+
+static int _min_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT_ARR));
+    (void)ctx;
+
+    const float* src = as_float_arr(arg[0]);
+    float min_val = 0;
+
+    if (element_count(arg[0]) > 0) {
+        min_val = FLT_MAX;
+        for (int64_t i = 0; i < element_count(arg[0]); ++i) {
+            min_val = MIN(min_val, src[i]);
+        }
+    }
+
+    as_float(*dst) = min_val;
+    return 0;
+}
+
+static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT_ARR));
+    (void)ctx;
+
+    const float* src = as_float_arr(arg[0]);
+    float max_val = 0;
+
+    if (element_count(arg[0]) > 0) {
+        max_val = -FLT_MAX;
+        for (int64_t i = 0; i < element_count(arg[0]); ++i) {
+            max_val = MAX(max_val, src[i]);
+        }
+    }
+
+    as_float(*dst) = max_val;
+    return 0;
+}
 
 static int _not  (data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD));
