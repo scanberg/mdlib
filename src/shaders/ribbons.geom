@@ -51,10 +51,9 @@ void emit_vertex(in vec4 clip_coord, in vec4 normal, in int idx) {
 }
 
 void main() {
-    if ((in_vert[0].flags & u_atom_mask) != u_atom_mask ||
-        (in_vert[1].flags & u_atom_mask) != u_atom_mask) {
-        return;
-    }
+    // We consider the rendered segment to fully belong to index 0
+    if ((in_vert[0].flags & u_atom_mask) != u_atom_mask) return;
+    if (in_vert[0].color.a == 0.0f) return;
 
     vec4 p[2];
     vec4 x[2];
