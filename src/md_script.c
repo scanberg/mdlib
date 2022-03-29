@@ -2201,16 +2201,13 @@ done:
 static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx);
 static bool evaluate_node(data_t*, const ast_node_t*, eval_context_t*);
 
-static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+static int do_proc_call(data_t* dst, const procedure_t* proc, const ast_node_t** args, int64_t num_args, eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(node && node->type == AST_PROC_CALL);
-    ASSERT(node->proc);
+    ASSERT(proc);
+    ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
 
     const bool only_visualize = dst == NULL && ctx->vis;
     int result = 0;
-
-    const int64_t num_args = md_array_size(node->children);
-    ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
 
     data_t  arg_data  [MAX_SUPPORTED_PROC_ARGS] = {0};
     token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
@@ -2223,12 +2220,12 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
         // In this context we are not interested in storing any data (since it is only used to be passed as arguments)
         // so we can allocate the data required for the node with the temp alloc
 
-        arg_tokens[i] = node->children[i]->token;
-        arg_flags[i] = node->children[i]->flags;
-        md_type_info_t arg_type = node->children[i]->data.type;
+        arg_tokens[i] = args[i]->token;
+        arg_flags[i] = args[i]->flags;
+        md_type_info_t arg_type = args[i]->data.type;
 
         if (is_variable_length(arg_type)) {
-            if (!finalize_type(&arg_type, node->children[i], ctx)) {
+            if (!finalize_type(&arg_type, args[i], ctx)) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to finalize dynamic type in procedure call");
                 result = -1;
                 goto done;
@@ -2236,31 +2233,28 @@ static int do_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx
         }
 
         allocate_data(&arg_data[i], arg_type, ctx->temp_alloc);
-        if (!evaluate_node(&arg_data[i], node->children[i], ctx)) {
+        if (!evaluate_node(&arg_data[i], args[i], ctx)) {
             result = -1;
             goto done;
         }
     }
 
-    if (only_visualize && !(node->proc->flags & FLAG_VISUALIZE)) {
+    if (only_visualize && !(proc->flags & FLAG_VISUALIZE)) {
         // We are called within a visualization context, to visualize things
         // If our function is not marked as FLAG_VISUALIZE, we just stop here.
         // The arguments have alread been evaluated
     } else {
         flags_t* old_arg_flags  = ctx->arg_flags;
         token_t* old_arg_tokens = ctx->arg_tokens;
-        token_t  old_op_token   = ctx->op_token;
         // Set
-        ctx->op_token   = node->token;
         ctx->arg_tokens = arg_tokens;
         ctx->arg_flags  = arg_flags;
 
-        result = node->proc->proc_ptr(dst, arg_data, ctx);
+        result = proc->proc_ptr(dst, arg_data, ctx);
 
         // Reset
         ctx->arg_flags  = old_arg_flags;
         ctx->arg_tokens = old_arg_tokens;
-        ctx->op_token   = old_op_token;
     }
 
 done:
@@ -2281,7 +2275,16 @@ done:
 }
 
 static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
-    return do_proc_call(dst, node, ctx) >= 0;
+    ASSERT(node);
+    ASSERT(node->type == AST_PROC_CALL);
+    ASSERT(node->proc);
+
+    token_t old_token = ctx->op_token;
+    ctx->op_token = node->token;
+    int result = do_proc_call(dst, node->proc, node->children, md_array_size(node->children), ctx);
+    ctx->op_token = old_token;
+
+    return result >= 0;
 }
 
 static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
@@ -2603,21 +2606,17 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
         to = res.procedure->return_type;
 
         if (node->type == AST_CONSTANT_VALUE) {
-            value_t val = node->value;
-            data_t old = {
-                .type = node->data.type,
-                .size = node->data.size,
-                .ptr = &val,
-            };
-
             if (type_info_array_len(to) == -1) {
                 if (res.procedure->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
                     to.dim[to.len_dim] = (int)type_info_array_len(from);
                 } else {
                     ASSERT(res.procedure->flags & FLAG_QUERYABLE_LENGTH);
 
+                    token_t  old_op_token = ctx->op_token;
+                    ctx->op_token = node->token;
                     // Perform the call to get length
-                    int query_result = res.procedure->proc_ptr(NULL, &old, ctx);
+                    int query_result = do_proc_call(NULL, res.procedure, &node, 1, ctx);
+                    ctx->op_token = old_op_token;
 
                     if (query_result >= 0) { // Zero length is valid
                         to.dim[to.len_dim] = query_result;
@@ -2630,6 +2629,13 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
             }
 
             ASSERT(type_info_array_len(to) > -1);
+
+            value_t val = node->value;
+            data_t old = {
+                .type = node->data.type,
+                .size = node->data.size,
+                .ptr = &val,
+            };
 
             // Convert the type
             node->data.type = to;
@@ -2685,7 +2691,10 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
         ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
 
         // Perform the call
-        int query_result = do_proc_call(NULL, node, ctx);
+        token_t old_token = ctx->op_token;
+        ctx->op_token = node->token;
+        int query_result = do_proc_call(NULL, node->proc, node->children, md_array_size(node->children), ctx);
+        ctx->op_token = old_token;
 
         if (query_result >= 0) { // Zero length is valid
             type->dim[type->len_dim] = query_result;
@@ -2757,9 +2766,11 @@ static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, 
             // Try to resolve length by calling the procedure
             static_backchannel_t channel = {0};
             static_backchannel_t* prev_channel = ctx->backchannel;
+            token_t prev_op_token = ctx->op_token;
             ctx->backchannel = &channel;
-            int query_result = do_proc_call(NULL, node, ctx);
+            int query_result = do_proc_call(NULL, node->proc, node->children, md_array_size(node->children), ctx);
             ctx->backchannel = prev_channel;
+            ctx->op_token = prev_op_token;
 
             if (channel.flags & FLAG_DYNAMIC_LENGTH) {
                 // If we fail to deduce the length it is still valid in this scenario

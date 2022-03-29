@@ -405,7 +405,7 @@ static procedure_t casts[] = {
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _flatten_bf_arr},
 
-    {CSTR("cast"),    TI_FLOAT3_ARR,    1,  {TI_POSITION_ARR},  _position, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_DYNAMIC_LENGTH},
+    //{CSTR("cast"),    TI_FLOAT3_ARR,    1,  {TI_POSITION_ARR},  _position, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_DYNAMIC_LENGTH},
 };
 
 static procedure_t operators[] = {
