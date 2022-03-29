@@ -1105,7 +1105,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
                         control_point_index[len++] = idx++;
                     }
                     control_point_index[len++] = idx-1;
-                    control_point_index[len++] = 0xFFFFFFFF;
+                    control_point_index[len++] = 0xFFFFFFFFU;
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             }

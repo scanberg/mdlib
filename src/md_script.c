@@ -2306,9 +2306,8 @@ static identifier_t* find_static_identifier(str_t name, eval_context_t* ctx) {
     // Static Identifiers from Compilation
     if (ctx->ir) {
         for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
-            ASSERT(ctx->ir->identifiers[i].node);
             // Only return IR identifiers if they are constant
-            if ((ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
+            if (ctx->ir->identifiers[i].node && (ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
                 return &ctx->ir->identifiers[i];
             }
         }
