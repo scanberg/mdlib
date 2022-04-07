@@ -263,7 +263,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
 
         if (x || y || z) {
             int64_t byte_size = natoms * sizeof(rvec);
-            rvec* pos = md_alloc(default_temp_allocator, byte_size);
+            rvec* pos = md_alloc(default_allocator, byte_size);
             result = xtc_coord(file, natoms, pos);
             if (result) {            
                 // nm -> Ångström
@@ -273,7 +273,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
                     if (z) z[i] = pos[i][2] * 10.0f;
                 }
             }
-            md_free(default_temp_allocator, pos, byte_size);
+            md_free(default_allocator, pos, byte_size);
         }
     }
 

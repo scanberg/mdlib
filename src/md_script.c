@@ -3812,10 +3812,10 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         if (!(prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL)) {
             memset(prop->data.values, 0, prop->data.num_values * sizeof(float));
             if (prop->data.aggregate) {
-                memset(prop->data.aggregate->population_mean,     0, prop->data.aggregate->num_values * sizeof(float));
-                memset(prop->data.aggregate->population_var, 0, prop->data.aggregate->num_values * sizeof(float));
-                memset(prop->data.aggregate->population_min,      0, prop->data.aggregate->num_values * sizeof(float));
-                memset(prop->data.aggregate->population_max,      0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->population_mean, 0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->population_var,  0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->population_min,  0, prop->data.aggregate->num_values * sizeof(float));
+                memset(prop->data.aggregate->population_max,  0, prop->data.aggregate->num_values * sizeof(float));
             }
         }
         prop->data.min_value = +FLT_MAX;
@@ -3850,6 +3850,10 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             allocate_data(&data[i], expr[i]->node->data.type, &temp_alloc);
             data[i].unit = expr[i]->node->data.unit;
             data[i].value_range = expr[i]->node->data.value_range;
+            if (data[i].value_range.beg == 0 && data[i].value_range.end == 0) {
+                data[i].value_range.beg = -FLT_MAX;
+                data[i].value_range.end = +FLT_MAX;
+            }
             if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
                 md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
                 result = false;
