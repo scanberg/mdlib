@@ -66,7 +66,8 @@ static float element_covalent_radii[] = {
     1.39, 1.39, 1.32, 1.26, 1.24, 1.32, 1.22, 1.22, 1.20, 1.19, 1.20, 1.20, 1.16, 2.20, 1.95, 1.90, 1.75, 1.64, 1.54, 1.47, 1.46, 1.42, 1.39, 1.45,
     1.44, 1.42, 1.39, 1.39, 1.38, 1.39, 1.40, 2.44, 2.15, 2.07, 2.04, 2.03, 2.01, 1.99, 1.98, 1.98, 1.96, 1.94, 1.92, 1.92, 1.89, 1.90, 1.87, 1.87,
     1.75, 1.70, 1.62, 1.51, 1.44, 1.41, 1.36, 1.36, 1.32, 1.45, 1.46, 1.48, 1.40, 1.50, 1.50, 2.60, 2.21, 2.15, 2.06, 2.00, 1.96, 1.90, 1.87, 1.80,
-    1.69, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60};
+    1.69, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60
+};
 
 // https://dx.doi.org/10.1021/jp8111556
 static float element_vdw_radii[] = {
@@ -74,7 +75,8 @@ static float element_vdw_radii[] = {
     2.05, 2.05, 2.05, 2.00, 2.00, 2.00, 2.10, 1.87, 2.11, 1.85, 1.90, 1.83, 2.02, 3.03, 2.49, 2.40, 2.30, 2.15, 2.10, 2.05, 2.05, 2.00, 2.05, 2.10,
     2.20, 2.20, 1.93, 2.17, 2.06, 1.98, 2.16, 3.43, 2.68, 2.50, 2.48, 2.47, 2.45, 2.43, 2.42, 2.40, 2.38, 2.37, 2.35, 2.33, 2.32, 2.30, 2.28, 2.27,
     2.25, 2.20, 2.10, 2.05, 2.00, 2.00, 2.05, 2.10, 2.05, 1.96, 2.02, 2.07, 1.97, 2.02, 2.20, 3.48, 2.83, 2.00, 2.40, 2.00, 2.30, 2.00, 2.00, 2.00,
-    2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00};
+    2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00, 2.00
+};
 
 // http://chemistry.wikia.com/wiki/List_of_elements_by_atomic_mass
 // last element padded with 295
@@ -88,7 +90,21 @@ static float element_atomic_mass[] = {
     178.49,  180.94788,  183.84,   186.207,   190.23,   192.217,   195.084,   196.966569,  200.59,  204.3833,   207.2,   208.98040,
     210,     210,        220,      223,       226,      227,       231.03588, 232.03806,   237,     238.02891,  243,     244,
     247,     247,        251,      252,       257,      258,       259,       262,         261,     262,        266,     264,
-    277,     268,        271,      272,       285,      284,       289,       288,         292,     294,        295};
+    277,     268,        271,      272,       285,      284,       289,       288,         292,     294,        295
+};
+
+// https://en.wikipedia.org/wiki/Valence_(chemistry)
+// Elements with unknown max valence is assigned with 0
+static uint8_t element_max_valence[] = {
+    0,
+    1, 0,
+    1, 2, 3, 4, 5, 2, 1, 0,
+    1, 2, 3, 4, 5, 6, 7, 0,
+    1, 2, 3, 4, 5, 6, 7, 7, 5, 4, 4, 2, 3, 4, 5, 6, 7, 2,
+    1, 2, 3, 4, 5, 6, 7, 8, 6, 4, 3, 2, 3, 4, 5, 6, 7, 8,
+    1, 2, 3, 4, 5, 4, 3, 3, 3, 3, 4, 4, 3, 3, 3, 3, 3, 4, 5, 6, 7, 8, 9, 6, 5, 2, 3, 4, 5, 6, 7, 6,
+    1, 2, 3, 4, 5, 6, 7, 7, 7, 6, 5, 5, 4, 3, 3, 3, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
 
 // http://jmol.sourceforge.net/jscolors/
 static uint32_t element_cpk_colors[] = {
@@ -101,7 +117,8 @@ static uint32_t element_cpk_colors[] = {
     0xFFFFC24D, 0xFFFFA64D, 0xFFD69421, 0xFFAB7D26, 0xFF966626, 0xFF875417, 0xFFE0D0D0, 0xFF23D1FF, 0xFFD0B8B8, 0xFF4D54A6, 0xFF615957, 0xFFB54F9E,
     0xFF005CAB, 0xFF454F75, 0xFF968242, 0xFF660042, 0xFF007D00, 0xFFFAAB70, 0xFFFFBA00, 0xFFFFA100, 0xFFFF8F00, 0xFFFF8000, 0xFFFF6B00, 0xFFF25C54,
     0xFFE35C78, 0xFFE34F8A, 0xFFD436A1, 0xFFD41FB3, 0xFFBA1FB3, 0xFFA60DB3, 0xFF870DBD, 0xFF6600C7, 0xFF5900CC, 0xFF4F00D1, 0xFF4500D9, 0xFF3800E0,
-    0xFF2E00E6, 0xFF2600EB, 0xFF2200F0, 0xFF2000F6, 0xFF1E00F8, 0xFF1C00FA, 0xFF1A00FC, 0xFF1800FD, 0xFF1600FE, 0xFF1400FF, 0xFF1200FF};
+    0xFF2E00E6, 0xFF2600EB, 0xFF2200F0, 0xFF2000F6, 0xFF1E00F8, 0xFF1C00FA, 0xFF1A00FC, 0xFF1800FD, 0xFF1600FE, 0xFF1400FF, 0xFF1200FF
+};
 
 static const char* amino_acids[] = {
     "ALA", "ARG", "ASN", "ASP", "CYS", "CYX", "GLN", "GLU",
@@ -288,23 +305,25 @@ static inline bool extract_backbone_atoms(md_backbone_atoms_t* backbone_atoms, c
     return false;
 }
 
+bool md_util_backbone_atoms_extract(md_backbone_atoms_t backbone_atoms[], int64_t capacity, const md_molecule_t* mol) {
+    if (!backbone_atoms) return false;
+    if (capacity < 0) return false;
+    memset(backbone_atoms, 0, capacity * sizeof(md_backbone_atoms_t));
 
-bool md_util_backbone_atoms_extract(md_backbone_atoms_t backbone_atoms[], int64_t capacity, const md_util_backbone_args_t* args) {
-    ASSERT(backbone_atoms);
-    ASSERT(args);
-    memset(backbone_atoms, 0, args->residue.count * sizeof(md_backbone_atoms_t));
-    bool result = true;
-    for (uint32_t i = 0; i < args->residue.count; ++i) {
-        ASSERT(i <= capacity);
-        if (!extract_backbone_atoms(&backbone_atoms[i], args->atom.name, args->residue.atom_range[i])) {
-            md_printf(MD_LOG_TYPE_INFO, "Could not extract backbone of residue[%i], possible that the residue is not an amino acid", i);
-            result = false;
+    if (mol) {
+        int64_t size = MIN(capacity, mol->backbone.count);
+        for (int64_t bb_idx = 0; bb_idx < size; ++bb_idx) {
+            const md_residue_idx_t res_idx = mol->backbone.residue_idx[bb_idx];
+            if (!extract_backbone_atoms(&backbone_atoms[bb_idx], mol->atom.name, mol->residue.atom_range[res_idx])) {
+                md_printf(MD_LOG_TYPE_INFO, "Failed to extract backbone atoms of residue[%i], possible that the residue is not an amino acid", res_idx);
+            }
         }
+        return true;
     }
-    return result;
+    return false;
 }
 
-static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args_t* args, md_range_t bb_range, int i, const float distances[3], float delta) {
+static inline bool zhang_skolnick_ss(const md_molecule_t* args, md_range_t bb_range, int i, const float distances[3], float delta) {
     for (int j = MAX((int)bb_range.beg, i - 2); j <= i; ++j) {
         for (int k = 2; k < 5; ++k) {
             if (j + k >= (int)bb_range.end) continue;
@@ -321,45 +340,49 @@ static inline bool zhang_skolnick_ss(const md_util_secondary_structure_args_t* a
     return true;
 }
 
-static inline bool is_helical(const md_util_secondary_structure_args_t* args, md_range_t res_range, int i) {
+static inline bool is_helical(const md_molecule_t* mol, md_range_t bb_range, int i) {
     const float distances[] = { 5.45f, 5.18f, 6.37f };
     const float delta = 2.1f;
-    return zhang_skolnick_ss(args, res_range, i, distances, delta);
+    return zhang_skolnick_ss(mol, bb_range, i, distances, delta);
 }
 
-static inline bool is_sheet(const md_util_secondary_structure_args_t* args, md_range_t res_range, int i) {
+static inline bool is_sheet(const md_molecule_t* mol, md_range_t bb_range, int i) {
     const float distances[] = { 6.1f, 10.4f, 13.0f };
     const float delta = 1.42f;
-    return zhang_skolnick_ss(args, res_range, i, distances, delta);
+    return zhang_skolnick_ss(mol, bb_range, i, distances, delta);
 }
 
 // TM-align: a protein structure alignment algorithm based on the Tm-score
 // doi:10.1093/nar/gki524
-bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structure[], int64_t capacity, const md_util_secondary_structure_args_t* args) {
-    ASSERT(args);
-    ASSERT(args->atom.x);
-    ASSERT(args->atom.y);
-    ASSERT(args->atom.z);
-    ASSERT(args->backbone.atoms);
-    ASSERT(args->chain.backbone_range);
-    ASSERT(secondary_structure);
+bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structure[], int64_t capacity, const struct md_molecule_t* mol) {
+    if (!secondary_structure) return false;
+    if (capacity < 0) return false;
 
-    for (int64_t chain_idx = 0; chain_idx < args->chain.count; ++chain_idx) {
-        const md_range_t range = args->chain.backbone_range[chain_idx];
+    memset(secondary_structure, 0, capacity * sizeof(md_secondary_structure_t));
+
+    if (!mol) return false;
+    if (!mol->atom.x) return false;
+    if (!mol->atom.y) return false;
+    if (!mol->atom.z) return false;
+    if (!mol->backbone.atoms) return false;
+    if (!mol->chain.backbone_range) return false;
+
+    for (int64_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
+        const md_range_t range = mol->chain.backbone_range[chain_idx];
         ASSERT(range.end <= capacity);
 
         if (range.end - range.beg < 4) {
-            memset(secondary_structure + range.beg, 0, (range.end - range.beg) * sizeof(md_secondary_structure_t));
             continue;
         }
 
         // Classify residues
         for (int32_t i = range.beg; i < range.end; ++i) {
             md_secondary_structure_t ss = MD_SECONDARY_STRUCTURE_COIL;
-            if (is_sheet(args, range, i)) {
+
+            if (is_sheet(mol, range, i)) {
                 ss = MD_SECONDARY_STRUCTURE_SHEET;
             }
-            else if (is_helical(args, range, i)) {
+            else if (is_helical(mol, range, i)) {
                 ss = MD_SECONDARY_STRUCTURE_HELIX;
             }
             secondary_structure[i] = ss;
@@ -391,31 +414,33 @@ static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
     return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
 }
 
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int64_t capacity, const md_util_backbone_angle_args_t* args) {
-    ASSERT(args);
-    ASSERT(args->atom.x);
-    ASSERT(args->atom.y);
-    ASSERT(args->atom.z);
-    ASSERT(args->backbone.atoms);
-    ASSERT(args->chain.backbone_range);
-    ASSERT(backbone_angles);
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int64_t capacity, const md_molecule_t* mol) {
+    if (!backbone_angles) return false;
+    if (capacity < 0) return false;
 
-    memset(backbone_angles, 0, sizeof(md_backbone_angles_t) * args->backbone.count);
-    for (int64_t chain_idx = 0; chain_idx < args->chain.count; ++chain_idx) {
-        const md_range_t range = args->chain.backbone_range[chain_idx];
+    memset(backbone_angles, 0, sizeof(md_backbone_angles_t) * capacity);
+
+    if (!mol) return false;
+    if (!mol->atom.x) return false;
+    if (!mol->atom.y) return false;
+    if (!mol->atom.z) return false;
+    if (!mol->backbone.atoms) return false;
+    
+
+    for (int64_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
+        const md_range_t range = mol->chain.backbone_range[chain_idx];
         ASSERT(range.end <= capacity);
 
         if (range.end - range.beg < 4) {
-            memset(backbone_angles + range.beg, 0, (range.end - range.beg) * sizeof(md_backbone_angles_t));
             continue;
         }
 
         for (int64_t i = range.beg + 1; i < range.end - 1; ++i) {
-            vec3_t c_prev = { args->atom.x[args->backbone.atoms[i-1].c], args->atom.y[args->backbone.atoms[i-1].c], args->atom.z[args->backbone.atoms[i-1].c] };
-            vec3_t n      = { args->atom.x[args->backbone.atoms[i].n]  , args->atom.y[args->backbone.atoms[i].n]  , args->atom.z[args->backbone.atoms[i].n]   };
-            vec3_t ca     = { args->atom.x[args->backbone.atoms[i].ca] , args->atom.y[args->backbone.atoms[i].ca] , args->atom.z[args->backbone.atoms[i].ca]  };
-            vec3_t c      = { args->atom.x[args->backbone.atoms[i].c]  , args->atom.y[args->backbone.atoms[i].c]  , args->atom.z[args->backbone.atoms[i].c]   };
-            vec3_t n_next = { args->atom.x[args->backbone.atoms[i+1].n], args->atom.y[args->backbone.atoms[i+1].n], args->atom.z[args->backbone.atoms[i+1].n] };
+            const vec3_t c_prev = { mol->atom.x[mol->backbone.atoms[i-1].c], mol->atom.y[mol->backbone.atoms[i-1].c], mol->atom.z[mol->backbone.atoms[i-1].c] };
+            const vec3_t n      = { mol->atom.x[mol->backbone.atoms[i].n]  , mol->atom.y[mol->backbone.atoms[i].n]  , mol->atom.z[mol->backbone.atoms[i].n]   };
+            const vec3_t ca     = { mol->atom.x[mol->backbone.atoms[i].ca] , mol->atom.y[mol->backbone.atoms[i].ca] , mol->atom.z[mol->backbone.atoms[i].ca]  };
+            const vec3_t c      = { mol->atom.x[mol->backbone.atoms[i].c]  , mol->atom.y[mol->backbone.atoms[i].c]  , mol->atom.z[mol->backbone.atoms[i].c]   };
+            const vec3_t n_next = { mol->atom.x[mol->backbone.atoms[i+1].n], mol->atom.y[mol->backbone.atoms[i+1].n], mol->atom.z[mol->backbone.atoms[i+1].n] };
             backbone_angles[i].phi = dihedral_angle(c_prev, n, ca, c);
             backbone_angles[i].psi = dihedral_angle(n, ca, c, n_next);
         }
@@ -424,22 +449,24 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int
     return true;
 }
 
-bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const md_util_classify_ramachandran_args_t* args) {
-    ASSERT(args);
-
+bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const md_molecule_t* mol) {
+    ASSERT(ramachandran_types);
     memset(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
 
-    if (args->backbone.count == 0) return false;
-    if (args->residue.count == 0) return false;
+    if (capacity < 0) return false;
+    if (mol->backbone.count == 0) return false;
+    if (mol->residue.count == 0) return false;
 
-    ASSERT(args->residue.name);
-    ASSERT(args->backbone.res_idx);
+    ASSERT(mol->residue.name);
+    ASSERT(mol->backbone.residue_idx);
 
-    for (int64_t i = 0; i < args->backbone.count; ++i) {
-        int64_t res_idx = args->backbone.res_idx[i];
-        ASSERT(res_idx < args->residue.count);
+    int64_t size = MIN(capacity, mol->backbone.count);
 
-        str_t resname = label_to_str(&args->residue.name[res_idx]);
+    for (int64_t i = 0; i < size; ++i) {
+        int64_t res_idx = mol->backbone.residue_idx[i];
+        ASSERT(res_idx < mol->residue.count);
+
+        str_t resname = label_to_str(&mol->residue.name[res_idx]);
         if (compare_str_cstr_n(resname, "GLY", 3)) {
             ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GLYCINE;
         } else if (compare_str_cstr_n(resname, "PRO", 3)) {
@@ -463,101 +490,96 @@ static inline bool covelent_bond_heuristic(float x0, float y0, float z0, md_elem
     return (d_min * d_min) < d2 && d2 < (d_max * d_max);
 }
 
-md_bond_t* md_util_extract_covalent_bonds(const md_util_covalent_bond_args_t* args, struct md_allocator_i* alloc) {
-    md_bond_t* bonds = 0;
+bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* alloc) {
+    ASSERT(mol);
+    ASSERT(alloc);
 
-    for (int64_t ri = 0; ri < args->residue.count; ++ri) {
-        const int64_t pre_internal_bond_count = md_array_size(bonds);
+    if (mol->covalent_bond.bond) {
+        md_array_shrink(mol->covalent_bond.bond, 0);
+    }
+
+    for (int64_t ri = 0; ri < mol->residue.count; ++ri) {
+        const int64_t pre_internal_bond_count = md_array_size(mol->covalent_bond.bond);
 
         // Compute internal bonds (within residue)
-        for (int64_t i = args->residue.atom_range[ri].beg; i < args->residue.atom_range[ri].end - 1; ++i) {
-            for (int64_t j = i + 1; j < args->residue.atom_range[ri].end; ++j) {
-                if (covelent_bond_heuristic(args->atom.x[i], args->atom.y[i], args->atom.z[i], args->atom.element[i],
-                                            args->atom.x[j], args->atom.y[j], args->atom.z[j], args->atom.element[j])) {
+        for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end - 1; ++i) {
+            for (int64_t j = i + 1; j < mol->residue.atom_range[ri].end; ++j) {
+                if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
+                                            mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
                     md_bond_t bond = {(int32_t)i, (int32_t)j};
-                    md_array_push(bonds, bond, alloc);
+                    md_array_push(mol->covalent_bond.bond, bond, alloc);
                 }
             }
         }
 
-        const int64_t post_internal_bond_count = md_array_size(bonds);
+        const int64_t post_internal_bond_count = md_array_size(mol->covalent_bond.bond);
 
-        if (args->residue.internal_bond_range) {
-            args->residue.internal_bond_range[ri].beg = (uint32_t)pre_internal_bond_count;
-            args->residue.internal_bond_range[ri].end = (uint32_t)post_internal_bond_count;
+        if (mol->residue.internal_covalent_bond_range) {
+            mol->residue.internal_covalent_bond_range[ri].beg = (uint32_t)pre_internal_bond_count;
+            mol->residue.internal_covalent_bond_range[ri].end = (uint32_t)post_internal_bond_count;
         }
 
         const int64_t rj = ri + 1;
-        if (rj < args->residue.count) {
+        if (rj < mol->residue.count) {
             // Compute extarnal bonds (between residues)
-            for (int64_t i = args->residue.atom_range[ri].beg; i < args->residue.atom_range[ri].end; ++i) {
-                for (int64_t j = args->residue.atom_range[rj].beg; j < args->residue.atom_range[rj].end; ++j) {
-                    if (covelent_bond_heuristic(args->atom.x[i], args->atom.y[i], args->atom.z[i], args->atom.element[i],
-                        args->atom.x[j], args->atom.y[j], args->atom.z[j], args->atom.element[j])) {
+            for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end; ++i) {
+                for (int64_t j = mol->residue.atom_range[rj].beg; j < mol->residue.atom_range[rj].end; ++j) {
+                    if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
+                        mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
                         md_bond_t bond = {(int32_t)i, (int32_t)j};
-                        md_array_push(bonds, bond, alloc);
+                        md_array_push(mol->covalent_bond.bond, bond, alloc);
                     }
                 }
             }
 
-            const int64_t post_external_bond_count = md_array_size(bonds);
+            const int64_t post_external_bond_count = md_array_size(mol->covalent_bond.bond);
 
-            if (args->residue.complete_bond_range) {
-                args->residue.complete_bond_range[ri].end = (uint32_t)post_external_bond_count;
-                args->residue.complete_bond_range[rj].beg = (uint32_t)post_internal_bond_count;
+            if (mol->residue.complete_covalent_bond_range) {
+                mol->residue.complete_covalent_bond_range[ri].end = (uint32_t)post_external_bond_count;
+                mol->residue.complete_covalent_bond_range[rj].beg = (uint32_t)post_internal_bond_count;
             }
         }
     }
 
-    if (args->residue.complete_bond_range) {
-        ASSERT(args->residue.count > 0);
-        args->residue.complete_bond_range[0].beg = 0;
-        args->residue.complete_bond_range[args->residue.count - 1].end = (uint32_t)md_array_size(bonds);
+    if (mol->residue.complete_covalent_bond_range) {
+        ASSERT(mol->residue.count > 0);
+        mol->residue.complete_covalent_bond_range[0].beg = 0;
+        mol->residue.complete_covalent_bond_range[mol->residue.count - 1].end = (uint32_t)md_array_size(mol->covalent_bond.bond);
     }
 
-    return bonds;
+    mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
+
+    return true;
 }
 
-bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, md_util_apply_pbc_args_t args) {
-    ASSERT(out_x);
-    ASSERT(out_y);
-    ASSERT(out_z);
-    ASSERT(args.atom.count == count);
-    ASSERT(args.residue.atom_range);
-
-    // @TODO: Assert that the box is orthogonal?
-    ASSERT(args.pbc.box[0][0] > 0.0f);
-    ASSERT(args.pbc.box[1][1] > 0.0f);
-    ASSERT(args.pbc.box[2][2] > 0.0f);
-
-    vec3_t ext = {args.pbc.box[0][0], args.pbc.box[1][1], args.pbc.box[2][2]};
-//    vec3_t half_ext = vec3_mul_f(ext, 0.5f);
+bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
+    if (!mol) return false;
 
     float* residue_com_x = 0;
     float* residue_com_y = 0;
     float* residue_com_z = 0;
 
-    if (args.chain.residue_range && args.chain.count) {
-        int64_t stride = ROUND_UP(args.residue.count, md_simd_widthf);
+    if (mol->chain.residue_range && mol->chain.count) {
+        int64_t stride = ROUND_UP(mol->residue.count, md_simd_widthf);
         float* mem = md_alloc(default_temp_allocator, stride * sizeof(float) * 3);
         residue_com_x = mem + stride * 0;
         residue_com_y = mem + stride * 1;
         residue_com_z = mem + stride * 2;
     }
     
-    for (int64_t i = 0; i < args.residue.count; ++i) {
-        md_range_t atom_range = args.residue.atom_range[i];
+    for (int64_t i = 0; i < mol->residue.count; ++i) {
+        md_range_t atom_range = mol->residue.atom_range[i];
         vec3_t com = md_util_compute_periodic_com(
-            args.atom.x + atom_range.beg,
-            args.atom.y + atom_range.beg,
-            args.atom.z + atom_range.beg,
+            mol->atom.x + atom_range.beg,
+            mol->atom.y + atom_range.beg,
+            mol->atom.z + atom_range.beg,
             NULL,
             atom_range.end - atom_range.beg,
-            args.pbc.box);
+            pbc_ext);
 
-        com.x = deperiodizef(com.x, ext.x * 0.5f, ext.x);
-        com.y = deperiodizef(com.y, ext.y * 0.5f, ext.y);
-        com.z = deperiodizef(com.z, ext.z * 0.5f, ext.z);
+        com.x = deperiodizef(com.x, pbc_ext.x * 0.5f, pbc_ext.x);
+        com.y = deperiodizef(com.y, pbc_ext.y * 0.5f, pbc_ext.y);
+        com.z = deperiodizef(com.z, pbc_ext.z * 0.5f, pbc_ext.z);
 
         if (residue_com_x) {
             ASSERT(residue_com_y);
@@ -568,44 +590,44 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
         }
 
         for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
-            out_x[j] = deperiodizef(args.atom.x[j], com.x, ext.x);
-            out_y[j] = deperiodizef(args.atom.y[j], com.y, ext.y);
-            out_z[j] = deperiodizef(args.atom.z[j], com.z, ext.z);
+            mol->atom.x[j] = deperiodizef(mol->atom.x[j], com.x, pbc_ext.x);
+            mol->atom.y[j] = deperiodizef(mol->atom.y[j], com.y, pbc_ext.y);
+            mol->atom.z[j] = deperiodizef(mol->atom.z[j], com.z, pbc_ext.z);
         }
     }
 
-    for (int64_t i = 0; i < args.chain.count; ++i) {
-        md_range_t res_range = args.chain.residue_range[i];
+    for (int64_t i = 0; i < mol->chain.count; ++i) {
+        md_range_t res_range = mol->chain.residue_range[i];
         vec3_t chain_com = md_util_compute_periodic_com(
             residue_com_x + res_range.beg,
             residue_com_y + res_range.beg,
             residue_com_z + res_range.beg,
             NULL,
             res_range.end - res_range.beg,
-            args.pbc.box);
+            pbc_ext);
 
         // Ensure that the chain com is within the period of the bounding box
-        chain_com.x = deperiodizef(chain_com.x, ext.x * 0.5f, ext.x);
-        chain_com.y = deperiodizef(chain_com.y, ext.y * 0.5f, ext.y);
-        chain_com.z = deperiodizef(chain_com.z, ext.z * 0.5f, ext.z);
+        chain_com.x = deperiodizef(chain_com.x, pbc_ext.x * 0.5f, pbc_ext.x);
+        chain_com.y = deperiodizef(chain_com.y, pbc_ext.y * 0.5f, pbc_ext.y);
+        chain_com.z = deperiodizef(chain_com.z, pbc_ext.z * 0.5f, pbc_ext.z);
 
         for (int64_t j = res_range.beg; j < res_range.end; ++j) {
             vec3_t res_com = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
 
             // Ensire that the residue is within the period of the chain
-            res_com.x = deperiodizef(res_com.x, chain_com.x, ext.x);
-            res_com.y = deperiodizef(res_com.y, chain_com.y, ext.y);
-            res_com.z = deperiodizef(res_com.z, chain_com.z, ext.z);
+            res_com.x = deperiodizef(res_com.x, chain_com.x, pbc_ext.x);
+            res_com.y = deperiodizef(res_com.y, chain_com.y, pbc_ext.y);
+            res_com.z = deperiodizef(res_com.z, chain_com.z, pbc_ext.z);
 
             vec3_t d = vec3_sub(res_com, (vec3_t){residue_com_x[j], residue_com_y[j], residue_com_z[j]});
             const float d2 = vec3_dot(d,d);
 
             if (d2 > 0) {
-                md_range_t atom_range = args.residue.atom_range[j];
+                md_range_t atom_range = mol->residue.atom_range[j];
                 for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
-                    out_x[k] += d.x;
-                    out_y[k] += d.y;
-                    out_z[k] += d.z;
+                    mol->atom.x[k] += d.x;
+                    mol->atom.y[k] += d.y;
+                    mol->atom.z[k] += d.z;
                 }
             }            
         }
@@ -614,11 +636,7 @@ bool md_util_apply_pbc(float* out_x, float* out_y, float* out_z, int64_t count, 
     return true;
 }
 
-vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, float box[3][3]) {
-    const float ext_x = box[0][0];
-    const float ext_y = box[1][1];
-    const float ext_z = box[2][2];
-    
+vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
     float w = in_w ? in_w[0] : 1.0f;
     float sum_x = in_x[0] * w;
     float sum_y = in_y[0] * w;
@@ -630,9 +648,9 @@ vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const 
         float com_y = sum_y / sum_w;
         float com_z = sum_z / sum_w;
 
-        float x = deperiodizef(in_x[i], com_x, ext_x);
-        float y = deperiodizef(in_y[i], com_y, ext_y);
-        float z = deperiodizef(in_z[i], com_z, ext_z);
+        float x = deperiodizef(in_x[i], com_x, pbc_ext.x);
+        float y = deperiodizef(in_y[i], com_y, pbc_ext.y);
+        float z = deperiodizef(in_z[i], com_z, pbc_ext.z);
 
         w = in_w ? in_w[i] : 1.0f;
         sum_x += x * w;
@@ -858,23 +876,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
         md_array_ensure(mol->residue.complete_covalent_bond_range, mol->residue.count, alloc);
 
         // Use heuristical method of finding covalent bonds
-        md_util_covalent_bond_args_t args = {
-            .atom = {
-                .count = mol->atom.count,
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
-                .element = mol->atom.element
-            },
-            .residue = {
-                .count = mol->residue.count,
-                .atom_range = mol->residue.atom_range,
-                .internal_bond_range = mol->residue.internal_covalent_bond_range,
-                .complete_bond_range = mol->residue.complete_covalent_bond_range,
-            },
-        };
-        mol->covalent_bond.bond = md_util_extract_covalent_bonds(&args, alloc);
-        mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
+        md_util_extract_covalent_bonds(mol, alloc);
     }
 
     if (mol->chain.count == 0) {
@@ -937,8 +939,8 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     if (mol->chain.count) {
         // Compute backbone data
         int64_t bb_offset = 0;
-        for (int64_t i = 0; i < mol->chain.count; ++i) {
-            const int64_t res_count = mol->chain.residue_range[i].end - mol->chain.residue_range[i].beg;
+        for (int64_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
+            const int64_t res_count = mol->chain.residue_range[chain_idx].end - mol->chain.residue_range[chain_idx].beg;
             md_range_t bb_range = { (int32_t)bb_offset, (int32_t)(bb_offset + res_count) };
             md_array_push(mol->chain.backbone_range, bb_range, alloc);
             bb_offset += res_count;
@@ -951,59 +953,19 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
         md_array_resize(mol->backbone.ramachandran_type, mol->backbone.count, alloc);
         md_array_resize(mol->backbone.residue_idx, mol->backbone.count, alloc);
 
-        int64_t backbone_idx = 0;
-        for (int64_t i = 0; i < mol->chain.count; ++i) {
-            const int64_t res_count = mol->chain.residue_range[i].end - mol->chain.residue_range[i].beg;
-            const int64_t res_offset = mol->chain.residue_range[i].beg;
-
+        // Set the residue indices for the backbone
+        bb_offset = 0;
+        for (int64_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
+            int64_t res_count = (int64_t)mol->chain.residue_range[chain_idx].end - (int64_t)mol->chain.residue_range[chain_idx].beg;
             for (int64_t j = 0; j < res_count; ++j) {
-                mol->backbone.residue_idx[backbone_idx + j] = (md_residue_idx_t)(res_offset + j);
+                mol->backbone.residue_idx[bb_offset + j] = (md_residue_idx_t)((int64_t)mol->chain.residue_range[chain_idx].beg + j);
             }
-
-            md_util_backbone_args_t bb_args = {
-                .atom = {
-                    .count = mol->atom.count,
-                    .name = mol->atom.name,
-                },
-                .residue = {
-                    .count = res_count,
-                    .atom_range = mol->residue.atom_range + res_offset,
-                },
-            };
-            md_util_backbone_atoms_extract(mol->backbone.atoms + backbone_idx, mol->backbone.count, &bb_args);
-
-            backbone_idx += res_count;
+            bb_offset += res_count;
         }
 
-        md_util_secondary_structure_args_t ss_args = {
-            .atom = {
-                .count = mol->atom.count,
-                .x = mol->atom.x,
-                .y = mol->atom.y,
-                .z = mol->atom.z,
-            },
-            .backbone = {
-                .count = mol->backbone.count,
-                .atoms = mol->backbone.atoms,
-            },
-            .chain = {
-                .count = mol->chain.count,
-                .backbone_range = mol->chain.backbone_range,
-            }
-        };
-        md_util_backbone_secondary_structure_compute(mol->backbone.secondary_structure, mol->backbone.count, &ss_args);
-
-        md_util_classify_ramachandran_args_t rama_args = {
-            .residue = {
-                .count = mol->residue.count,
-                .name = mol->residue.name,
-            },
-            .backbone = {
-                .count = mol->backbone.count,
-                .res_idx = mol->backbone.residue_idx,
-            }
-        };
-        md_util_backbone_ramachandran_classify(mol->backbone.ramachandran_type, mol->backbone.count, &rama_args);
+        md_util_backbone_atoms_extract(mol->backbone.atoms, mol->backbone.count, mol);
+        md_util_backbone_secondary_structure_compute(mol->backbone.secondary_structure, mol->backbone.count, mol);
+        md_util_backbone_ramachandran_classify(mol->backbone.ramachandran_type, mol->backbone.count, mol);
     }
 
     return true;

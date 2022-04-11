@@ -73,8 +73,12 @@ typedef struct md_molecule_atom_data_t {
     float* x;
     float* y;
     float* z;
+    float* vx;
+    float* vy;
+    float* vz;
     float* radius;
     float* mass;
+    uint8_t* valence;
     md_element_t* element;
     md_label_t* name;
     md_flags_t* flags;                          // Auxillary bit buffer for flagging individual atoms
