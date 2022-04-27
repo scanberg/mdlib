@@ -76,6 +76,7 @@ typedef enum token_type_t {
     TOKEN_NOT,
     TOKEN_OF,     // Reserved
     TOKEN_IN,     // Operator for setting the evaluation context.
+    TOKEN_OUT,
     TOKEN_FLOAT,  // Floating point number
     TOKEN_INT,    // integer
     TOKEN_STRING, // String literal, defined between two quotation marks "LIKE THIS" or 'LIKE THIS'
@@ -106,6 +107,7 @@ typedef enum ast_type_t {
     AST_AND,
     AST_XOR,
     AST_OR,
+    AST_OUT,
     AST_CONTEXT,
     AST_ASSIGNMENT,
 } ast_type_t;
@@ -404,10 +406,12 @@ static uint32_t operator_precedence(ast_type_t type) {
         return 8;
     case AST_OR:
         return 9;
-    case AST_CONTEXT:
+    case AST_OUT:
         return 10;
-    case AST_ASSIGNMENT:
+    case AST_CONTEXT:
         return 11;
+    case AST_ASSIGNMENT:
+        return 12;
     default:
         ASSERT(false);
     }
@@ -1112,6 +1116,9 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
                 }
                 else if (compare_str(str, MAKE_STR("xor"))) {
                     token.type = TOKEN_XOR;
+                }
+                else if (compare_str(str, MAKE_STR("out"))) {
+                    token.type = TOKEN_OUT;
                 }
             }
             
@@ -2066,6 +2073,25 @@ ast_node_t* parse_in(parse_context_t* ctx) {
     return node;
 }
 
+ast_node_t* parse_out(parse_context_t* ctx) {
+    token_t token = tokenizer_consume_next(ctx->tokenizer);
+    ASSERT(token.type == TOKEN_OUT);
+
+    ctx->node = 0;
+    ast_node_t* rhs = parse_expression(ctx);
+    ast_node_t* node = 0;
+
+    if(!rhs) {
+        create_error(ctx->ir, token, "Right hand side of 'out' did not evaluate into a valid expression.");
+    }
+    else {
+        node = create_node(ctx->ir, AST_OUT, token);
+        md_array_push(node->children, rhs, ctx->ir->arena);
+    }
+
+    return node;
+}
+
 ast_node_t* parse_parentheses(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
     ASSERT(token.type == '(');
@@ -2146,6 +2172,10 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
             break;
             case TOKEN_IN:
             ctx->node = parse_in(ctx);
+            fix_precedence(&ctx->node);
+            break;
+            case TOKEN_OUT:
+            ctx->node = parse_out(ctx);
             fix_precedence(&ctx->node);
             break;
             case TOKEN_FLOAT:
@@ -2478,6 +2508,20 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     return true;
 }
 
+static bool evaluate_out(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(ctx);
+    ASSERT(node && node->type == AST_OUT);
+    ASSERT(md_array_size(node->children) == 1);
+
+    const ast_node_t* expr = node->children[0];
+    const md_bitfield_t* old_ctx = ctx->mol_ctx;
+    ctx->mol_ctx = 0;
+    bool result = evaluate_node(dst, expr, ctx);
+    ctx->mol_ctx = old_ctx;
+
+    return result;
+}
+
 static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(node && node->type == AST_CONTEXT);
@@ -2563,7 +2607,8 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
             return evaluate_identifier_reference(dst, node, ctx);
         case AST_CONTEXT:
             return evaluate_context(dst, node, ctx);
-
+        case AST_OUT:
+            return evaluate_out(dst, node, ctx);
         case AST_NOT:       // All operators should have been resolved during static check and converted into proc-calls
         case AST_UNARY_NEG:
         case AST_MUL:
@@ -3199,6 +3244,29 @@ static void propagate_context(ast_node_t* node, const md_bitfield_t* context) {
     }
 }
 
+static bool static_check_out(ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node);
+    ASSERT(node->type == AST_OUT);
+    ASSERT(md_array_size(node->children) == 1);
+
+    ast_node_t* expr = node->children[0];
+    ASSERT(expr);
+
+    const md_bitfield_t* old_ctx = ctx->mol_ctx;
+    ctx->mol_ctx = 0;
+    bool result = false;
+    if (static_check_node(expr, ctx)) {
+        node->flags |= expr->flags & FLAG_PROPAGATION_MASK;
+        node->data.type = expr->data.type;
+        node->data.unit = expr->data.unit;
+        node->data.value_range = expr->data.value_range;
+        result = true;
+    }
+    ctx->mol_ctx = old_ctx;
+
+    return result;
+}
+
 static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CONTEXT && node->children && md_array_size(node->children) == 2);
 
@@ -3315,6 +3383,8 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
         return static_check_proc_call(node, ctx);
     case AST_CONTEXT:
         return static_check_context(node, ctx);
+    case AST_OUT:
+        return static_check_out(node, ctx);
     case AST_ADD:
     case AST_SUB:
     case AST_MUL:

@@ -179,6 +179,7 @@ static inline md_label_t make_label(str_t str) {
     return lbl;
 }
 
+// @NOTE(Robin): This needs to be a pointer as we extract the ptr from the structure and thus cannot be copied as a parameter
 static inline str_t label_to_str(const md_label_t* lbl) {
     ASSERT(lbl);
     str_t str = {lbl->buf, lbl->len};

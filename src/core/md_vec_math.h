@@ -251,6 +251,18 @@ static inline vec3_t vec3_abs(vec3_t v) {
     return v;
 }
 
+static inline vec3_t vec3_less_than(vec3_t a, vec3_t b) {
+    vec3_t v;
+    v.x = (float)(a.x < b.x);
+    v.y = (float)(a.y < b.y);
+    v.z = (float)(a.z < b.z);
+    return v;
+}
+
+static inline bool vec3_equal(vec3_t a, vec3_t b) {
+    return (a.x == b.x && a.y == b.y && a.z == b.z);
+}
+
 static inline vec3_t vec3_clamp(vec3_t v, vec3_t min, vec3_t max) {
     v.x = CLAMP(v.x, min.x, max.x);
     v.y = CLAMP(v.y, min.y, max.y);

@@ -15,6 +15,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <float.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -123,7 +124,7 @@ static uint32_t element_cpk_colors[] = {
 static const char* amino_acids[] = {
     "ALA", "ARG", "ASN", "ASP", "CYS", "CYX", "GLN", "GLU",
     "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER",
-    "THR", "TRP", "TYR", "VAL", "SEC", "PYL", "ASC", "GLX", "XLE",
+    "THR", "TRP", "TYR", "VAL", "SEC", "PYL", "ASC", "GLX", "XLE", "HISE"
 };
 
 static const char* dna[] = {"DA", "DA3", "DA5", "DC", "DC3", "DC5", "DG", "DG3", "DG5", "DT", "DT3", "DT5"};
@@ -176,7 +177,7 @@ bool md_util_resname_amino_acid(str_t str) {
     return match_str_in_array(str, amino_acids, ARRAY_SIZE(amino_acids)) != -1;
 }
 
-md_element_t md_util_lookup_element(str_t str) {
+md_element_t md_util_element_lookup(str_t str) {
     if (str.len == 1 || str.len == 2) {
         for (md_element_t i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
             str_t sym = element_symbols[i];
@@ -202,48 +203,66 @@ static inline md_element_t lookup_element_ignore_case(str_t str) {
     return 0;
 }
 
-md_element_t md_util_decode_element(str_t atom_name, str_t res_name) {
-    if (!atom_name.ptr || !atom_name.len) return 0;
-    if (!res_name.ptr  || !res_name.len) return 0;
+bool md_util_element_decode(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol) {
+    ASSERT(capacity >= 0);
+    ASSERT(mol);
+    ASSERT(mol->atom.count >= 0);
 
-    const char* beg = atom_name.ptr;
-    const char* end = atom_name.ptr + atom_name.len;
+    const int64_t count = MIN(capacity, mol->atom.count);
+    for (int64_t i = 0; i < count; ++i) {
+        if (element[i] != 0) continue;
 
-    // Trim whitespace and digits
-    const char* c = beg;
-    while (c < end && *c && (is_digit(*c) || is_whitespace(*c))) ++c;
-    beg = c;
+        const char* beg = mol->atom.name[i].buf;
+        const char* end = mol->atom.name[i].buf + mol->atom.name[i].len;
 
-    c = beg;
-    while (c < end && is_alpha(*c)) ++c;
-    end = c;
+        // Trim whitespace and digits
+        const char* c = beg;
+        while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
+        beg = c;
 
-    str_t str = {
-        .ptr = beg,
-        .len = end-beg
-    };
+        c = beg;
+        while (c < end && is_alpha(*c) && !(*c == 'x' || *c == 'X')) ++c;
+        end = c;
 
-    if (atom_name.len > 0) {
-        if (md_util_resname_amino_acid(trim_whitespace(res_name))) {
-            // EASY-PEASY, we just try to match against the first character
-            str.len = 1;
-            return lookup_element_ignore_case(str);
-        }
-        else {
+        str_t name = {
+            .ptr = beg,
+            .len = end-beg
+        };
+
+        if (name.len > 0) {
+
+            md_element_t elem = 0;
+            if ((elem = md_util_element_lookup(name)) != 0) goto done;
+
+            // If amino acid, try to deduce the element from that
+            if (mol->atom.residue_idx && mol->residue.name) {
+                str_t resname = trim_whitespace(label_to_str(&mol->residue.name[mol->atom.residue_idx[i]]));
+                if (md_util_resname_amino_acid(resname)) {
+                    // EASY-PEASY, we just try to match against the first character
+                    name.len = 1;
+                    elem = lookup_element_ignore_case(name);
+                    goto done;
+                }
+            }
+
             // Try to match against several characters but ignore the case
-            if (str.len > 1) {
-                str.len = 2;
-                md_element_t elem = lookup_element_ignore_case(str);
-                if (elem) return elem;
+            if (name.len > 1) {
+                name.len = 2;
+                elem = lookup_element_ignore_case(name);
             }
 
             // Last resort, try to match against single first character
-            str.len = 1;
-            return lookup_element_ignore_case(str);
+            if (elem == 0) {
+                name.len = 1;
+                elem = lookup_element_ignore_case(name);
+            }
+
+        done:
+            element[i] = elem;
         }
     }
 
-    return 0;
+    return true;
 }
 
 str_t md_util_element_symbol(md_element_t element) {
@@ -269,6 +288,11 @@ float md_util_element_covalent_radius(md_element_t element) {
 float md_util_element_atomic_mass(md_element_t element) {
     ASSERT(element < Num_Elements);
     return element_atomic_mass[element];
+}
+
+int md_util_element_max_valence(md_element_t element) {
+    ASSERT(element < Num_Elements);
+    return (int)element_max_valence[element];
 }
 
 uint32_t md_util_element_cpk_color(md_element_t element) {
@@ -498,6 +522,9 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
         md_array_shrink(mol->covalent_bond.bond, 0);
     }
 
+    md_array_resize(mol->atom.valence, mol->atom.count, alloc);
+    memset(mol->atom.valence, 0, md_array_bytes(mol->atom.valence));
+
     for (int64_t ri = 0; ri < mol->residue.count; ++ri) {
         const int64_t pre_internal_bond_count = md_array_size(mol->covalent_bond.bond);
 
@@ -508,6 +535,8 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
                                             mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
                     md_bond_t bond = {(int32_t)i, (int32_t)j};
                     md_array_push(mol->covalent_bond.bond, bond, alloc);
+                    mol->atom.valence[i] += 1;
+                    mol->atom.valence[j] += 1;
                 }
             }
         }
@@ -528,6 +557,8 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
                         mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
                         md_bond_t bond = {(int32_t)i, (int32_t)j};
                         md_array_push(mol->covalent_bond.bond, bond, alloc);
+                        mol->atom.valence[i] += 1;
+                        mol->atom.valence[j] += 1;
                     }
                 }
             }
@@ -552,53 +583,127 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
     return true;
 }
 
+vec3_t md_util_compute_com_periodic(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
+    double acc_c_x = 0;
+    double acc_s_x = 0;
+    double acc_c_y = 0;
+    double acc_s_y = 0;
+    double acc_c_z = 0;
+    double acc_s_z = 0;
+    double acc_w = 0;
+
+    const double scl_x = TWO_PI / (double)pbc_ext.x;
+    const double scl_y = TWO_PI / (double)pbc_ext.y;
+    const double scl_z = TWO_PI / (double)pbc_ext.z;
+
+    for (int64_t i = 0; i < count; ++i) {
+        double theta_x = in_x[i] * scl_x;
+        double theta_y = in_y[i] * scl_y;
+        double theta_z = in_z[i] * scl_z;
+        double w = in_w ? in_w[i] : 1.0;
+
+        acc_c_x += w * cos(theta_x);
+        acc_s_x += w * sin(theta_x);
+
+        acc_c_y += w * cos(theta_y);
+        acc_s_y += w * sin(theta_y);
+
+        acc_c_z += w * cos(theta_z);
+        acc_s_z += w * sin(theta_z);
+
+        acc_w += w;
+    }
+
+    double theta_x = atan2(-acc_s_x / acc_w, -acc_c_x / acc_w) + PI;
+    double theta_y = atan2(-acc_s_y / acc_w, -acc_c_y / acc_w) + PI;
+    double theta_z = atan2(-acc_s_z / acc_w, -acc_c_z / acc_w) + PI;
+
+    vec3_t result = {
+        (theta_x / TWO_PI) * (double)pbc_ext.x,
+        (theta_y / TWO_PI) * (double)pbc_ext.y,
+        (theta_z / TWO_PI) * (double)pbc_ext.z,
+    };
+
+    return result;
+}
+
 bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
     if (!mol) return false;
 
     float* residue_com_x = 0;
     float* residue_com_y = 0;
     float* residue_com_z = 0;
+    float* residue_aabb_min_x = 0;
+    float* residue_aabb_max_x = 0;
+    float* residue_aabb_min_y = 0;
+    float* residue_aabb_max_y = 0;
+    float* residue_aabb_min_z = 0;
+    float* residue_aabb_max_z = 0;
 
     if (mol->chain.residue_range && mol->chain.count) {
         int64_t stride = ROUND_UP(mol->residue.count, md_simd_widthf);
-        float* mem = md_alloc(default_temp_allocator, stride * sizeof(float) * 3);
-        residue_com_x = mem + stride * 0;
-        residue_com_y = mem + stride * 1;
-        residue_com_z = mem + stride * 2;
+        float* mem = md_alloc(default_temp_allocator, stride * sizeof(float) * 9);
+        ASSERT(mem);
+        residue_com_x       = mem + stride * 0;
+        residue_com_y       = mem + stride * 1;
+        residue_com_z       = mem + stride * 2;
+        residue_aabb_min_x  = mem + stride * 3;
+        residue_aabb_max_x  = mem + stride * 4;
+        residue_aabb_min_y  = mem + stride * 5;
+        residue_aabb_max_y  = mem + stride * 6;
+        residue_aabb_min_z  = mem + stride * 7;
+        residue_aabb_max_z  = mem + stride * 8;
     }
     
     for (int64_t i = 0; i < mol->residue.count; ++i) {
         md_range_t atom_range = mol->residue.atom_range[i];
-        vec3_t com = md_util_compute_periodic_com(
+        vec3_t com = md_util_compute_com_periodic(
             mol->atom.x + atom_range.beg,
             mol->atom.y + atom_range.beg,
             mol->atom.z + atom_range.beg,
-            NULL,
+            mol->atom.mass + atom_range.beg,
             atom_range.end - atom_range.beg,
             pbc_ext);
-
-        com.x = deperiodizef(com.x, pbc_ext.x * 0.5f, pbc_ext.x);
-        com.y = deperiodizef(com.y, pbc_ext.y * 0.5f, pbc_ext.y);
-        com.z = deperiodizef(com.z, pbc_ext.z * 0.5f, pbc_ext.z);
-
-        if (residue_com_x) {
-            ASSERT(residue_com_y);
-            ASSERT(residue_com_z);
-            residue_com_x[i] = com.x;
-            residue_com_y[i] = com.y;
-            residue_com_z[i] = com.z;
-        }
 
         for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
             mol->atom.x[j] = deperiodizef(mol->atom.x[j], com.x, pbc_ext.x);
             mol->atom.y[j] = deperiodizef(mol->atom.y[j], com.y, pbc_ext.y);
             mol->atom.z[j] = deperiodizef(mol->atom.z[j], com.z, pbc_ext.z);
         }
+
+        if (residue_com_x) {
+            ASSERT(residue_com_y);
+            ASSERT(residue_com_z);
+            ASSERT(residue_aabb_min_x);
+            ASSERT(residue_aabb_max_x);
+            ASSERT(residue_aabb_min_y);
+            ASSERT(residue_aabb_max_y);
+            ASSERT(residue_aabb_min_z);
+            ASSERT(residue_aabb_max_z);
+            residue_com_x[i] = com.x;
+            residue_com_y[i] = com.y;
+            residue_com_z[i] = com.z;
+            residue_aabb_min_x[i] = +FLT_MAX;
+            residue_aabb_max_x[i] = -FLT_MAX;
+            residue_aabb_min_y[i] = +FLT_MAX;
+            residue_aabb_max_y[i] = -FLT_MAX;
+            residue_aabb_min_z[i] = +FLT_MAX;
+            residue_aabb_max_z[i] = -FLT_MAX;
+
+            for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
+                residue_aabb_min_x[i] = MIN(residue_aabb_min_x[i], mol->atom.x[j]);
+                residue_aabb_max_x[i] = MAX(residue_aabb_max_x[i], mol->atom.x[j]);
+                residue_aabb_min_y[i] = MIN(residue_aabb_min_y[i], mol->atom.y[j]);
+                residue_aabb_max_y[i] = MAX(residue_aabb_max_y[i], mol->atom.y[j]);
+                residue_aabb_min_z[i] = MIN(residue_aabb_min_z[i], mol->atom.z[j]);
+                residue_aabb_max_z[i] = MAX(residue_aabb_max_z[i], mol->atom.z[j]);
+            }
+        }
     }
 
     for (int64_t i = 0; i < mol->chain.count; ++i) {
         md_range_t res_range = mol->chain.residue_range[i];
-        vec3_t chain_com = md_util_compute_periodic_com(
+        vec3_t chain_com = md_util_compute_com_periodic(
             residue_com_x + res_range.beg,
             residue_com_y + res_range.beg,
             residue_com_z + res_range.beg,
@@ -606,15 +711,13 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
             res_range.end - res_range.beg,
             pbc_ext);
 
-        // Ensure that the chain com is within the period of the bounding box
-        chain_com.x = deperiodizef(chain_com.x, pbc_ext.x * 0.5f, pbc_ext.x);
-        chain_com.y = deperiodizef(chain_com.y, pbc_ext.y * 0.5f, pbc_ext.y);
-        chain_com.z = deperiodizef(chain_com.z, pbc_ext.z * 0.5f, pbc_ext.z);
-
+        // Compute the aabb of the chain
+        vec3_t chain_aabb_min = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
+        vec3_t chain_aabb_max = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
         for (int64_t j = res_range.beg; j < res_range.end; ++j) {
             vec3_t res_com = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
 
-            // Ensire that the residue is within the period of the chain
+            // Ensure that the residue is within the period of the chain
             res_com.x = deperiodizef(res_com.x, chain_com.x, pbc_ext.x);
             res_com.y = deperiodizef(res_com.y, chain_com.y, pbc_ext.y);
             res_com.z = deperiodizef(res_com.z, chain_com.z, pbc_ext.z);
@@ -623,19 +726,55 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
             const float d2 = vec3_dot(d,d);
 
             if (d2 > 0) {
-                md_range_t atom_range = mol->residue.atom_range[j];
-                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
-                    mol->atom.x[k] += d.x;
-                    mol->atom.y[k] += d.y;
-                    mol->atom.z[k] += d.z;
-                }
-            }            
+                residue_aabb_min_x[j] += d.x;
+                residue_aabb_max_x[j] += d.x;
+                residue_aabb_min_y[j] += d.y;
+                residue_aabb_max_y[j] += d.y;
+                residue_aabb_min_z[j] += d.z;
+                residue_aabb_max_z[j] += d.z;
+            }
+
+            chain_aabb_min.x = MIN(chain_aabb_min.x, residue_aabb_min_x[j]);
+            chain_aabb_max.x = MAX(chain_aabb_max.x, residue_aabb_max_x[j]);
+            chain_aabb_min.y = MIN(chain_aabb_min.y, residue_aabb_min_y[j]);
+            chain_aabb_max.y = MAX(chain_aabb_max.y, residue_aabb_max_y[j]);
+            chain_aabb_min.z = MIN(chain_aabb_min.z, residue_aabb_min_z[j]);
+            chain_aabb_max.z = MAX(chain_aabb_max.z, residue_aabb_max_z[j]);
+        }
+
+        // Create mask on which axis to apply the deperiodization
+        // Don't apply deperiodization if the chain spans more than half the simulation extent in that dimension
+        vec3_t chain_dp_mask = vec3_less_than(vec3_sub(chain_aabb_max, chain_aabb_min), vec3_mul_f(pbc_ext, 0.5f));
+
+        if (!vec3_equal(chain_dp_mask, (vec3_t){0,0,0})) {
+            for (int64_t j = res_range.beg; j < res_range.end; ++j) {
+                vec3_t res_com = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
+
+                // Ensure that the residue is within the period of the chain
+                res_com.x = deperiodizef(res_com.x, chain_com.x, pbc_ext.x);
+                res_com.y = deperiodizef(res_com.y, chain_com.y, pbc_ext.y);
+                res_com.z = deperiodizef(res_com.z, chain_com.z, pbc_ext.z);
+
+                vec3_t d = vec3_sub(res_com, (vec3_t){residue_com_x[j], residue_com_y[j], residue_com_z[j]});
+                d = vec3_mul(d, chain_dp_mask);
+                const float d2 = vec3_dot(d,d);
+
+                if (d2 > 0) {
+                    md_range_t atom_range = mol->residue.atom_range[j];
+                    for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
+                        mol->atom.x[k] += d.x;
+                        mol->atom.y[k] += d.y;
+                        mol->atom.z[k] += d.z;
+                    }
+                }            
+            }
         }
     }
 
     return true;
 }
 
+/*
 vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
     float w = in_w ? in_w[0] : 1.0f;
     float sum_x = in_x[0] * w;
@@ -665,6 +804,7 @@ vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const 
 
     return (vec3_t){com_x, com_y, com_z};
 }
+*/
 
 vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {
     ASSERT(x);
@@ -870,7 +1010,47 @@ static inline bool ranges_overlap(md_range_t a, md_range_t b) {
     return (a.beg < b.end&& b.beg < a.end);
 }
 
+// Try to fill in missing fields for molecule struct
+// Element -> Mass / Radius
+// Bonds
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc) {
+    ASSERT(mol);
+    ASSERT(alloc);
+
+    if (mol->atom.element == 0) {
+        md_array_resize(mol->atom.element, mol->atom.count, alloc);
+        memset(mol->atom.element, 0, mol->atom.count * sizeof(*mol->atom.element));
+    }
+    md_util_element_decode(mol->atom.element, mol->atom.count, mol);
+
+    if (mol->atom.radius == 0)  md_array_resize(mol->atom.radius, mol->atom.count, alloc);
+    if (mol->atom.mass == 0)    md_array_resize(mol->atom.mass, mol->atom.count, alloc);
+    if (mol->atom.valence == 0) {
+        md_array_resize(mol->atom.valence, mol->atom.count, alloc);
+        memset(mol->atom.valence, 0, md_array_size(mol->atom.valence) * sizeof(*mol->atom.valence));
+    }
+    if (mol->atom.flags == 0) {
+        md_array_resize(mol->atom.flags, mol->atom.count, alloc);
+        memset(mol->atom.flags, 0, md_array_size(mol->atom.flags) * sizeof(*mol->atom.flags));
+    }
+    if (mol->atom.vx == 0) {
+        md_array_resize(mol->atom.vx, mol->atom.count, alloc);
+        memset(mol->atom.vx, 0, md_array_size(mol->atom.vx) * sizeof(*mol->atom.vx));
+    }
+    if (mol->atom.vy == 0) {
+        md_array_resize(mol->atom.vy, mol->atom.count, alloc);
+        memset(mol->atom.vy, 0, md_array_size(mol->atom.vy) * sizeof(*mol->atom.vy));
+    }
+    if (mol->atom.vz == 0) {
+        md_array_resize(mol->atom.vz, mol->atom.count, alloc);
+        memset(mol->atom.vz, 0, md_array_size(mol->atom.vz) * sizeof(*mol->atom.vz));
+    }
+   
+    for (int64_t i = 0; i < mol->atom.count; ++i) {
+        mol->atom.radius[i] = md_util_element_vdw_radius(mol->atom.element[i]);
+        mol->atom.mass[i]   = md_util_element_atomic_mass(mol->atom.element[i]);
+    }
+
     if (mol->covalent_bond.count == 0) {
         md_array_ensure(mol->residue.internal_covalent_bond_range, mol->residue.count, alloc);
         md_array_ensure(mol->residue.complete_covalent_bond_range, mol->residue.count, alloc);

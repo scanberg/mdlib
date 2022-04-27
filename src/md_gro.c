@@ -264,11 +264,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     md_array_ensure(mol->atom.x, num_atoms, alloc);
     md_array_ensure(mol->atom.y, num_atoms, alloc);
     md_array_ensure(mol->atom.z, num_atoms, alloc);
-    md_array_ensure(mol->atom.element, num_atoms, alloc);
     md_array_ensure(mol->atom.name, num_atoms, alloc);
-    md_array_ensure(mol->atom.radius, num_atoms, alloc);
-    md_array_ensure(mol->atom.mass, num_atoms, alloc);
-    md_array_ensure(mol->atom.flags, num_atoms, alloc);
     md_array_ensure(mol->atom.residue_idx, num_atoms, alloc);
 
     int32_t cur_res_id = -1;
@@ -278,14 +274,6 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         const float z = data->atom_data[i].z;
         str_t atom_name = (str_t){data->atom_data[i].atom_name, strnlen(data->atom_data[i].atom_name, ARRAY_SIZE(data->atom_data[i].atom_name))};
         str_t res_name = (str_t){data->atom_data[i].res_name, strnlen(data->atom_data[i].res_name, ARRAY_SIZE(data->atom_data[i].res_name))};
-        md_element_t element = md_util_decode_element(atom_name, res_name);
-
-        if (element == 0) {
-            md_printf(MD_LOG_TYPE_INFO, "Failed to decode element with atom name '%s' and residue name '%s'", data->atom_data[i].atom_name, data->atom_data[i].res_name);
-        }
-
-        const float radius = md_util_element_vdw_radius(element);
-        const float mass = md_util_element_atomic_mass(element);
 
         int32_t res_id = data->atom_data[i].res_id;
         if (res_id != cur_res_id) {
@@ -305,11 +293,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         md_array_push(mol->atom.x, x, alloc);
         md_array_push(mol->atom.y, y, alloc);
         md_array_push(mol->atom.z, z, alloc);
-        md_array_push(mol->atom.element, element, alloc);
         md_array_push(mol->atom.name, make_label(atom_name), alloc);
-        md_array_push(mol->atom.radius, radius, alloc);
-        md_array_push(mol->atom.mass, mass, alloc);
-        md_array_push(mol->atom.flags, 0, alloc);
 
         if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
     }

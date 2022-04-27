@@ -460,11 +460,8 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
     md_array_ensure(mol->atom.x, num_atoms, alloc);
     md_array_ensure(mol->atom.y, num_atoms, alloc);
     md_array_ensure(mol->atom.z, num_atoms, alloc);
-    md_array_ensure(mol->atom.radius, num_atoms, alloc);
-    md_array_ensure(mol->atom.mass, num_atoms, alloc);
     md_array_ensure(mol->atom.element, num_atoms, alloc);
     md_array_ensure(mol->atom.name, num_atoms, alloc);
-    md_array_ensure(mol->atom.flags, num_atoms, alloc);
     md_array_ensure(mol->atom.residue_idx, num_atoms, alloc);
 
     int32_t cur_res_id = -1;
@@ -483,19 +480,11 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, we directly try to use that to lookup the element
             str_t element_str = { data->atom_coordinates[i].element, strnlen(data->atom_coordinates[i].element, ARRAY_SIZE(data->atom_coordinates[i].element)) };
-            element = md_util_lookup_element(element_str);
+            element = md_util_element_lookup(element_str);
             if (element == 0) {
                 md_printf(MD_LOG_TYPE_INFO, "Failed to lookup element with string '%s'", data->atom_coordinates[i].element);
             }
         }
-        else {
-            element = md_util_decode_element(atom_name, res_name);
-            if (element == 0) {
-                md_printf(MD_LOG_TYPE_INFO, "Failed to decode element with atom name '%s' and residue name '%s'", data->atom_coordinates[i].atom_name, data->atom_coordinates[i].res_name);
-            }
-        }
-        float radius = md_util_element_vdw_radius(element);
-        float mass = md_util_element_atomic_mass(element);
 
         char chain_id = data->atom_coordinates[i].chain_id;
         if (chain_id != ' ' && chain_id != cur_chain_id) {
@@ -537,26 +526,12 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         md_array_push(mol->atom.z, z, alloc);
         md_array_push(mol->atom.element, element, alloc);
         md_array_push(mol->atom.name, make_label(atom_name), alloc);
-        md_array_push(mol->atom.radius, radius, alloc);
-        md_array_push(mol->atom.mass, mass, alloc);
         md_array_push(mol->atom.flags, 0, alloc);
         
         if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
         if (mol->chain.count)   md_array_push(mol->atom.chain_idx, (md_chain_idx_t)(mol->chain.count - 1), alloc);
     }
 
-#if 0
-    // Compute/Extract covalent bonds
-    if (data->num_connections > 0) {
-        // Convert given connections
-        ASSERT(data->connections);
-        for (int64_t i = 0; i < data->num_connections; ++i) {
-            data->connections[i];
-        }
-    }
-    else {
-    }
-#endif
     md_util_postprocess_molecule(mol, alloc);
 
     return true;

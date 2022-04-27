@@ -105,7 +105,7 @@
 #endif
 
 #ifndef TWO_PI
-#define TWO_PI 2.0 * PI
+#define TWO_PI (2.0 * PI)
 #endif
 
 #ifndef DEG_TO_RAD
