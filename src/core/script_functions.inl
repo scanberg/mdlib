@@ -2297,7 +2297,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->mol && ctx->mol->atom.residue_idx && ctx->mol->residue.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
-            ASSERT(element_count(*dst) == num_bf);
+            const int64_t capacity = element_count(*dst);
 
             int i = 0;
             int64_t beg = tmp_bf.beg_bit;
@@ -2305,6 +2305,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
             while ((beg = md_bitfield_scan(&tmp_bf, beg, end)) != 0) {
                 const int64_t res_idx = ctx->mol->atom.residue_idx[beg - 1];
                 md_range_t range = ctx->mol->residue.atom_range[res_idx];
+                ASSERT(i < capacity);
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
                 i += 1;
                 beg = range.end;
@@ -2342,6 +2343,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->mol && ctx->mol->atom.chain_idx && ctx->mol->chain.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
+            const int64_t capacity = element_count(*dst);
 
             int i = 0;
             int64_t beg = tmp_bf.beg_bit;
@@ -2349,6 +2351,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
             while ((beg = md_bitfield_scan(&tmp_bf, beg, end)) != 0) {
                 const int64_t chain_idx = ctx->mol->atom.chain_idx[beg - 1];
                 md_range_t range = ctx->mol->chain.atom_range[chain_idx];
+                ASSERT(i < capacity);
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
                 i += 1;
                 beg = range.end;
