@@ -410,7 +410,7 @@ static inline vec4_t vec4_from_vec3(vec3_t v, float w) {
 }
 
 static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {
-    vec4_t c = {0,0,0,0};
+    vec4_t c;
 #if VEC_MATH_USE_SSE
     c.f128 = _mm_mul_ps(a.f128, b.f128);
 #else
@@ -423,7 +423,7 @@ static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t vec4_mul_f(vec4_t a, float s) {
-    vec4_t c = {0,0,0,0};
+    vec4_t c;
 #if VEC_MATH_USE_SSE
     c.f128 = _mm_mul_ps(a.f128, _mm_set1_ps(s));
 #else
@@ -436,7 +436,7 @@ static inline vec4_t vec4_mul_f(vec4_t a, float s) {
 }
 
 static inline vec4_t vec4_div(vec4_t a, vec4_t b) {
-    vec4_t c = {0,0,0,0};
+    vec4_t c;
 #if VEC_MATH_USE_SSE
     c.f128 = _mm_div_ps(a.f128, b.f128);
 #else
@@ -449,7 +449,7 @@ static inline vec4_t vec4_div(vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t vec4_div_f(vec4_t a, float s) {
-    vec4_t c = {0,0,0,0};
+    vec4_t c;
 #if VEC_MATH_USE_SSE
     c.f128 = _mm_div_ps(a.f128, _mm_set1_ps(s));
 #else
@@ -462,7 +462,7 @@ static inline vec4_t vec4_div_f(vec4_t a, float s) {
 }
 
 static inline vec4_t vec4_add(vec4_t a, vec4_t b) {
-    vec4_t c = {0,0,0,0};
+    vec4_t c;
 #if VEC_MATH_USE_SSE
     c.f128 = _mm_add_ps(a.f128, b.f128);
 #else
@@ -475,7 +475,7 @@ static inline vec4_t vec4_add(vec4_t a, vec4_t b) {
 }
 
 static inline vec4_t vec4_add_f(vec4_t a, float s) {
-    vec4_t c = {0,0,0,0};
+    vec4_t c;
 #if VEC_MATH_USE_SSE
     c.f128 = _mm_add_ps(a.f128, _mm_set1_ps(s));
 #else
@@ -488,7 +488,7 @@ static inline vec4_t vec4_add_f(vec4_t a, float s) {
 }
 
 static inline vec4_t vec4_sub(vec4_t a, vec4_t b) {
-    vec4_t c = {0,0,0,0};
+    vec4_t c;
 #if VEC_MATH_USE_SSE
     c.f128 = _mm_sub_ps(a.f128, b.f128);
 #else
@@ -1377,63 +1377,51 @@ static inline bool operator != (vec4_t a, vec4_t b){
 }
 
 static inline vec4_t operator + (vec4_t a, vec4_t b) {
-    vec4_t c = {a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w};
-    return c;
+    return vec4_add(a, b);
 }
 
-static inline vec4_t operator + (vec4_t a, float s) {
-    vec4_t c = {a.x + s, a.y + s, a.z + s, a.w + s};
-    return c;
+static inline vec4_t operator + (vec4_t v, float s) {
+    return vec4_add_f(v, s);
 }
 
-static inline vec4_t operator + (float s, vec4_t a) {
-    vec4_t c = {a.x + s, a.y + s, a.z + s, a.w + s};
-    return c;
+static inline vec4_t operator + (float s, vec4_t v) {
+    return vec4_add_f(v, s);
 }
 
 static inline vec4_t operator - (vec4_t a, vec4_t b) {
-    vec4_t c = {a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w};
-    return c;
+    return vec4_sub(a, b);
 }
 
-static inline vec4_t operator - (vec4_t a, float s) {
-    vec4_t c = {a.x - s, a.y - s, a.z - s, a.w - s};
-    return c;
+static inline vec4_t operator - (vec4_t v, float s) {
+    return vec4_sub_f(v, s);
 }
 
-static inline vec4_t operator - (float s, vec4_t a) {
-    vec4_t c = {s - a.x, s - a.y, s - a.z, s - a.w};
-    return c;
+static inline vec4_t operator - (float s, vec4_t v) {
+    return vec4_sub(vec4_from_float(s), v);
 }
 
 static inline vec4_t operator * (vec4_t a, vec4_t b) {
-    vec4_t c = {a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w};
-    return c;
+    return vec4_mul(a, b);
 }
 
-static inline vec4_t operator * (vec4_t a, float s) {
-    vec4_t c = {a.x * s, a.y * s, a.z * s, a.w * s};
-    return c;
+static inline vec4_t operator * (vec4_t v, float s) {
+    return vec4_mul_f(v, s);
 }
 
-static inline vec4_t operator * (float s, vec4_t a) {
-    vec4_t c = {a.x * s, a.y * s, a.z * s, a.w * s};
-    return c;
+static inline vec4_t operator * (float s, vec4_t v) {
+    return vec4_mul_f(v, s);
 }
 
 static inline vec4_t operator / (vec4_t a, vec4_t b) {
-    vec4_t c = {a.x / b.x, a.y / b.y, a.z / b.z, a.w / b.w};
-    return c;
+    return vec4_div(a, b);
 }
 
-static inline vec4_t operator / (vec4_t a, float s) {
-    vec4_t c = {a.x / s, a.y / s, a.z / s, a.w / s};
-    return c;
+static inline vec4_t operator / (vec4_t v, float s) {
+    return vec4_div_f(v, s);
 }
 
-static inline vec4_t operator / (float s, vec4_t a) {
-    vec4_t c = {s / a.x, s / a.y, s / a.z, s / a.w};
-    return c;
+static inline vec4_t operator / (float s, vec4_t v) {
+    return vec4_div(vec4_from_float(s), v);
 }
 
 // quat
