@@ -1376,6 +1376,16 @@ static inline bool operator != (vec4_t a, vec4_t b){
     return !(a == b);
 }
 
+static inline vec4_t& operator += (vec4_t& a, vec4_t b) {
+    a = vec4_add(a,b);
+    return a;
+}
+
+static inline vec4_t& operator += (vec4_t& v, float s) {
+    v = vec4_add_f(v,s);
+    return v;
+}
+
 static inline vec4_t operator + (vec4_t a, vec4_t b) {
     return vec4_add(a, b);
 }
@@ -1386,6 +1396,16 @@ static inline vec4_t operator + (vec4_t v, float s) {
 
 static inline vec4_t operator + (float s, vec4_t v) {
     return vec4_add_f(v, s);
+}
+
+static inline vec4_t& operator -= (vec4_t& a, vec4_t b) {
+    a = vec4_sub(a,b);
+    return a;
+}
+
+static inline vec4_t& operator -= (vec4_t& v, float s) {
+    v = vec4_sub_f(v,s);
+    return v;
 }
 
 static inline vec4_t operator - (vec4_t a, vec4_t b) {
@@ -1400,6 +1420,16 @@ static inline vec4_t operator - (float s, vec4_t v) {
     return vec4_sub(vec4_from_float(s), v);
 }
 
+static inline vec4_t& operator *= (vec4_t& a, vec4_t b) {
+    a = vec4_mul(a,b);
+    return b;
+}
+
+static inline vec4_t& operator *= (vec4_t& v, float s) {
+    v = vec4_mul_f(v,s);
+    return v;
+}
+
 static inline vec4_t operator * (vec4_t a, vec4_t b) {
     return vec4_mul(a, b);
 }
@@ -1410,6 +1440,16 @@ static inline vec4_t operator * (vec4_t v, float s) {
 
 static inline vec4_t operator * (float s, vec4_t v) {
     return vec4_mul_f(v, s);
+}
+
+static inline vec4_t& operator /= (vec4_t& a, vec4_t b) {
+    a = vec4_div(a,b);
+    return b;
+}
+
+static inline vec4_t& operator /= (vec4_t& v, float s) {
+    v = vec4_div_f(v,s);
+    return v;
 }
 
 static inline vec4_t operator / (vec4_t a, vec4_t b) {
