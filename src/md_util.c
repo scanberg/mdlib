@@ -215,7 +215,7 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
         const char* beg = mol->atom.name[i].buf;
         const char* end = mol->atom.name[i].buf + mol->atom.name[i].len;
 
-        // Trim whitespace and digits
+        // Trim whitespace, digits and 'X's
         const char* c = beg;
         while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
         beg = c;
@@ -525,36 +525,18 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
     md_array_resize(mol->atom.valence, mol->atom.count, alloc);
     memset(mol->atom.valence, 0, md_array_bytes(mol->atom.valence));
 
-    for (int64_t ri = 0; ri < mol->residue.count; ++ri) {
-        const int64_t pre_internal_bond_count = md_array_size(mol->covalent_bond.bond);
+    if (mol->residue.count > 0) {
+        // Residues are defined,
+        // First find connections within residues, then between residues
 
-        // Compute internal bonds (within residue)
-        for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end - 1; ++i) {
-            for (int64_t j = i + 1; j < mol->residue.atom_range[ri].end; ++j) {
-                if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
-                                            mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
-                    md_bond_t bond = {(int32_t)i, (int32_t)j};
-                    md_array_push(mol->covalent_bond.bond, bond, alloc);
-                    mol->atom.valence[i] += 1;
-                    mol->atom.valence[j] += 1;
-                }
-            }
-        }
+        for (int64_t ri = 0; ri < mol->residue.count; ++ri) {
+            const int64_t pre_internal_bond_count = md_array_size(mol->covalent_bond.bond);
 
-        const int64_t post_internal_bond_count = md_array_size(mol->covalent_bond.bond);
-
-        if (mol->residue.internal_covalent_bond_range) {
-            mol->residue.internal_covalent_bond_range[ri].beg = (uint32_t)pre_internal_bond_count;
-            mol->residue.internal_covalent_bond_range[ri].end = (uint32_t)post_internal_bond_count;
-        }
-
-        const int64_t rj = ri + 1;
-        if (rj < mol->residue.count) {
-            // Compute extarnal bonds (between residues)
-            for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end; ++i) {
-                for (int64_t j = mol->residue.atom_range[rj].beg; j < mol->residue.atom_range[rj].end; ++j) {
+            // Compute internal bonds (within residue)
+            for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end - 1; ++i) {
+                for (int64_t j = i + 1; j < mol->residue.atom_range[ri].end; ++j) {
                     if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
-                        mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
+                                                mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
                         md_bond_t bond = {(int32_t)i, (int32_t)j};
                         md_array_push(mol->covalent_bond.bond, bond, alloc);
                         mol->atom.valence[i] += 1;
@@ -563,19 +545,56 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
                 }
             }
 
-            const int64_t post_external_bond_count = md_array_size(mol->covalent_bond.bond);
+            const int64_t post_internal_bond_count = md_array_size(mol->covalent_bond.bond);
 
-            if (mol->residue.complete_covalent_bond_range) {
-                mol->residue.complete_covalent_bond_range[ri].end = (uint32_t)post_external_bond_count;
-                mol->residue.complete_covalent_bond_range[rj].beg = (uint32_t)post_internal_bond_count;
+            if (mol->residue.internal_covalent_bond_range) {
+                mol->residue.internal_covalent_bond_range[ri].beg = (uint32_t)pre_internal_bond_count;
+                mol->residue.internal_covalent_bond_range[ri].end = (uint32_t)post_internal_bond_count;
+            }
+
+            const int64_t rj = ri + 1;
+            if (rj < mol->residue.count) {
+                // Compute extarnal bonds (between residues)
+                for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end; ++i) {
+                    for (int64_t j = mol->residue.atom_range[rj].beg; j < mol->residue.atom_range[rj].end; ++j) {
+                        if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
+                            mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
+                            md_bond_t bond = {(int32_t)i, (int32_t)j};
+                            md_array_push(mol->covalent_bond.bond, bond, alloc);
+                            mol->atom.valence[i] += 1;
+                            mol->atom.valence[j] += 1;
+                        }
+                    }
+                }
+
+                const int64_t post_external_bond_count = md_array_size(mol->covalent_bond.bond);
+
+                if (mol->residue.complete_covalent_bond_range) {
+                    mol->residue.complete_covalent_bond_range[ri].end = (uint32_t)post_external_bond_count;
+                    mol->residue.complete_covalent_bond_range[rj].beg = (uint32_t)post_internal_bond_count;
+                }
             }
         }
-    }
 
-    if (mol->residue.complete_covalent_bond_range) {
-        ASSERT(mol->residue.count > 0);
-        mol->residue.complete_covalent_bond_range[0].beg = 0;
-        mol->residue.complete_covalent_bond_range[mol->residue.count - 1].end = (uint32_t)md_array_size(mol->covalent_bond.bond);
+        if (mol->residue.complete_covalent_bond_range) {
+            ASSERT(mol->residue.count > 0);
+            mol->residue.complete_covalent_bond_range[0].beg = 0;
+            mol->residue.complete_covalent_bond_range[mol->residue.count - 1].end = (uint32_t)md_array_size(mol->covalent_bond.bond);
+        }
+    }
+    else {
+        // No residues present, test all against all
+        for (int64_t i = 0; i < mol->atom.count - 1; ++i) {
+            for (int64_t j = i + 1; j < mol->atom.count; ++j) {
+                if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
+                    mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
+                    md_bond_t bond = {(int32_t)i, (int32_t)j};
+                    md_array_push(mol->covalent_bond.bond, bond, alloc);
+                    mol->atom.valence[i] += 1;
+                    mol->atom.valence[j] += 1;
+                }
+            }
+        }
     }
 
     mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
@@ -625,6 +644,24 @@ vec3_t md_util_compute_com_periodic(const float* in_x, const float* in_y, const 
     };
 
     return result;
+}
+
+// From here: https://www.arianarab.com/post/crystal-structure-software
+mat3_t md_util_compute_unit_cell_basis(float a, float b, float c, float alpha, float beta, float gamma) {
+    alpha = DEG_TO_RAD(alpha);
+    beta  = DEG_TO_RAD(beta);
+    gamma = DEG_TO_RAD(gamma);
+
+    const float cb = cosf(beta);
+    const float x = (cosf(alpha) - cb * cosf(gamma)) / sinf(gamma);
+    mat3_t M = {
+        .col = {
+            {a, 0, 0},
+            {b * cosf(gamma), b * sinf(gamma), 0},
+            {c * cb, c * x, c * sqrtf(1 - cb * cb - x * x)},
+        },
+    };
+    return M;
 }
 
 bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
@@ -1059,7 +1096,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
         md_util_extract_covalent_bonds(mol, alloc);
     }
 
-    if (mol->chain.count == 0) {
+    if (mol->chain.count == 0 && mol->residue.count > 0) {
         // Compute artificial chains and label them A - Z
         if (mol->residue.complete_covalent_bond_range) {
             // Identify connected residues (through covalent bonds) if more than one, we store it as a chain

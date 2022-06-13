@@ -45,7 +45,7 @@ UTEST(spatial_hash, big) {
     const str_t pdb_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
-    ASSERT_TRUE(md_pdb_data_parse_file(pdb_file, &pdb_data, alloc));
+    ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
 
     md_molecule_t mol = {0};
     ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));

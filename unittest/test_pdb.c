@@ -10,7 +10,7 @@
 UTEST(pdb, parse_ordinary) {
     str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(path, &pdb_data, default_allocator);
+    bool result = md_pdb_data_parse_file(&pdb_data, path, default_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 0);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 9084);
@@ -25,7 +25,7 @@ UTEST(pdb, parse_ordinary) {
 UTEST(pdb, parse_trajectory) {
     str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(path, &pdb_data, default_allocator);
+    bool result = md_pdb_data_parse_file(&pdb_data, path, default_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 38);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 5814);
@@ -76,7 +76,7 @@ UTEST(pdb, create_molecule) {
     str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
 
     md_pdb_data_t pdb_data = {0};
-    ASSERT_TRUE(md_pdb_data_parse_file(path, &pdb_data, alloc));
+    ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, alloc));
 
     md_molecule_t mol = {0};
     EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));

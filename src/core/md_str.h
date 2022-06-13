@@ -12,6 +12,7 @@
 #endif
 
 struct md_allocator_i;
+struct md_file_o;
 
 typedef struct str_t {
     const char* ptr;
@@ -202,7 +203,30 @@ static inline void convert_to_upper(char* str, int64_t len) {
     }
 }
 
-bool extract_next_token(str_t* tok, str_t* str, char delim);
+// Extracts token with whitespace as delimiter
+bool extract_next_token(str_t* tok, str_t* str);
+// Extracts token with specific delimiter
+bool extract_next_token_delim(str_t* tok, str_t* str, char delim);
+
+typedef struct buffered_reader_t {
+    struct md_file_o* file;
+    char* buffer;
+    int64_t offset;
+} buffered_reader_t;
+
+bool buffered_reader_init(buffered_reader_t* reader, int64_t buf_size, str_t filename, struct md_allocator_i* alloc);
+void buffered_reader_free(buffered_reader_t* reader, struct md_allocator_i* alloc);
+
+// Get single line
+bool buffered_reader_get_line(str_t* line, buffered_reader_t* reader);
+
+// Get a big chunk as many complete lines as can we can fit into the reader buffer
+bool buffered_reader_get_chunk(str_t* chunk, buffered_reader_t* reader);
+
+bool buffered_reader_peek_line(str_t* line, buffered_reader_t* reader);
+
+// Gets the total offset into the file (current chunk + offset)
+int64_t buffered_reader_get_offset(const buffered_reader_t* reader);
 
 #ifdef __cplusplus
 }

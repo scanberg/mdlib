@@ -2375,10 +2375,15 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->residue.name);
+    ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_STRING_ARR));
 
     int result = 0;
+
+    if (!ctx->mol->residue.name) {
+        create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue names");
+        return -1;
+    }
 
     const int64_t num_str = element_count(arg[0]);
     const str_t* str = as_string_arr(arg[0]);
@@ -2443,10 +2448,15 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->residue.name);
+    ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
 
     int result = 0;
+
+    if (!ctx->mol->residue.id) {
+        create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue ids");
+        return -1;
+    }
 
     const int64_t   num_rid = element_count(arg[0]);
     const irange_t*     rid = arg[0].ptr;
@@ -2506,8 +2516,13 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->chain.atom_range);
+    ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
+
+    if (ctx->mol->chain.count == 0 || !ctx->mol->chain.atom_range) {
+        create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
+        return -1;
+    }
 
     int result = 0;
 
@@ -2562,8 +2577,13 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->chain.id && ctx->mol->chain.atom_range);
+    ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_STRING_ARR));
+
+    if (ctx->mol->chain.count == 0 || !ctx->mol->chain.id) {
+        create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
+        return -1;
+    }
 
     int result = 0;
 

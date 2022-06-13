@@ -1,5 +1,4 @@
-#ifndef _MD_PDB_H_
-#define _MD_PDB_H_
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -143,12 +142,12 @@ typedef struct md_pdb_data_t {
 // RAW FUNCTIONS
 // Parse a text-blob as PDB
 // This will append to the supplied pdb_data so make sure the data is in a valid state or zero
-bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* pdb_data, struct md_allocator_i* alloc);
-bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* pdb_data, struct md_allocator_i* alloc);
+bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i* alloc);
+bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_allocator_i* alloc);
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
-bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* pdb_data, struct md_allocator_i* alloc);
+bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* data, struct md_allocator_i* alloc);
 bool md_pdb_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
 struct md_molecule_api* md_pdb_molecule_api();
@@ -161,6 +160,4 @@ struct md_trajectory_api* md_pdb_trajectory_api();
 
 #ifdef __cplusplus
 }
-#endif
-
 #endif

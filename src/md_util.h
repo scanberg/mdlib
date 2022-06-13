@@ -62,6 +62,9 @@ bool md_util_extract_hydrogen_bonds(struct md_molecule_t* mol, struct md_allocat
 // Generates missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
+// Compute a mat3 basis from cell extents a,b,c and cell axis angles alpha, beta, gamma (in degrees)
+mat3_t md_util_compute_unit_cell_basis(float a, float b, float c, float alpha, float beta, float gamma);
+
 bool md_util_apply_pbc(struct md_molecule_t* mol, vec3_t pbc_ext);
 
 // Computes the center of mass for a set of points with a given weight given in a periodic box

@@ -1,5 +1,4 @@
-#ifndef _MD_GRO_H_
-#define _MD_GRO_H_
+#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -25,7 +24,7 @@ typedef struct md_gro_atom_t {
 
 typedef struct md_gro_data_t {
     char title[256];
-    float unit_cell[3];
+    float cell_ext[3];
 
     // Field data
     int64_t num_atoms;
@@ -47,4 +46,3 @@ struct md_molecule_api* md_gro_molecule_api();
 }
 #endif
 
-#endif

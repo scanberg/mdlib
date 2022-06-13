@@ -395,8 +395,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
         }
 
         char buf[1024];
-        str_t path = extract_path_without_ext(filename);
-        int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)path.len, path.ptr);
+        int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
         str_t cache_file = {buf, len};
 
         int64_t* offsets = try_read_offset_cache(cache_file, alloc);

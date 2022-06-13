@@ -528,20 +528,26 @@ static inline float vec4_distance_squared(vec4_t a, vec4_t b) {
 }
 
 static inline float vec4_distance(vec4_t a, vec4_t b) {
-    return sqrtf(vec4_distance_squared(a,b));
+    float l2 = vec4_distance_squared(a,b);
+#if VEC_MATH_USE_SSE
+    vec4_t r = {
+        .f128 = _mm_sqrt_ss(_mm_set1_ps(l2))
+    };
+    return r.x;
+#else
+    return sqrtf(l2);
+#endif
 }
 
 static inline float vec4_length(vec4_t v) {
-    float result;
-    float dp = vec4_dot(v,v);
+    float l2 = vec4_dot(v,v);
 #if VEC_MATH_USE_SSE
-    vec4_t l;
-    l.f128 = md_simd_sqrt_f128(md_simd_set1_f128(dp));
-    result = l.x;
+    vec4_t r;
+    r.f128 = md_simd_sqrt_f128(md_simd_set1_f128(l2));
+    return r.x;
 #else
-    result = sqrtf(dp);
+    return sqrtf(l2);
 #endif
-    return result;
 }
 
 static inline vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {

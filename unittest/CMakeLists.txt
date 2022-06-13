@@ -29,6 +29,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_pdb.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_gro.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xtc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_xyz.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_util.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_script.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_frame_cache.c

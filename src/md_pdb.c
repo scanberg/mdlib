@@ -297,7 +297,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
 // PUBLIC PROCEDURES
 
-bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* data, struct md_allocator_i* alloc) {
+bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i* alloc) {
     str_t line;
     const char* base_offset = str.ptr;
     while (extract_line(&line, &str)) {
@@ -357,7 +357,7 @@ bool md_pdb_data_parse_str(str_t str, md_pdb_data_t* data, struct md_allocator_i
     return true;
 }
 
-bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* data, struct md_allocator_i* alloc) {
+bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         const int64_t buf_size = KILOBYTES(64ULL);
@@ -382,7 +382,7 @@ bool md_pdb_data_parse_file(str_t filename, md_pdb_data_t* data, struct md_alloc
             }
 
             const int64_t pre_num_models = data->num_models;
-            md_pdb_data_parse_str(str, data, alloc);
+            md_pdb_data_parse_str(data, str, alloc);
 
             for (int64_t i = pre_num_models; i < data->num_models; ++i) {
                 data->models[i].byte_offset += file_offset;
@@ -555,10 +555,10 @@ bool md_pdb_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     return true;
 }
 
-static bool pdb_init_from_str(md_molecule_t* mol, str_t string, md_allocator_i* alloc) {
+static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
     md_pdb_data_t data = {0};
 
-    md_pdb_data_parse_str(string, &data, default_allocator);
+    md_pdb_data_parse_str(&data, str, default_allocator);
     bool success = md_pdb_molecule_init(mol, &data, alloc);
     md_pdb_data_free(&data, default_allocator);
     
@@ -584,7 +584,7 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
             ASSERT(str.ptr[last_new_line] == '\n');
             str.len = last_new_line + 1;
 
-            md_pdb_data_parse_str(str, &data, default_allocator);
+            md_pdb_data_parse_str(&data, str, default_allocator);
 
             if (data.num_models > 1) {
                 // We only need 1 model to derive the molecule data. We consider the rest as trajectory data.
@@ -754,8 +754,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     md_file_close(file);
 
     char buf[1024] = "";
-    str_t path = extract_path_without_ext(filename);
-    int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)path.len, path.ptr);
+    int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
     str_t cache_file = {buf, len};
 
     float box[3][3] = {0};
@@ -764,7 +763,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
 
     if (!try_read_cache(cache_file, &offsets, &num_atoms, box, alloc)) {
         md_pdb_data_t data = {0};
-        if (!md_pdb_data_parse_file(filename, &data, default_allocator)) {
+        if (!md_pdb_data_parse_file(&data, filename, default_allocator)) {
             return false;
         }
 

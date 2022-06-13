@@ -102,9 +102,9 @@ static inline bool parse_unitcell(str_t str, md_gro_data_t* data) {
         return false;
     }
 
-    data->unit_cell[0] = (float)parse_float(trim_whitespace(substr(line, 0, 10)));
-    data->unit_cell[1] = (float)parse_float(trim_whitespace(substr(line, 10, 10)));
-    data->unit_cell[2] = (float)parse_float(trim_whitespace(substr(line, 20, 10)));
+    data->cell_ext[0] = (float)parse_float(trim_whitespace(substr(line, 0, 10)));
+    data->cell_ext[1] = (float)parse_float(trim_whitespace(substr(line, 10, 10)));
+    data->cell_ext[2] = (float)parse_float(trim_whitespace(substr(line, 20, 10)));
 
     return true;
 }
