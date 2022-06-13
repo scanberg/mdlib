@@ -202,10 +202,7 @@ static inline float vec2_dot(vec2_t a, vec2_t b) {
 
 static inline float vec2_length(vec2_t v) {
     float l2 = vec2_dot(v,v);
-    vec4_t r = {
-        .f128 = _mm_sqrt_ss(_mm_set1_ps(l2))
-    };
-    return r.x;
+    return sqrtf(l2);
 }
 
 static inline float vec2_dist(vec2_t a, vec2_t b) {
@@ -340,15 +337,7 @@ static inline float vec3_dot(vec3_t a, vec3_t b) {
 }
 
 static inline float vec3_length(vec3_t v) {
-    float l2 = vec3_dot(v,v);
-#if VEC_MATH_USE_SSE
-    vec4_t r = {
-        .f128 = _mm_sqrt_ss(_mm_set1_ps(l2))
-    };
-    return r.x;
-#else
-    return sqrtf(l2);
-#endif
+    return sqrtf(vec3_dot(v,v));
 }
 
 static inline float vec3_distance(vec3_t a, vec3_t b) {
@@ -379,15 +368,7 @@ static inline vec3_t vec3_lerp(vec3_t a, vec3_t b, float t) {
 
 // VEC4 OPERATIONS
 static inline vec4_t vec4_zero() {
-    vec4_t res;
-#if VEC_MATH_USE_SSE
-    res.f128 = _mm_setzero_ps();
-#else
-    res.x = 0;
-    res.y = 0;
-    res.z = 0;
-    res.w = 0;
-#endif
+    vec4_t res = {0};
     return res;
 }
 
@@ -528,26 +509,11 @@ static inline float vec4_distance_squared(vec4_t a, vec4_t b) {
 }
 
 static inline float vec4_distance(vec4_t a, vec4_t b) {
-    float l2 = vec4_distance_squared(a,b);
-#if VEC_MATH_USE_SSE
-    vec4_t r = {
-        .f128 = _mm_sqrt_ss(_mm_set1_ps(l2))
-    };
-    return r.x;
-#else
-    return sqrtf(l2);
-#endif
+    return sqrtf(vec4_distance_squared(a,b));
 }
 
 static inline float vec4_length(vec4_t v) {
-    float l2 = vec4_dot(v,v);
-#if VEC_MATH_USE_SSE
-    vec4_t r;
-    r.f128 = md_simd_sqrt_f128(md_simd_set1_f128(l2));
-    return r.x;
-#else
-    return sqrtf(l2);
-#endif
+    return sqrtf(vec4_dot(v,v));
 }
 
 static inline vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
@@ -826,10 +792,8 @@ static inline __m128 linear_combine_sse(__m128 a, mat4_t B) {
 // MAT2
 static inline mat2_t mat2_ident() {
     mat2_t M = {
-        {
-            {1,0},
-            {0,1}
-        }
+        1,0,
+        0,1,
     };
     return M;
 }
@@ -837,22 +801,18 @@ static inline mat2_t mat2_ident() {
 // MAT3
 static inline mat3_t mat3_ident() {
     mat3_t M = {
-        {
-            {1,0,0},
-            {0,1,0},
-            {0,0,1}
-        }
+        1,0,0,
+        0,1,0,
+        0,0,1,
     };
     return M;
 }
 
 static inline mat3_t mat3_from_mat4(mat4_t M) {
     mat3_t R = {
-        .col = {
-            {M.elem[0][0], M.elem[0][1], M.elem[0][2]},
-            {M.elem[1][0], M.elem[1][1], M.elem[1][2]},
-            {M.elem[2][0], M.elem[2][1], M.elem[2][2]},
-        }
+        M.elem[0][0], M.elem[0][1], M.elem[0][2],
+        M.elem[1][0], M.elem[1][1], M.elem[1][2],
+        M.elem[2][0], M.elem[2][1], M.elem[2][2],
     };
     return R;
 }
@@ -884,34 +844,26 @@ static inline mat3_t mat3_from_quat(quat_t q) {
 // Create scale matrix from scalar components x, y, z which dictates the scale on each corresponding axis
 static inline mat3_t mat3_scale(float x, float y, float z) {
     mat3_t M = {
-        .col = {
-            {x,0,0},
-            {0,y,0},
-            {0,0,z}
-        }
+        x,0,0,
+        0,y,0,
+        0,0,z,
     };
     return M;
 }
 
 static inline mat3_t mat3_add(mat3_t A, mat3_t B) {
-    mat3_t M = {
-        .col = {
-            vec3_add(A.col[0], B.col[0]),
-            vec3_add(A.col[1], B.col[1]),
-            vec3_add(A.col[2], B.col[2]),
-        }
-    };
+    mat3_t M;
+    M.col[0] = vec3_add(A.col[0], B.col[0]);
+    M.col[1] = vec3_add(A.col[1], B.col[1]);
+    M.col[2] = vec3_add(A.col[2], B.col[2]);
     return M;
 }
 
 static inline mat3_t mat3_sub(mat3_t A, mat3_t B) {
-    mat3_t M = {
-        .col = {
-            vec3_sub(A.col[0], B.col[0]),
-            vec3_sub(A.col[1], B.col[1]),
-            vec3_sub(A.col[2], B.col[2]),
-    }
-    };
+    mat3_t M;
+    M.col[0] = vec3_sub(A.col[0], B.col[0]);
+    M.col[1] = vec3_sub(A.col[1], B.col[1]);
+    M.col[2] = vec3_sub(A.col[2], B.col[2]);
     return M;
 }
 
@@ -942,23 +894,18 @@ static inline mat3_t mat3_mul(mat3_t A, mat3_t B) {
 }
 
 static inline mat3_t mat3_mul_f(mat3_t M, float s) {
-    mat3_t R = {
-        .col = {
-            vec3_mul_f(M.col[0], s),
-            vec3_mul_f(M.col[1], s),
-            vec3_mul_f(M.col[2], s),
-        }
-    };
+    mat3_t R;
+    R.col[0] = vec3_mul_f(M.col[0], s);
+    R.col[1] = vec3_mul_f(M.col[1], s);
+    R.col[2] = vec3_mul_f(M.col[2], s);    
     return R;
 }
 
 static inline mat3_t mat3_transpose(mat3_t M) {
     mat3_t T = {
-        .col = {
-            {M.elem[0][0], M.elem[1][0], M.elem[2][0]},
-            {M.elem[0][1], M.elem[1][1], M.elem[2][1]},
-            {M.elem[0][2], M.elem[1][2], M.elem[2][2]}
-        }
+        M.elem[0][0], M.elem[1][0], M.elem[2][0],
+        M.elem[0][1], M.elem[1][1], M.elem[2][1],
+        M.elem[0][2], M.elem[1][2], M.elem[2][2]
     };
     return T;
 }
