@@ -59,6 +59,9 @@
 
 #define as_bitfield(arg) ((md_bitfield_t*)((arg).ptr))
 
+#define as_vec2(arg) (*((vec2_t*)((arg).ptr)))
+#define as_vec2_arr(arg) (((vec2_t*)((arg).ptr)))
+
 #define as_vec3(arg) (*((vec3_t*)((arg).ptr)))
 #define as_vec3_arr(arg) (((vec3_t*)((arg).ptr)))
 
@@ -306,9 +309,9 @@ static int _xor  (data_t*, data_t[], eval_context_t*); // -> bitfield
 // Selectors
 // Atomic level selectors
 static int _all     (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _x       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _y       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _z       (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_x       (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_y       (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_z       (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _within_expl_flt  (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _within_expl_frng (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _within_impl_flt  (data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -358,6 +361,11 @@ static int _position(data_t*, data_t[], eval_context_t*);  // (position[]) -> fl
 static int _position_x(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
 static int _position_y(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
 static int _position_z(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
+
+static int _position_xy(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
+static int _position_xz(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
+
+static int _position_yz(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
 
 // Linear algebra
 static int _dot           (data_t*, data_t[], eval_context_t*); // (float[], float[]) -> float
@@ -570,9 +578,10 @@ static procedure_t procedures[] = {
 
     // Dynamic selectors (depend on atomic position, therefore marked as dynamic which means the values cannot be determined at compile-time)
     // Also have variable result (well its a single bitfield, but the number of atoms within is not fixed)
-    {CSTR("x"),         TI_BITFIELD, 1, {TI_FRANGE},                    _x,                 FLAG_DYNAMIC},
-    {CSTR("y"),         TI_BITFIELD, 1, {TI_FRANGE},                    _y,                 FLAG_DYNAMIC},
-    {CSTR("z"),         TI_BITFIELD, 1, {TI_FRANGE},                    _z,                 FLAG_DYNAMIC},
+    {CSTR("within_x"),  TI_BITFIELD, 1, {TI_FRANGE},    _within_x,     FLAG_DYNAMIC},
+    {CSTR("within_y"),  TI_BITFIELD, 1, {TI_FRANGE},    _within_y,     FLAG_DYNAMIC},
+    {CSTR("within_z"),  TI_BITFIELD, 1, {TI_FRANGE},    _within_z,     FLAG_DYNAMIC},
+
     {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT,  TI_POSITION_ARR},   _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
     {CSTR("within"),    TI_BITFIELD, 2, {TI_FRANGE, TI_POSITION_ARR},   _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
     {CSTR("within"),    TI_BITFIELD, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
@@ -598,10 +607,16 @@ static procedure_t procedures[] = {
     {CSTR("com"),       TI_FLOAT3,      1,  {TI_POSITION_ARR},  _com,       FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
     {CSTR("plane"),     TI_FLOAT4,      1,  {TI_POSITION_ARR},  _plane,     FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
-    {CSTR("position"),      TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
-    {CSTR("position_x"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
-    {CSTR("position_y"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
-    {CSTR("position_z"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position"),  TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("x"),         TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("y"),         TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("z"),         TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+
+    {CSTR("xy"),        TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xy,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("xz"),        TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xz,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+
+    {CSTR("yz"),        TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_yz,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+
 
     // --- MISC ---
     {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _flatten_bf_arr},
@@ -1749,15 +1764,15 @@ static int coordinate_range(data_t* dst, data_t arg[], eval_context_t* ctx, cons
     }
 }
 
-static int _x(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _within_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return coordinate_range(dst, arg, ctx, ctx->mol->atom.x);
 }
 
-static int _y(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _within_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return coordinate_range(dst, arg, ctx, ctx->mol->atom.y);
 }
 
-static int _z(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _within_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return coordinate_range(dst, arg, ctx, ctx->mol->atom.z);
 }
 
@@ -3507,6 +3522,69 @@ static int _position_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
         float* z = as_float_arr(*dst);
         for (int64_t i = 0; i < element_count(*dst); ++i) {
             z[i] = pos[i].z;
+        }
+    }
+    else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+    } else {
+        return position_validate(arg[0], 0, ctx);
+    }
+    return 0;
+}
+
+static int _position_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT2_ARR));
+        const vec3_t* pos = position_extract(arg[0], ctx);
+        ASSERT(element_count(*dst) == md_array_size(pos));
+        
+        vec2_t* xy = as_vec2_arr(*dst);
+        for (int64_t i = 0; i < element_count(*dst); ++i) {
+            xy[i] = (vec2_t){pos[i].x, pos[i].y};
+        }
+    }
+    else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+    } else {
+        return position_validate(arg[0], 0, ctx);
+    }
+    return 0;
+}
+
+static int _position_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT2_ARR));
+        const vec3_t* pos = position_extract(arg[0], ctx);
+        ASSERT(element_count(*dst) == md_array_size(pos));
+
+        vec2_t* xz = as_vec2_arr(*dst);
+        for (int64_t i = 0; i < element_count(*dst); ++i) {
+            xz[i] = (vec2_t){pos[i].x, pos[i].z};
+        }
+    }
+    else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+    } else {
+        return position_validate(arg[0], 0, ctx);
+    }
+    return 0;
+}
+
+static int _position_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT2_ARR));
+        const vec3_t* pos = position_extract(arg[0], ctx);
+        ASSERT(element_count(*dst) == md_array_size(pos));
+
+        vec2_t* yz = as_vec2_arr(*dst);
+        for (int64_t i = 0; i < element_count(*dst); ++i) {
+            yz[i] = (vec2_t){pos[i].y, pos[i].z};
         }
     }
     else if (ctx->vis) {
