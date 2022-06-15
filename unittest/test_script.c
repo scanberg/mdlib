@@ -287,7 +287,7 @@ UTEST(script, property_compute) {
     }
 
     {
-        md_script_ir_compile_source(ir, MAKE_STR("sel = x(0:100);\np1  = distance(com(sel), 100);"), &mol, NULL);
+        md_script_ir_compile_source(ir, MAKE_STR("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);

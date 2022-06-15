@@ -59,8 +59,8 @@ v4 = v1;		# v4 is also a number, copied from v1.
 
 
 sel1 = resname("GLY") and not label("CA"); # resname("PFT") will return a bitrange
-sel2 = x(0:10);
-sel3 = y(:10.0); 		# Select all atoms with y coordinates in range -infinity to 10.0 returns bitfield
+sel2 = within_x(0:10);
+sel3 = within_y(:10.0); 		# Select all atoms with y coordinates in range -infinity to 10.0 returns bitfield
 
 
 sel5 = residue(:); 		# Returns array of ranges for each residue in the dataset
