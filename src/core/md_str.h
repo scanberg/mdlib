@@ -141,7 +141,7 @@ static inline int64_t str_count_char_occur(str_t str, char character) {
 }
 
 static inline str_t substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
-    if (offset > str.len) {
+    if (offset < 0 || offset > str.len) {
         str_t res = {0, 0};
         return res;
     }
