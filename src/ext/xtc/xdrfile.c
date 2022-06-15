@@ -661,8 +661,8 @@ static inline int decodebits(int buf[], int num_of_bits) {
 
 static inline void decodeints(int buf[], int num_of_ints, int num_of_bits, unsigned int sizes[],
                               int nums[]) {
-
-    int bytes[8];
+    // @NOTE: Some trajectories seem to overflow the bytes here which was originally set to 8
+    int bytes[16];
     int i, j, num_of_bytes, p, num, size;
 
     bytes[1] = bytes[2] = bytes[3] = 0;
