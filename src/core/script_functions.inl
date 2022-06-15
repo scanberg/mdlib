@@ -3078,21 +3078,23 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             const int64_t count = md_bitfield_popcount(bf);
 
-            const int64_t stride = ROUND_UP(count, md_simd_widthf);
-            const int64_t coord_bytes = stride * 7 * sizeof(float);
-            float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
-            float* x0 = coord_data + stride * 0;
-            float* y0 = coord_data + stride * 1;
-            float* z0 = coord_data + stride * 2;
-            float* x  = coord_data + stride * 3;
-            float* y  = coord_data + stride * 4;
-            float* z  = coord_data + stride * 5;
-            float* w  = coord_data + stride * 6;
+            if (count > 0) {
+                const int64_t stride = ROUND_UP(count, md_simd_widthf);
+                const int64_t coord_bytes = stride * 7 * sizeof(float);
+                float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
+                float* x0 = coord_data + stride * 0;
+                float* y0 = coord_data + stride * 1;
+                float* z0 = coord_data + stride * 2;
+                float* x  = coord_data + stride * 3;
+                float* y  = coord_data + stride * 4;
+                float* z  = coord_data + stride * 5;
+                float* w  = coord_data + stride * 6;
 
-            extract_xyz (x0, y0, z0,    ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, bf);
-            extract_xyzw(x,  y,  z,  w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+                extract_xyz (x0, y0, z0,    ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, bf);
+                extract_xyzw(x,  y,  z,  w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
 
-            as_float(*dst) = (float)md_util_compute_rmsd(x0, y0, z0, x, y, z, w, count);
+                as_float(*dst) = (float)md_util_compute_rmsd(x0, y0, z0, x, y, z, w, count);
+            }
         }
 
         // No need to free anything, this will be taken care of in the procedure call
