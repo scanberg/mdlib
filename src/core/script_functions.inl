@@ -355,6 +355,9 @@ static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
 static int _plane   (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[4]
 static int _position(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3][]
+static int _position_x(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
+static int _position_y(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
+static int _position_z(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
 
 // Linear algebra
 static int _dot           (data_t*, data_t[], eval_context_t*); // (float[], float[]) -> float
@@ -595,7 +598,10 @@ static procedure_t procedures[] = {
     {CSTR("com"),       TI_FLOAT3,      1,  {TI_POSITION_ARR},  _com,       FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
     {CSTR("plane"),     TI_FLOAT4,      1,  {TI_POSITION_ARR},  _plane,     FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
-    {CSTR("position"),  TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position"),      TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_x"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_y"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_z"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 
     // --- MISC ---
     {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _flatten_bf_arr},
@@ -1248,6 +1254,58 @@ static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
     return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
 }
 
+// This should ideally be some light weight regular expression matching.
+// For now we just use joker characters '*'
+// "*AD" matches anything that ends with AD
+// "AD*" matches anything that begins with AD
+// @TODO: "*AD*" matches anything that contains AD
+// @TODO: "AD*DA" matches anything that begins with AD and ends with DA
+
+static bool match_query(str_t query, str_t str) {
+    if (query.len == 0 || str.len == 0) return false;
+
+    int joker_count = 0;
+    for (int64_t i = 0; i < query.len; ++i) {
+        if (query.ptr[i] == '*') joker_count += 1;
+    }
+
+    if (joker_count == 0) return compare_str(query, str);
+
+    int64_t first_joker = find_char(query, '*');
+    int64_t last_joker = rfind_char(query, '*');
+
+    str_t beg_match = first_joker != 0 ? substr(query, 0, first_joker) : (str_t){0};
+    str_t end_match = last_joker  != query.len - 1 ? substr(query, last_joker + 1, -1) : (str_t){0};
+
+    if (!str_empty(beg_match)) {
+        if (!compare_str_n(beg_match, str, beg_match.len)) return false;
+    }
+
+    if (!str_empty(end_match)) {
+        str = substr(str, str.len - end_match.len, end_match.len);
+        if (!compare_str(end_match, str)) return false;
+    }
+
+    return true;
+}
+
+static bool validate_query(str_t query) {
+    if (query.len == 0) return false;
+    int joker_count = 0;
+    for (int64_t i = 0; i < query.len; ++i) {
+        if (query.ptr[i] == '*') {
+            joker_count += 1;
+        }
+    }
+    if (joker_count > 2) return false;
+
+    if (joker_count == 2) {
+        return query.ptr[0] == '*' && query.ptr[query.len-1] == '*';
+    }
+
+    return true;
+}
+
 // IMPLEMENTATIONS
 // @TODO: Add more here
 
@@ -1508,9 +1566,9 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             
-            const char* atom_str = ctx->mol->atom.name[i].buf;
+            str_t atom_str = label_to_str(&ctx->mol->atom.name[i]);
             for (int64_t j = 0; j < num_str; ++j) {
-                if (compare_str_cstr(str[j], atom_str)) {
+                if (match_query(str[j], atom_str)) {
                     md_bitfield_set_bit(bf, i);
                 }
             }
@@ -1518,11 +1576,15 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     } else {
         // We are only validating the arguments here, making sure that they are represented within the potential context
         for (int64_t j = 0; j < num_str; ++j) {
+            if (!validate_query(str[j])) {
+                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
+                return -1;
+            }
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                const char* atom_str = ctx->mol->atom.name[i].buf;
-                if (compare_str_cstr(str[j], atom_str)) {
+                str_t atom_str = label_to_str(&ctx->mol->atom.name[i]);
+                if (match_query(str[j], atom_str)) {
                     match = true;
                     break;
                 }
@@ -2385,8 +2447,8 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return -1;
     }
 
-    const int64_t num_str = element_count(arg[0]);
-    const str_t* str = as_string_arr(arg[0]);
+    const int64_t num_queries = element_count(arg[0]);
+    const str_t* queries = as_string_arr(arg[0]);
     
     // Here we only pick the residues which are represented within the context (by having bits set)
     int64_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
@@ -2402,8 +2464,8 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             for (int64_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
-                for (int64_t j = 0; j < num_str; ++j) {
-                    if (compare_str(str[j], label_to_str(&ctx->mol->residue.name[res_idx]))) {
+                for (int64_t j = 0; j < num_queries; ++j) {
+                    if (match_query(queries[j], label_to_str(&ctx->mol->residue.name[res_idx]))) {
                         //uint64_t offset = ctx->mol->residue.atom_range[i].beg;
                         //uint64_t length = ctx->mol->residue.atom_range[i].end - ctx->mol->residue.atom_range[i].beg;
                         //bit_set(result.bits, offset, length);
@@ -2425,17 +2487,21 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
     else {
         int count = 0;
-        for (int64_t j = 0; j < num_str; ++j) {
+        for (int64_t j = 0; j < num_queries; ++j) {
+            if (!validate_query(queries[j])) {
+                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", queries[j].len, queries[j].ptr);
+                return -1;
+            }
             bool match = false;
             for (int64_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (compare_str(str[j], label_to_str(&ctx->mol->residue.name[res_idx]))) {
+                if (match_query(queries[j], label_to_str(&ctx->mol->residue.name[res_idx]))) {
                     count += 1;
                     match = true;
                 }
             }
             if (!match) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any residue within the context", str[j].len, str[j].ptr);
+                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any residue within the context", queries[j].len, queries[j].ptr);
                 return -1;
             }
         }
@@ -2600,7 +2666,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
             int64_t dst_idx = 0;
             for (int64_t i = 0; i < md_array_size(chain_indices); ++i) {
                 for (int64_t j = 0; j < num_str; ++j) {
-                    if (compare_str(str[j], label_to_str(&ctx->mol->chain.id[i]))) {
+                    if (match_query(str[j], label_to_str(&ctx->mol->chain.id[i]))) {
                         //uint64_t offset = ctx->mol->chain.atom_range[i].beg;
                         //uint64_t length = ctx->mol->chain.atom_range[i].end - ctx->mol->chain.atom_range[i].beg;
                         //bit_set(bf->bits, offset, length);
@@ -2621,9 +2687,13 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         int count = 0;
         for (int64_t j = 0; j < num_str; ++j) {
+            if (!validate_query(str[j])) {
+                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
+                return -1;
+            }
             bool match = false;
             for (int64_t i = 0; i < md_array_size(chain_indices); ++i) {
-                if (compare_str(str[j], label_to_str(&ctx->mol->chain.id[i]))) {
+                if (match_query(str[j], label_to_str(&ctx->mol->chain.id[i]))) {
                     match = true;
                     break;
                 }
@@ -3376,6 +3446,66 @@ static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
         memcpy(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
+    }
+    else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+    } else {
+        return position_validate(arg[0], 0, ctx);
+    }
+    return 0;
+}
+
+static int _position_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
+        const vec3_t* pos = position_extract(arg[0], ctx);
+        ASSERT(element_count(*dst) == md_array_size(pos));
+        float* x = as_float_arr(*dst);
+        for (int64_t i = 0; i < element_count(*dst); ++i) {
+            x[i] = pos[i].x;
+        }
+    }
+    else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+    } else {
+        return position_validate(arg[0], 0, ctx);
+    }
+    return 0;
+}
+
+static int _position_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
+        const vec3_t* pos = position_extract(arg[0], ctx);
+        ASSERT(element_count(*dst) == md_array_size(pos));
+        float* y = as_float_arr(*dst);
+        for (int64_t i = 0; i < element_count(*dst); ++i) {
+            y[i] = pos[i].y;
+        }
+    }
+    else if (ctx->vis) {
+        position_visualize(arg[0], ctx);
+    } else {
+        return position_validate(arg[0], 0, ctx);
+    }
+    return 0;
+}
+
+static int _position_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
+        const vec3_t* pos = position_extract(arg[0], ctx);
+        ASSERT(element_count(*dst) == md_array_size(pos));
+        float* z = as_float_arr(*dst);
+        for (int64_t i = 0; i < element_count(*dst); ++i) {
+            z[i] = pos[i].z;
+        }
     }
     else if (ctx->vis) {
         position_visualize(arg[0], ctx);

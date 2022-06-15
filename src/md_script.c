@@ -805,15 +805,17 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
     return node;
 }
 
-
-
-static identifier_t* get_identifier(md_script_ir_t* ir, str_t name) {
-    for (int64_t i = 0; i < md_array_size(ir->identifiers); ++i) {
-        if (compare_str(ir->identifiers[i].name, name)) {
-            return &ir->identifiers[i];
+static identifier_t* find_identifier(str_t name, identifier_t* identifiers, int64_t count) {
+    for (int64_t i = 0; i < count; ++i) {
+        if (compare_str(name, identifiers[i].name)) {
+            return &identifiers[i];
         }
     }
     return NULL;
+}
+
+static identifier_t* get_identifier(md_script_ir_t* ir, str_t name) {
+    return find_identifier(name, ir->identifiers, md_array_size(ir->identifiers));
 }
 
 static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
@@ -4041,21 +4043,33 @@ static inline bool validate_eval(const md_script_eval_t* eval) {
     return true;
 }
 
-static md_script_ir_t* create_ir(str_t str, md_allocator_i* alloc, const md_script_ir_t* ctx_ir) {
-    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
-    md_script_ir_t* ir = md_alloc(arena, sizeof(md_script_ir_t));
+static void reset_ir(md_script_ir_t* ir) {
+    md_allocator_i* arena = ir->arena;
+    md_arena_allocator_reset(ir->arena);
     memset(ir, 0, sizeof(md_script_ir_t));
     ir->magic = SCRIPT_IR_MAGIC;
     ir->arena = arena;
-    ir->str = copy_str(str, ir->arena);
+}
 
-    if (ctx_ir) {
-        // If we have an IR context, we want to extract identifiers and subexpressions to be used so we can reference it.
-        md_array_push_array(ir->identifiers,  ctx_ir->identifiers,  md_array_size(ctx_ir->identifiers),  ir->arena);
-        md_array_push_array(ir->eval_targets, ctx_ir->eval_targets, md_array_size(ctx_ir->eval_targets), ir->arena);
-    }
-
+static md_script_ir_t* create_ir(md_allocator_i* alloc) {
+    md_script_ir_t* ir = md_alloc(alloc, sizeof(md_script_ir_t));
+    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
+    memset(ir, 0, sizeof(md_script_ir_t));
+    ir->magic = SCRIPT_IR_MAGIC;
+    ir->arena = arena;
     return ir;
+}
+
+static bool add_ir_ctx(md_script_ir_t* ir, const md_script_ir_t* ctx_ir) {
+    ASSERT(ir);
+    ASSERT(ctx_ir);
+
+    // we want to extract identifiers and subexpressions to be used so we can reference it.
+    // @TODO: Check for collisions of identifiers here
+    md_array_push_array(ir->identifiers,  ctx_ir->identifiers,  md_array_size(ctx_ir->identifiers),  ir->arena);
+    md_array_push_array(ir->eval_targets, ctx_ir->eval_targets, md_array_size(ctx_ir->eval_targets), ir->arena);
+
+    return true;
 }
 
 static void free_ir(md_script_ir_t* ir) {
@@ -4132,7 +4146,20 @@ bool extract_tokens(md_script_ir_t* ir) {
     return true;
 }
 
-md_script_ir_t* md_script_ir_create(str_t src, const md_molecule_t* mol, md_allocator_i* alloc, const md_script_ir_t* ctx_ir) {
+md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
+    if (!alloc) {
+        md_print(MD_LOG_TYPE_ERROR, "Script Create: Allocator was null");
+        return NULL;
+    }
+    return create_ir(alloc);
+}
+
+bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, const md_script_ir_t* ctx_ir) {
+    if (!validate_ir(ir)) {
+        md_print(MD_LOG_TYPE_ERROR, "Script Compile: IR is not valid");
+        return false;
+    }
+
     if (str_empty(src)) {
         md_print(MD_LOG_TYPE_ERROR, "Script Compile: Source string was empty");
         return false;
@@ -4143,12 +4170,12 @@ md_script_ir_t* md_script_ir_create(str_t src, const md_molecule_t* mol, md_allo
         return false;
     }
 
-    if (!alloc) {
-        md_print(MD_LOG_TYPE_ERROR, "Script Compile: Allocator was null");
-        return false;
-    }
+    reset_ir(ir);
+    ir->str = copy_str(src, ir->arena);
 
-    md_script_ir_t* ir = create_ir(src, alloc, ctx_ir);
+    if (ctx_ir) {
+        add_ir_ctx(ir, ctx_ir);
+    }
 
     ir->compile_success = parse_script(ir) &&
         static_type_check(ir, mol) &&
@@ -4161,12 +4188,54 @@ md_script_ir_t* md_script_ir_create(str_t src, const md_molecule_t* mol, md_allo
     //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
 #endif
 
-    return ir;
+    return ir->compile_success;
+}
+
+bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, int64_t count) {
+    if (!validate_ir(ir)) {
+        md_print(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: IR is not valid");
+        return false;
+    }
+
+    if (bitfield_identifiers && count > 0) {
+        for (int64_t i = 0; i < count; ++i) {
+            str_t name = bitfield_identifiers[i].identifier_name;
+            if (!md_script_valid_identifier_name(name)) {
+                md_printf(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: Invalid identifier name: '%.*s')", (int)name.len, name.ptr);
+                return false;
+            }
+            if (find_identifier(name, ir->identifiers, md_array_size(ir->identifiers))) {
+                md_printf(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: Identifier name collision: '%.*s')", (int)name.len, name.ptr);
+                return false;
+            }
+            
+            // @TODO: Rework this, the data can be modified at the source therefore we should perhaps only
+            // Deal with shallow copies....
+            ast_node_t* node = create_node(ir, AST_CONSTANT_VALUE, (token_t){0});
+            node->data.ptr = &node->value._bitfield;
+            node->data.size = sizeof(md_bitfield_t);
+            node->data.type = (md_type_info_t)TI_BITFIELD;
+            md_bitfield_init(&node->value._bitfield, ir->arena);
+            md_bitfield_copy(&node->value._bitfield, bitfield_identifiers[i].bitfield);
+
+            identifier_t* ident = create_identifier(ir, name);
+            ident->data = &node->data;
+            ident->node = node;
+        }
+    }
+
+    return true;
 }
 
 void md_script_ir_free(md_script_ir_t* ir) {
     if (validate_ir(ir)) {
         free_ir(ir);
+    }
+}
+
+void md_script_ir_clear(md_script_ir_t* ir) {
+    if (validate_ir(ir)) {
+        reset_ir(ir);
     }
 }
 
@@ -4327,7 +4396,11 @@ void md_script_eval_interrupt(md_script_eval_t* eval) {
 }
 
 static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allocator_i* alloc) {
-    md_script_ir_t* ir = create_ir(expr, default_temp_allocator, NULL);
+
+
+    md_script_ir_t* ir = create_ir(default_temp_allocator);
+    ir->str = copy_str(expr, ir->arena);
+
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     bool result = false;
 
@@ -4372,7 +4445,12 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
 
     SETUP_STACK(default_allocator, MEGABYTES(32));
 
-    md_script_ir_t* ir = create_ir(expr, &temp_alloc, ctx_ir);
+    md_script_ir_t* ir = create_ir(&temp_alloc);
+    ir->str = copy_str(expr, ir->arena);
+
+    if (ctx_ir) {
+        add_ir_ctx(ir, ctx_ir);
+    }
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
 

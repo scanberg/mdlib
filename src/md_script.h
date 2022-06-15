@@ -167,8 +167,19 @@ extern "C" {
 // mol      : molecule
 // alloc    : allocator
 // ctx_ir   : provide a context of identifiers and expressions [optional]
-md_script_ir_t* md_script_ir_create(str_t src, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir);
+
+md_script_ir_t* md_script_ir_create(struct md_allocator_i* alloc);
 void md_script_ir_free(md_script_ir_t* ir);
+
+void md_script_ir_clear(md_script_ir_t* ir);
+
+typedef struct md_script_bitfield_identifier_t {
+    str_t identifier_name;
+    const struct md_bitfield_t* bitfield;
+} md_script_bitfield_identifier_t;
+bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, int64_t count);
+
+bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const md_script_ir_t* ctx_ir);
 
 int64_t md_script_ir_num_errors(const md_script_ir_t* ir);
 const md_script_error_t* md_script_ir_errors(const md_script_ir_t* ir);
@@ -210,6 +221,23 @@ void     md_script_eval_interrupt(md_script_eval_t* eval);
 // ### VISUALIZE ###
 bool md_script_visualization_init(md_script_visualization_t* vis, struct md_script_visualization_args_t args);
 bool md_script_visualization_free(md_script_visualization_t* vis);
+
+// ### MISC ###
+
+static inline bool md_script_valid_identifier_name(str_t str) {
+    if (!str.ptr) return false;
+    if (!str.len) return false;
+
+    const char* beg = str.ptr;
+    const char* end = str.ptr + str.len;
+
+    if (!is_alpha(*beg) && *beg != '_') return false;
+    for (const char* c = beg + 1; c < end; ++c) {
+        if (!is_alpha(*c) && (*c != '_') && !is_digit(*c)) return false;
+    }
+
+    return true;
+}
 
 #ifdef __cplusplus
 }
