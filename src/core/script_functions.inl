@@ -378,6 +378,10 @@ static int _vec2 (data_t*, data_t[], eval_context_t*); // (float, float) -> floa
 static int _vec3 (data_t*, data_t[], eval_context_t*); // (float, float, float) -> float[4]
 static int _vec4 (data_t*, data_t[], eval_context_t*); // (float, float, float, float) -> float[4]
 
+// Misc
+// Count the number of bits set
+static int _count (data_t*, data_t[], eval_context_t*); // (bitfield) -> float
+
 static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     ASSERT(dst);
@@ -607,21 +611,23 @@ static procedure_t procedures[] = {
     {CSTR("com"),       TI_FLOAT3,      1,  {TI_POSITION_ARR},  _com,       FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
     {CSTR("plane"),     TI_FLOAT4,      1,  {TI_POSITION_ARR},  _plane,     FLAG_DYNAMIC | FLAG_VISUALIZE | FLAG_STATIC_VALIDATION},
 
-    {CSTR("position"),  TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
-    {CSTR("x"),         TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
-    {CSTR("y"),         TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
-    {CSTR("z"),         TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position"),      TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_x"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_y"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_z"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 
-    {CSTR("xy"),        TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xy,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
-    {CSTR("xz"),        TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xz,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_xy"),   TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xy,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_xz"),   TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xz,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 
-    {CSTR("yz"),        TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_yz,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+    {CSTR("position_yz"),   TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_yz,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 
 
     // --- MISC ---
+    {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD_ARR},  _count},
     {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _flatten_bf_arr},
     {CSTR("residue"),   TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
     {CSTR("chain"),     TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
+
 };
 
 #undef CSTR
@@ -3813,6 +3819,24 @@ static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     const frange_t cutoff = as_frange(arg[2]);
     return internal_rdf(dst, arg, cutoff.beg, cutoff.end, ctx);
+}
+
+static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
+        int64_t count = 0;
+        const md_bitfield_t* bf = as_bitfield(arg[0]);
+        const int64_t num_bf = element_count(arg[0]);
+        for (int64_t i = 0; i < num_bf; ++i) {
+            int64_t popcnt = md_bitfield_popcount(&bf[i]);
+            count += popcnt;
+        }
+        as_float(*dst) = (float)count;
+    }
+    
+    return 0;
 }
 
 static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int64_t num_bitfields, const md_element_t atom_elements[]) {
