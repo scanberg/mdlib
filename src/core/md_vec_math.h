@@ -512,6 +512,10 @@ static inline float vec4_distance(vec4_t a, vec4_t b) {
     return sqrtf(vec4_distance_squared(a,b));
 }
 
+static inline float vec4_length_squared(vec4_t v) {
+    return vec4_dot(v,v);
+}
+
 static inline float vec4_length(vec4_t v) {
     return sqrtf(vec4_dot(v,v));
 }
@@ -592,10 +596,10 @@ static inline vec4_t vec4_round(vec4_t v) {
 #if VEC_MATH_USE_SSE
     r.f128 = md_simd_round_f128(v.f128);
 #else
-    r.x = signf(v.x);
-    r.y = signf(v.y);
-    r.z = signf(v.z);
-    r.w = signf(v.w);
+    r.x = roundf(v.x);
+    r.y = roundf(v.y);
+    r.z = roundf(v.z);
+    r.w = roundf(v.w);
 #endif
     return r;
 }
@@ -626,11 +630,16 @@ static inline vec4_t vec4_deperiodize(vec4_t val, vec4_t ref, vec4_t period) {
 }
 */
 
+static inline float vec4_periodic_distance_squared(vec4_t a, vec4_t b, vec4_t period) {
+    vec4_t dx = vec4_sub(a, b);
+    vec4_t d  = vec4_sub(dx, vec4_mul(vec4_round(vec4_div(dx, period)), period));
+    return vec4_length_squared(d);
+}
+
 static inline float vec4_periodic_distance(vec4_t a, vec4_t b, vec4_t period) {
     vec4_t dx = vec4_sub(a, b);
     vec4_t d  = vec4_sub(dx, vec4_mul(vec4_round(vec4_div(dx, period)), period));
-    float result = vec4_length(d);
-    return result;
+    return vec4_length(d);
 }
 
 static inline vec4_t vec4_from_u32(uint32_t rgba) {
