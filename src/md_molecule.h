@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <core/md_str.h>
+#include <core/md_vec_math.h>
 
 // Forward declarations
 struct md_allocator_i;
@@ -19,6 +20,7 @@ typedef uint32_t                    md_secondary_structure_t;
 typedef uint8_t                     md_flags_t;
 typedef uint8_t                     md_element_t;
 typedef uint8_t                     md_ramachandran_type_t;
+typedef mat3_t                      md_coordinate_frame_t;
 
 // We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
 enum {
@@ -120,6 +122,7 @@ typedef struct md_molecule_bond_data_t {
 typedef struct md_molecule_t {
     md_molecule_o* inst;
 
+    md_coordinate_frame_t   coord_frame;
     md_molecule_atom_data_t atom;
     md_molecule_residue_data_t residue;
     md_molecule_chain_data_t chain;

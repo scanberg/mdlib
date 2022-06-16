@@ -504,14 +504,11 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
-static inline bool covelent_bond_heuristic(float x0, float y0, float z0, md_element_t e0, float x1, float y1, float z1, md_element_t e1) {
-    ASSERT(e0 < Num_Elements);
-    ASSERT(e1 < Num_Elements);
-    const float d = element_covalent_radii[e0] + element_covalent_radii[e1];
+static inline bool covelent_bond_heuristic(float dist_squared, md_element_t elem[2]) {
+    const float d = element_covalent_radii[elem[0]] + element_covalent_radii[elem[1]];
     const float d_min = d - 0.5f;
     const float d_max = d + 0.3f;
-    const float d2 = (x1-x0)*(x1-x0) + (y1-y0)*(y1-y0) + (z1-z0)*(z1-z0);
-    return (d_min * d_min) < d2 && d2 < (d_max * d_max);
+    return (d_min * d_min) < dist_squared && dist_squared < (d_max * d_max);
 }
 
 bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* alloc) {
@@ -525,6 +522,8 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
     md_array_resize(mol->atom.valence, mol->atom.count, alloc);
     memset(mol->atom.valence, 0, md_array_bytes(mol->atom.valence));
 
+    const vec4_t period = vec4_from_vec3(md_util_compute_unit_cell_extent(mol->coord_frame), 0);
+
     if (mol->residue.count > 0) {
         // Residues are defined,
         // First find connections within residues, then between residues
@@ -534,9 +533,12 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
 
             // Compute internal bonds (within residue)
             for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end - 1; ++i) {
+                const vec4_t a = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
                 for (int64_t j = i + 1; j < mol->residue.atom_range[ri].end; ++j) {
-                    if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
-                                                mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
+                    const vec4_t b = {mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], 0};
+                    const float d2 = vec4_periodic_distance_squared(a, b, period);
+                    const md_element_t elem[2] = { mol->atom.element[i], mol->atom.element[j] };
+                    if (covelent_bond_heuristic(d2, elem)) {
                         md_bond_t bond = {(int32_t)i, (int32_t)j};
                         md_array_push(mol->covalent_bond.bond, bond, alloc);
                         mol->atom.valence[i] += 1;
@@ -554,11 +556,14 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
 
             const int64_t rj = ri + 1;
             if (rj < mol->residue.count) {
-                // Compute extarnal bonds (between residues)
+                // Compute external bonds (between residues)
                 for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end; ++i) {
+                    const vec4_t a = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
                     for (int64_t j = mol->residue.atom_range[rj].beg; j < mol->residue.atom_range[rj].end; ++j) {
-                        if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
-                            mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
+                        const vec4_t b = {mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], 0};
+                        const float d2 = vec4_periodic_distance_squared(a, b, period);
+                        const md_element_t elem[2] = { mol->atom.element[i], mol->atom.element[j] };
+                        if (covelent_bond_heuristic(d2, elem)) {
                             md_bond_t bond = {(int32_t)i, (int32_t)j};
                             md_array_push(mol->covalent_bond.bond, bond, alloc);
                             mol->atom.valence[i] += 1;
@@ -584,10 +589,14 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
     }
     else {
         // No residues present, test all against all
+        // @TODO: This should be accelerated by spatial hashing
         for (int64_t i = 0; i < mol->atom.count - 1; ++i) {
+            const vec4_t a = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
             for (int64_t j = i + 1; j < mol->atom.count; ++j) {
-                if (covelent_bond_heuristic(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], mol->atom.element[i],
-                    mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], mol->atom.element[j])) {
+                const vec4_t b = {mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], 0};
+                const float d2 = vec4_periodic_distance_squared(a, b, period);
+                const md_element_t elem[2] = { mol->atom.element[i], mol->atom.element[j] };
+                if (covelent_bond_heuristic(d2, elem)) {
                     md_bond_t bond = {(int32_t)i, (int32_t)j};
                     md_array_push(mol->covalent_bond.bond, bond, alloc);
                     mol->atom.valence[i] += 1;
@@ -662,6 +671,29 @@ mat3_t md_util_compute_unit_cell_basis(float a, float b, float c, float alpha, f
         },
     };
     return M;
+}
+
+// This is a bit silly, but I want to make sure we are conservative and not always compute the length of the vectors
+// In the odd case that we don't exactly get back what we had due to precision errors sqrtf(^2).
+vec3_t md_util_compute_unit_cell_extent(mat3_t M) {
+    vec3_t ext = {0};
+
+    if (M.elem[0][1] == 0 && M.elem[0][2] == 0)
+        ext.x = M.elem[0][0];
+    else
+        ext.x = vec3_length(M.col[0]);
+
+    if (M.elem[1][0] == 0 && M.elem[1][2] == 0)
+        ext.y = M.elem[1][1];
+    else
+        ext.y = vec3_length(M.col[1]);
+
+    if (M.elem[2][0] == 0 && M.elem[2][1] == 0)
+        ext.z = M.elem[2][2];
+    else
+        ext.z = vec3_length(M.col[2]);
+
+    return ext;
 }
 
 bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {

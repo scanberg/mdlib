@@ -604,41 +604,43 @@ static inline vec4_t vec4_round(vec4_t v) {
     return r;
 }
 
-/*
-
-float d = (val - ref) / period;
-d = fractf(d);
-d = d - signf(d) * (float)(fabsf(d) > 0.5f);
-return d * period + ref;
-
-*/
-
-/*
-static inline vec4_t vec4_deperiodize(vec4_t val, vec4_t ref, vec4_t period) {
-    vec4_t result;
+static inline vec4_t vec4_cmp_eq(vec4_t a, vec4_t b) {
+    vec4_t r;
 #if VEC_MATH_USE_SSE
-    result.f128 = md_simd_deperiodize_f128(val.f128, ref.f128, period.f128);
+    r.f128 = md_simd_cmp_eq_f128(a.f128, b.f128);
 #else
-    vec4_t d = vec4_div(vec4_sub(val, ref), period);
-    vec4_t f = vec4_fract(d);
-    vec4_t s = vec4_sign(d);
-    vec4_t a = vec4_abs(d);
-    f = vec4_sub(f, vec4_mul(s, a));
-    return vec4_add(vec4_mul(f, period), ref);
+    r.x = (a.x == b.x) ? 1.0f : 0.0f;
+    r.y = (a.y == b.y) ? 1.0f : 0.0f;
+    r.z = (a.z == b.z) ? 1.0f : 0.0f;
+    r.w = (a.w == b.w) ? 1.0f : 0.0f;
 #endif
-    return result;
+    return r;
 }
-*/
+
+static inline vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_blend_f128(a.f128, b.f128, mask.f128);
+#else
+    r.x = (mask.x != 0.0f) ? a.x : b.x;
+    r.y = (mask.y != 0.0f) ? a.y : b.y;
+    r.z = (mask.z != 0.0f) ? a.z : b.z;
+    r.w = (mask.w != 0.0f) ? a.w : b.w;
+#endif
+    return r;
+}
 
 static inline float vec4_periodic_distance_squared(vec4_t a, vec4_t b, vec4_t period) {
     vec4_t dx = vec4_sub(a, b);
     vec4_t d  = vec4_sub(dx, vec4_mul(vec4_round(vec4_div(dx, period)), period));
+    d = vec4_blend(d, dx, vec4_cmp_eq(period, vec4_zero()));
     return vec4_length_squared(d);
 }
 
 static inline float vec4_periodic_distance(vec4_t a, vec4_t b, vec4_t period) {
     vec4_t dx = vec4_sub(a, b);
     vec4_t d  = vec4_sub(dx, vec4_mul(vec4_round(vec4_div(dx, period)), period));
+    d = vec4_blend(d, dx, vec4_cmp_eq(period, vec4_zero()));
     return vec4_length(d);
 }
 

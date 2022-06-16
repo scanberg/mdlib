@@ -298,6 +298,12 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
     }
 
+    mol->coord_frame = (mat3_t) {
+        data->cell_ext[0] * 10.0f, 0, 0,
+        0, data->cell_ext[1] * 10.0f, 0,
+        0, 0, data->cell_ext[2] * 10.0f,
+    };
+
     md_util_postprocess_molecule(mol, alloc);
 
     return true;

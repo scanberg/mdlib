@@ -1683,13 +1683,13 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.element);
 
-    md_bitfield_t* bf = as_bitfield(*dst);
     irange_t* ranges = as_irange_arr(arg[0]);
     const int64_t num_ranges = element_count(arg[0]);
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
         ASSERT(dst->ptr && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             for (int64_t j = 0; j < num_ranges; ++j) {

@@ -64,6 +64,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
 
 // Compute a mat3 basis from cell extents a,b,c and cell axis angles alpha, beta, gamma (in degrees)
 mat3_t md_util_compute_unit_cell_basis(float a, float b, float c, float alpha, float beta, float gamma);
+vec3_t md_util_compute_unit_cell_extent(mat3_t M);
 
 bool md_util_apply_pbc(struct md_molecule_t* mol, vec3_t pbc_ext);
 
