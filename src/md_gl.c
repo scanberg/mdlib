@@ -981,11 +981,10 @@ bool md_gl_shaders_init(md_gl_shaders_t* ext_shaders, const char* custom_shader_
         if (!custom_shader_snippet) {
             custom_shader_snippet = default_shader_output;
         }
-        bool err;
-        if ((err = create_permuted_program(shaders->space_fill, MD_SHADER_DIR "/space_fill.vert", MD_SHADER_DIR "/space_fill.geom", MD_SHADER_DIR "/space_fill.frag",  custom_shader_snippet)) != true) return err;
-        if ((err = create_permuted_program(shaders->licorice,   MD_SHADER_DIR "/licorice.vert",   MD_SHADER_DIR "/licorice.geom",   MD_SHADER_DIR "/licorice.frag",    custom_shader_snippet)) != true) return err;
-        if ((err = create_permuted_program(shaders->ribbons,    MD_SHADER_DIR "/ribbons.vert",    MD_SHADER_DIR "/ribbons.geom",    MD_SHADER_DIR "/ribbons.frag",     custom_shader_snippet)) != true) return err;
-        if ((err = create_permuted_program(shaders->cartoon,    MD_SHADER_DIR "/cartoon.vert",    MD_SHADER_DIR "/cartoon.geom",    MD_SHADER_DIR "/cartoon.frag",     custom_shader_snippet)) != true) return err;
+        if (!create_permuted_program(shaders->space_fill, MD_SHADER_DIR "/space_fill.vert", MD_SHADER_DIR "/space_fill.geom", MD_SHADER_DIR "/space_fill.frag",  custom_shader_snippet)) return false;
+        if (!create_permuted_program(shaders->licorice,   MD_SHADER_DIR "/licorice.vert",   MD_SHADER_DIR "/licorice.geom",   MD_SHADER_DIR "/licorice.frag",    custom_shader_snippet)) return false;
+        if (!create_permuted_program(shaders->ribbons,    MD_SHADER_DIR "/ribbons.vert",    MD_SHADER_DIR "/ribbons.geom",    MD_SHADER_DIR "/ribbons.frag",     custom_shader_snippet)) return false;
+        if (!create_permuted_program(shaders->cartoon,    MD_SHADER_DIR "/cartoon.vert",    MD_SHADER_DIR "/cartoon.geom",    MD_SHADER_DIR "/cartoon.frag",     custom_shader_snippet)) return false;
     }
 
     return true;
@@ -1216,10 +1215,10 @@ static bool compute_residue_aabb(const internal_mol_t* mol);
 static bool cull_aabb(const internal_mol_t* mol);
 static bool compute_spline(const internal_mol_t* mol);
 
-static bool draw_space_fill(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation);
-static bool draw_licorice  (const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation);
-static bool draw_ribbons   (const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation);
-static bool draw_cartoon   (const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation);
+static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, float scale);
+static bool draw_licorice  (gl_program_t program, const internal_rep_t* rep, float scale);
+static bool draw_ribbons   (gl_program_t program, const internal_rep_t* rep, float scale);
+static bool draw_cartoon   (gl_program_t program, const internal_rep_t* rep, float scale);
 
 static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_args_t* args, const mat4_t* model_matrix) {
     ASSERT(ubo_data);
@@ -1354,12 +1353,26 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     for (int64_t i = 0; i < md_array_size(draw_ops); i++) {
         const internal_rep_t* rep  = (const internal_rep_t*)draw_ops[i]->rep;
         const mat4_t* model_matrix = (const mat4_t*)draw_ops[i]->model_matrix;
+        float scale = 1.0f;
 
         if (model_matrix) {
             // If we have a model matrix, we need to recompute the entire matrix stack...
             gl_ubo_base_t ubo_tmp = {0};
             init_ubo_base_data(&ubo_tmp, args, model_matrix);
             gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(gl_ubo_base_t), &ubo_tmp);
+            vec3_t model_scale = (vec3_t) {
+                vec3_length(vec3_from_vec4(model_matrix->col[0])),
+                vec3_length(vec3_from_vec4(model_matrix->col[1])),
+                vec3_length(vec3_from_vec4(model_matrix->col[2])),
+            };
+            if (model_scale.x != model_scale.y || model_scale.x != model_scale.z) {
+                float mean = (model_scale.x + model_scale.y + model_scale.z) / 3.0f;
+                md_printf(MD_LOG_TYPE_INFO, "Non uniform scale detected in model matrix (%.2f, %.2f, %.2f), this is not supported. Falling back to mean value (%.2f) as uniform scale",
+                    model_scale.x, model_scale.y, model_scale.z, mean);
+                scale = mean;
+            } else {
+                scale = model_scale.x;
+            }
         }
 
         switch (rep->type) {
@@ -1367,16 +1380,16 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             break;
         case MD_GL_REP_DEFAULT:
         case MD_GL_REP_SPACE_FILL:
-            draw_space_fill(shaders, rep, program_permutation);
+            draw_space_fill(shaders->space_fill[program_permutation], rep, scale);
             break;
         case MD_GL_REP_RIBBONS:
-            draw_ribbons(shaders, rep, program_permutation);
+            draw_ribbons(shaders->ribbons[program_permutation], rep, scale);
             break;
         case MD_GL_REP_CARTOON:
-            draw_cartoon(shaders, rep, program_permutation);
+            draw_cartoon(shaders->cartoon[program_permutation], rep, scale);
             break;
         case MD_GL_REP_LICORICE:
-            draw_licorice(shaders, rep, program_permutation);
+            draw_licorice(shaders->licorice[program_permutation], rep, scale);
             break;
         default:
             md_print(MD_LOG_TYPE_ERROR, "Representation had unexpected type");
@@ -1396,10 +1409,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     return true;
 }
 
-static bool draw_space_fill(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation) {
-    ASSERT(shaders);
-    ASSERT(shaders->space_fill[program_permutation].id);
-
+static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, float scale) {
     ASSERT(rep);
     ASSERT(rep->mol);
     ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
@@ -1408,7 +1418,7 @@ static bool draw_space_fill(const internal_shaders_t* shaders, const internal_re
     ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
     ASSERT(rep->color.id);
 
-    const float radius_scale = rep->args.space_fill.radius_scale;
+    const float radius_scale = rep->args.space_fill.radius_scale * scale;
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(radius_scale), &radius_scale);
 
     glBindVertexArray(ctx.vao);
@@ -1435,7 +1445,7 @@ static bool draw_space_fill(const internal_shaders_t* shaders, const internal_re
     
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     
-    glUseProgram(shaders->space_fill[program_permutation].id);
+    glUseProgram(program.id);
     glDrawArrays(GL_POINTS, 0, rep->mol->atom_count);
     glUseProgram(0);
     
@@ -1450,10 +1460,7 @@ static bool draw_space_fill(const internal_shaders_t* shaders, const internal_re
     return true;
 }
 
-static bool draw_licorice(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation) {
-    ASSERT(shaders);
-    ASSERT(shaders->licorice[program_permutation].id);
-
+static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float scale) {
     ASSERT(rep);
     ASSERT(rep->mol);
     ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
@@ -1462,7 +1469,7 @@ static bool draw_licorice(const internal_shaders_t* shaders, const internal_rep_
     ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
     ASSERT(rep->color.id);
 
-    const float radius = rep->args.licorice.radius;
+    const float radius = rep->args.licorice.radius * 0.5f * scale;
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(radius), &radius);
 
     glBindVertexArray(ctx.vao);
@@ -1487,7 +1494,7 @@ static bool draw_licorice(const internal_shaders_t* shaders, const internal_rep_
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
 
-    glUseProgram(shaders->licorice[program_permutation].id);
+    glUseProgram(program.id);
     glDrawElements(GL_LINES, rep->mol->bond_count * 2, GL_UNSIGNED_INT, 0);
     glUseProgram(0);
 
@@ -1503,10 +1510,7 @@ static bool draw_licorice(const internal_shaders_t* shaders, const internal_rep_
     return true;
 }
 
-bool draw_ribbons(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation) {
-    ASSERT(shaders);
-    ASSERT(shaders->ribbons[program_permutation].id);
-
+bool draw_ribbons(gl_program_t program, const internal_rep_t* rep, float scale) {
     ASSERT(rep);
     ASSERT(rep->mol);
     ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
@@ -1514,11 +1518,11 @@ bool draw_ribbons(const internal_shaders_t* shaders, const internal_rep_t* rep, 
     ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
     ASSERT(rep->color.id);
 
-    float scale[2] = {
-        rep->args.ribbons.width_scale,
-        rep->args.ribbons.thickness_scale * 0.1f
+    const float profile_scale[2] = {
+        rep->args.ribbons.width_scale * scale,
+        rep->args.ribbons.thickness_scale * 0.1f * scale,
     };
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(scale), &scale);
+    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(profile_scale), &profile_scale);
 
     glBindVertexArray(ctx.vao);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
@@ -1556,10 +1560,9 @@ bool draw_ribbons(const internal_shaders_t* shaders, const internal_rep_t* rep, 
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFF);
 
-    GLuint program = shaders->ribbons[program_permutation].id;
-    glUseProgram(program);
-    glUniform1i(glGetUniformLocation(program, "u_atom_color_buffer"), 0);
-    glUniform1i(glGetUniformLocation(program, "u_atom_flags_buffer"), 1);
+    glUseProgram(program.id);
+    glUniform1i(glGetUniformLocation(program.id, "u_atom_color_buffer"), 0);
+    glUniform1i(glGetUniformLocation(program.id, "u_atom_flags_buffer"), 1);
     glDrawElements(GL_LINE_STRIP, rep->mol->backbone_spline_index_count, GL_UNSIGNED_INT, 0);
     glUseProgram(0);
 
@@ -1578,10 +1581,7 @@ bool draw_ribbons(const internal_shaders_t* shaders, const internal_rep_t* rep, 
     return true;
 }
 
-static bool draw_cartoon(const internal_shaders_t* shaders, const internal_rep_t* rep, int program_permutation) {
-    ASSERT(shaders);
-    ASSERT(shaders->cartoon[program_permutation].id);
-
+static bool draw_cartoon(gl_program_t program, const internal_rep_t* rep, float scale) {
     ASSERT(rep);
     ASSERT(rep->mol);
     ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
@@ -1589,11 +1589,11 @@ static bool draw_cartoon(const internal_shaders_t* shaders, const internal_rep_t
     ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
     ASSERT(rep->color.id);
 
-    float scale[2] = {
-        rep->args.ribbons.width_scale,
-        rep->args.ribbons.thickness_scale
+    const float profile_scale[2] = {
+        rep->args.ribbons.width_scale * scale,
+        rep->args.ribbons.thickness_scale * scale,
     };
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(scale), &scale);
+    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(profile_scale), &profile_scale);
 
     glBindVertexArray(ctx.vao);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
@@ -1637,10 +1637,9 @@ static bool draw_cartoon(const internal_shaders_t* shaders, const internal_rep_t
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFF);
 
-    GLuint program = shaders->cartoon[program_permutation].id;
-    glUseProgram(program);
-    glUniform1i(glGetUniformLocation(program, "u_atom_color_buffer"), 0);
-    glUniform1i(glGetUniformLocation(program, "u_atom_flags_buffer"), 1);
+    glUseProgram(program.id);
+    glUniform1i(glGetUniformLocation(program.id, "u_atom_color_buffer"), 0);
+    glUniform1i(glGetUniformLocation(program.id, "u_atom_flags_buffer"), 1);
     glDrawElements(GL_LINE_STRIP, rep->mol->backbone_spline_index_count, GL_UNSIGNED_INT, 0);
     glUseProgram(0);
 
