@@ -24,15 +24,16 @@ typedef struct md_array_header_t {
     int64_t size;
 } md_array_header_t;
 
-#define md_array_header(a)          ((md_array_header_t*)((uint8_t*)(a) - sizeof(md_array_header_t)))
-#define md_array_size(a)            ((a) ? md_array_header(a)->size : 0)
-#define md_array_bytes(a)           (md_array_size(a) * sizeof(*(a)))
-#define md_array_end(a)             ((a) ? (a + md_array_size(a)) : NULL)
-#define md_array_last(a)            ((a) ? md_array_end(a) - 1 : NULL)
-#define md_array_capacity(a)        ((a) ? md_array_header(a)->capacity : 0)
-#define md_array_needs_to_grow(a,n) (md_array_capacity(a) < n)
-#define md_array_pop(a)             ((a)[--md_array_header(a)->size])
-#define md_array_shrink(a,n)        ((a) ? md_array_header(a)->size = n : 0)
+#define md_array_header(a)              ((md_array_header_t*)((uint8_t*)(a) - sizeof(md_array_header_t)))
+#define md_array_size(a)                ((a) ? md_array_header(a)->size : 0)
+#define md_array_bytes(a)               (md_array_size(a) * sizeof(*(a)))
+#define md_array_end(a)                 ((a) ? (a + md_array_size(a)) : NULL)
+#define md_array_last(a)                ((a) ? md_array_end(a) - 1 : NULL)
+#define md_array_capacity(a)            ((a) ? md_array_header(a)->capacity : 0)
+#define md_array_needs_to_grow(a,n)     (md_array_capacity(a) < n)
+#define md_array_pop(a)                 ((a)[--md_array_header(a)->size])
+#define md_array_shrink(a,n)            ((a) ? md_array_header(a)->size = n : 0)
+#define md_array_swap_back_and_pop(a,i) ((a)[i] = (a)[--md_array_header(a)->size])
 
 // Allocator time!
 #define md_array_grow(a, n, alloc)      ((*(void **)&(a)) = md_array_grow_internal((void *)a, n, sizeof(*a), alloc, __FILE__, __LINE__))
