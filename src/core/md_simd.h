@@ -231,6 +231,20 @@ static inline float md_simd_horizontal_add_f128(__m128 x) {
     return _mm_cvtss_f32(sums);
 }
 
+static inline __m128 md_simd_cubic_spline_f128(__m128 p0, __m128 p1, __m128 p2, __m128 p3, __m128 t, __m128 tension) {
+    const __m128 vt = tension;
+    const __m128 t1 = t;
+    const __m128 t2 = _mm_mul_ps(t, t);
+    const __m128 t3 = _mm_mul_ps(t2, t);
+    const __m128 v0 = _mm_mul_ps(_mm_sub_ps(p2, p0), vt);
+    const __m128 v1 = _mm_mul_ps(_mm_sub_ps(p3, p1), vt);
+    const __m128 x0 = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(2), _mm_sub_ps(p1, p2)), _mm_add_ps(v0, v1));
+    const __m128 x1 = _mm_sub_ps(_mm_mul_ps(_mm_set1_ps(3), _mm_sub_ps(p2, p1)), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(2), v0), v1));
+    const __m128 r0 = _mm_add_ps(_mm_mul_ps(x0, t3), _mm_mul_ps(x1, t2));
+    const __m128 r1 = _mm_add_ps(_mm_mul_ps(v0, t1), p1);
+    return _mm_add_ps(r0, r1);
+}
+
 // Cast
 static inline __m128  md_simd_cast_f128_i128(__m128i x) { return _mm_castsi128_ps(x); }
 static inline __m128i md_simd_cast_i128_f128(__m128  x) { return _mm_castps_si128(x); }

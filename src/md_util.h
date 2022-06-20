@@ -78,67 +78,37 @@ vec3_t md_util_compute_com_periodic(const float* x, const float* y, const float*
 vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count);
 
 // Computes the optimal rotation between two configurations of a set of points with corresponding weights weights
-// x0, y0, z0 -> position 0
-// x1, y1, z1 -> position 1
-// w -> weight (is assumed to be constant)
+// x0, y0, z0 -> arrays of position 0
+// x1, y1, z1 -> arrays of position 1
+// w -> array of weights (optional)
 // count -> Length of all arrays
 mat3_t md_util_compute_optimal_rotation(const float* x0, const float* y0, const float* z0, vec3_t com0, const float* x1, const float* y1, const float* z1, vec3_t com1, const float* w, int64_t count);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
 // The rmsd is the root mean squared deviation between the two sets of aligned vectors.
+// x0, y0, z0 -> arrays of position 0
+// x1, y1, z1 -> arrays of position 1
+// w -> array of weights (optional)
+// count -> Length of all arrays
 double md_util_compute_rmsd(const float* x0, const float* y0, const float* z0, const float* x1, const float* y1, const float* z1, const float* w, int64_t count);
 
-typedef struct md_util_linear_interpolation_args_t {
-    struct {
-        int64_t count;
-        struct {
-            float* x;
-            float* y;
-            float* z;
-        } dst;
+// Perform linear interpolation of supplied coordinates
+// dst_coord -> destination arrays (x,y,z)
+// src_coord -> source arrays [2] (x0, y0, z0), (x1, y1, z1)
+// count -> count of coordinates (this implies that all coordinate arrays must be equal in length)
+// pbc_ext -> Extent of periodic boundary (optional) set to zero if should be ignored
+// t -> interpolation factor (0..1)
+bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], int64_t count, vec3_t pbc_ext, float t);
 
-        struct {
-            const float* x;
-            const float* y;
-            const float* z;
-        } src[2];
-    } coord;
-
-    struct {
-        float box[3][3];
-    } pbc;
-
-    float t;
-} md_util_linear_interpolation_args_t;
-
-void md_util_linear_interpolation(md_util_linear_interpolation_args_t args);
-
-typedef struct md_util_cubic_interpolation_args_t {
-    struct {
-        int64_t count;
-        struct {
-            float* x;
-            float* y;
-            float* z;
-        } dst;
-
-        struct {
-            const float* x;
-            const float* y;
-            const float* z;
-        } src[4];
-    } coord;
-
-    struct {
-        float box[3][3];
-    } pbc;
-
-    float t;
-    float tension;
-} md_util_cubic_interpolation_args_t;
-
-void md_util_cubic_interpolation(md_util_cubic_interpolation_args_t args);
+// Perform cubic interpolation of supplied coordinates
+// dst_coord -> destination arrays (x,y,z)
+// src_coord -> source arrays [4] (x0, y0, z0), (x1, y1, z1), (x2, y2, z2), (x3, y3, z3)
+// count -> count of coordinates (this implies that all coordinate arrays must be equal in length)
+// pbc_ext -> Extent of periodic boundary (optional) set to zero if should be ignored
+// t -> interpolation factor (0..1)
+// tension -> tension factor (0..1), 0 is jerky, 0.5 corresponds to catmul rom, 1.0 is silky smooth
+bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float tension);
 
 #ifdef __cplusplus
 }

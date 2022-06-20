@@ -140,6 +140,14 @@ static inline float lerpf(float a, float b, float t) {
     return a * (1.0f - t) + b * t;
 }
 
+static inline float cubic_splinef(float p0, float p1, float p2, float p3, float t, float tension) {
+    const float v0 = (p2 - p0) * tension;
+    const float v1 = (p3 - p1) * tension;
+    const float t2 = t * t;
+    const float t3 = t * t * t;
+    return (2.0f * p1 - 2.0f * p2 + v0 + v1) * t3 + (-3.0f * p1 + 3.0f * p2 - 2.0f * v0 - v1) * t2 + v0 * t + p1;
+}
+
 // VEC2 OPERATIONS
 static inline vec2_t vec2_from_vec3(vec3_t v) {
     vec2_t r = {v.x, v.y};
@@ -526,6 +534,21 @@ static inline vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
     return r;
 }
 
+static inline vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p3, float t, float tension) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    const vec4_t vt = {t,t,t,t};
+    const vec4_t vtension = {tension, tension, tension, tension};
+    r.f128 = md_simd_cubic_spline_f128(p0.f128, p1.f128, p2.f128, p3.f128, vt.f128, vtension.f128);
+#else
+    r.x = cubic_splinef(p0.x, p1.x, p2.x, p3.x, t, tension);
+    r.y = cubic_splinef(p0.y, p1.y, p2.y, p3.y, t, tension);
+    r.z = cubic_splinef(p0.z, p1.z, p2.z, p3.z, t, tension);
+    r.w = cubic_splinef(p0.w, p1.w, p2.w, p3.w, t, tension);
+#endif
+    return r;
+}
+
 static inline vec4_t vec4_min(vec4_t a, vec4_t b) {
     vec4_t r;
 #if VEC_MATH_USE_SSE
@@ -628,6 +651,14 @@ static inline vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
     r.w = (mask.w != 0.0f) ? a.w : b.w;
 #endif
     return r;
+}
+
+static inline vec4_t vec4_deperiodize(vec4_t x, vec4_t r, vec4_t period) {
+    vec4_t d = vec4_sub(x, r);
+    vec4_t dx = vec4_div(d, period);
+    dx = vec4_sub(dx, vec4_round(dx));
+    vec4_t x_prim = vec4_add(r, vec4_mul(dx, period));
+    return vec4_blend(x_prim, x, vec4_cmp_eq(period, vec4_zero()));
 }
 
 static inline float vec4_periodic_distance_squared(vec4_t a, vec4_t b, vec4_t period) {
@@ -1507,7 +1538,6 @@ T cubic_spline(T p0, T p1, T p2, T p3, V s, V tension = (V)0.5) {
     T v1 = (p3 - p1) * tension;
     V s2 = s * s;
     V s3 = s * s2;
-
     return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * s3 + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * s2 + v0 * s + p1;
 }
 

@@ -1360,19 +1360,15 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             gl_ubo_base_t ubo_tmp = {0};
             init_ubo_base_data(&ubo_tmp, args, model_matrix);
             gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(gl_ubo_base_t), &ubo_tmp);
-            vec3_t model_scale = (vec3_t) {
+            const vec3_t model_scale = (vec3_t) {
                 vec3_length(vec3_from_vec4(ubo_tmp.view_transform.world_to_view.col[0])),
                 vec3_length(vec3_from_vec4(ubo_tmp.view_transform.world_to_view.col[1])),
                 vec3_length(vec3_from_vec4(ubo_tmp.view_transform.world_to_view.col[2])),
             };
-            if (model_scale.x != model_scale.y || model_scale.x != model_scale.z) {
-                float mean = (model_scale.x + model_scale.y + model_scale.z) / 3.0f;
-                md_printf(MD_LOG_TYPE_INFO, "Non uniform scale detected in model-view matrix (%.2f, %.2f, %.2f), this is not supported. Falling back to mean value (%.2f) as uniform scale for parameters",
-                    model_scale.x, model_scale.y, model_scale.z, mean);
-                scale = mean;
-            } else {
-                scale = model_scale.x;
-            }
+            const float mean = (model_scale.x + model_scale.y + model_scale.z) / 3.0f;
+
+            // Non uniform scale is not supported, it will cause rendering artifact for radius scaling parameters which are assumed to be uniform.
+            scale = mean;
         }
 
         switch (rep->type) {

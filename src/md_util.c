@@ -504,7 +504,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
-static inline bool covelent_bond_heuristic(float dist_squared, md_element_t elem[2]) {
+static inline bool covelent_bond_heuristic(float dist_squared, const md_element_t elem[2]) {
     const float d = element_covalent_radii[elem[0]] + element_covalent_radii[elem[1]];
     const float d_min = d - 0.5f;
     const float d_max = d + 0.3f;
@@ -947,84 +947,121 @@ double md_util_compute_rmsd(const float* x0, const float* y0, const float* z0, c
     return sqrt(d_sum / w_sum);
 }
 
-
-
-static const float zero_box[3][3] = {0};
-
-void md_util_linear_interpolation(md_util_linear_interpolation_args_t args) {
-    bool use_pbc = memcmp(args.pbc.box, zero_box, sizeof(args.pbc.box)) != 0;
+bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], int64_t count, vec3_t pbc_ext, float t) {
+    const bool use_pbc = !vec3_equal(pbc_ext, (vec3_t){0,0,0});
+    t = CLAMP(t, 0.0f, 1.0f);
 
     if (use_pbc) {
-        md_simd_typef box_ext_x = md_simd_set1f(args.pbc.box[0][0]);
-        md_simd_typef box_ext_y = md_simd_set1f(args.pbc.box[1][1]);
-        md_simd_typef box_ext_z = md_simd_set1f(args.pbc.box[2][2]);
+        md_simd_typef box_ext_x = md_simd_set1f(pbc_ext.x);
+        md_simd_typef box_ext_y = md_simd_set1f(pbc_ext.y);
+        md_simd_typef box_ext_z = md_simd_set1f(pbc_ext.z);
 
-        for (int64_t i = 0; i < args.coord.count; i += md_simd_widthf) {
-            md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
-            md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
-            md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
+        int64_t i = 0;
+        const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
+        for (; i < simd_count; i += md_simd_widthf) {
+            md_simd_typef x0 = md_simd_loadf(src_coord[0].x + i);
+            md_simd_typef y0 = md_simd_loadf(src_coord[0].y + i);
+            md_simd_typef z0 = md_simd_loadf(src_coord[0].z + i);
 
-            md_simd_typef x1 = md_simd_loadf(args.coord.src[1].x + i);
-            md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
-            md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
+            md_simd_typef x1 = md_simd_loadf(src_coord[1].x + i);
+            md_simd_typef y1 = md_simd_loadf(src_coord[1].y + i);
+            md_simd_typef z1 = md_simd_loadf(src_coord[1].z + i);
 
             x1 = simd_deperiodize(x1, x0, box_ext_x);
             y1 = simd_deperiodize(y1, y0, box_ext_y);
             z1 = simd_deperiodize(z1, z0, box_ext_z);
 
-            md_simd_typef x = md_simd_lerpf(x0, x1, args.t);
-            md_simd_typef y = md_simd_lerpf(y0, y1, args.t);
-            md_simd_typef z = md_simd_lerpf(z0, z1, args.t);
+            md_simd_typef x = md_simd_lerpf(x0, x1, t);
+            md_simd_typef y = md_simd_lerpf(y0, y1, t);
+            md_simd_typef z = md_simd_lerpf(z0, z1, t);
 
-            md_simd_storef(args.coord.dst.x + i, x);
-            md_simd_storef(args.coord.dst.y + i, y);
-            md_simd_storef(args.coord.dst.z + i, z);
+            md_simd_storef(dst_coord.x + i, x);
+            md_simd_storef(dst_coord.y + i, y);
+            md_simd_storef(dst_coord.z + i, z);
+        }
+
+        // Do the rest
+        const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0.0f);
+        for (; i < count; ++i) {
+            vec4_t src[2] = {
+                {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
+                {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
+            };
+
+            src[1] = vec4_deperiodize(src[1], src[0], pbc_ext4);
+            const vec4_t coord = vec4_lerp(src[0], src[1], t);
+
+            dst_coord.x[i] = coord.x;
+            dst_coord.y[i] = coord.y;
+            dst_coord.z[i] = coord.z;
         }
     } else {
-        for (int64_t i = 0; i < args.coord.count; i += md_simd_widthf) {
-            md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
-            md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
-            md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
+        int64_t i = 0;
+        const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
+        for (; i < simd_count; i += md_simd_widthf) {
+            md_simd_typef x0 = md_simd_loadf(src_coord[0].x + i);
+            md_simd_typef y0 = md_simd_loadf(src_coord[0].y + i);
+            md_simd_typef z0 = md_simd_loadf(src_coord[0].z + i);
 
-            md_simd_typef x1 = md_simd_loadf(args.coord.src[1].x + i);
-            md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
-            md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
+            md_simd_typef x1 = md_simd_loadf(src_coord[1].x + i);
+            md_simd_typef y1 = md_simd_loadf(src_coord[1].y + i);
+            md_simd_typef z1 = md_simd_loadf(src_coord[1].z + i);
 
-            md_simd_typef x = md_simd_lerpf(x0, x1, args.t);
-            md_simd_typef y = md_simd_lerpf(y0, y1, args.t);
-            md_simd_typef z = md_simd_lerpf(z0, z1, args.t);
+            md_simd_typef x = md_simd_lerpf(x0, x1, t);
+            md_simd_typef y = md_simd_lerpf(y0, y1, t);
+            md_simd_typef z = md_simd_lerpf(z0, z1, t);
 
-            md_simd_storef(args.coord.dst.x + i, x);
-            md_simd_storef(args.coord.dst.y + i, y);
-            md_simd_storef(args.coord.dst.z + i, z);
+            md_simd_storef(dst_coord.x + i, x);
+            md_simd_storef(dst_coord.y + i, y);
+            md_simd_storef(dst_coord.z + i, z);
+        }
+
+        // Do the rest
+        for (; i < count; ++i) {
+            vec4_t src[2] = {
+                {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
+                {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
+            };
+
+            const vec4_t coord = vec4_lerp(src[0], src[1], t);
+
+            dst_coord.x[i] = coord.x;
+            dst_coord.y[i] = coord.y;
+            dst_coord.z[i] = coord.z;
         }
     }
+
+    return true;
 }
 
-void md_util_cubic_interpolation(md_util_cubic_interpolation_args_t args) {
-    bool use_pbc = memcmp(args.pbc.box, zero_box, sizeof(args.pbc.box)) != 0;
+bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float tension) {
+    const bool use_pbc = !vec3_equal(pbc_ext, (vec3_t){0,0,0});
+    t = CLAMP(t, 0.0f, 1.0f);
+    tension = CLAMP(tension, 0.0f, 1.0f);
 
     if (use_pbc) {
-        md_simd_typef box_ext_x = md_simd_set1f(args.pbc.box[0][0]);
-        md_simd_typef box_ext_y = md_simd_set1f(args.pbc.box[1][1]);
-        md_simd_typef box_ext_z = md_simd_set1f(args.pbc.box[2][2]);
+        md_simd_typef box_ext_x = md_simd_set1f(pbc_ext.x);
+        md_simd_typef box_ext_y = md_simd_set1f(pbc_ext.y);
+        md_simd_typef box_ext_z = md_simd_set1f(pbc_ext.z);
 
-        for (int64_t i = 0; i < args.coord.count; i += md_simd_widthf) {
-            md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
-            md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
-            md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
+        int64_t i = 0;
+        const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
+        for (; i < simd_count; i += md_simd_widthf) {
+            md_simd_typef x0 = md_simd_loadf(src_coord[0].x + i);
+            md_simd_typef y0 = md_simd_loadf(src_coord[0].y + i);
+            md_simd_typef z0 = md_simd_loadf(src_coord[0].z + i);
 
-            md_simd_typef x1 = md_simd_loadf(args.coord.src[1].x + i);
-            md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
-            md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
+            md_simd_typef x1 = md_simd_loadf(src_coord[1].x + i);
+            md_simd_typef y1 = md_simd_loadf(src_coord[1].y + i);
+            md_simd_typef z1 = md_simd_loadf(src_coord[1].z + i);
 
-            md_simd_typef x2 = md_simd_loadf(args.coord.src[2].x + i);
-            md_simd_typef y2 = md_simd_loadf(args.coord.src[2].y + i);
-            md_simd_typef z2 = md_simd_loadf(args.coord.src[2].z + i);
+            md_simd_typef x2 = md_simd_loadf(src_coord[2].x + i);
+            md_simd_typef y2 = md_simd_loadf(src_coord[2].y + i);
+            md_simd_typef z2 = md_simd_loadf(src_coord[2].z + i);
 
-            md_simd_typef x3 = md_simd_loadf(args.coord.src[3].x + i);
-            md_simd_typef y3 = md_simd_loadf(args.coord.src[3].y + i);
-            md_simd_typef z3 = md_simd_loadf(args.coord.src[3].z + i);
+            md_simd_typef x3 = md_simd_loadf(src_coord[3].x + i);
+            md_simd_typef y3 = md_simd_loadf(src_coord[3].y + i);
+            md_simd_typef z3 = md_simd_loadf(src_coord[3].z + i);
 
             x0 = simd_deperiodize(x0, x1, box_ext_x);
             x2 = simd_deperiodize(x2, x1, box_ext_x);
@@ -1038,41 +1075,82 @@ void md_util_cubic_interpolation(md_util_cubic_interpolation_args_t args) {
             z2 = simd_deperiodize(z2, z1, box_ext_z);
             z3 = simd_deperiodize(z3, z2, box_ext_z);
 
-            md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, args.t, args.tension);
-            md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, args.t, args.tension);
-            md_simd_typef z = md_simd_cubic_splinef(z0, z1, z2, z3, args.t, args.tension);
+            md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, t, tension);
+            md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, t, tension);
+            md_simd_typef z = md_simd_cubic_splinef(z0, z1, z2, z3, t, tension);
 
-            md_simd_storef(args.coord.dst.x + i, x);
-            md_simd_storef(args.coord.dst.y + i, y);
-            md_simd_storef(args.coord.dst.z + i, z);
+            md_simd_storef(dst_coord.x + i, x);
+            md_simd_storef(dst_coord.y + i, y);
+            md_simd_storef(dst_coord.z + i, z);
+        }
+
+        // Do the rest
+        const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0.0f);
+        for (; i < count; ++i) {
+            vec4_t src[4] = {
+                {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
+                {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
+                {src_coord[2].x[i], src_coord[2].y[i], src_coord[2].z[i], 1},
+                {src_coord[3].x[i], src_coord[3].y[i], src_coord[3].z[i], 1},
+            };
+
+            src[0] = vec4_deperiodize(src[0], src[1], pbc_ext4);
+            src[2] = vec4_deperiodize(src[2], src[1], pbc_ext4);
+            src[3] = vec4_deperiodize(src[3], src[2], pbc_ext4);
+
+            const vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, tension);
+
+            dst_coord.x[i] = coord.x;
+            dst_coord.y[i] = coord.y;
+            dst_coord.z[i] = coord.z;
         }
     } else {
-        for (int64_t i = 0; i < args.coord.count; i += md_simd_widthf) {
-            md_simd_typef x0 = md_simd_loadf(args.coord.src[0].x + i);
-            md_simd_typef y0 = md_simd_loadf(args.coord.src[0].y + i);
-            md_simd_typef z0 = md_simd_loadf(args.coord.src[0].z + i);
+        int64_t i = 0;
+        const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
+        for (; i < simd_count; i += md_simd_widthf) {
+            md_simd_typef x0 = md_simd_loadf(src_coord[0].x + i);
+            md_simd_typef y0 = md_simd_loadf(src_coord[0].y + i);
+            md_simd_typef z0 = md_simd_loadf(src_coord[0].z + i);
 
-            md_simd_typef x1 = md_simd_loadf(args.coord.src[1].x + i);
-            md_simd_typef y1 = md_simd_loadf(args.coord.src[1].y + i);
-            md_simd_typef z1 = md_simd_loadf(args.coord.src[1].z + i);
+            md_simd_typef x1 = md_simd_loadf(src_coord[1].x + i);
+            md_simd_typef y1 = md_simd_loadf(src_coord[1].y + i);
+            md_simd_typef z1 = md_simd_loadf(src_coord[1].z + i);
 
-            md_simd_typef x2 = md_simd_loadf(args.coord.src[2].x + i);
-            md_simd_typef y2 = md_simd_loadf(args.coord.src[2].y + i);
-            md_simd_typef z2 = md_simd_loadf(args.coord.src[2].z + i);
+            md_simd_typef x2 = md_simd_loadf(src_coord[2].x + i);
+            md_simd_typef y2 = md_simd_loadf(src_coord[2].y + i);
+            md_simd_typef z2 = md_simd_loadf(src_coord[2].z + i);
 
-            md_simd_typef x3 = md_simd_loadf(args.coord.src[3].x + i);
-            md_simd_typef y3 = md_simd_loadf(args.coord.src[3].y + i);
-            md_simd_typef z3 = md_simd_loadf(args.coord.src[3].z + i);
+            md_simd_typef x3 = md_simd_loadf(src_coord[3].x + i);
+            md_simd_typef y3 = md_simd_loadf(src_coord[3].y + i);
+            md_simd_typef z3 = md_simd_loadf(src_coord[3].z + i);
 
-            md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, args.t, args.tension);
-            md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, args.t, args.tension);
-            md_simd_typef z = md_simd_cubic_splinef(z0, z1, z2, z3, args.t, args.tension);
+            md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, t, tension);
+            md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, t, tension);
+            md_simd_typef z = md_simd_cubic_splinef(z0, z1, z2, z3, t, tension);
 
-            md_simd_storef(args.coord.dst.x + i, x);
-            md_simd_storef(args.coord.dst.y + i, y);
-            md_simd_storef(args.coord.dst.z + i, z);
+            md_simd_storef(dst_coord.x + i, x);
+            md_simd_storef(dst_coord.y + i, y);
+            md_simd_storef(dst_coord.z + i, z);
+        }
+
+        // Do the rest
+        for (; i < count; ++i) {
+            vec4_t src[4] = {
+                {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
+                {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
+                {src_coord[2].x[i], src_coord[2].y[i], src_coord[2].z[i], 1},
+                {src_coord[3].x[i], src_coord[3].y[i], src_coord[3].z[i], 1},
+            };
+
+            vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, tension);
+
+            dst_coord.x[i] = coord.x;
+            dst_coord.y[i] = coord.y;
+            dst_coord.z[i] = coord.z;
         }
     }
+
+    return true;
 }
 
 static inline bool ranges_overlap(md_range_t a, md_range_t b) {

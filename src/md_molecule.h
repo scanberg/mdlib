@@ -70,14 +70,24 @@ typedef struct md_label_t {
 #endif
 } md_label_t;
 
-typedef struct md_molecule_atom_data_t {
-    int64_t count;
+// Structure Of Array layout version of vec3_t
+typedef struct md_vec3_soa_t {
     float* x;
     float* y;
     float* z;
+} md_vec3_soa_t;
+
+typedef struct md_molecule_atom_data_t {
+    int64_t count;
+    // Coordinates
+    float* x;
+    float* y;
+    float* z;
+    // Velocities
     float* vx;
     float* vy;
     float* vz;
+    // Misc
     float* radius;
     float* mass;
     uint8_t* valence;
@@ -187,6 +197,18 @@ static inline str_t label_to_str(const md_label_t* lbl) {
     ASSERT(lbl);
     str_t str = {lbl->buf, lbl->len};
     return str;
+}
+
+static inline md_vec3_soa_t md_molecule_coord_soa(md_molecule_t* mol) {
+    ASSERT(mol);
+    md_vec3_soa_t soa = {mol->atom.x, mol->atom.y, mol->atom.z};
+    return soa;
+}
+
+static inline md_vec3_soa_t md_molecule_velocity_soa(md_molecule_t* mol) {
+    ASSERT(mol);
+    md_vec3_soa_t soa = {mol->atom.vx, mol->atom.vy, mol->atom.vz};
+    return soa;
 }
 
 #ifdef __cplusplus
