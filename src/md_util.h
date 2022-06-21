@@ -63,35 +63,62 @@ bool md_util_extract_hydrogen_bonds(struct md_molecule_t* mol, struct md_allocat
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
 // Compute a mat3 basis from cell extents a,b,c and cell axis angles alpha, beta, gamma (in degrees)
-mat3_t md_util_compute_unit_cell_basis(float a, float b, float c, float alpha, float beta, float gamma);
+mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma);
 vec3_t md_util_compute_unit_cell_extent(mat3_t M);
 
+// Applies periodic boundary conditions to coordinates of atoms within molecule
+// It ensures that residues are
 bool md_util_apply_pbc(struct md_molecule_t* mol, vec3_t pbc_ext);
 
-// Computes the center of mass for a set of points with a given weight given in a periodic box
-vec3_t md_util_compute_com_periodic(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t pbc_ext);
+// Structure Of Array layout version of vec3_t
+// This is to simplify the interfaces a bit when dealing with multiple coordinate streams
+typedef struct md_vec3_soa_t {
+    float* x;
+    float* y;
+    float* z;
+} md_vec3_soa_t;
+
+// Convenience functions to extract vec3_soa streams from molecule
+static inline md_vec3_soa_t md_molecule_coord(md_molecule_t* mol) {
+    ASSERT(mol);
+    md_vec3_soa_t soa = {mol->atom.x, mol->atom.y, mol->atom.z};
+    return soa;
+}
+
+static inline md_vec3_soa_t md_molecule_vel(md_molecule_t* mol) {
+    ASSERT(mol);
+    md_vec3_soa_t soa = {mol->atom.vx, mol->atom.vy, mol->atom.vz};
+    return soa;
+}
 
 // Computes the center of mass for a set of points with a given weight
 // x, y, z -> Arrays containing coordinates
-// w -> Array of weights (optional) set as NULL to use equal weights
+// w -> Array of weights (optional): set as NULL to use equal weights
 // count -> Length of all arrays
 vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count);
 
-// Computes the optimal rotation between two configurations of a set of points with corresponding weights weights
-// x0, y0, z0 -> arrays of position 0
-// x1, y1, z1 -> arrays of position 1
-// w -> array of weights (optional)
+// Computes the center of mass for a set of points with a given weight given in periodic boundary conditions
+// x, y, z -> Arrays containing coordinates
+// w -> Array of weights (optional): set as NULL to use equal weights
 // count -> Length of all arrays
-mat3_t md_util_compute_optimal_rotation(const float* x0, const float* y0, const float* z0, vec3_t com0, const float* x1, const float* y1, const float* z1, vec3_t com1, const float* w, int64_t count);
+// pbc_ext -> Extent of periodic boundary (optional): Set to zero if pbc does not apply in that dimension
+vec3_t md_util_compute_com_periodic(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t pbc_ext);
+
+// Computes the optimal rotation between two configurations of a set of points with corresponding weights weights
+// coords -> coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
+// com -> center of mass [2] (xyz0), (xyz1)
+// w -> array of weights (optional): set as NULL to use equal weights
+// count -> Length of all arrays (coords + w)
+mat3_t md_util_compute_optimal_rotation(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
 // The rmsd is the root mean squared deviation between the two sets of aligned vectors.
-// x0, y0, z0 -> arrays of position 0
-// x1, y1, z1 -> arrays of position 1
-// w -> array of weights (optional)
-// count -> Length of all arrays
-double md_util_compute_rmsd(const float* x0, const float* y0, const float* z0, const float* x1, const float* y1, const float* z1, const float* w, int64_t count);
+// coords -> coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
+// com -> center of mass [2] (xyz0), (xyz1)
+// w -> array of weights (optional): set as NULL to use equal weights
+// count -> Length of all arrays (coords + w)
+double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
 
 // Perform linear interpolation of supplied coordinates
 // dst_coord -> destination arrays (x,y,z)
@@ -105,7 +132,7 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
 // dst_coord -> destination arrays (x,y,z)
 // src_coord -> source arrays [4] (x0, y0, z0), (x1, y1, z1), (x2, y2, z2), (x3, y3, z3)
 // count -> count of coordinates (this implies that all coordinate arrays must be equal in length)
-// pbc_ext -> Extent of periodic boundary (optional) set to zero if should be ignored
+// pbc_ext -> Extent of periodic boundary (optional): Set to zero if pbc does not apply in that dimension
 // t -> interpolation factor (0..1)
 // tension -> tension factor (0..1), 0 is jerky, 0.5 corresponds to catmul rom, 1.0 is silky smooth
 bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float tension);

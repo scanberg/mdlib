@@ -3103,18 +3103,30 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 const int64_t stride = ROUND_UP(count, md_simd_widthf);
                 const int64_t coord_bytes = stride * 7 * sizeof(float);
                 float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
-                float* x0 = coord_data + stride * 0;
-                float* y0 = coord_data + stride * 1;
-                float* z0 = coord_data + stride * 2;
-                float* x  = coord_data + stride * 3;
-                float* y  = coord_data + stride * 4;
-                float* z  = coord_data + stride * 5;
+                md_vec3_soa_t coord[2] = {
+                    {
+                        coord_data + stride * 0,
+                        coord_data + stride * 1,
+                        coord_data + stride * 2,
+                    },
+                    {
+                        coord_data + stride * 3,
+                        coord_data + stride * 4,
+                        coord_data + stride * 5,
+                    },
+                };
                 float* w  = coord_data + stride * 6;
 
-                extract_xyz (x0, y0, z0,    ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, bf);
-                extract_xyzw(x,  y,  z,  w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
 
-                as_float(*dst) = (float)md_util_compute_rmsd(x0, y0, z0, x, y, z, w, count);
+                extract_xyz (coord[0].x, coord[0].y, coord[0].z, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, bf);
+                extract_xyzw(coord[1].x, coord[1].y, coord[1].z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+
+                const vec3_t com[2] = {
+                    md_util_compute_com(coord[0].x, coord[0].y, coord[0].z, w, count),
+                    md_util_compute_com(coord[1].x, coord[1].y, coord[1].z, w, count),
+                };
+
+                as_float(*dst) = (float)md_util_compute_rmsd(coord, com, w, count);
             }
         }
 
@@ -3865,27 +3877,20 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
     return true;
 }
 
-static inline void populate_volume(float* vol, const float* x, const float* y, const float* z, int64_t num_pos, vec4_t max) {
+static inline void populate_volume(float* vol, const float* x, const float* y, const float* z, int64_t num_pos, mat4_t M) {
     for (int64_t i = 0; i < num_pos; ++i) {
-        const md_simd_f128_t min = md_simd_zero_f128();
-        const md_simd_f128_t val = md_simd_set_f128(x[i], y[i], z[i], 0.0f);
+        const vec4_t coord = mat4_mul_vec4(M, (vec4_t){x[i], y[i], z[i], 1.0f});
 
-        md_simd_f128_t a = md_simd_cmp_lt_f128(min, val);
-        md_simd_f128_t b = md_simd_cmp_lt_f128(val, max.f128);
-        md_simd_f128_t c = md_simd_and_f128(a, b);
+        // Dwelling into bitland here, is a bit unsure if we should expose these as vec4 operations
+        const md_simd_f128_t a = md_simd_cmp_lt_f128(md_simd_zero_f128(), coord.f128);
+        const md_simd_f128_t b = md_simd_cmp_lt_f128(coord.f128, md_simd_set_f128(VOL_DIM, VOL_DIM, VOL_DIM, 0));
+        const md_simd_f128_t c = md_simd_and_f128(a, b);
 
-        int res = _mm_movemask_ps(c);
-        if (res == 0x7) {
-            vol[(int)z[i] * VOL_DIM * VOL_DIM + (int)y[i] * VOL_DIM + (int)x[i]] += 1.0f;
+        // Count the number of lanes which is not zero
+        // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
+        if (_mm_movemask_ps(c) == 0x7) {
+            vol[(uint32_t)coord.z * (VOL_DIM * VOL_DIM) + (uint32_t)coord.y * VOL_DIM + (uint32_t)coord.x] += 1.0f;
         }
-
-        /*
-        if ((0 < x[i] && x[i] < max.x) &&
-            (0 < y[i] && y[i] < max.y) &&
-            (0 < z[i] && z[i] < max.z)) {
-            
-        }
-        */
     }
 }
 
@@ -3943,35 +3948,43 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const int64_t ref_size = md_bitfield_popcount(ref_bf);
         ASSERT(ref_size > 0);
 
-        const int64_t mem_size = sizeof(float) * (ref_size * 7 + target_size * 6);
+        const int64_t mem_size = sizeof(float) * (ref_size * 7 + target_size * 3);
         float* mem = md_alloc(ctx->temp_alloc, mem_size);
 
-        float* ref_x  = mem + ref_size * 0;
-        float* ref_y  = mem + ref_size * 1;
-        float* ref_z  = mem + ref_size * 2;
-        float* ref_x0 = mem + ref_size * 3;
-        float* ref_y0 = mem + ref_size * 4;
-        float* ref_z0 = mem + ref_size * 5;
-        float* ref_w  = mem + ref_size * 6;
-        float* target_x  = mem + ref_size * 7 + target_size * 0;
-        float* target_y  = mem + ref_size * 7 + target_size * 1;
-        float* target_z  = mem + ref_size * 7 + target_size * 2;
-        float* target_x0 = mem + ref_size * 7 + target_size * 3;
-        float* target_y0 = mem + ref_size * 7 + target_size * 4;
-        float* target_z0 = mem + ref_size * 7 + target_size * 5;
+        md_vec3_soa_t ref[2] = {
+            {
+                mem + ref_size * 0,
+                mem + ref_size * 1,
+                mem + ref_size * 2,
+            }, 
+            {
+                mem + ref_size * 3,
+                mem + ref_size * 4,
+                mem + ref_size * 5,
+            },
+        };
+
+        float* ref_w = mem + ref_size * 6;
+
+        md_vec3_soa_t target = {
+            mem + ref_size * 7 + target_size * 0,
+            mem + ref_size * 7 + target_size * 1,
+            mem + ref_size * 7 + target_size * 2,
+        };
+
+        vec3_t ref_com[2];
 
         // Fetch initial reference positions
-        extract_xyzw(ref_x0, ref_y0, ref_z0, ref_w, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, ref_bf);
+        extract_xyzw(ref[0].x, ref[0].y, ref[0].z, ref_w, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, ref_bf);
 
         // Fetch target positions
-        extract_xyz(target_x0, target_y0, target_z0, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield);
-
-        const vec3_t ref_com0 = md_util_compute_com(ref_x0, ref_y0, ref_z0, ref_w, ref_size);
+        extract_xyz(target.x, target.y, target.z, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield);
+        ref_com[0] = md_util_compute_com(ref[0].x, ref[0].y, ref[0].z, ref_w, ref_size);
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
         mat3_t eigen_vecs;
         vec3_t eigen_vals;
-        mat3_eigen(mat3_covariance_matrix(ref_x0, ref_y0, ref_z0, ref_com0, ref_size), eigen_vecs.col, eigen_vals.elem);
+        mat3_eigen(mat3_covariance_matrix(ref[0].x, ref[0].y, ref[0].z, ref_com[0], ref_size), eigen_vecs.col, eigen_vals.elem);
         mat4_t A = mat4_from_mat3(mat3_transpose(eigen_vecs));
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
@@ -3983,20 +3996,20 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->vis->sdf.extent = cutoff;
         }
 
-        const vec4_t max_ext = {VOL_DIM, VOL_DIM, VOL_DIM, VOL_DIM};
-
         for (int64_t i = 0; i < num_ref_bitfields; ++i) {
             const md_bitfield_t* bf = &ref_bitfields[i];
 
-            extract_xyz(ref_x, ref_y, ref_z, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, bf);
-            vec3_t ref_com = md_util_compute_com(ref_x, ref_y, ref_z, ref_w, ref_size);
-            mat3_t R = md_util_compute_optimal_rotation(ref_x0, ref_y0, ref_z0, ref_com0, ref_x, ref_y, ref_z, ref_com, ref_w, ref_size);
-            mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com.x, -ref_com.y, -ref_com.z));
+            extract_xyz(ref[1].x, ref[1].y, ref[1].z, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, bf);
+            ref_com[1] = md_util_compute_com(ref[1].x, ref[1].y, ref[1].z, ref_w, ref_size);
+            mat3_t R = md_util_compute_optimal_rotation(ref, ref_com, ref_w, ref_size);
+            mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
             if (vol) {
                 mat4_t VART = mat4_mul(VA, RT);
-                mat4_batch_transform2(target_x, target_y, target_z, target_x0, target_y0, target_z0, 1.0f, target_size, VART);
-                populate_volume(vol, target_x, target_y, target_z, target_size, max_ext);
+                // This should probably be measured, but I have a hard time imagining that performing
+                // batch transform into a temp buffer is faster than directly transforming.
+                //mat4_batch_transform2(target[1].x, target[1].y, target[1].z, target[0].x, target[0].y, target[0].z, 1.0f, target_size, VART);
+                populate_volume(vol, target.x, target.y, target.z, target_size, VART);
             }
             if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_SDF) {
                 md_allocator_i* alloc = ctx->vis->o->alloc;

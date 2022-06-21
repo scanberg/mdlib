@@ -747,8 +747,6 @@ static inline bool validate_closef(md_simd_typef x, float ref[], float eps) {
 }
 
 UTEST(simd, test) {
-	md_simd_typef val = md_simd_set1f(1.0f);
-
 	md_simd_typef sin, cos;
     sincos256_ps(md_simd_set1f(1.0f), &sin, &cos);
 

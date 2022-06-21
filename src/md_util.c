@@ -611,63 +611,107 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
     return true;
 }
 
-vec3_t md_util_compute_com_periodic(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
-    double acc_c_x = 0;
-    double acc_s_x = 0;
-    double acc_c_y = 0;
-    double acc_s_y = 0;
-    double acc_c_z = 0;
-    double acc_s_z = 0;
-    double acc_w = 0;
+vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
+    ASSERT(count >= 0);
 
-    const double scl_x = TWO_PI / (double)pbc_ext.x;
-    const double scl_y = TWO_PI / (double)pbc_ext.y;
-    const double scl_z = TWO_PI / (double)pbc_ext.z;
-
-    for (int64_t i = 0; i < count; ++i) {
-        double theta_x = in_x[i] * scl_x;
-        double theta_y = in_y[i] * scl_y;
-        double theta_z = in_z[i] * scl_z;
-        double w = in_w ? in_w[i] : 1.0;
-
-        acc_c_x += w * cos(theta_x);
-        acc_s_x += w * sin(theta_x);
-
-        acc_c_y += w * cos(theta_y);
-        acc_s_y += w * sin(theta_y);
-
-        acc_c_z += w * cos(theta_z);
-        acc_s_z += w * sin(theta_z);
-
-        acc_w += w;
+    if (count == 0) {
+        return (vec3_t) {0,0,0};
     }
 
-    double theta_x = atan2(-acc_s_x / acc_w, -acc_c_x / acc_w) + PI;
-    double theta_y = atan2(-acc_s_y / acc_w, -acc_c_y / acc_w) + PI;
-    double theta_z = atan2(-acc_s_z / acc_w, -acc_c_z / acc_w) + PI;
+    // Use vec4 here so we can utilize SSE vectorization if applicable
+    // @TODO: Vectorize with full register width
+    vec4_t sum_xyzw = {0,0,0,0};
+    if (w) {
+        for (int64_t i = 0; i < count; ++i) {
+            vec4_t xyz1 = {x[i], y[i], z[i], 1.0f};
+            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, w[i]));
+        }
+    } else {
+        for (int64_t i = 0; i < count; ++i) {
+            vec4_t xyz0 = {x[i], y[i], z[i], 0};
+            sum_xyzw = vec4_add(sum_xyzw, xyz0);
+        }
+        sum_xyzw.w = (float)count;
+    }
 
-    vec3_t result = {
-        (theta_x / TWO_PI) * (double)pbc_ext.x,
-        (theta_y / TWO_PI) * (double)pbc_ext.y,
-        (theta_z / TWO_PI) * (double)pbc_ext.z,
-    };
+    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
+}
 
-    return result;
+// We need to support cases where pbc_ext is zero, therefore we need to pick our algorithm based on this
+// Single component version
+static inline double compute_com_periodic(const float* in_x, const float* in_w, int64_t count, float pbc_ext) {
+    double com = 0;
+
+    if (pbc_ext > 0) {
+        double acc_c = 0;
+        double acc_s = 0;
+        double acc_w = 0;
+
+        const double scl = TWO_PI / (double)pbc_ext;
+
+        for (int64_t i = 0; i < count; ++i) {
+            double theta = in_x[i] * scl;
+            double w = in_w ? in_w[i] : 1.0;
+            acc_c += w * cos(theta);
+            acc_s += w * sin(theta);
+            acc_w += w;
+        }
+
+        const double theta_prim = atan2(-acc_s / acc_w, -acc_c / acc_w) + PI;
+        com = (theta_prim / TWO_PI) * (double)pbc_ext;
+    } else {
+        double acc_x = 0;
+        double acc_w = 0;
+        for (int64_t i = 0; i < count; ++i) {
+            double x = in_x[i];
+            double w = in_w ? in_w[i] : 1.0;
+            acc_x += x * w;
+            acc_w += w;
+        }
+        com = acc_x / acc_w;
+    }
+
+    return com;
+}
+
+// Love the elegance of using trigonometric functions, unsure of the performance...
+// @TODO: sin, cos and atan2 can and should of course be vectorized.
+vec3_t md_util_compute_com_periodic(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
+    ASSERT(in_x);
+    ASSERT(in_y);
+    ASSERT(in_z);
+    ASSERT(count >= 0);
+    ASSERT(pbc_ext.x >= 0);
+    ASSERT(pbc_ext.y >= 0);
+    ASSERT(pbc_ext.z >= 0);
+
+    if (count == 0) {
+        return (vec3_t) {0,0,0};
+    }
+
+    double x = compute_com_periodic(in_x, in_w, count, pbc_ext.x);
+    double y = compute_com_periodic(in_y, in_w, count, pbc_ext.y);
+    double z = compute_com_periodic(in_z, in_w, count, pbc_ext.z);
+
+    return (vec3_t) {(float)x, (float)y, (float)z};
 }
 
 // From here: https://www.arianarab.com/post/crystal-structure-software
-mat3_t md_util_compute_unit_cell_basis(float a, float b, float c, float alpha, float beta, float gamma) {
+mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma) {
     alpha = DEG_TO_RAD(alpha);
     beta  = DEG_TO_RAD(beta);
     gamma = DEG_TO_RAD(gamma);
 
-    const float cb = cosf(beta);
-    const float x = (cosf(alpha) - cb * cosf(gamma)) / sinf(gamma);
+    const double cb = cos(beta);
+    const double x = (cos(alpha) - cb * cos(gamma)) / sin(gamma);
     mat3_t M = {
         .col = {
             {a, 0, 0},
-            {b * cosf(gamma), b * sinf(gamma), 0},
-            {c * cb, c * x, c * sqrtf(1 - cb * cb - x * x)},
+            {b * cos(gamma), b * sin(gamma), 0},
+            {c * cb, c * x, c * sqrt(1 - cb * cb - x * x)},
         },
     };
     return M;
@@ -734,11 +778,13 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
             atom_range.end - atom_range.beg,
             pbc_ext);
 
-        for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
-            mol->atom.x[j] = deperiodizef(mol->atom.x[j], com.x, pbc_ext.x);
-            mol->atom.y[j] = deperiodizef(mol->atom.y[j], com.y, pbc_ext.y);
-            mol->atom.z[j] = deperiodizef(mol->atom.z[j], com.z, pbc_ext.z);
-        }
+        //if (atom_range.end - atom_range.beg > 3) {
+            for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
+                mol->atom.x[j] = deperiodizef(mol->atom.x[j], com.x, pbc_ext.x);
+                mol->atom.y[j] = deperiodizef(mol->atom.y[j], com.y, pbc_ext.y);
+                mol->atom.z[j] = deperiodizef(mol->atom.z[j], com.z, pbc_ext.z);
+            }
+        //}
 
         if (residue_com_x) {
             ASSERT(residue_com_y);
@@ -766,6 +812,10 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
                 residue_aabb_max_y[i] = MAX(residue_aabb_max_y[i], mol->atom.y[j]);
                 residue_aabb_min_z[i] = MIN(residue_aabb_min_z[i], mol->atom.z[j]);
                 residue_aabb_max_z[i] = MAX(residue_aabb_max_z[i], mol->atom.z[j]);
+            }
+
+            if (residue_aabb_max_x[i] - residue_aabb_min_x[i] > pbc_ext.x * 0.5f) {
+                while(0) {};
             }
         }
     }
@@ -831,6 +881,10 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
                 if (d2 > 0) {
                     md_range_t atom_range = mol->residue.atom_range[j];
                     for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
+
+                        if (strncmp(mol->atom.name->buf, "HW1", 3) == 0) {
+                            while(0){};
+                        }
                         mol->atom.x[k] += d.x;
                         mol->atom.y[k] += d.y;
                         mol->atom.z[k] += d.z;
@@ -875,68 +929,28 @@ vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const 
 }
 */
 
-vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
-    ASSERT(count > 0);
-
-    vec3_t res = {0,0,0};
-    if (w) {
-        vec3_t sum_pos = {0,0,0};
-        float  sum_w = 0;
-        for (int64_t i = 0; i < count; ++i) {
-            vec3_t pos = {x[i], y[i], z[i]};
-            sum_pos = vec3_add(sum_pos, vec3_mul_f(pos, w[i]));
-            sum_w += w[i];
-        }
-        res = vec3_div_f(sum_pos, sum_w);
-    } else {
-        vec3_t sum_pos = {0,0,0};
-        for (int64_t i = 0; i < count; ++i) {
-            vec3_t pos = {x[i], y[i], z[i]};
-            sum_pos = vec3_add(sum_pos, pos);
-        }
-        res = vec3_div_f(sum_pos, (float)count);
-    }
-
-    return res;
-}
-
-mat3_t md_util_compute_optimal_rotation(const float* x0, const float* y0, const float* z0, vec3_t com0, const float* x1, const float* y1, const float* z1, vec3_t com1, const float* w, int64_t count) {
-    ASSERT(x0 && y0 && z0);
-    ASSERT(x1 && y1 && z1);
-
+mat3_t md_util_compute_optimal_rotation(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count) {
     if (count < 1) {
         return mat3_ident();
     }
 
     mat3_t cov_mat = {0};
-
     if (w) {
-        cov_mat = mat3_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, w, com0, com1, count);
+        cov_mat = mat3_weighted_cross_covariance_matrix(coord[0].x, coord[0].y, coord[0].z, coord[1].x, coord[1].y, coord[1].z, w, com[0], com[1], count);
     } else {
-        cov_mat = mat3_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, com0, com1, count);
+        cov_mat = mat3_cross_covariance_matrix(coord[0].x, coord[0].y, coord[0].z, coord[1].x, coord[1].y, coord[1].z, com[0], com[1], count);
     }
 
     return mat3_extract_rotation(cov_mat);
 }
 
-double md_util_compute_rmsd(const float* x0, const float* y0, const float* z0, const float* x1, const float* y1, const float* z1, const float* w, int64_t count) {
-    vec3_t com0 = md_util_compute_com(x0, y0, z0, w, count);
-    vec3_t com1 = md_util_compute_com(x1, y1, z1, w, count);
-
-    mat3_t cov_mat = {0};
-    if (w) cov_mat = mat3_weighted_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, w, com0, com1, count);    
-    else   cov_mat = mat3_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, com0, com1, count);
-
-    mat3_t R = mat3_extract_rotation(cov_mat);
-
+double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count) {
+    const mat3_t R = md_util_compute_optimal_rotation(coord, com, w, count);
     double d_sum = 0;
     double w_sum = 0;
     for (int64_t i = 0; i < count; ++i) {
-        vec3_t u = {x0[i] - com0.x, y0[i] - com0.y, z0[i] - com0.z};
-        vec3_t v = {x1[i] - com1.x, y1[i] - com1.y, z1[i] - com1.z};
+        vec3_t u = {coord[0].x[i] - com[0].x, coord[0].y[i] - com[0].y, coord[0].z[i] - com[0].z};
+        vec3_t v = {coord[1].x[i] - com[1].x, coord[1].y[i] - com[1].y, coord[1].z[i] - com[1].z};
         vec3_t vp = mat3_mul_vec3(R, v);
         vec3_t d = vec3_sub(u, vp);
         float weight = w ? w[i] : 1.0f;

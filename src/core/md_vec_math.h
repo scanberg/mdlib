@@ -380,7 +380,20 @@ static inline vec4_t vec4_zero() {
     return res;
 }
 
-static inline vec4_t vec4_from_float(float v) {
+static inline vec4_t vec4_set(float x, float y, float z, float w) {
+    vec4_t res;
+#if VEC_MATH_USE_SSE
+    res.f128 = _mm_set_ps(w, z, y, x);
+#else
+    res.x = x;
+    res.y = y;
+    res.z = z;
+    res.w = w;
+#endif
+    return res;
+}
+
+static inline vec4_t vec4_set1(float v) {
     vec4_t res;
 #if VEC_MATH_USE_SSE
     res.f128 = _mm_set1_ps(v);
@@ -391,6 +404,10 @@ static inline vec4_t vec4_from_float(float v) {
     res.w = v;
 #endif
     return res;
+}
+
+static inline vec4_t vec4_from_float(float v) {
+    return vec4_set1(v);
 }
 
 static inline vec4_t vec4_from_vec3(vec3_t v, float w) {
@@ -636,6 +653,58 @@ static inline vec4_t vec4_cmp_eq(vec4_t a, vec4_t b) {
     r.y = (a.y == b.y) ? 1.0f : 0.0f;
     r.z = (a.z == b.z) ? 1.0f : 0.0f;
     r.w = (a.w == b.w) ? 1.0f : 0.0f;
+#endif
+    return r;
+}
+
+static inline vec4_t vec4_cmp_lt(vec4_t a, vec4_t b) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_cmp_lt_f128(a.f128, b.f128);
+#else
+    r.x = (a.x < b.x) ? 1.0f : 0.0f;
+    r.y = (a.y < b.y) ? 1.0f : 0.0f;
+    r.z = (a.z < b.z) ? 1.0f : 0.0f;
+    r.w = (a.w < b.w) ? 1.0f : 0.0f;
+#endif
+    return r;
+}
+
+static inline vec4_t vec4_cmp_le(vec4_t a, vec4_t b) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_cmp_le_f128(a.f128, b.f128);
+#else
+    r.x = (a.x <= b.x) ? 1.0f : 0.0f;
+    r.y = (a.y <= b.y) ? 1.0f : 0.0f;
+    r.z = (a.z <= b.z) ? 1.0f : 0.0f;
+    r.w = (a.w <= b.w) ? 1.0f : 0.0f;
+#endif
+    return r;
+}
+
+static inline vec4_t vec4_cmp_gt(vec4_t a, vec4_t b) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_cmp_lt_f128(a.f128, b.f128);
+#else
+    r.x = (a.x > b.x) ? 1.0f : 0.0f;
+    r.y = (a.y > b.y) ? 1.0f : 0.0f;
+    r.z = (a.z > b.z) ? 1.0f : 0.0f;
+    r.w = (a.w > b.w) ? 1.0f : 0.0f;
+#endif
+    return r;
+}
+
+static inline vec4_t vec4_cmp_ge(vec4_t a, vec4_t b) {
+    vec4_t r;
+#if VEC_MATH_USE_SSE
+    r.f128 = md_simd_cmp_ge_f128(a.f128, b.f128);
+#else
+    r.x = (a.x >= b.x) ? 1.0f : 0.0f;
+    r.y = (a.y >= b.y) ? 1.0f : 0.0f;
+    r.z = (a.z >= b.z) ? 1.0f : 0.0f;
+    r.w = (a.w >= b.w) ? 1.0f : 0.0f;
 #endif
     return r;
 }

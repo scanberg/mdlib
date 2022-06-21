@@ -41,6 +41,14 @@
 #define RESTRICT __restrict
 #endif
 
+#ifndef FORCE_INLINE
+#if MD_COMPILER_MSVC
+#define FORCE_INLINE __forceinline
+#else
+#define FORCE_INLINE __attribute__((always_inline))
+#endif
+#endif
+
 // Really GCC? REALLY? DO WE REALLY NEED TO INCLUDE stddef.h for this??????
 #ifndef NULL
 #define NULL (void*)0
