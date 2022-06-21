@@ -7,7 +7,7 @@
 #define md_simd_i128_t __m128i
 #define md_simd_i256_t __m256i
 
-#define MD_SIMD_INLINE FORCE_INLINE
+#define MD_SIMD_INLINE static FORCE_INLINE
 
 #ifdef __AVX__
 // Float
