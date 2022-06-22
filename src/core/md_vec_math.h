@@ -1486,7 +1486,7 @@ static inline vec4_t operator - (float s, vec4_t v) {
 
 static inline vec4_t& operator *= (vec4_t& a, vec4_t b) {
     a = vec4_mul(a,b);
-    return b;
+    return a;
 }
 
 static inline vec4_t& operator *= (vec4_t& v, float s) {
@@ -1508,7 +1508,7 @@ static inline vec4_t operator * (float s, vec4_t v) {
 
 static inline vec4_t& operator /= (vec4_t& a, vec4_t b) {
     a = vec4_div(a,b);
-    return b;
+    return a;
 }
 
 static inline vec4_t& operator /= (vec4_t& v, float s) {
