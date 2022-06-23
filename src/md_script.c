@@ -42,6 +42,7 @@
 #if MD_COMPILER_GCC || MD_COMPILER_CLANG
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #pragma GCC diagnostic ignored "-Wswitch"   // Single character tokens not part of enumeration
+#pragma GCC diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #endif
 
 #define SCRIPT_IR_MAGIC 0x371bacfe8274910a
@@ -2233,7 +2234,7 @@ done:
 static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx);
 static bool evaluate_node(data_t*, const ast_node_t*, eval_context_t*);
 
-static int do_proc_call(data_t* dst, const procedure_t* proc, const ast_node_t** args, int64_t num_args, eval_context_t* ctx) {
+static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** const args, int64_t num_args, eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(proc);
     ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);

@@ -14,7 +14,7 @@ dimensions. Some of which are dimensionless, but we need to propagate them throu
 anyways.
 
 Since we use fixed units within the structure, we need to deal with unit conversions, in the case
-where one would like for example to use nanometer instead of Ångström.
+where one would like for example to use nanometer instead of ï¿½ngstrï¿½m.
 
 This is currently exposed with a flag which is supplied to the print functions.
 Not the most flexible solution, but gets the job done.

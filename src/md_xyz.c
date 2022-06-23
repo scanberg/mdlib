@@ -350,7 +350,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, con
     }
 
     if (comment.len > 0) {
-        strncpy(model->comment, comment.ptr, MIN(sizeof(model->comment)-1, comment.len));
+        strncpy(model->comment, comment.ptr, MIN(sizeof(model->comment)-1, (size_t)comment.len));
     }
 
     if (format->flags & XYZ_TINKER_ARC) {
@@ -493,7 +493,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->timestamp = (double)(step); // This information is missing from xyz trajectories
         mat3_t box = {0};
         if (model.cell_extent[0] != 0) {
-            if (model.cell_angle != 0 && model.cell_angle[0] != 90 && model.cell_angle[1] != 90 && model.cell_angle[2] != 90) {
+            if (model.cell_angle[0] != 90 && model.cell_angle[1] != 90 && model.cell_angle[2] != 90) {
                 box = md_util_compute_unit_cell_basis(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
             } else {
                 box.elem[0][0] = model.cell_extent[0];
@@ -618,7 +618,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     ASSERT(data);
     if (data->coordinates) md_array_free(data->coordinates, alloc);
     if (data->models) md_array_free(data->models, alloc);
-    memset(data, 0, sizeof(data));
+    memset(data, 0, sizeof(md_xyz_data_t));
 }
 
 bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct md_allocator_i* alloc) {

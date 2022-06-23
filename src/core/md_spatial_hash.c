@@ -16,7 +16,7 @@ typedef struct md_spatial_hash_cell_t {
 } md_spatial_hash_cell_t;
 
 /*
-// Store as relative cell-coordinates quantized to 16 bits: Über precision
+// Store as relative cell-coordinates quantized to 16 bits: ï¿½ber precision
 typedef union md_spatial_hash_coord_t {
     struct {
         uint16_t x;

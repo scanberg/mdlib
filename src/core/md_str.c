@@ -431,7 +431,7 @@ bool buffered_reader_peek_chunk(str_t* chunk, buffered_reader_t* reader) {
         // Could not find new line, 
         if (!buffered_reader_fill_buffer(reader)) return false;
         new_line = rfind_char(buffered_reader_str(reader), '\n');
-        new_line == -1 ? md_array_size(reader->buffer) : new_line;
+        if (new_line == -1) new_line = md_array_size(reader->buffer);
     }
 
     chunk->ptr = reader->buffer + reader->offset;
@@ -450,7 +450,7 @@ bool buffered_reader_get_chunk(str_t* chunk, buffered_reader_t* reader) {
         // Could not find new line, 
         if (!buffered_reader_fill_buffer(reader)) return false;
         new_line = rfind_char(buffered_reader_str(reader), '\n');
-        new_line == -1 ? md_array_size(reader->buffer) : new_line;
+        if (new_line == -1) new_line = md_array_size(reader->buffer);
     }
 
     chunk->ptr = reader->buffer + reader->offset;
