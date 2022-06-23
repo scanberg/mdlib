@@ -17,7 +17,7 @@ add_library(mold ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
 set(MOLD_WARNING_FLAGS "")
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
-  set(MOLD_WARNING_FLAGS -Wall -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic -Wno-gnu-anonymous-struct -Wno-nested-anon-types)
+  set(MOLD_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wno-gnu-anonymous-struct -Wno-nested-anon-types)
   target_compile_options(mold PRIVATE -march=native)
   if (MD_PROFILE_COMPILE_TIMES)
     add_compile_options(-ftime-trace)
@@ -28,10 +28,12 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     elseif (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU") # clang native
     message(STATUS "MOLD: Clang configuration was used")
     endif()
+  elseif (CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
+    message(STATUS "MOLD: AppleClang configuration was used")
   endif()
 elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     message(STATUS "MOLD: GCC configuration was used")
-    set(MOLD_WARNING_FLAGS -Wall -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wextra -Wpedantic)
+    set(MOLD_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter)
     target_compile_options(mold PRIVATE -march=native)
 elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     message(STATUS "MOLD: MSVC configuration was used")
