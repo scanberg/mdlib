@@ -539,6 +539,8 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
                 md_print(MD_LOG_TYPE_ERROR, "Failed to read expected coordinate count in XYZ");
                 return false;
             }
+            
+            md_array_push(data->models, model, alloc);
             byte_offset = str.ptr - base_offset;
         }
     }
