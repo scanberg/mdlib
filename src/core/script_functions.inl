@@ -3837,14 +3837,8 @@ static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
-        int64_t count = 0;
-        const md_bitfield_t* bf = as_bitfield(arg[0]);
-        const int64_t num_bf = element_count(arg[0]);
-        for (int64_t i = 0; i < num_bf; ++i) {
-            int64_t popcnt = md_bitfield_popcount(&bf[i]);
-            count += popcnt;
-        }
+        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT));
+        const int64_t count = position_validate(arg[0], 0, ctx);
         as_float(*dst) = (float)count;
     }
     

@@ -42,6 +42,8 @@
 #if MD_COMPILER_GCC || MD_COMPILER_CLANG
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 #pragma GCC diagnostic ignored "-Wswitch"   // Single character tokens not part of enumeration
+#endif
+#if MD_COMPILER_CLANG
 #pragma GCC diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
 #endif
 
@@ -1307,7 +1309,7 @@ static int print_type_info(char* buf, int buf_size, md_type_info_t info) {
     return len;
 }
 
-#define PRINT(fmt, ...) len += snprintf(buf + len, MAX(0, buf_size - len), fmt, ##__VA_ARGS__)
+#define PRINT(...) len += snprintf(buf + len, MAX(0, buf_size - len), ##__VA_ARGS__)
 
 static int print_bitfield(char* buf, int buf_size, const md_bitfield_t* bitfield) {
     ASSERT(bitfield);
