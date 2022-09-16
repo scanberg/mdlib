@@ -1,4 +1,4 @@
-INCLUDE(CheckCXXSourceRuns)
+INCLUDE(CheckCSourceRuns)
 
 SET(HAVE_AVX_EXTENSIONS)
 SET(HAVE_AVX2_EXTENSIONS)
@@ -12,7 +12,7 @@ ELSEIF(MSVC AND NOT CMAKE_CL_64)  # reserve for WINDOWS
   SET(CMAKE_REQUIRED_FLAGS "/arch:AVX2")
 ENDIF()
 
-CHECK_CXX_SOURCE_RUNS("
+CHECK_C_SOURCE_RUNS("
 #include <immintrin.h>
 int main()
 {
@@ -29,7 +29,7 @@ ELSEIF(MSVC AND NOT CMAKE_CL_64)
     SET(CMAKE_REQUIRED_FLAGS "/arch:AVX")
 endif()
 
-CHECK_CXX_SOURCE_RUNS("
+CHECK_C_SOURCE_RUNS("
 #include <immintrin.h>
 int main()
 {
