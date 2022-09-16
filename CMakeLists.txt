@@ -32,16 +32,14 @@ source_group("shaders" FILES ${SHADER_FILES})
 
 add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
 
-message(STATUS ${AVX_FLAGS})
-
 set(MD_WARNING_FLAGS)
 set(MD_COMMON_COMPILE_FLAGS ${AVX_FLAGS})
 set(MD_RELEASE_COMPILE_FLAGS)
 set(MD_DEBUG_COMPILE_FLAGS)
 set(MD_COMPILE_DEFINITIONS MD_SHADER_DIR=\"shaders\")
 set(MD_LIBS)
-set(MD_SHADER_SRC_DIR "/src/shaders")
-set(MD_SHADER_DST_DIR "${CMAKE_BINARY_DIR}/shaders")
+set(MD_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
+set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   list(APPEND MD_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wno-gnu-anonymous-struct -Wno-nested-anon-types)
@@ -65,8 +63,8 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     list(APPEND MD_LIBS m Threads::Threads)
 elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     message(STATUS "mdlib: MSVC configuration was used")
-    set(MD_SHADER_DST_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>/shaders")
-    list(APPEND MD_WARNING_FLAGS /W4)
+    set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders")
+    list(APPEND MD_WARNING_FLAGS /W4 /wd4201 /wd4324 /wd26451)
     list(APPEND MD_COMPILE_FLAGS /MP /GR- /fp:fast)
     list(APPEND MD_COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
     
@@ -79,7 +77,7 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     endif()
 endif()
 
-create_copy_resource_dir_target(md_copy_shaders MD_SHADER_SRC_DIR MD_SHADER_DST_DIR)
+create_copy_resource_dir_target(md_copy_shaders ${MD_SHADER_SRC_DIR} ${MD_SHADER_DST_DIR})
 
 add_dependencies(mdlib md_copy_shaders)
 

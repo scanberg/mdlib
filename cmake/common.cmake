@@ -25,7 +25,6 @@ function(create_copy_resource_dir_target target_name SRC_DIR DST_DIR)
     foreach(FILE ${COPY_FILES})
       set(SRC "${SRC_DIR}/${FILE}")
       set(DST "${DST_DIR}/${FILE}")
-      message(STATUS "${DST}")
       add_custom_command(
         OUTPUT  ${DST}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DST_DIR}
