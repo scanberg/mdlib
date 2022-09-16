@@ -733,7 +733,7 @@ static inline vec3_t extract_com(const float* x, const float* y, const float* z,
     int64_t end_bit = bitfield->end_bit;
     while ((beg_bit = md_bitfield_scan(bitfield, beg_bit, end_bit)) != 0) {
         const int64_t idx = beg_bit - 1;
-        const float weight = w[idx];
+        const float weight = w ? w[idx] : 1.0f;
         vec4_t v = {x[idx], y[idx], z[idx], 1.0f};
         v = vec4_mul_f(v, weight);
         sum = vec4_add(sum, v);
@@ -1191,7 +1191,8 @@ static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
             // Shift here since we use 1 based indices for atoms
             const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
             vec4_t xyzw = { ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], 1.0f };
-            xyzw = vec4_mul_f(xyzw, ctx->mol->atom.mass[idx]);
+            const float m = ctx->mol->atom.mass ? ctx->mol->atom.mass[idx] : 1.0f;
+            xyzw = vec4_mul_f(xyzw, m);
             sum = vec4_add(sum, xyzw);
         }
         break;

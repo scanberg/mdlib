@@ -199,6 +199,8 @@ UTEST(script, compile_script) {
     md_molecule_t mol = {0};
     ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
 
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
     str_t script_src = load_textfile(MAKE_STR(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_script_ir_compile_source(ir, script_src, &mol, NULL);
@@ -233,6 +235,8 @@ UTEST(script, selection_big) {
     md_molecule_t mol = {0};
     ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
 
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
     md_bitfield_t bf = {0};
     md_bitfield_init(&bf, alloc);
 
@@ -251,6 +255,8 @@ UTEST(script, property_compute) {
 
     md_molecule_t mol = {0};
     ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
     ASSERT_TRUE(traj);

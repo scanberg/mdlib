@@ -515,7 +515,7 @@ MD_SIMD_INLINE void md_simd_sincosf(md_simd_typef x, md_simd_typef *s, md_simd_t
     sign_bit_sin = md_simd_andf(x, md_simd_set1f(-0.0f));
 
     /* scale by 4/Pi */
-    y = md_simd_mulf(x, md_simd_set1f(1.27323954473516)); // 4 / M_PI
+    y = md_simd_mulf(x, md_simd_set1f(1.27323954473516f)); // 4 / M_PI
 
     /* store the integer part of y in imm2 */
     imm2 = md_simd_convert_f_to_i(y);
@@ -543,9 +543,9 @@ MD_SIMD_INLINE void md_simd_sincosf(md_simd_typef x, md_simd_typef *s, md_simd_t
 
     /* The magic pass: "Extended precision modular arithmetic" 
     x = ((x - y * DP1) - y * DP2) - y * DP3; */
-    xmm1 = md_simd_set1f(-0.78515625);
-    xmm2 = md_simd_set1f(-2.4187564849853515625e-4);
-    xmm3 = md_simd_set1f(-3.77489497744594108e-8);
+    xmm1 = md_simd_set1f(-0.78515625f);
+    xmm2 = md_simd_set1f(-2.4187564849853515625e-4f);
+    xmm3 = md_simd_set1f(-3.77489497744594108e-8f);
     xmm1 = md_simd_mulf(y, xmm1);
     xmm2 = md_simd_mulf(y, xmm2);
     xmm3 = md_simd_mulf(y, xmm3);
@@ -563,12 +563,12 @@ MD_SIMD_INLINE void md_simd_sincosf(md_simd_typef x, md_simd_typef *s, md_simd_t
 
     /* Evaluate the first polynom  (0 <= x <= Pi/4) */
     md_simd_typef z = md_simd_mulf(x,x);
-    y = md_simd_set1f(2.443315711809948E-005);
+    y = md_simd_set1f(2.443315711809948E-005f);
 
     y = md_simd_mulf(y, z);
-    y = md_simd_addf(y, md_simd_set1f(-1.388731625493765E-003));
+    y = md_simd_addf(y, md_simd_set1f(-1.388731625493765E-003f));
     y = md_simd_mulf(y, z);
-    y = md_simd_addf(y, md_simd_set1f(4.166664568298827E-002));
+    y = md_simd_addf(y, md_simd_set1f(4.166664568298827E-002f));
     y = md_simd_mulf(y, z);
     y = md_simd_mulf(y, z);
     md_simd_typef tmp = md_simd_mulf(z, md_simd_set1f(0.5));
@@ -577,11 +577,11 @@ MD_SIMD_INLINE void md_simd_sincosf(md_simd_typef x, md_simd_typef *s, md_simd_t
 
     /* Evaluate the second polynom  (Pi/4 <= x <= 0) */
 
-    md_simd_typef y2 = md_simd_set1f(-1.9515295891E-4);
+    md_simd_typef y2 = md_simd_set1f(-1.9515295891E-4f);
     y2 = md_simd_mulf(y2, z);
-    y2 = md_simd_addf(y2, md_simd_set1f(8.3321608736E-3));
+    y2 = md_simd_addf(y2, md_simd_set1f(8.3321608736E-3f));
     y2 = md_simd_mulf(y2, z);
-    y2 = md_simd_addf(y2, md_simd_set1f(-1.6666654611E-1));
+    y2 = md_simd_addf(y2, md_simd_set1f(-1.6666654611E-1f));
     y2 = md_simd_mulf(y2, z);
     y2 = md_simd_mulf(y2, x);
     y2 = md_simd_addf(y2, x);
