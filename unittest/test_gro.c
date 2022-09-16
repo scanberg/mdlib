@@ -24,7 +24,7 @@ UTEST(gro, parse_small) {
         EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y);
         EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z);
     }
-    md_gro_molecule_free(&mol, alloc);
+    md_molecule_free(&mol, alloc);
 
     EXPECT_TRUE(md_gro_molecule_api()->init_from_file(&mol, path, alloc));
     for (int64_t i = 0; i < mol.atom.count; ++i) {
@@ -32,7 +32,6 @@ UTEST(gro, parse_small) {
         EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y);
         EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z);
     }
-    EXPECT_TRUE(md_gro_molecule_api()->free(&mol, alloc));
 
     md_gro_data_free(&gro_data, alloc);
 }
@@ -54,7 +53,7 @@ UTEST(gro, parse_big) {
         EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y);
         EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z);
     }
-    md_gro_molecule_free(&mol, alloc);
+    md_molecule_free(&mol, alloc);
 
     EXPECT_TRUE(md_gro_molecule_api()->init_from_file(&mol, path, alloc));
     for (int64_t i = 0; i < mol.atom.count; ++i) {
@@ -62,7 +61,6 @@ UTEST(gro, parse_big) {
         EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y);
         EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z);
     }
-    EXPECT_TRUE(md_gro_molecule_api()->free(&mol, alloc));
 
     md_gro_data_free(&gro_data, alloc);
 }

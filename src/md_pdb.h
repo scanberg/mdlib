@@ -14,6 +14,7 @@ struct md_allocator_i;
 struct md_trajectory_i;
 struct md_trajectory_api;
 struct md_molecule_api;
+struct md_mat4_t;
 
 typedef enum md_pdb_helix_class_t {
     Helix_Unknown           = 0,
@@ -124,6 +125,16 @@ typedef struct md_pdb_cryst1_t {
     int32_t z;
 } md_pdb_cryst1_t;
 
+// This structure represents the Biomolecule Assembly information found in REMARK 350
+// In order to fully reconstruct the molecular structure, atoms within certain chains should be duplicated and transformed
+typedef struct md_pdb_assembly_t {
+    int32_t id;
+    char    apply_to_chains[32];
+    // These offset and count refer into the separate transform array
+    int32_t transform_offset;
+    int32_t transform_count;
+} md_pdb_assembly_t;
+
 typedef struct md_pdb_data_t {
     int64_t num_cryst1;
     md_pdb_cryst1_t* cryst1;
@@ -137,6 +148,10 @@ typedef struct md_pdb_data_t {
     md_pdb_sheet_t* sheets;
     int64_t num_connections;
     md_pdb_connect_t* connections;
+    int64_t num_assemblies;
+    md_pdb_assembly_t* assemblies;
+    int64_t num_transforms;
+    struct mat4_t* transforms;
 } md_pdb_data_t;
 
 // RAW FUNCTIONS
@@ -148,8 +163,6 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
 bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* data, struct md_allocator_i* alloc);
-bool md_pdb_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* alloc);
-
 struct md_molecule_api* md_pdb_molecule_api();
 
 // TRAJECTORY

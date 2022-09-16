@@ -68,7 +68,7 @@ UTEST(util, rmsd) {
     
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
-    md_pdb_molecule_free(&mol, alloc);
+    md_molecule_free(&mol, alloc);
     md_pdb_trajectory_free(traj);
     md_pdb_data_free(&pdb_data, alloc);
 }

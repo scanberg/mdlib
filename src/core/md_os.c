@@ -32,6 +32,7 @@
 #elif MD_PLATFORM_UNIX
 
 #include <time.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -80,13 +81,15 @@ str_t md_os_current_working_directory() {
     ASSERT(val != 0);
 #elif MD_PLATFORM_UNIX
     getcwd(CWD, sizeof(CWD));
+#else
+    ASSERT(false);
 #endif
     str_t res = { .ptr = CWD, .len = (int64_t)strnlen(CWD, sizeof(CWD)) };
     return res;
 }
 
 static inline str_t internal_fullpath(str_t path, md_allocator_i* alloc) {
-    path = copy_str(path, default_temp_allocator); // Zero terminate
+    path = str_copy(path, default_temp_allocator); // Zero terminate
 
     char sz_buf[MD_MAX_PATH] = "";
 #if MD_PLATFORM_WINDOWS
@@ -112,10 +115,12 @@ static inline str_t internal_fullpath(str_t path, md_allocator_i* alloc) {
         default:            md_printf(MD_LOG_TYPE_ERROR, "Undefined error"); break;
         }
     }
+#else
+    ASSERT(false);
 #endif
     str_t result = { 0 };
     if (len > 0) {
-        result = copy_str((str_t) { sz_buf, len }, alloc);
+        result = str_copy((str_t) { sz_buf, len }, alloc);
     }
     return result;
 }
@@ -170,14 +175,46 @@ str_t md_os_path_make_relative(str_t from, str_t to, struct md_allocator_i* allo
         }
         len += snprintf(sz_buf + len, sizeof(sz_buf) - len, "%.*s", (int)rto.len, rto.ptr);
     }
+#else
+    ASSERT(false);
 #endif
     if (result) {
-        relative_str = copy_str((str_t) { .ptr = sz_buf, .len = (int64_t)strnlen(sz_buf, sizeof(sz_buf)) }, alloc);
+        relative_str = str_copy((str_t) { .ptr = sz_buf, .len = (int64_t)strnlen(sz_buf, sizeof(sz_buf)) }, alloc);
     }
     else {
         md_printf(MD_LOG_TYPE_ERROR, "Failed to extract relative path.");
     }
     return relative_str;
+}
+
+bool md_os_path_exists(str_t path) {
+#if MD_PLATFORM_WINDOWS
+    path = str_copy(path, default_temp_allocator);
+    bool result = PathFileExists(path.ptr);
+#elif MD_PLATFORM_UNIX
+    bool result = (access(path.ptr, F_OK) == 0);
+#else
+    ASSERT(false);
+#endif
+    return result;
+}
+
+bool md_os_path_is_directory(str_t path) {
+#if MD_PLATFORM_WINDOWS
+    path = str_copy(path, default_temp_allocator);
+    bool result = PathIsDirectory(path.ptr);
+#elif MD_PLATFORM_UNIX
+    bool result = false;
+    struct stat s;
+    if (stat(path.ptr, &s) == 0) {
+        if (s.st_mode & S_IFDIR) {
+            result = true;
+        }
+    }
+#else
+    ASSERT(false);
+#endif
+    return result;
 }
 
 timestamp_t md_os_time_current() {
@@ -189,6 +226,8 @@ timestamp_t md_os_time_current() {
     struct timespec t;
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
     return t.tv_sec * 1000000000 + t.tv_nsec;
+#else
+    ASSERT(false);
 #endif
 }
 
@@ -199,6 +238,8 @@ timestamp_t md_os_time_from_milliseconds(int64_t ms) {
     return (ms * 3000) / frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
     return ms * 1.0e-6;
+#else
+    ASSERT(false);
 #endif
 }
 
@@ -209,6 +250,8 @@ double md_os_time_as_milliseconds(timestamp_t t) {
     return (double)(t * 1000) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
     return t * 1.0e-6;
+#else
+    ASSERT(false);
 #endif
 }
 
@@ -219,6 +262,8 @@ double md_os_time_as_seconds(timestamp_t t) {
     return (double)(t * 1000) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
     return t * 1.0e-9;
+#else
+    ASSERT(false);
 #endif
 }
 
@@ -227,5 +272,7 @@ void md_os_sleep(int64_t milliseconds) {
     Sleep((int32_t)milliseconds);
 #elif MD_PLATFORM_UNIX
     usleep(milliseconds * 1000);
+#else
+    ASSERT(false);
 #endif
 }

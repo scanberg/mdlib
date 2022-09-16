@@ -310,7 +310,7 @@ UTEST(script, property_compute) {
 
     md_script_ir_free(ir);
     md_pdb_trajectory_free(traj);
-    md_pdb_molecule_free(&mol, alloc);
+    md_molecule_free(&mol, alloc);
     md_pdb_data_free(&pdb_data, alloc);
 }
 
@@ -418,6 +418,6 @@ UTEST(script, parallel_evaluation) {
     md_script_eval_free(ref_eval);
 
     md_pdb_trajectory_free(traj);
-    md_pdb_molecule_free(&mol, alloc);
+    md_molecule_free(&mol, alloc);
     md_pdb_data_free(&pdb_data, alloc);
 }

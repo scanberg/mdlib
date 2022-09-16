@@ -8,21 +8,20 @@
 // Forward declarations
 struct md_allocator_i;
 
-typedef struct md_molecule_o md_molecule_o; // Opaque data blob
-
-typedef int32_t                     md_atom_idx_t;
-typedef int32_t                     md_residue_idx_t;
-typedef int32_t                     md_backbone_idx_t;
-typedef int32_t                     md_residue_id_t;
-typedef int32_t                     md_chain_idx_t;
-typedef int32_t                     md_molecule_idx_t;
-typedef uint32_t                    md_secondary_structure_t;
-typedef uint8_t                     md_flags_t;
-typedef uint8_t                     md_element_t;
-typedef uint8_t                     md_ramachandran_type_t;
-typedef mat3_t                      md_coordinate_frame_t;
+typedef int32_t     md_atom_idx_t;
+typedef int32_t     md_residue_idx_t;
+typedef int32_t     md_backbone_idx_t;
+typedef int32_t     md_residue_id_t;
+typedef int32_t     md_chain_idx_t;
+typedef int32_t     md_molecule_idx_t;
+typedef uint32_t    md_secondary_structure_t;
+typedef uint8_t     md_flags_t;
+typedef uint8_t     md_element_t;
+typedef uint8_t     md_ramachandran_type_t;
+typedef mat3_t      md_coordinate_frame_t;
 
 // We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
+// This allows us later on to interpolate between them
 enum {
     MD_SECONDARY_STRUCTURE_UNKNOWN = 0,
     MD_SECONDARY_STRUCTURE_COIL    = 0x000000FF,
@@ -61,12 +60,14 @@ typedef struct md_backbone_angles_t {
     float psi;
 } md_backbone_angles_t;
 
+// Miniature string buffer with length
 typedef struct md_label_t {
     char    buf[7];
     uint8_t len;
 
 #ifdef __cplusplus
     constexpr operator str_t() { return {buf, len}; }
+    constexpr operator const char*() { return buf; }
 #endif
 } md_label_t;
 
@@ -105,10 +106,14 @@ typedef struct md_molecule_chain_data_t {
     md_label_t* id;
     md_range_t* residue_range;
     md_range_t* atom_range;
-    md_range_t* backbone_range;
 } md_molecule_chain_data_t;
 
 typedef struct md_molecule_backbone_data_t {
+    // This holds the consecutive ranges which form the backbones
+    int64_t range_count;
+    md_range_t* range;
+
+    // These fields share the same length 'count'
     int64_t count;
     md_backbone_atoms_t* atoms;
     md_backbone_angles_t* angle;
@@ -122,17 +127,24 @@ typedef struct md_molecule_bond_data_t {
     md_bond_t* bond;
 } md_molecule_bond_data_t;
 
+// This represents symmetries which are instanced, commonly found
+// in PDB data. It is up to the renderer to properly render this instanced.
+typedef struct md_molecule_instance_data_t {
+    int64_t count;
+    md_range_t* atom_range;
+    md_label_t* label;
+    mat4_t* transform;
+} md_molecule_instance_data_t;
+
 typedef struct md_molecule_t {
-    md_molecule_o* inst;
-
-    md_coordinate_frame_t   coord_frame;
-    md_molecule_atom_data_t atom;
-    md_molecule_residue_data_t residue;
-    md_molecule_chain_data_t chain;
+    md_coordinate_frame_t       coord_frame;
+    md_molecule_atom_data_t     atom;
+    md_molecule_residue_data_t  residue;
+    md_molecule_chain_data_t    chain;
     md_molecule_backbone_data_t backbone;
-    md_molecule_bond_data_t covalent_bond;
-    md_molecule_bond_data_t hydrogen_bond;
-
+    md_molecule_bond_data_t     covalent_bond;
+    md_molecule_bond_data_t     hydrogen_bond;
+    md_molecule_instance_data_t instance;
 } md_molecule_t;
 
 #if 0
@@ -145,7 +157,7 @@ struct md_macro_molecule {
         int64_t             count;
         md_molecule_idx_t*    idx;
         const char**        label;
-        float               (*transform)[4][4];
+        mat3*               transform;
     } instance;
 };
 #endif
@@ -153,7 +165,7 @@ struct md_macro_molecule {
 
 /*
 
-The molecule api is just a convenience API for abstracing the functionality of initializing and freeing molecule data
+The molecule api is just a convenience API for abstracing the functionality of initializing molecule data
 
 The reason for providing a distinct function for initializing from file is that some molecule files can
 also contain their trajectories, such as PDB files. In such case, the whole file would have to be read and passed, but for
@@ -168,9 +180,13 @@ extern "C" {
 typedef struct md_molecule_api {
     bool (*init_from_str) (md_molecule_t* mol, str_t string,   struct md_allocator_i* alloc);
     bool (*init_from_file)(md_molecule_t* mol, str_t filename, struct md_allocator_i* alloc);
-    bool (*free)(md_molecule_t* mol, struct md_allocator_i* alloc);
 } md_molecule_api;
 
+// @NOTE(RS): This is just to be thurough,
+// I would recommend using an explicit arena allocator for the molecule and just clearing that in one go instead of calling this.
+void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc);
+
+// macro concatenate trick to assert that the input is a valid compile time C-string
 #define MAKE_LABEL(cstr) {cstr"", sizeof(cstr)-1}
 
 static inline md_label_t make_label(str_t str) {
@@ -191,6 +207,8 @@ static inline str_t label_to_str(const md_label_t* lbl) {
     str_t str = {lbl->buf, lbl->len};
     return str;
 }
+
+#define LBL_TO_STR(lbl) (str_t){lbl.buf, lbl.len}
 
 #ifdef __cplusplus
 }

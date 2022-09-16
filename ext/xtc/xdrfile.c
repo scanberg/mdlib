@@ -37,6 +37,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32) || defined(_WIN64)
+#ifndef VC_EXTRALEAN
+#define VC_EXTRALEAN
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#endif
+
 #include "xdrfile.h"
 
 char* exdr_message[exdrNR] = {"OK",
@@ -200,7 +210,7 @@ XDRFILE* xdrfile_mem(void* ptr, int64_t num_bytes, const char* mode) {
     if (*mode == 'w' || *mode == 'W') {
         xdrmode = XDR_ENCODE;
     } else if (*mode == 'a' || *mode == 'A') {
-        // xdrmode = XDR_ENCODE;
+        // We cannot append in memory mode
         return NULL;
     } else if (*mode == 'r' || *mode == 'R') {
         xdrmode = XDR_DECODE;

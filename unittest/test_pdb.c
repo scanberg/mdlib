@@ -88,7 +88,7 @@ UTEST(pdb, create_molecule) {
         EXPECT_EQ(mol.atom.z[i], pdb_data.atom_coordinates[i].z);
     }
 
-    md_pdb_molecule_free(&mol, alloc);
+    md_molecule_free(&mol, alloc);
     
     /*
     

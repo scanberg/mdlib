@@ -13,13 +13,8 @@
 
 #define MD_GRO_MOL_MAGIC  0xbabcebf677bfaf67
 
-typedef struct label {
-    char str[8];
-} label_t;
-
 typedef struct gro_molecule {
     uint64_t magic;
-    label_t* labels;
     struct md_allocator_i* allocator;
 } gro_molecule_t;
 
@@ -48,7 +43,7 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
         return false;
     }
 
-    line = trim_whitespace(line);
+    line = str_trim_whitespace(line);
     const int64_t len = MIN((int64_t)ARRAY_SIZE(data->title) - 1, line.len);
     strncpy(data->title, line.ptr, len);
     data->title[len] = '\0';
@@ -58,7 +53,7 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
         return false;
     }
 
-    data->num_atoms = parse_int(trim_whitespace(line));
+    data->num_atoms = parse_int(str_trim_whitespace(line));
     const int64_t min_bounds = 1;
     const int64_t max_bounds = 10000000;
     if (data->num_atoms < min_bounds || max_bounds < data->num_atoms) {
@@ -72,12 +67,12 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
 static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_field_width, int64_t* read_count, int64_t read_target, md_allocator_i* alloc) {
     str_t line = {0};
     while ((*read_count < read_target) && extract_line(&line, &str)) {
-        int64_t res_id  = parse_int(trim_whitespace(substr(line, 0, 5)));
-        str_t res_name  = trim_whitespace(substr(line, 5, 5));
-        str_t atom_name = trim_whitespace(substr(line, 10, 5));
-        double x = parse_float(trim_whitespace(substr(line, 20 + 0 * pos_field_width, pos_field_width))) * 10.0; // nm -> �
-        double y = parse_float(trim_whitespace(substr(line, 20 + 1 * pos_field_width, pos_field_width))) * 10.0;
-        double z = parse_float(trim_whitespace(substr(line, 20 + 2 * pos_field_width, pos_field_width))) * 10.0;
+        int64_t res_id  = parse_int(str_trim_whitespace(substr(line, 0, 5)));
+        str_t res_name  = str_trim_whitespace(substr(line, 5, 5));
+        str_t atom_name = str_trim_whitespace(substr(line, 10, 5));
+        double x = parse_float(str_trim_whitespace(substr(line, 20 + 0 * pos_field_width, pos_field_width))) * 10.0; // nm -> �
+        double y = parse_float(str_trim_whitespace(substr(line, 20 + 1 * pos_field_width, pos_field_width))) * 10.0;
+        double z = parse_float(str_trim_whitespace(substr(line, 20 + 2 * pos_field_width, pos_field_width))) * 10.0;
 
         md_gro_atom_t atom = {0};
         atom.res_id = (int32_t)res_id;
@@ -102,9 +97,9 @@ static inline bool parse_unitcell(str_t str, md_gro_data_t* data) {
         return false;
     }
 
-    data->cell_ext[0] = (float)parse_float(trim_whitespace(substr(line, 0, 10)));
-    data->cell_ext[1] = (float)parse_float(trim_whitespace(substr(line, 10, 10)));
-    data->cell_ext[2] = (float)parse_float(trim_whitespace(substr(line, 20, 10)));
+    data->cell_ext[0] = (float)parse_float(str_trim_whitespace(substr(line, 0, 10)));
+    data->cell_ext[1] = (float)parse_float(str_trim_whitespace(substr(line, 10, 10)));
+    data->cell_ext[2] = (float)parse_float(str_trim_whitespace(substr(line, 20, 10)));
 
     return true;
 }
@@ -243,23 +238,9 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     ASSERT(data);
     ASSERT(alloc);
 
-    if (mol->inst) {
-        md_print(MD_LOG_TYPE_DEBUG, "molecule inst object is not zero, potentially leaking memory when clearing");
-    }
-
     memset(mol, 0, sizeof(md_molecule_t));
 
-    mol->inst = md_alloc(alloc, sizeof(gro_molecule_t));
-    gro_molecule_t* inst = (gro_molecule_t*)mol->inst;
-    memset(inst, 0, sizeof(gro_molecule_t));
-
-    inst->magic = MD_GRO_MOL_MAGIC;
-    inst->allocator = md_arena_allocator_create(alloc, KILOBYTES(16));
-    inst->labels = 0;
-
     const int64_t num_atoms = data->num_atoms;
-
-    alloc = inst->allocator;
 
     md_array_ensure(mol->atom.x, num_atoms, alloc);
     md_array_ensure(mol->atom.y, num_atoms, alloc);
@@ -304,26 +285,6 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         0, 0, data->cell_ext[2] * 10.0f,
     };
 
-    md_util_postprocess_molecule(mol, alloc);
-
-    return true;
-}
-
-bool md_gro_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* alloc) {
-    ASSERT(mol);
-    ASSERT(mol->inst);
-    ASSERT(alloc);
-
-    gro_molecule_t* inst = (gro_molecule_t*)mol->inst;
-    if (inst->magic != MD_GRO_MOL_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "GRO magic did not match!");
-        return false;
-    }
-
-    md_arena_allocator_destroy(inst->allocator);
-    md_free(alloc, inst, sizeof(gro_molecule_t));
-    memset(mol, 0, sizeof(md_molecule_t));
-
     return true;
 }
 
@@ -352,7 +313,6 @@ static bool gro_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
 static md_molecule_api gro_api = {
     gro_init_from_str,
     gro_init_from_file,
-    md_gro_molecule_free,
 };
 
 md_molecule_api* md_gro_molecule_api() {

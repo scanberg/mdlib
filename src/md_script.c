@@ -792,7 +792,7 @@ static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
 
 static inline bool is_identifier_procedure(str_t ident) {
     for (int64_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
-        if (compare_str(ident, procedures[i].name)) {
+        if (str_equal(ident, procedures[i].name)) {
             return true;
         }
     }
@@ -810,7 +810,7 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
 
 static identifier_t* find_identifier(str_t name, identifier_t* identifiers, int64_t count) {
     for (int64_t i = 0; i < count; ++i) {
-        if (compare_str(name, identifiers[i].name)) {
+        if (str_equal(name, identifiers[i].name)) {
             return &identifiers[i];
         }
     }
@@ -825,7 +825,7 @@ static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
     ASSERT(get_identifier(ir, name) == NULL);
 
     identifier_t ident = {
-        .name = copy_str(name, ir->arena),
+        .name = str_copy(name, ir->arena),
         .node = 0,
         .data = 0,
     };
@@ -904,7 +904,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
 
     for (int64_t i = 0; i < num_cantidates; ++i) {
         procedure_t* proc = &candidates[i];
-        if (compare_str(proc->name, name)) {
+        if (str_equal(proc->name, name)) {
             if (num_arg_types == proc->num_args) {
                 if (compare_type_info_array(arg_types, proc->arg_type, num_arg_types)) {
                     res.success = true;
@@ -937,7 +937,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
 
         for (int64_t i = 0; i < num_cantidates; ++i) {
             procedure_t* proc = &candidates[i];
-            if (compare_str(proc->name, name)) {
+            if (str_equal(proc->name, name)) {
                 if (num_arg_types == proc->num_args) {
                     // Same name and same number of args...
 
@@ -1035,7 +1035,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
 
 static constant_t* find_constant(str_t name) {
     for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
-        if (compare_str(constants[i].name, name)) {
+        if (str_equal(constants[i].name, name)) {
             return &constants[i];
         }
     }
@@ -1101,28 +1101,28 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             const int64_t n = j - i;
             if (n == 2) {
                 str_t str = {buf+i, 2};
-                if (compare_str(str, MAKE_STR("or"))) {
+                if (str_equal(str, MAKE_STR("or"))) {
                     token.type = TOKEN_OR;
                 }
-                else if (compare_str(str, MAKE_STR("in"))) {
+                else if (str_equal(str, MAKE_STR("in"))) {
                     token.type = TOKEN_IN;
                 }
-                else if (compare_str(str, MAKE_STR("of"))) {
+                else if (str_equal(str, MAKE_STR("of"))) {
                     token.type = TOKEN_OF;
                 }
             }
             else if (n == 3) {
                 str_t str = {buf+i, 3};
-                if (compare_str(str, MAKE_STR("and"))) {
+                if (str_equal(str, MAKE_STR("and"))) {
                     token.type = TOKEN_AND;
                 }
-                else if (compare_str(str, MAKE_STR("not"))) {
+                else if (str_equal(str, MAKE_STR("not"))) {
                     token.type = TOKEN_NOT;
                 }
-                else if (compare_str(str, MAKE_STR("xor"))) {
+                else if (str_equal(str, MAKE_STR("xor"))) {
                     token.type = TOKEN_XOR;
                 }
-                else if (compare_str(str, MAKE_STR("out"))) {
+                else if (str_equal(str, MAKE_STR("out"))) {
                     token.type = TOKEN_OUT;
                 }
             }
@@ -1202,7 +1202,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             if (n == 2) {
                 str_t str = {buf + i, 2};
                 for (int k = 0; k < (int)ARRAY_SIZE(symbols_2); ++k) {
-                    if (compare_str(str, (str_t){symbols_2[k].str, 2})) {
+                    if (str_equal(str, (str_t){symbols_2[k].str, 2})) {
                         token.type = symbols_2[k].type;
                         j = i + 2;
                         break;
@@ -1784,7 +1784,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
             else {
                 node = create_node(ctx->ir, AST_IDENTIFIER, token);
                 create_identifier(ctx->ir, ident);
-                node->ident = copy_str(ident, ctx->ir->arena);
+                node->ident = str_copy(ident, ctx->ir->arena);
             }
         } else {
             // Identifier reference, resolve this later in the static check
@@ -1979,7 +1979,7 @@ ast_node_t* parse_value(parse_context_t* ctx) {
     }
     else if (token.type == TOKEN_STRING) {
         node->data.type = (md_type_info_t)TI_STRING;
-        node->value._string = copy_str(substr(token.str, 1, MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
+        node->value._string = str_copy(substr(token.str, 1, MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
     }
     else {
         ASSERT(false);
@@ -2342,7 +2342,7 @@ static identifier_t* find_static_identifier(str_t name, eval_context_t* ctx) {
     if (ctx->ir) {
         for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
             // Only return IR identifiers if they are constant
-            if (ctx->ir->identifiers[i].node && (ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && compare_str(name, ctx->ir->identifiers[i].name)) {
+            if (ctx->ir->identifiers[i].node && (ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && str_equal(name, ctx->ir->identifiers[i].name)) {
                 return &ctx->ir->identifiers[i];
             }
         }
@@ -2357,7 +2357,7 @@ static identifier_t* find_dynamic_identifier(str_t name, eval_context_t* ctx) {
 
     // Dynamic Identifiers from Evaluation
     for (int64_t i = 0; i < md_array_size(ctx->identifiers); ++i) {
-        if (compare_str(name, ctx->identifiers[i].name)) {
+        if (str_equal(name, ctx->identifiers[i].name)) {
             return &ctx->identifiers[i];
         }
     }
@@ -3075,7 +3075,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         if (num_elem > 0) {
             array_unit = elem[0]->data.unit;
             for (int64_t i = 1; i < num_elem; ++i) {
-                if (!unit_compare(elem[i]->data.unit, array_unit)) {
+                if (!unit_equal(elem[i]->data.unit, array_unit)) {
                     array_unit = (md_unit_t){0};
                     break;
                 }
@@ -3712,7 +3712,7 @@ static void init_property(md_script_property_t* prop, int64_t num_frames, str_t 
     ASSERT(node);
     ASSERT(alloc);
 
-    prop->ident = copy_str(ident, alloc);
+    prop->ident = str_copy(ident, alloc);
     prop->flags = 0;
     prop->data = (md_script_property_data_t){0};
     prop->vis_token = (struct md_script_vis_token_t*)node;
@@ -4102,7 +4102,7 @@ static void create_tokens(md_script_ir_t* ir, const ast_node_t* node, const ast_
     char type_buf[128];
     char unit_buf[128];
     int type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
-    int unit_len = unit_print_long(unit_buf, (int)sizeof(unit_buf), node->data.unit);
+    int unit_len = unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit);
     if (unit_len == 0) {
         len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "(%.*s) ", type_len, type_buf);
     } else {
@@ -4114,7 +4114,7 @@ static void create_tokens(md_script_ir_t* ir, const ast_node_t* node, const ast_
     token.col_end = node->token.col_end;
     token.depth = depth;
     token.vis_token = (const struct md_script_vis_token_t*)(node_override ? node_override : node);
-    token.text = copy_str((str_t){.ptr = buf, .len = len}, ir->arena);
+    token.text = str_copy((str_t){.ptr = buf, .len = len}, ir->arena);
 
     // Parent token should be last token added (unless empty)
     md_script_token_t* last_token = md_array_last(ir->tokens);
@@ -4174,7 +4174,7 @@ bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const md_molecul
     }
 
     reset_ir(ir);
-    ir->str = copy_str(src, ir->arena);
+    ir->str = str_copy(src, ir->arena);
 
     if (ctx_ir) {
         add_ir_ctx(ir, ctx_ir);
@@ -4402,7 +4402,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
 
 
     md_script_ir_t* ir = create_ir(default_temp_allocator);
-    ir->str = copy_str(expr, ir->arena);
+    ir->str = str_copy(expr, ir->arena);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     bool result = false;
@@ -4449,7 +4449,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
     SETUP_STACK(default_allocator, MEGABYTES(32));
 
     md_script_ir_t* ir = create_ir(&temp_alloc);
-    ir->str = copy_str(expr, ir->arena);
+    ir->str = str_copy(expr, ir->arena);
 
     if (ctx_ir) {
         add_ir_ctx(ir, ctx_ir);

@@ -6,9 +6,10 @@
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 #include <core/md_sync.h>
+#include <core/md_vec_math.h>
 #include <md_trajectory.h>
 
-#include <ext/xtc/xdrfile.h>
+#include <xtc/xdrfile.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -246,19 +247,15 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
     // Get header
     int natoms = 0, step = 0;
     float time = 0;
-    float box[3][3] = {0};
-    result = xtc_header(file, &natoms, &step, &time, box);
+    mat3_t box = mat3_ident();
+    result = xtc_header(file, &natoms, &step, &time, box.elem);
     if (result) {
         if (header) {
-            for (int i = 0; i < 3; ++i) {
-                for (int j = 0; j < 3; ++j) {
-                    box[i][j] *= 10.0f;
-                }
-            }
+            box = mat3_mul_f(box, 10.0f); // nm -> Ångström
             header->num_atoms = natoms;
             header->index = step;
             header->timestamp = time;
-            memcpy(header->box, box, sizeof(header->box));
+            memcpy(header->box, box.elem, sizeof(header->box));
         }
 
         if (x || y || z) {
@@ -382,7 +379,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
     ASSERT(alloc);
 
     // Ensure that filename is zero terminated
-    filename = copy_str(filename, default_temp_allocator);
+    filename = str_copy(filename, default_temp_allocator);
     XDRFILE* file = xdrfile_open(filename.ptr, "r");
 
     if (file) {
@@ -435,7 +432,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
             .num_frames = md_array_size(offsets) - 1,
             .num_atoms = num_atoms,
             .max_frame_data_size = max_frame_size,
-            .time_unit = {.base = {.time = UNIT_TIME_PIKOSECONDS}, .dim = {.time = 1}},
+            .time_unit = unit_pikosecond(),
         };
 
         traj->inst = (struct md_trajectory_o*)xtc;

@@ -63,7 +63,7 @@ bool md_gl_shaders_free(md_gl_shaders_t* shaders);
 //      - secondary_structure : md_secondary_structure_t = u8[4]
 
 typedef struct md_gl_molecule_t {
-    uint64_t _mem[12];
+    char _mem[128];
 } md_gl_molecule_t;
 
 bool md_gl_molecule_init(md_gl_molecule_t* gl_mol, const md_molecule_t* mol);
@@ -96,7 +96,7 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* mol, uint
 typedef struct md_gl_representation_t md_gl_representation_t;
 
 struct md_gl_representation_t { // This is an opaque blob which matches the size of internal memory used by the structure
-    uint64_t _mem[4];
+    char _mem[32];
 };
 
 typedef uint16_t md_gl_representation_type_t;

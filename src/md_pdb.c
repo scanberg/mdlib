@@ -8,6 +8,7 @@
 #include <core/md_allocator.h>
 #include <core/md_log.h>
 #include <core/md_sync.h>
+#include <core/md_vec_math.h>
 #include <md_molecule.h>
 #include <md_trajectory.h>
 #include <md_util.h>
@@ -19,19 +20,10 @@
 extern "C" {
 #endif
 
-#define MD_PDB_MOL_MAGIC  0x285ada29078a9bc8
 #define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
-
-typedef struct label {
-    char str[8];
-} label_t;
+#define PARSE_BIOMT 1
 
 // The opaque blob
-typedef struct pdb_molecule_t {
-    uint64_t magic;
-    label_t* labels;
-    md_allocator_i* allocator;
-} pdb_molecule_t;
 
 typedef struct pdb_trajectory_t {
     uint64_t magic;
@@ -49,7 +41,7 @@ static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64
         ASSERT(dst_size > 0);
         dst[0] = '\0';
     }
-    str_t src = trim_whitespace(substr(line, beg - 1, end-beg + 1));
+    str_t src = str_trim_whitespace(substr(line, beg - 1, end-beg + 1));
     ASSERT(dst_size >= src.len);
     memcpy(dst, src.ptr, src.len);
 }
@@ -58,12 +50,12 @@ static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64
 // This makes our life easier when specifying all the different ranges
 static inline int32_t extract_int(str_t line, int64_t beg, int64_t end) {
     if (line.len < end) return 0;
-    return (int32_t)parse_int(trim_whitespace(substr(line, beg - 1, end-beg + 1)));
+    return (int32_t)parse_int(str_trim_whitespace(substr(line, beg - 1, end-beg + 1)));
 }
 
 static inline float extract_float(str_t line, int64_t beg, int64_t end) {
     if (line.len < end) return 0.0f;
-    return (float)parse_float(trim_whitespace(substr(line, beg - 1, end-beg + 1)));
+    return (float)parse_float(str_trim_whitespace(substr(line, beg - 1, end-beg + 1)));
 }
 
 static inline char extract_char(str_t line, int32_t idx) {
@@ -87,7 +79,7 @@ static inline md_pdb_coordinate_t extract_coord(str_t line) {
         .temp_factor = extract_float(line, 61, 66),
         .element = {0},
         .charge = {0},
-        .is_hetatm = compare_str_cstr_n(line, "HETATM", 6),
+        .is_hetatm = str_equal_cstr_n(line, "HETATM", 6),
     };
     copy_str_field(coord.atom_name, sizeof(coord.atom_name),    line, 13, 16);
     copy_str_field(coord.res_name,  sizeof(coord.res_name),     line, 18, 20);
@@ -155,7 +147,7 @@ static inline md_pdb_sheet_t extract_sheet(str_t line) {
 }
 
 static inline md_pdb_connect_t extract_connect(str_t line) {
-    line = trim_whitespace(line);
+    line = str_trim_whitespace(line);
     md_pdb_connect_t c = {
         .atom_serial = {
             [0] = extract_int(line, 7, 11),
@@ -169,7 +161,7 @@ static inline md_pdb_connect_t extract_connect(str_t line) {
 }
 
 static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
-    line = trim_whitespace(line);
+    line = str_trim_whitespace(line);
     md_pdb_cryst1_t c = {
         .a = extract_float(line, 7,  15),
         .b = extract_float(line, 16, 24),
@@ -193,7 +185,7 @@ static inline int32_t count_pdb_coordinate_entries(str_t str) {
     str_t line;
     while (extract_line(&line, &str)) {
         if (line.len < 6) continue;
-        if ((compare_str_cstr_n(line, "ATOM", 4) || compare_str_cstr_n(line, "HETATM", 6))) {
+        if ((str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6))) {
             count += 1;
         }
     }
@@ -269,7 +261,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     int32_t step = 0;
     if (extract_line(&line, &str)) {
-        if (compare_str_cstr_n(line, "MODEL", 5)) {
+        if (str_equal_cstr_n(line, "MODEL", 5)) {
             step = (int32_t)parse_int(substr(line, 10, 4));
         }
     }
@@ -277,7 +269,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     int64_t i = 0;
     while (extract_line(&line, &str) && i < pdb->header.num_atoms) {
         if (line.len < 6) continue;
-        if (compare_str_cstr_n(line, "ATOM", 4) || compare_str_cstr_n(line, "HETATM", 6)) {
+        if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
             if (x) { x[i] = extract_float(line, 31, 38); }
             if (y) { y[i] = extract_float(line, 39, 46); }
             if (z) { z[i] = extract_float(line, 47, 54); }
@@ -302,19 +294,19 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
     const char* base_offset = str.ptr;
     while (extract_line(&line, &str)) {
         if (line.len < 6) continue;
-        if (compare_str_cstr_n(line, "ATOM", 4) || compare_str_cstr_n(line, "HETATM", 6)) {
+        if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
             md_array_push(data->atom_coordinates, coord, alloc);
         }
-        else if (compare_str_cstr_n(line, "HELIX", 5)) {
+        else if (str_equal_cstr_n(line, "HELIX", 5)) {
             md_pdb_helix_t helix = extract_helix(line);
             md_array_push(data->helices, helix, alloc);
         }
-        else if (compare_str_cstr_n(line, "SHEET", 5)) {
+        else if (str_equal_cstr_n(line, "SHEET", 5)) {
             md_pdb_sheet_t sheet = extract_sheet(line);
             md_array_push(data->sheets, sheet, alloc);
         }
-        else if (compare_str_cstr_n(line, "CONECT", 6)) {
+        else if (str_equal_cstr_n(line, "CONECT", 6)) {
             md_pdb_connect_t connect = extract_connect(line);
             md_pdb_connect_t* last = md_array_last(data->connections);
             if (last && last->atom_serial[0] == connect.atom_serial[0]) {
@@ -324,7 +316,7 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
                 md_array_push(data->connections, connect, alloc);
             }
         }
-        else if (compare_str_cstr_n(line, "MODEL", 5)) {
+        else if (str_equal_cstr_n(line, "MODEL", 5)) {
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
             md_pdb_model_t model = {
                 .serial = (int32_t)parse_int(substr(line, 10, 4)),
@@ -334,16 +326,68 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
             };
             md_array_push(data->models, model, alloc);
         }
-        else if (compare_str_cstr_n(line, "ENDMDL", 6)) {
+        else if (str_equal_cstr_n(line, "ENDMDL", 6)) {
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
             md_pdb_model_t* model = md_array_last(data->models);
             ASSERT(model);
             model->end_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1;
             model->end_atom_index = num_coords;
         }
-        else if (compare_str_cstr_n(line, "CRYST1", 6)) {
+        else if (str_equal_cstr_n(line, "CRYST1", 6)) {
             md_pdb_cryst1_t cryst1 = extract_cryst1(line);
             md_array_push(data->cryst1, cryst1, alloc);
+        }
+        else if (str_equal_cstr_n(line, "REMARK 350", 10)) {
+            if (str_equal_cstr(substr(line, 11, 12), "BIOMOLECULE:")) {
+                md_pdb_assembly_t assembly = {0};
+                assembly.id = (int32_t)parse_int(str_trim_whitespace(substr(line, 23, -1)));
+                assembly.transform_offset = (int32_t)md_array_size(data->transforms);
+                md_array_push(data->assemblies, assembly, alloc);
+            }
+            else if (str_equal_cstr(substr(line, 11, 30), "APPLY THE FOLLOWING TO CHAINS:") ||
+                     str_equal_cstr(substr(line, 11, 30), "                   AND CHAINS:")) {
+                md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
+                if (assembly) {
+                    str_t chains = str_trim_whitespace(substr(line, 41, 30));
+                    str_t chain;
+
+                    // Find the next index of insertion for chain
+                    int32_t next_idx = 0;
+                    while (next_idx < ARRAY_SIZE(assembly->apply_to_chains) && assembly->apply_to_chains[next_idx] != 0) {
+                        next_idx += 1;
+                    }
+                    while (extract_next_token_delim(&chain, &chains, ',') && next_idx < ARRAY_SIZE(assembly->apply_to_chains)) {
+                        assembly->apply_to_chains[next_idx] = str_trim_whitespace(chain).ptr[0];
+                        next_idx += 1;
+                    }
+                } else {
+                    md_print(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, assembly is missing");
+                }
+            }
+            else if (str_equal_cstr(substr(line, 13, 5), "BIOMT")) {
+                md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
+                if (assembly) {
+                    const int32_t row_idx = char_to_digit(line.ptr[18]) - 1;
+                    assert(-1 < row_idx && row_idx < 4);
+
+                    if (row_idx == 0) {
+                        mat4_t transform = {0};
+                        md_array_push(data->transforms, transform, alloc);
+                        assembly->transform_count += 1;
+                    }
+                    mat4_t* transform = md_array_last(data->transforms);
+                    if (transform) {
+                        transform->elem[0][row_idx] = (float)parse_float(str_trim_whitespace(substr(line, 23, 10)));
+                        transform->elem[1][row_idx] = (float)parse_float(str_trim_whitespace(substr(line, 33, 10)));
+                        transform->elem[2][row_idx] = (float)parse_float(str_trim_whitespace(substr(line, 43, 10)));
+                        transform->elem[3][row_idx] = (float)parse_float(str_trim_whitespace(substr(line, 53, -1)));
+                    } else {
+                        md_print(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, transform is missing");
+                    }
+                } else {
+                    md_print(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, assembly is missing");
+                }
+            }
         }
     }
 
@@ -353,6 +397,8 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
     data->num_sheets = md_array_size(data->sheets);
     data->num_connections = md_array_size(data->connections);
     data->num_cryst1 = md_array_size(data->cryst1);
+    data->num_assemblies = md_array_size(data->assemblies);
+    data->num_transforms = md_array_size(data->transforms);
 
     return true;
 }
@@ -403,24 +449,21 @@ done:
 
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
     ASSERT(data);
+    ASSERT(alloc);
+    if (data->cryst1)               md_array_free(data->cryst1, alloc);
     if (data->models)               md_array_free(data->models, alloc);
+    if (data->atom_coordinates)     md_array_free(data->atom_coordinates, alloc);
     if (data->helices)              md_array_free(data->helices, alloc);
     if (data->sheets)               md_array_free(data->sheets, alloc);
-    if (data->atom_coordinates)     md_array_free(data->atom_coordinates, alloc);
     if (data->connections)          md_array_free(data->connections, alloc);
+    if (data->assemblies)           md_array_free(data->assemblies, alloc);
 }
 
-static inline str_t add_label(str_t str, pdb_molecule_t* inst) {
-    ASSERT(inst);
-    for (int64_t i = 0; i < md_array_size(inst->labels); ++i) {
-        str_t label = { .ptr = inst->labels[i].str, .len = strnlen(inst->labels[i].str, ARRAY_SIZE(inst->labels[i].str)) };
-        if (compare_str(str, label)) {
-            return label;
-        }
+md_chain_idx_t find_chain_idx(char chain_id, md_molecule_t* mol) {
+    for (md_chain_idx_t i = 0; i < (md_chain_idx_t)mol->chain.count; ++i) {
+        if (mol->chain.id[i].buf[0] == chain_id) return i;
     }
-    label_t label = {0};
-    memcpy(label.str, str.ptr, MIN(str.len, ARRAY_SIZE(label.str) - 1));
-    return (str_t){md_array_push(inst->labels, label, inst->allocator)->str, str.len};
+    return -1;
 }
 
 bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct md_allocator_i* alloc) {
@@ -438,24 +481,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         end_atom_index = data->models[0].end_atom_index;
     }
 
-    if (mol->inst) {
-        md_print(MD_LOG_TYPE_DEBUG, "molecule inst object is not zero, potentially leaking memory when clearing");
-    }
-
     memset(mol, 0, sizeof(md_molecule_t));
 
-    mol->inst = md_alloc(alloc, sizeof(pdb_molecule_t));
-    pdb_molecule_t* inst = (pdb_molecule_t*)mol->inst;
-    memset(inst, 0, sizeof(pdb_molecule_t));
-    
-    inst->magic = MD_PDB_MOL_MAGIC;
-    inst->allocator = md_arena_allocator_create(alloc, KILOBYTES(64));
-    inst->labels = 0;
-
-    const int64_t num_atoms = end_atom_index - beg_atom_index;
-
-    // Change allocator to arena so we can very easily free it later.
-    alloc = inst->allocator;
+    int64_t num_atoms = end_atom_index - beg_atom_index;
 
     md_array_ensure(mol->atom.x, num_atoms, alloc);
     md_array_ensure(mol->atom.y, num_atoms, alloc);
@@ -472,7 +500,6 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         float y = data->atom_coordinates[i].y;
         float z = data->atom_coordinates[i].z;
         str_t atom_name = (str_t){data->atom_coordinates[i].atom_name, strnlen(data->atom_coordinates[i].atom_name, ARRAY_SIZE(data->atom_coordinates[i].atom_name))};
-        //atom_name = add_label(atom_name, inst);
 
         str_t res_name = (str_t){data->atom_coordinates[i].res_name, strnlen(data->atom_coordinates[i].res_name, ARRAY_SIZE(data->atom_coordinates[i].res_name))};
 
@@ -491,7 +518,6 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
             cur_chain_id = chain_id;
             
             str_t chain_str = { &data->atom_coordinates[i].chain_id, 1 };
-            //chain_label = add_label(chain_label, inst);
             md_range_t residue_range = {(uint32_t)mol->residue.count, (uint32_t)mol->residue.count};
             md_range_t atom_range = {(uint32_t)mol->atom.count, (uint32_t)mol->atom.count};
             
@@ -505,7 +531,6 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         if (res_id != cur_res_id) {
             cur_res_id = res_id;
 
-            //res_name = add_label(res_name, inst);
             md_residue_id_t id = res_id;
             md_range_t atom_range = {(uint32_t)mol->atom.count, (uint32_t)mol->atom.count};
 
@@ -532,25 +557,53 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         if (mol->chain.count)   md_array_push(mol->atom.chain_idx, (md_chain_idx_t)(mol->chain.count - 1), alloc);
     }
 
-    md_util_postprocess_molecule(mol, alloc);
+    // Create instances from assemblies
+    for (int64_t aidx = 0; aidx < data->num_assemblies; ++aidx) {
+        const md_pdb_assembly_t* assembly = &data->assemblies[aidx];
+        md_label_t instance_label;
+        instance_label.len = (uint8_t)snprintf(instance_label.buf, sizeof(instance_label.buf), "ASM_%i", assembly->id);
 
-    return true;
-}
+        for (int64_t tidx = assembly->transform_offset; tidx < assembly->transform_offset + assembly->transform_count; ++tidx) {
+            md_range_t instance_range = {0,0};
+            for (int64_t cidx = 0; cidx < ARRAY_SIZE(data->assemblies[aidx].apply_to_chains); ++cidx) {
+                // A transform can be applied to multiple chains,
+                // We extract the consecutive ranges of the chains and possibly split this into multiple instances with the same label and transform
 
-bool md_pdb_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
-    ASSERT(mol);
-    ASSERT(mol->inst);
-    ASSERT(alloc);
+                char chain_id = data->assemblies[aidx].apply_to_chains[cidx];
+                if (chain_id == 0) {
+                    break;
+                }
 
-    pdb_molecule_t* inst = (pdb_molecule_t*)mol->inst;
-    if (inst->magic != MD_PDB_MOL_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "PDB magic did not match!");
-        return false;
+                md_chain_idx_t chain_idx = find_chain_idx(chain_id, mol);
+                if (chain_idx != -1) {
+                    if (instance_range.beg == 0 && instance_range.end == 0) {
+                        instance_range = mol->chain.atom_range[chain_idx];
+                    } else {
+                        // Append if possible
+                        if (instance_range.end == mol->chain.atom_range[chain_idx].beg) {
+                            instance_range.end = mol->chain.atom_range[chain_idx].end;
+                        } else {
+                            // Discontinous range, we need to commit and reset the range
+                            md_array_push(mol->instance.atom_range, instance_range, alloc);
+                            md_array_push(mol->instance.label, instance_label, alloc);
+                            md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
+                            instance_range = mol->chain.atom_range[chain_idx];
+                        }
+                    }
+                } else {
+                    // Fatal error
+                    md_print(MD_LOG_TYPE_ERROR, "Malformed PDB dataset, an assembly refers to a non existing chain id");
+                    return false;
+                }
+            }
+
+            md_array_push(mol->instance.atom_range, instance_range, alloc);
+            md_array_push(mol->instance.label, instance_label, alloc);
+            md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
+        }
     }
 
-    md_arena_allocator_destroy(inst->allocator);
-    md_free(alloc, inst, sizeof(pdb_molecule_t));
-    memset(mol, 0, sizeof(md_molecule_t));
+    mol->instance.count = md_array_size(mol->instance.atom_range);
 
     return true;
 }
@@ -609,7 +662,6 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
 static md_molecule_api pdb_molecule_api = {
     pdb_init_from_str,
     pdb_init_from_file,
-    md_pdb_molecule_free
 };
 
 md_molecule_api* md_pdb_molecule_api() {

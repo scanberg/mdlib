@@ -12,7 +12,7 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
   add_compile_options_config(DEBUG /MTd)
 endif()
 
-target_link_libraries(md_unittest PRIVATE mold ${VIAMD_STDLIBS})
+target_link_libraries(md_unittest PRIVATE mdlib ${VIAMD_STDLIBS})
 
 target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\")
 
@@ -22,6 +22,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_array.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_bitop.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_bitfield.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_edr.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intrinsics.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_simd.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_vec_math.c
@@ -32,6 +33,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xtc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xyz.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_util.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_unit.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_script.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_frame_cache.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_spatial_hash.c

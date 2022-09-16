@@ -192,12 +192,12 @@ str_t alloc_str(uint64_t len, struct md_allocator_i* alloc) {
     return str;
 }
 
-void free_str(str_t str, struct md_allocator_i* alloc) {
+void str_free(str_t str, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     md_free(alloc, (void*)str.ptr, str.len + 1);
 }
 
-str_t copy_str(const str_t str, struct md_allocator_i* alloc) {
+str_t str_copy(const str_t str, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     str_t result = {0,0};
     if (str.ptr && str.len > 0) {

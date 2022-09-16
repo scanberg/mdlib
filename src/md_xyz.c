@@ -70,16 +70,16 @@ typedef struct xyz_trajectory_t {
 // This makes our life easier when specifying all the different ranges
 static inline int32_t extract_int(str_t line, int64_t beg, int64_t end) {
     if (line.len < end) return 0;
-    return (int32_t)parse_int(trim_whitespace(substr(line, beg, end-beg)));
+    return (int32_t)parse_int(str_trim_whitespace(substr(line, beg, end-beg)));
 }
 
 static inline float extract_float(str_t line, int64_t beg, int64_t end) {
     if (line.len < end) return 0.0f;
-    return (float)parse_float(trim_whitespace(substr(line, beg, end-beg)));
+    return (float)parse_float(str_trim_whitespace(substr(line, beg, end-beg)));
 }
 
 static inline bool is_float(str_t str) {
-    str = trim_whitespace(str);
+    str = str_trim_whitespace(str);
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
 
@@ -93,7 +93,7 @@ static inline bool is_float(str_t str) {
 }
 
 static inline bool is_unsigned_int(str_t str) {
-    str = trim_whitespace(str);
+    str = str_trim_whitespace(str);
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
 
@@ -106,7 +106,7 @@ static inline bool is_unsigned_int(str_t str) {
 }
 
 static inline bool is_string(str_t str) {
-    str = trim_whitespace(str);
+    str = str_trim_whitespace(str);
 
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
@@ -275,7 +275,7 @@ static inline md_xyz_coordinate_t extract_coord(str_t line, const xyz_format_t* 
     md_xyz_coordinate_t coord = { 0 };
     
     if (format->flags & XYZ_ELEMENT_SYMBOL) {
-        str_t element = trim_whitespace(substr(line, format->element.beg, format->element.end - format->element.beg));
+        str_t element = str_trim_whitespace(substr(line, format->element.beg, format->element.end - format->element.beg));
         strncpy(coord.element_symbol, element.ptr, MIN(element.len, (int)sizeof(coord.element_symbol)));
     } else if (format->flags & XYZ_ATOMIC_NUMBER) {
         coord.atomic_number = extract_int(line, format->element.beg, format->element.end);
@@ -295,7 +295,7 @@ static inline md_xyz_coordinate_t extract_coord(str_t line, const xyz_format_t* 
         line = substr(line, format->atom_type.end, -1);
         int connection_count = 0;
         while (extract_next_token(&token, &line)) {
-            token = trim_whitespace(token);
+            token = str_trim_whitespace(token);
             if (token.len > 0) {
                 int connection = (int)parse_int(token);
                 if (connection) {
@@ -559,7 +559,14 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
     buffered_reader_t reader = {0};
     bool result = false;
 
-    if (buffered_reader_init(&reader, KILOBYTES(32), filename, alloc)) {
+    // @NOTE(Robin): We use a buffer here which we read into, the goal is to
+    // minimize the strain on FILE I/O operations.
+    // The buffered reader ensures that we receive lines which are complete and not chopped
+    // This is currently a bit 'hairy' and could be simplified a bit: we need to keep track of
+    // the byte offset into the file and keep this for our offset cache which is created on the side
+    // if the file is a trajectory.
+
+    if (buffered_reader_init(&reader, KILOBYTES(32), filename, default_allocator)) {
         str_t chunk;
         int64_t reader_offset = buffered_reader_get_offset(&reader);
         if (buffered_reader_get_chunk(&chunk, &reader)) {
@@ -603,7 +610,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
 
         result = true;
         done:
-        buffered_reader_free(&reader, alloc);
+        buffered_reader_free(&reader, default_allocator);
     }
 
     md_xyz_model_t* last_model = md_array_last(data->models);
@@ -638,23 +645,9 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         end_coord_index = data->models[0].end_coord_index;
     }
 
-    if (mol->inst) {
-        md_print(MD_LOG_TYPE_DEBUG, "molecule inst object is not zero, potentially leaking memory when clearing");
-    }
-
     memset(mol, 0, sizeof(md_molecule_t));
 
-    mol->inst = md_alloc(alloc, sizeof(xyz_molecule_t));
-    xyz_molecule_t* inst = (xyz_molecule_t*)mol->inst;
-    memset(inst, 0, sizeof(xyz_molecule_t));
-    
-    inst->magic = MD_XYZ_MOL_MAGIC;
-    inst->allocator = md_arena_allocator_create(alloc, KILOBYTES(64));
-
     const int64_t num_atoms = end_coord_index - beg_coord_index;
-
-    // Change allocator to arena so we can very easily free it later.
-    alloc = inst->allocator;
 
     md_array_ensure(mol->atom.x, num_atoms, alloc);
     md_array_ensure(mol->atom.y, num_atoms, alloc);
@@ -676,26 +669,6 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         md_array_push(mol->atom.name, make_label(atom_name), alloc);
         md_array_push(mol->atom.flags, 0, alloc);
     }
-
-    md_util_postprocess_molecule(mol, alloc);
-
-    return true;
-}
-
-bool md_xyz_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
-    ASSERT(mol);
-    ASSERT(mol->inst);
-    ASSERT(alloc);
-
-    xyz_molecule_t* inst = (xyz_molecule_t*)mol->inst;
-    if (inst->magic != MD_XYZ_MOL_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "XYZ magic did not match!");
-        return false;
-    }
-
-    md_arena_allocator_destroy(inst->allocator);
-    md_free(alloc, inst, sizeof(xyz_molecule_t));
-    memset(mol, 0, sizeof(md_molecule_t));
 
     return true;
 }
@@ -760,7 +733,6 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
 static md_molecule_api xyz_molecule_api = {
     xyz_init_from_str,
     xyz_init_from_file,
-    md_xyz_molecule_free
 };
 
 md_molecule_api* md_xyz_molecule_api() {

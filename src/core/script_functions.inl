@@ -406,8 +406,8 @@ static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // @TODO: Add your values here
 static constant_t constants[] = {
-    {CSTR("PI"),     _PI,  {.dim.angle = 1 }},
-    {CSTR("TAU"),    _TAU, {.dim.angle = 1 }},
+    {CSTR("PI"),     _PI,  {.base = {.dim.angle = 1 }, .mult = 1.0}},
+    {CSTR("TAU"),    _TAU, {.base = {.dim.angle = 1 }, .mult = 1.0}},
     {CSTR("E"),      _E},
 };
 
@@ -1290,7 +1290,7 @@ static bool match_query(str_t query, str_t str) {
         if (query.ptr[i] == '*') joker_count += 1;
     }
 
-    if (joker_count == 0) return compare_str(query, str);
+    if (joker_count == 0) return str_equal(query, str);
 
     int64_t first_joker = find_char(query, '*');
     int64_t last_joker = rfind_char(query, '*');
@@ -1299,12 +1299,12 @@ static bool match_query(str_t query, str_t str) {
     str_t end_match = last_joker  != query.len - 1 ? substr(query, last_joker + 1, -1) : (str_t){0};
 
     if (!str_empty(beg_match)) {
-        if (!compare_str_n(beg_match, str, beg_match.len)) return false;
+        if (!str_equal_n(beg_match, str, beg_match.len)) return false;
     }
 
     if (!str_empty(end_match)) {
         str = substr(str, str.len - end_match.len, end_match.len);
-        if (!compare_str(end_match, str)) return false;
+        if (!str_equal(end_match, str)) return false;
     }
 
     return true;
@@ -1622,7 +1622,15 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_STRING_ARR));
-    ASSERT(ctx && ctx->mol && ctx->mol->atom.element);
+    ASSERT(ctx && ctx->mol);
+
+    if (!ctx->mol->atom.element) {
+        if (!dst) {
+            create_error(ctx->ir, ctx->arg_tokens[0], "Dataset does not contain elements, perhaps it is coarse grained?");
+            return -1;
+        }
+        return 0;
+    }
 
     uint8_t* elem_idx = 0;
 
@@ -1633,13 +1641,13 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_element_t elem = md_util_element_lookup(str[i]);
         if (elem)
             md_array_push(elem_idx, elem, ctx->temp_alloc);
-        else {
+        else if (!dst) {
             create_error(ctx->ir, ctx->arg_tokens[0], "Failed to map '%.*s' into any Element.", str[i].len, str[i].ptr);
             return -1;
         }
     }
     const int64_t num_elem = md_array_size(elem_idx);
-    if (num_elem == 0) {
+    if (!dst && num_elem == 0) {
         create_error(ctx->ir, ctx->arg_tokens[0], "No valid arguments in Element");
         return -1;
     }
@@ -2774,7 +2782,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ .dim.length = 1};
+            ctx->backchannel->unit = unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -2834,7 +2842,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ .dim.length = 1 };
+            ctx->backchannel->unit = unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -2892,7 +2900,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ .dim.length = 1};
+            ctx->backchannel->unit = unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -2951,7 +2959,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res0 < 0) return res0;
         if (res1 < 0) return res1;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ .dim.length = 1};
+            ctx->backchannel->unit = unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         int64_t count = (int64_t)res0 * (int64_t)res1;
@@ -3012,7 +3020,7 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (position_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (position_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ .dim.angle = 1};
+            ctx->backchannel->unit = unit_radian();
             ctx->backchannel->value_range = (frange_t){0, PI};
         }
     }
@@ -3070,7 +3078,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (position_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (position_validate(arg[3], 3, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){.dim.angle = 1};
+            ctx->backchannel->unit = unit_radian();
             ctx->backchannel->value_range = (frange_t){-PI, PI};
         }
     }
@@ -4045,7 +4053,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ .dim = {.count = 1, .length = -3} };
+            ctx->backchannel->unit = (md_unit_t){0};
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
     }

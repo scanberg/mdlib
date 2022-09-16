@@ -1,7 +1,7 @@
 
 #include "md_gl.h"
 #include "md_util.h"
-#include "ext/gl3w/gl3w.h"
+#include <gl3w/gl3w.h>
 #include <core/md_common.h>
 #include <core/md_compiler.h>
 #include <core/md_log.h>
@@ -76,6 +76,7 @@ enum {
     GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX,    // u32, LINE_STRIP_ADJACENCY Indices for spline subdivision, seperated by primitive restart index 0xFFFFFFFF
     GL_BUFFER_MOL_BACKBONE_SPLINE_DATA,            // Subdivided control points of spline
     GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX,           // u32, LINE_STRIP indices for rendering, seperated by primitive restart index 0xFFFFFFFF
+    GL_BUFFER_MOL_INSTANCE_TRANSFORM,              // mat4 instance transformation matrices
     GL_BUFFER_MOL_COUNT
 };
 
@@ -85,6 +86,10 @@ enum {
 
 enum {
     MOL_FLAG_HAS_BACKBONE = 1
+};
+
+enum {
+    DRAW_FLAG_COMPUTE_BACKBONE_SPLINE = 1
 };
 
 #define MAX_SHADER_PERMUTATIONS 2
@@ -168,6 +173,7 @@ typedef struct context_t {
     GLuint vao;
     GLuint fbo;
     gl_buffer_t ubo;
+    gl_buffer_t instance_ubo;
     gl_texture_t texture[GL_TEXTURE_COUNT];
     gl_program_t program[GL_PROGRAM_COUNT];
     gl_version_t version;
@@ -1036,20 +1042,20 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         if (mol->residue.atom_range)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
         //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
-        if (mol->chain.count > 0 && mol->chain.backbone_range && mol->backbone.atoms && mol->residue.atom_range && mol->backbone.secondary_structure) {
+        if (mol->backbone.range_count > 0 && mol->backbone.range && mol->backbone.atoms && mol->residue.atom_range && mol->backbone.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
-            for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
-                uint32_t res_count = mol->chain.backbone_range[i].end - mol->chain.backbone_range[i].beg;
+            for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
+                uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
                 backbone_residue_count += res_count;
                 backbone_spline_count += (res_count - 1) * SPLINE_MAX_SUBDIVISION_COUNT;
             }
 
             const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
-            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->chain.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
+            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range_count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->chain.count * (1); // primitive restart between each chain
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1); // primitive restart between each chain
 
             gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
@@ -1064,10 +1070,10 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
-                    for (uint32_t j = (uint32_t)mol->chain.backbone_range[i].beg; j < (uint32_t)mol->chain.backbone_range[i].end; ++j) {
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
+                    for (uint32_t j = (uint32_t)mol->backbone.range[i].beg; j < (uint32_t)mol->backbone.range[i].end; ++j) {
                         backbone_data[idx].residue_idx = j;
-                        backbone_data[idx].segment_idx = j - mol->chain.backbone_range[i].beg;
+                        backbone_data[idx].segment_idx = j - mol->backbone.range[i].beg;
                         backbone_data[idx].ca_idx = mol->backbone.atoms[j].ca;
                         backbone_data[idx].c_idx  = mol->backbone.atoms[j].c;
                         backbone_data[idx].o_idx  = mol->backbone.atoms[j].o;
@@ -1083,8 +1089,8 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (secondary_structure) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
-                    for (uint32_t j = (uint32_t)mol->chain.backbone_range[i].beg; j < (uint32_t)mol->chain.backbone_range[i].end; ++j) {
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
+                    for (uint32_t j = (uint32_t)mol->backbone.range[i].beg; j < (uint32_t)mol->backbone.range[i].end; ++j) {
                         secondary_structure[idx] = mol->backbone.secondary_structure[j];
                         ++idx;
                     }
@@ -1099,9 +1105,9 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (control_point_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
                     control_point_index[len++] = idx;
-                    for (uint32_t j = (uint32_t)mol->chain.backbone_range[i].beg; j < (uint32_t)mol->chain.backbone_range[i].end; ++j) {
+                    for (uint32_t j = (uint32_t)mol->backbone.range[i].beg; j < (uint32_t)mol->backbone.range[i].end; ++j) {
                         control_point_index[len++] = idx++;
                     }
                     control_point_index[len++] = idx-1;
@@ -1118,8 +1124,8 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (spline_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->chain.count; ++i) {
-                    uint32_t res_count = mol->chain.backbone_range[i].end - mol->chain.backbone_range[i].beg;
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
+                    uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
                     if (res_count > 0) {
                         for (uint32_t j = 0; j < (res_count - 1) * SPLINE_MAX_SUBDIVISION_COUNT; ++j) {
                             spline_index[len++] = idx++;
@@ -1272,8 +1278,6 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 
     gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo.id);
-        
-    const uint32_t MOL_FLAG_COMPUTE_SPLINE = 1;
 
     md_gl_draw_op_t const** draw_ops = 0;
     draw_mol_t* draw_mols = 0;
@@ -1315,7 +1319,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             }
 
             if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {
-                draw_mols[mol_idx].flags |= MOL_FLAG_COMPUTE_SPLINE;
+                draw_mols[mol_idx].flags |= DRAW_FLAG_COMPUTE_BACKBONE_SPLINE;
             }
         }
     }
@@ -1339,7 +1343,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             
     PUSH_GPU_SECTION("COMPUTE SPLINE")
     for (uint32_t i = 0; i < md_array_size(draw_mols); i++) {
-        if (draw_mols[i].flags & MOL_FLAG_COMPUTE_SPLINE) {
+        if (draw_mols[i].flags & DRAW_FLAG_COMPUTE_BACKBONE_SPLINE) {
             compute_spline(draw_mols[i].mol);
         }
     }

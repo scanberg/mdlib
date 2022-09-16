@@ -55,7 +55,7 @@ static inline bool str_empty(str_t str) {
     return str.ptr == 0 || str.len == 0;
 }
 
-static inline str_t trim_whitespace(str_t str) {
+static inline str_t str_trim_whitespace(str_t str) {
     const char* beg = str.ptr;
     const char* end = str.ptr + str.len;
     while (beg < end && is_whitespace(*beg)) ++beg;
@@ -65,7 +65,7 @@ static inline str_t trim_whitespace(str_t str) {
     return str;
 }
 
-static inline bool compare_str(const str_t str_a, const str_t str_b) {
+static inline bool str_equal(const str_t str_a, const str_t str_b) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if (str_a.len != str_b.len) return false;
     for (int64_t i = 0; i < str_a.len; ++i) {
@@ -74,7 +74,7 @@ static inline bool compare_str(const str_t str_a, const str_t str_b) {
     return true;
 }
 
-static inline bool compare_str_n(const str_t str_a, const str_t str_b, int64_t n) {
+static inline bool str_equal_n(const str_t str_a, const str_t str_b, int64_t n) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
 
@@ -86,7 +86,7 @@ static inline bool compare_str_n(const str_t str_a, const str_t str_b, int64_t n
     return true;
 }
 
-static inline bool compare_str_ignore_case(const str_t str_a, const str_t str_b) {
+static inline bool str_equal_ignore_case(const str_t str_a, const str_t str_b) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if (str_a.len != str_b.len) return false;
     for (int64_t i = 0; i < str_a.len; ++i) {
@@ -95,7 +95,7 @@ static inline bool compare_str_ignore_case(const str_t str_a, const str_t str_b)
     return true;
 }
 
-static inline bool compare_str_cstr(str_t str, const char* cstr) {
+static inline bool str_equal_cstr(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
     for (int64_t i = 0; i < str.len; ++i) {
         if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
@@ -104,7 +104,7 @@ static inline bool compare_str_cstr(str_t str, const char* cstr) {
 }
 
 // Compare str and cstr only up to n characters
-static inline bool compare_str_cstr_n(str_t str, const char* cstr, int64_t n) {
+static inline bool str_equal_cstr_n(str_t str, const char* cstr, int64_t n) {
     if (n < 0) return false;
     if (!str.ptr || !str.len || !cstr) return false;
     n = n < str.len ? n : str.len;
@@ -114,7 +114,7 @@ static inline bool compare_str_cstr_n(str_t str, const char* cstr, int64_t n) {
     return true;
 }
 
-static inline bool compare_str_cstr_ignore_case(str_t str, const char* cstr) {
+static inline bool str_equal_cstr_ignore_case(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
     for (int64_t i = 0; i < str.len; ++i) {
         if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
@@ -167,8 +167,8 @@ int64_t parse_int(str_t str);
 
 // Will allocate one extra character for zero termination
 str_t alloc_str(uint64_t len, struct md_allocator_i* alloc);
-void  free_str(str_t str, struct md_allocator_i* alloc);
-str_t copy_str(str_t str, struct md_allocator_i* alloc);
+void  str_free(str_t str, struct md_allocator_i* alloc);
+str_t str_copy(str_t str, struct md_allocator_i* alloc);
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
 str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...);
 
@@ -207,6 +207,10 @@ static inline void convert_to_upper(char* str, int64_t len) {
 bool extract_next_token(str_t* tok, str_t* str);
 // Extracts token with specific delimiter
 bool extract_next_token_delim(str_t* tok, str_t* str, char delim);
+
+
+// The Buffere Reader is a bit wierd, and the interface is not really super.nice
+// But it is an attempt to have an external cache when reading a file in order to get full lines and chunks
 
 typedef struct buffered_reader_t {
     struct md_file_o* file;

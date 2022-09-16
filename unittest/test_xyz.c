@@ -109,7 +109,7 @@ UTEST(xyz, create_molecule) {
         EXPECT_EQ(mol.atom.z[i], data.coordinates[i].z);
     }
 
-    md_xyz_molecule_free(&mol, alloc);
+    md_molecule_free(&mol, alloc);
 
     md_xyz_data_free(&data, alloc);
 }

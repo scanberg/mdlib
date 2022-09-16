@@ -10,6 +10,20 @@ struct md_allocator_i;
 extern "C" {
 #endif
 
+enum {
+    MD_UTIL_POSTPROCESS_ELEMENT_BIT         = 1,
+    MD_UTIL_POSTPROCESS_RADIUS_BIT          = 2,
+    MD_UTIL_POSTPROCESS_MASS_BIT            = 4,
+    MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT  = 8,
+    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 16,
+    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 32,
+
+    MD_UTIL_POSTPROCESS_ALL             = ~0U,
+    MD_UTIL_POSTPROCESS_COARSE_GRAINED  = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
+};
+
+typedef uint32_t md_util_postprocess_flags_t;
+
 // This assumes the string exactly matches the value within the look up table
 // The match is case sensitive and expects elements to be formatted with Big first letter and small second letter:
 // E.g. H, He, Fe, Na, C
@@ -41,8 +55,8 @@ static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
 // We can resolve that by looking at the residue name and in the case of Carbon Alpha, the residue name should be matched to an amino acid.
 bool md_util_element_decode(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol);
 
-// Extracts the indices which make up the backbone from the supplied atom names within corresponding residues
-bool md_util_backbone_atoms_extract(md_backbone_atoms_t backbone_atoms[], int64_t capacity, const struct md_molecule_t* mol);
+// Extracts the atom indices which are central for a segment within the backbone for a single residue
+bool md_util_backbone_atoms_extract_from_residue_idx(md_backbone_atoms_t* backbone_atoms, md_residue_idx_t res_idx, const md_molecule_t* mol);
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as args->backbone.count
@@ -59,8 +73,8 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 bool md_util_extract_covalent_bonds(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 bool md_util_extract_hydrogen_bonds(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
-// Generates missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc);
+// Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
+bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
 
 // Compute a mat3 basis from cell extents a,b,c and cell axis angles alpha, beta, gamma (in degrees)
 mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma);

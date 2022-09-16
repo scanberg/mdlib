@@ -176,6 +176,8 @@ MD_SIMD_INLINE __m128 md_simd_cmp_le_f128 (__m128 a, __m128 b) { return _mm_cmpl
 MD_SIMD_INLINE __m128 md_simd_cmp_eq_f128 (__m128 a, __m128 b) { return _mm_cmpeq_ps(a, b); }
 MD_SIMD_INLINE __m128 md_simd_cmp_neq_f128(__m128 a, __m128 b) { return _mm_cmpneq_ps(a, b); }
 
+MD_SIMD_INLINE int md_simd_movemask_f128(__m128 x) { return _mm_movemask_ps(x); }
+
 MD_SIMD_INLINE __m128 md_simd_abs_f128(__m128 a) { return _mm_and_ps(a, _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF))); }
 
 // @NOTE: If 0.0f is given as input, it will be mapped to 1.0f

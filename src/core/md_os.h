@@ -18,6 +18,9 @@ str_t       md_os_current_working_directory();
 str_t       md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc);
 str_t       md_os_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
 
+bool		md_os_path_exists(str_t path);
+bool		md_os_path_is_directory(str_t path);
+
 timestamp_t md_os_time_current();
 timestamp_t md_os_time_from_milliseconds(int64_t milliseconds);
 double      md_os_time_as_milliseconds(timestamp_t t);

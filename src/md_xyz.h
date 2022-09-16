@@ -50,7 +50,6 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
 bool md_xyz_molecule_init(struct md_molecule_t* mol, const md_xyz_data_t* data, struct md_allocator_i* alloc);
-bool md_xyz_molecule_free(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
 struct md_molecule_api* md_xyz_molecule_api();
 

@@ -76,7 +76,6 @@ static inline uint64_t popcnt64(uint64_t x) {
 
 // count leading zeros
 static inline uint32_t clz32(uint32_t x) {
-    ASSERT(x != 0); // 0 is undefined behaviour
     return __lzcnt(x);
 }
 
@@ -86,11 +85,14 @@ static inline uint64_t clz64(uint64_t x) {
 }
 
 static inline uint32_t ctz32(uint32_t x) {
-    return popcnt32(~x & (x-1U));
+    //return popcnt32(~x & (x-1U));
+    return _tzcnt_u32(x);
 }
 
 static inline uint64_t ctz64(uint64_t x) {
-    return popcnt64(~x & (x-1LLU));
+    //return popcnt64(~x & (x-1LLU));
+    // This is a valid instruction for almost all x64 processors
+    return _tzcnt_u64(x);
 }
 
 // Scans for the first bit set from least significant bit (LSB) to most significant bit (MSB)
@@ -145,7 +147,7 @@ static inline uint64_t find_first_zero_byte64(uint64_t x) {
 
 static inline uint32_t next_power_of_two32(uint32_t x) {
     if (x < 2) return x;  // avoid clz(0)
-    return 1UL << (sizeof(uint32_t) * 8 - clz32(x-1));
+    return 1U << (sizeof(uint32_t) * 8 - clz32(x-1));
 }
 
 static inline uint64_t next_power_of_two64 (uint64_t x) {
