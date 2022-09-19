@@ -1,0 +1,116 @@
+#version 460
+
+#ifndef GROUP_SIZE
+#define GROUP_SIZE 32
+#endif
+
+#define REP_TYPE_SPACEFILL	0
+#define REP_TYPE_LICORICE	1
+#define REP_TYPE_VDW		2
+#define REP_TYPE_CARTOON	3
+#define REP_TYPE_RIBBONS	4
+#define REP_TYPE_GAUSSIAN	5
+#define REP_TYPE_SES		6
+
+struct DrawElementsIndirectCommand {
+    uint count;
+    uint instance_count;
+    uint first_index;
+    uint base_vertex;
+    uint base_instance;
+};
+
+struct DrawArraysIndirectCommand {
+	uint count;
+	uint instance_count;
+	uint first;
+	uint base_instance;
+};
+
+struct DrawData {
+	uint  transform_idx;
+	uint  color_offset;
+	float args[2];
+};
+
+struct DrawOp {
+	uint group_offset;
+	uint group_length;
+	uint transform_idx;
+	uint color_offset;
+	uint rep_type;
+	float rep_args[2];
+};
+
+struct Group {
+	uint atom_offset;
+	uint atom_length;
+};
+
+struct SphereData {
+	DrawArraysIndirectCommand cmd;
+	DrawData data;
+};
+
+layout (location = 0) uniform uint op_count;
+
+layout (binding = 0) readonly buffer InputDrawOperations {
+	DrawOp ops[];
+};
+
+layout (binding = 1) readonly buffer PositionBuffer {
+	vec3 positions[];
+};
+
+layout (binding = 2) readonly buffer GroupBuffer {
+	Group groups[];
+};
+
+layout (binding = 3) buffer DrawControlBuffer {
+	uint sphere_draw_count;
+};
+
+layout (binding = 4) writeonly buffer SphereDrawBuffer {
+	SphereData sphere_draw[];
+};
+
+layout (local_size_x = GROUP_SIZE) in;
+
+#define INF (1.0/0.0)
+
+void main() {
+	uint g_idx = gl_LocalInvocationIndex;
+	uint l_idx = gl_LocalInvocationID.x;
+
+	if (g_idx < op_count) {
+		DrawOp op = ops[g_idx];
+		for (uint i = op.group_offset; i < op.group_offset + op.group_length; ++i) {
+			Group group = groups[i];
+
+			// Compute AABB
+			vec3 aabb_min = +vec3(INF,INF,INF);
+			vec3 aabb_max = -vec3(INF,INF,INF);
+			for (uint j = group.atom_offset; j < group.atom_offset + group.atom_length; ++j) {
+				aabb_min = min(aabb_min, positions[j]);
+				aabb_max = max(aabb_max, positions[j]);
+			}
+
+			// Compute Min Max Clip Coords from AABB
+
+			// Determine LOD from Clip Extent
+
+			// Cull using Hi-Z texture
+
+			// Commit Draw Command
+
+			uint d_idx = atomicAdd(sphere_draw_count, 1);
+			sphere_draw[d_idx].cmd.count = 4;
+			sphere_draw[d_idx].cmd.instance_count = group.atom_length;
+			sphere_draw[d_idx].cmd.first = 0;
+			sphere_draw[d_idx].cmd.base_instance = group.atom_offset;
+			sphere_draw[d_idx].data.transform_idx = op.transform_idx;
+			sphere_draw[d_idx].data.color_offset  = op.color_offset;
+			sphere_draw[d_idx].data.args[0]		  = op.rep_args[0];
+		}
+	}
+}

@@ -49,7 +49,7 @@ typedef struct md_gfx_bond_t {
 } md_gfx_bond_t;
 
 typedef struct md_gfx_instance_t {
-    md_gfx_range_t atom_range;
+    md_gfx_range_t group_range;
     const struct mat4_t* transform;
 } md_gfx_instance_t;
 

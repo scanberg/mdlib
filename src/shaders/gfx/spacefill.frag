@@ -1,5 +1,4 @@
 #version 460
-#extension GL_EXT_conservative_depth : enable
 
 struct UniformData {
     mat4 world_to_view;
@@ -17,20 +16,20 @@ struct UniformData {
     float radius_scale;
 };
 
-struct VertexData {
+layout (binding = 0, std140) uniform UboBuffer {
+    UniformData ubo;
+};
+
+layout(location = 0) in VertexData {
     smooth vec3 view_coord;
     flat   vec4 view_sphere;
     flat   vec3 view_velocity;
     flat   vec4 color;
     flat   uint atom_idx;
     smooth vec2 uv;
-};
+} in_frag;
 
-layout(location = 0) out VertexData in_frag;
-
-#ifdef GL_EXT_conservative_depth
 layout (depth_greater) out float gl_FragDepth;
-#endif
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec3 out_normal;
@@ -40,12 +39,13 @@ layout(location = 3) out uint out_atom_index;
 void main() {
     vec3 center = in_frag.view_sphere.xyz;
     float radius = in_frag.view_sphere.w;
+    vec3 view_coord;
 
-if (u_ortho == 1U) {
+if (ubo.ortho == 1U) {
     vec2 uv = in_frag.uv;
     float len = length(uv);
     if (len > 1.0) discard;
-    vec3 view_coord = in_frag.view_coord.xyz + vec3(0, 0, radius * (sqrt(1.0 - len*len)));
+    view_coord = in_frag.view_coord.xyz + vec3(0, 0, radius * (sqrt(1.0 - len*len)));
 } else {
     vec3 m = -center;
     vec3 d = normalize(in_frag.view_coord);
@@ -55,10 +55,10 @@ if (u_ortho == 1U) {
     float discr = b*b - c;
     if (discr < 0.0) discard;
     float t = -b -sqrt(discr);
-    vec3 view_coord = d * t;
+    view_coord = d * t;
 }
 
-    vec4 clip_coord = u_view_to_clip * vec4(view_coord, 1);
+    vec4 clip_coord = ubo.view_to_clip * vec4(view_coord, 1);
     gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
 
     vec3 view_normal = (view_coord - center) / radius;

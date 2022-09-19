@@ -11,8 +11,8 @@
 #include <core/md_allocator.h>
 #include <core/md_array.inl>
 
-#include <stdbool.h>
-#include <string.h>     // memset, memcpy
+#include <string.h>     // memset, memcpy, strstr
+#include <stdlib.h>     // malloc
 
 // For subdividing backbone segments
 #define MIN_SPLINE_SUBDIVISION_COUNT 1
@@ -21,6 +21,8 @@
 #define MAX_STRUCTURE_COUNT 64
 #define MAX_REPRESENTATION_COUNT 64
 #define MAX_HANDLE_COUNT (MAX_STRUCTURE_COUNT + MAX_REPRESENTATION_COUNT)
+
+#define INVALID_INDEX (~0U)
 
 #ifndef GL_PUSH_GPU_SECTION
 #define GL_PUSH_GPU_SECTION(lbl)                                                                \
@@ -143,17 +145,14 @@ typedef struct gl_context_t {
     gl_version_t version;
 
     uint32_t fbo;
-    gl_texture_t depth_tex;      // depth buffer for depth testing in fixed pipeline
-    gl_texture_t visibility_tex; // 64-bit buffer with: hi: 32-bit depth + lo: 32-bit payload
-    gl_texture_t hi_z_tex;       // depth pyramid for occlusion culling (smaller power of two)
+    gl_texture_t depth_tex;         // D32F   32-BITS depth buffer for depth testing in fixed pipeline
+    gl_texture_t color_tex;         // RGBA8  32-BITS
+    gl_texture_t index_tex;         // R32UI  32-BITS
+    gl_texture_t normal_tex;        // RG8    16-BITS
+    gl_texture_t ss_vel_tex;        // RG16F  32-BITS
 
-    // Transient GPU resident
-    gl_buffer_t ubo_buf;
-    gl_buffer_t vertex_buf;
-    gl_buffer_t index_buf;
-    gl_buffer_t drawcall_buf;
-    gl_buffer_t dispatch_buf;
-    gl_buffer_t command_buf;
+    gl_texture_t hi_z_tex;          // R32F   32-BITS depth pyramid for occlusion culling (power of two, not conforming in size to others)
+    gl_texture_t visibility_tex;    // R64UI  64-BITS hi: 32-bit depth + lo: 32-bit payload, for compute rasterization of spheres
 
     // Structure Buffers
     gl_buffer_t position_buf;
@@ -166,6 +165,7 @@ typedef struct gl_context_t {
     gl_buffer_t group_buf;
     gl_buffer_t instance_buf;
 
+    // Allocation Data
     uint32_t atom_offset;
     uint32_t atom_capacity;
 
@@ -197,6 +197,19 @@ typedef struct gl_context_t {
     gl_program_t gaussian_surface_prog;
     gl_program_t solvent_excluded_surface_prog;
 
+    // This is not just culling, it is orcestrating and generating the subsequent compute and drawcalls
+    gl_program_t cull_prog;
+
+    // Transient GPU resident buffers
+    gl_buffer_t ubo_buf;
+    gl_buffer_t vertex_buf;
+    gl_buffer_t index_buf;
+    gl_buffer_t transform_buf;
+
+    gl_buffer_t draw_op_buf;
+    gl_buffer_t draw_control_buf;
+    gl_buffer_t sphere_draw_buf;
+
     structure_t structures[MAX_STRUCTURE_COUNT];
     representation_t representations[MAX_REPRESENTATION_COUNT];
 
@@ -206,8 +219,6 @@ typedef struct gl_context_t {
     uint16_t structure_count;
     uint16_t handle_next_idx;
 } gl_context_t;
-
-
 
 // Internal packed structures which maps to the layout used in GPU-memory
 // Pack the first index as an absolute offset and second as a relative to the first
@@ -229,7 +240,7 @@ typedef struct segment_t {
 } segment_t;
 
 typedef struct instance_t {
-    range_t  atom_range;
+    range_t  group_range;
     uint32_t transform_idx;
 } instance_t;
 
@@ -342,10 +353,12 @@ static bool compile_shader_from_source(GLuint shader, char* shader_src, const ch
 static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines) {
     md_file_o* file = md_file_open((str_t){.ptr = filename, .len = strlen(filename)}, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        char buffer[KILOBYTES(32)] = {0};
+        char buffer[KILOBYTES(16)];
         uint64_t file_size = md_file_size(file);
-        const uint64_t size = MIN(file_size, ARRAY_SIZE(buffer) - 1);
-        md_file_read(file, buffer, size);
+        ASSERT(file_size + 1 < sizeof(buffer));
+        uint64_t read_size = md_file_read(file, buffer, file_size);
+        ASSERT(read_size + 1 < sizeof(buffer));
+        buffer[read_size] = '\0';
         const bool success = compile_shader_from_source(shader, buffer, defines);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
         const char* res_str = success ? "Success" : "Fail";
@@ -476,6 +489,16 @@ static inline bool validate_handle(md_gfx_handle_t id) {
     return ctx.handles[id.idx].gen == id.gen;
 }
 
+static inline representation_t* get_representation(md_gfx_handle_t id) {
+    if (id.idx >= ARRAY_SIZE(ctx.handles)) return NULL;
+    return (ctx.handles[id.idx].gen == id.gen) ? &ctx.representations[ctx.handles[id.idx].idx] : NULL;
+}
+
+static inline structure_t* get_structure(md_gfx_handle_t id) {
+    if (id.idx >= ARRAY_SIZE(ctx.handles)) return NULL;
+    return (ctx.handles[id.idx].gen == id.gen) ? &ctx.structures[ctx.handles[id.idx].idx] : NULL;
+}
+
 bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t flags) {
     if (!ctx.version) {
         if (gl3wInit() != GL3W_OK) {
@@ -498,11 +521,12 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
 
         ctx.ubo_buf      = gl_buffer_create(KILOBYTES(1), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
-        ctx.vertex_buf   = gl_buffer_create(MEGABYTES(64), NULL, 0);
-        ctx.index_buf    = gl_buffer_create(MEGABYTES(64), NULL, 0);
-        ctx.drawcall_buf = gl_buffer_create(MEGABYTES(8),  NULL, 0);
-        ctx.dispatch_buf = gl_buffer_create(MEGABYTES(8),  NULL, 0);
-        ctx.command_buf  = gl_buffer_create(sizeof(gl_command_buf_t), NULL, 0);
+        ctx.vertex_buf       = gl_buffer_create(MEGABYTES(64), NULL, 0);
+        ctx.index_buf        = gl_buffer_create(MEGABYTES(64), NULL, 0);
+        ctx.draw_op_buf      = gl_buffer_create(MEGABYTES(1),  NULL, 0);
+        ctx.draw_control_buf = gl_buffer_create(MEGABYTES(1),  NULL, 0);
+        ctx.sphere_draw_buf  = gl_buffer_create(MEGABYTES(4),  NULL, 0);
+        //ctx.command_buf     = gl_buffer_create(sizeof(gl_command_buf_t), NULL, 0);
 
         const uint32_t atom_cap = 4 * 1000 * 1000;
         ctx.position_buf = gl_buffer_create(atom_cap * sizeof(vec3_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
@@ -571,9 +595,8 @@ void md_gfx_shutdown() {
     gl_buffer_destroy(&ctx.ubo_buf);
     gl_buffer_destroy(&ctx.vertex_buf);
     gl_buffer_destroy(&ctx.index_buf);
-    gl_buffer_destroy(&ctx.drawcall_buf);
-    gl_buffer_destroy(&ctx.dispatch_buf);
-    gl_buffer_destroy(&ctx.command_buf);
+    gl_buffer_destroy(&ctx.draw_op_buf);
+    gl_buffer_destroy(&ctx.sphere_draw_buf);
 
     gl_buffer_destroy(&ctx.position_buf);
     gl_buffer_destroy(&ctx.velocity_buf);
@@ -915,10 +938,33 @@ bool md_gfx_rep_set_color(md_gfx_handle_t id, uint32_t offset, uint32_t count, c
     return true;
 }
 
-bool md_gfx_draw(uint32_t draw_op_count, const md_gfx_draw_op_t* draw_ops, const mat4_t* proj_mat, const mat4_t* view_mat) {
+typedef struct draw_op_t {
+    uint32_t group_offset;
+    uint32_t group_count;
+    uint32_t transform_idx;
+    uint32_t color_offset;
+    uint32_t rep_type;
+    float    rep_args[2];
+} draw_op_t;
+
+typedef struct sphere_draw_t {
+    uint32_t count;
+    uint32_t instance_count;
+    uint32_t first;
+    uint32_t base_instance;
+    uint32_t transform_idx;
+    uint32_t color_offset;
+    float    args[2];
+} sphere_draw_t;
+
+typedef struct draw_control_t {
+    uint32_t sphere_draw_count;
+} draw_control_t;
+
+bool md_gfx_draw(uint32_t draw_op_count, const md_gfx_draw_op_t* in_draw_ops, const mat4_t* proj_mat, const mat4_t* view_mat) {
     if (!validate_context()) return false;
 
-    if (!draw_ops) {
+    if (draw_op_count > 0 && !in_draw_ops) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to Draw: draw ops was NULL");
         return false;
     }
@@ -929,8 +975,85 @@ bool md_gfx_draw(uint32_t draw_op_count, const md_gfx_draw_op_t* draw_ops, const
         .world_to_clip = mat4_mul(*proj_mat, *view_mat),
         .view_to_clip = *proj_mat,
     };
+
     gl_buffer_set_sub_data(ctx.ubo_buf, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo_buf.id);
 
+    draw_control_t draw_ctrl = {0};
+    gl_buffer_set_sub_data(ctx.draw_control_buf, 0, sizeof(draw_control_t), &draw_ctrl);
+
+    uint32_t out_draw_count = 0;
+    draw_op_t out_draw_ops[128];
+
+    uint32_t transform_count = 0;
+    mat4_t transforms[128];
+
+    for (uint32_t i = 0; i < draw_op_count; ++i) {
+        // Validate draw op
+        structure_t* s = get_structure(in_draw_ops[i].structure);
+        if (!s) {
+            md_print(MD_LOG_TYPE_ERROR, "Invalid structure supplied in draw operation");
+            continue;   
+        }
+        representation_t* r = get_representation(in_draw_ops[i].representation);
+        if (!r) {
+            md_print(MD_LOG_TYPE_ERROR, "Invalid representation supplied in draw operation");
+            continue;
+        }
+
+        if (s->atom_count > r->color_count) {
+            md_print(MD_LOG_TYPE_ERROR, "Representation does not hold a sufficient quantity of colors to match the structure in draw operation");
+            continue;
+        }
+
+        uint32_t transform_idx = 0; // Zero is the default and represents identity matrix
+        if (in_draw_ops[i].model_mat && !mat4_equal(*in_draw_ops[i].model_mat, mat4_ident())) {
+            transforms[transform_count++] = *in_draw_ops[i].model_mat;
+        }
+
+        // We good, create internal draw op and fill buffer
+        draw_op_t op;
+        op.group_offset  = s->group_offset;
+        op.group_count   = s->group_count;
+        op.color_offset  = r->color_offset;
+        op.rep_type      = MD_GFX_REP_TYPE_SPACEFILL;
+        op.rep_args[0]   = r->attr.spacefill.radius_scale;
+        op.transform_idx = transform_idx;
+
+        out_draw_ops[out_draw_count++] = op;
+    }
+
+    gl_buffer_set_sub_data(ctx.draw_op_buf, 0, sizeof(draw_op_t) * out_draw_count, out_draw_ops);
+    gl_buffer_set_sub_data(ctx.transform_buf, 0, sizeof(mat4_t) * transform_count, transforms);
+
+    // CULL + FILL DRAW DATA
+    glUseProgram(ctx.cull_prog.id);
+    glUniform1ui(0, draw_op_count);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ctx.draw_op_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ctx.position_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ctx.group_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ctx.draw_control_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ctx.sphere_draw_buf.id);
+
+    glDispatchCompute(DIV_UP(out_draw_count, 32), 1, 1);
+
+    // BARRIER
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    // DRAW SPACEFILL
+    glUseProgram(ctx.spacefill_prog.id);
+    glBindBuffer(GL_PARAMETER_BUFFER, ctx.draw_control_buf.id);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ctx.sphere_draw_buf.id);
+    glMultiDrawArraysIndirectCount(GL_TRIANGLE_STRIP, 0, offsetof(draw_control_t, sphere_draw_count), (1 << 16), sizeof(sphere_draw_t));
+    
+    // DRAW LICORICE
+
+
+
+    // COMPOSE
+
+    // COMPUTE HI-Z
+
+    glUseProgram(0);
     return true;
 }

@@ -30,7 +30,7 @@ source_group("src" FILES ${SRC_FILES})
 source_group("core" FILES ${CORE_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 
-add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES})
+add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES})
 
 set(MD_WARNING_FLAGS)
 set(MD_COMMON_COMPILE_FLAGS ${AVX_FLAGS})
