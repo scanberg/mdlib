@@ -49,7 +49,7 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->hydrogen_bond.bond) md_array_free(mol->hydrogen_bond.bond, alloc);
 
     // Instance
-    if (mol->instance.atom_range) md_array_free(mol->instance.atom_range, alloc);
+    if (mol->instance.residue_range) md_array_free(mol->instance.residue_range, alloc);
     if (mol->instance.transform) md_array_free(mol->instance.transform, alloc);
 
     memset(mol, 0, sizeof(md_molecule_t));

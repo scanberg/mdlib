@@ -577,17 +577,17 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                 md_chain_idx_t chain_idx = find_chain_idx(chain_id, mol);
                 if (chain_idx != -1) {
                     if (instance_range.beg == 0 && instance_range.end == 0) {
-                        instance_range = mol->chain.atom_range[chain_idx];
+                        instance_range = mol->chain.residue_range[chain_idx];
                     } else {
                         // Append if possible
-                        if (instance_range.end == mol->chain.atom_range[chain_idx].beg) {
-                            instance_range.end = mol->chain.atom_range[chain_idx].end;
+                        if (instance_range.end == mol->chain.residue_range[chain_idx].beg) {
+                            instance_range.end = mol->chain.residue_range[chain_idx].end;
                         } else {
                             // Discontinous range, we need to commit and reset the range
-                            md_array_push(mol->instance.atom_range, instance_range, alloc);
+                            md_array_push(mol->instance.residue_range, instance_range, alloc);
                             md_array_push(mol->instance.label, instance_label, alloc);
                             md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
-                            instance_range = mol->chain.atom_range[chain_idx];
+                            instance_range = mol->chain.residue_range[chain_idx];
                         }
                     }
                 } else {
@@ -597,13 +597,13 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                 }
             }
 
-            md_array_push(mol->instance.atom_range, instance_range, alloc);
+            md_array_push(mol->instance.residue_range, instance_range, alloc);
             md_array_push(mol->instance.label, instance_label, alloc);
             md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
         }
     }
 
-    mol->instance.count = md_array_size(mol->instance.atom_range);
+    mol->instance.count = md_array_size(mol->instance.residue_range);
 
     return true;
 }

@@ -1160,7 +1160,6 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
 bool md_gl_molecule_free(md_gl_molecule_t* ext_mol) {
     if (ext_mol) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        ASSERT(mol->magic == MAGIC);
         for (uint32_t i = 0; i < GL_BUFFER_MOL_COUNT; ++i) {
             gl_buffer_conditional_delete(&mol->buffer[i]);
         }

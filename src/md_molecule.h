@@ -131,7 +131,7 @@ typedef struct md_molecule_bond_data_t {
 // in PDB data. It is up to the renderer to properly render this instanced.
 typedef struct md_molecule_instance_data_t {
     int64_t count;
-    md_range_t* atom_range;
+    md_range_t* residue_range;
     md_label_t* label;
     mat4_t* transform;
 } md_molecule_instance_data_t;

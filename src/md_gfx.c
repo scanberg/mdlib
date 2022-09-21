@@ -11,6 +11,19 @@
 #include <core/md_allocator.h>
 #include <core/md_array.inl>
 
+typedef mat4_t mat4;
+typedef vec4_t vec4;
+typedef uint32_t uint;
+typedef struct UniformData UniformData;
+typedef struct DrawArraysIndirectCommand DrawArraysIndirectCommand;
+typedef struct DrawElementsIndirectCommand DrawElementsIndirectCommand;
+typedef struct DispatchIndirectCommand DispatchIndirectCommand;
+typedef struct DrawSpheresIndirectCommand DrawSpheresIndirectCommand;
+typedef struct DrawIndirect DrawIndirect;
+typedef struct DrawOp DrawOp;
+
+#include <shaders/gfx/common.h>
+
 #include <string.h>     // memset, memcpy, strstr
 #include <stdlib.h>     // malloc
 
@@ -23,6 +36,8 @@
 #define MAX_HANDLE_COUNT (MAX_STRUCTURE_COUNT + MAX_REPRESENTATION_COUNT)
 
 #define INVALID_INDEX (~0U)
+
+#define DEPTH_PYRAMID_RES 1024
 
 #ifndef GL_PUSH_GPU_SECTION
 #define GL_PUSH_GPU_SECTION(lbl)                                                                \
@@ -99,14 +114,6 @@ typedef struct gl_program_t {
     uint32_t flags;     // Compute_bit, vertex_bit, fragment_bit etc. whatever stages this program contains
 } gl_program_t;
 
-// Shared ubo data for all shaders
-typedef struct gl_ubo_base_t {
-    mat4_t world_to_view;
-    mat4_t world_to_view_normal;
-    mat4_t world_to_clip;
-    mat4_t view_to_clip;
-} gl_ubo_base_t;
-
 typedef uint32_t gl_version_t;
 
 typedef struct structure_t {
@@ -128,6 +135,9 @@ typedef struct structure_t {
     uint32_t instance_offset;
     uint32_t instance_count;
 
+    uint32_t transform_offset;
+    uint32_t transform_count;
+
     uint16_t h_idx; // Handle index
 } structure_t;
 
@@ -144,6 +154,7 @@ typedef struct representation_t {
 typedef struct gl_context_t {
     gl_version_t version;
 
+    // For fixed pipeline framebuffer
     uint32_t fbo;
     gl_texture_t depth_tex;         // D32F   32-BITS depth buffer for depth testing in fixed pipeline
     gl_texture_t color_tex;         // RGBA8  32-BITS
@@ -151,7 +162,7 @@ typedef struct gl_context_t {
     gl_texture_t normal_tex;        // RG8    16-BITS
     gl_texture_t ss_vel_tex;        // RG16F  32-BITS
 
-    gl_texture_t hi_z_tex;          // R32F   32-BITS depth pyramid for occlusion culling (power of two, not conforming in size to others)
+    gl_texture_t depth_pyramid_tex; // R32F   32-BITS depth pyramid for occlusion culling (power of two, not conforming in size to others)
     gl_texture_t visibility_tex;    // R64UI  64-BITS hi: 32-bit depth + lo: 32-bit payload, for compute rasterization of spheres
 
     // Structure Buffers
@@ -184,6 +195,9 @@ typedef struct gl_context_t {
     uint32_t instance_offset;
     uint32_t instance_capacity;
 
+    uint32_t transform_offset;
+    uint32_t transform_capacity;
+
     // Representation Buffers
     gl_buffer_t color_buf;
 
@@ -197,8 +211,11 @@ typedef struct gl_context_t {
     gl_program_t gaussian_surface_prog;
     gl_program_t solvent_excluded_surface_prog;
 
-    // This is not just culling, it is orcestrating and generating the subsequent compute and drawcalls
+    // This culls structures and generates indirect draw and compute commands
     gl_program_t cull_prog;
+
+    // Computes depth pyramid
+    gl_program_t depth_reduce_prog;
 
     // Transient GPU resident buffers
     gl_buffer_t ubo_buf;
@@ -207,8 +224,8 @@ typedef struct gl_context_t {
     gl_buffer_t transform_buf;
 
     gl_buffer_t draw_op_buf;
-    gl_buffer_t draw_control_buf;
-    gl_buffer_t sphere_draw_buf;
+    gl_buffer_t draw_ind_buf;
+    gl_buffer_t draw_sphere_idx_buf;
 
     structure_t structures[MAX_STRUCTURE_COUNT];
     representation_t representations[MAX_REPRESENTATION_COUNT];
@@ -228,8 +245,8 @@ typedef struct bond_t {
 } bond_t;
 
 typedef struct range_t {
-    uint32_t offset : 20;
-    uint32_t length : 12;
+    uint32_t offset;
+    uint32_t count;
 } range_t;
 
 typedef struct segment_t {
@@ -254,7 +271,6 @@ typedef struct velocity_t {
 } velocity_t;
 
 STATIC_ASSERT(sizeof(bond_t) == sizeof(uint32_t), "Invalid size of bond");
-STATIC_ASSERT(sizeof(range_t) == sizeof(uint32_t), "Invalid size of range");
 STATIC_ASSERT(sizeof(segment_t) == sizeof(uint32_t), "Invalid size of segment");
 
 static inline gl_texture_t gl_texture_create(uint32_t width, uint32_t height, uint32_t levels, uint32_t format) {
@@ -309,33 +325,90 @@ static bool extract_version_string(char version_str[], uint32_t version_cap, con
     return false;
 }
 
-static bool compile_shader_from_source(GLuint shader, char* shader_src, const char* defines) {
-    const char* sources[8] = {0};
-    uint32_t num_sources = 0;
+typedef struct include_file_t {
+    const char* filename;
+    const char* source;
+} include_file_t;
+
+#define APPEND_STR(a, str, alloc)   md_array_push_array(a, str.ptr, str.len, alloc)
+#define APPEND_CSTR(a, cstr, alloc) md_array_push_array(a, cstr, (int64_t)strlen(cstr), alloc)
+#define APPEND_CHAR(a, ch, alloc) md_array_push(a, ch, alloc);
+#define APPEND_LINE(a, line, alloc) APPEND_STR(a, alloc_printf(alloc, "#line %u", line), alloc)
+
+static bool compile_shader_from_source(GLuint shader, const char* source, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
+    if (!source) {
+        md_print(MD_LOG_TYPE_ERROR, "Missing shader source");
+        return false;
+    }
+
+    str_t str = str_from_cstr(source);
+
+    str_t version_str;
+    if (!extract_line(&version_str, &str) || !str_equal_cstr_n(version_str, "#version", 8)) {
+        md_print(MD_LOG_TYPE_ERROR, "Missing version as first line in shader!");
+        return false;
+    }
+
+    md_allocator_i* alloc = default_temp_allocator;
+
+    char* buf = 0;
+    md_array_ensure(buf, KILOBYTES(4), alloc);
+
+    uint32_t line_count = 0;
+    APPEND_STR(buf, version_str, alloc);
+    line_count += 1;
 
     if (defines) {
-        const char* src = shader_src;
-        char version_str[32] = {0};
-        if (!extract_version_string(version_str, sizeof(version_str), &src)) {
-            md_print(MD_LOG_TYPE_ERROR, "Missing version string as first line in shader!");
-            return false;
-        }
-
-        sources[num_sources++] = version_str;
-        sources[num_sources++] = "\n";
-
-        if (defines) {
-            sources[num_sources++] = defines;
-            sources[num_sources++] = "\n";
-        }
-
-        sources[num_sources++] = src;
-
-        glShaderSource(shader, num_sources, sources, 0);
-    } else {
-        const char* c_src = shader_src;
-        glShaderSource(shader, 1, &c_src, 0);
+        str_t def = str_from_cstr(defines);
+        line_count += (uint32_t)str_count_char_occur(def, '\n');        
+        APPEND_LINE(buf, line_count, alloc);
     }
+
+    str_t line;
+    while (extract_line(&line, &str)) {
+        if (str_equal_cstr_n(line, "#include", 8)) {
+            if (include_file_count == 0 || !include_files) {
+                md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: no include files have been supplied");
+                return false;
+            }
+            str_t file = str_trim_whitespace(substr(line, 8, -1));
+            if (!file.len) {
+                md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: file is missing");
+                return false;
+            }
+            char beg_delim = file.ptr[0];
+            char end_delim = file.ptr[file.len-1];
+            if (!(beg_delim == '"' || beg_delim == '<') ||
+                !(end_delim == '"' || end_delim == '>') ||
+                 (beg_delim == '"' && end_delim != '"') ||
+                 (beg_delim == '<' && end_delim != '>')) {
+                md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: missing or mismatched delimiters");
+                return false;
+            }
+            file = substr(file, 1, file.len-2);
+            str_t src = {0};
+            for (uint32_t i = 0; i < include_file_count; ++i) {
+                if (str_equal_cstr(file, include_files[i].filename)) {
+                    src = str_from_cstr(include_files[i].source);
+                    break;
+                }
+            }
+            if (str_empty(src)) {
+                md_printf(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: could not find include file '%.*s'", (int)file.len, file.ptr);
+                return false;
+            }
+            APPEND_STR(buf, src, alloc);
+            APPEND_LINE(buf, line_count, alloc);
+        }
+        else {
+            APPEND_STR(buf, line, alloc);
+            line_count += 1;
+        }
+    }
+    APPEND_CHAR(buf, '\0', alloc);
+
+    const char* c_src[] = {buf};
+    glShaderSource(shader, ARRAY_SIZE(c_src), c_src, 0);
     
     GLint success;
     glCompileShader(shader);
@@ -350,20 +423,13 @@ static bool compile_shader_from_source(GLuint shader, char* shader_src, const ch
     return true;
 }
 
-static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines) {
-    md_file_o* file = md_file_open((str_t){.ptr = filename, .len = strlen(filename)}, MD_FILE_READ | MD_FILE_BINARY);
-    if (file) {
-        char buffer[KILOBYTES(16)];
-        uint64_t file_size = md_file_size(file);
-        ASSERT(file_size + 1 < sizeof(buffer));
-        uint64_t read_size = md_file_read(file, buffer, file_size);
-        ASSERT(read_size + 1 < sizeof(buffer));
-        buffer[read_size] = '\0';
-        const bool success = compile_shader_from_source(shader, buffer, defines);
+static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
+    str_t src = load_textfile(str_from_cstr(filename), default_temp_allocator);
+    if (!str_empty(src)) {
+        const bool success = compile_shader_from_source(shader, src.ptr, defines, include_files, include_file_count);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
         const char* res_str = success ? "Success" : "Fail";
         md_printf(log_type,  "Compiling shader %-40s %s", filename, res_str);
-        md_file_close(file);
         return success;
     } else {
         md_printf(MD_LOG_TYPE_ERROR, "Could not open file file '%s'", filename);
@@ -407,6 +473,8 @@ static inline uint32_t gl_extract_shader_type_from_file_extension(const char* fi
         return GL_COMPUTE_SHADER;
     } else if (strstr(filename, ".vert")) {
         return GL_VERTEX_SHADER;
+    } else if (strstr(filename, ".geom")) {
+        return GL_GEOMETRY_SHADER;
     } else if (strstr(filename, ".frag")) {
         return GL_FRAGMENT_SHADER;
     }
@@ -422,28 +490,28 @@ static inline uint32_t gl_get_shader_type_bit(uint32_t shader_type) {
     return 0;
 }
 
-static gl_program_t gl_program_create_from_files(const char* filenames[], uint32_t count, const char* defines) {
+static gl_program_t gl_program_create_from_files(const char* shader_files[], uint32_t shader_file_count, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     uint32_t shaders[8];
-    ASSERT(count < ARRAY_SIZE(shaders));
+    ASSERT(shader_file_count < ARRAY_SIZE(shaders));
     gl_program_t prog = {0};
 
     uint32_t flags = 0;
-    for (uint32_t i = 0; i < count; ++i) {
-        uint32_t type = gl_extract_shader_type_from_file_extension(filenames[i]);
+    for (uint32_t i = 0; i < shader_file_count; ++i) {
+        uint32_t type = gl_extract_shader_type_from_file_extension(shader_files[i]);
         flags |= gl_get_shader_type_bit(type);
         shaders[i] = glCreateShader(type);
-        compile_shader_from_file(shaders[i], filenames[i], defines);
+        compile_shader_from_file(shaders[i], shader_files[i], defines, include_files, include_file_count);
     }
     
     uint32_t id = glCreateProgram();
-    if (link_program(id, shaders, count)) {
+    if (link_program(id, shaders, shader_file_count)) {
         prog.id = id;
         prog.flags = flags;  
     } else {
         glDeleteProgram(id);
     }
 
-    for (uint32_t i = 0; i < count; ++i) {
+    for (uint32_t i = 0; i < shader_file_count; ++i) {
         glDeleteShader(shaders[i]);
     }
 
@@ -515,19 +583,21 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
             return false;
         }
 
-        glGenFramebuffers(1, &ctx.fbo);
+        glCreateFramebuffers(1, &ctx.fbo);
 
-        ctx.hi_z_tex        = gl_texture_create(1024, 1024, 10, GL_DEPTH_COMPONENT32F);
+        uint mip_levels = compute_mip_count(DEPTH_PYRAMID_RES, DEPTH_PYRAMID_RES);
+        ctx.depth_pyramid_tex    = gl_texture_create(DEPTH_PYRAMID_RES, DEPTH_PYRAMID_RES, mip_levels, GL_DEPTH_COMPONENT32F);
 
-        ctx.ubo_buf      = gl_buffer_create(KILOBYTES(1), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+        ctx.ubo_buf             = gl_buffer_create(KILOBYTES(1),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+        ctx.draw_op_buf         = gl_buffer_create(MEGABYTES(1),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
-        ctx.vertex_buf       = gl_buffer_create(MEGABYTES(64), NULL, 0);
-        ctx.index_buf        = gl_buffer_create(MEGABYTES(64), NULL, 0);
-        ctx.draw_op_buf      = gl_buffer_create(MEGABYTES(1),  NULL, 0);
-        ctx.draw_control_buf = gl_buffer_create(MEGABYTES(1),  NULL, 0);
-        ctx.sphere_draw_buf  = gl_buffer_create(MEGABYTES(4),  NULL, 0);
-        //ctx.command_buf     = gl_buffer_create(sizeof(gl_command_buf_t), NULL, 0);
+        // Fully GPU Resident Buffers
+        ctx.draw_ind_buf        = gl_buffer_create(KILOBYTES(32), NULL, 0);
+        ctx.vertex_buf          = gl_buffer_create(MEGABYTES(64), NULL, 0);
+        ctx.index_buf           = gl_buffer_create(MEGABYTES(64), NULL, 0);
+        ctx.draw_sphere_idx_buf = gl_buffer_create(MEGABYTES(4),  NULL, 0);
 
+        // Storage buffers for structure data
         const uint32_t atom_cap = 4 * 1000 * 1000;
         ctx.position_buf = gl_buffer_create(atom_cap * sizeof(vec3_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.velocity_buf = gl_buffer_create(atom_cap * sizeof(vec3_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
@@ -535,7 +605,7 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
         ctx.atom_capacity = atom_cap;
         
         const uint32_t bond_cap = 2 * 1000 * 1000;
-        ctx.bond_buf     = gl_buffer_create(bond_cap * sizeof(md_gfx_bond_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+        ctx.bond_buf     = gl_buffer_create(bond_cap * sizeof(bond_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.bond_capacity = bond_cap;
 
         const uint32_t bb_cap = 1 * 1000 * 1000;
@@ -544,25 +614,68 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
         ctx.bb_seg_capacity = bb_cap;
 
         const uint32_t bb_range_cap = 10 * 1000;
-        ctx.bb_range_buf = gl_buffer_create(bb_range_cap * sizeof(md_gfx_range_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+        ctx.bb_range_buf = gl_buffer_create(bb_range_cap * sizeof(range_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.bb_range_capacity = bb_range_cap;
 
         const uint32_t group_cap = 1 * 1000 * 1000;
-        ctx.group_buf    = gl_buffer_create(group_cap * sizeof(md_gfx_range_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+        ctx.group_buf    = gl_buffer_create(group_cap * sizeof(range_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.group_capacity = group_cap;
 
         const uint32_t inst_cap = 10 * 1000;
-        ctx.instance_buf = gl_buffer_create(inst_cap * sizeof(md_gfx_instance_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+        ctx.instance_buf = gl_buffer_create(inst_cap * sizeof(instance_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.instance_capacity = inst_cap;
+
+        const uint32_t transform_cap = 100000;
+        ctx.transform_buf = gl_buffer_create(transform_cap * sizeof(mat4_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+        ctx.transform_capacity = transform_cap;
+
+        // Storage buffers for representation data
+        ctx.color_buf = gl_buffer_create(MEGABYTES(64), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
+
+        str_t common_src = load_textfile(str_from_cstr(MD_SHADER_DIR "/gfx/common.h"), default_temp_allocator);
+        if (str_empty(common_src)) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to read common header for shaders");
+            return false;
+        }
+
+        include_file_t include_files[] = {
+            {
+                .filename = "common.h",
+                .source = common_src.ptr,
+            },
+        };
 
         // Compile shader programs
         const char* spacefill_files[] = {
             MD_SHADER_DIR "/gfx/spacefill.vert",
+            MD_SHADER_DIR "/gfx/spacefill.geom",
             MD_SHADER_DIR "/gfx/spacefill.frag",
         };
-        ctx.spacefill_prog = gl_program_create_from_files(spacefill_files, ARRAY_SIZE(spacefill_files), "");
+        ctx.spacefill_prog = gl_program_create_from_files(spacefill_files, ARRAY_SIZE(spacefill_files), 0, include_files, ARRAY_SIZE(include_files));
 
         if (!ctx.spacefill_prog.id) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
+            md_gfx_shutdown();
+            return false;
+        }
+
+        const char* cull_files[] = {
+            MD_SHADER_DIR "/gfx/cull.comp"
+        };
+        ctx.cull_prog = gl_program_create_from_files(cull_files, ARRAY_SIZE(cull_files), 0, include_files, ARRAY_SIZE(include_files));
+
+        if (!ctx.cull_prog.id) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
+            md_gfx_shutdown();
+            return false;
+        }
+
+        const char* depth_reduce_files[] = {
+            MD_SHADER_DIR "/gfx/depth_reduce.comp"
+        };
+        ctx.depth_reduce_prog = gl_program_create_from_files(depth_reduce_files, ARRAY_SIZE(depth_reduce_files), 0, include_files, ARRAY_SIZE(include_files));
+
+        if (!ctx.depth_reduce_prog.id) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
             md_gfx_shutdown();
             return false;
@@ -576,10 +689,28 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
 
     if (ctx.version) {
         gl_texture_destroy(&ctx.depth_tex);
-        ctx.depth_tex       = gl_texture_create(width, height, 1, GL_DEPTH_COMPONENT32F);
+        ctx.depth_tex = gl_texture_create(width, height, 1, GL_DEPTH_COMPONENT32F);
 
-        ctx.visibility_tex  = gl_texture_create(width, height, 1, GL_RG32UI);
+        gl_texture_destroy(&ctx.color_tex);
+        ctx.color_tex = gl_texture_create(width, height, 1, GL_RGBA8);
+        
+        gl_texture_destroy(&ctx.normal_tex);
+        ctx.normal_tex = gl_texture_create(width, height, 1, GL_RG8);
+
+        gl_texture_destroy(&ctx.index_tex);
+        ctx.index_tex = gl_texture_create(width, height, 1, GL_RGBA8);
+
+        gl_texture_destroy(&ctx.ss_vel_tex);
+        ctx.ss_vel_tex = gl_texture_create(width, height, 1, GL_RG16F);
+
         gl_texture_destroy(&ctx.visibility_tex);
+        ctx.visibility_tex = gl_texture_create(width, height, 1, GL_RG32UI);
+
+        glNamedFramebufferTexture(ctx.fbo, GL_DEPTH_ATTACHMENT,  ctx.depth_tex.id,  0);
+        glNamedFramebufferTexture(ctx.fbo, GL_COLOR_ATTACHMENT0, ctx.color_tex.id,  0);
+        glNamedFramebufferTexture(ctx.fbo, GL_COLOR_ATTACHMENT1, ctx.normal_tex.id, 0);
+        glNamedFramebufferTexture(ctx.fbo, GL_COLOR_ATTACHMENT2, ctx.index_tex.id,  0);
+        glNamedFramebufferTexture(ctx.fbo, GL_COLOR_ATTACHMENT3, ctx.ss_vel_tex.id, 0);
     }
 
     return true;
@@ -588,7 +719,7 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
 void md_gfx_shutdown() {
     if (ctx.fbo) glDeleteFramebuffers(1, &ctx.fbo);
 
-    gl_texture_destroy(&ctx.hi_z_tex);
+    gl_texture_destroy(&ctx.depth_pyramid_tex);
     gl_texture_destroy(&ctx.depth_tex);
     gl_texture_destroy(&ctx.visibility_tex);
 
@@ -596,7 +727,6 @@ void md_gfx_shutdown() {
     gl_buffer_destroy(&ctx.vertex_buf);
     gl_buffer_destroy(&ctx.index_buf);
     gl_buffer_destroy(&ctx.draw_op_buf);
-    gl_buffer_destroy(&ctx.sphere_draw_buf);
 
     gl_buffer_destroy(&ctx.position_buf);
     gl_buffer_destroy(&ctx.velocity_buf);
@@ -612,7 +742,7 @@ void md_gfx_shutdown() {
 }
 
 // Allocate ranges for structure
-bool allocate_structure(structure_t* s, uint32_t atom_count, uint32_t bond_count, uint32_t bb_seg_count, uint32_t bb_range_count, uint32_t group_count, uint32_t instance_count) {
+static bool alloc_structure_data(structure_t* s, uint32_t atom_count, uint32_t bond_count, uint32_t bb_seg_count, uint32_t bb_range_count, uint32_t group_count, uint32_t instance_count) {
     // Find range (for now we consider this as a ring-buffer and will replace old data when full)
     if (ctx.atom_offset + atom_count > ctx.atom_capacity) {
         ctx.atom_offset = 0;
@@ -652,8 +782,24 @@ bool allocate_structure(structure_t* s, uint32_t atom_count, uint32_t bond_count
     s->instance_offset = ctx.instance_offset;
     ctx.instance_offset += instance_count;
 
-    return true;
+    if (instance_count > 0) {
+        s->transform_offset = ctx.transform_offset;
+        ctx.transform_offset += instance_count;
+    }
 
+    s->atom_count = atom_count;
+    s->bond_count = bond_count;
+    s->bb_seg_count = bb_seg_count;
+    s->bb_range_count = bb_range_count;
+    s->group_count = group_count;
+    s->instance_count = instance_count;
+    s->transform_count = instance_count;
+
+    return true;
+}
+
+static bool free_structure_data(structure_t* s) {
+    return true;
 }
 
 md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t group_count, uint32_t instance_count) {
@@ -668,7 +814,7 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
     uint16_t s_idx = (uint16_t)ctx.structure_count++;
 
     structure_t* s = &ctx.structures[s_idx];
-    if (!allocate_structure(s, atom_count, bond_count, backbone_segment_count, backbone_range_count, group_count, instance_count)) {
+    if (!alloc_structure_data(s, atom_count, bond_count, backbone_segment_count, backbone_range_count, group_count, instance_count)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to allocate storage required for structure");
         return (md_gfx_handle_t){0};
     }
@@ -694,6 +840,7 @@ bool md_gfx_structure_destroy(md_gfx_handle_t id) {
     ASSERT(ctx.structure_count > 0);
     ctx.structure_count -= 1;
 
+    free_structure_data(&ctx.structures[s_idx]);
     if (ctx.structure_count > 1) {
         // Swap back and pop resource array to keep it packed
         ctx.structures[s_idx] = ctx.structures[ctx.structure_count];
@@ -706,7 +853,8 @@ bool md_gfx_structure_destroy(md_gfx_handle_t id) {
 }
 
 bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
-    if (!validate_handle(id)) {
+    structure_t* s = get_structure(id);
+    if (!s) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Handle is invalid");
         return false;
     }
@@ -716,14 +864,12 @@ bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, uint32_t offset, uin
         return false;
     }
 
-    structure_t* s = &ctx.structures[id.idx];
-
     if (offset + count > s->atom_count) {
         md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
         return false;
     }
 
-    float* ptr = glMapNamedBufferRange(ctx.position_buf.id, s->atom_offset * sizeof(vec3_t), s->atom_count * sizeof(vec3_t), GL_WRITE_ONLY);
+    float* ptr = glMapNamedBufferRange(ctx.position_buf.id, s->atom_offset * sizeof(vec3_t), s->atom_count * sizeof(vec3_t), GL_MAP_WRITE_BIT);
     if (!ptr) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Could not map buffer");
         return false;
@@ -733,7 +879,7 @@ bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, uint32_t offset, uin
     for (uint32_t i = offset; i < count; ++i) {
         ptr[i * 3 + 0] = *(const float*)((const uint8_t*)x + byte_stride * i);
         ptr[i * 3 + 1] = *(const float*)((const uint8_t*)y + byte_stride * i);
-        ptr[i * 3 + 2] = *(const float*)((const uint8_t*)z + byte_stride * i);
+        ptr[i * 3 + 2] = *(const float*)((const uint8_t*)z + byte_stride * i);        
     }
     glUnmapNamedBuffer(ctx.position_buf.id);
 
@@ -741,7 +887,8 @@ bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, uint32_t offset, uin
 }
 
 bool md_gfx_structure_set_atom_velocity(md_gfx_handle_t id, uint32_t offset, uint32_t count, const float* vx, const float* vy, const float* vz, uint32_t byte_stride) {
-    if (!validate_handle(id)) {
+    structure_t* s = get_structure(id);
+    if (!s) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to set atom velocity data: Handle is invalid");
         return false;
     }
@@ -751,14 +898,12 @@ bool md_gfx_structure_set_atom_velocity(md_gfx_handle_t id, uint32_t offset, uin
         return false;
     }
 
-    structure_t* s = &ctx.structures[id.idx];
-
     if (offset + count > s->atom_count) {
         md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
         return false;
     }
 
-    float* ptr = glMapNamedBufferRange(ctx.velocity_buf.id, s->atom_offset * sizeof(vec3_t), s->atom_count * sizeof(vec3_t), GL_WRITE_ONLY);
+    float* ptr = glMapNamedBufferRange(ctx.velocity_buf.id, s->atom_offset * sizeof(vec3_t), s->atom_count * sizeof(vec3_t), GL_MAP_WRITE_BIT);
     if (!ptr) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to set atom velocity data: Could not map buffer");
         return false;
@@ -776,7 +921,8 @@ bool md_gfx_structure_set_atom_velocity(md_gfx_handle_t id, uint32_t offset, uin
 }
 
 bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride) {
-    if (!validate_handle(id)) {
+    structure_t* s = get_structure(id);
+    if (!s) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Handle is invalid");
         return false;
     }
@@ -786,16 +932,14 @@ bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, uint32_t offset, uint3
         return false;
     }
 
-    structure_t* s = &ctx.structures[id.idx];
-    const uint32_t element_size = sizeof(float);
-
     if (offset + count > s->atom_count) {
         md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
         return false;
     }
 
+    const uint32_t element_size = sizeof(float);
     if (byte_stride > element_size) {
-        float* ptr = glMapNamedBufferRange(ctx.radius_buf.id, s->atom_offset * element_size, s->atom_count * element_size, GL_WRITE_ONLY);
+        float* ptr = glMapNamedBufferRange(ctx.radius_buf.id, s->atom_offset * element_size, s->atom_count * element_size, GL_MAP_WRITE_BIT);
         if (!ptr) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Could not map buffer");
             return false;
@@ -806,26 +950,126 @@ bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, uint32_t offset, uint3
         }
         glUnmapNamedBuffer(ctx.radius_buf.id);
     } else {
-        gl_buffer_set_sub_data(ctx.radius_buf, offset * element_size, count * element_size, radius);
+        gl_buffer_set_sub_data(ctx.radius_buf, (s->atom_offset + offset) * element_size, count * element_size, radius);
     }
     return true;
 }
 
 bool md_gfx_structure_zero_atom_velocity(md_gfx_handle_t id) {
-    if (!validate_handle(id)) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to zero atom velocity data: Handle is invalid");
+    structure_t* s = get_structure(id);
+    if (!s) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set clear atom velocity data: Handle is invalid");
         return false;
     }
 
-    structure_t* s = &ctx.structures[id.idx];
     const uint32_t element_size = sizeof(vec3_t);
-
     glClearNamedBufferSubData(ctx.velocity_buf.id, GL_RGB32F, s->atom_offset * element_size, s->atom_count * element_size, GL_RGB, GL_FLOAT, 0);
 
     return true;
 }
 
-bool allocate_representation(representation_t* rep, uint32_t color_count) {
+bool md_gfx_structure_set_group_ranges(md_gfx_handle_t id, uint32_t offset, uint32_t count, const md_gfx_range_t* ranges, uint32_t byte_stride) {
+    structure_t* s = get_structure(id);
+    if (!s) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom group data: Handle is invalid");
+        return false;
+    }
+
+    if (!ranges) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom group data: ranges argument is missing.");
+        return false;
+    }
+
+    if (offset + count > s->atom_count) {
+        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
+        return false;
+    }
+
+    const uint32_t element_size = sizeof(range_t);
+    range_t* ptr = glMapNamedBufferRange(ctx.group_buf.id, s->group_offset * element_size, s->group_count * element_size, GL_MAP_WRITE_BIT);
+    if (!ptr) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Could not map buffer");
+        return false;
+    }
+
+    byte_stride = MAX(element_size, byte_stride);
+    for (uint32_t i = offset; i < count; ++i) {
+        const md_gfx_range_t* in_range = (const md_gfx_range_t*)((const uint8_t*)ranges + byte_stride * i);
+        ptr[i] = (range_t){in_range->beg_idx, in_range->end_idx - in_range->beg_idx};
+    }
+    glUnmapNamedBuffer(ctx.group_buf.id);
+    return true;
+}
+
+bool md_gfx_structure_set_instance_group_ranges(md_gfx_handle_t id, uint32_t offset, uint32_t count, const md_gfx_range_t* group_ranges, uint32_t byte_stride) {
+    structure_t* s = get_structure(id);
+    if (!s) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Handle is invalid");
+        return false;
+    }
+
+    if (!group_ranges) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Argument is missing.");
+        return false;
+    }
+
+    if (offset + count > s->instance_count) {
+        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
+        return false;
+    }
+
+    const uint32_t element_size = sizeof(range_t);
+    instance_t* ptr = glMapNamedBufferRange(ctx.instance_buf.id, s->instance_offset * element_size, s->instance_count * element_size, GL_MAP_WRITE_BIT);
+    if (!ptr) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Could not map buffer");
+        return false;
+    }
+    byte_stride = MAX(element_size, byte_stride);
+    for (uint32_t i = offset; i < count; ++i) {
+        const md_gfx_range_t* in_range = (const md_gfx_range_t*)((const uint8_t*)group_ranges + byte_stride * i);
+        ptr[i].group_range = (range_t){in_range->beg_idx, in_range->end_idx - in_range->beg_idx};
+    }
+    glUnmapNamedBuffer(ctx.instance_buf.id);
+    return true;
+}
+
+bool md_gfx_structure_set_instance_transforms(md_gfx_handle_t id, uint32_t offset, uint32_t count, const struct mat4_t* transforms, uint32_t byte_stride) {
+    structure_t* s = get_structure(id);
+    if (!s) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Handle is invalid");
+        return false;
+    }
+
+    if (!transforms) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Argument is missing.");
+        return false;
+    }
+
+    if (offset + count > s->transform_count) {
+        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
+        return false;
+    }
+
+    const uint32_t element_size = sizeof(mat4_t);
+    if (byte_stride > element_size) {
+        mat4_t* ptr = glMapNamedBufferRange(ctx.transform_buf.id, s->transform_offset * element_size, s->transform_count * element_size, GL_MAP_WRITE_BIT);
+        if (!ptr) {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Could not map buffer");
+            return false;
+        }
+        byte_stride = MAX(element_size, byte_stride);
+        for (uint32_t i = offset; i < count; ++i) {
+            ptr[i] = *(const mat4_t*)((const uint8_t*)transforms + byte_stride * i);
+        }
+        glUnmapNamedBuffer(ctx.transform_buf.id);
+    } else {
+        gl_buffer_set_sub_data(ctx.transform_buf, (s->transform_offset + offset) * element_size, count * element_size, transforms);
+    }
+
+    return true;
+}
+
+static bool alloc_representation_data(representation_t* rep, uint32_t color_count) {
     // Find range (for now we consider this as a ring-buffer and will replace old data when full)
     if (ctx.color_offset + color_count > ctx.color_capacity) {
         ctx.color_offset = 0;
@@ -833,6 +1077,12 @@ bool allocate_representation(representation_t* rep, uint32_t color_count) {
     rep->color_offset = ctx.color_offset;
     ctx.color_offset += color_count;
 
+    rep->color_count = color_count;
+
+    return true;
+}
+
+static bool free_representation_data(representation_t* rep) {
     return true;
 }
 
@@ -848,7 +1098,7 @@ md_gfx_handle_t md_gfx_rep_create(uint32_t color_count) {
     uint16_t r_idx = ctx.representation_count++;
 
     representation_t* r = &ctx.representations[r_idx];
-    if (!allocate_representation(r, color_count)) {
+    if (!alloc_representation_data(r, color_count)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to allocate storage required for representation");
         return (md_gfx_handle_t){0};
     }
@@ -874,6 +1124,8 @@ bool md_gfx_rep_destroy(md_gfx_handle_t id) {
     ASSERT(ctx.representation_count > 0);
     ctx.representation_count -= 1;
 
+    free_representation_data(&ctx.representations[r_idx]);
+
     if (ctx.representation_count > 1) {
         // Swap back and pop resource array to keep it packed
         ctx.representations[r_idx] = ctx.representations[ctx.representation_count];
@@ -886,7 +1138,8 @@ bool md_gfx_rep_destroy(md_gfx_handle_t id) {
 }
 
 bool md_gfx_rep_set_type_and_attr(md_gfx_handle_t id, md_gfx_rep_type_t type, const md_gfx_rep_attr_t* attr) {
-    if (!validate_handle(id)) {
+    representation_t* r = get_representation(id);
+    if (!r) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to set representation type and atrributes: Handle is invalid");
         return false;
     }
@@ -896,14 +1149,14 @@ bool md_gfx_rep_set_type_and_attr(md_gfx_handle_t id, md_gfx_rep_type_t type, co
         return false;
     }
 
-    representation_t* r = &ctx.representations[id.idx];
     r->type = type;
     r->attr = *attr;
     return true;
 }
 
 bool md_gfx_rep_set_color(md_gfx_handle_t id, uint32_t offset, uint32_t count, const md_gfx_color_t* color, uint32_t byte_stride) {
-    if (!validate_handle(id)) {
+    representation_t* r = get_representation(id);
+    if (!r) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to set color data: Handle is invalid");
         return false;
     }
@@ -913,82 +1166,63 @@ bool md_gfx_rep_set_color(md_gfx_handle_t id, uint32_t offset, uint32_t count, c
         return false;
     }
 
-    representation_t* r = &ctx.representations[id.idx];
-    const uint32_t element_size = sizeof(md_gfx_color_t);
-
     if (offset + count > r->color_count) {
         md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
         return false;
     }
 
+    const uint32_t element_size = sizeof(md_gfx_color_t);
     if (byte_stride > element_size) {
-        float* ptr = glMapNamedBufferRange(ctx.color_buf.id, r->color_offset * element_size, r->color_count * element_size, GL_WRITE_ONLY);
+        md_gfx_color_t* ptr = glMapNamedBufferRange(ctx.color_buf.id, r->color_offset * element_size, r->color_count * element_size, GL_WRITE_ONLY);
         if (!ptr) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to set color data: Could not map buffer");
             return false;
         }
         byte_stride = MAX(element_size, byte_stride);
         for (uint32_t i = offset; i < count; ++i) {
-            ptr[i] = *(const float*)((const uint8_t*)color + byte_stride * i);
+            ptr[i] = *(const md_gfx_color_t*)((const uint8_t*)color + byte_stride * i);
         }
         glUnmapNamedBuffer(ctx.color_buf.id);
     } else {
-        gl_buffer_set_sub_data(ctx.color_buf, offset * element_size, count * element_size, color);
+        gl_buffer_set_sub_data(ctx.color_buf, (r->color_offset + offset) * element_size, count * element_size, color);
     }
     return true;
 }
 
-typedef struct draw_op_t {
-    uint32_t group_offset;
-    uint32_t group_count;
-    uint32_t transform_idx;
-    uint32_t color_offset;
-    uint32_t rep_type;
-    float    rep_args[2];
-} draw_op_t;
-
-typedef struct sphere_draw_t {
-    uint32_t count;
-    uint32_t instance_count;
-    uint32_t first;
-    uint32_t base_instance;
-    uint32_t transform_idx;
-    uint32_t color_offset;
-    float    args[2];
-} sphere_draw_t;
-
-typedef struct draw_control_t {
-    uint32_t sphere_draw_count;
-} draw_control_t;
-
-bool md_gfx_draw(uint32_t draw_op_count, const md_gfx_draw_op_t* in_draw_ops, const mat4_t* proj_mat, const mat4_t* view_mat) {
+bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops, const mat4_t* proj_mat, const mat4_t* view_mat, const mat4_t* inv_proj_mat, const mat4_t* inv_view_mat) {
     if (!validate_context()) return false;
 
-    if (draw_op_count > 0 && !in_draw_ops) {
+    if (in_draw_op_count > 0 && !in_draw_ops) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to Draw: draw ops was NULL");
         return false;
     }
-            
-    gl_ubo_base_t ubo_data = {
+
+    if (!proj_mat || !view_mat || !inv_proj_mat || !inv_view_mat) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to Draw: one or more missing matrix arguments");
+        return false;
+    }
+
+    UniformData ubo_data = {
         .world_to_view = *view_mat,
-        .world_to_view_normal = mat4_transpose(mat4_inverse(*view_mat)),
-        .world_to_clip = mat4_mul(*proj_mat, *view_mat),
+        .world_to_view_normal = mat4_transpose(*inv_view_mat),
         .view_to_clip = *proj_mat,
+        .clip_to_view = *inv_proj_mat,
     };
 
     gl_buffer_set_sub_data(ctx.ubo_buf, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo_buf.id);
 
-    draw_control_t draw_ctrl = {0};
-    gl_buffer_set_sub_data(ctx.draw_control_buf, 0, sizeof(draw_control_t), &draw_ctrl);
+    // Clear buffer
+    glClearNamedBufferData(ctx.draw_ind_buf.id, GL_R32UI, GL_RED, GL_UNSIGNED_INT, 0);
 
-    uint32_t out_draw_count = 0;
-    draw_op_t out_draw_ops[128];
+    uint32_t draw_op_count = 0;
+    DrawOp   draw_ops[128];
 
     uint32_t transform_count = 0;
     mat4_t transforms[128];
+    transforms[transform_count++] = mat4_ident();
 
-    for (uint32_t i = 0; i < draw_op_count; ++i) {
+    for (uint32_t i = 0; i < in_draw_op_count; ++i) {
         // Validate draw op
         structure_t* s = get_structure(in_draw_ops[i].structure);
         if (!s) {
@@ -1012,48 +1246,100 @@ bool md_gfx_draw(uint32_t draw_op_count, const md_gfx_draw_op_t* in_draw_ops, co
         }
 
         // We good, create internal draw op and fill buffer
-        draw_op_t op;
+        DrawOp op;
         op.group_offset  = s->group_offset;
         op.group_count   = s->group_count;
+        op.atom_offset   = s->atom_offset;
         op.color_offset  = r->color_offset;
         op.rep_type      = MD_GFX_REP_TYPE_SPACEFILL;
         op.rep_args[0]   = r->attr.spacefill.radius_scale;
-        op.transform_idx = transform_idx;
+        op.transform_idx = ctx.transform_offset + transform_idx;
 
-        out_draw_ops[out_draw_count++] = op;
+        // We only process 1024 groups at a time in the compute shader
+        // If the structure contains more than this, we split it into several draw ops
+        uint32_t op_count = DIV_UP(s->group_count, CULL_GROUP_SIZE);
+        for (uint32_t op_idx = 0; op_idx < op_count; ++op_idx) {
+            op.group_offset = s->group_offset + op_idx * CULL_GROUP_SIZE;
+            op.group_count  = (op_idx < (op_count - 1)) ? CULL_GROUP_SIZE : s->group_count % CULL_GROUP_SIZE;
+            draw_ops[draw_op_count++] = op;
+        }
     }
 
-    gl_buffer_set_sub_data(ctx.draw_op_buf, 0, sizeof(draw_op_t) * out_draw_count, out_draw_ops);
-    gl_buffer_set_sub_data(ctx.transform_buf, 0, sizeof(mat4_t) * transform_count, transforms);
+    gl_buffer_set_sub_data(ctx.draw_op_buf, 0, sizeof(DrawOp) * draw_op_count, draw_ops);
+    gl_buffer_set_sub_data(ctx.transform_buf, ctx.transform_offset * sizeof(mat4_t), sizeof(mat4_t) * transform_count, transforms);
 
-    // CULL + FILL DRAW DATA
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, POSITION_BINDING,            ctx.position_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, RADIUS_BINDING,              ctx.radius_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, GROUP_BINDING,               ctx.group_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, COLOR_BINDING,               ctx.color_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, TRANSFORM_BINDING,           ctx.transform_buf.id);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_OP_BINDING,             ctx.draw_op_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_INDIRECT_BINDING,       ctx.draw_ind_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_SPHERE_INDEX_BINDING,   ctx.draw_sphere_idx_buf.id);
+
+    // CULL + GENERATE DRAW DATA
     glUseProgram(ctx.cull_prog.id);
-    glUniform1ui(0, draw_op_count);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ctx.draw_op_buf.id);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ctx.position_buf.id);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ctx.group_buf.id);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ctx.draw_control_buf.id);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ctx.sphere_draw_buf.id);
-
-    glDispatchCompute(DIV_UP(out_draw_count, 32), 1, 1);
+    glDispatchCompute(draw_op_count, 1, 1);
 
     // BARRIER
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+
+
 
     // DRAW SPACEFILL
+    glBindBuffer(GL_PARAMETER_BUFFER, ctx.draw_ind_buf.id);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ctx.draw_ind_buf.id);
     glUseProgram(ctx.spacefill_prog.id);
-    glBindBuffer(GL_PARAMETER_BUFFER, ctx.draw_control_buf.id);
-    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ctx.sphere_draw_buf.id);
-    glMultiDrawArraysIndirectCount(GL_TRIANGLE_STRIP, 0, offsetof(draw_control_t, sphere_draw_count), (1 << 16), sizeof(sphere_draw_t));
-    
+    glMultiDrawArraysIndirectCount(GL_POINTS, offsetof(DrawIndirect, draw_sphere_cmd), offsetof(DrawIndirect, draw_sphere_cmd_count), draw_op_count, sizeof(DrawSpheresIndirectCommand));
+
     // DRAW LICORICE
-
-
 
     // COMPOSE
 
-    // COMPUTE HI-Z
+    // COMPUTE DEPTH PYRAMID
+    glUseProgram(ctx.depth_reduce_prog.id);
+    glBindTextureUnit(1, ctx.depth_tex.id);
+    for (uint32_t i = 0; i < ctx.depth_pyramid_tex.levels; ++i) {
+        // Output
+        uint width  = MAX(1, ctx.depth_pyramid_tex.width >> i);
+        uint height = MAX(1, ctx.depth_pyramid_tex.height >> i);
+        glUniform2ui(0, width, height);
+        glBindImageTexture(0, ctx.depth_tex.id, i, 0, 0, GL_WRITE_ONLY, GL_R32F);
+        glDispatchCompute(DIV_UP(width, DEPTH_REDUCE_GROUP_SIZE), DIV_UP(height, DEPTH_REDUCE_GROUP_SIZE), 1);
+    }
+    
+        /*
+    for (uint32_t i = 0; i < depth_pyramid_levels; ++i)
+    {
+        DescriptorInfo sourceDepth = (i == 0)
+            ? DescriptorInfo(depthSampler, depthTarget.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+            : DescriptorInfo(depthSampler, depthPyramidMips[i - 1], VK_IMAGE_LAYOUT_GENERAL);
+
+        DescriptorInfo descriptors[] = { { depthPyramidMips[i], VK_IMAGE_LAYOUT_GENERAL }, sourceDepth };
+        // vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, depthreduceProgram.updateTemplate, depthreduceProgram.layout, 0, descriptors);
+        pushDescriptors(depthreduceProgram, descriptors);
+
+        uint32_t levelWidth = std::max(1u, depthPyramidWidth >> i);
+        uint32_t levelHeight = std::max(1u, depthPyramidHeight >> i);
+
+        DepthReduceData reduceData = { vec2(levelWidth, levelHeight) };
+
+        vkCmdPushConstants(commandBuffer, depthreduceProgram.layout, depthreduceProgram.pushConstantStages, 0, sizeof(reduceData), &reduceData);
+        vkCmdDispatch(commandBuffer, getGroupCount(levelWidth, depthreduceCS.localSizeX), getGroupCount(levelHeight, depthreduceCS.localSizeY), 1);
+
+        VkImageMemoryBarrier2 reduceBarrier = imageBarrier(depthPyramid.image,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+            VK_IMAGE_ASPECT_COLOR_BIT, i, 1);
+
+        pipelineBarrier(commandBuffer, 0, 0, nullptr, 1, &reduceBarrier);
+    }
+    */
 
     glUseProgram(0);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    glBindBuffer(GL_PARAMETER_BUFFER, 0);
+
     return true;
 }

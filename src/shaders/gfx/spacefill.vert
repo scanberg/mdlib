@@ -1,71 +1,60 @@
 #version 460
 
-struct UniformData {
-    mat4 world_to_view;
-    mat4 world_to_view_normal;
-    mat4 world_to_clip;
-    mat4 view_to_clip;
-    vec2 fle;
-    uint ortho;
-    uint atom_mask;
-};
-
-struct DrawData {
-    uint transform_offset;
-    uint color_offset;
-};
+#include "common.h"
 
 layout (binding = 0, std140) uniform UboBuffer {
     UniformData ubo;
 };
 
-layout(binding = 1) readonly buffer PositionBuffer {
-    vec3 atom_pos[];
+layout(binding = POSITION_BINDING, std430) readonly buffer PositionBuffer {
+    Position atom_pos[];
 };
 
-layout(binding = 2) readonly buffer RadiusBuffer {
+layout(binding = RADIUS_BINDING) readonly buffer RadiusBuffer {
     float atom_rad[];
 };
 
-layout(binding = 3) readonly buffer ColorBuffer {
+layout(binding = COLOR_BINDING) readonly buffer ColorBuffer {
     uint colors[];
 };
 
-layout(binding = 4) readonly buffer TransformBuffer {
+layout(binding = TRANSFORM_BINDING) readonly buffer TransformBuffer {
     mat4 transforms[];
 };
 
-layout(binding = 5) readonly buffer DrawDataBuffer {
-    DrawData draw_data[];
+layout(binding = DRAW_INDIRECT_BINDING) readonly buffer DrawIndirectBuffer {
+    DrawIndirect indirect;
 };
 
-layout(location = 0) out VertexData {
-    smooth vec3 view_coord;
-    flat   vec4 view_sphere;
-    flat   vec3 view_velocity;
-    flat   vec4 color;
-    flat   uint atom_idx;
-    smooth vec2 uv;
-} out_vert;
+layout(binding = DRAW_SPHERE_INDEX_BINDING) readonly buffer SphereIndexBuffer {
+    uint indices[];
+};
+
+layout(location = 0) out VS_GS {
+    flat vec4 view_sphere;
+    flat vec3 view_velocity;
+    flat uint color;
+    flat uint index;
+} OUT;
 
 void main() {
-    uint vertex_idx = gl_VertexID;
-    uint sphere_idx = gl_InstanceID;
-    uint draw_idx = gl_DrawID;
+    uint idx = indices[gl_VertexID];
+    uint draw_idx  = gl_DrawID;
+    uint atom_idx  = indirect.draw_sphere_cmd[draw_idx].atom_offset + idx;
+    uint color_idx = indirect.draw_sphere_cmd[draw_idx].color_offset + idx;
+    uint transform_idx = indirect.draw_sphere_cmd[draw_idx].transform_idx;
+    float radius_scale = indirect.draw_sphere_cmd[draw_idx].radius_scale;
 
-    mat4 model_mat = transforms[draw_data[draw_idx].transform_offset];
-    vec4 color   = unpackSnorm4x8(colors[draw_data[draw_idx].color_offset]);
+    mat4 model_mat = transforms[transform_idx];
+    uint color = colors[color_idx];
 
-    vec4  pos = vec4(atom_pos[sphere_idx], 1);
-    float rad = atom_rad[sphere_idx] * ubo.radius_scale;
+    vec4  pos = vec4(atom_pos[atom_idx].x, atom_pos[atom_idx].y, atom_pos[atom_idx].z, 1);
+    float rad = atom_rad[atom_idx] * radius_scale;
     vec4 view_pos = ubo.world_to_view * model_mat * pos;
     vec4 view_sphere = vec4(view_pos.xyz, rad);
-    vec4 view_coord = vec4(view_pos.xyz + vec3(((vertex_idx & 1U) != 0U) ? -rad : +rad, ((vertex_idx & 2U) != 0U) ? -rad : +rad, +rad), 1);
-    
-    out_vert.view_coord  = view_coord.xyz;
-	out_vert.view_sphere = view_sphere;
-	out_vert.color = color;
-	out_vert.atom_idx = uint(gl_VertexID);
 
-    gl_Position = ubo.view_to_clip * view_coord;
+	OUT.view_sphere = view_sphere;
+    OUT.view_velocity = vec3(0,0,0);
+	OUT.color = color;
+	OUT.index = atom_idx;
 }
