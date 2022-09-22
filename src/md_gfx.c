@@ -1285,15 +1285,13 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     // BARRIER
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
 
-
-
     // DRAW SPACEFILL
     glBindBuffer(GL_PARAMETER_BUFFER, ctx.draw_ind_buf.id);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ctx.draw_ind_buf.id);
     glUseProgram(ctx.spacefill_prog.id);
     glMultiDrawArraysIndirectCount(GL_POINTS, offsetof(DrawIndirect, draw_sphere_cmd), offsetof(DrawIndirect, draw_sphere_cmd_count), draw_op_count, sizeof(DrawSpheresIndirectCommand));
 
-    // DRAW LICORICE
+    // DRAW REST
 
     // COMPOSE
 
@@ -1307,39 +1305,22 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
         glUniform2ui(0, width, height);
         glBindImageTexture(0, ctx.depth_tex.id, i, 0, 0, GL_WRITE_ONLY, GL_R32F);
         glDispatchCompute(DIV_UP(width, DEPTH_REDUCE_GROUP_SIZE), DIV_UP(height, DEPTH_REDUCE_GROUP_SIZE), 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
-    
-        /*
-    for (uint32_t i = 0; i < depth_pyramid_levels; ++i)
-    {
-        DescriptorInfo sourceDepth = (i == 0)
-            ? DescriptorInfo(depthSampler, depthTarget.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-            : DescriptorInfo(depthSampler, depthPyramidMips[i - 1], VK_IMAGE_LAYOUT_GENERAL);
-
-        DescriptorInfo descriptors[] = { { depthPyramidMips[i], VK_IMAGE_LAYOUT_GENERAL }, sourceDepth };
-        // vkCmdPushDescriptorSetWithTemplateKHR(commandBuffer, depthreduceProgram.updateTemplate, depthreduceProgram.layout, 0, descriptors);
-        pushDescriptors(depthreduceProgram, descriptors);
-
-        uint32_t levelWidth = std::max(1u, depthPyramidWidth >> i);
-        uint32_t levelHeight = std::max(1u, depthPyramidHeight >> i);
-
-        DepthReduceData reduceData = { vec2(levelWidth, levelHeight) };
-
-        vkCmdPushConstants(commandBuffer, depthreduceProgram.layout, depthreduceProgram.pushConstantStages, 0, sizeof(reduceData), &reduceData);
-        vkCmdDispatch(commandBuffer, getGroupCount(levelWidth, depthreduceCS.localSizeX), getGroupCount(levelHeight, depthreduceCS.localSizeY), 1);
-
-        VkImageMemoryBarrier2 reduceBarrier = imageBarrier(depthPyramid.image,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
-            VK_IMAGE_ASPECT_COLOR_BIT, i, 1);
-
-        pipelineBarrier(commandBuffer, 0, 0, nullptr, 1, &reduceBarrier);
-    }
-    */
 
     glUseProgram(0);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
     glBindBuffer(GL_PARAMETER_BUFFER, 0);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, POSITION_BINDING,            0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, RADIUS_BINDING,              0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, GROUP_BINDING,               0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, COLOR_BINDING,               0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, TRANSFORM_BINDING,           0);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_OP_BINDING,             0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_INDIRECT_BINDING,       0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_SPHERE_INDEX_BINDING,   0);
 
     return true;
 }
