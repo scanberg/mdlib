@@ -2,8 +2,16 @@
 
 #include "common.h"
 
+layout (binding = 0, std140) uniform UboBuffer {
+    UniformData ubo;
+};
+
 layout (binding = POSITION_BINDING, std430) readonly buffer PositionBuffer {
 	Position positions[];
+};
+
+layout (binding = RADIUS_BINDING, std430) readonly buffer RadiusBuffer {
+	float radius[];
 };
 
 layout (binding = GROUP_BINDING, std430) readonly buffer GroupBuffer {
@@ -22,10 +30,35 @@ layout (binding = DRAW_SPHERE_INDEX_BINDING, std430) buffer DrawSphereIndices {
 	uint sphere_indices[];
 };
 
+layout (binding = DEBUG_BINDING, std430) buffer DebugBuffer {
+	DebugData debug;
+};
+
+layout(binding = 0) uniform sampler2D in_depth_pyramid_tex;
+
 layout (local_size_x = CULL_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
 shared uint total_write_count = 0;
 shared uint total_write_offset = 0;
+
+#define MAX_RADIUS 2
+
+// 2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere. Michael Mara, Morgan McGuire. 2013
+void project_sphere(vec4 S, float P00, float P11, out vec4 aabb)
+{
+	vec2 cx = -S.xz;
+	vec2 vx = vec2(sqrt(dot(cx, cx) - S.w * S.w), S.w);
+	vec2 minx = mat2(vx.x, vx.y, -vx.y, vx.x) * cx;
+	vec2 maxx = mat2(vx.x, -vx.y, vx.y, vx.x) * cx;
+
+	vec2 cy = -S.yz;
+	vec2 vy = vec2(sqrt(dot(cy, cy) - S.w * S.w), S.w);
+	vec2 miny = mat2(vy.x, vy.y, -vy.y, vy.x) * cy;
+	vec2 maxy = mat2(vy.x, -vy.y, vy.y, vy.x) * cy;
+
+	aabb = vec4(minx.x / minx.y * P00, miny.x / miny.y * P11, maxx.x / maxx.y * P00, maxy.x / maxy.y * P11);
+	aabb = aabb.xwzy * vec4(0.5f, -0.5f, 0.5f, -0.5f) + vec4(0.5f); // clip space -> uv space
+}
 
 void main() {
 	uint draw_idx = gl_WorkGroupID.x;
@@ -42,27 +75,62 @@ void main() {
 		uint group_atom_count  = groups[ops[draw_idx].group_offset + group_idx].atom_count;
 
 		// Compute AABB
-		vec3 aabb_min = +vec3(INF,INF,INF);
-		vec3 aabb_max = -vec3(INF,INF,INF);
+		vec3 aabb_min = vec3(POS_INF,POS_INF,POS_INF);
+		vec3 aabb_max = vec3(NEG_INF,NEG_INF,NEG_INF);
 		for (uint j = group_atom_offset; j < group_atom_offset + group_atom_count; ++j) {
 			uint idx = ops[draw_idx].atom_offset + j;
 			vec3 pos = vec3(positions[idx].x, positions[idx].y, positions[idx].z);
-			aabb_min = min(aabb_min, pos);
-			aabb_max = max(aabb_max, pos);
+			float rad = radius[idx];
+			aabb_min = min(aabb_min, pos - rad);
+			aabb_max = max(aabb_max, pos + rad);
 		}
+		vec3 center = (aabb_min + aabb_max) * 0.5;
+		float extent = length(aabb_max - center);
+
+		center = vec3(ubo.world_to_view * vec4(center, 1));
+		vec4 sphere = vec4(center, extent);
+		bool visible = true;
 
 		// Frustum Culling
+		if (ubo.frustum_culling == 1) {
 
-		// Compute Min Max Clip Coords from AABB
+		}
 
-		// Determine LOD from Clip Extent
+		// HiZ Culling
+		if (visible && ubo.depth_culling == 1) {
+			vec4 aabb;
+			project_sphere(sphere, ubo.view_to_clip[0][0], ubo.view_to_clip[1][1], aabb);
+			float width  = (aabb.z - aabb.x) * float(ubo.depth_pyramid_width);
+			float height = (aabb.w - aabb.y) * float(ubo.depth_pyramid_height);
+			float level  = floor(log2(max(width, height)));
 
-		// Cull using Hi-Z texture
+			vec4 clip_coord = ubo.view_to_clip * vec4(sphere.xyz + sphere.w, 1);
 
-		bool group_visible = true;
-		if (group_visible) {
+			// Sampler is set up to do max reduction, so this computes the maximum depth of a 2x2 texel quad
+			float depth = textureLod(in_depth_pyramid_tex, (aabb.xy + aabb.zw) * 0.5, level).x;
+			float depth_sphere = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
+
+			if (group_idx == 0) {
+				debug.sphere_depth = depth_sphere;
+				debug.read_depth = depth;
+				debug.view_coord = vec4(center, 1);
+				debug.aabb_min[0] = aabb.x;
+				debug.aabb_min[1] = aabb.y;
+				debug.aabb_max[0] = aabb.z;
+				debug.aabb_max[1] = aabb.w;
+				debug.aabb_width = width;
+				debug.aabb_height = height;
+				debug.lod = level;
+			}
+
+			visible = visible && (depth_sphere < depth);
+			//visible = visible && (group_idx % 2 == 0);
+		}
+
+		if (visible) {
 			group_write_offset = atomicAdd(total_write_count, group_atom_count);
 		}
+
 
 		// SYNC
 		barrier();
@@ -85,7 +153,10 @@ void main() {
 
 		barrier();
 
-		if (group_visible) {
+		atomicAdd(debug.total_groups_processed, 1);
+		if (visible) {
+			atomicAdd(debug.total_groups_drawn, 1);
+
 			for (uint j = 0; j < group_atom_count; ++j) {
 				// Write structure relative offsets
 				sphere_indices[total_write_offset + group_write_offset + j] = group_atom_offset + j;

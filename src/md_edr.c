@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include <xtc/xdrfile.h>
+#include <xdrfile.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>

@@ -9,7 +9,7 @@
 #include "md_simd.h"
 
 #include <string.h>
-#include <fastlz/fastlz.h>
+#include <fastlz.h>
 
 #define MAGIC 0xcad86278
 #define ALIGNMENT sizeof(block_t)

@@ -6,21 +6,37 @@
 #define REP_TYPE_GAUSSIAN	5
 #define REP_TYPE_SES		6
 
+// Buffer bindings
 #define POSITION_BINDING  0
 #define RADIUS_BINDING    1
 #define GROUP_BINDING     2
 #define COLOR_BINDING     3
 #define TRANSFORM_BINDING 4
-
 #define DRAW_OP_BINDING	5
 #define DRAW_INDIRECT_BINDING 6
 #define DRAW_SPHERE_INDEX_BINDING 7
+
+#define DEBUG_BINDING 8
+
+// Texture bind slots
+#define DEPTH_TEX_BINDING     0
+#define COLOR_TEX_BINDING     1
+#define NORMAL_TEX_BINDING    2
+#define SS_VEL_TEX_BINDING    3
+#define INDEX_TEX_BINDING     4
+
+// Output locations in drawbuffer
+#define COLOR_TEX_ATTACHMENT   0
+#define NORMAL_TEX_ATTACHMENT  1
+#define SS_VEL_TEX_ATTACHMENT  2
+#define INDEX_TEX_ATTACHMENT   3
 
 #define RASTER_SPHERE_GROUP_SIZE 32
 #define CULL_GROUP_SIZE 1024
 #define DEPTH_REDUCE_GROUP_SIZE 32
 
-#define INF (1.0/0.0)
+#define POS_INF uintBitsToFloat(0x7F800000)
+#define NEG_INF uintBitsToFloat(0xFF800000)
 
 struct UniformData {
 	mat4 world_to_view;
@@ -28,6 +44,27 @@ struct UniformData {
 	mat4 view_to_clip;
 	mat4 clip_to_view;
 	vec4 frustum_plane[4];
+	uint frustum_culling;
+	uint depth_culling;
+	uint depth_pyramid_width;
+	uint depth_pyramid_height;
+	float znear;
+	float zfar;
+	float _pad[2];
+};
+
+struct DebugData {
+	uint total_groups_processed;
+	uint total_groups_drawn;
+	float sphere_depth;
+	float read_depth;
+	vec4 view_coord;
+	float aabb_min[2];
+	float aabb_max[2];
+	float aabb_width;
+	float aabb_height;
+	float lod;
+	float _pad;
 };
 
 struct DrawOp {

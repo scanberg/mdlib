@@ -1,7 +1,7 @@
 
 #include "md_gl.h"
 #include "md_util.h"
-#include <gl3w/gl3w.h>
+#include <GL/gl3w.h>
 #include <core/md_common.h>
 #include <core/md_compiler.h>
 #include <core/md_log.h>

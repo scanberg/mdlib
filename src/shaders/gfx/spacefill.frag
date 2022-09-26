@@ -23,10 +23,10 @@ layout(location = 0) in GS_FS {
 
 layout (depth_greater) out float gl_FragDepth;
 
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec2 out_normal;
-layout(location = 2) out vec2 out_velocity;
-layout(location = 3) out vec4 out_index;
+layout(location = COLOR_TEX_ATTACHMENT)  out vec4 out_color;
+layout(location = NORMAL_TEX_ATTACHMENT) out vec2 out_normal;
+layout(location = SS_VEL_TEX_ATTACHMENT) out vec2 out_velocity;
+layout(location = INDEX_TEX_ATTACHMENT)  out vec4 out_index;
 
 vec2 encode_normal (vec3 n) {
    float p = sqrt(n.z * 8 + 8);

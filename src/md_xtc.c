@@ -9,7 +9,7 @@
 #include <core/md_vec_math.h>
 #include <md_trajectory.h>
 
-#include <xtc/xdrfile.h>
+#include <xdrfile.h>
 
 #include <string.h>
 #include <stdio.h>

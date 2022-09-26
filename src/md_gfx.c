@@ -1,7 +1,7 @@
 #include "md_gfx.h"
 
 #include "md_util.h"
-#include <gl3w/gl3w.h>
+#include <GL/gl3w.h>
 
 #include <core/md_common.h>
 #include <core/md_log.h>
@@ -15,6 +15,8 @@ typedef mat4_t mat4;
 typedef vec4_t vec4;
 typedef uint32_t uint;
 typedef struct UniformData UniformData;
+typedef struct DebugData DebugData;
+
 typedef struct DrawArraysIndirectCommand DrawArraysIndirectCommand;
 typedef struct DrawElementsIndirectCommand DrawElementsIndirectCommand;
 typedef struct DispatchIndirectCommand DispatchIndirectCommand;
@@ -22,6 +24,7 @@ typedef struct DrawSpheresIndirectCommand DrawSpheresIndirectCommand;
 typedef struct DrawIndirect DrawIndirect;
 typedef struct DrawOp DrawOp;
 
+// Common shared header between
 #include <shaders/gfx/common.h>
 
 #include <string.h>     // memset, memcpy, strstr
@@ -37,8 +40,6 @@ typedef struct DrawOp DrawOp;
 
 #define INVALID_INDEX (~0U)
 
-#define DEPTH_PYRAMID_RES 1024
-
 #ifndef GL_PUSH_GPU_SECTION
 #define GL_PUSH_GPU_SECTION(lbl)                                                                \
 {                                                                                               \
@@ -53,18 +54,34 @@ typedef struct DrawOp DrawOp;
 }
 #endif
 
-static inline bool is_ortho_proj_matrix(const mat4_t M) {
-    return M.elem[2][3] == 0.0f;
+static inline uint32_t previous_pow2(uint32_t v) {
+    uint32_t r = 1;
+    while (r * 2 < v)
+        r *= 2;
+    return r;
 }
 
-static inline void extract_jitter_uv(float jitter[2], const mat4_t M) {
-    if (is_ortho_proj_matrix(M)) {
-        jitter[0] = -M.elem[3][0] * 0.5f;
-        jitter[1] = -M.elem[3][1] * 0.5f;
+static inline bool is_ortho_proj_matrix(const mat4_t P) {
+    return P.elem[2][3] == 0.0f;
+}
+
+static inline float extract_znear(const mat4_t Pinv) {
+    return 1.f / (Pinv.elem[3][3] - Pinv.elem[2][3]);
+}
+
+static inline float extract_zfar(const mat4_t Pinv) {
+    return 1.f / (Pinv.elem[3][3] + Pinv.elem[2][3]);
+}
+
+static inline vec2_t extract_jitter_uv(const mat4_t P) {
+    vec2_t jitter;
+    if (is_ortho_proj_matrix(P)) {
+        jitter.x = -P.elem[3][0] * 0.5f;
+        jitter.y = -P.elem[3][1] * 0.5f;
     }
     else {
-        jitter[0] = M.elem[2][0] * 0.5f;
-        jitter[1] = M.elem[2][1] * 0.5f;
+        jitter.x = P.elem[2][0] * 0.5f;
+        jitter.y = P.elem[2][1] * 0.5f;
     }
 }
 
@@ -155,7 +172,11 @@ typedef struct gl_context_t {
     gl_version_t version;
 
     // For fixed pipeline framebuffer
-    uint32_t fbo;
+    uint32_t vao_id;
+    uint32_t fbo_id;
+    uint32_t fbo_width;
+    uint32_t fbo_height;
+
     gl_texture_t depth_tex;         // D32F   32-BITS depth buffer for depth testing in fixed pipeline
     gl_texture_t color_tex;         // RGBA8  32-BITS
     gl_texture_t index_tex;         // R32UI  32-BITS
@@ -217,6 +238,9 @@ typedef struct gl_context_t {
     // Computes depth pyramid
     gl_program_t depth_reduce_prog;
 
+    // Composes final image and outputs
+    gl_program_t compose_prog;
+
     // Transient GPU resident buffers
     gl_buffer_t ubo_buf;
     gl_buffer_t vertex_buf;
@@ -226,6 +250,9 @@ typedef struct gl_context_t {
     gl_buffer_t draw_op_buf;
     gl_buffer_t draw_ind_buf;
     gl_buffer_t draw_sphere_idx_buf;
+
+    gl_buffer_t DEBUG_BUF;
+    DebugData* debug_data;
 
     structure_t structures[MAX_STRUCTURE_COUNT];
     representation_t representations[MAX_REPRESENTATION_COUNT];
@@ -583,10 +610,8 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
             return false;
         }
 
-        glCreateFramebuffers(1, &ctx.fbo);
-
-        uint mip_levels = compute_mip_count(DEPTH_PYRAMID_RES, DEPTH_PYRAMID_RES);
-        ctx.depth_pyramid_tex    = gl_texture_create(DEPTH_PYRAMID_RES, DEPTH_PYRAMID_RES, mip_levels, GL_DEPTH_COMPONENT32F);
+        glCreateFramebuffers(1, &ctx.fbo_id);
+        glCreateVertexArrays(1, &ctx.vao_id);
 
         ctx.ubo_buf             = gl_buffer_create(KILOBYTES(1),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.draw_op_buf         = gl_buffer_create(MEGABYTES(1),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
@@ -596,6 +621,8 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
         ctx.vertex_buf          = gl_buffer_create(MEGABYTES(64), NULL, 0);
         ctx.index_buf           = gl_buffer_create(MEGABYTES(64), NULL, 0);
         ctx.draw_sphere_idx_buf = gl_buffer_create(MEGABYTES(4),  NULL, 0);
+
+        ctx.DEBUG_BUF = gl_buffer_create(KILOBYTES(1), NULL, 0);
 
         // Storage buffers for structure data
         const uint32_t atom_cap = 4 * 1000 * 1000;
@@ -653,29 +680,23 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
         };
         ctx.spacefill_prog = gl_program_create_from_files(spacefill_files, ARRAY_SIZE(spacefill_files), 0, include_files, ARRAY_SIZE(include_files));
 
-        if (!ctx.spacefill_prog.id) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
-            md_gfx_shutdown();
-            return false;
-        }
-
         const char* cull_files[] = {
             MD_SHADER_DIR "/gfx/cull.comp"
         };
         ctx.cull_prog = gl_program_create_from_files(cull_files, ARRAY_SIZE(cull_files), 0, include_files, ARRAY_SIZE(include_files));
 
-        if (!ctx.cull_prog.id) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
-            md_gfx_shutdown();
-            return false;
-        }
-
         const char* depth_reduce_files[] = {
-            MD_SHADER_DIR "/gfx/depth_reduce.comp"
+            MD_SHADER_DIR "/gfx/depth_reduce.comp",
         };
         ctx.depth_reduce_prog = gl_program_create_from_files(depth_reduce_files, ARRAY_SIZE(depth_reduce_files), 0, include_files, ARRAY_SIZE(include_files));
 
-        if (!ctx.depth_reduce_prog.id) {
+        const char* compose_files[] = {
+            MD_SHADER_DIR "/gfx/fs_quad.vert",
+            MD_SHADER_DIR "/gfx/compose.frag",
+        };
+        ctx.compose_prog = gl_program_create_from_files(compose_files, ARRAY_SIZE(compose_files), 0, include_files, ARRAY_SIZE(include_files));
+
+        if (!ctx.spacefill_prog.id || !ctx.cull_prog.id || !ctx.depth_reduce_prog.id || !ctx.compose_prog.id) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
             md_gfx_shutdown();
             return false;
@@ -688,36 +709,58 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
     }
 
     if (ctx.version) {
-        gl_texture_destroy(&ctx.depth_tex);
-        ctx.depth_tex = gl_texture_create(width, height, 1, GL_DEPTH_COMPONENT32F);
+        if (ctx.fbo_width != width || ctx.fbo_height != height) {
+            gl_texture_destroy(&ctx.depth_tex);
+            ctx.depth_tex = gl_texture_create(width, height, 1, GL_DEPTH_COMPONENT32F);
+            glTextureParameteri(ctx.depth_tex.id, GL_TEXTURE_REDUCTION_MODE_ARB, GL_MAX);
 
-        gl_texture_destroy(&ctx.color_tex);
-        ctx.color_tex = gl_texture_create(width, height, 1, GL_RGBA8);
-        
-        gl_texture_destroy(&ctx.normal_tex);
-        ctx.normal_tex = gl_texture_create(width, height, 1, GL_RG8);
+            gl_texture_destroy(&ctx.color_tex);
+            ctx.color_tex = gl_texture_create(width, height, 1, GL_RGBA8);
 
-        gl_texture_destroy(&ctx.index_tex);
-        ctx.index_tex = gl_texture_create(width, height, 1, GL_RGBA8);
+            gl_texture_destroy(&ctx.normal_tex);
+            ctx.normal_tex = gl_texture_create(width, height, 1, GL_RG8);
 
-        gl_texture_destroy(&ctx.ss_vel_tex);
-        ctx.ss_vel_tex = gl_texture_create(width, height, 1, GL_RG16F);
+            gl_texture_destroy(&ctx.index_tex);
+            ctx.index_tex = gl_texture_create(width, height, 1, GL_RGBA8);
 
-        gl_texture_destroy(&ctx.visibility_tex);
-        ctx.visibility_tex = gl_texture_create(width, height, 1, GL_RG32UI);
+            gl_texture_destroy(&ctx.ss_vel_tex);
+            ctx.ss_vel_tex = gl_texture_create(width, height, 1, GL_RG16F);
 
-        glNamedFramebufferTexture(ctx.fbo, GL_DEPTH_ATTACHMENT,  ctx.depth_tex.id,  0);
-        glNamedFramebufferTexture(ctx.fbo, GL_COLOR_ATTACHMENT0, ctx.color_tex.id,  0);
-        glNamedFramebufferTexture(ctx.fbo, GL_COLOR_ATTACHMENT1, ctx.normal_tex.id, 0);
-        glNamedFramebufferTexture(ctx.fbo, GL_COLOR_ATTACHMENT2, ctx.index_tex.id,  0);
-        glNamedFramebufferTexture(ctx.fbo, GL_COLOR_ATTACHMENT3, ctx.ss_vel_tex.id, 0);
+            gl_texture_destroy(&ctx.visibility_tex);
+            ctx.visibility_tex = gl_texture_create(width, height, 1, GL_RG32UI);
+
+            glNamedFramebufferTexture(ctx.fbo_id, GL_DEPTH_ATTACHMENT,  ctx.depth_tex.id,  0);
+            glNamedFramebufferTexture(ctx.fbo_id, GL_COLOR_ATTACHMENT0 + COLOR_TEX_ATTACHMENT,  ctx.color_tex.id,  0);
+            glNamedFramebufferTexture(ctx.fbo_id, GL_COLOR_ATTACHMENT0 + NORMAL_TEX_ATTACHMENT, ctx.normal_tex.id, 0);
+            glNamedFramebufferTexture(ctx.fbo_id, GL_COLOR_ATTACHMENT0 + SS_VEL_TEX_ATTACHMENT, ctx.ss_vel_tex.id, 0);
+            glNamedFramebufferTexture(ctx.fbo_id, GL_COLOR_ATTACHMENT0 + INDEX_TEX_ATTACHMENT,  ctx.index_tex.id,  0);
+
+            ctx.fbo_width = width;
+            ctx.fbo_height = height;
+        }
+        uint32_t w = previous_pow2(width);
+        uint32_t h = previous_pow2(height);
+        uint32_t l = compute_mip_count(w, h);
+        if (ctx.depth_pyramid_tex.width != w || ctx.depth_pyramid_tex.height != h || ctx.depth_pyramid_tex.levels != l) {
+            gl_texture_destroy(&ctx.depth_pyramid_tex);
+            ctx.depth_pyramid_tex = gl_texture_create(w, h, l, GL_R32F);
+            glTextureParameteri(ctx.depth_pyramid_tex.id, GL_TEXTURE_REDUCTION_MODE_ARB, GL_MAX);
+            glTextureParameteri(ctx.depth_pyramid_tex.id, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
+            glTextureParameteri(ctx.depth_pyramid_tex.id, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTextureParameteri(ctx.depth_pyramid_tex.id, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTextureParameteri(ctx.depth_pyramid_tex.id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
     }
 
     return true;
 }
 
 void md_gfx_shutdown() {
-    if (ctx.fbo) glDeleteFramebuffers(1, &ctx.fbo);
+    if (ctx.fbo_id) glDeleteFramebuffers(1, &ctx.fbo_id);
+    gl_texture_destroy(&ctx.color_tex);
+    gl_texture_destroy(&ctx.normal_tex);
+    gl_texture_destroy(&ctx.ss_vel_tex);
+    gl_texture_destroy(&ctx.index_tex);
 
     gl_texture_destroy(&ctx.depth_pyramid_tex);
     gl_texture_destroy(&ctx.depth_tex);
@@ -799,6 +842,7 @@ static bool alloc_structure_data(structure_t* s, uint32_t atom_count, uint32_t b
 }
 
 static bool free_structure_data(structure_t* s) {
+    (void)s;
     return true;
 }
 
@@ -1082,7 +1126,8 @@ static bool alloc_representation_data(representation_t* rep, uint32_t color_coun
     return true;
 }
 
-static bool free_representation_data(representation_t* rep) {
+static bool free_representation_data(representation_t* r) {
+    (void)r;
     return true;
 }
 
@@ -1202,11 +1247,71 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
         return false;
     }
 
+    // Store old state
+    uint32_t  old_draw_buffers[16];
+    uint32_t  old_viewport[4];
+    uint32_t  old_draw_buffer_count;
+    uint32_t  old_fbo;
+    uint32_t  old_vao;
+    uint32_t  old_cull_mode;
+    uint32_t  old_depth_func;
+    float     old_clear_color[4];
+    float     old_clear_depth;
+    bool      old_color_mask[4];
+    bool      old_depth_mask;
+    bool      old_depth_test;
+    bool      old_cull_face;
+
+
+    glGetBooleanv(GL_COLOR_WRITEMASK, (GLboolean*)(old_color_mask));
+    glGetBooleanv(GL_DEPTH_TEST, (GLboolean*)(&old_depth_test));
+    glGetBooleanv(GL_DEPTH_WRITEMASK, (GLboolean*)(&old_depth_mask));
+    glGetBooleanv(GL_CULL_FACE, (GLboolean*)(&old_cull_face));
+
+    glGetIntegerv(GL_DEPTH_FUNC, (GLint*)(&old_depth_func));
+    glGetIntegerv(GL_CULL_FACE_MODE, (GLint*)(&old_cull_mode));
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, (GLint*)(&old_fbo));
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, (GLint*)(&old_vao));
+    glGetIntegerv(GL_VIEWPORT, (GLint*)old_viewport);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, old_clear_color);
+    glGetFloatv(GL_DEPTH_CLEAR_VALUE, &old_clear_depth);
+
+    for (old_draw_buffer_count = 0; old_draw_buffer_count < ARRAY_SIZE(old_draw_buffers); ++old_draw_buffer_count) {
+        glGetIntegerv(GL_DRAW_BUFFER0 + old_draw_buffer_count, (GLint*)(&old_draw_buffers[old_draw_buffer_count]));
+        if (old_draw_buffers[old_draw_buffer_count] == 0) {
+            break;
+        }
+    }
+
+    // Set state
+    const uint32_t draw_buffers[] = { GL_COLOR_ATTACHMENT0 + COLOR_TEX_ATTACHMENT, GL_COLOR_ATTACHMENT0 + NORMAL_TEX_ATTACHMENT, GL_COLOR_ATTACHMENT0 + SS_VEL_TEX_ATTACHMENT, GL_COLOR_ATTACHMENT0 + INDEX_TEX_ATTACHMENT };
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctx.fbo_id);
+    glDrawBuffers(ARRAY_SIZE(draw_buffers), draw_buffers);
+    glViewport(0, 0, ctx.fbo_width, ctx.fbo_height);
+
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+
+    glEnable(GL_DEPTH_TEST);    
+    glDepthFunc(GL_LESS);
+    glDepthMask(1);
+    glColorMask(1, 1, 1, 1);
+
+    glClearColor(0,0,0,0);
+    glClearDepth(1.0);
+    glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+
     UniformData ubo_data = {
         .world_to_view = *view_mat,
         .world_to_view_normal = mat4_transpose(*inv_view_mat),
         .view_to_clip = *proj_mat,
         .clip_to_view = *inv_proj_mat,
+        .depth_pyramid_width = ctx.depth_pyramid_tex.width,
+        .depth_pyramid_height = ctx.depth_pyramid_tex.height,
+        .frustum_culling = 1,
+        .depth_culling = 1,
+        .znear = extract_znear(*inv_proj_mat),
+        .zfar = extract_zfar(*inv_proj_mat),
     };
 
     gl_buffer_set_sub_data(ctx.ubo_buf, 0, sizeof(ubo_data), &ubo_data);
@@ -1214,6 +1319,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
 
     // Clear buffer
     glClearNamedBufferData(ctx.draw_ind_buf.id, GL_R32UI, GL_RED, GL_UNSIGNED_INT, 0);
+    glClearNamedBufferData(ctx.DEBUG_BUF.id, GL_R32UI, GL_RED, GL_UNSIGNED_INT, 0);
 
     uint32_t draw_op_count = 0;
     DrawOp   draw_ops[128];
@@ -1278,8 +1384,11 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_INDIRECT_BINDING,       ctx.draw_ind_buf.id);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_SPHERE_INDEX_BINDING,   ctx.draw_sphere_idx_buf.id);
 
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DEBUG_BINDING,               ctx.DEBUG_BUF.id);
+
     // CULL + GENERATE DRAW DATA
     glUseProgram(ctx.cull_prog.id);
+    glBindTextureUnit(0, ctx.depth_pyramid_tex.id);
     glDispatchCompute(draw_op_count, 1, 1);
 
     // BARRIER
@@ -1289,21 +1398,35 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glBindBuffer(GL_PARAMETER_BUFFER, ctx.draw_ind_buf.id);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ctx.draw_ind_buf.id);
     glUseProgram(ctx.spacefill_prog.id);
-    glMultiDrawArraysIndirectCount(GL_POINTS, offsetof(DrawIndirect, draw_sphere_cmd), offsetof(DrawIndirect, draw_sphere_cmd_count), draw_op_count, sizeof(DrawSpheresIndirectCommand));
+    glMultiDrawArraysIndirectCount(GL_POINTS, (const void*)offsetof(DrawIndirect, draw_sphere_cmd), (GLintptr)offsetof(DrawIndirect, draw_sphere_cmd_count), draw_op_count, sizeof(DrawSpheresIndirectCommand));
 
     // DRAW REST
+    // TODO
 
-    // COMPOSE
+    // COMPOSE & OUTPUT
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, old_fbo);
+    glDrawBuffers(old_draw_buffer_count, old_draw_buffers);
+    glViewport(old_viewport[0], old_viewport[1], old_viewport[2], old_viewport[3]);
 
-    // COMPUTE DEPTH PYRAMID
+    glUseProgram(ctx.compose_prog.id);
+    glBindTextureUnit(DEPTH_TEX_BINDING,  ctx.depth_tex.id);
+    glBindTextureUnit(COLOR_TEX_BINDING,  ctx.color_tex.id);
+    glBindTextureUnit(NORMAL_TEX_BINDING, ctx.normal_tex.id);
+    glBindTextureUnit(SS_VEL_TEX_BINDING, ctx.ss_vel_tex.id);
+    glBindTextureUnit(INDEX_TEX_BINDING,  ctx.index_tex.id);
+
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    // COMPUTE DEPTH PYRAMID FOR NEXT ITERATION
     glUseProgram(ctx.depth_reduce_prog.id);
-    glBindTextureUnit(1, ctx.depth_tex.id);
     for (uint32_t i = 0; i < ctx.depth_pyramid_tex.levels; ++i) {
         // Output
         uint width  = MAX(1, ctx.depth_pyramid_tex.width >> i);
         uint height = MAX(1, ctx.depth_pyramid_tex.height >> i);
         glUniform2ui(0, width, height);
-        glBindImageTexture(0, ctx.depth_tex.id, i, 0, 0, GL_WRITE_ONLY, GL_R32F);
+        glUniform1f (1, (float)MAX(0, (int)i-1));
+        glBindTextureUnit(1, i == 0 ? ctx.depth_tex.id : ctx.depth_pyramid_tex.id);
+        glBindImageTexture(0, ctx.depth_pyramid_tex.id, i, 0, 0, GL_WRITE_ONLY, GL_R32F);
         glDispatchCompute(DIV_UP(width, DEPTH_REDUCE_GROUP_SIZE), DIV_UP(height, DEPTH_REDUCE_GROUP_SIZE), 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
@@ -1321,6 +1444,25 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_OP_BINDING,             0);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_INDIRECT_BINDING,       0);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_SPHERE_INDEX_BINDING,   0);
+
+    // reset state
+    glCullFace(old_cull_mode);    
+    glDepthFunc(old_depth_func);
+    glDepthMask(old_depth_mask);
+    glColorMask(old_color_mask[0], old_color_mask[1], old_color_mask[2], old_color_mask[3]);
+    glBindVertexArray(old_vao);
+    
+    if (old_cull_face) {
+        glEnable(GL_CULL_FACE);
+    } else {
+        glDisable(GL_CULL_FACE);
+    }
+
+    if (old_depth_test) {
+        glEnable(GL_DEPTH_TEST);
+    } else {
+        glDisable(GL_DEPTH_TEST);
+    }
 
     return true;
 }

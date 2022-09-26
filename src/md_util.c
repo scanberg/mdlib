@@ -8,8 +8,6 @@
 #include <core/md_vec_math.h>
 #include <core/md_simd.h>
 
-#include <svd3/svd3.h>
-
 #include <md_trajectory.h>
 #include <md_molecule.h>
 

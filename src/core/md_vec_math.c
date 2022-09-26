@@ -1,6 +1,6 @@
 #include "md_vec_math.h"
 
-#include <svd3/svd3.h>
+#include <svd3.h>
 #include <math.h>
 
 #define SWAP(x, y) {int t = x; x = y; y = t;}
