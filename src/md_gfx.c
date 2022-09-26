@@ -11,6 +11,10 @@
 #include <core/md_allocator.h>
 #include <core/md_array.inl>
 
+#include <string.h>     // memset, memcpy, strstr
+#include <stdlib.h>     // malloc
+#include <stddef.h>
+
 typedef mat4_t mat4;
 typedef vec4_t vec4;
 typedef uint32_t uint;
@@ -26,9 +30,6 @@ typedef struct DrawOp DrawOp;
 
 // Common shared header between
 #include <shaders/gfx/common.h>
-
-#include <string.h>     // memset, memcpy, strstr
-#include <stdlib.h>     // malloc
 
 // For subdividing backbone segments
 #define MIN_SPLINE_SUBDIVISION_COUNT 1
