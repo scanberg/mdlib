@@ -14,6 +14,7 @@
 #include <string.h>     // memset, memcpy
 #include <stdlib.h>     // qsort
 #include <stdio.h>      // printf etc
+#include <stddef.h>     // offsetof
 
 #define MAGIC 0xfacb8172U
 #define SPLINE_MAX_SUBDIVISION_COUNT 8
