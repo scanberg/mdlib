@@ -34,7 +34,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
-//#include <stdlib.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 
