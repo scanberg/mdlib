@@ -98,7 +98,7 @@
 #define DIV_UP(x, y) ((x + (y-1)) / y)
 #endif
 
-// Rounds up x to nearest multiple of y. Not the weed-killer
+// Rounds up x to nearest multiple of y. No affiliation to the weed-killer
 #ifndef ROUND_UP
 #define ROUND_UP(x, y) (y * DIV_UP(x,y))
 #endif
@@ -130,6 +130,10 @@
 
 #ifndef MEGABYTES
 #define MEGABYTES(x) (x * 1024LL * 1024LL)
+#endif
+
+#ifndef GIGABYTES
+#define GIGABYTES(x) (x * 1024LL * 1024LL * 1024LL)
 #endif
 
 #ifndef CONCAT

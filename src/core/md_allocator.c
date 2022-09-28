@@ -7,7 +7,7 @@
 #define MAX_TEMP_ALLOCATION_SIZE (THREAD_LOCAL_RING_BUFFER_SIZE / 2)
 #define DEFAULT_ALIGNMENT 16
 
-int64_t default_temp_allocator_max_allocation_size() {
+uint64_t default_temp_allocator_max_allocation_size() {
     return MAX_TEMP_ALLOCATION_SIZE;
 }
 
@@ -57,7 +57,7 @@ static inline void* ring_alloc_internal(uint64_t size) {
     return ring.mem + curr;
 }
 
-static void* ring_realloc_internal(struct md_allocator_o *inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;    
     (void)file;
     (void)line;
@@ -97,12 +97,12 @@ static void* ring_realloc_internal(struct md_allocator_o *inst, void* ptr, uint6
 
 static struct md_allocator_i _default_allocator = {
     NULL,
-    realloc_internal
+    realloc_internal,
 };
 
 static struct md_allocator_i _default_temp_allocator = {
     NULL,
-    ring_realloc_internal
+    ring_realloc_internal,
 };
 
 struct md_allocator_i* default_allocator = &_default_allocator;

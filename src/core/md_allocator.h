@@ -21,11 +21,11 @@ typedef struct md_allocator_i {
     void *(*realloc)(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line);
 } md_allocator_i;
 
-static inline void* md_aligned_alloc(struct md_allocator_i* alloc, uint64_t size, uint64_t alignment) {
-    uint64_t offset = alignment - 1 + sizeof(void*) + sizeof(uint64_t);
+static inline void* md_aligned_alloc(struct md_allocator_i* alloc, uint64_t size, uint64_t align) {
+    uint64_t offset = align - 1 + sizeof(void*) + sizeof(uint64_t);
     void* p1 = md_alloc(alloc, size + offset);
     if (!p1) return 0;
-    void** p2 = (void**)(((uint64_t)(p1) + offset) & ~(alignment - 1));
+    void** p2 = (void**)(((uint64_t)(p1) + offset) & ~(align - 1));
     p2[-1] = p1;
     p2[-2] = (void*)(size + offset); // store real allocation size
 
@@ -44,7 +44,7 @@ static inline void md_aligned_free(struct md_allocator_i* alloc, void* ptr, uint
 extern "C" {
 #endif
 
-int64_t default_temp_allocator_max_allocation_size();
+uint64_t default_temp_allocator_max_allocation_size();
 
 extern struct md_allocator_i* default_allocator;
 extern struct md_allocator_i* default_temp_allocator;

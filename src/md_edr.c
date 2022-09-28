@@ -808,6 +808,6 @@ done:
 }
 
 void md_edr_energies_free(md_edr_energies_t* energies) {
-	md_arena_allocator_destroy(energies->alloc);
+	if (energies->alloc) md_arena_allocator_destroy(energies->alloc);
 	*energies = (md_edr_energies_t){0};
 }

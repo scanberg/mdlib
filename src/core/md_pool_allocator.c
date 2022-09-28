@@ -107,7 +107,7 @@ static void* pool_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_s
     return pool_new_slot(pool, new_size);
 }
 
-struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, int64_t slot_size) {
+struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, uint64_t slot_size) {
     ASSERT(backing);
     ASSERT(slot_size > 0);
     uint64_t mem_size = sizeof(md_allocator_i) + sizeof(pool_t);

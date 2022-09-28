@@ -33,7 +33,8 @@ static inline void arena_reset(arena_t* arena) {
 }
 
 static inline page_t* arena_new_page(arena_t* arena, uint64_t size) {
-    page_t* page = md_alloc(arena->alloc, sizeof(page_t) + size); // @NOTE: we allocate the page + its memory
+    // @NOTE: Allocate page + memory
+    page_t* page = md_alloc(arena->alloc, sizeof(page_t) + size);
     page->mem = (char*)page + sizeof(page_t);
     page->size = size;
     page->curr = 0;
@@ -80,15 +81,15 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_
     arena_t* arena = (arena_t*)inst;
     ASSERT(arena && arena->magic == MAGIC_NUMBER);
 
+    // Free
     if (new_size == 0) {
-        // Free
         // We cannot assert here since new_size may be NULL in case of a new allocation of size 0 as well.
         //ASSERT(ptr);
         //ASSERT(old_size);
         return NULL;
     }
+    // Realloc
     if (ptr && old_size) {
-        // Realloc
         if ((char*)ptr + old_size == (char*)arena->curr_page->mem + arena->curr_page->curr) {
             // This is the last allocation that occured, then we can shrink or grow that sucker
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
@@ -104,10 +105,8 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_
         memcpy(new_ptr, ptr, old_size);
         return new_ptr;
     }
-    else {
-        // Alloc
-        return arena_alloc(arena, new_size);
-    }
+    // Alloc
+    return arena_alloc(arena, new_size);
 }
 
 struct md_allocator_i* md_arena_allocator_create(struct md_allocator_i* backing, uint64_t page_size) {
