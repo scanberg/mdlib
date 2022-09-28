@@ -32,10 +32,11 @@
 #elif MD_PLATFORM_UNIX
 
 #include <time.h>
-#include <sys/stat.h>
 #include <unistd.h>
-#include <stdlib.h>
 #include <errno.h>
+//#include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
 
 #endif
 
@@ -99,7 +100,7 @@ static inline str_t internal_fullpath(str_t path, md_allocator_i* alloc) {
     }
 #elif MD_PLATFORM_UNIX
     int64_t len = 0;
-    if (realpath(path.ptr, sz_buf) == sz_buf) {
+    if (realpath(path.ptr, sz_buf) != NULL) {
         len = (int64_t)strnlen(sz_buf, sizeof(sz_buf));
     }
     else {
@@ -272,6 +273,73 @@ void md_os_sleep(int64_t milliseconds) {
     Sleep((int32_t)milliseconds);
 #elif MD_PLATFORM_UNIX
     usleep(milliseconds * 1000);
+#else
+    ASSERT(false);
+#endif
+}
+
+// MEM
+// Linux equivalent is partly taken from here
+// https://forums.pcsx2.net/Thread-blog-VirtualAlloc-on-Linux
+
+uint64_t md_os_page_size(void) {
+#if MD_PLATFORM_WINDOWS
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    return info.dwPageSize;
+#elif MD_PLATFORM_UNIX
+    return sysconf(_SC_PAGE_SIZE);
+#else
+    ASSERT(false);
+#endif
+}
+
+void* md_os_reserve(uint64_t size) {
+    uint64_t gb_snapped_size = ROUND_UP(size, GIGABYTES(1));
+#if MD_PLATFORM_WINDOWS
+    return VirtualAlloc(0, gb_snapped_size, MEM_RESERVE, PAGE_NOACCESS);
+#elif MD_PLATFORM_UNIX
+    void* result = mmap(0, gb_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    ASSERT(result != MAP_FAILED);
+    return result;
+#else
+    ASSERT(false);
+#endif
+}
+
+void md_os_release(void* ptr) {
+#if MD_PLATFORM_WINDOWS
+    VirtualFree(ptr, 0, MEM_RELEASE);
+#elif MD_PLATFORM_UNIX
+    munmap(ptr, -1);
+#else
+    ASSERT(false);
+#endif
+}
+
+void md_os_commit(void* ptr, uint64_t size) {
+    
+    uint64_t page_snapped_size = ROUND_UP(size, md_os_page_size());
+#if MD_PLATFORM_WINDOWS
+    VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
+#elif MD_PLATFORM_UNIX
+    int result = mprotect(ptr, page_snapped_size, PROT_READ | PROT_WRITE);
+    ASSERT(result == 0);
+#else
+    ASSERT(false);
+#endif
+}
+
+void md_os_decommit(void* ptr, uint64_t size) {
+#if MD_PLATFORM_WINDOWS
+    VirtualFree(ptr, size, MEM_DECOMMIT);
+#elif MD_PLATFORM_UNIX
+    int res;
+    uint64_t page_snapped_size = ROUND_UP(size, md_os_page_size());
+    res = mprotect(ptr, page_snapped_size, PROT_NONE);
+    ASSERT(res == 0);
+    res = madvise(ptr, page_snapped_size, MADV_DONTNEED);
+    ASSERT(res == 0);
 #else
     ASSERT(false);
 #endif

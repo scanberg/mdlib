@@ -15,11 +15,23 @@ UTEST(os, path) {
     }
     {
         /*
-        str_t path = make_cst
-        r("/cool/fool/../bool/../file.txt");
+        // FAILS ON UNIX
+        str_t path = MAKE_STR("cool/fool/../bool/../file.txt");
         str_t result = md_os_path_make_canonical(path, default_temp_allocator);
-        str_t ref = make_cstr("/cool/file.txt");
-        EXPECT_TRUE(compare_str(result, ref));
+        str_t ref = MAKE_STR("cool/file.txt");
+        EXPECT_TRUE(str_equal(result, ref));
         */
     }
+}
+
+UTEST(os, mem) {
+    void* ptr = md_os_reserve(GIGABYTES(1));
+    md_os_commit(ptr, MEGABYTES(1));
+    md_os_commit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
+
+    EXPECT_NE(ptr, NULL);
+
+    md_os_decommit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
+    md_os_decommit(ptr, MEGABYTES(1));
+    md_os_release(ptr);
 }
