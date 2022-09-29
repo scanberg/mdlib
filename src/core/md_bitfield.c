@@ -158,18 +158,17 @@ static inline block_t block_xor(block_t a, block_t b) {
 }
 
 static inline block_t block_not(block_t blk) {
-#if 0
     block_t res;
 #ifdef __AVX__
     res.mm256[0] = md_simd_noti(blk.mm256[0]);
     res.mm256[1] = md_simd_noti(blk.mm256[1]);
-#elif (defined(_M_AMD64) || defined(_M_X64))
+#else
     res.mm128[0] = md_simd_noti(blk.mm128[0]);
     res.mm128[1] = md_simd_noti(blk.mm128[1]);
     res.mm128[2] = md_simd_noti(blk.mm128[2]);
     res.mm128[3] = md_simd_noti(blk.mm128[3]);
 #endif
-#endif
+/*
     block_t res = {
         ~blk.u64[0],
         ~blk.u64[1],
@@ -180,6 +179,7 @@ static inline block_t block_not(block_t blk) {
         ~blk.u64[6],
         ~blk.u64[7],
     };
+    */
     return res;
 }
 

@@ -318,7 +318,6 @@ void md_os_release(void* ptr) {
 }
 
 void md_os_commit(void* ptr, uint64_t size) {
-    
     uint64_t page_snapped_size = ROUND_UP(size, md_os_page_size());
 #if MD_PLATFORM_WINDOWS
     VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);

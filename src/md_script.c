@@ -59,7 +59,7 @@
     md_stack_allocator_init(&stack_alloc, md_alloc(backing_allocator, size), size); \
     md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc)
 
-#define FREE_STACK() md_free(_backing, stack_alloc.buf, stack_alloc.cap)
+#define FREE_STACK() md_free(_backing, stack_alloc.ptr, stack_alloc.cap)
 
 // #############################
 // ###   TYPE DECLARATIONS   ###
@@ -2293,7 +2293,7 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
     }
 
 done:
-    ctx->max_stack_size = MAX(ctx->max_stack_size, (int64_t)ctx->stack_alloc->cur);
+    ctx->max_stack_size = MAX(ctx->max_stack_size, (int64_t)ctx->stack_alloc->pos);
 
     for (int64_t i = num_args - 1; i >= 0; --i) {
         free_data(&arg_data[i], ctx->temp_alloc);
@@ -3831,7 +3831,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     }
     
     // This data is meant to hold the evaluated expressions
-    data_t* data = md_stack_allocator_alloc(&stack_alloc, num_expr * sizeof(data_t));
+    data_t* data = md_stack_allocator_push(&stack_alloc, num_expr * sizeof(data_t));
 
     const uint64_t STACK_RESET_POINT = md_stack_allocator_get_offset(&stack_alloc);
 
@@ -4752,9 +4752,9 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     SETUP_STACK(default_allocator, MEGABYTES(32));
 
     int64_t num_frames = md_trajectory_num_atoms(args.traj);
-    float* x = md_stack_allocator_alloc(&stack_alloc, num_frames * sizeof(float));
-    float* y = md_stack_allocator_alloc(&stack_alloc, num_frames * sizeof(float));
-    float* z = md_stack_allocator_alloc(&stack_alloc, num_frames * sizeof(float));
+    float* x = md_stack_allocator_push(&stack_alloc, num_frames * sizeof(float));
+    float* y = md_stack_allocator_push(&stack_alloc, num_frames * sizeof(float));
+    float* z = md_stack_allocator_push(&stack_alloc, num_frames * sizeof(float));
     
     md_trajectory_frame_header_t header = { 0 };
     if (args.traj) {

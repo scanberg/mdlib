@@ -4,6 +4,8 @@
 #include <core/md_array.inl>
 #include <core/md_pool_allocator.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_virtual_allocator.h>
+#include <core/md_stack_allocator.h>
 
 #define COMMON_ALLOCATOR_TEST_BODY \
     void* mem = 0; \
@@ -111,4 +113,48 @@ UTEST(allocator, arena_extended) {
     }
 
     md_arena_allocator_destroy(arena);
+}
+
+UTEST(allocator, vm_arena) {
+    md_vm_arena_t arena;
+    md_vm_arena_init(&arena, GIGABYTES(4));
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        void* mem = md_vm_arena_push(&arena, sizeof(int64_t));
+    }
+
+    md_vm_arena_reset(&arena);
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        void* mem = md_vm_arena_push_aligned(&arena, 128, 32);
+    }
+
+    md_vm_arena_free(&arena);
+}
+
+
+UTEST(allocator, vm_allocator) {
+    md_vm_allocator_t vm;
+    md_vm_allocator_init(&vm, GIGABYTES(64)); // Reserve ridiculous amounts of space
+    md_allocator_i alloc = md_vm_allocator_create_interface(&vm);
+
+    // Commit to smaller portion by allocating
+    for (uint32_t i = 0; i < 1000; ++i) {
+        md_alloc(&alloc, MEGABYTES(1));
+    }
+
+    // Release reserved space
+    md_vm_allocator_free(&vm);
+}
+
+UTEST(allocator, stack_allocator) {
+    void* buf = md_alloc(default_allocator, MEGABYTES(64));
+    md_stack_allocator_t stack;
+    md_stack_allocator_init(&stack, buf, MEGABYTES(64));
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        md_stack_allocator_push(&stack, sizeof(uint64_t));
+    }
+
+    md_free(default_allocator, buf, MEGABYTES(64));
 }

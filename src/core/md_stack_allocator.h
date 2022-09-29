@@ -8,74 +8,68 @@
 extern "C" {
 #endif
 
-#define MD_STACK_ALLOCATOR_ALIGNMENT 16
+#define MD_STACK_ALLOCATOR_DEFAULT_ALIGNMENT 16
 #define MD_STACK_ALLOCATOR_MAGIC 0x8a7ccbba81980234
 
 // This is a small, efficient linear allocator which just pushes a pointer offset within a buffer
 // For simplicity, all allocations are aligned to 16 bytes, which is default on x64 systems anyways
 typedef struct md_stack_allocator_t {
-    uint8_t* buf;
+    void* ptr;
     uint64_t cap;
-    uint64_t cur;
-    uint64_t prv;
+    uint64_t pos;
     uint64_t magic;
 } md_stack_allocator_t;
 
-static inline void md_stack_allocator_init(md_stack_allocator_t* stack_alloc, void* backing_buffer, int64_t buffer_capacity) {
-    ASSERT(stack_alloc);
+static inline void md_stack_allocator_init(md_stack_allocator_t* stack, void* backing_buffer, int64_t buffer_capacity) {
+    ASSERT(stack);
     ASSERT(backing_buffer);
     ASSERT(buffer_capacity > 0);
 
-    stack_alloc->buf = (uint8_t*)backing_buffer;
-    stack_alloc->cap = buffer_capacity;
-    stack_alloc->cur = 0;
-    stack_alloc->prv = 0;
-    stack_alloc->magic = MD_STACK_ALLOCATOR_MAGIC;
+    stack->ptr = backing_buffer;
+    stack->cap = buffer_capacity;
+    stack->pos = 0;
+    stack->magic = MD_STACK_ALLOCATOR_MAGIC;
 }
 
-static inline void* md_stack_allocator_alloc(md_stack_allocator_t* stack_alloc, int64_t size) {
-    ASSERT(stack_alloc);
-    ASSERT(stack_alloc->magic == MD_STACK_ALLOCATOR_MAGIC);
+static inline void* md_stack_allocator_push_aligned(md_stack_allocator_t* stack, uint64_t size, uint64_t align) {
+    ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
 
-    const int64_t aligned_size = (size + (MD_STACK_ALLOCATOR_ALIGNMENT-1)) & -MD_STACK_ALLOCATOR_ALIGNMENT;
-    ASSERT(stack_alloc->cur + aligned_size < stack_alloc->cap);
+    void* mem = 0;
+    uint64_t pos_addr = (uint64_t)stack->ptr + stack->pos;
+    uint64_t alignment_size = ROUND_UP(pos_addr, align) - pos_addr;
 
-    stack_alloc->prv = stack_alloc->cur;
-    stack_alloc->cur += aligned_size;
-    return stack_alloc->buf + stack_alloc->prv;
-}
-
-static inline void md_stack_allocator_free(md_stack_allocator_t* stack_alloc, void* mem, uint64_t size) {
-    ASSERT(stack_alloc);
-    ASSERT(stack_alloc->magic == MD_STACK_ALLOCATOR_MAGIC);
-    (void)size;
-
-    if (mem == stack_alloc->buf + stack_alloc->prv) {
-        // compare against aligned size
-        ASSERT(((size + (MD_STACK_ALLOCATOR_ALIGNMENT-1)) & -MD_STACK_ALLOCATOR_ALIGNMENT) == stack_alloc->cur - stack_alloc->prv);
-        stack_alloc->cur = stack_alloc->prv;
+    if (stack->pos + alignment_size <= stack->cap) {
+        mem = (char*)stack->ptr + stack->pos + alignment_size;
+        stack->pos += alignment_size + size;
     }
+
+    return mem;
 }
 
-static inline void md_stack_allocator_reset(md_stack_allocator_t* stack_alloc) {
-    ASSERT(stack_alloc);
-    ASSERT(stack_alloc->magic == MD_STACK_ALLOCATOR_MAGIC);
-    stack_alloc->cur = 0;
-    stack_alloc->prv = 0;
+static inline void* md_stack_allocator_push(md_stack_allocator_t* stack, uint64_t size) {
+    return md_stack_allocator_push_aligned(stack, size, MD_STACK_ALLOCATOR_DEFAULT_ALIGNMENT);
 }
 
-static inline void md_stack_allocator_set_offset(md_stack_allocator_t* stack_alloc, uint64_t offset) {
-    ASSERT(stack_alloc);
-    ASSERT(stack_alloc->magic == MD_STACK_ALLOCATOR_MAGIC);
-    ASSERT(offset < stack_alloc->cap);
-    stack_alloc->cur = offset;
-    stack_alloc->prv = offset;
+static inline void md_stack_allocator_pop(md_stack_allocator_t* stack, uint64_t size) {
+    ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
+    ASSERT(size < stack->pos);
+    stack->pos -= size;
 }
 
-static inline uint64_t md_stack_allocator_get_offset(md_stack_allocator_t* stack_alloc) {
-    ASSERT(stack_alloc);
-    ASSERT(stack_alloc->magic == MD_STACK_ALLOCATOR_MAGIC);
-    return stack_alloc->cur;
+static inline void md_stack_allocator_reset(md_stack_allocator_t* stack) {
+    ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
+    stack->pos = 0;
+}
+
+static inline void md_stack_allocator_set_offset(md_stack_allocator_t* stack, uint64_t offset) {
+    ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
+    ASSERT(offset < stack->cap);
+    stack->pos = offset;
+}
+
+static inline uint64_t md_stack_allocator_get_offset(md_stack_allocator_t* stack) {
+    ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
+    return stack->pos;
 }
 
 md_allocator_i md_stack_allocator_create_interface(md_stack_allocator_t* stack_alloc);
