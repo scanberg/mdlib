@@ -60,7 +60,7 @@ bool extract_line(str_t* out_line, str_t* in_out_str) {
     return true;
 }
 
-int64_t find_char(str_t str, int c) {
+int64_t str_find_char(str_t str, int c) {
     // @TODO: Implement support for UTF encodings here.
     // Identify the effective width used in c and search for that.
     for (int64_t i = 0; i < (int64_t)str.len; ++i) {
@@ -69,7 +69,7 @@ int64_t find_char(str_t str, int c) {
     return -1;
 }
 
-int64_t rfind_char(str_t str, int c) {
+int64_t str_rfind_char(str_t str, int c) {
     for (int64_t i = str.len - 1; i >= 0; --i) {
         if (str.ptr[i] == c) return i;
     }
@@ -228,7 +228,7 @@ str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
 
 // c:/folder/file.ext -> ext
 str_t extract_ext(str_t path) {
-    int64_t pos = rfind_char(path, '.');
+    int64_t pos = str_rfind_char(path, '.');
 
     str_t res = {0,0};
     if (pos > -1) {
@@ -241,9 +241,9 @@ str_t extract_ext(str_t path) {
 
 // c:/folder/file.ext -> file.ext
 str_t extract_file(str_t path) {
-    int64_t pos = rfind_char(path, '/');
+    int64_t pos = str_rfind_char(path, '/');
     if (pos == -1) {
-        pos = rfind_char(path, '\\');
+        pos = str_rfind_char(path, '\\');
     }
 
     str_t res = {0,0};
@@ -257,7 +257,7 @@ str_t extract_file(str_t path) {
 
 // c:/folder/file.ext -> c:/folder/file.
 str_t extract_path_without_ext(str_t path) {
-    const int64_t pos = rfind_char(path, '.');
+    const int64_t pos = str_rfind_char(path, '.');
 
     str_t res = {0,0};
     if (pos) {
@@ -269,9 +269,9 @@ str_t extract_path_without_ext(str_t path) {
 
 // c:/folder/file.ext -> c:/folder/
 str_t extract_path_without_file(str_t path) {
-    int64_t pos = rfind_char(path, '/');
+    int64_t pos = str_rfind_char(path, '/');
     if (pos == -1) {
-        pos = rfind_char(path, '\\');
+        pos = str_rfind_char(path, '\\');
     }
 
     str_t res = {0};
@@ -322,147 +322,4 @@ bool extract_next_token_delim(str_t* tok, str_t* str, char delim) {
     str->len = end - str->ptr;
 
     return true;
-}
-
-bool buffered_reader_init(buffered_reader_t* reader, int64_t buf_size, str_t filename, struct md_allocator_i* alloc) {
-    if (!reader) {
-        md_print(MD_LOG_TYPE_ERROR, "Reader was null");
-        return false;
-    }
-
-    if (buf_size <= 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Invalid buffer size");
-        return false;
-    }
-
-    if (!alloc) {
-        md_print(MD_LOG_TYPE_ERROR, "Allocator was null");
-        return false;
-    }
-
-    if (str_empty(filename)) {
-        md_print(MD_LOG_TYPE_ERROR, "Filename was empty");
-        return false;
-    }
-
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
-    if (!file) {
-        md_print(MD_LOG_TYPE_ERROR, "Could not open file");
-        return false;
-    }
-    
-    if (reader->buffer) {
-        md_print(MD_LOG_TYPE_DEBUG, "Reader is not zero, potential memory leak");
-    }
-    memset(reader, 0, sizeof(buffered_reader_t));
-
-    reader->file = file;
-    md_array_ensure(reader->buffer, buf_size, alloc);
-
-    return true;
-}
-
-
-void buffered_reader_free(buffered_reader_t* reader, struct md_allocator_i* alloc) {
-    ASSERT(reader);
-    ASSERT(alloc);
-
-    md_array_free(reader->buffer, alloc);
-    md_file_close(reader->file);
-}
-
-static inline bool buffered_reader_fill_buffer(buffered_reader_t* reader) {
-    ASSERT(reader);
-
-    // Copy eventual remainder to beginning
-    const int64_t len = reader->offset;
-    const int64_t cap = md_array_capacity(reader->buffer);
-    const int64_t remainder = len > 0 ? cap - len : 0;
-    const int64_t target_bytes = cap - remainder;
-
-    if (remainder > 0) {
-        // Copy remainder to beginning of buffer
-        memcpy(reader->buffer, reader->buffer + cap - remainder, remainder);
-    }
-
-    const int64_t read_bytes = md_file_read(reader->file, reader->buffer + remainder, target_bytes);
-    if (read_bytes == 0) {
-        return false;
-    }
-
-    const int64_t new_size = remainder + read_bytes;
-    md_array_shrink(reader->buffer, new_size);
-    reader->offset = 0;
-
-    return new_size > 0;
-}
-
-static inline str_t buffered_reader_str(const buffered_reader_t* reader) {
-    return (str_t){reader->buffer + reader->offset, md_array_size(reader->buffer) - reader->offset};
-}
-
-// Get single line
-bool buffered_reader_get_line(str_t* line, buffered_reader_t* reader) {
-    ASSERT(line);
-    ASSERT(reader);
-
-    int64_t new_line = find_char(buffered_reader_str(reader), '\n');
-    if (new_line == -1) {
-        // Could not find new line, 
-        if (!buffered_reader_fill_buffer(reader)) return false;
-    }
-    
-    new_line = find_char(buffered_reader_str(reader), '\n');
-    if (new_line == -1) new_line = md_array_size(reader->buffer);
-    line->ptr = reader->buffer + reader->offset;
-    line->len = new_line - reader->offset;
-
-    reader->offset = new_line;
-
-    return true;
-}
-
-bool buffered_reader_peek_chunk(str_t* chunk, buffered_reader_t* reader) {
-    ASSERT(chunk);
-    ASSERT(reader);
-
-    int64_t new_line = rfind_char(buffered_reader_str(reader), '\n');
-    if (new_line == -1) {
-        // Could not find new line, 
-        if (!buffered_reader_fill_buffer(reader)) return false;
-        new_line = rfind_char(buffered_reader_str(reader), '\n');
-        if (new_line == -1) new_line = md_array_size(reader->buffer);
-    }
-
-    chunk->ptr = reader->buffer + reader->offset;
-    chunk->len = new_line - reader->offset;
-
-    return true;
-}
-
-// Get chunk
-bool buffered_reader_get_chunk(str_t* chunk, buffered_reader_t* reader) {
-    ASSERT(chunk);
-    ASSERT(reader);
-
-    int64_t new_line = rfind_char(buffered_reader_str(reader), '\n');
-    if (new_line == -1) {
-        // Could not find new line, 
-        if (!buffered_reader_fill_buffer(reader)) return false;
-        new_line = rfind_char(buffered_reader_str(reader), '\n');
-        if (new_line == -1) new_line = md_array_size(reader->buffer);
-    }
-
-    chunk->ptr = reader->buffer + reader->offset;
-    chunk->len = new_line - reader->offset;
-
-    reader->offset = new_line + 1;
-
-    return true;
-}
-
-int64_t buffered_reader_get_offset(const buffered_reader_t* reader) {
-    ASSERT(reader);
-    const int64_t file_offset = md_file_tell(reader->file) - md_array_size(reader->buffer);
-    return file_offset + reader->offset;
 }

@@ -270,26 +270,26 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
     return true;
 }
 
-static inline md_xyz_coordinate_t extract_coord(str_t line, const xyz_format_t* format) {
+static inline bool extract_coord(md_xyz_coordinate_t* coord, const xyz_format_t* format, str_t line) {
+    ASSERT(coord);
     ASSERT(format);
-    md_xyz_coordinate_t coord = { 0 };
     
     if (format->flags & XYZ_ELEMENT_SYMBOL) {
         str_t element = str_trim_whitespace(substr(line, format->element.beg, format->element.end - format->element.beg));
-        strncpy(coord.element_symbol, element.ptr, MIN(element.len, (int)sizeof(coord.element_symbol)));
+        strncpy(coord->element_symbol, element.ptr, MIN(element.len, (int)sizeof(coord->element_symbol)));
     } else if (format->flags & XYZ_ATOMIC_NUMBER) {
-        coord.atomic_number = extract_int(line, format->element.beg, format->element.end);
+        coord->atomic_number = extract_int(line, format->element.beg, format->element.end);
     } else {
         md_print(MD_LOG_TYPE_ERROR, "Undetermined format for element type in XYZ coordinate");
-        goto done;
+        return false;
     }
 
-    coord.x = extract_float(line, format->x.beg, format->x.end);
-    coord.y = extract_float(line, format->y.beg, format->y.end);
-    coord.z = extract_float(line, format->z.beg, format->z.end);
+    coord->x = extract_float(line, format->x.beg, format->x.end);
+    coord->y = extract_float(line, format->y.beg, format->y.end);
+    coord->z = extract_float(line, format->z.beg, format->z.end);
 
     if (format->flags & XYZ_TINKER) {
-        coord.atom_type = extract_int(line, format->atom_type.beg, format->atom_type.end);
+        coord->atom_type = extract_int(line, format->atom_type.beg, format->atom_type.end);
         // Connectivity follows atom_type
         str_t token;
         line = substr(line, format->atom_type.end, -1);
@@ -299,17 +299,16 @@ static inline md_xyz_coordinate_t extract_coord(str_t line, const xyz_format_t* 
             if (token.len > 0) {
                 int connection = (int)parse_int(token);
                 if (connection) {
-                    coord.connectivity[connection_count++] = connection;
+                    coord->connectivity[connection_count++] = connection;
                 } else {
                     md_print(MD_LOG_TYPE_ERROR, "Invalid connectivity information in XYZ file");
-                    goto done;
+                    return false;
                 }
             }
         }
     }
 
-    done:
-    return coord;
+    return true;
 }
 
 static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, const xyz_format_t* format, int32_t* coord_count) {
@@ -380,7 +379,13 @@ static inline int32_t xyz_parse_model_coordinates(md_xyz_data_t* data, str_t* st
     for (; i < count; ++i) {
         if (!extract_line(&line, str))
             break;
-        md_array_push(data->coordinates, extract_coord(line, format), alloc);
+        md_xyz_coordinate_t coord;
+        if (extract_coord(&coord, format, line)) {
+            md_array_push(data->coordinates, coord, alloc);
+        } else {
+            md_print(MD_LOG_TYPE_ERROR, "Failed to parse model coordinate");
+            break;
+        }
     }
 
     return i;
@@ -520,35 +525,36 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
 bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i* alloc) {
     xyz_format_t format = {0};
-    if (extract_format(&format, str)) {
-        int32_t expected_count = 0;
-        md_xyz_model_t model = {0};
-        const char* base_offset = str.ptr;
-        int64_t byte_offset = 0;
-        while (xyz_parse_model_header(&model, &str, &format, &expected_count)) {
-            model.beg_coord_index = (int32_t)md_array_size(data->coordinates);
-            model.end_coord_index = (int32_t)md_array_size(data->coordinates);
-            model.byte_offset = byte_offset;
+    if (!extract_format(&format, str)) {
+        md_print(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
+        return false;
+    }
 
-            md_xyz_model_t* last_model = md_array_last(data->models);
-            if (last_model) {
-                last_model->end_coord_index = (int32_t)md_array_size(data->coordinates);
-            }
-            int32_t real_count = xyz_parse_model_coordinates(data, &str, &format, expected_count, alloc);
-            if (real_count != expected_count) {
-                md_print(MD_LOG_TYPE_ERROR, "Failed to read expected coordinate count in XYZ");
+    int32_t expected_count = 0;
+    md_xyz_model_t mdl = {0};
+    const char* base_offset = str.ptr;
+    int64_t byte_offset = 0;
+
+    while (xyz_parse_model_header(&mdl, &str, &format, &expected_count)) {
+        mdl.byte_offset = byte_offset;
+
+        mdl.beg_coord_index = (int32_t)md_array_size(data->coordinates);
+        for (int32_t i = 0; i < expected_count; ++i) {
+            str_t line;
+            md_xyz_coordinate_t coord;
+            if (extract_line(&line, &str) && extract_coord(&coord, &format, line)) {
+                md_array_push(data->coordinates, coord, alloc);
+            } else {
+                md_print(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
                 return false;
             }
-            
-            md_array_push(data->models, model, alloc);
-            byte_offset = str.ptr - base_offset;
         }
+        mdl.end_coord_index = (int32_t)md_array_size(data->coordinates);
+            
+        md_array_push(data->models, mdl, alloc);
+        byte_offset = str.ptr - base_offset;
     }
 
-    md_xyz_model_t* last_model = md_array_last(data->models);
-    if (last_model) {
-        last_model->end_coord_index = (int32_t)md_array_size(data->coordinates);
-    }
     data->num_coordinates = md_array_size(data->coordinates);
     data->num_models = md_array_size(data->models);
 
@@ -556,67 +562,62 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
 }
 
 bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_allocator_i* alloc) {
-    buffered_reader_t reader = {0};
     bool result = false;
 
-    // @NOTE(Robin): We use a buffer here which we read into, the goal is to
-    // minimize the strain on FILE I/O operations.
-    // The buffered reader ensures that we receive lines which are complete and not chopped
-    // This is currently a bit 'hairy' and could be simplified a bit: we need to keep track of
-    // the byte offset into the file and keep this for our offset cache which is created on the side
-    // if the file is a trajectory.
+    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    if (!file) {
+        md_printf(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
+        return false;
+    }
 
-    if (buffered_reader_init(&reader, KILOBYTES(32), filename, default_allocator)) {
-        str_t chunk;
-        int64_t reader_offset = buffered_reader_get_offset(&reader);
-        if (buffered_reader_get_chunk(&chunk, &reader)) {
-            const char* chunk_base = chunk.ptr;
-            xyz_format_t format = {0};
-            if (extract_format(&format, chunk)) {
-                int32_t expected_count = 0;
+    char buf[256];
+    xyz_format_t format = {0};
+    md_xyz_model_t mdl = {0};
+    int32_t expected_count = 0;
+    str_t chunk = {buf, md_file_read(file, buf, sizeof(buf))};
 
-                while (true) {
-                    if (expected_count == 0) {
-                        const int64_t chunk_offset = chunk.ptr - chunk_base;
-                        md_xyz_model_t model = {0};
-                        if (!xyz_parse_model_header(&model, &chunk, &format, &expected_count)) {
-                            md_print(MD_LOG_TYPE_ERROR, "Failed to read xyz header");
-                            goto done;
-                        }
-                        model.beg_coord_index = (int32_t)md_array_size(data->coordinates);
-                        model.end_coord_index = (int32_t)md_array_size(data->coordinates);
-                        model.byte_offset = reader_offset + chunk_offset;
+    if (!extract_format(&format, chunk)) {
+        md_print(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
+        goto done;
+    }
 
-                        md_xyz_model_t* last_model = md_array_last(data->models);
-                        if (last_model) {
-                            last_model->end_coord_index = (int32_t)md_array_size(data->coordinates);
-                        }
+    // Reset filepos
+    md_file_seek(file, 0, MD_FILE_BEG);
 
-                        md_array_push(data->models, model, alloc);
-                    }
-                    int32_t read_count = xyz_parse_model_coordinates(data, &chunk, &format, expected_count, alloc);
-                    expected_count -= read_count;
+    while (true) {
+        chunk = (str_t) {buf, md_file_read(file, buf, sizeof(buf))};
+        if (str_trim_whitespace(chunk).len == 0) break;
 
-                    if (chunk.len == 0) {
-                        reader_offset = buffered_reader_get_offset(&reader);
-                        if (!buffered_reader_get_chunk(&chunk, &reader)) {
-                            break;
-                        }
-                        chunk_base = chunk.ptr;
-                    }
-                }
-            }
+        mdl.byte_offset = md_file_tell(file) - chunk.len;
+
+        if (!xyz_parse_model_header(&mdl, &chunk, &format, &expected_count)) {
+            md_print(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to read header");
+            goto done;
         }
 
-        result = true;
-        done:
-        buffered_reader_free(&reader, default_allocator);
-    }
+        // Set file pointer back to line after header
+        md_file_seek(file, -chunk.len, MD_FILE_CUR);
 
-    md_xyz_model_t* last_model = md_array_last(data->models);
-    if (last_model) {
-        last_model->end_coord_index = (int32_t)md_array_size(data->coordinates);
+        mdl.beg_coord_index = (int32_t)md_array_size(data->coordinates);
+        for (int32_t i = 0; i < expected_count; ++i) {
+            str_t line = {buf, md_file_read_line(file, buf, sizeof(buf))};
+            md_xyz_coordinate_t coord;
+            if (extract_coord(&coord, &format, line)) {
+                md_array_push(data->coordinates, coord, alloc);
+            } else {
+                md_print(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
+                goto done;
+            }
+        }
+        mdl.end_coord_index = (int32_t)md_array_size(data->coordinates);
+
+        md_array_push(data->models, mdl, alloc);
     }
+        
+    result = true;
+    done:
+    md_file_close(file);
+
     data->num_coordinates = md_array_size(data->coordinates);
     data->num_models = md_array_size(data->models);
 
@@ -684,49 +685,54 @@ static bool xyz_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
 }
 
 static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
-    buffered_reader_t reader = {0};
     md_allocator_i* temp_alloc = default_allocator;
     bool result = false;
 
-    if (buffered_reader_init(&reader, KILOBYTES(64), filename, temp_alloc)) {
-        md_xyz_data_t data = {0};
-        str_t chunk;
-        if (buffered_reader_get_chunk(&chunk, &reader)) {
-            xyz_format_t format = {0};
-            if (extract_format(&format, chunk)) {
-                int32_t expected_count = 0;
-                md_xyz_model_t model = {0};
-                if (!xyz_parse_model_header(&model, &chunk, &format, &expected_count)) {
-                    md_print(MD_LOG_TYPE_ERROR, "Failed to read xyz header");
-                    goto done;
-                }
-
-                model.beg_coord_index = 0;
-                model.end_coord_index = 0;
-                md_array_push(data.models, model, temp_alloc);
-
-                while (true) {
-                    int32_t read_count = xyz_parse_model_coordinates(&data, &chunk, &format, expected_count, temp_alloc);
-                    expected_count -= read_count;
-                    if (expected_count == 0) break;
-                    
-                    if (!buffered_reader_get_chunk(&chunk, &reader)) {
-                        goto done;
-                    }
-                }
-            }
-        }
-
-        md_xyz_model_t* last_model = md_array_last(data.models);
-        if (last_model) {
-            last_model->end_coord_index = (int32_t)md_array_size(data.coordinates);
-        }
-        data.num_coordinates = md_array_size(data.coordinates);
-        data.num_models = md_array_size(data.models);
-        result = md_xyz_molecule_init(mol, &data, alloc);
-        done:
-        buffered_reader_free(&reader, temp_alloc);
+    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    if (!file) {
+        md_printf(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
+        return false;
     }
+
+    char buf[256];
+    xyz_format_t format = {0};
+    md_xyz_data_t data = {0};
+    md_xyz_model_t mdl = {0};
+    int32_t expected_count = 0;
+    str_t chunk = {buf, md_file_read(file, buf, sizeof(buf))};
+
+    if (!extract_format(&format, chunk)) {
+        md_print(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
+        goto done;
+    }
+
+    if (!xyz_parse_model_header(&mdl, &chunk, &format, &expected_count)) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to read xyz header");
+        goto done;
+    }
+
+    // Set file pointer back to line after header
+    md_file_seek(file, -chunk.len, MD_FILE_CUR);
+
+    for (int32_t i = 0; i < expected_count; ++i) {
+        str_t line = {buf, md_file_read_line(file, buf, sizeof(buf))};
+        md_xyz_coordinate_t coord;
+        if (extract_coord(&coord, &format, line)) {
+            md_array_push(data.coordinates, coord, alloc);
+        } else {
+            md_print(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
+            goto done;
+        }
+    }
+    mdl.end_coord_index = (int32_t)md_array_size(data.coordinates);
+    md_array_push(data.models, mdl, temp_alloc);
+
+    data.num_coordinates = md_array_size(data.coordinates);
+    data.num_models = md_array_size(data.models);
+    result = md_xyz_molecule_init(mol, &data, alloc);
+
+    done:
+    md_file_close(file);
     return result;
 }
 

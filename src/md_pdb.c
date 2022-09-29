@@ -418,7 +418,7 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
             // If we read a complete block, that means the buffer is cut-off
             if (bytes_read == buf_size - buf_offset) {
                 // make sure we send complete lines for parsing so we locate the last '\n'
-                const int64_t last_new_line = rfind_char(str, '\n');
+                const int64_t last_new_line = str_rfind_char(str, '\n');
                 if (last_new_line == -1) {
                     md_print(MD_LOG_TYPE_ERROR, "Could not locate new line character when parsing PDB file");
                     goto done;
@@ -631,7 +631,7 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
             str_t str = { .ptr = buf, .len = buf_offset + bytes_read };
 
             // Make sure we send complete lines for parsing so we locate the last '\n'
-            const int64_t last_new_line = rfind_char(str, '\n');
+            const int64_t last_new_line = str_rfind_char(str, '\n');
             if (last_new_line == -1) break;
 
             ASSERT(str.ptr[last_new_line] == '\n');

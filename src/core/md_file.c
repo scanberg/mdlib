@@ -30,7 +30,7 @@ struct md_file_o {
     FILE handle;
 };
 
-md_file_o* md_file_open(str_t filename, int flags) {
+md_file_o* md_file_open(str_t filename, uint32_t flags) {
     if (!filename.ptr || !filename.len) return NULL;
 
 #if MD_PLATFORM_WINDOWS
@@ -151,6 +151,27 @@ int64_t md_file_size(md_file_o* file) {
 int64_t md_file_read(md_file_o* file, void* ptr, int64_t num_bytes) {
     ASSERT(file);
     return fread(ptr, 1, num_bytes, (FILE*)file);
+}
+
+int64_t md_file_read_line(md_file_o* file, char* buf, int64_t cap) {
+    int64_t pos = md_file_tell(file);
+    char* res = fgets(buf, cap, (FILE*)file);
+    int64_t len = md_file_tell(file) - pos;
+    return res ? len : 0;
+}
+
+int64_t md_file_read_lines(md_file_o* file, char* buf, int64_t cap, int64_t line_count) {
+    if (!file || !buf || cap < 1 || line_count < -1) return 0;
+    line_count = (line_count == -1) ? INT64_MAX : line_count;
+    int64_t tot_size = 0;
+    for (int64_t i = 0; i < line_count && cap > 0; ++i) {
+        int64_t read_size = md_file_read_line(file, buf, cap);
+        if (read_size == 0) break;
+        buf += read_size;
+        cap -= read_size;
+        tot_size += read_size;
+    }
+    return tot_size;
 }
 
 int64_t md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes) {

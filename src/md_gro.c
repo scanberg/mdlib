@@ -178,7 +178,7 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
                 break;
             } else {
                 // We want to make sure we send complete lines for parsing so we locate the last '\n'
-                const int64_t last_new_line = rfind_char(str, '\n');
+                const int64_t last_new_line = str_rfind_char(str, '\n');
                 if (last_new_line == -1) {
                     md_print(MD_LOG_TYPE_ERROR, "Unexpected structure within gro file, missing new lines?");
                     goto done;

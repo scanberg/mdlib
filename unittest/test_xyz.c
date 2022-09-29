@@ -6,6 +6,8 @@
 #include <md_molecule.h>
 #include <core/md_allocator.h>
 #include <core/md_file.h>
+#include <core/md_str.h>
+#include <core/md_array.inl>
 
 UTEST(xyz, xyz_standard) {
     str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
@@ -85,6 +87,69 @@ UTEST(xyz, xyz_tinker_arc) {
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
         fgets(str, sizeof(str), (FILE*)file);
         EXPECT_EQ(strncmp(str, "   404  molden generated tinker .xyz (mm3 param.)", 48), 0);
+    }
+    md_file_close(file);
+
+    md_xyz_data_free(&data, default_allocator);
+}
+
+UTEST(xyz, o2_arc) {
+    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/o2.arc");
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    EXPECT_TRUE(result);
+    EXPECT_EQ(data.num_models, 2000);
+    EXPECT_EQ(data.num_coordinates, 2000 * 2);
+
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    ASSERT_NE((FILE*)file, NULL);
+    for (int64_t i = 0; i < data.num_models; ++i) {
+        char str[64];
+        md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
+        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_EQ(strncmp(str, "     2", 6), 0);
+    }
+    md_file_close(file);
+
+    md_xyz_data_free(&data, default_allocator);
+}
+
+UTEST(xyz, h2o_arc) {
+    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/h2o.arc");
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    EXPECT_TRUE(result);
+    EXPECT_EQ(data.num_models, 2000);
+    EXPECT_EQ(data.num_coordinates, 2000 * 3);
+
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    ASSERT_NE((FILE*)file, NULL);
+    for (int64_t i = 0; i < data.num_models; ++i) {
+        char str[64];
+        md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
+        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_EQ(strncmp(str, "     3  molden generated tinker .xyz (mm3 param.)", 49), 0);
+    }
+    md_file_close(file);
+
+    md_xyz_data_free(&data, default_allocator);
+}
+
+UTEST(xyz, ch4_arc) {
+    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/ch4.arc");
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    EXPECT_TRUE(result);
+    EXPECT_EQ(data.num_models, 2000);
+    EXPECT_EQ(data.num_coordinates, 2000 * 5);
+
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    ASSERT_NE((FILE*)file, NULL);
+    for (int64_t i = 0; i < data.num_models; ++i) {
+        char str[64];
+        md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
+        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_EQ(strncmp(str, "     5  molden generated tinker .xyz (mm3 param.)", 49), 0);
     }
     md_file_close(file);
 

@@ -1293,8 +1293,8 @@ static bool match_query(str_t query, str_t str) {
 
     if (joker_count == 0) return str_equal(query, str);
 
-    int64_t first_joker = find_char(query, '*');
-    int64_t last_joker = rfind_char(query, '*');
+    int64_t first_joker = str_find_char(query, '*');
+    int64_t last_joker = str_rfind_char(query, '*');
 
     str_t beg_match = first_joker != 0 ? substr(query, 0, first_joker) : (str_t){0};
     str_t end_match = last_joker  != query.len - 1 ? substr(query, last_joker + 1, -1) : (str_t){0};
