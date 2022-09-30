@@ -149,7 +149,7 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
     {
         // Test if we have an ARC trajectory
         // Second line should then contain exactly 6 floats
-        int token_count = 0;
+        size_t token_count = 0;
         str_t token[16];
         str_t line = lines[1];
         while (token_count < ARRAY_SIZE(token) && extract_next_token(&token[token_count], &line)) {
@@ -180,7 +180,7 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
     // Determine coordinate structure
     // Traditional XYZ only holds 4 fields (atomic number or element symbol and coordinates)
     // Tinker holds additional fields (atom index, atom type and connectivity) at least 6 fields
-    int token_count = 0;
+    size_t token_count = 0;
     str_t token[16];
     str_t line = lines[2];
     while (token_count < ARRAY_SIZE(token) && extract_next_token(&token[token_count], &line)) {

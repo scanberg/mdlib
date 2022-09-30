@@ -84,6 +84,7 @@ static inline vec2_t extract_jitter_uv(const mat4_t P) {
         jitter.x = P.elem[2][0] * 0.5f;
         jitter.y = P.elem[2][1] * 0.5f;
     }
+    return jitter;
 }
 
 static inline uint32_t compute_mip_count(uint32_t width, uint32_t height) {
@@ -560,7 +561,7 @@ void init_handles() {
     for (uint32_t i = 0; i < ARRAY_SIZE(ctx.handles); ++i) {
         ctx.handles[i].idx = (uint16_t)(i + 1);
         // Scramble generations a bit
-        ctx.handles[i].gen = (uint16_t)((i + 1) * 1236285 ^ 23645 + 123745);
+        ctx.handles[i].gen = (uint16_t)((i + 1) * (1236285 ^ 23645) + 123745);
     }
     ctx.handle_next_idx = 0;
 }

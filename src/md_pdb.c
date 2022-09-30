@@ -352,7 +352,7 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
                     str_t chain;
 
                     // Find the next index of insertion for chain
-                    int32_t next_idx = 0;
+                    size_t next_idx = 0;
                     while (next_idx < ARRAY_SIZE(assembly->apply_to_chains) && assembly->apply_to_chains[next_idx] != 0) {
                         next_idx += 1;
                     }
@@ -565,7 +565,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
 
         for (int64_t tidx = assembly->transform_offset; tidx < assembly->transform_offset + assembly->transform_count; ++tidx) {
             md_range_t instance_range = {0,0};
-            for (int64_t cidx = 0; cidx < ARRAY_SIZE(data->assemblies[aidx].apply_to_chains); ++cidx) {
+            for (size_t cidx = 0; cidx < ARRAY_SIZE(data->assemblies[aidx].apply_to_chains); ++cidx) {
                 // A transform can be applied to multiple chains,
                 // We extract the consecutive ranges of the chains and possibly split this into multiple instances with the same label and transform
 

@@ -137,9 +137,9 @@ typedef enum flags_t {
     FLAG_STATIC_VALIDATION          = 0x00020, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
     FLAG_CONSTANT                   = 0x00040, // Hints that the identifier is constant and should not be modified.
 
-    // Flags from 0x00100 - 0x00800 are propagated into arguments of procedures during evaluation
     FLAG_FLATTEN                    = 0x00100, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
-    FLAG_NO_FLATTEN                 = 0x00200, // Hints that a procedure do not want flattened bitfields as input, e.g. com, 
+    FLAG_NO_FLATTEN                 = 0x00200, // Hints that a procedure do not want flattened bitfields as input, e.g. com
+
     // Flags from 0x10000 and upwards are automatically propagated upwards the AST_TREE
     FLAG_DYNAMIC                    = 0x10000, // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependency on atomic positions)
     FLAG_SDF                        = 0x20000, // Indicates that the expression involves an sdf computation
@@ -152,9 +152,6 @@ typedef enum eval_flags_t {
     EVAL_FLAG_EVALUATE              = 0x2,
     EVAL_FLAG_FLATTEN               = 0x100,
 } eval_flags_t;
-
-// Propagate downwards to arguments of functions
-static const uint32_t FLAG_ARG_PROPAGATION_MASK = 0x0000FF00U;
 
 // Propagate upwards to parent nodes within the AST tree
 static const uint32_t FLAG_AST_PROPAGATION_MASK = 0xFFFF0000U;
@@ -810,7 +807,7 @@ static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
 }
 
 static inline bool is_identifier_procedure(str_t ident) {
-    for (int64_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
         if (str_equal(ident, procedures[i].name)) {
             return true;
         }
@@ -877,7 +874,7 @@ static void fix_precedence(ast_node_t** node) {
 }
 
 static bool is_type_implicitly_convertible(md_type_info_t from, md_type_info_t to) {
-    for (int64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(casts); ++i) {
         if (is_type_directly_compatible(from, casts[i].arg_type[0]) &&
             is_type_directly_compatible(casts[i].return_type, to)) {
             return true;
@@ -899,7 +896,7 @@ static procedure_match_result_t find_cast_procedure(md_type_info_t from, md_type
 
     // In the future, we might need to do two casts to actually get to the proper type.
 
-    for (int64_t i = 0; i < ARRAY_SIZE(casts); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(casts); ++i) {
         if (is_type_directly_compatible(from, casts[i].arg_type[0]) &&
             is_type_directly_compatible(casts[i].return_type, to)) {
 
@@ -1053,7 +1050,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
 }
 
 static constant_t* find_constant(str_t name) {
-    for (int64_t i = 0; i < ARRAY_SIZE(constants); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(constants); ++i) {
         if (str_equal(constants[i].name, name)) {
             return &constants[i];
         }
@@ -1220,7 +1217,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             // Match buf + i against the longest accepted symbol that we can find.
             if (n == 2) {
                 str_t str = {buf + i, 2};
-                for (int k = 0; k < (int)ARRAY_SIZE(symbols_2); ++k) {
+                for (size_t k = 0; k < ARRAY_SIZE(symbols_2); ++k) {
                     if (str_equal(str, (str_t){symbols_2[k].str, 2})) {
                         token.type = symbols_2[k].type;
                         j = i + 2;
@@ -1229,7 +1226,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
                 }
             }
             if (!token.type) {
-                for (int k = 0; k < (int)ARRAY_SIZE(symbols_1); ++k) {
+                for (size_t k = 0; k < ARRAY_SIZE(symbols_1); ++k) {
                     if (symbols_1[k] == buf[i]) {
                         // The character is the type
                         token.type = symbols_1[k];
