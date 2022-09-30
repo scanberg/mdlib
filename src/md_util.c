@@ -213,6 +213,8 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
         const char* beg = mol->atom.name[i].buf;
         const char* end = mol->atom.name[i].buf + mol->atom.name[i].len;
 
+        str_t original = {mol->atom.name[i].buf, mol->atom.name[i].len};
+
         // Trim whitespace, digits and 'X's
         const char* c = beg;
         while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
@@ -241,6 +243,14 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
                     elem = lookup_element_ignore_case(name);
                     goto done;
                 }
+            }
+
+            // Heuristic cases
+
+            // 2 letters + 1 digit (e.g. HO[0-9]) usually means just look at the first letter
+            if (original.len == 3 && is_digit(original.ptr[2])) {
+                elem = lookup_element_ignore_case(substr(original, 0, 1));
+                goto done;
             }
 
             // Try to match against several characters but ignore the case
@@ -745,7 +755,7 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
     int64_t mem_size = 0;
 
     if (mol->chain.residue_range && mol->chain.count) {
-        int64_t stride = ROUND_UP(mol->residue.count, md_simd_widthf);
+        int64_t stride = ALIGN_TO(mol->residue.count, md_simd_widthf);
         mem_size = stride * sizeof(float) * 9;
         mem_temp = md_alloc(default_allocator, mem_size);
         ASSERT(mem_temp);

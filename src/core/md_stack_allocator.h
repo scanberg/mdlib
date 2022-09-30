@@ -33,10 +33,11 @@ static inline void md_stack_allocator_init(md_stack_allocator_t* stack, void* ba
 
 static inline void* md_stack_allocator_push_aligned(md_stack_allocator_t* stack, uint64_t size, uint64_t align) {
     ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
+    ASSERT(IS_POW2(align));
 
     void* mem = 0;
     uint64_t pos_addr = (uint64_t)stack->ptr + stack->pos;
-    uint64_t alignment_size = ROUND_UP(pos_addr, align) - pos_addr;
+    uint64_t alignment_size = ALIGN_TO(pos_addr, align) - pos_addr;
 
     if (stack->pos + alignment_size <= stack->cap) {
         mem = (char*)stack->ptr + stack->pos + alignment_size;
@@ -52,7 +53,7 @@ static inline void* md_stack_allocator_push(md_stack_allocator_t* stack, uint64_
 
 static inline void md_stack_allocator_pop(md_stack_allocator_t* stack, uint64_t size) {
     ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
-    ASSERT(size < stack->pos);
+    ASSERT(size <= stack->pos);
     stack->pos -= size;
 }
 
@@ -61,13 +62,13 @@ static inline void md_stack_allocator_reset(md_stack_allocator_t* stack) {
     stack->pos = 0;
 }
 
-static inline void md_stack_allocator_set_offset(md_stack_allocator_t* stack, uint64_t offset) {
+static inline void md_stack_allocator_set_pos(md_stack_allocator_t* stack, uint64_t offset) {
     ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
     ASSERT(offset < stack->cap);
     stack->pos = offset;
 }
 
-static inline uint64_t md_stack_allocator_get_offset(md_stack_allocator_t* stack) {
+static inline uint64_t md_stack_allocator_get_pos(md_stack_allocator_t* stack) {
     ASSERT(stack && stack->magic == MD_STACK_ALLOCATOR_MAGIC);
     return stack->pos;
 }

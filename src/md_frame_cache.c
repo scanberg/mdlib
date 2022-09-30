@@ -30,9 +30,9 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     }
 
     // We want to ensure that there are enough padding for each frame to avoid overlap if one wants to do full-width simd stores.
-    const int64_t num_atoms = ROUND_UP(md_trajectory_num_atoms(traj), md_simd_widthf); 
+    const int64_t num_atoms = ALIGN_TO(md_trajectory_num_atoms(traj), md_simd_widthf); 
     const int64_t bytes_per_frame = sizeof(md_semaphore_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
-    const int64_t num_slots = ROUND_UP(num_cached_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
+    const int64_t num_slots = ALIGN_TO(num_cached_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
     const int64_t total_bytes = num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT;
 
     cache->alloc = alloc;
@@ -44,7 +44,7 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
         return false;
     }
     cache->slot.count  = num_slots;
-    cache->slot.lock   = (md_semaphore_t*)NEXT_ALIGNED_ADRESS(cache->buf, CACHE_MEM_ALIGNMENT);
+    cache->slot.lock   = (md_semaphore_t*)NEXT_ALIGNED_ADDRESS(cache->buf, CACHE_MEM_ALIGNMENT);
     cache->slot.header = (md_slot_header_t*)(cache->slot.lock + num_slots);
     cache->slot.data   = (md_frame_data_t*)(cache->slot.header + num_slots);
 

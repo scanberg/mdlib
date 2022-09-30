@@ -287,8 +287,7 @@ static inline block_t get_block(const md_bitfield_t* bf, int64_t blk_idx) {
 
 static inline block_t* get_block_ptr(md_bitfield_t* bf, int64_t blk_idx) {
     const int64_t beg_blk = block_idx(bf->beg_bit);
-    const int64_t end_blk = block_idx(bf->end_bit);
-    ASSERT(bf->bits && beg_blk <= blk_idx && blk_idx <= end_blk);
+    ASSERT(bf->bits && beg_blk <= blk_idx && blk_idx <= block_idx(bf->end_bit));
     return &((block_t*)bf->bits)[blk_idx - beg_blk];
 }
 
@@ -416,6 +415,11 @@ bool md_bitfield_free(md_bitfield_t* bf) {
     if (bf->bits) md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
     memset(bf, 0, sizeof(md_bitfield_t));
     return true;
+}
+
+void md_bitfield_reserve_range  (md_bitfield_t* bf, int64_t beg_bit, int64_t end_bit) {
+    validate_bitfield(bf);
+    ensure_range(bf, beg_bit, end_bit);
 }
 
 bool md_bitfield_empty(const md_bitfield_t* bf) {

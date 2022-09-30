@@ -11,8 +11,8 @@ static void* vm_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_siz
     md_vm_allocator_t* vm = (md_vm_allocator_t*)inst;
     ASSERT(vm && vm->magic == MAGIC);
 
-    uint64_t old_page_aligned_size = ROUND_UP(old_size, vm->page_size);
-    uint64_t new_page_aligned_size = ROUND_UP(new_size, vm->page_size);
+    uint64_t old_page_aligned_size = ALIGN_TO(old_size, vm->page_size);
+    uint64_t new_page_aligned_size = ALIGN_TO(new_size, vm->page_size);
 
     // FREE
     if (new_size == 0) {
@@ -55,7 +55,7 @@ static void* vm_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_siz
 
     // ALLOC
     void* new_ptr = (char*)vm->base + vm->commit_pos;
-    uint64_t commit_size = ROUND_UP(new_size, vm->page_size);
+    uint64_t commit_size = ALIGN_TO(new_size, vm->page_size);
     md_os_commit((char*)vm->base + vm->commit_pos, commit_size);
     vm->commit_pos += commit_size;
     return new_ptr;

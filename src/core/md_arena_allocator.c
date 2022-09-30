@@ -153,7 +153,7 @@ void md_arena_allocator_destroy(struct md_allocator_i* alloc) {
 // VM
 
 void md_vm_arena_init(md_vm_arena_t* arena, uint64_t reservation_size) {
-    reservation_size = ROUND_UP(reservation_size, GIGABYTES(1));
+    reservation_size = ALIGN_TO(reservation_size, GIGABYTES(1));
     arena->base = md_os_reserve(reservation_size);
     arena->size = reservation_size;
     arena->commit_pos = VM_COMMIT_SIZE;
@@ -171,13 +171,14 @@ void md_vm_arena_free(md_vm_arena_t* arena) {
 
 void* md_vm_arena_push_aligned(md_vm_arena_t* arena, uint64_t size, uint64_t align) {
     ASSERT(arena && arena->magic == VM_MAGIC);
+    ASSERT(IS_POW2(align));
 
     void* mem = 0;
     align = MAX(arena->align, align);
 
     uint64_t pos = arena->pos;
     uint64_t pos_address = (uint64_t)arena->base + pos;
-    uint64_t alignment_size = ROUND_UP(pos_address, align) - pos_address;
+    uint64_t alignment_size = ALIGN_TO(pos_address, align) - pos_address;
 
     if (pos + alignment_size + size <= arena->size) {
         mem = (char*)arena->base + pos + alignment_size;
@@ -185,7 +186,7 @@ void* md_vm_arena_push_aligned(md_vm_arena_t* arena, uint64_t size, uint64_t ali
         arena->pos = new_pos;
 
         if (new_pos > arena->commit_pos) {
-            uint64_t commit_size = ROUND_UP(new_pos - arena->commit_pos, VM_COMMIT_SIZE);
+            uint64_t commit_size = ALIGN_TO(new_pos - arena->commit_pos, VM_COMMIT_SIZE);
             md_os_commit((char*)arena->base + arena->commit_pos, commit_size);
             arena->commit_pos += commit_size;
         }
@@ -220,7 +221,7 @@ void md_vm_arena_set_pos(md_vm_arena_t* arena, uint64_t pos) {
     ASSERT(arena && arena->magic == VM_MAGIC);
     ASSERT(pos < arena->pos);
     arena->pos = pos;
-    uint64_t decommit_pos = ROUND_UP(pos, VM_COMMIT_SIZE);
+    uint64_t decommit_pos = ALIGN_TO(pos, VM_COMMIT_SIZE);
     uint64_t over_commited = arena->commit_pos - decommit_pos;
     if (decommit_pos > 0 && over_commited >= VM_DECOMMIT_THRESHOLD) {
         md_os_decommit((char*)arena->base, over_commited);

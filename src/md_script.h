@@ -104,17 +104,17 @@ typedef struct md_script_visualization_t {
 
     struct {
         int64_t count;      // number of points
-        uint16_t* idx;      // vertex indices;
+        uint32_t* idx;      // vertex indices;
     } point;
 
     struct {
         int64_t count;      // number of lines
-        uint16_t* idx;      // p0 p1 vertex indices
+        uint32_t* idx;      // p0 p1 vertex indices
     } line;
 
     struct {
         int64_t count;      // number of triangles
-        uint16_t* idx;      // p0 p1 p2 vertex indices
+        uint32_t* idx;      // p0 p1 p2 vertex indices
     } triangle;
 
     struct {

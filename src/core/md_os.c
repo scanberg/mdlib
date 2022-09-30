@@ -295,7 +295,7 @@ uint64_t md_os_page_size(void) {
 }
 
 void* md_os_reserve(uint64_t size) {
-    uint64_t gb_snapped_size = ROUND_UP(size, GIGABYTES(1));
+    uint64_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
 #if MD_PLATFORM_WINDOWS
     return VirtualAlloc(0, gb_snapped_size, MEM_RESERVE, PAGE_NOACCESS);
 #elif MD_PLATFORM_UNIX
@@ -318,7 +318,7 @@ void md_os_release(void* ptr) {
 }
 
 void md_os_commit(void* ptr, uint64_t size) {
-    uint64_t page_snapped_size = ROUND_UP(size, md_os_page_size());
+    uint64_t page_snapped_size = ALIGN_TO(size, md_os_page_size());
 #if MD_PLATFORM_WINDOWS
     VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
 #elif MD_PLATFORM_UNIX
@@ -334,7 +334,7 @@ void md_os_decommit(void* ptr, uint64_t size) {
     VirtualFree(ptr, size, MEM_DECOMMIT);
 #elif MD_PLATFORM_UNIX
     int res;
-    uint64_t page_snapped_size = ROUND_UP(size, md_os_page_size());
+    uint64_t page_snapped_size = ALIGN_TO(size, md_os_page_size());
     res = mprotect(ptr, page_snapped_size, PROT_NONE);
     ASSERT(res == 0);
     res = madvise(ptr, page_snapped_size, MADV_DONTNEED);

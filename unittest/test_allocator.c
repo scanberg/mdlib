@@ -48,6 +48,16 @@ UTEST(allocator, arena) {
     md_arena_allocator_destroy(alloc);
 }
 
+UTEST(allocator, stack_generic) {
+    void* buf = md_alloc(default_allocator, MEGABYTES(32));
+    md_stack_allocator_t stack;
+    md_stack_allocator_init(&stack, buf, MEGABYTES(32));
+    md_allocator_i stack_alloc = md_stack_allocator_create_interface(&stack);
+    md_allocator_i* alloc = &stack_alloc;
+    COMMON_ALLOCATOR_TEST_BODY
+    md_free(default_allocator, buf, MEGABYTES(32));
+}
+
 // @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
 
 UTEST(allocator, pool) {
@@ -154,6 +164,10 @@ UTEST(allocator, stack_allocator) {
 
     for (uint32_t i = 0; i < 1000; ++i) {
         md_stack_allocator_push(&stack, sizeof(uint64_t));
+    }
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        md_stack_allocator_push_aligned(&stack, sizeof(uint64_t), 32);
     }
 
     md_free(default_allocator, buf, MEGABYTES(64));

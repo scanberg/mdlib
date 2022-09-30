@@ -65,16 +65,33 @@
 #define DEBUG 1
 #endif // NDEBUG
 
+#ifdef __cplusplus
+template <typename T, size_t N>
+constexpr size_t array_size_impl(T (&)[N]) { return N; }
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(x) array_size_impl(x)
+#endif
+#else
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
+#endif
+#endif
+
+#ifndef IS_POW2
+#define IS_POW2(x) ((x & (x - 1)) == 0)
+#endif
+
+// This is essentially the same as ROUND_UP, but only works when alignment is a power of two
+#ifndef ALIGN_TO
+#define ALIGN_TO(x, alignment) ((x + (alignment-1)) & (~alignment+1))
 #endif
 
 #ifndef IS_ALIGNED
 #define IS_ALIGNED(ptr, alignment) (((uintptr_t)ptr % alignment) == 0)
 #endif
 
-#ifndef NEXT_ALIGNED_ADRESS
-#define NEXT_ALIGNED_ADRESS(ptr, alignment) ((char*)ptr + alignment - ((uint64_t)ptr & (alignment - 1)))
+#ifndef NEXT_ALIGNED_ADDRESS
+#define NEXT_ALIGNED_ADDRESS(ptr, alignment) ((void*)(ALIGN_TO((uintptr_t)ptr, alignment)))
 #endif
 
 #ifndef MIN
