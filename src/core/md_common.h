@@ -2,6 +2,7 @@
 #define _MD_COMMON_H_
 
 #include "md_compiler.h"
+#include <stddef.h>
 
 #ifndef ASSERT
 #include <assert.h>
