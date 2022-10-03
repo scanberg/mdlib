@@ -219,18 +219,65 @@ void md_vm_arena_reset(md_vm_arena_t* arena) {
 
 void md_vm_arena_set_pos(md_vm_arena_t* arena, uint64_t pos) {
     ASSERT(arena && arena->magic == VM_MAGIC);
-    ASSERT(pos < arena->pos);
+    ASSERT(pos <= arena->pos);
     arena->pos = pos;
     uint64_t decommit_pos = ALIGN_TO(pos, VM_COMMIT_SIZE);
     uint64_t over_commited = arena->commit_pos - decommit_pos;
     if (decommit_pos > 0 && over_commited >= VM_DECOMMIT_THRESHOLD) {
-        md_os_decommit((char*)arena->base, over_commited);
+        md_os_decommit((char*)arena->base + decommit_pos, over_commited);
         arena->commit_pos -= over_commited;
     }
 }
 
 uint64_t md_vm_arena_get_pos(md_vm_arena_t* arena) {
+    ASSERT(arena && arena->magic == VM_MAGIC);
     return arena->pos;
+}
+
+static void* vm_arena_realloc(struct md_allocator_o* alloc, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+    (void)file;
+    (void)line;
+    md_vm_arena_t* arena = (md_vm_arena_t*)alloc;
+
+    ASSERT(arena);
+    ASSERT(arena->magic == VM_MAGIC);
+
+    if (new_size == 0) {
+        if ((char*)arena->base + arena->pos == (char*)ptr + old_size) {
+            md_vm_arena_pop(arena, old_size);
+        }
+        return NULL;
+    }
+
+    if (old_size) {
+        ASSERT(ptr);
+        if ((char*)arena->base + arena->pos == (char*)ptr + old_size) {
+            const int64_t diff = (int64_t)new_size - (int64_t)old_size;
+            const int64_t new_pos = arena->pos + diff;
+            ASSERT(0 <= new_pos && new_pos < (int64_t)arena->size);
+            if (diff < 0) {
+                md_vm_arena_set_pos(arena, new_pos);
+            }
+            else {
+                md_vm_arena_push(arena, (uint64_t)diff);
+            }
+            return ptr;
+        }
+        void* new_ptr = md_vm_arena_push(arena, new_size);
+        memcpy(new_ptr, ptr, old_size);
+        return new_ptr;
+    }
+
+    return md_vm_arena_push(arena, new_size);
+}
+
+struct md_allocator_i md_vm_arena_create_interface(md_vm_arena_t* arena) {
+    ASSERT(arena && arena->magic == VM_MAGIC);
+    md_allocator_i alloc = {
+        (md_allocator_o*)arena,
+        vm_arena_realloc,
+    };
+    return alloc;
 }
 
 md_vm_arena_temp_t md_vm_arena_temp_begin(md_vm_arena_t* arena) {

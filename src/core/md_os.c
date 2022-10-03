@@ -320,7 +320,8 @@ void md_os_release(void* ptr) {
 void md_os_commit(void* ptr, uint64_t size) {
     uint64_t page_snapped_size = ALIGN_TO(size, md_os_page_size());
 #if MD_PLATFORM_WINDOWS
-    VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
+    void* result = VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
+    ASSERT(result != NULL);
 #elif MD_PLATFORM_UNIX
     int result = mprotect(ptr, page_snapped_size, PROT_READ | PROT_WRITE);
     ASSERT(result == 0);

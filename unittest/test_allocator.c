@@ -130,13 +130,39 @@ UTEST(allocator, vm_arena) {
     md_vm_arena_init(&arena, GIGABYTES(4));
 
     for (uint32_t i = 0; i < 1000; ++i) {
-        void* mem = md_vm_arena_push(&arena, sizeof(int64_t));
+        size_t size = rand() % 63 + 1;
+        void* mem = md_vm_arena_push(&arena, size);
+        memset(mem, 0, size);   // Important to touch memory in order to validate that it is writable
     }
 
     md_vm_arena_reset(&arena);
 
     for (uint32_t i = 0; i < 1000; ++i) {
-        void* mem = md_vm_arena_push_aligned(&arena, 128, 32);
+        size_t size = rand() % 127 + 1;
+        void* mem = md_vm_arena_push_aligned(&arena, size, 32);
+        memset(mem, 0, size); // Important to touch memory in order to validate that it is writable
+    }
+
+    md_vm_arena_free(&arena);
+}
+
+UTEST(allocator, vm_arena_generic) {
+    md_vm_arena_t arena;
+    md_vm_arena_init(&arena, GIGABYTES(4));
+    md_allocator_i alloc = md_vm_arena_create_interface(&arena);
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        size_t size = rand() % 63 + 1;
+        void* mem = md_alloc(&alloc, size);
+        memset(mem, 0, size);   // Important to touch memory in order to validate that it is writable
+    }
+
+    md_vm_arena_reset(&arena);
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        size_t size = rand() % 127 + 1;
+        void* mem = md_alloc(&alloc, size);
+        memset(mem, 0, size); // Important to touch memory in order to validate that it is writable
     }
 
     md_vm_arena_free(&arena);
@@ -150,7 +176,7 @@ UTEST(allocator, vm_allocator) {
 
     // Commit to smaller portion by allocating
     for (uint32_t i = 0; i < 1000; ++i) {
-        md_alloc(&alloc, MEGABYTES(1));
+        md_alloc(&alloc, rand() % 63 + 1);
     }
 
     // Release reserved space
