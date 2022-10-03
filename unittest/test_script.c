@@ -128,7 +128,8 @@ UTEST(script, basic_expressions) {
         data_t data = {0};
         EXPECT_TRUE(eval_expression(&data, MAKE_STR("'this is a string'"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_STRING);
-        EXPECT_STREQ(as_string(data).ptr, "this is a string");
+        str_t str = as_string(data);
+        EXPECT_STREQ(str.ptr, "this is a string");
     }
 
     {

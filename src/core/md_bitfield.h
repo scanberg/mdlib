@@ -5,12 +5,12 @@
 struct md_allocator_i;
 
 typedef struct md_bitfield_t {
-    uint32_t magic;
-    uint32_t flags;
-    uint32_t beg_bit;
-    uint32_t end_bit;
     void* bits;
     struct md_allocator_i* alloc;
+    uint32_t beg_bit;
+    uint32_t end_bit;
+    uint32_t magic;
+    uint32_t flags;
 } md_bitfield_t;
 
 #ifdef __cplusplus
@@ -23,17 +23,17 @@ extern "C" {
 void md_bitfield_init           (md_bitfield_t* bf, struct md_allocator_i* alloc);
 bool md_bitfield_free           (md_bitfield_t* bf);
 
-void md_bitfield_reserve_range  (md_bitfield_t* bf, int64_t beg, int64_t end);
+void md_bitfield_reserve_range  (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 bool md_bitfield_empty          (const md_bitfield_t* bf);
 
-void md_bitfield_set_range      (md_bitfield_t* bf, int64_t beg, int64_t end);
-void md_bitfield_set_bit        (md_bitfield_t* bf, int64_t bit_idx);
-void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, int64_t num_indices);
+void md_bitfield_set_range      (md_bitfield_t* bf, uint64_t beg, uint64_t end);
+void md_bitfield_set_bit        (md_bitfield_t* bf, uint64_t bit_idx);
+void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, uint64_t num_indices);
 
 void md_bitfield_clear          (md_bitfield_t* bf);
-void md_bitfield_clear_range    (md_bitfield_t* bf, int64_t beg, int64_t end);
-void md_bitfield_clear_bit      (md_bitfield_t* bf, int64_t bit_idx);
+void md_bitfield_clear_range    (md_bitfield_t* bf, uint64_t beg, uint64_t end);
+void md_bitfield_clear_bit      (md_bitfield_t* bf, uint64_t bit_idx);
 
 void md_bitfield_or             (md_bitfield_t* dst, const md_bitfield_t* src_a, const md_bitfield_t* src_b);
 void md_bitfield_or_inplace     (md_bitfield_t* a,   const md_bitfield_t* b);
@@ -48,17 +48,17 @@ void md_bitfield_xor            (md_bitfield_t* dst, const md_bitfield_t* src_a,
 void md_bitfield_xor_inplace    (md_bitfield_t* a, const md_bitfield_t* b);
 
 // We need an explicit range or something here to 
-void md_bitfield_not            (md_bitfield_t* dst, const md_bitfield_t* src, int64_t beg, int64_t end);
-void md_bitfield_not_inplace    (md_bitfield_t* bf, int64_t beg, int64_t end);
+void md_bitfield_not            (md_bitfield_t* dst, const md_bitfield_t* src, uint64_t beg, uint64_t end);
+void md_bitfield_not_inplace    (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 void md_bitfield_copy           (md_bitfield_t* dst, const md_bitfield_t* src);
 
 // Count number of bits set
-int64_t md_bitfield_popcount    (const md_bitfield_t* bf);
-int64_t md_bitfield_popcount_range(const md_bitfield_t* bf, int64_t beg, int64_t end);
+uint64_t md_bitfield_popcount    (const md_bitfield_t* bf);
+uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 // Test if single bit in field is set
-bool md_bitfield_test_bit   (const md_bitfield_t* bf, int64_t idx);
+bool md_bitfield_test_bit   (const md_bitfield_t* bf, uint64_t idx);
 
 /*
 static inline uint32_t md_bitfield_beg_bit    (const md_bitfield_t* bf) {
@@ -85,9 +85,9 @@ static inline uint32_t md_bitfield_end_bit    (const md_bitfield_t* bf) {
      do_something(bit_idx);
  }
 */
-int64_t md_bitfield_scan(const md_bitfield_t* bf, int64_t beg, int64_t end);
+uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
-int64_t md_bitfield_scan_reverse(const md_bitfield_t* bf, int64_t beg, int64_t end);
+uint64_t md_bitfield_scan_reverse(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 // Copy the contents of the bitfield into an external buffer
 //bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_bitfield_t* src);
@@ -99,15 +99,15 @@ uint32_t* md_bitfield_extract_indices_u32(const md_bitfield_t* bf, struct md_all
 uint32_t* md_bitfield_extract_bits_u32(const md_bitfield_t* bf, struct md_allocator_i* alloc);
 
 // Returns the maximum serialization size in bytes of a bitfield
-int64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf);
+uint64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf);
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
-int64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
+uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
 
 // Deserializes a compressed buffer into a bitfield.
 // User must ensure that the bitfield is properly initialized with an allocator
-bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, int64_t num_bytes);
+bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_bytes);
 
 #ifdef __cplusplus
 }

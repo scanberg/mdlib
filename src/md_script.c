@@ -53,13 +53,12 @@
 #define MAX_SUPPORTED_PROC_ARGS 8
 #define MAX_SUPPORTED_TYPE_DIMS 4
 
-#define SETUP_STACK(backing_allocator, size) \
-    md_allocator_i* _backing = backing_allocator; \
-    md_stack_allocator_t stack_alloc = {0}; \
-    md_stack_allocator_init(&stack_alloc, md_alloc(backing_allocator, size), size); \
-    md_allocator_i temp_alloc = md_stack_allocator_create_interface(&stack_alloc)
+#define SETUP_TEMP_ALLOC(reserve_size) \
+    md_vm_arena_t vm_arena; \
+    md_vm_arena_init(&vm_arena, reserve_size); \
+    md_allocator_i temp_alloc = md_vm_arena_create_interface(&vm_arena);
 
-#define FREE_STACK() md_free(_backing, stack_alloc.ptr, stack_alloc.cap)
+#define FREE_TEMP_ALLOC() md_vm_arena_free(&vm_arena);
 
 // #############################
 // ###   TYPE DECLARATIONS   ###
@@ -266,9 +265,10 @@ typedef struct eval_context_t {
     const md_molecule_t* mol;
     const md_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
 
-    int64_t max_stack_size;
-    md_stack_allocator_t* stack_alloc;  // This is the same allocator as temp alloc, just with the raw interface
-    md_allocator_i* temp_alloc;         // For allocating transient data
+    //int64_t max_stack_size;
+    //md_stack_allocator_t* stack_alloc;  // This is the same allocator as temp alloc, just with the raw interface
+    md_vm_arena_t* raw_temp_alloc;
+    md_allocator_i* temp_alloc;         // For allocating transient data (Generic interface to raw_temp_alloc)
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
 
     // Contextual information for static checking 
@@ -315,6 +315,7 @@ typedef struct ast_node_t {
     data_t              data;           // Structure for passing as argument into procedure. (Holds pointer, length and type)
 
     procedure_t*    proc;           // Procedure reference
+    uint32_t        proc_flags;     // Additional flags used for e.g. swapping arguments which may be required for the procedure call
     str_t           ident;          // Identifier reference
 
     // CONTEXT
@@ -929,7 +930,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                 }
                 else if (proc->flags & FLAG_SYMMETRIC_ARGS) {
                     // @TODO: Does this make sense for anything else than two arguments???
-                    // Note, the only exception here is the RDF function which should be symmetric on the first two, and then have the third cutoff parameter.
+                    // The only exception here is the RDF function which should be symmetric on the first two, and then have the third cutoff parameter.
                     ASSERT(proc->num_args >= 2);
                     md_type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
                     if (compare_type_info_array(swapped_args, proc->arg_type, 2)) {
@@ -2309,8 +2310,6 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
     }
 
 done:
-    ctx->max_stack_size = MAX(ctx->max_stack_size, (int64_t)ctx->stack_alloc->pos);
-
     for (int64_t i = num_args - 1; i >= 0; --i) {
         free_data(&arg_data[i], ctx->temp_alloc);
     }
@@ -2327,7 +2326,7 @@ done:
 
 static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
-    ASSERT(node->type == AST_PROC_CALL);
+    //ASSERT(node->type == AST_PROC_CALL);
     ASSERT(node->proc);
 
     token_t old_token = ctx->op_token;
@@ -2646,6 +2645,7 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
         case AST_LT:
         case AST_GT:
         case AST_CAST:      // Casts should have been resolved during static check and converted into a proc-call
+            //return evaluate_proc_call(dst, node, ctx);
         case AST_UNDEFINED:
         default:
             ASSERT(false);
@@ -2659,7 +2659,7 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
 // Determine the type of all nodes
 
 static bool static_check_node(ast_node_t*, eval_context_t*);
-static bool finalize_proc_call(ast_node_t*, procedure_match_result_t*, eval_context_t*);
+static bool finalize_proc_call(ast_node_t*, eval_context_t*);
 
 static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context_t* ctx) {
     const md_type_info_t from = node->data.type;
@@ -2723,8 +2723,10 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
             node->type = AST_PROC_CALL;
             node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
             md_array_push(node->children, node_copy, ctx->ir->arena);
+            node->proc = res.procedure;
+            node->proc_flags = res.flags;
 
-            return finalize_proc_call(node, &res, ctx);
+            return finalize_proc_call(node, ctx);
         }
     }
 
@@ -2733,9 +2735,9 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
 }
 
 static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
-    //ASSERT(is_variable_length(node->data.type));
-    ASSERT(node->type == AST_PROC_CALL);
     ASSERT(type);
+    ASSERT(node);
+    ASSERT(ctx);
 
     *type = node->data.type;
 
@@ -2771,19 +2773,19 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
     return true;
 }
 
-static bool finalize_proc_call(ast_node_t* node, procedure_match_result_t* res, eval_context_t* ctx) {
+static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
-    ASSERT(res);
     ASSERT(ctx);
+    ASSERT(node->proc);
+    ASSERT(node->type == AST_PROC_CALL);
 
-    node->proc = res->procedure;
     node->data.type = node->proc->return_type;
 
     const int64_t num_args = md_array_size(node->children);
     ast_node_t** args = node->children;
 
     if (num_args > 0) {
-        if (res->flags & FLAG_SYMMETRIC_ARGS) {
+        if (node->proc_flags & FLAG_SYMMETRIC_ARGS) {
             // If the symmetric flag is set, we need to swap the arguments
             ASSERT(num_args >= 2);
             ast_node_t* tmp_child = node->children[0];
@@ -2920,7 +2922,9 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
             }
 
             node->type = AST_PROC_CALL;
-            result = finalize_proc_call(node, &res, ctx);
+            node->proc = res.procedure;
+            node->proc_flags = res.flags;
+            result = finalize_proc_call(node, ctx);
         } else {
             char arg_type_str[2][64] = {"empty", "empty"};
             for (int i = 0; i < num_args; ++i) {
@@ -2941,64 +2945,69 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node->type == AST_PROC_CALL);
     uint32_t backup_flags = ctx->eval_flags;
 
-    //bool result = true;
-    //if (!node->proc) {
-    bool result = static_check_children(node, ctx);
-    if (result) {
-        const uint64_t num_args = md_array_size(node->children);
-        const str_t proc_name = node->token.str;
+    bool result = true;
+    // @NOTE: We do not want to overwrite the procedure if already assigned, as it might have been assigned as an operator (which is a proc call)
+    if (!node->proc) {
+        result = static_check_children(node, ctx);
+        if (result) {
+            const uint64_t num_args = md_array_size(node->children);
+            const str_t proc_name = node->token.str;
 
-        // One or more arguments
-        ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
-        md_type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS] = {0};
+            // One or more arguments
+            ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
+            md_type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS] = {0};
 
-        for (uint64_t i = 0; i < num_args; ++i) {
-            arg_type[i] = node->children[i]->data.type;
-        }
-
-        procedure_match_result_t res = find_procedure_supporting_arg_types(proc_name, arg_type, num_args, true);
-        if (res.success) {
-            // If we have procedure flags modifying flatten state, then we need to recheck children with flags set
-            if (res.procedure->flags & FLAG_FLATTEN) {
-                ctx->eval_flags |= EVAL_FLAG_FLATTEN;
-                result = result && static_check_children(node, ctx);
-            } else if (res.procedure->flags & FLAG_NO_FLATTEN) {
-                ctx->eval_flags = ctx->eval_flags & (~EVAL_FLAG_FLATTEN);
-                result = result && static_check_children(node, ctx);
+            for (uint64_t i = 0; i < num_args; ++i) {
+                arg_type[i] = node->children[i]->data.type;
             }
-            result = result && finalize_proc_call(node, &res, ctx);
-        } else {
-            if (num_args == 0) {
-                create_error(ctx->ir, node->token,
-                    "Could not find matching procedure '%.*s' which takes no arguments", (int)proc_name.len, proc_name.ptr);
-            } else {
-                char buf[512] = {0};
-                int  cur = 0;
-                for (uint64_t i = 0; i < num_args; ++i) {
-                    cur += print_type_info(buf + cur, ARRAY_SIZE(buf) - cur, arg_type[i]);
-                    if (i + 1 != num_args) {
-                        cur += snprintf(buf + cur, ARRAY_SIZE(buf) - cur, ",");
-                    }
-                }
 
-                create_error(ctx->ir, node->token,
-                    "Could not find matching procedure '%.*s' which takes the following argument(s) (%.*s)",
-                    (int)proc_name.len, proc_name.ptr, cur, buf);
+            procedure_match_result_t res = find_procedure_supporting_arg_types(proc_name, arg_type, num_args, true);
+            result = result && res.success;
+
+            if (res.success) {
+                node->proc = res.procedure;
+                node->proc_flags = res.flags;
+            } else {
+                if (num_args == 0) {
+                    create_error(ctx->ir, node->token,
+                        "Could not find matching procedure '%.*s' which takes no arguments", (int)proc_name.len, proc_name.ptr);
+                } else {
+                    char buf[512] = {0};
+                    int  cur = 0;
+                    for (uint64_t i = 0; i < num_args; ++i) {
+                        cur += print_type_info(buf + cur, ARRAY_SIZE(buf) - cur, arg_type[i]);
+                        if (i + 1 != num_args) {
+                            cur += snprintf(buf + cur, ARRAY_SIZE(buf) - cur, ",");
+                        }
+                    }
+
+                    create_error(ctx->ir, node->token,
+                        "Could not find matching procedure '%.*s' which takes the following argument(s) (%.*s)",
+                        (int)proc_name.len, proc_name.ptr, cur, buf);
+                }
             }
         }
     }
-    //}
 
     if (result && node->proc) {
+        // If we have procedure flags modifying flatten state, then we need to recheck children with flags set
+        if (node->proc->flags & FLAG_FLATTEN) {
+            ctx->eval_flags |= EVAL_FLAG_FLATTEN;
+            result = result && static_check_children(node, ctx);
+        } else if (node->proc->flags & FLAG_NO_FLATTEN) {
+            ctx->eval_flags = ctx->eval_flags & (~EVAL_FLAG_FLATTEN);
+            result = result && static_check_children(node, ctx);
+        }
+
         // Perform new child check here since children may have changed due to conversions etc.
-        result = result && static_check_children(node, ctx);
+        result = result && static_check_children(node, ctx) && finalize_proc_call(node, ctx);
 
         // Perform static validation by evaluating with NULL ptr
-        if (node->proc->flags & FLAG_STATIC_VALIDATION) {
+        if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
             static_backchannel_t* prev_channel = ctx->backchannel;
             static_backchannel_t channel = {0};
             ctx->backchannel = &channel;
-            result &= evaluate_proc_call(NULL, node, ctx);
+            result = result && evaluate_proc_call(NULL, node, ctx);
             node->data.unit = channel.unit;
             node->data.value_range = channel.value_range;
             ctx->backchannel = prev_channel;
@@ -3537,11 +3546,11 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol) {
 
     bool result = true;
 
-    SETUP_STACK(default_allocator, MEGABYTES(128));
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     eval_context_t ctx = {
         .ir = ir,
-        .stack_alloc = &stack_alloc,
+        .raw_temp_alloc = &vm_arena,
         .temp_alloc = &temp_alloc,
         .alloc = ir->arena,
         .mol = mol,
@@ -3557,9 +3566,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol) {
         }
     }
 
-    md_printf(MD_LOG_TYPE_INFO, "Max stack size: %li KB", ctx.max_stack_size / KILOBYTES(1));
-
-    FREE_STACK();
+    FREE_TEMP_ALLOC();
 
     return result;
 }
@@ -3649,12 +3656,12 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
 static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     ASSERT(mol);
 
-    SETUP_STACK(default_allocator, MEGABYTES(128));
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     eval_context_t ctx = {
         .ir = ir,
         .mol = mol,
-        .stack_alloc = &stack_alloc,
+        .raw_temp_alloc = &vm_arena,
         .temp_alloc = &temp_alloc,
     };
 
@@ -3664,10 +3671,10 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     // Evaluate every node which is not flagged with FLAG_DYNAMIC and store its value.
     for (int64_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
         result &= static_eval_node(ir->type_checked_expressions[i]->node, &ctx);
-        md_stack_allocator_reset(&stack_alloc);
+        md_vm_arena_reset(&vm_arena);
     }
 
-    FREE_STACK();
+    FREE_TEMP_ALLOC();
 
     return result;
 }
@@ -3850,7 +3857,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     
     ASSERT(md_array_size(ir->prop_expressions) == num_props);
 
-    SETUP_STACK(default_allocator, MEGABYTES(128));
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     // coordinate data for reading trajectory frames into
     const int64_t stride = ALIGN_TO(mol->atom.count, md_simd_widthf);    // Round up allocation size to simd width to allow for vectorized operations
@@ -3866,9 +3873,9 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     }
     
     // This data is meant to hold the evaluated expressions
-    data_t* data = md_stack_allocator_push(&stack_alloc, num_expr * sizeof(data_t));
+    data_t* data = md_vm_arena_push(&vm_arena, num_expr * sizeof(data_t));
 
-    const uint64_t STACK_RESET_POINT = md_stack_allocator_get_pos(&stack_alloc);
+    const uint64_t STACK_RESET_POINT = md_vm_arena_get_pos(&vm_arena);
 
     md_trajectory_frame_header_t init_header = { 0 };
     md_trajectory_frame_header_t curr_header = { 0 };
@@ -3890,7 +3897,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
         .mol = &mutable_mol,
-        .stack_alloc = &stack_alloc,
+        .raw_temp_alloc = &vm_arena,
         .temp_alloc = &temp_alloc,
         .alloc = &temp_alloc,
         .frame_header = &curr_header,
@@ -3948,7 +3955,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             goto done;
         }
         
-        md_stack_allocator_set_pos(&stack_alloc, STACK_RESET_POINT);
+        md_vm_arena_set_pos(&vm_arena, STACK_RESET_POINT);
         ctx.identifiers = 0;
 
         for (int64_t i = 0; i < num_expr; ++i) {
@@ -4049,7 +4056,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     ASSERT(dst_idx == num_frames);
 done:
-    FREE_STACK();
+    FREE_TEMP_ALLOC();
     return result;
 }
 
@@ -4434,23 +4441,23 @@ void md_script_eval_interrupt(md_script_eval_t* eval) {
 }
 
 static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allocator_i* alloc) {
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
 
-
-    md_script_ir_t* ir = create_ir(default_temp_allocator);
+    // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
+    // Which means that the actual string data is contained within the ir->arena => temp_alloc
+    md_script_ir_t* ir = create_ir(alloc);
     ir->str = str_copy(expr, ir->arena);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     bool result = false;
-
-    SETUP_STACK(default_allocator, MEGABYTES(128));
 
     ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = &temp_alloc});
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .stack_alloc = &stack_alloc,
-            .temp_alloc = &temp_alloc,
+            .raw_temp_alloc = &vm_arena,
+            .temp_alloc = &temp_alloc,       
         };
 
         if (static_check_node(node, &ctx)) {
@@ -4467,9 +4474,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
         }
     }
 
-    FREE_STACK();
-
-    free_ir(ir);
+    FREE_TEMP_ALLOC();
 
     return result;
 }
@@ -4481,7 +4486,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
 
     bool success = false;
 
-    SETUP_STACK(default_allocator, MEGABYTES(128));
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     md_script_ir_t* ir = create_ir(&temp_alloc);
     ir->str = str_copy(expr, ir->arena);
@@ -4508,7 +4513,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .stack_alloc = &stack_alloc,
+            .raw_temp_alloc = &vm_arena,
             .temp_alloc = &temp_alloc,
             .alloc = &temp_alloc,
             .initial_configuration = {
@@ -4560,7 +4565,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
         if (space_left) len += snprintf(result->error_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
     }
 
-    FREE_STACK();
+    FREE_TEMP_ALLOC();
     return success;
 }
 
@@ -4785,12 +4790,12 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     }
 
 
-    SETUP_STACK(default_allocator, MEGABYTES(128));
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     int64_t num_frames = md_trajectory_num_atoms(args.traj);
-    float* x = md_stack_allocator_push(&stack_alloc, num_frames * sizeof(float));
-    float* y = md_stack_allocator_push(&stack_alloc, num_frames * sizeof(float));
-    float* z = md_stack_allocator_push(&stack_alloc, num_frames * sizeof(float));
+    float* x = md_vm_arena_push(&vm_arena, num_frames * sizeof(float));
+    float* y = md_vm_arena_push(&vm_arena, num_frames * sizeof(float));
+    float* z = md_vm_arena_push(&vm_arena, num_frames * sizeof(float));
     
     md_trajectory_frame_header_t header = { 0 };
     if (args.traj) {
@@ -4804,7 +4809,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)args.ir,
         .mol = args.mol,
-        .stack_alloc = &stack_alloc,
+        .raw_temp_alloc = &vm_arena,
         .temp_alloc = &temp_alloc,
         .vis = vis,
         .initial_configuration = {
@@ -4825,7 +4830,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         md_bitfield_or_inplace(vis->atom_mask, &vis->structures.atom_masks[i]);
     }
 
-    FREE_STACK();
+    FREE_TEMP_ALLOC();
 
     return true;
 }
