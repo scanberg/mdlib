@@ -39,10 +39,16 @@
 #define NEG_INF uintBitsToFloat(0xFF800000)
 
 struct UniformData {
+	// Single transforms
 	mat4 world_to_view;
 	mat4 world_to_view_normal;
 	mat4 view_to_clip;
 	mat4 clip_to_view;
+	// Composed transforms
+	mat4 world_to_clip;
+	mat4 curr_clip_to_prev_clip;	// Current frame clip to previous frame clip
+	mat4 prev_world_to_clip;		// Previous frames world to clip
+	// Misc
 	vec4 frustum_plane[4];
 	uint frustum_culling;
 	uint depth_culling;
@@ -56,15 +62,18 @@ struct UniformData {
 struct DebugData {
 	uint total_groups_processed;
 	uint total_groups_drawn;
-	float sphere_depth;
+	float aabb_depth;
 	float read_depth;
-	vec4 view_coord;
+	float tex_min[2];
+	float tex_max[2];
 	float aabb_min[2];
 	float aabb_max[2];
 	float aabb_width;
 	float aabb_height;
 	float lod;
-	float _pad;
+	float pick_depth;
+	uint  pick_index;
+	uint _pad[3];
 };
 
 struct DrawOp {
@@ -95,18 +104,17 @@ struct DrawArraysIndirectCommand {
 
 struct DrawElementsIndirectCommand {
 	uint  count;
-	uint  instanceCount;
-	uint  firstIndex;
-	uint  baseVertex;
-	uint  baseInstance;
-	uint  _pad[3];
+	uint  instance_count;
+	uint  first_index;
+	uint  base_vertex;
+	uint  base_instance;
 };
 
 struct DrawSpheresIndirectCommand {
-	DrawArraysIndirectCommand cmd;
+	//DrawArraysIndirectCommand cmd;
+	DrawElementsIndirectCommand cmd;
 	//Payload
 	uint transform_idx;
-	uint atom_offset;
 	uint color_offset;
 	float radius_scale;
 };

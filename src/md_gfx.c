@@ -39,6 +39,8 @@ typedef struct DrawOp DrawOp;
 #define MAX_REPRESENTATION_COUNT 64
 #define MAX_HANDLE_COUNT (MAX_STRUCTURE_COUNT + MAX_REPRESENTATION_COUNT)
 
+#define MAX_INSTANCE_PER_STRUCTURE_COUNT 32
+
 #define INVALID_INDEX (~0U)
 
 #ifndef GL_PUSH_GPU_SECTION
@@ -135,6 +137,30 @@ typedef struct gl_program_t {
 
 typedef uint32_t gl_version_t;
 
+// Internal packed structures which maps to the layout used in GPU-memory
+// Pack the first index as an absolute offset and second as a relative to the first
+typedef struct bond_t {
+    uint32_t first : 20;
+    uint32_t other : 12;
+} bond_t;
+
+typedef struct range_t {
+    uint32_t offset;
+    uint32_t count;
+} range_t;
+
+typedef struct segment_t {
+    uint32_t offset : 20;
+    uint32_t ca_idx : 4;
+    uint32_t c_idx  : 4;
+    uint32_t o_idx  : 4;
+} segment_t;
+
+typedef struct instance_t {
+    mat4_t   transform;
+    range_t  group_range;
+} instance_t;
+
 typedef struct structure_t {
     uint32_t atom_offset;
     uint32_t atom_count;
@@ -151,11 +177,17 @@ typedef struct structure_t {
     uint32_t group_offset;
     uint32_t group_count;
 
+    /*
     uint32_t instance_offset;
     uint32_t instance_count;
-
+    */
+    /*
     uint32_t transform_offset;
     uint32_t transform_count;
+    */
+
+    uint32_t instance_count;
+    instance_t instance[MAX_INSTANCE_PER_STRUCTURE_COUNT];
 
     uint16_t h_idx; // Handle index
 } structure_t;
@@ -197,7 +229,7 @@ typedef struct gl_context_t {
     gl_buffer_t sec_str_buf;
     gl_buffer_t bb_range_buf;
     gl_buffer_t group_buf;
-    gl_buffer_t instance_buf;
+//    gl_buffer_t instance_buf;
 
     // Allocation Data
     uint32_t atom_offset;
@@ -215,8 +247,10 @@ typedef struct gl_context_t {
     uint32_t group_offset;
     uint32_t group_capacity;
 
+    /*
     uint32_t instance_offset;
     uint32_t instance_capacity;
+    */
 
     uint32_t transform_offset;
     uint32_t transform_capacity;
@@ -240,6 +274,9 @@ typedef struct gl_context_t {
     // Computes depth pyramid
     gl_program_t depth_reduce_prog;
 
+    // Write back picking data
+    gl_program_t write_picking_prog;
+
     // Composes final image and outputs
     gl_program_t compose_prog;
 
@@ -256,6 +293,10 @@ typedef struct gl_context_t {
     gl_buffer_t DEBUG_BUF;
     DebugData* debug_data;
 
+    mat4_t prev_view_mat;
+    mat4_t prev_proj_mat;
+    uint32_t frame_idx;
+
     structure_t structures[MAX_STRUCTURE_COUNT];
     representation_t representations[MAX_REPRESENTATION_COUNT];
 
@@ -266,29 +307,7 @@ typedef struct gl_context_t {
     uint16_t handle_next_idx;
 } gl_context_t;
 
-// Internal packed structures which maps to the layout used in GPU-memory
-// Pack the first index as an absolute offset and second as a relative to the first
-typedef struct bond_t {
-    uint32_t first : 20;
-    uint32_t other : 12;
-} bond_t;
 
-typedef struct range_t {
-    uint32_t offset;
-    uint32_t count;
-} range_t;
-
-typedef struct segment_t {
-    uint32_t offset : 20;
-    uint32_t ca_idx : 4;
-    uint32_t c_idx  : 4;
-    uint32_t o_idx  : 4;
-} segment_t;
-
-typedef struct instance_t {
-    range_t  group_range;
-    uint32_t transform_idx;
-} instance_t;
 
 // These are absolute for now, but may be compacted later on
 typedef struct position_t {
@@ -624,7 +643,8 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
         ctx.index_buf           = gl_buffer_create(MEGABYTES(64), NULL, 0);
         ctx.draw_sphere_idx_buf = gl_buffer_create(MEGABYTES(4),  NULL, 0);
 
-        ctx.DEBUG_BUF = gl_buffer_create(KILOBYTES(1), NULL, 0);
+        ctx.DEBUG_BUF = gl_buffer_create(KILOBYTES(1), NULL, GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT);
+        ctx.debug_data = glMapNamedBuffer(ctx.DEBUG_BUF.id, GL_READ_ONLY);
 
         // Storage buffers for structure data
         const uint32_t atom_cap = 4 * 1000 * 1000;
@@ -650,9 +670,11 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
         ctx.group_buf    = gl_buffer_create(group_cap * sizeof(range_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.group_capacity = group_cap;
 
+        /*
         const uint32_t inst_cap = 10 * 1000;
         ctx.instance_buf = gl_buffer_create(inst_cap * sizeof(instance_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
         ctx.instance_capacity = inst_cap;
+        */
 
         const uint32_t transform_cap = 100000;
         ctx.transform_buf = gl_buffer_create(transform_cap * sizeof(mat4_t),  NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
@@ -692,13 +714,18 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
         };
         ctx.depth_reduce_prog = gl_program_create_from_files(depth_reduce_files, ARRAY_SIZE(depth_reduce_files), 0, include_files, ARRAY_SIZE(include_files));
 
+        const char* picking_files[] = {
+            MD_SHADER_DIR "/gfx/write_picking_data.comp",
+        };
+        ctx.write_picking_prog = gl_program_create_from_files(picking_files, ARRAY_SIZE(picking_files), 0, include_files, ARRAY_SIZE(include_files));
+
         const char* compose_files[] = {
             MD_SHADER_DIR "/gfx/fs_quad.vert",
             MD_SHADER_DIR "/gfx/compose.frag",
         };
         ctx.compose_prog = gl_program_create_from_files(compose_files, ARRAY_SIZE(compose_files), 0, include_files, ARRAY_SIZE(include_files));
 
-        if (!ctx.spacefill_prog.id || !ctx.cull_prog.id || !ctx.depth_reduce_prog.id || !ctx.compose_prog.id) {
+        if (!ctx.spacefill_prog.id || !ctx.cull_prog.id || !ctx.depth_reduce_prog.id || !ctx.write_picking_prog.id || !ctx.compose_prog.id) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
             md_gfx_shutdown();
             return false;
@@ -752,6 +779,10 @@ bool md_gfx_initialize(uint32_t width, uint32_t height, md_gfx_config_flags_t fl
             glTextureParameteri(ctx.depth_pyramid_tex.id, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTextureParameteri(ctx.depth_pyramid_tex.id, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         }
+
+        ctx.prev_proj_mat = mat4_ident();
+        ctx.prev_view_mat = mat4_ident();
+        ctx.frame_idx = 0;
     }
 
     return true;
@@ -781,7 +812,7 @@ void md_gfx_shutdown() {
     gl_buffer_destroy(&ctx.sec_str_buf);
     gl_buffer_destroy(&ctx.bb_range_buf);
     gl_buffer_destroy(&ctx.group_buf);
-    gl_buffer_destroy(&ctx.instance_buf);
+    //gl_buffer_destroy(&ctx.instance_buf);
 
     ctx = (gl_context_t){0};
 }
@@ -805,10 +836,6 @@ static bool alloc_structure_data(structure_t* s, uint32_t atom_count, uint32_t b
         ctx.group_offset = 0;
     }
 
-    if (ctx.instance_offset + instance_count > ctx.instance_capacity) {
-        ctx.instance_offset = 0;
-    }
-
     s->atom_offset = ctx.atom_offset;
     ctx.atom_offset += atom_count;
 
@@ -824,13 +851,7 @@ static bool alloc_structure_data(structure_t* s, uint32_t atom_count, uint32_t b
     s->group_offset = ctx.group_offset;
     ctx.group_offset += group_count;
 
-    s->instance_offset = ctx.instance_offset;
-    ctx.instance_offset += instance_count;
-
-    if (instance_count > 0) {
-        s->transform_offset = ctx.transform_offset;
-        ctx.transform_offset += instance_count;
-    }
+    ASSERT(instance_count < ARRAY_SIZE(s->instance));
 
     s->atom_count = atom_count;
     s->bond_count = bond_count;
@@ -838,7 +859,6 @@ static bool alloc_structure_data(structure_t* s, uint32_t atom_count, uint32_t b
     s->bb_range_count = bb_range_count;
     s->group_count = group_count;
     s->instance_count = instance_count;
-    s->transform_count = instance_count;
 
     return true;
 }
@@ -1064,18 +1084,13 @@ bool md_gfx_structure_set_instance_group_ranges(md_gfx_handle_t id, uint32_t off
         return false;
     }
 
-    const uint32_t element_size = sizeof(range_t);
-    instance_t* ptr = glMapNamedBufferRange(ctx.instance_buf.id, s->instance_offset * element_size, s->instance_count * element_size, GL_MAP_WRITE_BIT);
-    if (!ptr) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Could not map buffer");
-        return false;
+    byte_stride = MAX(byte_stride, sizeof(md_gfx_range_t));
+    for (uint32_t i = offset; i < offset + count; ++i) {
+        md_gfx_range_t range = *(const md_gfx_range_t*)((const uint8_t*)group_ranges + byte_stride * i);
+        s->instance[i].group_range.offset = range.beg_idx;
+        s->instance[i].group_range.count  = range.end_idx - range.beg_idx;
     }
-    byte_stride = MAX(element_size, byte_stride);
-    for (uint32_t i = offset; i < count; ++i) {
-        const md_gfx_range_t* in_range = (const md_gfx_range_t*)((const uint8_t*)group_ranges + byte_stride * i);
-        ptr[i].group_range = (range_t){in_range->beg_idx, in_range->end_idx - in_range->beg_idx};
-    }
-    glUnmapNamedBuffer(ctx.instance_buf.id);
+
     return true;
 }
 
@@ -1091,25 +1106,15 @@ bool md_gfx_structure_set_instance_transforms(md_gfx_handle_t id, uint32_t offse
         return false;
     }
 
-    if (offset + count > s->transform_count) {
+    if (offset + count > s->instance_count) {
         md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
         return false;
     }
 
-    const uint32_t element_size = sizeof(mat4_t);
-    if (byte_stride > element_size) {
-        mat4_t* ptr = glMapNamedBufferRange(ctx.transform_buf.id, s->transform_offset * element_size, s->transform_count * element_size, GL_MAP_WRITE_BIT);
-        if (!ptr) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Could not map buffer");
-            return false;
-        }
-        byte_stride = MAX(element_size, byte_stride);
-        for (uint32_t i = offset; i < count; ++i) {
-            ptr[i] = *(const mat4_t*)((const uint8_t*)transforms + byte_stride * i);
-        }
-        glUnmapNamedBuffer(ctx.transform_buf.id);
-    } else {
-        gl_buffer_set_sub_data(ctx.transform_buf, (s->transform_offset + offset) * element_size, count * element_size, transforms);
+    byte_stride = MAX(byte_stride, sizeof(mat4_t));
+    for (uint32_t i = offset; i < offset + count; ++i) {
+        mat4_t mat = *(const mat4_t*)((const uint8_t*)transforms + byte_stride * i);
+        s->instance[i].transform = mat;
     }
 
     return true;
@@ -1303,11 +1308,20 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glClearDepth(1.0);
     glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
 
+    mat4_t prev_transform = mat4_mul(ctx.prev_proj_mat, ctx.prev_view_mat);
+    mat4_t inv_transform = mat4_mul(*inv_view_mat, *inv_proj_mat);
+    mat4_t curr_clip_to_prev_clip_mat = mat4_mul(prev_transform, inv_transform);
+
+    ctx.prev_proj_mat = *proj_mat;
+    ctx.prev_view_mat = *view_mat;
+
     UniformData ubo_data = {
         .world_to_view = *view_mat,
         .world_to_view_normal = mat4_transpose(*inv_view_mat),
         .view_to_clip = *proj_mat,
         .clip_to_view = *inv_proj_mat,
+        .curr_clip_to_prev_clip = curr_clip_to_prev_clip_mat,
+        .prev_world_to_clip = prev_transform,
         .depth_pyramid_width = ctx.depth_pyramid_tex.width,
         .depth_pyramid_height = ctx.depth_pyramid_tex.height,
         .frustum_culling = 1,
@@ -1318,63 +1332,6 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
 
     gl_buffer_set_sub_data(ctx.ubo_buf, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo_buf.id);
-
-    // Clear buffer
-    glClearNamedBufferData(ctx.draw_ind_buf.id, GL_R32UI, GL_RED, GL_UNSIGNED_INT, 0);
-    glClearNamedBufferData(ctx.DEBUG_BUF.id, GL_R32UI, GL_RED, GL_UNSIGNED_INT, 0);
-
-    uint32_t draw_op_count = 0;
-    DrawOp   draw_ops[128];
-
-    uint32_t transform_count = 0;
-    mat4_t transforms[128];
-    transforms[transform_count++] = mat4_ident();
-
-    for (uint32_t i = 0; i < in_draw_op_count; ++i) {
-        // Validate draw op
-        structure_t* s = get_structure(in_draw_ops[i].structure);
-        if (!s) {
-            md_print(MD_LOG_TYPE_ERROR, "Invalid structure supplied in draw operation");
-            continue;   
-        }
-        representation_t* r = get_representation(in_draw_ops[i].representation);
-        if (!r) {
-            md_print(MD_LOG_TYPE_ERROR, "Invalid representation supplied in draw operation");
-            continue;
-        }
-
-        if (s->atom_count > r->color_count) {
-            md_print(MD_LOG_TYPE_ERROR, "Representation does not hold a sufficient quantity of colors to match the structure in draw operation");
-            continue;
-        }
-
-        uint32_t transform_idx = 0; // Zero is the default and represents identity matrix
-        if (in_draw_ops[i].model_mat && !mat4_equal(*in_draw_ops[i].model_mat, mat4_ident())) {
-            transforms[transform_count++] = *in_draw_ops[i].model_mat;
-        }
-
-        // We good, create internal draw op and fill buffer
-        DrawOp op;
-        op.group_offset  = s->group_offset;
-        op.group_count   = s->group_count;
-        op.atom_offset   = s->atom_offset;
-        op.color_offset  = r->color_offset;
-        op.rep_type      = MD_GFX_REP_TYPE_SPACEFILL;
-        op.rep_args[0]   = r->attr.spacefill.radius_scale;
-        op.transform_idx = ctx.transform_offset + transform_idx;
-
-        // We only process 1024 groups at a time in the compute shader
-        // If the structure contains more than this, we split it into several draw ops
-        uint32_t op_count = DIV_UP(s->group_count, CULL_GROUP_SIZE);
-        for (uint32_t op_idx = 0; op_idx < op_count; ++op_idx) {
-            op.group_offset = s->group_offset + op_idx * CULL_GROUP_SIZE;
-            op.group_count  = (op_idx < (op_count - 1)) ? CULL_GROUP_SIZE : s->group_count % CULL_GROUP_SIZE;
-            draw_ops[draw_op_count++] = op;
-        }
-    }
-
-    gl_buffer_set_sub_data(ctx.draw_op_buf, 0, sizeof(DrawOp) * draw_op_count, draw_ops);
-    gl_buffer_set_sub_data(ctx.transform_buf, ctx.transform_offset * sizeof(mat4_t), sizeof(mat4_t) * transform_count, transforms);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, POSITION_BINDING,            ctx.position_buf.id);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, RADIUS_BINDING,              ctx.radius_buf.id);
@@ -1388,24 +1345,129 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DEBUG_BINDING,               ctx.DEBUG_BUF.id);
 
+    // Clear buffer
+    glClearNamedBufferData(ctx.draw_ind_buf.id, GL_R32UI, GL_RED, GL_UNSIGNED_INT, 0);
+
+    uint32_t draw_op_count = 0;
+    DrawOp   draw_ops[512];
+
+    uint32_t transform_count = 0;
+    mat4_t transforms[128];
+    transforms[transform_count++] = mat4_ident();
+
+    for (uint32_t in_idx = 0; in_idx < in_draw_op_count; ++in_idx) {
+        const md_gfx_draw_op_t* in_op = in_draw_ops + in_idx;
+
+        // Validate draw op
+        structure_t* s = get_structure(in_op->structure);
+        if (!s) {
+            md_print(MD_LOG_TYPE_ERROR, "Invalid structure supplied in draw operation");
+            continue;   
+        }
+        representation_t* r = get_representation(in_op->representation);
+        if (!r) {
+            md_print(MD_LOG_TYPE_ERROR, "Invalid representation supplied in draw operation");
+            continue;
+        }
+
+        if (s->atom_count > r->color_count) {
+            md_print(MD_LOG_TYPE_ERROR, "Representation does not hold a sufficient quantity of colors to match the structure in draw operation");
+            continue;
+        }
+
+        if (s->instance_count > 0) {
+            DrawOp out_op;
+            out_op.group_offset  = s->group_offset;
+            out_op.group_count   = s->group_count;
+            out_op.atom_offset   = s->atom_offset;
+            out_op.color_offset  = r->color_offset;
+            out_op.rep_type      = MD_GFX_REP_TYPE_SPACEFILL;
+            out_op.rep_args[0]   = r->attr.spacefill.radius_scale;
+
+            for (uint32_t inst_idx = 0; inst_idx < s->instance_count; ++inst_idx) {
+                uint32_t transform_idx = 0;
+                const instance_t* inst = s->instance + inst_idx;
+                mat4_t model_mat = in_op->model_mat ? mat4_mul(*in_op->model_mat, inst->transform) : inst->transform;
+                if (!mat4_equal(model_mat, mat4_ident())) {
+                    transform_idx = transform_count;
+                    transforms[transform_count++] = model_mat;
+                }
+                out_op.transform_idx = ctx.transform_offset + transform_idx;
+
+                // We only process 1024 groups at a time in the compute shader
+                // If the structure contains more than this, we split it into several draw ops
+                uint32_t out_count = DIV_UP(inst->group_range.count, CULL_GROUP_SIZE);
+                for (uint32_t i = 0; i < out_count; ++i) {
+                    out_op.group_offset = inst->group_range.offset + i * CULL_GROUP_SIZE;
+                    out_op.group_count  = (i < (out_count - 1)) ? CULL_GROUP_SIZE : inst->group_range.count % CULL_GROUP_SIZE;
+                    ASSERT(draw_op_count < ARRAY_SIZE(draw_ops));
+                    draw_ops[draw_op_count++] = out_op;
+                }
+            }
+        } else {
+            uint32_t transform_idx = 0; // This is the default and represents identity matrix
+            if (in_op->model_mat && !mat4_equal(*in_op->model_mat, mat4_ident())) {
+                ASSERT(transform_count < ARRAY_SIZE(transforms));
+                transform_idx = transform_count;
+                transforms[transform_count++] = *in_op->model_mat;
+            }
+
+            // Create internal draw op and fill buffer
+            DrawOp out_op;
+            out_op.group_offset  = s->group_offset;
+            out_op.group_count   = s->group_count;
+            out_op.atom_offset   = s->atom_offset;
+            out_op.color_offset  = r->color_offset;
+            out_op.rep_type      = MD_GFX_REP_TYPE_SPACEFILL;
+            out_op.rep_args[0]   = r->attr.spacefill.radius_scale;
+            out_op.transform_idx = ctx.transform_offset + transform_idx;
+
+            // We only process 1024 groups at a time in the compute shader
+            // If the structure contains more than this, we split it into several draw ops
+            uint32_t out_count = DIV_UP(s->group_count, CULL_GROUP_SIZE);
+            for (uint32_t i = 0; i < out_count; ++i) {
+                out_op.group_offset = s->group_offset + i * CULL_GROUP_SIZE;
+                out_op.group_count  = (i < (out_count - 1)) ? CULL_GROUP_SIZE : s->group_count % CULL_GROUP_SIZE;
+                ASSERT(draw_op_count < ARRAY_SIZE(draw_ops));
+                draw_ops[draw_op_count++] = out_op;
+            }
+        }
+    }
+
+GL_PUSH_GPU_SECTION("UPLOAD DRAW OPS + TRANSFORMS");
+    gl_buffer_set_sub_data(ctx.draw_op_buf, 0, sizeof(DrawOp) * draw_op_count, draw_ops);
+    gl_buffer_set_sub_data(ctx.transform_buf, ctx.transform_offset * sizeof(mat4_t), sizeof(mat4_t) * transform_count, transforms);
+GL_POP_GPU_SECTION();
+
+GL_PUSH_GPU_SECTION("CULL + GENERATE DRAW COMMANDS");
     // CULL + GENERATE DRAW DATA
     glUseProgram(ctx.cull_prog.id);
     glBindTextureUnit(0, ctx.depth_pyramid_tex.id);
     glDispatchCompute(draw_op_count, 1, 1);
+GL_POP_GPU_SECTION();
 
     // BARRIER
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
 
+GL_PUSH_GPU_SECTION("SPACEFILL");
     // DRAW SPACEFILL
     glBindBuffer(GL_PARAMETER_BUFFER, ctx.draw_ind_buf.id);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ctx.draw_ind_buf.id);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx.draw_sphere_idx_buf.id);
     glUseProgram(ctx.spacefill_prog.id);
-    glMultiDrawArraysIndirectCount(GL_POINTS, (const void*)offsetof(DrawIndirect, draw_sphere_cmd), (GLintptr)offsetof(DrawIndirect, draw_sphere_cmd_count), draw_op_count, sizeof(DrawSpheresIndirectCommand));
+    glMultiDrawElementsIndirectCount(GL_POINTS, GL_UNSIGNED_INT, (const void*)offsetof(DrawIndirect, draw_sphere_cmd), (GLintptr)offsetof(DrawIndirect, draw_sphere_cmd_count), draw_op_count, sizeof(DrawSpheresIndirectCommand));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    glBindBuffer(GL_PARAMETER_BUFFER, 0);
+GL_POP_GPU_SECTION();
 
     // DRAW REST
     // TODO
 
+    glMemoryBarrier(GL_FRAMEBUFFER_BARRIER_BIT);
+
     // COMPOSE & OUTPUT
+GL_PUSH_GPU_SECTION("COMPOSE");
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, old_fbo);
     glDrawBuffers(old_draw_buffer_count, old_draw_buffers);
     glViewport(old_viewport[0], old_viewport[1], old_viewport[2], old_viewport[3]);
@@ -1418,8 +1480,10 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glBindTextureUnit(INDEX_TEX_BINDING,  ctx.index_tex.id);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
+GL_POP_GPU_SECTION();
 
     // COMPUTE DEPTH PYRAMID FOR NEXT ITERATION
+GL_PUSH_GPU_SECTION("DEPTH REDUCE");
     glUseProgram(ctx.depth_reduce_prog.id);
     for (uint32_t i = 0; i < ctx.depth_pyramid_tex.levels; ++i) {
         // Output
@@ -1432,7 +1496,9 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
         glDispatchCompute(DIV_UP(width, DEPTH_REDUCE_GROUP_SIZE), DIV_UP(height, DEPTH_REDUCE_GROUP_SIZE), 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
     }
+GL_POP_GPU_SECTION();
 
+GL_PUSH_GPU_SECTION("RESET STATE");
     glUseProgram(0);
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
     glBindBuffer(GL_PARAMETER_BUFFER, 0);
@@ -1465,6 +1531,36 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     } else {
         glDisable(GL_DEPTH_TEST);
     }
+GL_POP_GPU_SECTION();
 
     return true;
+}
+
+bool md_gfx_query_picking(uint32_t mouse_x, uint32_t mouse_y) {
+    if (!validate_context()) return false;
+
+GL_PUSH_GPU_SECTION("WRITE PICKING DATA");
+    glUseProgram(ctx.write_picking_prog.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DEBUG_BINDING, ctx.DEBUG_BUF.id);
+    glBindTextureUnit(DEPTH_TEX_BINDING,  ctx.depth_tex.id);
+    glBindImageTexture(0, ctx.index_tex.id, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32UI);
+    glUniform2i (0, (int)mouse_x, (int)mouse_y);
+    glUniform2f (1, (float)ctx.index_tex.width, (float)ctx.index_tex.height);
+    glDispatchCompute(1,1,1);
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DEBUG_BINDING, 0);
+    glUseProgram(0);
+GL_POP_GPU_SECTION();
+
+    return true;
+}
+
+uint32_t md_gfx_get_picking_idx() {
+    if (!validate_context()) return INVALID_INDEX;
+    return ctx.debug_data->pick_index;
+}
+
+float md_gfx_get_picking_depth() {
+    if (!validate_context()) return 1.0f;
+    return ctx.debug_data->pick_depth;
 }

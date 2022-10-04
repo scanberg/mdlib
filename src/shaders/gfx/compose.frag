@@ -16,8 +16,7 @@ layout(location = 1) out vec2 out_normal;
 layout(location = 2) out vec2 out_velocity;
 layout(location = 3) out vec4 out_index;
 
-void main()
-{
+void main() {
 	gl_FragDepth = texture(in_depth_tex, uv).x;
 	out_color    = texture(in_color_tex, uv);
 	out_normal   = texture(in_normal_tex, uv).xy;

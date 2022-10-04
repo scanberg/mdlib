@@ -1,0 +1,23 @@
+#version 460
+
+#include "common.h"
+
+layout (binding = DEBUG_BINDING, std430) buffer DebugBuffer {
+	DebugData debug;
+};
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(binding = 0, r32ui) uniform readonly uimage2D in_index_img;
+layout(binding = 0) uniform sampler2D in_depth_tex;
+
+layout(location = 0) uniform ivec2 coord;
+layout(location = 1) uniform vec2 image_size;
+
+void main()
+{
+	if (gl_LocalInvocationIndex == 0U) {
+		debug.pick_depth = texture(in_depth_tex, vec2(coord) / image_size).x;
+		debug.pick_index = imageLoad(in_index_img, coord).x;
+	}
+}

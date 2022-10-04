@@ -26,10 +26,6 @@ layout(binding = DRAW_INDIRECT_BINDING) readonly buffer DrawIndirectBuffer {
     DrawIndirect indirect;
 };
 
-layout(binding = DRAW_SPHERE_INDEX_BINDING) readonly buffer SphereIndexBuffer {
-    uint indices[];
-};
-
 layout(location = 0) out VS_GS {
     flat vec4 view_sphere;
     flat vec3 view_velocity;
@@ -38,9 +34,9 @@ layout(location = 0) out VS_GS {
 } OUT;
 
 void main() {
-    uint idx = indices[gl_VertexID];
+    uint idx = gl_VertexID;
     uint draw_idx  = gl_DrawID;
-    uint atom_idx  = indirect.draw_sphere_cmd[draw_idx].atom_offset + idx;
+    uint atom_idx  = gl_BaseInstance + idx;
     uint color_idx = indirect.draw_sphere_cmd[draw_idx].color_offset + idx;
     uint transform_idx = indirect.draw_sphere_cmd[draw_idx].transform_idx;
     float radius_scale = indirect.draw_sphere_cmd[draw_idx].radius_scale;

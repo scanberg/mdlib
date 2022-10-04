@@ -371,7 +371,7 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
                     assert(-1 < row_idx && row_idx < 4);
 
                     if (row_idx == 0) {
-                        mat4_t transform = {0};
+                        mat4_t transform = mat4_ident();
                         md_array_push(data->transforms, transform, alloc);
                         assembly->transform_count += 1;
                     }

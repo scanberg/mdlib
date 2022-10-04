@@ -116,7 +116,7 @@ bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, uint32_t offset, uint3
 bool md_gfx_structure_set_group_ranges(md_gfx_handle_t id, uint32_t offset, uint32_t count, const md_gfx_range_t* ranges, uint32_t byte_stride);
 
 // Parts of a structure can be replicated and transformed as instances
-// This is defined through an atom_range and a transform
+// This is defined through a group range and a transform
 bool md_gfx_structure_set_instance_group_ranges(md_gfx_handle_t id, uint32_t offset, uint32_t count, const md_gfx_range_t* group_ranges, uint32_t byte_stride);
 bool md_gfx_structure_set_instance_transforms  (md_gfx_handle_t id, uint32_t offset, uint32_t count, const struct mat4_t* transforms, uint32_t byte_stride);
 
@@ -137,6 +137,12 @@ bool md_gfx_rep_set_color(md_gfx_handle_t id, uint32_t offset, uint32_t count, c
 
 // Draw (Commit draw operations to render structures with representations)
 bool md_gfx_draw(uint32_t draw_op_count, const md_gfx_draw_op_t* draw_ops, const struct mat4_t* proj_mat, const struct mat4_t* view_mat, const struct mat4_t* inv_proj_mat, const struct mat4_t* inv_view_mat);
+
+// Perform this after the draw operation
+bool md_gfx_query_picking(uint32_t mouse_x, uint32_t mouse_y);
+
+uint32_t md_gfx_get_picking_idx();
+float    md_gfx_get_picking_depth();
 
 #ifdef __cplusplus
 }
