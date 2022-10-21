@@ -8,6 +8,7 @@ INCLUDE(cmake/FindAVX.cmake)
 # Options
 option(MD_UNITTEST "Enable unittest" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
+option(MD_USE_RELATIVE_RESOURCE_PATH "Use relative path for resources, this will copy the relevant files into the binary folder upon building" ON)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -37,7 +38,11 @@ set(MD_WARNING_FLAGS_EXT)
 set(MD_COMMON_COMPILE_FLAGS ${AVX_FLAGS})
 set(MD_RELEASE_COMPILE_FLAGS)
 set(MD_DEBUG_COMPILE_FLAGS)
-set(MD_COMPILE_DEFINITIONS MD_SHADER_DIR=\"shaders\")
+if (MD_USE_RELATIVE_RESOURCE_PATH)
+  set(MD_COMPILE_DEFINITIONS MD_SHADER_DIR="shaders")
+else()
+  set(MD_COMPILE_DEFINITIONS MD_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
+endif()
 set(MD_LIBS)
 set(MD_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
 set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
@@ -80,9 +85,10 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     endif()
 endif()
 
-create_copy_resource_dir_target(md_copy_shaders ${MD_SHADER_SRC_DIR} ${MD_SHADER_DST_DIR})
-
-add_dependencies(mdlib md_copy_shaders)
+if (MD_USE_RELATIVE_RESOURCE_PATH)
+  create_copy_resource_dir_target(md_copy_shaders ${MD_SHADER_SRC_DIR} ${MD_SHADER_DST_DIR})
+  add_dependencies(mdlib md_copy_shaders) 
+endif()
 
 target_include_directories(mdlib PUBLIC
   src/
