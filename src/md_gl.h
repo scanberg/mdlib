@@ -73,7 +73,7 @@ bool md_gl_molecule_free(md_gl_molecule_t* gl_mol);
 bool md_gl_molecule_set_atom_position(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
 bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
 bool md_gl_molecule_set_atom_radius  (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* radius, uint32_t byte_stride);
-bool md_gl_molecule_set_atom_flags   (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const uint8_t* flags, uint32_t byte_stride);
+bool md_gl_molecule_set_atom_flags   (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const md_flags_t* flags, uint32_t byte_stride);
 
 // Call this function after setting new atomic positions to update velocities
 // It will compute a new velocity as the difference between new and old atomic positions

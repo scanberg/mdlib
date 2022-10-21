@@ -274,37 +274,37 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
 }
 
 str_t md_util_element_symbol(md_element_t element) {
-    ASSERT(element < Num_Elements);
+    element = element < Num_Elements ? element : 0;
     return element_symbols[element];
 }
 
 str_t md_util_element_name(md_element_t element) {
-    ASSERT(element < Num_Elements);
+    element = element < Num_Elements ? element : 0;
     return element_names[element];
 }
 
 float md_util_element_vdw_radius(md_element_t element) {
-    ASSERT(element < Num_Elements);
+    element = element < Num_Elements ? element : 0;
     return element_vdw_radii[element];
 }
 
 float md_util_element_covalent_radius(md_element_t element) {
-    ASSERT(element < Num_Elements);
+    element = element < Num_Elements ? element : 0;
     return element_covalent_radii[element];
 }
 
 float md_util_element_atomic_mass(md_element_t element) {
-    ASSERT(element < Num_Elements);
+    element = element < Num_Elements ? element : 0;
     return element_atomic_mass[element];
 }
 
 int md_util_element_max_valence(md_element_t element) {
-    ASSERT(element < Num_Elements);
+    element = element < Num_Elements ? element : 0;
     return (int)element_max_valence[element];
 }
 
 uint32_t md_util_element_cpk_color(md_element_t element) {
-    ASSERT(element < Num_Elements);
+    element = element < Num_Elements ? element : 0;
     return element_cpk_colors[element];
 }
 
@@ -605,6 +605,60 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
     mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
 
     return true;
+}
+
+void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, int64_t count) {
+    md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
+    md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
+    md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
+
+    md_simd_typef vx_max = md_simd_set1f(-FLT_MAX);
+    md_simd_typef vy_max = md_simd_set1f(-FLT_MAX);
+    md_simd_typef vz_max = md_simd_set1f(-FLT_MAX);
+
+    int64_t i = 0;
+    const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
+    for (; i < simd_count; i += md_simd_widthf) {
+        md_simd_typef x = md_simd_loadf(in_x + i);
+        md_simd_typef y = md_simd_loadf(in_y + i);
+        md_simd_typef z = md_simd_loadf(in_z + i);
+        md_simd_typef r = md_simd_loadf(in_r + i);
+
+        vx_min = md_simd_minf(vx_min, md_simd_subf(x, r));
+        vy_min = md_simd_minf(vy_min, md_simd_subf(y, r));
+        vz_min = md_simd_minf(vz_min, md_simd_subf(z, r));
+
+        vx_max = md_simd_maxf(vx_max, md_simd_addf(x, r));
+        vy_max = md_simd_maxf(vy_max, md_simd_addf(y, r));
+        vz_max = md_simd_maxf(vz_max, md_simd_addf(z, r));
+    }
+
+    float x_min = md_simd_horizontal_minf(vx_min);
+    float y_min = md_simd_horizontal_minf(vy_min);
+    float z_min = md_simd_horizontal_minf(vz_min);
+
+    float x_max = md_simd_horizontal_maxf(vx_max);
+    float y_max = md_simd_horizontal_maxf(vy_max);
+    float z_max = md_simd_horizontal_maxf(vz_max);
+
+    for (; i < count; ++i) {
+        float r = in_r[i];
+        x_min = MIN(x_min, in_x[i] - r);
+        y_min = MIN(y_min, in_y[i] - r);
+        z_min = MIN(z_min, in_z[i] - r);
+
+        x_max = MAX(x_max, in_x[i] + r);
+        y_max = MAX(y_max, in_y[i] + r);
+        z_max = MAX(z_max, in_z[i] + r);
+    }
+
+    aabb_min->x = x_min;
+    aabb_min->y = y_min;
+    aabb_min->z = z_min;
+
+    aabb_max->x = x_max;
+    aabb_max->y = y_max;
+    aabb_max->z = z_max;
 }
 
 vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {

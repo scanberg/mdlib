@@ -67,7 +67,7 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
 elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     message(STATUS "mdlib: MSVC configuration was used")
     set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders")
-    list(APPEND MD_WARNING_FLAGS /W4 /wd4201 /wd4324 /wd26451 /MP /GR- /fp:fast)
+    list(APPEND MD_WARNING_FLAGS /W4 /wd4201 /wd4305 /wd4324 /wd26451 /MP /GR- /fp:fast)
     list(APPEND MD_WARNING_FLAGS_EXT /W2)
     list(APPEND MD_COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
     

@@ -276,7 +276,9 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, const xyz_format_t*
     
     if (format->flags & XYZ_ELEMENT_SYMBOL) {
         str_t element = str_trim_whitespace(substr(line, format->element.beg, format->element.end - format->element.beg));
-        strncpy(coord->element_symbol, element.ptr, MIN(element.len, (int)sizeof(coord->element_symbol)));
+        size_t len    = (size_t)MIN(element.len, (int64_t)sizeof(coord->element_symbol)-1);
+        strncpy(coord->element_symbol, element.ptr, len);
+        coord->element_symbol[len] = '\0';
     } else if (format->flags & XYZ_ATOMIC_NUMBER) {
         coord->atomic_number = extract_int(line, format->element.beg, format->element.end);
     } else {
@@ -601,7 +603,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
         mdl.beg_coord_index = (int32_t)md_array_size(data->coordinates);
         for (int32_t i = 0; i < expected_count; ++i) {
             str_t line = {buf, md_file_read_line(file, buf, sizeof(buf))};
-            md_xyz_coordinate_t coord;
+            md_xyz_coordinate_t coord = {0};
             if (extract_coord(&coord, &format, line)) {
                 md_array_push(data->coordinates, coord, alloc);
             } else {
@@ -610,7 +612,6 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
             }
         }
         mdl.end_coord_index = (int32_t)md_array_size(data->coordinates);
-
         md_array_push(data->models, mdl, alloc);
     }
         
@@ -716,7 +717,7 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
 
     for (int32_t i = 0; i < expected_count; ++i) {
         str_t line = {buf, md_file_read_line(file, buf, sizeof(buf))};
-        md_xyz_coordinate_t coord;
+        md_xyz_coordinate_t coord = {0};
         if (extract_coord(&coord, &format, line)) {
             md_array_push(data.coordinates, coord, alloc);
         } else {

@@ -551,8 +551,8 @@ bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, 
     return false;
 }
 
-bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const uint8_t* flags, uint32_t byte_stride) {
-    if (ext_mol && flags) {
+bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_flags_t* flag_data, uint32_t byte_stride) {
+    if (ext_mol && flag_data) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id) {
             md_print(MD_LOG_TYPE_ERROR, "Molecule flags buffer missing");
@@ -562,13 +562,13 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
             md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
             return false;
         }
-        byte_stride = MAX(sizeof(uint8_t), byte_stride);
-        if (byte_stride > sizeof(uint8_t)) {
+        byte_stride = MAX(sizeof(md_flags_t), byte_stride);
+        if (byte_stride > sizeof(md_flags_t)) {
             glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
-            uint8_t* data = (uint8_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            md_flags_t* data = (md_flags_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (data) {
                 for (uint32_t i = offset; i < count; ++i) {
-                    data[i] = flags[byte_stride * i];
+                    data[i] = *(const md_flags_t*)((const uint8_t*)flag_data + byte_stride * i);
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -579,7 +579,7 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
             return false;
         }
         else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS], offset * sizeof(uint8_t), count * sizeof(uint8_t), flags);
+            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS], offset * sizeof(md_flags_t), count * sizeof(md_flags_t), flag_data);
             return true;
         }
     }
@@ -1025,7 +1025,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         gl_mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV]   = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
         gl_mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
         gl_mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS]          = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 1, NULL, GL_STATIC_DRAW);
-        gl_mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS]           = gl_buffer_create(gl_mol->atom_count * sizeof(uint8_t),   NULL, GL_STATIC_DRAW);
+        gl_mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS]           = gl_buffer_create(gl_mol->atom_count * sizeof(md_flags_t), NULL, GL_STATIC_DRAW);
 
         if (mol->atom.x && mol->atom.y && mol->atom.z) {
             md_gl_molecule_set_atom_position(ext_mol, 0, gl_mol->atom_count, mol->atom.x, mol->atom.y, mol->atom.z, 0);
@@ -1438,7 +1438,7 @@ static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, flo
 
     glEnableVertexAttribArray(3);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
-    glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, 0, 0);
+    glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT, 0, 0);
 
     glEnableVertexAttribArray(4);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);
@@ -1485,7 +1485,7 @@ static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float
 
     glEnableVertexAttribArray(2);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
-    glVertexAttribIPointer(2, 1, GL_UNSIGNED_BYTE, 0, 0);
+    glVertexAttribIPointer(2, 1, GL_UNSIGNED_INT, 0, 0);
 
     glEnableVertexAttribArray(3);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);

@@ -15,7 +15,7 @@ typedef int32_t     md_residue_id_t;
 typedef int32_t     md_chain_idx_t;
 typedef int32_t     md_molecule_idx_t;
 typedef uint32_t    md_secondary_structure_t;
-typedef uint8_t     md_flags_t;
+typedef uint32_t    md_flags_t;
 typedef uint8_t     md_element_t;
 typedef uint8_t     md_ramachandran_type_t;
 typedef mat3_t      md_coordinate_frame_t;
@@ -128,10 +128,10 @@ typedef struct md_molecule_bond_data_t {
 } md_molecule_bond_data_t;
 
 // This represents symmetries which are instanced, commonly found
-// in PDB data. It is up to the renderer to properly render this instanced.
+// in PDB data. It is up to the renderer to properly render this instanced data.
 typedef struct md_molecule_instance_data_t {
     int64_t count;
-    md_range_t* residue_range;
+    md_range_t* atom_range;
     md_label_t* label;
     mat4_t* transform;
 } md_molecule_instance_data_t;

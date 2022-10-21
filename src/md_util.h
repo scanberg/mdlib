@@ -105,6 +105,9 @@ static inline md_vec3_soa_t md_molecule_vel(md_molecule_t* mol) {
     return soa;
 }
 
+// Computes the minimum axis aligned bounding box for a set of spheres with a given radius
+void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, int64_t count);
+
 // Computes the center of mass for a set of points with a given weight
 // x, y, z -> Arrays containing coordinates
 // w -> Array of weights (optional): set as NULL to use equal weights

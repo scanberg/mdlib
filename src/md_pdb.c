@@ -564,6 +564,11 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         instance_label.len = (uint8_t)snprintf(instance_label.buf, sizeof(instance_label.buf), "ASM_%i", assembly->id);
 
         for (int64_t tidx = assembly->transform_offset; tidx < assembly->transform_offset + assembly->transform_count; ++tidx) {
+            if (mat4_equal(data->transforms[tidx], mat4_ident())) {
+                // Do not add the identity transform as an instance, that is implicit in the structure
+                // Only add the additional instances
+                continue;
+            }
             md_range_t instance_range = {0,0};
             for (size_t cidx = 0; cidx < ARRAY_SIZE(data->assemblies[aidx].apply_to_chains); ++cidx) {
                 // A transform can be applied to multiple chains,
@@ -577,17 +582,17 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                 md_chain_idx_t chain_idx = find_chain_idx(chain_id, mol);
                 if (chain_idx != -1) {
                     if (instance_range.beg == 0 && instance_range.end == 0) {
-                        instance_range = mol->chain.residue_range[chain_idx];
+                        instance_range = mol->chain.atom_range[chain_idx];
                     } else {
                         // Append if possible
-                        if (instance_range.end == mol->chain.residue_range[chain_idx].beg) {
-                            instance_range.end = mol->chain.residue_range[chain_idx].end;
+                        if (instance_range.end == mol->chain.atom_range[chain_idx].beg) {
+                            instance_range.end = mol->chain.atom_range[chain_idx].end;
                         } else {
                             // Discontinous range, we need to commit and reset the range
-                            md_array_push(mol->instance.residue_range, instance_range, alloc);
+                            md_array_push(mol->instance.atom_range, instance_range, alloc);
                             md_array_push(mol->instance.label, instance_label, alloc);
                             md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
-                            instance_range = mol->chain.residue_range[chain_idx];
+                            instance_range = mol->chain.atom_range[chain_idx];
                         }
                     }
                 } else {
@@ -597,13 +602,15 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                 }
             }
 
-            md_array_push(mol->instance.residue_range, instance_range, alloc);
+            md_array_push(mol->instance.atom_range, instance_range, alloc);
             md_array_push(mol->instance.label, instance_label, alloc);
             md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
         }
     }
 
-    mol->instance.count = md_array_size(mol->instance.residue_range);
+    mol->instance.count = md_array_size(mol->instance.atom_range);
+    ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
+    ASSERT(md_array_size(mol->instance.transform) == mol->instance.count);
 
     return true;
 }
