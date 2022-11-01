@@ -56,6 +56,99 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     memset(mol, 0, sizeof(md_molecule_t));
 }
 
+// This is from Mathis work in Openspace modified slightly
+// Some macros to help get the job done. The idea is to clone each field in src to dst,
+// but some index fields need also to be incremented to point to the cloned data.
+
+#define ARRAY_PUSH(A, B) \
+        if (src->A.B) md_array_push_array(dst->A.B, src->A.B, src->A.count, alloc)
+
+#define ARRAY_INCREMENT(A, B, C) \
+        for (int64_t j = 0; j < src->A.count; j++) \
+            if (src->A.B) dst->A.B[dst->A.count + j] += C
+
+#define ARRAY_INCREMENT_FIELD(A, B, C, D) \
+        for (int64_t j = 0; j < src->A.count; j++) \
+            if (src->A.B) dst->A.B[dst->A.count + j].C += D
+
+void md_molecule_append(md_molecule_t* dst, const md_molecule_t* src, md_allocator_i* alloc) {
+    ASSERT(dst);
+    ASSERT(src);
+    ASSERT(alloc);
+
+    ARRAY_PUSH(atom, x);
+    ARRAY_PUSH(atom, y);
+    ARRAY_PUSH(atom, z);
+    ARRAY_PUSH(atom, vx);
+    ARRAY_PUSH(atom, vy);
+    ARRAY_PUSH(atom, vz);
+    ARRAY_PUSH(atom, radius);
+    ARRAY_PUSH(atom, mass);
+    ARRAY_PUSH(atom, valence);
+    ARRAY_PUSH(atom, element);
+    ARRAY_PUSH(atom, name);
+    ARRAY_PUSH(atom, flags);
+    ARRAY_PUSH(atom, residue_idx);
+    ARRAY_PUSH(atom, chain_idx);
+
+    ARRAY_INCREMENT(atom, residue_idx, src->residue.count);
+    ARRAY_INCREMENT(atom, chain_idx,   src->chain.count);
+
+    ARRAY_PUSH(backbone, atoms);
+    ARRAY_PUSH(backbone, angle);
+    ARRAY_PUSH(backbone, secondary_structure);
+    ARRAY_PUSH(backbone, ramachandran_type);
+    ARRAY_PUSH(backbone, residue_idx);
+
+    md_array_push_array(dst->backbone.range, src->backbone.range, src->backbone.range_count, alloc);
+
+    ARRAY_INCREMENT(backbone, residue_idx, src->residue.count);
+    ARRAY_INCREMENT_FIELD(backbone, atoms, c,  src->backbone.count);
+    ARRAY_INCREMENT_FIELD(backbone, atoms, ca, src->backbone.count);
+    ARRAY_INCREMENT_FIELD(backbone, atoms, n,  src->backbone.count);
+    ARRAY_INCREMENT_FIELD(backbone, atoms, o,  src->backbone.count);
+
+    ARRAY_PUSH(chain, id);
+    ARRAY_PUSH(chain, residue_range);
+    ARRAY_PUSH(chain, atom_range);
+    ARRAY_INCREMENT_FIELD(chain, residue_range, beg, src->residue.count);
+    ARRAY_INCREMENT_FIELD(chain, residue_range, end, src->residue.count);
+    ARRAY_INCREMENT_FIELD(chain, atom_range, beg, src->atom.count);
+    ARRAY_INCREMENT_FIELD(chain, atom_range, end, src->atom.count);
+
+    ARRAY_PUSH(covalent_bond, bond);
+    ARRAY_INCREMENT_FIELD(covalent_bond, bond, idx[0], src->atom.count);
+    ARRAY_INCREMENT_FIELD(covalent_bond, bond, idx[1], src->atom.count);
+
+    ARRAY_PUSH(hydrogen_bond, bond);
+    ARRAY_INCREMENT_FIELD(hydrogen_bond, bond, idx[0], src->atom.count);
+    ARRAY_INCREMENT_FIELD(hydrogen_bond, bond, idx[1], src->atom.count);
+
+    ARRAY_PUSH(residue, name);
+    ARRAY_PUSH(residue, id);
+    ARRAY_PUSH(residue, atom_range);
+    ARRAY_PUSH(residue, internal_covalent_bond_range);
+    ARRAY_PUSH(residue, complete_covalent_bond_range);
+    ARRAY_INCREMENT_FIELD(residue, atom_range, beg, src->atom.count);
+    ARRAY_INCREMENT_FIELD(residue, atom_range, end, src->atom.count);
+    ARRAY_INCREMENT_FIELD(residue, internal_covalent_bond_range, beg, src->covalent_bond.count);
+    ARRAY_INCREMENT_FIELD(residue, internal_covalent_bond_range, end, src->covalent_bond.count);
+    ARRAY_INCREMENT_FIELD(residue, complete_covalent_bond_range, beg, src->covalent_bond.count);
+    ARRAY_INCREMENT_FIELD(residue, complete_covalent_bond_range, end, src->covalent_bond.count);
+
+    dst->atom.count           += src->atom.count;
+    dst->backbone.count       += src->backbone.count;
+    dst->backbone.range_count += src->backbone.range_count;
+    dst->chain.count          += src->chain.count;
+    dst->covalent_bond.count  += src->covalent_bond.count;
+    dst->hydrogen_bond.count  += src->hydrogen_bond.count;
+    dst->residue.count        += src->residue.count;
+}
+
+#undef ARRAY_PUSH
+#undef ARRAY_INCREMENT
+#undef ARRAY_INCREMENT_FIELD
+
 #ifdef __cplusplus
 }
 #endif

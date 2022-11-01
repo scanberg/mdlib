@@ -161,6 +161,7 @@ constexpr size_t array_size_impl(T (&)[N]) { return N; }
 
 #ifdef  __cplusplus
 
+#ifndef defer
 struct ExitScopeHelp {
     template <typename T>
     struct ExitScope {
@@ -177,6 +178,7 @@ struct ExitScopeHelp {
 };
 
 #define defer [[maybe_unused]] const auto& CONCAT(defer__, __LINE__) = ExitScopeHelp() + [&]()
+#endif
 
 #endif //  __cplusplus
 

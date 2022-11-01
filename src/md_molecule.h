@@ -147,22 +147,6 @@ typedef struct md_molecule_t {
     md_molecule_instance_data_t instance;
 } md_molecule_t;
 
-#if 0
-// This is not really well defined yet since it has no real use case so far.
-struct md_macro_molecule {
-    int64_t num_molecules;
-    md_molecule* molecules;
-
-    struct {
-        int64_t             count;
-        md_molecule_idx_t*    idx;
-        const char**        label;
-        mat3*               transform;
-    } instance;
-};
-#endif
-
-
 /*
 
 The molecule api is just a convenience API for abstracing the functionality of initializing molecule data
@@ -182,9 +166,12 @@ typedef struct md_molecule_api {
     bool (*init_from_file)(md_molecule_t* mol, str_t filename, struct md_allocator_i* alloc);
 } md_molecule_api;
 
-// @NOTE(RS): This is just to be thurough,
+// @NOTE(Robin): This is just to be thorough,
 // I would recommend using an explicit arena allocator for the molecule and just clearing that in one go instead of calling this.
 void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc);
+
+// Append the internal data of one molecule to another
+void md_molecule_append(md_molecule_t* dst_mol, const md_molecule_t* src_mol, struct md_allocator_i* alloc);
 
 // macro concatenate trick to assert that the input is a valid compile time C-string
 #define MAKE_LABEL(cstr) {cstr"", sizeof(cstr)-1}
