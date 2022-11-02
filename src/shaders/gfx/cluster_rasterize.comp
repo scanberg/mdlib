@@ -1,0 +1,137 @@
+#version 460
+
+#extension GL_ARB_gpu_shader_int64 : enable
+#extension GL_NV_shader_atomic_int64 : require
+
+#include "common.h"
+#include "culling.glsl"
+
+layout (binding = 0, std140) uniform UboBuffer {
+    UniformData ubo;
+};
+
+layout (binding = TRANSFORM_BINDING, std430) readonly buffer TransformBuffer {
+	mat4 in_transforms[];
+};
+
+layout(binding = CLUSTER_BOUNDS_BINDING) readonly buffer ClusterBoundsBuffer {
+    ClusterBounds in_cluster_bounds[];
+};
+
+layout(binding = CLUSTER_POS_RAD_BINDING) readonly buffer ClusterPosRadBuffer {
+    CompressedPosRad in_cluster_pos_rad[];
+};
+
+layout (binding = CLUSTER_INST_DATA_BINDING, std430) readonly buffer ClusterInstanceBuffer {
+	ClusterInstance in_cluster_inst_data[];
+};
+
+layout (binding = CLUSTER_INST_RAST_IDX_BINDING, std430) readonly buffer InClustInstIdxBuffer {
+	uint in_cluster_inst_idx[];
+};
+
+layout (binding = VIS_BINDING, std430) buffer VisBuffer {
+	uint64_t vis_buf[];
+};
+
+// 2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere. Michael Mara, Morgan McGuire. 2013
+// There is an assumption here that the projection matrix is a symmetric projection matrix, hence only P[0][0] and P[1][1] is used.
+void project_sphere(vec4 S, float P00, float P11, out vec4 aabb)
+{
+    P00 = -P00;
+    P11 = -P11;
+	vec2 cx = -S.xz;
+	vec2 vx = vec2(sqrt(dot(cx, cx) - S.w * S.w), S.w);
+	vec2 minx = mat2(vx.x, vx.y, -vx.y, vx.x) * cx;
+	vec2 maxx = mat2(vx.x, -vx.y, vx.y, vx.x) * cx;
+
+	vec2 cy = -S.yz;
+	vec2 vy = vec2(sqrt(dot(cy, cy) - S.w * S.w), S.w);
+	vec2 miny = mat2(vy.x, vy.y, -vy.y, vy.x) * cy;
+	vec2 maxy = mat2(vy.x, -vy.y, vy.y, vy.x) * cy;
+
+	aabb = vec4(minx.x / minx.y * P00, miny.x / miny.y * P11, maxx.x / maxx.y * P00, maxy.x / maxy.y * P11);
+}
+
+float sphere_test(in vec4 view_sphere, in vec3 view_dir) {
+    vec3 m = -view_sphere.xyz;
+    vec3 d = view_dir;
+    float r = view_sphere.w;
+    float b = dot(m, d);
+    float c = dot(m, m) - r*r;
+    float discr = b*b - c;
+    return discr < 0.0 ? POS_INF : -b -sqrt(discr);
+}
+
+void write_vis(ivec2 coord, float depth, uint payload) {
+	ivec2 c = clamp(coord, ivec2(0,0), ivec2(ubo.render_width-1, ubo.render_height-1));
+	uint idx = coord.y * ubo.render_width + coord.x;
+	uint64_t cur_val = vis_buf[idx];
+	float cur_depth = uintBitsToFloat(uint(cur_val >> 32));
+	if (depth < cur_depth) {
+		uint64_t val = (uint64_t(floatBitsToUint(depth)) << 32) | payload;
+		atomicMin(vis_buf[idx], val);
+	}
+}
+
+layout (local_size_x = CLUSTER_RASTERIZE_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+shared ClusterBounds clust_bounds;
+shared ClusterInstance clust_inst;
+shared uint clust_inst_idx;
+shared mat4 M;
+
+layout(binding = 0) uniform sampler2D in_depth_pyramid_tex;
+
+void main() {
+	if (gl_LocalInvocationID.x == 0) {
+		clust_inst_idx = in_cluster_inst_idx[gl_WorkGroupID.x];
+		clust_inst = in_cluster_inst_data[clust_inst_idx];
+		clust_bounds = in_cluster_bounds[clust_inst.cluster_idx];
+		M = in_transforms[clust_inst.transform_idx];
+	}
+
+	barrier();
+
+	uint cluster_range = clust_inst.cluster_range;
+	uint cluster_offset = cluster_range >> 8;
+	uint cluster_size	= cluster_range & 0xFF;
+	uint cluster_idx = clust_inst.cluster_idx;
+	mat4 MV = ubo.world_to_view * M;
+	mat4 P = ubo.view_to_clip;
+
+	for (uint i = gl_LocalInvocationID.x; i < cluster_size; i += gl_WorkGroupSize.x) {
+		uint idx = cluster_offset + i;
+		uint write_idx = (clust_inst_idx << 8) | i;
+		
+		CompressedPosRad ccoords = in_cluster_pos_rad[idx];
+
+		vec4 ncoords = vec4(unpackUnorm2x16(ccoords.xy), unpackUnorm2x16(ccoords.zr));
+		vec4 coords = mix(clust_bounds.cluster_min, clust_bounds.cluster_max, ncoords);
+
+		vec4 view_pos = MV * vec4(coords.xyz,1);
+		vec4 view_sphere = vec4(view_pos.xyz, coords.w);
+
+		float clip_z = -P[2][2] - P[3][2] / (view_sphere.z + view_sphere.w);
+
+		// Rasterize it!
+		vec4 clip_aabb;
+        project_sphere(view_sphere, P[0][0], P[1][1], clip_aabb);
+		vec4 uv_aabb = clip_aabb * 0.5 + 0.5;
+
+		vec2 ext = vec2(ubo.render_width, ubo.render_height);
+		ivec2 min_coord = ivec2(uv_aabb.xy * ext + 0.5);
+		ivec2 max_coord = ivec2(uv_aabb.zw * ext + 0.5);
+
+		ivec2 minc = clamp(min(min_coord, max_coord), ivec2(0,0), ivec2(ubo.render_width, ubo.render_height));
+		ivec2 maxc = clamp(max(min_coord, max_coord), ivec2(0,0), ivec2(ubo.render_width, ubo.render_height));
+		ivec2 ext_coord = max(maxc - minc, ivec2(1,1));
+
+		for (int y = minc.y; y < maxc.y; y += 1) {
+			for (int x = minc.x; x < maxc.x; x += 1) {
+				float depth = clip_z * 0.5 + 0.5;
+				write_vis(ivec2(x,y), depth, write_idx);
+			}
+		}
+	}
+}

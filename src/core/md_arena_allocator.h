@@ -50,7 +50,7 @@ uint64_t md_vm_arena_get_pos(md_vm_arena_t* vm_arena);
 
 struct md_allocator_i md_vm_arena_create_interface(md_vm_arena_t* arena);
 
-// Convenience functions for storing a position upon begin and resetting to that position upon end
+// Convenience functions for storing the position upon begin and resetting to that position upon end
 md_vm_arena_temp_t md_vm_arena_temp_begin(md_vm_arena_t* arena);
 void md_vm_arena_temp_end(md_vm_arena_temp_t temp);
 

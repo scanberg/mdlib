@@ -8,8 +8,7 @@ layout(binding = 1) uniform sampler2D in_tex;
 layout(location = 0) uniform uvec2 image_size;
 layout(location = 1) uniform float lod;
 
-void main()
-{
+void main() {
 	uvec2 pos = gl_GlobalInvocationID.xy;
 
 	// Sampler is set up to do min reduction, so this computes the minimum depth of a 2x2 texel quad

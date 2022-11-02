@@ -39,13 +39,14 @@ set(MD_COMMON_COMPILE_FLAGS ${AVX_FLAGS})
 set(MD_RELEASE_COMPILE_FLAGS)
 set(MD_DEBUG_COMPILE_FLAGS)
 if (MD_USE_RELATIVE_RESOURCE_PATH)
-  set(MD_COMPILE_DEFINITIONS MD_SHADER_DIR="shaders")
+  set(MD_SHADER_DIR "shaders")
+  set(MD_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
+  set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
 else()
-  set(MD_COMPILE_DEFINITIONS MD_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
+  set(MD_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
 endif()
 set(MD_LIBS)
-set(MD_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
-set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
+
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   list(APPEND MD_WARNING_FLAGS_EXT -w)
@@ -97,7 +98,7 @@ target_include_directories(mdlib PUBLIC
   ext/gl3w/
   ext/svd3/
   ext/xtc/)
-target_compile_definitions(mdlib PRIVATE ${MD_COMPILE_DEFINITIONS})
+target_compile_definitions(mdlib PUBLIC MD_SHADER_DIR="${MD_SHADER_DIR}" PRIVATE ${MD_COMPILE_DEFINITIONS})
 target_compile_options(mdlib PRIVATE ${MD_WARNING_FLAGS} ${MD_COMMON_COMPILE_FLAGS})
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_WARNING_FLAGS_EXT})
 add_compile_options_config(DEBUG ${MD_DEBUG_COMPILE_FLAGS})

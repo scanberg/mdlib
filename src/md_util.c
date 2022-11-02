@@ -607,7 +607,54 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
     return true;
 }
 
-void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, int64_t count) {
+void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count) {
+    md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
+    md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
+    md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
+
+    md_simd_typef vx_max = md_simd_set1f(-FLT_MAX);
+    md_simd_typef vy_max = md_simd_set1f(-FLT_MAX);
+    md_simd_typef vz_max = md_simd_set1f(-FLT_MAX);
+
+    int64_t i = 0;
+    const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
+    for (; i < simd_count; i += md_simd_widthf) {
+        md_simd_typef x = md_simd_loadf(in_x + i);
+        md_simd_typef y = md_simd_loadf(in_y + i);
+        md_simd_typef z = md_simd_loadf(in_z + i);
+
+        vx_min = md_simd_minf(vx_min, x);
+        vy_min = md_simd_minf(vy_min, y);
+        vz_min = md_simd_minf(vz_min, z);
+
+        vx_max = md_simd_maxf(vx_max, x);
+        vy_max = md_simd_maxf(vy_max, y);
+        vz_max = md_simd_maxf(vz_max, z);
+    }
+
+    float x_min = md_simd_horizontal_minf(vx_min);
+    float y_min = md_simd_horizontal_minf(vy_min);
+    float z_min = md_simd_horizontal_minf(vz_min);
+
+    float x_max = md_simd_horizontal_maxf(vx_max);
+    float y_max = md_simd_horizontal_maxf(vy_max);
+    float z_max = md_simd_horizontal_maxf(vz_max);
+
+    for (; i < count; ++i) {
+        x_min = MIN(x_min, in_x[i]);
+        y_min = MIN(y_min, in_y[i]);
+        z_min = MIN(z_min, in_z[i]);
+
+        x_max = MAX(x_max, in_x[i]);
+        y_max = MAX(y_max, in_y[i]);
+        z_max = MAX(z_max, in_z[i]);
+    }
+
+    *aabb_min = (vec3_t){x_min, y_min, z_min};
+    *aabb_max = (vec3_t){x_max, y_max, z_max};
+}
+
+void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, int64_t count) {
     md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
     md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
     md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
@@ -652,13 +699,8 @@ void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x,
         z_max = MAX(z_max, in_z[i] + r);
     }
 
-    aabb_min->x = x_min;
-    aabb_min->y = y_min;
-    aabb_min->z = z_min;
-
-    aabb_max->x = x_max;
-    aabb_max->y = y_max;
-    aabb_max->z = z_max;
+    *aabb_min = (vec3_t){x_min, y_min, z_min};
+    *aabb_max = (vec3_t){x_max, y_max, z_max};
 }
 
 vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {
@@ -1370,7 +1412,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
                 for (int64_t res_idx = mol->chain.residue_range[chain_idx].beg; res_idx < mol->chain.residue_range[chain_idx].end; ++res_idx) {
                     md_backbone_atoms_t atoms;
                     if (md_util_backbone_atoms_extract_from_residue_idx(&atoms, (int32_t)res_idx, mol)) {
-                        md_array_push(backbone, atoms, default_temp_allocator);
+                        md_array_push(backbone, atoms, default_allocator);
                     } else {
                         if (md_array_size(backbone) >= MIN_BACKBONE_LENGTH) {
                             // Commit the backbone
@@ -1389,6 +1431,8 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
                 md_array_shrink(backbone, 0);
             }
 
+            md_array_free(backbone, default_allocator);
+
             mol->backbone.range_count = md_array_size(mol->backbone.range);
             mol->backbone.count = md_array_size(mol->backbone.atoms);
 
@@ -1405,6 +1449,153 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     }
 
     return true;
+}
+
+/*
+This is blatantly stolen and modified from Arseny Kapoulkines Mesh optimizer
+https://github.com/zeux/meshoptimizer/
+
+MIT License
+Copyright (c) 2016-2022 Arseny Kapoulkine
+*/
+
+// "Insert" two 0 bits after each of the 10 low bits of x
+static inline uint32_t part1By2(uint32_t x) {
+    x &= 0x000003ff;                  // x = ---- ---- ---- ---- ---- --98 7654 3210
+    x = (x ^ (x << 16)) & 0xff0000ff; // x = ---- --98 ---- ---- ---- ---- 7654 3210
+    x = (x ^ (x << 8)) & 0x0300f00f;  // x = ---- --98 ---- ---- 7654 ---- ---- 3210
+    x = (x ^ (x << 4)) & 0x030c30c3;  // x = ---- --98 ---- 76-- --54 ---- 32-- --10
+    x = (x ^ (x << 2)) & 0x09249249;  // x = ---- 9--8 --7- -6-- 5--4 --3- -2-- 1--0
+    return x;
+}
+
+static void computeOrder(uint32_t* result, const float* vx, const float* vy, const float* vz, size_t count, size_t byte_stride) {
+    float minv[3] = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
+    float maxv[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
+    byte_stride = MAX(byte_stride, sizeof(float));
+    for (size_t i = 0; i < count; ++i) {
+        float x = *(float*)((const char*)vx + byte_stride * i);
+        float y = *(float*)((const char*)vy + byte_stride * i);
+        float z = *(float*)((const char*)vz + byte_stride * i);
+
+        minv[0] = MIN(minv[0], x);
+        maxv[0] = MAX(maxv[0], x);
+
+        minv[1] = MIN(minv[1], y);
+        maxv[1] = MAX(maxv[1], y);
+
+        minv[2] = MIN(minv[2], z);
+        maxv[2] = MAX(maxv[2], z);
+    }
+
+    float extent = 0.f;
+
+    extent = (maxv[0] - minv[0]) < extent ? extent : (maxv[0] - minv[0]);
+    extent = (maxv[1] - minv[1]) < extent ? extent : (maxv[1] - minv[1]);
+    extent = (maxv[2] - minv[2]) < extent ? extent : (maxv[2] - minv[2]);
+
+    float scale = extent == 0 ? 0.f : 1.f / extent;
+
+    // generate Morton order based on the position inside a unit cube
+    for (size_t i = 0; i < count; ++i) {
+        int x = (int)((vx[i] - minv[0]) * scale * 1023.f + 0.5f);
+        int y = (int)((vy[i] - minv[1]) * scale * 1023.f + 0.5f);
+        int z = (int)((vz[i] - minv[2]) * scale * 1023.f + 0.5f);
+
+        result[i] = part1By2(x) | (part1By2(y) << 1) | (part1By2(z) << 2);
+    }
+}
+
+static void computeHistogram(uint32_t hist[1024][3], const uint32_t* data, size_t count) {
+    // compute 3 10-bit histograms in parallel
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t id = data[i];
+
+        hist[(id >> 0)  & 1023][0]++;
+        hist[(id >> 10) & 1023][1]++;
+        hist[(id >> 20) & 1023][2]++;
+    }
+
+    uint32_t sumx = 0, sumy = 0, sumz = 0;
+
+    // replace histogram data with prefix histogram sums in-place
+    for (int i = 0; i < 1024; ++i) {
+        uint32_t hx = hist[i][0], hy = hist[i][1], hz = hist[i][2];
+
+        hist[i][0] = sumx;
+        hist[i][1] = sumy;
+        hist[i][2] = sumz;
+
+        sumx += hx;
+        sumy += hy;
+        sumz += hz;
+    }
+
+    ASSERT(sumx == count && sumy == count && sumz == count);
+}
+
+static void radixPass(uint32_t* destination, const uint32_t* source, const uint32_t* keys, size_t count, uint32_t hist[1024][3], int pass) {
+    int bitoff = pass * 10;
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t id = (keys[source[i]] >> bitoff) & 1023;
+        destination[hist[id][pass]++] = source[i];
+    }
+}
+
+void md_util_spatial_sort_soa(uint32_t* source, const float* x, const float* y, const float* z, int64_t count) {
+    if (!source || !z || !y || !z || count <= 0) return;
+
+    md_allocator_i* alloc = default_allocator;
+
+    uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
+    computeOrder(keys, x, y, z, count, 0);
+
+    // Important to zero the data here, since we increment when computing the histogram
+    uint32_t hist[1024][3] = {0};
+    computeHistogram(hist, keys, count);
+
+    uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
+    for (size_t i = 0; i < count; ++i) {
+        scratch[i] = (uint32_t)i;
+    }
+
+    // 3-pass radix sort computes the resulting order into scratch
+    radixPass(source, scratch, keys, count, hist, 0);
+    radixPass(scratch, source, keys, count, hist, 1);
+    radixPass(source, scratch, keys, count, hist, 2);
+
+    md_free(alloc, scratch, sizeof(uint32_t) * count);
+    md_free(alloc, keys,    sizeof(uint32_t) * count);
+}
+
+void md_util_spatial_sort(uint32_t* source, const vec3_t* xyz, int64_t count) {
+    if (!source || !xyz || count <= 0) return;
+
+    md_allocator_i* alloc = default_allocator;
+
+    uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
+    const float* x = &xyz[0];
+    const float* y = &xyz[1];
+    const float* z = &xyz[2];
+    computeOrder(keys, x, y, z, count, sizeof(vec3_t));
+
+    // Important to zero the data here, since we increment when computing the histogram
+    uint32_t hist[1024][3] = {0};
+    computeHistogram(hist, keys, count);
+
+    uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
+    for (size_t i = 0; i < count; ++i) {
+        scratch[i] = (uint32_t)i;
+    }
+
+    // 3-pass radix sort computes the resulting order into scratch
+    radixPass(source, scratch, keys, count, hist, 0);
+    radixPass(scratch, source, keys, count, hist, 1);
+    radixPass(source, scratch, keys, count, hist, 2);
+
+    md_free(alloc, scratch, sizeof(uint32_t) * count);
+    md_free(alloc, keys,    sizeof(uint32_t) * count);
 }
 
 #ifdef __cplusplus

@@ -1,0 +1,79 @@
+#version 460
+
+#include "common.h"
+#include "culling.glsl"
+
+layout (binding = 0, std140) uniform UboBuffer {
+    UniformData ubo;
+};
+
+layout (binding = TRANSFORM_BINDING, std430) readonly buffer TransformBuffer {
+	mat4 in_transforms[];
+};
+
+layout (binding = CLUSTER_BOUNDS_BINDING, std430) readonly buffer ClusterBoundsBuffer {
+	ClusterBounds in_cluster_bounds[];
+};
+
+layout (binding = CLUSTER_INST_DATA_BINDING, std430) readonly buffer ClusterInstanceBuffer {
+	ClusterInstance in_cluster_inst[];
+};
+
+layout (binding = CLUSTER_INST_OCC_IDX_BINDING, std430) readonly buffer InClusterInstanceIdxBuffer {
+	uint in_cluster_occ_idx[];
+};
+
+layout (binding = CLUSTER_INST_VIS_IDX_BINDING, std430) writeonly buffer OutClusterInstanceIdxBuffer {
+	uint out_cluster_vis_idx[];
+};
+
+layout (binding = CLUSTER_INST_RAST_IDX_BINDING, std430) writeonly buffer OutRastClusterIdxBuffer {
+	uint out_clust_rast_idx[];
+};
+
+layout (binding = DRAW_INDIRECT_PARAM_BINDING, std430) buffer ParamBuffer {
+	DrawParameters param;
+};
+
+layout(binding = 0) uniform sampler2D in_depth_pyramid_tex;
+
+layout (local_size_x = CLUSTER_CULL_LATE_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+	if (gl_GlobalInvocationID.x < param.cluster_occ_count) {
+		uint cluster_inst_idx = in_cluster_occ_idx[gl_GlobalInvocationID.x];
+		ClusterInstance inst = in_cluster_inst[cluster_inst_idx];
+		uint cluster_idx = inst.cluster_idx;
+
+		mat4 MVP = ubo.world_to_clip * in_transforms[inst.transform_idx];
+
+		ClusterBounds bounds = in_cluster_bounds[cluster_idx];
+		vec3 aabb_min = bounds.cluster_min.xyz - bounds.cluster_max.w;
+		vec3 aabb_max = bounds.cluster_max.xyz + bounds.cluster_max.w;
+
+		vec3 uv_aabb_min, uv_aabb_max;
+		project_aabb(aabb_min, aabb_max, MVP, uv_aabb_min, uv_aabb_max);
+
+		vec2 cluster_ext = (uv_aabb_max.xy - uv_aabb_min.xy) * vec2(ubo.depth_pyramid_width, ubo.depth_pyramid_height);
+		float max_ext = max(cluster_ext.x, cluster_ext.y);
+
+		bool rasterize = max_ext < CLUSTER_RASTER_LIMIT_PIXEL_EXTENT;
+		bool visible = cull_hiz(uv_aabb_min, uv_aabb_max, in_depth_pyramid_tex, ubo.depth_pyramid_width, ubo.depth_pyramid_height);
+
+		if (visible) {
+			if (!rasterize) {
+				// Write cluster instance index in visible cluster list
+				uint idx = atomicAdd(param.cluster_vis_count, 1);
+				out_cluster_vis_idx[idx] = cluster_inst_idx;
+
+				// Ensure the WG size of element write indirect 
+				atomicMax(param.write_vis_elem_cmd.num_groups_x, idx+1);
+			} else {
+				// Write to cluster instance index in raster cluster list
+				uint idx = atomicAdd(param.cluster_rast_count, 1);
+				out_clust_rast_idx[idx] = cluster_inst_idx;
+				atomicMax(param.clust_raster_cmd.num_groups_x, idx+1);
+			}
+		}
+	}
+}

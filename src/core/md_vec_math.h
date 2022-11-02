@@ -374,6 +374,16 @@ static inline vec3_t vec3_lerp(vec3_t a, vec3_t b, float t) {
     return vec3_add(vec3_mul_f(a, 1.0f - t), vec3_mul_f(b, t));
 }
 
+static inline vec3_t vec3_min(vec3_t a, vec3_t b) {
+    vec3_t res = {MIN(a.x, b.x), MIN(a.y, b.y), MIN(a.z, b.z)};
+    return res;
+}
+
+static inline vec3_t vec3_max(vec3_t a, vec3_t b) {
+    vec3_t res = {MAX(a.x, b.x), MAX(a.y, b.y), MAX(a.z, b.z)};
+    return res;
+}
+
 // VEC4 OPERATIONS
 static inline vec4_t vec4_zero() {
     vec4_t res = {0};
@@ -1386,18 +1396,25 @@ static inline bool operator != (vec3_t a, vec3_t b){
 }
 
 static inline vec3_t operator + (vec3_t a, vec3_t b) {
-    vec3_t c = {a.x + b.x, a.y + b.y, a.z + b.z};
-    return c;
+    return vec3_add(a, b);
 }
 
-static inline vec3_t operator + (vec3_t a, float s) {
-    vec3_t c = {a.x + s, a.y + s, a.z + s};
-    return c;
+static inline vec3_t operator + (vec3_t v, float s) {
+    return vec3_add_f(v, s);
 }
 
-static inline vec3_t operator + (float s, vec3_t a) {
-    vec3_t c = {a.x + s, a.y + s, a.z + s};
-    return c;
+static inline vec3_t operator + (float s, vec3_t v) {
+    return vec3_add_f(v, s);
+}
+
+static inline vec3_t operator += (vec3_t& a, vec3_t b) {
+    a = vec3_add(a, b);
+    return a;
+}
+
+static inline vec3_t operator += (vec3_t& v, float s) {
+    v = vec3_add_f(v, s);
+    return v;
 }
 
 static inline vec3_t operator - (vec3_t a, vec3_t b) {

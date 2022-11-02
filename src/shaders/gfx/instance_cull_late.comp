@@ -1,0 +1,69 @@
+#version 460
+
+#include "common.h"
+#include "culling.glsl"
+
+layout (binding = 0, std140) uniform UboBuffer {
+    UniformData ubo;
+};
+
+layout (binding = TRANSFORM_BINDING, std430) readonly buffer TransformBuffer {
+	mat4 transforms[];
+};
+
+layout (binding = INSTANCE_DATA_BINDING, std430) readonly buffer InInstanceDataBuffer {
+	InstanceData in_inst[];
+};
+
+layout (binding = INSTANCE_OCC_IDX_BINDING, std430) readonly buffer InInstCullIdxBuffer {
+	uint in_inst_idx[];
+};
+
+layout (binding = INSTANCE_VIS_IDX_BINDING, std430) writeonly buffer OutInstVisIdxBuffer {
+	uint out_inst_vis_idx[];
+};
+
+layout (binding = DRAW_INDIRECT_PARAM_BINDING, std430) buffer ParamBuffer {
+	DrawParameters param;
+};
+
+layout (binding = DEBUG_BINDING, std430) buffer DebugBuffer {
+	DebugData debug;
+};
+
+layout(binding = 0) uniform sampler2D in_depth_pyramid_tex;
+
+layout (local_size_x = INSTANCE_CULL_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+	if (gl_GlobalInvocationID.x < param.instance_occ_count) {
+		uint inst_idx = in_inst_idx[gl_GlobalInvocationID.x];
+		InstanceData inst = in_inst[inst_idx];
+		mat4 M = transforms[inst.transform_idx];
+		mat4 MVP = ubo.world_to_clip * M;
+
+		vec3 aabb_min = inst.min_xyzr.xyz - inst.max_xyzr.w;
+		vec3 aabb_max = inst.max_xyzr.xyz + inst.max_xyzr.w;
+
+		vec3 uv_aabb_min, uv_aabb_max;
+		project_aabb(aabb_min, aabb_max, MVP, uv_aabb_min, uv_aabb_max);
+
+		bool visible = true;
+		if (ubo.depth_culling == 1) {
+			visible = visible && cull_hiz(uv_aabb_min, uv_aabb_max, in_depth_pyramid_tex, ubo.depth_pyramid_width, ubo.depth_pyramid_height);
+		}
+
+		// @TODO PERF: Batch the global atomic operations using Subgroup and GSM
+		// to reduce strain on L2
+		if (visible) {
+			uint offset = atomicAdd(param.instance_vis_count, 1);
+			out_inst_vis_idx[offset] = inst_idx;
+
+			uint wg_size = DIV_UP(offset + 1, CLUSTER_CULL_GROUP_SIZE);
+			atomicMax(param.inst_clust_cull_cmd.num_groups_x, wg_size);
+
+			// @TODO: Remove
+			//atomicMax(debug.instance_late_count , offset + 1);
+		}
+	}
+}

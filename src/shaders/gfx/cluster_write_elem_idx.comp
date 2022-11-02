@@ -1,0 +1,38 @@
+#version 460
+
+#include "common.h"
+
+layout (binding = CLUSTER_INST_DATA_BINDING, std430) readonly buffer ClusterInstanceBuffer {
+	ClusterInstance in_cluster_inst_data[];
+};
+
+layout (binding = CLUSTER_WRITE_ELEM_BINDING, std430) readonly buffer ClusterIdxBuffer {
+	uint in_cluster_inst_idx[];
+};
+
+layout (binding = DRAW_SPHERE_INDEX_BINDING, std430) writeonly buffer DrawSphereIndices {
+	uint out_elem_idx[];
+};
+
+layout (binding = DRAW_INDIRECT_PARAM_BINDING, std430) buffer DrawIndirectParamBuffer {
+	DrawParameters param;
+};
+
+layout (local_size_x = CLUSTER_WRITE_ELEM_IDX_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+shared uint elem_offset;
+
+void main() {
+	uint cluster_inst_idx = in_cluster_inst_idx[gl_WorkGroupID.x];
+	uint cluster_range = in_cluster_inst_data[cluster_inst_idx].cluster_range;
+	uint cluster_size = cluster_range & 0xFF;
+
+	if (gl_LocalInvocationID.x == 0) {
+		elem_offset = atomicAdd(param.draw_sphere_cmd.count, cluster_size);
+	}
+	barrier();
+
+	for (uint i = gl_LocalInvocationID.x; i < cluster_size; i += gl_WorkGroupSize.x) {
+		out_elem_idx[elem_offset + i] = (cluster_inst_idx << 8) | i;
+	}
+}

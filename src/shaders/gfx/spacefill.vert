@@ -6,51 +6,54 @@ layout (binding = 0, std140) uniform UboBuffer {
     UniformData ubo;
 };
 
-layout(binding = POSITION_BINDING, std430) readonly buffer PositionBuffer {
-    Position atom_pos[];
+layout(binding = CLUSTER_BOUNDS_BINDING) readonly buffer ClusterBoundsBuffer {
+    ClusterBounds cluster_bounds[];
 };
 
-layout(binding = RADIUS_BINDING) readonly buffer RadiusBuffer {
-    float atom_rad[];
+layout(binding = CLUSTER_POS_RAD_BINDING) readonly buffer ClusterPosRadBuffer {
+    CompressedPosRad cluster_pos_rad[];
 };
 
-layout(binding = COLOR_BINDING) readonly buffer ColorBuffer {
-    uint colors[];
+layout(binding = CLUSTER_INST_DATA_BINDING) readonly buffer VisibleClusterBuffer {
+    ClusterInstance cluster_instances[];
 };
 
 layout(binding = TRANSFORM_BINDING) readonly buffer TransformBuffer {
     mat4 transforms[];
 };
 
-layout(binding = DRAW_INDIRECT_BINDING) readonly buffer DrawIndirectBuffer {
-    DrawIndirect indirect;
-};
-
 layout(location = 0) out VS_GS {
     flat vec4 view_sphere;
-    flat vec3 view_velocity;
-    flat uint color;
     flat uint index;
 } OUT;
 
 void main() {
-    uint idx = gl_VertexID;
-    uint draw_idx  = gl_DrawID;
-    uint atom_idx  = gl_BaseInstance + idx;
-    uint color_idx = indirect.draw_sphere_cmd[draw_idx].color_offset + idx;
-    uint transform_idx = indirect.draw_sphere_cmd[draw_idx].transform_idx;
-    float radius_scale = indirect.draw_sphere_cmd[draw_idx].radius_scale;
+    uint cluster_atom_idx = gl_VertexID & 0xFFu;
+    uint cluster_inst_idx = gl_VertexID >> 8;
+
+    ClusterInstance inst = cluster_instances[cluster_inst_idx];
+
+    uint cluster_range = inst.cluster_range;
+    uint cluster_idx   = inst.cluster_idx;
+    uint transform_idx = inst.transform_idx;
+    float radius_scale = inst.rep_scale;
 
     mat4 model_mat = transforms[transform_idx];
-    uint color = colors[color_idx];
+    uint cluster_offset = cluster_range >> 8;
+    uint cluster_size   = cluster_range & 0xFF;
 
-    vec4  pos = vec4(atom_pos[atom_idx].x, atom_pos[atom_idx].y, atom_pos[atom_idx].z, 1);
-    float rad = atom_rad[atom_idx] * radius_scale;
-    vec4 view_pos = ubo.world_to_view * model_mat * pos;
-    vec4 view_sphere = vec4(view_pos.xyz, rad);
+    ClusterBounds bounds = cluster_bounds[cluster_idx];
+    CompressedPosRad ccoords = cluster_pos_rad[cluster_offset + cluster_atom_idx];
+
+    vec4 ncoords = vec4(unpackUnorm2x16(ccoords.xy), unpackUnorm2x16(ccoords.zr));
+    vec4 coords = mix(bounds.cluster_min, bounds.cluster_max, ncoords);
+
+    vec3  c = coords.xyz;
+    float r = coords.w * radius_scale;
+
+    vec4 view_pos = ubo.world_to_view * model_mat * vec4(c,1);
+    vec4 view_sphere = vec4(view_pos.xyz, r);
 
 	OUT.view_sphere = view_sphere;
-    OUT.view_velocity = vec3(0,0,0);
-	OUT.color = color;
-	OUT.index = atom_idx;
+	OUT.index = gl_VertexID;
 }

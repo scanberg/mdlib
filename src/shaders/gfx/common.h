@@ -7,36 +7,68 @@
 #define REP_TYPE_SES		6
 
 // Buffer bindings
-#define POSITION_BINDING  0
-#define RADIUS_BINDING    1
-#define GROUP_BINDING     2
-#define COLOR_BINDING     3
-#define TRANSFORM_BINDING 4
-#define DRAW_OP_BINDING	5
-#define DRAW_INDIRECT_BINDING 6
-#define DRAW_SPHERE_INDEX_BINDING 7
+#define POSITION_BINDING			0
+#define RADIUS_BINDING				1
+#define CLUSTER_RANGE_BINDING		2
+#define CLUSTER_BOUNDS_BINDING		3
+#define CLUSTER_POS_RAD_BINDING		4
+#define CLUSTER_ATOM_INDEX_BINDING	5
+#define COLOR_BINDING				6
+#define TRANSFORM_BINDING			7
 
-#define DEBUG_BINDING 8
+#define GPU_DRAW_OP_BINDING			9
+#define DRAW_INDIRECT_PARAM_BINDING	10
+#define DRAW_INDIRECT_CMD_BINDING	11
+#define DRAW_SPHERE_INDEX_BINDING	12
+
+#define CLUSTER_INST_DATA_BINDING		14
+#define CLUSTER_INST_VIS_IDX_BINDING	15
+#define CLUSTER_INST_OCC_IDX_BINDING	16
+#define CLUSTER_WRITE_ELEM_BINDING		17	// Bind an array of indices to cluster instances to generate element indices
+#define CLUSTER_INST_RAST_IDX_BINDING	18
+
+#define INSTANCE_DATA_BINDING		20
+#define INSTANCE_VIS_IDX_BINDING	21
+#define INSTANCE_OCC_IDX_BINDING	22
+
+#define DEBUG_BINDING				25
+#define VIS_BINDING					26
 
 // Texture bind slots
-#define DEPTH_TEX_BINDING     0
-#define COLOR_TEX_BINDING     1
-#define NORMAL_TEX_BINDING    2
-#define SS_VEL_TEX_BINDING    3
-#define INDEX_TEX_BINDING     4
+#define DEPTH_TEX_BINDING	0
+#define COLOR_TEX_BINDING	1
+#define NORMAL_TEX_BINDING	2
+#define SS_VEL_TEX_BINDING	3
+#define INDEX_TEX_BINDING	4
 
 // Output locations in drawbuffer
-#define COLOR_TEX_ATTACHMENT   0
-#define NORMAL_TEX_ATTACHMENT  1
-#define SS_VEL_TEX_ATTACHMENT  2
-#define INDEX_TEX_ATTACHMENT   3
+#define COLOR_TEX_ATTACHMENT	0
+#define NORMAL_TEX_ATTACHMENT	1
+#define SS_VEL_TEX_ATTACHMENT	2
+#define INDEX_TEX_ATTACHMENT	3
 
-#define RASTER_SPHERE_GROUP_SIZE 32
-#define CULL_GROUP_SIZE 1024
+#define INSTANCE_CULL_GROUP_SIZE 1024
+#define CLUSTER_CULL_GROUP_SIZE 128
+#define CLUSTER_CULL_LATE_GROUP_SIZE 1024
 #define DEPTH_REDUCE_GROUP_SIZE 32
+#define CLUSTER_RASTERIZE_GROUP_SIZE 128
+#define CLUSTER_COMPUTE_DATA_GROUP_SIZE 128
+#define CLUSTER_WRITE_ELEM_IDX_SIZE 128
+
+#define CLUSTER_RASTER_LIMIT_PIXEL_EXTENT 50
 
 #define POS_INF uintBitsToFloat(0x7F800000)
 #define NEG_INF uintBitsToFloat(0xFF800000)
+
+// Round up division
+#ifndef DIV_UP
+#define DIV_UP(x, y) ((x + (y-1)) / y)
+#endif
+
+// Rounds up x to nearest multiple of y. No affiliation to the weed-killer
+#ifndef ROUND_UP
+#define ROUND_UP(x, y) (y * DIV_UP(x,y))
+#endif
 
 struct UniformData {
 	// Single transforms
@@ -47,48 +79,40 @@ struct UniformData {
 	// Composed transforms
 	mat4 world_to_clip;
 	mat4 curr_clip_to_prev_clip;	// Current frame clip to previous frame clip
+	mat4 curr_view_to_prev_clip;	// Current frame view to previous frame clip
 	mat4 prev_world_to_clip;		// Previous frames world to clip
+	mat4 prev_world_to_view;
+	mat4 prev_view_to_clip;
 	// Misc
 	vec4 frustum_plane[4];
 	uint frustum_culling;
 	uint depth_culling;
 	uint depth_pyramid_width;
 	uint depth_pyramid_height;
+	uint render_width;
+	uint render_height;
 	float znear;
 	float zfar;
-	float _pad[2];
-};
-
-struct DebugData {
-	uint total_groups_processed;
-	uint total_groups_drawn;
-	float aabb_depth;
-	float read_depth;
-	float tex_min[2];
-	float tex_max[2];
-	float aabb_min[2];
-	float aabb_max[2];
-	float aabb_width;
-	float aabb_height;
-	float lod;
-	float pick_depth;
-	uint  pick_index;
+	uint late;
 	uint _pad[3];
 };
 
-struct DrawOp {
-	uint  group_offset;
-	uint  group_count;
-	uint  transform_idx;
-	uint  atom_offset;
-	uint  color_offset;
-	uint  rep_type;
-	float rep_args[2];
+struct DebugData {
+	uint instance_occ_count;
+	uint instance_late_count;
+	uint instance_clust_late_count;
+	float pick_depth;
+	uint  pick_index;
 };
 
-struct Group {
-	uint atom_offset;
-	uint atom_count;
+// For now this is only a spacefill version for now
+struct InstanceData {
+	vec4 min_xyzr;
+	vec4 max_xyzr;
+	uint cluster_offset;
+	uint cluster_count;
+	uint transform_idx;
+	uint _pad;
 };
 
 struct Position {
@@ -110,27 +134,46 @@ struct DrawElementsIndirectCommand {
 	uint  base_instance;
 };
 
-struct DrawSpheresIndirectCommand {
-	//DrawArraysIndirectCommand cmd;
-	DrawElementsIndirectCommand cmd;
-	//Payload
-	uint transform_idx;
-	uint color_offset;
-	float radius_scale;
-};
-
 struct DispatchIndirectCommand {
-	uint  num_groups_x;
-	uint  num_groups_y;
-	uint  num_groups_z;
-	uint  _pad;
+	uint num_groups_x;
+	uint num_groups_y;
+	uint num_groups_z;
+	uint _pad;
 };
 
-struct DrawIndirect {
-	uint draw_sphere_cmd_count;
-	uint raster_sphere_cmd_count;
-	uint sphere_idx_count;
-	uint _pad;
-	DispatchIndirectCommand    raster_sphere_cmd;
-	DrawSpheresIndirectCommand draw_sphere_cmd[128];
+struct DrawParameters {
+	DispatchIndirectCommand write_vis_elem_cmd;
+	DispatchIndirectCommand clust_raster_cmd;
+	DrawElementsIndirectCommand draw_sphere_cmd;
+
+	DispatchIndirectCommand inst_clust_cull_cmd;
+	DispatchIndirectCommand inst_cull_late_cmd;
+	DispatchIndirectCommand clust_cull_late_cmd;
+
+	uint cluster_inst_count;
+	uint cluster_vis_count;
+	uint cluster_occ_count;
+	uint cluster_rast_count;
+
+	uint instance_count;
+	uint instance_vis_count;
+	uint instance_occ_count;
+};
+
+// xyz + radius min and max
+struct ClusterBounds {
+	vec4 cluster_min;
+	vec4 cluster_max;
+};
+
+struct CompressedPosRad {
+	uint xy;
+	uint zr;
+};
+
+struct ClusterInstance {
+	uint  cluster_range;
+	uint  cluster_idx;
+	uint  transform_idx;
+	float rep_scale;
 };

@@ -1,0 +1,109 @@
+#version 460
+
+#extension GL_KHR_shader_subgroup_basic  : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+
+#include "common.h"
+
+layout (binding = POSITION_BINDING, std430) readonly buffer AtomPositionBuffer {
+	Position atom_pos[];
+};
+
+layout (binding = RADIUS_BINDING, std430) readonly buffer AtomRadiusBuffer {
+	float atom_rad[];
+};
+
+layout (binding = CLUSTER_RANGE_BINDING, std430) readonly buffer ClusterRangeBuffer {
+	uint cluster_ranges[];
+};
+
+layout (binding = CLUSTER_ATOM_INDEX_BINDING, std430) readonly buffer ClusterAtomIndexBuffer {
+	uint atom_ind[];
+};
+
+layout (binding = CLUSTER_BOUNDS_BINDING, std430) writeonly buffer ClusterBoundsBuffer {
+	ClusterBounds cluster_bounds[];
+};
+
+layout (binding = CLUSTER_POS_RAD_BINDING, std430) writeonly buffer ClusterAtomPosRadBuffer {
+	CompressedPosRad cluster_pos_rad[];
+};
+
+layout (local_size_x = CLUSTER_COMPUTE_DATA_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+layout(location = 0) uniform uvec2 cluster_range;
+
+shared vec4 sphere[256];
+
+//  128 (WorkgroupSize) / 32 (SubgroupSize) = 4
+shared vec4 workgroup_min[128];
+shared vec4 workgroup_max[128];
+
+void main() {
+	uint range = cluster_ranges[gl_WorkGroupID.x];
+	uint cluster_offset = range >> 8;
+	uint cluster_size   = range & 0xFF;
+
+	vec4 cluster_min = vec4(POS_INF);
+	vec4 cluster_max = vec4(NEG_INF);
+
+	// Write spheres to GSM
+	for (uint i = gl_LocalInvocationID.x; i < cluster_size; i += gl_WorkGroupSize.x) {
+		uint src_idx = atom_ind[cluster_offset + i];
+		Position p = atom_pos[src_idx];
+		float    r = atom_rad[src_idx];
+		vec4     c = vec4(p.x, p.y, p.z, r);
+		sphere[i] = c;
+		cluster_min = min(cluster_min, c);
+		cluster_max = max(cluster_max, c);
+	}
+
+	barrier();
+
+	// Compute min max per subgroup
+	cluster_min = min(cluster_min, subgroupMin(cluster_min));
+	cluster_max = max(cluster_max, subgroupMax(cluster_max));
+
+	// Write Subgroup min max to GSM
+	if (subgroupElect()) {
+		workgroup_min[gl_SubgroupID] = cluster_min;
+		workgroup_max[gl_SubgroupID] = cluster_max;
+	}
+
+	barrier();
+
+	if (gl_LocalInvocationID.x == 0) {
+		for (uint i = 0; i < gl_NumSubgroups; ++i) {
+			cluster_min = min(cluster_min, workgroup_min[i]);
+			cluster_max = max(cluster_max, workgroup_max[i]);
+		}
+
+		workgroup_min[0] = cluster_min;
+		workgroup_max[0] = cluster_max;
+	}
+
+	barrier();
+
+	cluster_min = workgroup_min[0];
+	cluster_max = workgroup_max[0];
+
+	// Compress & Write back data
+	vec4 scl = 1.0 / (cluster_max - cluster_min);
+	for (uint i = gl_LocalInvocationID.x; i < cluster_size; i += gl_WorkGroupSize.x) {
+		vec4 c = (sphere[i] - cluster_min) * scl;
+
+		CompressedPosRad pos_rad;
+		pos_rad.xy = packUnorm2x16(c.xy);
+		pos_rad.zr = packUnorm2x16(c.zw);
+
+		cluster_pos_rad[cluster_offset + i] = pos_rad;
+	}
+
+	if (gl_LocalInvocationID.x == 0) {
+		ClusterBounds bounds;
+		bounds.cluster_min = cluster_min;
+		bounds.cluster_max = cluster_max;
+		cluster_bounds[gl_WorkGroupID.x] = bounds;
+	}
+}

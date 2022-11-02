@@ -1,0 +1,37 @@
+#version 460
+
+#extension GL_ARB_gpu_shader_int64 : enable
+
+#include "common.h"
+
+layout (binding = 0, std140) uniform UboBuffer {
+    UniformData ubo;
+};
+
+layout (binding = VIS_BINDING, std430) readonly buffer VisBuffer {
+	uint64_t vis_buf[];
+};
+
+layout(binding = 0, r32f) uniform writeonly image2D out_image;
+
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+
+void main() {
+	uvec2 pos = gl_GlobalInvocationID.xy;
+	uvec2 size = imageSize(out_image);
+	if (pos.x < size.x && pos.y < size.y) {
+		ivec2 c = ivec2((vec2(pos) / vec2(size-1)) * vec2(ubo.render_width-1, ubo.render_height-1));
+		ivec2 c00 = clamp(c + ivec2(0,0), ivec2(0,0), ivec2(ubo.render_width-1, ubo.render_height-1));
+		ivec2 c01 = clamp(c + ivec2(1,0), ivec2(0,0), ivec2(ubo.render_width-1, ubo.render_height-1));
+		ivec2 c10 = clamp(c + ivec2(1,0), ivec2(0,0), ivec2(ubo.render_width-1, ubo.render_height-1));
+		ivec2 c11 = clamp(c + ivec2(1,1), ivec2(0,0), ivec2(ubo.render_width-1, ubo.render_height-1));
+
+		float d00 = uintBitsToFloat(uint(vis_buf[c00.y * ubo.render_width.x + c00.x] >> 32));
+		float d01 = uintBitsToFloat(uint(vis_buf[c01.y * ubo.render_width.x + c01.x] >> 32));
+		float d10 = uintBitsToFloat(uint(vis_buf[c10.y * ubo.render_width.x + c10.x] >> 32));
+		float d11 = uintBitsToFloat(uint(vis_buf[c11.y * ubo.render_width.x + c11.x] >> 32));
+
+		float depth = max(max(d00, d01), max(d10, d11));
+		imageStore(out_image, ivec2(pos), vec4(depth));
+	}
+}

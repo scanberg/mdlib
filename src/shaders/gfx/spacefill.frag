@@ -1,5 +1,9 @@
 #version 460
 
+//#extension GL_NV_gpu_shader5 : enable
+#extension GL_ARB_gpu_shader_int64 : enable
+#extension GL_NV_shader_atomic_int64 : enable
+
 #include "common.h"
 
 #ifndef ORTHO
@@ -12,34 +16,16 @@ layout (binding = 0, std140) uniform UboBuffer {
 
 layout(location = 0) in GS_FS {
     flat   vec4 view_sphere;
-    flat   vec3 view_velocity;
-    flat   uint color;
-    flat   uint index;
     smooth vec3 view_coord;
+    flat   uint index;
 #if ORTHO
     smooth vec2 uv;
 #endif
 } IN;
 
-layout (depth_greater) out float gl_FragDepth;
-
-layout(location = COLOR_TEX_ATTACHMENT)  out vec4 out_color;
-layout(location = NORMAL_TEX_ATTACHMENT) out vec2 out_normal;
-layout(location = SS_VEL_TEX_ATTACHMENT) out vec2 out_velocity;
-layout(location = INDEX_TEX_ATTACHMENT)  out vec4 out_index;
-
-vec2 encode_normal (vec3 n) {
-   float p = sqrt(n.z * 8 + 8);
-   return n.xy / p + 0.5;
-}
-
-vec4 encode_index(uint index) {
-    return vec4(
-        (index & 0x000000FFU) >> 0U,
-        (index & 0x0000FF00U) >> 8U,
-        (index & 0x00FF0000U) >> 16U,
-        (index & 0xFF000000U) >> 24U) / 255.0;
-}
+layout (binding = VIS_BINDING, std430) buffer VisBuffer {
+	uint64_t vis_buf[];
+};
 
 void main() {
     vec3 center = IN.view_sphere.xyz;
@@ -63,16 +49,10 @@ void main() {
     view_coord = d * t;
 #endif
 
-    vec4 clip_coord = ubo.view_to_clip * vec4(view_coord, 1);
-    gl_FragDepth = (clip_coord.z / clip_coord.w) * 0.5 + 0.5;
+    float depth = (-ubo.view_to_clip[2][2] - ubo.view_to_clip[3][2] / (view_coord.z)) * 0.5 + 0.5;
 
-    vec3 view_normal = (view_coord - center) / radius;
-    vec4 color = unpackUnorm4x8(IN.color);
-    vec3 view_velocity = IN.view_velocity;
-    uint index = IN.index;
-
-    out_color = color;
-    out_normal = encode_normal(view_normal);
-    out_velocity = vec2(0,0);
-    out_index = encode_index(index);
+    uint depth_uint = floatBitsToUint(depth);
+    uint payload = IN.index;
+    uint64_t vis_data = (uint64_t(depth_uint) << 32) | payload;
+    uint64_t vis_value = atomicMin(vis_buf[uint(gl_FragCoord.y) * ubo.render_width + uint(gl_FragCoord.x)], vis_data);
 }
