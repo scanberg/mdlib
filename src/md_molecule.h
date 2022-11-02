@@ -173,6 +173,8 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc);
 // Append the internal data of one molecule to another
 void md_molecule_append(md_molecule_t* dst_mol, const md_molecule_t* src_mol, struct md_allocator_i* alloc);
 
+void md_molecule_copy(md_molecule_t* dst_mol, const md_molecule_t* src_mol, struct md_allocator_i* alloc);
+
 // macro concatenate trick to assert that the input is a valid compile time C-string
 #define MAKE_LABEL(cstr) {cstr"", sizeof(cstr)-1}
 
