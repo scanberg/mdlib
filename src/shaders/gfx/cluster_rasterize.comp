@@ -125,11 +125,11 @@ void main() {
 
 		ivec2 minc = clamp(min(min_coord, max_coord), ivec2(0,0), ivec2(ubo.render_width, ubo.render_height));
 		ivec2 maxc = clamp(max(min_coord, max_coord), ivec2(0,0), ivec2(ubo.render_width, ubo.render_height));
-		ivec2 ext_coord = max(maxc - minc, ivec2(1,1));
+
+		float depth = clip_z * 0.5 + 0.5;
 
 		for (int y = minc.y; y < maxc.y; y += 1) {
 			for (int x = minc.x; x < maxc.x; x += 1) {
-				float depth = clip_z * 0.5 + 0.5;
 				write_vis(ivec2(x,y), depth, write_idx);
 			}
 		}

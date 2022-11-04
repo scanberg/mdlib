@@ -349,7 +349,7 @@ struct md_script_ir_t {
     expression_t        **expressions;
     expression_t        **type_checked_expressions;     // List of expressions which passed type checking
     expression_t        **eval_targets;                 // List of dynamic expressions which needs to be evaluated per frame
-    expression_t        **prop_expressions;             // List of expressions which are meant for exposure as properties
+    uint32_t            *prop_eval_target_indices;      // List of indices (to eval_targets) of expressions which are meant to be exposed as properties
     
     identifier_t        *identifiers;                   // List of identifiers, notice that the data in a const context should only be used if it is flagged as
 
@@ -2441,10 +2441,8 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
         };
         ident = md_array_push(ctx->identifiers, id, ctx->alloc);
         return evaluate_node(dst, rhs, ctx);
-
     }
 
-    ASSERT(false);
     return false;
 }
 
@@ -3611,7 +3609,7 @@ static bool extract_property_expressions(md_script_ir_t* ir) {
         ASSERT(expr);
         ASSERT(expr->node);
         if (expr->ident && is_property_type(expr->node->data.type)) {
-            md_array_push(ir->prop_expressions, expr, ir->arena);
+            md_array_push(ir->prop_eval_target_indices, (uint32_t)i, ir->arena);
         }
     }
 
@@ -3855,7 +3853,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     const int64_t num_expr = md_array_size(ir->eval_targets);
     expression_t** const expr = ir->eval_targets;
     
-    ASSERT(md_array_size(ir->prop_expressions) == num_props);
+    ASSERT(md_array_size(ir->prop_eval_target_indices) == num_props);
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
@@ -3980,8 +3978,9 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
         for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
             md_script_property_t* prop = &props[p_idx];
-            const int32_t size = (int32_t)type_info_array_len(data[p_idx].type);
-            float* values = (float*)data[p_idx].ptr;
+            const uint32_t d_idx = ir->prop_eval_target_indices[p_idx];
+            const int32_t size = (int32_t)type_info_array_len(data[d_idx].type);
+            float* values = (float*)data[d_idx].ptr;
 
             if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 ASSERT(prop->data.values);
@@ -4001,8 +4000,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 }
 
                 // Update range if not explicitly set
-                prop->data.min_range[0] = (data[p_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[p_idx].value_range.beg;
-                prop->data.max_range[0] = (data[p_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[p_idx].value_range.end;
+                prop->data.min_range[0] = (data[d_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[d_idx].value_range.beg;
+                prop->data.max_range[0] = (data[d_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[d_idx].value_range.end;
             }
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
                 // Accumulate values
@@ -4024,8 +4023,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 prop->data.max_value = MAX(prop->data.max_value, max);
 
                 // Update range if not explicitly set
-                prop->data.min_range[0] = (data[p_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[p_idx].value_range.beg;
-                prop->data.max_range[0] = (data[p_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[p_idx].value_range.end;
+                prop->data.min_range[0] = (data[d_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[d_idx].value_range.beg;
+                prop->data.max_range[0] = (data[d_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[d_idx].value_range.end;
             }
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                 // Accumulate values
@@ -4350,12 +4349,14 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
 
     md_script_eval_t* eval = create_eval(alloc);
 
-    const int64_t num_prop_expr = md_array_size(ir->prop_expressions);
+    const int64_t num_prop_expr = md_array_size(ir->prop_eval_target_indices);
     if (num_prop_expr > 0) {
         md_array_resize(eval->properties, num_prop_expr, eval->arena);
         for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
-            ASSERT(ir->prop_expressions[i]->ident);
-            init_property(&eval->properties[i], num_frames, ir->prop_expressions[i]->ident->name, ir->prop_expressions[i]->node, eval->arena);
+            uint32_t idx = ir->prop_eval_target_indices[i];
+            ASSERT(idx < md_array_size(ir->eval_targets));
+            ASSERT(ir->eval_targets[idx]->ident);
+            init_property(&eval->properties[i], num_frames, ir->eval_targets[idx]->ident->name, ir->eval_targets[idx]->node, eval->arena);
         }
     }
 
@@ -4386,7 +4387,7 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
     if (result) {
         const int64_t num_properties = md_array_size(eval->properties);
         if (num_properties > 0) {
-            ASSERT(num_properties == md_array_size(ir->prop_expressions));
+            ASSERT(num_properties == md_array_size(ir->prop_eval_target_indices));
             eval->interrupt = false;
             result = eval_properties(eval->properties, num_properties, mol, traj, filter_mask, ir, eval);
 

@@ -962,8 +962,7 @@ static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     }
     case TYPE_BITFIELD:
     {
-        if (ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
-            ASSERT(ctx->backchannel);
+        if (ctx->backchannel && ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
             ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
         }
         if (element_count(arg) == 1) {
@@ -975,8 +974,7 @@ static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     }
     case TYPE_IRANGE:
     {
-        if (ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
-            ASSERT(ctx->backchannel);
+        if (ctx->backchannel && ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
             ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
         }
         irange_t* ranges = as_irange_arr(arg);
