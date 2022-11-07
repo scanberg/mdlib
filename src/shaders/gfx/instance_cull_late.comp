@@ -59,7 +59,7 @@ void main() {
 			uint offset = atomicAdd(param.instance_vis_count, 1);
 			out_inst_vis_idx[offset] = inst_idx;
 
-			uint wg_size = DIV_UP(offset + 1, CLUSTER_CULL_GROUP_SIZE);
+			uint wg_size = DIV_UP(offset + 1, INSTANCE_CLUSTER_CULL_GROUP_SIZE);
 			atomicMax(param.inst_clust_cull_cmd.num_groups_x, wg_size);
 
 			// @TODO: Remove

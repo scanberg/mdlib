@@ -27,6 +27,17 @@ layout (binding = VIS_BINDING, std430) buffer VisBuffer {
 	uint64_t vis_buf[];
 };
 
+void write_vis(ivec2 coord, float depth, uint payload) {
+	ivec2 c = clamp(coord, ivec2(0,0), ivec2(ubo.render_width-1, ubo.render_height-1));
+	uint idx = coord.y * ubo.render_width + coord.x;
+	uint64_t cur_val = vis_buf[idx];
+	float cur_depth = uintBitsToFloat(uint(cur_val >> 32));
+	if (depth < cur_depth) {
+		uint64_t val = (uint64_t(floatBitsToUint(depth)) << 32) | payload;
+		atomicMin(vis_buf[idx], val);
+	}
+}
+
 void main() {
     vec3 center = IN.view_sphere.xyz;
     float radius = IN.view_sphere.w;
@@ -50,9 +61,5 @@ void main() {
 #endif
 
     float depth = (-ubo.view_to_clip[2][2] - ubo.view_to_clip[3][2] / (view_coord.z)) * 0.5 + 0.5;
-
-    uint depth_uint = floatBitsToUint(depth);
-    uint payload = IN.index;
-    uint64_t vis_data = (uint64_t(depth_uint) << 32) | payload;
-    uint64_t vis_value = atomicMin(vis_buf[uint(gl_FragCoord.y) * ubo.render_width + uint(gl_FragCoord.x)], vis_data);
+    write_vis(ivec2(gl_FragCoord.xy), depth, IN.index);
 }

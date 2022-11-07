@@ -111,23 +111,21 @@ void main() {
 
         bool visible = true;
 
-//#if ENABLE_CULLING
 		if (ubo.late == 1 && ubo.depth_culling == 1) {
 		    vec3 aabb_uv_min = vec3(aabb.xy, clip_z) * 0.5 + 0.5;
 		    vec3 aabb_uv_max = vec3(aabb.zw, clip_z) * 0.5 + 0.5;
 
             visible = cull_hiz(aabb_uv_min, aabb_uv_max, in_depth_pyramid_tex, ubo.depth_pyramid_width, ubo.depth_pyramid_height);
 		}
-//#endif
 
         if (visible) {
             emit_vertex_persp(vec4(aabb.xy, clip_z, 1));
             emit_vertex_persp(vec4(aabb.zy, clip_z, 1));
             emit_vertex_persp(vec4(aabb.xw, clip_z, 1));
             emit_vertex_persp(vec4(aabb.zw, clip_z, 1));
+            EndPrimitive();
         }
 
-        EndPrimitive();
     #else
         // Focal length
         vec2 fle = vec2(ubo.view_to_clip[0][0], ubo.view_to_clip[1][1]);

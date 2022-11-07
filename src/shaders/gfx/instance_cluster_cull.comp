@@ -1,5 +1,7 @@
 #version 460
 
+#extension GL_KHR_shader_subgroup_basic : enable
+
 #include "common.h"
 #include "culling.glsl"
 
@@ -31,16 +33,16 @@ layout (binding = CLUSTER_INST_DATA_BINDING, std430) writeonly buffer ClusterIns
 	ClusterInstance out_clust_inst[];
 };
 
-layout (binding = CLUSTER_INST_VIS_IDX_BINDING, std430) writeonly buffer OutVisClusterIdxBuffer {
-	uint out_clust_vis_idx[];
-};
-
-layout (binding = CLUSTER_INST_OCC_IDX_BINDING, std430) writeonly buffer OutOccClusterIdxBuffer {
-	uint out_clust_occ_idx[];
+layout (binding = CLUSTER_INST_DRAW_IDX_BINDING, std430) writeonly buffer OutVisClusterIdxBuffer {
+	uint out_clust_draw_idx[];
 };
 
 layout (binding = CLUSTER_INST_RAST_IDX_BINDING, std430) writeonly buffer OutRastClusterIdxBuffer {
 	uint out_clust_rast_idx[];
+};
+
+layout (binding = CLUSTER_INST_OCC_IDX_BINDING, std430) writeonly buffer OutOccClusterIdxBuffer {
+	uint out_clust_occ_idx[];
 };
 
 layout (binding = DRAW_INDIRECT_PARAM_BINDING, std430) buffer ParamBuffer {
@@ -53,11 +55,27 @@ layout (binding = DEBUG_BINDING, std430) buffer DebugBuffer {
 
 layout(binding = 0) uniform sampler2D in_depth_pyramid_tex;
 
-layout (local_size_x = CLUSTER_CULL_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
+layout (local_size_x = INSTANCE_CLUSTER_CULL_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
 shared InstanceData s_inst;
 shared uint s_inst_idx;
 shared mat4 M;
+
+shared uint s_clust_inst_offset;
+shared uint s_clust_inst_count;
+
+shared uint s_clust_draw_offset;
+shared uint s_clust_draw_count;
+
+shared uint s_clust_rast_offset;
+shared uint s_clust_rast_count;
+
+shared uint s_clust_occ_offset;
+shared uint s_clust_occ_count;
+
+shared uint s_max_clust_draw_wg_size_x;
+shared uint s_max_clust_rast_wg_size_x;
+shared uint s_max_clust_cull_late_wg_size_x;
 
 void main() {
 	//  Instance Specific Data
@@ -65,6 +83,9 @@ void main() {
 		s_inst_idx = in_inst_idx[gl_WorkGroupID.x];
 		s_inst = in_inst[s_inst_idx];
 		M = in_transforms[s_inst.transform_idx];
+		s_max_clust_draw_wg_size_x = 0;
+		s_max_clust_rast_wg_size_x = 0;
+		s_max_clust_cull_late_wg_size_x = 0;
 	}
 	barrier();
 
@@ -75,6 +96,15 @@ void main() {
 	mat4 prev_MVP = ubo.prev_world_to_clip * M;
 
 	for (uint i = gl_LocalInvocationID.x; i < cluster_count; i += gl_WorkGroupSize.x) {
+		if (gl_LocalInvocationID.x == 0) {
+			s_clust_inst_count = 0;
+			s_clust_draw_count = 0;
+			s_clust_rast_count = 0;
+			s_clust_occ_count = 0;
+		}
+
+		barrier();
+
 		uint cluster_idx = cluster_offset + i;
 		uint range = in_cluster_ranges[cluster_idx];
 		uint cluster_offset = range >> 8;
@@ -84,12 +114,11 @@ void main() {
 		vec3 aabb_min = bounds.cluster_min.xyz - bounds.cluster_max.w;
 		vec3 aabb_max = bounds.cluster_max.xyz + bounds.cluster_max.w;
 
+		bool frustum_visible = true;
 		if (ubo.frustum_culling == 1 && ubo.late == 0) {
 			vec3 uv_aabb_min, uv_aabb_max;
 			project_aabb(aabb_min, aabb_max, curr_MVP, uv_aabb_min, uv_aabb_max);
-			if (!cull_frustum(uv_aabb_min, uv_aabb_max)) {
-				continue;
-			}
+			frustum_visible = cull_frustum(uv_aabb_min, uv_aabb_max);
 		}
 
 		vec3 uv_aabb_min, uv_aabb_max;
@@ -98,62 +127,82 @@ void main() {
 		float max_ext = max(cluster_ext.x, cluster_ext.y);
 
 		bool rasterize = max_ext < CLUSTER_RASTER_LIMIT_PIXEL_EXTENT;
-		bool visible = true;
+		bool visible = frustum_visible;
 
-		if (ubo.depth_culling == 1) {
+		if (ubo.depth_culling == 1 && visible) {
 			visible = visible && cull_hiz(uv_aabb_min, uv_aabb_max, in_depth_pyramid_tex, ubo.depth_pyramid_width, ubo.depth_pyramid_height);
 		}
 
-		ClusterInstance clust_inst;
-		clust_inst.cluster_range = range;
-		clust_inst.cluster_idx = cluster_idx;
-		clust_inst.transform_idx = transform_idx;
-		clust_inst.rep_scale = 1.0f;
+		bool write_clust_inst = (ubo.late == 0 && frustum_visible) || visible;
+		bool write_draw_idx = visible && !rasterize;
+		bool write_rast_idx = visible && rasterize;
+		bool write_occ_idx = ubo.late == 0 && frustum_visible && !visible;
 
 		// @TODO: Subgroup to reduce strain on L2
 		uint clust_inst_idx;
-		if (ubo.late == 0 || visible) {
-			// Write cluster instance data
-			clust_inst_idx = atomicAdd(param.cluster_inst_count, 1);
+		uint idx;
+
+		if (write_clust_inst) {
+			clust_inst_idx = atomicAdd(s_clust_inst_count, 1);
+		}
+		if (write_draw_idx) {
+			idx = atomicAdd(s_clust_draw_count, 1);
+		}
+		else if (write_rast_idx) {
+			idx = atomicAdd(s_clust_rast_count, 1);
+		}
+		else if (write_occ_idx) {
+			idx = atomicAdd(s_clust_occ_count, 1);
+		}
+
+		barrier();
+
+		if (gl_LocalInvocationID.x == 0) {
+			s_clust_inst_offset = atomicAdd(param.cluster_inst_count, s_clust_inst_count);
+			s_clust_draw_offset = atomicAdd(param.cluster_draw_count, s_clust_draw_count);
+			s_clust_rast_offset = atomicAdd(param.cluster_rast_count, s_clust_rast_count);
+			s_clust_occ_offset  = atomicAdd(param.cluster_occ_count,  s_clust_occ_count);
+
+			s_max_clust_draw_wg_size_x = s_clust_draw_offset + s_clust_draw_count;
+			s_max_clust_rast_wg_size_x = s_clust_rast_offset + s_clust_rast_count;
+			s_max_clust_cull_late_wg_size_x = DIV_UP(s_clust_occ_offset + s_clust_occ_count, CLUSTER_CULL_LATE_GROUP_SIZE);
+		}
+		barrier();
+
+		clust_inst_idx += s_clust_inst_offset;
+
+		if (write_clust_inst) {
+			ClusterInstance clust_inst;
+			clust_inst.cluster_range = range;
+			clust_inst.cluster_idx = cluster_idx;
+			clust_inst.transform_idx = transform_idx;
+			vec4 color;
+			if (write_draw_idx) color = vec4(0,1,0,1);
+			if (write_rast_idx) color = vec4(1,1,0,1);
+			if (ubo.late == 1 && visible) color = vec4(1,0,0,1);
+			if (write_occ_idx)  color = vec4(0,0,1,1);
+			clust_inst.color = packUnorm4x8(color);
+
 			out_clust_inst[clust_inst_idx] = clust_inst;
 		}
 
-		if (visible) {
-			if (!rasterize) {
-				// Write cluster instance index in visible cluster list
-				uint idx = atomicAdd(param.cluster_vis_count, 1);
-				out_clust_vis_idx[idx] = clust_inst_idx;
-
-				// Ensure the WG size of element write indirect 
-				atomicMax(param.write_vis_elem_cmd.num_groups_x, idx+1);
-
-				// @TODO: Remove me
-				/*
-				if (ubo.late == 1) {
-					atomicMax(debug.instance_late_count , idx + 1);
-				}
-				*/
-			} else {
-				// Write to cluster instance index in raster cluster list
-				uint idx = atomicAdd(param.cluster_rast_count, 1);
-				out_clust_rast_idx[idx] = clust_inst_idx;
-				atomicMax(param.clust_raster_cmd.num_groups_x, idx+1);
-
-				// @TODO: Remove me
-				/*
-				if (ubo.late == 1) {
-					atomicMax(debug.instance_late_count , idx + 1);
-				}
-				*/
-			}
+		if (write_draw_idx) {
+			idx += s_clust_draw_offset;
+			out_clust_draw_idx[idx] = clust_inst_idx;
 		}
-		else if (ubo.late == 0) {
-			uint idx = atomicAdd(param.cluster_occ_count, 1);
+		else if (write_rast_idx) {
+			idx += s_clust_rast_offset;
+			out_clust_rast_idx[idx] = clust_inst_idx;
+		}
+		else if (write_occ_idx) {
+			idx += s_clust_occ_offset;
 			out_clust_occ_idx[idx] = clust_inst_idx;
-
-			// Ensure WG size of cluster cull second pass
-			uint req_wg_size = DIV_UP(idx+1, CLUSTER_CULL_LATE_GROUP_SIZE);
-			atomicMax(param.clust_cull_late_cmd.num_groups_x, req_wg_size);
 		}
+	}
+
+	if (gl_LocalInvocationID.x == 0) {
+		atomicMax(param.write_vis_elem_cmd.num_groups_x, s_max_clust_draw_wg_size_x);
+		atomicMax(param.clust_raster_cmd.num_groups_x, s_max_clust_rast_wg_size_x);
+		atomicMax(param.clust_cull_late_cmd.num_groups_x, s_max_clust_cull_late_wg_size_x);
 	}
 }

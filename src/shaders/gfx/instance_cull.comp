@@ -31,7 +31,20 @@ layout(binding = 0) uniform sampler2D in_depth_pyramid_tex;
 
 layout (local_size_x = INSTANCE_CULL_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
 
+shared uint s_inst_vis_offset;
+shared uint s_inst_vis_count;
+
+shared uint s_inst_occ_offset;
+shared uint s_inst_occ_count;
+
 void main() {
+	if (gl_LocalInvocationID.x == 0) {
+		s_inst_vis_count = 0;
+		s_inst_occ_count = 0;
+	}
+
+	barrier();
+
 	if (gl_GlobalInvocationID.x < param.instance_count) {
 		uint inst_idx = gl_GlobalInvocationID.x;
 		InstanceData inst = in_inst[inst_idx];
@@ -42,38 +55,49 @@ void main() {
 		vec3 aabb_max = inst.max_xyzr.xyz + inst.max_xyzr.w;
 
 		// Frustum Culling
+		bool frustum_visible = true;
 		if (ubo.frustum_culling == 1) {
 			mat4 curr_MVP = ubo.world_to_clip * M;
 			vec3 uv_aabb_min, uv_aabb_max;
 			project_aabb(aabb_min, aabb_max, curr_MVP, uv_aabb_min, uv_aabb_max);
-			if (!cull_frustum(uv_aabb_min, uv_aabb_max)) {
-				return;
-			}
+			frustum_visible = cull_frustum(uv_aabb_min, uv_aabb_max);
 		}
 
-		bool visible = true;
-
 		// HiZ Culling
+		bool visible = frustum_visible;
 		if (ubo.depth_culling == 1) {
 			vec3 uv_aabb_min, uv_aabb_max;
 			project_aabb(aabb_min, aabb_max, prev_MVP, uv_aabb_min, uv_aabb_max);
 			visible = visible && cull_hiz(uv_aabb_min, uv_aabb_max, in_depth_pyramid_tex, ubo.depth_pyramid_width, ubo.depth_pyramid_height);
 		}
 
-		// @TODO PERF: Batch the global atomic operations using Subgroup and GSM
-		// to reduce strain on L2
+		uint idx;
 		if (visible) {
-			uint offset = atomicAdd(param.instance_vis_count, 1);
-			out_inst_vis_idx[offset] = inst_idx;
-
-			uint wg_size = offset + 1;
-			atomicMax(param.inst_clust_cull_cmd.num_groups_x, wg_size);
-		} else {
-			uint offset = atomicAdd(param.instance_occ_count, 1);
-			out_inst_occ_idx[offset] = inst_idx;
-
-			uint wg_size = DIV_UP(offset + 1, INSTANCE_CULL_GROUP_SIZE);
-			atomicMax(param.inst_cull_late_cmd.num_groups_x, wg_size);
+			idx = atomicAdd(s_inst_vis_count, 1);
+		} else if (frustum_visible) {
+			idx = atomicAdd(s_inst_occ_count, 1);
 		}
+
+		barrier();
+		
+		if (gl_LocalInvocationID.x == 0) {
+			s_inst_vis_offset = atomicAdd(param.instance_vis_count, s_inst_vis_count);
+			s_inst_occ_offset = atomicAdd(param.instance_occ_count, s_inst_occ_count);
+		}
+
+		barrier();
+
+		if (visible) {
+			idx += s_inst_vis_offset;
+			out_inst_vis_idx[idx] = inst_idx;
+		} else if (frustum_visible) {
+			idx += s_inst_occ_offset;
+			out_inst_occ_idx[idx] = inst_idx;
+		}
+	}
+
+	if (gl_LocalInvocationID.x == 0) {
+		atomicMax(param.inst_clust_cull_cmd.num_groups_x, s_inst_vis_offset + s_inst_vis_count);
+		atomicMax(param.inst_cull_late_cmd.num_groups_x, DIV_UP(s_inst_occ_offset + s_inst_occ_count, INSTANCE_CULL_GROUP_SIZE));
 	}
 }

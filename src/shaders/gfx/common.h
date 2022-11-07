@@ -22,10 +22,10 @@
 #define DRAW_SPHERE_INDEX_BINDING	12
 
 #define CLUSTER_INST_DATA_BINDING		14
-#define CLUSTER_INST_VIS_IDX_BINDING	15
-#define CLUSTER_INST_OCC_IDX_BINDING	16
-#define CLUSTER_WRITE_ELEM_BINDING		17	// Bind an array of indices to cluster instances to generate element indices
-#define CLUSTER_INST_RAST_IDX_BINDING	18
+#define CLUSTER_INST_DRAW_IDX_BINDING	15
+#define CLUSTER_INST_RAST_IDX_BINDING	16
+#define CLUSTER_INST_OCC_IDX_BINDING	17
+#define CLUSTER_WRITE_ELEM_BINDING		18	// Bind an array of indices to cluster instances to generate element indices
 
 #define INSTANCE_DATA_BINDING		20
 #define INSTANCE_VIS_IDX_BINDING	21
@@ -48,7 +48,7 @@
 #define INDEX_TEX_ATTACHMENT	3
 
 #define INSTANCE_CULL_GROUP_SIZE 1024
-#define CLUSTER_CULL_GROUP_SIZE 128
+#define INSTANCE_CLUSTER_CULL_GROUP_SIZE 128
 #define CLUSTER_CULL_LATE_GROUP_SIZE 1024
 #define DEPTH_REDUCE_GROUP_SIZE 32
 #define CLUSTER_RASTERIZE_GROUP_SIZE 128
@@ -151,9 +151,9 @@ struct DrawParameters {
 	DispatchIndirectCommand clust_cull_late_cmd;
 
 	uint cluster_inst_count;
-	uint cluster_vis_count;
-	uint cluster_occ_count;
+	uint cluster_draw_count;
 	uint cluster_rast_count;
+	uint cluster_occ_count;
 
 	uint instance_count;
 	uint instance_vis_count;
@@ -172,8 +172,8 @@ struct CompressedPosRad {
 };
 
 struct ClusterInstance {
-	uint  cluster_range;
-	uint  cluster_idx;
-	uint  transform_idx;
-	float rep_scale;
+	uint cluster_range;
+	uint cluster_idx;
+	uint transform_idx;
+	uint color;
 };

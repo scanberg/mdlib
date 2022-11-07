@@ -66,6 +66,7 @@ void main() {
 	uint clust_offset = clust_range >> 8;
 	uint clust_size	= clust_range & 0xFF;
 	uint transform_idx = clust_inst.transform_idx;
+	vec4 clust_color = unpackUnorm4x8(clust_inst.color);
 
 	mat4 model_mat = in_transforms[transform_idx];
 	ClusterBounds clust_bounds = in_cluster_bounds[clust_idx];

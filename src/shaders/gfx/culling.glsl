@@ -17,10 +17,10 @@ void project_aabb(vec3 aabb_min, vec3 aabb_max, mat4 MVP, out vec3 out_aabb_min,
 }
 
 bool cull_frustum(vec3 uv_aabb_min, vec3 uv_aabb_max) {
-	return (0 < uv_aabb_max.x && uv_aabb_min.x < 1) && (0 < uv_aabb_max.y && uv_aabb_min.y < 1) && (0 < uv_aabb_max.z);
+	return (0.0 < uv_aabb_max.x && uv_aabb_min.x < 1.0) && (0.0 < uv_aabb_max.y && uv_aabb_min.y < 1.0) && (0.0 < uv_aabb_max.z && uv_aabb_min.z < 1.0);
 }
 
-bool cull_hiz(vec3 uv_aabb_min, vec3 uv_aabb_max, sampler2D hiz_tex, uint hiz_width, uint hiz_height) {
+bool cull_hiz(vec3 uv_aabb_min, vec3 uv_aabb_max, sampler2D hiz_tex, float hiz_width, float hiz_height) {
 	float width  = (uv_aabb_max.x - uv_aabb_min.x) * hiz_width;
 	float height = (uv_aabb_max.y - uv_aabb_min.y) * hiz_height;
 	float max_size = max(width, height);
@@ -30,5 +30,5 @@ bool cull_hiz(vec3 uv_aabb_min, vec3 uv_aabb_max, sampler2D hiz_tex, uint hiz_wi
 	float depth_ref = textureLod(hiz_tex, (uv_aabb_min.xy + uv_aabb_max.xy) * 0.5, level).x;
 	float depth_min = uv_aabb_min.z;
 
-	return (depth_min <= depth_ref);
+	return (depth_min < depth_ref);
 }

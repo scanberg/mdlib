@@ -105,8 +105,9 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t fbo_width, uint32_t
 void md_gfx_shutdown();
 
 // STRUCTURE
-md_gfx_handle_t md_gfx_structure_create_from_mol(md_gfx_handle_t id, const struct md_molecule_t* mol);
-md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t instance_count);
+md_gfx_handle_t md_gfx_structure_create_from_mol(const struct md_molecule_t* mol);
+// Explicit initialization of data for a structure
+md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t group_count, uint32_t instance_count);
 bool md_gfx_structure_destroy(md_gfx_handle_t id);
 
 // ATOM FIELDS
@@ -114,6 +115,8 @@ bool md_gfx_structure_set_atom_position_soa(md_gfx_handle_t id, const float* x, 
 bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const struct vec3_t* xyz, uint32_t count, uint32_t byte_stride);
 bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, uint32_t count, uint32_t byte_stride);
 bool md_gfx_structure_set_atom_flags(md_gfx_handle_t id, const uint32_t* flags, uint32_t count, uint32_t byte_stride);
+
+bool md_gfx_structure_set_group_atom_ranges(md_gfx_handle_t id, const md_gfx_range_t* atom_ranges, uint32_t count, uint32_t byte_stride);
 
 // Parts of a structure can be replicated and transformed as instances
 // An instance is defined as an atom range and a transform

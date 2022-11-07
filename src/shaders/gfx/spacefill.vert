@@ -36,7 +36,7 @@ void main() {
     uint cluster_range = inst.cluster_range;
     uint cluster_idx   = inst.cluster_idx;
     uint transform_idx = inst.transform_idx;
-    float radius_scale = inst.rep_scale;
+    float radius_scale = 1.0;
 
     mat4 model_mat = transforms[transform_idx];
     uint cluster_offset = cluster_range >> 8;

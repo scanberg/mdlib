@@ -147,8 +147,11 @@ typedef struct segment_t {
 } segment_t;
 
 typedef struct instance_t {
-    mat4_t   transform;
-    range_t  atom_range;
+    mat4_t  transform;
+    vec4_t  min_xyzr;
+    vec4_t  max_xyzr;
+    range_t atom_range;
+    range_t cluster_range;
 } instance_t;
 
 typedef struct allocation_field_t {
@@ -169,11 +172,10 @@ typedef struct structure_t {
     allocation_range_t bb_range;
     allocation_range_t cluster;
 
-    // min and max values of coordinates xyz + radius r
-    vec4_t min_xyzr;
-    vec4_t max_xyzr;
-
     // Dynamic array
+    range_t*    groups;
+
+    instance_t  base_instance;
     instance_t* instances;
 
     uint16_t h_idx; // Handle index
@@ -643,8 +645,8 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         ctx.ubo_buf = gl_buffer_create(KILOBYTES(1), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
         ctx.instance_data_buf = gl_buffer_create(sizeof(InstanceData) * MAX_INSTANCE_COUNT, NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
-        ctx.instance_vis_buf = gl_buffer_create(sizeof(uint) * MAX_INSTANCE_COUNT, NULL, 0);
-        ctx.instance_occ_buf = gl_buffer_create(sizeof(uint) * MAX_INSTANCE_COUNT, NULL, 0);
+        ctx.instance_vis_buf  = gl_buffer_create(sizeof(uint) * MAX_INSTANCE_COUNT, NULL, 0);
+        ctx.instance_occ_buf  = gl_buffer_create(sizeof(uint) * MAX_INSTANCE_COUNT, NULL, 0);
 
         // Fully GPU Resident Buffers
         ctx.draw_ind_param_buf      = gl_buffer_create(sizeof(DrawParameters), NULL, GL_DYNAMIC_STORAGE_BIT);
@@ -902,7 +904,12 @@ static void field_free(allocation_field_t* field, allocation_range_t range) {
     }
 }
 
-md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t instance_count) {
+md_gfx_handle_t md_gfx_structure_create_from_mol(const md_molecule_t* mol) {
+    ASSERT(mol);
+    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)mol->covalent_bond.count, (uint32_t)mol->backbone.count, (uint32_t)mol->backbone.range_count, (uint32_t)mol->residue.count, (uint32_t)mol->instance.count);
+}
+
+md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t group_count, uint32_t instance_count) {
     if (!validate_context()) {
         return (md_gfx_handle_t){0};
     }
@@ -926,6 +933,7 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
     s->bb_range = field_alloc(&ctx.bb_range, backbone_range_count);
     s->cluster  = field_alloc(&ctx.cluster, DIV_UP(atom_count, MIN_COUNT_PER_CLUSTER)); // Reserve the maximum amount of clusters we need (this changes dynamically when recomputing clusters)
 
+    md_array_ensure(s->groups, group_count, default_allocator);
     md_array_ensure(s->instances, instance_count, default_allocator);
 
     // Create external handle for user
@@ -962,6 +970,146 @@ bool md_gfx_structure_destroy(md_gfx_handle_t id) {
     }
 
     return true;
+}
+
+typedef struct aabb_t {
+    vec3_t min_box;
+    vec3_t max_box;
+} aabb_t;
+
+uint32_t* create_cluster_ranges(uint32_t atom_range_beg, uint32_t atom_range_end, md_allocator_i* alloc) {
+    uint32_t* ranges = 0;
+    for (uint32_t i = atom_range_beg; i < atom_range_end;) {
+        uint32_t cluster_offset = i;
+        uint32_t cluster_size   = MIN(MAX_COUNT_PER_CLUSTER, atom_range_end - i);
+
+        uint32_t cluster_range = (cluster_offset << 8) | cluster_size;
+        md_array_push(ranges, cluster_range, alloc);
+        i += cluster_size;
+    }
+    return ranges;
+}
+
+uint32_t* create_cluster_ranges_from_groups(range_t* groups, uint32_t group_count, md_allocator_i* alloc) {
+    uint32_t* ranges = 0;
+    uint32_t cluster_offset = 0;
+    uint32_t cluster_size   = 0;
+
+    for (uint32_t i = 0; i < group_count; ++i) {
+        if (cluster_size + groups[i].count < MAX_COUNT_PER_CLUSTER) {
+            cluster_size += groups[i].count;
+        }
+        else {
+            uint32_t range = (cluster_offset << 8) | cluster_size;
+            md_array_push(ranges, range, alloc);
+            cluster_offset = groups[i].offset;
+            cluster_size   = groups[i].count;
+        }
+    }
+
+    uint32_t range = (cluster_offset << 8) | cluster_size;
+    md_array_push(ranges, range, alloc);
+
+    return ranges;
+}
+
+void recompute_clusters2(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
+    md_vm_arena_t vm_arena;
+    md_vm_arena_init(&vm_arena, GIGABYTES(4));
+    md_allocator_i vm_alloc = md_vm_arena_create_interface(&vm_arena);
+    md_allocator_i* alloc = &vm_alloc;
+
+    // This is a bit fiddly to get the mapping right, especially if you have instances defined.
+    // We make the assumption that if you have groups and instances defined, the instances are defined on the boarders of the defined groups.
+    // And that all atoms belong to a group.
+
+    const uint32_t grp_count = (uint32_t)md_array_size(s->groups);
+    const uint32_t inst_count = (uint32_t)md_array_size(s->instances);
+
+    uint32_t* grp_indices  = md_vm_arena_push(&vm_arena, sizeof(uint32_t) * count);
+
+    aabb_t* grp_aabb = md_vm_arena_push(&vm_arena, sizeof(aabb_t) * grp_count);
+    vec3_t* grp_cent = md_vm_arena_push(&vm_arena, sizeof(vec3_t) * grp_count);
+    int32_t* grp_inst_idx = md_vm_arena_push(&vm_arena, sizeof(int32_t) * grp_count);
+
+    for (uint32_t g_idx = 0; g_idx < grp_count; ++g_idx) {
+        vec3_t aabb_min = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
+        vec3_t aabb_max = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+        uint32_t beg = s->groups[g_idx].offset;
+        uint32_t end = s->groups[g_idx].offset + s->groups[g_idx].count;
+        for (uint32_t i = beg; i < end; ++i) {
+            vec3_t p = {x[i], y[i], z[i]};
+            aabb_min = vec3_min(aabb_min, p);
+            aabb_max = vec3_max(aabb_max, p);
+            grp_indices[i] = g_idx;
+            grp_inst_idx[i] = -1;
+        }
+        aabb_t aabb = {aabb_min, aabb_max};
+        vec3_t cent = vec3_mul_f(vec3_add(aabb_min, aabb_max), 0.5f);
+        grp_aabb[g_idx] = aabb;
+        grp_cent[g_idx] = cent;
+    }
+
+    range_t* inst_grp_ranges = md_vm_arena_push(&vm_arena, sizeof(range_t) * md_array_size(s->instances));
+
+    // Mark any atoms part of an instance, these are special cases
+    for (uint32_t i_idx = 0; i_idx < md_array_size(s->instances); ++i_idx) {
+        uint32_t first = s->instances[i_idx].atom_range.offset;
+        uint32_t last  = s->instances[i_idx].atom_range.offset + s->instances[i_idx].atom_range.count - 1;
+        range_t range = {grp_indices[first], grp_indices[last]};
+        inst_grp_ranges[i_idx] = range;
+        for (uint32_t i = range.offset; i < range.offset + range.count; ++i) {
+            grp_inst_idx[i] = i_idx;
+        }
+    }
+
+    uint32_t* grp_src_indices = md_vm_arena_push(&vm_arena, sizeof(uint32_t) * grp_count);
+    md_util_spatial_sort(grp_src_indices, grp_cent, grp_count);
+
+    uint32_t* src_indices = NULL;
+    range_t* base_groups  = NULL;
+    
+    // Add according to group and ignore groups part of instances
+    for (uint32_t j = 0; j < grp_count; ++j) {
+        uint32_t g_idx = grp_src_indices[j];
+        if (grp_inst_idx[g_idx] > -1) continue;
+        md_array_push(base_groups, s->groups[g_idx], alloc);
+
+        uint32_t beg = s->groups[g_idx].offset;
+        uint32_t end = s->groups[g_idx].offset + s->groups[g_idx].count;
+        for (uint32_t i = beg; i < end; ++i) {
+            md_array_push(src_indices, i, alloc);
+        }
+    }
+
+    uint32_t* cluster_base_ranges = create_cluster_ranges_from_groups(base_groups, (uint32_t)md_array_size(base_groups), alloc);
+
+    uint32_t* cluster_ranges = NULL;
+    md_array_push_array(cluster_ranges, cluster_base_ranges, md_array_size(cluster_base_ranges), alloc);
+
+    // Add according to group and part of instances
+    for (uint32_t i = 0; i < inst_count; ++i) {
+        range_t* groups = 0;
+        uint32_t beg = inst_grp_ranges[i].offset;
+        uint32_t end = inst_grp_ranges[i].offset + inst_grp_ranges[i].count;
+
+        for (uint32_t j = beg; j < end; ++j) {
+            md_array_push(groups, s->groups[j], alloc);
+        }
+        uint32_t* inst_ranges = create_cluster_ranges_from_groups(groups, (uint32_t)md_array_size(groups), alloc);
+        s->instances[i].cluster_range = (range_t){(uint32_t)md_array_size(cluster_ranges), (uint32_t)md_array_size(inst_ranges)};
+        md_array_push_array(cluster_ranges, inst_ranges, md_array_size(inst_ranges), alloc);
+    }
+
+    uint32_t cluster_count = (uint32_t)md_array_size(cluster_ranges);
+
+    s->atom.count = count;
+    s->cluster.count = cluster_count;
+
+    gl_buffer_set_sub_data(ctx.cluster_data_atom_idx_buf, s->atom.offset * sizeof(uint32_t),     s->atom.count * sizeof(uint32_t),     src_indices);
+    gl_buffer_set_sub_data(ctx.cluster_range_buf,         s->cluster.offset * sizeof(uint32_t),  s->cluster.count * sizeof(uint32_t),  cluster_ranges);
+
+    md_vm_arena_free(&vm_arena);
 }
 
 // Great resource and explanation of some of the techiques used when building BVH trees
@@ -1035,19 +1183,17 @@ void recompute_clusters(structure_t* s, const float* x, const float* y, const fl
         }
 
         uint32_t cluster_range = (cluster_offset << 8) | cluster_size;
-
-        uint32_t x = cluster_range >> 8;
-        uint32_t y = cluster_range & 0xFF;
         md_array_push(cluster_ranges, cluster_range, alloc);
 
         min_xyz = vec3_min(min_xyz, cluster_aabb_min);
         max_xyz = vec3_max(max_xyz, cluster_aabb_max);
     }
 
-    s->min_xyzr = vec4_from_vec3(min_xyz, s->min_xyzr.w);
-    s->max_xyzr = vec4_from_vec3(max_xyz, s->max_xyzr.w);
-
     uint32_t cluster_count = (uint32_t)md_array_size(cluster_ranges);
+
+    s->base_instance.min_xyzr = vec4_from_vec3(min_xyz, s->base_instance.min_xyzr.w);
+    s->base_instance.min_xyzr = vec4_from_vec3(max_xyz, s->base_instance.max_xyzr.w);
+    s->base_instance.cluster_range = (range_t){0, cluster_count};
 
     s->atom.count = count;
     s->cluster.count = cluster_count;
@@ -1200,8 +1346,8 @@ bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, u
         max_r = MAX(max_r, radius[i]);
     }
 
-    s->min_xyzr.w = min_r;
-    s->max_xyzr.w = max_r;
+    s->base_instance.min_xyzr.w = min_r;
+    s->base_instance.max_xyzr.w = max_r;
 
     update_cluster_data(s);
 
@@ -1242,6 +1388,34 @@ bool md_gfx_structure_set_atom_flags(md_gfx_handle_t id, const uint32_t* flags, 
     }
     return true;
 }
+
+bool md_gfx_structure_set_group_atom_ranges(md_gfx_handle_t id, const md_gfx_range_t* atom_ranges, uint32_t count, uint32_t byte_stride) {
+    structure_t* s = get_structure(id);
+    if (!s) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set group atom range data: Handle is invalid");
+        return false;
+    }
+
+    if (!atom_ranges) {
+        md_print(MD_LOG_TYPE_ERROR, "Failed to set group atom range data: Argument is missing.");
+        return false;
+    }
+
+    if (count > md_array_capacity(s->groups)) {
+        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+        return false;
+    }
+
+    byte_stride = MAX(byte_stride, sizeof(md_gfx_range_t));
+    for (uint32_t i = 0; i < count; ++i) {
+        md_gfx_range_t range = *(const md_gfx_range_t*)((const uint8_t*)atom_ranges + byte_stride * i);
+        s->groups[i].offset = range.beg_idx;
+        s->groups[i].count  = range.end_idx - range.beg_idx;
+    }
+
+    return true;
+}
+
 
 bool md_gfx_structure_set_instance_atom_ranges(md_gfx_handle_t id, const md_gfx_range_t* atom_ranges, uint32_t count, uint32_t byte_stride) {
     structure_t* s = get_structure(id);
@@ -1502,9 +1676,9 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_SPHERE_INDEX_BINDING,       ctx.draw_sphere_idx_buf.id);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_DATA_BINDING,       ctx.cluster_instance_data_buf.id);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_VIS_IDX_BINDING,    ctx.cluster_instance_vis_idx_buf.id);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_OCC_IDX_BINDING,    ctx.cluster_instance_occ_idx_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_DRAW_IDX_BINDING,   ctx.cluster_instance_vis_idx_buf.id);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_RAST_IDX_BINDING,   ctx.cluster_instance_rast_idx_buf.id);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_OCC_IDX_BINDING,    ctx.cluster_instance_occ_idx_buf.id);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, INSTANCE_DATA_BINDING,           ctx.instance_data_buf.id);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, INSTANCE_VIS_IDX_BINDING,        ctx.instance_vis_buf.id);
@@ -1543,20 +1717,41 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
             continue;
         }
 
-        uint32_t transform_idx = 0; // This is the default and represents identity matrix
-        if (in_op->model_mat && !mat4_equal(*in_op->model_mat, mat4_ident())) {
-            transform_idx = (uint32_t)md_array_size(transforms);
-            md_array_push(transforms, *in_op->model_mat, alloc);
+        // Create draw op for the base
+        {
+            uint32_t transform_idx = 0; // This is the default and represents identity matrix
+            if (in_op->model_mat && !mat4_equal(*in_op->model_mat, mat4_ident())) {
+                transform_idx = (uint32_t)md_array_size(transforms);
+                md_array_push(transforms, *in_op->model_mat, alloc);
+            }
+
+            InstanceData out = {0};
+            out.min_xyzr = s->base_instance.min_xyzr;
+            out.max_xyzr = s->base_instance.max_xyzr;
+            out.cluster_offset = s->base_instance.cluster_range.offset;
+            out.cluster_count  = s->base_instance.cluster_range.count;
+            out.transform_idx = ctx.transform.offset + transform_idx;
+            md_array_push(inst_data, out, alloc);
         }
 
-        // Create draw op
-        InstanceData inst = {0};
-        inst.min_xyzr = s->min_xyzr;
-        inst.max_xyzr = s->max_xyzr;
-        inst.cluster_offset = s->cluster.offset;
-        inst.cluster_count  = s->cluster.count;
-        inst.transform_idx = ctx.transform.offset + transform_idx;
-        md_array_push(inst_data, inst, alloc);
+        // Create draw ops for instanced clusters
+        for (uint32_t i = 0; i < (uint32_t)md_array_size(s->instances); ++i) {
+            const instance_t* inst = s->instances + i;
+            mat4_t M = inst->transform;
+            if (in_op->model_mat && !mat4_equal(*in_op->model_mat, mat4_ident())) {
+                M = mat4_mul(*in_op->model_mat, M);
+            }
+            uint32_t transform_idx = (uint32_t)md_array_size(transforms);
+            md_array_push(transforms, M, alloc);
+
+            InstanceData out = {0};
+            out.min_xyzr = inst->min_xyzr;
+            out.max_xyzr = inst->max_xyzr;
+            out.cluster_offset = inst->cluster_range.offset;
+            out.cluster_count  = inst->cluster_range.count;
+            out.transform_idx = ctx.transform.offset + transform_idx;
+            md_array_push(inst_data, out, alloc);
+        }
     }
 
     uint32_t instance_count  = (uint32_t)md_array_size(inst_data);
@@ -1628,17 +1823,17 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
  
 {
-    GL_PUSH_GPU_SECTION("CLUSTER RASTER");
-    glUseProgram(ctx.cluster_raster_prog.id);
-    glDispatchComputeIndirect((GLintptr)offsetof(DrawParameters, clust_raster_cmd));
-    GL_POP_GPU_SECTION();
-}
-{
     GL_PUSH_GPU_SECTION("SPACEFILL");
     glUseProgram(ctx.spacefill_prog.id);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx.draw_sphere_idx_buf.id);
     glDrawElementsIndirect(GL_POINTS, GL_UNSIGNED_INT, (const void*)offsetof(DrawParameters, draw_sphere_cmd));
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    GL_POP_GPU_SECTION();
+}
+{
+    GL_PUSH_GPU_SECTION("CLUSTER RASTER");
+    glUseProgram(ctx.cluster_raster_prog.id);
+    glDispatchComputeIndirect((GLintptr)offsetof(DrawParameters, clust_raster_cmd));
     GL_POP_GPU_SECTION();
 }
 
@@ -1652,7 +1847,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
         glNamedBufferSubData(ctx.draw_ind_param_buf.id, offsetof(DrawParameters, clust_raster_cmd.num_groups_x),    sizeof(uint), &zero);
         glNamedBufferSubData(ctx.draw_ind_param_buf.id, offsetof(DrawParameters, inst_clust_cull_cmd.num_groups_x), sizeof(uint), &zero);
         glNamedBufferSubData(ctx.draw_ind_param_buf.id, offsetof(DrawParameters, draw_sphere_cmd.count),            sizeof(uint), &zero);
-        glNamedBufferSubData(ctx.draw_ind_param_buf.id, offsetof(DrawParameters, cluster_vis_count),                sizeof(uint), &zero);
+        glNamedBufferSubData(ctx.draw_ind_param_buf.id, offsetof(DrawParameters, cluster_draw_count),               sizeof(uint), &zero);
         glNamedBufferSubData(ctx.draw_ind_param_buf.id, offsetof(DrawParameters, cluster_rast_count),               sizeof(uint), &zero);
         glNamedBufferSubData(ctx.draw_ind_param_buf.id, offsetof(DrawParameters, instance_vis_count),               sizeof(uint), &zero);
         glNamedBufferSubData(ctx.ubo_buf.id, offsetof(UniformData, late), sizeof(uint), &one);
@@ -1686,7 +1881,7 @@ glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 {
     GL_PUSH_GPU_SECTION("INSTANCE CULL LATE");
     glUseProgram(ctx.instance_cull_late_prog.id);
-    glDispatchComputeIndirect((GLintptr)offsetof(DrawParameters, inst_clust_cull_cmd));
+    glDispatchComputeIndirect((GLintptr)offsetof(DrawParameters, inst_cull_late_cmd));
     GL_POP_GPU_SECTION();
 }
 
@@ -1699,11 +1894,9 @@ glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
     GL_POP_GPU_SECTION();
 }
 
-glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
-
 {
     GL_PUSH_GPU_SECTION("CLUSTER CULL LATE");
-    glUseProgram(ctx.instance_cluster_cull_prog.id);
+    glUseProgram(ctx.cluster_cull_late_prog.id);
     glDispatchComputeIndirect((GLintptr)offsetof(DrawParameters, clust_cull_late_cmd));
     GL_POP_GPU_SECTION();
 }
@@ -1721,17 +1914,18 @@ glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
 glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
 
 {
-    GL_PUSH_GPU_SECTION("CLUSTER RASTER LATE");
-    glUseProgram(ctx.cluster_raster_prog.id);
-    glDispatchComputeIndirect((GLintptr)offsetof(DrawParameters, clust_raster_cmd));
-    GL_POP_GPU_SECTION();
-}
-{
     GL_PUSH_GPU_SECTION("SPACEFILL LATE");
     glUseProgram(ctx.spacefill_prog.id);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ctx.draw_sphere_idx_buf.id);
     glDrawElementsIndirect(GL_POINTS, GL_UNSIGNED_INT, (const void*)offsetof(DrawParameters, draw_sphere_cmd));
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    GL_POP_GPU_SECTION();
+}
+
+{
+    GL_PUSH_GPU_SECTION("CLUSTER RASTER LATE");
+    glUseProgram(ctx.cluster_raster_prog.id);
+    glDispatchComputeIndirect((GLintptr)offsetof(DrawParameters, clust_raster_cmd));
     GL_POP_GPU_SECTION();
 }
 
@@ -1807,10 +2001,10 @@ GL_PUSH_GPU_SECTION("RESET STATE");
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DRAW_SPHERE_INDEX_BINDING,   0);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_DATA_BINDING,       0);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_VIS_IDX_BINDING,    0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_DRAW_IDX_BINDING,   0);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_RAST_IDX_BINDING,   0);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_OCC_IDX_BINDING,    0);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_WRITE_ELEM_BINDING,      0);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, CLUSTER_INST_RAST_IDX_BINDING,   0);
 
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, DEBUG_BINDING,               0);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, VIS_BINDING,                 0);

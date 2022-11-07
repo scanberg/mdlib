@@ -117,11 +117,17 @@ void main() {
 		// Rasterize it!
 		vec4 clip_aabb;
         project_sphere(view_sphere, P[0][0], P[1][1], clip_aabb);
-		vec4 uv_aabb = clip_aabb * 0.5 + 0.5;
+		vec3 uv_aabb_min = vec3(clip_aabb.xy, clip_z) * 0.5 + 0.5;
+		vec3 uv_aabb_max = vec3(clip_aabb.zw, clip_z) * 0.5 + 0.5;
+
+
+		if (ubo.late == 1 && !cull_hiz(uv_aabb_min, uv_aabb_max, in_depth_pyramid_tex, ubo.depth_pyramid_width, ubo.depth_pyramid_height)) {
+			continue;
+		}
 
 		vec2 ext = vec2(ubo.render_width, ubo.render_height);
-		ivec2 min_coord = ivec2(uv_aabb.xy * ext + 0.5);
-		ivec2 max_coord = ivec2(uv_aabb.zw * ext + 0.5);
+		ivec2 min_coord = ivec2(uv_aabb_min.xy * ext + 0.5);
+		ivec2 max_coord = ivec2(uv_aabb_max.xy * ext + 0.5);
 
 		ivec2 minc = clamp(min(min_coord, max_coord), ivec2(0,0), ivec2(ubo.render_width, ubo.render_height));
 		ivec2 maxc = clamp(max(min_coord, max_coord), ivec2(0,0), ivec2(ubo.render_width, ubo.render_height));
