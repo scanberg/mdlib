@@ -3887,7 +3887,14 @@ static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int64_t num_bitfields, const md_element_t atom_elements[]) {
+// This is quirky and wierd.
+// It should essentially check if all the supplied bitfields are 'equivalent'
+// Equivalent in this case means that all of them represent the same type of structures within the system
+// We do this now by checking against the atom elements if available (which is not the case in CoarseGrained simulations)
+// In such case we revert to matching Atom labels
+// To resolve this PROPERLY, one needs to determine the topology of each supplied substructure and match it as a graph.
+
+static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int64_t num_bitfields, const md_molecule_t* mol) {
     // Number of bits should match.
     // The atomic element of each set bit should match.
 
@@ -3898,15 +3905,30 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
     for (int64_t i = 1; i < num_bitfields; ++i) {
         const md_bitfield_t* bf = &bitfields[i];
         const int64_t count = md_bitfield_popcount(bf);
-        if (count != ref_count) return false;
+        if (count != ref_count) {
+            return false;
+        }
 
         int64_t beg_bit = bf->beg_bit;
         int64_t end_bit = bf->end_bit;
         while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
             const int64_t idx = beg_bit - 1;
             const int64_t ref_idx = ref_bf->beg_bit + (idx - bf->beg_bit);
-            if (!md_bitfield_test_bit(ref_bf, ref_idx)) return false;
-            if (atom_elements[idx] != atom_elements[ref_idx]) return false;
+            if (!md_bitfield_test_bit(ref_bf, ref_idx)) {
+                return false;
+            }
+            if (mol->atom.element) {
+                if (mol->atom.element[idx] != mol->atom.element[ref_idx]) {
+                    return false;
+                }
+            } else {
+                str_t a = label_to_str(&mol->atom.name[idx]);
+                str_t b = label_to_str(&mol->atom.name[ref_idx]);
+                if (!str_equal(a, b)) {
+                    return false;
+                }
+
+            }
         }
     }
 
@@ -4042,9 +4064,6 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             if (vol) {
                 mat4_t VART = mat4_mul(VA, RT);
-                // This should probably be measured, but I have a hard time imagining that performing
-                // batch transform into a temp buffer is faster than directly transforming.
-                //mat4_batch_transform2(target[1].x, target[1].y, target[1].z, target[0].x, target[0].y, target[0].z, 1.0f, target_size, VART);
                 populate_volume(vol, target.x, target.y, target.z, target_size, VART);
             }
             if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_SDF) {
@@ -4075,7 +4094,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // Test for equivalence
-        if (!are_bitfields_equivalent(ref_bitfields, num_ref_bitfields, ctx->mol->atom.element)) {
+        if (!are_bitfields_equivalent(ref_bitfields, num_ref_bitfields, ctx->mol)) {
             create_error(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfields are not identical: the number of atoms and their corresponding elements do not match between all supplied bitfields");
             return -1;
         }
