@@ -101,12 +101,10 @@ struct md_gl_representation_t { // This is an opaque blob which matches the size
 
 typedef uint16_t md_gl_representation_type_t;
 enum {
-    MD_GL_REP_DEFAULT                    = 0,
-    MD_GL_REP_SPACE_FILL                 = 1,
-    MD_GL_REP_SOLVENT_EXCLUDED_SURFACE   = 2,
-    MD_GL_REP_RIBBONS                    = 3,
-    MD_GL_REP_CARTOON                    = 4,
-    MD_GL_REP_LICORICE                   = 5
+    MD_GL_REP_SPACE_FILL                 = 0,
+    MD_GL_REP_LICORICE                   = 1,
+    MD_GL_REP_RIBBONS                    = 2,
+    MD_GL_REP_CARTOON                    = 3,
 };
 
 typedef union md_gl_representation_args_t {

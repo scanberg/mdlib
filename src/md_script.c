@@ -1,4 +1,4 @@
-﻿#include "md_script.h"
+#include "md_script.h"
 #include "md_molecule.h"
 #include "md_trajectory.h"
 #include "md_frame_cache.h"
@@ -4722,19 +4722,29 @@ bool md_filter_free(md_filter_result_t* result, struct md_allocator_i* alloc) {
     return true;
 }
 
-/*
-bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const md_molecule_t* mol, md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap) {
-    ASSERT(prop);
+bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mol, const struct md_script_ir_t* ctx_ir, char* err_buf, int err_cap) {
     ASSERT(mol);
-    ASSERT(alloc);
 
-    bool result = false;
+    if (!dst_bf || !md_bitfield_validate(dst_bf)) {
+        md_printf(MD_LOG_TYPE_ERROR, "md_filter: Passed in bitfield was NULL or not valid.");
+        return false;
+    }
 
-    md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
-    md_allocator_i* temp_alloc = arena;
+    if (!mol) {
+        md_printf(MD_LOG_TYPE_ERROR, "md_filter: Passed in molecule was NULL");
+        return false;
+    }
 
-    md_script_ir_t* ir = create_ir(arena);
-    init_ir(ir, expr, ctx_ir);
+    bool success = false;
+
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
+
+    md_script_ir_t* ir = create_ir(&temp_alloc);
+    ir->str = str_copy(expr, ir->arena);
+
+    if (ctx_ir) {
+        add_ir_ctx(ir, ctx_ir);
+    }
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
 
@@ -4742,7 +4752,7 @@ bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr,
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
-        .temp_alloc = temp_alloc,
+        .temp_alloc = &temp_alloc,
     };
 
     ir->stage = "Filter evaluate";
@@ -4751,82 +4761,61 @@ bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr,
     ast_node_t* node = parse_expression(&parse_ctx);
     node = prune_expressions(node);
     if (node) {
-        eval_context_t static_ctx = {
+        eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .temp_alloc = temp_alloc,
+            .raw_temp_alloc = &vm_arena,
+            .temp_alloc = &temp_alloc,
+            .alloc = &temp_alloc,
+            .initial_configuration = {
+                .x = mol->atom.x,
+                .y = mol->atom.y,
+                .z = mol->atom.z,
+            },
+            .eval_flags = EVAL_FLAG_FLATTEN,
         };
 
-        if (static_check_node(node, &static_ctx)) {
-            if (node->data.type.base_type == TYPE_FLOAT && (node->data.type.dim[1] == 0 || node->data.type.dim[1] == 1)) {
-                eval_context_t eval_ctx = {
-                    .ir = ir,
-                    .mol = mol,
-                    .temp_alloc = temp_alloc,
-                    .initial_configuration = {
-                        .x = mol->atom.x,
-                        .y = mol->atom.y,
-                        .z = mol->atom.z,
-                }
-                };
-
+        if (static_check_node(node, &ctx)) {
+            if (node->data.type.base_type == TYPE_BITFIELD) {
                 // Evaluate dynamic targets if available
                 for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
-                    data_t data = { .type = ir->eval_targets[i]->node->data.type };
-                    allocate_data(&data, arena);
-                    evaluate_node(&data, ir->eval_targets[i]->node, &eval_ctx);
+                    data_t data = {0};
+                    allocate_data(&data, ir->eval_targets[i]->node->data.type, &temp_alloc);
+                    evaluate_node(&data, ir->eval_targets[i]->node, &ctx);
                 }
 
-                // Actual property
-                data_t data = { .type = node->data.type };
-                allocate_data(&data, arena);
+                data_t data = {0};
+                allocate_data(&data, node->data.type, &temp_alloc);
 
-                result = evaluate_node(&data, node, &eval_ctx);
-                if (result) {
-                    str_t ident = make_cstr("prop");
-                    // Allocate data for property
-                    init_property(prop, 1, ident, node, alloc);
+                if (evaluate_node(&data, node, &ctx)) {
+                    md_bitfield_clear(dst_bf);
 
-                    // Copy data to property
-                    memcpy(prop->data.values, data.ptr, prop->data.num_values * sizeof(float));
-
-                    float min;
-                    float max;
-                    compute_min_max(&min, &max, prop->data.values, prop->data.num_values);
-
-                    prop->data.min_range[0] = data.min_range;
-                    prop->data.max_range[0] = data.max_range;
-
-
-                    // @TODO: Compute sample_mean and variance
-
+                    const int64_t len = type_info_array_len(data.type);
+                    const md_bitfield_t* bf_arr = data.ptr;
+                    if (bf_arr) {
+                        for (int64_t i = 0; i < len; ++i) {
+                            md_bitfield_or_inplace(dst_bf, &bf_arr[i]);
+                        }
+                    }
+                    //bool is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
+                    success = true;
                 }
+            } else {
+                md_printf(MD_LOG_TYPE_ERROR, "md_filter: Expression did not evaluate to a valid bitfield\n");
+                return false;
             }
-        }
-    }
-    if (!result) {
-        if (err_str) {
-            snprintf(err_str, err_cap, "Filter did not evaluate to a property\n");
-        } else {
-            md_print(MD_LOG_TYPE_ERROR, "Filter did not evaluate to a property");
         }
     }
 
     int64_t len = 0;
     for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
-        if (err_str) {
-            int64_t space_left = MAX(0, err_cap - len);
-            if (space_left) len += snprintf(err_str + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
-        } else {
-            md_printf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].error.len, ir->errors[i].error.ptr);
-        }
+        int space_left = MAX(0, (int)(err_cap - len));
+        if (space_left) len += snprintf(err_buf + len, (size_t)space_left, "%.*s\n", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
     }
 
-    md_arena_allocator_destroy(arena);
-
-    return result;
+    FREE_TEMP_ALLOC();
+    return success;
 }
-*/
 
 #define VIS_MAGIC 0xbc6169abd9628947
 

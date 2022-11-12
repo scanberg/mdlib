@@ -10,7 +10,7 @@ struct md_allocator_i;
 extern "C" {
 #endif
 
-enum {
+typedef enum md_util_postprocess_flags_t {
     MD_UTIL_POSTPROCESS_ELEMENT_BIT         = 1,
     MD_UTIL_POSTPROCESS_RADIUS_BIT          = 2,
     MD_UTIL_POSTPROCESS_MASS_BIT            = 4,
@@ -20,9 +20,7 @@ enum {
 
     MD_UTIL_POSTPROCESS_ALL             = -1,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED  = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
-};
-
-typedef uint32_t md_util_postprocess_flags_t;
+} md_util_postprocess_flags_t;
 
 // Structure Of Array layout version of vec3_t
 // This is to simplify the interfaces a bit when dealing with multiple coordinate streams

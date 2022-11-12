@@ -1,7 +1,5 @@
 #pragma once
 
-#include <stdint.h>
-#include <stdbool.h>
 #include <core/md_str.h>
 
 struct md_allocator_i;
@@ -18,8 +16,9 @@ extern "C" {
 void md_string_builder_init(md_string_builder_t* sb, struct md_allocator_i* alloc);
 void md_string_builder_free(md_string_builder_t* sb);
 
-void md_string_builder_print(md_string_builder_t* sb, const char* string);
 void md_string_builder_printf(md_string_builder_t* sb, const char* format, ...);
+void md_string_builder_append_char(md_string_builder_t* sb, char c);
+void md_string_builder_append_cstr(md_string_builder_t* sb, const char* cstr);
 void md_string_builder_append_str(md_string_builder_t* sb, str_t str);
 void md_string_builder_reset(md_string_builder_t* sb);
 

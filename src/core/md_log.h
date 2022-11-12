@@ -17,11 +17,14 @@ typedef struct md_logger_i {
 extern "C" {
 #endif
 
-void md_add_logger(const md_logger_i* logger);
-void md_remove_logger(const md_logger_i* logger);
+void md_logger_add(const md_logger_i* logger);
+void md_logger_remove(const md_logger_i* logger);
+
 int  md_print(md_log_type_t log_type, const char* msg);
 int  md_printf(md_log_type_t log_type, const char* format, ...);
 
+// This is added implicitly
+// If you do not want to have this, you remove it explicitly
 extern struct md_logger_i* default_logger;
 
 #ifdef __cplusplus

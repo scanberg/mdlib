@@ -734,41 +734,6 @@ bool md_gl_molecule_zero_velocity(md_gl_molecule_t* ext_mol) {
     return false;
 }
 
-/*
-static bool md_update_visible_atom_color_range(internal_rep_t* rep) {
-    if (!rep) return md_gl_REPRESENTATION_INVALID;
-    if (!rep->mol) return md_gl_MOLECULE_INVALID;
-
-    glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);
-    void* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_READ_ONLY);
-    if (ptr) {
-        uint32_t* col = (uint32_t*)ptr;
-        md_range_t range = {0xFFFFFFFF, 0};
-            
-        for (uint32_t i = 0; i < rep->mol->atom_count; i++) {
-            if (col[i] & 0xFF000000) {
-                range.beg = MIN(range.beg, i);
-                range.end = MAX(range.end, i);
-            }
-        }
-            
-        if (range.beg == 0xFFFFFFFFU) {
-            range.beg = range.end = 0;
-        } else {
-            range.end++;    // @NOTE: Increment end one past last found index
-        }
-            
-        rep->visible_range = range;
-        glUnmapBuffer(GL_ARRAY_BUFFER);
-    } else {
-        return false;
-    }
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-    return true;
-}
-*/
-
 bool md_gl_representation_set_type_and_args(md_gl_representation_t* ext_rep, md_gl_representation_type_t type, md_gl_representation_args_t args) {
     internal_rep_t* rep = (internal_rep_t*)ext_rep;
     rep->type = type;
@@ -1217,9 +1182,6 @@ bool md_gl_representation_free(md_gl_representation_t* ext_rep) {
     return false;
 }
 
-static bool build_depth_mipmap(gl_texture_t dst, gl_texture_t src);
-static bool compute_residue_aabb(const internal_mol_t* mol);
-static bool cull_aabb(const internal_mol_t* mol);
 static bool compute_spline(const internal_mol_t* mol);
 
 static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, float scale);
@@ -1325,21 +1287,6 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     }
     
     //qsort((void*)draw_ent, draw_ent_count, sizeof(draw_entity_t), compare_draw_ent);
-               
-    // Compute residue AABBs for culling
-    if (ctx.version >= 430 && (args->options & MD_GL_OPTION_RESIDUE_OCCLUSION_CULLING)) {
-        PUSH_GPU_SECTION("COMPUTE RESIDUE AABB")
-        for (int64_t i = 0; i < md_array_size(draw_mols); i++) {
-            compute_residue_aabb(draw_mols[i].mol);
-        }
-        POP_GPU_SECTION()
-            
-        PUSH_GPU_SECTION("CULL RESIDUE AABB")
-        for (uint32_t i = 0; i < md_array_size(draw_mols); i++) {
-            cull_aabb(draw_mols[i].mol);
-        }
-        POP_GPU_SECTION()
-    }
             
     PUSH_GPU_SECTION("COMPUTE SPLINE")
     for (uint32_t i = 0; i < md_array_size(draw_mols); i++) {
@@ -1377,20 +1324,17 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
         }
 
         switch (rep->type) {
-        case MD_GL_REP_SOLVENT_EXCLUDED_SURFACE:
-            break;
-        case MD_GL_REP_DEFAULT:
         case MD_GL_REP_SPACE_FILL:
             draw_space_fill(shaders->space_fill[program_permutation], rep, scale);
+            break;
+        case MD_GL_REP_LICORICE:
+            draw_licorice(shaders->licorice[program_permutation], rep, scale);
             break;
         case MD_GL_REP_RIBBONS:
             draw_ribbons(shaders->ribbons[program_permutation], rep, scale);
             break;
         case MD_GL_REP_CARTOON:
             draw_cartoon(shaders->cartoon[program_permutation], rep, scale);
-            break;
-        case MD_GL_REP_LICORICE:
-            draw_licorice(shaders->licorice[program_permutation], rep, scale);
             break;
         default:
             md_print(MD_LOG_TYPE_ERROR, "Representation had unexpected type");
@@ -1657,29 +1601,6 @@ static bool draw_cartoon(gl_program_t program, const internal_rep_t* rep, float 
 
     glBindVertexArray(0);
 
-    return true;
-}
-
-static bool compute_residue_aabb(const internal_mol_t* mol) {   
-    (void)ctx;
-    (void)mol;
-
-    return true;
-}
-
-static bool cull_aabb(const internal_mol_t* mol) {
-    (void)ctx;
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_RESIDUE_VISIBLE].id);
-    void* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-    if (ptr) {
-        uint32_t* data = (uint32_t*)ptr;
-        for (uint32_t i = 0; i < mol->residue_count; i++) {
-            //data[i] = (i % 2U) ? 1U : 0U;
-            data[i] = 1U;
-        }
-        glUnmapBuffer(GL_ARRAY_BUFFER);
-    }
-    
     return true;
 }
 

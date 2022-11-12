@@ -226,6 +226,20 @@ str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
     return (str_t) {buf, len};
 }
 
+str_t str_concat(str_t a, str_t b, struct md_allocator_i* alloc) {
+    char* buf = md_alloc(alloc, a.len + b.len + 1);
+    int64_t len = a.len + b.len;
+    
+    if (!str_empty(a)) {
+        memcpy(buf, a.ptr, a.len);
+    }
+    if (!str_empty(b)) {
+        memcpy(buf + a.len, b.ptr, b.len);
+    }
+    buf[a.len + b.len] = '\0';
+    return (str_t){buf, len};
+}
+
 // c:/folder/file.ext -> ext
 str_t extract_ext(str_t path) {
     int64_t pos = str_rfind_char(path, '.');

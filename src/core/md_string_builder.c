@@ -31,7 +31,7 @@ void md_string_builder_free(md_string_builder_t* sb) {
 	sb->alloc = NULL;
 }
 
-void md_string_builder_print(md_string_builder_t* sb, const char* cstr) {
+void md_string_builder_append_cstr(md_string_builder_t* sb, const char* cstr) {
 	ASSERT(sb);
 	int64_t len = (int64_t)strlen(cstr);
 	if (len > 0) {
@@ -66,6 +66,13 @@ void md_string_builder_append_str(md_string_builder_t* sb, str_t str) {
 		md_array_push_array(sb->buf, str.ptr, str.len, sb->alloc);
 		md_array_push(sb->buf, '\0', sb->alloc);
 	}
+}
+
+void md_string_builder_append_char(md_string_builder_t* sb, char c) {
+    ASSERT(sb);
+    if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
+    md_array_push(sb->buf, c, sb->alloc);
+    md_array_push(sb->buf, '\0', sb->alloc);
 }
 
 void md_string_builder_reset(md_string_builder_t* sb) {

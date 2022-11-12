@@ -22,6 +22,7 @@ extern "C" {
 
 void md_bitfield_init           (md_bitfield_t* bf, struct md_allocator_i* alloc);
 bool md_bitfield_free           (md_bitfield_t* bf);
+bool md_bitfield_validate       (md_bitfield_t* bf);
 
 void md_bitfield_reserve_range  (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
