@@ -13,7 +13,7 @@ UTEST(string_builder, all) {
 	EXPECT_EQ(NULL, str.ptr);
 	EXPECT_EQ(0, str.len);
 
-	md_string_builder_print(&sb, "Hej");
+	md_string_builder_append_cstr(&sb, "Hej");
 	str = md_string_builder_to_string(&sb);
 
 	EXPECT_STREQ("Hej", str.ptr);
@@ -27,6 +27,11 @@ UTEST(string_builder, all) {
 	str = md_string_builder_to_string(&sb);
 
 	EXPECT_STREQ("Hej 2 Cool 4 School.", str.ptr);
+
+	md_string_builder_append_char(&sb, '!');
+	str = md_string_builder_to_string(&sb);
+
+	EXPECT_STREQ("Hej 2 Cool 4 School.!", str.ptr);
 
 	md_string_builder_reset(&sb);
 	str = md_string_builder_to_string(&sb);

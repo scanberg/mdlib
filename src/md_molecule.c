@@ -91,8 +91,8 @@ void md_molecule_append(md_molecule_t* dst, const md_molecule_t* src, md_allocat
     ARRAY_PUSH(atom, residue_idx);
     ARRAY_PUSH(atom, chain_idx);
 
-    ARRAY_INCREMENT(atom, residue_idx, dst->residue.count);
-    ARRAY_INCREMENT(atom, chain_idx,   dst->chain.count);
+    ARRAY_INCREMENT(atom, residue_idx, (int32_t)dst->residue.count);
+    ARRAY_INCREMENT(atom, chain_idx,   (int32_t)dst->chain.count);
 
     ARRAY_PUSH(backbone, atoms);
     ARRAY_PUSH(backbone, angle);
@@ -101,45 +101,45 @@ void md_molecule_append(md_molecule_t* dst, const md_molecule_t* src, md_allocat
     ARRAY_PUSH(backbone, residue_idx);
 
     md_array_ensure(dst->backbone.range, dst->backbone.range_count + src->backbone.range_count, alloc);
-    int32_t offset = dst->backbone.count;
+    int32_t offset = (int32_t)dst->backbone.count;
     for (int64_t i = 0; i < src->backbone.range_count; ++i) {
         md_range_t range = {src->backbone.range[i].beg + offset, src->backbone.range[i].end + offset};
         md_array_push(dst->backbone.range, range, alloc);
     }
 
-    ARRAY_INCREMENT(backbone, residue_idx,     dst->residue.count);
-    ARRAY_INCREMENT_FIELD(backbone, atoms, c,  dst->atom.count);
-    ARRAY_INCREMENT_FIELD(backbone, atoms, ca, dst->atom.count);
-    ARRAY_INCREMENT_FIELD(backbone, atoms, n,  dst->atom.count);
-    ARRAY_INCREMENT_FIELD(backbone, atoms, o,  dst->atom.count);
+    ARRAY_INCREMENT(backbone, residue_idx,     (int32_t)dst->residue.count);
+    ARRAY_INCREMENT_FIELD(backbone, atoms, c,  (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(backbone, atoms, ca, (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(backbone, atoms, n,  (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(backbone, atoms, o,  (int32_t)dst->atom.count);
 
     ARRAY_PUSH(chain, id);
     ARRAY_PUSH(chain, residue_range);
     ARRAY_PUSH(chain, atom_range);
-    ARRAY_INCREMENT_FIELD(chain, residue_range, beg, dst->residue.count);
-    ARRAY_INCREMENT_FIELD(chain, residue_range, end, dst->residue.count);
-    ARRAY_INCREMENT_FIELD(chain, atom_range,    beg, dst->atom.count);
-    ARRAY_INCREMENT_FIELD(chain, atom_range,    end, dst->atom.count);
+    ARRAY_INCREMENT_FIELD(chain, residue_range, beg, (int32_t)dst->residue.count);
+    ARRAY_INCREMENT_FIELD(chain, residue_range, end, (int32_t)dst->residue.count);
+    ARRAY_INCREMENT_FIELD(chain, atom_range,    beg, (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(chain, atom_range,    end, (int32_t)dst->atom.count);
 
     ARRAY_PUSH(covalent_bond, bond);
-    ARRAY_INCREMENT_FIELD(covalent_bond, bond, idx[0], dst->atom.count);
-    ARRAY_INCREMENT_FIELD(covalent_bond, bond, idx[1], dst->atom.count);
+    ARRAY_INCREMENT_FIELD(covalent_bond, bond, idx[0], (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(covalent_bond, bond, idx[1], (int32_t)dst->atom.count);
 
     ARRAY_PUSH(hydrogen_bond, bond);
-    ARRAY_INCREMENT_FIELD(hydrogen_bond, bond, idx[0], dst->atom.count);
-    ARRAY_INCREMENT_FIELD(hydrogen_bond, bond, idx[1], dst->atom.count);
+    ARRAY_INCREMENT_FIELD(hydrogen_bond, bond, idx[0], (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(hydrogen_bond, bond, idx[1], (int32_t)dst->atom.count);
 
     ARRAY_PUSH(residue, name);
     ARRAY_PUSH(residue, id);
     ARRAY_PUSH(residue, atom_range);
     ARRAY_PUSH(residue, internal_covalent_bond_range);
     ARRAY_PUSH(residue, complete_covalent_bond_range);
-    ARRAY_INCREMENT_FIELD(residue, atom_range, beg, dst->atom.count);
-    ARRAY_INCREMENT_FIELD(residue, atom_range, end, dst->atom.count);
-    ARRAY_INCREMENT_FIELD(residue, internal_covalent_bond_range, beg, dst->covalent_bond.count);
-    ARRAY_INCREMENT_FIELD(residue, internal_covalent_bond_range, end, dst->covalent_bond.count);
-    ARRAY_INCREMENT_FIELD(residue, complete_covalent_bond_range, beg, dst->covalent_bond.count);
-    ARRAY_INCREMENT_FIELD(residue, complete_covalent_bond_range, end, dst->covalent_bond.count);
+    ARRAY_INCREMENT_FIELD(residue, atom_range, beg, (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(residue, atom_range, end, (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(residue, internal_covalent_bond_range, beg, (int32_t)dst->covalent_bond.count);
+    ARRAY_INCREMENT_FIELD(residue, internal_covalent_bond_range, end, (int32_t)dst->covalent_bond.count);
+    ARRAY_INCREMENT_FIELD(residue, complete_covalent_bond_range, beg, (int32_t)dst->covalent_bond.count);
+    ARRAY_INCREMENT_FIELD(residue, complete_covalent_bond_range, end, (int32_t)dst->covalent_bond.count);
 
     dst->atom.count           += src->atom.count;
     dst->backbone.count       += src->backbone.count;

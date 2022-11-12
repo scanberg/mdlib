@@ -1556,8 +1556,8 @@ void md_util_spatial_sort_soa(uint32_t* source, const float* x, const float* y, 
     computeHistogram(hist, keys, count);
 
     uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
-    for (size_t i = 0; i < count; ++i) {
-        scratch[i] = (uint32_t)i;
+    for (uint32_t i = 0; i < (uint32_t)count; ++i) {
+        scratch[i] = i;
     }
 
     // 3-pass radix sort computes the resulting order into scratch
@@ -1575,9 +1575,10 @@ void md_util_spatial_sort(uint32_t* source, const vec3_t* xyz, int64_t count) {
     md_allocator_i* alloc = default_allocator;
 
     uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
-    const float* x = &xyz[0];
-    const float* y = &xyz[1];
-    const float* z = &xyz[2];
+    const float* base = (const float*)xyz;
+    const float* x = base + 0;
+    const float* y = base + 1;
+    const float* z = base + 2;
     computeOrder(keys, x, y, z, count, sizeof(vec3_t));
 
     // Important to zero the data here, since we increment when computing the histogram
@@ -1585,8 +1586,8 @@ void md_util_spatial_sort(uint32_t* source, const vec3_t* xyz, int64_t count) {
     computeHistogram(hist, keys, count);
 
     uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
-    for (size_t i = 0; i < count; ++i) {
-        scratch[i] = (uint32_t)i;
+    for (uint32_t i = 0; i < (uint32_t)count; ++i) {
+        scratch[i] = i;
     }
 
     // 3-pass radix sort computes the resulting order into scratch
