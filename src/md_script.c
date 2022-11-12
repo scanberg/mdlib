@@ -255,9 +255,9 @@ typedef struct md_script_visualization_o {
 } md_script_visualization_o;
 
 typedef struct static_backchannel_t {
-    flags_t  flags;
-    md_unit_t   unit;
-    frange_t value_range;
+    flags_t   flags;
+    md_unit_t unit;
+    frange_t  value_range;
 } static_backchannel_t;
 
 typedef struct eval_context_t {
@@ -265,8 +265,6 @@ typedef struct eval_context_t {
     const md_molecule_t* mol;
     const md_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
 
-    //int64_t max_stack_size;
-    //md_stack_allocator_t* stack_alloc;  // This is the same allocator as temp alloc, just with the raw interface
     md_vm_arena_t* raw_temp_alloc;
     md_allocator_i* temp_alloc;         // For allocating transient data (Generic interface to raw_temp_alloc)
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
@@ -299,7 +297,7 @@ typedef struct procedure_t {
     md_type_info_t return_type;
     int64_t num_args;
     md_type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
-    int  (*proc_ptr)(data_t*, data_t[], eval_context_t*); // Function pointer to the "C" procedure
+    int  (*proc_ptr)(data_t*, data_t[], eval_context_t*); // Function pointer to the "C" procedure    
     flags_t flags;
 } procedure_t;
 
@@ -314,7 +312,7 @@ typedef struct ast_node_t {
     value_t             value;          // Scalar values for storing data directly inside the node
     data_t              data;           // Structure for passing as argument into procedure. (Holds pointer, length and type)
 
-    procedure_t*    proc;           // Procedure reference
+    const procedure_t*    proc;           // Procedure reference
     uint32_t        proc_flags;     // Additional flags used for e.g. swapping arguments which may be required for the procedure call
     str_t           ident;          // Identifier reference
 
@@ -438,7 +436,7 @@ static inline bool compare_type_info_dim(md_type_info_t a, md_type_info_t b) {
     return (memcmp(&a.dim, &b.dim, sizeof(a.dim)) == 0) && (a.len_dim == b.len_dim);
 }
 
-static inline bool compare_type_info(md_type_info_t a, md_type_info_t b) {
+static inline bool type_info_equal(md_type_info_t a, md_type_info_t b) {
     /*if (a.base_type == TYPE_BITFIELD && b.base_type == TYPE_BITFIELD) {
         if ((a.level == -1 || b.level == -1) || a.level == b.level) {
             return compare_type_info_dim(a, b);
@@ -553,7 +551,7 @@ static inline bool is_type_directly_compatible(md_type_info_t from, md_type_info
         }
     }
 
-    if (compare_type_info(from, to)) return true;
+    if (type_info_equal(from, to)) return true;
 
     if (from.base_type == to.base_type) {
         // This is essentially a logical XOR, we only want to support this operation if we have one unspecified array dimension.
@@ -2454,14 +2452,21 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
     ast_node_t** const args = node->children;
 
     if (dst) {
-        ASSERT(compare_type_info(dst->type, node->data.type));
+        ASSERT(type_info_equal(type_info_element_type(dst->type), type_info_element_type(node->data.type)));
 
         int64_t byte_offset = 0;
         for (int64_t i = 0; i < num_args; ++i) {
+            md_type_info_t type = args[i]->data.type;
+            if (is_variable_length(type)) {
+                if (!finalize_type(&type, args[i], ctx)) {
+                    md_printf(MD_LOG_TYPE_DEBUG, "evaluate_array: Failed to finalize type for variable length argument...");
+                    return false;
+                }
+            }
             data_t data = {
-                .type = args[i]->data.type,
+                .type = type,
                 .ptr = (char*)dst->ptr + byte_offset,
-                .size = type_info_total_byte_size(args[i]->data.type)
+                .size = type_info_total_byte_size(type)
             };
             if (!evaluate_node(&data, args[i], ctx)) {
                 return false;
@@ -2502,9 +2507,9 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
 
     int offset = 0;
     int length = 1;
-    if (compare_type_info(idx_data.type, (md_type_info_t)TI_INT)) {
+    if (type_info_equal(idx_data.type, (md_type_info_t)TI_INT)) {
         offset = *((int*)(idx_data.ptr));
-    } else if (compare_type_info(idx_data.type, (md_type_info_t)TI_IRANGE)) {
+    } else if (type_info_equal(idx_data.type, (md_type_info_t)TI_IRANGE)) {
         irange_t range = *((irange_t*)(idx_data.ptr));
         offset = range.beg;
         length = range.end - range.beg + 1;
@@ -2516,7 +2521,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     offset -= 1;
 
     if (dst) {
-        ASSERT(compare_type_info(dst->type, node->data.type));
+        ASSERT(type_info_equal(dst->type, node->data.type));
         ASSERT(dst->ptr);
         const int64_t elem_size = type_info_byte_stride(arr_data.type);
         const data_t src = {dst->type, (char*)arr_data.ptr + elem_size * offset, elem_size * length};
@@ -2732,7 +2737,8 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
     return false;
 }
 
-static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
+
+static bool finalize_type_proc(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(type);
     ASSERT(node);
     ASSERT(ctx);
@@ -2756,10 +2762,13 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
         ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
 
         // Perform the call
+        md_script_visualization_t* old_vis = ctx->vis;
         token_t old_token = ctx->op_token;
         ctx->op_token = node->token;
+        ctx->vis = NULL;
         int query_result = do_proc_call(NULL, node->proc, node->children, md_array_size(node->children), ctx);
         ctx->op_token = old_token;
+        ctx->vis = old_vis;
 
         if (query_result >= 0) { // Zero length is valid
             type->dim[type->len_dim] = query_result;
@@ -2770,6 +2779,134 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
     }
     return true;
 }
+
+static bool finalize_type_array(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(type);
+    ASSERT(node);
+    ASSERT(ctx);
+    ASSERT(ctx->temp_alloc);
+
+    const ast_node_t** children = node->children;
+    const int64_t num_children = md_array_size(node->children);
+    int length = 0;
+    for (int64_t i = 0; i < num_children; ++i) {
+        md_type_info_t c_type = children[i]->data.type;
+        if (is_variable_length(c_type)) {
+            if (!finalize_type(&c_type, children[i], ctx)) {
+                return false;
+            }
+        }
+        if (!type_info_equal(type_info_element_type(c_type), type_info_element_type(*type))) {
+            md_printf(MD_LOG_TYPE_DEBUG, "finalize_type_array: Base element mismatch");
+            return false;
+        }
+        length += type_info_array_len(c_type);
+    }
+
+    type->dim[type->len_dim] = length;
+    return true;
+}
+
+// This should be invoked whenever we have an variable length type and we need to determine what the node evaluates into within the current context / state
+static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(type);
+    ASSERT(node);
+    ASSERT(ctx);
+
+    switch (node->type) {
+    case AST_ASSIGNMENT:
+        ASSERT(node->children);
+        ASSERT(md_array_size(node->children) == 2);
+        return finalize_type(type, node->children[1], ctx);
+    case AST_ARRAY:
+        return finalize_type_array(type, node, ctx);
+    case AST_IDENTIFIER:
+        ASSERT(node->children);
+        ASSERT(md_array_size(node->children) == 1);
+        return finalize_type(type, node->children[0], ctx);
+    case AST_ADD:
+    case AST_SUB:
+    case AST_MUL:
+    case AST_DIV:
+    case AST_AND:
+    case AST_XOR:
+    case AST_OR:
+    case AST_NOT:
+    case AST_EQ:
+    case AST_NE:
+    case AST_LE:
+    case AST_GE:
+    case AST_LT:
+    case AST_GT:
+    case AST_CAST:
+    case AST_PROC_CALL:
+        return finalize_type_proc(type, node, ctx);
+
+    case AST_ARRAY_SUBSCRIPT: // Array subscripts should not be variable length, since the input should be statically evaluated so no out of bounds accesses occur...
+    case AST_CONSTANT_VALUE:
+    case AST_OUT:
+    case AST_CONTEXT:   // We don't allow dynamic length expressions for Contexts for now... Perhaps in the future...
+    default:
+        ASSERT(false);
+    }
+    return false;
+}
+
+
+/*
+static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(type);
+    ASSERT(node);
+    ASSERT(ctx);
+
+    // If we want to finalize the type of an assigment, we need to at the RHS expression and determine that
+    if (node->type == AST_ASSIGNMENT) {
+        ASSERT(node->children);
+        ASSERT(md_array_size(node->children) == 2);
+        node = node->children[1];
+    } else if (node->type == AST_IDENTIFIER) {
+        ASSERT(node->children);
+        ASSERT(md_array_size(node->children) == 1);
+        node = node->children[0];
+    }
+
+    *type = node->data.type;
+
+    ast_node_t** const args = node->children;
+    int64_t num_args = md_array_size(node->children);
+
+    if (node->proc->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
+        ASSERT(num_args > 0);
+        // We can deduce the length of the array from the input type (take the array which is the longest???)
+        int64_t max_len = 0;
+        for (int64_t i = 0; i < num_args; ++i) {
+            int64_t len = (int32_t)type_info_array_len(args[i]->data.type);
+            ASSERT(len > -1);
+            max_len = MAX(len, max_len);
+        }
+        type->dim[type->len_dim] = (int32_t)max_len;
+    } else {
+        ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
+
+        // Perform the call
+        md_script_visualization_t* old_vis = ctx->vis;
+        token_t old_token = ctx->op_token;
+        ctx->op_token = node->token;
+        ctx->vis = NULL;
+        int query_result = do_proc_call(NULL, node->proc, node->children, md_array_size(node->children), ctx);
+        ctx->op_token = old_token;
+        ctx->vis = old_vis;
+
+        if (query_result >= 0) { // Zero length is valid
+            type->dim[type->len_dim] = query_result;
+        } else {
+            create_error(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
+            return false;
+        }
+    }
+    return true;
+}
+*/
 
 static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
@@ -2991,10 +3128,8 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         // If we have procedure flags modifying flatten state, then we need to recheck children with flags set
         if (node->proc->flags & FLAG_FLATTEN) {
             ctx->eval_flags |= EVAL_FLAG_FLATTEN;
-            result = result && static_check_children(node, ctx);
         } else if (node->proc->flags & FLAG_NO_FLATTEN) {
             ctx->eval_flags = ctx->eval_flags & (~EVAL_FLAG_FLATTEN);
-            result = result && static_check_children(node, ctx);
         }
 
         // Perform new child check here since children may have changed due to conversions etc.
@@ -3059,7 +3194,11 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         // Pass 1: find a suitable base_type for the array
         for (int64_t i = 0; i < num_elem; ++i) {
             md_type_info_t elem_type = type_info_element_type(elem[i]->data.type);
-            array_len += type_info_array_len(elem[i]->data.type);
+
+            if (is_variable_length(elem[i]->data.type)) {
+                array_len = -1;
+            }
+            if (array_len >= 0) array_len += type_info_array_len(elem[i]->data.type);
 
             if (array_type.base_type == TYPE_UNDEFINED) {
                 // Assign type from first element
@@ -3249,10 +3388,12 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
         identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
         ASSERT(ident);
 
+        /*
         if (is_variable_length(rhs->data.type)) {
             create_error(ctx->ir, rhs->token, "Right hand side of assignment has variable length, assignments can only be made with arguments of known length");
             return false;
         }
+        */
 
         if (!(rhs->flags & FLAG_DYNAMIC) && !rhs->data.ptr) {
             // If it is not a dynamic node, we evaluate it directly and store the data.
@@ -3957,12 +4098,15 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         ctx.identifiers = 0;
 
         for (int64_t i = 0; i < num_expr; ++i) {
-            if (is_variable_length(expr[i]->node->data.type)) {
-                md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s', identifier has variable length", expr[i]->ident->name.len, expr[i]->ident->name.ptr);
-                result = false;
-                goto done;
+            md_type_info_t type = expr[i]->node->data.type;
+            if (is_variable_length(type)) {
+                if (!finalize_type(&type, expr[i]->node, &ctx)) {
+                    md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s', failed to finalize its type", expr[i]->ident->name.len, expr[i]->ident->name.ptr);
+                    result = false;
+                    goto done;
+                }
             }
-            allocate_data(&data[i], expr[i]->node->data.type, &temp_alloc);
+            allocate_data(&data[i], type, &temp_alloc);
             data[i].unit = expr[i]->node->data.unit;
             data[i].value_range = expr[i]->node->data.value_range;
             if (data[i].value_range.beg == 0 && data[i].value_range.end == 0) {
@@ -4725,9 +4869,29 @@ static const ast_node_t* get_node(const ast_node_t* node, int32_t col) {
 }
 
 static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
+    if (node->type == AST_IDENTIFIER) {
+        ASSERT(node->children);
+        ASSERT(md_array_size(node->children) == 1);
+        node = node->children[0];
+    }
+    else if (node->type == AST_ASSIGNMENT) {
+        ASSERT(node->children);
+        ASSERT(md_array_size(node->children) == 2);
+        node = node->children[1];
+    }
+
     if (node->data.type.base_type == TYPE_BITFIELD) {
         data_t data = {0};
-        allocate_data(&data, node->data.type, ctx->temp_alloc);
+
+        md_type_info_t type = node->data.type;
+        if (is_variable_length(type)) {
+            if (!finalize_type(&type, node, ctx)) {
+                md_print(MD_LOG_TYPE_DEBUG, "Vis Eval: Failed to finalize type for variable length expression");
+                return;
+            }
+        }
+
+        allocate_data(&data, type, ctx->temp_alloc);
         evaluate_node(&data, node, ctx);
 
         ASSERT(data.ptr);

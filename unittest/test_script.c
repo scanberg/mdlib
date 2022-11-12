@@ -247,6 +247,34 @@ UTEST(script, selection_big) {
     md_arena_allocator_destroy(alloc);
 }
 
+UTEST(script, dynamic_length) {
+    md_allocator_i* alloc = default_allocator;
+    const str_t pdb_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+
+    md_pdb_data_t pdb_data = {0};
+    ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
+
+    md_molecule_t mol = {0};
+    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
+    md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
+    ASSERT_TRUE(traj);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    {
+        str_t src = MAKE_STR("sel1 = residue(within_z(1:50));");
+        md_script_ir_compile_source(ir, src, &mol, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+    }
+
+    md_script_ir_free(ir);
+    md_pdb_trajectory_free(traj);
+    md_molecule_free(&mol, alloc);
+    md_pdb_data_free(&pdb_data, alloc);
+}
+
 UTEST(script, property_compute) {
     md_allocator_i* alloc = default_allocator;
     const str_t pdb_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");

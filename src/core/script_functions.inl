@@ -502,7 +502,7 @@ static procedure_t operators[] = {
 
     {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
     {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-
+    
     {CSTR("/"),      TI_VOLUME, 2,  {TI_VOLUME,  TI_VOLUME},    _op_simd_div_farr_farr,  FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
     {CSTR("/"),      TI_VOLUME, 2,  {TI_VOLUME,  TI_FLOAT},     _op_simd_div_farr_f,     FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
@@ -2417,7 +2417,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_or_inplace(&tmp_bf, &src_bf[i]);
     }
 
-    int result = 0;
+    int result = STATIC_VALIDATION_ERROR;
     if (ctx->mol && ctx->mol->atom.residue_idx && ctx->mol->residue.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
@@ -2434,8 +2434,15 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 i += 1;
                 beg = range.end;
             }
+            result = 0; // OK
         } else {
             int count = 0;
+            
+            if (ctx->backchannel) {
+                if (ctx->arg_flags[0] & FLAG_DYNAMIC) {
+                    ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+                }
+            }
 
             int64_t beg = tmp_bf.beg_bit;
             int64_t end = tmp_bf.end_bit;
@@ -2998,7 +3005,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         int64_t count = (int64_t)res0 * (int64_t)res1;
         if (count > 1000000) {
-            create_error(ctx->ir, ctx->op_token, "The size produced by the operation is %"PRId64", which exceeds the upper limit of 1000000", count);
+            create_error(ctx->ir, ctx->op_token, "The size produced by the operation is %"PRId64", which exceeds the upper limit of 1'000'000", count);
             return STATIC_VALIDATION_ERROR;
         }
         result = (int)count;
@@ -3192,24 +3199,24 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // #################
 
 static int _cast_int_to_flt(data_t* dst, data_t arg[], eval_context_t* ctx){
-    ASSERT(dst && compare_type_info(dst->type, (md_type_info_t)TI_FLOAT));
-    ASSERT(compare_type_info(arg[0].type, (md_type_info_t)TI_INT));
+    ASSERT(dst && type_info_equal(dst->type, (md_type_info_t)TI_FLOAT));
+    ASSERT(type_info_equal(arg[0].type, (md_type_info_t)TI_INT));
     (void)ctx;
     as_float(*dst) = (float)as_int(arg[0]);
     return 0;
 }
 
 static int _cast_int_to_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (md_type_info_t)TI_IRANGE));
-    ASSERT(compare_type_info(arg[0].type, (md_type_info_t)TI_INT));
+    ASSERT(dst && type_info_equal(dst->type, (md_type_info_t)TI_IRANGE));
+    ASSERT(type_info_equal(arg[0].type, (md_type_info_t)TI_INT));
     (void)ctx;
     as_irange(*dst) = (irange_t){as_int(arg[0]), as_int(arg[0])};
     return 0;
 }
 
 static int _cast_irng_to_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && compare_type_info(dst->type, (md_type_info_t)TI_FRANGE));
-    ASSERT(compare_type_info(arg[0].type, (md_type_info_t)TI_IRANGE));
+    ASSERT(dst && type_info_equal(dst->type, (md_type_info_t)TI_FRANGE));
+    ASSERT(type_info_equal(arg[0].type, (md_type_info_t)TI_IRANGE));
     (void)ctx;
     as_frange(*dst) = (frange_t){(float)as_irange(arg[0]).beg, (float)as_irange(arg[0]).end};
     return 0;
@@ -3379,7 +3386,7 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(compare_type_info(dst->type, (md_type_info_t)TI_FLOAT3));
+        ASSERT(type_info_equal(dst->type, (md_type_info_t)TI_FLOAT3));
         as_vec3(*dst) = position_extract_com(arg[0], ctx);
     } else if (ctx->vis) {
         position_visualize(arg[0], ctx);
@@ -3475,7 +3482,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec4_t plane = {normal.x, normal.y, normal.z, d};
 
         if (dst) {
-            ASSERT(compare_type_info(dst->type, (md_type_info_t)TI_FLOAT4));
+            ASSERT(type_info_equal(dst->type, (md_type_info_t)TI_FLOAT4));
             as_vec4(*dst) = plane;
         }
 
@@ -3988,10 +3995,12 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     if (dst || ctx->vis) {
-        ASSERT(num_ref_bitfields > 0);
         ASSERT(ctx->initial_configuration.x);
         ASSERT(ctx->initial_configuration.y);
         ASSERT(ctx->initial_configuration.z);
+
+        // This could happen if we have dynamic length as input
+        if (num_ref_bitfields == 0) return 0;
 
         float* vol = 0;
         if (dst) {
