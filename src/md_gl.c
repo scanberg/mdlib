@@ -1175,7 +1175,10 @@ bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_mole
 bool md_gl_representation_free(md_gl_representation_t* ext_rep) {
     if (ext_rep) {
         internal_rep_t* rep = (internal_rep_t*)ext_rep;
-        ASSERT(rep->magic == MAGIC);
+        if (rep->magic != MAGIC) {
+            md_print(MD_LOG_TYPE_ERROR, "Attempting to free representation which have not been initialized.");
+            return false;
+        }
         gl_buffer_conditional_delete(&rep->color);
         return true;
     }
