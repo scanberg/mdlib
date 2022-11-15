@@ -703,7 +703,34 @@ void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* 
     *aabb_max = (vec3_t){x_max, y_max, z_max};
 }
 
-vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count) {
+vec3_t md_util_compute_com(const vec3_t* xyz, const float* w, int64_t count) {
+    ASSERT(xyz);
+    ASSERT(count >= 0);
+
+    if (count == 0) {
+        return (vec3_t) {0,0,0};
+    }
+
+    // Use vec4 here so we can utilize SSE vectorization if applicable
+    // @TODO: Vectorize with full register width
+    vec4_t sum_xyzw = {0,0,0,0};
+    if (w) {
+        for (int64_t i = 0; i < count; ++i) {
+            vec4_t xyz1 = vec4_from_vec3(xyz[i], 1.0f);
+            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, w[i]));
+        }
+    } else {
+        for (int64_t i = 0; i < count; ++i) {
+            vec4_t xyz0 = vec4_from_vec3(xyz[i], 0);
+            sum_xyzw = vec4_add(sum_xyzw, xyz0);
+        }
+        sum_xyzw.w = (float)count;
+    }
+
+    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
+}
+
+vec3_t md_util_compute_com_soa(const float* x, const float* y, const float* z, const float* w, int64_t count) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
@@ -732,48 +759,72 @@ vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const
     return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
 }
 
-// We need to support cases where pbc_ext is zero, therefore we need to pick our algorithm based on this
-// Single component version
-static inline double compute_com_periodic(const float* in_x, const float* in_w, int64_t count, float pbc_ext) {
-    double com = 0;
+static inline double compute_com_periodic(const float* in_x, const float* in_w, int64_t count, float pbc_ext, size_t stride_x) {
+    double com;
 
-    if (pbc_ext > 0) {
-        double acc_c = 0;
-        double acc_s = 0;
-        double acc_w = 0;
+    double acc_c = 0;
+    double acc_s = 0;
+    double acc_w = 0;
 
-        const double scl = TWO_PI / (double)pbc_ext;
+    const double scl = TWO_PI / pbc_ext;
+    stride_x = MAX(1, stride_x);
 
-        for (int64_t i = 0; i < count; ++i) {
-            double theta = in_x[i] * scl;
-            double w = in_w ? in_w[i] : 1.0;
-            acc_c += w * cos(theta);
-            acc_s += w * sin(theta);
-            acc_w += w;
-        }
-
-        acc_w = (acc_w == 0) ? count : acc_w;
-        const double theta_prim = atan2(-acc_s / acc_w, -acc_c / acc_w) + PI;
-        com = (theta_prim / TWO_PI) * (double)pbc_ext;
-    } else {
-        double acc_x = 0;
-        double acc_w = 0;
-        for (int64_t i = 0; i < count; ++i) {
-            double x = in_x[i];
-            double w = in_w ? in_w[i] : 1.0;
-            acc_x += x * w;
-            acc_w += w;
-        }
-
-        com = acc_x / acc_w;
+    for (int64_t i = 0; i < count; ++i) {
+        double theta = in_x[stride_x * i] * scl;
+        double w = in_w ? in_w[i] : 1.0;
+        acc_c += w * cos(theta);
+        acc_s += w * sin(theta);
+        acc_w += w;
     }
 
+    acc_w = (acc_w == 0) ? count : acc_w;
+    const double theta_prim = atan2(-acc_s / acc_w, -acc_c / acc_w) + PI;
+    com = (theta_prim / TWO_PI) * pbc_ext;
+
+    return com;
+}
+
+static inline double compute_com(const float* in_x, const float* in_w, int64_t count, size_t stride_x) {
+    double com = 0;
+    double acc_x = 0;
+    double acc_w = 0;
+
+    stride_x = MAX(1, stride_x);
+
+    for (int64_t i = 0; i < count; ++i) {
+        double x = in_x[stride_x * i];
+        double w = in_w ? in_w[i] : 1.0;
+        acc_x += x * w;
+        acc_w += w;
+    }
+
+    com = acc_x / acc_w;
     return com;
 }
 
 // Love the elegance of using trigonometric functions, unsure of the performance...
 // @TODO: sin, cos and atan2 can and should of course be vectorized.
-vec3_t md_util_compute_com_periodic(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
+/*
+vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
+    ASSERT(in_xyz);
+    ASSERT(count >= 0);
+    ASSERT(pbc_ext.x >= 0);
+    ASSERT(pbc_ext.y >= 0);
+    ASSERT(pbc_ext.z >= 0);
+
+    if (count == 0) {
+        return (vec3_t) {0,0,0};
+    }
+
+    // We need to pick the version based on each component of pdc_ext, since one or more may be zero
+    double x = pbc_ext.x > 0 ? compute_com_periodic(in_xyz->elem, in_w, count, pbc_ext.x, 3) : compute_com(in_xyz->elem, in_w, count, 1);
+    double y = pbc_ext.y > 0 ? compute_com_periodic(in_xyz->elem, in_w, count, pbc_ext.y, 3) : compute_com(in_xyz->elem, in_w, count, 1);
+    double z = pbc_ext.z > 0 ? compute_com_periodic(in_xyz->elem, in_w, count, pbc_ext.z, 3) : compute_com(in_xyz->elem, in_w, count, 1);
+
+    return (vec3_t) {(float)x, (float)y, (float)z};
+}
+
+vec3_t md_util_compute_com_periodic_soa(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -786,11 +837,69 @@ vec3_t md_util_compute_com_periodic(const float* in_x, const float* in_y, const 
         return (vec3_t) {0,0,0};
     }
 
-    double x = compute_com_periodic(in_x, in_w, count, pbc_ext.x);
-    double y = compute_com_periodic(in_y, in_w, count, pbc_ext.y);
-    double z = compute_com_periodic(in_z, in_w, count, pbc_ext.z);
+    // We need to pick the version based on each component of pdc_ext, since one or more may be zero
+    double x = pbc_ext.x > 0 ? compute_com_periodic(in_x, in_w, count, pbc_ext.x, 1) : compute_com(in_x, in_w, count, 1);
+    double y = pbc_ext.y > 0 ? compute_com_periodic(in_y, in_w, count, pbc_ext.y, 1) : compute_com(in_y, in_w, count, 1);
+    double z = pbc_ext.z > 0 ? compute_com_periodic(in_z, in_w, count, pbc_ext.z, 1) : compute_com(in_z, in_w, count, 1);
 
     return (vec3_t) {(float)x, (float)y, (float)z};
+}
+*/
+
+vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
+    ASSERT(in_xyz);
+
+    float w = in_w ? in_w[0] : 1.0f;
+    float sum_x = in_xyz[0].x * w;
+    float sum_y = in_xyz[0].y * w;
+    float sum_z = in_xyz[0].z * w;
+    float sum_w = w;
+
+    for (int64_t i = 1; i < count; ++i) {
+        float x = pbc_ext.x > 0 ? deperiodizef(in_xyz[i].x, sum_x / sum_w, pbc_ext.x) : in_xyz[i].x;
+        float y = pbc_ext.y > 0 ? deperiodizef(in_xyz[i].y, sum_y / sum_w, pbc_ext.y) : in_xyz[i].y;
+        float z = pbc_ext.z > 0 ? deperiodizef(in_xyz[i].z, sum_z / sum_w, pbc_ext.z) : in_xyz[i].z;
+
+        w = in_w ? in_w[i] : 1.0f;
+        sum_x += x * w;
+        sum_y += y * w;
+        sum_z += z * w;
+        sum_w += w;
+    }
+
+    // Ensure the resulting com is within the period of the box
+    float com_x = sum_x / sum_w;
+    float com_y = sum_y / sum_w;
+    float com_z = sum_z / sum_w;
+
+    return (vec3_t){com_x, com_y, com_z};
+}
+
+vec3_t md_util_compute_com_periodic_soa(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
+    float w = in_w ? in_w[0] : 1.0f;
+    float sum_x = in_x[0] * w;
+    float sum_y = in_y[0] * w;
+    float sum_z = in_z[0] * w;
+    float sum_w = w;
+
+    for (int64_t i = 1; i < count; ++i) {
+        float x = pbc_ext.x > 0 ? deperiodizef(in_x[i], sum_x / sum_w, pbc_ext.x) : in_x[i];
+        float y = pbc_ext.y > 0 ? deperiodizef(in_y[i], sum_y / sum_w, pbc_ext.y) : in_y[i];
+        float z = pbc_ext.z > 0 ? deperiodizef(in_z[i], sum_z / sum_w, pbc_ext.z) : in_z[i];
+
+        w = in_w ? in_w[i] : 1.0f;
+        sum_x += x * w;
+        sum_y += y * w;
+        sum_z += z * w;
+        sum_w += w;
+    }
+
+    // Ensure the resulting com is within the period of the box
+    float com_x = sum_x / sum_w;
+    float com_y = sum_y / sum_w;
+    float com_z = sum_z / sum_w;
+
+    return (vec3_t){com_x, com_y, com_z};
 }
 
 // From here: https://www.arianarab.com/post/crystal-structure-software
@@ -837,45 +946,19 @@ vec3_t md_util_compute_unit_cell_extent(mat3_t M) {
 bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
     if (!mol) return false;
 
-    float* residue_com_x = 0;
-    float* residue_com_y = 0;
-    float* residue_com_z = 0;
-    float* residue_aabb_min_x = 0;
-    float* residue_aabb_max_x = 0;
-    float* residue_aabb_min_y = 0;
-    float* residue_aabb_max_y = 0;
-    float* residue_aabb_min_z = 0;
-    float* residue_aabb_max_z = 0;
-
-    void* mem_temp = 0;
-    int64_t mem_size = 0;
-
+    vec3_t* residue_com = 0;
     if (mol->chain.residue_range && mol->chain.count) {
-        int64_t stride = ALIGN_TO(mol->residue.count, md_simd_widthf);
-        mem_size = stride * sizeof(float) * 9;
-        mem_temp = md_alloc(default_allocator, mem_size);
-        ASSERT(mem_temp);
-
-        float* mem = mem_temp;
-        residue_com_x       = mem + stride * 0;
-        residue_com_y       = mem + stride * 1;
-        residue_com_z       = mem + stride * 2;
-        residue_aabb_min_x  = mem + stride * 3;
-        residue_aabb_max_x  = mem + stride * 4;
-        residue_aabb_min_y  = mem + stride * 5;
-        residue_aabb_max_y  = mem + stride * 6;
-        residue_aabb_min_z  = mem + stride * 7;
-        residue_aabb_max_z  = mem + stride * 8;
+        md_array_resize(residue_com, mol->residue.count, default_allocator);
     }
     
     for (int64_t i = 0; i < mol->residue.count; ++i) {
         md_range_t atom_range = mol->residue.atom_range[i];
 
-        vec3_t com = md_util_compute_com_periodic(
+        vec3_t com = md_util_compute_com_periodic_soa(
             mol->atom.x + atom_range.beg,
             mol->atom.y + atom_range.beg,
             mol->atom.z + atom_range.beg,
-            mol->atom.mass + atom_range.beg,
+            mol->atom.mass ? mol->atom.mass + atom_range.beg : NULL,
             atom_range.end - atom_range.beg,
             pbc_ext);
 
@@ -885,143 +968,120 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
             mol->atom.z[j] = deperiodizef(mol->atom.z[j], com.z, pbc_ext.z);
         }
 
-        if (residue_com_x) {
-            ASSERT(residue_com_y);
-            ASSERT(residue_com_z);
-            ASSERT(residue_aabb_min_x);
-            ASSERT(residue_aabb_max_x);
-            ASSERT(residue_aabb_min_y);
-            ASSERT(residue_aabb_max_y);
-            ASSERT(residue_aabb_min_z);
-            ASSERT(residue_aabb_max_z);
-            residue_com_x[i] = com.x;
-            residue_com_y[i] = com.y;
-            residue_com_z[i] = com.z;
-            residue_aabb_min_x[i] = +FLT_MAX;
-            residue_aabb_max_x[i] = -FLT_MAX;
-            residue_aabb_min_y[i] = +FLT_MAX;
-            residue_aabb_max_y[i] = -FLT_MAX;
-            residue_aabb_min_z[i] = +FLT_MAX;
-            residue_aabb_max_z[i] = -FLT_MAX;
-
-            for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
-                residue_aabb_min_x[i] = MIN(residue_aabb_min_x[i], mol->atom.x[j]);
-                residue_aabb_max_x[i] = MAX(residue_aabb_max_x[i], mol->atom.x[j]);
-                residue_aabb_min_y[i] = MIN(residue_aabb_min_y[i], mol->atom.y[j]);
-                residue_aabb_max_y[i] = MAX(residue_aabb_max_y[i], mol->atom.y[j]);
-                residue_aabb_min_z[i] = MIN(residue_aabb_min_z[i], mol->atom.z[j]);
-                residue_aabb_max_z[i] = MAX(residue_aabb_max_z[i], mol->atom.z[j]);
-            }
+        if (residue_com) {
+            residue_com[i] = com;
         }
     }
 
-    for (int64_t i = 0; i < mol->chain.count; ++i) {
-        md_range_t res_range = mol->chain.residue_range[i];
-        vec3_t chain_com = md_util_compute_com_periodic(
-            residue_com_x + res_range.beg,
-            residue_com_y + res_range.beg,
-            residue_com_z + res_range.beg,
-            NULL,
-            res_range.end - res_range.beg,
-            pbc_ext);
+    // Chains are a bit problematic and can span more than half the extent of a simulation box
+    // The question is then what is the correct placement of it with respect to the box?
+    // Ideally we don't want to break up chains since they will certainly hold secondary structures
+    // Which span multiple residues
 
-        // Compute the aabb of the chain
-        vec3_t chain_aabb_min = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
-        vec3_t chain_aabb_max = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-        for (int64_t j = res_range.beg; j < res_range.end; ++j) {
-            vec3_t res_com = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
+    for (int64_t j = 0; j < mol->chain.count; ++j) {
+        md_range_t res_range = mol->chain.residue_range[j];
+        vec3_t chain_com = md_util_compute_com_periodic(residue_com + res_range.beg, 0, res_range.end - res_range.beg, pbc_ext);
 
-            // Ensure that the residue is within the period of the chain
+        {
+            vec3_t dp;
+            dp.x = deperiodizef(chain_com.x, pbc_ext.x * 0.5f, pbc_ext.x);
+            dp.y = deperiodizef(chain_com.y, pbc_ext.y * 0.5f, pbc_ext.y);
+            dp.z = deperiodizef(chain_com.z, pbc_ext.z * 0.5f, pbc_ext.z);
+
+            vec3_t d = vec3_sub(dp, chain_com);
+            if (vec3_dot(d, d) > 0) {
+                chain_com = dp;
+                for (int64_t k = res_range.beg; k < res_range.end; ++k) {
+                    residue_com[k] = vec3_add(residue_com[k], d);
+                }
+            }
+        }
+
+        // Pick a a residue reference which is closest to the COM
+        // Then we deperiodize from this residue forward and backward each residue with respect to the previous.
+        int ref_idx = res_range.beg;
+        float ref_d2 = vec3_distance_squared(residue_com[ref_idx], chain_com);
+        for (int i = res_range.beg + 1; i < res_range.end; ++i) {
+            float d2 = vec3_distance_squared(residue_com[i], chain_com);
+            if (d2 < ref_d2) {
+                ref_d2 = d2;
+                ref_idx = i;
+            }
+        }
+
+        // First we deperiodize the reference to ensure it is within the bounds of the simulation box
+        // Ensure that the residue is within the period of the chain
+        {
+            vec3_t res_com = residue_com[ref_idx];
             res_com.x = deperiodizef(res_com.x, chain_com.x, pbc_ext.x);
             res_com.y = deperiodizef(res_com.y, chain_com.y, pbc_ext.y);
             res_com.z = deperiodizef(res_com.z, chain_com.z, pbc_ext.z);
 
-            vec3_t d = vec3_sub(res_com, (vec3_t){residue_com_x[j], residue_com_y[j], residue_com_z[j]});
-            const float d2 = vec3_dot(d,d);
+            vec3_t d = vec3_sub(res_com, residue_com[ref_idx]);
 
-            if (d2 > 0) {
-                residue_aabb_min_x[j] += d.x;
-                residue_aabb_max_x[j] += d.x;
-                residue_aabb_min_y[j] += d.y;
-                residue_aabb_max_y[j] += d.y;
-                residue_aabb_min_z[j] += d.z;
-                residue_aabb_max_z[j] += d.z;
+            if (vec3_dot(d,d) > 0) {
+                residue_com[ref_idx] = res_com;
+                md_range_t atom_range = mol->residue.atom_range[ref_idx];
+                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
+                    mol->atom.x[k] += d.x;
+                    mol->atom.y[k] += d.y;
+                    mol->atom.z[k] += d.z;
+                }
             }
-
-            chain_aabb_min.x = MIN(chain_aabb_min.x, residue_aabb_min_x[j]);
-            chain_aabb_max.x = MAX(chain_aabb_max.x, residue_aabb_max_x[j]);
-            chain_aabb_min.y = MIN(chain_aabb_min.y, residue_aabb_min_y[j]);
-            chain_aabb_max.y = MAX(chain_aabb_max.y, residue_aabb_max_y[j]);
-            chain_aabb_min.z = MIN(chain_aabb_min.z, residue_aabb_min_z[j]);
-            chain_aabb_max.z = MAX(chain_aabb_max.z, residue_aabb_max_z[j]);
         }
 
-        // Create mask on which axis to apply the deperiodization
-        // Don't apply deperiodization if the chain spans more than half the simulation extent in that dimension
-        vec3_t chain_dp_mask = vec3_less_than(vec3_sub(chain_aabb_max, chain_aabb_min), vec3_mul_f(pbc_ext, 0.5f));
+        // Propagate backwards
+        for (int i = ref_idx - 1; i >= res_range.beg; --i) {
+            vec3_t res_com = residue_com[i];
+            vec3_t ref_com = residue_com[i+1];
 
-        if (!vec3_equal(chain_dp_mask, (vec3_t){0,0,0})) {
-            for (int64_t j = res_range.beg; j < res_range.end; ++j) {
-                vec3_t res_com = {residue_com_x[j], residue_com_y[j], residue_com_z[j]};
+            // Ensure that the residue is within the period of the chain
+            res_com.x = deperiodizef(res_com.x, ref_com.x, pbc_ext.x);
+            res_com.y = deperiodizef(res_com.y, ref_com.y, pbc_ext.y);
+            res_com.z = deperiodizef(res_com.z, ref_com.z, pbc_ext.z);
 
-                // Ensure that the residue is within the period of the chain
-                res_com.x = deperiodizef(res_com.x, chain_com.x, pbc_ext.x);
-                res_com.y = deperiodizef(res_com.y, chain_com.y, pbc_ext.y);
-                res_com.z = deperiodizef(res_com.z, chain_com.z, pbc_ext.z);
+            vec3_t d = vec3_sub(res_com, residue_com[i]);
 
-                vec3_t d = vec3_sub(res_com, (vec3_t){residue_com_x[j], residue_com_y[j], residue_com_z[j]});
-                d = vec3_mul(d, chain_dp_mask);
-                const float d2 = vec3_dot(d,d);
+            if (vec3_dot(d,d) > 0) {
+                residue_com[i] = res_com;
+                md_range_t atom_range = mol->residue.atom_range[i];
+                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
+                    mol->atom.x[k] += d.x;
+                    mol->atom.y[k] += d.y;
+                    mol->atom.z[k] += d.z;
+                }
+            }    
+        }
+        // Propagate forwards
+        for (int i = ref_idx + 1; i < res_range.end; ++i) {
+            vec3_t res_com = residue_com[i];
+            vec3_t ref_com = residue_com[i-1];
 
-                if (d2 > 0) {
-                    md_range_t atom_range = mol->residue.atom_range[j];
-                    for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
-                        mol->atom.x[k] += d.x;
-                        mol->atom.y[k] += d.y;
-                        mol->atom.z[k] += d.z;
-                    }
-                }            
-            }
+            // Ensure that the residue is within the period of the chain
+            res_com.x = deperiodizef(res_com.x, ref_com.x, pbc_ext.x);
+            res_com.y = deperiodizef(res_com.y, ref_com.y, pbc_ext.y);
+            res_com.z = deperiodizef(res_com.z, ref_com.z, pbc_ext.z);
+
+            vec3_t d = vec3_sub(res_com, residue_com[i]);
+
+            if (vec3_dot(d,d) > 0) {
+                residue_com[i] = res_com;
+                md_range_t atom_range = mol->residue.atom_range[i];
+                for (int64_t k = atom_range.beg; k < atom_range.end; ++k) {
+                    mol->atom.x[k] += d.x;
+                    mol->atom.y[k] += d.y;
+                    mol->atom.z[k] += d.z;
+                }
+            }    
         }
     }
 
-    if (mem_temp) {
-        md_free(default_allocator, mem_temp, mem_size);
+    if (residue_com) {
+        md_array_free(residue_com, default_allocator);
     }
     return true;
 }
 
-/*
-vec3_t md_util_compute_periodic_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
-    float w = in_w ? in_w[0] : 1.0f;
-    float sum_x = in_x[0] * w;
-    float sum_y = in_y[0] * w;
-    float sum_z = in_z[0] * w;
-    float sum_w = w;
-
-    for (int64_t i = 1; i < count; ++i) {
-        float com_x = sum_x / sum_w;
-        float com_y = sum_y / sum_w;
-        float com_z = sum_z / sum_w;
-
-        float x = deperiodizef(in_x[i], com_x, pbc_ext.x);
-        float y = deperiodizef(in_y[i], com_y, pbc_ext.y);
-        float z = deperiodizef(in_z[i], com_z, pbc_ext.z);
-
-        w = in_w ? in_w[i] : 1.0f;
-        sum_x += x * w;
-        sum_y += y * w;
-        sum_z += z * w;
-        sum_w += w;
-    }
-
-    float com_x = sum_x / sum_w;
-    float com_y = sum_y / sum_w;
-    float com_z = sum_z / sum_w;
-
-    return (vec3_t){com_x, com_y, com_z};
-}
-*/
 
 mat3_t md_util_compute_optimal_rotation(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count) {
     if (count < 1) {

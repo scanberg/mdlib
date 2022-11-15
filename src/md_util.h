@@ -121,14 +121,16 @@ void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* 
 // x, y, z -> Arrays containing coordinates
 // w -> Array of weights (optional): set as NULL to use equal weights
 // count -> Length of all arrays
-vec3_t md_util_compute_com(const float* x, const float* y, const float* z, const float* w, int64_t count);
+vec3_t md_util_compute_com(const vec3_t* xyz, const float* w, int64_t count);
+vec3_t md_util_compute_com_soa(const float* x, const float* y, const float* z, const float* w, int64_t count);
 
 // Computes the center of mass for a set of points with a given weight given in periodic boundary conditions
 // x, y, z -> Arrays containing coordinates
 // w -> Array of weights (optional): set as NULL to use equal weights
 // count -> Length of all arrays
 // pbc_ext -> Extent of periodic boundary (optional): Set to zero if pbc does not apply in that dimension
-vec3_t md_util_compute_com_periodic(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t pbc_ext);
+vec3_t md_util_compute_com_periodic(const vec3_t* xyz, const float* w, int64_t count, vec3_t pbc_ext);
+vec3_t md_util_compute_com_periodic_soa(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t pbc_ext);
 
 // Computes the optimal rotation between two configurations of a set of points with corresponding weights weights
 // coords -> coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)

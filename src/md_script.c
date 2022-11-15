@@ -2800,7 +2800,7 @@ static bool finalize_type_array(md_type_info_t* type, const ast_node_t* node, ev
             md_printf(MD_LOG_TYPE_DEBUG, "finalize_type_array: Base element mismatch");
             return false;
         }
-        length += type_info_array_len(c_type);
+        length += (int)type_info_array_len(c_type);
     }
 
     type->dim[type->len_dim] = length;

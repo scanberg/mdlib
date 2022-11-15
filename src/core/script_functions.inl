@@ -3171,8 +3171,8 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 extract_xyzw(coord[1].x, coord[1].y, coord[1].z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
 
                 const vec3_t com[2] = {
-                    md_util_compute_com(coord[0].x, coord[0].y, coord[0].z, w, count),
-                    md_util_compute_com(coord[1].x, coord[1].y, coord[1].z, w, count),
+                    md_util_compute_com_soa(coord[0].x, coord[0].y, coord[0].z, w, count),
+                    md_util_compute_com_soa(coord[1].x, coord[1].y, coord[1].z, w, count),
                 };
 
                 as_float(*dst) = (float)md_util_compute_rmsd(coord, com, w, count);
@@ -4046,7 +4046,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Fetch target positions
         extract_xyz(target.x, target.y, target.z, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield);
-        ref_com[0] = md_util_compute_com(ref[0].x, ref[0].y, ref[0].z, ref_w, ref_size);
+        ref_com[0] = md_util_compute_com_soa(ref[0].x, ref[0].y, ref[0].z, ref_w, ref_size);
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
         mat3_t eigen_vecs;
@@ -4067,7 +4067,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const md_bitfield_t* bf = &ref_bitfields[i];
 
             extract_xyz(ref[1].x, ref[1].y, ref[1].z, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, bf);
-            ref_com[1] = md_util_compute_com(ref[1].x, ref[1].y, ref[1].z, ref_w, ref_size);
+            ref_com[1] = md_util_compute_com_soa(ref[1].x, ref[1].y, ref[1].z, ref_w, ref_size);
             mat3_t R = md_util_compute_optimal_rotation(ref, ref_com, ref_w, ref_size);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
