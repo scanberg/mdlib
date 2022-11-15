@@ -4735,6 +4735,11 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
         return false;
     }
 
+    if (mol->atom.count == 0) {
+        md_printf(MD_LOG_TYPE_ERROR, "md_filter: Passed in molecule was empty");
+        return false;
+    }
+
     bool success = false;
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
