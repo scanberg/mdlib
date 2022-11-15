@@ -61,8 +61,8 @@ UTEST(util, rmsd) {
 
     // Our implementation
     vec3_t com[2] = {
-        md_util_compute_com(coord[0].x, coord[0].y, coord[0].z, mol.atom.mass, mol.atom.count),
-        md_util_compute_com(coord[1].x, coord[1].y, coord[1].z, mol.atom.mass, mol.atom.count),
+        md_util_compute_com_soa(coord[0].x, coord[0].y, coord[0].z, mol.atom.mass, mol.atom.count),
+        md_util_compute_com_soa(coord[1].x, coord[1].y, coord[1].z, mol.atom.mass, mol.atom.count),
     };
     double rmsd = md_util_compute_rmsd(coord, com, mol.atom.mass, mol.atom.count);
     
