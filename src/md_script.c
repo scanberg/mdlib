@@ -2786,7 +2786,7 @@ static bool finalize_type_array(md_type_info_t* type, const ast_node_t* node, ev
     ASSERT(ctx);
     ASSERT(ctx->temp_alloc);
 
-    const ast_node_t** children = node->children;
+    ast_node_t** const children = node->children;
     const int64_t num_children = md_array_size(node->children);
     int length = 0;
     for (int64_t i = 0; i < num_children; ++i) {

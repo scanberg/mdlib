@@ -38,14 +38,14 @@ static const si_prefix_t si_prefixes[] = {
 };
 
 static str_t find_prefix_str_from_value(float value) {
-    for (int i = 0; i < ARRAY_SIZE(si_prefixes); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(si_prefixes); ++i) {
         if (si_prefixes[i].value == value) return si_prefixes[i].prefix;
     }
     return (str_t){0};
 }
 
 static float find_prefix_value_from_str(str_t str) {
-    for (int i = 0; i < ARRAY_SIZE(si_prefixes); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(si_prefixes); ++i) {
         if (str_equal(str, si_prefixes[i].prefix)) return si_prefixes[i].value;
     }
     return 0;
@@ -120,7 +120,7 @@ static const unit_name_t defined_units[] = {
 };
 
 static md_unit_t find_unit_from_predefined(str_t name) {
-    for (int i = 0; i < ARRAY_SIZE(defined_units); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(defined_units); ++i) {
         if (str_equal(name, defined_units[i].str)) {
             return defined_units[i].unit;
         }
@@ -129,7 +129,7 @@ static md_unit_t find_unit_from_predefined(str_t name) {
 }
 
 static str_t find_name_from_predefined(md_unit_t unit) {
-    for (int i = 0; i < ARRAY_SIZE(defined_units); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(defined_units); ++i) {
         if (unit_equal(defined_units[i].unit, unit)) {
             return defined_units[i].str;
         }
@@ -140,7 +140,7 @@ static str_t find_name_from_predefined(md_unit_t unit) {
 // b is allowed to match or be a subset of a (with the same sign), but not vice-versa
 static inline int compute_match_score(md_unit_t a, md_unit_t b) {
     int score = 0;
-    for (int i = 0; i < ARRAY_SIZE(b.base.arr); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(b.base.arr); ++i) {
         int sign_a = (a.base.arr[i] > 0) - (a.base.arr[i] < 0);
         int sign_b = (b.base.arr[i] > 0) - (b.base.arr[i] < 0);
 
@@ -155,7 +155,7 @@ static inline int compute_match_score(md_unit_t a, md_unit_t b) {
 static md_unit_t find_best_matching_predefined(md_unit_t unit) {
     int best_match_score = 0;
     int best_match_idx   = -1;
-    for (int i = 0; i < ARRAY_SIZE(defined_units); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(defined_units); ++i) {
         int match_score = compute_match_score(unit, defined_units[i].unit);
         if (match_score > best_match_score) {
             best_match_score = match_score;
@@ -475,7 +475,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
     }
 
     // Try to match find a matching base and see if we can apply a prefix
-    for (int i = 0; i < ARRAY_SIZE(defined_units); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(defined_units); ++i) {
         if (unit_base_equal(unit, defined_units[i].unit)) {
             // We found a matching unit, we just need to work out a matching prefix scaling
             str_t str  = defined_units[i].str;

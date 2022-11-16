@@ -179,14 +179,13 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
-        int64_t count_a = type_info_element_stride_count(arg[0].type); \
-        int64_t count_b = type_info_element_stride_count(arg[1].type); \
-        ASSERT(count_a == count_b); \
-        ASSERT(count_a % md_simd_widthf == 0); \
+        int64_t count = type_info_element_stride_count(arg[0].type); \
+        ASSERT(count == type_info_element_stride_count(arg[1].type)); \
+        ASSERT(count % md_simd_widthf == 0); \
         const float* src_a = as_float_arr(arg[0]); \
         const float* src_b = as_float_arr(arg[1]); \
         float* dst_arr = as_float_arr(*dst); \
-        for (int64_t i = 0; i < count_a; i += md_simd_widthf) { \
+        for (int64_t i = 0; i < count; i += md_simd_widthf) { \
             md_simd_typef a = md_simd_loadf(src_a + i); \
             md_simd_typef b = md_simd_loadf(src_b + i); \
             md_simd_storef(dst_arr + i, op(a, b)); \
@@ -2421,7 +2420,6 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->mol && ctx->mol->atom.residue_idx && ctx->mol->residue.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
-            const int64_t capacity = element_count(*dst);
 
             int i = 0;
             int64_t beg = tmp_bf.beg_bit;
@@ -2429,7 +2427,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
             while ((beg = md_bitfield_scan(&tmp_bf, beg, end)) != 0) {
                 const int64_t res_idx = ctx->mol->atom.residue_idx[beg - 1];
                 md_range_t range = ctx->mol->residue.atom_range[res_idx];
-                ASSERT(i < capacity);
+                ASSERT(i < element_count(*dst));
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
                 i += 1;
                 beg = range.end;
@@ -2474,7 +2472,6 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->mol && ctx->mol->atom.chain_idx && ctx->mol->chain.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
-            const int64_t capacity = element_count(*dst);
 
             int i = 0;
             int64_t beg = tmp_bf.beg_bit;
@@ -2482,7 +2479,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
             while ((beg = md_bitfield_scan(&tmp_bf, beg, end)) != 0) {
                 const int64_t chain_idx = ctx->mol->atom.chain_idx[beg - 1];
                 md_range_t range = ctx->mol->chain.atom_range[chain_idx];
-                ASSERT(i < capacity);
+                ASSERT(i < element_count(*dst));
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
                 i += 1;
                 beg = range.end;
@@ -2961,12 +2958,9 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         vec3_t* a_pos = position_extract(arg[0], ctx);
         vec3_t* b_pos = position_extract(arg[1], ctx);
-        const int64_t a_len = md_array_size(a_pos);
-        const int64_t b_len = md_array_size(b_pos);
 
         float* dst_arr = as_float_arr(*dst);
-        const int64_t dst_len = element_count(*dst);
-        ASSERT(dst_len == a_len * b_len);
+        ASSERT(element_count(*dst) == md_array_size(a_pos) * md_array_size(b_pos));
 
         for (int64_t i = 0; i < md_array_size(a_pos); ++i) {
             for (int64_t j = 0; j < md_array_size(b_pos); ++j) {
@@ -3227,8 +3221,7 @@ static int _cast_int_arr_to_irng_arr(data_t* dst, data_t arg[], eval_context_t* 
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
-    const int64_t arg_len = element_count(arg[0]);
-    ASSERT(dst_len == arg_len);
+    ASSERT(dst_len == element_count(arg[0]));
 
     irange_t* d = dst->ptr;
     int*      s = arg[0].ptr;
@@ -3245,8 +3238,7 @@ static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* c
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
-    const int64_t arg_len = element_count(arg[0]);
-    ASSERT(dst_len == arg_len);
+    ASSERT(dst_len == element_count(arg[0]));
 
     float* d = dst->ptr;
     int*   s = arg[0].ptr;
@@ -3262,8 +3254,7 @@ static int _cast_irng_arr_to_frng_arr(data_t* dst, data_t arg[], eval_context_t*
     ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
-    const int64_t arg_len = element_count(arg[0]);
-    ASSERT(dst_len == arg_len);
+    ASSERT(dst_len == element_count(arg[0]));
 
     frange_t* d = dst->ptr;
     irange_t* s = arg[0].ptr;

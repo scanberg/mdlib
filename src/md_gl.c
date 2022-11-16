@@ -1212,8 +1212,8 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
         const mat4_t* prev_view_to_clip  = (const mat4_t*)args->view_transform.prev_projection_matrix;
         ubo_data->view_transform.prev_world_to_clip = mat4_mul(*prev_view_to_clip, *prev_world_to_view);
         ubo_data->view_transform.curr_view_to_prev_clip = mat4_mul(ubo_data->view_transform.prev_world_to_clip, ubo_data->view_transform.view_to_world);
-        extract_jitter_uv(&ubo_data->jitter_uv.x, ubo_data->view_transform.view_to_clip);
-        extract_jitter_uv(&ubo_data->jitter_uv.z, *prev_view_to_clip);
+        extract_jitter_uv(ubo_data->jitter_uv.elem + 0, ubo_data->view_transform.view_to_clip);
+        extract_jitter_uv(ubo_data->jitter_uv.elem + 2, *prev_view_to_clip);
     }
     ubo_data->atom_mask = args->atom_mask;
 }
