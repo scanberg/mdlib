@@ -64,6 +64,19 @@ static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);
 }
 
+// Convenience functions to extract vec3_soa streams from molecule
+static inline md_vec3_soa_t md_molecule_coord(md_molecule_t* mol) {
+    ASSERT(mol);
+    md_vec3_soa_t soa = {mol->atom.x, mol->atom.y, mol->atom.z};
+    return soa;
+}
+
+static inline md_vec3_soa_t md_molecule_vel(md_molecule_t* mol) {
+    ASSERT(mol);
+    md_vec3_soa_t soa = {mol->atom.vx, mol->atom.vy, mol->atom.vz};
+    return soa;
+}
+
 // This operation tries to deduce the element from the atom type/name which usually contains alot of cruft.
 // It also tries resolve some ambiguities: Such as CA, is that Carbon Alpha or is it calcium?
 // We can resolve that by looking at the residue name and in the case of Carbon Alpha, the residue name should be matched to an amino acid.
@@ -95,21 +108,8 @@ mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alph
 vec3_t md_util_compute_unit_cell_extent(mat3_t M);
 
 // Applies periodic boundary conditions to coordinates of atoms within molecule
-// It ensures that residues are
+// It ensures that residues and chains reside within the same period
 bool md_util_apply_pbc(struct md_molecule_t* mol, vec3_t pbc_ext);
-
-// Convenience functions to extract vec3_soa streams from molecule
-static inline md_vec3_soa_t md_molecule_coord(md_molecule_t* mol) {
-    ASSERT(mol);
-    md_vec3_soa_t soa = {mol->atom.x, mol->atom.y, mol->atom.z};
-    return soa;
-}
-
-static inline md_vec3_soa_t md_molecule_vel(md_molecule_t* mol) {
-    ASSERT(mol);
-    md_vec3_soa_t soa = {mol->atom.vx, mol->atom.vy, mol->atom.vz};
-    return soa;
-}
 
 // Computes the miminum axis aligned bounding vox for a set of points
 void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count);
