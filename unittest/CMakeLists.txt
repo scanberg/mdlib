@@ -14,7 +14,7 @@ endif()
 
 target_link_libraries(md_unittest PRIVATE mdlib ${VIAMD_STDLIBS})
 
-target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\")
+target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/data\" UTEST_USE_OLD_QPC)
 
 target_sources(md_unittest
   PRIVATE
