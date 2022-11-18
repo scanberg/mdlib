@@ -336,6 +336,7 @@ typedef struct expression_t {
 
 struct md_script_ir_t {
     uint64_t magic;
+    uint64_t fingerprint;
 
     // We could use a direct raw interface here to save some function pointer indirections
     struct md_allocator_i *arena;
@@ -792,9 +793,6 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
 
 // Include all procedures, operators and defines
 #include "core/script_functions.inl"
-
-
-
 
 // ############################
 // ###   HELPER FUNCTIONS   ###
@@ -3984,6 +3982,22 @@ void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_me
     * */
 }
 
+static void clear_properties(md_script_property_t* props, int64_t num_props) {
+    // Preprocess the property data
+    for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
+        md_script_property_t* prop = &props[p_idx];
+        memset(prop->data.values, 0, prop->data.num_values * sizeof(float));
+        if (prop->data.aggregate) {
+            memset(prop->data.aggregate->population_mean, 0, prop->data.aggregate->num_values * sizeof(float));
+            memset(prop->data.aggregate->population_var,  0, prop->data.aggregate->num_values * sizeof(float));
+            memset(prop->data.aggregate->population_min,  0, prop->data.aggregate->num_values * sizeof(float));
+            memset(prop->data.aggregate->population_max,  0, prop->data.aggregate->num_values * sizeof(float));
+        }
+        prop->data.min_value = +FLT_MAX;
+        prop->data.max_value = -FLT_MAX;
+    }
+}
+
 static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_bitfield_t* mask, const md_script_ir_t* ir, md_script_eval_t* eval) {
     ASSERT(props);
     ASSERT(mol);
@@ -4061,22 +4075,6 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     int64_t end_bit = mask->end_bit;
 
     int64_t dst_idx = 0;
-
-    // Preprocess the property data
-    for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
-        md_script_property_t* prop = &props[p_idx];
-        if (!(prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL)) {
-            memset(prop->data.values, 0, prop->data.num_values * sizeof(float));
-            if (prop->data.aggregate) {
-                memset(prop->data.aggregate->population_mean, 0, prop->data.aggregate->num_values * sizeof(float));
-                memset(prop->data.aggregate->population_var,  0, prop->data.aggregate->num_values * sizeof(float));
-                memset(prop->data.aggregate->population_min,  0, prop->data.aggregate->num_values * sizeof(float));
-                memset(prop->data.aggregate->population_max,  0, prop->data.aggregate->num_values * sizeof(float));
-            }
-        }
-        prop->data.min_value = +FLT_MAX;
-        prop->data.max_value = -FLT_MAX;
-    }
 
     // We evaluate each frame, one at a time
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
@@ -4173,11 +4171,12 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                 // Accumulate values
                 ASSERT(prop->data.values);
+                ASSERT(prop->data.num_values % md_simd_widthf == 0); // This should always be the case if we nice powers of 2 for our volumes
                 
                 // Cumulative moving average
                 const md_simd_typef N = md_simd_set1f((float)(dst_idx));
                 const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
-                for (int64_t i = 0; i < ALIGN_TO(prop->data.num_values, md_simd_widthf); i += md_simd_widthf) {
+                for (int64_t i = 0; i < prop->data.num_values; i += md_simd_widthf) {
                     md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
                     md_simd_typef new_val = md_simd_loadf(values + i);
                     md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
@@ -4376,6 +4375,8 @@ bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const md_molecul
     //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
 #endif
 
+    ir->fingerprint = generate_fingerprint();
+
     return ir->compile_success;
 }
 
@@ -4462,6 +4463,13 @@ bool md_script_ir_valid(const md_script_ir_t* ir) {
     return ir->compile_success;
 }
 
+uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return 0;
+    }
+    return ir->fingerprint;
+}
+
 static md_script_eval_t* create_eval(md_allocator_i* alloc) {
     md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
     md_script_eval_t* eval = md_alloc(arena, sizeof(md_script_eval_t));
@@ -4533,6 +4541,7 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
         if (num_properties > 0) {
             ASSERT(num_properties == md_array_size(ir->prop_eval_target_indices));
             eval->interrupt = false;
+            clear_properties(eval->properties, num_properties);
             result = eval_properties(eval->properties, num_properties, mol, traj, filter_mask, ir, eval);
 
             const uint64_t fingerprint = generate_fingerprint();

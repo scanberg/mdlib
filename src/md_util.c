@@ -961,6 +961,10 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
             atom_range.end - atom_range.beg,
             pbc_ext);
 
+        com.x = deperiodizef(com.x, pbc_ext.x * 0.5f, pbc_ext.x);
+        com.y = deperiodizef(com.y, pbc_ext.y * 0.5f, pbc_ext.y);
+        com.z = deperiodizef(com.z, pbc_ext.z * 0.5f, pbc_ext.z);
+
         for (int64_t j = atom_range.beg; j < atom_range.end; ++j) {
             mol->atom.x[j] = deperiodizef(mol->atom.x[j], com.x, pbc_ext.x);
             mol->atom.y[j] = deperiodizef(mol->atom.y[j], com.y, pbc_ext.y);

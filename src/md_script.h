@@ -58,12 +58,6 @@ typedef struct md_script_aggregate_t {
     float*  population_max;
 } md_script_aggregate_t;
 
-/*
-typedef struct md_script_distribution_t {
-    uint32_t num_bins;
-} md_script_distribution_t;
-*/
-
 typedef struct md_script_property_data_t {
     int32_t dim[4];     // Dimension of values, they are exposed packed in a linear array
 
@@ -188,6 +182,8 @@ int64_t md_script_ir_num_tokens(const md_script_ir_t* ir);
 const md_script_token_t* md_script_ir_tokens(const md_script_ir_t* ir);
 
 bool md_script_ir_valid(const md_script_ir_t* ir);
+
+uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir);
 
 // ### EVALUATE ###
 
