@@ -242,6 +242,16 @@ static inline vec2_t vec2_fract(vec2_t v) {
 
 // VEC3 OPERATIONS
 
+static inline vec3_t vec3_set(float x, float y, float z) {
+    vec3_t v = {x,y,z};
+    return v;
+}
+
+static inline vec3_t vec3_set1(float x) {
+    vec3_t v = {x,x,x};
+    return v;
+}
+
 static inline vec3_t vec3_fract(vec3_t v) {
     v.x = fractf(v.x);
     v.y = fractf(v.y);
@@ -372,6 +382,15 @@ static inline vec3_t vec3_normalize(vec3_t v) {
 static inline vec3_t vec3_lerp(vec3_t a, vec3_t b, float t) {
     ASSERT(0 <= t && t <= 1);
     return vec3_add(vec3_mul_f(a, 1.0f - t), vec3_mul_f(b, t));
+}
+
+static inline vec3_t vec3_deperiodize(vec3_t v, vec3_t ref, vec3_t period) {
+    vec3_t res = {
+        deperiodizef(v.x, ref.x, period.x),
+        deperiodizef(v.y, ref.y, period.y),
+        deperiodizef(v.z, ref.z, period.z)
+    };
+    return res;
 }
 
 static inline vec3_t vec3_min(vec3_t a, vec3_t b) {
