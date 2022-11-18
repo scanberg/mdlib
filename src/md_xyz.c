@@ -508,7 +508,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
                 box.elem[2][2] = model.cell_extent[2];
             }
         }
-        memcpy(header->box, &box, sizeof(header->box));
+        header->box = box;
     }
 
     return true;

@@ -30,7 +30,7 @@ typedef struct pdb_trajectory_t {
     md_file_o* file;
     uint64_t filesize;
     int64_t* frame_offsets;
-    float box[3][3];                // For pdb trajectories we have a static box
+    mat3_t box;                // For pdb trajectories we have a static box
     md_trajectory_header_t header;
     md_allocator_i* allocator;
     md_mutex_t mutex;
@@ -281,7 +281,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     if (header) {
         header->num_atoms = i;
         header->timestamp = (double)(step-1); // This information is missing from PDB trajectories
-        memcpy(header->box, pdb->box, sizeof(header->box));
+        header->box = pdb->box;
     }
 
     return true;
@@ -816,11 +816,11 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
     str_t cache_file = {buf, len};
 
-    float box[3][3] = {0};
+    mat3_t box = {0};
     int64_t num_atoms = 0;
     int64_t* offsets = 0;
 
-    if (!try_read_cache(cache_file, &offsets, &num_atoms, box, alloc)) {
+    if (!try_read_cache(cache_file, &offsets, &num_atoms, box.elem, alloc)) {
         md_pdb_data_t data = {0};
         if (!md_pdb_data_parse_file(&data, filename, default_allocator)) {
             return false;
@@ -858,12 +858,12 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
             if (data.cryst1[0].alpha != 90.0f || data.cryst1[0].beta != 90.0f || data.cryst1[0].gamma != 90.0f) {
                 md_print(MD_LOG_TYPE_INFO, "The PDB file CRYST1 entry has one or more non-orthogonal axes, these are ignored");
             }
-            box[0][0] = data.cryst1[0].a;
-            box[1][1] = data.cryst1[0].b;
-            box[2][2] = data.cryst1[0].c;
+            box.elem[0][0] = data.cryst1[0].a;
+            box.elem[1][1] = data.cryst1[0].b;
+            box.elem[2][2] = data.cryst1[0].c;
         }
 
-        write_cache(cache_file, offsets, num_atoms, box);
+        write_cache(cache_file, offsets, num_atoms, box.elem);
     }
 
     int64_t max_frame_size = 0;
@@ -893,7 +893,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
     };
-    memcpy(pdb->box, box, sizeof(box));
+    pdb->box = box;
 
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <core/md_str.h>
 #include <core/md_unit.h>
+#include <core/md_vec_math.h>
 
 struct md_trajectory_o;
 
@@ -18,7 +19,7 @@ typedef struct md_trajectory_frame_header_t {
 	int64_t num_atoms;
 	int64_t index;
 	double  timestamp;
-	float	box[3][3];
+	mat3_t	box;
 } md_trajectory_frame_header_t;
 
 #ifdef __cplusplus

@@ -894,7 +894,6 @@ vec3_t md_util_compute_com_periodic_soa(const float* in_x, const float* in_y, co
         sum_w += w;
     }
 
-    // Ensure the resulting com is within the period of the box
     float com_x = sum_x / sum_w;
     float com_y = sum_y / sum_w;
     float com_z = sum_z / sum_w;

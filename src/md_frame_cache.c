@@ -186,7 +186,7 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
         if (x)   memcpy(x,   data->x,   data->header.num_atoms * sizeof(float));
         if (y)   memcpy(y,   data->y,   data->header.num_atoms * sizeof(float));
         if (z)   memcpy(z,   data->z,   data->header.num_atoms * sizeof(float));
-        if (box) memcpy(box, data->header.box, sizeof(data->header.box));
+        if (box) memcpy(box, data->header.box.elem, sizeof(data->header.box));
         if (timestamp) *timestamp = data->header.timestamp;
     }
 

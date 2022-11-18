@@ -255,7 +255,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
             header->num_atoms = natoms;
             header->index = step;
             header->timestamp = time;
-            memcpy(header->box, box.elem, sizeof(header->box));
+            header->box = box;
         }
 
         if (x || y || z) {
