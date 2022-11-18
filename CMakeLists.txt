@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.5)
 
 project(mdlib VERSION 0.1.2 LANGUAGES C)
 
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+if(CMAKE_COMPILER_IS_GNUCC)
+  set(CMAKE_C_EXTENSIONS ON)
+endif()
+
 INCLUDE(cmake/common.cmake)
 INCLUDE(cmake/FindAVX.cmake)
 
@@ -9,12 +15,6 @@ INCLUDE(cmake/FindAVX.cmake)
 option(MD_UNITTEST "Enable unittest" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
 option(MD_USE_RELATIVE_RESOURCE_PATH "Use relative path for resources, this will copy the relevant files into the binary folder upon building" ON)
-
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-if(CMAKE_COMPILER_IS_GNUCC)
-  set(CMAKE_C_EXTENSIONS ON)
-endif()
 
 if(MD_UNITTEST)
   enable_testing()
@@ -25,7 +25,9 @@ file(GLOB SRC_FILES src/*.h src/*.c)
 file(GLOB CORE_FILES src/core/*.h src/core/*.c)
 file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE SHADER_FILES src/shaders/*)
+file(GLOB_RECURSE CMAKE_FILES cmake/*)
 
+source_group("cmake" FILES ${CMAKE_FILES})
 source_group("src" FILES ${SRC_FILES})
 source_group("core" FILES ${CORE_FILES})
 source_group("ext" FILES ${EXT_FILES})
@@ -33,11 +35,11 @@ source_group("shaders" FILES ${SHADER_FILES})
 
 add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES})
 
-set(MD_WARNING_FLAGS)
-set(MD_WARNING_FLAGS_EXT)
-set(MD_COMMON_COMPILE_FLAGS ${AVX_FLAGS})
-set(MD_RELEASE_COMPILE_FLAGS)
-set(MD_DEBUG_COMPILE_FLAGS)
+set(MD_DEFINES)
+set(MD_FLAGS_EXT)
+set(MD_FLAGS ${AVX_FLAGS})
+set(MD_FLAGS_REL)
+set(MD_FLAGS_DEB)
 if (MD_USE_RELATIVE_RESOURCE_PATH)
   set(MD_SHADER_DIR "shaders")
   set(MD_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
@@ -49,8 +51,18 @@ set(MD_LIBS)
 
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
-  list(APPEND MD_WARNING_FLAGS_EXT -w)
-  list(APPEND MD_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter -Wno-gnu-anonymous-struct -Wno-nested-anon-types)
+  set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
+  set(MD_FLAGS ${MD_FLAGS}
+    "-Wall"
+    "-Wextra"
+    "-Wpedantic"
+    "-Wno-missing-field-initializers"
+    "-Wno-missing-braces"
+    "-Wno-unused-function"
+    "-Wno-unused-parameter"
+    "-Wno-gnu-anonymous-struct"
+    "-Wno-nested-anon-types")
+
   if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
     if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
     message(STATUS "mdlib: MSVC-Clang configuration was used")
@@ -62,29 +74,65 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   endif()
 elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
     message(STATUS "mdlib: GCC configuration was used")
-    list(APPEND MD_WARNING_FLAGS_EXT -w)
-    list(APPEND MD_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wno-missing-field-initializers -Wno-missing-braces -Wno-unused-function -Wno-unused-parameter)
+    set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
+    set(MD_FLAGS ${MD_FLAGS}
+      "-Wall"
+      "-Wextra"
+      "-Wpedantic"
+      "-Wno-missing-field-initializers"
+      "-Wno-missing-braces"
+      "-Wno-unused-function"
+      "-Wno-unused-parameter")
+
     if (MD_LINK_STDLIB_STATIC)
-      list(APPEND MD_LIBS -static-libgcc -static-libstdc++)
+      set(MD_LIBS ${MD_LIBS}
+        "-static-libgcc"
+        "-static-libstdc++")
     endif()
     find_package(Threads REQUIRED)
-    list(APPEND MD_COMPILE_DEFINITIONS _GNU_SOURCE)
-    list(APPEND MD_LIBS m Threads::Threads)
+    set(MD_DEFINES ${MD_DEFINES} "${_GNU_SOURCE}")
+    set(MD_LIBS ${MD_LIBS}
+        "m"
+        "Threads::Threads")
 elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     message(STATUS "mdlib: MSVC configuration was used")
     set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders")
-    list(APPEND MD_WARNING_FLAGS /W4 /wd4201 /wd4305 /wd4324 /wd26451 /MP /GR- /fp:fast)
-    list(APPEND MD_WARNING_FLAGS_EXT /W2)
-    list(APPEND MD_COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
+    set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "/W2")
+    set(MD_FLAGS ${MD_FLAGS}
+      "/W4"
+      "/wd4201"
+      "/wd4305"
+      "/wd4324"
+      "/wd26451"
+      "/MP"
+      "/GR-"
+      "/fp:fast")
+    set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
     
     if (MD_LINK_STDLIB_STATIC)
-        list(APPEND MD_DEBUG_COMPILE_FLAGS /MTd)
-        list(APPEND MD_RELEASE_COMPILE_FLAGS /MT /Oi /GS-)
+      set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
+        "/MTd"
+        "/ZI"
+        "/Gm")
+      set(MD_FLAGS_REL ${MD_FLAGS_REL}
+        "/MT"
+        "/Oi"
+        "/GS-")
     else()
-        list(APPEND MD_DEBUG_COMPILE_FLAGS /MDd)
-        list(APPEND MD_RELEASE_COMPILE_FLAGS /MD /Oi /GS-)
+      set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
+        "/MDd"
+        "/ZI"
+        "/Gm")
+      set(MD_FLAGS_REL ${MD_FLAGS_REL}
+        "/MD"
+        "/Oi"
+        "/GS-")
     endif()
 endif()
+
+set(MD_FLAGS ${MD_FLAGS} PARENT_SCOPE)
+set(MD_FLAGS_DEB ${MD_FLAGS_DEB} PARENT_SCOPE)
+set(MD_FLAGS_REL ${MD_FLAGS_REL} PARENT_SCOPE)
 
 if (MD_USE_RELATIVE_RESOURCE_PATH)
   create_copy_resource_dir_target(md_copy_shaders ${MD_SHADER_SRC_DIR} ${MD_SHADER_DST_DIR})
@@ -98,10 +146,10 @@ target_include_directories(mdlib PUBLIC
   ext/gl3w/
   ext/svd3/
   ext/xtc/)
-target_compile_definitions(mdlib PUBLIC MD_SHADER_DIR="${MD_SHADER_DIR}" PRIVATE ${MD_COMPILE_DEFINITIONS})
-target_compile_options(mdlib PRIVATE ${MD_WARNING_FLAGS} ${MD_COMMON_COMPILE_FLAGS})
-set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_WARNING_FLAGS_EXT})
-add_compile_options_config(DEBUG ${MD_DEBUG_COMPILE_FLAGS})
-add_compile_options_config(RELEASE ${MD_RELEASE_COMPILE_FLAGS})
+target_compile_definitions(mdlib PUBLIC MD_SHADER_DIR="${MD_SHADER_DIR}" PRIVATE ${MD_DEFINES})
+target_compile_options(mdlib PRIVATE ${MD_FLAGS})
+set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
+add_compile_options_config(DEBUG ${MD_FLAGS_DEB})
+add_compile_options_config(RELEASE ${MD_FLAGS_REL})
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PRIVATE ${MD_LIBS})
