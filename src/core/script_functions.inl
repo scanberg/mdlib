@@ -2793,7 +2793,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));            
             if (ctx->frame_header) {
-                vec4_t vp = {ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2], 1.0f};
+                vec4_t vp = vec4_from_vec3(mat3_mul_vec3(ctx->frame_header->box, (vec3_t){1,1,1}), 1.0f);
                 vec4_t va = vec4_from_vec3(a, 0.0f);
                 vec4_t vb = vec4_from_vec3(b, 0.0f);
                 as_float(*dst) = vec4_periodic_distance(va, vb, vp);
@@ -3817,7 +3817,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             if (ref_len > 0 && trg_len > 0) {
                 vec3_t pbc_ext = { 0,0,0 };
                 if (ctx->frame_header) {
-                    pbc_ext = (vec3_t){ ctx->frame_header->box[0][0], ctx->frame_header->box[1][1], ctx->frame_header->box[2][2] };
+                    pbc_ext = mat3_mul_vec3(ctx->frame_header->box, (vec3_t){1,1,1});
                 }
                 compute_rdf(bins, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, pbc_ext, ctx->temp_alloc);
             }
