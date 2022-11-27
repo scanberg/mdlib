@@ -2,14 +2,13 @@
 #define _MD_COMMON_H_
 
 #include "md_compiler.h"
-#include <stddef.h>
 
 #ifndef ASSERT
 #include <assert.h>
 #define ASSERT assert
 #if MD_COMPILER_MSVC
 #ifndef STATIC_ASSERT
-#define STATIC_ASSERT static_assert
+#define STATIC_ASSERT _Static_assert
 #endif
 #else
 #ifndef STATIC_ASSERT
@@ -66,16 +65,14 @@
 #define DEBUG 1
 #endif // NDEBUG
 
-#ifdef __cplusplus
-template <typename T, size_t N>
-constexpr size_t array_size_impl(T (&)[N]) { return N; }
 #ifndef ARRAY_SIZE
-#define ARRAY_SIZE(x) array_size_impl(x)
-#endif
-#else
-#ifndef ARRAY_SIZE
-#define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
-#endif
+#   ifdef __cplusplus
+#       include <stddef.h>
+        template <typename T, size_t N> constexpr size_t array_size_impl(T (&)[N]) { return N; }
+#       define ARRAY_SIZE(x) array_size_impl(x)
+#   else
+#       define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
+#   endif
 #endif
 
 #ifndef IS_POW2

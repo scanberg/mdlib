@@ -20,17 +20,17 @@ UTEST(gro, parse_small) {
 
     md_gro_molecule_init(&mol, &gro_data, alloc);
     for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z);
+        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
     md_molecule_free(&mol, alloc);
 
     EXPECT_TRUE(md_gro_molecule_api()->init_from_file(&mol, path, alloc));
     for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z);
+        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
 
     md_gro_data_free(&gro_data, alloc);
@@ -49,17 +49,17 @@ UTEST(gro, parse_big) {
 
     md_gro_molecule_init(&mol, &gro_data, alloc);
     for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z);
+        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
     md_molecule_free(&mol, alloc);
 
     EXPECT_TRUE(md_gro_molecule_api()->init_from_file(&mol, path, alloc));
     for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z);
+        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
     }
 
     md_gro_data_free(&gro_data, alloc);

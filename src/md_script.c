@@ -139,21 +139,24 @@ typedef enum flags_t {
     FLAG_FLATTEN                    = 0x00100, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
     FLAG_NO_FLATTEN                 = 0x00200, // Hints that a procedure do not want flattened bitfields as input, e.g. com
 
-    // Flags from 0x10000 and upwards are automatically propagated upwards the AST_TREE
+    // Flags from 0x10000 and upwards are automatically propagated upwards the Nodes of the AST_TREE
     FLAG_DYNAMIC                    = 0x10000, // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependency on atomic positions)
     FLAG_SDF                        = 0x20000, // Indicates that the expression involves an sdf computation
     FLAG_VISUALIZE                  = 0x40000, // Hints that a procedure can produce visualizations
-    FLAG_SPATIAL_QUERY              = 0x80000, // This means that the expression involves some form of spatial query. If we have this, we can pre-compute a spatial hash acceleration structure and provide it through the context
+
+    // Flags from 0x10000000 and upwards are automatically propagated to the IR flags
+    FLAG_SPATIAL_QUERY              = 0x10000000, // This means that the expression involves some form of spatial query. If we have this, we can pre-compute a spatial hash acceleration structure and provide it through the context
 } flags_t;
 
 typedef enum eval_flags_t {
-    EVAL_FLAG_STATIC_TYPE_CHECK     = 0x1,
-    EVAL_FLAG_EVALUATE              = 0x2,
+    //EVAL_FLAG_STATIC_TYPE_CHECK     = 0x1,
+    //EVAL_FLAG_EVALUATE              = 0x2,
     EVAL_FLAG_FLATTEN               = 0x100,
 } eval_flags_t;
 
 // Propagate upwards to parent nodes within the AST tree
 static const uint32_t FLAG_AST_PROPAGATION_MASK = 0xFFFF0000U;
+static const uint32_t FLAG_IR_PROPAGATION_MASK  = 0xF0000000U;
 
 typedef struct token_t {
     token_type_t type;
@@ -274,7 +277,6 @@ typedef struct eval_context_t {
     token_t* arg_tokens;                // Tokens to arguments for contextual information when reporting errors
     flags_t* arg_flags;                 // Flags of arguments
     identifier_t* identifiers;          // Evaluated identifiers for references
-
                                       
     md_script_visualization_t* vis;     // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
     md_trajectory_frame_header_t* frame_header;
@@ -285,6 +287,8 @@ typedef struct eval_context_t {
         const float* y;
         const float* z;
     } initial_configuration;
+
+    md_spatial_hash_t* spatial_hash;
 
     // This is information which is only present in the static check and serves as a backchannel for the procedure in order to deduce value range, units, flags and such
     static_backchannel_t* backchannel;
@@ -342,6 +346,7 @@ struct md_script_ir_t {
     struct md_allocator_i *arena;
 
     str_t str;  // Original string containing the 'source'
+    uint32_t flags;     // special flags which have been assigned during compile time
     
     // These are resizable arrays
     ast_node_t          **nodes;
@@ -2850,62 +2855,6 @@ static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_con
     return false;
 }
 
-
-/*
-static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(type);
-    ASSERT(node);
-    ASSERT(ctx);
-
-    // If we want to finalize the type of an assigment, we need to at the RHS expression and determine that
-    if (node->type == AST_ASSIGNMENT) {
-        ASSERT(node->children);
-        ASSERT(md_array_size(node->children) == 2);
-        node = node->children[1];
-    } else if (node->type == AST_IDENTIFIER) {
-        ASSERT(node->children);
-        ASSERT(md_array_size(node->children) == 1);
-        node = node->children[0];
-    }
-
-    *type = node->data.type;
-
-    ast_node_t** const args = node->children;
-    int64_t num_args = md_array_size(node->children);
-
-    if (node->proc->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
-        ASSERT(num_args > 0);
-        // We can deduce the length of the array from the input type (take the array which is the longest???)
-        int64_t max_len = 0;
-        for (int64_t i = 0; i < num_args; ++i) {
-            int64_t len = (int32_t)type_info_array_len(args[i]->data.type);
-            ASSERT(len > -1);
-            max_len = MAX(len, max_len);
-        }
-        type->dim[type->len_dim] = (int32_t)max_len;
-    } else {
-        ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
-
-        // Perform the call
-        md_script_visualization_t* old_vis = ctx->vis;
-        token_t old_token = ctx->op_token;
-        ctx->op_token = node->token;
-        ctx->vis = NULL;
-        int query_result = do_proc_call(NULL, node->proc, node->children, md_array_size(node->children), ctx);
-        ctx->op_token = old_token;
-        ctx->vis = old_vis;
-
-        if (query_result >= 0) { // Zero length is valid
-            type->dim[type->len_dim] = query_result;
-        } else {
-            create_error(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
-            return false;
-        }
-    }
-    return true;
-}
-*/
-
 static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(ctx);
@@ -3698,6 +3647,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol) {
         ir->record_errors = true;   // We reset the error recording flag before each statement
         if (static_check_node(ir->expressions[i]->node, &ctx)) {
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
+            ir->flags |= (ir->expressions[i]->node->flags & FLAG_IR_PROPAGATION_MASK);
         } else {
             result = false;
         }
@@ -4041,6 +3991,8 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     float* curr_y = curr_coords + 1 * stride;
     float* curr_z = curr_coords + 2 * stride;
 
+    md_spatial_hash_t spatial_hash = {0};
+
     // We want a mutable molecule which we can modify the atom coordinate section of
     md_molecule_t mutable_mol = *mol;
     mutable_mol.atom.x = curr_x;
@@ -4060,6 +4012,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
             .y = init_y,
             .z = init_z,
         },
+        .spatial_hash = &spatial_hash,
     };
 
     // Fill the data for the initial configuration (needed by rmsd and SDF as a 'reference')
@@ -4094,6 +4047,11 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
         
         md_vm_arena_set_pos(&vm_arena, STACK_RESET_POINT);
         ctx.identifiers = 0;
+
+        if (ir->flags & FLAG_SPATIAL_QUERY) {
+            vec3_t pbc_ext = mat3_mul_vec3(curr_header.box, vec3_set1(1));
+            md_spatial_hash_init_soa(&spatial_hash, curr_x, curr_y, curr_z, mol->atom.count, pbc_ext, &temp_alloc);
+        }
 
         for (int64_t i = 0; i < num_expr; ++i) {
             md_type_info_t type = expr[i]->node->data.type;
@@ -4960,10 +4918,10 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
-    int64_t num_frames = md_trajectory_num_atoms(args.traj);
-    float* x = md_vm_arena_push(&vm_arena, num_frames * sizeof(float));
-    float* y = md_vm_arena_push(&vm_arena, num_frames * sizeof(float));
-    float* z = md_vm_arena_push(&vm_arena, num_frames * sizeof(float));
+    int64_t num_atoms = md_trajectory_num_atoms(args.traj);
+    float* x = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
+    float* y = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
+    float* z = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
     
     md_trajectory_frame_header_t header = { 0 };
     if (args.traj) {
@@ -4974,18 +4932,26 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         z = args.mol->atom.z;
     }
 
+    md_spatial_hash_t spatial_hash = {0};
+    if (args.ir->flags & FLAG_SPATIAL_QUERY) {
+        vec3_t pbc_ext = mat3_mul_vec3(header.box, vec3_set1(1));
+        md_spatial_hash_init_soa(&spatial_hash, x, y, z, num_atoms, pbc_ext, &temp_alloc);
+    }
+
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)args.ir,
         .mol = args.mol,
         .raw_temp_alloc = &vm_arena,
         .temp_alloc = &temp_alloc,
         .vis = vis,
+        .frame_header = &header,
         .initial_configuration = {
             .header = &header,
             .x = x,
             .y = y,
             .z = z
-        }
+        },
+        .spatial_hash = &spatial_hash,
     };
     vis->atom_mask = &vis->o->atom_mask;
 

@@ -111,11 +111,14 @@ vec3_t md_util_compute_unit_cell_extent(mat3_t M);
 // It ensures that residues and chains reside within the same period
 bool md_util_apply_pbc(struct md_molecule_t* mol, vec3_t pbc_ext);
 
-// Computes the miminum axis aligned bounding vox for a set of points
+// Computes the miminum axis aligned bounding box for a set of points
 void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, int64_t count);
+
+// Computes the miminum axis aligned bounding box for a set of points within a periodic box (0,0,0) -> (pbc_ext)
+void md_util_compute_aabb_periodic_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count, vec3_t pbc_ext);
 
 // Computes the center of mass for a set of points with a given weight
 // x, y, z -> Arrays containing coordinates

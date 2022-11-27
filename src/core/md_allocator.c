@@ -3,8 +3,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define THREAD_LOCAL_RING_BUFFER_SIZE MEGABYTES(4)
-#define MAX_TEMP_ALLOCATION_SIZE (THREAD_LOCAL_RING_BUFFER_SIZE / 2)
+#ifndef MD_TEMP_ALLOC_SIZE
+#define MD_TEMP_ALLOC_SIZE MEGABYTES(32)
+#endif 
+
+#define MAX_TEMP_ALLOCATION_SIZE (MD_TEMP_ALLOC_SIZE / 2)
 #define DEFAULT_ALIGNMENT 16
 
 uint64_t default_temp_allocator_max_allocation_size() {
@@ -17,7 +20,7 @@ uint64_t default_temp_allocator_max_allocation_size() {
 typedef struct ring_buffer {
     uint64_t curr;
     uint64_t prev;
-    char mem[THREAD_LOCAL_RING_BUFFER_SIZE];
+    char mem[MD_TEMP_ALLOC_SIZE];
 } ring_buffer;
 
 THREAD_LOCAL ring_buffer ring = {0};
@@ -80,11 +83,12 @@ static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, uint6
             // This is the last allocation that occured, then we can shrink or grow that sucker
             int64_t new_curr = (int64_t)ring.curr + diff;
             ASSERT(new_curr > 0);
-            if (new_curr < THREAD_LOCAL_RING_BUFFER_SIZE) {
+            if (new_curr < MD_TEMP_ALLOC_SIZE) {
                 ring.curr = new_curr;
                 return ptr;
             }
         }
+
         // ptr is not the last allocation or the new size did not fit into the buffer which is left
         void* new_ptr = ring_alloc_internal(new_size);
         memcpy(new_ptr, ptr, old_size);

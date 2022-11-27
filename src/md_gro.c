@@ -70,9 +70,9 @@ static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_
         int64_t res_id  = parse_int(str_trim_whitespace(substr(line, 0, 5)));
         str_t res_name  = str_trim_whitespace(substr(line, 5, 5));
         str_t atom_name = str_trim_whitespace(substr(line, 10, 5));
-        double x = parse_float(str_trim_whitespace(substr(line, 20 + 0 * pos_field_width, pos_field_width))) * 10.0; // nm -> �
-        double y = parse_float(str_trim_whitespace(substr(line, 20 + 1 * pos_field_width, pos_field_width))) * 10.0;
-        double z = parse_float(str_trim_whitespace(substr(line, 20 + 2 * pos_field_width, pos_field_width))) * 10.0;
+        double x = parse_float(str_trim_whitespace(substr(line, 20 + 0 * pos_field_width, pos_field_width)));
+        double y = parse_float(str_trim_whitespace(substr(line, 20 + 1 * pos_field_width, pos_field_width)));
+        double z = parse_float(str_trim_whitespace(substr(line, 20 + 2 * pos_field_width, pos_field_width)));
 
         md_gro_atom_t atom = {0};
         atom.res_id = (int32_t)res_id;
@@ -250,9 +250,9 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
 
     int32_t cur_res_id = -1;
     for (int64_t i = 0; i < num_atoms; ++i) {
-        const float x = data->atom_data[i].x;
-        const float y = data->atom_data[i].y;
-        const float z = data->atom_data[i].z;
+        const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
+        const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
+        const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
         str_t atom_name = (str_t){data->atom_data[i].atom_name, strnlen(data->atom_data[i].atom_name, ARRAY_SIZE(data->atom_data[i].atom_name))};
         str_t res_name = (str_t){data->atom_data[i].res_name, strnlen(data->atom_data[i].res_name, ARRAY_SIZE(data->atom_data[i].res_name))};
 

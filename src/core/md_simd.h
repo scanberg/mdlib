@@ -2,6 +2,10 @@
 
 #include "md_intrinsics.h"
 
+// If the instruction set supports AVX2 it should support FMA as well.
+// However, we cannot rely on that (in case of emulation or whatever may gimp your instruction set)
+// so we check for it in cmake and define if it is available
+
 #define md_simd_f128_t __m128
 #define md_simd_f256_t __m256
 #define md_simd_i128_t __m128i
@@ -27,6 +31,8 @@
     #define md_simd_mulf md_simd_mul_f256
     #define md_simd_divf md_simd_div_f256
 
+    #define md_simd_fmaddf md_simd_fmadd_f256
+
     #define md_simd_andf     md_simd_and_f256
     #define md_simd_and_notf md_simd_and_not_f256
     #define md_simd_orf      md_simd_or_f256
@@ -46,10 +52,13 @@
     #define md_simd_signcopyf   md_simd_signcopy_f256
     #define md_simd_fractf  md_simd_fract_f256
     #define md_simd_roundf  md_simd_round_f256
+    #define md_simd_floorf  md_simd_floor_f256
+    #define md_simd_ceilf   md_simd_ceil_f256
     #define md_simd_blendf  md_simd_blend_f256
-    #define md_simd_sqrtf   md_simd_sqrtf_f256
+    #define md_simd_sqrtf   md_simd_sqrt_f256
 
     #define md_simd_deperiodizef md_simd_deperiodize_f256
+    #define md_simd_deperiodize2f md_simd_deperiodize2_f256
 
     #define md_simd_horizontal_minf md_simd_horizontal_min_f256
     #define md_simd_horizontal_maxf md_simd_horizontal_max_f256
@@ -64,6 +73,11 @@
 // Int
     #define md_simd_widthi 8
     #define md_simd_typei   md_simd_i256_t
+    #define md_simd_loadi   md_simd_load_i256
+    #define md_simd_load_alignedi   md_simd_load_aligned_i256
+    #define md_simd_storei  md_simd_store_i256
+    #define md_simd_store_alignedi  md_simd_store_aligned_i256
+
     #define md_simd_set1i   md_simd_set1_i256
     #define md_simd_zeroi   md_simd_zero_i256
     #define md_simd_ori     md_simd_or_i256
@@ -91,6 +105,8 @@
     #define md_simd_mulf md_simd_mul_f128
     #define md_simd_divf md_simd_div_f128
 
+    #define md_simd_fmaddf md_simd_fmadd_f128
+
     #define md_simd_andf     md_simd_and_f128
     #define md_simd_and_notf md_simd_and_not_f128
     #define md_simd_orf      md_simd_or_f128
@@ -110,7 +126,14 @@
     #define md_simd_signcopyf   md_simd_signcopy_f128
     #define md_simd_fractf  md_simd_fract_f128
     #define md_simd_roundf  md_simd_round_f128
+    #define md_simd_floorf  md_simd_floor_f128
+    #define md_simd_ceilf   md_simd_ceil_f128
     #define md_simd_blendf  md_simd_blend_f128
+    #define md_simd_sqrtf   md_simd_sqrt_f128
+
+
+    #define md_simd_deperiodizef md_simd_deperiodize_f128
+    #define md_simd_deperiodize2f md_simd_deperiodize2_f128
 
     #define md_simd_horizontal_minf md_simd_horizontal_min_f128
     #define md_simd_horizontal_maxf md_simd_horizontal_max_f128
@@ -125,6 +148,12 @@
 // Int
     #define md_simd_widthi 4
     #define md_simd_typei   md_simd_i128_t
+
+    #define md_simd_loadi   md_simd_load_i128
+    #define md_simd_load_alignedi   md_simd_load_aligned_i128
+    #define md_simd_storei  md_simd_store_i128
+    #define md_simd_store_alignedi  md_simd_store_aligned_i128
+
     #define md_simd_set1i   md_simd_set1_i128
     #define md_simd_zeroi   md_simd_zero_i128
     #define md_simd_ori     md_simd_or_i128
@@ -164,6 +193,14 @@ MD_SIMD_INLINE __m128 md_simd_sub_f128(__m128 a, __m128 b) { return _mm_sub_ps(a
 MD_SIMD_INLINE __m128 md_simd_mul_f128(__m128 a, __m128 b) { return _mm_mul_ps(a, b); }
 MD_SIMD_INLINE __m128 md_simd_div_f128(__m128 a, __m128 b) { return _mm_div_ps(a, b); }
 
+MD_SIMD_INLINE __m128 md_simd_fmadd_f128(__m128 a, __m128 b, __m128 c) {
+#ifdef __FMA__
+    return _mm_fmadd_ps(a, b, c);
+#else
+    return _mm_add_ps(_mm_mul_ps(a, b), c);
+#endif
+}
+
 MD_SIMD_INLINE __m128 md_simd_and_f128    (__m128 a, __m128 b) { return _mm_and_ps(a, b); }
 MD_SIMD_INLINE __m128 md_simd_and_not_f128(__m128 a, __m128 b) { return _mm_andnot_ps(a, b); }
 MD_SIMD_INLINE __m128 md_simd_or_f128     (__m128 a, __m128 b) { return _mm_or_ps(a, b); }
@@ -193,11 +230,19 @@ MD_SIMD_INLINE __m128 md_simd_copysign_f128(__m128 mag, __m128 sign) {
 }
 
 MD_SIMD_INLINE __m128 md_simd_fract_f128(__m128 x) {
-    return _mm_sub_ps(x, _mm_round_ps(x, _MM_FROUND_TRUNC | _MM_FROUND_NO_EXC));
+    return _mm_sub_ps(x, _mm_round_ps(x, _MM_FROUND_FLOOR | _MM_FROUND_NO_EXC));
 }
 
 MD_SIMD_INLINE __m128 md_simd_round_f128(__m128 x) {
     return _mm_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+}
+
+MD_SIMD_INLINE __m128 md_simd_floor_f128(__m128 x) {
+    return _mm_round_ps(x, _MM_FROUND_FLOOR | _MM_FROUND_NO_EXC);
+}
+
+MD_SIMD_INLINE __m128 md_simd_ceil_f128(__m128 x) {
+    return _mm_round_ps(x, _MM_FROUND_CEIL | _MM_FROUND_NO_EXC);
 }
 
 MD_SIMD_INLINE __m128 md_simd_blend_f128(__m128 a, __m128 b, __m128 mask) {
@@ -249,6 +294,25 @@ MD_SIMD_INLINE __m128 md_simd_cubic_spline_f128(__m128 p0, __m128 p1, __m128 p2,
     return _mm_add_ps(r0, r1);
 }
 
+// position, reference, period
+MD_SIMD_INLINE __m128 md_simd_deperiodize_f128(__m128 x, __m128 r, __m128 p) {
+    __m128 d  = md_simd_sub_f128(x, r);
+    __m128 dx = md_simd_div_f128(d, p);
+    dx = md_simd_sub_f128(dx, md_simd_round_f128(dx));
+    __m128 x_prim = md_simd_add_f128(r, md_simd_mul_f128(dx, p));
+    return md_simd_blend_f128(x_prim, x, md_simd_cmp_eq_f128(p, md_simd_zero_f128()));
+}
+
+// Version 2, with explicit inverted period to avoid div
+// position, reference, period, (1 / period)
+MD_SIMD_INLINE __m128 md_simd_deperiodize2_f128(__m128 x, __m128 r, __m128 p, __m128 ip) {
+    __m128 d  = md_simd_sub_f128(x, r);
+    __m128 dx = md_simd_mul_f128(d, ip);
+    dx = md_simd_sub_f128(dx, md_simd_round_f128(dx));
+    __m128 x_prim = md_simd_add_f128(r, md_simd_mul_f128(dx, p));
+    return md_simd_blend_f128(x_prim, x, md_simd_cmp_eq_f128(p, md_simd_zero_f128()));
+}
+
 // Cast
 MD_SIMD_INLINE __m128  md_simd_cast_f128_i128(__m128i x) { return _mm_castsi128_ps(x); }
 MD_SIMD_INLINE __m128i md_simd_cast_i128_f128(__m128  x) { return _mm_castps_si128(x); }
@@ -258,6 +322,12 @@ MD_SIMD_INLINE __m128  md_simd_convert_to_f128_i128(__m128i x)    { return _mm_c
 MD_SIMD_INLINE __m128i md_simd_convert_to_i128_f128(__m128  x)    { return _mm_cvtps_epi32(x); }
 
 // Int operations
+MD_SIMD_INLINE __m128i md_simd_load_i128(const int* addr) { return _mm_loadu_si128((const __m128i*)addr); }
+MD_SIMD_INLINE __m128i md_simd_load_aligned_i128(const int* addr) { return _mm_load_si128((const __m128i*)addr); }
+
+MD_SIMD_INLINE void    md_simd_store_i128(int* addr, __m128i x) { _mm_storeu_si128((__m128i*)addr, x); }
+MD_SIMD_INLINE void    md_simd_store_aligned_i128(int* addr, __m128i x) { _mm_store_si128((__m128i*)addr, x); }
+
 MD_SIMD_INLINE __m128i md_simd_set1_i128(int x) { return _mm_set1_epi32(x); }
 MD_SIMD_INLINE __m128i md_simd_set_i128(int x, int y, int z, int w) { return _mm_set_epi32(w, z, y, x); }
 MD_SIMD_INLINE __m128i md_simd_zero_i128() { return _mm_setzero_si128(); }
@@ -301,6 +371,14 @@ MD_SIMD_INLINE __m256 md_simd_sub_f256(__m256 a, __m256 b) { return _mm256_sub_p
 MD_SIMD_INLINE __m256 md_simd_mul_f256(__m256 a, __m256 b) { return _mm256_mul_ps(a, b); }
 MD_SIMD_INLINE __m256 md_simd_div_f256(__m256 a, __m256 b) { return _mm256_div_ps(a, b); }
 
+MD_SIMD_INLINE __m256 md_simd_fmadd_f256(__m256 a, __m256 b, __m256 c) {
+#ifdef __FMA__
+    return _mm256_fmadd_ps(a, b, c);
+#else
+    return _mm256_add_ps(_mm256_mul_ps(a, b), c);
+#endif
+}
+
 MD_SIMD_INLINE __m256 md_simd_and_f256    (__m256 a, __m256 b) { return _mm256_and_ps(a, b); }
 MD_SIMD_INLINE __m256 md_simd_and_not_f256(__m256 a, __m256 b) { return _mm256_andnot_ps(a, b); }
 MD_SIMD_INLINE __m256 md_simd_or_f256     (__m256 a, __m256 b) { return _mm256_or_ps(a, b); }
@@ -328,15 +406,27 @@ MD_SIMD_INLINE __m256 md_simd_copysign_f256(__m256 mag, __m256 sign) {
 }
 
 MD_SIMD_INLINE __m256 md_simd_fract_f256(__m256 x) {
-    return _mm256_sub_ps(x, _mm256_round_ps(x, _MM_FROUND_TRUNC | _MM_FROUND_NO_EXC));
+    return _mm256_sub_ps(x, _mm256_round_ps(x, _MM_FROUND_FLOOR | _MM_FROUND_NO_EXC));
 }
 
 MD_SIMD_INLINE __m256 md_simd_round_f256(__m256 x) {
     return _mm256_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
 }
 
+MD_SIMD_INLINE __m256 md_simd_floor_f256(__m256 x) {
+    return _mm256_round_ps(x, _MM_FROUND_FLOOR | _MM_FROUND_NO_EXC);
+}
+
+MD_SIMD_INLINE __m256 md_simd_ceil_f256(__m256 x) {
+    return _mm256_round_ps(x, _MM_FROUND_CEIL | _MM_FROUND_NO_EXC);
+}
+
 MD_SIMD_INLINE __m256 md_simd_blend_f256(__m256 a, __m256 b, __m256 mask) {
     return _mm256_blendv_ps(a, b, mask);
+}
+
+MD_SIMD_INLINE __m256 md_simd_sqrt_f256(__m256 x) {
+    return _mm256_sqrt_ps(x);
 }
 
 MD_SIMD_INLINE __m256 md_simd_min_f256(__m256 a, __m256 b) { return _mm256_min_ps(a, b); }
@@ -368,6 +458,25 @@ MD_SIMD_INLINE float md_simd_horizontal_add_f256(__m256 x) {
     return _mm_cvtss_f32(sums);
 }
 
+// position, reference, period
+MD_SIMD_INLINE __m256 md_simd_deperiodize_f256(__m256 x, __m256 r, __m256 p) {
+    __m256 d  = md_simd_sub_f256(x, r);
+    __m256 dx = md_simd_div_f256(d, p);
+    dx = md_simd_sub_f256(dx, md_simd_round_f256(dx));
+    __m256 x_prim = md_simd_add_f256(r, md_simd_mul_f256(dx, p));
+    return md_simd_blend_f256(x_prim, x, md_simd_cmp_eq_f256(p, md_simd_zero_f256()));
+}
+
+// Version 2, with explicit inverted period to avoid div
+// position, reference, period, (1 / period)
+MD_SIMD_INLINE __m256 md_simd_deperiodize2_f256(__m256 x, __m256 r, __m256 p, __m256 ip) {
+    __m256 d  = md_simd_sub_f256(x, r);
+    __m256 dx = md_simd_mul_f256(d, ip);
+    dx = md_simd_sub_f256(dx, md_simd_round_f256(dx));
+    __m256 x_prim = md_simd_add_f256(r, md_simd_mul_f256(dx, p));
+    return md_simd_blend_f256(x_prim, x, md_simd_cmp_eq_f256(p, md_simd_zero_f256()));
+}
+
 // Cast
 MD_SIMD_INLINE __m256  md_simd_cast_f256_i256(__m256i x) { return _mm256_castsi256_ps(x); }
 MD_SIMD_INLINE __m256i md_simd_cast_i256_f256(__m256  x) { return _mm256_castps_si256(x); }
@@ -377,6 +486,12 @@ MD_SIMD_INLINE __m256  md_simd_convert_to_f256_i256(__m256i x)    { return _mm25
 MD_SIMD_INLINE __m256i md_simd_convert_to_i256_f256(__m256  x)    { return _mm256_cvtps_epi32(x); }
 
 // Int operations
+
+MD_SIMD_INLINE __m256i md_simd_load_i256(const int* addr) { return _mm256_loadu_si256((const __m256i*)addr); }
+MD_SIMD_INLINE __m256i md_simd_load_aligned_i256(const int* addr) { return _mm256_load_si256((const __m256i*)addr); }
+
+MD_SIMD_INLINE void    md_simd_store_i256(int* addr, __m256i x) { _mm256_storeu_si256((__m256i*)addr, x); }
+MD_SIMD_INLINE void    md_simd_store_aligned_i256(int* addr, __m256i x) { _mm256_store_si256((__m256i*)addr, x); }
 
 MD_SIMD_INLINE __m256i md_simd_set1_i256(int x) { return _mm256_set1_epi32(x); }
 MD_SIMD_INLINE __m256i md_simd_set_i256(int x0, int y0, int z0, int w0, int x1, int y1, int z1, int w1) { return _mm256_set_epi32(w1, z1, y1, x1, w0, z0, y0, x0); }
@@ -399,6 +514,7 @@ MD_SIMD_INLINE __m256i md_simd_sub_i256(__m256i a, __m256i b)    { return _mm256
 MD_SIMD_INLINE __m256i md_simd_cmp_eq_i256(__m256i a, __m256i b) { return _mm256_cmpeq_epi32(a, b); }
 
 MD_SIMD_INLINE __m256i md_simd_shift_left_i256(__m256i a, int count) { return _mm256_slli_epi32(a, count); }
+MD_SIMD_INLINE __m256i md_simd_shift_right_i256(__m256i a, int count) { return _mm256_srli_epi32(a, count); }
 
 
 #else

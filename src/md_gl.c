@@ -349,7 +349,7 @@ static bool compile_shader_from_file(GLuint shader, const char* filename, const 
         const uint64_t size = MIN(file_size, ARRAY_SIZE(buffer) - 1);
         md_file_read(file, buffer, size);
         const bool success = compile_shader_from_source(shader, buffer, defines, extra_src);
-        const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
+        const md_log_type_t log_type = success ? MD_LOG_TYPE_DEBUG : MD_LOG_TYPE_ERROR;
         const char* res_str = success ? "Success" : "Fail";
         md_printf(log_type,  "Compiling shader %-40s %s", filename, res_str);
         md_file_close(file);

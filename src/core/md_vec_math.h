@@ -9,8 +9,17 @@
 #endif
 
 #include "md_compiler.h"
-#if MD_COMPILER_MSVC
-#pragma warning( disable : 4201 ) // nameless structs
+
+#if MD_COMPILER_GCC
+#	pragma GCC diagnostic push
+#	pragma GCC diagnostic ignored "-Wpedantic"
+#elif MD_COMPILER_CLANG
+#	pragma clang diagnostic push
+#	pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
+#	pragma clang diagnostic ignored "-Wnested-anon-types"
+#elif MD_COMPILER_MSVC
+#	pragma warning(push)
+#	pragma warning(disable: 4201)  // nonstandard extension used : nameless struct/union
 #endif
 
 #include "md_common.h"
@@ -70,7 +79,7 @@ typedef struct quat_t {
         };
         float elem[4];
 #if MD_VEC_MATH_USE_SSE
-        __m128 f128;
+        md_simd_f128_t f128;
 #endif
     };
 #ifdef __cplusplus
@@ -112,6 +121,14 @@ typedef struct mat4_t {
 #endif
 } mat4_t;
 
+#if MD_COMPILER_CLANG
+#	pragma clang diagnostic pop
+#elif MD_COMPILER_GCC
+#	pragma GCC diagnostic pop
+#elif MD_COMPILER_MSVC
+#	pragma warning(pop)
+#endif
+
 static inline float stepf(float edge, float x) { return (float)((x - edge) > 0); }
 static inline double step(double edge, double x) { return (double)((x - edge) > 0); }
 
@@ -122,6 +139,7 @@ static inline float signf(float x)  { return (float)((x > 0.0f) - (x < 0.0f)); }
 static inline double sign(double x) { return (double)((x > 0.0) - (x < 0.0)); }
 
 static inline float deperiodizef(float val, float ref, float period) {
+    if (period == 0.0f) return val;
     float d = (val - ref) / period;
     d = fractf(d);
     d = d - signf(d) * (float)(fabsf(d) > 0.5f);
@@ -129,6 +147,7 @@ static inline float deperiodizef(float val, float ref, float period) {
 }
 
 static inline double deperiodize(double val, double ref, double period) {
+    if (period == 0.0) return val;
     double d = (val - ref) / period;
     d = fract(d);
     d = d - sign(d) * (double)(fabs(d) > 0.5);
@@ -190,7 +209,7 @@ static inline vec2_t vec2_mul_f(vec2_t a, float s) {
 }
 
 static inline vec2_t vec2_madd(vec2_t a, vec2_t b, vec2_t c) {
-    vec2_t res = {a.x * b.x + c.x, a.y * b.y + c.y};
+    vec2_t res = {(a.x * b.x) + c.x, (a.y * b.y) + c.y};
     return res;
 }
 
@@ -241,6 +260,10 @@ static inline vec2_t vec2_fract(vec2_t v) {
 }
 
 // VEC3 OPERATIONS
+static inline vec3_t vec3_zero() {
+    vec3_t res = {0};
+    return res;
+}
 
 static inline vec3_t vec3_set(float x, float y, float z) {
     vec3_t v = {x,y,z};
@@ -412,7 +435,7 @@ static inline vec4_t vec4_zero() {
 static inline vec4_t vec4_set(float x, float y, float z, float w) {
     vec4_t res;
 #if MD_VEC_MATH_USE_SSE
-    res.f128 = _mm_set_ps(w, z, y, x);
+    res.f128 = md_simd_set_f128(w, z, y, x);
 #else
     res.x = x;
     res.y = y;
@@ -425,7 +448,7 @@ static inline vec4_t vec4_set(float x, float y, float z, float w) {
 static inline vec4_t vec4_set1(float v) {
     vec4_t res;
 #if MD_VEC_MATH_USE_SSE
-    res.f128 = _mm_set1_ps(v);
+    res.f128 = md_simd_set1_f128(v);
 #else
     res.x = v;
     res.y = v;
@@ -447,7 +470,7 @@ static inline vec4_t vec4_from_vec3(vec3_t v, float w) {
 static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SSE
-    c.f128 = _mm_mul_ps(a.f128, b.f128);
+    c.f128 = md_simd_mul_f128(a.f128, b.f128);
 #else
     c.x = a.x * b.x;
     c.y = a.y * b.y;
@@ -460,7 +483,7 @@ static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {
 static inline vec4_t vec4_mul_f(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SSE
-    c.f128 = _mm_mul_ps(a.f128, _mm_set1_ps(s));
+    c.f128 = md_simd_mul_f128(a.f128, md_simd_set1_f128(s));
 #else
     c.x = a.x * s;
     c.y = a.y * s;
@@ -473,7 +496,7 @@ static inline vec4_t vec4_mul_f(vec4_t a, float s) {
 static inline vec4_t vec4_div(vec4_t a, vec4_t b) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SSE
-    c.f128 = _mm_div_ps(a.f128, b.f128);
+    c.f128 = md_simd_div_f128(a.f128, b.f128);
 #else
     c.x = a.x / b.x;
     c.y = a.y / b.y;
@@ -486,7 +509,7 @@ static inline vec4_t vec4_div(vec4_t a, vec4_t b) {
 static inline vec4_t vec4_div_f(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SSE
-    c.f128 = _mm_div_ps(a.f128, _mm_set1_ps(s));
+    c.f128 = md_simd_div_f128(a.f128, md_simd_set1_f128(s));
 #else
     c.x = a.x / s;
     c.y = a.y / s;
@@ -499,7 +522,7 @@ static inline vec4_t vec4_div_f(vec4_t a, float s) {
 static inline vec4_t vec4_add(vec4_t a, vec4_t b) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SSE
-    c.f128 = _mm_add_ps(a.f128, b.f128);
+    c.f128 = md_simd_add_f128(a.f128, b.f128);
 #else
     c.x = a.x + b.x;
     c.y = a.y + b.y;
@@ -512,7 +535,7 @@ static inline vec4_t vec4_add(vec4_t a, vec4_t b) {
 static inline vec4_t vec4_add_f(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SSE
-    c.f128 = _mm_add_ps(a.f128, _mm_set1_ps(s));
+    c.f128 = md_simd_add_f128(a.f128, md_simd_set1_f128(s));
 #else
     c.x = a.x + s;
     c.y = a.y + s;
@@ -525,7 +548,7 @@ static inline vec4_t vec4_add_f(vec4_t a, float s) {
 static inline vec4_t vec4_sub(vec4_t a, vec4_t b) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SSE
-    c.f128 = _mm_sub_ps(a.f128, b.f128);
+    c.f128 = md_simd_sub_f128(a.f128, b.f128);
 #else
     c.x = a.x - b.x;
     c.y = a.y - b.y;
@@ -538,7 +561,7 @@ static inline vec4_t vec4_sub(vec4_t a, vec4_t b) {
 static inline vec4_t vec4_sub_f(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SSE
-    c.f128 = _mm_sub_ps(a.f128, _mm_set1_ps(s));
+    c.f128 = md_simd_sub_f128(a.f128, md_simd_set1_f128(s));
 #else
     c.x = a.x - s;
     c.y = a.y - s;
@@ -546,6 +569,19 @@ static inline vec4_t vec4_sub_f(vec4_t a, float s) {
     c.w = a.w - s;
 #endif
     return c;
+}
+
+static inline vec4_t vec4_fmadd(vec4_t a, vec4_t b, vec4_t c) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SSE
+    r.f128 = md_simd_fmadd_f128(a.f128, b.f128, c.f128);
+#else
+    r.x = a.x - s;
+    r.y = a.y - s;
+    r.z = a.z - s;
+    r.w = a.w - s;
+#endif
+    return r;
 }
 
 static inline float vec4_dot(vec4_t a, vec4_t b) {
@@ -664,6 +700,32 @@ static inline vec4_t vec4_round(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SSE
     r.f128 = md_simd_round_f128(v.f128);
+#else
+    r.x = roundf(v.x);
+    r.y = roundf(v.y);
+    r.z = roundf(v.z);
+    r.w = roundf(v.w);
+#endif
+    return r;
+}
+
+static inline vec4_t vec4_floor(vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SSE
+    r.f128 = md_simd_floor_f128(v.f128);
+#else
+    r.x = roundf(v.x);
+    r.y = roundf(v.y);
+    r.z = roundf(v.z);
+    r.w = roundf(v.w);
+#endif
+    return r;
+}
+
+static inline vec4_t vec4_ceil(vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SSE
+    r.f128 = md_simd_ceil_f128(v.f128);
 #else
     r.x = roundf(v.x);
     r.y = roundf(v.y);

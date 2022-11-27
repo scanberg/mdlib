@@ -2,12 +2,13 @@ INCLUDE(CheckCSourceRuns)
 
 SET(HAVE_AVX_EXTENSIONS)
 SET(HAVE_AVX2_EXTENSIONS)
+SET(HAVE_FMA_EXTENSIONS)
 SET(AVX_FLAGS)
 
 # Check AVX 2
 SET(CMAKE_REQUIRED_FLAGS)
 IF(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  SET(CMAKE_REQUIRED_FLAGS "-mavx2")
+  SET(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma")
 ELSEIF(MSVC AND NOT CMAKE_CL_64)  # reserve for WINDOWS
   SET(CMAKE_REQUIRED_FLAGS "/arch:AVX2")
 ENDIF()
@@ -20,6 +21,17 @@ int main()
     __m256i result = _mm256_abs_epi32 (a);
     return 0;
 }" HAVE_AVX2_EXTENSIONS)
+
+CHECK_C_SOURCE_RUNS("
+#include <immintrin.h>
+int main()
+{
+    __m256 a = _mm256_set1_ps (1.0f);
+    __m256 b = _mm256_set1_ps (2.0f);
+    __m256 c = _mm256_set1_ps (3.0f);
+    __m256 result = _mm256_fmadd_ps(a, b, c);
+    return 0;
+}" HAVE_FMA_EXTENSIONS)
 
 # Check AVX
 SET(CMAKE_REQUIRED_FLAGS)
@@ -39,18 +51,24 @@ int main()
     return 0;
 }" HAVE_AVX_EXTENSIONS)
 
-IF(${HAVE_AVX_EXTENSIONS})
-    IF(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        SET(AVX_FLAGS "-mavx")
-    ELSEIF(MSVC)
-        SET(AVX_FLAGS "/arch:AVX")
-    ENDIF()
-ENDIF()
-
-IF(${HAVE_AVX2_EXTENSIONS})
-    IF(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+IF(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    IF(${HAVE_AVX2_EXTENSIONS})
         SET(AVX_FLAGS "-mavx2")
-    ELSEIF(MSVC)
-        SET(AVX_FLAGS "/arch:AVX2")
+    ELSEIF(${HAVE_AVX_EXTENSIONS})
+        SET(AVX_FLAGS "-mavx")
+    ENDIF()
+    IF(${HAVE_FMA_EXTENSIONS})
+        SET(AVX_FLAGS ${AVX_FLAGS} "-mfma")
+        IF(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            SET(AVX_FLAGS ${AVX_FLAGS} "-ffp-contract=fast")
+        ELSE()
+            SET(AVX_FLAGS ${AVX_FLAGS} "-ffast-math")
+        ENDIF()
+    ENDIF()
+ELSEIF(MSVC)
+    IF(${HAVE_AVX2_EXTENSIONS})
+        SET(AVX_FLAGS "/arch:AVX2" "/fp:fast")
+    ELSEIF(${HAVE_AVX_EXTENSIONS})
+        SET(AVX_FLAGS "/arch:AVX" "/fp:fast")
     ENDIF()
 ENDIF()

@@ -36,6 +36,9 @@ source_group("shaders" FILES ${SHADER_FILES})
 add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES})
 
 set(MD_DEFINES)
+if (${HAVE_FMA_EXTENSIONS})
+set(MD_DEFINES ${MD_DEFINES} "__FMA__")
+endif()
 set(MD_FLAGS_EXT)
 set(MD_FLAGS ${AVX_FLAGS})
 set(MD_FLAGS_REL)
@@ -59,9 +62,7 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-missing-field-initializers"
     "-Wno-missing-braces"
     "-Wno-unused-function"
-    "-Wno-unused-parameter"
-    "-Wno-gnu-anonymous-struct"
-    "-Wno-nested-anon-types")
+    "-Wno-unused-parameter")
 
   if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
     if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
@@ -105,8 +106,7 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       "/wd4324"
       "/wd26451"
       "/MP"
-      "/GR-"
-      "/fp:fast")
+      "/GR-")
     set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
     
     if (MD_LINK_STDLIB_STATIC)
@@ -146,6 +146,7 @@ target_include_directories(mdlib PUBLIC
   ext/gl3w/
   ext/svd3/
   ext/xtc/)
+
 target_compile_definitions(mdlib PUBLIC MD_SHADER_DIR="${MD_SHADER_DIR}" PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS})
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
