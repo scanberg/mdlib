@@ -797,7 +797,7 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
 }
 
 // Include all procedures, operators and defines
-#include "core/script_functions.inl"
+#include "md_script_functions.inl"
 
 // ############################
 // ###   HELPER FUNCTIONS   ###
@@ -4622,6 +4622,12 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
     ast_node_t* node = parse_expression(&parse_ctx);
     node = prune_expressions(node);
     if (node) {
+        md_spatial_hash_t spatial_hash = {0};
+        if (ir->flags & FLAG_SPATIAL_QUERY) {
+            vec3_t pbc_ext = mat3_mul_vec3(mol->coord_frame, vec3_set1(1));
+            md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
+        }
+
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
@@ -4634,7 +4640,9 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
                 .z = mol->atom.z,
             },
             .eval_flags = EVAL_FLAG_FLATTEN,
+            .spatial_hash = &spatial_hash,
         };
+
 
         if (static_check_node(node, &ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {

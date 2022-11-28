@@ -4084,13 +4084,13 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 
 /*
-// This is some experimental future work, for matching structures using maximum overlapping subgraph
+// This is some experimental future work, for matching structures using maximum common subgraph
 typedef struct node_t {
-    md_element_t elem;
+    uint32_t id;
 } node_t;
 
 typedef struct edge_t {
-    int32_t idx[2];
+    uint32_t idx[2];
 } edge_t;
 
 typedef struct graph_t {

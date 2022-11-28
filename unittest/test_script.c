@@ -343,6 +343,15 @@ UTEST(script, property_compute) {
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
+    {
+        str_t src = MAKE_STR("s1 = count(within(10, residue(:)));");
+        md_script_ir_compile_source(ir, src, &mol, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+        md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
+        ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
+        md_script_eval_free(eval);
+    }
+
     md_script_ir_free(ir);
     md_pdb_trajectory_free(traj);
     md_molecule_free(&mol, alloc);

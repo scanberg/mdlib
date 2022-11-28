@@ -1,4 +1,4 @@
-#include "md_string_builder.h"
+#include "md_str_builder.h"
 
 #include "md_allocator.h"
 #include "md_log.h"
@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-void md_string_builder_init(md_string_builder_t* sb, struct md_allocator_i* alloc) {
+void md_str_builder_init(md_str_builder_t* sb, struct md_allocator_i* alloc) {
 	ASSERT(sb);
 	ASSERT(alloc);
 #if DEBUG
@@ -20,7 +20,7 @@ void md_string_builder_init(md_string_builder_t* sb, struct md_allocator_i* allo
 	sb->alloc = alloc;
 }
 
-void md_string_builder_free(md_string_builder_t* sb) {
+void md_str_builder_free(md_str_builder_t* sb) {
 	ASSERT(sb);
 	if (!sb->buf) {
 		return;
@@ -31,7 +31,7 @@ void md_string_builder_free(md_string_builder_t* sb) {
 	sb->alloc = NULL;
 }
 
-void md_string_builder_append_cstr(md_string_builder_t* sb, const char* cstr) {
+void md_str_builder_append_cstr(md_str_builder_t* sb, const char* cstr) {
 	ASSERT(sb);
 	int64_t len = (int64_t)strlen(cstr);
 	if (len > 0) {
@@ -41,7 +41,7 @@ void md_string_builder_append_cstr(md_string_builder_t* sb, const char* cstr) {
 	}
 }
 
-void md_string_builder_printf(md_string_builder_t* sb, const char* format, ...) {
+void md_str_builder_printf(md_str_builder_t* sb, const char* format, ...) {
 	ASSERT(sb);
 	va_list args;
 	va_start(args, format);
@@ -59,7 +59,7 @@ void md_string_builder_printf(md_string_builder_t* sb, const char* format, ...) 
 	}
 }
 
-void md_string_builder_append_str(md_string_builder_t* sb, str_t str) {
+void md_str_builder_append_str(md_str_builder_t* sb, str_t str) {
 	ASSERT(sb);
 	if (str.len > 0) {
 		if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
@@ -68,19 +68,19 @@ void md_string_builder_append_str(md_string_builder_t* sb, str_t str) {
 	}
 }
 
-void md_string_builder_append_char(md_string_builder_t* sb, char c) {
+void md_str_builder_append_char(md_str_builder_t* sb, char c) {
     ASSERT(sb);
     if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
     md_array_push(sb->buf, c, sb->alloc);
     md_array_push(sb->buf, '\0', sb->alloc);
 }
 
-void md_string_builder_reset(md_string_builder_t* sb) {
+void md_str_builder_reset(md_str_builder_t* sb) {
 	ASSERT(sb);
 	md_array_shrink(sb->buf, 0);
 }
 
-str_t md_string_builder_to_string(md_string_builder_t* sb) {
+str_t md_str_builder_to_str(md_str_builder_t* sb) {
 	ASSERT(sb);
 	return (str_t) { md_array_size(sb->buf) ? sb->buf : 0, md_array_size(sb->buf) };
 }

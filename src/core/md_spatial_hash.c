@@ -112,6 +112,7 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
                 *(const float*)((const char*)in_x + i * stride),
                 *(const float*)((const char*)in_y + i * stride),
                 *(const float*)((const char*)in_z + i * stride),
+                0
             };
             c = vec4_deperiodize(c, ref, ext);
 
@@ -135,9 +136,9 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
     };
 
     int32_t cell_max[3] = {
-        (int32_t)ceilf(aabb_max.x * INV_CELL_EXT),
-        (int32_t)ceilf(aabb_max.y * INV_CELL_EXT),
-        (int32_t)ceilf(aabb_max.z * INV_CELL_EXT),
+        (int32_t)floorf(aabb_max.x * INV_CELL_EXT) + 1,
+        (int32_t)floorf(aabb_max.y * INV_CELL_EXT) + 1,
+        (int32_t)floorf(aabb_max.z * INV_CELL_EXT) + 1,
     };
 
     int32_t cell_dim[3] = {
@@ -299,6 +300,13 @@ static inline bool query_pos_rad(const md_spatial_hash_t* hash, vec3_t pos, floa
     return true;
 }
 
+static inline void inc_cell(int* cell_idx, int cell_min, int cell_dim, int cell_pbc) {
+    *cell_idx += 1;
+    if (*cell_idx >= cell_dim) {
+        *cell_idx = cell_pbc - cell_dim;
+    }
+}
+
 // Periodic version (more advanced)
 // @TODO: There is room for algorithmic improvement here.
 static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t position, float radius, md_spatial_hash_iterator_fn iter, void* user_param) {
@@ -307,7 +315,7 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
 
     const vec4_t ref = vec4_mul_f(hash->pbc_ext, 0.5f);
     const vec4_t pbc_ext = hash->pbc_ext;
-    vec4_t pos = vec4_deperiodize(vec4_from_vec3(position, 0), ref, pbc_ext);
+    vec4_t pos = vec4_from_vec3(position, 0);
     float rad = radius;
     float rad2 = radius * radius;
     //float cell_rad2 = (radius + SQRT_CELL_EXT) * (radius + SQRT_CELL_EXT);
@@ -333,27 +341,39 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
     };
 
     // Extent in cells to search
-    // @TODO FIX
     int32_t cell_ext[3] = {
-        MIN((int32_t)(ceilf((pos.x + rad) * INV_CELL_EXT) - floorf((pos.x - rad) * INV_CELL_EXT)) + 1, cell_pbc[0]),
-        MIN((int32_t)(ceilf((pos.y + rad) * INV_CELL_EXT) - floorf((pos.y - rad) * INV_CELL_EXT)) + 1, cell_pbc[1]),
-        MIN((int32_t)(ceilf((pos.z + rad) * INV_CELL_EXT) - floorf((pos.z - rad) * INV_CELL_EXT)) + 1, cell_pbc[2]),
+        MIN((int32_t)(ceilf((pos.x + rad) * INV_CELL_EXT) - floorf((pos.x - rad) * INV_CELL_EXT)) + 1, cell_pbc[0] - 1),
+        MIN((int32_t)(ceilf((pos.y + rad) * INV_CELL_EXT) - floorf((pos.y - rad) * INV_CELL_EXT)) + 1, cell_pbc[1] - 1),
+        MIN((int32_t)(ceilf((pos.z + rad) * INV_CELL_EXT) - floorf((pos.z - rad) * INV_CELL_EXT)) + 1, cell_pbc[2] - 1),
     };
 
-    int32_t idx[3] = {0};
+    // If cell beg is outside of occupied cell domain [cell_min, cell_dim[ we skip forward to next period and accomodate for that jump
+    for (int i = 0; i < 3; ++i) {
+        if (cell_beg[i] >= cell_dim[i]) {
+            // How far ahead we need skip in order to end up within the occupied cell domain of the next period
+            int delta = cell_pbc[i] - cell_beg[i];
+            cell_beg[i] = (cell_beg[i] + delta) % cell_pbc[i];
+            cell_ext[i] -= delta;
+            if (cell_ext[i] < 0) return true;
+        }
+    }
+
+    int32_t cell_end[3] = {
+        cell_beg[0] + cell_ext[0],
+        cell_beg[1] + cell_ext[1],
+        cell_beg[2] + cell_ext[2],
+    };
+
     int32_t cc[3] = {0};
     vec4_t cc_min = {0};
-    for (; idx[2] < cell_ext[2]; ++idx[2]) {
-        cc[2] = (cell_beg[2] + idx[2]) % cell_pbc[2];
-        if (cc[2] == cell_dim[2]) break;
+    for (cc[2] = cell_beg[2]; cc[2] != cell_end[2]; inc_cell(&cc[2], cell_min[2], cell_dim[2], cell_pbc[2])) {
+        ASSERT(cc[2] < cell_dim[2]);
         cc_min.z = (cell_min[2] + cc[2]) * CELL_EXT;
-        for (; idx[1] < cell_ext[1]; ++idx[1]) {
-            cc[1] = (cell_beg[1] + idx[1]) % cell_pbc[1];
-            if (cc[1] == cell_dim[1]) break;
+        for (cc[1] = cell_beg[1]; cc[1] < cell_end[1]; inc_cell(&cc[1], cell_min[1], cell_dim[1], cell_pbc[1])) {
+            ASSERT(cc[1] < cell_dim[1]);
             cc_min.y = (cell_min[1] + cc[1]) * CELL_EXT;
-            for (; idx[0] < cell_ext[0]; ++idx[0]) {
-                cc[0] = (cell_beg[0] + idx[0]) % cell_pbc[0];
-                if (cc[0] == cell_dim[0]) break;
+            for (cc[0] = cell_beg[0]; cc[0] < cell_end[0]; inc_cell(&cc[0], cell_min[0], cell_dim[0], cell_pbc[0])) {
+                ASSERT(cc[0] < cell_dim[0]);
                 cc_min.x = (cell_min[0] + cc[0]) * CELL_EXT;
                 //vec3_t cc_mid = vec3_add_f(cc_min, 0.5f * CELL_EXT);
                 // Check the distance from cell centrum to the point, for early discard of entire cell
