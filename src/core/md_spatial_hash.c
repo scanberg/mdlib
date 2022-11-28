@@ -345,12 +345,15 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
     vec4_t cc_min = {0};
     for (; idx[2] < cell_ext[2]; ++idx[2]) {
         cc[2] = (cell_beg[2] + idx[2]) % cell_pbc[2];
+        if (cc[2] == cell_dim[2]) break;
         cc_min.z = (cell_min[2] + cc[2]) * CELL_EXT;
         for (; idx[1] < cell_ext[1]; ++idx[1]) {
             cc[1] = (cell_beg[1] + idx[1]) % cell_pbc[1];
+            if (cc[1] == cell_dim[1]) break;
             cc_min.y = (cell_min[1] + cc[1]) * CELL_EXT;
             for (; idx[0] < cell_ext[0]; ++idx[0]) {
                 cc[0] = (cell_beg[0] + idx[0]) % cell_pbc[0];
+                if (cc[0] == cell_dim[0]) break;
                 cc_min.x = (cell_min[0] + cc[0]) * CELL_EXT;
                 //vec3_t cc_mid = vec3_add_f(cc_min, 0.5f * CELL_EXT);
                 // Check the distance from cell centrum to the point, for early discard of entire cell
