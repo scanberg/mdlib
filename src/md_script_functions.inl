@@ -3950,18 +3950,18 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // This could happen if we have dynamic length as input
         if (num_ref_bitfields == 0) return 0;
 
+        const int64_t ref_size = md_bitfield_popcount(ref_bf);
+        const int64_t target_size = md_bitfield_popcount(target_bitfield);
+
+        if (ref_size == 0) return 0;
+        if (target_size == 0) return 0; 
+
         float* vol = 0;
         if (dst) {
             ASSERT(dst->ptr);
             ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_VOLUME));
             vol = as_float_arr(*dst);
         }
-
-        const int64_t target_size = md_bitfield_popcount(target_bitfield);
-        ASSERT(target_size > 0);
-
-        const int64_t ref_size = md_bitfield_popcount(ref_bf);
-        ASSERT(ref_size > 0);
 
         const int64_t mem_size = sizeof(float) * (ref_size * 7);
         float* mem = md_alloc(ctx->temp_alloc, mem_size);

@@ -1,4 +1,5 @@
 #include "md_allocator.h"
+#include <core/md_ring_allocator.h>
 #include <core/md_common.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,13 +18,20 @@ uint64_t default_temp_allocator_max_allocation_size() {
 // @NOTE: Perhaps going through thread local storage for this type of default temporary allocator is bat-shit insane.
 // This should be properly profiled and tested accross platforms and compilers to see what the performance implications are.
 
-typedef struct ring_buffer {
-    uint64_t curr;
-    uint64_t prev;
-    char mem[MD_TEMP_ALLOC_SIZE];
-} ring_buffer;
+// This is a fixed buffer hacked
+typedef struct ring_alloc_t {
+    md_ring_allocator_t alloc;
+    char buf[MD_TEMP_ALLOC_SIZE];
+} ring_alloc_t;
 
-THREAD_LOCAL ring_buffer ring = {0};
+THREAD_LOCAL static ring_alloc_t _ring = {
+    .alloc = {
+        .magic = MD_RING_ALLOCATOR_MAGIC,
+        .pos = 0,
+        .cap = MD_TEMP_ALLOC_SIZE,
+        .ptr = 0,
+    }
+};
 
 static void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;
@@ -37,6 +45,23 @@ static void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t o
     return realloc(ptr, (size_t)new_size);
 }
 
+extern void* ring_realloc(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line);
+
+static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+    (void)inst;
+    return ring_realloc((md_allocator_o*)get_thread_ring_allocator(), ptr, old_size, new_size, file, line);
+}
+
+struct md_ring_allocator_t* get_thread_ring_allocator() {
+    // This is an Ugly hack since we cannot initialize the thread local ring buffer object with the address of the other thread local buffer
+    // This can probably be resolved in some fashion,
+    // The constraint is that initialization fields must be constant-expressions when initializeing thread local objects.
+
+    _ring.alloc.ptr = _ring.buf;
+    return &_ring.alloc;
+}
+
+/*
 static inline void* ring_alloc_internal(uint64_t size) {
     // We want to make sure that we maintain some type of alignment for allocations
     // By default on x64, the alignment should be 16 bytes when using malloc or stack allocations (alloca)
@@ -98,6 +123,7 @@ static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, uint6
     // alloc
     return ring_alloc_internal(new_size);
 }
+*/
 
 static struct md_allocator_i _default_allocator = {
     NULL,

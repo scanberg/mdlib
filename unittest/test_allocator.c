@@ -6,6 +6,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_virtual_allocator.h>
 #include <core/md_stack_allocator.h>
+#include <core/md_ring_allocator.h>
 
 #define COMMON_ALLOCATOR_TEST_BODY \
     void* mem = 0; \
@@ -16,6 +17,8 @@
     int64_t* arr = NULL; \
     for (int64_t i = 0; i < 1000; ++i) { \
         md_array_push(arr, i, alloc); \
+        md_array_push(arr, i, alloc); \
+        md_array_pop(arr); \
     } \
     \
     for (int64_t i = 0; i < 1000; ++i) { \
@@ -23,7 +26,7 @@
     } \
     md_array_free(arr, alloc); \
     \
-    int64_t size[] = {16, 7238, 1, 2, 7, 3, 2, 4}; \
+    uint32_t size[] = {16, 7238, 1, 2, 7, 3, 2, 4, 11, 12, 13, 14, 15, 17}; \
     for (int64_t i = 0; i < ARRAY_SIZE(size); ++i) { \
         uint64_t expected_alignment = size[i] > 2 ? 16 : size[i]; \
         mem = md_alloc(alloc, size[i]); \
@@ -57,6 +60,17 @@ UTEST(allocator, stack_generic) {
     COMMON_ALLOCATOR_TEST_BODY
     md_free(default_allocator, buf, MEGABYTES(32));
 }
+
+UTEST(allocator, ring_generic) {
+    void* buf = md_alloc(default_allocator, MEGABYTES(1));
+    md_ring_allocator_t ring;
+    md_ring_allocator_init(&ring, buf, MEGABYTES(1));
+    md_allocator_i ring_alloc = md_ring_allocator_create_interface(&ring);
+    md_allocator_i* alloc = &ring_alloc;
+    COMMON_ALLOCATOR_TEST_BODY
+    md_free(default_allocator, buf, MEGABYTES(1));
+}
+
 
 // @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
 
@@ -169,7 +183,7 @@ UTEST(allocator, vm_arena_generic) {
 }
 
 
-UTEST(allocator, vm_allocator) {
+UTEST(allocator, vm) {
     md_vm_allocator_t vm;
     md_vm_allocator_init(&vm, GIGABYTES(64)); // Reserve ridiculous amounts of space
     md_allocator_i alloc = md_vm_allocator_create_interface(&vm);
@@ -183,7 +197,7 @@ UTEST(allocator, vm_allocator) {
     md_vm_allocator_free(&vm);
 }
 
-UTEST(allocator, stack_allocator) {
+UTEST(allocator, stack) {
     void* buf = md_alloc(default_allocator, MEGABYTES(64));
     md_stack_allocator_t stack;
     md_stack_allocator_init(&stack, buf, MEGABYTES(64));
@@ -192,9 +206,33 @@ UTEST(allocator, stack_allocator) {
         md_stack_allocator_push(&stack, sizeof(uint64_t));
     }
 
+    for (uint32_t i = 0; i < 500; ++i) {
+        md_stack_allocator_pop(&stack, sizeof(uint64_t));
+    }
+
     for (uint32_t i = 0; i < 1000; ++i) {
         md_stack_allocator_push_aligned(&stack, sizeof(uint64_t), 32);
     }
 
     md_free(default_allocator, buf, MEGABYTES(64));
+}
+
+UTEST(allocator, ring) {
+    void* buf = md_alloc(default_allocator, KILOBYTES(32));
+    md_ring_allocator_t ring;
+    md_ring_allocator_init(&ring, buf, KILOBYTES(32));
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        md_ring_allocator_push(&ring, sizeof(uint64_t));
+    }
+
+    for (uint32_t i = 0; i < 500; ++i) {
+        md_ring_allocator_pop(&ring, sizeof(uint64_t));
+    }
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        md_ring_allocator_push_aligned(&ring, sizeof(uint64_t), 32);
+    }
+
+    md_free(default_allocator, buf, KILOBYTES(32));
 }

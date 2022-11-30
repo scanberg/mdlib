@@ -260,7 +260,7 @@ double md_os_time_as_seconds(timestamp_t t) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    return (double)(t * 1000) / (double)frequency.QuadPart;
+    return (double)(t) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
     return t * 1.0e-9;
 #else

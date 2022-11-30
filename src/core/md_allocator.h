@@ -9,6 +9,7 @@
 #define md_alloc_at(a, sz, file, line) (a)->realloc((a)->inst, 0, 0, sz, file, line)
 #define md_free(a, p, sz) (a)->realloc((a)->inst, p, sz, 0, __FILE__, __LINE__)
 
+struct md_ring_allocator_t;
 typedef struct md_allocator_o md_allocator_o;
 
 typedef struct md_allocator_i {
@@ -40,6 +41,7 @@ static inline void md_aligned_free(struct md_allocator_i* alloc, void* ptr, uint
     md_free(alloc, p1, alloc_size);
 }
 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -48,6 +50,9 @@ uint64_t default_temp_allocator_max_allocation_size();
 
 extern struct md_allocator_i* default_allocator;
 extern struct md_allocator_i* default_temp_allocator;
+
+// Direct interface to the thread local ring allocator
+struct md_ring_allocator_t* get_thread_ring_allocator();
 
 #ifdef __cplusplus
 }

@@ -9,7 +9,7 @@
 
 #define VM_MAGIC 0x87b716a78ccb2813
 #define VM_COMMIT_SIZE KILOBYTES(64)
-#define VM_DECOMMIT_THRESHOLD KILOBYTES(64)
+#define VM_DECOMMIT_THRESHOLD MEGABYTES(1)
 
 typedef struct page_t {
     void* mem;

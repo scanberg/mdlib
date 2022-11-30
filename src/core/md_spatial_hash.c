@@ -33,7 +33,152 @@ static inline uint32_t pack_unorm_vec3(vec3_t v) {
     return (z << 20) | (y << 10) | x;
 }
 
-static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec3_t pbc_ext, md_allocator_i* alloc) {
+static void init_coords(vec4_t* aabb_min, vec4_t* aabb_max, uint32_t* cell_coord, uint32_t* packed_cell_coord, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec3_t pbc_ext) {
+    const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+    vec3_t box_min, box_max;
+    md_util_compute_aabb_periodic_xyz(&box_min, &box_max, in_x, in_y, in_z, count, stride, pbc_ext);
+
+    size_t i = 0;
+    const size_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
+    for (; i < simd_count; i += md_simd_widthf) {
+        md_simd_typef x = md_simd_loadf((const float*)((const char*)in_x + i * stride));
+        md_simd_typef y = md_simd_loadf((const float*)((const char*)in_y + i * stride));
+        md_simd_typef z = md_simd_loadf((const float*)((const char*)in_z + i * stride));
+
+        x = md_simd_deperiodizef(x, md_simd_set1f(ref.x), md_simd_set1f(pbc_ext.x));
+        y = md_simd_deperiodizef(y, md_simd_set1f(ref.y), md_simd_set1f(pbc_ext.y));
+        z = md_simd_deperiodizef(z, md_simd_set1f(ref.z), md_simd_set1f(pbc_ext.z));
+
+        x = md_simd_mulf(md_simd_subf(x, md_simd_set1f(box_min.x)), md_simd_set1f(INV_CELL_EXT));
+        y = md_simd_mulf(md_simd_subf(y, md_simd_set1f(box_min.y)), md_simd_set1f(INV_CELL_EXT));
+        z = md_simd_mulf(md_simd_subf(z, md_simd_set1f(box_min.z)), md_simd_set1f(INV_CELL_EXT));
+
+        md_simd_typef fx = md_simd_floorf(x);
+        md_simd_typef fy = md_simd_floorf(y);
+        md_simd_typef fz = md_simd_floorf(z);
+
+        md_simd_typei ccx = md_simd_convert_f_to_i(fx);
+        md_simd_typei ccy = md_simd_convert_f_to_i(fy);
+        md_simd_typei ccz = md_simd_convert_f_to_i(fz);
+
+        md_simd_typei pcx = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(x, fx), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
+        md_simd_typei pcy = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(y, fy), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
+        md_simd_typei pcz = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(z, fz), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
+
+        md_simd_typei cc = md_simd_ori(md_simd_shift_lefti(ccz, 20), md_simd_ori(md_simd_shift_lefti(ccy, 10), ccx));
+        md_simd_typei pc = md_simd_ori(md_simd_shift_lefti(pcz, 20), md_simd_ori(md_simd_shift_lefti(pcy, 10), pcx));
+
+        md_simd_storei((int*)cell_coord + i, cc);
+        md_simd_storei((int*)packed_cell_coord + i, pc);
+    }
+
+    // Handle remainder
+    for (; i < count; ++i) {
+        vec4_t c = {
+            *(const float*)((const char*)in_x + i * stride),
+            *(const float*)((const char*)in_y + i * stride),
+            *(const float*)((const char*)in_z + i * stride),
+            0
+        };
+        c = vec4_deperiodize(c, ref, ext);
+
+        *aabb_min = vec4_min(*aabb_min, c);
+        *aabb_max = vec4_max(*aabb_max, c);
+
+        c = vec4_mul_f(c, INV_CELL_EXT);
+
+        vec4_t f = vec4_floor(c);
+        vec4_t p = vec4_fmadd(vec4_sub(c, f), vec4_set1(1023.0f), vec4_set1(0.5f));
+
+        cell_coord[i]        = ((uint32_t)f.z << 20) | ((uint32_t)f.y << 10) | (uint32_t)f.x;
+        packed_cell_coord[i] = ((uint32_t)p.z << 20) | ((uint32_t)p.y << 10) | (uint32_t)p.x;
+    }
+}
+
+static void init_coords_periodic(vec4_t* aabb_min, vec4_t* aabb_max, uint32_t* cell_coord, uint32_t* packed_cell_coord, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec3_t pbc_ext) {
+    md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
+    md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
+    md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
+
+    md_simd_typef vx_max = md_simd_set1f(-FLT_MAX);
+    md_simd_typef vy_max = md_simd_set1f(-FLT_MAX);
+    md_simd_typef vz_max = md_simd_set1f(-FLT_MAX);
+
+    const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+    size_t i = 0;
+    const size_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
+    for (; i < simd_count; i += md_simd_widthf) {
+        md_simd_typef x = md_simd_loadf((const float*)((const char*)in_x + i * stride));
+        md_simd_typef y = md_simd_loadf((const float*)((const char*)in_y + i * stride));
+        md_simd_typef z = md_simd_loadf((const float*)((const char*)in_z + i * stride));
+
+        x = md_simd_deperiodizef(x, md_simd_set1f(ref.x), md_simd_set1f(pbc_ext.x));
+        y = md_simd_deperiodizef(y, md_simd_set1f(ref.y), md_simd_set1f(pbc_ext.y));
+        z = md_simd_deperiodizef(z, md_simd_set1f(ref.z), md_simd_set1f(pbc_ext.z));
+
+        vx_min = md_simd_minf(vx_min, x);
+        vy_min = md_simd_minf(vy_min, y);
+        vz_min = md_simd_minf(vz_min, z);
+
+        vx_max = md_simd_maxf(vx_max, x);
+        vy_max = md_simd_maxf(vy_max, y);
+        vz_max = md_simd_maxf(vz_max, z);
+
+        x = md_simd_mulf(x, md_simd_set1f(INV_CELL_EXT));
+        y = md_simd_mulf(y, md_simd_set1f(INV_CELL_EXT));
+        z = md_simd_mulf(z, md_simd_set1f(INV_CELL_EXT));
+
+        md_simd_typef fx = md_simd_floorf(x);
+        md_simd_typef fy = md_simd_floorf(y);
+        md_simd_typef fz = md_simd_floorf(z);
+
+        md_simd_typei ccx = md_simd_convert_f_to_i(fx);
+        md_simd_typei ccy = md_simd_convert_f_to_i(fy);
+        md_simd_typei ccz = md_simd_convert_f_to_i(fz);
+
+        md_simd_typei pcx = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(x, fx), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
+        md_simd_typei pcy = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(y, fy), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
+        md_simd_typei pcz = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(z, fz), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
+
+        md_simd_typei cc = md_simd_ori(md_simd_shift_lefti(ccz, 20), md_simd_ori(md_simd_shift_lefti(ccy, 10), ccx));
+        md_simd_typei pc = md_simd_ori(md_simd_shift_lefti(pcz, 20), md_simd_ori(md_simd_shift_lefti(pcy, 10), pcx));
+
+        md_simd_storei((int*)cell_coord + i, cc);
+        md_simd_storei((int*)packed_cell_coord + i, pc);
+    }
+
+    *aabb_min = (vec4_t) {md_simd_horizontal_minf(vx_min), md_simd_horizontal_minf(vy_min), md_simd_horizontal_minf(vz_min)};
+    *aabb_max = (vec4_t) {md_simd_horizontal_maxf(vx_max), md_simd_horizontal_maxf(vy_max), md_simd_horizontal_maxf(vz_max)};
+
+    // Handle remainder
+    for (; i < count; ++i) {
+        vec4_t c = {
+            *(const float*)((const char*)in_x + i * stride),
+            *(const float*)((const char*)in_y + i * stride),
+            *(const float*)((const char*)in_z + i * stride),
+            0
+        };
+        c = vec4_deperiodize(c, ref, ext);
+
+        *aabb_min = vec4_min(*aabb_min, c);
+        *aabb_max = vec4_max(*aabb_max, c);
+
+        c = vec4_mul_f(c, INV_CELL_EXT);
+
+        vec4_t f = vec4_floor(c);
+        vec4_t p = vec4_fmadd(vec4_sub(c, f), vec4_set1(1023.0f), vec4_set1(0.5f));
+
+        cell_coord[i]        = ((uint32_t)f.z << 20) | ((uint32_t)f.y << 10) | (uint32_t)f.x;
+        packed_cell_coord[i] = ((uint32_t)p.z << 20) | ((uint32_t)p.y << 10) | (uint32_t)p.x;
+    }
+}
+
+__declspec(noinline)
+bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec3_t pbc_ext, md_allocator_i* alloc) {
     ASSERT(hash); 
     ASSERT(in_x);
     ASSERT(in_y);
@@ -46,21 +191,36 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
     uint32_t* cell_coord        = md_alloc(temp_alloc, sizeof(uint32_t) * count);
     uint32_t* packed_cell_coord = md_alloc(temp_alloc, sizeof(uint32_t) * count);
     uint32_t* local_idx         = md_alloc(temp_alloc, sizeof(uint32_t) * count);
+    uint32_t* src_idx           = md_alloc(temp_alloc, sizeof(uint32_t) * count);
 
     const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
     vec4_t aabb_min = {0};
     vec4_t aabb_max = {0};
 
+    md_util_compute_aabb_periodic_xyz((vec3_t*)(&aabb_min), (vec3_t*)(&aabb_max), in_x, in_y, in_z, count, stride, pbc_ext);
+
+    const int32_t cell_min[3] = {
+        (int32_t)floorf(aabb_min.x * INV_CELL_EXT),
+        (int32_t)floorf(aabb_min.y * INV_CELL_EXT),
+        (int32_t)floorf(aabb_min.z * INV_CELL_EXT),
+    };
+
+    const int32_t cell_max[3] = {
+        (int32_t)floorf(aabb_max.x * INV_CELL_EXT) + 1,
+        (int32_t)floorf(aabb_max.y * INV_CELL_EXT) + 1,
+        (int32_t)floorf(aabb_max.z * INV_CELL_EXT) + 1,
+    };
+
+    const int32_t cell_dim[3] = {
+        MAX(1, cell_max[0] - cell_min[0]),
+        MAX(1, cell_max[1] - cell_min[1]),
+        MAX(1, cell_max[2] - cell_min[2]),
+    };
+
+    const uint32_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
+
     {
-        md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
-        md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
-        md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
-
-        md_simd_typef vx_max = md_simd_set1f(-FLT_MAX);
-        md_simd_typef vy_max = md_simd_set1f(-FLT_MAX);
-        md_simd_typef vz_max = md_simd_set1f(-FLT_MAX);
-
         size_t i = 0;
         const size_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
         for (; i < simd_count; i += md_simd_widthf) {
@@ -68,29 +228,17 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
             md_simd_typef y = md_simd_loadf((const float*)((const char*)in_y + i * stride));
             md_simd_typef z = md_simd_loadf((const float*)((const char*)in_z + i * stride));
 
-            x = md_simd_deperiodizef(x, md_simd_set1f(ref.x), md_simd_set1f(pbc_ext.x));
-            y = md_simd_deperiodizef(y, md_simd_set1f(ref.y), md_simd_set1f(pbc_ext.y));
-            z = md_simd_deperiodizef(z, md_simd_set1f(ref.z), md_simd_set1f(pbc_ext.z));
-
-            vx_min = md_simd_minf(vx_min, x);
-            vy_min = md_simd_minf(vy_min, y);
-            vz_min = md_simd_minf(vz_min, z);
-
-            vx_max = md_simd_maxf(vx_max, x);
-            vy_max = md_simd_maxf(vy_max, y);
-            vz_max = md_simd_maxf(vz_max, z);
-
-            x = md_simd_mulf(x, md_simd_set1f(INV_CELL_EXT));
-            y = md_simd_mulf(y, md_simd_set1f(INV_CELL_EXT));
-            z = md_simd_mulf(z, md_simd_set1f(INV_CELL_EXT));
+            x = md_simd_mulf(md_simd_deperiodizef(x, md_simd_set1f(ref.x), md_simd_set1f(ext.x)), md_simd_set1f(INV_CELL_EXT));
+            y = md_simd_mulf(md_simd_deperiodizef(y, md_simd_set1f(ref.y), md_simd_set1f(ext.y)), md_simd_set1f(INV_CELL_EXT));
+            z = md_simd_mulf(md_simd_deperiodizef(z, md_simd_set1f(ref.z), md_simd_set1f(ext.z)), md_simd_set1f(INV_CELL_EXT));
 
             md_simd_typef fx = md_simd_floorf(x);
             md_simd_typef fy = md_simd_floorf(y);
             md_simd_typef fz = md_simd_floorf(z);
 
-            md_simd_typei ccx = md_simd_convert_f_to_i(fx);
-            md_simd_typei ccy = md_simd_convert_f_to_i(fy);
-            md_simd_typei ccz = md_simd_convert_f_to_i(fz);
+            md_simd_typei ccx = md_simd_subi(md_simd_convert_f_to_i(fx), md_simd_set1i(cell_min[0]));
+            md_simd_typei ccy = md_simd_subi(md_simd_convert_f_to_i(fy), md_simd_set1i(cell_min[1]));
+            md_simd_typei ccz = md_simd_subi(md_simd_convert_f_to_i(fz), md_simd_set1i(cell_min[2]));
 
             md_simd_typei pcx = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(x, fx), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
             md_simd_typei pcy = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(y, fy), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
@@ -103,9 +251,6 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
             md_simd_storei((int*)packed_cell_coord + i, pc);
         }
 
-        aabb_min = (vec4_t) {md_simd_horizontal_minf(vx_min), md_simd_horizontal_minf(vy_min), md_simd_horizontal_minf(vz_min)};
-        aabb_max = (vec4_t) {md_simd_horizontal_maxf(vx_max), md_simd_horizontal_maxf(vy_max), md_simd_horizontal_maxf(vz_max)};
-
         // Handle remainder
         for (; i < count; ++i) {
             vec4_t c = {
@@ -114,43 +259,19 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
                 *(const float*)((const char*)in_z + i * stride),
                 0
             };
-            c = vec4_deperiodize(c, ref, ext);
+            c = vec4_mul_f(vec4_deperiodize(c, ref, ext), INV_CELL_EXT);
 
-            aabb_min = vec4_min(aabb_min, c);
-            aabb_max = vec4_max(aabb_max, c);
-
-            c = vec4_mul_f(c, INV_CELL_EXT);
-        
             vec4_t f = vec4_floor(c);
             vec4_t p = vec4_fmadd(vec4_sub(c, f), vec4_set1(1023.0f), vec4_set1(0.5f));
-        
-            cell_coord[i]        = ((uint32_t)f.z << 20) | ((uint32_t)f.y << 10) | (uint32_t)f.x;
+            uint32_t cc =
+                (((int32_t)f.z - cell_min[2]) << 20) |
+                (((int32_t)f.y - cell_min[1]) << 10) |
+                 ((int32_t)f.x - cell_min[0]);
+
+            cell_coord[i]        = cc;
             packed_cell_coord[i] = ((uint32_t)p.z << 20) | ((uint32_t)p.y << 10) | (uint32_t)p.x;
         }
     }
-
-    int32_t cell_min[3] = {
-        (int32_t)floorf(aabb_min.x * INV_CELL_EXT),
-        (int32_t)floorf(aabb_min.y * INV_CELL_EXT),
-        (int32_t)floorf(aabb_min.z * INV_CELL_EXT),
-    };
-
-    int32_t cell_max[3] = {
-        (int32_t)floorf(aabb_max.x * INV_CELL_EXT) + 1,
-        (int32_t)floorf(aabb_max.y * INV_CELL_EXT) + 1,
-        (int32_t)floorf(aabb_max.z * INV_CELL_EXT) + 1,
-    };
-
-    int32_t cell_dim[3] = {
-        MAX(1, cell_max[0] - cell_min[0]),
-        MAX(1, cell_max[1] - cell_min[1]),
-        MAX(1, cell_max[2] - cell_min[2]),
-    };
-
-    // Snap aabb_min to cell_ext
-    aabb_min = vec4_mul_f((vec4_t){(float)cell_min[0], (float)cell_min[1], (float)cell_min[2], 0}, CELL_EXT);
-
-    int32_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
 
     // Allocate needed data
     md_spatial_hash_cell_t* cells   = md_alloc(alloc, sizeof(md_spatial_hash_cell_t) * cell_count);
@@ -159,19 +280,24 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
 
     memset(cells, 0, cell_count * sizeof(md_spatial_hash_cell_t));
 
+    const uint32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
+
     for (size_t i = 0; i < count; ++i) {
-        int32_t cz = ((cell_coord[i] >> 20) & 0x3FF) - cell_min[2];
-        int32_t cy = ((cell_coord[i] >> 10) & 0x3FF) - cell_min[1];
-        int32_t cx = ((cell_coord[i] >>  0) & 0x3FF) - cell_min[0];
-        int32_t idx = cz * cell_dim[0] * cell_dim[1] + cy * cell_dim[0] + cx;
+        uint32_t cc = cell_coord[i];
+        uint32_t cz = ((cc >> 20) & 0x3FF);
+        uint32_t cy = ((cc >> 10) & 0x3FF);
+        uint32_t cx = ((cc >>  0) & 0x3FF);
+        uint32_t idx = cz * cell_dim_01 + cy * cell_dim[0] + cx;
         ASSERT(idx < cell_count);
 
         local_idx[i] = cells[idx].length++;
         ASSERT(cells[idx].length != 0 && "hash cell has wrapped, too many entities per cell");
     }
 
-    for (int32_t i = 1; i < cell_count; ++i) {
-        cells[i].offset = cells[i-1].offset + cells[i-1].length;
+    uint32_t offset = cells[0].length;
+    for (uint32_t i = 1; i < cell_count; ++i) {
+        cells[i].offset = offset;
+        offset += cells[i].length;
     }
 
 #if DEBUG
@@ -180,17 +306,24 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
     ASSERT(cell->offset + cell->length == count);
 #endif
 
-    // Write data to correct location
     for (size_t i = 0; i < count; ++i) {
-        int32_t cz = ((cell_coord[i] >> 20) & 0x3FF) - cell_min[2];
-        int32_t cy = ((cell_coord[i] >> 10) & 0x3FF) - cell_min[1];
-        int32_t cx = ((cell_coord[i] >>  0) & 0x3FF) - cell_min[0];
-        int32_t idx = cz * cell_dim[0] * cell_dim[1] + cy * cell_dim[0] + cx;
+        uint32_t cc = cell_coord[i];
+        uint32_t cz = ((cc >> 20) & 0x3FF);
+        uint32_t cy = ((cc >> 10) & 0x3FF);
+        uint32_t cx = ((cc >>  0) & 0x3FF);
+        uint32_t idx = cz * cell_dim_01 + cy * cell_dim[0] + cx;
         uint32_t dst_idx = cells[idx].offset + local_idx[i];
-        coords[dst_idx]  = packed_cell_coord[i];
-        original_idx[dst_idx] = (uint32_t)i;
+        src_idx[dst_idx] = (uint32_t)i;
     }
 
+    // Write data to correct location
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t idx = src_idx[i];
+        coords[i]  = packed_cell_coord[idx];
+        original_idx[i] = (uint32_t)idx;
+    }
+
+    md_free(temp_alloc, src_idx,            sizeof(uint32_t) * count);
     md_free(temp_alloc, local_idx,          sizeof(uint32_t) * count);
     md_free(temp_alloc, packed_cell_coord,  sizeof(uint32_t) * count);
     md_free(temp_alloc, cell_coord,         sizeof(uint32_t) * count);
@@ -248,17 +381,17 @@ bool md_spatial_hash_free(md_spatial_hash_t* hash) {
 }
 
 // Non periodic version (simpler)
-static inline bool query_pos_rad(const md_spatial_hash_t* hash, vec3_t pos, float radius, md_spatial_hash_iterator_fn iter, void* user_param) {
+static inline bool query_pos_rad(const md_spatial_hash_t* hash, vec3_t position, float radius, md_spatial_hash_iterator_fn iter, void* user_param) {
     ASSERT(hash);
     ASSERT(iter);
 
-    vec4_t xyz0 = vec4_from_vec3(pos, 0);
+    vec4_t pos = vec4_from_vec3(position, 0);
     float rad = radius;
     float rad2 = radius * radius;
     //float cell_rad2 = (radius + SQRT_CELL_EXT) * (radius + SQRT_CELL_EXT);
 
-    int32_t cell_min[3] = {hash->cell_min[0], hash->cell_min[1], hash->cell_min[2]};
-    int32_t cell_dim[3] = {hash->cell_dim[0], hash->cell_dim[1], hash->cell_dim[2]};
+    const int32_t* cell_min = hash->cell_min;
+    const int32_t* cell_dim = hash->cell_dim;
 
     int32_t cell_beg[3] = {
         CLAMP((int32_t)(floorf((pos.x - rad) * INV_CELL_EXT)) - cell_min[0], 0, cell_dim[0] - 1),
@@ -287,7 +420,8 @@ static inline bool query_pos_rad(const md_spatial_hash_t* hash, vec3_t pos, floa
                     md_spatial_hash_cell_t cell = hash->cells[cell_idx];
                     for (uint32_t i = cell.offset; i < cell.offset + cell.length; ++i) {
                         vec4_t p = vec4_add(cc_min, vec4_mul_f(vec4_from_vec3(unpack_unorm_vec3(hash->coords[i]), 0), CELL_EXT));
-                        if (vec4_distance_squared(p, xyz0) < rad2) {
+                        const float d2 = vec4_distance_squared(p, pos);
+                        if (d2 < rad2) {
                             if (!iter(hash->indices[i], vec3_from_vec4(p), user_param)) {
                                 return false;
                             }
@@ -300,15 +434,19 @@ static inline bool query_pos_rad(const md_spatial_hash_t* hash, vec3_t pos, floa
     return true;
 }
 
-static inline void inc_cell(int* cell_idx, int cell_min, int cell_dim, int cell_pbc) {
+static inline void inc_cell(int* cell_idx, int cell_beg, int cell_dim, int cell_pbc) {
     *cell_idx += 1;
-    if (*cell_idx >= cell_dim) {
-        *cell_idx = cell_pbc - cell_dim;
+    int cc = cell_beg + *cell_idx;
+    if (cc >= cell_dim) {
+        *cell_idx += cell_pbc - cell_dim;
     }
 }
 
 // Periodic version (more advanced)
-// @TODO: There is room for algorithmic improvement here.
+// The periodic domain is aligned to the cells at the origin, but not at the other end since we use a fixed cell-size
+// Furthermore, the cell domain usually only spans a subrange of the periodic domain
+// This makes the query non-trivial as in the non periodic case.
+
 static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t position, float radius, md_spatial_hash_iterator_fn iter, void* user_param) {
     ASSERT(hash);
     ASSERT(iter);
@@ -320,8 +458,8 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
     float rad2 = radius * radius;
     //float cell_rad2 = (radius + SQRT_CELL_EXT) * (radius + SQRT_CELL_EXT);
 
-    int32_t cell_min[3] = {hash->cell_min[0], hash->cell_min[1], hash->cell_min[2]};
-    int32_t cell_dim[3] = {hash->cell_dim[0], hash->cell_dim[1], hash->cell_dim[2]};
+    const int32_t cell_min[3] = { hash->cell_min[0], hash->cell_min[1], hash->cell_min[2] };
+    const int32_t cell_dim[3] = { hash->cell_dim[0], hash->cell_dim[1], hash->cell_dim[2] };
 
     int32_t cell_pbc[3] = {
         (int32_t)(pbc_ext.x * INV_CELL_EXT) + 1,
@@ -342,9 +480,9 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
 
     // Extent in cells to search
     int32_t cell_ext[3] = {
-        MIN((int32_t)(ceilf((pos.x + rad) * INV_CELL_EXT) - floorf((pos.x - rad) * INV_CELL_EXT)) + 1, cell_pbc[0] - 1),
-        MIN((int32_t)(ceilf((pos.y + rad) * INV_CELL_EXT) - floorf((pos.y - rad) * INV_CELL_EXT)) + 1, cell_pbc[1] - 1),
-        MIN((int32_t)(ceilf((pos.z + rad) * INV_CELL_EXT) - floorf((pos.z - rad) * INV_CELL_EXT)) + 1, cell_pbc[2] - 1),
+        MIN((int32_t)(ceilf((pos.x + rad) * INV_CELL_EXT) - floorf((pos.x - rad) * INV_CELL_EXT)) + 1, cell_pbc[0] - 1) + 1,
+        MIN((int32_t)(ceilf((pos.y + rad) * INV_CELL_EXT) - floorf((pos.y - rad) * INV_CELL_EXT)) + 1, cell_pbc[1] - 1) + 1,
+        MIN((int32_t)(ceilf((pos.z + rad) * INV_CELL_EXT) - floorf((pos.z - rad) * INV_CELL_EXT)) + 1, cell_pbc[2] - 1) + 1,
     };
 
     // If cell beg is outside of occupied cell domain [cell_min, cell_dim[ we skip forward to next period and accomodate for that jump
@@ -358,21 +496,19 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
         }
     }
 
-    int32_t cell_end[3] = {
-        cell_beg[0] + cell_ext[0],
-        cell_beg[1] + cell_ext[1],
-        cell_beg[2] + cell_ext[2],
-    };
-
+    int32_t ci[3] = {0};
     int32_t cc[3] = {0};
     vec4_t cc_min = {0};
-    for (cc[2] = cell_beg[2]; cc[2] != cell_end[2]; inc_cell(&cc[2], cell_min[2], cell_dim[2], cell_pbc[2])) {
+    for (ci[2] = 0; ci[2] < cell_ext[2]; inc_cell(&ci[2], cell_beg[2], cell_dim[2], cell_pbc[2])) {
+        cc[2] = (cell_beg[2] + ci[2]) % cell_pbc[2];
         ASSERT(cc[2] < cell_dim[2]);
         cc_min.z = (cell_min[2] + cc[2]) * CELL_EXT;
-        for (cc[1] = cell_beg[1]; cc[1] < cell_end[1]; inc_cell(&cc[1], cell_min[1], cell_dim[1], cell_pbc[1])) {
+        for (ci[1] = 0; ci[1] < cell_ext[1]; inc_cell(&ci[1], cell_beg[1], cell_dim[1], cell_pbc[1])) {
+            cc[1] = (cell_beg[1] + ci[1]) % cell_pbc[1];
             ASSERT(cc[1] < cell_dim[1]);
             cc_min.y = (cell_min[1] + cc[1]) * CELL_EXT;
-            for (cc[0] = cell_beg[0]; cc[0] < cell_end[0]; inc_cell(&cc[0], cell_min[0], cell_dim[0], cell_pbc[0])) {
+            for (ci[0] = 0; ci[0] < cell_ext[0]; inc_cell(&ci[0], cell_beg[0], cell_dim[0], cell_pbc[0])) {
+                cc[0] = (cell_beg[0] + ci[0]) % cell_pbc[0];
                 ASSERT(cc[0] < cell_dim[0]);
                 cc_min.x = (cell_min[0] + cc[0]) * CELL_EXT;
                 //vec3_t cc_mid = vec3_add_f(cc_min, 0.5f * CELL_EXT);
@@ -382,7 +518,8 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
                 md_spatial_hash_cell_t cell = hash->cells[cell_idx];
                 for (uint32_t i = cell.offset; i < cell.offset + cell.length; ++i) {
                     vec4_t p = vec4_add(cc_min, vec4_mul_f(vec4_from_vec3(unpack_unorm_vec3(hash->coords[i]), 0), CELL_EXT));
-                    if (vec4_periodic_distance_squared(p, pos, pbc_ext) < rad2) {
+                    const float d2 = vec4_periodic_distance_squared(p, pos, pbc_ext);
+                    if (d2 < rad2) {
                         if (!iter(hash->indices[i], vec3_from_vec4(p), user_param)) {
                             return false;
                         }

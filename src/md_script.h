@@ -186,6 +186,7 @@ bool md_script_ir_valid(const md_script_ir_t* ir);
 uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir);
 
 // ### EVALUATE ###
+// This API is a dumpster-fire currently and should REALLY be simplified.
 
 // Allocate and initialize the data for properties within the evaluation
 // We need to pass the number of frames we want the data to hold
@@ -194,6 +195,9 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
 
 void md_script_eval_free(md_script_eval_t* eval);
 
+// Clear before evaluating (computing data) frames
+void md_script_eval_clear(md_script_eval_t* eval);
+
 // Compute properties
 // Must be performed after the eval_init
 // eval     : evaluation object to hold result
@@ -201,7 +205,10 @@ void md_script_eval_free(md_script_eval_t* eval);
 // mol      : molecule
 // traj     : trajectory
 // frame_mask [OPTIONAL] : A mask which holds the frames which should be evaluated. Supply this if only a subset should be evaluated.
-bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const struct md_bitfield_t* frame_mask);
+bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const struct md_bitfield_t* frame_mask);
+
+// This is perhaps the granularity to operate on in a threaded context, in order to be able to interrupt evaluations without too much wait time.
+//bool md_script_eval_frame(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_idx);
 
 int64_t md_script_eval_num_properties(const md_script_eval_t* eval);
 const md_script_property_t* md_script_eval_properties(const md_script_eval_t* eval);
@@ -209,9 +216,9 @@ const md_script_property_t* md_script_eval_properties(const md_script_eval_t* ev
 // Compile and evaluate a single property from a string
 //bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap);
 
-
-uint32_t md_script_eval_num_frames_completed(const md_script_eval_t* eval);
-uint32_t md_script_eval_num_frames_total(const md_script_eval_t* eval);
+//uint32_t md_script_eval_num_frames_completed(const md_script_eval_t* eval);
+//uint32_t md_script_eval_num_frames_total(const md_script_eval_t* eval);
+const struct md_bitfield_t* md_script_eval_completed_frames(const md_script_eval_t* eval);
 void     md_script_eval_interrupt(md_script_eval_t* eval);
 
 // ### VISUALIZE ###

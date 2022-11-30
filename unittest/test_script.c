@@ -299,7 +299,7 @@ UTEST(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
+        ASSERT_TRUE(md_script_eval_frames(eval, ir, &mol, traj, NULL));
 
         md_script_eval_free(eval);
     }
@@ -316,7 +316,7 @@ UTEST(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
+        ASSERT_TRUE(md_script_eval_frames(eval, ir, &mol, traj, NULL));
 
         md_script_eval_free(eval);
     }
@@ -328,7 +328,7 @@ UTEST(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
+        ASSERT_TRUE(md_script_eval_frames(eval, ir, &mol, traj, NULL));
 
         md_script_eval_free(eval);
     }
@@ -348,7 +348,7 @@ UTEST(script, property_compute) {
         md_script_ir_compile_source(ir, src, &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
         md_script_eval_t* eval = md_script_eval_create(md_trajectory_num_frames(traj), ir, alloc);
-        ASSERT_TRUE(md_script_eval_compute(eval, ir, &mol, traj, NULL));
+        ASSERT_TRUE(md_script_eval_frames(eval, ir, &mol, traj, NULL));
         md_script_eval_free(eval);
     }
 
@@ -378,7 +378,7 @@ void func(void* user_data) {
     const md_script_property_t* ref_prop = md_script_eval_properties(data->ref_eval);
 
     ASSERT(num_cur_prop == num_ref_prop);
-    if (md_script_eval_compute(data->eval, data->ir, data->mol, data->traj, NULL)) {
+    if (md_script_eval_frames(data->eval, data->ir, data->mol, data->traj, NULL)) {
         for (int64_t p_idx = 0; p_idx < num_cur_prop; ++p_idx) {
             ASSERT(cur_prop[p_idx].data.num_values == ref_prop[p_idx].data.num_values);
             for (int64_t i = 0; i < cur_prop[p_idx].data.num_values; ++i) {
@@ -416,7 +416,7 @@ UTEST(script, parallel_evaluation) {
     EXPECT_TRUE(md_script_ir_valid(ir));
 
     md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, alloc);
-    ASSERT_TRUE(md_script_eval_compute(ref_eval, ir, &mol, traj, NULL));
+    ASSERT_TRUE(md_script_eval_frames(ref_eval, ir, &mol, traj, NULL));
 
     ASSERT_EQ(1, md_script_eval_num_properties(ref_eval));
     ASSERT_EQ(num_frames, md_script_eval_properties(ref_eval)[0].data.num_values);

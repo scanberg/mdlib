@@ -21,6 +21,7 @@
 #include "core/md_platform.h"
 #include "core/md_compiler.h"
 #include "core/md_os.h"
+#include "core/md_sync.h"
 #include "core/md_spatial_hash.h"
 #include "core/md_unit.h"
 
@@ -370,11 +371,16 @@ struct md_script_eval_t {
     uint64_t magic;
 
     struct md_allocator_i *arena;
-    uint32_t num_frames_completed;
-    uint32_t num_frames_total;
+    //uint32_t num_frames_completed;
+    //uint32_t num_frames_total;
     volatile bool interrupt;
 
+    md_bitfield_t completed_frames;
+    md_mutex_t    frame_mutex;
+
     md_script_property_t    *properties;
+    volatile uint32_t       *prop_dist_count;   // Counters property distributions
+    md_mutex_t              *prop_dist_mutex;    // Protect the data when writing to it in a threaded context (Distributions)
 };
 
 typedef struct parse_context_t {
@@ -2903,6 +2909,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
     // Propagate procedure flags
     node->flags |= node->proc->flags & FLAG_AST_PROPAGATION_MASK;
+    ctx->ir->flags |= node->proc->flags & FLAG_IR_PROPAGATION_MASK;
 
     // Need to flag with DYNAMIC_LENGTH if we evaluate within a context since the return type length may depend on its context.
     if (ctx->mol_ctx && (node->proc->flags & FLAG_QUERYABLE_LENGTH)) {
@@ -4020,14 +4027,10 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     bool result = true;
 
-    const int64_t num_frames = md_bitfield_popcount(mask);
-    eval->num_frames_total = (uint32_t)num_frames;
-    eval->num_frames_completed = 0;
+    //const int64_t num_frames = md_bitfield_popcount(mask);
 
     int64_t beg_bit = mask->beg_bit;
     int64_t end_bit = mask->end_bit;
-
-    int64_t dst_idx = 0;
 
     // We evaluate each frame, one at a time
     while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
@@ -4084,7 +4087,7 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
             if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 ASSERT(prop->data.values);
-                memcpy(prop->data.values + dst_idx * size, values, size * sizeof(float));
+                memcpy(prop->data.values + f_idx * size, values, size * sizeof(float));
 
                 // Determine min max values
                 float min, max, mean, var;
@@ -4093,10 +4096,10 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 prop->data.max_value = MAX(prop->data.max_value, max);
 
                 if (prop->data.aggregate) {
-                    prop->data.aggregate->population_mean[dst_idx] = mean;
-                    prop->data.aggregate->population_var[dst_idx] = var;
-                    prop->data.aggregate->population_min[dst_idx] = min;
-                    prop->data.aggregate->population_max[dst_idx] = max;
+                    prop->data.aggregate->population_mean[f_idx] = mean;
+                    prop->data.aggregate->population_var[f_idx] = var;
+                    prop->data.aggregate->population_min[f_idx] = min;
+                    prop->data.aggregate->population_max[f_idx] = max;
                 }
 
                 // Update range if not explicitly set
@@ -4107,54 +4110,67 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
                 // Accumulate values
                 ASSERT(prop->data.values);
 
-                // Cumulative moving average
-                const md_simd_typef N = md_simd_set1f((float)(dst_idx));
-                const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
-                for (int64_t i = 0; i < ALIGN_TO(prop->data.num_values, md_simd_widthf); i += md_simd_widthf) {
-                    md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
-                    md_simd_typef new_val = md_simd_loadf(values + i);
-                    md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
-                }
-
-                // Determine min max values
                 float min, max, mean, var;
                 compute_min_max_mean_variance(&min, &max, &mean, &var, values, size);
-                prop->data.min_value = MIN(prop->data.min_value, min);
-                prop->data.max_value = MAX(prop->data.max_value, max);
 
-                // Update range if not explicitly set
-                prop->data.min_range[0] = (data[d_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[d_idx].value_range.beg;
-                prop->data.max_range[0] = (data[d_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[d_idx].value_range.end;
+                // ATOMIC WRITE
+                md_mutex_lock(&eval->prop_dist_mutex[p_idx]);
+                {
+                    // Cumulative moving average
+                    const uint32_t count = eval->prop_dist_count[p_idx]++;
+                    const md_simd_typef N = md_simd_set1f((float)(count));
+                    const md_simd_typef scl = md_simd_set1f(1.0f / (float)(count + 1));
+
+                    for (int64_t i = 0; i < ALIGN_TO(prop->data.num_values, md_simd_widthf); i += md_simd_widthf) {
+                        md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
+                        md_simd_typef new_val = md_simd_loadf(values + i);
+                        md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
+                    }
+                    // Determine min max values
+                    prop->data.min_value = MIN(prop->data.min_value, min);
+                    prop->data.max_value = MAX(prop->data.max_value, max);
+
+                    // Update range if not explicitly set
+                    prop->data.min_range[0] = (data[d_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[d_idx].value_range.beg;
+                    prop->data.max_range[0] = (data[d_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[d_idx].value_range.end;
+                }
+                md_mutex_unlock(&eval->prop_dist_mutex[p_idx]);
             }
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                 // Accumulate values
                 ASSERT(prop->data.values);
                 ASSERT(prop->data.num_values % md_simd_widthf == 0); // This should always be the case if we nice powers of 2 for our volumes
                 
-                // Cumulative moving average
-                const md_simd_typef N = md_simd_set1f((float)(dst_idx));
-                const md_simd_typef scl = md_simd_set1f(1.0f / (float)(dst_idx + 1));
-                for (int64_t i = 0; i < prop->data.num_values; i += md_simd_widthf) {
-                    md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
-                    md_simd_typef new_val = md_simd_loadf(values + i);
-                    md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
+                // ATOMIC WRITE
+                md_mutex_lock(&eval->prop_dist_mutex[p_idx]);
+                {
+                    // Cumulative moving average
+                    const uint32_t count = eval->prop_dist_count[p_idx]++;
+                    const md_simd_typef N = md_simd_set1f((float)(count));
+                    const md_simd_typef scl = md_simd_set1f(1.0f / (float)(count + 1));
+
+                    for (int64_t i = 0; i < prop->data.num_values; i += md_simd_widthf) {
+                        md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
+                        md_simd_typef new_val = md_simd_loadf(values + i);
+                        md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
+                    }
                 }
+                md_mutex_unlock(&eval->prop_dist_mutex[p_idx]);
             }
             else {
                 ASSERT(false);
             }
         }
 
-        dst_idx += 1;
-        eval->num_frames_completed = (uint32_t)dst_idx;
+        md_mutex_lock(&eval->frame_mutex);
+        md_bitfield_set_bit(&eval->completed_frames, f_idx);
+        md_mutex_unlock(&eval->frame_mutex);
 
         uint64_t fingerprint = generate_fingerprint();
         for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
             props[p_idx].data.fingerprint = fingerprint;
         }
     }
-
-    ASSERT(dst_idx == num_frames);
 done:
     FREE_TEMP_ALLOC();
     return result;
@@ -4213,6 +4229,7 @@ static bool add_ir_ctx(md_script_ir_t* ir, const md_script_ir_t* ctx_ir) {
     // @TODO: Check for collisions of identifiers here
     md_array_push_array(ir->identifiers,  ctx_ir->identifiers,  md_array_size(ctx_ir->identifiers),  ir->arena);
     md_array_push_array(ir->eval_targets, ctx_ir->eval_targets, md_array_size(ctx_ir->eval_targets), ir->arena);
+    ir->flags |= ctx_ir->flags;
 
     return true;
 }
@@ -4437,12 +4454,6 @@ static md_script_eval_t* create_eval(md_allocator_i* alloc) {
     return eval;
 }
 
-static void free_eval(md_script_eval_t* eval) {
-    if (validate_eval(eval)) {
-        md_arena_allocator_destroy(eval->arena);
-    }
-}
-
 md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, md_allocator_i* alloc) {
     if (num_frames == 0) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Number of frames was 0");
@@ -4459,21 +4470,40 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
 
     md_script_eval_t* eval = create_eval(alloc);
 
+    md_bitfield_init(&eval->completed_frames, alloc);
+    md_bitfield_reserve_range(&eval->completed_frames, 0, num_frames);
+
     const int64_t num_prop_expr = md_array_size(ir->prop_eval_target_indices);
     if (num_prop_expr > 0) {
         md_array_resize(eval->properties, num_prop_expr, eval->arena);
+        md_array_resize(eval->prop_dist_count, num_prop_expr, eval->arena);
+        md_array_resize(eval->prop_dist_mutex, num_prop_expr, eval->arena);
         for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
             uint32_t idx = ir->prop_eval_target_indices[i];
             ASSERT(idx < md_array_size(ir->eval_targets));
             ASSERT(ir->eval_targets[idx]->ident);
             init_property(&eval->properties[i], num_frames, ir->eval_targets[idx]->ident->name, ir->eval_targets[idx]->node, eval->arena);
+            md_mutex_init(&eval->prop_dist_mutex[i]);
         }
+        clear_properties(eval->properties, num_prop_expr);
     }
+    md_mutex_init(&eval->frame_mutex);
 
     return eval;
 }
 
-bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const struct md_bitfield_t* filter_mask) {
+void md_script_eval_clear(md_script_eval_t* eval) {
+    ASSERT(eval);
+    ASSERT(eval->magic == SCRIPT_EVAL_MAGIC);
+    clear_properties(eval->properties, md_array_size(eval->properties));
+    md_bitfield_clear(&eval->completed_frames);
+    for (int64_t i = 0; i < md_array_size(eval->prop_dist_count); ++i) {
+        eval->prop_dist_count[i] = 0;
+    }
+    eval->interrupt = false;
+}
+
+bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const struct md_bitfield_t* filter_mask) {
     ASSERT(eval);
 
     bool result = true;
@@ -4495,11 +4525,10 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
     }
 
     if (result) {
+        ASSERT(md_array_size(eval->properties) == md_array_size(ir->prop_eval_target_indices));
         const int64_t num_properties = md_array_size(eval->properties);
         if (num_properties > 0) {
-            ASSERT(num_properties == md_array_size(ir->prop_eval_target_indices));
             eval->interrupt = false;
-            clear_properties(eval->properties, num_properties);
             result = eval_properties(eval->properties, num_properties, mol, traj, filter_mask, ir, eval);
 
             const uint64_t fingerprint = generate_fingerprint();
@@ -4514,7 +4543,11 @@ bool md_script_eval_compute(md_script_eval_t* eval, const struct md_script_ir_t*
 
 void md_script_eval_free(md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        free_eval(eval);
+        for (int64_t i = 0; i < md_array_size(eval->prop_dist_mutex); ++i) {
+            md_mutex_destroy(&eval->prop_dist_mutex[i]);
+        }
+        md_mutex_destroy(&eval->frame_mutex);
+        md_arena_allocator_destroy(eval->arena);
     }
 }
 
@@ -4532,18 +4565,11 @@ const md_script_property_t* md_script_eval_properties(const md_script_eval_t* ev
     return NULL;
 }
 
-uint32_t md_script_eval_num_frames_completed(const md_script_eval_t* eval) {
+const md_bitfield_t* md_script_eval_completed_frames(const md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        return eval->num_frames_completed;
+        return &eval->completed_frames;
     }
-    return 0;
-}
-
-uint32_t md_script_eval_num_frames_total(const md_script_eval_t* eval) {
-    if (validate_eval(eval)) {
-        return eval->num_frames_total;
-    }
-    return 0;
+    return NULL;
 }
 
 void md_script_eval_interrupt(md_script_eval_t* eval) {
@@ -4623,10 +4649,6 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
     node = prune_expressions(node);
     if (node) {
         md_spatial_hash_t spatial_hash = {0};
-        if (ir->flags & FLAG_SPATIAL_QUERY) {
-            vec3_t pbc_ext = mat3_mul_vec3(mol->coord_frame, vec3_set1(1));
-            md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
-        }
 
         eval_context_t ctx = {
             .ir = ir,
@@ -4643,9 +4665,13 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
             .spatial_hash = &spatial_hash,
         };
 
-
         if (static_check_node(node, &ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
+                if (ir->flags & FLAG_SPATIAL_QUERY) {
+                    vec3_t pbc_ext = mat3_mul_vec3(mol->coord_frame, vec3_set1(1));
+                    md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
+                }
+
                 // Evaluate dynamic targets if available
                 for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
                     data_t data = {0};

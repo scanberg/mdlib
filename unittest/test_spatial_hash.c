@@ -2,6 +2,7 @@
 
 #include "core/md_allocator.h"
 #include "core/md_arena_allocator.h"
+#include "core/md_bitfield.h"
 #include "core/md_spatial_hash.h"
 #include "core/md_str.h"
 #include "core/md_os.h"
@@ -92,24 +93,92 @@ UTEST_F(spatial_hash, perf_test_init) {
 
     md_spatial_hash_t spatial_hash = {0};
 
-    for (uint32_t i = 0; i < 1000; ++i) {
+    const uint32_t num_iter = 100;
+    timestamp_t t0 = md_os_time_current();
+    for (uint32_t i = 0; i < num_iter; ++i) {
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
         md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, alloc);
         md_vm_arena_temp_end(temp);
     }
+    timestamp_t t1 = md_os_time_current();
+    double t = md_os_time_as_milliseconds(t1 - t0);
+
+    printf("Avg. time taken to generate spatial hash structure of %i atoms: %.3fms\n", (int)mol->atom.count, t / (double)num_iter);
 }
 
 static inline float rnd() {
     return rand() / (float)RAND_MAX;
 }
 
+typedef struct param_t {
+    uint32_t *count;
+    md_bitfield_t* ref_bf;
+} param_t;
+
 static bool iter_fn(uint32_t idx, vec3_t coord, void* user_param) {
-    uint32_t* count = (uint32_t*)user_param;
+    param_t* param = user_param; 
+    uint32_t* count = param->count;
     *count += 1;
     return true;
 }
 
-UTEST_F(spatial_hash, perf_test_query) {
+UTEST_F(spatial_hash, test_correctness_non_periodic) {
+    md_molecule_t* mol = &utest_fixture->mol;
+    md_allocator_i* alloc = &utest_fixture->alloc;
+    vec3_t pbc_ext = utest_fixture->pbc_ext;
+
+    md_spatial_hash_t spatial_hash = {0};
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
+    md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, (vec3_t){0,0,0}, alloc);
+    
+    srand(31);
+
+    /*
+    md_bitfield_t bf = {0};
+    md_bitfield_init(&bf, alloc);
+    md_bitfield_reserve_range(&bf, 0, mol->atom.count);
+    */
+
+    timestamp_t t = 0;
+    const uint32_t num_iter = 100;
+    for (uint32_t iter = 0; iter < 100; ++iter) {
+        //md_bitfield_clear(&bf);
+        vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), pbc_ext);
+        float radius = rnd() * 30;
+
+        uint32_t ref_count = 0;
+        const float rad2 = radius * radius;
+        for (int64_t i = 0; i < mol->atom.count; ++i) {
+            vec4_t c = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
+
+            if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
+                ref_count += 1;
+                //md_bitfield_set_bit(&bf, i);
+            }
+        }
+
+        uint32_t count = 0;
+        param_t param = {
+            .count = &count,
+            //.ref_bf = &bf,
+        };
+        timestamp_t t0 = md_os_time_current();
+        md_spatial_hash_query(&spatial_hash, pos, radius, iter_fn, &param);
+        timestamp_t t1 = md_os_time_current();
+        t += (t1 - t0);
+
+        // We have quantization artifacts since the coordinates are compressed into 10-bits per dimension relative to the cell.
+        // This means we will have some straddling cases that are wither just within or outside of the search radius, thus we cannot match the reference exactly.
+        int delta = (int)ref_count - (int)count;
+        EXPECT_LT(ABS(delta), 2);
+    }
+
+    printf("Avg. time taken per query: %.4fms\n", md_os_time_as_milliseconds(t) / (double)num_iter);
+
+    md_vm_arena_temp_end(temp);
+}
+
+UTEST_F(spatial_hash, test_correctness_periodic) {
     md_molecule_t* mol = &utest_fixture->mol;
     md_allocator_i* alloc = &utest_fixture->alloc;
     vec3_t pbc_ext = utest_fixture->pbc_ext;
@@ -117,15 +186,51 @@ UTEST_F(spatial_hash, perf_test_query) {
     md_spatial_hash_t spatial_hash = {0};
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
     md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, alloc);
-    
+
     srand(31);
 
-    for (uint32_t i = 0; i < 100000; ++i) {
+    /*
+    md_bitfield_t bf = {0};
+    md_bitfield_init(&bf, alloc);
+    md_bitfield_reserve_range(&bf, 0, mol->atom.count);
+    */
+
+    timestamp_t t = 0;
+    const uint32_t num_iter = 100;
+    const vec4_t period = vec4_from_vec3(pbc_ext, 0);
+    for (uint32_t iter = 0; iter < num_iter; ++iter) {
+        //md_bitfield_clear(&bf);
         vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), pbc_ext);
         float radius = rnd() * 30;
+
+        uint32_t ref_count = 0;
+        const float rad2 = radius * radius;
+        for (int64_t i = 0; i < mol->atom.count; ++i) {
+            vec4_t c = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
+
+            if (vec4_periodic_distance_squared(vec4_from_vec3(pos, 0), c, period) < rad2) {
+                ref_count += 1;
+                //md_bitfield_set_bit(&bf, i);
+            }
+        }
+
         uint32_t count = 0;
-        md_spatial_hash_query(&spatial_hash, pos, radius, iter_fn, &count);
+        param_t param = {
+            .count = &count,
+            //.ref_bf = &bf,
+        };
+        timestamp_t t0 = md_os_time_current();
+        md_spatial_hash_query(&spatial_hash, pos, radius, iter_fn, &param);
+        timestamp_t t1 = md_os_time_current();
+        t += (t1 - t0);
+
+        // We have quantization artifacts since the coordinates are compressed into 10-bits per dimension relative to the cell.
+        // This means we will have some straddling cases that are wither just within or outside of the search radius, thus we cannot match the reference exactly.
+        int delta = (int)ref_count - (int)count;
+        EXPECT_LT(ABS(delta), 2);
     }
+
+    printf("Avg. time taken per query: %.4fms\n", md_os_time_as_milliseconds(t) / (double)num_iter);
 
     md_vm_arena_temp_end(temp);
 }

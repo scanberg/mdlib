@@ -703,7 +703,7 @@ void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* 
     *aabb_max = (vec3_t){x_max, y_max, z_max};
 }
 
-void md_util_compute_aabb_periodic_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t pbc_ext) {
+void md_util_compute_aabb_periodic_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count, uint64_t stride, vec3_t pbc_ext) {
     md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
     md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
     md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
@@ -712,18 +712,19 @@ void md_util_compute_aabb_periodic_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_ma
     md_simd_typef vy_max = md_simd_set1f(-FLT_MAX);
     md_simd_typef vz_max = md_simd_set1f(-FLT_MAX);
 
-    vec3_t ref = vec3_mul_f(pbc_ext, 0.5f);
+    vec4_t ext = vec4_from_vec3(pbc_ext, 0);
+    vec4_t ref = vec4_mul_f(ext, 0.5f);
 
     int64_t i = 0;
     const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
     for (; i < simd_count; i += md_simd_widthf) {
-        md_simd_typef x = md_simd_loadf(in_x + i);
-        md_simd_typef y = md_simd_loadf(in_y + i);
-        md_simd_typef z = md_simd_loadf(in_z + i);
+        md_simd_typef x = md_simd_loadf((const float*)((const char*)in_x + i * stride));
+        md_simd_typef y = md_simd_loadf((const float*)((const char*)in_y + i * stride));
+        md_simd_typef z = md_simd_loadf((const float*)((const char*)in_z + i * stride));
 
-        x = md_simd_deperiodizef(x, md_simd_set1f(ref.x), md_simd_set1f(pbc_ext.x));
-        y = md_simd_deperiodizef(y, md_simd_set1f(ref.y), md_simd_set1f(pbc_ext.y));
-        z = md_simd_deperiodizef(z, md_simd_set1f(ref.z), md_simd_set1f(pbc_ext.z));
+        x = md_simd_deperiodizef(x, md_simd_set1f(ref.x), md_simd_set1f(ext.x));
+        y = md_simd_deperiodizef(y, md_simd_set1f(ref.y), md_simd_set1f(ext.y));
+        z = md_simd_deperiodizef(z, md_simd_set1f(ref.z), md_simd_set1f(ext.z));
 
         vx_min = md_simd_minf(vx_min, x);
         vy_min = md_simd_minf(vy_min, y);
@@ -734,27 +735,35 @@ void md_util_compute_aabb_periodic_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_ma
         vz_max = md_simd_maxf(vz_max, z);
     }
 
-    float x_min = md_simd_horizontal_minf(vx_min);
-    float y_min = md_simd_horizontal_minf(vy_min);
-    float z_min = md_simd_horizontal_minf(vz_min);
+    vec4_t aabb_min = {
+        md_simd_horizontal_minf(vx_min),
+        md_simd_horizontal_minf(vy_min),
+        md_simd_horizontal_minf(vz_min),
+        0
+    };
 
-    float x_max = md_simd_horizontal_maxf(vx_max);
-    float y_max = md_simd_horizontal_maxf(vy_max);
-    float z_max = md_simd_horizontal_maxf(vz_max);
+    vec4_t aabb_max = {
+        md_simd_horizontal_maxf(vx_max),
+        md_simd_horizontal_maxf(vy_max),
+        md_simd_horizontal_maxf(vz_max),
+        0
+    };
 
     // Handle remainder
     for (; i < count; ++i) {
-        x_min = MIN(x_min, in_x[i]);
-        y_min = MIN(y_min, in_y[i]);
-        z_min = MIN(z_min, in_z[i]);
-
-        x_max = MAX(x_max, in_x[i]);
-        y_max = MAX(y_max, in_y[i]);
-        z_max = MAX(z_max, in_z[i]);
+        vec4_t c = {
+            *(const float*)((const char*)in_x + i * stride),
+            *(const float*)((const char*)in_y + i * stride),
+            *(const float*)((const char*)in_z + i * stride),
+            0
+        };
+        c = vec4_deperiodize(c, ref, ext);
+        aabb_min = vec4_min(aabb_min, c);
+        aabb_max = vec4_max(aabb_max, c);
     }
 
-    *out_aabb_min = (vec3_t){x_min, y_min, z_min};
-    *out_aabb_max = (vec3_t){x_max, y_max, z_max};
+    *out_aabb_min = vec3_from_vec4(aabb_min);
+    *out_aabb_max = vec3_from_vec4(aabb_max);
 }
 
 vec3_t md_util_compute_com(const vec3_t* xyz, const float* w, int64_t count) {
