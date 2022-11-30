@@ -177,7 +177,6 @@ static void init_coords_periodic(vec4_t* aabb_min, vec4_t* aabb_max, uint32_t* c
     }
 }
 
-__declspec(noinline)
 bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec3_t pbc_ext, md_allocator_i* alloc) {
     ASSERT(hash); 
     ASSERT(in_x);
