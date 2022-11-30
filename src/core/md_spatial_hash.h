@@ -6,15 +6,14 @@
 #include <core/md_vec_math.h>
 
 struct md_allocator_i;
-struct md_spatial_hash_cell_t;
 
 typedef bool (*md_spatial_hash_iterator_fn)(uint32_t idx, vec3_t coord, void* user_param);
 
 typedef struct md_spatial_hash_t {
-    struct md_spatial_hash_cell_t*  cells;
-    uint32_t*                       coords;     // Compressed coordinates 10 bits precision relative to cell
-    uint32_t*                       indices;    // original given index
-    struct md_allocator_i*          alloc;
+    uint32_t*               cells;
+    uint32_t*               coords;     // Compressed coordinates 10 bits precision relative to cell
+    uint32_t*               indices;    // original given index
+    struct md_allocator_i*  alloc;
     int32_t cell_min[3];
     uint32_t coord_count;
     int32_t cell_dim[3];
