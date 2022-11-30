@@ -170,7 +170,7 @@ UTEST_F(spatial_hash, test_correctness_non_periodic) {
         // We have quantization artifacts since the coordinates are compressed into 10-bits per dimension relative to the cell.
         // This means we will have some straddling cases that are wither just within or outside of the search radius, thus we cannot match the reference exactly.
         int delta = (int)ref_count - (int)count;
-        EXPECT_LT(ABS(delta), 2);
+        EXPECT_LE(ABS(delta), 2);
     }
 
     printf("Avg. time taken per query: %.4fms\n", md_os_time_as_milliseconds(t) / (double)num_iter);
@@ -227,7 +227,7 @@ UTEST_F(spatial_hash, test_correctness_periodic) {
         // We have quantization artifacts since the coordinates are compressed into 10-bits per dimension relative to the cell.
         // This means we will have some straddling cases that are wither just within or outside of the search radius, thus we cannot match the reference exactly.
         int delta = (int)ref_count - (int)count;
-        EXPECT_LT(ABS(delta), 2);
+        EXPECT_LE(ABS(delta), 2);
     }
 
     printf("Avg. time taken per query: %.4fms\n", md_os_time_as_milliseconds(t) / (double)num_iter);
