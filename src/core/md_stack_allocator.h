@@ -1,8 +1,8 @@
 #pragma once
 
-#include <stdint.h>
 #include "core/md_allocator.h"
 #include "core/md_common.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,10 +14,10 @@ extern "C" {
 // This is a small, efficient linear allocator which just pushes a pointer offset within a buffer
 // For simplicity, all allocations > 2 bytes are aligned to 16 bytes, which is default on x64 systems anyways
 typedef struct md_stack_allocator_t {
-    void* ptr;
-    uint64_t cap;
     uint64_t pos;
+    uint64_t cap;
     uint64_t magic;
+    void* ptr;
 } md_stack_allocator_t;
 
 static inline void md_stack_allocator_init(md_stack_allocator_t* stack, void* backing_buffer, int64_t buffer_capacity) {
@@ -25,10 +25,10 @@ static inline void md_stack_allocator_init(md_stack_allocator_t* stack, void* ba
     ASSERT(backing_buffer);
     ASSERT(buffer_capacity > 0);
 
-    stack->ptr = backing_buffer;
-    stack->cap = buffer_capacity;
     stack->pos = 0;
+    stack->cap = buffer_capacity;
     stack->magic = MD_STACK_ALLOCATOR_MAGIC;
+    stack->ptr = backing_buffer;
 }
 
 static inline void* md_stack_allocator_push_aligned(md_stack_allocator_t* stack, uint64_t size, uint64_t align) {

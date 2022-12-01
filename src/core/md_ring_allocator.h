@@ -1,8 +1,8 @@
 #pragma once
 
-#include <stdint.h>
 #include "core/md_allocator.h"
 #include "core/md_common.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,9 +14,9 @@ extern "C" {
 // This is a small, efficient linear allocator which just pushes a pointer offset within a buffer and wraps around when full
 // For simplicity, all allocations > 2 bytes are aligned to 16 bytes
 typedef struct md_ring_allocator_t {
-    uint64_t magic;
     uint64_t pos;
     uint64_t cap;
+    uint64_t magic;
     void*    ptr;
 } md_ring_allocator_t;
 
@@ -25,9 +25,9 @@ static inline void md_ring_allocator_init(md_ring_allocator_t* ring, void* backi
     ASSERT(backing_buffer);
     ASSERT(buffer_capacity > 0);
 
-    ring->magic = MD_RING_ALLOCATOR_MAGIC;
     ring->pos = 0;
     ring->cap = buffer_capacity;
+    ring->magic = MD_RING_ALLOCATOR_MAGIC;
     ring->ptr = backing_buffer;
 }
 

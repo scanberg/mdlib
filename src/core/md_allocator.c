@@ -26,9 +26,9 @@ typedef struct ring_alloc_t {
 
 THREAD_LOCAL static ring_alloc_t _ring = {
     .alloc = {
-        .magic = MD_RING_ALLOCATOR_MAGIC,
         .pos = 0,
         .cap = MD_TEMP_ALLOC_SIZE,
+        .magic = MD_RING_ALLOCATOR_MAGIC,
         .ptr = 0,
     }
 };
