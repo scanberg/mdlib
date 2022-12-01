@@ -11,7 +11,7 @@ UTEST(os, path) {
         snprintf(buf, sizeof(buf), "%.*s/../../", (int)cwd.len, cwd.ptr);
         str_t path = {buf, strnlen(buf, sizeof(buf))};
         str_t result = md_os_path_make_canonical(path, default_temp_allocator);
-        printf("result: '%.*s'", (int)result.len, result.ptr);
+        printf("result: '%.*s'\n", (int)result.len, result.ptr);
     }
     {
         /*
@@ -22,6 +22,12 @@ UTEST(os, path) {
         EXPECT_TRUE(str_equal(result, ref));
         */
     }
+}
+
+UTEST(os, ram) {
+    uint64_t physical_ram = md_os_physical_ram_in_bytes();
+    printf("total physical ram %i GB\n", (int)(physical_ram / GIGABYTES(1)));
+    EXPECT_GT(physical_ram, 0);
 }
 
 UTEST(os, mem) {

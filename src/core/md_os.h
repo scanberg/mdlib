@@ -10,9 +10,7 @@ typedef int64_t timestamp_t;
 extern "C" {
 #endif
 
-/*
-int64_t     md_os_physical_ram_in_bytes();
-*/
+uint64_t    md_os_physical_ram_in_bytes();
 str_t       md_os_current_working_directory(void);
 
 str_t       md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc);

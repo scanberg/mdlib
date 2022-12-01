@@ -71,8 +71,19 @@ void print_windows_error() {
 }
 #endif
 
-int64_t md_os_physical_ram_in_bytes() {
+uint64_t md_os_physical_ram_in_bytes() {
+#if MD_PLATFORM_WINDOWS
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof(status);
+    GlobalMemoryStatusEx(&status);
+    return status.ullTotalPhys;
+#elif MD_PLATFORM_UNIX
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    return pages * page_size;
+#else
     ASSERT(false);
+#endif
     return 0;
 }
 
