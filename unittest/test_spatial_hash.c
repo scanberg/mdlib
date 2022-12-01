@@ -93,7 +93,7 @@ UTEST_F(spatial_hash, perf_test_init) {
 
     md_spatial_hash_t spatial_hash = {0};
 
-    const uint32_t num_iter = 100;
+    const uint32_t num_iter = 1000;
     timestamp_t t0 = md_os_time_current();
     for (uint32_t i = 0; i < num_iter; ++i) {
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
@@ -168,7 +168,7 @@ UTEST_F(spatial_hash, test_correctness_non_periodic) {
         t += (t1 - t0);
 
         // We have quantization artifacts since the coordinates are compressed into 10-bits per dimension relative to the cell.
-        // This means we will have some straddling cases that are wither just within or outside of the search radius, thus we cannot match the reference exactly.
+        // This means we will have some straddling cases that are either just within or outside of the search radius, thus we cannot match the reference exactly.
         int delta = (int)ref_count - (int)count;
         EXPECT_LE(ABS(delta), 2);
     }
@@ -225,7 +225,7 @@ UTEST_F(spatial_hash, test_correctness_periodic) {
         t += (t1 - t0);
 
         // We have quantization artifacts since the coordinates are compressed into 10-bits per dimension relative to the cell.
-        // This means we will have some straddling cases that are wither just within or outside of the search radius, thus we cannot match the reference exactly.
+        // This means we will have some straddling cases that are either just within or outside of the search radius, thus we cannot match the reference exactly.
         int delta = (int)ref_count - (int)count;
         EXPECT_LE(ABS(delta), 2);
     }

@@ -42,13 +42,11 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
     uint32_t* cell_coord        = md_alloc(temp_alloc, sizeof(uint32_t) * count);
     uint32_t* packed_cell_coord = md_alloc(temp_alloc, sizeof(uint32_t) * count);
     uint32_t* local_idx         = md_alloc(temp_alloc, sizeof(uint32_t) * count);
-    uint32_t* src_idx           = md_alloc(temp_alloc, sizeof(uint32_t) * count);
 
     const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
     vec4_t aabb_min = {0};
     vec4_t aabb_max = {0};
-
     md_util_compute_aabb_periodic_xyz((vec3_t*)(&aabb_min), (vec3_t*)(&aabb_max), in_x, in_y, in_z, count, stride, pbc_ext);
 
     const int32_t cell_min[3] = {
@@ -157,24 +155,18 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
     ASSERT((cell >> 10) + (cell & 1023) == count);
 #endif
 
+    // Write data to correct location
     for (size_t i = 0; i < count; ++i) {
         uint32_t cc = cell_coord[i];
         uint32_t cz = ((cc >> 20) & 0x3FF);
         uint32_t cy = ((cc >> 10) & 0x3FF);
         uint32_t cx = ((cc >>  0) & 0x3FF);
-        uint32_t idx = cz * cell_dim_01 + cy * cell_dim[0] + cx;
-        uint32_t dst_idx = (cells[idx] >> 10) + local_idx[i];
-        src_idx[dst_idx] = (uint32_t)i;
+        uint32_t cell_idx = cz * cell_dim_01 + cy * cell_dim[0] + cx;
+        uint32_t dst_idx = (cells[cell_idx] >> 10) + local_idx[i];
+        coords[dst_idx]  = packed_cell_coord[i];
+        original_idx[dst_idx] = (uint32_t)i;
     }
 
-    // Write data to correct location
-    for (size_t i = 0; i < count; ++i) {
-        uint32_t idx = src_idx[i];
-        coords[i]  = packed_cell_coord[idx];
-        original_idx[i] = (uint32_t)idx;
-    }
-
-    md_free(temp_alloc, src_idx,            sizeof(uint32_t) * count);
     md_free(temp_alloc, local_idx,          sizeof(uint32_t) * count);
     md_free(temp_alloc, packed_cell_coord,  sizeof(uint32_t) * count);
     md_free(temp_alloc, cell_coord,         sizeof(uint32_t) * count);
