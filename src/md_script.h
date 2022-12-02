@@ -200,12 +200,12 @@ void md_script_eval_clear(md_script_eval_t* eval);
 
 // Compute properties
 // Must be performed after the eval_init
-// eval     : evaluation object to hold result
-// ir       : holds an IR of the script to be evaluated
-// mol      : molecule
-// traj     : trajectory
-// frame_mask [OPTIONAL] : A mask which holds the frames which should be evaluated. Supply this if only a subset should be evaluated.
-bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const struct md_bitfield_t* frame_mask);
+// eval             : evaluation object to hold result
+// ir               : holds an IR of the script to be evaluated
+// mol              : molecule
+// traj             : trajectory
+// frame_(beg/end)  : range of frames [beg,end[ to evaluate 
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_beg, uint32_t frame_end);
 
 // This is perhaps the granularity to operate on in a threaded context, in order to be able to interrupt evaluations without too much wait time.
 //bool md_script_eval_frame(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_idx);

@@ -13,7 +13,7 @@
 #include "core/md_array.inl"
 #include "core/md_file.h"
 #include "core/md_arena_allocator.h"
-#include "core/md_stack_allocator.h"
+#include "core/md_linear_allocator.h"
 #include "core/md_compiler.h"
 #include "core/md_bitop.h"
 #include "core/md_vec_math.h"
@@ -3955,12 +3955,17 @@ static void clear_properties(md_script_property_t* props, int64_t num_props) {
     }
 }
 
-static bool eval_properties(md_script_property_t* props, int64_t num_props, const md_molecule_t* mol, const md_trajectory_i* traj, const md_bitfield_t* mask, const md_script_ir_t* ir, md_script_eval_t* eval) {
-    ASSERT(props);
+static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, const md_trajectory_i* traj, const md_script_ir_t* ir, uint32_t frame_beg, uint32_t frame_end) {
+    ASSERT(eval);
     ASSERT(mol);
     ASSERT(traj);
     ASSERT(ir);
-    ASSERT(eval);
+
+    const int64_t num_props = md_array_size(eval->properties);
+    md_script_property_t* props = eval->properties;
+
+    // No properties to evaluate!
+    if (num_props == 0) return true;
     
     const int64_t num_expr = md_array_size(ir->eval_targets);
     expression_t** const expr = ir->eval_targets;
@@ -3974,13 +3979,6 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
     const int64_t coord_bytes = stride * 3 * sizeof(float);
     float* init_coords = md_alloc(&temp_alloc, coord_bytes);
     float* curr_coords = md_alloc(&temp_alloc, coord_bytes);
-
-    md_bitfield_t tmp_bf = {0};
-    if (!mask) {
-        md_bitfield_init(&tmp_bf, &temp_alloc);
-        md_bitfield_set_range(&tmp_bf, 0, md_trajectory_num_frames(traj));
-        mask = &tmp_bf;
-    }
     
     // This data is meant to hold the evaluated expressions
     data_t* data = md_vm_arena_push(&vm_arena, num_expr * sizeof(data_t));
@@ -4027,19 +4025,11 @@ static bool eval_properties(md_script_property_t* props, int64_t num_props, cons
 
     bool result = true;
 
-    //const int64_t num_frames = md_bitfield_popcount(mask);
-
-    int64_t beg_bit = mask->beg_bit;
-    int64_t end_bit = mask->end_bit;
-
     // We evaluate each frame, one at a time
-    while ((beg_bit = md_bitfield_scan(mask, beg_bit, end_bit)) != 0) {
+    for (uint32_t f_idx = frame_beg; f_idx < frame_end; ++f_idx) {
         if (eval->interrupt) {
             goto done;
         }
-
-        int64_t f_idx = beg_bit - 1;
-        ASSERT(f_idx < md_trajectory_num_frames(traj));
         
         result = md_trajectory_load_frame(traj, f_idx, &curr_header, curr_x, curr_y, curr_z);
 
@@ -4503,39 +4493,40 @@ void md_script_eval_clear(md_script_eval_t* eval) {
     eval->interrupt = false;
 }
 
-bool md_script_eval_frames(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const struct md_bitfield_t* filter_mask) {
+bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_beg, uint32_t frame_end) {
     ASSERT(eval);
 
-    bool result = true;
     if (!ir) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Immediate representation was null");
-        result = false;
+        return false;
     }
     if (!mol) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Molecule was null");
-        result = false;
+        return false;
     }
     if (!traj) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was null");
-        result = false;
+        return false;
     }
-    if (md_trajectory_num_frames(traj) == 0) {
+
+    const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
+    if (num_frames == 0) {
         md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was empty");
-        result = false;
+        return false;
     }
+    if (frame_beg > frame_end || frame_end > num_frames) {
+        md_print(MD_LOG_TYPE_ERROR, "Script eval: Invalid frame range");
+        return false;
+    }
+    
+    // @TODO: This should be turned into a soft error check that the IR version is the same as the eval targets were created for.
+    ASSERT(md_array_size(eval->properties) == md_array_size(ir->prop_eval_target_indices));
 
-    if (result) {
-        ASSERT(md_array_size(eval->properties) == md_array_size(ir->prop_eval_target_indices));
-        const int64_t num_properties = md_array_size(eval->properties);
-        if (num_properties > 0) {
-            eval->interrupt = false;
-            result = eval_properties(eval->properties, num_properties, mol, traj, filter_mask, ir, eval);
+    bool result = eval_properties(eval, mol, traj, ir, frame_beg, frame_end);
 
-            const uint64_t fingerprint = generate_fingerprint();
-            for (int64_t i = 0; i < num_properties; ++i) {
-                eval->properties[i].data.fingerprint = fingerprint;
-            }
-        }
+    const uint64_t fingerprint = generate_fingerprint();
+    for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
+        eval->properties[i].data.fingerprint = fingerprint;
     }
 
     return result;
