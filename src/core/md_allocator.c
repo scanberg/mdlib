@@ -5,7 +5,7 @@
 #include <string.h>
 
 #ifndef MD_TEMP_ALLOC_SIZE
-#define MD_TEMP_ALLOC_SIZE MEGABYTES(32)
+#define MD_TEMP_ALLOC_SIZE MEGABYTES(16)
 #endif 
 
 #define MAX_TEMP_ALLOCATION_SIZE (MD_TEMP_ALLOC_SIZE / 2)
@@ -19,19 +19,16 @@ uint64_t default_temp_allocator_max_allocation_size() {
 // This should be properly profiled and tested accross platforms and compilers to see what the performance implications are.
 
 // This is a fixed buffer hacked
-typedef struct ring_alloc_t {
-    md_ring_allocator_t alloc;
-    char buf[MD_TEMP_ALLOC_SIZE];
-} ring_alloc_t;
 
-THREAD_LOCAL static ring_alloc_t _ring = {
-    .alloc = {
-        .pos = 0,
-        .cap = MD_TEMP_ALLOC_SIZE,
-        .magic = MD_RING_ALLOCATOR_MAGIC,
-        .ptr = 0,
-    }
+THREAD_LOCAL char _buf[MD_TEMP_ALLOC_SIZE];
+
+THREAD_LOCAL md_ring_allocator_t _ring_alloc = {
+    .pos = 0,
+    .cap = MD_TEMP_ALLOC_SIZE,
+    .magic = MD_RING_ALLOCATOR_MAGIC,
+    .ptr = 0,
 };
+
 
 static void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;
@@ -56,9 +53,8 @@ struct md_ring_allocator_t* get_thread_ring_allocator() {
     // This is an Ugly hack since we cannot initialize the thread local ring buffer object with the address of the other thread local buffer
     // This can probably be resolved in some fashion,
     // The constraint is that initialization fields must be constant-expressions when initializeing thread local objects.
-
-    _ring.alloc.ptr = _ring.buf;
-    return &_ring.alloc;
+    _ring_alloc.ptr = _buf;
+    return &_ring_alloc;
 }
 
 /*

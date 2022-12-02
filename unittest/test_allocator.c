@@ -5,7 +5,7 @@
 #include <core/md_pool_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_virtual_allocator.h>
-#include <core/md_stack_allocator.h>
+#include <core/md_linear_allocator.h>
 #include <core/md_ring_allocator.h>
 
 #define COMMON_ALLOCATOR_TEST_BODY \
@@ -51,12 +51,12 @@ UTEST(allocator, arena) {
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST(allocator, stack_generic) {
+UTEST(allocator, linear_generic) {
     void* buf = md_alloc(default_allocator, MEGABYTES(32));
-    md_stack_allocator_t stack;
-    md_stack_allocator_init(&stack, buf, MEGABYTES(32));
-    md_allocator_i stack_alloc = md_stack_allocator_create_interface(&stack);
-    md_allocator_i* alloc = &stack_alloc;
+    md_linear_allocator_t linear;
+    md_linear_allocator_init(&linear, buf, MEGABYTES(32));
+    md_allocator_i linear_alloc = md_linear_allocator_create_interface(&linear);
+    md_allocator_i* alloc = &linear_alloc;
     COMMON_ALLOCATOR_TEST_BODY
     md_free(default_allocator, buf, MEGABYTES(32));
 }
@@ -197,21 +197,21 @@ UTEST(allocator, vm) {
     md_vm_allocator_free(&vm);
 }
 
-UTEST(allocator, stack) {
+UTEST(allocator, linear) {
     void* buf = md_alloc(default_allocator, MEGABYTES(64));
-    md_stack_allocator_t stack;
-    md_stack_allocator_init(&stack, buf, MEGABYTES(64));
+    md_linear_allocator_t linear;
+    md_linear_allocator_init(&linear, buf, MEGABYTES(64));
 
     for (uint32_t i = 0; i < 1000; ++i) {
-        md_stack_allocator_push(&stack, sizeof(uint64_t));
+        md_linear_allocator_push(&linear, sizeof(uint64_t));
     }
 
     for (uint32_t i = 0; i < 500; ++i) {
-        md_stack_allocator_pop(&stack, sizeof(uint64_t));
+        md_linear_allocator_pop(&linear, sizeof(uint64_t));
     }
 
     for (uint32_t i = 0; i < 1000; ++i) {
-        md_stack_allocator_push_aligned(&stack, sizeof(uint64_t), 32);
+        md_linear_allocator_push_aligned(&linear, sizeof(uint64_t), 32);
     }
 
     md_free(default_allocator, buf, MEGABYTES(64));
