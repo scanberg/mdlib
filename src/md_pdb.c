@@ -319,7 +319,7 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
         else if (str_equal_cstr_n(line, "MODEL", 5)) {
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
             md_pdb_model_t model = {
-                .serial = (int32_t)parse_int(substr(line, 10, 4)),
+                .serial = (int32_t)parse_int(substr(line, 6, -1)),
                 .beg_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1,
                 .beg_atom_index = num_coords,
                 .byte_offset = line.ptr - base_offset,
