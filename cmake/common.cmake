@@ -6,18 +6,11 @@ string(REGEX REPLACE "-DNDEBUG " "" CMAKE_C_FLAGS_RELWITHDEBUG "${CMAKE_C_FLAGS_
 string(APPEND CMAKE_CXX_FLAGS_BETATEST " -g")
 string(APPEND CMAKE_C_FLAGS_BETATEST " -g")
 
-include(GNUInstallDirs)
+#include(GNUInstallDirs)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR})
-
-# add_compile_options_config(<CONFIG> <option> ...)
-function(add_compile_options_config CONFIG)
-    foreach(opt ${ARGN})
-        add_compile_options("$<$<CONFIG:${CONFIG}>:${opt}>")
-    endforeach()
-endfunction()
 
 function(create_copy_resource_dir_target target_name SRC_DIR DST_DIR)
     set(DST_FILES)

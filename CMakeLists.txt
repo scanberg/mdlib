@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.15)
 
 project(mdlib VERSION 0.1.2 LANGUAGES C)
 
@@ -33,8 +33,6 @@ source_group("core" FILES ${CORE_FILES})
 source_group("ext" FILES ${EXT_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 
-add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES})
-
 set(MD_DEFINES)
 if (${HAVE_FMA_EXTENSIONS})
 set(MD_DEFINES ${MD_DEFINES} "__FMA__")
@@ -51,7 +49,6 @@ else()
   set(MD_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
 endif()
 set(MD_LIBS)
-
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
@@ -106,33 +103,24 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       "/wd4324"
       "/wd26451"
       "/MP"
-      "/GR-")
+      "/GR-"
+      "/Oi")
     set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
     
-    if (MD_LINK_STDLIB_STATIC)
-      set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
-        "/MTd"
+    set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
         "/ZI"
         "/Gm")
-      set(MD_FLAGS_REL ${MD_FLAGS_REL}
-        "/MT"
-        "/Oi"
+    set(MD_FLAGS_REL ${MD_FLAGS_REL}
         "/GS-")
-    else()
-      set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
-        "/MDd"
-        "/ZI"
-        "/Gm")
-      set(MD_FLAGS_REL ${MD_FLAGS_REL}
-        "/MD"
-        "/Oi"
-        "/GS-")
-    endif()
 endif()
 
-set(MD_FLAGS ${MD_FLAGS} PARENT_SCOPE)
-set(MD_FLAGS_DEB ${MD_FLAGS_DEB} PARENT_SCOPE)
-set(MD_FLAGS_REL ${MD_FLAGS_REL} PARENT_SCOPE)
+add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES})
+
+if (MD_LINK_STDLIB_STATIC)
+    set_property(TARGET mdlib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+else()
+    set_property(TARGET mdlib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 
 if (MD_USE_RELATIVE_RESOURCE_PATH)
   create_copy_resource_dir_target(md_copy_shaders ${MD_SHADER_SRC_DIR} ${MD_SHADER_DST_DIR})
@@ -148,9 +136,11 @@ target_include_directories(mdlib PUBLIC
   ext/xtc/)
 
 target_compile_definitions(mdlib PUBLIC MD_SHADER_DIR="${MD_SHADER_DIR}" PRIVATE ${MD_DEFINES})
-target_compile_options(mdlib PRIVATE ${MD_FLAGS})
+target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
-add_compile_options_config(DEBUG ${MD_FLAGS_DEB})
-add_compile_options_config(RELEASE ${MD_FLAGS_REL})
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PRIVATE ${MD_LIBS})
+
+set(MD_FLAGS ${MD_FLAGS} PARENT_SCOPE)
+set(MD_FLAGS_DEB ${MD_FLAGS_DEB} PARENT_SCOPE)
+set(MD_FLAGS_REL ${MD_FLAGS_REL} PARENT_SCOPE)
