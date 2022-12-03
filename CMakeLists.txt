@@ -108,8 +108,7 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
     
     set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
-        "/ZI"
-        "/Gm")
+        "/ZI")
     set(MD_FLAGS_REL ${MD_FLAGS_REL}
         "/GS-")
 endif()
