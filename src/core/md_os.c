@@ -83,8 +83,8 @@ uint64_t md_os_physical_ram_in_bytes() {
     return pages * page_size;
 #else
     ASSERT(false);
-#endif
     return 0;
+#endif
 }
 
 str_t md_os_current_working_directory() {
@@ -353,5 +353,24 @@ void md_os_decommit(void* ptr, uint64_t size) {
     ASSERT(res == 0);
 #else
     ASSERT(false);
+#endif
+}
+
+bool md_os_thread_on_exit(md_os_thread_exit_callback callback) {
+    if (!callback) {
+        md_printf(MD_LOG_TYPE_ERROR, "OS: callback was NULL");
+        return false;
+    }
+
+#if MD_PLATFORM_WINDOWS
+    DWORD idx = FlsAlloc(callback);
+    return idx != FLS_OUT_OF_INDEXES;
+#elif MD_PLATFORM_UNIX
+    pthread_key_t key;
+    int ret = pthread_key_create(&key, callback);
+    return ret == 0;
+#else
+    ASSERT(false);
+    return false;
 #endif
 }

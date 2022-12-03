@@ -37,6 +37,12 @@ void		md_os_release(void* ptr);
 void		md_os_commit(void* ptr, uint64_t size);
 void		md_os_decommit(void* ptr, uint64_t size);
 
+
+// THREAD
+typedef void (*md_os_thread_exit_callback)(void* data);
+
+bool		md_os_thread_on_exit(md_os_thread_exit_callback callback);
+
 #ifdef __cplusplus
 }
 #endif

@@ -49,9 +49,11 @@ extern "C" {
 uint64_t default_temp_allocator_max_allocation_size();
 
 extern struct md_allocator_i* default_allocator;
+
+// General allocator interface to thread local ring buffer
 extern struct md_allocator_i* default_temp_allocator;
 
-// Direct interface to the thread local ring allocator
+// Direct interface to the thread local ring buffer (Prefer this)
 struct md_ring_allocator_t* get_thread_ring_allocator();
 
 #ifdef __cplusplus
