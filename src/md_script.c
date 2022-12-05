@@ -61,11 +61,37 @@
 
 #define FREE_TEMP_ALLOC() md_vm_arena_free(&vm_arena);
 
+// ################################
+// ###   FORWARD DECLARATIONS   ###
+// ################################
+typedef enum token_type_t token_type_t;
+typedef enum ast_type_t ast_type_t;
+typedef enum base_type_t base_type_t;
+typedef enum flags_t flags_t;
+typedef enum eval_flags_t eval_flags_t;
+
+typedef struct tokenizer_t tokenizer_t;
+typedef struct token_t token_t;
+typedef struct expression_t expression_t;
+typedef struct ast_node_t ast_node_t;
+typedef struct procedure_t procedure_t;
+typedef struct identifier_t identifier_t;
+typedef struct frange_t frange_t;
+typedef struct irange_t irange_t;
+typedef struct type_info_t type_info_t;
+typedef struct data_t data_t;
+typedef struct constant_t constant_t;
+typedef struct static_backchannel_t static_backchannel_t;
+typedef struct parse_context_t parse_context_t;
+typedef struct eval_context_t eval_context_t;
+
+typedef union value_t value_t;
+
 // #############################
 // ###   TYPE DECLARATIONS   ###
 // #############################
 
-typedef enum token_type_t {
+enum token_type_t {
     TOKEN_UNDEF = 0,
     // Reserve the first indices for character literals
     TOKEN_IDENT = 128, // idenfitier
@@ -84,9 +110,9 @@ typedef enum token_type_t {
     TOKEN_INT,    // integer
     TOKEN_STRING, // String literal, defined between two quotation marks "LIKE THIS" or 'LIKE THIS'
     TOKEN_END     // End of tokenstream
-} token_type_t;
+};
 
-typedef enum ast_type_t {
+enum ast_type_t {
     AST_UNDEFINED = 0,
     AST_EXPRESSION,         // Parenthesis wrapped expression, We need to have it up here to ensure its precedence over things
     AST_PROC_CALL,          // Procedure call, Operators are directly translated into procedure calls as well.
@@ -113,9 +139,9 @@ typedef enum ast_type_t {
     AST_OUT,
     AST_CONTEXT,
     AST_ASSIGNMENT,
-} ast_type_t;
+};
 
-typedef enum base_type_t {
+enum base_type_t {
     TYPE_UNDEFINED = 0,
     TYPE_FLOAT,
     TYPE_INT,
@@ -125,9 +151,9 @@ typedef enum base_type_t {
     TYPE_BITFIELD,      // Bitfield used to represent a selection of atoms
     TYPE_STRING,
     TYPE_POSITION,      // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a position (INT, IRANGE, BITFIELD or float[3])
-} base_type_t;
+};
 
-typedef enum flags_t {
+enum flags_t {
     // Function Flags
     FLAG_SYMMETRIC_ARGS             = 0x00001, // Indicates that the first two arguments are symmetric, meaning they can be swapped
     FLAG_ARGS_EQUAL_LENGTH          = 0x00002, // Arguments should have the same array length
@@ -147,37 +173,40 @@ typedef enum flags_t {
 
     // Flags from 0x10000000 and upwards are automatically propagated to the IR flags
     FLAG_SPATIAL_QUERY              = 0x10000000, // This means that the expression involves some form of spatial query. If we have this, we can pre-compute a spatial hash acceleration structure and provide it through the context
-} flags_t;
+};
 
-typedef enum eval_flags_t {
+enum eval_flags_t {
     //EVAL_FLAG_STATIC_TYPE_CHECK     = 0x1,
     //EVAL_FLAG_EVALUATE              = 0x2,
     EVAL_FLAG_FLATTEN               = 0x100,
-} eval_flags_t;
+};
 
 // Propagate upwards to parent nodes within the AST tree
 static const uint32_t FLAG_AST_PROPAGATION_MASK = 0xFFFF0000U;
 static const uint32_t FLAG_IR_PROPAGATION_MASK  = 0xF0000000U;
 
-typedef struct token_t {
+struct token_t {
     token_type_t type;
-    int32_t line;
-    int32_t col_beg;
-    int32_t col_end;
+    int line_beg;
+    int line_end;
+    int col_beg;
+    int col_end;
+    int beg;
+    int end;
     str_t str;
-} token_t;
+};
 
-typedef struct frange_t {
+struct frange_t {
     float beg;
     float end;
-} frange_t;
+};
 
-typedef struct irange_t {
-    int32_t beg;
-    int32_t end;
-} irange_t;
+struct irange_t {
+    int beg;
+    int end;
+};
 
-typedef struct md_type_info_t {
+struct type_info_t {
     base_type_t  base_type;
 
     // This is how we encode the types dimensionality in dim
@@ -205,51 +234,49 @@ typedef struct md_type_info_t {
     // dim = [-1][0][0][0] Would sample_mean that this argument accepts arrays of base_type of any length
     // dim = [4][-1][0][0] Would sample_mean that this argument accepts arrays of base_type[4] of any length
 
-    int32_t     dim[MAX_SUPPORTED_TYPE_DIMS]; // The dimensionality of a single element, each entry in dim represents a multidimensional length
-    int32_t     len_dim;                      // Tells us which dimension in dim that encodes the length
+    int dim[MAX_SUPPORTED_TYPE_DIMS]; // The dimensionality of a single element, each entry in dim represents a multidimensional length
+    int len_dim;                      // Tells us which dimension in dim that encodes the length
 //    context_level_t level;                    // Is only used for bitfields to signify which context they operate on. Should always be 0 otherwise
-} md_type_info_t;
+};
 
 // There is a conceptual twist here if len should belong to the type_info_t or if it should belong to data_t
 // We need to differentiate between different lengths of arrays with the same type in our system, so for now it should probably reside within the type_info
 // I.e. the array length should be part of the fundamental type. This only strenghtens the type-system
 
 // This is the struct which is passed as arguments into the procedures
-typedef struct data_t {
-    md_type_info_t      type;
-    void*               ptr;    // Pointer to the data
-    int64_t             size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
+struct data_t {
+    type_info_t type;
+    void*       ptr;    // Pointer to the data
+    int64_t     size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
 
-    frange_t            value_range;
-    md_unit_t           unit;
-} data_t;
+    frange_t    value_range;
+    md_unit_t   unit;
+};
 
 // This is data stored directly in the nodes to hold scalar values
-typedef union value_t {
-    str_t       _string;
-    float       _float;
-    int32_t     _int;
-    frange_t    _frange;
-    irange_t    _irange;
-    bool        _bool;
-    md_bitfield_t  _bitfield;
-} value_t;
+union value_t {
+    str_t           _string;
+    float           _float;
+    int             _int;
+    frange_t        _frange;
+    irange_t        _irange;
+    bool            _bool;
+    md_bitfield_t   _bitfield;
+};
 
-struct ast_node_t;
-
-typedef struct identifier_t {
-    str_t              name;
-    struct ast_node_t* node;    // This is the node to evaluate in order to generate the data for the identifier
-    data_t*            data;    // This is the data to fill in...
+struct identifier_t {
+    str_t       name;
+    ast_node_t* node;    // This is the node to evaluate in order to generate the data for the identifier
+    data_t*     data;    // This is the data to fill in...
     //data_t      data;
     //flags_t     flags;
-} identifier_t;
+};
 
-typedef struct constant_t {
-    str_t  name;
-    float  value;
+struct constant_t {
+    str_t     name;
+    float     value;
     md_unit_t unit;
-} constant_t;
+};
 
 typedef struct md_script_visualization_o {
     uint64_t magic;
@@ -297,40 +324,40 @@ typedef struct eval_context_t {
     uint32_t eval_flags; // Flags containing information in what context the evaluation is occurring
 } eval_context_t;
 
-typedef struct procedure_t {
+struct procedure_t {
     str_t name;
-    md_type_info_t return_type;
+    type_info_t return_type;
     int64_t num_args;
-    md_type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
+    type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
     int  (*proc_ptr)(data_t*, data_t[], eval_context_t*); // Function pointer to the "C" procedure    
     flags_t flags;
-} procedure_t;
+};
 
-typedef struct ast_node_t {
+struct ast_node_t {
     // @OPTIMIZE: Make specific types for each type of Ast_node, where the first member is the type which we can use and cast after.
-    ast_type_t      type;    
-    token_t         token;          // Corresponding token from which the node was created (used to tie errors back into src)
-    flags_t         flags;
+    ast_type_t          type;    
+    token_t             token;      // Corresponding token from which the node was created (used to tie errors back into src)
+    flags_t             flags;      // Flags for node (set during static type checking)
 
     // PAYLOAD
-    struct ast_node_t**   children;       // For AND, OR, NOT, procedure arguments etc.
-    value_t             value;          // Scalar values for storing data directly inside the node
-    data_t              data;           // Structure for passing as argument into procedure. (Holds pointer, length and type)
+    ast_node_t**        children;   // For AND, OR, NOT, procedure arguments etc.
+    value_t             value;      // Scalar values for storing data directly inside the node
+    data_t              data;       // Structure for passing as argument into procedure. (Holds pointer, length and type)
 
-    const procedure_t*    proc;           // Procedure reference
-    uint32_t        proc_flags;     // Additional flags used for e.g. swapping arguments which may be required for the procedure call
-    str_t           ident;          // Identifier reference
+    const procedure_t*  proc;       // Procedure reference
+    uint32_t            proc_flags; // Additional flags used for e.g. swapping arguments which may be required for the procedure call
+    str_t               ident;      // Identifier reference (also used for procedure name lookup)
 
     // CONTEXT
-    md_type_info_t* lhs_context_types; // For static type checking
+    type_info_t* lhs_context_types; // For static type checking
     const md_bitfield_t* context;  // Since contexts have to be statically known at compile time, we store a reference to it.
-} ast_node_t;
+};
 
 typedef struct tokenizer_t {
-    str_t str;
-    int64_t cur;
-    int64_t line;
-    int64_t line_offset;
+    str_t   str;
+    int     cur;
+    int     line;
+    int     line_offset;  // offset to the current line
 } tokenizer_t;
 
 typedef struct expression_t {
@@ -359,8 +386,8 @@ struct md_script_ir_t {
     identifier_t        *identifiers;                   // List of identifiers, notice that the data in a const context should only be used if it is flagged as
 
     // These are the final products which can be read through the public part of the structure
-    md_script_error_t   *errors;
-    md_script_token_t   *tokens;
+    md_script_error_t       *errors;
+    md_script_vis_token_t   *vis_tokens;
 
     const char* stage;  // This is just to supply a context for the errors i.e. which stage the error occured
     bool record_errors; // This is to toggle if new errors should be registered... We don't want to flood the errors
@@ -383,12 +410,12 @@ struct md_script_eval_t {
     md_mutex_t              *prop_dist_mutex;    // Protect the data when writing to it in a threaded context (Distributions)
 };
 
-typedef struct parse_context_t {
+struct parse_context_t {
     md_script_ir_t* ir;
     tokenizer_t*    tokenizer;
     ast_node_t*     node;   // This represents the current root node in the tree
     md_allocator_i* temp_alloc;
-} parse_context_t;
+};
 
 
 // ##########################
@@ -444,43 +471,43 @@ static uint32_t operator_precedence(ast_type_t type) {
     return 0;
 }
 
-static inline bool compare_type_info_dim(md_type_info_t a, md_type_info_t b) {
+static inline bool compare_type_info_dim(type_info_t a, type_info_t b) {
     return (memcmp(&a.dim, &b.dim, sizeof(a.dim)) == 0) && (a.len_dim == b.len_dim);
 }
 
-static inline bool type_info_equal(md_type_info_t a, md_type_info_t b) {
+static inline bool type_info_equal(type_info_t a, type_info_t b) {
     /*if (a.base_type == TYPE_BITFIELD && b.base_type == TYPE_BITFIELD) {
         if ((a.level == -1 || b.level == -1) || a.level == b.level) {
             return compare_type_info_dim(a, b);
         }
         return false;
     }*/
-    return memcmp(&a, &b, sizeof(md_type_info_t)) == 0;
+    return memcmp(&a, &b, sizeof(type_info_t)) == 0;
 }
 
-static inline bool is_undefined_type(md_type_info_t ti) {
-    return memcmp(&ti, &(md_type_info_t){0}, sizeof(md_type_info_t)) == 0;
+static inline bool is_undefined_type(type_info_t ti) {
+    return memcmp(&ti, &(type_info_t){0}, sizeof(type_info_t)) == 0;
 }
 
-static inline bool is_array(md_type_info_t ti) {
+static inline bool is_array(type_info_t ti) {
     return ti.dim[0] > 1;
 }
 
-static inline bool is_scalar(md_type_info_t ti) {
+static inline bool is_scalar(type_info_t ti) {
     return ti.dim[0] == 1 && ti.dim[1] == 0 && ti.len_dim == 0;
 }
 
-static inline bool is_variable_length(md_type_info_t ti) {
+static inline bool is_variable_length(type_info_t ti) {
     return ti.dim[ti.len_dim] == -1;
 }
 
 /*
-static inline bool is_incomplete_bitfield(md_type_info_t ti) {
+static inline bool is_incomplete_bitfield(type_info_t ti) {
     return ti.base_type == TYPE_BITFIELD && ti.level == -1;
 }
 */
 
-static inline int64_t type_info_array_len(md_type_info_t ti) {
+static inline int64_t type_info_array_len(type_info_t ti) {
     ASSERT(ti.len_dim < MAX_SUPPORTED_TYPE_DIMS);
     return ti.dim[ti.len_dim];
 }
@@ -492,9 +519,9 @@ static inline int64_t element_count(data_t arg) {
 
 // If the type is a scalar, then it is its own element type.
 // If the type is an array, then its element type is the type of one element within the array
-static inline md_type_info_t type_info_element_type(md_type_info_t ti) {
+static inline type_info_t type_info_element_type(type_info_t ti) {
     if (is_scalar(ti)) return ti;
-    md_type_info_t elem_ti = ti;
+    type_info_t elem_ti = ti;
     elem_ti.dim[elem_ti.len_dim] = 1;
     return elem_ti;
 }
@@ -514,7 +541,7 @@ static inline uint64_t base_type_element_byte_size(base_type_t type) {
     }
 }
 
-static inline bool is_type_dim_compatible(md_type_info_t from, md_type_info_t to) {
+static inline bool is_type_dim_compatible(type_info_t from, type_info_t to) {
 
     // Some examples of matching, ^ shows len_dim
     // float[4][0][0][0] should match     float[-1][0][0][0]
@@ -539,11 +566,11 @@ static inline bool is_type_dim_compatible(md_type_info_t from, md_type_info_t to
     return false;
 }
 
-static inline bool is_type_equivalent(md_type_info_t a, md_type_info_t b) {
-    return memcmp(&a, &b, sizeof(md_type_info_t)) == 0;
+static inline bool is_type_equivalent(type_info_t a, type_info_t b) {
+    return memcmp(&a, &b, sizeof(type_info_t)) == 0;
 }
 
-static inline bool is_type_position_compatible(md_type_info_t type) {
+static inline bool is_type_position_compatible(type_info_t type) {
     switch(type.base_type) {
         case TYPE_INT: return true;
         case TYPE_IRANGE: return true;
@@ -553,7 +580,7 @@ static inline bool is_type_position_compatible(md_type_info_t type) {
     }
 }
 
-static inline bool is_type_directly_compatible(md_type_info_t from, md_type_info_t to) {
+static inline bool is_type_directly_compatible(type_info_t from, type_info_t to) {
     if (to.base_type == TYPE_POSITION && is_type_position_compatible(from)) {
         to.base_type = from.base_type;
         if (from.base_type == TYPE_FLOAT) {
@@ -575,7 +602,7 @@ static inline bool is_type_directly_compatible(md_type_info_t from, md_type_info
     return false;
 }
 
-static inline bool compare_type_info_array(const md_type_info_t a[], const md_type_info_t b[], int64_t num_arg_types) {
+static inline bool compare_type_info_array(const type_info_t a[], const type_info_t b[], int64_t num_arg_types) {
     for (int64_t i = 0; i < num_arg_types; ++i) {
         if (!is_type_directly_compatible(a[i], b[i])) {
             return false;
@@ -587,7 +614,7 @@ static inline bool compare_type_info_array(const md_type_info_t a[], const md_ty
 // Returns the count of elements for this type, i.e an array of [4][4][1] would return 16
 // NOTE: It does not include the last dimension which encodes the length of the array
 // 
-static inline int64_t type_info_element_stride_count(md_type_info_t ti) {
+static inline int64_t type_info_element_stride_count(type_info_t ti) {
     if (ti.len_dim == 0) return 1;
     int64_t stride = ti.dim[0];
     for (int32_t i = 1; i < ti.len_dim; ++i) {
@@ -596,15 +623,15 @@ static inline int64_t type_info_element_stride_count(md_type_info_t ti) {
     return stride;
 }
 
-static inline int64_t type_info_byte_stride(md_type_info_t ti) {
+static inline int64_t type_info_byte_stride(type_info_t ti) {
     return type_info_element_stride_count(ti) * base_type_element_byte_size(ti.base_type);
 }
 
-static inline int64_t type_info_total_byte_size(md_type_info_t ti) {
+static inline int64_t type_info_total_byte_size(type_info_t ti) {
     return type_info_byte_stride(ti) * type_info_array_len(ti);
 }
 
-static inline int64_t type_info_total_element_count(md_type_info_t ti) {
+static inline int64_t type_info_total_element_count(type_info_t ti) {
     return type_info_element_stride_count(ti) * type_info_array_len(ti);
 }
 
@@ -612,7 +639,7 @@ static inline int64_t bitfield_byte_size(int64_t num_bits) {
     return DIV_UP(num_bits, 64) * sizeof(int64_t);
 }
 
-static bool allocate_data(data_t* data, md_type_info_t type, md_allocator_i* alloc) {
+static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(!is_undefined_type(type));
     ASSERT(alloc);
@@ -739,6 +766,33 @@ static const char* get_token_type_str(token_type_t type) {
     }
 }
 
+static token_t concat_tokens(token_t a, token_t b) {
+    token_t t;
+    if (a.line_beg < b.line_beg) {
+        t.col_beg  = a.col_beg;
+        t.col_end  = b.col_end;
+        t.line_beg = a.line_beg;
+        t.line_end = b.line_end;
+    } else if (b.line_beg < a.line_beg) {
+        t.col_beg  = b.col_beg;
+        t.col_end  = a.col_end;
+        t.line_beg = b.line_beg;
+        t.line_end = a.line_end;
+    } else {
+        t.col_beg  = MIN(a.col_beg, b.col_beg);
+        t.col_end  = MAX(a.col_end, b.col_end);
+        t.line_beg = a.line_beg;
+        t.line_end = b.line_end;
+    }
+    t.type = a.beg < b.beg ? a.type : b.type;
+    t.beg = MIN(a.beg, b.beg);
+    t.end = MAX(a.end, b.end);
+
+    t.str.ptr = MIN(str_beg(a.str), str_beg(b.str));
+    t.str.len = MAX(str_end(a.str), str_end(b.str)) - str_beg(t.str);
+    return t;
+}
+
 static const char* get_value_type_str(base_type_t type) {
     switch(type) {
     case TYPE_UNDEFINED: return "undefined";
@@ -771,15 +825,16 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
     err_str[len] = '\0';
 
     md_script_error_t error = {
-        .line = (uint32_t)token.line,
-        .col_beg = (uint32_t)(token.col_beg),
-        .length = (uint32_t)token.str.len,
-        .error = {.ptr = err_str, .len = (uint64_t)len},
+        .range = {
+            .beg = token.beg,
+            .end = token.end,
+        },
+        .text = {.ptr = err_str, .len = (uint64_t)len},
     };
     md_array_push(ir->errors, error, ir->arena);
 
     // @TODO: Remove at some point
-    md_printf(MD_LOG_TYPE_DEBUG, "%s line %llu: %s", ir->stage, token.line, buffer);
+    md_printf(MD_LOG_TYPE_DEBUG, "%s line %i: %s", ir->stage, token.line_beg, buffer);
 
     if (token.str.ptr && token.str.len) {
         memset(buffer, 0, ARRAY_SIZE(buffer));
@@ -881,7 +936,7 @@ static void fix_precedence(ast_node_t** node) {
     }
 }
 
-static bool is_type_implicitly_convertible(md_type_info_t from, md_type_info_t to) {
+static bool is_type_implicitly_convertible(type_info_t from, type_info_t to) {
     for (size_t i = 0; i < ARRAY_SIZE(casts); ++i) {
         if (is_type_directly_compatible(from, casts[i].arg_type[0]) &&
             is_type_directly_compatible(casts[i].return_type, to)) {
@@ -897,7 +952,7 @@ typedef struct procedure_match_result_t {
     uint32_t flags;
 } procedure_match_result_t;
 
-static procedure_match_result_t find_cast_procedure(md_type_info_t from, md_type_info_t to) {
+static procedure_match_result_t find_cast_procedure(type_info_t from, type_info_t to) {
 
     procedure_match_result_t res = {0};
     uint32_t lowest_cost = ~0U;
@@ -923,7 +978,7 @@ static procedure_match_result_t find_cast_procedure(md_type_info_t from, md_type
     return res;
 }
 
-static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const md_type_info_t arg_types[], int64_t num_arg_types, procedure_t* candidates, int64_t num_cantidates, bool allow_implicit_conversions) {
+static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], int64_t num_arg_types, procedure_t* candidates, int64_t num_cantidates, bool allow_implicit_conversions) {
     procedure_match_result_t res = {0};
 
     for (int64_t i = 0; i < num_cantidates; ++i) {
@@ -939,7 +994,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                     // @TODO: Does this make sense for anything else than two arguments???
                     // The only exception here is the RDF function which should be symmetric on the first two, and then have the third cutoff parameter.
                     ASSERT(proc->num_args >= 2);
-                    md_type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
+                    type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
                     if (compare_type_info_array(swapped_args, proc->arg_type, 2)) {
                         res.success = true;
                         res.procedure = proc;
@@ -990,7 +1045,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                     if (proc->flags & FLAG_SYMMETRIC_ARGS) {
                         ASSERT(proc->num_args >= 2);
                         // Test if we can get a (better) result by swapping the arguments
-                        md_type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
+                        type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
 
                         cost = 0;
                         flags = FLAG_SYMMETRIC_ARGS;
@@ -1027,12 +1082,12 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
     return res;
 }
 
-static procedure_match_result_t find_procedure_supporting_arg_types(str_t name, const md_type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
+static procedure_match_result_t find_procedure_supporting_arg_types(str_t name, const type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
     return find_procedure_supporting_arg_types_in_candidates(name, arg_types, num_arg_types, procedures, ARRAY_SIZE(procedures), allow_implicit_conversions);
 }
 
-static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op, const md_type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
-    // Map token type to string which we use to identify operator procedures
+static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op, const type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
+    // Map marker type to string which we use to identify operator procedures
     str_t name = {0};
     switch(op) {
     case AST_ADD: name = MAKE_STR("+");   break;
@@ -1086,18 +1141,22 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
     token_t token = {0};
 
     if (tokenizer->cur >= tokenizer->str.len) {
-        tokenizer->cur = tokenizer->str.len;
+        tokenizer->cur = (int)tokenizer->str.len;
         token.type = TOKEN_END;
-        token.line = (int32_t)tokenizer->line;
-        token.col_beg = (int32_t)(tokenizer->cur - tokenizer->line_offset);
+        token.line_beg = tokenizer->line;
+        token.line_end = tokenizer->line;
+        token.col_beg  = tokenizer->cur - tokenizer->line_offset;
+        token.col_end  = tokenizer->cur - tokenizer->line_offset;
+        token.beg      = tokenizer->cur;
+        token.end      = tokenizer->cur;
         return token;
     }
     
-    int64_t line = tokenizer->line;
+    int        line = tokenizer->line;
     const char* buf = tokenizer->str.ptr;
-    const int64_t len = tokenizer->str.len;
-    for (int64_t i = tokenizer->cur; i != len; ++i) {
-        int64_t j = 0;
+    const int   len = (int)tokenizer->str.len;
+    for (int i = (int)tokenizer->cur; i != len; ++i) {
+        int j = 0;
         
         if (buf[i] == '#') {
             // Skip to end of line
@@ -1122,7 +1181,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             }
             
             // Keywords
-            const int64_t n = j - i;
+            const int n = j - i;
             if (n == 2) {
                 str_t str = {buf+i, 2};
                 if (str_equal(str, MAKE_STR("or"))) {
@@ -1220,7 +1279,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             };
             
             // Potential symbol count in buf to match (only care about 1 or 2)
-            const int64_t n = (i + 1 < len && is_symbol(buf[i + 1])) ? 2 : 1;
+            const int n = (i + 1 < len && is_symbol(buf[i + 1])) ? 2 : 1;
             
             // Match buf + i against the longest accepted symbol that we can find.
             if (n == 2) {
@@ -1248,19 +1307,25 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
         if (j != 0) {
             token.str.ptr = tokenizer->str.ptr + i;
             token.str.len = j - i;
-            token.line = (int32_t)line;
-            token.col_beg = (int32_t)(i - tokenizer->line_offset);
-            token.col_end = (int32_t)(j - tokenizer->line_offset);
+            token.line_beg = line;
+            token.line_end = line;
+            token.col_beg = i - tokenizer->line_offset;
+            token.col_end = j - tokenizer->line_offset;
+            token.beg = i;
+            token.end = j;
             break;
         }
 
         if (!token.type && i >= len - 1) {
             // We are going to hit the end in next iteration and have nothing to show for.
-            tokenizer->cur = tokenizer->str.len;
+            tokenizer->cur = (int)tokenizer->str.len;
             token.type = TOKEN_END;
-            token.line = (int32_t)line;
-            token.col_beg = (int32_t)(i - tokenizer->line_offset);
-            token.col_end = token.col_beg;
+            token.line_beg = line;
+            token.line_end = line;
+            token.col_beg  = i - tokenizer->line_offset;
+            token.col_end  = i - tokenizer->line_offset;
+            token.beg = i;
+            token.end = i;
             break;
         }
     }
@@ -1272,8 +1337,8 @@ static token_t tokenizer_consume_next(tokenizer_t* tokenizer) {
     token_t token = tokenizer_get_next_from_buffer(tokenizer);
     if (token.str.ptr && token.str.len) {
         // Advance current of tokenizer
-        tokenizer->cur = token.str.ptr + token.str.len - tokenizer->str.ptr;
-        tokenizer->line = token.line;
+        tokenizer->cur = (int)(token.str.ptr + token.str.len - tokenizer->str.ptr);
+        tokenizer->line = token.line_end;
     }
     return token;
 }
@@ -1291,8 +1356,8 @@ static token_t tokenizer_consume_until_type(tokenizer_t* tokenizer, token_type_t
         }
         if (token.str.ptr && token.str.len) {
             // Advance current of tokenizer
-            tokenizer->cur = token.str.ptr + token.str.len - tokenizer->str.ptr;
-            tokenizer->line = token.line;
+            tokenizer->cur = (int)(token.str.ptr + token.str.len - tokenizer->str.ptr);
+            tokenizer->line = token.line_end;
         }
     }
 end:
@@ -1312,7 +1377,7 @@ static tokenizer_t tokenizer_init(str_t str) {
 // ###   PRINTING   ###
 // ####################
 
-static int print_type_info(char* buf, int buf_size, md_type_info_t info) {
+static int print_type_info(char* buf, int buf_size, type_info_t info) {
     int len = snprintf(buf, buf_size, "%s", get_value_type_str(info.base_type));
 
     for (int i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
@@ -1365,7 +1430,7 @@ static int print_value(char* buf, int buf_size, data_t data) {
                 data.type.len_dim = MAX(0, data.type.len_dim-1);
                 arr_len = data.type.dim[data.type.len_dim];
             }
-            md_type_info_t type = type_info_element_type(data.type);
+            type_info_t type = type_info_element_type(data.type);
             int64_t stride = type_info_byte_stride(data.type);
 
             PRINT("{");
@@ -1456,7 +1521,7 @@ static void print_value(FILE* file, data_t data) {
             data.type.len_dim = MAX(0, data.type.len_dim-1);
             len = data.type.dim[data.type.len_dim];
         }
-        md_type_info_t type = type_info_element_type(data.type);
+        type_info_t type = type_info_element_type(data.type);
         int64_t stride = type_info_byte_stride(data.type);
 
         fprintf(file, "[");
@@ -1568,16 +1633,16 @@ static void print_label(FILE* file, const ast_node_t* node) {
     case AST_AND:
     case AST_OR:
     case AST_NOT:
-        fprintf(file, "logical op %s", get_token_type_str(node->token.type));
+        fprintf(file, "logical op %s", get_token_type_str(node->marker.type));
         break;
     case AST_ADD:
     case AST_SUB:
     case AST_MUL:
     case AST_DIV:
-        fprintf(file, "binary op %s", get_token_type_str(node->token.type));
+        fprintf(file, "binary op %s", get_token_type_str(node->marker.type));
         break;
     default:
-        fprintf(file, "%s", get_token_type_str(node->token.type));
+        fprintf(file, "%s", get_token_type_str(node->marker.type));
         break;
     }
 
@@ -1685,8 +1750,9 @@ static void expand_node_token_range_with_children(ast_node_t* node) {
         ASSERT(node->children[i] != node);
         if (!node->children[i]) continue;
         expand_node_token_range_with_children(node->children[i]);
-        node->token.col_beg = MIN(node->token.col_beg, node->children[i]->token.col_beg);
-        node->token.col_end = MAX(node->token.col_end, node->children[i]->token.col_end);
+        node->token = concat_tokens(node->token, node->children[i]->token);
+        //node->token.col_beg = MIN(node->token.col_beg, node->children[i]->token.col_beg);
+        //node->token.col_end = MAX(node->token.col_end, node->children[i]->token.col_end);
     }
 }
 
@@ -1720,7 +1786,7 @@ done:
 }
 
 static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
-    // Here we know atleast that the token refers to something which is listed as a procedure!
+    // Here we know atleast that the marker refers to something which is listed as a procedure!
     token_t next = tokenizer_peek_next(ctx->tokenizer);
     ast_node_t* node = 0;
     
@@ -1731,17 +1797,19 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
         next = tokenizer_consume_next(ctx->tokenizer);
         if (expect_token_type(ctx->ir, next, ')')) {
             node = create_node(ctx->ir, AST_PROC_CALL, token);
+            node->ident = str_copy(token.str, ctx->ir->arena);
             const int64_t num_args = md_array_size(args);
             if (num_args) {
                 md_array_push_array(node->children, args, num_args, ctx->ir->arena);
             }
             // Expand proc call to contain entire argument list ')'
-            node->token.col_end = next.col_end;
+            node->token = concat_tokens(node->token, next);
         } else {
             create_error(ctx->ir, token, "Unexpected end of argument list");
         }
     } else {
         node = create_node(ctx->ir, AST_PROC_CALL, token);
+        node->ident = str_copy(token.str, ctx->ir->arena);
     }
 
     return node;
@@ -1752,7 +1820,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
     ASSERT(token.type == TOKEN_IDENT);
 
     if (ctx->node && (ctx->node->token.type == TOKEN_IDENT)) {
-        create_error(ctx->ir, token, "Invalid syntax, identifiers must be separated by operation");
+        create_error(ctx->ir, concat_tokens(ctx->node->token, token), "Invalid syntax, identifiers must be separated by operation");
         return NULL;
     }
     
@@ -1769,8 +1837,9 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         node->data.unit = c->unit;
         node->data.ptr = &node->value._float;
         node->data.size = sizeof(float);
-        node->data.type = (md_type_info_t)TI_FLOAT;
+        node->data.type = (type_info_t)TI_FLOAT;
         node->flags |= FLAG_CONSTANT;
+        node->ident = str_copy(ident, ctx->ir->arena);
     } else {
         // Identifier
         token_t next = tokenizer_peek_next(ctx->tokenizer);
@@ -1813,6 +1882,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         } else {
             // Identifier reference, resolve this later in the static check
             node = create_node(ctx->ir, AST_IDENTIFIER, token);
+            node->ident = str_copy(ident, ctx->ir->arena);
         }
     }
     return node;
@@ -1955,8 +2025,9 @@ ast_node_t* parse_value(parse_context_t* ctx) {
     ast_node_t* node = create_node(ctx->ir, AST_CONSTANT_VALUE, token);
     
     if (token.type == ':' || (next.type == ':' && (is_number(token.type)))) {
-        // Expand the nodes token to contain the range
-        node->token.col_end = next.col_end;
+        // Expand the nodes marker to contain the range
+        //node->token.col_end = next.col_end;
+        node->token = concat_tokens(node->token, next);
 
         // RANGE
         // ... ugh! alot to parse!
@@ -1977,32 +2048,34 @@ ast_node_t* parse_value(parse_context_t* ctx) {
             token = tokenizer_consume_next(ctx->tokenizer);
             end = parse_float(token.str);
             is_float |= (token.type == TOKEN_FLOAT);
-            // Expand the nodes token to contain the number
-            node->token.col_end = next.col_end;
+            // Expand the nodes marker to contain the number
+            //node->token.col_end = next.col_end;
+            node->token = concat_tokens(node->token, next);
+
         } else {
             end = FLT_MAX;
         }
 
         if (is_float) {
-            node->data.type = (md_type_info_t)TI_FRANGE;
+            node->data.type = (type_info_t)TI_FRANGE;
             node->value._frange.beg = (float)beg;
             node->value._frange.end = (float)end;
         } else {
-            node->data.type = (md_type_info_t)TI_IRANGE;
+            node->data.type = (type_info_t)TI_IRANGE;
             node->value._irange.beg = (beg == -FLT_MAX) ?  INT32_MIN : (int32_t)beg;
             node->value._irange.end = (end ==  FLT_MAX) ?  INT32_MAX : (int32_t)end;
         }
     }
     else if (token.type == TOKEN_FLOAT) {
-        node->data.type = (md_type_info_t)TI_FLOAT;
+        node->data.type = (type_info_t)TI_FLOAT;
         node->value._float = (float)parse_float(token.str);
     }
     else if (token.type == TOKEN_INT) {
-        node->data.type = (md_type_info_t)TI_INT;
+        node->data.type = (type_info_t)TI_INT;
         node->value._int = (int32_t)parse_int(token.str);
     }
     else if (token.type == TOKEN_STRING) {
-        node->data.type = (md_type_info_t)TI_STRING;
+        node->data.type = (type_info_t)TI_STRING;
         node->value._string = str_copy(substr(token.str, 1, MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
     }
     else {
@@ -2036,8 +2109,9 @@ ast_node_t* parse_array_subscript(parse_context_t* ctx) {
                 md_array_push(node->children, node_copy, ctx->ir->arena);
                 md_array_push_array(node->children, elements, num_elements, ctx->ir->arena);
 
-                // Expand token range to contain ']'
-                node->token.col_end = next.col_end;
+                // Expand marker range to contain ']'
+                //node->token.col_end = next.col_end;
+                node->token = concat_tokens(node->token, next);
 
                 return node;
             } else {
@@ -2066,8 +2140,10 @@ ast_node_t* parse_array(parse_context_t* ctx) {
             // We only commit the results if everything at least parsed ok.
             node = create_node(ctx->ir, AST_ARRAY, token);
             md_array_push_array(node->children, elements, num_elements, ctx->ir->arena);
-            // Expand token range with '}'
-            node->token.col_end = next.col_end;
+            // Expand marker range with '}'
+            //node->token.col_end = next.col_end;
+            node->token = concat_tokens(node->token, next);
+
         } else {
             create_error(ctx->ir, token, "Empty arrays are not allowed.");
         }
@@ -2129,8 +2205,10 @@ ast_node_t* parse_parentheses(parse_context_t* ctx) {
     md_array_push(node->children, expr, ctx->ir->arena);
     token_t next = tokenizer_consume_next(ctx->tokenizer);
     if (expect_token_type(ctx->ir, next, ')')) {
-        // Expand token with ')'
-        node->token.col_end = next.col_end;
+        // Expand marker with ')'
+        //node->token.col_end = next.col_end;
+        node->token = concat_tokens(node->token, next);
+
         return node;
     }
     return NULL;
@@ -2164,11 +2242,11 @@ static ast_node_t* parse_argument(parse_context_t* ctx) {
         fix_precedence(&ctx->node);
         break;
     case TOKEN_UNDEF:
-        create_error(ctx->ir, next, "Undefined token!");
+        create_error(ctx->ir, next, "Undefined marker!");
         tokenizer_consume_next(ctx->tokenizer);
         return NULL;
     default:
-        create_error(ctx->ir, next, "Unexpected token value! '%.*s'",
+        create_error(ctx->ir, next, "Unexpected marker value! '%.*s'",
             next.str.len, next.str.ptr);
         return NULL;
     }
@@ -2257,7 +2335,7 @@ done:
 // ###   EVALUATE   ###
 // ####################
 
-static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx);
+static bool finalize_type(type_info_t* type, const ast_node_t* node, eval_context_t* ctx);
 static bool evaluate_node(data_t*, const ast_node_t*, eval_context_t*);
 
 static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** const args, int64_t num_args, eval_context_t* ctx) {
@@ -2281,7 +2359,7 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
         arg_tokens[i] = args[i]->token;
         arg_flags[i] = args[i]->flags;
-        md_type_info_t arg_type = args[i]->data.type;
+        type_info_t arg_type = args[i]->data.type;
 
         if (is_variable_length(arg_type)) {
             if (!finalize_type(&arg_type, args[i], ctx)) {
@@ -2465,7 +2543,7 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
 
         int64_t byte_offset = 0;
         for (int64_t i = 0; i < num_args; ++i) {
-            md_type_info_t type = args[i]->data.type;
+            type_info_t type = args[i]->data.type;
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, args[i], ctx)) {
                     md_printf(MD_LOG_TYPE_DEBUG, "evaluate_array: Failed to finalize type for variable length argument...");
@@ -2516,9 +2594,9 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
 
     int offset = 0;
     int length = 1;
-    if (type_info_equal(idx_data.type, (md_type_info_t)TI_INT)) {
+    if (type_info_equal(idx_data.type, (type_info_t)TI_INT)) {
         offset = *((int*)(idx_data.ptr));
-    } else if (type_info_equal(idx_data.type, (md_type_info_t)TI_IRANGE)) {
+    } else if (type_info_equal(idx_data.type, (type_info_t)TI_IRANGE)) {
         irange_t range = *((irange_t*)(idx_data.ptr));
         offset = range.beg;
         length = range.end - range.beg + 1;
@@ -2571,7 +2649,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     const md_bitfield_t* ctx_bf = (const md_bitfield_t*)ctx_node->data.ptr;
 
     ASSERT(node->lhs_context_types);
-    const md_type_info_t* lhs_types = node->lhs_context_types;
+    const type_info_t* lhs_types = node->lhs_context_types;
     ASSERT(md_array_size(lhs_types) == num_ctx);
 
     // Evaluate the expression within each context.
@@ -2673,9 +2751,9 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
 static bool static_check_node(ast_node_t*, eval_context_t*);
 static bool finalize_proc_call(ast_node_t*, eval_context_t*);
 
-static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context_t* ctx) {
-    const md_type_info_t from = node->data.type;
-    md_type_info_t to   = new_type;
+static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t* ctx) {
+    const type_info_t from = node->data.type;
+    type_info_t to   = new_type;
 
     procedure_match_result_t res = find_cast_procedure(from, to);
     if (res.success) {
@@ -2747,7 +2825,7 @@ static bool convert_node(ast_node_t* node, md_type_info_t new_type, eval_context
 }
 
 
-static bool finalize_type_proc(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
+static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(type);
     ASSERT(node);
     ASSERT(ctx);
@@ -2789,7 +2867,7 @@ static bool finalize_type_proc(md_type_info_t* type, const ast_node_t* node, eva
     return true;
 }
 
-static bool finalize_type_array(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
+static bool finalize_type_array(type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(type);
     ASSERT(node);
     ASSERT(ctx);
@@ -2799,7 +2877,7 @@ static bool finalize_type_array(md_type_info_t* type, const ast_node_t* node, ev
     const int64_t num_children = md_array_size(node->children);
     int length = 0;
     for (int64_t i = 0; i < num_children; ++i) {
-        md_type_info_t c_type = children[i]->data.type;
+        type_info_t c_type = children[i]->data.type;
         if (is_variable_length(c_type)) {
             if (!finalize_type(&c_type, children[i], ctx)) {
                 return false;
@@ -2817,7 +2895,7 @@ static bool finalize_type_array(md_type_info_t* type, const ast_node_t* node, ev
 }
 
 // This should be invoked whenever we have an variable length type and we need to determine what the node evaluates into within the current context / state
-static bool finalize_type(md_type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
+static bool finalize_type(type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(type);
     ASSERT(node);
     ASSERT(ctx);
@@ -2996,7 +3074,7 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
         const int64_t num_args = md_array_size(node->children);
         ast_node_t** arg = node->children;
 
-        md_type_info_t arg_type[2] = {arg[0]->data.type, num_args > 1 ? arg[1]->data.type : (md_type_info_t){0}};
+        type_info_t arg_type[2] = {arg[0]->data.type, num_args > 1 ? arg[1]->data.type : (type_info_t){0}};
         procedure_match_result_t res = find_operator_supporting_arg_types(node->type, arg_type, num_args, true);
         if (res.success) {
             if (num_args == 2) {
@@ -3040,11 +3118,11 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         result = static_check_children(node, ctx);
         if (result) {
             const uint64_t num_args = md_array_size(node->children);
-            const str_t proc_name = node->token.str;
+            const str_t proc_name = node->ident;
 
             // One or more arguments
             ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
-            md_type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS] = {0};
+            type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS] = {0};
 
             for (uint64_t i = 0; i < num_args; ++i) {
                 arg_type[i] = node->children[i]->data.type;
@@ -3142,12 +3220,12 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         ast_node_t**      elem = node->children;
 
         int64_t array_len = 0;
-        md_type_info_t array_type = {0};
+        type_info_t array_type = {0};
         md_unit_t array_unit = {0};
         
         // Pass 1: find a suitable base_type for the array
         for (int64_t i = 0; i < num_elem; ++i) {
-            md_type_info_t elem_type = type_info_element_type(elem[i]->data.type);
+            type_info_t elem_type = type_info_element_type(elem[i]->data.type);
 
             if (is_variable_length(elem[i]->data.type)) {
                 array_len = -1;
@@ -3188,7 +3266,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
         // Pass 2: Perform implicit conversions of nodes if required
         for (int64_t i = 0; i < num_elem; ++i) {
-            md_type_info_t converted_type = array_type;
+            type_info_t converted_type = array_type;
             converted_type.dim[converted_type.len_dim] = (int32_t)type_info_array_len(elem[i]->data.type);
 
             if (!is_type_directly_compatible(elem[i]->data.type, converted_type) &&
@@ -3344,7 +3422,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
 
         /*
         if (is_variable_length(rhs->data.type)) {
-            create_error(ctx->ir, rhs->token, "Right hand side of assignment has variable length, assignments can only be made with arguments of known length");
+            create_error(ctx->ir, rhs->marker, "Right hand side of assignment has variable length, assignments can only be made with arguments of known length");
             return false;
         }
         */
@@ -3458,7 +3536,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                             return false;
                         }
 
-                        md_type_info_t type = lhs->data.type;
+                        type_info_t type = lhs->data.type;
 
                         if (lhs->flags & FLAG_DYNAMIC_LENGTH) {
                             if (!finalize_type(&type, lhs, &local_ctx)) {
@@ -3550,6 +3628,54 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     return false;
 }
 
+static uint64_t inline hash64(const char* key, uint64_t len) {
+    // Murmur one at a time
+    uint64_t h = 525201411107845655ull;
+    for (uint64_t i = 0; i < len; ++i) {
+        h ^= key[i];
+        h *= 0x5bd1e9955bd1e995;
+        h ^= h >> 47;
+    }
+    return h;
+}
+
+static uint64_t hash_node(const ast_node_t*);
+
+static uint64_t hash_children(const ast_node_t* node) {
+    uint64_t hash = 127365712389ull;
+    for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+        hash ^= hash_node(node->children[i]);
+    }
+    return hash;
+}
+
+static uint64_t hash_node(const ast_node_t* node) {
+    ASSERT(node);
+    switch (node->type) {
+    case AST_CONSTANT_VALUE:
+        switch (node->data.type.base_type) {
+        case TYPE_BITFIELD:
+        {
+            const md_bitfield_t* bf = (const md_bitfield_t*)node->data.ptr;
+            return md_bitfield_hash(bf);
+        }
+        case TYPE_STRING:
+        {
+            const str_t* str = (const str_t*)node->data.ptr;
+            return hash64(str->ptr, str->len);
+        }
+        default:
+            return hash64(node->data.ptr, node->data.size);
+        }
+    case AST_IDENTIFIER:
+        return hash64(node->ident.ptr, node->ident.len);
+    case AST_PROC_CALL:
+        return hash64(node->ident.ptr, node->ident.len) ^ hash_children(node);
+    default:
+        return hash_children(node);
+    }
+}
+
 // Prunes the tree from AST_EXPRESSION, since that is just an unnecessary indirection for sorting the tree correctly on precedence
 static ast_node_t* prune_expressions(ast_node_t* node) {
     if (node) {
@@ -3595,7 +3721,7 @@ static bool parse_script(md_script_ir_t* ir) {
         if (node) {
             tok = tokenizer_consume_next(ctx.tokenizer);
             if (tok.type != ';') {
-                create_error(ir, tok, "Missing ';' to mark end of statement.");
+                create_error(ir, node->token, "Missing ';' to mark end of statement.");
                 continue;
             }
 
@@ -3619,7 +3745,7 @@ static bool parse_script(md_script_ir_t* ir) {
                 md_array_push(ir->expressions, expr, ir->arena);
             //}
             //else {
-            //    create_error(ir, node->token, "Every parsed expression should end up being assigned to a unique identifier.");
+            //    create_error(ir, node->marker, "Every parsed expression should end up being assigned to a unique identifier.");
             //    result = false;
             //}
         } else {
@@ -3681,19 +3807,19 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
     return true;
 }
 
-static inline bool is_temporal_type(md_type_info_t ti) {
+static inline bool is_temporal_type(type_info_t ti) {
     return (ti.base_type == TYPE_FLOAT && ti.dim[0] > 0 && ti.dim[1] == 0);
 }
 
-static inline bool is_distribution_type(md_type_info_t ti) {
+static inline bool is_distribution_type(type_info_t ti) {
     return (ti.base_type == TYPE_FLOAT && ti.dim[0] == DIST_BINS && ti.dim[1] > 0 && ti.dim[2] == 0);
 }
 
-static inline bool is_volume_type(md_type_info_t ti) {
+static inline bool is_volume_type(type_info_t ti) {
     return (ti.base_type == TYPE_FLOAT && ti.dim[0] == VOL_DIM && ti.dim[1] == VOL_DIM && ti.dim[2] == VOL_DIM && ti.dim[3] > 0);
 }
 
-static inline bool is_property_type(md_type_info_t ti) {
+static inline bool is_property_type(type_info_t ti) {
     return is_temporal_type(ti) || is_distribution_type(ti) || is_volume_type(ti);
 }
 
@@ -3773,7 +3899,7 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     return result;
 }
 
-static void allocate_property_data(md_script_property_t* prop, md_type_info_t type, int64_t num_frames, md_allocator_i* alloc) {
+static void allocate_property_data(md_script_property_t* prop, type_info_t type, int64_t num_frames, md_allocator_i* alloc) {
     int64_t num_values = 0;
     memcpy(prop->data.dim, type.dim, sizeof(type.dim));
 
@@ -3851,7 +3977,7 @@ static void init_property(md_script_property_t* prop, int64_t num_frames, str_t 
     prop->ident = str_copy(ident, alloc);
     prop->flags = 0;
     prop->data = (md_script_property_data_t){0};
-    prop->vis_token = (struct md_script_vis_token_t*)node;
+    prop->vis_payload = (const md_script_vis_payload_t*)node;
     prop->data.unit = node->data.unit;
 
     if (is_temporal_type(node->data.type)) {
@@ -4047,7 +4173,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         }
 
         for (int64_t i = 0; i < num_expr; ++i) {
-            md_type_info_t type = expr[i]->node->data.type;
+            type_info_t type = expr[i]->node->data.type;
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, expr[i]->node, &ctx)) {
                     md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s', failed to finalize its type", expr[i]->ident->name.len, expr[i]->ident->name.ptr);
@@ -4230,8 +4356,8 @@ static void free_ir(md_script_ir_t* ir) {
     }
 }
 
-static void create_tokens(md_script_ir_t* ir, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
-    md_script_token_t token = {0};
+static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
+    md_script_vis_token_t vis = {0};
 
     ASSERT(node->type != AST_UNDEFINED);
 
@@ -4258,32 +4384,35 @@ static void create_tokens(md_script_ir_t* ir, const ast_node_t* node, const ast_
         len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "(%.*s, %.*s)", type_len, type_buf, unit_len, unit_buf);
     }
 
-    token.line = node->token.line;
-    token.col_beg = node->token.col_beg;
-    token.col_end = node->token.col_end;
-    token.depth = depth;
-    token.vis_token = (const struct md_script_vis_token_t*)(node_override ? node_override : node);
-    token.text = str_copy((str_t){.ptr = buf, .len = len}, ir->arena);
+    vis.range.beg = node->token.beg;
+    vis.range.end = node->token.end;
+    vis.depth = depth;
+    vis.text = str_copy((str_t){.ptr = buf, .len = len}, ir->arena);
+    vis.payload = (const struct md_script_vis_payload_t*)(node_override ? node_override : node);
 
-    // Parent token should be last token added (unless empty)
-    md_script_token_t* last_token = md_array_last(ir->tokens);
-    if (last_token && token.line == last_token->line && token.col_beg == last_token->col_beg && token.col_end == last_token->col_end) {
-        // If the current token has the exact same line, col_beg and col_end, we only want to update the text, not the payload (the node)
-        // since we will evaluate that top down anyways. Otherwise, visualizations for position extraction casts will not be triggered.
-        last_token->text = token.text;
+    // Parent marker should be last marker added (unless empty)
+    md_script_vis_token_t* last = md_array_last(ir->vis_tokens);
+    if (last &&
+        vis.range.beg == last->range.beg &&
+        vis.range.end == last->range.end)
+    {
+        // If the current marker has the exact same line, col_beg and col_end, we only want to update the text, not the payload (the node)
+        // since we will evaluate that top down anyways.
+        // This is to deal with 'casts' which have the same marker size, but shadow the actual operation we want to visualize
+        last->text = vis.text;
     } else {
-        md_array_push(ir->tokens, token, ir->arena);
+        md_array_push(ir->vis_tokens, vis, ir->arena);
     }
 
     // Recurse and add children
     const int64_t num_children = md_array_size(node->children);
     if (node->type == AST_CONTEXT) {
         ASSERT(num_children == 2);
-        create_tokens(ir, node->children[0], node, depth + 1);
-        create_tokens(ir, node->children[1], NULL, depth + 1);
+        create_vis_tokens(ir, node->children[0], node, depth + 1);
+        create_vis_tokens(ir, node->children[1], NULL, depth + 1);
     } else {
         for (int64_t i = 0; i < num_children; ++i) {
-            create_tokens(ir, node->children[i], NULL, depth + 1);
+            create_vis_tokens(ir, node->children[i], NULL, depth + 1);
         }
     }
 }
@@ -4292,7 +4421,7 @@ bool extract_tokens(md_script_ir_t* ir) {
     const int64_t num_expr = md_array_size(ir->type_checked_expressions);
     for (int64_t i = 0; i < num_expr; ++i) {
         expression_t* expr = ir->type_checked_expressions[i];
-        create_tokens(ir, expr->node, NULL, 0);
+        create_vis_tokens(ir, expr->node, NULL, 0);
     }
 
     return true;
@@ -4340,7 +4469,15 @@ bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const md_molecul
     //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
 #endif
 
-    ir->fingerprint = generate_fingerprint();
+    ir->fingerprint = 89017241625762ull;
+    const int64_t num_expr = md_array_size(ir->type_checked_expressions);
+    for (int64_t i = 0; i < num_expr; ++i) {
+        uint64_t hash = hash_node(ir->type_checked_expressions[i]->node);
+        md_printf(MD_LOG_TYPE_DEBUG, "%llu", hash);
+        ir->fingerprint ^= hash;
+    }
+    md_print(MD_LOG_TYPE_DEBUG, "---");
+
 
     return ir->compile_success;
 }
@@ -4354,7 +4491,7 @@ bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_b
     if (bitfield_identifiers && count > 0) {
         for (int64_t i = 0; i < count; ++i) {
             str_t name = bitfield_identifiers[i].identifier_name;
-            if (!md_script_valid_identifier_name(name)) {
+            if (!md_script_identifier_name_valid(name)) {
                 md_printf(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: Invalid identifier name: '%.*s')", (int)name.len, name.ptr);
                 return false;
             }
@@ -4368,7 +4505,7 @@ bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_b
             ast_node_t* node = create_node(ir, AST_CONSTANT_VALUE, (token_t){0});
             node->data.ptr = &node->value._bitfield;
             node->data.size = sizeof(md_bitfield_t);
-            node->data.type = (md_type_info_t)TI_BITFIELD;
+            node->data.type = (type_info_t)TI_BITFIELD;
             md_bitfield_init(&node->value._bitfield, ir->arena);
             md_bitfield_copy(&node->value._bitfield, bitfield_identifiers[i].bitfield);
 
@@ -4407,18 +4544,18 @@ const md_script_error_t* md_script_ir_errors(const md_script_ir_t* ir) {
     return ir->errors;
 }
 
-int64_t md_script_ir_num_tokens(const md_script_ir_t* ir) {
+int64_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return 0;
     }
-    return md_array_size(ir->tokens);
+    return md_array_size(ir->vis_tokens);
 }
 
-const md_script_token_t* md_script_ir_tokens(const md_script_ir_t* ir) {
+const md_script_vis_token_t* md_script_ir_vis_tokens(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return NULL;
     }
-    return ir->tokens;
+    return ir->vis_tokens;
 }
 
 bool md_script_ir_valid(const md_script_ir_t* ir) {
@@ -4599,7 +4736,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
 
     if (ir->errors) {
         for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
-            md_printf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].error.len, ir->errors[i].error.ptr);
+            md_printf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
         }
     }
 
@@ -4699,7 +4836,7 @@ bool md_filter_evaluate(md_filter_result_t* result, str_t expr, const md_molecul
     int64_t len = 0;
     for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
         int64_t space_left = MAX(0, (int64_t)sizeof(result->error_buf) - len);
-        if (space_left) len += snprintf(result->error_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
+        if (space_left) len += snprintf(result->error_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
     }
 
     FREE_TEMP_ALLOC();
@@ -4807,7 +4944,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
     int64_t len = 0;
     for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
         int space_left = MAX(0, (int)(err_cap - len));
-        if (space_left) len += snprintf(err_buf + len, (size_t)space_left, "%.*s\n", (int)ir->errors[i].error.len, ir->errors[i].error.ptr);
+        if (space_left) len += snprintf(err_buf + len, (size_t)space_left, "%.*s\n", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
     }
 
     FREE_TEMP_ALLOC();
@@ -4816,6 +4953,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
 
 #define VIS_MAGIC 0xbc6169abd9628947
 
+/*
 static md_range_t node_range(const ast_node_t* node) {
     md_range_t range = {node->token.col_beg, node->token.col_end};
     const int64_t num_children = md_array_size(node->children);
@@ -4853,6 +4991,7 @@ static const ast_node_t* get_node(const ast_node_t* node, int32_t col) {
 
     return result;
 }
+*/
 
 static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
     if (node->type == AST_IDENTIFIER) {
@@ -4869,7 +5008,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
     if (node->data.type.base_type == TYPE_BITFIELD) {
         data_t data = {0};
 
-        md_type_info_t type = node->data.type;
+        type_info_t type = node->data.type;
         if (is_variable_length(type)) {
             if (!finalize_type(&type, node, ctx)) {
                 md_print(MD_LOG_TYPE_DEBUG, "Vis Eval: Failed to finalize type for variable length expression");
@@ -4917,7 +5056,7 @@ static void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
 
 bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visualization_args_t args) {
     ASSERT(vis);
-    if (!args.token) return false;
+    if (!args.payload) return false;
     if (!args.mol) return false;
     if (!args.ir) return false;
     if (!args.alloc) return false;
@@ -4980,7 +5119,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     };
     vis->atom_mask = &vis->o->atom_mask;
 
-    visualize_node((ast_node_t*)args.token, &ctx);
+    visualize_node((ast_node_t*)args.payload, &ctx);
 
     // This just to see that we conceptually did not make any errors when evaluating sub_contexts
     ASSERT(vis->atom_mask == &vis->o->atom_mask);
@@ -5001,6 +5140,21 @@ bool md_script_visualization_free(md_script_visualization_t* vis) {
         md_arena_allocator_destroy(vis->o->alloc);
     }
     memset(vis, 0, sizeof(md_script_visualization_t));
+
+    return true;
+}
+
+bool md_script_identifier_name_valid(str_t ident) {
+    if (!ident.ptr) return false;
+    if (!ident.len) return false;
+
+    const char* beg = str_beg(ident);
+    const char* end = str_end(ident);
+
+    if (!is_alpha(*beg) && *beg != '_') return false;
+    for (const char* c = beg + 1; c < end; ++c) {
+        if (!is_alpha(*c) && (*c != '_') && !is_digit(*c)) return false;
+    }
 
     return true;
 }

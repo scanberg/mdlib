@@ -199,7 +199,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst); \
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
-        ASSERT(is_type_equivalent(arg[1].type, (md_type_info_t)TI_FLOAT)); \
+        ASSERT(is_type_equivalent(arg[1].type, (type_info_t)TI_FLOAT)); \
         int64_t count = type_info_element_stride_count(arg[0].type); \
         ASSERT(count % md_simd_widthf == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
@@ -929,14 +929,14 @@ static inline irange_t get_chain_range_in_context(const md_molecule_t* mol, cons
 }
 
 static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
     if (element_count(arg) == 0) return 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
     const int64_t ctx_size = ctx_range.end - ctx_range.beg;
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
-        ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
+        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         return (int)type_info_array_len(arg.type);
     case TYPE_INT: {
         int* indices = as_int_arr(arg);
@@ -1003,7 +1003,7 @@ static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
 }
 
 static void position_visualize(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
     ASSERT(ctx->vis);
 
     if (element_count(arg) == 0) return;
@@ -1011,7 +1011,7 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
-        ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
+        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
             const vec3_t* pos = as_vec3_arr(arg);
             const int64_t len = element_count(arg);
@@ -1080,13 +1080,13 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
 }
 
 static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
     vec3_t* positions = 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
-        ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
+        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         md_array_push_array(positions, as_vec3_arr(arg), element_count(arg), ctx->temp_alloc);
         break;
     case TYPE_INT: {
@@ -1169,13 +1169,13 @@ static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
 }
 
 static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
     vec4_t sum = { 0 };
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT: {
-        ASSERT(is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR));
+        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         vec3_t* positions = as_vec3_arr(arg);
         for (int64_t i = 0; i < element_count(arg); ++i) {
             vec4_add(sum, vec4_from_vec3(positions[i], 1.0f));
@@ -1330,8 +1330,8 @@ static bool validate_query(str_t query) {
 // @TODO: Add more here
 
 static int _min_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT_ARR));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     const float* src = as_float_arr(arg[0]);
@@ -1349,8 +1349,8 @@ static int _min_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT_ARR));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     const float* src = as_float_arr(arg[0]);
@@ -1368,8 +1368,8 @@ static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _not  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
 
     md_bitfield_t* bf_dst = dst->ptr;
@@ -1389,9 +1389,9 @@ static int _not  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _and  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
 
     md_bitfield_t* bf_dst = dst->ptr;
@@ -1406,9 +1406,9 @@ static int _and  (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _or   (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
 
     md_bitfield_t* bf_dst = dst->ptr;
@@ -1423,9 +1423,9 @@ static int _or   (data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _xor(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     (void)ctx;
 
     md_bitfield_t* bf_dst = dst->ptr;
@@ -1440,9 +1440,9 @@ static int _xor(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _dot(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT_ARR));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
     float* a = (float*)arg[0].ptr;
     float* b = (float*)arg[1].ptr;
@@ -1455,9 +1455,9 @@ static int _dot(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cross(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT3));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT3));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT3));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT3));
     (void)ctx;
 
     float* a = (float*)arg[0].ptr;
@@ -1471,8 +1471,8 @@ static int _cross(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _length(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT_ARR));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
     (void)ctx;
 
     float* a = (float*)arg[0].ptr;
@@ -1487,9 +1487,9 @@ static int _length(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 
 static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT44));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT44));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT44));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT44));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT44));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT44));
     (void)ctx;
 
     // The type system should already have covered this, we are only reading data we know exists.
@@ -1502,9 +1502,9 @@ static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _mat4_mul_vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type,   (md_type_info_t)TI_FLOAT4));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT44));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT4));
+    ASSERT(dst && is_type_equivalent(dst->type,   (type_info_t)TI_FLOAT4));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT44));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT4));
     (void)ctx;
 
     // The type system should already have covered this, we are only reading data we know exists.
@@ -1517,9 +1517,9 @@ static int _mat4_mul_vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec2(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT2));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT2));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     float (*res) = (float*)dst->ptr;
@@ -1529,10 +1529,10 @@ static int _vec2(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT3));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT3));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     float (*res) = (float*)dst->ptr;
@@ -1543,11 +1543,11 @@ static int _vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT4));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[3].type, (md_type_info_t)TI_FLOAT));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_FLOAT4));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_FLOAT));
 
     (void)ctx;
     float (*res) = (float*)dst->ptr;
@@ -1560,7 +1560,7 @@ static int _vec4(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
-        ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         (void)arg;
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
         md_bitfield_set_range(bf, 0, ctx->mol->atom.count);
@@ -1572,7 +1572,7 @@ static int _all(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_STRING_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.name);
 
     const str_t* str = as_string_arr(arg[0]);
@@ -1580,7 +1580,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
 
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
@@ -1620,7 +1620,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_STRING_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
     ASSERT(ctx && ctx->mol);
 
     if (!ctx->mol->atom.element) {
@@ -1654,7 +1654,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
 
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
@@ -1687,7 +1687,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.element);
 
     irange_t* ranges = as_irange_arr(arg[0]);
@@ -1695,7 +1695,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        ASSERT(dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
@@ -1790,24 +1790,24 @@ static int coordinate_range(data_t* dst, eval_context_t* ctx, frange_t range_x, 
 }
 
 static int _within_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     return coordinate_range(dst, ctx, as_frange(arg[0]), (frange_t){-FLT_MAX, FLT_MAX}, (frange_t){-FLT_MAX, FLT_MAX});
 }
 
 static int _within_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     return coordinate_range(dst, ctx, (frange_t){-FLT_MAX, FLT_MAX}, as_frange(arg[0]), (frange_t){-FLT_MAX, FLT_MAX});
 }
 
 static int _within_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
     return coordinate_range(dst, ctx, (frange_t){-FLT_MAX, FLT_MAX}, (frange_t){-FLT_MAX, FLT_MAX}, as_frange(arg[0]));
 }
 
 static int _within_xyz(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FRANGE));
     return coordinate_range(dst, ctx, as_frange(arg[0]), as_frange(arg[1]), as_frange(arg[2]));
 }
 
@@ -1820,8 +1820,8 @@ static bool within_float_iter(uint32_t idx, vec3_t pos, void* user_data) {
 
 static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
 
     const float radius = as_float(arg[0]);
 
@@ -1830,7 +1830,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const int64_t num_pos = md_array_size(in_pos);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             for (int64_t i = 0; i < num_pos; ++i) {
                 md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
@@ -1859,7 +1859,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
 
     const float radius = as_float(arg[0]);
 
@@ -1870,7 +1870,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const int64_t num_pos = md_array_size(in_pos);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             for (int64_t i = 0; i < num_pos; ++i) {
                 // @TODO: Should be periodic if applicable
@@ -1920,8 +1920,8 @@ static bool within_frng_iter(uint32_t idx, vec3_t pos, void* user_data) {
 
 static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
 
     const frange_t rad_range = as_frange(arg[0]);
 
@@ -1930,7 +1930,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const int64_t num_pos = element_count(arg[1]);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             within_frng_payload_t payload = {
                 .bf = dst_bf,
@@ -1969,7 +1969,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
 
     const frange_t rad_range = as_frange(arg[0]);
 
@@ -1979,7 +1979,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const int64_t num_pos = md_array_size(in_pos);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             within_frng_payload_t payload = {
                 .bf = dst_bf,
@@ -2021,7 +2021,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     ASSERT(ctx && ctx->mol);
 
     const int64_t num_ranges = element_count(arg[0]);
@@ -2029,7 +2029,7 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        ASSERT(dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
 
         for (int64_t i = 0; i < num_ranges; ++i) {
@@ -2060,7 +2060,7 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
     ASSERT(ctx && ctx->mol);
 
     const int64_t num_indices = element_count(arg[0]);
@@ -2068,7 +2068,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        ASSERT(dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = 0; i < num_indices; ++i) {
             int32_t idx = remap_index_to_context(indices[i], ctx_range);
@@ -2099,7 +2099,7 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const md_element_t* elem = ctx->mol->atom.element;
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
+        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         const int64_t capacity = type_info_array_len(dst->type);
         (void)capacity;
 
@@ -2154,7 +2154,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int64_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
+        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
         const int64_t capacity = type_info_array_len(dst->type);
         int64_t dst_idx = 0;
@@ -2199,7 +2199,7 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int64_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
+        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             const md_range_t range = ctx->mol->residue.atom_range[res_indices[i]];
@@ -2293,7 +2293,7 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->residue.atom_range);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     int result = 0;
 
@@ -2305,7 +2305,7 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int32_t ctx_size = ctx_range.end - ctx_range.beg;
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
             const int64_t capacity = type_info_array_len(dst->type);
@@ -2351,7 +2351,7 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     const int64_t num_bf = element_count(arg[0]);
     const md_bitfield_t* src_bf = as_bitfield(arg[0]);
 
@@ -2402,7 +2402,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
 
     const int64_t num_bf = element_count(arg[0]);
     const md_bitfield_t* src_bf = as_bitfield(arg[0]);
@@ -2449,7 +2449,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_STRING_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     int result = 0;
 
@@ -2466,7 +2466,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int64_t res_count = md_array_size(res_indices);
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
             const int64_t capacity = type_info_array_len(dst->type);
@@ -2528,7 +2528,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     int result = 0;
 
@@ -2544,7 +2544,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int64_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
             const int64_t capacity = type_info_array_len(dst->type);
@@ -2597,7 +2597,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     if (ctx->mol->chain.count == 0 || !ctx->mol->chain.atom_range) {
         create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
@@ -2612,7 +2612,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const int32_t ctx_size = ctx_range.end - ctx_range.beg;
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
             const int64_t capacity = type_info_array_len(dst->type);
@@ -2657,7 +2657,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_STRING_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     if (ctx->mol->chain.count == 0 || !ctx->mol->chain.id) {
         create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
@@ -2671,7 +2671,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int64_t* chain_indices = get_chain_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_BITFIELD_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
             const int64_t capacity = type_info_array_len(dst->type);
@@ -2728,15 +2728,15 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst || ctx->vis) {
         vec3_t a = position_extract_com(arg[0], ctx);
         vec3_t b = position_extract_com(arg[1], ctx);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));            
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));            
             if (ctx->frame_header) {
                 vec4_t vp = vec4_from_vec3(mat3_mul_vec3(ctx->frame_header->box, (vec3_t){1,1,1}), 1.0f);
                 vec4_t va = vec4_from_vec3(a, 0.0f);
@@ -2776,8 +2776,8 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst || ctx->vis) {
         const vec3_t* a_pos = position_extract(arg[0], ctx);
@@ -2800,7 +2800,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
             as_float(*dst) = min_dist;
         }
         else {
@@ -2836,8 +2836,8 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst || ctx->vis) {
         const vec3_t* a_pos = position_extract(arg[0], ctx);
@@ -2860,7 +2860,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
             as_float(*dst) = max_dist;
         } else {
             ASSERT(ctx->vis);
@@ -2893,13 +2893,13 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
     
     int result = 0;
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
 
         vec3_t* a_pos = position_extract(arg[0], ctx);
         vec3_t* b_pos = position_extract(arg[1], ctx);
@@ -2954,9 +2954,9 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_POSITION_ARR));
     
     if (dst) {
         const vec3_t a = position_extract_com(arg[0], ctx);
@@ -2965,7 +2965,7 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const vec3_t v0 = vec3_normalize(vec3_sub(a, b));
         const vec3_t v1 = vec3_normalize(vec3_sub(c, b));
 
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
         as_float(*dst) = acosf(vec3_dot(v0, v1));
     } else if (ctx->vis) {
         position_visualize(arg[0], ctx);
@@ -3009,13 +3009,13 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[3].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
         const vec3_t a = position_extract_com(arg[0], ctx);
         const vec3_t b = position_extract_com(arg[1], ctx);
         const vec3_t c = position_extract_com(arg[2], ctx);
@@ -3067,13 +3067,13 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_equivalent(arg[0].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(is_type_equivalent(arg[0].type, (type_info_t)TI_BITFIELD));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.mass);
 
     bool result = 0;
 
     if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_FLOAT));
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
         ASSERT(ctx->initial_configuration.x && ctx->initial_configuration.y && ctx->initial_configuration.z);
 
         if (dst->ptr) {
@@ -3138,32 +3138,32 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // #################
 
 static int _cast_int_to_flt(data_t* dst, data_t arg[], eval_context_t* ctx){
-    ASSERT(dst && type_info_equal(dst->type, (md_type_info_t)TI_FLOAT));
-    ASSERT(type_info_equal(arg[0].type, (md_type_info_t)TI_INT));
+    ASSERT(dst && type_info_equal(dst->type, (type_info_t)TI_FLOAT));
+    ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_INT));
     (void)ctx;
     as_float(*dst) = (float)as_int(arg[0]);
     return 0;
 }
 
 static int _cast_int_to_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && type_info_equal(dst->type, (md_type_info_t)TI_IRANGE));
-    ASSERT(type_info_equal(arg[0].type, (md_type_info_t)TI_INT));
+    ASSERT(dst && type_info_equal(dst->type, (type_info_t)TI_IRANGE));
+    ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_INT));
     (void)ctx;
     as_irange(*dst) = (irange_t){as_int(arg[0]), as_int(arg[0])};
     return 0;
 }
 
 static int _cast_irng_to_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && type_info_equal(dst->type, (md_type_info_t)TI_FRANGE));
-    ASSERT(type_info_equal(arg[0].type, (md_type_info_t)TI_IRANGE));
+    ASSERT(dst && type_info_equal(dst->type, (type_info_t)TI_FRANGE));
+    ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_IRANGE));
     (void)ctx;
     as_frange(*dst) = (frange_t){(float)as_irange(arg[0]).beg, (float)as_irange(arg[0]).end};
     return 0;
 }
 
 static int _cast_int_arr_to_irng_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_IRANGE_ARR));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_IRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
     ASSERT(dst_len == element_count(arg[0]));
@@ -3179,8 +3179,8 @@ static int _cast_int_arr_to_irng_arr(data_t* dst, data_t arg[], eval_context_t* 
 }
 
 static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
     ASSERT(dst_len == element_count(arg[0]));
@@ -3195,8 +3195,8 @@ static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* c
 }
 
 static int _cast_irng_arr_to_frng_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (md_type_info_t)TI_FRANGE_ARR));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
+    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_FRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
     ASSERT(dst_len == element_count(arg[0]));
@@ -3212,7 +3212,7 @@ static int _cast_irng_arr_to_frng_arr(data_t* dst, data_t arg[], eval_context_t*
 }
 
 static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_INT_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
     ASSERT(arg[0].ptr);
 
     int result = 0;
@@ -3225,7 +3225,7 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // The idea here is that if we have a context, we only make sure to add the indices which are represented within the context.
 
     if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
        
         for (int64_t i = 0; i < num_idx; ++i) {
@@ -3258,7 +3258,7 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_IRANGE_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     ASSERT(arg[0].ptr);
 
     int result = 0;
@@ -3269,7 +3269,7 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
     const int32_t ctx_size = ctx_range.end - ctx_range.beg;
 
     if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = 0; i < num_ranges; ++i) {
             irange_t range = clamp_range(remap_range_to_context(ranges[i], ctx_range), ctx_range);
@@ -3304,8 +3304,8 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
 
 static int _flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
-    ASSERT(dst && is_type_equivalent(dst->type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
+    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
 
     md_bitfield_t* dst_bf = as_bitfield(*dst);
     const md_bitfield_t* src_bf_arr = (md_bitfield_t*)arg[0].ptr;
@@ -3319,10 +3319,10 @@ static int _flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(type_info_equal(dst->type, (md_type_info_t)TI_FLOAT3));
+        ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT3));
         as_vec3(*dst) = position_extract_com(arg[0], ctx);
     } else if (ctx->vis) {
         position_visualize(arg[0], ctx);
@@ -3343,12 +3343,12 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int64_t extract_xyz_from_arg(vec3_t** xyz, data_t arg, eval_context_t* ctx) {    
-    if (is_type_directly_compatible(arg.type, (md_type_info_t)TI_FLOAT3_ARR)) {
+    if (is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR)) {
         // Nothing to do!
         if (*xyz) *xyz = arg.ptr;
         return element_count(arg);
     }
-    else if (is_type_directly_compatible(arg.type, (md_type_info_t)TI_BITFIELD_ARR)) {
+    else if (is_type_directly_compatible(arg.type, (type_info_t)TI_BITFIELD_ARR)) {
         const md_bitfield_t* bf_arr = as_bitfield(arg);
         int64_t count = 0;
         md_bitfield_t tmp_bf = {0};
@@ -3373,7 +3373,7 @@ static int64_t extract_xyz_from_arg(vec3_t** xyz, data_t arg, eval_context_t* ct
             }
         }
     }
-    else if (is_type_directly_compatible(arg.type, (md_type_info_t)TI_INT_ARR)) {
+    else if (is_type_directly_compatible(arg.type, (type_info_t)TI_INT_ARR)) {
         int32_t* indices = as_int_arr(arg);
         for (int64_t i = 0; i < element_count(arg); ++i) {
             int32_t idx = indices[i];
@@ -3381,7 +3381,7 @@ static int64_t extract_xyz_from_arg(vec3_t** xyz, data_t arg, eval_context_t* ct
             md_array_push(*xyz, p, ctx->temp_alloc);
         }
     }
-    else if (is_type_directly_compatible(arg.type, (md_type_info_t)TI_IRANGE_ARR)) {
+    else if (is_type_directly_compatible(arg.type, (type_info_t)TI_IRANGE_ARR)) {
         for (int64_t i = 0; i < element_count(arg); ++i) {
             
         }
@@ -3392,7 +3392,7 @@ static int64_t extract_xyz_from_arg(vec3_t** xyz, data_t arg, eval_context_t* ct
 }
 
 static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
     (void)ctx;
 
     const vec3_t* in_pos = position_extract(arg[0], ctx);
@@ -3418,7 +3418,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec4_t plane = {normal.x, normal.y, normal.z, d};
 
         if (dst) {
-            ASSERT(type_info_equal(dst->type, (md_type_info_t)TI_FLOAT4));
+            ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT4));
             as_vec4(*dst) = plane;
         }
 
@@ -3459,10 +3459,10 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT3_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
         memcpy(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
@@ -3476,10 +3476,10 @@ static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _position_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
         float* x = as_float_arr(*dst);
@@ -3496,10 +3496,10 @@ static int _position_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _position_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
         float* y = as_float_arr(*dst);
@@ -3516,10 +3516,10 @@ static int _position_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _position_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
         float* z = as_float_arr(*dst);
@@ -3536,10 +3536,10 @@ static int _position_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _position_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT2_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
         
@@ -3557,10 +3557,10 @@ static int _position_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _position_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT2_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
 
@@ -3578,10 +3578,10 @@ static int _position_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _position_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT2_ARR));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
 
@@ -3748,7 +3748,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
         const int64_t trg_len = md_array_size(trg_pos);
         
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_DISTRIBUTION));
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_DISTRIBUTION));
             ASSERT(dst->ptr);
             float* bins = as_float_arr(*dst);
             if (ref_len > 0 && trg_len > 0) {
@@ -3790,28 +3790,28 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
 }
 
 static int _rdf_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
     const float cutoff = as_float(arg[2]);
     return internal_rdf(dst, arg, 0, cutoff, ctx);
 }
 
 static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FRANGE));
 
     const frange_t cutoff = as_frange(arg[2]);
     return internal_rdf(dst, arg, cutoff.beg, cutoff.end, ctx);
 }
 
 static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (md_type_info_t)TI_FLOAT));
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
         const int64_t count = position_validate(arg[0], 0, ctx);
         as_float(*dst) = (float)count;
     }
@@ -3923,9 +3923,9 @@ bool sdf_iter(uint32_t idx, vec3_t xyz, void* user_param) {
 
 static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[2].type, (md_type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
     ASSERT(arg[0].ptr);
     ASSERT(arg[1].ptr);
     ASSERT(arg[2].ptr);
@@ -3959,7 +3959,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         float* vol = 0;
         if (dst) {
             ASSERT(dst->ptr);
-            ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_VOLUME));
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_VOLUME));
             vol = as_float_arr(*dst);
         }
 
@@ -4114,12 +4114,12 @@ static int32_t greedy_align(const md_bitfield_t* a, const md_bitfield_t* b, cons
 }
 
 static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (md_type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[1].type, (md_type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
 
     if (dst) {
         ASSERT(dst->ptr);
-        ASSERT(is_type_equivalent(dst->type, (md_type_info_t)TI_INT_ARR));
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_INT_ARR));
     }
 }
 */

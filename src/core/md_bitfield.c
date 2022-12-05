@@ -993,3 +993,34 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
 
     return true;
 }
+
+// This can certainly be improved!
+// Not really performance critical
+
+static uint64_t inline hash64(const char* key, uint64_t len) {
+    // Murmur one at a time
+    uint64_t h = 525201411107845655ull;
+    for (uint64_t i = 0; i < len; ++i) {
+        h ^= key[i];
+        h *= 0x5bd1e9955bd1e995;
+        h ^= h >> 47;
+    }
+    return h;
+}
+
+uint64_t md_bitfield_hash(const md_bitfield_t* bf) {
+    ASSERT(bf);
+
+    if (bf->beg_bit == bf->end_bit) return 0;
+
+    const uint64_t length = num_blocks(bf->beg_bit, bf->end_bit);
+    const uint64_t offset = block_idx(bf->beg_bit);
+
+    uint64_t hash = 91827481724897189ull;
+    for (uint64_t i = offset; i < offset + length; ++i) {
+        const block_t* blk = get_block_ptr(bf, i);
+        hash *= hash64((const char*)blk->u64, sizeof(blk->u64));
+    }
+
+    return hash;
+}

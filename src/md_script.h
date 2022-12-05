@@ -12,8 +12,19 @@ struct md_molecule_t;
 struct md_trajectory_i;
 struct md_allocator_i;
 
-// This is represents an opaque token of something which can be visualized
-struct md_script_vis_token_t;
+/*
+
+This is currently a giant TURD waiting to be polished into something more user friendly.
+The API is a mess which has not been cleaned up for quite some time and more or less reflects all the quirks and 'Hacks'
+in order to make it work within VIAMD
+@TODO: Clean this shit up!
+
+*/
+
+
+// This is represents an opaque marker of something which can be visualized
+//struct md_script_vis_token_t;
+typedef struct md_script_vis_payload_t md_script_vis_payload_t;
 
 typedef enum md_script_property_flags_t {
     MD_SCRIPT_PROPERTY_FLAG_TEMPORAL        = 0x0001,
@@ -23,25 +34,24 @@ typedef enum md_script_property_flags_t {
     MD_SCRIPT_PROPERTY_FLAG_SDF             = 0x0010,
 } md_script_property_flags_t;
 
-typedef struct md_script_token_t {
-    const struct md_script_vis_token_t* vis_token;
 
-    int32_t line;
-    int32_t col_beg;
-    int32_t col_end;
-    int32_t depth;
+// This represents the byte offset into the script source
+typedef struct md_script_range_marker_t {
+    int beg;
+    int end;
 
+} md_script_range_marker_t;
+
+typedef struct md_script_vis_token_t {
+    md_script_range_marker_t range;
+    int depth;
     str_t text;
-} md_script_token_t;
+    const md_script_vis_payload_t* payload;
+} md_script_vis_token_t;
 
 typedef struct md_script_error_t {
-    // Data for indicating where the error occured within the script string
-    int32_t line;      // Line number
-    int32_t col_beg;   // Column offset
-    int32_t length;    // Length in characters
-
-    // Human readable error message
-    str_t error;
+    md_script_range_marker_t range;
+    str_t text;
 } md_script_error_t;
 
 // Opaque Immediate Representation (compilation result)
@@ -83,7 +93,7 @@ typedef struct md_script_property_t {
     md_script_property_flags_t flags;
     md_script_property_data_t  data;
 
-    const struct md_script_vis_token_t* vis_token; // For visualization of the property
+    const struct md_script_vis_payload_t* vis_payload; // For visualization of the property
 } md_script_property_t;
 
 struct md_script_visualization_o;
@@ -144,7 +154,7 @@ enum {
 typedef uint32_t md_script_visualization_flags_t;
 
 typedef struct md_script_visualization_args_t {
-    const struct md_script_vis_token_t* token;
+    const struct md_script_vis_payload_t* payload;
     const struct md_script_ir_t* ir;
     const struct md_molecule_t* mol;
     const struct md_trajectory_i* traj;
@@ -178,8 +188,8 @@ bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const struct md_
 int64_t md_script_ir_num_errors(const md_script_ir_t* ir);
 const md_script_error_t* md_script_ir_errors(const md_script_ir_t* ir);
 
-int64_t md_script_ir_num_tokens(const md_script_ir_t* ir);
-const md_script_token_t* md_script_ir_tokens(const md_script_ir_t* ir);
+int64_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir);
+const md_script_vis_token_t* md_script_ir_vis_tokens(const md_script_ir_t* ir);
 
 bool md_script_ir_valid(const md_script_ir_t* ir);
 
@@ -227,20 +237,7 @@ bool md_script_visualization_free(md_script_visualization_t* vis);
 
 // ### MISC ###
 
-static inline bool md_script_valid_identifier_name(str_t str) {
-    if (!str.ptr) return false;
-    if (!str.len) return false;
-
-    const char* beg = str.ptr;
-    const char* end = str.ptr + str.len;
-
-    if (!is_alpha(*beg) && *beg != '_') return false;
-    for (const char* c = beg + 1; c < end; ++c) {
-        if (!is_alpha(*c) && (*c != '_') && !is_digit(*c)) return false;
-    }
-
-    return true;
-}
+bool md_script_identifier_name_valid(str_t ident);
 
 #ifdef __cplusplus
 }

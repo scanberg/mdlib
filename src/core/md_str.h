@@ -55,6 +55,14 @@ static inline bool str_empty(str_t str) {
     return str.ptr == 0 || str.len == 0;
 }
 
+static inline const char* str_beg(str_t str) {
+    return str.ptr;
+}
+
+static inline const char* str_end(str_t str) {
+    return str.ptr + str.len;
+}
+
 static inline str_t str_trim_whitespace(str_t str) {
     const char* beg = str.ptr;
     const char* end = str.ptr + str.len;

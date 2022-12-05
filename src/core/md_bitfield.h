@@ -90,6 +90,7 @@ uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 uint64_t md_bitfield_scan_reverse(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
+
 // Copy the contents of the bitfield into an external buffer
 //bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_bitfield_t* src);
 
@@ -109,6 +110,9 @@ uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
 // Deserializes a compressed buffer into a bitfield.
 // User must ensure that the bitfield is properly initialized with an allocator
 bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_bytes);
+
+// Compute hash for the bitfield
+uint64_t md_bitfield_hash(const md_bitfield_t* bf);
 
 #ifdef __cplusplus
 }
