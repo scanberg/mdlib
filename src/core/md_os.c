@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <pthread.h>
 
 #endif
 
