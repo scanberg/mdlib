@@ -233,7 +233,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                     }
                 }
             } else {
-                if (xdr_seek(xd, sh->natoms * DIM * sizeof(double), SEEK_CUR) != exdrOK) {
+                if (xdr_seek(xd, sh->x_size, SEEK_CUR) != exdrOK) {
                     md_print(MD_LOG_TYPE_ERROR, "TRR: Failed to skip coordinate section in frame");
                     return false;
                 }
@@ -254,7 +254,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                     }
                 }
             } else {
-                if (xdr_seek(xd, sh->natoms * DIM * sizeof(double), SEEK_CUR) != exdrOK) {
+                if (xdr_seek(xd, sh->v_size, SEEK_CUR) != exdrOK) {
                     md_print(MD_LOG_TYPE_ERROR, "TRR: Failed to skip velocity section in frame");
                     return false;
                 }
@@ -274,7 +274,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                     }
                 }
             } else {
-                if (xdr_seek(xd, sh->natoms * DIM * sizeof(double), SEEK_CUR) != exdrOK) {
+                if (xdr_seek(xd, sh->f_size, SEEK_CUR) != exdrOK) {
                     md_print(MD_LOG_TYPE_ERROR, "TRR: Failed to skip force section in frame");
                     return false;
                 }
@@ -338,7 +338,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                     }
                 }
             } else {
-                if (xdr_seek(xd, sh->natoms * DIM * sizeof(float), SEEK_CUR) != exdrOK) {
+                if (xdr_seek(xd, sh->x_size, SEEK_CUR) != exdrOK) {
                     md_print(MD_LOG_TYPE_ERROR, "TRR: Failed to skip coordinate section in frame");
                     return false;
                 }
@@ -359,7 +359,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                     }
                 }
             } else {
-                if (xdr_seek(xd, sh->natoms * DIM * sizeof(float), SEEK_CUR) != exdrOK) {
+                if (xdr_seek(xd, sh->v_size, SEEK_CUR) != exdrOK) {
                     md_print(MD_LOG_TYPE_ERROR, "TRR: Failed to skip velocity section in frame");
                     return false;
                 }
@@ -379,7 +379,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                     }
                 }
             } else {
-                if (xdr_seek(xd, sh->natoms * DIM * sizeof(float), SEEK_CUR) != exdrOK) {
+                if (xdr_seek(xd, sh->f_size, SEEK_CUR) != exdrOK) {
                     md_print(MD_LOG_TYPE_ERROR, "TRR: Failed to skip force section in frame");
                     return false;
                 }
