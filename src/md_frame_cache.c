@@ -37,6 +37,8 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
 
     cache->alloc = alloc;
     cache->traj = traj;
+
+    md_printf(MD_LOG_TYPE_DEBUG, "Allocating %.2f MB as frame cache.", (double)total_bytes / (double)MEGABYTES(1) );
     md_array_resize(cache->buf, total_bytes, alloc);
     if (!cache->buf) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to allocate requested memory for frame_cache.");
