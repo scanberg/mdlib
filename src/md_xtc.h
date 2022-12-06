@@ -1,8 +1,5 @@
 #pragma once
 
-#include <stdint.h>
-#include <stdbool.h>
-
 #include <core/md_str.h>
 
 struct md_allocator_i;

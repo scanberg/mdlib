@@ -4,24 +4,6 @@
 
 #include <stdio.h>
 
-static void other_func(int* value) {
-    printf("Printing yo!");
-    *value = 10;
-}
-
-static void function(void* user_data) {
-    int* value = (int*)user_data;
-    other_func(value);
-    *value = 5;
-}
-
-UTEST(sync, thread) {
-    int value = 666;
-    md_thread_t* thread = md_thread_create(function, &value);
-    EXPECT_TRUE(md_thread_join(thread));
-    EXPECT_EQ(5, value);
-}
-
 UTEST(sync, mutex) {
     md_mutex_t mutex;
 

@@ -72,7 +72,7 @@ void print_windows_error() {
 }
 #endif
 
-uint64_t md_os_physical_ram_in_bytes() {
+uint64_t md_physical_ram() {
 #if MD_PLATFORM_WINDOWS
     MEMORYSTATUSEX status;
     status.dwLength = sizeof(status);
@@ -88,7 +88,7 @@ uint64_t md_os_physical_ram_in_bytes() {
 #endif
 }
 
-str_t md_os_current_working_directory() {
+str_t md_os_path_cwd() {
 #if MD_PLATFORM_WINDOWS
     char* val = _getcwd(CWD, sizeof(CWD));
     ASSERT(val != 0);
@@ -200,7 +200,7 @@ str_t md_os_path_make_relative(str_t from, str_t to, struct md_allocator_i* allo
     return relative_str;
 }
 
-bool md_os_path_exists(str_t path) {
+bool md_os_path_is_valid(str_t path) {
 #if MD_PLATFORM_WINDOWS
     path = str_copy(path, default_temp_allocator);
     bool result = PathFileExists(path.ptr);
@@ -230,7 +230,7 @@ bool md_os_path_is_directory(str_t path) {
     return result;
 }
 
-timestamp_t md_os_time_current() {
+md_timestamp_t md_os_time_current() {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
@@ -244,23 +244,23 @@ timestamp_t md_os_time_current() {
 #endif
 }
 
-timestamp_t md_os_time_from_milliseconds(int64_t ms) {
+double md_os_time_as_nanoseconds(md_timestamp_t t) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    return (ms * 3000) / frequency.QuadPart;
+    return (t * 1E6) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
-    return ms * 1.0e-6;
+    return t * 1.0e-3;
 #else
     ASSERT(false);
 #endif
 }
 
-double md_os_time_as_milliseconds(timestamp_t t) {
+double md_os_time_as_milliseconds(md_timestamp_t t) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
-    return (double)(t * 1000) / (double)frequency.QuadPart;
+    return (t * 1E3) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
     return t * 1.0e-6;
 #else
@@ -268,7 +268,7 @@ double md_os_time_as_milliseconds(timestamp_t t) {
 #endif
 }
 
-double md_os_time_as_seconds(timestamp_t t) {
+double md_os_time_as_seconds(md_timestamp_t t) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER frequency;
     QueryPerformanceFrequency(&frequency);
@@ -280,21 +280,11 @@ double md_os_time_as_seconds(timestamp_t t) {
 #endif
 }
 
-void md_os_sleep(int64_t milliseconds) {
-#if MD_PLATFORM_WINDOWS
-    Sleep((int32_t)milliseconds);
-#elif MD_PLATFORM_UNIX
-    usleep(milliseconds * 1000);
-#else
-    ASSERT(false);
-#endif
-}
-
 // MEM
 // Linux equivalent is partly taken from here
 // https://forums.pcsx2.net/Thread-blog-VirtualAlloc-on-Linux
 
-uint64_t md_os_page_size(void) {
+uint64_t md_vm_page_size(void) {
 #if MD_PLATFORM_WINDOWS
     SYSTEM_INFO info;
     GetSystemInfo(&info);
@@ -306,12 +296,12 @@ uint64_t md_os_page_size(void) {
 #endif
 }
 
-void* md_os_reserve(uint64_t size) {
+void* md_vm_reserve(uint64_t size) {
     uint64_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
 #if MD_PLATFORM_WINDOWS
     return VirtualAlloc(0, gb_snapped_size, MEM_RESERVE, PAGE_NOACCESS);
 #elif MD_PLATFORM_UNIX
-    void* result = mmap(0, gb_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    void* result = mmap(0, gb_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ASSERT(result != MAP_FAILED);
     return result;
 #else
@@ -319,7 +309,7 @@ void* md_os_reserve(uint64_t size) {
 #endif
 }
 
-void md_os_release(void* ptr) {
+void md_vm_release(void* ptr) {
 #if MD_PLATFORM_WINDOWS
     VirtualFree(ptr, 0, MEM_RELEASE);
 #elif MD_PLATFORM_UNIX
@@ -329,8 +319,8 @@ void md_os_release(void* ptr) {
 #endif
 }
 
-void md_os_commit(void* ptr, uint64_t size) {
-    uint64_t page_snapped_size = ALIGN_TO(size, md_os_page_size());
+void md_vm_commit(void* ptr, uint64_t size) {
+    uint64_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
 #if MD_PLATFORM_WINDOWS
     void* result = VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
     ASSERT(result != NULL);
@@ -342,12 +332,12 @@ void md_os_commit(void* ptr, uint64_t size) {
 #endif
 }
 
-void md_os_decommit(void* ptr, uint64_t size) {
+void md_vm_decommit(void* ptr, uint64_t size) {
 #if MD_PLATFORM_WINDOWS
     VirtualFree(ptr, size, MEM_DECOMMIT);
 #elif MD_PLATFORM_UNIX
     int res;
-    uint64_t page_snapped_size = ALIGN_TO(size, md_os_page_size());
+    uint64_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
     res = mprotect(ptr, page_snapped_size, PROT_NONE);
     ASSERT(res == 0);
     res = madvise(ptr, page_snapped_size, MADV_DONTNEED);
@@ -357,7 +347,74 @@ void md_os_decommit(void* ptr, uint64_t size) {
 #endif
 }
 
-bool md_os_thread_on_exit(md_os_thread_exit_callback callback) {
+
+
+// ### THREAD ###
+
+// Thread
+md_thread_t* md_thread_create(md_thread_entry func, void* user_data) {
+#if MD_PLATFORM_WINDOWS
+    DWORD unused;
+    HANDLE id = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)func, user_data, 0, &unused);
+    return (md_thread_t*)id;
+#elif MD_PLATFORM_UNIX
+#if MD_COMPILER_GCC
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+#endif
+    pthread_t thread;
+    pthread_create(&thread, NULL, (void* (*)(void*))func, user_data);
+    return (md_thread_t*)thread;
+#if MD_COMPILER_GCC
+#pragma GCC diagnostic pop
+#endif
+#else
+    ASSERT(false);
+#endif
+}
+
+void md_thread_detach(md_thread_t* thread) {
+#if MD_PLATFORM_WINDOWS
+    CloseHandle((HANDLE)thread);
+#elif MD_PLATFORM_UNIX
+    pthread_detach((pthread_t)thread);
+#else
+    ASSERT(false);
+#endif
+}
+
+bool md_thread_join(md_thread_t* thread) {
+#if MD_PLATFORM_WINDOWS
+    WaitForSingleObject((HANDLE)thread, INFINITE);
+    return CloseHandle((HANDLE)thread);
+#elif MD_PLATFORM_UNIX
+    return pthread_join((pthread_t)thread, NULL) == 0;
+#else
+    ASSERT(false);
+#endif
+}
+
+md_thread_id_t md_thread_get_id(md_thread_t* thread) {
+#if MD_PLATFORM_WINDOWS
+    return GetThreadId((HANDLE)thread);
+#elif MD_PLATFORM_UNIX
+    return (md_thread_id_t)thread;
+#else
+    ASSERT(false);
+#endif
+}
+
+md_thread_id_t md_thread_id(void) {
+#if MD_PLATFORM_WINDOWS
+    return GetCurrentThreadId();
+#elif MD_PLATFORM_UNIX
+    return (md_thread_id_t)pthread_self();
+#else
+    ASSERT(false);
+#endif
+}
+
+bool md_thread_on_exit(md_thread_exit callback) {
     if (!callback) {
         md_printf(MD_LOG_TYPE_ERROR, "OS: callback was NULL");
         return false;
@@ -373,5 +430,15 @@ bool md_os_thread_on_exit(md_os_thread_exit_callback callback) {
 #else
     ASSERT(false);
     return false;
+#endif
+}
+
+void md_thread_sleep(uint64_t milliseconds) {
+#if MD_PLATFORM_WINDOWS
+    Sleep((DWORD)milliseconds);
+#elif MD_PLATFORM_UNIX
+    usleep(milliseconds * 1000);
+#else
+    ASSERT(false);
 #endif
 }

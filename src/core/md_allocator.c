@@ -56,7 +56,7 @@ struct md_ring_allocator_t* get_thread_ring_allocator() {
     if (!_ring_alloc.ptr) {
         _ring_alloc.ptr = malloc(MD_TEMP_ALLOC_SIZE);
         ASSERT(_ring_alloc.ptr);
-        md_os_thread_on_exit(release_ring_buffer);
+        md_thread_on_exit(release_ring_buffer);
     }
     return &_ring_alloc;
 }

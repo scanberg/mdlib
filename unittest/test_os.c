@@ -7,7 +7,7 @@
 UTEST(os, path) {
     {
         char buf[4096];
-        str_t cwd = md_os_current_working_directory();
+        str_t cwd = md_os_path_cwd();
         snprintf(buf, sizeof(buf), "%.*s/../../", (int)cwd.len, cwd.ptr);
         str_t path = {buf, strnlen(buf, sizeof(buf))};
         str_t result = md_os_path_make_canonical(path, default_temp_allocator);
@@ -25,19 +25,36 @@ UTEST(os, path) {
 }
 
 UTEST(os, ram) {
-    uint64_t physical_ram = md_os_physical_ram_in_bytes();
+    uint64_t physical_ram = md_physical_ram();
     printf("total physical ram %i GB\n", (int)(physical_ram / GIGABYTES(1)));
     EXPECT_GT(physical_ram, 0);
 }
 
 UTEST(os, mem) {
-    void* ptr = md_os_reserve(GIGABYTES(1));
-    md_os_commit(ptr, MEGABYTES(1));
-    md_os_commit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
+    void* ptr = md_vm_reserve(GIGABYTES(128));
+    md_vm_commit(ptr, MEGABYTES(1));
+    md_vm_commit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
 
     EXPECT_NE(ptr, NULL);
 
-    md_os_decommit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
-    md_os_decommit(ptr, MEGABYTES(1));
-    md_os_release(ptr);
+    md_vm_decommit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
+    md_vm_decommit(ptr, MEGABYTES(1));
+    md_vm_release(ptr);
+}
+
+static void other_func(int* value) {
+    *value = 10;
+}
+
+static void function(void* user_data) {
+    int* value = (int*)user_data;
+    other_func(value);
+    *value = 5;
+}
+
+UTEST(os, thread) {
+    int number_of_the_beast = 666;
+    md_thread_t* thread = md_thread_create(function, &number_of_the_beast);
+    EXPECT_TRUE(md_thread_join(thread));
+    EXPECT_EQ(5, number_of_the_beast);
 }

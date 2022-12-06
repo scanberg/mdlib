@@ -6,11 +6,6 @@
 
 #include <string.h>
 
-#if MD_COMPILER_GCC
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-function-type"
-#endif
-
 #if MD_PLATFORM_WINDOWS
 
 //#pragma comment(lib, "ntdll.lib")
@@ -46,29 +41,6 @@ typedef struct _SEMAPHORE_BASIC_INFORMATION {
 
 STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SECTION does not fit into md_mutex_t!");
 
-// Thread
-md_thread_t* md_thread_create(md_thread_func func, void* user_data) {
-	DWORD unused;
-	HANDLE id = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)func, user_data, 0, &unused);
-	return (md_thread_t*)id;
-}
-
-void md_thread_detach(md_thread_t* thread) {
-	CloseHandle((HANDLE)thread);
-}
-
-bool md_thread_join(md_thread_t* thread) {
-	WaitForSingleObject((HANDLE)thread, INFINITE);
-	return CloseHandle((HANDLE)thread);
-}
-
-md_thread_id_t md_thread_get_id(md_thread_t* thread) {
-	return GetThreadId((HANDLE)thread);
-}
-
-md_thread_id_t md_thread_id(void) {
-	return GetCurrentThreadId();
-}
 
 // Mutex
 bool md_mutex_init(md_mutex_t* mutex) {
@@ -149,37 +121,8 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 }
 
 #elif MD_PLATFORM_UNIX
+
 #include <pthread.h>
-
-md_thread_t* md_thread_create(md_thread_func fn, void* user_data) {
-#if 0
-	size_t stack_size;
-	pthread_attr_t attr;
-	pthread_attr_init(&attr);
-	pthread_attr_getstacksize(&attr, &stack_size);
-	pthread_attr_destroy(&attr);
-	printf("Current stack size: %d\n", stack_size);
-#endif
-	pthread_t thread;
-	pthread_create(&thread, NULL, (void* (*)(void*))fn, user_data);
-	return (md_thread_t*)thread;
-}
-
-void md_thread_detach(md_thread_t* thread) {
-	pthread_detach((pthread_t)thread);
-}
-
-bool md_thread_join(md_thread_t* thread) {
-	return pthread_join((pthread_t)thread, NULL) == 0;
-}
-
-md_thread_id_t md_thread_get_id(md_thread_t* thread) {
-	return (md_thread_id_t)thread;
-}
-
-md_thread_id_t md_thread_id(void) {
-	return (md_thread_id_t)pthread_self();
-}
 
 STATIC_ASSERT(sizeof(pthread_mutex_t) <= sizeof(md_mutex_t), "pthread_mutex_t does not fit into md_mutex_t!");
 

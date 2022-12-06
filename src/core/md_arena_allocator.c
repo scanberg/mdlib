@@ -154,18 +154,18 @@ void md_arena_allocator_destroy(struct md_allocator_i* alloc) {
 
 void md_vm_arena_init(md_vm_arena_t* arena, uint64_t reservation_size) {
     reservation_size = ALIGN_TO(reservation_size, GIGABYTES(1));
-    arena->base = md_os_reserve(reservation_size);
+    arena->base = md_vm_reserve(reservation_size);
     arena->size = reservation_size;
     arena->commit_pos = VM_COMMIT_SIZE;
     arena->pos = 0;
     arena->align = DEFAULT_ALIGNMENT;
     arena->magic = VM_MAGIC;
-    md_os_commit(arena->base, VM_COMMIT_SIZE);
+    md_vm_commit(arena->base, VM_COMMIT_SIZE);
 }
 
 void md_vm_arena_free(md_vm_arena_t* arena) {
     ASSERT(arena && arena->magic == VM_MAGIC);
-    md_os_release(arena->base);
+    md_vm_release(arena->base);
     memset(arena, 0, sizeof(md_vm_arena_t));
 }
 
@@ -187,7 +187,7 @@ void* md_vm_arena_push_aligned(md_vm_arena_t* arena, uint64_t size, uint64_t ali
 
         if (new_pos > arena->commit_pos) {
             uint64_t commit_size = ALIGN_TO(new_pos - arena->commit_pos, VM_COMMIT_SIZE);
-            md_os_commit((char*)arena->base + arena->commit_pos, commit_size);
+            md_vm_commit((char*)arena->base + arena->commit_pos, commit_size);
             arena->commit_pos += commit_size;
         }
     }
@@ -224,7 +224,7 @@ void md_vm_arena_set_pos(md_vm_arena_t* arena, uint64_t pos) {
     uint64_t decommit_pos = ALIGN_TO(pos, VM_COMMIT_SIZE);
     uint64_t over_commited = arena->commit_pos - decommit_pos;
     if (decommit_pos > 0 && over_commited >= VM_DECOMMIT_THRESHOLD) {
-        md_os_decommit((char*)arena->base + decommit_pos, over_commited);
+        md_vm_decommit((char*)arena->base + decommit_pos, over_commited);
         arena->commit_pos -= over_commited;
     }
 }

@@ -4473,10 +4473,14 @@ bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const md_molecul
     const int64_t num_expr = md_array_size(ir->type_checked_expressions);
     for (int64_t i = 0; i < num_expr; ++i) {
         uint64_t hash = hash_node(ir->type_checked_expressions[i]->node);
+#if DEBUG
         md_printf(MD_LOG_TYPE_DEBUG, "%llu", hash);
+#endif
         ir->fingerprint ^= hash;
     }
+#if DEBUG
     md_print(MD_LOG_TYPE_DEBUG, "---");
+#endif
 
 
     return ir->compile_success;
