@@ -15,7 +15,6 @@
 #include <stdio.h>
 
 #define MD_XTC_TRAJ_MAGIC 0x162365dac721995
-
 #define XTC_MAGIC 1995
 
 /* XTC small header size (natoms<=9).
@@ -49,10 +48,10 @@ typedef struct xtc_t {
     int64_t* frame_offsets;
     md_trajectory_header_t header;
     md_allocator_i* allocator;
-    md_mutex_t mutex;
+    md_mutex_t mutex;    
 } xtc_t;
 
-static bool xtc_header(XDRFILE* xd, int* natoms, int* step, float* time, matrix box) {
+static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, matrix box) {
     int result, magic;
 
     if ((result = xdrfile_read_int(&magic, 1, xd)) != 1) {
@@ -93,11 +92,11 @@ static bool xtc_header(XDRFILE* xd, int* natoms, int* step, float* time, matrix 
     return true;
 }
 
-static bool xtc_coord(XDRFILE* xd, int natoms, rvec* pos) {
+static bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
     int result;
     float prec;
 
-    result = xdrfile_decompress_coord_float(pos[0], &natoms, &prec, xd);
+    result = xdrfile_decompress_coord_float(x[0], &natoms, &prec, xd);
     if (result != natoms) {
         md_print(MD_LOG_TYPE_ERROR, "XTC: Failed to read coordinates");
         return false;
@@ -118,7 +117,7 @@ static bool xtc_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
         return false;
     }
 
-    if (!xtc_header(xd, &natoms, &step, &time, box)) {
+    if (!xtc_frame_header(xd, &natoms, &step, &time, box)) {
         return false;
     }
 
@@ -240,6 +239,11 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
         return false;
     }
 
+    if ((x || y || z) && !(x && y && z)) {
+        md_print(MD_LOG_TYPE_ERROR, "XTC: User supplied coordinates (x,y,z) cannot be partially supplied");
+        return false;
+    }
+
     // There is a warning for ignoring const qualifier for frame_data_ptr, but it is ok since we only perform read operations "r" with the data.
     XDRFILE* file = xdrfile_mem((void*)frame_data_ptr, frame_data_size, "r");
     ASSERT(file);
@@ -248,7 +252,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
     int natoms = 0, step = 0;
     float time = 0;
     mat3_t box = mat3_ident();
-    result = xtc_header(file, &natoms, &step, &time, box.elem);
+    result = xtc_frame_header(file, &natoms, &step, &time, box.elem);
     if (result) {
         if (header) {
             box = mat3_mul_f(box, 10.0f); // nm -> Ångström
@@ -261,7 +265,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
         if (x || y || z) {
             int64_t byte_size = natoms * sizeof(rvec);
             rvec* pos = md_alloc(default_allocator, byte_size);
-            result = xtc_coord(file, natoms, pos);
+            result = xtc_frame_coords(file, natoms, pos);
             if (result) {            
                 // nm -> Ångström
                 for (int64_t i = 0; i < natoms; ++i) {
@@ -386,7 +390,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
         int num_atoms, step;
         float time;
         float box[3][3];
-        if (!xtc_header(file, &num_atoms, &step, &time, box)) {
+        if (!xtc_frame_header(file, &num_atoms, &step, &time, box)) {
             xdrfile_close(file);
             return false;
         }

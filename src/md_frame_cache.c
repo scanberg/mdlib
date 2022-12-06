@@ -80,8 +80,6 @@ void md_frame_cache_free(md_frame_cache_t* cache) {
     memset(cache, 0, sizeof(md_frame_cache_t));
 }
 
-#include <stdio.h>
-
 static inline void md_frame_cache_frame_lock_aquire(struct md_frame_cache_lock_t* lock) {
     ASSERT(lock);
     bool success = md_semaphore_aquire((md_semaphore_t*)lock);

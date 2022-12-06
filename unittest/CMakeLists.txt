@@ -32,6 +32,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_gro.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xtc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xyz.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_trr.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_util.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_unit.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_script.c

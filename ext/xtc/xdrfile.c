@@ -2224,18 +2224,16 @@ static int xdrmem_setpos(XDR* xdrs, int64_t pos, int whence) {
     case SEEK_SET:
         mem->head = mem->base + pos;
         break;
-        ;
     case SEEK_CUR:
         mem->head = mem->head + pos;
         break;
-        ;
     case SEEK_END:
         mem->head = mem->base + mem->num_bytes + pos;
         break;
     default:
         return -1;
     }
-    return mem->base <= mem->head && mem->head <= (mem->base + mem->num_bytes);
+    return (mem->base <= mem->head && mem->head <= (mem->base + mem->num_bytes)) ? 0 : -1;
 }
 
 int64_t xdr_tell(XDRFILE* xd)

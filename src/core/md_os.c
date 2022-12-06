@@ -72,22 +72,6 @@ void print_windows_error() {
 }
 #endif
 
-uint64_t md_physical_ram() {
-#if MD_PLATFORM_WINDOWS
-    MEMORYSTATUSEX status;
-    status.dwLength = sizeof(status);
-    GlobalMemoryStatusEx(&status);
-    return status.ullTotalPhys;
-#elif MD_PLATFORM_UNIX
-    long pages = sysconf(_SC_PHYS_PAGES);
-    long page_size = sysconf(_SC_PAGE_SIZE);
-    return pages * page_size;
-#else
-    ASSERT(false);
-    return 0;
-#endif
-}
-
 str_t md_os_path_cwd() {
 #if MD_PLATFORM_WINDOWS
     char* val = _getcwd(CWD, sizeof(CWD));
@@ -281,8 +265,24 @@ double md_os_time_as_seconds(md_timestamp_t t) {
 }
 
 // MEM
-// Linux equivalent is partly taken from here
+// Linux equivalent of virtual memory allocation is partly taken from here
 // https://forums.pcsx2.net/Thread-blog-VirtualAlloc-on-Linux
+
+uint64_t md_physical_ram() {
+#if MD_PLATFORM_WINDOWS
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof(status);
+    GlobalMemoryStatusEx(&status);
+    return status.ullTotalPhys;
+#elif MD_PLATFORM_UNIX
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    return pages * page_size;
+#else
+    ASSERT(false);
+    return 0;
+#endif
+}
 
 uint64_t md_vm_page_size(void) {
 #if MD_PLATFORM_WINDOWS
