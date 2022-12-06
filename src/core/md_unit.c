@@ -596,11 +596,11 @@ md_unit_t unit_second() {
 }
 
 md_unit_t unit_nanosecond() {
-    return (md_unit_t)UNIT_SECOND;
+    return (md_unit_t)UNIT_NANOSECOND;
 }
 
 md_unit_t unit_pikosecond() {
-    return (md_unit_t)UNIT_SECOND;
+    return (md_unit_t)UNIT_PIKOSECOND;
 }
 
 md_unit_t unit_ampere() {
