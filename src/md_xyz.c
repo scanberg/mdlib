@@ -7,7 +7,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
-#include <core/md_sync.h>
+#include <core/md_os.h>
 #include <md_molecule.h>
 #include <md_trajectory.h>
 #include <md_util.h>

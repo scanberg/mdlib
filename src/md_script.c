@@ -21,7 +21,6 @@
 #include "core/md_platform.h"
 #include "core/md_compiler.h"
 #include "core/md_os.h"
-#include "core/md_sync.h"
 #include "core/md_spatial_hash.h"
 #include "core/md_unit.h"
 

@@ -5,7 +5,7 @@
 #include <core/md_file.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
-#include <core/md_sync.h>
+#include <core/md_os.h>
 #include <core/md_vec_math.h>
 #include <md_trajectory.h>
 

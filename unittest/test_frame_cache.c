@@ -11,7 +11,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_file.h>
 #include <core/md_os.h>
-#include <core/md_sync.h>
 #include <core/md_vec_math.h>
 
 #define NUM_THREADS 8
