@@ -2,7 +2,7 @@
 
 #include "md_allocator.h"
 #include "md_log.h"
-#include "md_array.inl"
+#include "md_array.h"
 
 #include <stdarg.h>
 #include <stdio.h>

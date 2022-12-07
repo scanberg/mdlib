@@ -1,7 +1,7 @@
 #include "md_pdb.h"
 
 #include <core/md_common.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_str.h>
 #include <core/md_file.h>
 #include <core/md_arena_allocator.h>
@@ -13,8 +13,8 @@
 #include <md_trajectory.h>
 #include <md_util.h>
 
-#include <string.h> // memcpy
 #include <stdio.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,7 +43,7 @@ static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64
     }
     str_t src = str_trim_whitespace(substr(line, beg - 1, end-beg + 1));
     ASSERT(dst_size >= src.len);
-    memcpy(dst, src.ptr, src.len);
+    MEMCPY(dst, src.ptr, src.len);
 }
 
 // We massage the beg and end indices here to correspond the pdb specification
@@ -177,7 +177,7 @@ static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
 }
 
 static inline void append_connect(md_pdb_connect_t* connect, const md_pdb_connect_t* other) {
-    memcpy(&connect->atom_serial[5], &other->atom_serial[1], 3 * sizeof(int32_t));
+    MEMCPY(&connect->atom_serial[5], &other->atom_serial[1], 3 * sizeof(int32_t));
 }
 
 static inline int32_t count_pdb_coordinate_entries(str_t str) {
@@ -368,7 +368,7 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
                 md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
                 if (assembly) {
                     const int32_t row_idx = char_to_digit(line.ptr[18]) - 1;
-                    assert(-1 < row_idx && row_idx < 4);
+                    ASSERT(-1 < row_idx && row_idx < 4);
 
                     if (row_idx == 0) {
                         mat4_t transform = mat4_ident();
@@ -436,7 +436,7 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
 
             // Copy remainder to beginning of buffer
             buf_offset = buf_size - str.len;
-            memcpy(buf, str.ptr + str.len, buf_offset);
+            MEMCPY(buf, str.ptr + str.len, buf_offset);
             file_offset += buf_size - buf_offset;
         }
 done:
@@ -481,7 +481,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         end_atom_index = data->models[0].end_atom_index;
     }
 
-    memset(mol, 0, sizeof(md_molecule_t));
+    MEMSET(mol, 0, sizeof(md_molecule_t));
 
     int64_t num_atoms = end_atom_index - beg_atom_index;
 
@@ -507,7 +507,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, we directly try to use that to lookup the element
             str_t element_str = { data->atom_coordinates[i].element, strnlen(data->atom_coordinates[i].element, ARRAY_SIZE(data->atom_coordinates[i].element)) };
-            element = md_util_element_lookup(element_str);
+            element = md_util_element_lookup_ignore_case(element_str);
             if (element == 0) {
                 md_printf(MD_LOG_TYPE_INFO, "Failed to lookup element with string '%s'", data->atom_coordinates[i].element);
             }
@@ -653,7 +653,7 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
 
             // Copy remainder to beginning of buffer
             buf_offset = buf_size - str.len;
-            memcpy(buf, str.ptr + str.len, buf_offset);
+            MEMCPY(buf, str.ptr + str.len, buf_offset);
         }
         md_file_close(file);
 
@@ -876,7 +876,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
 
     void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
     ASSERT(mem);
-    memset(mem, 0, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
+    MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
 
     md_trajectory_i* traj = mem;
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)(traj + 1);

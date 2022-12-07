@@ -1,7 +1,7 @@
 #include "utest.h"
 
 #include <core/md_allocator.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 
 UTEST(array, test) {
     uint64_t* arr = 0;

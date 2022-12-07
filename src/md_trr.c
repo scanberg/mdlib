@@ -1,11 +1,11 @@
 #include "md_trr.h"
 
 #include <core/md_common.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_file.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
-#include <core/md_sync.h>
+#include <core/md_os.h>
 #include <core/md_vec_math.h>
 #include <md_util.h>
 #include <md_trajectory.h>
@@ -669,7 +669,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* alloc)
 
         void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(trr_t));
         ASSERT(mem);
-        memset(mem, 0, sizeof(md_trajectory_i) + sizeof(trr_t));
+        MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(trr_t));
 
         md_trajectory_i* traj = mem;
         trr_t* trr = (trr_t*)(traj + 1);

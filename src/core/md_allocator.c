@@ -6,7 +6,7 @@
 #include <string.h>
 
 #ifndef MD_TEMP_ALLOC_SIZE
-#define MD_TEMP_ALLOC_SIZE MEGABYTES(32)
+#define MD_TEMP_ALLOC_SIZE MEGABYTES(16)
 #endif 
 
 #define MAX_TEMP_ALLOCATION_SIZE (MD_TEMP_ALLOC_SIZE / 2)
@@ -14,8 +14,6 @@
 uint64_t default_temp_allocator_max_allocation_size() {
     return MAX_TEMP_ALLOCATION_SIZE;
 }
-
-//THREAD_LOCAL char _buf[MD_TEMP_ALLOC_SIZE];
 
 THREAD_LOCAL md_ring_allocator_t _ring_alloc = {
     .pos = 0,
@@ -60,70 +58,6 @@ struct md_ring_allocator_t* get_thread_ring_allocator() {
     }
     return &_ring_alloc;
 }
-
-/*
-static inline void* ring_alloc_internal(uint64_t size) {
-    // We want to make sure that we maintain some type of alignment for allocations
-    // By default on x64, the alignment should be 16 bytes when using malloc or stack allocations (alloca)
-    // For single byte and double byte allocations, we could skip this default alignment, but for 4 byte and above
-    // we should enforce this as x64 calling convention uses xmm registers for passing floats, which could result in a
-    // performance penalty if the data is not 16 byte aligned.
-
-    const uint64_t alignment = (size <= 2) ? size : DEFAULT_ALIGNMENT;
-
-    ring.prev = ring.curr;
-
-    if (ring.curr + size + alignment > sizeof(ring.mem)) {
-        ring.curr = 0;
-    }
-
-    const uint64_t addr = (uint64_t)ring.mem + ring.curr;
-    const uint64_t mod = addr & (alignment - 1);      // modulo: addr % alignment, but fast for power of 2
-    const uint64_t curr = mod ? ring.curr + alignment - mod : ring.curr;
-
-    ring.curr = curr + size;
-    return ring.mem + curr;
-}
-
-static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
-    (void)inst;    
-    (void)file;
-    (void)line;
-    ASSERT(new_size < MAX_TEMP_ALLOCATION_SIZE);
-
-    if (new_size == 0) {
-        // free
-        // If this is the last allocation, then we move the pointer back
-        if (ptr == (&ring.mem[ring.prev])) {
-            ring.curr = ring.prev;
-        }
-
-        return NULL;
-    }
-
-    if (ptr && old_size) {
-        // realloc
-        int64_t diff = (int64_t)new_size - (int64_t)old_size;
-        if (ptr == (char*)ring.mem + ring.curr) {
-            // This is the last allocation that occured, then we can shrink or grow that sucker
-            int64_t new_curr = (int64_t)ring.curr + diff;
-            ASSERT(new_curr > 0);
-            if (new_curr < MD_TEMP_ALLOC_SIZE) {
-                ring.curr = new_curr;
-                return ptr;
-            }
-        }
-
-        // ptr is not the last allocation or the new size did not fit into the buffer which is left
-        void* new_ptr = ring_alloc_internal(new_size);
-        memcpy(new_ptr, ptr, old_size);
-        return new_ptr;
-    }
-    
-    // alloc
-    return ring_alloc_internal(new_size);
-}
-*/
 
 static struct md_allocator_i _default_allocator = {
     NULL,

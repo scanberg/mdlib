@@ -3,7 +3,7 @@
 #include <core/md_compiler.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 #include <core/md_simd.h>
@@ -185,7 +185,7 @@ md_element_t md_util_element_lookup(str_t str) {
     return 0;
 }
 
-static inline md_element_t lookup_element_ignore_case(str_t str) {
+md_element_t md_util_element_lookup_ignore_case(str_t str) {
     if (str.len == 1 || str.len == 2) {
         for (md_element_t i = 0; i < ARRAY_SIZE(element_symbols); ++i) {
             str_t sym = element_symbols[i];
@@ -201,33 +201,62 @@ static inline md_element_t lookup_element_ignore_case(str_t str) {
     return 0;
 }
 
+// Trim whitespace, digits and 'X's
+str_t trim_type(str_t type) {
+    const char* beg = str_beg(type);
+    const char* end = str_end(type);
+    const char* c = beg;
+    while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
+    beg = c;
+
+    c = beg;
+    while (c < end && is_alpha(*c) && !(*c == 'x' || *c == 'X')) ++c;
+    end = c;
+
+    return (str_t) { .ptr = beg, .len = end-beg };
+}
+
+static bool amino_acid_heuristic(const md_label_t labels[], int size) {
+    // This is the minimal set of types which needs to be present in the case of Glycine and excluding hydrogen
+#define BIT_N  1
+#define BIT_CA 2
+#define BIT_C  4
+#define BIT_O  8
+
+    int count = 0;
+    int bits  = 0;
+    for (int i = 0; i < size; ++i) {
+        str_t lbl = { labels[i].buf, labels[i].len };
+        lbl = trim_type(lbl);
+        if (lbl.len && lbl.ptr[0] != 'H') {
+            if (str_equal_cstr(lbl, "N")) bits |= BIT_N;
+            else if (str_equal_cstr(lbl, "CA")) bits |= BIT_CA;
+            else if (str_equal_cstr(lbl, "C")) bits |= BIT_C;
+            else if (str_equal_cstr(lbl, "O")) bits |= BIT_O;
+            count += 1;
+        }
+    }
+    return 4 <= count && count <= 14 && bits == (BIT_N | BIT_CA | BIT_C | BIT_O);
+#undef BIT_N
+#undef BIT_CA
+#undef BIT_C
+#undef BIT_O
+}
+
 bool md_util_element_decode(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol) {
     ASSERT(capacity >= 0);
     ASSERT(mol);
     ASSERT(mol->atom.count >= 0);
 
+    // @TODO, PERF: Iterate over residues and check if the entire residue is an amino acid
     const int64_t count = MIN(capacity, mol->atom.count);
     for (int64_t i = 0; i < count; ++i) {
         if (element[i] != 0) continue;
 
-        const char* beg = mol->atom.name[i].buf;
-        const char* end = mol->atom.name[i].buf + mol->atom.name[i].len;
-
         str_t original = {mol->atom.name[i].buf, mol->atom.name[i].len};
 
         // Trim whitespace, digits and 'X's
-        const char* c = beg;
-        while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
-        beg = c;
-
-        c = beg;
-        while (c < end && is_alpha(*c) && !(*c == 'x' || *c == 'X')) ++c;
-        end = c;
-
-        str_t name = {
-            .ptr = beg,
-            .len = end-beg
-        };
+        str_t name = trim_type(original);
 
         if (name.len > 0) {
 
@@ -237,32 +266,38 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
             // If amino acid, try to deduce the element from that
             if (mol->atom.residue_idx && mol->residue.name) {
                 str_t resname = str_trim_whitespace(label_to_str(&mol->residue.name[mol->atom.residue_idx[i]]));
-                if (md_util_resname_amino_acid(resname)) {
+                md_range_t res_range = mol->residue.atom_range[mol->atom.residue_idx[i]];
+                if (md_util_resname_amino_acid(resname) ||
+                    amino_acid_heuristic(mol->atom.name + res_range.beg, res_range.end - res_range.beg))
+                {
                     // EASY-PEASY, we just try to match against the first character
                     name.len = 1;
-                    elem = lookup_element_ignore_case(name);
+                    elem = md_util_element_lookup_ignore_case(name);
                     goto done;
                 }
             }
 
             // Heuristic cases
 
+            // CA -> Carbon, not Calcium (if part of a residue > 2 atoms)
+
+
             // 2 letters + 1 digit (e.g. HO[0-9]) usually means just look at the first letter
             if (original.len == 3 && is_digit(original.ptr[2])) {
-                elem = lookup_element_ignore_case(substr(original, 0, 1));
+                elem = md_util_element_lookup_ignore_case(substr(original, 0, 1));
                 goto done;
             }
 
             // Try to match against several characters but ignore the case
             if (name.len > 1) {
                 name.len = 2;
-                elem = lookup_element_ignore_case(name);
+                elem = md_util_element_lookup_ignore_case(name);
             }
 
             // Last resort, try to match against single first character
             if (elem == 0) {
                 name.len = 1;
-                elem = lookup_element_ignore_case(name);
+                elem = md_util_element_lookup_ignore_case(name);
             }
 
         done:
@@ -338,8 +373,8 @@ static inline bool extract_backbone_atoms(md_backbone_atoms_t* backbone_atoms, c
 }
 
 bool md_util_backbone_atoms_extract_from_residue_idx(md_backbone_atoms_t* backbone_atoms, md_residue_idx_t res_idx, const md_molecule_t* mol) {
-    assert(backbone_atoms);
-    assert(mol);
+    ASSERT(backbone_atoms);
+    ASSERT(mol);
     if (res_idx < 0 || mol->residue.count <= res_idx) return false;
     return extract_backbone_atoms(backbone_atoms, mol->atom.name, mol->residue.atom_range[res_idx]);
 }
@@ -379,7 +414,7 @@ bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secon
     if (!secondary_structure) return false;
     if (capacity < 0) return false;
 
-    memset(secondary_structure, 0, capacity * sizeof(md_secondary_structure_t));
+    MEMSET(secondary_structure, 0, capacity * sizeof(md_secondary_structure_t));
 
     if (!mol) return false;
     if (!mol->atom.x) return false;
@@ -439,7 +474,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int
     if (!backbone_angles) return false;
     if (capacity < 0) return false;
 
-    memset(backbone_angles, 0, sizeof(md_backbone_angles_t) * capacity);
+    MEMSET(backbone_angles, 0, sizeof(md_backbone_angles_t) * capacity);
 
     if (!mol) return false;
     if (!mol->atom.x) return false;
@@ -471,7 +506,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int
 
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const md_molecule_t* mol) {
     ASSERT(ramachandran_types);
-    memset(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
+    MEMSET(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
 
     if (capacity < 0) return false;
     if (mol->backbone.count == 0) return false;
@@ -516,7 +551,7 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
     }
 
     md_array_resize(mol->atom.valence, mol->atom.count, alloc);
-    memset(mol->atom.valence, 0, md_array_bytes(mol->atom.valence));
+    MEMSET(mol->atom.valence, 0, md_array_bytes(mol->atom.valence));
 
     const vec4_t period = vec4_from_vec3(md_util_compute_unit_cell_extent(mol->coord_frame), 0);
 
@@ -1411,26 +1446,26 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
 
     if (mol->atom.vx == 0) {
         md_array_resize(mol->atom.vx, mol->atom.count, alloc);
-        memset(mol->atom.vx, 0, md_array_size(mol->atom.vx) * sizeof(*mol->atom.vx));
+        MEMSET(mol->atom.vx, 0, md_array_size(mol->atom.vx) * sizeof(*mol->atom.vx));
     }
     if (mol->atom.vy == 0) {
         md_array_resize(mol->atom.vy, mol->atom.count, alloc);
-        memset(mol->atom.vy, 0, md_array_size(mol->atom.vy) * sizeof(*mol->atom.vy));
+        MEMSET(mol->atom.vy, 0, md_array_size(mol->atom.vy) * sizeof(*mol->atom.vy));
     }
     if (mol->atom.vz == 0) {
         md_array_resize(mol->atom.vz, mol->atom.count, alloc);
-        memset(mol->atom.vz, 0, md_array_size(mol->atom.vz) * sizeof(*mol->atom.vz));
+        MEMSET(mol->atom.vz, 0, md_array_size(mol->atom.vz) * sizeof(*mol->atom.vz));
     }
 
     if (mol->atom.flags == 0) {
         md_array_resize(mol->atom.flags, mol->atom.count, alloc);
-        memset(mol->atom.flags, 0, md_array_size(mol->atom.flags) * sizeof(*mol->atom.flags));
+        MEMSET(mol->atom.flags, 0, md_array_size(mol->atom.flags) * sizeof(*mol->atom.flags));
     }
 
     if (flags & MD_UTIL_POSTPROCESS_ELEMENT_BIT) {
         if (mol->atom.element == 0) {
             md_array_resize(mol->atom.element, mol->atom.count, alloc);
-            memset(mol->atom.element, 0, mol->atom.count * sizeof(*mol->atom.element));
+            MEMSET(mol->atom.element, 0, mol->atom.count * sizeof(*mol->atom.element));
         }
         md_util_element_decode(mol->atom.element, mol->atom.count, mol);
     }
@@ -1452,7 +1487,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     if (flags & MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT) {
         if (mol->atom.valence == 0) {
             md_array_resize(mol->atom.valence, mol->atom.count, alloc);
-            memset(mol->atom.valence, 0, md_array_size(mol->atom.valence) * sizeof(*mol->atom.valence));
+            MEMSET(mol->atom.valence, 0, md_array_size(mol->atom.valence) * sizeof(*mol->atom.valence));
         }
 
         if (mol->covalent_bond.count == 0) {

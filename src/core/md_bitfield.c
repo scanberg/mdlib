@@ -1,7 +1,7 @@
 #include "md_bitfield.h"
 #include "md_allocator.h"
 #include "md_log.h"
-#include "md_array.inl"
+#include "md_array.h"
 
 #include "md_common.h"
 #include "md_bitop.h"
@@ -196,7 +196,7 @@ block_t block_mask_lo(uint32_t idx) {
     res.mm256[0] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(eq_idx, lo_idx), eq_bits, _mm256_cmpeq_epi32(lo_idx, eq_idx));
     res.mm256[1] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(eq_idx, hi_idx), eq_bits, _mm256_cmpeq_epi32(hi_idx, eq_idx));
 #else
-    memset(&res, 0, sizeof(block_t));
+    MEMSET(&res, 0, sizeof(block_t));
     for (uint64_t i = 0; i < idx / 64; ++i) res.u64[i] = ~0ULL;
     res.u64[idx / 64] = ((uint64_t)1 << (idx & 63)) - 1;
 #endif
@@ -217,7 +217,7 @@ block_t block_mask_hi(uint32_t idx) {
     res.mm256[0] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(lo_idx, eq_idx), eq_bit, _mm256_cmpeq_epi32(lo_idx, eq_idx));
     res.mm256[1] = _mm256_blendv_epi8(_mm256_cmpgt_epi32(hi_idx, eq_idx), eq_bit, _mm256_cmpeq_epi32(hi_idx, eq_idx));
 #else
-    memset(&res, 0, sizeof(block_t));
+    MEMSET(&res, 0, sizeof(block_t));
     res.u64[idx / 64] = ~(((uint64_t)1 << (idx & 63)) - 1);
     for (uint64_t i = idx / 64 + 1; i < 8; ++i) res.u64[i] = ~0ULL;
 #endif
@@ -285,11 +285,7 @@ static inline block_t get_block(const md_bitfield_t* bf, uint64_t blk_idx) {
     return (block_t) {0};
 }
 
-static inline block_t* get_block_ptr(md_bitfield_t* bf, uint64_t blk_idx) {
-    const uint64_t beg_blk = block_idx(bf->beg_bit);
-    ASSERT(bf->bits && beg_blk <= blk_idx && blk_idx <= block_idx(bf->end_bit));
-    return &((block_t*)bf->bits)[blk_idx - beg_blk];
-}
+#define get_block_ptr(bf, idx) ((block_t*)bf->bits + (idx - block_idx(bf->beg_bit)))
 
 static inline void free_blocks(md_bitfield_t* bf) {
     ASSERT(bf);
@@ -354,7 +350,7 @@ static inline void ensure_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
         bf->end_bit = (uint32_t)end_bit;
         uint64_t num_blk = num_blocks(beg_bit, end_bit);
         allocate_blocks(bf, num_blk);
-        memset(bf->bits, 0, num_blk * sizeof(block_t));
+        MEMSET(bf->bits, 0, num_blk * sizeof(block_t));
         return;
     }
 
@@ -370,13 +366,13 @@ static inline void ensure_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
         const uint64_t new_num_blk = num_blocks(new_beg_bit, new_end_bit);
         block_t* new_bits = md_aligned_alloc(bf->alloc, new_num_blk * sizeof(block_t), ALIGNMENT);
         ASSERT(new_bits);
-        memset(new_bits, 0, new_num_blk * sizeof(block_t));
+        MEMSET(new_bits, 0, new_num_blk * sizeof(block_t));
 
         if (bf->bits) {
             // Copy old data blocks
             const uint64_t cur_num_blk = num_blocks(bf->beg_bit, bf->end_bit);
             const uint64_t offset_old_in_new = cur_beg_blk - new_beg_blk;
-            memcpy(new_bits + offset_old_in_new, bf->bits, cur_num_blk * sizeof(block_t));
+            MEMCPY(new_bits + offset_old_in_new, bf->bits, cur_num_blk * sizeof(block_t));
             md_aligned_free(bf->alloc, bf->bits, cur_num_blk * sizeof(block_t));
         }
 
@@ -403,7 +399,7 @@ bool md_bitfield_free(md_bitfield_t* bf) {
     ASSERT(md_bitfield_validate(bf));
 
     if (bf->bits) md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
-    memset(bf, 0, sizeof(md_bitfield_t));
+    MEMSET(bf, 0, sizeof(md_bitfield_t));
     return true;
 }
 
@@ -448,8 +444,7 @@ void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, uint64_t 
 
 void md_bitfield_clear(md_bitfield_t* bf) {
     ASSERT(md_bitfield_validate(bf));
-
-    memset(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    MEMSET(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
 }
 
 void md_bitfield_clear_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {
@@ -692,7 +687,7 @@ void md_bitfield_copy(md_bitfield_t* dst, const md_bitfield_t* src) {
 
     fit_to_range(dst, src->beg_bit, src->end_bit);
     if (dst->bits) {
-        memcpy(dst->bits, src->bits, num_blocks(dst->beg_bit, dst->end_bit) * sizeof(block_t));
+        MEMCPY(dst->bits, src->bits, num_blocks(dst->beg_bit, dst->end_bit) * sizeof(block_t));
     }
     dst->flags = src->flags;
 }
@@ -966,7 +961,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     // Allocate the blocks
     
     fit_to_range(bf, beg_blk_idx * BITS_PER_BLOCK, end_blk_idx * BITS_PER_BLOCK + (BITS_PER_BLOCK-1));
-    memset(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    MEMSET(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
 
     // Fetch block_data and store
     block_t* dst_block = (block_t*)bf->bits;
@@ -975,9 +970,9 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
         uint16_t blk_idx = block_indices[i];
         if (blk_idx & BLOCK_IDX_FLAG_ALL_SET) {
             blk_idx &= ~BLOCK_IDX_FLAG_ALL_SET;
-            memset(dst_block + blk_idx, 0xFFFFFFFF, sizeof(block_t));
+            MEMSET(dst_block + blk_idx, 0xFFFFFFFF, sizeof(block_t));
         } else {
-            memcpy(dst_block + blk_idx, block_data + src_offset, sizeof(block_t));
+            MEMCPY(dst_block + blk_idx, block_data + src_offset, sizeof(block_t));
             src_offset += 1;
         }
     }
@@ -997,7 +992,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
 // This can certainly be improved!
 // Not really performance critical
 
-static uint64_t inline hash64(const char* key, uint64_t len) {
+static inline uint64_t hash64(const char* key, uint64_t len) {
     // Murmur one at a time
     uint64_t h = 525201411107845655ull;
     for (uint64_t i = 0; i < len; ++i) {
@@ -1018,8 +1013,8 @@ uint64_t md_bitfield_hash(const md_bitfield_t* bf) {
 
     uint64_t hash = 91827481724897189ull;
     for (uint64_t i = offset; i < offset + length; ++i) {
-        const block_t* blk = get_block_ptr(bf, i);
-        hash *= hash64((const char*)blk->u64, sizeof(blk->u64));
+        block_t blk = get_block(bf, i);
+        hash *= hash64((const char*)blk.u64, sizeof(blk.u64));
     }
 
     return hash;

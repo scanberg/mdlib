@@ -1,13 +1,13 @@
 #include "md_tracking_allocator.h"
 
-#include <stdbool.h>
 #include "core/md_os.h"
 
 #include "md_allocator.h"
-#include "md_array.inl"
+#include "md_array.h"
 #include "md_common.h"
 #include "md_log.h"
 
+#include <stdbool.h>
 
 // We need to protect this via a mutex lock since we don't know in which context this allocator is used.
 // Better safe than sorry.

@@ -1,7 +1,7 @@
 #include "md_xyz.h"
 
 #include <core/md_common.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_str.h>
 #include <core/md_file.h>
 #include <core/md_arena_allocator.h>
@@ -12,7 +12,6 @@
 #include <md_trajectory.h>
 #include <md_util.h>
 
-#include <string.h> // memcpy
 #include <stdio.h>
 
 #ifdef __cplusplus
@@ -277,7 +276,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, const xyz_format_t*
     if (format->flags & XYZ_ELEMENT_SYMBOL) {
         str_t element = str_trim_whitespace(substr(line, format->element.beg, format->element.end - format->element.beg));
         size_t len    = (size_t)MIN(element.len, (int64_t)sizeof(coord->element_symbol)-1);
-        strncpy(coord->element_symbol, element.ptr, len);
+        MEMCPY(coord->element_symbol, element.ptr, len);
         coord->element_symbol[len] = '\0';
     } else if (format->flags & XYZ_ATOMIC_NUMBER) {
         coord->atomic_number = extract_int(line, format->element.beg, format->element.end);
@@ -351,7 +350,9 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, con
     }
 
     if (comment.len > 0) {
-        strncpy(model->comment, comment.ptr, MIN(sizeof(model->comment)-1, (size_t)comment.len));
+        size_t len = MIN(sizeof(model->comment)-1, (size_t)comment.len);
+        MEMCPY(model->comment, comment.ptr, len);
+        model->comment[len] = '\0';
     }
 
     if (format->flags & XYZ_TINKER_ARC) {
@@ -629,7 +630,7 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     ASSERT(data);
     if (data->coordinates) md_array_free(data->coordinates, alloc);
     if (data->models) md_array_free(data->models, alloc);
-    memset(data, 0, sizeof(md_xyz_data_t));
+    MEMSET(data, 0, sizeof(md_xyz_data_t));
 }
 
 bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct md_allocator_i* alloc) {
@@ -647,7 +648,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         end_coord_index = data->models[0].end_coord_index;
     }
 
-    memset(mol, 0, sizeof(md_molecule_t));
+    MEMSET(mol, 0, sizeof(md_molecule_t));
 
     const int64_t num_atoms = end_coord_index - beg_coord_index;
 
@@ -934,7 +935,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
 
     void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(xyz_trajectory_t));
     ASSERT(mem);
-    memset(mem, 0, sizeof(md_trajectory_i) + sizeof(xyz_trajectory_t));
+    MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(xyz_trajectory_t));
 
     md_trajectory_i* traj = mem;
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)(traj + 1);

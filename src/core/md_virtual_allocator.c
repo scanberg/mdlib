@@ -40,7 +40,7 @@ static void* vm_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_siz
             md_vm_commit((char*)vm->base + vm->commit_pos, commit_size);
             vm->commit_pos += commit_size;
             if (!last) {
-                memcpy(new_ptr, ptr, old_size);
+                MEMCPY(new_ptr, ptr, old_size);
             }
             return new_ptr;
         } else {

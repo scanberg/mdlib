@@ -2,7 +2,7 @@
 
 #include "md_allocator.h"
 #include "md_log.h"
-#include "md_array.inl"
+#include "md_array.h"
 #include "md_simd.h"
 #include "md_util.h"
 
@@ -127,7 +127,7 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
     uint32_t* coords        = md_alloc(alloc, sizeof(uint32_t) * count);
     uint32_t* original_idx  = md_alloc(alloc, sizeof(uint32_t) * count);
 
-    memset(cells, 0, sizeof(uint32_t) * cell_count);
+    MEMSET(cells, 0, sizeof(uint32_t) * cell_count);
 
     const uint32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
 
@@ -175,9 +175,9 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
     hash->coords   = coords;
     hash->indices  = original_idx;
     hash->alloc    = alloc;
-    memcpy(hash->cell_min, cell_min, sizeof(cell_min));
+    MEMCPY(hash->cell_min, cell_min, sizeof(cell_min));
     hash->coord_count = (uint32_t)count;
-    memcpy(hash->cell_dim, cell_dim, sizeof(cell_dim));
+    MEMCPY(hash->cell_dim, cell_dim, sizeof(cell_dim));
     hash->magic = MD_SPATIAL_HASH_MAGIC;
     hash->pbc_ext = vec4_from_vec3(pbc_ext, 0);
 

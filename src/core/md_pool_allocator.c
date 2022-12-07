@@ -2,7 +2,7 @@
 
 #include "md_allocator.h"
 #include "md_common.h"
-#include "md_array.inl"
+#include "md_array.h"
 #include "md_intrinsics.h"
 
 #define MAGIC_NUMBER 0xf00b182c847bc69a
@@ -112,7 +112,7 @@ struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, 
     ASSERT(slot_size > 0);
     uint64_t mem_size = sizeof(md_allocator_i) + sizeof(pool_t);
     void* mem = md_alloc(backing, mem_size);
-    memset(mem, 0, mem_size);
+    MEMSET(mem, 0, mem_size);
 
     md_allocator_i* pool_alloc = mem;
     md_allocator_o* inst = (md_allocator_o*)((char*)mem + sizeof(md_allocator_i));

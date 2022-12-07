@@ -3,8 +3,8 @@
 #include "core/md_allocator.h"
 #include "core/md_simd.h"
 #include "core/md_log.h"
-#include "core/md_array.inl"
 #include "core/md_os.h"
+#include "core/md_array.h"
 #include "md_trajectory.h"
 #include "md_util.h"
 
@@ -42,7 +42,7 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     md_array_resize(cache->buf, total_bytes, alloc);
     if (!cache->buf) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to allocate requested memory for frame_cache.");
-        memset(cache, 0, sizeof(md_frame_cache_t));
+        MEMSET(cache, 0, sizeof(md_frame_cache_t));
         return false;
     }
     cache->slot.count  = num_slots;
@@ -79,7 +79,7 @@ void md_frame_cache_free(md_frame_cache_t* cache) {
         ASSERT(cache->alloc);
         md_array_free(cache->buf, cache->alloc);
     }
-    memset(cache, 0, sizeof(md_frame_cache_t));
+    MEMSET(cache, 0, sizeof(md_frame_cache_t));
 }
 
 static inline void md_frame_cache_frame_lock_aquire(struct md_frame_cache_lock_t* lock) {
@@ -183,10 +183,10 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
         ASSERT(data);
         ASSERT(lock);
 
-        if (x)   memcpy(x,   data->x,   data->header.num_atoms * sizeof(float));
-        if (y)   memcpy(y,   data->y,   data->header.num_atoms * sizeof(float));
-        if (z)   memcpy(z,   data->z,   data->header.num_atoms * sizeof(float));
-        if (box) memcpy(box, data->header.box.elem, sizeof(data->header.box));
+        if (x)   MEMCPY(x,   data->x,   data->header.num_atoms * sizeof(float));
+        if (y)   MEMCPY(y,   data->y,   data->header.num_atoms * sizeof(float));
+        if (z)   MEMCPY(z,   data->z,   data->header.num_atoms * sizeof(float));
+        if (box) MEMCPY(box, data->header.box.elem, sizeof(data->header.box));
         if (timestamp) *timestamp = data->header.timestamp;
     }
 

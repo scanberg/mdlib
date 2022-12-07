@@ -1,11 +1,7 @@
-#ifndef _MD_COMMON_H_
-#define _MD_COMMON_H_
+#pragma once
 
 #include "md_compiler.h"
 
-#ifndef ASSERT
-#include <assert.h>
-#define ASSERT assert
 #if MD_COMPILER_MSVC
 #ifndef STATIC_ASSERT
 #define STATIC_ASSERT _Static_assert
@@ -13,7 +9,6 @@
 #else
 #ifndef STATIC_ASSERT
 #define STATIC_ASSERT _Static_assert
-#endif
 #endif
 #endif
 
@@ -51,7 +46,7 @@
 
 // Really GCC? REALLY? DO WE REALLY NEED TO INCLUDE stddef.h for this??????
 #ifndef NULL
-#define NULL (void*)0
+#define NULL 0
 #endif
 
 #define DEBUG   0
@@ -67,8 +62,7 @@
 
 #ifndef ARRAY_SIZE
 #   ifdef __cplusplus
-#       include <stddef.h>
-        template <typename T, size_t N> constexpr size_t array_size_impl(T (&)[N]) { return N; }
+        template <typename T, unsigned long long N> constexpr unsigned long long array_size_impl(T (&)[N]) { return N; }
 #       define ARRAY_SIZE(x) array_size_impl(x)
 #   else
 #       define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
@@ -156,6 +150,43 @@
 #define CONCAT(x, y) CONCAT_INTERNAL(x, y)
 #endif
 
+// Provide declarations for common intrinsic functions which all of the supported compilers expose
+#ifndef ASSERT
+
+#ifdef  __cplusplus
+extern "C" void md_assert_impl(const char* file, int line, const char* func_name, const char* expr);
+#else
+void md_assert_impl(const char* file, int line, const char* func_name, const char* expr);
+#endif
+
+#define ASSERT(__e) \
+    ((__e) \
+        ? (void)0 \
+        : md_assert_impl( \
+            __FILE__, \
+            __LINE__, \
+            __func__, \
+            #__e) \
+    )
+#endif
+
+#if MD_COMPILER_MSVC
+#ifdef  __cplusplus
+extern "C" void * __cdecl memcpy(void*, const void*, size_t);
+extern "C" void * __cdecl memset(void*, int, size_t);
+#else
+void * __cdecl memcpy(void*, const void*, size_t);
+void * __cdecl memset(void*, int, size_t);
+#endif
+#pragma intrinsic(memcpy)
+#pragma intrinsic(memset)
+#define MEMCPY memcpy
+#define MEMSET memset
+#elif MD_COMPILER_GCC || MD_COMPILER_CLANG
+#define MEMCPY __builtin_memcpy
+#define MEMSET __builtin_memset
+#endif
+
 #ifdef  __cplusplus
 
 #ifndef defer
@@ -178,5 +209,3 @@ struct ExitScopeHelp {
 #endif
 
 #endif //  __cplusplus
-
-#endif

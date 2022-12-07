@@ -26,7 +26,7 @@ static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, uint64_t ol
             return ptr;
         }
         void* new_ptr = md_linear_allocator_push(linear, new_size);
-        memcpy(new_ptr, ptr, old_size);
+        MEMCPY(new_ptr, ptr, old_size);
         return new_ptr;
     }
 

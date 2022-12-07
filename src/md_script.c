@@ -10,7 +10,7 @@
 #include "core/md_allocator.h"
 #include "core/md_common.h"
 #include "core/md_str.h"
-#include "core/md_array.inl"
+#include "core/md_array.h"
 #include "core/md_file.h"
 #include "core/md_arena_allocator.h"
 #include "core/md_linear_allocator.h"
@@ -63,11 +63,11 @@
 // ################################
 // ###   FORWARD DECLARATIONS   ###
 // ################################
-typedef enum token_type_t token_type_t;
-typedef enum ast_type_t ast_type_t;
-typedef enum base_type_t base_type_t;
-typedef enum flags_t flags_t;
-typedef enum eval_flags_t eval_flags_t;
+typedef int token_type_t;
+typedef int ast_type_t;
+typedef int base_type_t;
+typedef int flags_t;
+typedef int eval_flags_t;
 
 typedef struct tokenizer_t tokenizer_t;
 typedef struct token_t token_t;
@@ -657,7 +657,7 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
             return false;
         }
         // @NOTE (Robin): This could be a very wasteful operation most times as the memory will be overwritten anyways.
-        memset(data->ptr, 0, bytes);
+        MEMSET(data->ptr, 0, bytes);
     }
     data->size = bytes;
     data->type = type;
@@ -712,7 +712,7 @@ static void copy_data(data_t* dst, const data_t* src) {
             //dst_bf->bits = (uint64_t*)((char*)dst->ptr + ((uint64_t)src_bf->bits - (uint64_t)src->ptr));
         }
     } else {
-        memcpy(dst->ptr, src->ptr, src->size);
+        MEMCPY(dst->ptr, src->ptr, src->size);
     }
 }
 
@@ -820,7 +820,7 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
     ASSERT(len < (int)ARRAY_SIZE(buffer));
 
     char* err_str = md_alloc(ir->arena, (uint64_t)len + 1);
-    memcpy(err_str, buffer, len);
+    MEMCPY(err_str, buffer, len);
     err_str[len] = '\0';
 
     md_script_error_t error = {
@@ -836,7 +836,7 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
     md_printf(MD_LOG_TYPE_DEBUG, "%s line %i: %s", ir->stage, token.line_beg, buffer);
 
     if (token.str.ptr && token.str.len) {
-        memset(buffer, 0, ARRAY_SIZE(buffer));
+        MEMSET(buffer, 0, ARRAY_SIZE(buffer));
         const char* src_beg = ir->str.ptr;
         const char* src_end = ir->str.ptr + ir->str.len;
         const char* beg = token.str.ptr;
@@ -879,7 +879,7 @@ static inline bool is_identifier_procedure(str_t ident) {
 
 static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t token) {
     ast_node_t* node = md_alloc(ir->arena, sizeof(ast_node_t));
-    memset(node, 0, sizeof(ast_node_t));
+    MEMSET(node, 0, sizeof(ast_node_t));
     node->type = type;
     node->token = token;
     md_array_push(ir->nodes, node, ir->arena);
@@ -2099,9 +2099,9 @@ ast_node_t* parse_array_subscript(parse_context_t* ctx) {
             if (num_elements) {
 
                 ast_node_t* node_copy = create_node(ctx->ir, node->type, token);
-                memcpy(node_copy, node, sizeof(ast_node_t));
+                MEMCPY(node_copy, node, sizeof(ast_node_t));
 
-                memset(node, 0, sizeof(ast_node_t));
+                MEMSET(node, 0, sizeof(ast_node_t));
                 node->type = AST_ARRAY_SUBSCRIPT;
                 node->token = token;
 
@@ -2807,7 +2807,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
         } else {
             // We need to convert this node into a cast node and add the original node data as a child
             ast_node_t* node_copy = create_node(ctx->ir, node->type, node->token);
-            memcpy(node_copy, node, sizeof(ast_node_t));
+            MEMCPY(node_copy, node, sizeof(ast_node_t));
             node->data = (data_t){0};
             node->type = AST_PROC_CALL;
             node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
@@ -3627,7 +3627,7 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     return false;
 }
 
-static uint64_t inline hash64(const char* key, uint64_t len) {
+static inline uint64_t hash64(const char* key, uint64_t len) {
     // Murmur one at a time
     uint64_t h = 525201411107845655ull;
     for (uint64_t i = 0; i < len; ++i) {
@@ -3900,7 +3900,7 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
 
 static void allocate_property_data(md_script_property_t* prop, type_info_t type, int64_t num_frames, md_allocator_i* alloc) {
     int64_t num_values = 0;
-    memcpy(prop->data.dim, type.dim, sizeof(type.dim));
+    MEMCPY(prop->data.dim, type.dim, sizeof(type.dim));
 
     int64_t aggregate_size = 0;
 
@@ -3938,31 +3938,31 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
     }
 
     prop->data.values = md_alloc(alloc, num_values * sizeof(float));
-    memset(prop->data.values, 0, num_values * sizeof(float));
+    MEMSET(prop->data.values, 0, num_values * sizeof(float));
     prop->data.num_values = num_values;
 
     if (type_info_array_len(type) > 1) {
         // Need to allocate data for aggregate as well.
         prop->data.aggregate = md_alloc(alloc, sizeof(md_script_aggregate_t));
 
-        memset(prop->data.aggregate, 0, sizeof(md_script_aggregate_t));
+        MEMSET(prop->data.aggregate, 0, sizeof(md_script_aggregate_t));
         prop->data.aggregate->num_values = aggregate_size;
 
         if (aggregate_size != num_values) {
             prop->data.aggregate->population_mean = md_alloc(alloc, aggregate_size * sizeof(float));
-            memset(prop->data.aggregate->population_mean, 0, aggregate_size * sizeof(float));
+            MEMSET(prop->data.aggregate->population_mean, 0, aggregate_size * sizeof(float));
         } else {
             prop->data.aggregate->population_mean = prop->data.values;
         }
 
         prop->data.aggregate->population_var = md_alloc(alloc, aggregate_size * sizeof(float));
-        memset(prop->data.aggregate->population_var, 0, aggregate_size * sizeof(float));
+        MEMSET(prop->data.aggregate->population_var, 0, aggregate_size * sizeof(float));
 
         prop->data.aggregate->population_min = md_alloc(alloc, aggregate_size * sizeof(float));
-        memset(prop->data.aggregate->population_min, 0, aggregate_size * sizeof(float));
+        MEMSET(prop->data.aggregate->population_min, 0, aggregate_size * sizeof(float));
 
         prop->data.aggregate->population_max = md_alloc(alloc, aggregate_size * sizeof(float));
-        memset(prop->data.aggregate->population_max, 0, aggregate_size * sizeof(float));
+        MEMSET(prop->data.aggregate->population_max, 0, aggregate_size * sizeof(float));
     }
 }
 
@@ -4068,12 +4068,12 @@ static void clear_properties(md_script_property_t* props, int64_t num_props) {
     // Preprocess the property data
     for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
         md_script_property_t* prop = &props[p_idx];
-        memset(prop->data.values, 0, prop->data.num_values * sizeof(float));
+        MEMSET(prop->data.values, 0, prop->data.num_values * sizeof(float));
         if (prop->data.aggregate) {
-            memset(prop->data.aggregate->population_mean, 0, prop->data.aggregate->num_values * sizeof(float));
-            memset(prop->data.aggregate->population_var,  0, prop->data.aggregate->num_values * sizeof(float));
-            memset(prop->data.aggregate->population_min,  0, prop->data.aggregate->num_values * sizeof(float));
-            memset(prop->data.aggregate->population_max,  0, prop->data.aggregate->num_values * sizeof(float));
+            MEMSET(prop->data.aggregate->population_mean, 0, prop->data.aggregate->num_values * sizeof(float));
+            MEMSET(prop->data.aggregate->population_var,  0, prop->data.aggregate->num_values * sizeof(float));
+            MEMSET(prop->data.aggregate->population_min,  0, prop->data.aggregate->num_values * sizeof(float));
+            MEMSET(prop->data.aggregate->population_max,  0, prop->data.aggregate->num_values * sizeof(float));
         }
         prop->data.min_value = +FLT_MAX;
         prop->data.max_value = -FLT_MAX;
@@ -4202,7 +4202,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
 
             if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
                 ASSERT(prop->data.values);
-                memcpy(prop->data.values + f_idx * size, values, size * sizeof(float));
+                MEMCPY(prop->data.values + f_idx * size, values, size * sizeof(float));
 
                 // Determine min max values
                 float min, max, mean, var;
@@ -4285,6 +4285,9 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
             props[p_idx].data.fingerprint = fingerprint;
         }
+
+        int id = (int)(md_thread_id() & 0xFF);
+        md_printf(MD_LOG_TYPE_DEBUG, "Finished evaluation of frame %i on thread %i, arena size: %.2f MB", (int)f_idx, id, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
     }
 done:
     FREE_TEMP_ALLOC();
@@ -4322,7 +4325,7 @@ static inline bool validate_eval(const md_script_eval_t* eval) {
 static void reset_ir(md_script_ir_t* ir) {
     md_allocator_i* arena = ir->arena;
     md_arena_allocator_reset(ir->arena);
-    memset(ir, 0, sizeof(md_script_ir_t));
+    MEMSET(ir, 0, sizeof(md_script_ir_t));
     ir->magic = SCRIPT_IR_MAGIC;
     ir->arena = arena;
 }
@@ -4330,7 +4333,7 @@ static void reset_ir(md_script_ir_t* ir) {
 static md_script_ir_t* create_ir(md_allocator_i* alloc) {
     md_script_ir_t* ir = md_alloc(alloc, sizeof(md_script_ir_t));
     md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
-    memset(ir, 0, sizeof(md_script_ir_t));
+    MEMSET(ir, 0, sizeof(md_script_ir_t));
     ir->magic = SCRIPT_IR_MAGIC;
     ir->arena = arena;
     return ir;
@@ -4578,7 +4581,7 @@ uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir) {
 static md_script_eval_t* create_eval(md_allocator_i* alloc) {
     md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
     md_script_eval_t* eval = md_alloc(arena, sizeof(md_script_eval_t));
-    memset(eval, 0, sizeof(md_script_eval_t));
+    MEMSET(eval, 0, sizeof(md_script_eval_t));
     eval->magic = SCRIPT_EVAL_MAGIC;
     eval->arena = arena;
     return eval;
@@ -4850,7 +4853,7 @@ bool md_filter_free(md_filter_result_t* result, struct md_allocator_i* alloc) {
     ASSERT(result);
     ASSERT(alloc);
     md_array_free(result->bitfields, alloc);
-    memset(result, 0, sizeof(md_filter_result_t));
+    MEMSET(result, 0, sizeof(md_filter_result_t));
     return true;
 }
 
@@ -5075,7 +5078,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     } else {
         md_allocator_i* arena = md_arena_allocator_create(args.alloc, MEGABYTES(1));
         vis->o = md_alloc(arena, sizeof(md_script_visualization_o));
-        memset(vis->o, 0, sizeof(md_script_visualization_o));
+        MEMSET(vis->o, 0, sizeof(md_script_visualization_o));
         vis->o->alloc = arena;
         vis->o->magic = VIS_MAGIC;
         vis->o->flags = args.flags;
@@ -5142,7 +5145,7 @@ bool md_script_visualization_free(md_script_visualization_t* vis) {
         ASSERT(vis->o->magic == VIS_MAGIC);
         md_arena_allocator_destroy(vis->o->alloc);
     }
-    memset(vis, 0, sizeof(md_script_visualization_t));
+    MEMSET(vis, 0, sizeof(md_script_visualization_t));
 
     return true;
 }

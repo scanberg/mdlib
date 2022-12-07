@@ -42,6 +42,7 @@ typedef struct md_cluster_t {
 // The match is case sensitive and expects elements to be formatted with Big first letter and small second letter:
 // E.g. H, He, Fe, Na, C
 md_element_t md_util_element_lookup(str_t element_str);
+md_element_t md_util_element_lookup_ignore_case(str_t element_str);
 
 str_t md_util_element_symbol(md_element_t element);
 str_t md_util_element_name(md_element_t element);

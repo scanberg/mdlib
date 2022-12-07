@@ -7,7 +7,7 @@
 #include <core/md_allocator.h>
 #include <core/md_file.h>
 #include <core/md_str.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 
 UTEST(xyz, xyz_standard) {
     str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");

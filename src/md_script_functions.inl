@@ -3465,7 +3465,7 @@ static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
         const vec3_t* pos = position_extract(arg[0], ctx);
         ASSERT(element_count(*dst) == md_array_size(pos));
-        memcpy(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
+        MEMCPY(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
     }
     else if (ctx->vis) {
         position_visualize(arg[0], ctx);

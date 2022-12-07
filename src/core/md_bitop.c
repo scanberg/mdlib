@@ -35,7 +35,7 @@ void bit_set(uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
         return;
     }
     bits[beg_idx] |= beg_mask;
-    memset(bits + beg_idx + 1, 0xFF, (end_idx - beg_idx - 1) * sizeof(uint64_t));
+    MEMSET(bits + beg_idx + 1, 0xFF, (end_idx - beg_idx - 1) * sizeof(uint64_t));
     bits[end_idx] |= end_mask;
 }
 
@@ -55,7 +55,7 @@ void bit_clear(uint64_t* bits, uint64_t bit_offset, uint64_t bit_count) {
     }
     
     bits[beg_idx] &= ~beg_mask;
-    memset(bits + beg_idx + 1, 0x00, (end_idx - beg_idx - 1) * sizeof(uint64_t));
+    MEMSET(bits + beg_idx + 1, 0x00, (end_idx - beg_idx - 1) * sizeof(uint64_t));
     bits[end_idx] &= ~end_mask;
 }
 

@@ -1,14 +1,14 @@
 #include "md_arena_allocator.h"
 
 #include "md_allocator.h"
-#include "md_array.inl"
+#include "md_array.h"
 #include "md_os.h"
 
 #define MAGIC_NUMBER 0xfdc1728d827856cb
 #define DEFAULT_ALIGNMENT (sizeof(void*)*2) // Should be 16 when compiled for x64
 
 #define VM_MAGIC 0x87b716a78ccb2813
-#define VM_COMMIT_SIZE KILOBYTES(64)
+#define VM_COMMIT_SIZE MEGABYTES(1)
 #define VM_DECOMMIT_THRESHOLD MEGABYTES(1)
 
 typedef struct page_t {
@@ -107,7 +107,7 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_
         }
         // ptr is not the last allocation or the new size did not fit into the existing page.
         void* new_ptr = arena_alloc(arena, new_size);
-        memcpy(new_ptr, ptr, old_size);
+        MEMCPY(new_ptr, ptr, old_size);
         return new_ptr;
     }
     // Alloc
@@ -166,7 +166,7 @@ void md_vm_arena_init(md_vm_arena_t* arena, uint64_t reservation_size) {
 void md_vm_arena_free(md_vm_arena_t* arena) {
     ASSERT(arena && arena->magic == VM_MAGIC);
     md_vm_release(arena->base);
-    memset(arena, 0, sizeof(md_vm_arena_t));
+    MEMSET(arena, 0, sizeof(md_vm_arena_t));
 }
 
 void* md_vm_arena_push_aligned(md_vm_arena_t* arena, uint64_t size, uint64_t align) {
@@ -203,7 +203,7 @@ void* md_vm_arena_push(md_vm_arena_t* arena, uint64_t size) {
 void* md_vm_arena_push_zero(md_vm_arena_t* arena, uint64_t size) {
     ASSERT(arena && arena->magic == VM_MAGIC);
     void* mem = md_vm_arena_push(arena, size);
-    memset(mem, 0, size);
+    MEMSET(mem, 0, size);
     return mem;
 }
 
@@ -264,7 +264,7 @@ static void* vm_arena_realloc(struct md_allocator_o* alloc, void* ptr, uint64_t 
             return ptr;
         }
         void* new_ptr = md_vm_arena_push(arena, new_size);
-        memcpy(new_ptr, ptr, old_size);
+        MEMCPY(new_ptr, ptr, old_size);
         return new_ptr;
     }
 

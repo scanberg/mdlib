@@ -3,7 +3,7 @@
 #include "md_common.h"
 #include "md_file.h"
 #include "md_allocator.h"
-#include "md_array.inl"
+#include "md_array.h"
 #include "md_log.h"
 
 #include <string.h>
@@ -187,7 +187,7 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
 str_t alloc_str(uint64_t len, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char* mem = md_alloc(alloc, len + 1);
-    memset(mem, 0, len + 1);
+    MEMSET(mem, 0, len + 1);
     str_t str = {mem, len};
     return str;
 }
@@ -203,7 +203,7 @@ str_t str_copy(const str_t str, struct md_allocator_i* alloc) {
     if (str.ptr && str.len > 0) {
         char* data = md_alloc(alloc, str.len + 1);
         data[str.len] = '\0';
-        memcpy(data, str.ptr, str.len);
+        MEMCPY(data, str.ptr, str.len);
         result.ptr = data;
         result.len = str.len;
     }
@@ -231,10 +231,10 @@ str_t str_concat(str_t a, str_t b, struct md_allocator_i* alloc) {
     int64_t len = a.len + b.len;
     
     if (!str_empty(a)) {
-        memcpy(buf, a.ptr, a.len);
+        MEMCPY(buf, a.ptr, a.len);
     }
     if (!str_empty(b)) {
-        memcpy(buf + a.len, b.ptr, b.len);
+        MEMCPY(buf + a.len, b.ptr, b.len);
     }
     buf[a.len + b.len] = '\0';
     return (str_t){buf, len};

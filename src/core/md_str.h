@@ -14,6 +14,7 @@
 struct md_allocator_i;
 struct md_file_o;
 
+// Non owning string_view type
 typedef struct str_t {
     const char* ptr;
     int64_t     len;

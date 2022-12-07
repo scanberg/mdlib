@@ -8,11 +8,11 @@
 #include <core/md_vec_math.h>
 #include <core/md_file.h>
 #include <core/md_allocator.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 
 #include <stdbool.h>
-#include <string.h>     // memset, memcpy
-#include <stdlib.h>     // qsort
+#include <string.h>
+//#include <stdlib.h>     // qsort
 #include <stdio.h>      // printf etc
 #include <stddef.h>     // offsetof
 
@@ -721,7 +721,7 @@ bool md_gl_molecule_zero_velocity(md_gl_molecule_t* ext_mol) {
         glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
         float* data = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (data) {
-            memset(data, 0, sizeof(float) * 3 * mol->atom_count);
+            MEMSET(data, 0, sizeof(float) * 3 * mol->atom_count);
             glUnmapBuffer(GL_ARRAY_BUFFER);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
             return true;
@@ -948,7 +948,7 @@ bool md_gl_shaders_init(md_gl_shaders_t* ext_shaders, const char* custom_shader_
     }
 
     internal_shaders_t* shaders = (internal_shaders_t*)ext_shaders;
-    memset(shaders, 0, sizeof(internal_shaders_t));
+    MEMSET(shaders, 0, sizeof(internal_shaders_t));
 
     {
         if (!custom_shader_snippet) {
@@ -1130,7 +1130,7 @@ bool md_gl_molecule_free(md_gl_molecule_t* ext_mol) {
             gl_buffer_conditional_delete(&mol->buffer[i]);
         }
         uint32_t new_version = mol->version + 1;
-        memset(mol, 0, sizeof(md_gl_molecule_t));
+        MEMSET(mol, 0, sizeof(md_gl_molecule_t));
         mol->version = new_version;
         return true;
     }
@@ -1150,7 +1150,7 @@ bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_mole
         }
 
         internal_rep_t* rep = (internal_rep_t*)ext_rep;
-        memset(rep, 0, sizeof(internal_rep_t));
+        MEMSET(rep, 0, sizeof(internal_rep_t));
         rep->mol = (internal_mol_t*)ext_mol;
         rep->mol_version = rep->mol->version;
         rep->magic = MAGIC;
@@ -1196,11 +1196,11 @@ static inline void init_ubo_base_data(gl_ubo_base_t* ubo_data, const md_gl_draw_
     ASSERT(ubo_data);
     ASSERT(args);
 
-    memcpy(&ubo_data->view_transform.world_to_view, args->view_transform.view_matrix, sizeof(mat4_t));
+    MEMCPY(&ubo_data->view_transform.world_to_view, args->view_transform.view_matrix, sizeof(mat4_t));
     if (model_matrix) {
         ubo_data->view_transform.world_to_view = mat4_mul(ubo_data->view_transform.world_to_view, *model_matrix);
     }
-    memcpy(&ubo_data->view_transform.view_to_clip,  args->view_transform.projection_matrix, sizeof(mat4_t));
+    MEMCPY(&ubo_data->view_transform.view_to_clip,  args->view_transform.projection_matrix, sizeof(mat4_t));
 
     ubo_data->view_transform.world_to_clip = mat4_mul(ubo_data->view_transform.view_to_clip, ubo_data->view_transform.world_to_view);
     ubo_data->view_transform.world_to_view_normal = mat4_transpose(mat4_inverse(ubo_data->view_transform.world_to_view));

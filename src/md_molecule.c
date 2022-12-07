@@ -1,5 +1,6 @@
 #include "md_molecule.h"
-#include "core/md_array.inl"
+#include "core/md_array.h"
+#include "core/md_allocator.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,7 +54,7 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->instance.label) md_array_free(mol->instance.label, alloc);
     if (mol->instance.transform) md_array_free(mol->instance.transform, alloc);
 
-    memset(mol, 0, sizeof(md_molecule_t));
+    MEMSET(mol, 0, sizeof(md_molecule_t));
 }
 
 // This is from Mathis work in Openspace modified slightly
@@ -152,7 +153,7 @@ void md_molecule_append(md_molecule_t* dst, const md_molecule_t* src, md_allocat
 
 void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_allocator_i* alloc) {
     // Make sure that the dst_molecule is clean!
-    memset(dst, 0, sizeof(md_molecule_t));
+    MEMSET(dst, 0, sizeof(md_molecule_t));
 
     ARRAY_PUSH(atom, x);
     ARRAY_PUSH(atom, y);

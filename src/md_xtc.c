@@ -1,7 +1,7 @@
 #include "md_xtc.h"
 
 #include <core/md_common.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_file.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
@@ -421,7 +421,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
 
         void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(xtc_t));
         ASSERT(mem);
-        memset(mem, 0, sizeof(md_trajectory_i) + sizeof(xtc_t));
+        MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(xtc_t));
 
         md_trajectory_i* traj = mem;
         xtc_t* xtc = (xtc_t*)(traj + 1);

@@ -8,7 +8,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 
-#include <core/md_array.inl>
+#include <core/md_array.h>
 
 #define ENX_STRING_MAGIC -55555
 #define ENX_HEADER_MAGIC -7777777
@@ -102,7 +102,7 @@ typedef struct {
 } edr_fp_t;
 
 static int xdrfile_read_int64(int64_t* ptr, int ndata, XDRFILE* xfp) {
-	static_assert(2 * sizeof(int) >= 8, "XDR handling assumes that an int64_t can be stored in two ints");
+	STATIC_ASSERT(2 * sizeof(int) >= 8, "XDR handling assumes that an int64_t can be stored in two ints");
 
 	int imaj = 0;
 	int imin = 0;
@@ -147,7 +147,7 @@ static void add_subblock_enxblock(md_enxblock_t* block, int64_t new_size, md_all
 	const int64_t old_size = md_array_size(block->sub);
 	md_array_resize(block->sub, new_size, alloc);
 	if (new_size > old_size) {
-		memset(block->sub + old_size, 0, (new_size - old_size) * sizeof(md_enxsubblock_t));
+		MEMSET(block->sub + old_size, 0, (new_size - old_size) * sizeof(md_enxsubblock_t));
 	}
 }
 
@@ -155,7 +155,7 @@ static void add_blocks_enxframe(md_enxframe_t* frame, int64_t new_size, md_alloc
 	const int64_t old_size = md_array_size(frame->block);
 	md_array_resize(frame->block, new_size, alloc);
 	if (new_size > old_size) {
-		memset(frame->block + old_size, 0, (new_size - old_size) * sizeof(md_enxblock_t));
+		MEMSET(frame->block + old_size, 0, (new_size - old_size) * sizeof(md_enxblock_t));
 	}
 }
 
@@ -505,7 +505,7 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 		const int64_t new_size = frame->nre;
 		const int64_t old_size = md_array_size(frame->ener);
 		md_array_resize(frame->ener, frame->nre, alloc);
-		memset(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
+		MEMSET(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
 	}
 
 	for (int i = 0; i < frame->nre; ++i) {

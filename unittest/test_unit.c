@@ -2,7 +2,7 @@
 
 #include <core/md_unit.h>
 #include <core/md_allocator.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <core/md_str.h>
 
 typedef struct {

@@ -6,7 +6,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_file.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 #include <md_util.h>
 
 #include <string.h>
@@ -190,7 +190,7 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
 
             // Copy remainder to beginning of buffer
             buf_offset = buf_size - str.len;
-            memcpy(buf, str.ptr + str.len, buf_offset);
+            MEMCPY(buf, str.ptr + str.len, buf_offset);
         }
 
         if (num_atoms_read != data->num_atoms) {
@@ -215,30 +215,15 @@ done:
 void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {
     ASSERT(data);
     if (data->atom_data) md_array_free(data->atom_data, alloc);
-    memset(data, 0, sizeof(md_gro_data_t));
+    MEMSET(data, 0, sizeof(md_gro_data_t));
 }
-
-/*
-static inline str_t add_label(str_t str, gro_molecule_t* inst) {
-    ASSERT(inst);
-    for (int64_t i = 0; i < md_array_size(inst->labels); ++i) {
-        str_t label = { .ptr = inst->labels[i].str, .len = strnlen(inst->labels[i].str, ARRAY_SIZE(inst->labels[i].str)) };
-        if (compare_str(str, label)) {
-            return label;
-        }
-    }
-    label_t label = {0};
-    memcpy(label.str, str.ptr, MIN(str.len, (int64_t)ARRAY_SIZE(label.str) - 1));
-    return (str_t){md_array_push(inst->labels, label, inst->allocator)->str, str.len};
-}
-*/
 
 bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, struct md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(data);
     ASSERT(alloc);
 
-    memset(mol, 0, sizeof(md_molecule_t));
+    MEMSET(mol, 0, sizeof(md_molecule_t));
 
     const int64_t num_atoms = data->num_atoms;
 

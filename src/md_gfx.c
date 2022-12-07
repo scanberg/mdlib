@@ -10,7 +10,7 @@
 #include <core/md_compiler.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_array.inl>
+#include <core/md_array.h>
 
 #include <stdio.h>      // snprintf
 #include <string.h>     // memset, memcpy, strstr
@@ -1779,7 +1779,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     glClearNamedBufferData(ctx.visibility_buf.id,     GL_RG32UI, GL_RG,  GL_UNSIGNED_INT, &vis_clear_val);
     glNamedBufferSubData(ctx.draw_ind_param_buf.id, 0, sizeof(DrawParameters), &draw_param);
 
-    memset(ctx.debug_data, 0, sizeof(DebugData));
+    MEMSET(ctx.debug_data, 0, sizeof(DebugData));
 
     GL_POP_GPU_SECTION();
 }
