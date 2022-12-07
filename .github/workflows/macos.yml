@@ -47,15 +47,9 @@ jobs:
             ulimit -c unlimited
             sudo ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
             sudo chmod -R +rwx /cores/*
-
-        - name: test access to core dump directory
-          shell: bash
-          run: |
-            sudo touch /cores/test
-            ls /cores
-            sudo rm /cores/test
-        
-        - uses: actions/upload-artifact@v3
+        - name: Upload coredump
+          if: always()
+          uses: actions/upload-artifact@v3
           with:
             name: crashes
             path: /cores/
