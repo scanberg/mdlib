@@ -960,10 +960,14 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     uint16_t beg_blk_idx = block_indices[0];
     uint16_t end_blk_idx = block_indices[block_count - 1];
 
+    md_printf(MD_LOG_TYPE_INFO, "1");
+
     // Allocate the blocks
     
     fit_to_range(bf, beg_blk_idx * BITS_PER_BLOCK, end_blk_idx * BITS_PER_BLOCK + (BITS_PER_BLOCK-1));
     MEMSET(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+
+    md_printf(MD_LOG_TYPE_INFO, "2");
 
     // Fetch block_data and store
     block_t* dst_block = (block_t*)bf->bits;
@@ -979,9 +983,13 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
         }
     }
 
+    md_printf(MD_LOG_TYPE_INFO, "3");
+
     // Now we have the data, compute the true beg_bit and end_bit
     int64_t beg_bit = block_scan_forward(get_block(bf, beg_blk_idx));
     int64_t end_bit = block_scan_reverse(get_block(bf, end_blk_idx));
+
+    md_printf(MD_LOG_TYPE_INFO, "4");
 
     bf->beg_bit = (uint32_t)(beg_blk_idx * BITS_PER_BLOCK + (beg_bit ? beg_bit - 1 : 0));
     bf->end_bit = (uint32_t)(end_blk_idx * BITS_PER_BLOCK + (end_bit ? end_bit : 0));
