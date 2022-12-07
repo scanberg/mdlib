@@ -70,7 +70,7 @@ static void fastlz_memmove(uint8_t* dest, const uint8_t* src, uint32_t count) {
 }
 
 static void fastlz_memcpy(uint8_t* dest, const uint8_t* src, uint32_t count) {
-  return fastlz_memmove(dest, src, count);
+  fastlz_memmove(dest, src, count);
 }
 
 #else
