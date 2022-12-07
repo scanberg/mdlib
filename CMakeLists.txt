@@ -59,13 +59,16 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-missing-field-initializers"
     "-Wno-missing-braces"
     "-Wno-unused-function"
-    "-Wno-unused-parameter")
+    "-Wno-unused-parameter"
+    "-Wno-gnu-zero-variadic-macro-arguments"
+    "-Wno-nested-anon-types")
 
   if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
     if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
     message(STATUS "mdlib: MSVC-Clang configuration was used")
     elseif (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU") # clang native
     message(STATUS "mdlib: Clang configuration was used")
+        set(MD_LIBS ${MD_LIBS} "m" "atomic")
     endif()
   elseif (CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
     message(STATUS "mdlib: AppleClang configuration was used")
