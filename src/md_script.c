@@ -5,8 +5,10 @@
 #include "md_filter.h"
 #include "md_util.h"
 
-#include "core/md_bitfield.h"
+#include "core/md_compiler.h"
+#include "core/md_platform.h"
 #include "core/md_log.h"
+#include "core/md_bitfield.h"
 #include "core/md_allocator.h"
 #include "core/md_common.h"
 #include "core/md_str.h"
@@ -14,15 +16,13 @@
 #include "core/md_file.h"
 #include "core/md_arena_allocator.h"
 #include "core/md_linear_allocator.h"
-#include "core/md_compiler.h"
 #include "core/md_bitop.h"
-#include "core/md_vec_math.h"
 #include "core/md_simd.h"
-#include "core/md_platform.h"
-#include "core/md_compiler.h"
 #include "core/md_os.h"
-#include "core/md_spatial_hash.h"
 #include "core/md_unit.h"
+#include "core/md_spatial_hash.h"
+#include "core/md_vec_math.h"
+#include "core/md_str_builder.h"
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
@@ -1089,20 +1089,20 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     // Map marker type to string which we use to identify operator procedures
     str_t name = {0};
     switch(op) {
-    case AST_ADD: name = MAKE_STR("+");   break;
-    case AST_SUB: name = MAKE_STR("-");   break;
-    case AST_MUL: name = MAKE_STR("*");   break;
-    case AST_DIV: name = MAKE_STR("/");   break;
-    case AST_AND: name = MAKE_STR("and"); break;
-    case AST_OR:  name = MAKE_STR("or");  break;
-    case AST_XOR: name = MAKE_STR("xor");  break;
-    case AST_NOT: name = MAKE_STR("not"); break;
-    case AST_EQ:  name = MAKE_STR("==");  break;
-    case AST_NE:  name = MAKE_STR("!=");  break;
-    case AST_LT:  name = MAKE_STR("<");   break;
-    case AST_GT:  name = MAKE_STR(">");   break;
-    case AST_LE:  name = MAKE_STR("<=");  break;
-    case AST_GE:  name = MAKE_STR(">=");  break;
+    case AST_ADD: name = STR("+");   break;
+    case AST_SUB: name = STR("-");   break;
+    case AST_MUL: name = STR("*");   break;
+    case AST_DIV: name = STR("/");   break;
+    case AST_AND: name = STR("and"); break;
+    case AST_OR:  name = STR("or");  break;
+    case AST_XOR: name = STR("xor");  break;
+    case AST_NOT: name = STR("not"); break;
+    case AST_EQ:  name = STR("==");  break;
+    case AST_NE:  name = STR("!=");  break;
+    case AST_LT:  name = STR("<");   break;
+    case AST_GT:  name = STR(">");   break;
+    case AST_LE:  name = STR("<=");  break;
+    case AST_GE:  name = STR(">=");  break;
 
     default:
         ASSERT(false);
@@ -1183,28 +1183,28 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             const int n = j - i;
             if (n == 2) {
                 str_t str = {buf+i, 2};
-                if (str_equal(str, MAKE_STR("or"))) {
+                if (str_equal(str, STR("or"))) {
                     token.type = TOKEN_OR;
                 }
-                else if (str_equal(str, MAKE_STR("in"))) {
+                else if (str_equal(str, STR("in"))) {
                     token.type = TOKEN_IN;
                 }
-                else if (str_equal(str, MAKE_STR("of"))) {
+                else if (str_equal(str, STR("of"))) {
                     token.type = TOKEN_OF;
                 }
             }
             else if (n == 3) {
                 str_t str = {buf+i, 3};
-                if (str_equal(str, MAKE_STR("and"))) {
+                if (str_equal(str, STR("and"))) {
                     token.type = TOKEN_AND;
                 }
-                else if (str_equal(str, MAKE_STR("not"))) {
+                else if (str_equal(str, STR("not"))) {
                     token.type = TOKEN_NOT;
                 }
-                else if (str_equal(str, MAKE_STR("xor"))) {
+                else if (str_equal(str, STR("xor"))) {
                     token.type = TOKEN_XOR;
                 }
-                else if (str_equal(str, MAKE_STR("out"))) {
+                else if (str_equal(str, STR("out"))) {
                     token.type = TOKEN_OUT;
                 }
             }
@@ -4367,33 +4367,43 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
 
     ASSERT(node->type != AST_UNDEFINED);
 
-    int len = 0;
-    char buf[256] = {0};
+    md_str_builder_t sb = {0};
+    md_str_builder_init(&sb, default_temp_allocator);
 
     if (!(node->flags & FLAG_DYNAMIC)) {
         if (node->data.type.base_type != TYPE_BITFIELD) {
             char val_buf[128] = {0};
             int val_len = print_value(val_buf, sizeof(val_buf), node->data);
-            len += snprintf(buf + len, sizeof(buf) - len, "%.*s ", val_len, val_buf);
+            md_str_builder_append_cstr_len(&sb, val_buf, val_len);
         }
     } else {
-        len += snprintf(buf + len, sizeof(buf) - len, "[d] ");
+        md_str_builder_append_str(&sb, STR("[dynamic]"));
     }
 
     char type_buf[128];
-    char unit_buf[128];
     int type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
+    md_str_builder_printf(&sb, " %.*s", type_len, type_buf);
+
+    char unit_buf[128];
     int unit_len = unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit);
-    if (unit_len == 0) {
-        len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "(%.*s) ", type_len, type_buf);
-    } else {
-        len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "(%.*s, %.*s)", type_len, type_buf, unit_len, unit_buf);
+    if (unit_len) {
+        md_str_builder_printf(&sb, " %.*s", unit_len, unit_buf);
+    }
+
+    if (node->data.size) {
+        if (node->data.size / MEGABYTES(1)) {
+            md_str_builder_printf(&sb, " [%.2fMB]", (double)node->data.size / (double)MEGABYTES(1));
+        } else if (node->data.size / KILOBYTES(1)) {
+            md_str_builder_printf(&sb, " [%.2fKB]", (double)node->data.size / (double)KILOBYTES(1));
+        } else {
+            md_str_builder_printf(&sb, " [%iB]", (int)node->data.size);
+        }
     }
 
     vis.range.beg = node->token.beg;
     vis.range.end = node->token.end;
     vis.depth = depth;
-    vis.text = str_copy((str_t){.ptr = buf, .len = len}, ir->arena);
+    vis.text = str_copy(md_str_builder_to_str(&sb), ir->arena);
     vis.payload = (const struct md_script_vis_payload_t*)(node_override ? node_override : node);
 
     // Parent marker should be last marker added (unless empty)

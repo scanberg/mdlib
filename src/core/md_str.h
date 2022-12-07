@@ -1,9 +1,8 @@
 #pragma once
 
+#include "md_common.h"  // ASSERT, MIN, MAX
 #include <stdint.h>
 #include <stdbool.h>
-
-#include "md_common.h"  // ASSERT, MIN, MAX
 
 #ifdef __cplusplus
 #define DEF_VAL(x) = x
@@ -12,7 +11,6 @@
 #endif
 
 struct md_allocator_i;
-struct md_file_o;
 
 // Non owning string_view type
 typedef struct str_t {
@@ -29,10 +27,11 @@ typedef struct str_t {
 #endif
 } str_t;
 
+// Macro to bake a string literal into a str_t
 #ifdef __cplusplus
-#define MAKE_STR(cstr) {(cstr""), (sizeof(cstr)-1)}
+#define STR(cstr) {(cstr""), (sizeof(cstr)-1)}
 #else
-#define MAKE_STR(cstr) (str_t){(cstr ""), (sizeof(cstr)-1)}
+#define STR(cstr) (str_t){(cstr""), (sizeof(cstr)-1)}
 #endif
 
 #ifdef __cplusplus
@@ -171,7 +170,7 @@ str_t str_find_str(str_t str, str_t str_to_find);
 
 // Make sure you ave trimmed all whitespace before using these!
 // They are lean and mean
-double parse_float(str_t str);
+double  parse_float(str_t str);
 int64_t parse_int(str_t str);
 
 // Will allocate one extra character for zero termination

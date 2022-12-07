@@ -32,8 +32,11 @@ void md_str_builder_free(md_str_builder_t* sb) {
 }
 
 void md_str_builder_append_cstr(md_str_builder_t* sb, const char* cstr) {
+	md_str_builder_append_cstr_len(sb, cstr, (int64_t)strlen(cstr));
+}
+
+void md_str_builder_append_cstr_len(md_str_builder_t* sb, const char* cstr, int64_t len) {
 	ASSERT(sb);
-	int64_t len = (int64_t)strlen(cstr);
 	if (len > 0) {
 		if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
 		md_array_push_array(sb->buf, cstr, len, sb->alloc);

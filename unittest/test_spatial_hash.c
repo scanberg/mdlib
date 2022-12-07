@@ -42,7 +42,7 @@ UTEST(spatial_hash, small_periodic) {
 
 UTEST(spatial_hash, big) {
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(64));
-    const str_t pdb_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
@@ -77,7 +77,7 @@ UTEST_F_SETUP(spatial_hash) {
     utest_fixture->alloc = md_vm_arena_create_interface(&utest_fixture->arena);
 
     md_gro_data_t gro_data = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, MAKE_STR(MD_UNITTEST_DATA_DIR "/centered.gro"), &utest_fixture->alloc));
+    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), &utest_fixture->alloc));
     ASSERT_TRUE(md_gro_molecule_init(&utest_fixture->mol, &gro_data, &utest_fixture->alloc));
     utest_fixture->pbc_ext = mat3_mul_vec3(utest_fixture->mol.coord_frame, vec3_set1(1.f));
 }

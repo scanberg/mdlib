@@ -12,7 +12,7 @@
 
 UTEST(util, rmsd) {
     md_allocator_i* alloc = default_allocator;
-    const str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t path = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, alloc));

@@ -23,7 +23,7 @@ UTEST(string_builder, all) {
 
 	EXPECT_STREQ("Hej 2 Cool", str.ptr);
 
-	md_str_builder_append_str(&sb, MAKE_STR(" 4 School."));
+	md_str_builder_append_str(&sb, STR(" 4 School."));
 	str = md_str_builder_to_str(&sb);
 
 	EXPECT_STREQ("Hej 2 Cool 4 School.", str.ptr);

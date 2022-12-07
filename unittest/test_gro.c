@@ -10,7 +10,7 @@
 UTEST(gro, parse_small) {
     md_allocator_i* alloc = default_allocator;
 
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR"/catalyst.gro");
+    str_t path = STR(MD_UNITTEST_DATA_DIR"/catalyst.gro");
     md_gro_data_t gro_data = {0};
     bool result = md_gro_data_parse_file(&gro_data, path, alloc);
     EXPECT_TRUE(result);
@@ -39,7 +39,7 @@ UTEST(gro, parse_small) {
 UTEST(gro, parse_big) {
     md_allocator_i* alloc = default_allocator;
 
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR"/centered.gro");
+    str_t path = STR(MD_UNITTEST_DATA_DIR"/centered.gro");
     md_gro_data_t gro_data = { 0 };
     bool result = md_gro_data_parse_file(&gro_data, path, alloc);
     EXPECT_TRUE(result);

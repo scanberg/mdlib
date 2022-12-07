@@ -192,7 +192,7 @@ str_t md_os_path_make_relative(str_t from, str_t to, struct md_allocator_i* allo
 
         const int64_t folder_count = str_count_char_occur(rfrom, '/');
 
-        str_t folder_up = MAKE_STR("../");
+        str_t folder_up = STR("../");
         int len = 0;
         for (int64_t i = 0; i < folder_count; ++i) {
             len += snprintf(sz_buf + len, sizeof(sz_buf) - len, "%.*s", (int)folder_up.len, folder_up.ptr);

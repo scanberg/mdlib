@@ -19,6 +19,7 @@ void md_str_builder_free(md_str_builder_t* sb);
 void md_str_builder_printf(md_str_builder_t* sb, const char* format, ...);
 void md_str_builder_append_char(md_str_builder_t* sb, char c);
 void md_str_builder_append_cstr(md_str_builder_t* sb, const char* cstr);
+void md_str_builder_append_cstr_len(md_str_builder_t* sb, const char* cstr, int64_t len);
 void md_str_builder_append_str(md_str_builder_t* sb, str_t str);
 void md_str_builder_reset(md_str_builder_t* sb);
 

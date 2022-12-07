@@ -10,7 +10,7 @@ typedef struct {
 	str_t     str;
 } item_t;
 
-#define ADD(unit, cstr) md_array_push(table, ((item_t){unit, MAKE_STR(cstr)}), alloc)
+#define ADD(unit, cstr) md_array_push(table, ((item_t){unit, STR(cstr)}), alloc)
 
 #define UNIT_KILOGRAM       {.base = {.dim = {.mass = 1,}},     .mult = 1.0}
 #define UNIT_NANOMETER      {.base = {.dim = {.length = 1,}},   .mult = 1e-9}
@@ -60,15 +60,15 @@ UTEST(unit, print) {
 
 UTEST(unit, from_string) {
 	/*
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_KILOGRAM,	unit_from_string(MAKE_STR("Kg"))));
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_PASCAL,		unit_from_string(MAKE_STR("Pa"))));
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_NANOMETER,	unit_from_string(MAKE_STR("nm"))));
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_BAR,			unit_from_string(MAKE_STR("bar"))));
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_M_S2,		unit_from_string(MAKE_STR("m/s^2"))));
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_KJ_MOL,		unit_from_string(MAKE_STR("kJ/mol"))));
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_VOLT,		unit_from_string(MAKE_STR("V"))));
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_COULOMB,		unit_from_string(MAKE_STR("C"))));
-	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_AMPEREHOUR,	unit_from_string(MAKE_STR("Ah"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_KILOGRAM,	unit_from_string(STR("Kg"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_PASCAL,		unit_from_string(STR("Pa"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_NANOMETER,	unit_from_string(STR("nm"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_BAR,			unit_from_string(STR("bar"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_M_S2,		unit_from_string(STR("m/s^2"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_KJ_MOL,		unit_from_string(STR("kJ/mol"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_VOLT,		unit_from_string(STR("V"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_COULOMB,		unit_from_string(STR("C"))));
+	EXPECT_TRUE(unit_equal((md_unit_t)UNIT_AMPEREHOUR,	unit_from_string(STR("Ah"))));
 	*/
 }
 

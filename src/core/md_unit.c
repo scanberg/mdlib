@@ -510,7 +510,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
         md_unit_t best_match = find_best_matching_predefined(unit);
         if (!unit_empty(best_match)) {
             double mult  = unit.mult / best_match.mult;
-            str_t prefix = MAKE_STR("");
+            str_t prefix = STR("");
 
             if (mult != 1.0) {
                 prefix = find_prefix_str_from_value((float)mult);

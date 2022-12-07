@@ -126,7 +126,7 @@ static void print_bits(uint64_t* bits, uint64_t num_bits) {
 UTEST(script, basic_expressions) {
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, MAKE_STR("'this is a string'"), &test_mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, STR("'this is a string'"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_STRING);
         str_t str = as_string(data);
         EXPECT_STREQ(str.ptr, "this is a string");
@@ -134,21 +134,21 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, MAKE_STR("2 + 5"), &test_mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, STR("2 + 5"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_INT);
         EXPECT_EQ(as_int(data), 7);
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, MAKE_STR("2 + 5.0"), &test_mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, STR("2 + 5.0"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
         EXPECT_EQ(as_float(data), 7.0);
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, MAKE_STR("{2,1} + {1,8}"), &test_mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, STR("{2,1} + {1,8}"), &test_mol, default_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_INT);
         EXPECT_EQ(data.type.dim[0], 2);
         EXPECT_EQ(as_int_arr(data)[0], 3);
@@ -192,7 +192,7 @@ UTEST(script, selection) {
 
 UTEST(script, compile_script) {
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
-    const str_t gro_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/centered.gro");
+    const str_t gro_file = STR(MD_UNITTEST_DATA_DIR "/centered.gro");
 
     md_gro_data_t gro_data = {0};
     ASSERT_TRUE(md_gro_data_parse_file(&gro_data, gro_file, alloc));
@@ -202,7 +202,7 @@ UTEST(script, compile_script) {
 
     md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    str_t script_src = load_textfile(MAKE_STR(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
+    str_t script_src = load_textfile(STR(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_script_ir_compile_source(ir, script_src, &mol, NULL);
     EXPECT_TRUE(md_script_ir_valid(ir));
@@ -214,11 +214,11 @@ UTEST(script, semantic) {
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
 
     md_molecule_t mol = { 0 };
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, MAKE_STR(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
-        md_script_ir_compile_source(ir, MAKE_STR("p1 = resname('ALA') resname('GLY');"), &mol, NULL);
+        md_script_ir_compile_source(ir, STR("p1 = resname('ALA') resname('GLY');"), &mol, NULL);
         EXPECT_FALSE(md_script_ir_valid(ir));
     }
 
@@ -228,7 +228,7 @@ UTEST(script, semantic) {
 UTEST(script, selection_big) {
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
 
-    const str_t gro_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/centered.gro");
+    const str_t gro_file = STR(MD_UNITTEST_DATA_DIR "/centered.gro");
 
     md_gro_data_t gro_data = {0};
     ASSERT_TRUE(md_gro_data_parse_file(&gro_data, gro_file, alloc));
@@ -241,7 +241,7 @@ UTEST(script, selection_big) {
     md_bitfield_t bf = {0};
     md_bitfield_init(&bf, alloc);
 
-    bool result = eval_selection(&bf, MAKE_STR("atom(1:20) and element('O') in chain(:)"), &mol);
+    bool result = eval_selection(&bf, STR("atom(1:20) and element('O') in chain(:)"), &mol);
     EXPECT_TRUE(result);
 
     md_arena_allocator_destroy(alloc);
@@ -249,7 +249,7 @@ UTEST(script, selection_big) {
 
 UTEST(script, dynamic_length) {
     md_allocator_i* alloc = default_allocator;
-    const str_t pdb_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
@@ -264,7 +264,7 @@ UTEST(script, dynamic_length) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
-        str_t src = MAKE_STR("sel1 = residue(within_z(1:50));");
+        str_t src = STR("sel1 = residue(within_z(1:50));");
         md_script_ir_compile_source(ir, src, &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
@@ -277,7 +277,7 @@ UTEST(script, dynamic_length) {
 
 UTEST(script, property_compute) {
     md_allocator_i* alloc = default_allocator;
-    const str_t pdb_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
@@ -293,7 +293,7 @@ UTEST(script, property_compute) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
-        str_t src = MAKE_STR("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
+        str_t src = STR("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
         md_script_ir_compile_source(ir, src, &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
@@ -306,24 +306,12 @@ UTEST(script, property_compute) {
     }
 
     {
-        md_script_ir_compile_source(ir, MAKE_STR("d1 = 1:5 in residue(1:3);"), &mol, NULL);
+        md_script_ir_compile_source(ir, STR("d1 = 1:5 in residue(1:3);"), &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
     {
-        md_script_ir_compile_source(ir, MAKE_STR("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, NULL);
-        EXPECT_TRUE(md_script_ir_valid(ir));
-
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
-        EXPECT_NE(NULL, eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
-
-        md_script_eval_free(eval);
-    }
-
-    {
-        md_script_ir_compile_source(ir, MAKE_STR("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), &mol, NULL);
+        md_script_ir_compile_source(ir, STR("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
@@ -335,7 +323,19 @@ UTEST(script, property_compute) {
     }
 
     {
-        str_t src = MAKE_STR(
+        md_script_ir_compile_source(ir, STR("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), &mol, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        EXPECT_NE(NULL, eval);
+        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
+
+        md_script_eval_free(eval);
+    }
+
+    {
+        str_t src = STR(
             "s1 = residue(1:10);\n"
             "s2 = residue(11:15);\n"
             "s = {s1, s2};"
@@ -345,7 +345,7 @@ UTEST(script, property_compute) {
     }
 
     {
-        str_t src = MAKE_STR("s1 = count(within(10, residue(:)));");
+        str_t src = STR("s1 = count(within(10, residue(:)));");
         md_script_ir_compile_source(ir, src, &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
@@ -395,8 +395,8 @@ void func(void* user_data) {
 
 UTEST(script, parallel_evaluation) {
     md_allocator_i* alloc = default_allocator;
-    const str_t pdb_file = MAKE_STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-    const str_t script = MAKE_STR("p1 = distance(1,10);");
+    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t script = STR("p1 = distance(1,10);");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
