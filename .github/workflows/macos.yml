@@ -47,7 +47,7 @@ jobs:
             ulimit -c unlimited # Enable core dumps to be captured (must be in same run block) 
             sudo ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
             sudo chmod -R +rwx /cores/*
-          - uses: actions/upload-artifact@master # capture all crashes as build artifacts
-            with:
-              name: crashes
-              path: /cores
+        - uses: actions/upload-artifact@master # capture all crashes as build artifacts
+          with:
+            name: crashes
+            path: /cores
