@@ -938,7 +938,9 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     const int64_t mem_bytes = num_bytes * 100;
     void* mem = md_alloc(default_allocator, mem_bytes);
 
+    md_printf(MD_LOG_TYPE_INFO, "pre fastlz decompress");
     int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);
+    md_printf(MD_LOG_TYPE_INFO, "post fastlz decompress");
 
     if (size == 0) {
         md_printf(MD_LOG_TYPE_ERROR, "Failed, to decompress bitfield.");
