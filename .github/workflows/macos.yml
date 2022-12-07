@@ -16,10 +16,6 @@ jobs:
             # token: ${{ secrets.PAT }}
             repository: scanberg/mold_data
             path: unittest/data/
-        - uses: actions/upload-artifact@master # capture all crashes as build artifacts
-          with:
-            name: crashes
-            path: /cores
 
         - name: Create Build Environment
           # Some projects don't allow in-source building, so create a separate build directory
@@ -42,6 +38,16 @@ jobs:
           # Execute the build.  You can specify a specific target with "--target <NAME>"
           run: cmake --build . --config $BUILD_TYPE
 
+        - name: test enabling cores
+          ulimit -c               # should output 0 if disabled
+          ulimit -c unlimited
+          ulimit -c               # should output 'unlimited' now
+
+        - name: test access to core dump directory
+          sudo touch /cores/test
+          ls /cores
+          sudo rm /cores/test
+
         - name: Test
           working-directory: ${{github.workspace}}/build
           shell: bash
@@ -51,3 +57,7 @@ jobs:
             ulimit -c unlimited
             sudo ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
             sudo chmod -R +rwx /cores/*
+        - uses: actions/upload-artifact@master # capture all crashes as build artifacts
+          with:
+            name: crashes
+            path: /cores
