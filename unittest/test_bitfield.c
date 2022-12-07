@@ -159,7 +159,9 @@ UTEST(bitfield, serialization) {
     md_bitfield_t b = {0};
     md_bitfield_init(&b, alloc);
 
-    EXPECT_TRUE(md_bitfield_deserialize(&b, mem, real_bytes));
+    bool result = md_bitfield_deserialize(&b, mem, real_bytes);
+    md_printf(MD_LOG_TYPE_INFO, "Deserialization of b: %s", result ? "true" : "false");
+    EXPECT_TRUE(result);
 
     for (int64_t i = 0; i < 70000; ++i) {
         bool bit_a = md_bitfield_test_bit(&a, i);
