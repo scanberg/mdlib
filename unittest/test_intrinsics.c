@@ -1,11 +1,34 @@
 #include "utest.h"
 
 #include <core/md_compiler.h>
+#include <core/md_common.h>
 #include <core/md_intrinsics.h>
 
 #if (MD_COMPILER_GCC || MD_COMPILER_CLANG)
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #endif
+
+UTEST(intrinsics, memset) {
+    char data[131];
+    MEMSET(data, 4, sizeof(data));
+
+    for (int i = 0; i < ARRAY_SIZE(data); ++i) {
+        EXPECT_EQ(data[i], 4);
+    }
+}
+
+UTEST(intrinsics, memcpy) {
+    int a[131];
+    int b[131];
+    for (int i = 0; i < ARRAY_SIZE(a); ++i) {
+        a[i] = i;
+    }
+    MEMCPY(b, a, sizeof(b));
+
+    for (int i = 0; i < ARRAY_SIZE(a); ++i) {
+        EXPECT_EQ(a[i], b[i]);
+    }
+}
 
 UTEST(intrinsics, test) {
     {

@@ -4110,6 +4110,10 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
 
     const uint64_t STACK_RESET_POINT = md_vm_arena_get_pos(&vm_arena);
 
+    int thread_id = (md_thread_id() & 0xFFFF);
+    md_printf(MD_LOG_TYPE_DEBUG, "Starting evaluation on thread %i, range (%i,%i) arena size: %.2f MB", thread_id, (int)frame_beg, (int)frame_end, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
+    uint64_t max_arena_pos = 0;
+
     md_trajectory_frame_header_t init_header = { 0 };
     md_trajectory_frame_header_t curr_header = { 0 };
 
@@ -4285,11 +4289,11 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
             props[p_idx].data.fingerprint = fingerprint;
         }
-
-        int id = (int)(md_thread_id() & 0xFF);
-        md_printf(MD_LOG_TYPE_DEBUG, "Finished evaluation of frame %i on thread %i, arena size: %.2f MB", (int)f_idx, id, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
+        
+        max_arena_pos = MAX(max_arena_pos, vm_arena.commit_pos);
     }
 done:
+    md_printf(MD_LOG_TYPE_DEBUG, "Finished evaluation on thread %i, max arena size: %.2f MB", thread_id, (double)max_arena_pos / (double)MEGABYTES(1));
     FREE_TEMP_ALLOC();
     return result;
 }
