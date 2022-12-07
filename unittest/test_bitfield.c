@@ -2,6 +2,7 @@
 #include <core/md_allocator.h>
 #include <core/md_bitfield.h>
 #include <core/md_tracking_allocator.h>
+#include <core/md_log.h>
 
 #include <string.h>
 #include <stdint.h>
@@ -153,6 +154,8 @@ UTEST(bitfield, serialization) {
     void* mem = md_alloc(alloc, est_bytes);
     int64_t real_bytes = md_bitfield_serialize(mem, &a);
 
+    md_printf(MD_LOG_TYPE_INFO, "Estimated serialization bytes for a: %i, actual bytes: %i", (int)est_bytes, (int)real_bytes);
+
     md_bitfield_t b = {0};
     md_bitfield_init(&b, alloc);
 
@@ -169,6 +172,8 @@ UTEST(bitfield, serialization) {
     md_bitfield_set_bit(&c, 0);
 
     real_bytes = md_bitfield_serialize(mem, &c);
+    md_printf(MD_LOG_TYPE_INFO, "Serialized bytes bytes for c: %i", (int)est_bytes, (int)real_bytes);
+
 
     md_bitfield_clear(&b);
     EXPECT_TRUE(md_bitfield_deserialize(&b, mem, real_bytes));
