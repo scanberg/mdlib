@@ -47,8 +47,7 @@ jobs:
             ulimit -c unlimited
             sudo ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
             sudo chmod -R +rwx /cores/*
-        - name: Store Core Dumps
           uses: actions/upload-artifact@v3
-          with:
-            name: crashes
-            path: /cores
+            with:
+              name: crashes
+              path: /cores
