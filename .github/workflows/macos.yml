@@ -17,6 +17,11 @@ jobs:
             repository: scanberg/mold_data
             path: unittest/data/
 
+        - uses: actions/upload-artifact@master # capture all crashes as build artifacts
+          with:
+            name: crashes
+            path: /cores
+
         - name: Create Build Environment
           # Some projects don't allow in-source building, so create a separate build directory
           # We'll use this as our working directory for all subsequent commands
@@ -43,4 +48,7 @@ jobs:
           shell: bash
           # Execute tests defined by the CMake configuration.  
           # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-          run: ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
+          run: |
+            ulimit -c unlimited # Enable core dumps to be captured (must be in same run block) 
+            sudo ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
+            sudo chmod -R +rwx /cores/*
