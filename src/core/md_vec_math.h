@@ -8,6 +8,7 @@
 #include "md_simd.h"
 #endif
 
+#include "md_common.h"
 #include "md_compiler.h"
 
 #if MD_COMPILER_GCC
@@ -22,7 +23,6 @@
 #	pragma warning(disable: 4201)  // nonstandard extension used : nameless struct/union
 #endif
 
-#include "md_common.h"
 #include <stdint.h>
 #include <math.h>
 
@@ -135,8 +135,8 @@ static inline double step(double edge, double x) { return (double)((x - edge) > 
 static inline float fractf(float x) { return x - (int32_t)x; }
 static inline double fract(double x) { return x - (int64_t)x; }
 
-static inline float signf(float x)  { return (float)((x > 0.0f) - (x < 0.0f)); }
-static inline double sign(double x) { return (double)((x > 0.0) - (x < 0.0)); }
+static inline int   signf(float x) { return (int)((x > 0.0f) - (x < 0.0f)); }
+static inline int   sign(double x) { return (int)((x > 0.0) - (x < 0.0)); }
 
 static inline float deperiodizef(float val, float ref, float period) {
     if (period == 0.0f) return val;
