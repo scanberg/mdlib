@@ -10,7 +10,7 @@
 #include <core/md_array.h>
 
 UTEST(xyz, xyz_standard) {
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
@@ -31,7 +31,7 @@ UTEST(xyz, xyz_standard) {
 }
 
 UTEST(xyz, xyz_xmol) {
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
@@ -52,7 +52,7 @@ UTEST(xyz, xyz_xmol) {
 }
 
 UTEST(xyz, xyz_tinker) {
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/full.xyz");
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/full.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
@@ -73,7 +73,7 @@ UTEST(xyz, xyz_tinker) {
 }
 
 UTEST(xyz, xyz_tinker_arc) {
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/full.arc");
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/full.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
@@ -94,7 +94,7 @@ UTEST(xyz, xyz_tinker_arc) {
 }
 
 UTEST(xyz, o2_arc) {
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/o2.arc");
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/o2.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
@@ -115,7 +115,7 @@ UTEST(xyz, o2_arc) {
 }
 
 UTEST(xyz, h2o_arc) {
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/h2o.arc");
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/h2o.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
@@ -136,7 +136,7 @@ UTEST(xyz, h2o_arc) {
 }
 
 UTEST(xyz, ch4_arc) {
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/ch4.arc");
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/ch4.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
@@ -158,7 +158,7 @@ UTEST(xyz, ch4_arc) {
 
 UTEST(xyz, create_molecule) {
     md_allocator_i* alloc = default_allocator;
-    str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
 
     md_xyz_data_t data = {0};
     ASSERT_TRUE(md_xyz_data_parse_file(&data, path, alloc));
@@ -180,7 +180,7 @@ UTEST(xyz, create_molecule) {
 }
 
 UTEST(xyz, trajectory_i) {
-    const str_t path = MAKE_STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
+    const str_t path = STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
     md_trajectory_i* traj = md_xyz_trajectory_create(path, default_allocator);
     ASSERT_TRUE(traj);
 

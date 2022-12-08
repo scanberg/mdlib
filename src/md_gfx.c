@@ -410,7 +410,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     APPEND_STR(buf, version_str, alloc);
     line_count += 1;
 
-    str_t glsl_define = MAKE_STR("#ifndef GLSL\n#define GLSL\n#endif");
+    str_t glsl_define = STR("#ifndef GLSL\n#define GLSL\n#endif");
     APPEND_STR(buf, glsl_define, alloc);
     line_count += 3;
 

@@ -16,9 +16,9 @@ UTEST(os, path) {
     {
         /*
         // FAILS ON UNIX
-        str_t path = MAKE_STR("cool/fool/../bool/../file.txt");
+        str_t path = STR("cool/fool/../bool/../file.txt");
         str_t result = md_os_path_make_canonical(path, default_temp_allocator);
-        str_t ref = MAKE_STR("cool/file.txt");
+        str_t ref = STR("cool/file.txt");
         EXPECT_TRUE(str_equal(result, ref));
         */
     }
