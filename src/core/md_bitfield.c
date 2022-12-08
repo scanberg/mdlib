@@ -938,9 +938,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     const int64_t mem_bytes = num_bytes * 100;
     void* mem = md_alloc(default_allocator, mem_bytes);
 
-    md_printf(MD_LOG_TYPE_INFO, "pre fastlz decompress");
-    int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);
-    md_printf(MD_LOG_TYPE_INFO, "post fastlz decompress");
+    int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);    
 
     if (size == 0) {
         md_printf(MD_LOG_TYPE_ERROR, "Failed, to decompress bitfield.");
@@ -964,8 +962,6 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     
     fit_to_range(bf, beg_blk_idx * BITS_PER_BLOCK, end_blk_idx * BITS_PER_BLOCK + (BITS_PER_BLOCK-1));
     MEMSET(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
-
-    md_printf(MD_LOG_TYPE_INFO, "block_count: %i", (int)block_count);
 
     // Fetch block_data and store
     block_t* dst_block = (block_t*)bf->bits;
