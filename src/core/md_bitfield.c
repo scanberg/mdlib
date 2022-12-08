@@ -950,7 +950,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     const uint16_t* data = (const uint16_t*)mem;
     uint16_t block_count = data[0];
     const uint16_t* block_indices = data + 1;
-    const block_t* block_data = (const block_t*)(block_indices + block_count);
+    const uint16_t* block_data = (const uint16_t*)(block_indices + block_count);
 
     if (block_count == 0) {
         md_printf(MD_LOG_TYPE_ERROR, "Block count was zero");
@@ -980,7 +980,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
         } else {
             md_printf(MD_LOG_TYPE_INFO, "memcpy block %i", (int)blk_idx);
             MEMCPY(dst_block + blk_idx, block_data + src_offset, sizeof(block_t));
-            src_offset += 1;
+            src_offset += sizeof(block_t) / sizeof(uint16_t);
         }
     }
 
