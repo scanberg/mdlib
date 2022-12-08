@@ -46,9 +46,11 @@ jobs:
           run: |
             ulimit -c unlimited
             sudo ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
+        - name: Chmod cores
+          if: always()
+          run: sudo chmod -R +rwx /cores
         - name: Upload coredump
           if: always()  # This should be on failed for the previous task
-          run: sudo chmod -R +rwx /cores
           uses: actions/upload-artifact@v3
           with:
             name: crashes
