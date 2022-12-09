@@ -19,20 +19,24 @@ typedef struct md_slot_header_t {
     uint32_t access_count;
 } md_slot_header_t;
 
-bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allocator_i* alloc, int64_t num_cached_frames) {
+bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allocator_i* alloc, int64_t num_cache_frames) {
     ASSERT(cache);
     ASSERT(traj);
     ASSERT(alloc);
-    ASSERT(num_cached_frames >= 0);
 
-    if (num_cached_frames == 0) {
-        num_cached_frames = md_trajectory_num_frames(traj);
+    int64_t num_traj_frames = md_trajectory_num_frames(traj);
+    if (num_traj_frames == 0) {
+        md_print(MD_LOG_TYPE_ERROR, "Frame Cache: The supplied trajectory has no frames");
     }
+    if (num_cache_frames == 0) {
+        num_cache_frames = num_traj_frames;
+    }
+    num_cache_frames = MIN(num_cache_frames, num_traj_frames);
 
     // We want to ensure that there are enough padding for each frame to avoid overlap if one wants to do full-width simd stores.
     const int64_t num_atoms = ALIGN_TO(md_trajectory_num_atoms(traj), md_simd_widthf); 
     const int64_t bytes_per_frame = sizeof(md_semaphore_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
-    const int64_t num_slots = ALIGN_TO(num_cached_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
+    const int64_t num_slots = ALIGN_TO(num_cache_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
     const int64_t total_bytes = num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT;
 
     cache->alloc = alloc;
@@ -114,6 +118,12 @@ void md_frame_cache_clear(md_frame_cache_t* cache) {
         cache->slot.header[i].access_count = 0;
         md_frame_cache_frame_lock_release((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);
     }
+}
+
+int64_t md_frame_cache_num_frames(const md_frame_cache_t* cache) {
+    ASSERT(cache);
+    ASSERT(cache->magic == CACHE_MAGIC);
+    return cache->slot.count;
 }
 
 bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock) {
