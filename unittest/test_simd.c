@@ -30,6 +30,7 @@ misrepresented as being the original software.
 */
 
 #include <immintrin.h>
+#include <stdbool.h>
 
 /* yes I know, the top of this file is quite ugly */
 # define ALIGN32_BEG

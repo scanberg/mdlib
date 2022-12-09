@@ -1,10 +1,7 @@
 #pragma once
 
 #include "md_common.h"
-#include "md_compiler.h"
-
 #include <stdint.h>
-#include <stdbool.h>
 
 #if (MD_COMPILER_CLANG || MD_COMPILER_GCC)
 #include <x86intrin.h>

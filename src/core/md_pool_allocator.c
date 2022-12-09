@@ -5,6 +5,8 @@
 #include "md_array.h"
 #include "md_intrinsics.h"
 
+#include <stdbool.h>
+
 #define MAGIC_NUMBER 0xf00b182c847bc69a
 #define PAGE_SLOT_CAPACITY 64
 

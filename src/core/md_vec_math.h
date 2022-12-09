@@ -24,6 +24,7 @@
 #endif
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <math.h>
 
 #ifdef __cplusplus
@@ -135,6 +136,7 @@ static inline double step(double edge, double x) { return (double)((x - edge) > 
 static inline float fractf(float x) { return x - (int32_t)x; }
 static inline double fract(double x) { return x - (int64_t)x; }
 
+// This is the version which seems to result in the best codegen for all compilers
 static inline int   signf(float x) { return (int)((x > 0.0f) - (x < 0.0f)); }
 static inline int   sign(double x) { return (int)((x > 0.0) - (x < 0.0)); }
 
@@ -290,10 +292,11 @@ static inline vec3_t vec3_abs(vec3_t v) {
 }
 
 static inline vec3_t vec3_less_than(vec3_t a, vec3_t b) {
-    vec3_t v;
-    v.x = (float)(a.x < b.x);
-    v.y = (float)(a.y < b.y);
-    v.z = (float)(a.z < b.z);
+    vec3_t v = {
+        (float)(a.x < b.x),
+        (float)(a.y < b.y),
+        (float)(a.z < b.z),
+    };
     return v;
 }
 
