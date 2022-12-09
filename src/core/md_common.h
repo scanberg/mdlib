@@ -153,21 +153,26 @@
 // Provide declarations for common intrinsic functions which all of the supported compilers expose
 #ifndef ASSERT
 
-#ifdef  __cplusplus
+#   ifdef  __cplusplus
 extern "C" void md_assert_impl(const char* file, int line, const char* func_name, const char* expr);
-#else
+#   else
 void md_assert_impl(const char* file, int line, const char* func_name, const char* expr);
-#endif
+#   endif
 
-#define ASSERT(__e) \
-    ((__e) \
-        ? (void)0 \
-        : md_assert_impl( \
-            __FILE__, \
-            __LINE__, \
-            __func__, \
-            #__e) \
-    )
+#   if DEBUG
+#       define ASSERT(__e) \
+            ((__e) \
+                ? (void)0 \
+                : md_assert_impl( \
+                    __FILE__, \
+                    __LINE__, \
+                    __func__, \
+                    #__e) \
+            )
+#   else
+#       define ASSERT(__e)
+#   endif
+
 #endif
 
 #if MD_COMPILER_MSVC
