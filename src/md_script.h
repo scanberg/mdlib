@@ -68,6 +68,38 @@ typedef struct md_script_aggregate_t {
     float*  population_max;
 } md_script_aggregate_t;
 
+#if 0
+
+// This is some draft structures for a simpler API
+
+// Additional data field available if property is computed from a Spatial Distribution Function
+typedef struct md_script_data_sdf_t {
+    int64_t count;
+    mat4_t* matrices;
+    struct md_bitfield_t* structures;
+    float extent;
+} md_script_data_sdf_t;
+
+// The histogram is a quantization of a 1D-range populated with occurrences that fall within this range
+// The values of the bins have been normalized (often, but not always by a division of the number of samples) to represent a probablistic distribution.
+typedef struct md_script_data_histogram_t {
+    const float* bin_values;
+    int bin_count;
+    int num_samples;
+
+    float range_min;
+    float range_max;
+} md_script_data_histogram_t;
+
+// The volume is a 
+typedef struct md_script_data_volume_t {
+    int   dim[3];
+    float ext[3];
+    const float* values;
+} md_script_data_volume_t;
+
+#endif
+
 typedef struct md_script_property_data_t {
     int32_t dim[4];     // Dimension of values, they are exposed packed in a linear array
 
