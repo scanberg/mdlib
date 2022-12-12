@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+.natvis file for Visual Studio debugger.
+
+More information at: https://docs.microsoft.com/en-us/visualstudio/debugger/create-custom-views-of-native-objects?view=vs-2019
+-->
+
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+
+<Type Name="str_t">
+  <DisplayString>{ptr,[len]s8}</DisplayString>
+  <StringView>ptr,[len]s8</StringView>
+  <Expand>
+    <ArrayItems>
+      <Size>len</Size>
+      <ValuePointer>ptr</ValuePointer>
+    </ArrayItems>
+  </Expand>
+</Type>
+
+</AutoVisualizer>

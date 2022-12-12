@@ -25,13 +25,7 @@ file(GLOB SRC_FILES src/*.h src/*.c src/*.inl)
 file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
 file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE SHADER_FILES src/shaders/*)
-file(GLOB_RECURSE CMAKE_FILES cmake/*)
-
-source_group("cmake" FILES ${CMAKE_FILES})
-source_group("src" FILES ${SRC_FILES})
-source_group("core" FILES ${CORE_FILES})
-source_group("ext" FILES ${EXT_FILES})
-source_group("shaders" FILES ${SHADER_FILES})
+file(GLOB_RECURSE PROJ_FILES cmake/*)
 
 set(MD_DEFINES)
 if (${HAVE_FMA_EXTENSIONS})
@@ -114,9 +108,16 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
         "/ZI")
     set(MD_FLAGS_REL ${MD_FLAGS_REL}
         "/GS-")
+    set(PROJ_FILES ${PROJ_FILES} "mdlib.natvis")
 endif()
 
-add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES})
+source_group("src" FILES ${SRC_FILES}) 
+source_group("core" FILES ${CORE_FILES})
+source_group("ext" FILES ${EXT_FILES})
+source_group("shaders" FILES ${SHADER_FILES})
+source_group("proj" FILES ${PROJ_FILES})
+
+add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES} ${PROJ_FILES})
 
 if (MD_LINK_STDLIB_STATIC)
     set_property(TARGET mdlib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
