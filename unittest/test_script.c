@@ -467,3 +467,27 @@ UTEST(script, parallel_evaluation) {
     md_molecule_free(&mol, alloc);
     md_pdb_data_free(&pdb_data, alloc);
 }
+
+UTEST(script, parse_unary_binary) {
+    md_allocator_i* alloc = default_allocator;
+    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+
+    md_molecule_api* pdb = md_pdb_molecule_api();
+    md_molecule_t mol;
+    ASSERT_TRUE(pdb->init_from_file(&mol, pdb_file, alloc));
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    {
+        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = 5-4;"), &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = -4;"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = (-4);"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = 5 * (-4);"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = 5 * -4;"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = sqrt(2) * -4;"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = (5) - 4;"), &mol, NULL));
+    }
+
+    md_script_ir_free(ir);
+    md_molecule_free(&mol, alloc);
+}

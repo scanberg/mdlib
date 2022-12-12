@@ -63,11 +63,11 @@
 // ################################
 // ###   FORWARD DECLARATIONS   ###
 // ################################
-typedef int token_type_t;
-typedef int ast_type_t;
-typedef int base_type_t;
-typedef int flags_t;
-typedef int eval_flags_t;
+//typedef int token_type_t;
+//typedef int ast_type_t;
+//typedef int base_type_t;
+//typedef int flags_t;
+//typedef int eval_flags_t;
 
 typedef struct tokenizer_t tokenizer_t;
 typedef struct token_t token_t;
@@ -90,7 +90,7 @@ typedef union value_t value_t;
 // ###   TYPE DECLARATIONS   ###
 // #############################
 
-enum token_type_t {
+typedef enum token_type_t {
     TOKEN_UNDEF = 0,
     // Reserve the first indices for character literals
     TOKEN_IDENT = 128, // idenfitier
@@ -109,9 +109,9 @@ enum token_type_t {
     TOKEN_INT,    // integer
     TOKEN_STRING, // String literal, defined between two quotation marks "LIKE THIS" or 'LIKE THIS'
     TOKEN_END     // End of tokenstream
-};
+} token_type_t;
 
-enum ast_type_t {
+typedef enum ast_type_t {
     AST_UNDEFINED = 0,
     AST_EXPRESSION,         // Parenthesis wrapped expression, We need to have it up here to ensure its precedence over things
     AST_PROC_CALL,          // Procedure call, Operators are directly translated into procedure calls as well.
@@ -138,9 +138,9 @@ enum ast_type_t {
     AST_OUT,
     AST_CONTEXT,
     AST_ASSIGNMENT,
-};
+} ast_type_t;
 
-enum base_type_t {
+typedef enum base_type_t {
     TYPE_UNDEFINED = 0,
     TYPE_FLOAT,
     TYPE_INT,
@@ -150,9 +150,9 @@ enum base_type_t {
     TYPE_BITFIELD,      // Bitfield used to represent a selection of atoms
     TYPE_STRING,
     TYPE_POSITION,      // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a position (INT, IRANGE, BITFIELD or float[3])
-};
+} base_type_t;
 
-enum flags_t {
+typedef enum flags_t {
     // Function Flags
     FLAG_SYMMETRIC_ARGS             = 0x00001, // Indicates that the first two arguments are symmetric, meaning they can be swapped
     FLAG_ARGS_EQUAL_LENGTH          = 0x00002, // Arguments should have the same array length
@@ -172,17 +172,17 @@ enum flags_t {
 
     // Flags from 0x10000000 and upwards are automatically propagated to the IR flags
     FLAG_SPATIAL_QUERY              = 0x10000000, // This means that the expression involves some form of spatial query. If we have this, we can pre-compute a spatial hash acceleration structure and provide it through the context
-};
+} flags_t;
 
-enum eval_flags_t {
+typedef enum eval_flags_t {
     //EVAL_FLAG_STATIC_TYPE_CHECK     = 0x1,
     //EVAL_FLAG_EVALUATE              = 0x2,
     EVAL_FLAG_FLATTEN               = 0x100,
-};
+} eval_flags_t;
 
 // Propagate upwards to parent nodes within the AST tree
-static const uint32_t FLAG_AST_PROPAGATION_MASK = 0xFFFF0000U;
-static const uint32_t FLAG_IR_PROPAGATION_MASK  = 0xF0000000U;
+#define FLAG_AST_PROPAGATION_MASK 0xFFFF0000U
+#define FLAG_IR_PROPAGATION_MASK  0xF0000000U
 
 struct token_t {
     token_type_t type;
@@ -425,7 +425,7 @@ static inline uint64_t generate_fingerprint() {
     return md_os_time_current();
 }
 
-static uint32_t operator_precedence(ast_type_t type) {
+static inline uint32_t operator_precedence(ast_type_t type) {
     switch(type) {
     case AST_EXPRESSION:
     case AST_PROC_CALL:
@@ -716,12 +716,10 @@ static void copy_data(data_t* dst, const data_t* src) {
     }
 }
 
-static inline bool is_number(token_type_t type) {
-    return type == TOKEN_INT || type == TOKEN_FLOAT;
-}
+
 
 static inline bool is_operator(ast_type_t type) {
-    return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV ||
+    return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV || type == AST_UNARY_NEG ||
             type == AST_AND || type == AST_OR || type == AST_XOR || type == AST_NOT ||
             type == AST_EQ || type == AST_NE || type == AST_LE || type == AST_GE || type == AST_LT || type == AST_GT);
 }
@@ -729,6 +727,53 @@ static inline bool is_operator(ast_type_t type) {
 static inline bool is_bitwise_operator(ast_type_t type) {
     return (type == AST_AND || type == AST_OR || type == AST_XOR || type == AST_NOT);
 }
+
+static inline bool is_number(token_type_t type) {
+    return type == TOKEN_INT || type == TOKEN_FLOAT;
+}
+
+// Returns if a token should be considered an operand
+// Mainly used to disambiguate unary operator from binary operator
+// Then we need to look at the previous token
+static inline bool is_operand(token_type_t type) {
+    switch (type) {
+    case ')':
+    case ']':
+    case ':':
+    case TOKEN_IDENT:
+    case TOKEN_OF:
+    case TOKEN_IN:
+    case TOKEN_FLOAT:
+    case TOKEN_INT:
+    case TOKEN_STRING:
+        return true;
+    case TOKEN_EQ:
+    case TOKEN_AND:
+    case TOKEN_OR:
+    case TOKEN_XOR:
+    case TOKEN_GE:
+    case TOKEN_NOT:
+    case TOKEN_LE:
+    case '+':
+    case '>':
+    case '*':
+    case '-':
+    case '=':
+    case '/':
+    case '<':
+    case '[':
+    case '(':
+    case ',':
+    case ';':
+    case TOKEN_UNDEF:
+    case TOKEN_END:
+        return false;
+    default:
+        ASSERT(false);
+    }
+    return false;
+}
+
 
 static const char* get_token_type_str(token_type_t type) {
     switch (type) {
@@ -1090,6 +1135,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     str_t name = {0};
     switch(op) {
     case AST_ADD: name = STR("+");   break;
+    case AST_UNARY_NEG:
     case AST_SUB: name = STR("-");   break;
     case AST_MUL: name = STR("*");   break;
     case AST_DIV: name = STR("/");   break;
@@ -1215,7 +1261,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
         }
         
         // Numeric literal
-        else if (is_digit(buf[i]) || (i+1 < len && buf[i] == '-' && is_digit(buf[i+1]))) {
+        else if (is_digit(buf[i])) {
             bool is_float = false;
             for (j = i+1; j != len; ++j) {
                 if (buf[j] == '.') {
@@ -1985,35 +2031,30 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
     ASSERT(token.type == '-' || token.type == '+' || token.type == '*' || token.type == '/');
 
-    // We don't support unary negation of arbitrary types yet...
-    // If it is for a constant number, it is already baked into the number.
-    
     ast_node_t* lhs = ctx->node;
     ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
-    ast_node_t* node = 0;
    
-    if (lhs && rhs) {
+    if (!rhs) {
+        create_error(ctx->ir, token, "Invalid artihmetic expression, right operand is undefined.");
+    } else {
         ast_type_t type = 0;
         switch(token.type) {
             case '+': type = AST_ADD; break;
-            case '-': type = AST_SUB; break;
+            case '-': type = lhs ? AST_SUB : AST_UNARY_NEG; break;
             case '*': type = AST_MUL; break;
             case '/': type = AST_DIV; break;
             default: ASSERT(false);
         }
-        node = create_node(ctx->ir, type, token);
-        ast_node_t* args[2] = {lhs, rhs};
-        md_array_push_array(node->children, args, 2, ctx->ir->arena);
-    } else {
-        if (!lhs) {
-            create_error(ctx->ir, token, "Invalid artihmetic expression, left operand is undefined.");
-        } else if (!rhs) {
-            create_error(ctx->ir, token, "Invalid artihmetic expression, right operand is undefined.");
+        ast_node_t* node = create_node(ctx->ir, type, token);
+        if (type != AST_UNARY_NEG) {
+            md_array_push(node->children, lhs, ctx->ir->arena);
         }
+        md_array_push(node->children, rhs, ctx->ir->arena);
+        return node;
     }
     
-    return node;
+    return NULL;
 }
 
 ast_node_t* parse_value(parse_context_t* ctx) {
@@ -2129,20 +2170,18 @@ ast_node_t* parse_array(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
     ASSERT(token.type == '{');
 
-    ast_node_t* node = 0;
-
     ast_node_t** elements = parse_comma_separated_arguments_until_token(ctx, '}');
     token_t next = tokenizer_consume_next(ctx->tokenizer);
     if (expect_token_type(ctx->ir, next, '}')) {
         const int64_t num_elements = md_array_size(elements);
         if (num_elements) {
             // We only commit the results if everything at least parsed ok.
-            node = create_node(ctx->ir, AST_ARRAY, token);
+            ast_node_t* node = create_node(ctx->ir, AST_ARRAY, token);
             md_array_push_array(node->children, elements, num_elements, ctx->ir->arena);
             // Expand marker range with '}'
             //node->token.col_end = next.col_end;
             node->token = concat_tokens(node->token, next);
-
+            return node;
         } else {
             create_error(ctx->ir, token, "Empty arrays are not allowed.");
         }
@@ -2150,7 +2189,7 @@ ast_node_t* parse_array(parse_context_t* ctx) {
     else {
         create_error(ctx->ir, token, "Unexpected end of argument list");
     }
-    return node;
+    return NULL;
 }
 
 ast_node_t* parse_in(parse_context_t* ctx) {
@@ -2160,7 +2199,6 @@ ast_node_t* parse_in(parse_context_t* ctx) {
     ast_node_t* lhs = ctx->node;
     ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
-    ast_node_t* node = 0;
 
     if (!lhs) {
         create_error(ctx->ir, token, "Left hand side of 'in' did not evaluate into a valid expression.");
@@ -2169,12 +2207,12 @@ ast_node_t* parse_in(parse_context_t* ctx) {
         create_error(ctx->ir, token, "Right hand side of 'in' did not evaluate into a valid expression.");
     }
     else {
-        node = create_node(ctx->ir, AST_CONTEXT, token);
+        ast_node_t* node = create_node(ctx->ir, AST_CONTEXT, token);
         md_array_push(node->children, lhs, ctx->ir->arena);
         md_array_push(node->children, rhs, ctx->ir->arena);
+        return node;
     }
-
-    return node;
+    return NULL;
 }
 
 ast_node_t* parse_out(parse_context_t* ctx) {
@@ -2183,31 +2221,32 @@ ast_node_t* parse_out(parse_context_t* ctx) {
 
     ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
-    ast_node_t* node = 0;
 
     if(!rhs) {
         create_error(ctx->ir, token, "Right hand side of 'out' did not evaluate into a valid expression.");
     }
     else {
-        node = create_node(ctx->ir, AST_OUT, token);
+        ast_node_t* node = create_node(ctx->ir, AST_OUT, token);
         md_array_push(node->children, rhs, ctx->ir->arena);
+        return node;
     }
-
-    return node;
+    return NULL;
 }
 
 ast_node_t* parse_parentheses(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
     ASSERT(token.type == '(');
     ast_node_t* expr = parse_expression(ctx);
-    ast_node_t* node = create_node(ctx->ir, AST_EXPRESSION, token);
-    md_array_push(node->children, expr, ctx->ir->arena);
+    if (!expr) {
+        create_error(ctx->ir, token, "Expression inside parentheses did not evaluate into a valid expression.");
+        return NULL;
+    }
     token_t next = tokenizer_consume_next(ctx->tokenizer);
     if (expect_token_type(ctx->ir, next, ')')) {
-        // Expand marker with ')'
-        //node->token.col_end = next.col_end;
+        ast_node_t* node = create_node(ctx->ir, AST_EXPRESSION, token);
+        md_array_push(node->children, expr, ctx->ir->arena);
+        // Expand token marker
         node->token = concat_tokens(node->token, next);
-
         return node;
     }
     return NULL;
@@ -2313,11 +2352,11 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
             case ';':
             goto done;
             case TOKEN_UNDEF:
-            create_error(ctx->ir, token, "Undefined token!");
+            create_error(ctx->ir, token, "Invalid token!");
             tokenizer_consume_next(ctx->tokenizer);
             return NULL;
             default:
-            create_error(ctx->ir, token, "Unexpected token value! '%.*s'", token.str.len, token.str.ptr);
+            create_error(ctx->ir, token, "Unexpected token: '%.*s'", token.str.len, token.str.ptr);
             return NULL;
         }
         if (!ctx->node) goto done;
@@ -3406,6 +3445,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     ast_node_t* rhs = node->children[1];
 
     ASSERT(lhs && lhs->ident.ptr);
+    ASSERT(rhs);
 
     if (lhs->type != AST_IDENTIFIER) {
         create_error(ctx->ir, node->token, "Left hand side of assignment is not an identifier");
@@ -3618,6 +3658,7 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     case AST_GE:
     case AST_LT:
     case AST_GT:
+    case AST_UNARY_NEG:
         return static_check_operator(node, ctx);
     case AST_CAST: // Should never happen since we insert casts here in type checking phase.
     default:
@@ -3716,11 +3757,12 @@ static bool parse_script(md_script_ir_t* ir) {
 
         ctx.node = 0;
         ir->record_errors = true;   // We reset the error recording flag before each statement
-        ast_node_t* node = prune_expressions(parse_expression(&ctx));
-        if (node) {
+        ast_node_t* raw_node = parse_expression(&ctx);
+        ast_node_t* pruned_node = prune_expressions(raw_node);
+        if (pruned_node) {
             tok = tokenizer_consume_next(ctx.tokenizer);
             if (tok.type != ';') {
-                create_error(ir, node->token, "Missing ';' to mark end of statement.");
+                create_error(ir, pruned_node->token, "Missing ';' to mark end of statement.");
                 continue;
             }
 
@@ -3730,15 +3772,15 @@ static bool parse_script(md_script_ir_t* ir) {
             //if (node->type == AST_ASSIGNMENT &&
                 //md_array_size(node->children) == 2 && node->children[0]->type == AST_IDENTIFIER && node->children[0]->ident.ptr && node->children[1]) {
                 identifier_t* ident = NULL;
-                if (node->type == AST_ASSIGNMENT) {
-                    ASSERT(md_array_size(node->children) == 2);
-                    ASSERT(node->children[0]->type == AST_IDENTIFIER);
-                    ident = get_identifier(ir, node->children[0]->ident);
+                if (pruned_node->type == AST_ASSIGNMENT) {
+                    ASSERT(md_array_size(pruned_node->children) == 2);
+                    ASSERT(pruned_node->children[0]->type == AST_IDENTIFIER);
+                    ident = get_identifier(ir, pruned_node->children[0]->ident);
                     ASSERT(ident);
                     
                 }
                 expression_t* expr = md_alloc(ir->arena, sizeof(expression_t));
-                expr->node = node;
+                expr->node = pruned_node;
                 expr->ident = ident;
                 expr->str = expr_str;
                 md_array_push(ir->expressions, expr, ir->arena);
@@ -4490,14 +4532,13 @@ bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const md_molecul
     for (int64_t i = 0; i < num_expr; ++i) {
         uint64_t hash = hash_node(ir->type_checked_expressions[i]->node);
 #if DEBUG
-        md_printf(MD_LOG_TYPE_DEBUG, "%llu", hash);
+        //md_printf(MD_LOG_TYPE_DEBUG, "%llu", hash);
 #endif
         ir->fingerprint ^= hash;
     }
 #if DEBUG
-    md_print(MD_LOG_TYPE_DEBUG, "---");
+    //md_print(MD_LOG_TYPE_DEBUG, "---");
 #endif
-
 
     return ir->compile_success;
 }
