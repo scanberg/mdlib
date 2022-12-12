@@ -181,8 +181,8 @@ extern "C" void * __cdecl memcpy(void*, const void*, size_t);
 extern "C" void * __cdecl memset(void*, int, size_t);
 
 #else
-void * __cdecl memcpy(void*, const void*, size_t);
-void * __cdecl memset(void*, int, size_t);
+void * __cdecl memcpy(void* dst, const void* src, size_t size);
+void * __cdecl memset(void* dst, int val, size_t size);
 
 #endif
 #pragma intrinsic(memcpy)
