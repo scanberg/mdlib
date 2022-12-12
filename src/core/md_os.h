@@ -46,7 +46,7 @@ uint64_t    md_physical_ram();
 // Virtual Memory
 uint64_t	md_vm_page_size(void);
 void*		md_vm_reserve(uint64_t size);
-void		md_vm_release(void* ptr);
+void		md_vm_release(void* ptr, uint64_t size);
 void		md_vm_commit(void* ptr, uint64_t size);
 void		md_vm_decommit(void* ptr, uint64_t size);
 

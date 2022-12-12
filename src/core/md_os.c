@@ -336,11 +336,16 @@ void* md_vm_reserve(uint64_t size) {
 #endif
 }
 
-void md_vm_release(void* ptr) {
+void md_vm_release(void* ptr, uint64_t size) {
 #if MD_PLATFORM_WINDOWS
     VirtualFree(ptr, 0, MEM_RELEASE);
 #elif MD_PLATFORM_UNIX
-    munmap(ptr, -1);
+    uint64_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+    int result;
+    //result = madvise(ptr, -1, MADV_DONTNEED);
+    //ASSERT(result == 0);
+    result = munmap(ptr, gb_snapped_size);
+    ASSERT(result == 0);
 #else
     ASSERT(false);
 #endif

@@ -165,7 +165,7 @@ void md_vm_arena_init(md_vm_arena_t* arena, uint64_t reservation_size) {
 
 void md_vm_arena_free(md_vm_arena_t* arena) {
     ASSERT(arena && arena->magic == VM_MAGIC);
-    md_vm_release(arena->base);
+    md_vm_release(arena->base, arena->size);
     MEMSET(arena, 0, sizeof(md_vm_arena_t));
 }
 

@@ -31,15 +31,24 @@ UTEST(os, ram) {
 }
 
 UTEST(os, mem) {
-    void* ptr = md_vm_reserve(GIGABYTES(128));
+    const uint64_t reserve_size = GIGABYTES(8);
+    void* ptr = md_vm_reserve(reserve_size);
+    EXPECT_NE(ptr, NULL);
+
     md_vm_commit(ptr, MEGABYTES(1));
     md_vm_commit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
 
-    EXPECT_NE(ptr, NULL);
-
     md_vm_decommit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
     md_vm_decommit(ptr, MEGABYTES(1));
-    md_vm_release(ptr);
+
+    const uint64_t commit_size = GIGABYTES(4);
+    md_vm_commit(ptr, commit_size);
+    uint64_t* c = ptr;
+    for (uint64_t i = 0; i < commit_size / sizeof(uint64_t); ++i) {
+        c[i] = i;
+    }
+
+    md_vm_release(ptr, reserve_size);
 }
 
 static void other_func(int* value) {

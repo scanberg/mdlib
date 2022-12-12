@@ -75,7 +75,7 @@ void md_vm_allocator_init(md_vm_allocator_t* vm, uint64_t reservation_size) {
 
 void md_vm_allocator_free(md_vm_allocator_t* vm) {
     ASSERT(vm && vm->magic == MAGIC);
-    md_vm_release(vm->base);
+    md_vm_release(vm->base, vm->size);
     vm->base = 0;
     vm->size = 0;
     vm->commit_pos = 0;
