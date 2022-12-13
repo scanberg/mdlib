@@ -6,6 +6,7 @@
 #include "md_allocator.h"
 
 #include <stdio.h>
+#include <stdarg.h>
 
 #define MD_MAX_PATH 4096
 
