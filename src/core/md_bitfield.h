@@ -83,7 +83,7 @@ static inline uint32_t md_bitfield_end_bit    (const md_bitfield_t* bf) {
  md_bitfield_t* bitfield;
  int64_t beg_idx = 0;       // Marks the beginning of the range to scan
  int64_t end_idx = 200;     // Marks the end of the range to scan
- while ((beg_idx = md_bitfield_scan(bitfield, beg_idx, end_idx) != 0) {
+ while ((beg_idx = md_bitfield_scan(bitfield, beg_idx, end_idx)) != 0) {
      int64_t bit_idx = beg_idx - 1;   // beg_idx has a start index of 1 so we have to subtract one to get the 'real' index
      do_something(bit_idx);
  }
