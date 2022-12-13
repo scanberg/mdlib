@@ -13,7 +13,6 @@
 #include "core/md_common.h"
 #include "core/md_str.h"
 #include "core/md_array.h"
-#include "core/md_file.h"
 #include "core/md_arena_allocator.h"
 #include "core/md_linear_allocator.h"
 #include "core/md_bitop.h"
@@ -422,7 +421,7 @@ struct parse_context_t {
 // ##########################
 
 static inline uint64_t generate_fingerprint() {
-    return md_os_time_current();
+    return md_time_current();
 }
 
 static inline uint32_t operator_precedence(ast_type_t type) {

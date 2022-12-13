@@ -5,7 +5,7 @@
 #include <md_trajectory.h>
 #include <md_molecule.h>
 #include <core/md_allocator.h>
-#include <core/md_file.h>
+#include <core/md_os.h>
 
 UTEST(pdb, parse_ordinary) {
     str_t path = STR(MD_UNITTEST_DATA_DIR"/1k4r.pdb");

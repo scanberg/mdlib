@@ -63,6 +63,14 @@ static inline const char* str_end(str_t str) {
     return str.ptr + str.len;
 }
 
+static inline int64_t str_len(str_t str) {
+    return str.len;
+}
+
+static inline const char* str_ptr(str_t str) {
+    return str.ptr;
+}
+
 static inline str_t str_trim_whitespace(str_t str) {
     const char* beg = str.ptr;
     const char* end = str.ptr + str.len;

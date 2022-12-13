@@ -6,7 +6,7 @@
 #include <md_molecule.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
-#include <core/md_file.h>
+#include <core/md_os.h>
 
 #include "rmsd.h"
 

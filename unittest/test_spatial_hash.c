@@ -94,14 +94,14 @@ UTEST_F(spatial_hash, perf_test_init) {
     md_spatial_hash_t spatial_hash = {0};
 
     const uint32_t num_iter = 1000;
-    md_timestamp_t t0 = md_os_time_current();
+    md_timestamp_t t0 = md_time_current();
     for (uint32_t i = 0; i < num_iter; ++i) {
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
         md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, alloc);
         md_vm_arena_temp_end(temp);
     }
-    md_timestamp_t t1 = md_os_time_current();
-    double t = md_os_time_as_milliseconds(t1 - t0);
+    md_timestamp_t t1 = md_time_current();
+    double t = md_time_as_milliseconds(t1 - t0);
 
     printf("Avg. time taken to generate spatial hash structure of %i atoms: %.3fms\n", (int)mol->atom.count, t / (double)num_iter);
 }
@@ -162,9 +162,9 @@ UTEST_F(spatial_hash, test_correctness_non_periodic) {
             .count = &count,
             //.ref_bf = &bf,
         };
-        md_timestamp_t t0 = md_os_time_current();
+        md_timestamp_t t0 = md_time_current();
         md_spatial_hash_query(&spatial_hash, pos, radius, iter_fn, &param);
-        md_timestamp_t t1 = md_os_time_current();
+        md_timestamp_t t1 = md_time_current();
         t += (t1 - t0);
 
         // We have quantization artifacts since the coordinates are compressed into 10-bits per dimension relative to the cell.
@@ -173,7 +173,7 @@ UTEST_F(spatial_hash, test_correctness_non_periodic) {
         EXPECT_LE(ABS(delta), 2);
     }
 
-    printf("Avg. time taken per query: %.4fms\n", md_os_time_as_milliseconds(t) / (double)num_iter);
+    printf("Avg. time taken per query: %.4fms\n", md_time_as_milliseconds(t) / (double)num_iter);
 
     md_vm_arena_temp_end(temp);
 }
@@ -219,9 +219,9 @@ UTEST_F(spatial_hash, test_correctness_periodic) {
             .count = &count,
             //.ref_bf = &bf,
         };
-        md_timestamp_t t0 = md_os_time_current();
+        md_timestamp_t t0 = md_time_current();
         md_spatial_hash_query(&spatial_hash, pos, radius, iter_fn, &param);
-        md_timestamp_t t1 = md_os_time_current();
+        md_timestamp_t t1 = md_time_current();
         t += (t1 - t0);
 
         // We have quantization artifacts since the coordinates are compressed into 10-bits per dimension relative to the cell.
@@ -230,7 +230,7 @@ UTEST_F(spatial_hash, test_correctness_periodic) {
         EXPECT_LE(ABS(delta), 2);
     }
 
-    printf("Avg. time taken per query: %.4fms\n", md_os_time_as_milliseconds(t) / (double)num_iter);
+    printf("Avg. time taken per query: %.4fms\n", md_time_as_milliseconds(t) / (double)num_iter);
 
     md_vm_arena_temp_end(temp);
 }

@@ -6,7 +6,7 @@
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_file.h>
+#include <core/md_os.h>
 
 UTEST(trr, trajectory_i) {
     md_trajectory_i* traj = md_trr_trajectory_create(STR(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), default_allocator);

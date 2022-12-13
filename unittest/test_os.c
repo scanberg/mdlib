@@ -7,17 +7,17 @@
 UTEST(os, path) {
     {
         char buf[4096];
-        str_t cwd = md_os_path_cwd();
+        str_t cwd = md_path_cwd();
         snprintf(buf, sizeof(buf), "%.*s/../../", (int)cwd.len, cwd.ptr);
         str_t path = {buf, strnlen(buf, sizeof(buf))};
-        str_t result = md_os_path_make_canonical(path, default_temp_allocator);
+        str_t result = md_path_make_canonical(path, default_temp_allocator);
         printf("result: '%.*s'\n", (int)result.len, result.ptr);
     }
     {
         /*
         // FAILS ON UNIX
         str_t path = STR("cool/fool/../bool/../file.txt");
-        str_t result = md_os_path_make_canonical(path, default_temp_allocator);
+        str_t result = md_path_make_canonical(path, default_temp_allocator);
         str_t ref = STR("cool/file.txt");
         EXPECT_TRUE(str_equal(result, ref));
         */

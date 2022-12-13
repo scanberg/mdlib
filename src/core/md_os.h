@@ -13,15 +13,52 @@ extern "C" {
 
 // ### PATH ###
 // Gets the current working directory
-// Returns a non owning reference to a static string buffer
-str_t       md_os_path_cwd(void);
+// Returns a non owning reference to a shared static string buffer
+str_t   md_path_cwd(void);
 
-str_t       md_os_path_make_canonical(str_t path, struct md_allocator_i* alloc);
-str_t       md_os_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
+str_t   md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
+str_t   md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
 
 // Checks if a path to a file or directory is valid: i.e. it points to an actual file / dir on disk.
-bool		md_os_path_is_valid(str_t path);
-bool		md_os_path_is_directory(str_t path);
+bool	md_path_is_valid(str_t path);
+bool	md_path_is_directory(str_t path);
+
+
+// ### FILE ###
+
+// This is directly compatible with FILE, meaning you can directly cast it to FILE
+// and use it with the standard functions
+typedef struct md_file_o md_file_o;
+
+typedef enum {
+    MD_FILE_READ   = 1,
+    MD_FILE_WRITE  = 2,
+    MD_FILE_APPEND = 4,
+    MD_FILE_BINARY = 8
+} md_file_flags_t;
+
+typedef enum {
+    MD_FILE_BEG,
+    MD_FILE_CUR,
+    MD_FILE_END
+} md_file_seek_origin_t;
+
+md_file_o*  md_file_open(str_t filename, uint32_t file_flags);
+void        md_file_close(md_file_o* file);
+
+int64_t     md_file_tell(md_file_o* file);
+bool        md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin);
+int64_t     md_file_size(md_file_o* file);
+
+// Reads a line from the file by searching for the first occurrence of new-line character '\n'.
+// Returns the number of characters read (up to cap-1)
+int64_t     md_file_read_line(md_file_o* file, char* buf, int64_t cap);
+//int64_t     md_file_read_lines(md_file_o* file, char* buf, int64_t cap, int64_t line_count);
+
+int64_t     md_file_read(md_file_o* file, void* ptr, int64_t num_bytes);
+int64_t     md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes);
+
+int64_t     md_file_printf(md_file_o* file, const char* format, ...);
 
 // ### TIME ###
 // This represents a os specific time stamp with the highest precision available (usually nanoseconds)
@@ -29,11 +66,11 @@ bool		md_os_path_is_directory(str_t path);
 // Extract seconds or milliseconds from it.
 typedef int64_t md_timestamp_t;
 
-md_timestamp_t md_os_time_current(void);
+md_timestamp_t md_time_current(void);
 
-double      md_os_time_as_nanoseconds(md_timestamp_t t);
-double      md_os_time_as_milliseconds(md_timestamp_t t);
-double      md_os_time_as_seconds(md_timestamp_t t);
+double  md_time_as_nanoseconds(md_timestamp_t t);
+double  md_time_as_milliseconds(md_timestamp_t t);
+double  md_time_as_seconds(md_timestamp_t t);
 
 // ### MEMORY ###
 // This exposes system calls to the OS virtual memory allocator.
@@ -56,7 +93,7 @@ typedef void (*md_thread_entry)(void *data);
 typedef struct md_thread_t md_thread_t;
 typedef uint64_t md_thread_id_t;
 
-md_thread_t*	md_thread_create(md_thread_entry func, void* data);
+md_thread_t*    md_thread_create(md_thread_entry func, void* data);
 void			md_thread_detach(md_thread_t* thread);
 bool			md_thread_join(md_thread_t* thread);
 

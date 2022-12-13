@@ -7,7 +7,7 @@
 #include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_file.h>
+#include <core/md_os.h>
 
 UTEST(xtc, trajectory_i) {
     const str_t path = STR(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
