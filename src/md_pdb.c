@@ -825,8 +825,8 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
             return false;
         }
 
-        if (data.num_models == 0) {
-            md_print(MD_LOG_TYPE_ERROR, "The PDB file did not contain any model entries and cannot be read as a trajectory");
+        if (data.num_models <= 1) {
+            md_print(MD_LOG_TYPE_ERROR, "The PDB file did not contain multiple model entries and cannot be read as a trajectory");
             md_pdb_data_free(&data, default_allocator);
             return false;
         }
