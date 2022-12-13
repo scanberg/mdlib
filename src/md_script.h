@@ -215,7 +215,7 @@ typedef struct md_script_bitfield_identifier_t {
 } md_script_bitfield_identifier_t;
 bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, int64_t count);
 
-bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const md_script_ir_t* ctx_ir);
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const md_script_ir_t* ctx_ir);
 
 int64_t md_script_ir_num_errors(const md_script_ir_t* ir);
 const md_script_error_t* md_script_ir_errors(const md_script_ir_t* ir);
@@ -226,6 +226,10 @@ const md_script_vis_token_t* md_script_ir_vis_tokens(const md_script_ir_t* ir);
 bool md_script_ir_valid(const md_script_ir_t* ir);
 
 uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir);
+
+// Get identifiers within a script
+int64_t md_script_ir_num_identifiers(const md_script_ir_t* ir);
+const str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
 
 // ### EVALUATE ###
 // This API is a dumpster-fire currently and should REALLY be simplified.

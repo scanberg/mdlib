@@ -266,8 +266,6 @@ struct identifier_t {
     str_t       name;
     ast_node_t* node;    // This is the node to evaluate in order to generate the data for the identifier
     data_t*     data;    // This is the data to fill in...
-    //data_t      data;
-    //flags_t     flags;
 };
 
 struct constant_t {
@@ -386,6 +384,7 @@ struct md_script_ir_t {
     // These are the final products which can be read through the public part of the structure
     md_script_error_t       *errors;
     md_script_vis_token_t   *vis_tokens;
+    str_t                   *identifier_names;
 
     const char* stage;  // This is just to supply a context for the errors i.e. which stage the error occured
     bool record_errors; // This is to toggle if new errors should be registered... We don't want to flood the errors
@@ -4487,6 +4486,14 @@ bool extract_tokens(md_script_ir_t* ir) {
     return true;
 }
 
+bool extract_identifiers(md_script_ir_t* ir) {
+    const int64_t num_ident = md_array_size(ir->identifiers);
+    for (int64_t i = 0; i < num_ident; ++i) {
+        md_array_push(ir->identifier_names, ir->identifiers->name, ir->arena);
+    }
+    return true;
+}
+
 md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
     if (!alloc) {
         md_print(MD_LOG_TYPE_ERROR, "Script Create: Allocator was null");
@@ -4495,7 +4502,7 @@ md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
     return create_ir(alloc);
 }
 
-bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, const md_script_ir_t* ctx_ir) {
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, const md_script_ir_t* ctx_ir) {
     if (!validate_ir(ir)) {
         md_print(MD_LOG_TYPE_ERROR, "Script Compile: IR is not valid");
         return false;
@@ -4523,7 +4530,8 @@ bool md_script_ir_compile_source(md_script_ir_t* ir, str_t src, const md_molecul
         static_evaluation(ir, mol) &&
         extract_dynamic_evaluation_targets(ir) &&
         extract_property_expressions(ir) &&
-        extract_tokens(ir);
+        extract_tokens(ir) &&
+        extract_identifiers(ir);
 
 #if MD_DEBUG
     //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
@@ -4633,6 +4641,14 @@ uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir) {
         return 0;
     }
     return ir->fingerprint;
+}
+
+int64_t md_script_ir_num_identifiers(const md_script_ir_t* ir) {
+    return md_array_size(ir->identifier_names);
+}
+
+const str_t* md_script_ir_identifiers(const md_script_ir_t* ir) {
+    return ir->identifier_names;
 }
 
 static md_script_eval_t* create_eval(md_allocator_i* alloc) {
