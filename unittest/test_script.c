@@ -204,7 +204,7 @@ UTEST(script, compile_script) {
 
     str_t script_src = load_textfile(STR(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    md_script_ir_compile_source(ir, script_src, &mol, NULL);
+    md_script_ir_compile_from_source(ir, script_src, &mol, NULL);
     EXPECT_TRUE(md_script_ir_valid(ir));
 
     md_arena_allocator_destroy(alloc);
@@ -218,7 +218,7 @@ UTEST(script, semantic) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
-        md_script_ir_compile_source(ir, STR("p1 = resname('ALA') resname('GLY');"), &mol, NULL);
+        md_script_ir_compile_from_source(ir, STR("p1 = resname('ALA') resname('GLY');"), &mol, NULL);
         EXPECT_FALSE(md_script_ir_valid(ir));
     }
 
@@ -265,7 +265,7 @@ UTEST(script, dynamic_length) {
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
         str_t src = STR("sel1 = residue(within_z(1:50));");
-        md_script_ir_compile_source(ir, src, &mol, NULL);
+        md_script_ir_compile_from_source(ir, src, &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
@@ -294,7 +294,7 @@ UTEST(script, property_compute) {
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
         str_t src = STR("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
-        md_script_ir_compile_source(ir, src, &mol, NULL);
+        md_script_ir_compile_from_source(ir, src, &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
@@ -306,12 +306,12 @@ UTEST(script, property_compute) {
     }
 
     {
-        md_script_ir_compile_source(ir, STR("d1 = 1:5 in residue(1:3);"), &mol, NULL);
+        md_script_ir_compile_from_source(ir, STR("d1 = 1:5 in residue(1:3);"), &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
     {
-        md_script_ir_compile_source(ir, STR("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, NULL);
+        md_script_ir_compile_from_source(ir, STR("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
@@ -323,7 +323,7 @@ UTEST(script, property_compute) {
     }
 
     {
-        md_script_ir_compile_source(ir, STR("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), &mol, NULL);
+        md_script_ir_compile_from_source(ir, STR("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
@@ -340,13 +340,13 @@ UTEST(script, property_compute) {
             "s2 = residue(11:15);\n"
             "s = {s1, s2};"
         );
-        md_script_ir_compile_source(ir, src, &mol, NULL);
+        md_script_ir_compile_from_source(ir, src, &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
     {
         str_t src = STR("s1 = count(within(10, residue(:)));");
-        md_script_ir_compile_source(ir, src, &mol, NULL);
+        md_script_ir_compile_from_source(ir, src, &mol, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
@@ -414,7 +414,7 @@ UTEST(script, parallel_evaluation) {
     int64_t num_frames = md_trajectory_num_frames(traj);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    md_script_ir_compile_source(ir, script, &mol, NULL);
+    md_script_ir_compile_from_source(ir, script, &mol, NULL);
     EXPECT_TRUE(md_script_ir_valid(ir));
 
     md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, alloc);
@@ -479,13 +479,13 @@ UTEST(script, parse_unary_binary) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
-        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = 5-4;"), &mol, NULL));
-        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = -4;"),  &mol, NULL));
-        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = (-4);"),  &mol, NULL));
-        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = 5 * (-4);"),  &mol, NULL));
-        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = 5 * -4;"),  &mol, NULL));
-        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = sqrt(2) * -4;"),  &mol, NULL));
-        EXPECT_TRUE(md_script_ir_compile_source(ir, STR("x = (5) - 4;"), &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5-4;"), &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = -4;"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = (-4);"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5 * (-4);"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5 * -4;"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = sqrt(2) * -4;"),  &mol, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = (5) - 4;"), &mol, NULL));
     }
 
     md_script_ir_free(ir);
