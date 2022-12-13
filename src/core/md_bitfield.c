@@ -416,6 +416,15 @@ bool md_bitfield_empty(const md_bitfield_t* bf) {
     return bf->bits == NULL || (bf->beg_bit == bf->end_bit);
 }
 
+uint64_t md_bitfield_beg_bit(const md_bitfield_t* bf) {
+    return bf->bits ? bf->beg_bit : 0;
+    
+}
+
+uint64_t md_bitfield_end_bit(const md_bitfield_t* bf) {
+    return bf->bits ? bf->end_bit : 0;
+}
+
 void md_bitfield_set_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     ASSERT(md_bitfield_validate(bf));
 

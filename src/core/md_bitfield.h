@@ -27,6 +27,8 @@ bool md_bitfield_validate       (const md_bitfield_t* bf);
 void md_bitfield_reserve_range  (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 bool md_bitfield_empty          (const md_bitfield_t* bf);
+uint64_t md_bitfield_beg_bit    (const md_bitfield_t* bf);
+uint64_t md_bitfield_end_bit    (const md_bitfield_t* bf);
 
 void md_bitfield_set_range      (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 void md_bitfield_set_bit        (md_bitfield_t* bf, uint64_t bit_idx);
