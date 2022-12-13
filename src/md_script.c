@@ -3344,71 +3344,74 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
     // @TODO: In the future, se should expand this to support mixed integers and ranges and create a proper subset of the original data
     // @TODO: evaluate the children in order to determine the length and values (to make sure they are in range)
 
-    if (static_check_children(node, ctx)) {
-        const uint64_t  num_elem = md_array_size(node->children);
-        ast_node_t**        elem = node->children;
+    const uint64_t  num_elem = md_array_size(node->children);
+    ast_node_t**    elem = node->children;
 
-        if (num_elem < 2) {
-            create_error(ctx->ir, node->token, "Missing arguments in array subscript");
-            return false;
-        }
-        else if (num_elem > 2) {
-            create_error(ctx->ir, elem[2]->token, "Only single entries are allowed inside array subscript");
-            return false;
-        }
+    if (num_elem < 2) {
+        create_error(ctx->ir, node->token, "Missing arguments in array subscript");
+        return false;
+    }
+    else if (num_elem > 2) {
+        create_error(ctx->ir, elem[2]->token, "Only single entries are allowed inside array subscript");
+        return false;
+    }
 
-        ast_node_t* lhs = elem[0];
-        ast_node_t* arg = elem[1];
+    uint32_t eval_flags = ctx->eval_flags;
+    ctx->eval_flags = ctx->eval_flags & ~(EVAL_FLAG_FLATTEN);
+    if (!static_check_node(elem[0], ctx)) return false;
+    ctx->eval_flags = eval_flags;
 
-        if (is_variable_length(lhs->data.type)) {
-            create_error(ctx->ir, lhs->token, "Array subscript operator can only be applied to expressions which have a static length");
-            return false;
-        }
+    if (!static_check_node(elem[1], ctx)) return false;
 
-        if (arg->flags & FLAG_DYNAMIC) {
-            create_error(ctx->ir, arg->token, "Only static expressions are allowed within array subscript");
-            return false;
-        }
+    ast_node_t* lhs = elem[0];
+    ast_node_t* arg = elem[1];
 
-        if (is_scalar(arg->data.type)) {
-            if (arg->data.type.base_type == TYPE_INT || arg->data.type.base_type == TYPE_IRANGE) {
-                irange_t range = {0};
-                if (arg->data.type.base_type == TYPE_INT) {
-                    range.beg = arg->value._int;
-                    range.end = arg->value._int;
-                } else {
-                    range = arg->value._irange;
-                    if (range.beg == INT32_MIN) {
-                        range.beg = 1;
-                        arg->value._irange.beg = 1;
-                    }
-                    if (range.end == INT32_MAX) {
-                        range.end = (int32_t)element_count(lhs->data);
-                        arg->value._irange.end = range.end;
-                    }
-                }
-                if (range.beg <= range.end && 1 <= range.beg && range.end <= element_count(lhs->data)) {
-                    ASSERT(lhs->data.type.dim[0] > 0);
-                    // SUCCESS!
-                    node->data.type = lhs->data.type;
-                    node->data.type.dim[node->data.type.len_dim] = range.end - range.beg + 1;
-                    node->data.unit = lhs->data.unit;
-                    return true;
-                } else {
-                    create_error(ctx->ir, arg->token, "Invalid Array subscript range");
-                    return false;
-                }
+    if (is_variable_length(lhs->data.type)) {
+        create_error(ctx->ir, lhs->token, "Array subscript operator can only be applied to expressions which have a static length");
+        return false;
+    }
+
+    if (arg->flags & FLAG_DYNAMIC) {
+        create_error(ctx->ir, arg->token, "Only static expressions are allowed within array subscript");
+        return false;
+    }
+
+    if (is_scalar(arg->data.type)) {
+        if (arg->data.type.base_type == TYPE_INT || arg->data.type.base_type == TYPE_IRANGE) {
+            irange_t range = {0};
+            if (arg->data.type.base_type == TYPE_INT) {
+                range.beg = arg->value._int;
+                range.end = arg->value._int;
             } else {
-                create_error(ctx->ir, arg->token, "Only int and int-ranges are allowed inside array subscript");
+                range = arg->value._irange;
+                if (range.beg == INT32_MIN) {
+                    range.beg = 1;
+                    arg->value._irange.beg = 1;
+                }
+                if (range.end == INT32_MAX) {
+                    range.end = (int32_t)element_count(lhs->data);
+                    arg->value._irange.end = range.end;
+                }
+            }
+            if (range.beg <= range.end && 1 <= range.beg && range.end <= element_count(lhs->data)) {
+                ASSERT(lhs->data.type.dim[0] > 0);
+                // SUCCESS!
+                node->data.type = lhs->data.type;
+                node->data.type.dim[node->data.type.len_dim] = range.end - range.beg + 1;
+                node->data.unit = lhs->data.unit;
+                return true;
+            } else {
+                create_error(ctx->ir, arg->token, "Invalid Array subscript range");
                 return false;
             }
         } else {
-            create_error(ctx->ir, arg->token, "No arrays are allowed inside array subscript");
+            create_error(ctx->ir, arg->token, "Only int and int-ranges are allowed inside array subscript");
             return false;
         }
+    } else {
+        create_error(ctx->ir, arg->token, "No arrays are allowed inside array subscript");
+        return false;
     }
-
-    return false;
 }
 
 static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* ctx) {
