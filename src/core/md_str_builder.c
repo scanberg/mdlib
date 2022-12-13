@@ -18,6 +18,7 @@ void md_str_builder_init(md_str_builder_t* sb, struct md_allocator_i* alloc) {
 #endif
 	sb->buf = NULL;
 	sb->alloc = alloc;
+	md_array_ensure(sb->buf, 32, alloc);
 }
 
 void md_str_builder_free(md_str_builder_t* sb) {
@@ -71,6 +72,13 @@ void md_str_builder_append_str(md_str_builder_t* sb, str_t str) {
 	}
 }
 
+void md_str_builder_pop(md_str_builder_t* sb, int64_t n) {
+	ASSERT(sb);
+	ASSERT(n > 0);
+	md_array_shrink(sb->buf, MAX(0, md_array_size(sb->buf) - n));
+	md_array_push(sb->buf, '\0', sb->alloc);
+}
+
 void md_str_builder_append_char(md_str_builder_t* sb, char c) {
     ASSERT(sb);
     if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
@@ -83,7 +91,15 @@ void md_str_builder_reset(md_str_builder_t* sb) {
 	md_array_shrink(sb->buf, 0);
 }
 
-str_t md_str_builder_to_str(md_str_builder_t* sb) {
+const char* md_str_builder_cstr(const md_str_builder_t* sb) {
+	return sb->buf;
+}
+
+int64_t md_str_builder_len(const md_str_builder_t* sb) {
+	return md_array_size(sb->buf);
+}
+
+str_t md_str_builder_to_str(const md_str_builder_t* sb) {
 	ASSERT(sb);
 	return (str_t) { md_array_size(sb->buf) ? sb->buf : 0, md_array_size(sb->buf) };
 }
