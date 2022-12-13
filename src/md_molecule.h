@@ -197,7 +197,11 @@ static inline str_t label_to_str(const md_label_t* lbl) {
     return str;
 }
 
+#ifdef __cplusplus
+#define LBL_TO_STR(lbl) {lbl.buf, lbl.len}
+#else
 #define LBL_TO_STR(lbl) (str_t){lbl.buf, lbl.len}
+#endif // __cplusplus
 
 #ifdef __cplusplus
 }
