@@ -8,7 +8,7 @@
 #include <math.h>
 #include <string.h>
 
-#define BAKE(str) {str, sizeof(str)-1}
+#define S(str) {str"", sizeof(str)-1}
 
 typedef struct {
     float value;
@@ -17,24 +17,24 @@ typedef struct {
 
 
 static const si_prefix_t si_prefixes[] = {
-    {1e-3F,  BAKE(u8"m")},  {1.0F / 1e3F,   BAKE(u8"m")},
-    {1e3F,   BAKE(u8"k")},  {1.0F / 1e-3F,  BAKE(u8"k")},
-    {1e-6F,  BAKE(u8"μ")},  {1.0F / 1e6F,   BAKE(u8"μ")},
-    {1e-6F,  BAKE(u8"u")},  {1.0F / 1e6F,   BAKE(u8"u")},
-    {1e-2F,  BAKE(u8"c")},  {1.0F / 1e2F,   BAKE(u8"c")},
-    {1e6F,   BAKE(u8"M")},  {1.0F / 1e-6F,  BAKE(u8"M")},
-    {1e9F,   BAKE(u8"G")},  {1.0F / 1e-9F,  BAKE(u8"G")},
-    {1e-9F,  BAKE(u8"n")},  {1.0F / 1e9F,   BAKE(u8"n")},
-    {1e-12F, BAKE(u8"p")},  {1.0F / 1e12F,  BAKE(u8"p")},
-    {1e-15F, BAKE(u8"f")},  {1.0F / 1e15F,  BAKE(u8"f")},
-    {1e-18F, BAKE(u8"a")},  {1.0F / 1e18F,  BAKE(u8"a")},
-    {1e-21F, BAKE(u8"z")},  {1.0F / 1e21F,  BAKE(u8"z")},
-    {1e-24F, BAKE(u8"y")},  {1.0F / 1e24F,  BAKE(u8"y")},
-    {1e12F,  BAKE(u8"T")},  {1.0F / 1e-12F, BAKE(u8"T")},
-    {1e15F,  BAKE(u8"P")},  {1.0F / 1e-15F, BAKE(u8"P")},
-    {1e18F,  BAKE(u8"E")},  {1.0F / 1e-18F, BAKE(u8"E")},
-    {1e21F,  BAKE(u8"Z")},  {1.0F / 1e-21F, BAKE(u8"Z")},
-    {1e24F,  BAKE(u8"Y")},  {1.0F / 1e-24F, BAKE(u8"Y")},
+    {1e-3F,  S(u8"m")},  {1.0F / 1e3F,   S(u8"m")},
+    {1e3F,   S(u8"k")},  {1.0F / 1e-3F,  S(u8"k")},
+    {1e-6F,  S(u8"μ")},  {1.0F / 1e6F,   S(u8"μ")},
+    {1e-6F,  S(u8"u")},  {1.0F / 1e6F,   S(u8"u")},
+    {1e-2F,  S(u8"c")},  {1.0F / 1e2F,   S(u8"c")},
+    {1e6F,   S(u8"M")},  {1.0F / 1e-6F,  S(u8"M")},
+    {1e9F,   S(u8"G")},  {1.0F / 1e-9F,  S(u8"G")},
+    {1e-9F,  S(u8"n")},  {1.0F / 1e9F,   S(u8"n")},
+    {1e-12F, S(u8"p")},  {1.0F / 1e12F,  S(u8"p")},
+    {1e-15F, S(u8"f")},  {1.0F / 1e15F,  S(u8"f")},
+    {1e-18F, S(u8"a")},  {1.0F / 1e18F,  S(u8"a")},
+    {1e-21F, S(u8"z")},  {1.0F / 1e21F,  S(u8"z")},
+    {1e-24F, S(u8"y")},  {1.0F / 1e24F,  S(u8"y")},
+    {1e12F,  S(u8"T")},  {1.0F / 1e-12F, S(u8"T")},
+    {1e15F,  S(u8"P")},  {1.0F / 1e-15F, S(u8"P")},
+    {1e18F,  S(u8"E")},  {1.0F / 1e-18F, S(u8"E")},
+    {1e21F,  S(u8"Z")},  {1.0F / 1e-21F, S(u8"Z")},
+    {1e24F,  S(u8"Y")},  {1.0F / 1e-24F, S(u8"Y")},
 };
 
 static str_t find_prefix_str_from_value(float value) {
@@ -67,6 +67,8 @@ typedef struct {
 #define UNIT_COUNT          {.base = {.dim = {.count = 1,}},    .mult = 1.0}
 
 // Extra simple
+#define UNIT_MILLIMETER     {.base = {.dim = {.length = 1,}},   .mult = 1e-3}
+#define UNIT_MICROMETER     {.base = {.dim = {.length = 1,}},   .mult = 1e-6}
 #define UNIT_NANOMETER      {.base = {.dim = {.length = 1,}},   .mult = 1e-9}
 #define UNIT_ANGSTROM       {.base = {.dim = {.length = 1,}},   .mult = 1e-10}
 #define UNIT_MILLISECOND    {.base = {.dim = {.time = 1,}},     .mult = 1e-3}
@@ -89,49 +91,51 @@ typedef struct {
 #define UNIT_COULOMB        {.base = {.dim = {.time = 1, .current = 1}}, .mult = 1.0}
 #define UNIT_AMPEREHOUR     {.base = {.dim = {.time = 1, .current = 1}}, .mult = 3600.0}
 
-static const unit_name_t defined_units[] = {
+static const unit_name_t predefined_units[] = {
     // Base
-    {UNIT_METER,        BAKE(u8"m")},
-    {UNIT_KILOGRAM,     BAKE(u8"kg")},
-    {UNIT_SECOND,       BAKE(u8"s")},
-    {UNIT_AMPERE,       BAKE(u8"A")},
-    {UNIT_MOLE,         BAKE(u8"mol")},
-    {UNIT_KELVIN,       BAKE(u8"K")},
-    {UNIT_RADIAN,       BAKE(u8"rad")},
-    {UNIT_COUNT,        BAKE(u8"count")},
+    {UNIT_METER,        S(u8"m")},
+    {UNIT_KILOGRAM,     S(u8"kg")},
+    {UNIT_SECOND,       S(u8"s")},
+    {UNIT_AMPERE,       S(u8"A")},
+    {UNIT_MOLE,         S(u8"mol")},
+    {UNIT_KELVIN,       S(u8"K")},
+    {UNIT_RADIAN,       S(u8"rad")},
+    {UNIT_COUNT,        S(u8"count")},
 
     // Extra extra!
-    {UNIT_METER_SQ,     BAKE(u8"m²")},
-    {UNIT_METER_SQ,     BAKE(u8"m^2")},
-    {UNIT_NANOSECOND,   BAKE(u8"ns")},
-    {UNIT_PIKOSECOND,   BAKE(u8"ps")},
-    {UNIT_NANOMETER,    BAKE(u8"nm")},
-    {UNIT_ANGSTROM,     BAKE(u8"Å")},
-    {UNIT_DEGREE,       BAKE(u8"deg")},
-    {UNIT_DEGREE,       BAKE(u8"\u00B0")},
-    {UNIT_PASCAL,       BAKE(u8"Pa")},
-    {UNIT_BAR,          BAKE(u8"bar")},
-    {UNIT_JOULE,        BAKE(u8"J")},
-    {UNIT_NEWTON,       BAKE(u8"N")},
-    {UNIT_VOLT,         BAKE(u8"V")},
-    {UNIT_WATT,         BAKE(u8"W")},
-    {UNIT_COULOMB,      BAKE(u8"C")},
-    {UNIT_AMPEREHOUR,   BAKE(u8"Ah")},
+    {UNIT_MILLIMETER,   S(u8"mm")},
+    {UNIT_MICROMETER,   S(u8"μm")},
+    {UNIT_METER_SQ,     S(u8"m²")},
+    {UNIT_METER_SQ,     S(u8"m^2")},
+    {UNIT_NANOSECOND,   S(u8"ns")},
+    {UNIT_PIKOSECOND,   S(u8"ps")},
+    {UNIT_NANOMETER,    S(u8"nm")},
+    {UNIT_ANGSTROM,     S(u8"Å")},
+    {UNIT_DEGREE,       S(u8"deg")},
+    {UNIT_DEGREE,       S(u8"\u00B0")},
+    {UNIT_PASCAL,       S(u8"Pa")},
+    {UNIT_BAR,          S(u8"bar")},
+    {UNIT_JOULE,        S(u8"J")},
+    {UNIT_NEWTON,       S(u8"N")},
+    {UNIT_VOLT,         S(u8"V")},
+    {UNIT_WATT,         S(u8"W")},
+    {UNIT_COULOMB,      S(u8"C")},
+    {UNIT_AMPEREHOUR,   S(u8"Ah")},
 };
 
 static md_unit_t find_unit_from_predefined(str_t name) {
-    for (int i = 0; i < (int)ARRAY_SIZE(defined_units); ++i) {
-        if (str_equal(name, defined_units[i].str)) {
-            return defined_units[i].unit;
+    for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
+        if (str_equal(name, predefined_units[i].str)) {
+            return predefined_units[i].unit;
         }
     }
     return (md_unit_t){0};
 }
 
 static str_t find_name_from_predefined(md_unit_t unit) {
-    for (int i = 0; i < (int)ARRAY_SIZE(defined_units); ++i) {
-        if (unit_equal(defined_units[i].unit, unit)) {
-            return defined_units[i].str;
+    for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
+        if (unit_equal(predefined_units[i].unit, unit)) {
+            return predefined_units[i].str;
         }
     }
     return (str_t){0};
@@ -141,11 +145,11 @@ static str_t find_name_from_predefined(md_unit_t unit) {
 static inline int compute_match_score(md_unit_t a, md_unit_t b) {
     int score = 0;
     for (int i = 0; i < (int)ARRAY_SIZE(b.base.arr); ++i) {
+        
         int sign_a = (a.base.arr[i] > 0) - (a.base.arr[i] < 0);
         int sign_b = (b.base.arr[i] > 0) - (b.base.arr[i] < 0);
 
         if (sign_b) {
-            if (!sign_a) return 0;
             score += (sign_b == sign_a);
         }
     }
@@ -155,15 +159,15 @@ static inline int compute_match_score(md_unit_t a, md_unit_t b) {
 static md_unit_t find_best_matching_predefined(md_unit_t unit) {
     int best_match_score = 0;
     int best_match_idx   = -1;
-    for (int i = 0; i < (int)ARRAY_SIZE(defined_units); ++i) {
-        int match_score = compute_match_score(unit, defined_units[i].unit);
+    for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
+        int match_score = compute_match_score(unit, predefined_units[i].unit);
         if (match_score > best_match_score) {
             best_match_score = match_score;
             best_match_idx = i;
         }
     }
     if (best_match_idx != -1) {
-        return defined_units[best_match_idx].unit;
+        return predefined_units[best_match_idx].unit;
     }
     return (md_unit_t){0};
 }
@@ -294,7 +298,7 @@ md_unit_t unit_scl(md_unit_t unit, double scl) {
     return unit_scl;
 }
 
-bool unit_convert_d_inplace(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
+bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
     if (!unit_base_equal(cur_unit, new_unit)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to perform unit conversion, the current unit cannot be converted into new unit");
         return false;
@@ -323,7 +327,7 @@ bool unit_convert_d_inplace(double* values, int64_t num_values, md_unit_t cur_un
     return true;
 }
 
-bool unit_convert_f_inplace(float* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
+bool unit_convert_inplace_f(float* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
     if (!unit_base_equal(cur_unit, new_unit)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to perform unit conversion, the current unit cannot be converted into new unit");
         return false;
@@ -407,7 +411,7 @@ uint8_t base_count(md_unit_t unit) {
     return count;
 }
 
-int internal_print_dims(char* buf, int cap, md_unit_t unit) {
+int internal_print_dims_SI(char* buf, int cap, md_unit_t unit) {
     int len = 0;
     if (unit.base.dim.length != 0) {
         PRINT("m");
@@ -456,13 +460,11 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
         unit.mult = 1;
     }
 
-    // Try to match against predefined units in table
-    {
-        str_t str = find_name_from_predefined(unit);
-        if (!str_empty(str)) {
-            PRINT("%.*s", (int)str.len, str.ptr);
-            return len;
-        }
+    // Try to match against predefined units (exact)
+    str_t exact = find_name_from_predefined(unit);
+    if (!str_empty(exact)) {
+        PRINT("%.*s", (int)exact.len, exact.ptr);
+        return len;
     }
 
     // Try to match inverted against predefined units in table
@@ -474,12 +476,12 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
         }
     }
 
-    // Try to match find a matching base and see if we can apply a prefix
-    for (int i = 0; i < (int)ARRAY_SIZE(defined_units); ++i) {
-        if (unit_base_equal(unit, defined_units[i].unit)) {
-            // We found a matching unit, we just need to work out a matching prefix scaling
-            str_t str  = defined_units[i].str;
-            double mult  = unit.mult / defined_units[i].unit.mult;
+    // Try to match find an exact matching base and see if we can apply a prefix
+    for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
+        if (unit_base_equal(unit, predefined_units[i].unit)) {
+            // We found a matching base, we just need to work out a matching prefix scaling
+            str_t str  = predefined_units[i].str;
+            double mult  = unit.mult / predefined_units[i].unit.mult;
             str_t prefix = find_prefix_str_from_value((float)mult);
             if (!str_empty(prefix)) {
                 PRINT("%.*s%.*s", (int)prefix.len, prefix.ptr, (int)str.len, str.ptr);
@@ -490,10 +492,10 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
             }
         }
         // Test for inverted
-        if (unit_base_equal(unit_inv(unit), defined_units[i].unit)) {
+        if (unit_base_equal(unit_inv(unit), predefined_units[i].unit)) {
             // We found a matching unit, we just need to work out a matching prefix scaling
-            str_t str  = defined_units[i].str;
-            double mult  = unit.mult / defined_units[i].unit.mult;
+            str_t str  = predefined_units[i].str;
+            double mult  = unit.mult / predefined_units[i].unit.mult;
             str_t prefix = find_prefix_str_from_value((float)mult);
             if (!str_empty(prefix)) {
                 PRINT("1/%.*s%.*s", (int)prefix.len, prefix.ptr, (int)str.len, str.ptr);
@@ -517,6 +519,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
                 if (str_empty(prefix)) {
                     // Error, could not determine prefix
                     md_print(MD_LOG_TYPE_DEBUG, "Could not determine prefix");
+                    return 0;
                 }
             }
 
@@ -528,7 +531,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
         }
     }
 
-    // Last resort, just print out whatever is there in metric units
+    // Last resort, just print out whatever there is in metric units
     {
         str_t prefix = find_prefix_str_from_value((float)unit.mult);
         if (!str_empty(prefix)) {
@@ -538,10 +541,10 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
             PRINT("%f*", unit.mult);
         }
         unit.mult = 1.0;
-        len += internal_print_dims(buf + len, cap - len, mask_pos(unit));
+        len += internal_print_dims_SI(buf + len, cap - len, mask_pos(unit));
         if (base_count(mask_neg(unit))) {
             PRINT("/");
-            len += internal_print_dims(buf + len, cap - len, unit_inv(mask_neg(unit)));
+            len += internal_print_dims_SI(buf + len, cap - len, unit_inv(mask_neg(unit)));
         }   
     }
 
@@ -565,14 +568,85 @@ str_t unit_to_string(md_unit_t unit, struct md_allocator_i* alloc) {
 }
 
 md_unit_t unit_from_string(str_t str) {
-    md_unit_t unit = {0};
+    str = str_trim(str);
+    if (str_empty(str)) {
+        return (md_unit_t) {0};
+    }
+
+    int64_t delim;
     
-    // Step 1: Try to match against defined units (pick longest matching result)
+    delim = str_find_char(str, '/');
+    if (delim != -1) {
+        str_t num = str_substr(str, 0, delim);
+        str_t den = str_substr(str, delim + 1, str.len);
+        return unit_div(unit_from_string(num), unit_from_string(den));
+    }
+
+    delim = str_find_char(str, '*');
+    if (delim != -1) {
+        str_t p1 = str_substr(str, 0, delim);
+        str_t p2 = str_substr(str, delim + 1, str.len);
+        return unit_mul(unit_from_string(p1), unit_from_string(p2));
+    }
+    
+    delim = str_find_char(str, ' ');
+    if (delim != -1) {
+        str_t p1 = str_substr(str, 0, delim);
+        str_t p2 = str_substr(str, delim + 1, str.len);
+        return unit_mul(unit_from_string(p1), unit_from_string(p2));
+    }
+    
+    // Try to match against defined units (exact)
+    md_unit_t exact = find_unit_from_predefined(str);
+    if (!unit_empty(exact)) {
+        return exact;
+    }
         
+    // Try to match against longest matching predefined unit (from right to left)
+    delim = str_find_char(str, '^');
+    str_t base = str;
+    str_t exp = {0};
+    str_t rest = {0};
+    if (delim != -1) {
+        base = str_substr(str, 0, delim);
+        int64_t i = delim + 1;
+        while (i < str.len && (str.ptr[i] == '-' || str.ptr[i] == '+' || is_alpha(str.ptr[i]))) ++i;
+        exp = str_substr(str, delim + 1, i);
+        rest = str_substr(str, i + 1, str.len);
+    }
+        
+    int best_match_idx = -1;
+    for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
+        if (str_ends_with(base, predefined_units[i].str)) {
+            if (best_match_idx == -1 || predefined_units[i].str.len > predefined_units[best_match_idx].str.len) {
+                best_match_idx = i;
+            }
+        }
+    }
+    
+    if (best_match_idx != -1) {
+        str_t prefix = str_substr(base, 0, base.len - predefined_units[best_match_idx].str.len);
+        md_unit_t unit = predefined_units[best_match_idx].unit;
+        if (!str_empty(prefix)) {
+            unit.mult = unit.mult * find_prefix_value_from_str(prefix);
+        }
+            
+        if (!str_empty(exp)) {
+            int pow;
+            if (str_extract_i32(&pow, &exp)) {
+                unit = unit_pow(unit, pow);
+            }
+        }
 
-    // Step 2: Try to match against defined prefixes
+        if (!str_empty(rest)) {
+            unit = unit_mul(unit, unit_from_string(rest));
+        }
 
-    return unit;
+        return unit;
+    }
+
+    md_printf(MD_LOG_TYPE_ERROR, "Could not convert string to unit: '%.*s'", (int)str.len, str.ptr);
+    return (md_unit_t) {0};
 }
 
 md_unit_t unit_meter() {

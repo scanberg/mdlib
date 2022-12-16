@@ -11,13 +11,14 @@ struct md_allocator_i;
 
 This is a very simplistic unit system to cover our needs.
 There is a single unit structure which represents a fixed set of units with the corresponding
-dimensions. Some of which are dimensionless, but are needed to propagate be propageted through the system.
+dimensions. Some of which are dimensionless, but are needed to be propageted through the system.
 */
 
 // Base represents the data of the SI base units, excluding luminous intensity (candela) and with the addition of dimensionless units angle and count
 // dim represents the exponent in each base unit
-// Newton (N) (kg * m / s^2) would have mass=1, length=1 and time=-2 with a multiplier of 1.0
-// Ångström (Å) (1.0e-9 m) would have length=1 with a multiplier of 1.0e-10
+// Examples:
+// Newton (N) (kg * m / s^2) would have base { mass=1, length=1 and time=-2 } and mult = 1.0
+// Ångström (Å) (1.0e-9 m) would have base { length=1 } and mult = 1.0e-10
 typedef union md_unit_base_t {
     struct {
         int8_t length;      // Meters
@@ -66,9 +67,9 @@ md_unit_t unit_pow(md_unit_t unit, int pow);
 // Scales the multiplier with supplied value
 md_unit_t unit_scl(md_unit_t unit, double scl);
 
-// Will convert values and modify the unit into the new unit
-bool unit_convert_d_inplace(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit);
-bool unit_convert_f_inplace(float*  values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit);
+// Will convert values in its current unit into values in the new unit
+bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit);
+bool unit_convert_inplace_f(float*  values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit);
 
 //void unit_convert_d(double* dst_values, const double* src_values, int64_t num_values, md_unit_t* dst_unit, md_unit_t src_unit, md_unit_base_t new_base);
 //void unit_convert_f(float* dst_values, const float* src_values, int64_t num_values, md_unit_t* dst_unit, md_unit_t src_unit, md_unit_base_t new_base);
