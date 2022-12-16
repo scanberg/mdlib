@@ -2114,7 +2114,7 @@ ast_node_t* parse_value(parse_context_t* ctx) {
     }
     else if (token.type == TOKEN_STRING) {
         node->data.type = (type_info_t)TI_STRING;
-        node->value._string = str_copy(substr(token.str, 1, MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
+        node->value._string = str_copy(str_substr(token.str, 1, MAX(0, ((int)token.str.len - 2))), ctx->ir->arena); // remove quotation marks
     }
     else {
         ASSERT(false);
@@ -4410,43 +4410,43 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
 
     ASSERT(node->type != AST_UNDEFINED);
 
-    md_str_builder_t sb = {0};
-    md_str_builder_init(&sb, default_temp_allocator);
+    md_strb_t sb = {0};
+    md_strb_init(&sb, default_temp_allocator);
 
     if (!(node->flags & FLAG_DYNAMIC)) {
         if (node->data.type.base_type != TYPE_BITFIELD) {
             char val_buf[128] = {0};
             int val_len = print_value(val_buf, sizeof(val_buf), node->data);
-            md_str_builder_append_cstr_len(&sb, val_buf, val_len);
+            md_strb_cstrl(&sb, val_buf, val_len);
         }
     } else {
-        md_str_builder_append_str(&sb, STR("[dynamic]"));
+        md_strb_str(&sb, STR("[dynamic]"));
     }
 
     char type_buf[128];
     int type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
-    md_str_builder_printf(&sb, " %.*s", type_len, type_buf);
+    md_strb_fmt(&sb, " %.*s", type_len, type_buf);
 
     char unit_buf[128];
     int unit_len = unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit);
     if (unit_len) {
-        md_str_builder_printf(&sb, " %.*s", unit_len, unit_buf);
+        md_strb_fmt(&sb, " %.*s", unit_len, unit_buf);
     }
 
     if (node->data.size) {
         if (node->data.size / MEGABYTES(1)) {
-            md_str_builder_printf(&sb, " [%.2fMB]", (double)node->data.size / (double)MEGABYTES(1));
+            md_strb_fmt(&sb, " [%.2fMB]", (double)node->data.size / (double)MEGABYTES(1));
         } else if (node->data.size / KILOBYTES(1)) {
-            md_str_builder_printf(&sb, " [%.2fKB]", (double)node->data.size / (double)KILOBYTES(1));
+            md_strb_fmt(&sb, " [%.2fKB]", (double)node->data.size / (double)KILOBYTES(1));
         } else {
-            md_str_builder_printf(&sb, " [%iB]", (int)node->data.size);
+            md_strb_fmt(&sb, " [%iB]", (int)node->data.size);
         }
     }
 
     vis.range.beg = node->token.beg;
     vis.range.end = node->token.end;
     vis.depth = depth;
-    vis.text = str_copy(md_str_builder_to_str(&sb), ir->arena);
+    vis.text = str_copy(md_strb_to_str(&sb), ir->arena);
     vis.payload = (const struct md_script_vis_payload_t*)(node_override ? node_override : node);
 
     // Parent marker should be last marker added (unless empty)

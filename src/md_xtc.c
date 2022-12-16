@@ -220,6 +220,7 @@ static int64_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_
         xdr_seek(xtc->file, beg, SEEK_SET);
         const int64_t bytes_read = xdr_read(xtc->file, frame_data_ptr, frame_size);
         md_mutex_unlock(&xtc->mutex);
+        (void)bytes_read;
         ASSERT(frame_size == bytes_read);
     }
     return frame_size;

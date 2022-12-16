@@ -38,22 +38,22 @@ static inline int64_t compute_position_field_width(str_t line) {
 
 static inline bool parse_header(str_t* str, md_gro_data_t* data) {
     str_t line = {0};
-    if (!extract_line(&line, str)) {
+    if (!str_extract_line(&line, str)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to read title");
         return false;
     }
 
-    line = str_trim_whitespace(line);
+    line = str_trim(line);
     const int64_t len = MIN((int64_t)ARRAY_SIZE(data->title) - 1, line.len);
     strncpy(data->title, line.ptr, len);
     data->title[len] = '\0';
 
-    if (!extract_line(&line, str)) {
+    if (!str_extract_line(&line, str)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to read number of atoms");
         return false;
     }
 
-    data->num_atoms = parse_int(str_trim_whitespace(line));
+    data->num_atoms = parse_int(str_trim(line));
     const int64_t min_bounds = 1;
     const int64_t max_bounds = 10000000;
     if (data->num_atoms < min_bounds || max_bounds < data->num_atoms) {
@@ -66,13 +66,13 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
 
 static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_field_width, int64_t* read_count, int64_t read_target, md_allocator_i* alloc) {
     str_t line = {0};
-    while ((*read_count < read_target) && extract_line(&line, &str)) {
-        int64_t res_id  = parse_int(str_trim_whitespace(substr(line, 0, 5)));
-        str_t res_name  = str_trim_whitespace(substr(line, 5, 5));
-        str_t atom_name = str_trim_whitespace(substr(line, 10, 5));
-        double x = parse_float(str_trim_whitespace(substr(line, 20 + 0 * pos_field_width, pos_field_width)));
-        double y = parse_float(str_trim_whitespace(substr(line, 20 + 1 * pos_field_width, pos_field_width)));
-        double z = parse_float(str_trim_whitespace(substr(line, 20 + 2 * pos_field_width, pos_field_width)));
+    while ((*read_count < read_target) && str_extract_line(&line, &str)) {
+        int64_t res_id  = parse_int(str_trim(str_substr(line, 0, 5)));
+        str_t res_name  = str_trim(str_substr(line, 5, 5));
+        str_t atom_name = str_trim(str_substr(line, 10, 5));
+        double x = parse_float(str_trim(str_substr(line, 20 + 0 * pos_field_width, pos_field_width)));
+        double y = parse_float(str_trim(str_substr(line, 20 + 1 * pos_field_width, pos_field_width)));
+        double z = parse_float(str_trim(str_substr(line, 20 + 2 * pos_field_width, pos_field_width)));
 
         md_gro_atom_t atom = {0};
         atom.res_id = (int32_t)res_id;
@@ -92,14 +92,14 @@ static inline bool parse_unitcell(str_t str, md_gro_data_t* data) {
     ASSERT(data);
 
     str_t line = {0,0};
-    if (!extract_line(&line, &str)) {
+    if (!str_extract_line(&line, &str)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to extract line for unit cell.");
         return false;
     }
 
-    data->cell_ext[0] = (float)parse_float(str_trim_whitespace(substr(line, 0, 10)));
-    data->cell_ext[1] = (float)parse_float(str_trim_whitespace(substr(line, 10, 10)));
-    data->cell_ext[2] = (float)parse_float(str_trim_whitespace(substr(line, 20, 10)));
+    data->cell_ext[0] = (float)parse_float(str_trim(str_substr(line, 0, 10)));
+    data->cell_ext[1] = (float)parse_float(str_trim(str_substr(line, 10, 10)));
+    data->cell_ext[2] = (float)parse_float(str_trim(str_substr(line, 20, 10)));
 
     return true;
 }

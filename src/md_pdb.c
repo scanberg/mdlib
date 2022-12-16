@@ -40,7 +40,7 @@ static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64
         ASSERT(dst_size > 0);
         dst[0] = '\0';
     }
-    str_t src = str_trim_whitespace(substr(line, beg - 1, end-beg + 1));
+    str_t src = str_trim(str_substr(line, beg - 1, end-beg + 1));
     ASSERT(dst_size >= src.len);
     MEMCPY(dst, src.ptr, src.len);
 }
@@ -49,12 +49,12 @@ static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64
 // This makes our life easier when specifying all the different ranges
 static inline int32_t extract_int(str_t line, int64_t beg, int64_t end) {
     if (line.len < end) return 0;
-    return (int32_t)parse_int(str_trim_whitespace(substr(line, beg - 1, end-beg + 1)));
+    return (int32_t)parse_int(str_trim(str_substr(line, beg - 1, end-beg + 1)));
 }
 
 static inline float extract_float(str_t line, int64_t beg, int64_t end) {
     if (line.len < end) return 0.0f;
-    return (float)parse_float(str_trim_whitespace(substr(line, beg - 1, end-beg + 1)));
+    return (float)parse_float(str_trim(str_substr(line, beg - 1, end-beg + 1)));
 }
 
 static inline char extract_char(str_t line, int32_t idx) {
@@ -146,7 +146,7 @@ static inline md_pdb_sheet_t extract_sheet(str_t line) {
 }
 
 static inline md_pdb_connect_t extract_connect(str_t line) {
-    line = str_trim_whitespace(line);
+    line = str_trim(line);
     md_pdb_connect_t c = {
         .atom_serial = {
             [0] = extract_int(line, 7, 11),
@@ -160,7 +160,7 @@ static inline md_pdb_connect_t extract_connect(str_t line) {
 }
 
 static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
-    line = str_trim_whitespace(line);
+    line = str_trim(line);
     md_pdb_cryst1_t c = {
         .a = extract_float(line, 7,  15),
         .b = extract_float(line, 16, 24),
@@ -182,7 +182,7 @@ static inline void append_connect(md_pdb_connect_t* connect, const md_pdb_connec
 static inline int32_t count_pdb_coordinate_entries(str_t str) {
     int32_t count = 0;
     str_t line;
-    while (extract_line(&line, &str)) {
+    while (str_extract_line(&line, &str)) {
         if (line.len < 6) continue;
         if ((str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6))) {
             count += 1;
@@ -259,14 +259,14 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     str_t line;
 
     int32_t step = 0;
-    if (extract_line(&line, &str)) {
+    if (str_extract_line(&line, &str)) {
         if (str_equal_cstr_n(line, "MODEL", 5)) {
-            step = (int32_t)parse_int(substr(line, 10, 4));
+            step = (int32_t)parse_int(str_substr(line, 10, 4));
         }
     }
 
     int64_t i = 0;
-    while (extract_line(&line, &str) && i < pdb->header.num_atoms) {
+    while (str_extract_line(&line, &str) && i < pdb->header.num_atoms) {
         if (line.len < 6) continue;
         if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
             if (x) { x[i] = extract_float(line, 31, 38); }
@@ -291,7 +291,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i* alloc) {
     str_t line;
     const char* base_offset = str.ptr;
-    while (extract_line(&line, &str)) {
+    while (str_extract_line(&line, &str)) {
         if (line.len < 6) continue;
         if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
@@ -318,7 +318,7 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
         else if (str_equal_cstr_n(line, "MODEL", 5)) {
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
             md_pdb_model_t model = {
-                .serial = (int32_t)parse_int(substr(line, 6, -1)),
+                .serial = (int32_t)parse_int(str_substr(line, 6, -1)),
                 .beg_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1,
                 .beg_atom_index = num_coords,
                 .byte_offset = line.ptr - base_offset,
@@ -328,26 +328,27 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
         else if (str_equal_cstr_n(line, "ENDMDL", 6)) {
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
             md_pdb_model_t* model = md_array_last(data->models);
-            ASSERT(model);
-            model->end_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1;
-            model->end_atom_index = num_coords;
+            if (model) {
+                model->end_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1;
+                model->end_atom_index = num_coords;
+            }
         }
         else if (str_equal_cstr_n(line, "CRYST1", 6)) {
             md_pdb_cryst1_t cryst1 = extract_cryst1(line);
             md_array_push(data->cryst1, cryst1, alloc);
         }
         else if (str_equal_cstr_n(line, "REMARK 350", 10)) {
-            if (str_equal_cstr(substr(line, 11, 12), "BIOMOLECULE:")) {
+            if (str_equal_cstr(str_substr(line, 11, 12), "BIOMOLECULE:")) {
                 md_pdb_assembly_t assembly = {0};
-                assembly.id = (int32_t)parse_int(str_trim_whitespace(substr(line, 23, -1)));
+                assembly.id = (int32_t)parse_int(str_trim(str_substr(line, 23, -1)));
                 assembly.transform_offset = (int32_t)md_array_size(data->transforms);
                 md_array_push(data->assemblies, assembly, alloc);
             }
-            else if (str_equal_cstr(substr(line, 11, 30), "APPLY THE FOLLOWING TO CHAINS:") ||
-                     str_equal_cstr(substr(line, 11, 30), "                   AND CHAINS:")) {
+            else if (str_equal_cstr(str_substr(line, 11, 30), "APPLY THE FOLLOWING TO CHAINS:") ||
+                     str_equal_cstr(str_substr(line, 11, 30), "                   AND CHAINS:")) {
                 md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
                 if (assembly) {
-                    str_t chains = str_trim_whitespace(substr(line, 41, 30));
+                    str_t chains = str_trim(str_substr(line, 41, 30));
                     str_t chain;
 
                     // Find the next index of insertion for chain
@@ -356,14 +357,14 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
                         next_idx += 1;
                     }
                     while (extract_next_token_delim(&chain, &chains, ',') && next_idx < ARRAY_SIZE(assembly->apply_to_chains)) {
-                        assembly->apply_to_chains[next_idx] = str_trim_whitespace(chain).ptr[0];
+                        assembly->apply_to_chains[next_idx] = str_trim(chain).ptr[0];
                         next_idx += 1;
                     }
                 } else {
                     md_print(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, assembly is missing");
                 }
             }
-            else if (str_equal_cstr(substr(line, 13, 5), "BIOMT")) {
+            else if (str_equal_cstr(str_substr(line, 13, 5), "BIOMT")) {
                 md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
                 if (assembly) {
                     const int32_t row_idx = char_to_digit(line.ptr[18]) - 1;
@@ -376,10 +377,10 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
                     }
                     mat4_t* transform = md_array_last(data->transforms);
                     if (transform) {
-                        transform->elem[0][row_idx] = (float)parse_float(str_trim_whitespace(substr(line, 23, 10)));
-                        transform->elem[1][row_idx] = (float)parse_float(str_trim_whitespace(substr(line, 33, 10)));
-                        transform->elem[2][row_idx] = (float)parse_float(str_trim_whitespace(substr(line, 43, 10)));
-                        transform->elem[3][row_idx] = (float)parse_float(str_trim_whitespace(substr(line, 53, -1)));
+                        transform->elem[0][row_idx] = (float)parse_float(str_trim(str_substr(line, 23, 10)));
+                        transform->elem[1][row_idx] = (float)parse_float(str_trim(str_substr(line, 33, 10)));
+                        transform->elem[2][row_idx] = (float)parse_float(str_trim(str_substr(line, 43, 10)));
+                        transform->elem[3][row_idx] = (float)parse_float(str_trim(str_substr(line, 53, -1)));
                     } else {
                         md_print(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, transform is missing");
                     }

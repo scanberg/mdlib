@@ -188,10 +188,10 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
 
     if (result) {
         // Count number of folders as N in from and add N times '../'
-        str_t rfrom = substr(from, count, -1);
-        str_t rto = substr(to, count, -1);
+        str_t rfrom = str_substr(from, count, -1);
+        str_t rto = str_substr(to, count, -1);
 
-        const int64_t folder_count = str_count_char_occur(rfrom, '/');
+        const int64_t folder_count = str_count_occur_char(rfrom, '/');
 
         str_t folder_up = STR("../");
         int len = 0;

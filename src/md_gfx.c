@@ -396,7 +396,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     str_t str = str_from_cstr(source);
 
     str_t version_str;
-    if (!extract_line(&version_str, &str) || !str_equal_cstr_n(version_str, "#version", 8)) {
+    if (!str_extract_line(&version_str, &str) || !str_equal_cstr_n(version_str, "#version", 8)) {
         md_print(MD_LOG_TYPE_ERROR, "Missing version as first line in shader!");
         return false;
     }
@@ -416,18 +416,18 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
 
     if (defines) {
         str_t def = str_from_cstr(defines);
-        line_count += (uint32_t)str_count_char_occur(def, '\n');        
+        line_count += (uint32_t)str_count_occur_char(def, '\n');        
         APPEND_LINE(buf, line_count, alloc);
     }
 
     str_t line;
-    while (extract_line(&line, &str)) {
+    while (str_extract_line(&line, &str)) {
         if (str_equal_cstr_n(line, "#include", 8)) {
             if (include_file_count == 0 || !include_files) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: no include files have been supplied");
                 return false;
             }
-            str_t file = str_trim_whitespace(substr(line, 8, -1));
+            str_t file = str_trim(str_substr(line, 8, -1));
             if (!file.len) {
                 md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: file is missing");
                 return false;
@@ -441,7 +441,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
                 md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: missing or mismatched delimiters");
                 return false;
             }
-            file = substr(file, 1, file.len-2);
+            file = str_substr(file, 1, file.len-2);
             str_t src = {0};
             for (uint32_t i = 0; i < include_file_count; ++i) {
                 if (str_equal_cstr(file, include_files[i].filename)) {

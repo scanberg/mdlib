@@ -1303,15 +1303,15 @@ static bool match_query(str_t query, str_t str) {
     int64_t first_joker = str_find_char(query, '*');
     int64_t last_joker = str_rfind_char(query, '*');
 
-    str_t beg_match = first_joker != 0 ? substr(query, 0, first_joker) : (str_t){0};
-    str_t end_match = last_joker  != query.len - 1 ? substr(query, last_joker + 1, -1) : (str_t){0};
+    str_t beg_match = first_joker != 0 ? str_substr(query, 0, first_joker) : (str_t){0};
+    str_t end_match = last_joker  != query.len - 1 ? str_substr(query, last_joker + 1, -1) : (str_t){0};
 
     if (!str_empty(beg_match)) {
         if (!str_equal_n(beg_match, str, beg_match.len)) return false;
     }
 
     if (!str_empty(end_match)) {
-        str = substr(str, str.len - end_match.len, end_match.len);
+        str = str_substr(str, str.len - end_match.len, end_match.len);
         if (!str_equal(end_match, str)) return false;
     }
 

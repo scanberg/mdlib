@@ -15,12 +15,13 @@ str_t str_from_cstr(const char* cstr) {
     return str;
 }
 
-bool skip_line(str_t* in_out_str) {
+bool str_skip_line(str_t* in_out_str) {
     ASSERT(in_out_str);
     const char* c = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
     if (c) {
+        c = c + 1;
         in_out_str->len = in_out_str->len - (c - in_out_str->ptr);
-        in_out_str->ptr = c + 1;
+        in_out_str->ptr = c;
         return in_out_str;
     }
     return false;
@@ -39,7 +40,7 @@ bool peek_line(str_t* out_line, const str_t* in_str) {
     return false;
 }
 
-bool extract_line(str_t* out_line, str_t* in_out_str) {
+bool str_extract_line(str_t* out_line, str_t* in_out_str) {
     ASSERT(out_line);
     ASSERT(in_out_str);
     if (in_out_str->len == 0) return false;
@@ -49,14 +50,82 @@ bool extract_line(str_t* out_line, str_t* in_out_str) {
     const char* c = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
     if (c) {
         end = c + 1;
+        if (c > beg && c[-1] == '\r') --c;
+    } else {
+        c = end;
     }
 
     out_line->ptr = beg;
-    out_line->len = end - beg;
+    out_line->len = MAX(0, c - beg);
 
     in_out_str->len = in_out_str->ptr + in_out_str->len - end;
     in_out_str->ptr = end;
     
+    return true;
+}
+
+int64_t str_read_line(str_t* str, char* buf, int64_t cap) {
+    ASSERT(str);
+    if (!str->ptr || str->len == 0) return 0;
+    const char* beg = str_beg(*str);
+    const char* end = str_end(*str);
+    const char* c = (const char*)memchr(str->ptr, '\n', str->len);
+    if (c) {
+        end = c + 1;
+    }
+    end = MIN(end, beg + cap);
+    int64_t len = end - beg;
+    if (len > 0) {
+        MEMCPY(buf, beg, len - 1);
+        buf[len - 1] = '\0';
+    }
+
+    str->ptr = end;
+    str->len = str->len - len;
+    return len - 1;
+}
+
+bool str_extract_i32(int* val, str_t* str) {
+    ASSERT(val);
+    ASSERT(str);
+
+    str_t tok;
+    if (!extract_next_token(&tok, str)) return false;
+    *val = (int)parse_int(str_trim(tok));
+    
+    return true;
+}
+
+bool str_extract_i64(int64_t* val, str_t* str) {
+    ASSERT(val);
+    ASSERT(str);
+
+    str_t tok;
+    if (!extract_next_token(&tok, str)) return false;
+    *val = parse_int(str_trim(tok));
+
+    return true;
+}
+
+bool str_extract_f32(float* val, str_t* str) {
+    ASSERT(val);
+    ASSERT(str);
+
+    str_t tok;
+    if (!extract_next_token(&tok, str)) return false;
+    *val = (float)parse_float(str_trim(tok));
+
+    return true;
+}
+
+bool str_extract_f64(double* val, str_t* str) {
+    ASSERT(val);
+    ASSERT(str);
+
+    str_t tok;
+    if (!extract_next_token(&tok, str)) return false;
+    *val = parse_float(str_trim(tok));
+
     return true;
 }
 
@@ -74,6 +143,14 @@ int64_t str_rfind_char(str_t str, int c) {
         if (str.ptr[i] == c) return i;
     }
     return -1;
+}
+
+bool str_starts_with(str_t str, str_t prefix) {
+    return str.len >= prefix.len && strncmp(str.ptr, prefix.ptr, prefix.len) == 0;
+}
+
+bool str_ends_with(str_t str, str_t suffix) {
+    return str.len >= suffix.len && strncmp(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
 }
 
 str_t str_find_str(str_t haystack, str_t needle) {
@@ -109,17 +186,27 @@ done:
     return result;
 }
 
+#if MD_COMPILER_MSVC
+    double __cdecl pow(double x, double y);
+#   pragma intrinsic(pow)
+#   define POW pow
+#elif MD_COMPILER_GCC || MD_COMPILER_CLANG
+#   define POW __builtin_pow
+#endif
+
 double parse_float(str_t str) {
     ASSERT(str.ptr);
-    static const double pow10[16] = {
-        1e+0,  1e+1,  1e+2,  1e+3,
-        1e+4,  1e+5,  1e+6,  1e+7,
-        1e+8,  1e+9,  1e+10, 1e+11,
-        1e+12, 1e+13, 1e+14, 1e+15
+    static const double pow10[32] = {
+        1e+0,  1e+1,  1e+2,  1e+3,  1e+4,  1e+5,  1e+6,  1e+7,
+        1e+8,  1e+9,  1e+10, 1e+11, 1e+12, 1e+13, 1e+14, 1e+15,
+        1e+16, 1e+17, 1e+18, 1e+19, 1e+20, 1e+21, 1e+22, 1e+23,
+        1e+24, 1e+25, 1e+26, 1e+27, 1e+28, 1e+29, 1e+30, 1e+31,
     };
 
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
+
+    while (c < end && is_whitespace(*c)) ++c;
 
     double val = 0;
     double sign = 1;
@@ -127,26 +214,48 @@ double parse_float(str_t str) {
         ++c;
         sign = -1;
     }
-    while (c != end && is_digit(*c)) {
-        val = val * 10 + ((int)(*c) - '0');
-        ++c;
-    }
-    if (*c != '.' || c == end) return sign * val;
-
-    ++c; // skip '.'
-    const uint32_t count = (uint32_t)(end - c);
     while (c < end && is_digit(*c)) {
         val = val * 10 + ((int)(*c) - '0');
         ++c;
     }
 
-    return sign * val / pow10[count];
+    if (c < end && *c == '.') {
+        const char* dec = ++c;
+        while (c < end && (c - dec) < (ARRAY_SIZE(pow10)-1) && is_digit(*c)) {
+            val = val * 10 + ((int)(*c) - '0');
+            ++c;
+        }
+        int64_t count = c - dec;
+        val /= pow10[count];
+    }
+
+    if (c < end && *c == 'e' || *c == 'E') {
+        ++c;
+        int exp_sign = 1;
+        if (c < end && (*c == '+' || *c == '-')) {
+            exp_sign = *c == '+' ? 1 : -1;
+            ++c;
+        }
+        int exp_val = 0;
+        while (c < end && is_digit(*c)) {
+            exp_val = exp_val * 10 + ((int)(*c) - '0');
+            ++c;
+        }
+        if (ABS(exp_val) < ARRAY_SIZE(pow10)) {
+            val = exp_sign > 0 ? val * pow10[exp_val] : val / pow10[exp_val];
+        } else {
+            val = val * pow(10.0, exp_sign * exp_val);
+        }
+    }
+
+    return sign * val;
 }
 
 int64_t parse_int(str_t str) {
     int64_t val = 0;
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
+    while (c < end && is_whitespace(*c)) ++c;
     int64_t sign = 1;
     if (*c == '-') {
         ++c;

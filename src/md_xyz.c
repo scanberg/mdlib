@@ -68,16 +68,16 @@ typedef struct xyz_trajectory_t {
 // This makes our life easier when specifying all the different ranges
 static inline int32_t extract_int(str_t line, int64_t beg, int64_t end) {
     if (line.len < end) return 0;
-    return (int32_t)parse_int(str_trim_whitespace(substr(line, beg, end-beg)));
+    return (int32_t)parse_int(str_trim(str_substr(line, beg, end-beg)));
 }
 
 static inline float extract_float(str_t line, int64_t beg, int64_t end) {
     if (line.len < end) return 0.0f;
-    return (float)parse_float(str_trim_whitespace(substr(line, beg, end-beg)));
+    return (float)parse_float(str_trim(str_substr(line, beg, end-beg)));
 }
 
 static inline bool is_float(str_t str) {
-    str = str_trim_whitespace(str);
+    str = str_trim(str);
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
 
@@ -91,7 +91,7 @@ static inline bool is_float(str_t str) {
 }
 
 static inline bool is_unsigned_int(str_t str) {
-    str = str_trim_whitespace(str);
+    str = str_trim(str);
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
 
@@ -104,7 +104,7 @@ static inline bool is_unsigned_int(str_t str) {
 }
 
 static inline bool is_string(str_t str) {
-    str = str_trim_whitespace(str);
+    str = str_trim(str);
 
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
@@ -123,9 +123,9 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
 
     // Extract first three lines
     str_t lines[3];
-    extract_line(&lines[0], &str);
-    extract_line(&lines[1], &str);
-    extract_line(&lines[2], &str);
+    str_extract_line(&lines[0], &str);
+    str_extract_line(&lines[1], &str);
+    str_extract_line(&lines[2], &str);
 
 #define BEG(x) (int32_t)(x.ptr - base)
 #define END(x) (int32_t)(x.ptr - base + x.len)
@@ -273,7 +273,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, const xyz_format_t*
     ASSERT(format);
     
     if (format->flags & XYZ_ELEMENT_SYMBOL) {
-        str_t element = str_trim_whitespace(substr(line, format->element.beg, format->element.end - format->element.beg));
+        str_t element = str_trim(str_substr(line, format->element.beg, format->element.end - format->element.beg));
         size_t len    = (size_t)MIN(element.len, (int64_t)sizeof(coord->element_symbol)-1);
         MEMCPY(coord->element_symbol, element.ptr, len);
         coord->element_symbol[len] = '\0';
@@ -292,10 +292,10 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, const xyz_format_t*
         coord->atom_type = extract_int(line, format->atom_type.beg, format->atom_type.end);
         // Connectivity follows atom_type
         str_t token;
-        line = substr(line, format->atom_type.end, -1);
+        line = str_substr(line, format->atom_type.end, -1);
         int connection_count = 0;
         while (extract_next_token(&token, &line)) {
-            token = str_trim_whitespace(token);
+            token = str_trim(token);
             if (token.len > 0) {
                 int connection = (int)parse_int(token);
                 if (connection) {
@@ -321,7 +321,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, con
 
     str_t line[2];
 
-    if (!extract_line(&line[0], str)) {
+    if (!str_extract_line(&line[0], str)) {
         md_print(MD_LOG_TYPE_ERROR, "Failed to extract header line");
         return false;
     }
@@ -333,7 +333,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, con
     }
 
     if (!(format->flags & XYZ_TINKER) || (format->flags & XYZ_TINKER_ARC)) {
-        if (!extract_line(&line[1], str)) {
+        if (!str_extract_line(&line[1], str)) {
             md_print(MD_LOG_TYPE_ERROR, "Failed to extract extra line");  
             return false;
         }
@@ -342,7 +342,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, con
     str_t comment = {0};
     if (format->flags & XYZ_TINKER) {
         // Comment is in the first line following the coordinate count
-        comment = substr(line[0], format->coord_count.end, -1);
+        comment = str_substr(line[0], format->coord_count.end, -1);
     } else {
         // Comment is the second line
         comment = line[1];
@@ -379,7 +379,7 @@ static inline int32_t xyz_parse_model_coordinates(md_xyz_data_t* data, str_t* st
     int32_t i = 0;
     str_t line;
     for (; i < count; ++i) {
-        if (!extract_line(&line, str))
+        if (!str_extract_line(&line, str))
             break;
         md_xyz_coordinate_t coord;
         if (extract_coord(&coord, format, line)) {
@@ -481,7 +481,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     int64_t i = 0;
     str_t line;
-    while (extract_line(&line, &str) && i < xyz->header.num_atoms) {
+    while (str_extract_line(&line, &str) && i < xyz->header.num_atoms) {
         if (line.len < 6) continue;
 
         float coord_x = extract_float(line, xyz->format.x.beg, xyz->format.x.end);
@@ -544,7 +544,7 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
         for (int32_t i = 0; i < expected_count; ++i) {
             str_t line;
             md_xyz_coordinate_t coord;
-            if (extract_line(&line, &str) && extract_coord(&coord, &format, line)) {
+            if (str_extract_line(&line, &str) && extract_coord(&coord, &format, line)) {
                 md_array_push(data->coordinates, coord, alloc);
             } else {
                 md_print(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
@@ -588,7 +588,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
 
     while (true) {
         chunk = (str_t) {buf, md_file_read(file, buf, sizeof(buf))};
-        if (str_trim_whitespace(chunk).len == 0) break;
+        if (str_trim(chunk).len == 0) break;
 
         mdl.byte_offset = md_file_tell(file) - chunk.len;
 

@@ -71,7 +71,7 @@ static inline const char* str_ptr(str_t str) {
     return str.ptr;
 }
 
-static inline str_t str_trim_whitespace(str_t str) {
+static inline str_t str_trim(str_t str) {
     const char* beg = str.ptr;
     const char* end = str.ptr + str.len;
     while (beg < end && is_whitespace(*beg)) ++beg;
@@ -147,7 +147,7 @@ static inline int64_t str_count_equal_chars(str_t a, str_t b) {
     return i;
 }
 
-static inline int64_t str_count_char_occur(str_t str, char character) {
+static inline int64_t str_count_occur_char(str_t str, char character) {
     if (!str.ptr || str.len <= 0) return 0;
     int64_t count = 0;
     for (int64_t i = 0; i < str.len; ++i) {
@@ -156,7 +156,7 @@ static inline int64_t str_count_char_occur(str_t str, char character) {
     return count;
 }
 
-static inline str_t substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
+static inline str_t str_substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
     if (offset < 0 || offset > str.len) {
         str_t res = {0, 0};
         return res;
@@ -167,13 +167,21 @@ static inline str_t substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)
     return str;
 }
 
-bool skip_line(str_t* in_out_str);
+bool str_skip_line(str_t* in_out_str);
 bool peek_line(str_t* out_line, const str_t* in_str);
-bool extract_line(str_t* out_line, str_t* in_out_str);
+bool str_extract_line(str_t* out_line, str_t* in_out_str);
+
+bool str_extract_i32  (int* val, str_t* in_out_str);
+bool str_extract_i64(int64_t* val, str_t* in_out_str);
+
+bool str_extract_f32(float* val,  str_t* in_out_str);
+bool str_extract_f64(double* val,  str_t* in_out_str);
 
 int64_t str_find_char(str_t str, int c);
 int64_t str_rfind_char(str_t str, int c);
 
+bool str_starts_with(str_t str, str_t prefix);
+bool str_ends_with(str_t str, str_t suffix);
 str_t str_find_str(str_t str, str_t str_to_find);
 
 // Make sure you ave trimmed all whitespace before using these!
@@ -188,6 +196,8 @@ str_t str_copy(str_t str, struct md_allocator_i* alloc);
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
 str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...);
 str_t str_concat(str_t a, str_t b, struct md_allocator_i* alloc);
+
+int64_t str_read_line(str_t* in_out_str, char* buf, int64_t cap);
 
 // c:/folder/file.ext -> ext
 str_t extract_ext(str_t path);

@@ -265,7 +265,7 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
 
             // If amino acid, try to deduce the element from that
             if (mol->atom.residue_idx && mol->residue.name) {
-                str_t resname = str_trim_whitespace(label_to_str(&mol->residue.name[mol->atom.residue_idx[i]]));
+                str_t resname = str_trim(label_to_str(&mol->residue.name[mol->atom.residue_idx[i]]));
                 md_range_t res_range = mol->residue.atom_range[mol->atom.residue_idx[i]];
                 if (md_util_resname_amino_acid(resname) ||
                     amino_acid_heuristic(mol->atom.name + res_range.beg, res_range.end - res_range.beg))
@@ -284,7 +284,7 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
 
             // 2 letters + 1 digit (e.g. HO[0-9]) usually means just look at the first letter
             if (original.len == 3 && is_digit(original.ptr[2])) {
-                elem = md_util_element_lookup_ignore_case(substr(original, 0, 1));
+                elem = md_util_element_lookup_ignore_case(str_substr(original, 0, 1));
                 goto done;
             }
 
