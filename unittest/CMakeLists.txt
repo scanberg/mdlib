@@ -22,7 +22,9 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_array.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_bitop.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_bitfield.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_str.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_edr.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_cube.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_intrinsics.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_simd.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_vec_math.c
