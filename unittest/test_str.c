@@ -95,7 +95,7 @@ UTEST(str, perf_float) {
 }
 
 UTEST(str, extract_line) {
-    const str_t str = STR(
+    str_t str = STR(
         "this is some text\n"
         "this is line 2\n"
         "\n"

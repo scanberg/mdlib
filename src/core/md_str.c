@@ -229,7 +229,7 @@ double parse_float(str_t str) {
         val /= pow10[count];
     }
 
-    if (c < end && *c == 'e' || *c == 'E') {
+    if (c < end && (*c == 'e' || *c == 'E')) {
         ++c;
         int exp_sign = 1;
         if (c < end && (*c == '+' || *c == '-')) {
@@ -241,10 +241,10 @@ double parse_float(str_t str) {
             exp_val = exp_val * 10 + ((int)(*c) - '0');
             ++c;
         }
-        if (ABS(exp_val) < ARRAY_SIZE(pow10)) {
-            val = exp_sign > 0 ? val * pow10[exp_val] : val / pow10[exp_val];
-        } else {
-            val = val * pow(10.0, exp_sign * exp_val);
+        while (exp_val) {
+            int ev = MIN(exp_val, ARRAY_SIZE(pow10)-1);
+            val = exp_sign > 0 ? val * pow10[ev] : val / pow10[ev];
+            exp_val -= ev;
         }
     }
 
