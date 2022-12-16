@@ -2,32 +2,34 @@
 
 #include <core/md_str.h>
 
+// String Builder API
+
 struct md_allocator_i;
 
-typedef struct md_str_builder_t {
+typedef struct md_strb_t {
     char* buf;
     struct md_allocator_i* alloc;
-} md_str_builder_t;
+} md_strb_t;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void md_str_builder_init(md_str_builder_t* sb, struct md_allocator_i* alloc);
-void md_str_builder_free(md_str_builder_t* sb);
+void md_strb_init(md_strb_t* sb, struct md_allocator_i* alloc);
+void md_strb_free(md_strb_t* sb);
 
-void md_str_builder_printf(md_str_builder_t* sb, const char* format, ...);
-void md_str_builder_append_char(md_str_builder_t* sb, char c);
-void md_str_builder_append_cstr(md_str_builder_t* sb, const char* cstr);
-void md_str_builder_append_cstr_len(md_str_builder_t* sb, const char* cstr, int64_t len);
-void md_str_builder_append_str(md_str_builder_t* sb, str_t str);
-void md_str_builder_reset(md_str_builder_t* sb);
+void md_strb_fmt(md_strb_t* sb, const char* format, ...);
+void md_strb_char(md_strb_t* sb, char c);
+void md_strb_cstr(md_strb_t* sb, const char* cstr);
+void md_strb_cstrl(md_strb_t* sb, const char* cstr, int64_t len);
+void md_strb_str(md_strb_t* sb, str_t str);
+void md_strb_reset(md_strb_t* sb);
 
-void md_str_builder_pop(md_str_builder_t* sb, int64_t n);
+void md_strb_pop(md_strb_t* sb, int64_t n);
 
-const char* md_str_builder_cstr(const md_str_builder_t* sb);
-int64_t md_str_builder_len(const md_str_builder_t* sb);
-str_t md_str_builder_to_str(const md_str_builder_t* sb);
+int64_t     md_strb_len(const md_strb_t* sb);
+const char* md_strb_to_cstr(const md_strb_t* sb);
+str_t       md_strb_to_str(const md_strb_t* sb);
 
 #ifdef __cplusplus
 }
