@@ -69,6 +69,10 @@
 #   endif
 #endif
 
+#ifndef TYPE_COMPATIBLE
+#define TYPE_COMPATIBLE(x, type) _Generic((x), type : 1, default : 0)
+#endif
+
 #ifndef IS_POW2
 #define IS_POW2(x) ((x & (x - 1)) == 0)
 #endif
@@ -177,12 +181,12 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 
 #if MD_COMPILER_MSVC
 #ifdef  __cplusplus
-extern "C" void * __cdecl memcpy(void*, const void*, size_t);
-extern "C" void * __cdecl memset(void*, int, size_t);
+extern "C" void * __cdecl memcpy(void*, const void*, unsigned long long);
+extern "C" void * __cdecl memset(void*, int, unsigned long long);
 
 #else
-void * __cdecl memcpy(void* dst, const void* src, size_t size);
-void * __cdecl memset(void* dst, int val, size_t size);
+void * __cdecl memcpy(void* dst, const void* src, unsigned long long size);
+void * __cdecl memset(void* dst, int val, unsigned long long size);
 
 #endif
 #pragma intrinsic(memcpy)
