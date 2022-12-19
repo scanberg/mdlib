@@ -74,20 +74,20 @@
 #endif
 
 #ifndef IS_POW2
-#define IS_POW2(x) ((x & (x - 1)) == 0)
+#define IS_POW2(x) (((x) & ((x) - 1)) == 0)
 #endif
 
 // This is essentially the same as ROUND_UP, but only works when alignment is a power of two
 #ifndef ALIGN_TO
-#define ALIGN_TO(x, alignment) ((x + (alignment-1)) & (~alignment+1))
+#define ALIGN_TO(x, alignment) (((x) + ((alignment)-1)) & (~(alignment)+1))
 #endif
 
 #ifndef IS_ALIGNED
-#define IS_ALIGNED(ptr, alignment) (((uintptr_t)ptr % alignment) == 0)
+#define IS_ALIGNED(ptr, alignment) (((uintptr_t)(ptr) % (alignment)) == 0)
 #endif
 
 #ifndef NEXT_ALIGNED_ADDRESS
-#define NEXT_ALIGNED_ADDRESS(ptr, alignment) ((void*)(ALIGN_TO((uintptr_t)ptr, alignment)))
+#define NEXT_ALIGNED_ADDRESS(ptr, alignment) ((void*)(ALIGN_TO((uintptr_t)(ptr), (alignment))))
 #endif
 
 #ifndef MIN
@@ -108,17 +108,17 @@
 
 // Round up division
 #ifndef DIV_UP
-#define DIV_UP(x, y) ((x + (y-1)) / y)
+#define DIV_UP(x, y) (((x) + ((y)-1)) / (y))
 #endif
 
 // Rounds up x to nearest multiple of y. No affiliation to the weed-killer
 #ifndef ROUND_UP
-#define ROUND_UP(x, y) (y * DIV_UP(x,y))
+#define ROUND_UP(x, y) ((y) * DIV_UP(x,y))
 #endif
 
 // Rounds down x to nearest multiple of y.
 #ifndef ROUND_DOWN
-#define ROUND_DOWN(x, y) (y * (x / y))
+#define ROUND_DOWN(x, y) ((y) * ((x) / (y)))
 #endif
 
 #ifndef PI
