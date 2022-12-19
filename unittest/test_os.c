@@ -41,7 +41,7 @@ UTEST(os, mem) {
     md_vm_decommit((char*)ptr + MEGABYTES(1), MEGABYTES(2));
     md_vm_decommit(ptr, MEGABYTES(1));
 
-    const uint64_t commit_size = GIGABYTES(4);
+    const uint64_t commit_size = GIGABYTES(1);
     md_vm_commit(ptr, commit_size);
     uint64_t* c = ptr;
     for (uint64_t i = 0; i < commit_size / sizeof(uint64_t); ++i) {
