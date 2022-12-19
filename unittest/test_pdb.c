@@ -22,6 +22,21 @@ UTEST(pdb, parse_ordinary) {
     md_pdb_data_free(&pdb_data, default_allocator);
 }
 
+UTEST(pdb, unmatched_model_entry) {
+    str_t path = STR(MD_UNITTEST_DATA_DIR"/dppc64.pdb");
+    md_pdb_data_t pdb_data = {0};
+    bool result = md_pdb_data_parse_file(&pdb_data, path, default_allocator);
+    EXPECT_TRUE(result);
+    EXPECT_EQ(pdb_data.num_models, 0);
+    EXPECT_EQ(pdb_data.num_atom_coordinates, 14738);
+    EXPECT_EQ(pdb_data.num_connections, 0);
+    EXPECT_EQ(pdb_data.num_cryst1, 1);
+    EXPECT_EQ(pdb_data.num_helices, 0);
+    EXPECT_EQ(pdb_data.num_sheets, 0);
+
+    md_pdb_data_free(&pdb_data, default_allocator);
+}
+
 UTEST(pdb, parse_trajectory) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_pdb_data_t pdb_data = {0};
