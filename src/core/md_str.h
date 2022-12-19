@@ -23,7 +23,7 @@ typedef struct str_t {
 
     constexpr const char* beg() noexcept { return ptr; }
     constexpr const char* end() noexcept { return ptr + len; }
-    constexpr operator bool() noexcept { return ptr != nullptr; }
+    constexpr operator bool() noexcept { return ptr && len > 0; }
 #endif
 } str_t;
 

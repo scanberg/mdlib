@@ -221,7 +221,7 @@ double parse_float(str_t str) {
 
     if (c < end && *c == '.') {
         const char* dec = ++c;
-        while (c < end && (c - dec) < (ARRAY_SIZE(pow10)-1) && is_digit(*c)) {
+        while (c < end && (c - dec) < (int64_t)ARRAY_SIZE(pow10) - 1 && is_digit(*c)) {
             val = val * 10 + ((int)(*c) - '0');
             ++c;
         }
@@ -242,7 +242,7 @@ double parse_float(str_t str) {
             ++c;
         }
         while (exp_val) {
-            int ev = MIN(exp_val, ARRAY_SIZE(pow10)-1);
+            int ev = MIN(exp_val, (int)ARRAY_SIZE(pow10)-1);
             val = exp_sign > 0 ? val * pow10[ev] : val / pow10[ev];
             exp_val -= ev;
         }
