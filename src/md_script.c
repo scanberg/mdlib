@@ -3395,6 +3395,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
             if (range.beg <= range.end && 1 <= range.beg && range.end <= element_count(lhs->data)) {
                 ASSERT(lhs->data.type.dim[0] > 0);
                 // SUCCESS!
+                node->flags = lhs->flags;
                 node->data.type = lhs->data.type;
                 node->data.type.dim[node->data.type.len_dim] = range.end - range.beg + 1;
                 node->data.unit = lhs->data.unit;
