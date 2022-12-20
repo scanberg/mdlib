@@ -91,12 +91,31 @@ typedef struct md_script_data_histogram_t {
     float range_max;
 } md_script_data_histogram_t;
 
-// The volume is a 
+typedef struct md_script_data_scalar_t {
+    int dim;
+    const float* values;
+};
+
 typedef struct md_script_data_volume_t {
     int   dim[3];
     float ext[3];
     const float* values;
 } md_script_data_volume_t;
+
+
+typedef uint64_t pid_t;
+
+int64_t md_script_prop_count(md_script_ir_t* eval);
+pid_t*  md_script_prop_ids(md_script_ir_t* eval);
+
+vec2_t md_script_prop_period(md_script_ir_t* eval, pid_t id);
+
+
+int[3] md_script_prop_vol_extent(md_script_ir_t* eval, pid_t id);
+vec3_t md_script_prop_vol_extent(md_script_ir_t* eval, pid_t id);
+
+const float* md_script_prop_values(pid_t);
+
 
 #endif
 
@@ -238,6 +257,8 @@ const str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
 // We need to pass the number of frames we want the data to hold
 // Should be performed as soon as the IR has changed.
 md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
+
+uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval);
 
 void md_script_eval_free(md_script_eval_t* eval);
 

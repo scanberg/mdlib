@@ -2758,8 +2758,8 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
             } else {
                 as_float(*dst) = vec3_distance(a, b);
             }
-        } else {
-            ASSERT(ctx->vis);
+        }
+        if (ctx->vis) {
             position_visualize(arg[0], ctx);
             position_visualize(arg[1], ctx);
 
@@ -2816,8 +2816,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
             as_float(*dst) = min_dist;
         }
-        else {
-            ASSERT(ctx->vis);
+        if (ctx->vis) {
             position_visualize(arg[0], ctx);
             position_visualize(arg[1], ctx);
 
@@ -2875,8 +2874,8 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
             as_float(*dst) = max_dist;
-        } else {
-            ASSERT(ctx->vis);
+        }
+        if (ctx->vis) {
             position_visualize(arg[0], ctx);
             position_visualize(arg[1], ctx);
 
@@ -2911,38 +2910,37 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
     
     int result = 0;
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-
+    if (dst || ctx->vis) {
         vec3_t* a_pos = position_extract(arg[0], ctx);
         vec3_t* b_pos = position_extract(arg[1], ctx);
+        const int64_t a_len = md_array_size(a_pos);
+        const int64_t b_len = md_array_size(b_pos);
 
-        float* dst_arr = as_float_arr(*dst);
-        ASSERT(element_count(*dst) == md_array_size(a_pos) * md_array_size(b_pos));
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            ASSERT(element_count(*dst) == md_array_size(a_pos) * md_array_size(b_pos));
+            float* dst_arr = as_float_arr(*dst);
 
-        for (int64_t i = 0; i < md_array_size(a_pos); ++i) {
-            for (int64_t j = 0; j < md_array_size(b_pos); ++j) {
-                const float dist = vec3_distance(a_pos[i], b_pos[j]);
-                dst_arr[i * md_array_size(b_pos) + j] = dist;
+            for (int64_t i = 0; i < md_array_size(a_pos); ++i) {
+                for (int64_t j = 0; j < md_array_size(b_pos); ++j) {
+                    const float dist = vec3_distance(a_pos[i], b_pos[j]);
+                    dst_arr[i * md_array_size(b_pos) + j] = dist;
+                }
             }
         }
-    } else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
-        position_visualize(arg[1], ctx);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+            position_visualize(arg[1], ctx);
 
-        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            vec3_t* a_pos = position_extract(arg[0], ctx);
-            vec3_t* b_pos = position_extract(arg[1], ctx);
-            const int64_t a_len = md_array_size(a_pos);
-            const int64_t b_len = md_array_size(b_pos);
-
-            for (int64_t i = 0; i < a_len; ++i) {
-                uint32_t va = push_vertex(a_pos[i], ctx->vis);
-                push_point(va, ctx->vis);
-                for (int64_t j = 0; j < b_len; ++j) {
-                    uint32_t vb = push_vertex(b_pos[j], ctx->vis);
-                    push_point(vb, ctx->vis);
-                    push_line(va, vb, ctx->vis);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                for (int64_t i = 0; i < a_len; ++i) {
+                    uint32_t va = push_vertex(a_pos[i], ctx->vis);
+                    push_point(va, ctx->vis);
+                    for (int64_t j = 0; j < b_len; ++j) {
+                        uint32_t vb = push_vertex(b_pos[j], ctx->vis);
+                        push_point(vb, ctx->vis);
+                        push_line(va, vb, ctx->vis);
+                    }
                 }
             }
         }
@@ -2971,41 +2969,41 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_POSITION_ARR));
     
-    if (dst) {
+    if (dst || ctx->vis) {
         const vec3_t a = position_extract_com(arg[0], ctx);
         const vec3_t b = position_extract_com(arg[1], ctx);
         const vec3_t c = position_extract_com(arg[2], ctx);
         const vec3_t v0 = vec3_normalize(vec3_sub(a, b));
         const vec3_t v1 = vec3_normalize(vec3_sub(c, b));
 
-        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
-        as_float(*dst) = acosf(vec3_dot(v0, v1));
-    } else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
-        position_visualize(arg[1], ctx);
-        position_visualize(arg[2], ctx);
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
+            as_float(*dst) = acosf(vec3_dot(v0, v1));
+        }
 
-        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            const vec3_t a = position_extract_com(arg[0], ctx);
-            const vec3_t b = position_extract_com(arg[1], ctx);
-            const vec3_t c = position_extract_com(arg[2], ctx);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+            position_visualize(arg[1], ctx);
+            position_visualize(arg[2], ctx);
 
-            uint32_t va = push_vertex(a, ctx->vis);
-            uint32_t vb = push_vertex(b, ctx->vis);
-            uint32_t vc = push_vertex(c, ctx->vis);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                uint32_t va = push_vertex(a, ctx->vis);
+                uint32_t vb = push_vertex(b, ctx->vis);
+                uint32_t vc = push_vertex(c, ctx->vis);
 
-            push_point(va, ctx->vis);
-            push_point(vb, ctx->vis);
-            push_point(vc, ctx->vis);
-            push_line(va, vb, ctx->vis);
-            push_line(vb, vc, ctx->vis);
+                push_point(va, ctx->vis);
+                push_point(vb, ctx->vis);
+                push_point(vc, ctx->vis);
+                push_line(va, vb, ctx->vis);
+                push_line(vb, vc, ctx->vis);
 
-            // This is the angle arc
-            // @TODO: Insert more vertices here and make it a bit smoother
-            uint32_t vd = push_vertex(vec3_lerp(b, a, 0.3f), ctx->vis);
-            uint32_t ve = push_vertex(vec3_lerp(b, c, 0.3f), ctx->vis);
+                // This is the angle arc
+                // @TODO: Insert more vertices here and make it a bit smoother
+                uint32_t vd = push_vertex(vec3_lerp(b, a, 0.3f), ctx->vis);
+                uint32_t ve = push_vertex(vec3_lerp(b, c, 0.3f), ctx->vis);
 
-            push_triangle(vb, vd, ve, ctx->vis);
+                push_triangle(vb, vd, ve, ctx->vis);
+            }
         }
     } else {
         // Validate input
@@ -3027,42 +3025,40 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_POSITION_ARR));
     ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
+    if (dst || ctx->vis) {
         const vec3_t a = position_extract_com(arg[0], ctx);
         const vec3_t b = position_extract_com(arg[1], ctx);
         const vec3_t c = position_extract_com(arg[2], ctx);
         const vec3_t d = position_extract_com(arg[3], ctx);
 
-        as_float(*dst) = (float)dihedral_angle(a,b,c,d);
-    }
-    else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
-        position_visualize(arg[1], ctx);
-        position_visualize(arg[2], ctx);
-        position_visualize(arg[3], ctx);
+        if (dst) {
+            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
+            as_float(*dst) = (float)dihedral_angle(a,b,c,d);
+        }
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+            position_visualize(arg[1], ctx);
+            position_visualize(arg[2], ctx);
+            position_visualize(arg[3], ctx);
 
-        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            const vec3_t a = position_extract_com(arg[0], ctx);
-            const vec3_t b = position_extract_com(arg[1], ctx);
-            const vec3_t c = position_extract_com(arg[2], ctx);
-            const vec3_t d = position_extract_com(arg[3], ctx);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
 
-            uint32_t va = push_vertex(a, ctx->vis);
-            uint32_t vb = push_vertex(b, ctx->vis);
-            uint32_t vc = push_vertex(c, ctx->vis);
-            uint32_t vd = push_vertex(d, ctx->vis);
+                uint32_t va = push_vertex(a, ctx->vis);
+                uint32_t vb = push_vertex(b, ctx->vis);
+                uint32_t vc = push_vertex(c, ctx->vis);
+                uint32_t vd = push_vertex(d, ctx->vis);
 
-            push_point(va, ctx->vis);
-            push_point(vb, ctx->vis);
-            push_point(vc, ctx->vis);
-            push_point(vd, ctx->vis);
+                push_point(va, ctx->vis);
+                push_point(vb, ctx->vis);
+                push_point(vc, ctx->vis);
+                push_point(vd, ctx->vis);
 
-            push_line(va, vb, ctx->vis);
-            push_line(vb, vc, ctx->vis);
-            push_line(vc, vd, ctx->vis);
+                push_line(va, vb, ctx->vis);
+                push_line(vb, vc, ctx->vis);
+                push_line(vc, vd, ctx->vis);
 
-            // @TODO: Draw planes and the angle between them
+                // @TODO: Draw planes and the angle between them
+            }
         }
     } else {
         // Validate input
@@ -3334,22 +3330,27 @@ static int _flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT3));
-        as_vec3(*dst) = position_extract_com(arg[0], ctx);
-    } else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
-        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-            vec3_t com = position_extract_com(arg[0], ctx);
-            vec3_t* pos = position_extract(arg[0], ctx);
-            uint32_t c = push_vertex(com, ctx->vis);
-            push_point(c, ctx->vis);
-            for (int64_t i = 0; i < md_array_size(pos); ++i) {
-                uint32_t v = push_vertex(pos[i], ctx->vis);
-                push_line(c, v, ctx->vis);
+    vec3_t com;
+    if (dst || ctx->vis) {
+        com = position_extract_com(arg[0], ctx);
+        if (dst) {
+            ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT3));
+            as_vec3(*dst) = com;
+        }
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                vec3_t* pos = position_extract(arg[0], ctx);
+                uint32_t c = push_vertex(com, ctx->vis);
+                push_point(c, ctx->vis);
+                for (int64_t i = 0; i < md_array_size(pos); ++i) {
+                    uint32_t v = push_vertex(pos[i], ctx->vis);
+                    push_line(c, v, ctx->vis);
+                }
             }
         }
-    } else {
+    }
+    else {
         return position_validate(arg[0], 0, ctx);
     }
     return 0;
@@ -3474,14 +3475,16 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
-        const vec3_t* pos = position_extract(arg[0], ctx);
-        ASSERT(element_count(*dst) == md_array_size(pos));
-        MEMCPY(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
-    }
-    else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
+    if (dst || ctx->vis) {
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
+            const vec3_t* pos = position_extract(arg[0], ctx);
+            ASSERT(element_count(*dst) == md_array_size(pos));
+            MEMCPY(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
+        }
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+        }
     } else {
         return position_validate(arg[0], 0, ctx);
     }
@@ -3491,17 +3494,19 @@ static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _position_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-        const vec3_t* pos = position_extract(arg[0], ctx);
-        ASSERT(element_count(*dst) == md_array_size(pos));
-        float* x = as_float_arr(*dst);
-        for (int64_t i = 0; i < element_count(*dst); ++i) {
-            x[i] = pos[i].x;
+    if (dst || ctx->vis) {
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            const vec3_t* pos = position_extract(arg[0], ctx);
+            ASSERT(element_count(*dst) == md_array_size(pos));
+            float* x = as_float_arr(*dst);
+            for (int64_t i = 0; i < element_count(*dst); ++i) {
+                x[i] = pos[i].x;
+            }
         }
-    }
-    else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+        }
     } else {
         return position_validate(arg[0], 0, ctx);
     }
@@ -3511,17 +3516,19 @@ static int _position_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _position_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-        const vec3_t* pos = position_extract(arg[0], ctx);
-        ASSERT(element_count(*dst) == md_array_size(pos));
-        float* y = as_float_arr(*dst);
-        for (int64_t i = 0; i < element_count(*dst); ++i) {
-            y[i] = pos[i].y;
+    if (dst || ctx->vis) {
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            const vec3_t* pos = position_extract(arg[0], ctx);
+            ASSERT(element_count(*dst) == md_array_size(pos));
+            float* y = as_float_arr(*dst);
+            for (int64_t i = 0; i < element_count(*dst); ++i) {
+                y[i] = pos[i].y;
+            }
         }
-    }
-    else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+        }
     } else {
         return position_validate(arg[0], 0, ctx);
     }
@@ -3531,17 +3538,19 @@ static int _position_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _position_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-        const vec3_t* pos = position_extract(arg[0], ctx);
-        ASSERT(element_count(*dst) == md_array_size(pos));
-        float* z = as_float_arr(*dst);
-        for (int64_t i = 0; i < element_count(*dst); ++i) {
-            z[i] = pos[i].z;
+    if (dst || ctx->vis) {
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+            const vec3_t* pos = position_extract(arg[0], ctx);
+            ASSERT(element_count(*dst) == md_array_size(pos));
+            float* z = as_float_arr(*dst);
+            for (int64_t i = 0; i < element_count(*dst); ++i) {
+                z[i] = pos[i].z;
+            }
         }
-    }
-    else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+        }
     } else {
         return position_validate(arg[0], 0, ctx);
     }
@@ -3551,18 +3560,20 @@ static int _position_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _position_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-        const vec3_t* pos = position_extract(arg[0], ctx);
-        ASSERT(element_count(*dst) == md_array_size(pos));
+    if (dst || ctx->vis) {
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
+            const vec3_t* pos = position_extract(arg[0], ctx);
+            ASSERT(element_count(*dst) == md_array_size(pos));
         
-        vec2_t* xy = as_vec2_arr(*dst);
-        for (int64_t i = 0; i < element_count(*dst); ++i) {
-            xy[i] = (vec2_t){pos[i].x, pos[i].y};
+            vec2_t* xy = as_vec2_arr(*dst);
+            for (int64_t i = 0; i < element_count(*dst); ++i) {
+                xy[i] = (vec2_t){pos[i].x, pos[i].y};
+            }
         }
-    }
-    else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+        }
     } else {
         return position_validate(arg[0], 0, ctx);
     }
@@ -3572,18 +3583,20 @@ static int _position_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _position_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-        const vec3_t* pos = position_extract(arg[0], ctx);
-        ASSERT(element_count(*dst) == md_array_size(pos));
+    if (dst || ctx->vis) {
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
+            const vec3_t* pos = position_extract(arg[0], ctx);
+            ASSERT(element_count(*dst) == md_array_size(pos));
 
-        vec2_t* xz = as_vec2_arr(*dst);
-        for (int64_t i = 0; i < element_count(*dst); ++i) {
-            xz[i] = (vec2_t){pos[i].x, pos[i].z};
+            vec2_t* xz = as_vec2_arr(*dst);
+            for (int64_t i = 0; i < element_count(*dst); ++i) {
+                xz[i] = (vec2_t){pos[i].x, pos[i].z};
+            }
         }
-    }
-    else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+        }
     } else {
         return position_validate(arg[0], 0, ctx);
     }
@@ -3593,18 +3606,20 @@ static int _position_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static int _position_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
 
-    if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-        const vec3_t* pos = position_extract(arg[0], ctx);
-        ASSERT(element_count(*dst) == md_array_size(pos));
+    if (dst || ctx->vis) {
+        if (dst) {
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
+            const vec3_t* pos = position_extract(arg[0], ctx);
+            ASSERT(element_count(*dst) == md_array_size(pos));
 
-        vec2_t* yz = as_vec2_arr(*dst);
-        for (int64_t i = 0; i < element_count(*dst); ++i) {
-            yz[i] = (vec2_t){pos[i].y, pos[i].z};
+            vec2_t* yz = as_vec2_arr(*dst);
+            for (int64_t i = 0; i < element_count(*dst); ++i) {
+                yz[i] = (vec2_t){pos[i].y, pos[i].z};
+            }
         }
-    }
-    else if (ctx->vis) {
-        position_visualize(arg[0], ctx);
+        if (ctx->vis) {
+            position_visualize(arg[0], ctx);
+        }
     } else {
         return position_validate(arg[0], 0, ctx);
     }
@@ -3668,23 +3683,6 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
         }
     }
     else {
-        /*
-        md_spatial_hash_args_t args = {
-            .alloc = alloc,
-            .temp_alloc = alloc,
-            .cell_ext = CLAMP(max_cutoff / 1.5f, 1.0f, 16.0f),
-            .coords = {
-                .count = target_size,
-                .stride = sizeof(vec3_t),
-                .x = &target_pos->x,
-                .y = &target_pos->y,
-                .z = &target_pos->z,
-            },
-        };
-
-        md_spatial_hash_t hash = { 0 };
-        md_spatial_hash_init(&hash, &args);
-        */
         md_spatial_hash_t hash = {0};
         md_spatial_hash_init(&hash, target_pos, target_size, pbc_ext, alloc);
 
@@ -3768,7 +3766,8 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
                 const vec3_t pbc_ext = ctx->frame_header ? mat3_mul_vec3(ctx->frame_header->box, (vec3_t){1,1,1}) : (vec3_t){0,0,0};
                 compute_rdf(bins, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, pbc_ext, ctx->temp_alloc);
             }
-        } else {
+        }
+        if (ctx->vis) {
             return rdf_visualize(ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, ctx);
         }
         return 0;
