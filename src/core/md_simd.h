@@ -609,26 +609,26 @@ MD_SIMD_INLINE md_f64x4_t md_simd_cmp_ne_f64x4(md_f64x4_t a, md_f64x4_t b) { ret
 // for mul, there are operations defined for int as well, but the semantics differ: it multiplies the lanes as expected
 // but the results are stored in two lanes rather than storing the truncated value in each lane.
 
-#define md_simd_mul_f64x2 _mm_mul_pd
-#define md_simd_mul_f64x4 _mm256_mul_pd
 #define md_simd_mul_f32x4 _mm_mul_ps
 #define md_simd_mul_f32x8 _mm256_mul_ps
+#define md_simd_mul_f64x2 _mm_mul_pd
+#define md_simd_mul_f64x4 _mm256_mul_pd
 
-#define md_simd_div_f64x2 _mm_div_pd
-#define md_simd_div_f64x4 _mm256_div_pd
 #define md_simd_div_f32x4 _mm_div_ps
 #define md_simd_div_f32x8 _mm256_div_ps
+#define md_simd_div_f64x2 _mm_div_pd
+#define md_simd_div_f64x4 _mm256_div_pd
 
 #ifdef __FMA__
-#define md_simd_fmadd_f64x2 _mm_fmadd_pd
-#define md_simd_fmadd_f64x4 _mm256_fmadd_pd
 #define md_simd_fmadd_f32x4 _mm_fmadd_ps
 #define md_simd_fmadd_f32x8 _mm256_fmadd_ps
+#define md_simd_fmadd_f64x2 _mm_fmadd_pd
+#define md_simd_fmadd_f64x4 _mm256_fmadd_pd
 #else
-#define md_simd_fmadd_f64x2(A,B,C) _mm_add_pd(_mm_mul_pd(A,B), C)
-#define md_simd_fmadd_f64x4(A,B,C) _mm256_add_pd(_mm256_mul_pd(A,B), C)
-#define md_simd_fmadd_f32x4(A,B,C) _mm_add_ps(_mm_mul_ps(A,B), C)
-#define md_simd_fmadd_f32x8(A,B,C) _mm256_add_ps(_mm256_mul_ps(A,B), C)
+MD_SIMD_INLINE md_f32x4_t md_simd_fmadd_f32x4(md_f32x4_t a, md_f32x4_t b, md_f32x4_t c) { return _mm_add_ps(_mm_mul_ps(a,b), c); }
+MD_SIMD_INLINE md_f32x8_t md_simd_fmadd_f32x8(md_f32x8_t a, md_f32x8_t b, md_f32x8_t c) { return _mm256_add_ps(_mm256_mul_ps(a,b), c); }
+MD_SIMD_INLINE md_f64x2_t md_simd_fmadd_f64x2(md_f64x2_t a, md_f64x2_t b, md_f64x2_t c) { return _mm_add_pd(_mm_mul_pd(a,b), c); }
+MD_SIMD_INLINE md_f64x4_t md_simd_fmadd_f64x4(md_f64x4_t a, md_f64x4_t b, md_f64x4_t c) { return _mm256_add_pd(_mm256_mul_pd(a,b), c); }
 #endif
 
 MD_SIMD_INLINE md_f32x4_t md_simd_round_f32x4(md_f32x4_t a) { return _mm_round_ps     (a, _MM_FROUND_NO_EXC | _MM_FROUND_TO_NEAREST_INT); }
