@@ -575,34 +575,34 @@ MD_SIMD_INLINE md_f64x4_t md_simd_abs_f64x4(md_f64x4_t a) { return _mm256_and_pd
 #define md_simd_max_f32x4 _mm_max_ps   
 #define md_simd_max_f32x8 _mm256_max_ps
 
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_gt_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmp_ps    (a, b, _CMP_GT_OQ); }
+MD_SIMD_INLINE md_f32x4_t md_simd_cmp_gt_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmpgt_ps  (a, b); }
 MD_SIMD_INLINE md_f32x8_t md_simd_cmp_gt_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_GT_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_gt_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmp_pd    (a, b, _CMP_GT_OQ); }
+MD_SIMD_INLINE md_f64x2_t md_simd_cmp_gt_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmpgt_pd  (a, b); }
 MD_SIMD_INLINE md_f64x4_t md_simd_cmp_gt_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_GT_OQ); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_ge_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmp_ps    (a, b, _CMP_GE_OQ); }
+MD_SIMD_INLINE md_f32x4_t md_simd_cmp_ge_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmpge_ps  (a, b); }
 MD_SIMD_INLINE md_f32x8_t md_simd_cmp_ge_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_GE_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_ge_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmp_pd    (a, b, _CMP_GE_OQ); }
+MD_SIMD_INLINE md_f64x2_t md_simd_cmp_ge_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmpge_pd  (a, b); }
 MD_SIMD_INLINE md_f64x4_t md_simd_cmp_ge_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_GE_OQ); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_lt_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmp_ps    (a, b, _CMP_LT_OQ); }
+MD_SIMD_INLINE md_f32x4_t md_simd_cmp_lt_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmplt_ps  (a, b); }
 MD_SIMD_INLINE md_f32x8_t md_simd_cmp_lt_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_LT_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_lt_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmp_pd    (a, b, _CMP_LT_OQ); }
+MD_SIMD_INLINE md_f64x2_t md_simd_cmp_lt_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmplt_pd  (a, b); }
 MD_SIMD_INLINE md_f64x4_t md_simd_cmp_lt_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_LT_OQ); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_le_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmp_ps    (a, b, _CMP_LE_OQ); }
+MD_SIMD_INLINE md_f32x4_t md_simd_cmp_le_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmple_ps  (a, b); }
 MD_SIMD_INLINE md_f32x8_t md_simd_cmp_le_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_LE_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_le_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmp_pd    (a, b, _CMP_LE_OQ); }
+MD_SIMD_INLINE md_f64x2_t md_simd_cmp_le_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmple_pd  (a, b); }
 MD_SIMD_INLINE md_f64x4_t md_simd_cmp_le_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_LE_OQ); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_eq_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmp_ps    (a, b, _CMP_EQ_OQ); }
+MD_SIMD_INLINE md_f32x4_t md_simd_cmp_eq_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmpeq_ps  (a, b); }
 MD_SIMD_INLINE md_f32x8_t md_simd_cmp_eq_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_EQ_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_eq_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmp_pd    (a, b, _CMP_EQ_OQ); }
+MD_SIMD_INLINE md_f64x2_t md_simd_cmp_eq_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmpeq_pd  (a, b); }
 MD_SIMD_INLINE md_f64x4_t md_simd_cmp_eq_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_EQ_OQ); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_ne_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmp_ps    (a, b, _CMP_NEQ_OQ); }
+MD_SIMD_INLINE md_f32x4_t md_simd_cmp_ne_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmpneq_ps (a, b); }
 MD_SIMD_INLINE md_f32x8_t md_simd_cmp_ne_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_NEQ_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_ne_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmp_pd    (a, b, _CMP_NEQ_OQ); }
+MD_SIMD_INLINE md_f64x2_t md_simd_cmp_ne_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmpneq_pd (a, b); }
 MD_SIMD_INLINE md_f64x4_t md_simd_cmp_ne_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_NEQ_OQ); }
 
 // FLOAT SPECIFIC
