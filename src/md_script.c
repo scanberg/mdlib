@@ -1,22 +1,45 @@
+/**
+*   The script system allows for evaluation of expressions in the context of molecules.
+*   It is a statically typed language with a small set of types and operations.
+*   It is used both for 'filtering' i.e. selecting subsets of atoms through textual queries,
+*   used in representations among other things.
+*   
+*   The supported types are
+*   A subset of types 
+* 
+* 
+*   There are alot of things to improve here.
+*   
+*   PERIODS
+*   - We should support periods. or at least propagate periods within our system and expose it.
+*   - The question is where it belongs, is it part of the type or part of the value?
+*   
+*   UNITS
+*   Units are half arse supported atm. It only works for the trivial cases and the trivial operators (+,-,/,*)
+*   - There is no way to specify units for user supplied values.
+*   - The mathematical functions abs, min, max, sin, cos, log, pow etc. needs to be overloaded to properly modify units.
+*   - The units are resolved during the static check phase, which is concepcually correct. But it is currently very cluncky and not very robust to deal with units in the underlying functions.
+*   
+*   PROPERTY DATA
+*   The property data is a bit of a mess in the API, this should be simplified towards the user. It is fine that we only expose a small fixed quantity of property Types and make their types more concrete.
+*    
+**/
+
 #include "md_script.h"
 #include "md_molecule.h"
 #include "md_trajectory.h"
-#include "md_frame_cache.h"
 #include "md_filter.h"
 #include "md_util.h"
 
+#include "core/md_common.h"
 #include "core/md_compiler.h"
-#include "core/md_platform.h"
 #include "core/md_log.h"
 #include "core/md_bitfield.h"
 #include "core/md_allocator.h"
-#include "core/md_common.h"
 #include "core/md_str.h"
 #include "core/md_array.h"
 #include "core/md_arena_allocator.h"
-#include "core/md_linear_allocator.h"
 #include "core/md_bitop.h"
-#include "core/md_simd.h"
 #include "core/md_os.h"
 #include "core/md_unit.h"
 #include "core/md_spatial_hash.h"
@@ -662,7 +685,11 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
     data->size = bytes;
     data->type = type;
     data->value_range = (frange_t){0, 0};
-    data->unit = (md_unit_t){0};
+
+    if (data->unit.base.raw_bits == 0 && data->unit.mult == 0) {
+        data->unit.base.raw_bits = 0;
+        data->unit.mult = 1.0;
+    }
 
     if (type.base_type == TYPE_BITFIELD) {
         md_bitfield_t* bf = data->ptr;
@@ -927,6 +954,7 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
     MEMSET(node, 0, sizeof(ast_node_t));
     node->type = type;
     node->token = token;
+    node->data.unit = unit_none();
     md_array_push(ir->nodes, node, ir->arena);
     return node;
 }
@@ -2844,6 +2872,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
             ast_node_t* node_copy = create_node(ctx->ir, node->type, node->token);
             MEMCPY(node_copy, node, sizeof(ast_node_t));
             node->data = (data_t){0};
+            node->data.unit = node_copy->data.unit;
             node->type = AST_PROC_CALL;
             node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
             md_array_push(node->children, node_copy, ctx->ir->arena);
@@ -3255,7 +3284,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
         int64_t array_len = 0;
         type_info_t array_type = {0};
-        md_unit_t array_unit = {0};
+        md_unit_t array_unit = unit_none();
         
         // Pass 1: find a suitable base_type for the array
         for (int64_t i = 0; i < num_elem; ++i) {
@@ -3316,7 +3345,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
             array_unit = elem[0]->data.unit;
             for (int64_t i = 1; i < num_elem; ++i) {
                 if (!unit_equal(elem[i]->data.unit, array_unit)) {
-                    array_unit = (md_unit_t){0};
+                    array_unit = unit_none();
                     break;
                 }
             }
@@ -3458,13 +3487,6 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
 
         identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
         ASSERT(ident);
-
-        /*
-        if (is_variable_length(rhs->data.type)) {
-            create_error(ctx->ir, rhs->marker, "Right hand side of assignment has variable length, assignments can only be made with arguments of known length");
-            return false;
-        }
-        */
 
         if (!(rhs->flags & FLAG_DYNAMIC) && !rhs->data.ptr) {
             // If it is not a dynamic node, we evaluate it directly and store the data.

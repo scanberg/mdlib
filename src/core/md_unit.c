@@ -56,6 +56,8 @@ typedef struct {
     str_t       str;
 } unit_name_t;
 
+#define UNIT_NONE           {.mult = 1.0}
+
 // Base
 #define UNIT_METER          {.base = {.dim = {.length = 1,}},   .mult = 1.0}
 #define UNIT_KILOGRAM       {.base = {.dim = {.mass = 1,}},     .mult = 1.0}
@@ -482,28 +484,36 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
             // We found a matching base, we just need to work out a matching prefix scaling
             str_t str  = predefined_units[i].str;
             double mult  = unit.mult / predefined_units[i].unit.mult;
-            str_t prefix = find_prefix_str_from_value((float)mult);
-            if (!str_empty(prefix)) {
-                PRINT("%.*s%.*s", (int)prefix.len, prefix.ptr, (int)str.len, str.ptr);
-                return len;
-            } else {
-                md_print(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
-                return 0;
+            str_t prefix = STR("");
+
+            if (mult != 1.0) {
+                prefix = find_prefix_str_from_value((float)mult);
+                if (str_empty(prefix)) {
+                    md_print(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
+                    return 0;
+                }
             }
+
+            PRINT("%.*s%.*s", (int)prefix.len, prefix.ptr, (int)str.len, str.ptr);
+            return len;
         }
         // Test for inverted
         if (unit_base_equal(unit_inv(unit), predefined_units[i].unit)) {
             // We found a matching unit, we just need to work out a matching prefix scaling
             str_t str  = predefined_units[i].str;
             double mult  = unit.mult / predefined_units[i].unit.mult;
-            str_t prefix = find_prefix_str_from_value((float)mult);
-            if (!str_empty(prefix)) {
-                PRINT("1/%.*s%.*s", (int)prefix.len, prefix.ptr, (int)str.len, str.ptr);
-                return len;
-            } else {
-                md_print(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
-                return 0;
+            str_t prefix = STR("");
+
+            if (mult != 1.0) {
+                prefix = find_prefix_str_from_value((float)mult);
+                if (str_empty(prefix)) {
+                    md_print(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
+                    return 0;
+                }
             }
+
+            PRINT("1/%.*s%.*s", (int)prefix.len, prefix.ptr, (int)str.len, str.ptr);
+            return len;
         }
     }
 
@@ -647,6 +657,10 @@ md_unit_t unit_from_string(str_t str) {
 
     md_printf(MD_LOG_TYPE_ERROR, "Could not convert string to unit: '%.*s'", (int)str.len, str.ptr);
     return (md_unit_t) {0};
+}
+
+md_unit_t unit_none() {
+    return (md_unit_t)UNIT_NONE;
 }
 
 md_unit_t unit_meter() {

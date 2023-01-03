@@ -84,6 +84,8 @@ str_t unit_to_string(md_unit_t unit, struct md_allocator_i* alloc);
 md_unit_t unit_from_string(str_t str);
 
 // Some defined helper
+md_unit_t unit_none();  // Unitless quantity
+ 
 // Base units
 md_unit_t unit_meter();
 md_unit_t unit_nanometer();
