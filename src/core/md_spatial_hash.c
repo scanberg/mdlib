@@ -71,33 +71,34 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
 
     {
         size_t i = 0;
-        const size_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
-        for (; i < simd_count; i += md_simd_widthf) {
-            md_simd_typef x = md_simd_loadf((const float*)((const char*)in_x + i * stride));
-            md_simd_typef y = md_simd_loadf((const float*)((const char*)in_y + i * stride));
-            md_simd_typef z = md_simd_loadf((const float*)((const char*)in_z + i * stride));
+        const size_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+        ASSERT(md_simd_f32_width == md_simd_i32_width);
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
+            md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * stride));
+            md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * stride));
 
-            x = md_simd_mulf(md_simd_deperiodizef(x, md_simd_set1f(ref.x), md_simd_set1f(ext.x)), md_simd_set1f(INV_CELL_EXT));
-            y = md_simd_mulf(md_simd_deperiodizef(y, md_simd_set1f(ref.y), md_simd_set1f(ext.y)), md_simd_set1f(INV_CELL_EXT));
-            z = md_simd_mulf(md_simd_deperiodizef(z, md_simd_set1f(ref.z), md_simd_set1f(ext.z)), md_simd_set1f(INV_CELL_EXT));
+            x = md_simd_mul(md_simd_deperiodize(x, md_simd_set1_f32(ref.x), md_simd_set1_f32(ext.x)), md_simd_set1_f32(INV_CELL_EXT));
+            y = md_simd_mul(md_simd_deperiodize(y, md_simd_set1_f32(ref.y), md_simd_set1_f32(ext.y)), md_simd_set1_f32(INV_CELL_EXT));
+            z = md_simd_mul(md_simd_deperiodize(z, md_simd_set1_f32(ref.z), md_simd_set1_f32(ext.z)), md_simd_set1_f32(INV_CELL_EXT));
 
-            md_simd_typef fx = md_simd_floorf(x);
-            md_simd_typef fy = md_simd_floorf(y);
-            md_simd_typef fz = md_simd_floorf(z);
+            md_simd_f32_t fx = md_simd_floor(x);
+            md_simd_f32_t fy = md_simd_floor(y);
+            md_simd_f32_t fz = md_simd_floor(z);
 
-            md_simd_typei ccx = md_simd_subi(md_simd_convert_f_to_i(fx), md_simd_set1i(cell_min[0]));
-            md_simd_typei ccy = md_simd_subi(md_simd_convert_f_to_i(fy), md_simd_set1i(cell_min[1]));
-            md_simd_typei ccz = md_simd_subi(md_simd_convert_f_to_i(fz), md_simd_set1i(cell_min[2]));
+            md_simd_i32_t ccx = md_simd_sub(md_simd_convert_f32(fx), md_simd_set1_i32(cell_min[0]));
+            md_simd_i32_t ccy = md_simd_sub(md_simd_convert_f32(fy), md_simd_set1_i32(cell_min[1]));
+            md_simd_i32_t ccz = md_simd_sub(md_simd_convert_f32(fz), md_simd_set1_i32(cell_min[2]));
 
-            md_simd_typei pcx = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(x, fx), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
-            md_simd_typei pcy = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(y, fy), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
-            md_simd_typei pcz = md_simd_convert_f_to_i(md_simd_fmaddf(md_simd_subf(z, fz), md_simd_set1f(1023.0f), md_simd_set1f(0.5f)));
+            md_simd_i32_t pcx = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(x, fx), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
+            md_simd_i32_t pcy = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(y, fy), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
+            md_simd_i32_t pcz = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(z, fz), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
 
-            md_simd_typei cc = md_simd_ori(md_simd_shift_lefti(ccz, 20), md_simd_ori(md_simd_shift_lefti(ccy, 10), ccx));
-            md_simd_typei pc = md_simd_ori(md_simd_shift_lefti(pcz, 20), md_simd_ori(md_simd_shift_lefti(pcy, 10), pcx));
+            md_simd_i32_t cc = md_simd_or(md_simd_shift_left(ccz, 20), md_simd_or(md_simd_shift_left(ccy, 10), ccx));
+            md_simd_i32_t pc = md_simd_or(md_simd_shift_left(pcz, 20), md_simd_or(md_simd_shift_left(pcy, 10), pcx));
 
-            md_simd_storei((int*)cell_coord + i, cc);
-            md_simd_storei((int*)packed_cell_coord + i, pc);
+            md_simd_store((int*)cell_coord + i, cc);
+            md_simd_store((int*)packed_cell_coord + i, pc);
         }
 
         // Handle remainder

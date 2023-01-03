@@ -64,18 +64,6 @@ uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint6
 bool md_bitfield_test_bit   (const md_bitfield_t* bf, uint64_t idx);
 
 /*
-static inline uint32_t md_bitfield_beg_bit    (const md_bitfield_t* bf) {
-    ASSERT(bf);
-    return bf->beg_bit;
-}
-
-static inline uint32_t md_bitfield_end_bit    (const md_bitfield_t* bf) {
-    ASSERT(bf);
-    return bf->end_bit;
-}
-*/
-
-/*
  Bit scan forward, finds the first bit set within a given range (beg, end)
  Returns 0 if no bit is found, otherwise it returns the absolute offset to the bit (indexing starts at 1, posix convention)
  To use this in a loop to visit each bit set, the following operation can be used:

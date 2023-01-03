@@ -233,15 +233,15 @@ uint64_t bit_scan(const uint64_t* bits, uint64_t bit_offset, uint64_t bit_count)
     uint64_t bit_idx = 0;
     if (beg_idx == end_idx) {
         const uint64_t mask = beg_mask & end_mask;
-        if ((bit_idx = bit_scan_forward64(mask & bits[beg_idx])) != 0) return beg_idx * BITS_PER_BLOCK + bit_idx;
+        if ((bit_idx = bsf64(mask & bits[beg_idx])) != 0) return beg_idx * BITS_PER_BLOCK + bit_idx;
         return 0;
     }
 
-    if ((bit_idx = bit_scan_forward64(beg_mask & bits[beg_idx])) != 0) return beg_idx * BITS_PER_BLOCK + bit_idx;
+    if ((bit_idx = bsf64(beg_mask & bits[beg_idx])) != 0) return beg_idx * BITS_PER_BLOCK + bit_idx;
     for (uint64_t i = beg_idx + 1; i < end_idx; ++i) {
-        if ((bit_idx = bit_scan_forward64(bits[i])) != 0) return i * BITS_PER_BLOCK + bit_idx;
+        if ((bit_idx = bsf64(bits[i])) != 0) return i * BITS_PER_BLOCK + bit_idx;
     }
-    if ((bit_idx = bit_scan_forward64(end_mask & bits[end_idx])) != 0) return end_idx * BITS_PER_BLOCK + bit_idx;
+    if ((bit_idx = bsf64(end_mask & bits[end_idx])) != 0) return end_idx * BITS_PER_BLOCK + bit_idx;
     
     return 0;
 }

@@ -238,24 +238,24 @@ mat4_t mat4_inverse(mat4_t M) {
 void vec3_batch_translate(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, int64_t count, vec3_t translation) {
     int64_t i = 0;
 
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_widthf);
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
     if (simd_count > 0) {
-        md_simd_typef t_x = md_simd_set1f(translation.x);
-        md_simd_typef t_y = md_simd_set1f(translation.y);
-        md_simd_typef t_z = md_simd_set1f(translation.z);
+        md_simd_f32_t t_x = md_simd_set1_f32(translation.x);
+        md_simd_f32_t t_y = md_simd_set1_f32(translation.y);
+        md_simd_f32_t t_z = md_simd_set1_f32(translation.z);
 
-        for (; i < simd_count; i += md_simd_widthf) {
-            md_simd_typef x = md_simd_loadf(in_out_x + i);
-            md_simd_typef y = md_simd_loadf(in_out_y + i);
-            md_simd_typef z = md_simd_loadf(in_out_z + i);
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t x = md_simd_load_f32(in_out_x + i);
+            md_simd_f32_t y = md_simd_load_f32(in_out_y + i);
+            md_simd_f32_t z = md_simd_load_f32(in_out_z + i);
 
-            x = md_simd_addf(x, t_x);
-            y = md_simd_addf(y, t_y);
-            z = md_simd_addf(z, t_z);
+            x = md_simd_add(x, t_x);
+            y = md_simd_add(y, t_y);
+            z = md_simd_add(z, t_z);
 
-            md_simd_storef(in_out_x + i, x);
-            md_simd_storef(in_out_y + i, y);
-            md_simd_storef(in_out_z + i, z);
+            md_simd_store_f32(in_out_x + i, x);
+            md_simd_store_f32(in_out_y + i, y);
+            md_simd_store_f32(in_out_z + i, z);
         }
     }
 
@@ -269,24 +269,24 @@ void vec3_batch_translate(float* RESTRICT in_out_x, float* RESTRICT in_out_y, fl
 void vec3_batch_translate2(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation) {
     int64_t i = 0;
 
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_widthf);
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
     if (simd_count > 0) {
-        md_simd_typef t_x = md_simd_set1f(translation.x);
-        md_simd_typef t_y = md_simd_set1f(translation.y);
-        md_simd_typef t_z = md_simd_set1f(translation.z);
+        md_simd_f32_t t_x = md_simd_set1_f32(translation.x);
+        md_simd_f32_t t_y = md_simd_set1_f32(translation.y);
+        md_simd_f32_t t_z = md_simd_set1_f32(translation.z);
 
-        for (; i < simd_count; i += md_simd_widthf) {
-            md_simd_typef p_x = md_simd_loadf(in_x + i);
-            md_simd_typef p_y = md_simd_loadf(in_y + i);
-            md_simd_typef p_z = md_simd_loadf(in_z + i);
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t p_x = md_simd_load_f32(in_x + i);
+            md_simd_f32_t p_y = md_simd_load_f32(in_y + i);
+            md_simd_f32_t p_z = md_simd_load_f32(in_z + i);
 
-            p_x = md_simd_addf(p_x, t_x);
-            p_y = md_simd_addf(p_y, t_y);
-            p_z = md_simd_addf(p_z, t_z);
+            p_x = md_simd_add(p_x, t_x);
+            p_y = md_simd_add(p_y, t_y);
+            p_z = md_simd_add(p_z, t_z);
 
-            md_simd_storef(out_x + i, p_x);
-            md_simd_storef(out_y + i, p_y);
-            md_simd_storef(out_z + i, p_z);
+            md_simd_store(out_x + i, p_x);
+            md_simd_store(out_y + i, p_y);
+            md_simd_store(out_z + i, p_z);
         }
     }
 
@@ -298,53 +298,53 @@ void vec3_batch_translate2(float* out_x, float* out_y, float* out_z, const float
 }
 
 void mat4_batch_transform(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, float w_comp, int64_t count, mat4_t M) {
-    const md_simd_typef m11 = md_simd_set1f(M.elem[0][0]);
-    const md_simd_typef m12 = md_simd_set1f(M.elem[0][1]);
-    const md_simd_typef m13 = md_simd_set1f(M.elem[0][2]);
+    const md_simd_f32_t m11 = md_simd_set1_f32(M.elem[0][0]);
+    const md_simd_f32_t m12 = md_simd_set1_f32(M.elem[0][1]);
+    const md_simd_f32_t m13 = md_simd_set1_f32(M.elem[0][2]);
 
-    const md_simd_typef m21 = md_simd_set1f(M.elem[1][0]);
-    const md_simd_typef m22 = md_simd_set1f(M.elem[1][1]);
-    const md_simd_typef m23 = md_simd_set1f(M.elem[1][2]);
+    const md_simd_f32_t m21 = md_simd_set1_f32(M.elem[1][0]);
+    const md_simd_f32_t m22 = md_simd_set1_f32(M.elem[1][1]);
+    const md_simd_f32_t m23 = md_simd_set1_f32(M.elem[1][2]);
 
-    const md_simd_typef m31 = md_simd_set1f(M.elem[2][0]);
-    const md_simd_typef m32 = md_simd_set1f(M.elem[2][1]);
-    const md_simd_typef m33 = md_simd_set1f(M.elem[2][2]);
+    const md_simd_f32_t m31 = md_simd_set1_f32(M.elem[2][0]);
+    const md_simd_f32_t m32 = md_simd_set1_f32(M.elem[2][1]);
+    const md_simd_f32_t m33 = md_simd_set1_f32(M.elem[2][2]);
 
-    const md_simd_typef m41 = md_simd_set1f(M.elem[3][0]);
-    const md_simd_typef m42 = md_simd_set1f(M.elem[3][1]);
-    const md_simd_typef m43 = md_simd_set1f(M.elem[3][2]);
+    const md_simd_f32_t m41 = md_simd_set1_f32(M.elem[3][0]);
+    const md_simd_f32_t m42 = md_simd_set1_f32(M.elem[3][1]);
+    const md_simd_f32_t m43 = md_simd_set1_f32(M.elem[3][2]);
 
-    const md_simd_typef w = md_simd_set1f(w_comp);
+    const md_simd_f32_t w = md_simd_set1_f32(w_comp);
 
     int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_widthf);
-    for (; i < simd_count; i += md_simd_widthf) {
-        const md_simd_typef x = md_simd_loadf(in_out_x + i);
-        const md_simd_typef y = md_simd_loadf(in_out_y + i);
-        const md_simd_typef z = md_simd_loadf(in_out_z + i);
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
+    for (; i < simd_count; i += md_simd_f32_width) {
+        const md_simd_f32_t x = md_simd_load_f32(in_out_x + i);
+        const md_simd_f32_t y = md_simd_load_f32(in_out_y + i);
+        const md_simd_f32_t z = md_simd_load_f32(in_out_z + i);
 
-        const md_simd_typef m11x = md_simd_mulf(m11, x);
-        const md_simd_typef m21y = md_simd_mulf(m21, y);
-        const md_simd_typef m31z = md_simd_mulf(m31, z);
-        const md_simd_typef m41w = md_simd_mulf(m41, w);
+        const md_simd_f32_t m11x = md_simd_mul(m11, x);
+        const md_simd_f32_t m21y = md_simd_mul(m21, y);
+        const md_simd_f32_t m31z = md_simd_mul(m31, z);
+        const md_simd_f32_t m41w = md_simd_mul(m41, w);
 
-        const md_simd_typef m12x = md_simd_mulf(m12, x);
-        const md_simd_typef m22y = md_simd_mulf(m22, y);
-        const md_simd_typef m32z = md_simd_mulf(m32, z);
-        const md_simd_typef m42w = md_simd_mulf(m42, w);
+        const md_simd_f32_t m12x = md_simd_mul(m12, x);
+        const md_simd_f32_t m22y = md_simd_mul(m22, y);
+        const md_simd_f32_t m32z = md_simd_mul(m32, z);
+        const md_simd_f32_t m42w = md_simd_mul(m42, w);
 
-        const md_simd_typef m13x = md_simd_mulf(m13, x);
-        const md_simd_typef m23y = md_simd_mulf(m23, y);
-        const md_simd_typef m33z = md_simd_mulf(m33, z);
-        const md_simd_typef m43w = md_simd_mulf(m43, w);
+        const md_simd_f32_t m13x = md_simd_mul(m13, x);
+        const md_simd_f32_t m23y = md_simd_mul(m23, y);
+        const md_simd_f32_t m33z = md_simd_mul(m33, z);
+        const md_simd_f32_t m43w = md_simd_mul(m43, w);
 
-        const md_simd_typef res_x = md_simd_addf(md_simd_addf(m11x, m21y), md_simd_addf(m31z, m41w));
-        const md_simd_typef res_y = md_simd_addf(md_simd_addf(m12x, m22y), md_simd_addf(m32z, m42w));
-        const md_simd_typef res_z = md_simd_addf(md_simd_addf(m13x, m23y), md_simd_addf(m33z, m43w));
+        const md_simd_f32_t res_x = md_simd_add(md_simd_add(m11x, m21y), md_simd_add(m31z, m41w));
+        const md_simd_f32_t res_y = md_simd_add(md_simd_add(m12x, m22y), md_simd_add(m32z, m42w));
+        const md_simd_f32_t res_z = md_simd_add(md_simd_add(m13x, m23y), md_simd_add(m33z, m43w));
 
-        md_simd_storef(in_out_x + i, res_x);
-        md_simd_storef(in_out_y + i, res_y);
-        md_simd_storef(in_out_z + i, res_z);
+        md_simd_store(in_out_x + i, res_x);
+        md_simd_store(in_out_y + i, res_y);
+        md_simd_store(in_out_z + i, res_z);
     }
 
     for (; i < count; i++) {
@@ -359,53 +359,53 @@ void mat4_batch_transform(float* RESTRICT in_out_x, float* RESTRICT in_out_y, fl
 }
 
 void mat4_batch_transform2(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t M) {
-    const md_simd_typef m11 = md_simd_set1f(M.elem[0][0]);
-    const md_simd_typef m12 = md_simd_set1f(M.elem[0][1]);
-    const md_simd_typef m13 = md_simd_set1f(M.elem[0][2]);
+    const md_simd_f32_t m11 = md_simd_set1_f32(M.elem[0][0]);
+    const md_simd_f32_t m12 = md_simd_set1_f32(M.elem[0][1]);
+    const md_simd_f32_t m13 = md_simd_set1_f32(M.elem[0][2]);
 
-    const md_simd_typef m21 = md_simd_set1f(M.elem[1][0]);
-    const md_simd_typef m22 = md_simd_set1f(M.elem[1][1]);
-    const md_simd_typef m23 = md_simd_set1f(M.elem[1][2]);
+    const md_simd_f32_t m21 = md_simd_set1_f32(M.elem[1][0]);
+    const md_simd_f32_t m22 = md_simd_set1_f32(M.elem[1][1]);
+    const md_simd_f32_t m23 = md_simd_set1_f32(M.elem[1][2]);
 
-    const md_simd_typef m31 = md_simd_set1f(M.elem[2][0]);
-    const md_simd_typef m32 = md_simd_set1f(M.elem[2][1]);
-    const md_simd_typef m33 = md_simd_set1f(M.elem[2][2]);
+    const md_simd_f32_t m31 = md_simd_set1_f32(M.elem[2][0]);
+    const md_simd_f32_t m32 = md_simd_set1_f32(M.elem[2][1]);
+    const md_simd_f32_t m33 = md_simd_set1_f32(M.elem[2][2]);
 
-    const md_simd_typef m41 = md_simd_set1f(M.elem[3][0]);
-    const md_simd_typef m42 = md_simd_set1f(M.elem[3][1]);
-    const md_simd_typef m43 = md_simd_set1f(M.elem[3][2]);
+    const md_simd_f32_t m41 = md_simd_set1_f32(M.elem[3][0]);
+    const md_simd_f32_t m42 = md_simd_set1_f32(M.elem[3][1]);
+    const md_simd_f32_t m43 = md_simd_set1_f32(M.elem[3][2]);
 
-    const md_simd_typef w = md_simd_set1f(w_comp);
+    const md_simd_f32_t w = md_simd_set1_f32(w_comp);
 
     int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_widthf);
-    for (; i < simd_count; i += md_simd_widthf) {
-        const md_simd_typef x = md_simd_loadf(in_x + i);
-        const md_simd_typef y = md_simd_loadf(in_y + i);
-        const md_simd_typef z = md_simd_loadf(in_z + i);
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
+    for (; i < simd_count; i += md_simd_f32_width) {
+        md_simd_f32_t x = md_simd_load_f32(in_x + i);
+        md_simd_f32_t y = md_simd_load_f32(in_y + i);
+        md_simd_f32_t z = md_simd_load_f32(in_z + i);
 
-        const md_simd_typef m11x = md_simd_mulf(m11, x);
-        const md_simd_typef m21y = md_simd_mulf(m21, y);
-        const md_simd_typef m31z = md_simd_mulf(m31, z);
-        const md_simd_typef m41w = md_simd_mulf(m41, w);
+        md_simd_f32_t m11x = md_simd_mul(m11, x);
+        md_simd_f32_t m21y = md_simd_mul(m21, y);
+        md_simd_f32_t m31z = md_simd_mul(m31, z);
+        md_simd_f32_t m41w = md_simd_mul(m41, w);
 
-        const md_simd_typef m12x = md_simd_mulf(m12, x);
-        const md_simd_typef m22y = md_simd_mulf(m22, y);
-        const md_simd_typef m32z = md_simd_mulf(m32, z);
-        const md_simd_typef m42w = md_simd_mulf(m42, w);
+        md_simd_f32_t m12x = md_simd_mul(m12, x);
+        md_simd_f32_t m22y = md_simd_mul(m22, y);
+        md_simd_f32_t m32z = md_simd_mul(m32, z);
+        md_simd_f32_t m42w = md_simd_mul(m42, w);
 
-        const md_simd_typef m13x = md_simd_mulf(m13, x);
-        const md_simd_typef m23y = md_simd_mulf(m23, y);
-        const md_simd_typef m33z = md_simd_mulf(m33, z);
-        const md_simd_typef m43w = md_simd_mulf(m43, w);
+        md_simd_f32_t m13x = md_simd_mul(m13, x);
+        md_simd_f32_t m23y = md_simd_mul(m23, y);
+        md_simd_f32_t m33z = md_simd_mul(m33, z);
+        md_simd_f32_t m43w = md_simd_mul(m43, w);
 
-        const md_simd_typef res_x = md_simd_addf(md_simd_addf(m11x, m21y), md_simd_addf(m31z, m41w));
-        const md_simd_typef res_y = md_simd_addf(md_simd_addf(m12x, m22y), md_simd_addf(m32z, m42w));
-        const md_simd_typef res_z = md_simd_addf(md_simd_addf(m13x, m23y), md_simd_addf(m33z, m43w));
+        md_simd_f32_t res_x = md_simd_add(md_simd_add(m11x, m21y), md_simd_add(m31z, m41w));
+        md_simd_f32_t res_y = md_simd_add(md_simd_add(m12x, m22y), md_simd_add(m32z, m42w));
+        md_simd_f32_t res_z = md_simd_add(md_simd_add(m13x, m23y), md_simd_add(m33z, m43w));
 
-        md_simd_storef(out_x + i, res_x);
-        md_simd_storef(out_y + i, res_y);
-        md_simd_storef(out_z + i, res_z);
+        md_simd_store_f32(out_x + i, res_x);
+        md_simd_store_f32(out_y + i, res_y);
+        md_simd_store_f32(out_z + i, res_z);
     }
 
     for (; i < count; i++) {

@@ -4071,25 +4071,25 @@ void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_me
     *out_var = s2;
 
     /*
-    if (count > md_simd_widthf) {
-        md_simd_typef vmin = md_simd_set1f(FLT_MAX);
-        md_simd_typef vmax = md_simd_set1f(-FLT_MAX);
-        md_simd_typef v1 = md_simd_zerof();
-        md_simd_typef v2 = md_simd_zerof();
+    if (count > md_simd_width) {
+        md_simd_f32_t vmin = md_simd_set1_f32(FLT_MAX);
+        md_simd_f32_t vmax = md_simd_set1_f32(-FLT_MAX);
+        md_simd_f32_t v1 = md_simd_zero_f32();
+        md_simd_f32_t v2 = md_simd_zero_f32();
 
-        const int simd_count = (count / md_simd_widthf) * md_simd_widthf;
-        for (; i < simd_count; i += md_simd_widthf) {
-            md_simd_typef val = md_simd_loadf(data + i);
-            vmin = md_simd_minf(vmin, val);
-            vmax = md_simd_minf(vmax, val);
-            v1 = md_simd_addf(v1, val);
-            v2 = md_simd_addf(v2, md_simd_mulf(val, val));
+        const int simd_count = (count / md_simd_width) * md_simd_width;
+        for (; i < simd_count; i += md_simd_width) {
+            md_simd_f32_t val = md_simd_load_f32(data + i);
+            vmin = md_simd_min_f32(vmin, val);
+            vmax = md_simd_min_f32(vmax, val);
+            v1 = md_simd_add_f32(v1, val);
+            v2 = md_simd_add_f32(v2, md_simd_mul_f32(val, val));
         }
 
-        s1 = md_simd_horizontal_addf(v1);
-        s2 = md_simd_horizontal_addf(v2);
-        min = md_simd_horizontal_minf(vmin);
-        max = md_simd_horizontal_maxf(vmax);
+        s1 = md_simd_hadd_f32(v1);
+        s2 = md_simd_hadd_f32(v2);
+        min = md_simd_hmin_f32(vmin);
+        max = md_simd_hmax_f32(vmax);
     }
 
     for (; i < count; ++i) {
@@ -4143,7 +4143,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     // coordinate data for reading trajectory frames into
-    const int64_t stride = ALIGN_TO(mol->atom.count, md_simd_widthf);    // Round up allocation size to simd width to allow for vectorized operations
+    const int64_t stride = ALIGN_TO(mol->atom.count, md_simd_f32_width);    // Round up allocation size to simd width to allow for vectorized operations
     const int64_t coord_bytes = stride * 3 * sizeof(float);
     float* init_coords = md_alloc(&temp_alloc, coord_bytes);
     float* curr_coords = md_alloc(&temp_alloc, coord_bytes);
@@ -4280,13 +4280,13 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 {
                     // Cumulative moving average
                     const uint32_t count = eval->prop_dist_count[p_idx]++;
-                    const md_simd_typef N = md_simd_set1f((float)(count));
-                    const md_simd_typef scl = md_simd_set1f(1.0f / (float)(count + 1));
+                    const md_simd_f32_t N = md_simd_set1_f32((float)(count));
+                    const md_simd_f32_t scl = md_simd_set1_f32(1.0f / (float)(count + 1));
 
-                    for (int64_t i = 0; i < ALIGN_TO(prop->data.num_values, md_simd_widthf); i += md_simd_widthf) {
-                        md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
-                        md_simd_typef new_val = md_simd_loadf(values + i);
-                        md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
+                    for (int64_t i = 0; i < ALIGN_TO(prop->data.num_values, md_simd_f32_width); i += md_simd_f32_width) {
+                        md_simd_f32_t old_val = md_simd_mul(md_simd_load_f32(prop->data.values + i), N);
+                        md_simd_f32_t new_val = md_simd_load_f32(values + i);
+                        md_simd_store(prop->data.values + i, md_simd_mul(md_simd_add(new_val, old_val), scl));
                     }
                     // Determine min max values
                     prop->data.min_value = MIN(prop->data.min_value, min);
@@ -4301,20 +4301,20 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                 // Accumulate values
                 ASSERT(prop->data.values);
-                ASSERT(prop->data.num_values % md_simd_widthf == 0); // This should always be the case if we nice powers of 2 for our volumes
+                ASSERT(prop->data.num_values % md_simd_f32_width == 0); // This should always be the case if we nice powers of 2 for our volumes
                 
                 // ATOMIC WRITE
                 md_mutex_lock(&eval->prop_dist_mutex[p_idx]);
                 {
                     // Cumulative moving average
                     const uint32_t count = eval->prop_dist_count[p_idx]++;
-                    const md_simd_typef N = md_simd_set1f((float)(count));
-                    const md_simd_typef scl = md_simd_set1f(1.0f / (float)(count + 1));
+                    const md_simd_f32_t N = md_simd_set1_f32((float)(count));
+                    const md_simd_f32_t scl = md_simd_set1_f32(1.0f / (float)(count + 1));
 
-                    for (int64_t i = 0; i < prop->data.num_values; i += md_simd_widthf) {
-                        md_simd_typef old_val = md_simd_mulf(md_simd_loadf(prop->data.values + i), N);
-                        md_simd_typef new_val = md_simd_loadf(values + i);
-                        md_simd_storef(prop->data.values + i, md_simd_mulf(md_simd_addf(new_val, old_val), scl));
+                    for (int64_t i = 0; i < prop->data.num_values; i += md_simd_f32_width) {
+                        md_simd_f32_t old_val = md_simd_mul(md_simd_load_f32(prop->data.values + i), N);
+                        md_simd_f32_t new_val = md_simd_load_f32(values + i);
+                        md_simd_store(prop->data.values + i, md_simd_mul(md_simd_add(new_val, old_val), scl));
                     }
                 }
                 md_mutex_unlock(&eval->prop_dist_mutex[p_idx]);

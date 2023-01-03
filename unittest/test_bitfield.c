@@ -7,7 +7,70 @@
 #include <string.h>
 #include <stdint.h>
 
-UTEST(bitfield, test) {
+static void set_bitfield(md_bitfield_t* bf, const char* str) {
+    md_bitfield_clear(bf);
+    const size_t len = strlen(str);
+    for (size_t i = 0; i < len; ++i) {
+        if (str[i] == '1') {
+            md_bitfield_set_bit(bf, i);
+        }
+    }
+}
+
+static bool cmp_bitfield(const md_bitfield_t* bf, const char* str) {
+    const uint32_t beg_idx = 0;
+    const uint32_t end_idx = bf->end_bit;
+    const size_t len = strlen(str);
+
+    for (uint32_t i = beg_idx; i < end_idx; ++i) {
+        const bool  bf_bit = md_bitfield_test_bit(bf, i);
+        const bool ref_bit = i < len ? str[i] == '1' : false;
+        if (bf_bit != ref_bit) {
+            return false;
+        }
+    }
+    return true;
+}
+
+UTEST(bitfield, bit_op) {
+    md_bitfield_t a = {0};
+    md_bitfield_t b = {0};
+    md_bitfield_t c = {0};
+
+    md_bitfield_init(&a, default_allocator);
+    md_bitfield_init(&b, default_allocator);
+    md_bitfield_init(&c, default_allocator);
+
+    set_bitfield(&a, "10001110101");
+    set_bitfield(&b, "01101011101");
+
+    md_bitfield_xor(&c, &a, &a);
+    EXPECT_EQ(0, md_bitfield_popcount(&c));
+
+    md_bitfield_xor(&c, &b, &b);
+    EXPECT_EQ(0, md_bitfield_popcount(&c));
+
+    md_bitfield_not(&c, &a, 0, a.end_bit);
+    EXPECT_TRUE(cmp_bitfield(&c, "01110001010"));
+
+    md_bitfield_not(&c, &b, 0, b.end_bit);
+    EXPECT_TRUE(cmp_bitfield(&c, "10010100010"));
+
+    md_bitfield_andnot(&c, &a, &b);
+    EXPECT_TRUE(cmp_bitfield(&c, "10000100000"));
+    
+    md_bitfield_or(&c, &a, &b);
+    EXPECT_TRUE(cmp_bitfield(&c, "11101111101"));
+
+    md_bitfield_and(&c, &a, &b);
+    EXPECT_TRUE(cmp_bitfield(&c, "00001010101"));
+
+    md_bitfield_free(&a);
+    md_bitfield_free(&b);
+    md_bitfield_free(&c);
+}
+
+UTEST(bitfield, general) {
     md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
 
     md_bitfield_t bf = {0};

@@ -6,127 +6,70 @@
 #if (MD_COMPILER_CLANG || MD_COMPILER_GCC)
 #include <x86intrin.h>
 
-// Population count: counts the number of bits set
-static inline uint32_t popcnt32(uint32_t x) {
-    return __builtin_popcount(x);
-}
+#define popcnt32 __builtin_popcount
+#define popcnt64 __builtin_popcountll
 
-// Population count: counts the number of bits set
-static inline uint64_t popcnt64(uint64_t x) {
-    return __builtin_popcountll(x);
-}
+#define ctz32 __builtin_ctz
+#define ctz64 __builtin_ctzll
+
+#define bsf32 __builtin_ffs
+#define bsf64 __builtin_ffsll
 
 // count leading zeros
 static inline uint32_t clz32(uint32_t x) {
-    ASSERT(x != 0); // 0 is undefined behaviour
-    return __builtin_clz(x);
+    return x ? __builtin_clz(x) : 32;
 }
 
 // count leading zeros 64-bit
 static inline uint64_t clz64(uint64_t x) {
-    ASSERT(x != 0); // 0 is undefined behaviour
-    return __builtin_clzll(x);
+    return x ? __builtin_clzll(x) : 32;
 }
 
-static inline uint32_t ctz32(uint32_t x) {
-    return __builtin_ctz(x);
+static inline uint32_t bsr32(uint32_t x) {
+    return x ? 32 - __builtin_clz(x) : 0;
 }
 
-static inline uint64_t ctz64(uint64_t x) {
-    return __builtin_ctzll(x);
-}
-
-// Scans for the first bit set, from least significant to most significant bit,
-// indexing starts at 1, returns 0 if no bit is set (posix convention)
-static inline uint32_t bit_scan_forward32(uint32_t x) {
-    return __builtin_ffs(x);
-}
-
-static inline uint32_t bit_scan_reverse32(uint32_t x) {
-    if (x == 0) return 0;
-    return 32 - __builtin_clz(x);
-}
-
-// Scans for the first bit set, from least significant to most significant bit,
-// indexing starts at 1, returns 0 if no bit is set 
-static inline uint64_t bit_scan_forward64(uint64_t x) {
-    return __builtin_ffsll(x);
-}
-
-static inline uint64_t bit_scan_reverse64(uint64_t x) {
-    if (x == 0) return 0;
-    return 64 - __builtin_clzll(x);
+static inline uint64_t bsr64(uint64_t x) {
+    return x ? 64 - __builtin_clzll(x) : 0;
 }
 
 #elif MD_COMPILER_MSVC
 #include <intrin.h>
 
-// count bits
-static inline uint32_t popcnt32(uint32_t x) {
-    return __popcnt(x);
-}
-
-// count bits 64-bit
-static inline uint64_t popcnt64(uint64_t x) {
-    return __popcnt64(x);
-}
-
-// count leading zeros
-static inline uint32_t clz32(uint32_t x) {
-    return __lzcnt(x);
-}
-
-// count leading zeros 64-bit
-static inline uint64_t clz64(uint64_t x) {
-    return __lzcnt64(x);
-}
-
-static inline uint32_t ctz32(uint32_t x) {
-    //return popcnt32(~x & (x-1U));
-    return _tzcnt_u32(x);
-}
-
-static inline uint64_t ctz64(uint64_t x) {
-    //return popcnt64(~x & (x-1LLU));
-    // This is a valid instruction for almost all x64 processors
-    return _tzcnt_u64(x);
-}
+#define popcnt32 __popcnt
+#define popcnt64 __popcnt64
+#define clz32 __lzcnt
+#define clz64 __lzcnt64
+#define ctz32 _tzcnt_u32
+#define ctz64 _tzcnt_u64
 
 // Scans for the first bit set from least significant bit (LSB) to most significant bit (MSB)
 // indexing starts at 1, returns 0 if no bit is set (posix convention)
-static inline uint32_t bit_scan_forward32(uint32_t mask) {
-    if (mask == 0) return 0;
+static inline uint32_t bsf32(uint32_t mask) {
     unsigned long idx;
-    _BitScanForward(&idx, mask);
-    return idx + 1;
+    return _BitScanForward(&idx, mask) ? idx + 1 : 0;
 }
 
 // Searches for the first bit set from most significant bit (MSB) to least significant bit (LSB)
 // index starts at 1, returns 0 if no bit is set (posix convention)
-static inline uint32_t bit_scan_reverse32(uint32_t mask) {
-    if (mask == 0) return 0;
+static inline uint32_t bsr32(uint32_t mask) {
     unsigned long idx;
-    _BitScanReverse(&idx, mask);
-    return idx + 1;
+    return _BitScanReverse(&idx, mask) ? idx + 1 : 0;
 }
-
-// Searches for the first bit set from most significant bit (MSB) to least significant bit (LSB)
-// index starts at 1, returns 0 if no bit is set
-static inline uint64_t bit_scan_reverse64(uint64_t mask) {
-    if (mask == 0) return 0;
-    unsigned long idx;
-    _BitScanReverse64(&idx, mask);
-    return (uint64_t)idx + 1;
-} 
 
 // Scans for the first bit set, from least significant to most significant bit,
 // indexing starts at 1, returns 0 if no bit is set (posix convention)
-static inline uint64_t bit_scan_forward64(uint64_t mask) {
-    if (mask == 0) return 0;
+static inline uint64_t bsf64(uint64_t mask) {
     unsigned long idx;
-    _BitScanForward64(&idx, mask);
-    return (uint64_t)idx + 1;
+    return _BitScanForward64(&idx, mask) ? (uint64_t)idx + 1 : 0;
 }
+
+// Searches for the first bit set from most significant bit (MSB) to least significant bit (LSB)
+// index starts at 1, returns 0 if no bit is set (posix convention)
+static inline uint64_t bsr64(uint64_t mask) {
+    unsigned long idx;
+    return _BitScanReverse64(&idx, mask) ? (uint64_t)idx + 1 : 0;
+} 
 
 #endif
 

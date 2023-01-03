@@ -140,11 +140,11 @@ static inline int64_t match_str_in_array(str_t str, const char* arr[], int64_t a
     return -1;
 }
 
-static inline md_simd_typef simd_deperiodize(md_simd_typef x, md_simd_typef r, md_simd_typef period) {
-    md_simd_typef d = md_simd_subf(x, r);
-    md_simd_typef dx = md_simd_divf(d, period);
-    dx = md_simd_subf(dx, md_simd_roundf(dx));
-    return md_simd_addf(r, md_simd_mulf(dx, period));
+static inline md_simd_f32_t simd_deperiodize(md_simd_f32_t x, md_simd_f32_t r, md_simd_f32_t period) {
+    md_simd_f32_t d = md_simd_sub(x, r);
+    md_simd_f32_t dx = md_simd_div(d, period);
+    dx = md_simd_sub(dx, md_simd_round(dx));
+    return md_simd_add(r, md_simd_mul(dx, period));
 }
     
 bool md_util_resname_dna(str_t str) {
@@ -643,37 +643,37 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
 }
 
 void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count) {
-    md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
-    md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
-    md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
+    md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
+    md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
+    md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
 
-    md_simd_typef vx_max = md_simd_set1f(-FLT_MAX);
-    md_simd_typef vy_max = md_simd_set1f(-FLT_MAX);
-    md_simd_typef vz_max = md_simd_set1f(-FLT_MAX);
+    md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
+    md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
+    md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
 
     int64_t i = 0;
-    const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
-    for (; i < simd_count; i += md_simd_widthf) {
-        md_simd_typef x = md_simd_loadf(in_x + i);
-        md_simd_typef y = md_simd_loadf(in_y + i);
-        md_simd_typef z = md_simd_loadf(in_z + i);
+    const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+    for (; i < simd_count; i += md_simd_f32_width) {
+        md_simd_f32_t x = md_simd_load_f32(in_x + i);
+        md_simd_f32_t y = md_simd_load_f32(in_y + i);
+        md_simd_f32_t z = md_simd_load_f32(in_z + i);
 
-        vx_min = md_simd_minf(vx_min, x);
-        vy_min = md_simd_minf(vy_min, y);
-        vz_min = md_simd_minf(vz_min, z);
+        vx_min = md_simd_min(vx_min, x);
+        vy_min = md_simd_min(vy_min, y);
+        vz_min = md_simd_min(vz_min, z);
 
-        vx_max = md_simd_maxf(vx_max, x);
-        vy_max = md_simd_maxf(vy_max, y);
-        vz_max = md_simd_maxf(vz_max, z);
+        vx_max = md_simd_max(vx_max, x);
+        vy_max = md_simd_max(vy_max, y);
+        vz_max = md_simd_max(vz_max, z);
     }
 
-    float x_min = md_simd_horizontal_minf(vx_min);
-    float y_min = md_simd_horizontal_minf(vy_min);
-    float z_min = md_simd_horizontal_minf(vz_min);
+    float x_min = md_simd_hmin(vx_min);
+    float y_min = md_simd_hmin(vy_min);
+    float z_min = md_simd_hmin(vz_min);
 
-    float x_max = md_simd_horizontal_maxf(vx_max);
-    float y_max = md_simd_horizontal_maxf(vy_max);
-    float z_max = md_simd_horizontal_maxf(vz_max);
+    float x_max = md_simd_hmax(vx_max);
+    float y_max = md_simd_hmax(vy_max);
+    float z_max = md_simd_hmax(vz_max);
 
     for (; i < count; ++i) {
         x_min = MIN(x_min, in_x[i]);
@@ -690,38 +690,38 @@ void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* i
 }
 
 void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, int64_t count) {
-    md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
-    md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
-    md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
+    md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
+    md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
+    md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
 
-    md_simd_typef vx_max = md_simd_set1f(-FLT_MAX);
-    md_simd_typef vy_max = md_simd_set1f(-FLT_MAX);
-    md_simd_typef vz_max = md_simd_set1f(-FLT_MAX);
+    md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
+    md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
+    md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
 
     int64_t i = 0;
-    const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
-    for (; i < simd_count; i += md_simd_widthf) {
-        md_simd_typef x = md_simd_loadf(in_x + i);
-        md_simd_typef y = md_simd_loadf(in_y + i);
-        md_simd_typef z = md_simd_loadf(in_z + i);
-        md_simd_typef r = md_simd_loadf(in_r + i);
+    const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+    for (; i < simd_count; i += md_simd_f32_width) {
+        md_simd_f32_t x = md_simd_load_f32(in_x + i);
+        md_simd_f32_t y = md_simd_load_f32(in_y + i);
+        md_simd_f32_t z = md_simd_load_f32(in_z + i);
+        md_simd_f32_t r = md_simd_load_f32(in_r + i);
 
-        vx_min = md_simd_minf(vx_min, md_simd_subf(x, r));
-        vy_min = md_simd_minf(vy_min, md_simd_subf(y, r));
-        vz_min = md_simd_minf(vz_min, md_simd_subf(z, r));
+        vx_min = md_simd_min(vx_min, md_simd_sub(x, r));
+        vy_min = md_simd_min(vy_min, md_simd_sub(y, r));
+        vz_min = md_simd_min(vz_min, md_simd_sub(z, r));
 
-        vx_max = md_simd_maxf(vx_max, md_simd_addf(x, r));
-        vy_max = md_simd_maxf(vy_max, md_simd_addf(y, r));
-        vz_max = md_simd_maxf(vz_max, md_simd_addf(z, r));
+        vx_max = md_simd_max(vx_max, md_simd_add(x, r));
+        vy_max = md_simd_max(vy_max, md_simd_add(y, r));
+        vz_max = md_simd_max(vz_max, md_simd_add(z, r));
     }
 
-    float x_min = md_simd_horizontal_minf(vx_min);
-    float y_min = md_simd_horizontal_minf(vy_min);
-    float z_min = md_simd_horizontal_minf(vz_min);
+    float x_min = md_simd_hmin(vx_min);
+    float y_min = md_simd_hmin(vy_min);
+    float z_min = md_simd_hmin(vz_min);
 
-    float x_max = md_simd_horizontal_maxf(vx_max);
-    float y_max = md_simd_horizontal_maxf(vy_max);
-    float z_max = md_simd_horizontal_maxf(vz_max);
+    float x_max = md_simd_hmax(vx_max);
+    float y_max = md_simd_hmax(vy_max);
+    float z_max = md_simd_hmax(vz_max);
 
     for (; i < count; ++i) {
         float r = in_r[i];
@@ -739,48 +739,48 @@ void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* 
 }
 
 void md_util_compute_aabb_periodic_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count, uint64_t stride, vec3_t pbc_ext) {
-    md_simd_typef vx_min = md_simd_set1f(+FLT_MAX);
-    md_simd_typef vy_min = md_simd_set1f(+FLT_MAX);
-    md_simd_typef vz_min = md_simd_set1f(+FLT_MAX);
+    md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
+    md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
+    md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
 
-    md_simd_typef vx_max = md_simd_set1f(-FLT_MAX);
-    md_simd_typef vy_max = md_simd_set1f(-FLT_MAX);
-    md_simd_typef vz_max = md_simd_set1f(-FLT_MAX);
+    md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
+    md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
+    md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
 
     vec4_t ext = vec4_from_vec3(pbc_ext, 0);
     vec4_t ref = vec4_mul_f(ext, 0.5f);
 
     int64_t i = 0;
-    const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
-    for (; i < simd_count; i += md_simd_widthf) {
-        md_simd_typef x = md_simd_loadf((const float*)((const char*)in_x + i * stride));
-        md_simd_typef y = md_simd_loadf((const float*)((const char*)in_y + i * stride));
-        md_simd_typef z = md_simd_loadf((const float*)((const char*)in_z + i * stride));
+    const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+    for (; i < simd_count; i += md_simd_f32_width) {
+        md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
+        md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * stride));
+        md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * stride));
 
-        x = md_simd_deperiodizef(x, md_simd_set1f(ref.x), md_simd_set1f(ext.x));
-        y = md_simd_deperiodizef(y, md_simd_set1f(ref.y), md_simd_set1f(ext.y));
-        z = md_simd_deperiodizef(z, md_simd_set1f(ref.z), md_simd_set1f(ext.z));
+        x = md_simd_deperiodize(x, md_simd_set1_f32(ref.x), md_simd_set1_f32(ext.x));
+        y = md_simd_deperiodize(y, md_simd_set1_f32(ref.y), md_simd_set1_f32(ext.y));
+        z = md_simd_deperiodize(z, md_simd_set1_f32(ref.z), md_simd_set1_f32(ext.z));
 
-        vx_min = md_simd_minf(vx_min, x);
-        vy_min = md_simd_minf(vy_min, y);
-        vz_min = md_simd_minf(vz_min, z);
+        vx_min = md_simd_min(vx_min, x);
+        vy_min = md_simd_min(vy_min, y);
+        vz_min = md_simd_min(vz_min, z);
 
-        vx_max = md_simd_maxf(vx_max, x);
-        vy_max = md_simd_maxf(vy_max, y);
-        vz_max = md_simd_maxf(vz_max, z);
+        vx_max = md_simd_max(vx_max, x);
+        vy_max = md_simd_max(vy_max, y);
+        vz_max = md_simd_max(vz_max, z);
     }
 
     vec4_t aabb_min = {
-        md_simd_horizontal_minf(vx_min),
-        md_simd_horizontal_minf(vy_min),
-        md_simd_horizontal_minf(vz_min),
+        md_simd_hmin(vx_min),
+        md_simd_hmin(vy_min),
+        md_simd_hmin(vz_min),
         0
     };
 
     vec4_t aabb_max = {
-        md_simd_horizontal_maxf(vx_max),
-        md_simd_horizontal_maxf(vy_max),
-        md_simd_horizontal_maxf(vz_max),
+        md_simd_hmax(vx_max),
+        md_simd_hmax(vy_max),
+        md_simd_hmax(vz_max),
         0
     };
 
@@ -1221,32 +1221,32 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
     t = CLAMP(t, 0.0f, 1.0f);
 
     if (use_pbc) {
-        md_simd_typef box_ext_x = md_simd_set1f(pbc_ext.x);
-        md_simd_typef box_ext_y = md_simd_set1f(pbc_ext.y);
-        md_simd_typef box_ext_z = md_simd_set1f(pbc_ext.z);
+        md_simd_f32_t box_ext_x = md_simd_set1_f32(pbc_ext.x);
+        md_simd_f32_t box_ext_y = md_simd_set1_f32(pbc_ext.y);
+        md_simd_f32_t box_ext_z = md_simd_set1_f32(pbc_ext.z);
 
         int64_t i = 0;
-        const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
-        for (; i < simd_count; i += md_simd_widthf) {
-            md_simd_typef x0 = md_simd_loadf(src_coord[0].x + i);
-            md_simd_typef y0 = md_simd_loadf(src_coord[0].y + i);
-            md_simd_typef z0 = md_simd_loadf(src_coord[0].z + i);
+        const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
+            md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
+            md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
 
-            md_simd_typef x1 = md_simd_loadf(src_coord[1].x + i);
-            md_simd_typef y1 = md_simd_loadf(src_coord[1].y + i);
-            md_simd_typef z1 = md_simd_loadf(src_coord[1].z + i);
+            md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
+            md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
+            md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
 
             x1 = simd_deperiodize(x1, x0, box_ext_x);
             y1 = simd_deperiodize(y1, y0, box_ext_y);
             z1 = simd_deperiodize(z1, z0, box_ext_z);
 
-            md_simd_typef x = md_simd_lerpf(x0, x1, t);
-            md_simd_typef y = md_simd_lerpf(y0, y1, t);
-            md_simd_typef z = md_simd_lerpf(z0, z1, t);
+            md_simd_f32_t x = md_simd_lerp(x0, x1, t);
+            md_simd_f32_t y = md_simd_lerp(y0, y1, t);
+            md_simd_f32_t z = md_simd_lerp(z0, z1, t);
 
-            md_simd_storef(dst_coord.x + i, x);
-            md_simd_storef(dst_coord.y + i, y);
-            md_simd_storef(dst_coord.z + i, z);
+            md_simd_store(dst_coord.x + i, x);
+            md_simd_store(dst_coord.y + i, y);
+            md_simd_store(dst_coord.z + i, z);
         }
 
         // Do the rest
@@ -1266,23 +1266,23 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
         }
     } else {
         int64_t i = 0;
-        const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
-        for (; i < simd_count; i += md_simd_widthf) {
-            md_simd_typef x0 = md_simd_loadf(src_coord[0].x + i);
-            md_simd_typef y0 = md_simd_loadf(src_coord[0].y + i);
-            md_simd_typef z0 = md_simd_loadf(src_coord[0].z + i);
+        const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
+            md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
+            md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
 
-            md_simd_typef x1 = md_simd_loadf(src_coord[1].x + i);
-            md_simd_typef y1 = md_simd_loadf(src_coord[1].y + i);
-            md_simd_typef z1 = md_simd_loadf(src_coord[1].z + i);
+            md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
+            md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
+            md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
 
-            md_simd_typef x = md_simd_lerpf(x0, x1, t);
-            md_simd_typef y = md_simd_lerpf(y0, y1, t);
-            md_simd_typef z = md_simd_lerpf(z0, z1, t);
+            md_simd_f32_t x = md_simd_lerp(x0, x1, t);
+            md_simd_f32_t y = md_simd_lerp(y0, y1, t);
+            md_simd_f32_t z = md_simd_lerp(z0, z1, t);
 
-            md_simd_storef(dst_coord.x + i, x);
-            md_simd_storef(dst_coord.y + i, y);
-            md_simd_storef(dst_coord.z + i, z);
+            md_simd_store(dst_coord.x + i, x);
+            md_simd_store(dst_coord.y + i, y);
+            md_simd_store(dst_coord.z + i, z);
         }
 
         // Do the rest
@@ -1309,28 +1309,28 @@ bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t sr
     tension = CLAMP(tension, 0.0f, 1.0f);
 
     if (use_pbc) {
-        md_simd_typef box_ext_x = md_simd_set1f(pbc_ext.x);
-        md_simd_typef box_ext_y = md_simd_set1f(pbc_ext.y);
-        md_simd_typef box_ext_z = md_simd_set1f(pbc_ext.z);
+        md_simd_f32_t box_ext_x = md_simd_set1_f32(pbc_ext.x);
+        md_simd_f32_t box_ext_y = md_simd_set1_f32(pbc_ext.y);
+        md_simd_f32_t box_ext_z = md_simd_set1_f32(pbc_ext.z);
 
         int64_t i = 0;
-        const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
-        for (; i < simd_count; i += md_simd_widthf) {
-            md_simd_typef x0 = md_simd_loadf(src_coord[0].x + i);
-            md_simd_typef y0 = md_simd_loadf(src_coord[0].y + i);
-            md_simd_typef z0 = md_simd_loadf(src_coord[0].z + i);
+        const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
+            md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
+            md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
 
-            md_simd_typef x1 = md_simd_loadf(src_coord[1].x + i);
-            md_simd_typef y1 = md_simd_loadf(src_coord[1].y + i);
-            md_simd_typef z1 = md_simd_loadf(src_coord[1].z + i);
+            md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
+            md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
+            md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
 
-            md_simd_typef x2 = md_simd_loadf(src_coord[2].x + i);
-            md_simd_typef y2 = md_simd_loadf(src_coord[2].y + i);
-            md_simd_typef z2 = md_simd_loadf(src_coord[2].z + i);
+            md_simd_f32_t x2 = md_simd_load_f32(src_coord[2].x + i);
+            md_simd_f32_t y2 = md_simd_load_f32(src_coord[2].y + i);
+            md_simd_f32_t z2 = md_simd_load_f32(src_coord[2].z + i);
 
-            md_simd_typef x3 = md_simd_loadf(src_coord[3].x + i);
-            md_simd_typef y3 = md_simd_loadf(src_coord[3].y + i);
-            md_simd_typef z3 = md_simd_loadf(src_coord[3].z + i);
+            md_simd_f32_t x3 = md_simd_load_f32(src_coord[3].x + i);
+            md_simd_f32_t y3 = md_simd_load_f32(src_coord[3].y + i);
+            md_simd_f32_t z3 = md_simd_load_f32(src_coord[3].z + i);
 
             x0 = simd_deperiodize(x0, x1, box_ext_x);
             x2 = simd_deperiodize(x2, x1, box_ext_x);
@@ -1344,13 +1344,13 @@ bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t sr
             z2 = simd_deperiodize(z2, z1, box_ext_z);
             z3 = simd_deperiodize(z3, z2, box_ext_z);
 
-            md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, t, tension);
-            md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, t, tension);
-            md_simd_typef z = md_simd_cubic_splinef(z0, z1, z2, z3, t, tension);
+            md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
+            md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
+            md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
 
-            md_simd_storef(dst_coord.x + i, x);
-            md_simd_storef(dst_coord.y + i, y);
-            md_simd_storef(dst_coord.z + i, z);
+            md_simd_store(dst_coord.x + i, x);
+            md_simd_store(dst_coord.y + i, y);
+            md_simd_store(dst_coord.z + i, z);
         }
 
         // Do the rest
@@ -1375,31 +1375,31 @@ bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t sr
         }
     } else {
         int64_t i = 0;
-        const int64_t simd_count = (count / md_simd_widthf) * md_simd_widthf;
-        for (; i < simd_count; i += md_simd_widthf) {
-            md_simd_typef x0 = md_simd_loadf(src_coord[0].x + i);
-            md_simd_typef y0 = md_simd_loadf(src_coord[0].y + i);
-            md_simd_typef z0 = md_simd_loadf(src_coord[0].z + i);
+        const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
+            md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
+            md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
 
-            md_simd_typef x1 = md_simd_loadf(src_coord[1].x + i);
-            md_simd_typef y1 = md_simd_loadf(src_coord[1].y + i);
-            md_simd_typef z1 = md_simd_loadf(src_coord[1].z + i);
+            md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
+            md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
+            md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
 
-            md_simd_typef x2 = md_simd_loadf(src_coord[2].x + i);
-            md_simd_typef y2 = md_simd_loadf(src_coord[2].y + i);
-            md_simd_typef z2 = md_simd_loadf(src_coord[2].z + i);
+            md_simd_f32_t x2 = md_simd_load_f32(src_coord[2].x + i);
+            md_simd_f32_t y2 = md_simd_load_f32(src_coord[2].y + i);
+            md_simd_f32_t z2 = md_simd_load_f32(src_coord[2].z + i);
 
-            md_simd_typef x3 = md_simd_loadf(src_coord[3].x + i);
-            md_simd_typef y3 = md_simd_loadf(src_coord[3].y + i);
-            md_simd_typef z3 = md_simd_loadf(src_coord[3].z + i);
+            md_simd_f32_t x3 = md_simd_load_f32(src_coord[3].x + i);
+            md_simd_f32_t y3 = md_simd_load_f32(src_coord[3].y + i);
+            md_simd_f32_t z3 = md_simd_load_f32(src_coord[3].z + i);
 
-            md_simd_typef x = md_simd_cubic_splinef(x0, x1, x2, x3, t, tension);
-            md_simd_typef y = md_simd_cubic_splinef(y0, y1, y2, y3, t, tension);
-            md_simd_typef z = md_simd_cubic_splinef(z0, z1, z2, z3, t, tension);
+            md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
+            md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
+            md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
 
-            md_simd_storef(dst_coord.x + i, x);
-            md_simd_storef(dst_coord.y + i, y);
-            md_simd_storef(dst_coord.z + i, z);
+            md_simd_store_f32(dst_coord.x + i, x);
+            md_simd_store_f32(dst_coord.y + i, y);
+            md_simd_store_f32(dst_coord.z + i, z);
         }
 
         // Do the rest
@@ -1423,7 +1423,7 @@ bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t sr
 }
 
 static inline bool ranges_overlap(md_range_t a, md_range_t b) {
-    return (a.beg < b.end&& b.beg < a.end);
+    return (a.beg < b.end && b.beg < a.end);
 }
 
 static inline void commit_backbone(md_backbone_atoms_t* backbone, md_range_t res_range, md_molecule_t* mol, md_allocator_i* alloc) {

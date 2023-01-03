@@ -52,10 +52,10 @@ static void* pool_new_slot(pool_t* pool, uint64_t size) {
             break;
         }
     }
-    if (!page) page = pool_new_page(pool);    
+    if (!page) page = pool_new_page(pool);
     ASSERT(page);
     
-    const uint64_t bit = bit_scan_forward64(page->free_slots);
+    const uint64_t bit = bsf64(page->free_slots);
     ASSERT(bit);
     const uint64_t idx = bit - 1;
 

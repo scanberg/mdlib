@@ -719,37 +719,37 @@ void sincos256_ps(v8sf x, v8sf *s, v8sf *c) {
 }
 
 typedef union {
-	md_simd_typef vec;
-	float val[md_simd_widthf];
+	md_simd_f32_t vec;
+	float val[md_simd_f32_width];
 } vec_t;
 
-static inline bool validate_eqf(md_simd_typef x, float ref[]) {
+static inline bool validate_eqf(md_simd_f32_t x, float ref[]) {
 	vec_t v  = { .vec = x };
-	for (int i = 0; i < md_simd_widthf; ++i) {
+	for (int i = 0; i < md_simd_f32_width; ++i) {
 		if (v.val[i] != ref[i]) return false;
 	}
 	return true;
 }
 
-static inline bool validate_close1f(md_simd_typef x, float ref, float eps) {
+static inline bool validate_close1f(md_simd_f32_t x, float ref, float eps) {
 	vec_t v  = { .vec = x };
-	for (int i = 0; i < md_simd_widthf; ++i) {
+	for (int i = 0; i < md_simd_f32_width; ++i) {
 		if (fabsf(v.val[i] - ref) > eps) return false;
 	}
 	return true;
 }
 
-static inline bool validate_closef(md_simd_typef x, float ref[], float eps) {
+static inline bool validate_closef(md_simd_f32_t x, float ref[], float eps) {
 	vec_t v  = { .vec = x };
-	for (int i = 0; i < md_simd_widthf; ++i) {
+	for (int i = 0; i < md_simd_f32_width; ++i) {
 		if (fabsf(v.val[i] - ref[i]) > eps) return false;
 	}
 	return true;
 }
 
 UTEST(simd, test) {
-	md_simd_typef sin, cos;
-    sincos256_ps(md_simd_set1f(1.0f), &sin, &cos);
+	md_simd_f32_t sin, cos;
+    sincos256_ps(md_simd_set1_f32(1.0f), &sin, &cos);
 
 	EXPECT_TRUE(validate_close1f(sin, sinf(1.0f), 0.0001f));
 	EXPECT_TRUE(validate_close1f(cos, cosf(1.0f), 0.0001f));

@@ -1,5 +1,4 @@
-#ifndef _MD_COMPILER_H_
-#define _MD_COMPILER_H_
+#pragma once
 
 #define MD_COMPILER_GCC     0
 #define MD_COMPILER_CLANG   0
@@ -18,5 +17,3 @@
 #else
 #	error "MD_COMPILER_* is not defined!"
 #endif //
-
-#endif
