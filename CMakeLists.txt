@@ -8,13 +8,17 @@ if(CMAKE_COMPILER_IS_GNUCC)
   set(CMAKE_C_EXTENSIONS ON)
 endif()
 
-INCLUDE(cmake/common.cmake)
-INCLUDE(cmake/FindAVX.cmake)
+include(CMakeDependentOption)
+include(cmake/common.cmake)
+include(cmake/FindAVX.cmake)
 
 # Options
 option(MD_UNITTEST "Enable unittest" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
 option(MD_USE_RELATIVE_RESOURCE_PATH "Use relative path for resources, this will copy the relevant files into the binary folder upon building" ON)
+option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
+option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
+cmake_dependent_option(MD_ENABLE_FMA  "Enable FMA extensions" ${HAVE_FMA_EXTENSIONS} "MD_ENABLE_AVX2" OFF)
 
 if(MD_UNITTEST)
   enable_testing()
@@ -28,11 +32,11 @@ file(GLOB_RECURSE SHADER_FILES src/shaders/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
 
 set(MD_DEFINES)
-if (${HAVE_FMA_EXTENSIONS})
-set(MD_DEFINES ${MD_DEFINES} "__FMA__")
+if (${MD_ENABLE_FMA})
+    set(MD_DEFINES ${MD_DEFINES} "__FMA__")
 endif()
 set(MD_FLAGS_EXT)
-set(MD_FLAGS ${AVX_FLAGS})
+set(MD_FLAGS)
 set(MD_FLAGS_REL)
 set(MD_FLAGS_DEB)
 if (MD_USE_RELATIVE_RESOURCE_PATH)
@@ -57,6 +61,16 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-gnu-zero-variadic-macro-arguments"
     "-Wno-nested-anon-types")
 
+    if (MD_ENABLE_AVX2)
+        set(MD_FLAGS ${MD_FLAGS} "-mavx2")
+    elseif (MD_ENABLE_AVX)
+		set(MD_FLAGS ${MD_FLAGS} "-mavx")
+    endif()
+
+    if (MD_ENABLE_FMA)
+		set(MD_FLAGS ${MD_FLAGS} "-mfma" "-ffp-contract=fast")
+    endif()
+
   if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
     if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
     message(STATUS "mdlib: MSVC-Clang configuration was used")
@@ -78,6 +92,16 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
       "-Wno-missing-braces"
       "-Wno-unused-function"
       "-Wno-unused-parameter")
+
+    if (MD_ENABLE_AVX2)
+        set(MD_FLAGS ${MD_FLAGS} "-mavx2")
+    elseif (MD_ENABLE_AVX)
+		set(MD_FLAGS ${MD_FLAGS} "-mavx")
+    endif()
+
+    if (MD_ENABLE_FMA)
+		set(MD_FLAGS ${MD_FLAGS} "-mfma" "-ffast-math")
+    endif()
 
     if (MD_LINK_STDLIB_STATIC)
       set(MD_LIBS ${MD_LIBS}
@@ -102,6 +126,13 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       "/MP"
       "/GR-"
       "/Oi")
+
+    if (MD_ENABLE_AVX2)
+        set(MD_FLAGS ${MD_FLAGS} "/arch:AVX2" "/fp:fast")
+    elseif (MD_ENABLE_AVX)
+		set(MD_FLAGS ${MD_FLAGS} "/arch:AVX" "/fp:fast")
+    endif()
+      
     set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
     
     set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
