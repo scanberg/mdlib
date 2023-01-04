@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(mdlib VERSION 0.1.2 LANGUAGES C)
+project(mdlib VERSION 0.1.11 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -175,6 +175,9 @@ set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PRIVATE ${MD_LIBS})
 
-set(MD_FLAGS ${MD_FLAGS} PARENT_SCOPE)
-set(MD_FLAGS_DEB ${MD_FLAGS_DEB} PARENT_SCOPE)
-set(MD_FLAGS_REL ${MD_FLAGS_REL} PARENT_SCOPE)
+get_directory_property(has_parent PARENT_DIRECTORY)
+if (has_parent)
+    set(MD_FLAGS ${MD_FLAGS} PARENT_SCOPE)
+    set(MD_FLAGS_DEB ${MD_FLAGS_DEB} PARENT_SCOPE)
+    set(MD_FLAGS_REL ${MD_FLAGS_REL} PARENT_SCOPE)
+endif()
