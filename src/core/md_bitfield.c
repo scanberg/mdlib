@@ -18,15 +18,6 @@
 #pragma warning(disable : 4701)  // potentially uninitialized local variable used
 #endif
 
-/*
-
-TODO:
-Fix beg_bit and end_bit to mark the real bits for the range, and not the first bits within the blocks.
-This is to help out when sampling the bitfield to easily return the correct value when sampling outside of the range.
-We don't really have to care about the block values outside of the range and can just use full block operations.
-
-*/
-
 typedef union block_t {
     uint64_t u64[8];
     uint32_t u32[16];
@@ -55,7 +46,7 @@ static inline uint64_t num_blocks(uint64_t beg_bit, uint64_t end_bit) {
 
 static inline block_t block_and(block_t a, block_t b) {
     block_t res;
-    for (int i = 0; i < ARRAY_SIZE(a.v); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
         res.v[i] = md_simd_and(a.v[i], b.v[i]);
     }
     return res;
@@ -64,7 +55,7 @@ static inline block_t block_and(block_t a, block_t b) {
 static inline block_t block_andnot(block_t a, block_t b) {
     block_t res;
     // The arguments are flipped here because it is the first operand in the intrinsic that is bitwise NOT
-    for (int i = 0; i < ARRAY_SIZE(a.v); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
         res.v[i] = md_simd_and_not(a.v[i], b.v[i]);
     }
     return res;
@@ -72,7 +63,7 @@ static inline block_t block_andnot(block_t a, block_t b) {
 
 static inline block_t block_or(block_t a, block_t b) {
     block_t res;
-    for (int i = 0; i < ARRAY_SIZE(a.v); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
         res.v[i] = md_simd_or(a.v[i], b.v[i]);
     }
     return res;
@@ -80,7 +71,7 @@ static inline block_t block_or(block_t a, block_t b) {
 
 static inline block_t block_xor(block_t a, block_t b) {
     block_t res;
-    for (int i = 0; i < ARRAY_SIZE(a.v); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
         res.v[i] = md_simd_xor(b.v[i], a.v[i]);
     }
     return res;
@@ -88,7 +79,7 @@ static inline block_t block_xor(block_t a, block_t b) {
 
 static inline block_t block_not(block_t blk) {
     block_t res;
-    for (int i = 0; i < ARRAY_SIZE(blk.v); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(blk.v); ++i) {
         res.v[i] = md_simd_not(blk.v[i]);
     }
     return res;
@@ -99,14 +90,14 @@ block_t block_mask_lo(uint32_t idx) {
     block_t res;
 
 #if md_simd_i64_width == 4
-    md_simd_i64_t eq_idx = md_simd_set1_i64(idx / 64);
-    md_simd_i64_t eq_bits = md_simd_set1_i64((1UL << (idx & 63)) - 1);
+    md_i64x4_t eq_idx = md_simd_set1_i64x4(idx / 64);
+    md_i64x4_t eq_bit = md_simd_set1_i64x4((1UL << (idx & 63)) - 1);
 
-    md_simd_i64_t lo_idx = md_simd_set_i64(0, 1,  2,  3);
-    md_simd_i64_t hi_idx = md_simd_set_i64(4, 5,  6,  7);
+    md_i64x4_t lo_idx = md_simd_set_i64x4(0, 1,  2,  3);
+    md_i64x4_t hi_idx = md_simd_set_i64x4(4, 5,  6,  7);
 
-    res.v[0] = md_simd_blend(md_simd_cmp_gt(eq_idx, lo_idx), eq_bits, md_simd_cmp_eq(lo_idx, eq_idx));
-    res.v[1] = md_simd_blend(md_simd_cmp_gt(eq_idx, hi_idx), eq_bits, md_simd_cmp_eq(hi_idx, eq_idx));
+    res.v[0] = md_simd_blend_i64x4(md_simd_cmp_gt_i64x4(eq_idx, lo_idx), eq_bit, md_simd_cmp_eq_i64x4(lo_idx, eq_idx));
+    res.v[1] = md_simd_blend_i64x4(md_simd_cmp_gt_i64x4(eq_idx, hi_idx), eq_bit, md_simd_cmp_eq_i64x4(hi_idx, eq_idx));
 #else
     MEMSET(&res, 0, sizeof(block_t));
     for (uint64_t i = 0; i < idx / 64; ++i) res.u64[i] = ~0ULL;
@@ -120,14 +111,14 @@ block_t block_mask_hi(uint32_t idx) {
     block_t res;
 
 #if md_simd_i64_width == 4
-    md_simd_i64_t eq_idx = md_simd_set1_i64(idx / 32);
-    md_simd_i64_t eq_bit = md_simd_set1_i64(~((1UL << (idx & 31)) - 1));
+    md_i64x4_t eq_idx = md_simd_set1_i64x4(idx / 32);
+    md_i64x4_t eq_bit = md_simd_set1_i64x4(~((1UL << (idx & 31)) - 1));
 
-    md_simd_i64_t lo_idx = md_simd_set_i64(0, 1, 2, 3);
-    md_simd_i64_t hi_idx = md_simd_set_i64(4, 5, 6, 7);
+    md_i64x4_t lo_idx = md_simd_set_i64x4(0, 1, 2, 3);
+    md_i64x4_t hi_idx = md_simd_set_i64x4(4, 5, 6, 7);
 
-    res.v[0] = md_simd_blend(md_simd_cmp_gt(lo_idx, eq_idx), eq_bit, md_simd_cmp_eq(lo_idx, eq_idx));
-    res.v[1] = md_simd_blend(md_simd_cmp_gt(hi_idx, eq_idx), eq_bit, md_simd_cmp_eq(hi_idx, eq_idx));
+    res.v[0] = md_simd_blend_i64x4(md_simd_cmp_gt_i64x4(lo_idx, eq_idx), eq_bit, md_simd_cmp_eq_i64x4(lo_idx, eq_idx));
+    res.v[1] = md_simd_blend_i64x4(md_simd_cmp_gt_i64x4(hi_idx, eq_idx), eq_bit, md_simd_cmp_eq_i64x4(hi_idx, eq_idx));
 #else
     MEMSET(&res, 0, sizeof(block_t));
     res.u64[idx / 64] = ~(((uint64_t)1 << (idx & 63)) - 1);
