@@ -83,7 +83,7 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 		goto done;
 	}
 
-	md_strb_t sb;
+	md_strb_t sb = {0};
 	md_strb_init(&sb, default_allocator);
 	
 	md_strb_str(&sb, tidy_comment(cube->title));   md_strb_char(&sb, '\n');
