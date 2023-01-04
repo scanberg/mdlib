@@ -74,7 +74,7 @@ str_t tidy_comment(str_t comment) {
     return comment;
 }
 
-str_t md_cube_file_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
+str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 	str_t str = {0};
 
@@ -91,28 +91,29 @@ str_t md_cube_file_serialize(const md_cube_t* cube, struct md_allocator_i* alloc
 
 	int atom_count = cube->data.id ? -cube->atom.count : cube->atom.count;
 	int num_val = cube->data.id ? 1 : cube->data.num_m;
-	md_strb_fmt(&sb, "%d %12.6f %12.6f %12.6f %d\n", atom_count, cube->origin[0], cube->origin[1], cube->origin[2], num_val);
-    md_strb_fmt(&sb, "%d %12.6f %12.6f %12.6f\n", cube->data.num_x, cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
-	md_strb_fmt(&sb, "%d %12.6f %12.6f %12.6f\n", cube->data.num_y, cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
-	md_strb_fmt(&sb, "%d %12.6f %12.6f %12.6f\n", cube->data.num_z, cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
+	md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f%5d\n", atom_count, cube->origin[0], cube->origin[1], cube->origin[2], num_val);
+    md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_x, cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
+	md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_y, cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
+	md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f\n", cube->data.num_z, cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
 	
 	for (int i = 0; i < cube->atom.count; ++i) {
-		md_strb_fmt(&sb, "%d %12.6f %12.6f %12.6f %12.6f\n", cube->atom.number[i], cube->atom.coord[i][0], cube->atom.coord[i][1], cube->atom.coord[i][2]);
+		md_strb_fmt(&sb, "%5d%12.6f%12.6f%12.6f%12.6f\n", cube->atom.number[i], cube->atom.charge[i], cube->atom.coord[i][0], cube->atom.coord[i][1], cube->atom.coord[i][2]);
 	}
 
 	if (cube->data.id) {
-		md_strb_fmt(&sb, "%d ", cube->data.num_m);
+		md_strb_fmt(&sb, "%5d", cube->data.num_m);
 		for (int i = 0; i < cube->data.num_m; ++i) {
-			md_strb_fmt(&sb, "%d ", cube->data.id[i]);
+			md_strb_fmt(&sb, "%5d", cube->data.id[i]);
 			if (i % 23 == 22) {
 				md_strb_char(&sb, '\n');
 			}
 		}
+		md_strb_char(&sb, '\n');
 	}
 	
 	const int64_t data_count = cube->data.num_x * cube->data.num_y * cube->data.num_z;
 	for (int64_t i = 0; i < data_count; ++i) {
-        md_strb_fmt(&sb, "%12.6f ", cube->data.val[i]);
+        md_strb_fmt(&sb, " %12.5E", cube->data.val[i]);
         if (i % 6 == 5) {
 			md_strb_char(&sb, '\n');
 		}
@@ -128,7 +129,7 @@ static inline bool str_extract_v3(md_cube_v3 v, str_t* str) {
 	return str_extract_f32(&v[0], str) && str_extract_f32(&v[1], str) && str_extract_f32(&v[2], str);
 }
 
-bool md_cube_file_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* alloc) {
+bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* alloc) {
 	ASSERT(cube);
 	ASSERT(alloc);
 
@@ -145,32 +146,53 @@ bool md_cube_file_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i*
 	str_t line;
 	
 	// natoms, origin, [nval]
-	if (!str_extract_line(&line, &str)) goto line_error;
-    if (!(str_extract_i32(&cube->atom.count, &line) && str_extract_v3(cube->origin, &line))) goto parse_error;
+	if (!str_extract_line(&line, &str)) {
+		goto line_error;
+	}
+    if (!(str_extract_i32(&cube->atom.count, &line) && str_extract_v3(cube->origin, &line))) {
+		goto parse_error;
+	}
 	if (!str_extract_i32(&cube->data.num_m, &line)) {
 		cube->data.num_m = 1;
 	}
 
 	// num_x, xaxis
-	if (!str_extract_line(&line, &str)) goto line_error;
-    if (!(str_extract_i32(&cube->data.num_x, &line) && str_extract_v3(cube->xaxis, &line))) goto parse_error;
+	if (!str_extract_line(&line, &str)) {
+		goto line_error;
+	}
+    if (!(str_extract_i32(&cube->data.num_x, &line) && str_extract_v3(cube->xaxis, &line))) {
+		goto parse_error;
+	}
 	
 	// num_y, yaxis
-	if (!str_extract_line(&line, &str)) goto line_error;
-	if (!(str_extract_i32(&cube->data.num_y, &line) && str_extract_v3(cube->yaxis, &line))) goto parse_error;
+	if (!str_extract_line(&line, &str)) {
+		goto line_error;
+	}
+	if (!(str_extract_i32(&cube->data.num_y, &line) && str_extract_v3(cube->yaxis, &line))) {
+		goto parse_error;
+	}
 
 	// num_z, zaxis
-	if (!str_extract_line(&line, &str)) goto line_error;
-	if (!(str_extract_i32(&cube->data.num_z, &line) && str_extract_v3(cube->zaxis, &line))) goto parse_error;
+	if (!str_extract_line(&line, &str)) {
+		goto line_error;
+	}
+	if (!(str_extract_i32(&cube->data.num_z, &line) && str_extract_v3(cube->zaxis, &line))) {
+		goto parse_error;
+	}
 
 	// geom
-	for (int i = 0; i < abs(cube->atom.count); ++i) {
+	const int count = abs(cube->atom.count);
+	for (int i = 0; i < count; ++i) {
         int number;
 		float charge;
         md_cube_v3 coord;
 		
-        if (!str_extract_line(&line, &str)) goto line_error;
-        if (!(str_extract_i32(&number, &line) && str_extract_f32(&charge, &line) && str_extract_v3(coord, &line))) goto parse_error;
+        if (!str_extract_line(&line, &str)) {
+			goto line_error;
+		}
+        if (!(str_extract_i32(&number, &line) && str_extract_f32(&charge, &line) && str_extract_v3(coord, &line))) {
+			goto parse_error;
+		}
 		
 		md_array_push(cube->atom.number, number, alloc);
 		md_array_push(cube->atom.charge, charge, alloc);
@@ -180,10 +202,14 @@ bool md_cube_file_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i*
 	if (cube->atom.count < 0) {
         cube->atom.count = -cube->atom.count;
         // data id
-		if (!str_extract_i32(&cube->data.num_m, &str)) goto parse_error;
+		if (!str_extract_i32(&cube->data.num_m, &str)) {
+			goto parse_error;
+		}
 		for (int i = 0; i < cube->data.num_m; ++i) {
 			int id;
-			if (!str_extract_i32(&id, &str)) goto parse_error;
+			if (!str_extract_i32(&id, &str)) {
+				goto parse_error;
+			}
 			md_array_push(cube->data.id, id, alloc);
 		}
 	}
@@ -191,7 +217,9 @@ bool md_cube_file_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i*
 	int64_t num_data = cube->data.num_x * cube->data.num_y * cube->data.num_z * cube->data.num_m;
     for (int64_t i = 0; i < num_data; ++i) {
         float val;
-        if (!str_extract_f32(&val, &str)) goto parse_error;
+        if (!str_extract_f32(&val, &str)) {
+			goto parse_error;
+		}
         md_array_push(cube->data.val, val, alloc);
     }
 
@@ -214,7 +242,7 @@ bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
 	bool success = false;
     str_t str = load_textfile(path, default_allocator);
 	if (!str_empty(str)) {
-        success = md_cube_file_deserialize(cube, str, alloc);
+        success = md_cube_deserialize(cube, str, alloc);
 		str_free(str, default_allocator);
 	}
 	
@@ -230,7 +258,7 @@ bool md_cube_file_store(const md_cube_t* cube, str_t path) {
 	md_file_o* file = NULL;
 	bool success = false;
 	if (open_file(file, path)) {
-		str_t str = md_cube_file_serialize(cube, default_allocator);
+		str_t str = md_cube_serialize(cube, default_allocator);
         if (!str_empty(str)) {
 			success = md_file_write(file, str_ptr(str), str_len(str)) == str_len(str);
 			str_free(str, default_allocator);

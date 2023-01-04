@@ -73,3 +73,53 @@ UTEST(cube, read_A2B2) {
 
 	md_cube_free(&cube, default_allocator);
 }
+
+static bool cmp_cube_v3(md_cube_v3 a, md_cube_v3 b) {
+	return a[0] == b[0] && a[1] == b[1] && a[2] == b[2];
+}
+
+UTEST(cube, serialize_deserialize) {
+	md_cube_t cube_a = {0};
+	str_t path = STR(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube");
+	ASSERT_TRUE(md_cube_file_load(&cube_a, path, default_allocator));
+	
+	str_t str = md_cube_serialize(&cube_a, default_allocator);
+    ASSERT_FALSE(str_empty(str));
+
+	md_cube_t cube_b = {0};
+	ASSERT_TRUE(md_cube_deserialize(&cube_b, str, default_allocator));
+
+	EXPECT_STREQ(cube_a.title.ptr, cube_b.title.ptr);
+	EXPECT_STREQ(cube_a.comment.ptr, cube_b.comment.ptr);
+
+	EXPECT_TRUE(cmp_cube_v3(cube_a.origin, cube_b.origin));
+	EXPECT_TRUE(cmp_cube_v3(cube_a.xaxis, cube_b.xaxis));
+	EXPECT_TRUE(cmp_cube_v3(cube_a.yaxis, cube_b.yaxis));
+	EXPECT_TRUE(cmp_cube_v3(cube_a.zaxis, cube_b.zaxis));
+
+	EXPECT_EQ(cube_a.data.num_x, cube_b.data.num_x);
+	EXPECT_EQ(cube_a.data.num_y, cube_b.data.num_y);
+	EXPECT_EQ(cube_a.data.num_z, cube_b.data.num_z);
+	EXPECT_EQ(cube_a.data.num_m, cube_b.data.num_m);
+
+	if (cube_a.data.id) {
+		EXPECT_NE(cube_b.data.id, NULL);
+		int size_a = cube_a.data.num_x * cube_a.data.num_y * cube_a.data.num_z * cube_a.data.num_m;
+		int size_b = cube_b.data.num_x * cube_b.data.num_y * cube_b.data.num_z * cube_b.data.num_m;
+		ASSERT_EQ(size_a, size_b);
+		for (int i = 0; i < size_a; ++i) {
+			EXPECT_NEAR(cube_a.data.val[i], cube_b.data.val[i], 1.0e-9);
+		}
+	}
+
+	ASSERT_EQ(cube_a.atom.count, cube_b.atom.count);
+	for (int i = 0; i < cube_a.atom.count; ++i) {
+        EXPECT_EQ(cube_a.atom.number[i], cube_b.atom.number[i]);
+        EXPECT_NEAR(cube_a.atom.charge[i], cube_b.atom.charge[i], 1.0e-9);
+        EXPECT_TRUE(cmp_cube_v3(cube_a.atom.coord[i], cube_b.atom.coord[i]));
+	}
+
+	str_free(str, default_allocator);
+	md_cube_free(&cube_a, default_allocator);
+	md_cube_free(&cube_b, default_allocator);
+}

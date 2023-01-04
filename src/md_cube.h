@@ -40,8 +40,8 @@ typedef struct md_cube_t {
 extern "C" {
 #endif
 
-str_t md_cube_file_serialize(const md_cube_t* cube, struct md_allocator_i* alloc);
-bool  md_cube_file_deserialize(md_cube_t* cube, str_t data, struct md_allocator_i* alloc);
+str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc);
+bool  md_cube_deserialize(md_cube_t* cube, str_t data, struct md_allocator_i* alloc);
 	
 bool md_cube_file_store(const md_cube_t* cube, str_t path_to_file);
 bool md_cube_file_load(md_cube_t* cube, str_t path_to_file, struct md_allocator_i* alloc);
