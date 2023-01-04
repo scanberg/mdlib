@@ -166,7 +166,8 @@ MD_SIMD_INLINE md_i64x4_t md_simd_zero_i64x4() {
 
 #define MD_SIMD_EXTRACT_HI_SI128(X) _mm256_extractf128_si256(X, 1)
 #define MD_SIMD_EXTRACT_LO_SI128(X) _mm256_castsi256_si128(X)
-#define MD_SIMD_DOUBLE_PUMP1_SI128(X, OP, ...) _mm256_set_m128i(OP(MD_SIMD_EXTRACT_HI_SI128(X), __VA_ARGS__), OP(MD_SIMD_EXTRACT_LO_SI128(X), ##__VA_ARGS__))
+#define MD_SIMD_DOUBLE_PUMP1_SI128(X, OP) _mm256_set_m128i(OP(MD_SIMD_EXTRACT_HI_SI128(X)), OP(MD_SIMD_EXTRACT_LO_SI128(X)))
+#define MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(X, OP, ...) _mm256_set_m128i(OP(MD_SIMD_EXTRACT_HI_SI128(X),##__VA_ARGS__), OP(MD_SIMD_EXTRACT_LO_SI128(X),##__VA_ARGS__))
 #define MD_SIMD_DOUBLE_PUMP2_SI128(A, B, OP) _mm256_set_m128i(OP(MD_SIMD_EXTRACT_HI_SI128(B), MD_SIMD_EXTRACT_HI_SI128(A)), OP(MD_SIMD_EXTRACT_LO_SI128(B), MD_SIMD_EXTRACT_LO_SI128(A)))
 
 MD_SIMD_INLINE md_i32x4_t md_simd_and_i32x4(md_i32x4_t a, md_i32x4_t b) {
@@ -175,7 +176,11 @@ MD_SIMD_INLINE md_i32x4_t md_simd_and_i32x4(md_i32x4_t a, md_i32x4_t b) {
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_and_i32x8(md_i32x8_t a, md_i32x8_t b) {
+#ifdef __AVX2__
     md_i32x8_t val = {_mm256_and_si256(a.m256i, b.m256i)};
+#else
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_and_si128)};
+#endif
     return val;
 }
     
@@ -185,7 +190,11 @@ MD_SIMD_INLINE md_i64x2_t md_simd_and_i64x2(md_i64x2_t a, md_i64x2_t b) {
 }
 
 MD_SIMD_INLINE md_i64x4_t md_simd_and_i64x4(md_i64x4_t a, md_i64x4_t b) {
+#ifdef __AVX2__
     md_i64x4_t val = {_mm256_and_si256(a.m256i, b.m256i)};
+#else
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_and_si128)};
+#endif
     return val;
 }
 
@@ -195,7 +204,11 @@ MD_SIMD_INLINE md_i32x4_t md_simd_or_i32x4(md_i32x4_t a, md_i32x4_t b) {
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_or_i32x8(md_i32x8_t a, md_i32x8_t b) {
+#ifdef __AVX2__
     md_i32x8_t val = {_mm256_or_si256(a.m256i, b.m256i)};
+#else
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_or_si128)};
+#endif
 	return val;
 }
 
@@ -205,7 +218,11 @@ MD_SIMD_INLINE md_i64x2_t md_simd_or_i64x2(md_i64x2_t a, md_i64x2_t b) {
 }
 
 MD_SIMD_INLINE md_i64x4_t md_simd_or_i64x4(md_i64x4_t a, md_i64x4_t b) {
+#ifdef __AVX2__
     md_i64x4_t val = {_mm256_or_si256(a.m256i, b.m256i)};
+#else
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_or_si128)};
+#endif
     return val;
 }
 
@@ -215,7 +232,11 @@ MD_SIMD_INLINE md_i32x4_t md_simd_xor_i32x4(md_i32x4_t a, md_i32x4_t b) {
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_xor_i32x8(md_i32x8_t a, md_i32x8_t b) {
+#ifdef __AVX2__
     md_i32x8_t val = {_mm256_xor_si256(a.m256i, b.m256i)};
+#else
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_xor_si128)};
+#endif
     return val;
 }
 
@@ -225,28 +246,28 @@ MD_SIMD_INLINE md_i64x2_t md_simd_xor_i64x2(md_i64x2_t a, md_i64x2_t b) {
 }
 
 MD_SIMD_INLINE md_i64x4_t md_simd_xor_i64x4(md_i64x4_t a, md_i64x4_t b) {
+#ifdef __AVX2__
     md_i64x4_t val = {_mm256_xor_si256(a.m256i, b.m256i)};
+#else
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_xor_si128)};
+#endif
 	return val;
 }
 
 MD_SIMD_INLINE md_i32x4_t md_simd_not_i32x4(md_i32x4_t a) {
-    md_i32x4_t val = {_mm_xor_si128(a.m128i, _mm_set1_epi32(-1))};
-    return val;
+    return md_simd_xor_i32x4(a, md_simd_set1_i32x4(-1));
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_not_i32x8(md_i32x8_t a) {
-    md_i32x8_t val = {_mm256_xor_si256(a.m256i, _mm256_set1_epi32(-1))};
-	return val;
+	return md_simd_xor_i32x8(a, md_simd_set1_i32x8(-1));
 }
 
 MD_SIMD_INLINE md_i64x2_t md_simd_not_i64x2(md_i64x2_t a) {
-    md_i64x2_t val = {_mm_xor_si128(a.m128i, _mm_set1_epi64x(-1))};
-    return val;
+    return md_simd_xor_i64x2(a, md_simd_set1_i64x2(-1));
 }
 
 MD_SIMD_INLINE md_i64x4_t md_simd_not_i64x4(md_i64x4_t a) {
-    md_i64x4_t val = {_mm256_xor_si256(a.m256i, _mm256_set1_epi64x(-1))};
-    return val;
+    return md_simd_xor_i64x4(a, md_simd_set1_i64x4(-1));
 }
 
 MD_SIMD_INLINE md_i32x4_t md_simd_and_not_i32x4(md_i32x4_t a, md_i32x4_t b) {
@@ -255,7 +276,11 @@ MD_SIMD_INLINE md_i32x4_t md_simd_and_not_i32x4(md_i32x4_t a, md_i32x4_t b) {
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_and_not_i32x8(md_i32x8_t a, md_i32x8_t b) {
+#ifdef __AVX2__
     md_i32x8_t val = {_mm256_andnot_si256(b.m256i, a.m256i)};
+#else
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_andnot_si128)};
+#endif
     return val;
 }
 
@@ -265,7 +290,11 @@ MD_SIMD_INLINE md_i64x2_t md_simd_and_not_i64x2(md_i64x2_t a, md_i64x2_t b) {
 }
 
 MD_SIMD_INLINE md_i64x4_t md_simd_and_not_i64x4(md_i64x4_t a, md_i64x4_t b) {
+#ifdef __AVX2__
     md_i64x4_t val = {_mm256_andnot_si256(b.m256i, a.m256i)};
+#else
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_andnot_si128)};
+#endif
     return val;
 }
 
@@ -275,7 +304,11 @@ MD_SIMD_INLINE md_i32x4_t md_simd_add_i32x4(md_i32x4_t a, md_i32x4_t b) {
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_add_i32x8(md_i32x8_t a, md_i32x8_t b) {
+#ifdef __AVX2__
     md_i32x8_t val = {_mm256_add_epi32(a.m256i, b.m256i)};
+#else
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_add_epi32)};
+#endif
 	return val;
 }
 
@@ -285,7 +318,11 @@ MD_SIMD_INLINE md_i64x2_t md_simd_add_i64x2(md_i64x2_t a, md_i64x2_t b) {
 }
 
 MD_SIMD_INLINE md_i64x4_t md_simd_add_i64x4(md_i64x4_t a, md_i64x4_t b) {
+#ifdef __AVX2__
     md_i64x4_t val = {_mm256_add_epi64(a.m256i, b.m256i)};
+#else
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_add_epi64)};
+#endif
     return val;
 }
 
@@ -295,7 +332,11 @@ MD_SIMD_INLINE md_i32x4_t md_simd_sub_i32x4(md_i32x4_t a, md_i32x4_t b) {
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_sub_i32x8(md_i32x8_t a, md_i32x8_t b) {
+#ifdef __AVX2__
     md_i32x8_t val = {_mm256_sub_epi32(a.m256i, b.m256i)};
+#else
+        md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_sub_epi32)};
+#endif
     return val;
 }
 
@@ -305,7 +346,11 @@ MD_SIMD_INLINE md_i64x2_t md_simd_sub_i64x2(md_i64x2_t a, md_i64x2_t b) {
 }
 
 MD_SIMD_INLINE md_i64x4_t md_simd_sub_i64x4(md_i64x4_t a, md_i64x4_t b) {
+#ifdef __AVX2__
     md_i64x4_t val = {_mm256_sub_epi64(a.m256i, b.m256i)};
+#else
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_sub_epi64)};
+#endif
 	return val;
 }
 
@@ -315,7 +360,11 @@ MD_SIMD_INLINE md_i32x4_t md_simd_abs_i32x4(md_i32x4_t a) {
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_abs_i32x8(md_i32x8_t a) {
+#ifdef __AVX2__
     md_i32x8_t val = {_mm256_abs_epi32(a.m256i)};
+#else
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP1_SI128(a.m256i, _mm_abs_epi32)};
+#endif
     return val;
 }
 
@@ -508,7 +557,7 @@ MD_SIMD_INLINE md_i32x8_t md_simd_shift_left_i32x8(md_i32x8_t a, int32_t b) {
 #ifdef __AVX2__
     md_i32x8_t val = {_mm256_slli_epi32(a.m256i, b)};
 #else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP1_SI128(a.m256i, _mm_slli_epi32, b)};
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(a.m256i, _mm_slli_epi32, b)};
 #endif
     return val;
 }
@@ -522,7 +571,7 @@ MD_SIMD_INLINE md_i64x4_t md_simd_shift_left_i64x4(md_i64x4_t a, int32_t b) {
 #ifdef __AVX2__
     md_i64x4_t val = {_mm256_slli_epi64(a.m256i, b)};
 #else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP1_SI128(a.m256i, _mm_slli_epi64, b)};
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(a.m256i, _mm_slli_epi64, b)};
 #endif
     return val;
 }
@@ -536,7 +585,7 @@ MD_SIMD_INLINE md_i32x8_t md_simd_shift_right_i32x8(md_i32x8_t a, int32_t b) {
 #ifdef __AVX2__
     md_i32x8_t val = {_mm256_srli_epi32(a.m256i, b)};
 #else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP1_SI128(a.m256i, _mm_srli_epi32, b)};
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(a.m256i, _mm_srli_epi32, b)};
 #endif
 	return val;
 }
@@ -550,7 +599,7 @@ MD_SIMD_INLINE md_i64x4_t md_simd_shift_right_i64x4(md_i64x4_t a, int32_t b) {
 #ifdef __AVX2__
     md_i64x4_t val = {_mm256_srli_epi64(a.m256i, b)};
 #else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP1_SI128(a.m256i, _mm_srli_epi64, b)};
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(a.m256i, _mm_srli_epi64, b)};
 #endif
 	return val;
 }
