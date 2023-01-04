@@ -18,7 +18,7 @@ option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
 option(MD_USE_RELATIVE_RESOURCE_PATH "Use relative path for resources, this will copy the relevant files into the binary folder upon building" ON)
 option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
 option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
-cmake_dependent_option(MD_ENABLE_FMA  "Enable FMA extensions" ${HAVE_FMA_EXTENSIONS} "MD_ENABLE_AVX2" OFF)
+cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 
 if(MD_UNITTEST)
   enable_testing()
