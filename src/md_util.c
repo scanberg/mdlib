@@ -550,6 +550,12 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
         md_array_shrink(mol->covalent_bond.bond, 0);
     }
 
+    md_array_resize(mol->residue.internal_covalent_bond_range, mol->residue.count, alloc);
+    MEMSET(mol->residue.internal_covalent_bond_range, 0, md_array_bytes(mol->residue.internal_covalent_bond_range));
+
+    md_array_resize(mol->residue.complete_covalent_bond_range, mol->residue.count, alloc);
+    MEMSET(mol->residue.complete_covalent_bond_range, 0, md_array_bytes(mol->residue.complete_covalent_bond_range));
+
     md_array_resize(mol->atom.valence, mol->atom.count, alloc);
     MEMSET(mol->atom.valence, 0, md_array_bytes(mol->atom.valence));
 
@@ -652,7 +658,7 @@ void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* i
     md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
 
     int64_t i = 0;
-    const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
     for (; i < simd_count; i += md_simd_f32_width) {
         md_simd_f32_t x = md_simd_load_f32(in_x + i);
         md_simd_f32_t y = md_simd_load_f32(in_y + i);
@@ -699,7 +705,7 @@ void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* 
     md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
 
     int64_t i = 0;
-    const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
     for (; i < simd_count; i += md_simd_f32_width) {
         md_simd_f32_t x = md_simd_load_f32(in_x + i);
         md_simd_f32_t y = md_simd_load_f32(in_y + i);
@@ -1491,9 +1497,6 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
         }
 
         if (mol->covalent_bond.count == 0) {
-            md_array_ensure(mol->residue.internal_covalent_bond_range, mol->residue.count, alloc);
-            md_array_ensure(mol->residue.complete_covalent_bond_range, mol->residue.count, alloc);
-
             // Use heuristical method of finding covalent bonds
             md_util_extract_covalent_bonds(mol, alloc);
         }
