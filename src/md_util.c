@@ -265,7 +265,7 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
 
             // If amino acid, try to deduce the element from that
             if (mol->atom.residue_idx && mol->residue.name) {
-                str_t resname = str_trim(label_to_str(&mol->residue.name[mol->atom.residue_idx[i]]));
+                str_t resname = str_trim(LBL_TO_STR(mol->residue.name[mol->atom.residue_idx[i]]));
                 md_range_t res_range = mol->residue.atom_range[mol->atom.residue_idx[i]];
                 if (md_util_resname_amino_acid(resname) ||
                     amino_acid_heuristic(mol->atom.name + res_range.beg, res_range.end - res_range.beg))
@@ -521,7 +521,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
         int64_t res_idx = mol->backbone.residue_idx[i];
         ASSERT(res_idx < mol->residue.count);
 
-        str_t resname = label_to_str(&mol->residue.name[res_idx]);
+        str_t resname = LBL_TO_STR(mol->residue.name[res_idx]);
         if (str_equal_cstr_n(resname, "GLY", 3)) {
             ramachandran_types[i] = MD_RAMACHANDRAN_TYPE_GLYCINE;
         } else if (str_equal_cstr_n(resname, "PRO", 3)) {

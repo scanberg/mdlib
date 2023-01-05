@@ -98,7 +98,7 @@ typedef struct md_molecule_residue_data_t {
     md_residue_id_t* id;
     md_range_t* atom_range;
     md_range_t* internal_covalent_bond_range;   // Range of covalent bonds within the resuidue
-    md_range_t* complete_covalent_bond_range;   // Range of covalent bonds that in anyway is part of the residue
+    md_range_t* complete_covalent_bond_range;   // Range of covalent bonds that in anyway is connected to the residue
 } md_molecule_residue_data_t;
 
 typedef struct md_molecule_chain_data_t {
@@ -188,13 +188,6 @@ static inline md_label_t make_label(str_t str) {
         lbl.len = (uint8_t)len;
     }
     return lbl;
-}
-
-// @NOTE(Robin): This needs to be a pointer as we extract the ptr from the structure and thus cannot be copied as a parameter
-static inline str_t label_to_str(const md_label_t* lbl) {
-    ASSERT(lbl);
-    str_t str = {lbl->buf, lbl->len};
-    return str;
 }
 
 #ifdef __cplusplus

@@ -1595,7 +1595,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             
-            str_t atom_str = label_to_str(&ctx->mol->atom.name[i]);
+            str_t atom_str = LBL_TO_STR(ctx->mol->atom.name[i]);
             for (int64_t j = 0; j < num_str; ++j) {
                 if (match_query(str[j], atom_str)) {
                     md_bitfield_set_bit(bf, i);
@@ -1612,7 +1612,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
                 if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
-                str_t atom_str = label_to_str(&ctx->mol->atom.name[i]);
+                str_t atom_str = LBL_TO_STR(ctx->mol->atom.name[i]);
                 if (match_query(str[j], atom_str)) {
                     match = true;
                     break;
@@ -2174,7 +2174,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             int64_t ri = res_indices[i];
-            str_t str = label_to_str(&ctx->mol->residue.name[ri]);
+            str_t str = LBL_TO_STR(ctx->mol->residue.name[ri]);
             if (md_util_resname_amino_acid(str)) {
                 md_range_t range = ctx->mol->residue.atom_range[ri];
                 
@@ -2188,7 +2188,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             int64_t ri = res_indices[i];
-            str_t str = label_to_str(&ctx->mol->residue.name[ri]);
+            str_t str = LBL_TO_STR(ctx->mol->residue.name[ri]);
             if (md_util_resname_amino_acid(str)) {
                 count += 1;
             }
@@ -2488,7 +2488,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (int64_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
                 for (int64_t j = 0; j < num_queries; ++j) {
-                    if (match_query(queries[j], label_to_str(&ctx->mol->residue.name[res_idx]))) {
+                    if (match_query(queries[j], LBL_TO_STR(ctx->mol->residue.name[res_idx]))) {
                         //uint64_t offset = ctx->mol->residue.atom_range[i].beg;
                         //uint64_t length = ctx->mol->residue.atom_range[i].end - ctx->mol->residue.atom_range[i].beg;
                         //bit_set(result.bits, offset, length);
@@ -2518,7 +2518,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bool match = false;
             for (int64_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
-                if (match_query(queries[j], label_to_str(&ctx->mol->residue.name[res_idx]))) {
+                if (match_query(queries[j], LBL_TO_STR(ctx->mol->residue.name[res_idx]))) {
                     count += 1;
                     match = true;
                 }
@@ -2692,7 +2692,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
             int64_t dst_idx = 0;
             for (int64_t i = 0; i < md_array_size(chain_indices); ++i) {
                 for (int64_t j = 0; j < num_str; ++j) {
-                    if (match_query(str[j], label_to_str(&ctx->mol->chain.id[i]))) {
+                    if (match_query(str[j], LBL_TO_STR(ctx->mol->chain.id[i]))) {
                         ASSERT(dst_idx < capacity);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
                         dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
@@ -2717,7 +2717,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             int pre_count = count;
             for (int64_t i = 0; i < md_array_size(chain_indices); ++i) {
-                if (match_query(str[j], label_to_str(&ctx->mol->chain.id[i]))) {
+                if (match_query(str[j], LBL_TO_STR(ctx->mol->chain.id[i]))) {
                     count += 1;
                 }
             }
@@ -3866,8 +3866,8 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
                     return false;
                 }
             } else {
-                str_t a = label_to_str(&mol->atom.name[idx]);
-                str_t b = label_to_str(&mol->atom.name[ref_idx]);
+                str_t a = LBL_TO_STR(mol->atom.name[idx]);
+                str_t b = LBL_TO_STR(mol->atom.name[ref_idx]);
                 if (!str_equal(a, b)) {
                     return false;
                 }
