@@ -27,12 +27,12 @@ typedef struct md_array_header_t {
 #define md_array_swap_back_and_pop(a,i) ((a)[i] = (a)[--md_array_header(a)->size])
 
 // Allocator time!
-#define md_array_grow(a, n, alloc)      ((*(void **)&(a)) = md_array_capacity(a) >= n ? (a) : md_array_set_capacity_internal((void*)(a), md_array_grow_cap((void*)(a), n), sizeof(*(a)), alloc, __FILE__, __LINE__))
-#define md_set_capacity(a, n, alloc)    ((*(void **)&(a)) = md_array_set_capacity_internal((void*)(a), n, sizeof(*(a)), alloc, __FILE__, __LINE__))
-#define md_array_resize(a, n, alloc)    ((md_array_needs_to_grow((a), n) ? md_set_capacity((a), n, alloc) : 0), (a) ? md_array_header(a)->size = n : 0)
-#define md_array_ensure(a, n, alloc)    (md_array_needs_to_grow((a), n) ? md_array_grow((a), n, alloc) : 0)
+#define md_array_grow(a, n, alloc)      ((*(void **)&(a)) = md_array_capacity(a) >= (n) ? (a) : md_array_set_capacity_internal((void*)(a), md_array_grow_cap((void*)(a), (n)), sizeof(*(a)), alloc, __FILE__, __LINE__))
+#define md_set_capacity(a, n, alloc)    ((*(void **)&(a)) = md_array_set_capacity_internal((void*)(a), (n), sizeof(*(a)), alloc, __FILE__, __LINE__))
+#define md_array_resize(a, n, alloc)    ((md_array_needs_to_grow((a), (n)) ? md_set_capacity((a), (n), alloc) : 0), (a) ? md_array_header(a)->size = (n) : 0)
+#define md_array_ensure(a, n, alloc)    (md_array_needs_to_grow((a), (n)) ? md_array_grow((a), (n), alloc) : 0)
 #define md_array_push(a, item, alloc)   (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = (item), (a) + md_array_header(a)->size - 1)
-#define md_array_push_array(a, items, n, alloc) ((n) ? ((md_array_ensure((a), md_array_size(a) + n, alloc), MEMCPY((a) + md_array_size(a), items, n * sizeof(*(a))), md_array_header(a)->size += n), 0) : 0)
+#define md_array_push_array(a, items, n, alloc) ((n) ? ((md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)), 0) : 0)
 #define md_array_free(a, alloc)         ((*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__))
 
 #ifdef __cplusplus
