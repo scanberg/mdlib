@@ -71,7 +71,7 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
 
     {
         size_t i = 0;
-        const size_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+        const size_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
         ASSERT(md_simd_f32_width == md_simd_i32_width);
         for (; i < simd_count; i += md_simd_f32_width) {
             md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
@@ -130,14 +130,12 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
 
     MEMSET(cells, 0, sizeof(uint32_t) * cell_count);
 
-    const uint32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
-
     for (size_t i = 0; i < count; ++i) {
         uint32_t cc = cell_coord[i];
         uint32_t cz = ((cc >> 20) & 0x3FF);
         uint32_t cy = ((cc >> 10) & 0x3FF);
         uint32_t cx = ((cc >>  0) & 0x3FF);
-        uint32_t idx = cz * cell_dim_01 + cy * cell_dim[0] + cx;
+        uint32_t idx = cz * (cell_dim[0] * cell_dim[1]) + cy * cell_dim[0] + cx;
         ASSERT(idx < cell_count);
 
         local_idx[i] = cells[idx]++;
@@ -162,7 +160,7 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
         uint32_t cz = ((cc >> 20) & 0x3FF);
         uint32_t cy = ((cc >> 10) & 0x3FF);
         uint32_t cx = ((cc >>  0) & 0x3FF);
-        uint32_t cell_idx = cz * cell_dim_01 + cy * cell_dim[0] + cx;
+        uint32_t cell_idx = cz * (cell_dim[0] * cell_dim[1]) + cy * cell_dim[0] + cx;
         uint32_t dst_idx = (cells[cell_idx] >> 10) + local_idx[i];
         coords[dst_idx]  = packed_cell_coord[i];
         original_idx[dst_idx] = (uint32_t)i;
