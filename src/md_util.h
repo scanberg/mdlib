@@ -166,8 +166,8 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
 // count -> count of coordinates (this implies that all coordinate arrays must be equal in length)
 // pbc_ext -> Extent of periodic boundary (optional): Set to zero if pbc does not apply in that dimension
 // t -> interpolation factor (0..1)
-// tension -> tension factor (0..1), 0 is jerky, 0.5 corresponds to catmul rom, 1.0 is silky smooth
-bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float tension);
+// s -> scaling factor (0..1), 0 is jerky, 0.5 is catmul rom, 1.0 is silky smooth
+bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float s);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.

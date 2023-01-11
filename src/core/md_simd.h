@@ -936,13 +936,12 @@ MD_SIMD_INLINE md_f64x4_t md_simd_deperiodize_f64x4(md_f64x4_t x, md_f64x4_t r, 
     return md_simd_blend_f64x4(x_prim, x, md_simd_cmp_eq_f64x4(p, md_simd_zero_f64x4()));
 }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_cubic_spline_f32x4(md_f32x4_t p0, md_f32x4_t p1, md_f32x4_t p2, md_f32x4_t p3, md_f32x4_t t, md_f32x4_t tension) {
-    const md_f32x4_t vt = tension;
+MD_SIMD_INLINE md_f32x4_t md_simd_cubic_spline_f32x4(md_f32x4_t p0, md_f32x4_t p1, md_f32x4_t p2, md_f32x4_t p3, md_f32x4_t t, md_f32x4_t s) {
     const md_f32x4_t t1 = t;
     const md_f32x4_t t2 = md_simd_mul_f32x4(t, t);
     const md_f32x4_t t3 = md_simd_mul_f32x4(t2, t);
-    const md_f32x4_t v0 = md_simd_mul_f32x4(md_simd_sub_f32x4(p2, p0), vt);
-    const md_f32x4_t v1 = md_simd_mul_f32x4(md_simd_sub_f32x4(p3, p1), vt);
+    const md_f32x4_t v0 = md_simd_mul_f32x4(md_simd_sub_f32x4(p2, p0), s);
+    const md_f32x4_t v1 = md_simd_mul_f32x4(md_simd_sub_f32x4(p3, p1), s);
     const md_f32x4_t x0 = md_simd_add_f32x4(md_simd_mul_f32x4(md_simd_set1_f32x4(2), md_simd_sub_f32x4(p1, p2)), md_simd_add_f32x4(v0, v1));
     const md_f32x4_t x1 = md_simd_sub_f32x4(md_simd_mul_f32x4(md_simd_set1_f32x4(3), md_simd_sub_f32x4(p2, p1)), md_simd_add_f32x4(md_simd_mul_f32x4(md_simd_set1_f32x4(2), v0), v1));
     const md_f32x4_t r0 = md_simd_add_f32x4(md_simd_mul_f32x4(x0, t3), md_simd_mul_f32x4(x1, t2));
@@ -950,45 +949,39 @@ MD_SIMD_INLINE md_f32x4_t md_simd_cubic_spline_f32x4(md_f32x4_t p0, md_f32x4_t p
     return md_simd_add_f32x4(r0, r1);
 }
 
-MD_SIMD_INLINE md_f32x8_t md_simd_cubic_spline_f32x8(md_f32x8_t p0, md_f32x8_t p1, md_f32x8_t p2, md_f32x8_t p3, md_f32x8_t t, md_f32x8_t tension) {
-    const md_f32x8_t vt = tension;
-    const md_f32x8_t t1 = t;
+MD_SIMD_INLINE md_f32x8_t md_simd_cubic_spline_f32x8(md_f32x8_t p0, md_f32x8_t p1, md_f32x8_t p2, md_f32x8_t p3, md_f32x8_t t, md_f32x8_t s) {
     const md_f32x8_t t2 = md_simd_mul_f32x8(t, t);
     const md_f32x8_t t3 = md_simd_mul_f32x8(t2, t);
-    const md_f32x8_t v0 = md_simd_mul_f32x8(md_simd_sub_f32x8(p2, p0), vt);
-    const md_f32x8_t v1 = md_simd_mul_f32x8(md_simd_sub_f32x8(p3, p1), vt);
+    const md_f32x8_t v0 = md_simd_mul_f32x8(md_simd_sub_f32x8(p2, p0), s);
+    const md_f32x8_t v1 = md_simd_mul_f32x8(md_simd_sub_f32x8(p3, p1), s);
     const md_f32x8_t x0 = md_simd_add_f32x8(md_simd_mul_f32x8(md_simd_set1_f32x8(2), md_simd_sub_f32x8(p1, p2)), md_simd_add_f32x8(v0, v1));
     const md_f32x8_t x1 = md_simd_sub_f32x8(md_simd_mul_f32x8(md_simd_set1_f32x8(3), md_simd_sub_f32x8(p2, p1)), md_simd_add_f32x8(md_simd_mul_f32x8(md_simd_set1_f32x8(2), v0), v1));
     const md_f32x8_t r0 = md_simd_add_f32x8(md_simd_mul_f32x8(x0, t3), md_simd_mul_f32x8(x1, t2));
-    const md_f32x8_t r1 = md_simd_add_f32x8(md_simd_mul_f32x8(v0, t1), p1);
+    const md_f32x8_t r1 = md_simd_add_f32x8(md_simd_mul_f32x8(v0, t), p1);
     return md_simd_add_f32x8(r0, r1);
 }
 
-MD_SIMD_INLINE md_f64x2_t md_simd_cubic_spline_f64x2(md_f64x2_t p0, md_f64x2_t p1, md_f64x2_t p2, md_f64x2_t p3, md_f64x2_t t, md_f64x2_t tension) {
-    const md_f64x2_t vt = tension;
-    const md_f64x2_t t1 = t;
+MD_SIMD_INLINE md_f64x2_t md_simd_cubic_spline_f64x2(md_f64x2_t p0, md_f64x2_t p1, md_f64x2_t p2, md_f64x2_t p3, md_f64x2_t t, md_f64x2_t s) {
     const md_f64x2_t t2 = md_simd_mul_f64x2(t, t);
     const md_f64x2_t t3 = md_simd_mul_f64x2(t2, t);
-    const md_f64x2_t v0 = md_simd_mul_f64x2(md_simd_sub_f64x2(p2, p0), vt);
-    const md_f64x2_t v1 = md_simd_mul_f64x2(md_simd_sub_f64x2(p3, p1), vt);
+    const md_f64x2_t v0 = md_simd_mul_f64x2(md_simd_sub_f64x2(p2, p0), s);
+    const md_f64x2_t v1 = md_simd_mul_f64x2(md_simd_sub_f64x2(p3, p1), s);
     const md_f64x2_t x0 = md_simd_add_f64x2(md_simd_mul_f64x2(md_simd_set1_f64x2(2), md_simd_sub_f64x2(p1, p2)), md_simd_add_f64x2(v0, v1));
     const md_f64x2_t x1 = md_simd_sub_f64x2(md_simd_mul_f64x2(md_simd_set1_f64x2(3), md_simd_sub_f64x2(p2, p1)), md_simd_add_f64x2(md_simd_mul_f64x2(md_simd_set1_f64x2(2), v0), v1));
     const md_f64x2_t r0 = md_simd_add_f64x2(md_simd_mul_f64x2(x0, t3), md_simd_mul_f64x2(x1, t2));
-    const md_f64x2_t r1 = md_simd_add_f64x2(md_simd_mul_f64x2(v0, t1), p1);
+    const md_f64x2_t r1 = md_simd_add_f64x2(md_simd_mul_f64x2(v0, t), p1);
     return md_simd_add_f64x2(r0, r1);
 }
 
-MD_SIMD_INLINE md_f64x4_t md_simd_cubic_spline_f64x4(md_f64x4_t p0, md_f64x4_t p1, md_f64x4_t p2, md_f64x4_t p3, md_f64x4_t t, md_f64x4_t tension) {
-    const md_f64x4_t vt = tension;
-    const md_f64x4_t t1 = t;
+MD_SIMD_INLINE md_f64x4_t md_simd_cubic_spline_f64x4(md_f64x4_t p0, md_f64x4_t p1, md_f64x4_t p2, md_f64x4_t p3, md_f64x4_t t, md_f64x4_t s) {
     const md_f64x4_t t2 = md_simd_mul_f64x4(t, t);
     const md_f64x4_t t3 = md_simd_mul_f64x4(t2, t);
-    const md_f64x4_t v0 = md_simd_mul_f64x4(md_simd_sub_f64x4(p2, p0), vt);
-    const md_f64x4_t v1 = md_simd_mul_f64x4(md_simd_sub_f64x4(p3, p1), vt);
+    const md_f64x4_t v0 = md_simd_mul_f64x4(md_simd_sub_f64x4(p2, p0), s);
+    const md_f64x4_t v1 = md_simd_mul_f64x4(md_simd_sub_f64x4(p3, p1), s);
     const md_f64x4_t x0 = md_simd_add_f64x4(md_simd_mul_f64x4(md_simd_set1_f64x4(2), md_simd_sub_f64x4(p1, p2)), md_simd_add_f64x4(v0, v1));
     const md_f64x4_t x1 = md_simd_sub_f64x4(md_simd_mul_f64x4(md_simd_set1_f64x4(3), md_simd_sub_f64x4(p2, p1)), md_simd_add_f64x4(md_simd_mul_f64x4(md_simd_set1_f64x4(2), v0), v1));
     const md_f64x4_t r0 = md_simd_add_f64x4(md_simd_mul_f64x4(x0, t3), md_simd_mul_f64x4(x1, t2));
-    const md_f64x4_t r1 = md_simd_add_f64x4(md_simd_mul_f64x4(v0, t1), p1);
+    const md_f64x4_t r1 = md_simd_add_f64x4(md_simd_mul_f64x4(v0, t), p1);
     return md_simd_add_f64x4(r0, r1);
 }
 
@@ -1517,7 +1510,7 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
             const md_f64x2_t : md_simd_lerp_f64x2, \
             const md_f64x4_t : md_simd_lerp_f64x4)(a, b, t)
 
-#define md_simd_cubic_spline(p0, p1, p2, p3, t, tension) _Generic((p0),  \
+#define md_simd_cubic_spline(p0, p1, p2, p3, t, s) _Generic((p0),  \
             md_f32x4_t : md_simd_cubic_spline_f32x4, \
             md_f32x8_t : md_simd_cubic_spline_f32x8, \
             md_f64x2_t : md_simd_cubic_spline_f64x2, \
@@ -1525,7 +1518,7 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
             const md_f32x4_t : md_simd_cubic_spline_f32x4, \
             const md_f32x8_t : md_simd_cubic_spline_f32x8, \
             const md_f64x2_t : md_simd_cubic_spline_f64x2, \
-            const md_f64x4_t : md_simd_cubic_spline_f64x4)(p0, p1, p2, p3, t, tension)
+            const md_f64x4_t : md_simd_cubic_spline_f64x4)(p0, p1, p2, p3, t, s)
 
 #define md_simd_shift_left(x, i) _Generic((x),      \
             md_i32x4_t : md_simd_shift_left_i32x4,  \

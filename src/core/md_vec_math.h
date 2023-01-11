@@ -161,9 +161,9 @@ static inline float lerpf(float a, float b, float t) {
     return a * (1.0f - t) + b * t;
 }
 
-static inline float cubic_splinef(float p0, float p1, float p2, float p3, float t, float tension) {
-    const float v0 = (p2 - p0) * tension;
-    const float v1 = (p3 - p1) * tension;
+static inline float cubic_splinef(float p0, float p1, float p2, float p3, float t, float s) {
+    const float v0 = (p2 - p0) * s;
+    const float v1 = (p3 - p1) * s;
     const float t2 = t * t;
     const float t3 = t * t * t;
     return (2.0f * p1 - 2.0f * p2 + v0 + v1) * t3 + (-3.0f * p1 + 3.0f * p2 - 2.0f * v0 - v1) * t2 + v0 * t + p1;
@@ -619,17 +619,17 @@ static inline vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
     return r;
 }
 
-static inline vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p3, float t, float tension) {
+static inline vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p3, float t, float s) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
     const vec4_t vt = {t,t,t,t};
-    const vec4_t vtension = {tension, tension, tension, tension};
-    r.f32x4 = md_simd_cubic_spline_f32x4(p0.f32x4, p1.f32x4, p2.f32x4, p3.f32x4, vt.f32x4, vtension.f32x4);
+    const vec4_t vs = {s,s,s,s};
+    r.f32x4 = md_simd_cubic_spline_f32x4(p0.f32x4, p1.f32x4, p2.f32x4, p3.f32x4, vt.f32x4, vs.f32x4);
 #else
-    r.x = cubic_splinef(p0.x, p1.x, p2.x, p3.x, t, tension);
-    r.y = cubic_splinef(p0.y, p1.y, p2.y, p3.y, t, tension);
-    r.z = cubic_splinef(p0.z, p1.z, p2.z, p3.z, t, tension);
-    r.w = cubic_splinef(p0.w, p1.w, p2.w, p3.w, t, tension);
+    r.x = cubic_splinef(p0.x, p1.x, p2.x, p3.x, t, s);
+    r.y = cubic_splinef(p0.y, p1.y, p2.y, p3.y, t, s);
+    r.z = cubic_splinef(p0.z, p1.z, p2.z, p3.z, t, s);
+    r.w = cubic_splinef(p0.w, p1.w, p2.w, p3.w, t, s);
 #endif
     return r;
 }
@@ -1717,12 +1717,12 @@ T lerp (T a, T b, V t) {
 }
 
 template <typename T, typename V>
-T cubic_spline(T p0, T p1, T p2, T p3, V s, V tension = (V)0.5) {
-    T v0 = (p2 - p0) * tension;
-    T v1 = (p3 - p1) * tension;
-    V s2 = s * s;
-    V s3 = s * s2;
-    return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * s3 + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * s2 + v0 * s + p1;
+T cubic_spline(T p0, T p1, T p2, T p3, V t, V s = (V)1.0) {
+    T v0 = (p2 - p0) * s;
+    T v1 = (p3 - p1) * s;
+    V t2 = t * t;
+    V t3 = t * t2;
+    return ((V)2.0 * p1 - (V)2.0 * p2 + v0 + v1) * t3 + (-(V)3.0 * p1 + (V)3.0 * p2 - (V)2.0 * v0 - v1) * t2 + v0 * t + p1;
 }
 
 #endif

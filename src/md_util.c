@@ -1309,10 +1309,10 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
     return true;
 }
 
-bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float tension) {
+bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float s) {
     const bool use_pbc = !vec3_equal(pbc_ext, (vec3_t){0,0,0});
     t = CLAMP(t, 0.0f, 1.0f);
-    tension = CLAMP(tension, 0.0f, 1.0f);
+    s = CLAMP(s, 0.0f, 1.0f);
 
     if (use_pbc) {
         md_simd_f32_t box_ext_x = md_simd_set1_f32(pbc_ext.x);
@@ -1350,9 +1350,9 @@ bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t sr
             z2 = simd_deperiodize(z2, z1, box_ext_z);
             z3 = simd_deperiodize(z3, z2, box_ext_z);
 
-            md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
-            md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
-            md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
+            md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(s));
+            md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(s));
+            md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(s));
 
             md_simd_store(dst_coord.x + i, x);
             md_simd_store(dst_coord.y + i, y);
@@ -1373,7 +1373,7 @@ bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t sr
             src[2] = vec4_deperiodize(src[2], src[1], pbc_ext4);
             src[3] = vec4_deperiodize(src[3], src[2], pbc_ext4);
 
-            const vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, tension);
+            const vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, s);
 
             dst_coord.x[i] = coord.x;
             dst_coord.y[i] = coord.y;
@@ -1399,9 +1399,9 @@ bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t sr
             md_simd_f32_t y3 = md_simd_load_f32(src_coord[3].y + i);
             md_simd_f32_t z3 = md_simd_load_f32(src_coord[3].z + i);
 
-            md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
-            md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
-            md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(tension));
+            md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(s));
+            md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(s));
+            md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(s));
 
             md_simd_store_f32(dst_coord.x + i, x);
             md_simd_store_f32(dst_coord.y + i, y);
@@ -1417,7 +1417,7 @@ bool md_util_cubic_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t sr
                 {src_coord[3].x[i], src_coord[3].y[i], src_coord[3].z[i], 1},
             };
 
-            vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, tension);
+            vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, s);
 
             dst_coord.x[i] = coord.x;
             dst_coord.y[i] = coord.y;
