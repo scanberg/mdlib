@@ -3,6 +3,7 @@
 #include <core/md_compiler.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
+#include <core/md_ring_allocator.h>
 #include <core/md_array.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
@@ -645,6 +646,226 @@ bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* a
 
     mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
 
+    return true;
+}
+
+typedef struct fifo_t {
+    int* data;
+    unsigned int head;
+    unsigned int tail;
+    unsigned int cap;
+} fifo_t;
+
+bool fifo_empty(fifo_t* fifo) { return fifo->head == fifo->tail; }
+
+void fifo_init(fifo_t* fifo, unsigned int capacity, md_allocator_i* alloc) {
+    ASSERT(fifo);
+    fifo->head = 0;
+    fifo->tail = 0;
+    fifo->cap = next_power_of_two32(capacity);
+    fifo->data = md_alloc(alloc, sizeof(int) * fifo->cap);
+    MEMSET(fifo->data, 0, sizeof(int) * fifo->cap);
+}
+
+void fifo_free(fifo_t* fifo, md_allocator_i* alloc) {
+    ASSERT(fifo);
+    md_free(alloc, fifo->data, sizeof(int) * fifo->cap);
+    MEMSET(fifo, 0 , sizeof(fifo_t));
+}
+
+void fifo_push(fifo_t* fifo, int value) {
+    ASSERT((fifo->head + 1 & (fifo->cap - 1)) != fifo->tail);
+    fifo->data[fifo->head] = value;
+    fifo->head = (fifo->head + 1) & (fifo->cap - 1);
+}
+
+int fifo_pop(fifo_t* fifo) {
+    ASSERT(fifo->head != fifo->tail);
+    int val = fifo->data[fifo->tail];
+    fifo->tail = (fifo->tail + 1) & (fifo->cap - 1);
+    return val;
+}
+
+static bool compare_ring(const int* a, const int* b) {
+    if (md_array_size(a) != md_array_size(b)) {
+        return false;
+    }
+    for (int i = 0; i < md_array_size(a); ++i) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int find_ring(const int** rings, const int* ring) {
+    for (int i = 0; i < md_array_size(rings); ++i) {
+        if (compare_ring(rings[i], ring)) return i;
+    }
+    return -1;
+}
+
+static void insert_ring(int** rings, int* ring, md_allocator_i* alloc) {
+    // We want to ensure that each ring is unique, therefore we sort the atoms in the ring
+    int n = (int)md_array_size(ring);
+    
+    // Bubble-sort to order entries within ring
+    bool swapped = true;
+    while (swapped) {
+        swapped = false;
+        for (int i = 0; i < n - 1; ++i) {
+            if (ring[i] > ring[i + 1]) {
+                int tmp = ring[i];
+                ring[i] = ring[i + 1];
+                ring[i + 1] = tmp;
+                swapped = true;
+            }
+        }
+    }
+    
+    if (find_ring(rings, ring) == -1) {
+        md_array_push(rings, ring, alloc);
+    }
+}
+
+static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_idx, md_allocator_i* alloc) {
+    //md_printf(MD_LOG_TYPE_DEBUG, "Attempting to find residue rings within residue %d", res_idx);
+
+    int** rings   = 0;
+    fifo_t queue  = {0};
+    int* depth    = 0;
+    int* parent   = 0;
+    int** bonds   = 0;
+
+    md_range_t bond_range = mol->residue.internal_covalent_bond_range[res_idx];
+    md_range_t atom_range = mol->residue.atom_range[res_idx];
+    int offset = atom_range.beg;
+    int count  = atom_range.end - atom_range.beg;
+    md_array_resize(bonds,  count, alloc);
+    md_array_resize(depth,  count, alloc);
+    md_array_resize(parent, count, alloc);
+    
+    MEMSET(bonds, 0 , md_array_bytes(bonds));
+
+    for (int i = bond_range.beg; i < bond_range.end; ++i) {
+        int a = mol->covalent_bond.bond[i].idx[0] - offset;
+        int b = mol->covalent_bond.bond[i].idx[1] - offset;
+        md_array_push(bonds[a], b, alloc);
+        md_array_push(bonds[b], a, alloc);
+    }
+    
+    const int max_bond_count = 2 * (bond_range.end - bond_range.beg);
+    fifo_init(&queue, max_bond_count, alloc);
+    const int MAX_DEPTH = 99999;
+    
+    for (int i = 0; i < count; ++i) {
+        // Reset
+        for (int j = 0; j < count; ++j) {
+            depth[j]  = MAX_DEPTH;
+            parent[j] = -1;
+        }
+        queue.head = queue.tail = 0;
+        //md_printf(MD_LOG_TYPE_DEBUG, "Starting from atom %d", i);
+
+        md_printf(MD_LOG_TYPE_DEBUG, "exploring %d", i);
+        
+        fifo_push(&queue, i);
+        depth[i] = 0;
+        while (!fifo_empty(&queue)) {
+            int idx = fifo_pop(&queue);
+            md_printf(MD_LOG_TYPE_DEBUG, "popped %d", idx);
+
+            const int num_edges = md_array_size(bonds[idx]);
+            for (int j = 0; j < num_edges; ++j) {
+                int next = bonds[idx][j];
+                if (next == parent[idx]) continue;  // avoid adding parent to search queue
+                
+                if (depth[next] != MAX_DEPTH) {
+                    // We have found a ring
+                    
+                    // We found a junction point where the graph connects
+                    // Now we need to traverse both branches of this graph back up
+                    // In order to find the other junction where the graph branched.
+                    // We follow both branches up towards the root.
+
+                    int l = idx;
+                    int r = next;
+
+                    // Only add one of the two cases
+                    if (r > l) continue;
+
+                    int* ring = {0};
+
+                    int d = MAX(depth[l], depth[r]);
+                    while (d--) {
+                        if (depth[l] >= d) {
+                            md_array_push(ring, l, alloc);
+                            l = parent[l];
+                        }
+                        
+                        if (depth[r] >= d) {
+                            md_array_push(ring, r, alloc);
+                            r = parent[r];
+                        }
+
+                        if (l == r) {
+                            md_array_push(ring, l, alloc);
+                            break;
+                        }
+                    }
+
+                    md_printf(MD_LOG_TYPE_DEBUG, "Found ring");
+                    int n = md_array_size(ring);
+                    if (3 <= n && n <= 6) {
+                        insert_ring(rings, ring, alloc);
+                    }
+                } else {
+                    // We have found a new atom
+                    depth[next] = depth[idx] + 1;
+                    parent[next] = idx;
+                    fifo_push(&queue, next);
+                }
+            }
+        }
+    }
+
+    fifo_free(&queue,     alloc);
+    md_array_free(parent, alloc);
+    md_array_free(depth,  alloc);
+    md_array_free(bonds,  alloc);
+    return rings;
+}
+
+bool md_util_extract_rings(md_molecule_t* mol, md_allocator_i* alloc) {
+    ASSERT(mol);
+    ASSERT(alloc);
+
+    if (mol->covalent_bond.count == 0) {
+        md_print(MD_LOG_TYPE_ERROR, "The molecule did not contain any covalent bonds, which are required to compute rings.");
+        return false;
+    }
+
+    md_ring_allocator_t* ring_alloc = get_thread_ring_allocator();
+    md_allocator_i temp_alloc = md_ring_allocator_create_interface(ring_alloc);
+    
+    uint64_t reset_point = md_ring_allocator_get_pos(ring_alloc);
+    for (int i = 0; i < mol->residue.count; ++i) {
+        md_ring_allocator_set_pos(ring_alloc, reset_point);
+        int** rings = find_residue_rings(mol, i, &temp_alloc);
+        if (rings) {
+            for (int j = 0; j < (int)md_array_size(rings); ++j) {
+                const int n = (int)md_array_size(rings[j]);
+                const int offset = (int)md_array_size(mol->ring.data.indices);
+                md_array_push_array(mol->ring.data.indices, rings[j], n, alloc);
+                md_range_t range = {offset, offset + n};
+                md_array_push(mol->ring.range, range, alloc);
+            }
+        }
+    }
+
+    mol->ring.data.count = md_array_size(mol->ring.data.indices);
+    mol->ring.count = md_array_size(mol->ring.range);
+    
     return true;
 }
 

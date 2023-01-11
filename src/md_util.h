@@ -101,6 +101,8 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 bool md_util_extract_covalent_bonds(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 bool md_util_extract_hydrogen_bonds(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
+bool md_util_extract_rings(struct md_molecule_t* mol, struct md_allocator_i* alloc);
+
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
 

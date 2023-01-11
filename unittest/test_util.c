@@ -2,10 +2,12 @@
 #include <string.h>
 
 #include <md_pdb.h>
+#include <md_gro.h>
 #include <md_trajectory.h>
 #include <md_molecule.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 
 #include "rmsd.h"
@@ -71,4 +73,25 @@ UTEST(util, rmsd) {
     md_molecule_free(&mol, alloc);
     md_pdb_trajectory_free(traj);
     md_pdb_data_free(&pdb_data, alloc);
+}
+
+UTEST(util, ring) {
+    md_allocator_i* arena = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    
+    md_molecule_t mol = {0};
+    
+    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), arena));
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ALL);
+    md_util_extract_rings(&mol, arena);
+    EXPECT_EQ(mol.ring.count, 0);
+    md_arena_allocator_reset(arena);
+
+    MEMSET(&mol, 0, sizeof(md_molecule_t));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), arena));
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ALL);
+    md_util_extract_rings(&mol, arena);
+    EXPECT_GT(mol.ring.count, 5);
+    md_arena_allocator_reset(arena);
+    
+    md_arena_allocator_destroy(arena);
 }
