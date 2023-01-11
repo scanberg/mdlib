@@ -72,7 +72,7 @@ static inline block_t block_or(block_t a, block_t b) {
 static inline block_t block_xor(block_t a, block_t b) {
     block_t res;
     for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
-        res.v[i] = md_simd_xor(b.v[i], a.v[i]);
+        res.v[i] = md_simd_xor(a.v[i], b.v[i]);
     }
     return res;
 }
