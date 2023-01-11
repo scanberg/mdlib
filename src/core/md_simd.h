@@ -279,7 +279,7 @@ MD_SIMD_INLINE md_i32x8_t md_simd_and_not_i32x8(md_i32x8_t a, md_i32x8_t b) {
 #ifdef __AVX2__
     md_i32x8_t val = {_mm256_andnot_si256(b.m256i, a.m256i)};
 #else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_andnot_si128)};
+    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(b.m256i, a.m256i, _mm_andnot_si128)};
 #endif
     return val;
 }
@@ -293,7 +293,7 @@ MD_SIMD_INLINE md_i64x4_t md_simd_and_not_i64x4(md_i64x4_t a, md_i64x4_t b) {
 #ifdef __AVX2__
     md_i64x4_t val = {_mm256_andnot_si256(b.m256i, a.m256i)};
 #else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_andnot_si128)};
+    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(b.m256i, a.m256i, _mm_andnot_si128)};
 #endif
     return val;
 }
