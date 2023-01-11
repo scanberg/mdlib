@@ -97,7 +97,7 @@ typedef struct md_molecule_residue_data_t {
     md_label_t* name;
     md_residue_id_t* id;
     md_range_t* atom_range;
-    md_range_t* internal_covalent_bond_range;   // Range of covalent bonds within the resuidue
+    md_range_t* internal_covalent_bond_range;   // Range of covalent bonds strictly within the atoms of the resuidue
     md_range_t* complete_covalent_bond_range;   // Range of covalent bonds that in anyway is connected to the residue
 } md_molecule_residue_data_t;
 
@@ -127,6 +127,17 @@ typedef struct md_molecule_bond_data_t {
     md_bond_t* bond;
 } md_molecule_bond_data_t;
 
+typedef struct md_molecule_ring_data_t {
+    int64_t count;
+    md_range_t* range;
+
+    struct {
+        int64_t count;
+        // This is a sequential data holder for indices which is referenced by ring ranges
+        md_atom_idx_t* indices;
+    } data;
+} md_molecule_ring_data_t;
+
 // This represents symmetries which are instanced, commonly found
 // in PDB data. It is up to the renderer to properly render this instanced data.
 typedef struct md_molecule_instance_data_t {
@@ -144,6 +155,7 @@ typedef struct md_molecule_t {
     md_molecule_backbone_data_t backbone;
     md_molecule_bond_data_t     covalent_bond;
     md_molecule_bond_data_t     hydrogen_bond;
+    md_molecule_ring_data_t     ring;
     md_molecule_instance_data_t instance;
 } md_molecule_t;
 
@@ -178,6 +190,12 @@ void md_molecule_copy(md_molecule_t* dst_mol, const md_molecule_t* src_mol, stru
 // macro concatenate trick to assert that the input is a valid compile time C-string
 #define MAKE_LABEL(cstr) {cstr"", sizeof(cstr)-1}
 
+#ifdef __cplusplus
+#define LBL_TO_STR(lbl) {lbl.buf, lbl.len}
+#else
+#define LBL_TO_STR(lbl) (str_t){lbl.buf, lbl.len}
+#endif // __cplusplus
+
 static inline md_label_t make_label(str_t str) {
     md_label_t lbl = {0};
     if (str.ptr) {
@@ -190,11 +208,27 @@ static inline md_label_t make_label(str_t str) {
     return lbl;
 }
 
-#ifdef __cplusplus
-#define LBL_TO_STR(lbl) {lbl.buf, lbl.len}
-#else
-#define LBL_TO_STR(lbl) (str_t){lbl.buf, lbl.len}
-#endif // __cplusplus
+// Helper Access functions
+static inline str_t md_molecule_atom_name(const md_molecule_t* mol, md_atom_idx_t idx) {
+    return LBL_TO_STR(mol->atom.name[idx]);
+}
+
+static inline vec3_t md_molecule_atom_xyz(const md_molecule_t* mol, md_atom_idx_t idx) {
+    vec3_t xyz = {mol->atom.x[idx], mol->atom.y[idx], mol->atom.z[idx]};
+    return xyz;
+}
+
+static inline str_t md_molecule_residue_name(const md_molecule_t* mol, md_residue_idx_t idx) {
+    return LBL_TO_STR(mol->residue.name[idx]);
+}
+
+static inline md_atom_idx_t* md_molecule_ring_beg(const md_molecule_t* mol, int64_t ring_idx) {
+    return mol->ring.data.indices + mol->ring.range[ring_idx].beg;
+}
+
+static inline md_atom_idx_t* md_molecule_ring_end(const md_molecule_t* mol, int64_t ring_idx) {
+    return mol->ring.data.indices + mol->ring.range[ring_idx].end;
+}
 
 #ifdef __cplusplus
 }
