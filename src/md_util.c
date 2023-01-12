@@ -673,6 +673,10 @@ void fifo_free(fifo_t* fifo, md_allocator_i* alloc) {
     MEMSET(fifo, 0 , sizeof(fifo_t));
 }
 
+void fifo_clear(fifo_t* fifo) {
+    fifo->head = fifo->tail = 0;
+}
+
 void fifo_push(fifo_t* fifo, int value) {
     ASSERT((fifo->head + 1 & (fifo->cap - 1)) != fifo->tail);
     fifo->data[fifo->head] = value;
@@ -685,6 +689,7 @@ int fifo_pop(fifo_t* fifo) {
     fifo->tail = (fifo->tail + 1) & (fifo->cap - 1);
     return val;
 }
+
 
 static bool compare_ring(const int* a, const int* b) {
     if (md_array_size(a) != md_array_size(b)) {
@@ -729,87 +734,81 @@ static void insert_ring(int** rings, int* ring, md_allocator_i* alloc) {
 }
 
 static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_idx, md_allocator_i* alloc) {
-    //md_printf(MD_LOG_TYPE_DEBUG, "Attempting to find residue rings within residue %d", res_idx);
+    const int MAX_DEPTH = 99999;
 
-    int** rings   = 0;
     fifo_t queue  = {0};
-    int* depth    = 0;
-    int* parent   = 0;
-    int** bonds   = 0;
+    md_array(md_array(int)) rings  = 0;
+    md_array(md_array(int)) edges  = 0;
+    md_array(int)  depth  = 0;
+    md_array(int)  parent = 0;
 
     md_range_t bond_range = mol->residue.internal_covalent_bond_range[res_idx];
     md_range_t atom_range = mol->residue.atom_range[res_idx];
     int offset = atom_range.beg;
     int count  = atom_range.end - atom_range.beg;
-    md_array_resize(bonds,  count, alloc);
+    md_array_resize(edges,  count, alloc);
     md_array_resize(depth,  count, alloc);
     md_array_resize(parent, count, alloc);
     
-    MEMSET(bonds, 0 , md_array_bytes(bonds));
-
+    const int max_edge_count = 2 * (bond_range.end - bond_range.beg);
+    fifo_init(&queue, max_edge_count, alloc);
+    
+    MEMSET(edges, 0 , md_array_bytes(edges));
     for (int i = bond_range.beg; i < bond_range.end; ++i) {
         int a = mol->covalent_bond.bond[i].idx[0] - offset;
         int b = mol->covalent_bond.bond[i].idx[1] - offset;
-        md_array_push(bonds[a], b, alloc);
-        md_array_push(bonds[b], a, alloc);
+        md_array_push(edges[a], b, alloc);
+        md_array_push(edges[b], a, alloc);
+    }
+
+    // Init arrays
+    for (int j = 0; j < count; ++j) {
+        depth[j]  = MAX_DEPTH;
+        parent[j] = -1;
     }
     
-    const int max_bond_count = 2 * (bond_range.end - bond_range.beg);
-    fifo_init(&queue, max_bond_count, alloc);
-    const int MAX_DEPTH = 99999;
-    
     for (int i = 0; i < count; ++i) {
-        // Reset
-        for (int j = 0; j < count; ++j) {
-            depth[j]  = MAX_DEPTH;
-            parent[j] = -1;
-        }
-        queue.head = queue.tail = 0;
-        //md_printf(MD_LOG_TYPE_DEBUG, "Starting from atom %d", i);
+        // Find the first index which have not yet been processed
+        if (depth[i] < MAX_DEPTH) continue;
 
-        md_printf(MD_LOG_TYPE_DEBUG, "exploring %d", i);
-        
+        fifo_clear(&queue);        
         fifo_push(&queue, i);
         depth[i] = 0;
         while (!fifo_empty(&queue)) {
             int idx = fifo_pop(&queue);
-            md_printf(MD_LOG_TYPE_DEBUG, "popped %d", idx);
-
-            const int num_edges = md_array_size(bonds[idx]);
+            
+            const int num_edges = md_array_size(edges[idx]);
             for (int j = 0; j < num_edges; ++j) {
-                int next = bonds[idx][j];
+                int next = edges[idx][j];
                 if (next == parent[idx]) continue;  // avoid adding parent to search queue
                 
-                if (depth[next] != MAX_DEPTH) {
-                    // We have found a ring
-                    
+                if (depth[next] < MAX_DEPTH) {                   
                     // We found a junction point where the graph connects
                     // Now we need to traverse both branches of this graph back up
-                    // In order to find the other junction where the graph branched.
+                    // In order to find the other junction where the graph branches
                     // We follow both branches up towards the root.
 
                     int l = idx;
                     int r = next;
 
-                    // Only add one of the two cases
-                    if (r > l) continue;
+                    // Only process one of the two cases
+                    if (r < l) continue;
 
-                    int* ring = {0};
-
+                    md_array(int) ring = 0;
                     int d = MAX(depth[l], depth[r]);
                     while (d--) {
                         if (depth[l] >= d) {
-                            md_array_push(ring, l, alloc);
+                            md_array_push(ring, l + offset, alloc);
                             l = parent[l];
                         }
                         
                         if (depth[r] >= d) {
-                            md_array_push(ring, r, alloc);
+                            md_array_push(ring, r + offset, alloc);
                             r = parent[r];
                         }
 
                         if (l == r) {
-                            md_array_push(ring, l, alloc);
+                            md_array_push(ring, l + offset, alloc);
                             break;
                         }
                     }
@@ -820,8 +819,7 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
                         insert_ring(rings, ring, alloc);
                     }
                 } else {
-                    // We have found a new atom
-                    depth[next] = depth[idx] + 1;
+                    depth[next]  = depth[idx] + 1;
                     parent[next] = idx;
                     fifo_push(&queue, next);
                 }
@@ -832,7 +830,7 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
     fifo_free(&queue,     alloc);
     md_array_free(parent, alloc);
     md_array_free(depth,  alloc);
-    md_array_free(bonds,  alloc);
+    md_array_free(edges,  alloc);
     return rings;
 }
 
