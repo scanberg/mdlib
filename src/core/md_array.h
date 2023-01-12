@@ -15,6 +15,8 @@ typedef struct md_array_header_t {
     int64_t size;
 } md_array_header_t;
 
+#define md_array(Type) Type*
+
 #define md_array_header(a)              ((md_array_header_t*)((uint8_t*)(a) - sizeof(md_array_header_t)))
 #define md_array_size(a)                ((a) ? md_array_header(a)->size : 0)
 #define md_array_bytes(a)               (md_array_size(a) * sizeof(*(a)))
