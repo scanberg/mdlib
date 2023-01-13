@@ -392,22 +392,21 @@ struct md_script_ir_t {
     // We could use a direct raw interface here to save some function pointer indirections
     struct md_allocator_i *arena;
 
-    str_t str;  // Original string containing the 'source'
-    uint32_t flags;     // special flags which have been assigned during compile time
+    str_t str;      // Original string containing the 'source'
+    uint32_t flags; // special flags which have been assigned during compile time
     
-    // These are resizable arrays
-    ast_node_t          **nodes;
-    expression_t        **expressions;
-    expression_t        **type_checked_expressions;     // List of expressions which passed type checking
-    expression_t        **eval_targets;                 // List of dynamic expressions which needs to be evaluated per frame
-    uint32_t            *prop_eval_target_indices;      // List of indices (to eval_targets) of expressions which are meant to be exposed as properties
+    md_array(ast_node_t*) nodes;                        // All nodes in the AST tree
+
+    md_array(expression_t*) expressions;                // List of all expressions in the script
+    md_array(expression_t*) type_checked_expressions;   // List of expressions which passed type checking
+    md_array(expression_t*) eval_targets;               // List of dynamic expressions which needs to be evaluated per frame
     
-    identifier_t        *identifiers;                   // List of identifiers, notice that the data in a const context should only be used if it is flagged as
+    md_array(identifier_t)  identifiers;                // List of identifiers, notice that the data in a const context should only be used if it is flagged as
 
     // These are the final products which can be read through the public part of the structure
-    md_script_error_t       *errors;
-    md_script_vis_token_t   *vis_tokens;
-    str_t                   *identifier_names;
+    md_array(md_script_error_t)     errors;
+    md_array(md_script_vis_token_t) vis_tokens;
+    md_array(str_t)                 identifier_names;
 
     const char* stage;  // This is just to supply a context for the errors i.e. which stage the error occured
     bool record_errors; // This is to toggle if new errors should be registered... We don't want to flood the errors
@@ -420,8 +419,6 @@ struct md_script_eval_t {
     uint64_t ir_fingerprint;
 
     struct md_allocator_i *arena;
-    //uint32_t num_frames_completed;
-    //uint32_t num_frames_total;
     volatile bool interrupt;
 
     md_bitfield_t completed_frames;
@@ -429,7 +426,8 @@ struct md_script_eval_t {
 
     md_script_property_t    *properties;
     volatile uint32_t       *prop_dist_count;   // Counters property distributions
-    md_mutex_t              *prop_dist_mutex;    // Protect the data when writing to it in a threaded context (Distributions)
+    md_mutex_t              *prop_dist_mutex;   // Protect the data when writing to it in a threaded context (Distributions)
+    uint32_t                *prop_expr_idx;     // Original expression index in list (required to reference back when computing data silly silly)
 };
 
 struct parse_context_t {
@@ -3792,26 +3790,19 @@ static bool parse_script(md_script_ir_t* ir) {
             const char* end = tok.str.ptr + tok.str.len;
             str_t expr_str = {beg, (uint64_t)(end - beg)};
 
-            //if (node->type == AST_ASSIGNMENT &&
-                //md_array_size(node->children) == 2 && node->children[0]->type == AST_IDENTIFIER && node->children[0]->ident.ptr && node->children[1]) {
-                identifier_t* ident = NULL;
-                if (pruned_node->type == AST_ASSIGNMENT) {
-                    ASSERT(md_array_size(pruned_node->children) == 2);
-                    ASSERT(pruned_node->children[0]->type == AST_IDENTIFIER);
-                    ident = get_identifier(ir, pruned_node->children[0]->ident);
-                    ASSERT(ident);
+            identifier_t* ident = NULL;
+            if (pruned_node->type == AST_ASSIGNMENT) {
+                ASSERT(md_array_size(pruned_node->children) == 2);
+                ASSERT(pruned_node->children[0]->type == AST_IDENTIFIER);
+                ident = get_identifier(ir, pruned_node->children[0]->ident);
+                ASSERT(ident);
                     
-                }
-                expression_t* expr = md_alloc(ir->arena, sizeof(expression_t));
-                expr->node = pruned_node;
-                expr->ident = ident;
-                expr->str = expr_str;
-                md_array_push(ir->expressions, expr, ir->arena);
-            //}
-            //else {
-            //    create_error(ir, node->marker, "Every parsed expression should end up being assigned to a unique identifier.");
-            //    result = false;
-            //}
+            }
+            expression_t* expr = md_alloc(ir->arena, sizeof(expression_t));
+            expr->node = pruned_node;
+            expr->ident = ident;
+            expr->str = expr_str;
+            md_array_push(ir->expressions, expr, ir->arena);
         } else {
             token_type_t types[1] = {';'};
             tokenizer_consume_until_type(ctx.tokenizer, types, ARRAY_SIZE(types)); // Goto next statement
@@ -3887,19 +3878,20 @@ static inline bool is_property_type(type_info_t ti) {
     return is_temporal_type(ti) || is_distribution_type(ti) || is_volume_type(ti);
 }
 
-static bool extract_property_expressions(md_script_ir_t* ir) {
+static md_array(expression_t*) extract_property_expressions(md_script_ir_t* ir, md_allocator_i* alloc) {
     ASSERT(ir);
+    md_array(expression_t*) prop_expressions = 0;
 
     for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
         expression_t* expr = ir->eval_targets[i];
         ASSERT(expr);
         ASSERT(expr->node);
         if (expr->ident && is_property_type(expr->node->data.type)) {
-            md_array_push(ir->prop_eval_target_indices, (uint32_t)i, ir->arena);
+            md_array_push(prop_expressions, expr, alloc);
         }
     }
 
-    return true;
+    return prop_expressions;
 }
 
 static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
@@ -4160,7 +4152,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     const int64_t num_expr = md_array_size(ir->eval_targets);
     expression_t** const expr = ir->eval_targets;
     
-    ASSERT(md_array_size(ir->prop_eval_target_indices) == num_props);
+    //ASSERT(md_array_size(ir->prop_eval_target_indices) == num_props);
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
@@ -4265,7 +4257,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
 
         for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
             md_script_property_t* prop = &props[p_idx];
-            const uint32_t d_idx = ir->prop_eval_target_indices[p_idx];
+            const uint32_t d_idx = eval->prop_expr_idx[p_idx];
             const int32_t size = (int32_t)type_info_array_len(data[d_idx].type);
             float* values = (float*)data[d_idx].ptr;
 
@@ -4539,7 +4531,6 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
         return false;
     }
 
-    reset_ir(ir);
     ir->str = str_copy(src, ir->arena);
 
     if (ctx_ir) {
@@ -4550,7 +4541,6 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
         static_type_check(ir, mol) &&
         static_evaluation(ir, mol) &&
         extract_dynamic_evaluation_targets(ir) &&
-        extract_property_expressions(ir) &&
         extract_tokens(ir) &&
         extract_identifiers(ir);
 
@@ -4592,8 +4582,6 @@ bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_b
                 return false;
             }
             
-            // @TODO: Rework this, the data can be modified at the source therefore we should perhaps only
-            // Deal with shallow copies....
             ast_node_t* node = create_node(ir, AST_CONSTANT_VALUE, (token_t){0});
             node->data.ptr = &node->value._bitfield;
             node->data.size = sizeof(md_bitfield_t);
@@ -4703,23 +4691,34 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
 
     eval->ir_fingerprint = ir->fingerprint;
 
-    md_bitfield_init(&eval->completed_frames, alloc);
+    md_bitfield_init(&eval->completed_frames, eval->arena);
     md_bitfield_reserve_range(&eval->completed_frames, 0, num_frames);
 
-    const int64_t num_prop_expr = md_array_size(ir->prop_eval_target_indices);
-    if (num_prop_expr > 0) {
-        md_array_resize(eval->properties, num_prop_expr, eval->arena);
-        md_array_resize(eval->prop_dist_count, num_prop_expr, eval->arena);
-        md_array_resize(eval->prop_dist_mutex, num_prop_expr, eval->arena);
-        for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
-            uint32_t idx = ir->prop_eval_target_indices[i];
-            ASSERT(idx < md_array_size(ir->eval_targets));
-            ASSERT(ir->eval_targets[idx]->ident);
-            init_property(&eval->properties[i], num_frames, ir->eval_targets[idx]->ident->name, ir->eval_targets[idx]->node, eval->arena);
-            md_mutex_init(&eval->prop_dist_mutex[i]);
+    //md_array(expression_t*) prop_expr = extract_property_expressions(ir, default_temp_allocator);
+
+    int64_t num_prop_expr = 0;
+    for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
+        expression_t* expr = ir->eval_targets[i];
+        ASSERT(expr);
+        ASSERT(expr->node);
+        if (expr->ident && is_property_type(expr->node->data.type)) {
+            md_script_property_t prop = {0};
+            init_property(&prop, num_frames, expr->ident->name, expr->node, eval->arena);
+            md_array_push(eval->properties, prop, eval->arena);
+            md_array_push(eval->prop_expr_idx, (uint32_t)i, eval->arena);
+            num_prop_expr += 1;
         }
-        clear_properties(eval->properties, num_prop_expr);
     }
+    
+    md_array_resize(eval->prop_dist_count, num_prop_expr, eval->arena);
+    md_array_resize(eval->prop_dist_mutex, num_prop_expr, eval->arena);
+    clear_properties(eval->properties, num_prop_expr);
+        
+    for (int64_t i = 0; i < num_prop_expr; ++i) {
+        eval->prop_dist_count[i] = 0;
+        md_mutex_init(&eval->prop_dist_mutex[i]);
+    }
+
     md_mutex_init(&eval->frame_mutex);
 
     return eval;
@@ -4767,9 +4766,6 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
         return false;
     }
     
-    // @TODO: This should be turned into a soft error check that the IR version is the same as the eval targets were created for.
-    ASSERT(md_array_size(eval->properties) == md_array_size(ir->prop_eval_target_indices));
-
     bool result = eval_properties(eval, mol, traj, ir, frame_beg, frame_end);
 
     const uint64_t fingerprint = generate_fingerprint();
