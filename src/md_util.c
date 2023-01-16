@@ -757,6 +757,7 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
     for (int i = bond_range.beg; i < bond_range.end; ++i) {
         int a = mol->covalent_bond.bond[i].idx[0] - offset;
         int b = mol->covalent_bond.bond[i].idx[1] - offset;
+
         md_array_push(edges[a], b, alloc);
         md_array_push(edges[b], a, alloc);
     }
@@ -777,7 +778,7 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
         while (!fifo_empty(&queue)) {
             int idx = fifo_pop(&queue);
             
-            const int num_edges = md_array_size(edges[idx]);
+            const int num_edges = (int)md_array_size(edges[idx]);
             for (int j = 0; j < num_edges; ++j) {
                 int next = edges[idx][j];
                 if (next == parent[idx]) continue;  // avoid adding parent to search queue
@@ -813,8 +814,7 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
                         }
                     }
 
-                    md_printf(MD_LOG_TYPE_DEBUG, "Found ring");
-                    int n = md_array_size(ring);
+                    int n = (int)md_array_size(ring);
                     if (3 <= n && n <= 6) {
                         insert_ring(&rings, ring, alloc);
                     }
