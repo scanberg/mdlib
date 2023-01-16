@@ -4415,6 +4415,7 @@ static bool add_ir_ctx(md_script_ir_t* ir, const md_script_ir_t* ctx_ir) {
 static void free_ir(md_script_ir_t* ir) {
     if (validate_ir(ir)) {
         md_arena_allocator_destroy(ir->arena);
+        memset(ir, 0, sizeof(md_script_ir_t));
     }
 }
 
@@ -4531,6 +4532,8 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
         return false;
     }
 
+    reset_ir(ir);
+    
     ir->str = str_copy(src, ir->arena);
 
     if (ctx_ir) {
