@@ -703,14 +703,14 @@ static bool compare_ring(const int* a, const int* b) {
     return true;
 }
 
-static int find_ring(const int** rings, const int* ring) {
+static int find_ring(const md_array(md_array(int)) rings, const int* ring) {
     for (int i = 0; i < md_array_size(rings); ++i) {
         if (compare_ring(rings[i], ring)) return i;
     }
     return -1;
 }
 
-static void insert_ring(int** rings, int* ring, md_allocator_i* alloc) {
+static void insert_ring(md_array(md_array(int))* rings, md_array(int) ring, md_allocator_i* alloc) {
     // We want to ensure that each ring is unique, therefore we sort the atoms in the ring
     int n = (int)md_array_size(ring);
     
@@ -728,8 +728,8 @@ static void insert_ring(int** rings, int* ring, md_allocator_i* alloc) {
         }
     }
     
-    if (find_ring(rings, ring) == -1) {
-        md_array_push(rings, ring, alloc);
+    if (find_ring(*rings, ring) == -1) {
+        md_array_push(*rings, ring, alloc);
     }
 }
 
@@ -816,7 +816,7 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
                     md_printf(MD_LOG_TYPE_DEBUG, "Found ring");
                     int n = md_array_size(ring);
                     if (3 <= n && n <= 6) {
-                        insert_ring(rings, ring, alloc);
+                        insert_ring(&rings, ring, alloc);
                     }
                 } else {
                     depth[next]  = depth[idx] + 1;

@@ -90,7 +90,7 @@ UTEST(util, ring) {
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ALL);
     md_util_extract_rings(&mol, arena);
-    EXPECT_GT(mol.ring.count, 5);
+    EXPECT_EQ(mol.ring.count, 5);
     md_arena_allocator_reset(arena);
     
     md_arena_allocator_destroy(arena);
