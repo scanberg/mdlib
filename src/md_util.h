@@ -17,6 +17,7 @@ typedef enum md_util_postprocess_flags_t {
     MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT  = 8,
     MD_UTIL_POSTPROCESS_CHAINS_BIT          = 16,
     MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 32,
+    MD_UTIL_POSTPROCESS_RING_BIT            = 64,
 
     MD_UTIL_POSTPROCESS_ALL             = -1,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED  = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
@@ -102,6 +103,7 @@ bool md_util_extract_covalent_bonds(struct md_molecule_t* mol, struct md_allocat
 bool md_util_extract_hydrogen_bonds(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
 bool md_util_extract_rings(struct md_molecule_t* mol, struct md_allocator_i* alloc);
+bool md_util_extract_rings_from_subset(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);

@@ -733,22 +733,27 @@ static void insert_ring(md_array(md_array(int))* rings, md_array(int) ring, md_a
     }
 }
 
+// @TODO:
+// This should be improved by circumventing the need for residues.
+// Since it is essentially a breadth first search, it is conceptually similar to a flood-fill algorithm
+// Which means we only touch each atom once (with the exception of backtracking when a ring is found).
+
 static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_idx, md_allocator_i* alloc) {
     const int MAX_DEPTH = 99999;
 
     fifo_t queue  = {0};
     md_array(md_array(int)) rings  = 0;
     md_array(md_array(int)) edges  = 0;
-    md_array(int)  depth  = 0;
-    md_array(int)  parent = 0;
+    md_array(int)  depth = 0;
+    md_array(int)  pred  = 0;
 
     md_range_t bond_range = mol->residue.internal_covalent_bond_range[res_idx];
     md_range_t atom_range = mol->residue.atom_range[res_idx];
     int offset = atom_range.beg;
     int count  = atom_range.end - atom_range.beg;
-    md_array_resize(edges,  count, alloc);
-    md_array_resize(depth,  count, alloc);
-    md_array_resize(parent, count, alloc);
+    md_array_resize(edges, count, alloc);
+    md_array_resize(depth, count, alloc);
+    md_array_resize(pred,  count, alloc);
     
     const int max_edge_count = 2 * (bond_range.end - bond_range.beg);
     fifo_init(&queue, max_edge_count, alloc);
@@ -757,22 +762,21 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
     for (int i = bond_range.beg; i < bond_range.end; ++i) {
         int a = mol->covalent_bond.bond[i].idx[0] - offset;
         int b = mol->covalent_bond.bond[i].idx[1] - offset;
-
         md_array_push(edges[a], b, alloc);
         md_array_push(edges[b], a, alloc);
     }
 
     // Init arrays
     for (int j = 0; j < count; ++j) {
-        depth[j]  = MAX_DEPTH;
-        parent[j] = -1;
+        depth[j] = MAX_DEPTH;
+        pred[j]  = -1;
     }
     
     for (int i = 0; i < count; ++i) {
         // Find the first index which have not yet been processed
         if (depth[i] < MAX_DEPTH) continue;
 
-        fifo_clear(&queue);        
+        fifo_clear(&queue);
         fifo_push(&queue, i);
         depth[i] = 0;
         while (!fifo_empty(&queue)) {
@@ -781,7 +785,7 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
             const int num_edges = (int)md_array_size(edges[idx]);
             for (int j = 0; j < num_edges; ++j) {
                 int next = edges[idx][j];
-                if (next == parent[idx]) continue;  // avoid adding parent to search queue
+                if (next == pred[idx]) continue;  // avoid adding parent to search queue
                 
                 if (depth[next] < MAX_DEPTH) {                   
                     // We found a junction point where the graph connects
@@ -800,12 +804,12 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
                     while (d--) {
                         if (depth[l] >= d) {
                             md_array_push(ring, l + offset, alloc);
-                            l = parent[l];
+                            l = pred[l];
                         }
                         
                         if (depth[r] >= d) {
                             md_array_push(ring, r + offset, alloc);
-                            r = parent[r];
+                            r = pred[r];
                         }
 
                         if (l == r) {
@@ -819,18 +823,18 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
                         insert_ring(&rings, ring, alloc);
                     }
                 } else {
-                    depth[next]  = depth[idx] + 1;
-                    parent[next] = idx;
+                    depth[next] = depth[idx] + 1;
+                    pred[next]  = idx;
                     fifo_push(&queue, next);
                 }
             }
         }
     }
 
-    fifo_free(&queue,     alloc);
-    md_array_free(parent, alloc);
-    md_array_free(depth,  alloc);
-    md_array_free(edges,  alloc);
+    fifo_free(&queue,    alloc);
+    md_array_free(pred,  alloc);
+    md_array_free(depth, alloc);
+    md_array_free(edges, alloc);
     return rings;
 }
 
@@ -850,19 +854,13 @@ bool md_util_extract_rings(md_molecule_t* mol, md_allocator_i* alloc) {
     for (int i = 0; i < mol->residue.count; ++i) {
         md_ring_allocator_set_pos(ring_alloc, reset_point);
         int** rings = find_residue_rings(mol, i, &temp_alloc);
+        
         if (rings) {
             for (int j = 0; j < (int)md_array_size(rings); ++j) {
-                const int n = (int)md_array_size(rings[j]);
-                const int offset = (int)md_array_size(mol->ring.data.indices);
-                md_array_push_array(mol->ring.data.indices, rings[j], n, alloc);
-                md_range_t range = {offset, offset + n};
-                md_array_push(mol->ring.range, range, alloc);
+                md_molecule_ring_data_push(&mol->ring, rings[j], md_array_size(rings[j]), alloc);
             }
         }
     }
-
-    mol->ring.data.count = md_array_size(mol->ring.data.indices);
-    mol->ring.count = md_array_size(mol->ring.range);
     
     return true;
 }
@@ -1710,14 +1708,15 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     }
    
     if (flags & MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT) {
-        if (mol->atom.valence == 0) {
-            md_array_resize(mol->atom.valence, mol->atom.count, alloc);
-            MEMSET(mol->atom.valence, 0, md_array_size(mol->atom.valence) * sizeof(*mol->atom.valence));
-        }
-
         if (mol->covalent_bond.count == 0) {
             // Use heuristical method of finding covalent bonds
             md_util_extract_covalent_bonds(mol, alloc);
+        }
+    }
+    
+    if (flags & MD_UTIL_POSTPROCESS_RING_BIT) {
+        if (mol->covalent_bond.count > 0) {
+            md_util_extract_rings(mol, alloc);
         }
     }
 

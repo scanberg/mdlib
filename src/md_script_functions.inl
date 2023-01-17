@@ -314,28 +314,30 @@ static int _xor  (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 // Selectors
 // Atomic level selectors
-static int _all     (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_x       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_y       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_z       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_xyz       (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_expl_flt  (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_expl_frng (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_impl_flt  (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _within_impl_frng (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _name    (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _element_str (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _element_irng(data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _atom_irng    (data_t*, data_t[], eval_context_t*);   // -> bitfield
-static int _atom_int     (data_t*, data_t[], eval_context_t*);   // -> bitfield
+static int _all             (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_x        (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_y        (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_z        (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_xyz      (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_expl_flt (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_expl_frng(data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_impl_flt (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _within_impl_frng(data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _name            (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _element_str     (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _element_irng    (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _atom_irng       (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _atom_int        (data_t*, data_t[], eval_context_t*); // -> bitfield
+
+static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 
 // Residue level selectors
-static int _water   (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _protein   (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _ion     (data_t*, data_t[], eval_context_t*); // -> bitfield
-static int _resname (data_t*, data_t[], eval_context_t*); // (str[]) -> bitfield
-static int _resid   (data_t*, data_t[], eval_context_t*); // (irange[]) -> bitfield   // irange also covers integers, since integers are implicitly convertible to irange
-static int _residue (data_t*, data_t[], eval_context_t*); // (irange[]) -> bitfield
+static int _water   (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _protein   (data_t*, data_t[], eval_context_t*); // -> bitfield[]
+static int _ion     (data_t*, data_t[], eval_context_t*);   // -> bitfield
+static int _resname (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
+static int _resid   (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
+static int _residue (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
 
 static int _fill_residue(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
 static int _fill_chain  (data_t*, data_t[], eval_context_t*);    // (bitfield[]) -> bitfield
@@ -575,6 +577,8 @@ static procedure_t procedures[] = {
     {CSTR("element"),   TI_BITFIELD, 1, {TI_IRANGE_ARR},    _element_irng,      FLAG_STATIC_VALIDATION},
     {CSTR("atom"),      TI_BITFIELD, 1, {TI_IRANGE_ARR},    _atom_irng,         FLAG_STATIC_VALIDATION},
     {CSTR("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},       _atom_int,          FLAG_STATIC_VALIDATION},
+    
+    {CSTR("ring"),      TI_BITFIELD_ARR, 0, {0},            _ring,              FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
 
     // Residue level
     {CSTR("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
@@ -2097,6 +2101,74 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     return 0;
+}
+
+static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol);
+    (void)arg;
+
+    int result = 0;
+
+    if (dst && dst->ptr) {
+        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        md_bitfield_t* bf_arr = as_bitfield(*dst);
+        
+        int64_t num_rings = md_molecule_ring_data_count(&ctx->mol->ring);
+        int64_t dst_idx = 0;
+        for (int64_t i = 0; i < num_rings; ++i) {
+            md_bitfield_t* bf = &bf_arr[dst_idx];
+            
+            // Only accept the ring if it is fully within the given context
+            const md_atom_idx_t* ring_beg = md_molecule_ring_beg(&ctx->mol->ring, i);
+            const md_atom_idx_t* ring_end = md_molecule_ring_end(&ctx->mol->ring, i);
+
+            if (ctx->mol_ctx) {
+                bool discard = false;
+                for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
+                    if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
+                        discard = true;
+                        break;
+                    }
+                }
+                if (!discard) {
+                    for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
+                        md_bitfield_set_bit(bf, *it);
+                    }
+                    dst_idx += 1;
+                }
+            } else {
+                for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
+                    md_bitfield_set_bit(bf, *it);
+                }
+                dst_idx += 1;
+            }
+        }
+    } else {
+        // We need to check if the ring is within the given context
+        if (ctx->mol_ctx) {
+            int count = 0;
+            int64_t num_rings = md_molecule_ring_data_count(&ctx->mol->ring);
+            for (int64_t i = 0; i < num_rings; ++i) {
+                bool discard = false;
+                const md_atom_idx_t* ring_beg = md_molecule_ring_beg(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_end = md_molecule_ring_end(&ctx->mol->ring, i);
+                for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
+                    if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
+                        discard = true;
+                        break;
+                    }
+                }
+                if (!discard) {
+                    count += 1;
+                }
+            }
+            result = count;
+        } else {
+            return (int)md_molecule_ring_data_count(&ctx->mol->ring);
+        }
+    }
+
+    return result;
 }
 
 static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {

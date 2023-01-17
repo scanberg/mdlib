@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <core/md_str.h>
+#include <core/md_array.h>
 #include <core/md_vec_math.h>
 
 // Forward declarations
@@ -127,15 +128,12 @@ typedef struct md_molecule_bond_data_t {
     md_bond_t* bond;
 } md_molecule_bond_data_t;
 
+// Ring data
+// Container structure for multiple rings
+// Holds list of rings stored as ranges of atom indices
 typedef struct md_molecule_ring_data_t {
-    int64_t count;
-    md_range_t* range;
-
-    struct {
-        int64_t count;
-        // This is a sequential data holder for indices which is referenced by ring ranges
-        md_atom_idx_t* indices;
-    } data;
+    md_array(md_range_t)    ranges;
+    md_array(md_atom_idx_t) indices;
 } md_molecule_ring_data_t;
 
 // This represents symmetries which are instanced, commonly found
@@ -208,26 +206,40 @@ static inline md_label_t make_label(str_t str) {
     return lbl;
 }
 
-// Helper Access functions
-static inline str_t md_molecule_atom_name(const md_molecule_t* mol, md_atom_idx_t idx) {
-    return LBL_TO_STR(mol->atom.name[idx]);
+// Access to ring data
+static inline void md_molecule_ring_data_free (md_molecule_ring_data_t* data, md_allocator_i* alloc) {
+    md_array_free(data->ranges,  alloc);
+    md_array_free(data->indices, alloc);
 }
 
-static inline vec3_t md_molecule_atom_xyz(const md_molecule_t* mol, md_atom_idx_t idx) {
-    vec3_t xyz = {mol->atom.x[idx], mol->atom.y[idx], mol->atom.z[idx]};
-    return xyz;
+static inline void md_molecule_ring_data_push (md_molecule_ring_data_t* data, md_atom_idx_t* ring_data, int64_t ring_size, md_allocator_i* alloc) {
+    md_range_t range = {(int)md_array_size(data->indices), (int)md_array_size(data->indices) + (int)ring_size};
+    md_array_push_array(data->indices, ring_data, ring_size, alloc);
+    md_array_push(data->ranges, range, alloc);
 }
 
-static inline str_t md_molecule_residue_name(const md_molecule_t* mol, md_residue_idx_t idx) {
-    return LBL_TO_STR(mol->residue.name[idx]);
+static inline void md_molecule_ring_data_clear(md_molecule_ring_data_t* data) {
+    md_array_shrink(data->ranges,  0);
+    md_array_shrink(data->indices, 0);
 }
 
-static inline md_atom_idx_t* md_molecule_ring_beg(const md_molecule_t* mol, int64_t ring_idx) {
-    return mol->ring.data.indices + mol->ring.range[ring_idx].beg;
+static inline int64_t md_molecule_ring_data_count(const md_molecule_ring_data_t* data) { return md_array_size(data->ranges); }
+
+// Access to individual rings
+static inline md_atom_idx_t* md_molecule_ring_beg(const md_molecule_ring_data_t* data, int64_t ring_idx) {
+    return data->indices + data->ranges[ring_idx].beg;
 }
 
-static inline md_atom_idx_t* md_molecule_ring_end(const md_molecule_t* mol, int64_t ring_idx) {
-    return mol->ring.data.indices + mol->ring.range[ring_idx].end;
+static inline md_atom_idx_t* md_molecule_ring_end(const md_molecule_ring_data_t* data, int64_t ring_idx) {
+    return data->indices + data->ranges[ring_idx].end;
+}
+
+static inline md_atom_idx_t* md_molecule_ring_data(const md_molecule_ring_data_t* data, int64_t ring_idx) {
+    return data->indices + data->ranges[ring_idx].beg;
+}
+
+static inline int64_t md_molecule_ring_size(const md_molecule_ring_data_t* data, int64_t ring_idx) {
+    return data->ranges[ring_idx].end - data->ranges[ring_idx].beg;
 }
 
 #ifdef __cplusplus

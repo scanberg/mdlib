@@ -2727,7 +2727,6 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             data.size = elem_size;
 
             int64_t offset = type_info_array_len(lhs_types[i]);
-            ASSERT(offset > 0);
             dst_idx += offset;
         }
 
@@ -3605,7 +3604,9 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                         }
 
                         int64_t len = type_info_array_len(type);
-                        ASSERT(len > 0);
+                        // Some arrays will be zero and that is accepted
+                        // We still have to keep it even though it does not contribute
+                        // To keep arrays in sync.
 
                         md_array_push(node->lhs_context_types, type, ctx->ir->arena);
                         arr_len += len;

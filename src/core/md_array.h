@@ -1,3 +1,5 @@
+#pragma once
+
 // THIS IS INSIRED BY OUR MACHINERY'S IMPLEMENTATION OF MD ARRAY AT A PERVERTED LEVEL. 
 // (https://ourmachinery.com)
 

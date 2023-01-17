@@ -91,7 +91,7 @@ block_t block_mask_lo(uint32_t idx) {
 
 #if md_simd_i64_width == 4
     md_i64x4_t eq_idx = md_simd_set1_i64x4(idx / 64);
-    md_i64x4_t eq_bit = md_simd_set1_i64x4((1UL << (idx & 63)) - 1);
+    md_i64x4_t eq_bit = md_simd_set1_i64x4((1ULL << (idx & 63)) - 1);
 
     md_i64x4_t lo_idx = md_simd_set_i64x4(0, 1,  2,  3);
     md_i64x4_t hi_idx = md_simd_set_i64x4(4, 5,  6,  7);
