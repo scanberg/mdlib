@@ -3,10 +3,29 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <core/md_array.h>
 #include <core/md_vec_math.h>
+
+/*
+ *  This is an attempt of a spatial hashing structure intended for accelerated spatial queries.
+ *  It makes some assumptions as it is not intended to be a general purpose spatial hash:
+ *  - Only 3-dimensions (You could surely use it for 2D and 1D, but it would still to some redundant work)
+ *  - Each cell can only hold up to 1023 entries, this is because the offset and length is packed into a single 32-bit integer.
+ *      This implies the input data has a certain spatial distribution and the cell size is not too small.
+ *  - The internal coordinates are compressed as 3x10-bit integers, which means there is some loss in precision.
+ *  - The cell size is currently fixed for simplicity. Could certainly change over time.
+ *  - Internally works for periodic data as well as non-periodic
+ * 
+ *  Things to improve:
+ *  Simlify implementation. The current version of using fixed cell size makes it a bit more complicated in the periodic case than it needs to be.
+ *  Query should be handled with an external state object which can be used to iterate. The current callback is just cumersome and fugly.
+ * 
+ */
 
 struct md_allocator_i;
 
+// Callback function for when a point is found within the search space of the query
+// The return value (bool) signifies if it should continue its search (true) or if it should early exit (false).
 typedef bool (*md_spatial_hash_iterator_fn)(uint32_t idx, vec3_t coord, void* user_param);
 
 typedef struct md_spatial_hash_t {
@@ -33,13 +52,12 @@ bool md_spatial_hash_init_soa(md_spatial_hash_t* spatial_hash, const float* x, c
 bool md_spatial_hash_free(md_spatial_hash_t* spatial_hash);
 
 
-// Perform a spatial query for a given position + radius.
-// Will iterate over all points within the given position + radius and call the supplied function iter.
-//bool md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_iterator_fn iter, void* user_param);
-
 // Perform a spatial query for a given position + radius in a periodic domain given by pbc_min and pbc_max.
 // This will also include periodic occurrences of points accross the periodic boundries.
 bool md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_iterator_fn iter, void* user_param);
+
+// Get a list of indices which fall within the search space (pos + radius)
+md_array(uint32_t) md_spatial_hash_query_idx(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, struct md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

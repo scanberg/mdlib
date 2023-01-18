@@ -248,7 +248,7 @@ static inline bool query_pos_rad(const md_spatial_hash_t* hash, vec3_t position,
         CLAMP((int32_t)(ceilf((pos.z + rad) * INV_CELL_EXT)) - cell_min[2], 0, cell_dim[2])
     };
 
-    int32_t cc[3];
+    int32_t cc[3] = {0};
     vec4_t cc_min = {0};
     for (cc[2] = cell_beg[2]; cc[2] < cell_end[2]; ++cc[2]) {
         cc_min.z = (cell_min[2] + cc[2]) * CELL_EXT;
@@ -379,9 +379,27 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
     return true;
 }
 
+bool validate_spatial_hash(const md_spatial_hash_t* spatial_hash) {
+    if (!spatial_hash) {
+        md_print(MD_LOG_TYPE_ERROR, "spatial_hash is null");
+        return false;
+    }
+    
+    if (spatial_hash->magic != MD_SPATIAL_HASH_MAGIC) {
+        md_print(MD_LOG_TYPE_ERROR, "spatial_hash has invalid magic");
+        return false;
+    }
+
+    return true;
+}
+
 bool md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_iterator_fn iter, void* user_param) {
     ASSERT(spatial_hash);
     ASSERT(iter);
+
+    if (!validate_spatial_hash(spatial_hash)) {
+        return false;
+    }
 
     // This is for non periodic lookup
     if (vec4_equal(spatial_hash->pbc_ext, vec4_zero())) {
@@ -389,4 +407,26 @@ bool md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, fl
     } else {
         return query_pos_rad_periodic(spatial_hash, pos, radius, iter, user_param);
     }
+}
+
+typedef struct {
+    md_array(uint32_t) arr;
+    md_allocator_i* alloc;
+} idx_data_t;
+
+bool idx_fn(uint32_t idx, vec3_t pos, void* user_param) {
+    (void)pos;
+    idx_data_t* data = (idx_data_t*)user_param;
+    md_array_push(data->arr, idx, data->alloc);
+    return false;
+}
+
+md_array(uint32_t) md_spatial_hash_query_idx(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_allocator_i* alloc) {
+    idx_data_t data = {
+        .arr = NULL,
+        .alloc = alloc,
+    };
+
+    md_spatial_hash_query(spatial_hash, pos, radius, idx_fn, &data);
+    return data.arr;
 }
