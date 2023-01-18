@@ -856,25 +856,25 @@ static inline irange_t clamp_range(irange_t range, irange_t context) {
 
 static int64_t* get_residue_indices_in_context(const md_molecule_t* mol, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
     ASSERT(mol);
-    ASSERT(mol->atom.residue_idx);
-    ASSERT(mol->residue.atom_range);
     ASSERT(alloc);
 
     int64_t* arr = 0;
 
-    if (bitfield) {
-        int64_t beg = bitfield->beg_bit;
-        int64_t end = bitfield->end_bit;
-        while ((beg = md_bitfield_scan(bitfield, beg, end)) != 0) {
-            const int64_t i = beg - 1;
-            const int64_t res_idx = mol->atom.residue_idx[i];
-            md_array_push(arr, res_idx, alloc);
-            beg = mol->residue.atom_range[res_idx].end;
+    if (mol->residue.count) {
+        if (bitfield) {
+            int64_t beg = bitfield->beg_bit;
+            int64_t end = bitfield->end_bit;
+            while ((beg = md_bitfield_scan(bitfield, beg, end)) != 0) {
+                const int64_t i = beg - 1;
+                const int64_t res_idx = mol->atom.residue_idx[i];
+                md_array_push(arr, res_idx, alloc);
+                beg = mol->residue.atom_range[res_idx].end;
+            }
         }
-    }
-    else {
-        for (int64_t i = 0; i < mol->residue.count; ++i) {
-            md_array_push(arr, i, alloc);
+        else {
+            for (int64_t i = 0; i < mol->residue.count; ++i) {
+                md_array_push(arr, i, alloc);
+            }
         }
     }
 
@@ -888,19 +888,21 @@ static int64_t* get_chain_indices_in_context(const md_molecule_t* mol, const md_
     ASSERT(alloc);
     int64_t* arr = 0;
 
-    if (bitfield) {
-        int64_t beg = bitfield->beg_bit;
-        int64_t end = bitfield->end_bit;
-        while ((beg = md_bitfield_scan(bitfield, beg, end)) != 0) {
-            const int64_t i = beg - 1;
-            const int64_t chain_idx = mol->atom.chain_idx[i];
-            md_array_push(arr, chain_idx, alloc);
-            beg = mol->chain.atom_range[chain_idx].end;
+    if (mol->chain.count) {
+        if (bitfield) {
+            int64_t beg = bitfield->beg_bit;
+            int64_t end = bitfield->end_bit;
+            while ((beg = md_bitfield_scan(bitfield, beg, end)) != 0) {
+                const int64_t i = beg - 1;
+                const int64_t chain_idx = mol->atom.chain_idx[i];
+                md_array_push(arr, chain_idx, alloc);
+                beg = mol->chain.atom_range[chain_idx].end;
+            }
         }
-    }
-    else {
-        for (int64_t i = 0; i < mol->chain.count; ++i) {
-            md_array_push(arr, i, alloc);
+        else {
+            for (int64_t i = 0; i < mol->chain.count; ++i) {
+                md_array_push(arr, i, alloc);
+            }
         }
     }
 
@@ -2232,10 +2234,16 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->residue.name && ctx->mol->residue.atom_range);
+    ASSERT(ctx && ctx->mol);
     (void)arg;
 
     int result = 0;
+
+    if (!ctx->mol->residue.count) {
+        create_error(ctx->ir, ctx->op_token, "The molecule does not contain any residues");
+        return -1;
+    }
+
     int64_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
@@ -2257,6 +2265,10 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
+        if (ctx->mol->residue.count == 0) {
+            
+        }
+
         int count = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
             int64_t ri = res_indices[i];
