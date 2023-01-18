@@ -45,12 +45,12 @@ int md_base64_encode_size_in_bytes(int input_length) {
 // 
 int md_base64_encode(char* output, const void* input, int input_length) {
     if (output == NULL) {
-        md_print(MD_LOG_TYPE_ERROR, "Base64: Supplied output buffer was NULL");
+        md_log(MD_LOG_TYPE_ERROR, "Base64: Supplied output buffer was NULL");
         return 0;
     }
 
     if (input == NULL) {
-        md_print(MD_LOG_TYPE_ERROR, "Base64: Supplied input buffer was NULL");
+        md_log(MD_LOG_TYPE_ERROR, "Base64: Supplied input buffer was NULL");
         return 0;
     }
 
@@ -89,12 +89,12 @@ int md_base64_decode_size_in_bytes(int input_length) {
 
 int md_base64_decode(void* output, const char *input, int input_length) {
     if (output == NULL) {
-        md_print(MD_LOG_TYPE_ERROR, "Base64: Supplied output buffer was NULL");
+        md_log(MD_LOG_TYPE_ERROR, "Base64: Supplied output buffer was NULL");
         return 0;
     }
 
     if (input == NULL) {
-        md_print(MD_LOG_TYPE_ERROR, "Base64: Supplied input buffer was NULL");
+        md_log(MD_LOG_TYPE_ERROR, "Base64: Supplied input buffer was NULL");
         return 0;
     }
 
@@ -115,12 +115,12 @@ int md_base64_decode(void* output, const char *input, int input_length) {
         for (int k = 0; k < 4; ++k, ++i) {
             while (i < input_length && (input[i] == '\r' || input[i] == '\n')) i += 1;
             if (i == input_length) {
-                md_print(MD_LOG_TYPE_ERROR, "Base64: Failed to read and decode 4 consecutive bytes in input");
+                md_log(MD_LOG_TYPE_ERROR, "Base64: Failed to read and decode 4 consecutive bytes in input");
                 return 0;
             }
             char c = decode_character(input[i]);
             if (c < 0) {
-                md_print(MD_LOG_TYPE_ERROR, "Base64: Encountered invalid character in sequence.");
+                md_log(MD_LOG_TYPE_ERROR, "Base64: Encountered invalid character in sequence.");
                 return 0;
             }
             byte[k] = (uint32_t)c;

@@ -159,14 +159,6 @@
 #define STRINGIFY(s) #s
 #endif
 
-#ifndef __FUNC____
-#if MD_COMPILER_MSVC
-#define __FUNC__ __FUNCSIG__
-#else
-#define __FUNC__ __PRETTY_FUNCTION__
-#endif
-#endif
-
 // Provide declarations for common intrinsic functions which all of the supported compilers expose
 #ifndef ASSERT
 
@@ -183,7 +175,7 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
                 : md_assert_impl( \
                     __FILE__, \
                     __LINE__, \
-                    __FUNC__, \
+                    __func__, \
                     #__e) \
             )
 #   else

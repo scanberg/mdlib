@@ -217,13 +217,13 @@ UTEST(bitfield, serialization) {
     void* mem = md_alloc(alloc, est_bytes);
     int64_t real_bytes = md_bitfield_serialize(mem, &a);
 
-    md_printf(MD_LOG_TYPE_INFO, "Estimated serialization bytes for a: %i, actual bytes: %i", (int)est_bytes, (int)real_bytes);
+    md_logf(MD_LOG_TYPE_INFO, "Estimated serialization bytes for a: %i, actual bytes: %i", (int)est_bytes, (int)real_bytes);
 
     md_bitfield_t b = {0};
     md_bitfield_init(&b, alloc);
 
     bool result = md_bitfield_deserialize(&b, mem, real_bytes);
-    md_printf(MD_LOG_TYPE_INFO, "Deserialization of b: %s", result ? "true" : "false");
+    md_logf(MD_LOG_TYPE_INFO, "Deserialization of b: %s", result ? "true" : "false");
     EXPECT_TRUE(result);
 
     for (int64_t i = 0; i < 70000; ++i) {
@@ -237,7 +237,7 @@ UTEST(bitfield, serialization) {
     md_bitfield_set_bit(&c, 0);
 
     real_bytes = md_bitfield_serialize(mem, &c);
-    md_printf(MD_LOG_TYPE_INFO, "Serialized bytes bytes for c: %i", (int)est_bytes, (int)real_bytes);
+    md_logf(MD_LOG_TYPE_INFO, "Serialized bytes bytes for c: %i", (int)est_bytes, (int)real_bytes);
 
 
     md_bitfield_clear(&b);

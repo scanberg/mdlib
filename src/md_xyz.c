@@ -135,7 +135,7 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
         str_t token;
         str_t line = lines[0];
         if (!extract_next_token(&token, &line) || !is_unsigned_int(token)) {
-            md_print(MD_LOG_TYPE_ERROR, "Invalid format for XYZ: Missing coordinate count");
+            md_log(MD_LOG_TYPE_ERROR, "Invalid format for XYZ: Missing coordinate count");
             return false;
         }
 
@@ -205,7 +205,7 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
             } else if (is_unsigned_int(token[1])) {
                 format->flags |= XYZ_ATOMIC_NUMBER;
             } else {
-                md_print(MD_LOG_TYPE_ERROR, "Invalid format for element");
+                md_log(MD_LOG_TYPE_ERROR, "Invalid format for element");
                 return false;
             }
 
@@ -222,7 +222,7 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
             format->atom_type.end = END(token[5]);
 
         } else {
-            md_print(MD_LOG_TYPE_ERROR, "Invalid format for XYZ: Unknown variation of Tinker format?");
+            md_log(MD_LOG_TYPE_ERROR, "Invalid format for XYZ: Unknown variation of Tinker format?");
             return false;
         }
     }
@@ -241,7 +241,7 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
             } else if (is_unsigned_int(token[0])) {
                 format->flags |= XYZ_ATOMIC_NUMBER;
             } else {
-                md_print(MD_LOG_TYPE_ERROR, "Invalid format for element");
+                md_log(MD_LOG_TYPE_ERROR, "Invalid format for element");
                 return false;
             }
 
@@ -254,11 +254,11 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
             format->z.beg = END(token[3]) - 11;
             format->z.end = END(token[3]);
         } else {
-            md_print(MD_LOG_TYPE_ERROR, "Invalid format for XYZ: Unknown variation of Tinker format?");
+            md_log(MD_LOG_TYPE_ERROR, "Invalid format for XYZ: Unknown variation of Tinker format?");
             return false;
         }
     } else {
-        md_print(MD_LOG_TYPE_ERROR, "Invalid format for XYZ");
+        md_log(MD_LOG_TYPE_ERROR, "Invalid format for XYZ");
         return false;
     }
 
@@ -280,7 +280,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, const xyz_format_t*
     } else if (format->flags & XYZ_ATOMIC_NUMBER) {
         coord->atomic_number = extract_int(line, format->element.beg, format->element.end);
     } else {
-        md_print(MD_LOG_TYPE_ERROR, "Undetermined format for element type in XYZ coordinate");
+        md_log(MD_LOG_TYPE_ERROR, "Undetermined format for element type in XYZ coordinate");
         return false;
     }
 
@@ -301,7 +301,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, const xyz_format_t*
                 if (connection) {
                     coord->connectivity[connection_count++] = connection;
                 } else {
-                    md_print(MD_LOG_TYPE_ERROR, "Invalid connectivity information in XYZ file");
+                    md_log(MD_LOG_TYPE_ERROR, "Invalid connectivity information in XYZ file");
                     return false;
                 }
             }
@@ -322,19 +322,19 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, con
     str_t line[2];
 
     if (!str_extract_line(&line[0], str)) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to extract header line");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to extract header line");
         return false;
     }
 
     int32_t count = extract_int(line[0], format->coord_count.beg, format->coord_count.end);
     if (count <= 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to parse coordinate count in header");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to parse coordinate count in header");
         return false;
     }
 
     if (!(format->flags & XYZ_TINKER) || (format->flags & XYZ_TINKER_ARC)) {
         if (!str_extract_line(&line[1], str)) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to extract extra line");  
+            md_log(MD_LOG_TYPE_ERROR, "Failed to extract extra line");  
             return false;
         }
     }
@@ -385,7 +385,7 @@ static inline int32_t xyz_parse_model_coordinates(md_xyz_data_t* data, str_t* st
         if (extract_coord(&coord, format, line)) {
             md_array_push(data->coordinates, coord, alloc);
         } else {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to parse model coordinate");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to parse model coordinate");
             break;
         }
     }
@@ -411,22 +411,22 @@ int64_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
     ASSERT(xyz->magic == MD_XYZ_TRAJ_MAGIC);
 
     if (!xyz->filesize) {
-        md_print(MD_LOG_TYPE_ERROR, "File size is zero");
+        md_log(MD_LOG_TYPE_ERROR, "File size is zero");
         return 0;
     }
 
     if (!xyz->file) {
-        md_print(MD_LOG_TYPE_ERROR, "File handle is NULL");
+        md_log(MD_LOG_TYPE_ERROR, "File handle is NULL");
         return 0;
     }
 
     if (!xyz->frame_offsets) {
-        md_print(MD_LOG_TYPE_ERROR, "Frame offsets is empty");
+        md_log(MD_LOG_TYPE_ERROR, "Frame offsets is empty");
         return 0;
     }
 
     if (!(0 <= frame_idx && frame_idx < (int64_t)md_array_size(xyz->frame_offsets) - 1)) {
-        md_print(MD_LOG_TYPE_ERROR, "Frame index is out of range");
+        md_log(MD_LOG_TYPE_ERROR, "Frame index is out of range");
         return 0;
     }
 
@@ -458,14 +458,14 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
     if (xyz->magic != MD_XYZ_TRAJ_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "Error when decoding frame header, xyz magic did not match");
+        md_log(MD_LOG_TYPE_ERROR, "Error when decoding frame header, xyz magic did not match");
         return false;
     }
 
     const int64_t* ptr = frame_data_ptr;
     int32_t step = (int32_t)ptr[0];
     if (step < 0 || step >= xyz->header.num_frames) {
-        md_print(MD_LOG_TYPE_ERROR, "Error when decoding frame data, corrupt frame index");
+        md_log(MD_LOG_TYPE_ERROR, "Error when decoding frame data, corrupt frame index");
         return false;
     }
 
@@ -474,7 +474,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     md_xyz_model_t model = {0};
     int32_t coord_count = 0;
     if (!xyz_parse_model_header(&model, &str, &xyz->format, &coord_count)) {
-        md_print(MD_LOG_TYPE_ERROR, "Error when decoding header");
+        md_log(MD_LOG_TYPE_ERROR, "Error when decoding header");
         return false;
     }
 
@@ -528,7 +528,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i* alloc) {
     xyz_format_t format = {0};
     if (!extract_format(&format, str)) {
-        md_print(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
+        md_log(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
         return false;
     }
 
@@ -547,7 +547,7 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
             if (str_extract_line(&line, &str) && extract_coord(&coord, &format, line)) {
                 md_array_push(data->coordinates, coord, alloc);
             } else {
-                md_print(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
+                md_log(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
                 return false;
             }
         }
@@ -568,7 +568,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
 
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
-        md_printf(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
+        md_logf(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
         return false;
     }
 
@@ -579,7 +579,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
     str_t chunk = {buf, md_file_read(file, buf, sizeof(buf))};
 
     if (!extract_format(&format, chunk)) {
-        md_print(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
+        md_log(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
         goto done;
     }
 
@@ -593,7 +593,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
         mdl.byte_offset = md_file_tell(file) - chunk.len;
 
         if (!xyz_parse_model_header(&mdl, &chunk, &format, &expected_count)) {
-            md_print(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to read header");
+            md_log(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to read header");
             goto done;
         }
 
@@ -607,7 +607,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
             if (extract_coord(&coord, &format, line)) {
                 md_array_push(data->coordinates, coord, alloc);
             } else {
-                md_print(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
+                md_log(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
                 goto done;
             }
         }
@@ -691,7 +691,7 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
 
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
-        md_printf(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
+        md_logf(MD_LOG_TYPE_ERROR, "Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
         return false;
     }
 
@@ -703,12 +703,12 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     str_t chunk = {buf, md_file_read(file, buf, sizeof(buf))};
 
     if (!extract_format(&format, chunk)) {
-        md_print(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
+        md_log(MD_LOG_TYPE_ERROR, "Parse XYZ: Invalid format");
         goto done;
     }
 
     if (!xyz_parse_model_header(&mdl, &chunk, &format, &expected_count)) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to read xyz header");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to read xyz header");
         goto done;
     }
 
@@ -721,7 +721,7 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
         if (extract_coord(&coord, &format, line)) {
             md_array_push(data.coordinates, coord, alloc);
         } else {
-            md_print(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
+            md_log(MD_LOG_TYPE_ERROR, "Parse XYZ, Failed to parse coordinate");
             goto done;
         }
     }
@@ -751,7 +751,7 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
 
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
     if (xyz->magic != MD_XYZ_TRAJ_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "Error when decoding frame coord, xtc magic did not match");
+        md_log(MD_LOG_TYPE_ERROR, "Error when decoding frame coord, xtc magic did not match");
         return false;
     }
 
@@ -765,7 +765,7 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         void* frame_data = md_alloc(alloc, frame_size);
         const int64_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to read the expected size");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to read the expected size");
             md_free(alloc, frame_data, frame_size);
             return false;
         }
@@ -789,21 +789,21 @@ static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_ato
 
         read_bytes = md_file_read(file, &magic, sizeof(uint64_t));
         if (read_bytes != sizeof(uint64_t) || magic != CACHE_MAGIC) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, magic was incorrect or corrupt");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, magic was incorrect or corrupt");
             result = false;
             goto done;
         }
 
         read_bytes = md_file_read(file, num_atoms, sizeof(int64_t));
         if (read_bytes != sizeof(int64_t) || num_atoms == 0) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of atoms was zero or corrupt");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of atoms was zero or corrupt");
             result = false;
             goto done;
         }
 
         read_bytes = md_file_read(file, &num_offsets, sizeof(int64_t));
         if (read_bytes != sizeof(int64_t) || num_offsets == 0) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of frames was zero or corrupted");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of frames was zero or corrupted");
             result = false;
             goto done;
         }
@@ -813,7 +813,7 @@ static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_ato
 
         read_bytes = md_file_read(file, tmp_offsets, num_offsets * sizeof(int64_t));
         if (read_bytes != (int64_t)(num_offsets * sizeof(int64_t))) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to read offset cache, offsets are incomplete");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, offsets are incomplete");
             md_array_free(tmp_offsets, alloc);
             result = false;
             goto done;
@@ -851,7 +851,7 @@ static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms) {
         return true;
     }
 
-    md_printf(MD_LOG_TYPE_ERROR, "Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    md_logf(MD_LOG_TYPE_ERROR, "Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
     return false;
 }
 
@@ -866,7 +866,7 @@ void xyz_trajectory_free(struct md_trajectory_o* inst) {
 md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to open file for XYZ trajectory");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to open file for XYZ trajectory");
         return false;
     }
 
@@ -875,7 +875,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
         char buf[1024];
         int64_t len = md_file_read(file, buf, sizeof(buf));
         if (!extract_format(&format, (str_t){buf, len})) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to interpret format for XYZ trajectory");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to interpret format for XYZ trajectory");
             return false;
         }
     }
@@ -897,7 +897,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
         }
 
         if (data.num_models <= 1) {
-            md_print(MD_LOG_TYPE_INFO, "The xyz file did not contain multiple entries and cannot be read as a trajectory");
+            md_log(MD_LOG_TYPE_INFO, "The xyz file did not contain multiple entries and cannot be read as a trajectory");
             md_xyz_data_free(&data, default_allocator);
             return false;
         }
@@ -908,7 +908,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
             for (int64_t i = 1; i < data.num_models; ++i) {
                 const int64_t length = data.models[i].end_coord_index - data.models[i].beg_coord_index;
                 if (length != ref_length) {
-                    md_print(MD_LOG_TYPE_ERROR, "The xyz file models are not of equal length and cannot be read as a trajectory");
+                    md_log(MD_LOG_TYPE_ERROR, "The xyz file models are not of equal length and cannot be read as a trajectory");
                     md_xyz_data_free(&data, default_allocator);
                     return false;
                 }
@@ -967,7 +967,7 @@ void md_xyz_trajectory_free(md_trajectory_i* traj) {
     ASSERT(traj->inst);
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)traj->inst;
     if (xyz->magic != MD_XYZ_TRAJ_MAGIC) {
-        md_printf(MD_LOG_TYPE_ERROR, "Trajectory is not a valid xyz trajectory.");
+        md_logf(MD_LOG_TYPE_ERROR, "Trajectory is not a valid xyz trajectory.");
         ASSERT(false);
         return;
     }

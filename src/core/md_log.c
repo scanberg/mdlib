@@ -171,7 +171,7 @@ void md_logger_add(const md_logger_i* logger) {
         loggers[num_loggers++] = (md_logger_i*)logger; // push back
         return;
     }
-    md_printf(MD_LOG_TYPE_ERROR, "Failed to add logger, maximum capacity reached. (%d)", MAX_LOGGERS);
+    md_logf(MD_LOG_TYPE_ERROR, "Failed to add logger, maximum capacity reached. (%d)", MAX_LOGGERS);
 }
 
 void md_logger_remove(const md_logger_i* logger) {
@@ -181,17 +181,17 @@ void md_logger_remove(const md_logger_i* logger) {
             return;
         }
     }
-    md_print(MD_LOG_TYPE_ERROR, "Failed to remove logger, logger was not registered.");
+    md_log(MD_LOG_TYPE_ERROR, "Failed to remove logger, logger was not registered.");
 }
 
-int md_print(md_log_type_t log_type, const char* msg) {
+int md_log(md_log_type_t log_type, const char* msg) {
     for (int i = 0; i < num_loggers; ++i) {
         loggers[i]->log(loggers[i]->inst, log_type, msg);
     }
     return (int)strlen(msg);
 }
 
-int md_printf(md_log_type_t log_type, const char* format, ...) {
+int md_logf(md_log_type_t log_type, const char* format, ...) {
     char buf[4096];
 
     va_list args;

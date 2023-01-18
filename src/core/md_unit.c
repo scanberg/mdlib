@@ -302,7 +302,7 @@ md_unit_t unit_scl(md_unit_t unit, double scl) {
 
 bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
     if (!unit_base_equal(cur_unit, new_unit)) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to perform unit conversion, the current unit cannot be converted into new unit");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to perform unit conversion, the current unit cannot be converted into new unit");
         return false;
     }
 
@@ -312,11 +312,11 @@ bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_un
     }
 
     if (cur_unit.mult == 0) {
-        md_print(MD_LOG_TYPE_INFO, "Failed to perform unit conversion, multiplier in current unit was zero");
+        md_log(MD_LOG_TYPE_INFO, "Failed to perform unit conversion, multiplier in current unit was zero");
         return false;
     }
     if (new_unit.mult == 0) {
-        md_print(MD_LOG_TYPE_INFO, "Failed to perform unit conversion, multiplier in new unit was zero");
+        md_log(MD_LOG_TYPE_INFO, "Failed to perform unit conversion, multiplier in new unit was zero");
         return false;
     }
 
@@ -331,7 +331,7 @@ bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_un
 
 bool unit_convert_inplace_f(float* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
     if (!unit_base_equal(cur_unit, new_unit)) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to perform unit conversion, the current unit cannot be converted into new unit");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to perform unit conversion, the current unit cannot be converted into new unit");
         return false;
     }
 
@@ -341,11 +341,11 @@ bool unit_convert_inplace_f(float* values, int64_t num_values, md_unit_t cur_uni
     }
 
     if (cur_unit.mult == 0) {
-        md_print(MD_LOG_TYPE_INFO, "Failed to perform unit conversion, multiplier in current unit was zero");
+        md_log(MD_LOG_TYPE_INFO, "Failed to perform unit conversion, multiplier in current unit was zero");
         return false;
     }
     if (new_unit.mult == 0) {
-        md_print(MD_LOG_TYPE_INFO, "Failed to perform unit conversion, multiplier in new unit was zero");
+        md_log(MD_LOG_TYPE_INFO, "Failed to perform unit conversion, multiplier in new unit was zero");
         return false;
     }
 
@@ -489,7 +489,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
             if (mult != 1.0) {
                 prefix = find_prefix_str_from_value((float)mult);
                 if (str_empty(prefix)) {
-                    md_print(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
+                    md_log(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
                     return 0;
                 }
             }
@@ -507,7 +507,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
             if (mult != 1.0) {
                 prefix = find_prefix_str_from_value((float)mult);
                 if (str_empty(prefix)) {
-                    md_print(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
+                    md_log(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
                     return 0;
                 }
             }
@@ -528,7 +528,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
                 prefix = find_prefix_str_from_value((float)mult);
                 if (str_empty(prefix)) {
                     // Error, could not determine prefix
-                    md_print(MD_LOG_TYPE_DEBUG, "Could not determine prefix");
+                    md_log(MD_LOG_TYPE_DEBUG, "Could not determine prefix");
                     return 0;
                 }
             }
@@ -655,7 +655,7 @@ md_unit_t unit_from_string(str_t str) {
         return unit;
     }
 
-    md_printf(MD_LOG_TYPE_ERROR, "Could not convert string to unit: '%.*s'", (int)str.len, str.ptr);
+    md_logf(MD_LOG_TYPE_ERROR, "Could not convert string to unit: '%.*s'", (int)str.len, str.ptr);
     return (md_unit_t) {0};
 }
 

@@ -819,7 +819,7 @@ void fifo_clear(fifo_t* fifo) {
 }
 
 void fifo_push(fifo_t* fifo, int value) {
-    ASSERT((fifo->head + 1 & (fifo->cap - 1)) != fifo->tail);
+    ASSERT(((fifo->head + 1) & (fifo->cap - 1)) != fifo->tail);
     fifo->data[fifo->head] = value;
     fifo->head = (fifo->head + 1) & (fifo->cap - 1);
 }
@@ -832,7 +832,7 @@ int fifo_pop(fifo_t* fifo) {
 }
 
 
-static bool compare_ring(const int* a, const int* b) {
+static bool compare_ring(const md_array(int) a, const md_array(int) b) {
     if (md_array_size(a) != md_array_size(b)) {
         return false;
     }
@@ -883,10 +883,10 @@ static int** find_residue_rings(md_range_t atom_range, const md_bond_t* atom_bon
     const int MAX_DEPTH = 99999;
 
     fifo_t queue  = {0};
-    md_array(md_array(int)) rings  = 0;
-    md_array(md_array(int)) edges  = 0;
-    md_array(int)  depth = 0;
-    md_array(int)  pred  = 0;
+    md_array(md_array(int)) rings = 0;
+    md_array(md_array(int)) edges = 0;
+    md_array(int) depth = 0;
+    md_array(int) pred  = 0;
 
     int offset = atom_range.beg;
     int count  = atom_range.end - atom_range.beg;

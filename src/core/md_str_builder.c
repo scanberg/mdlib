@@ -13,7 +13,7 @@ void md_strb_init(md_strb_t* sb, struct md_allocator_i* alloc) {
 	ASSERT(alloc);
 #if DEBUG
 	if (sb->buf != 0) {
-		md_print(MD_LOG_TYPE_DEBUG, "Initializing non-zero struct, string builder may be leaking here.");
+		md_log(MD_LOG_TYPE_DEBUG, "Initializing non-zero struct, string builder may be leaking here.");
 	}
 #endif
 	sb->buf = NULL;

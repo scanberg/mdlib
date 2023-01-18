@@ -26,7 +26,7 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
 
     int64_t num_traj_frames = md_trajectory_num_frames(traj);
     if (num_traj_frames == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Frame Cache: The supplied trajectory has no frames");
+        md_log(MD_LOG_TYPE_ERROR, "Frame Cache: The supplied trajectory has no frames");
     }
     if (num_cache_frames == 0) {
         num_cache_frames = num_traj_frames;
@@ -42,10 +42,10 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     cache->alloc = alloc;
     cache->traj = traj;
 
-    md_printf(MD_LOG_TYPE_DEBUG, "Allocating %.2f MB as frame cache.", (double)total_bytes / (double)MEGABYTES(1) );
+    md_logf(MD_LOG_TYPE_DEBUG, "Allocating %.2f MB as frame cache.", (double)total_bytes / (double)MEGABYTES(1) );
     md_array_resize(cache->buf, total_bytes, alloc);
     if (!cache->buf) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to allocate requested memory for frame_cache.");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to allocate requested memory for frame_cache.");
         MEMSET(cache, 0, sizeof(md_frame_cache_t));
         return false;
     }
@@ -93,7 +93,7 @@ static inline void md_frame_cache_frame_lock_aquire(struct md_frame_cache_lock_t
     char buf[512] = {0};
     md_thread_id_t id = md_thread_id();
     snprintf(buf, 512, "thread-id: %llu", id);
-    md_printf(MD_LOG_TYPE_DEBUG, "AQUIRE LOCK \t%llu: %s", (uint64_t)lock, buf);
+    md_logf(MD_LOG_TYPE_DEBUG, "AQUIRE LOCK \t%llu: %s", (uint64_t)lock, buf);
 #endif
     ASSERT(success);
 }
@@ -102,7 +102,7 @@ void md_frame_cache_frame_lock_release(struct md_frame_cache_lock_t* lock) {
     ASSERT(lock);
     bool success = md_semaphore_release((md_semaphore_t*)lock);
 #if 0
-    md_printf(MD_LOG_TYPE_DEBUG, "RELEASE\t%llu\n", (uint64_t)lock);
+    md_logf(MD_LOG_TYPE_DEBUG, "RELEASE\t%llu\n", (uint64_t)lock);
 #endif
     ASSERT(success);
 }

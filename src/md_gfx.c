@@ -389,7 +389,7 @@ typedef struct include_file_t {
 
 static bool compile_shader_from_source(GLuint shader, const char* source, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     if (!source) {
-        md_print(MD_LOG_TYPE_ERROR, "Missing shader source");
+        md_log(MD_LOG_TYPE_ERROR, "Missing shader source");
         return false;
     }
 
@@ -397,7 +397,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
 
     str_t version_str;
     if (!str_extract_line(&version_str, &str) || !str_equal_cstr_n(version_str, "#version", 8)) {
-        md_print(MD_LOG_TYPE_ERROR, "Missing version as first line in shader!");
+        md_log(MD_LOG_TYPE_ERROR, "Missing version as first line in shader!");
         return false;
     }
 
@@ -424,12 +424,12 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     while (str_extract_line(&line, &str)) {
         if (str_equal_cstr_n(line, "#include", 8)) {
             if (include_file_count == 0 || !include_files) {
-                md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: no include files have been supplied");
+                md_log(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: no include files have been supplied");
                 return false;
             }
             str_t file = str_trim(str_substr(line, 8, -1));
             if (!file.len) {
-                md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: file is missing");
+                md_log(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: file is missing");
                 return false;
             }
             char beg_delim = file.ptr[0];
@@ -438,7 +438,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
                 !(end_delim == '"' || end_delim == '>') ||
                  (beg_delim == '"' && end_delim != '"') ||
                  (beg_delim == '<' && end_delim != '>')) {
-                md_print(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: missing or mismatched delimiters");
+                md_log(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: missing or mismatched delimiters");
                 return false;
             }
             file = str_substr(file, 1, file.len-2);
@@ -450,7 +450,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
                 }
             }
             if (str_empty(src)) {
-                md_printf(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: could not find include file '%.*s'", (int)file.len, file.ptr);
+                md_logf(MD_LOG_TYPE_ERROR, "Failed to parse include in shader file: could not find include file '%.*s'", (int)file.len, file.ptr);
                 return false;
             }
             APPEND_STR(buf, src, alloc);
@@ -472,7 +472,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     if (!success) {
         char err_buf[1024];
         glGetShaderInfoLog(shader, ARRAY_SIZE(err_buf), NULL, err_buf);
-        md_printf(MD_LOG_TYPE_ERROR, "Shader compile error:\n%s\n", err_buf);
+        md_logf(MD_LOG_TYPE_ERROR, "Shader compile error:\n%s\n", err_buf);
         return false;
     }
     
@@ -485,10 +485,10 @@ static bool compile_shader_from_file(GLuint shader, const char* filename, const 
         const bool success = compile_shader_from_source(shader, src.ptr, defines, include_files, include_file_count);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
         const char* res_str = success ? "Success" : "Fail";
-        md_printf(log_type,  "Compiling shader %-40s %s", filename, res_str);
+        md_logf(log_type,  "Compiling shader %-40s %s", filename, res_str);
         return success;
     } else {
-        md_printf(MD_LOG_TYPE_ERROR, "Could not open file file '%s'", filename);
+        md_logf(MD_LOG_TYPE_ERROR, "Could not open file file '%s'", filename);
         return false;
     }
 }
@@ -502,7 +502,7 @@ static bool link_program(GLuint program, const GLuint shader[], uint32_t count) 
         if (glIsShader(shader[i]) && compile_status) {
             glAttachShader(program, shader[i]);
         } else {
-            md_print(MD_LOG_TYPE_ERROR, "Program link error: One or more shaders are invalid\n");
+            md_log(MD_LOG_TYPE_ERROR, "Program link error: One or more shaders are invalid\n");
             return false;
         }
     }
@@ -513,7 +513,7 @@ static bool link_program(GLuint program, const GLuint shader[], uint32_t count) 
     if (!success) {
         char err_buf[1024];
         glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
-        md_printf(MD_LOG_TYPE_ERROR, "Program link error:\n%s\n", err_buf);
+        md_logf(MD_LOG_TYPE_ERROR, "Program link error:\n%s\n", err_buf);
         return false;
     }
     
@@ -578,7 +578,7 @@ static gl_context_t ctx = {0};
 
 static inline bool validate_context() {
     if (ctx.version == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "gfx context has not been initialized");
+        md_log(MD_LOG_TYPE_ERROR, "gfx context has not been initialized");
         return false;
     }
     return true;
@@ -626,7 +626,7 @@ static inline structure_t* get_structure(md_gfx_handle_t id) {
 bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t height, md_gfx_config_flags_t flags) {
     if (!ctx.version) {
         if (gl3wInit() != GL3W_OK) {
-            md_print(MD_LOG_TYPE_ERROR, "Could not load OpenGL extensions");
+            md_log(MD_LOG_TYPE_ERROR, "Could not load OpenGL extensions");
             return false;
         }
 
@@ -635,7 +635,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         glGetIntegerv(GL_MINOR_VERSION, &minor);
 
         if (major < 4 && minor < 6) {
-            md_printf(MD_LOG_TYPE_ERROR, "OpenGL version %i.%i is not supported, this renderer requires version 4.6", major, minor);
+            md_logf(MD_LOG_TYPE_ERROR, "OpenGL version %i.%i is not supported, this renderer requires version 4.6", major, minor);
             return false;
         }
 
@@ -702,13 +702,13 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
 
         str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), default_temp_allocator);
         if (str_empty(common_src)) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to read common.h required for shaders");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to read common.h required for shaders");
             return false;
         }
 
         str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), default_temp_allocator);
         if (str_empty(culling_src)) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to read culling.glsl required for shaders");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to read culling.glsl required for shaders");
             return false;
         }
 
@@ -800,7 +800,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
             !ctx.write_picking_prog.id ||
             !ctx.compose_prog.id)
         {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to compile one or more shader programs.");
             md_gfx_shutdown();
             return false;
         }
@@ -915,7 +915,7 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
     }
 
     if (ctx.structure_count >= MAX_STRUCTURE_COUNT) {
-        md_print(MD_LOG_TYPE_ERROR, "Unable to create structure, pool is full!");
+        md_log(MD_LOG_TYPE_ERROR, "Unable to create structure, pool is full!");
         return (md_gfx_handle_t){0};
     }
     uint16_t s_idx = (uint16_t)ctx.structure_count++;
@@ -942,7 +942,7 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
 
 bool md_gfx_structure_destroy(md_gfx_handle_t id) {
     if (!validate_handle(id)) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to destroy structure: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to destroy structure: Handle is invalid");
         return false;
     }
     uint16_t h_idx = id.idx;
@@ -1232,23 +1232,23 @@ void update_cluster_data(const structure_t* s) {
 bool md_gfx_structure_set_atom_position_soa(md_gfx_handle_t id, const float* x, const float* y, const float* z, uint32_t count) {
     structure_t* s = get_structure(id);
     if (!s) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Handle is invalid");
         return false;
     }
 
     if (!x || !y || ! z) {
-        md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing, must pass x, y and z for position.");
+        md_log(MD_LOG_TYPE_ERROR, "One or more arguments are missing, must pass x, y and z for position.");
         return false;
     }
 
     if (count > s->atom.capacity) {
-        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+        md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
         return false;
     }
     
     vec3_t* pos = glMapNamedBufferRange(ctx.position_buf.id, s->atom.offset * sizeof(vec3_t), s->atom.capacity * sizeof(vec3_t), GL_MAP_WRITE_BIT);
     if (!pos) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Could not map buffer");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Could not map buffer");
         return false;
     }
    
@@ -1269,17 +1269,17 @@ bool md_gfx_structure_set_atom_position_soa(md_gfx_handle_t id, const float* x, 
 bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const vec3_t* xyz, uint32_t count, uint32_t byte_stride) {
     structure_t* s = get_structure(id);
     if (!s) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Handle is invalid");
         return false;
     }
 
     if (!xyz) {
-        md_print(MD_LOG_TYPE_ERROR, "Argument is missing");
+        md_log(MD_LOG_TYPE_ERROR, "Argument is missing");
         return false;
     }
 
     if (count > s->atom.capacity) {
-        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+        md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
         return false;
     }
 
@@ -1287,7 +1287,7 @@ bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const vec3_t* xyz, u
     if (byte_stride > sizeof(vec3_t)) {
         vec3_t* pos = glMapNamedBufferRange(ctx.position_buf.id, s->atom.offset * sizeof(vec3_t), s->atom.capacity * sizeof(vec3_t), GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
         if (!pos) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Could not map buffer");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to set atom position data: Could not map buffer");
             return false;
         }
 
@@ -1309,17 +1309,17 @@ bool md_gfx_structure_set_atom_position(md_gfx_handle_t id, const vec3_t* xyz, u
 bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, uint32_t count, uint32_t byte_stride) {
     structure_t* s = get_structure(id);
     if (!s) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Handle is invalid");
         return false;
     }
 
     if (!radius) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Radius argument is missing.");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Radius argument is missing.");
         return false;
     }
 
     if (count > s->atom.capacity) {
-        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+        md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
         return false;
     }
 
@@ -1327,7 +1327,7 @@ bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, u
     if (byte_stride > element_size) {
         float* ptr = glMapNamedBufferRange(ctx.radius_buf.id, s->atom.offset * element_size, s->atom.capacity * element_size, GL_MAP_WRITE_BIT);
         if (!ptr) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Could not map buffer");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to set atom radius data: Could not map buffer");
             return false;
         }
         byte_stride = MAX(element_size, byte_stride);
@@ -1357,17 +1357,17 @@ bool md_gfx_structure_set_atom_radius(md_gfx_handle_t id, const float* radius, u
 bool md_gfx_structure_set_atom_flags(md_gfx_handle_t id, const uint32_t* flags, uint32_t count, uint32_t byte_stride) {
     structure_t* s = get_structure(id);
     if (!s) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom flags data: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set atom flags data: Handle is invalid");
         return false;
     }
 
     if (!flags) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set atom flags data: Flags argument is missing.");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set atom flags data: Flags argument is missing.");
         return false;
     }
 
     if (count > s->atom.capacity) {
-        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+        md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
         return false;
     }
 
@@ -1375,7 +1375,7 @@ bool md_gfx_structure_set_atom_flags(md_gfx_handle_t id, const uint32_t* flags, 
     if (byte_stride > element_size) {
         uint32_t* ptr = glMapNamedBufferRange(ctx.flags_buf.id, s->atom.offset * element_size, s->atom.capacity * element_size, GL_MAP_WRITE_BIT);
         if (!ptr) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to set atom flags data: Could not map buffer");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to set atom flags data: Could not map buffer");
             return false;
         }
         byte_stride = MAX(element_size, byte_stride);
@@ -1392,17 +1392,17 @@ bool md_gfx_structure_set_atom_flags(md_gfx_handle_t id, const uint32_t* flags, 
 bool md_gfx_structure_set_group_atom_ranges(md_gfx_handle_t id, const md_gfx_range_t* atom_ranges, uint32_t count, uint32_t byte_stride) {
     structure_t* s = get_structure(id);
     if (!s) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set group atom range data: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set group atom range data: Handle is invalid");
         return false;
     }
 
     if (!atom_ranges) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set group atom range data: Argument is missing.");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set group atom range data: Argument is missing.");
         return false;
     }
 
     if (count > md_array_capacity(s->groups)) {
-        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+        md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
         return false;
     }
 
@@ -1420,17 +1420,17 @@ bool md_gfx_structure_set_group_atom_ranges(md_gfx_handle_t id, const md_gfx_ran
 bool md_gfx_structure_set_instance_atom_ranges(md_gfx_handle_t id, const md_gfx_range_t* atom_ranges, uint32_t count, uint32_t byte_stride) {
     structure_t* s = get_structure(id);
     if (!s) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance atom range data: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set instance atom range data: Handle is invalid");
         return false;
     }
 
     if (!atom_ranges) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance atom range data: Argument is missing.");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set instance atom range data: Argument is missing.");
         return false;
     }
 
     if (count > md_array_capacity(s->instances)) {
-        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+        md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
         return false;
     }
 
@@ -1447,17 +1447,17 @@ bool md_gfx_structure_set_instance_atom_ranges(md_gfx_handle_t id, const md_gfx_
 bool md_gfx_structure_set_instance_transforms(md_gfx_handle_t id, const struct mat4_t* transforms, uint32_t count, uint32_t byte_stride) {
     structure_t* s = get_structure(id);
     if (!s) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Handle is invalid");
         return false;
     }
 
     if (!transforms) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Argument is missing.");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set instance group range data: Argument is missing.");
         return false;
     }
 
     if (count > md_array_capacity(s->instances)) {
-        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+        md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
         return false;
     }
 
@@ -1478,7 +1478,7 @@ md_gfx_handle_t md_gfx_rep_create(uint32_t color_count) {
     }
 
     if (ctx.representation_count >= MAX_REPRESENTATION_COUNT) {
-        md_print(MD_LOG_TYPE_ERROR, "Unable to create representation, pool is full!");
+        md_log(MD_LOG_TYPE_ERROR, "Unable to create representation, pool is full!");
         return (md_gfx_handle_t){0};
     }
     uint16_t r_idx = ctx.representation_count++;
@@ -1497,7 +1497,7 @@ md_gfx_handle_t md_gfx_rep_create(uint32_t color_count) {
 
 bool md_gfx_rep_destroy(md_gfx_handle_t id) {
     if (!validate_handle(id)) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to destroy representation: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to destroy representation: Handle is invalid");
         return false;
     }
     uint16_t h_idx = id.idx;
@@ -1524,17 +1524,17 @@ bool md_gfx_rep_destroy(md_gfx_handle_t id) {
 bool md_gfx_rep_set_data(md_gfx_handle_t id, md_gfx_rep_type_t type, md_gfx_rep_attr_t attr, const md_gfx_color_t* color, uint32_t count, uint32_t byte_stride) {
     representation_t* r = get_representation(id);
     if (!r) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set representation data: Handle is invalid");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set representation data: Handle is invalid");
         return false;
     }
 
     if (!color) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to set color data: Color argument is missing.");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to set color data: Color argument is missing.");
         return false;
     }
 
     if (count > r->color.capacity) {
-        md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
+        md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds.");
         return false;
     }
 
@@ -1542,7 +1542,7 @@ bool md_gfx_rep_set_data(md_gfx_handle_t id, md_gfx_rep_type_t type, md_gfx_rep_
     if (byte_stride > element_size) {
         md_gfx_color_t* ptr = glMapNamedBufferRange(ctx.color_buf.id, r->color.offset * element_size, r->color.capacity * element_size, GL_WRITE_ONLY);
         if (!ptr) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to set color data: Could not map buffer");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to set color data: Could not map buffer");
             return false;
         }
         byte_stride = MAX(element_size, byte_stride);
@@ -1565,12 +1565,12 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     if (!validate_context()) return false;
 
     if (in_draw_op_count > 0 && !in_draw_ops) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to Draw: draw ops was NULL");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to Draw: draw ops was NULL");
         return false;
     }
 
     if (!proj_mat || !view_mat || !inv_proj_mat || !inv_view_mat) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to Draw: one or more missing matrix arguments");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to Draw: one or more missing matrix arguments");
         return false;
     }
 
@@ -1703,17 +1703,17 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
         // Validate draw op
         structure_t* s = get_structure(in_op->structure);
         if (!s) {
-            md_print(MD_LOG_TYPE_ERROR, "Invalid structure supplied in draw operation");
+            md_log(MD_LOG_TYPE_ERROR, "Invalid structure supplied in draw operation");
             continue;   
         }
         representation_t* r = get_representation(in_op->representation);
         if (!r) {
-            md_print(MD_LOG_TYPE_ERROR, "Invalid representation supplied in draw operation");
+            md_log(MD_LOG_TYPE_ERROR, "Invalid representation supplied in draw operation");
             continue;
         }
 
         if (s->atom.count != r->color.count) {
-            md_print(MD_LOG_TYPE_ERROR, "Number of colors in representation does not match number of atoms in structure");
+            md_log(MD_LOG_TYPE_ERROR, "Number of colors in representation does not match number of atoms in structure");
             continue;
         }
 
@@ -1975,7 +1975,7 @@ GL_POP_GPU_SECTION();
     GL_POP_GPU_SECTION();
 }
 
-//md_printf(MD_LOG_TYPE_DEBUG, "Instance late count %i, cluster late count %i", ctx.debug_data->instance_late_count, ctx.debug_data->instance_clust_late_count);
+//md_logf(MD_LOG_TYPE_DEBUG, "Instance late count %i, cluster late count %i", ctx.debug_data->instance_late_count, ctx.debug_data->instance_clust_late_count);
 
 GL_PUSH_GPU_SECTION("RESET STATE");
     glUseProgram(0);

@@ -95,7 +95,7 @@ void print_windows_error() {
         (LPTSTR)&msg_buf,
         0, NULL);
 
-    md_printf(MD_LOG_TYPE_ERROR, "Error code (%d): %s", err_code, msg_buf);
+    md_logf(MD_LOG_TYPE_ERROR, "Error code (%d): %s", err_code, msg_buf);
     LocalFree(msg_buf);
 }
 #endif
@@ -129,15 +129,15 @@ static inline str_t internal_fullpath(str_t path, md_allocator_i* alloc) {
     }
     else {
         switch (errno) {
-        case EACCES:        md_printf(MD_LOG_TYPE_ERROR, "Read or search permission was denied for a component of the path prefix."); break;
-        case EINVAL:        md_printf(MD_LOG_TYPE_ERROR, "path is NULL or resolved_path is NULL."); break;
-        case EIO:           md_printf(MD_LOG_TYPE_ERROR, "An I/O error occurred while reading from the filesystem."); break;
-        case ELOOP:         md_printf(MD_LOG_TYPE_ERROR, "Too many symbolic links were encountered in translating the pathname."); break;
-        case ENAMETOOLONG:  md_printf(MD_LOG_TYPE_ERROR, "A component of a pathname exceeded NAME_MAX characters, or an entire pathname exceeded PATH_MAX characters."); break;
-        case ENOENT:        md_printf(MD_LOG_TYPE_ERROR, "The named file does not exist."); break;
-        case ENOMEM:        md_printf(MD_LOG_TYPE_ERROR, "Out of memory."); break;
-        case ENOTDIR:       md_printf(MD_LOG_TYPE_ERROR, "A component of the path prefix is not a directory."); break;
-        default:            md_printf(MD_LOG_TYPE_ERROR, "Undefined error"); break;
+        case EACCES:        md_logf(MD_LOG_TYPE_ERROR, "Read or search permission was denied for a component of the path prefix."); break;
+        case EINVAL:        md_logf(MD_LOG_TYPE_ERROR, "path is NULL or resolved_path is NULL."); break;
+        case EIO:           md_logf(MD_LOG_TYPE_ERROR, "An I/O error occurred while reading from the filesystem."); break;
+        case ELOOP:         md_logf(MD_LOG_TYPE_ERROR, "Too many symbolic links were encountered in translating the pathname."); break;
+        case ENAMETOOLONG:  md_logf(MD_LOG_TYPE_ERROR, "A component of a pathname exceeded NAME_MAX characters, or an entire pathname exceeded PATH_MAX characters."); break;
+        case ENOENT:        md_logf(MD_LOG_TYPE_ERROR, "The named file does not exist."); break;
+        case ENOMEM:        md_logf(MD_LOG_TYPE_ERROR, "Out of memory."); break;
+        case ENOTDIR:       md_logf(MD_LOG_TYPE_ERROR, "A component of the path prefix is not a directory."); break;
+        default:            md_logf(MD_LOG_TYPE_ERROR, "Undefined error"); break;
         }
     }
 #else
@@ -161,7 +161,7 @@ str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
 #endif
     }
     else {
-        md_printf(MD_LOG_TYPE_ERROR, "Failed to create canonical path!");
+        md_logf(MD_LOG_TYPE_ERROR, "Failed to create canonical path!");
     }
 
     return path;
@@ -207,7 +207,7 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
         relative_str = str_copy((str_t) { .ptr = sz_buf, .len = (int64_t)strnlen(sz_buf, sizeof(sz_buf)) }, alloc);
     }
     else {
-        md_printf(MD_LOG_TYPE_ERROR, "Failed to extract relative path.");
+        md_logf(MD_LOG_TYPE_ERROR, "Failed to extract relative path.");
     }
     return relative_str;
 }
@@ -255,7 +255,7 @@ md_file_o* md_file_open(str_t filename, uint32_t flags) {
     wchar_t w_file[MD_MAX_PATH] = {0};
     const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, ARRAY_SIZE(w_file));
     if (w_file_len >= ARRAY_SIZE(w_file)) {
-        md_print(MD_LOG_TYPE_ERROR, "File path exceeds limit!");
+        md_log(MD_LOG_TYPE_ERROR, "File path exceeds limit!");
         return NULL;
     }
     w_file[w_file_len] = L'\0';
@@ -281,7 +281,7 @@ md_file_o* md_file_open(str_t filename, uint32_t flags) {
         w_mode = L"ab";
         break;
     default:
-        md_print(MD_LOG_TYPE_ERROR, "Invalid combination of file access flags!");
+        md_log(MD_LOG_TYPE_ERROR, "Invalid combination of file access flags!");
         return NULL;
     }
 
@@ -308,7 +308,7 @@ md_file_o* md_file_open(str_t filename, uint32_t flags) {
         mode = "ab";
         break;
     default:
-        md_print(MD_LOG_TYPE_ERROR, "Invalid combination of file access flags!");
+        md_log(MD_LOG_TYPE_ERROR, "Invalid combination of file access flags!");
         return NULL;
     }
 
@@ -345,7 +345,7 @@ bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin)
         o = SEEK_END;
         break;
     default:
-        md_print(MD_LOG_TYPE_ERROR, "Invalid seek origin value!");
+        md_log(MD_LOG_TYPE_ERROR, "Invalid seek origin value!");
         return false;
     }
 
@@ -616,7 +616,7 @@ md_thread_id_t md_thread_id(void) {
 
 bool md_thread_on_exit(md_thread_exit callback) {
     if (!callback) {
-        md_printf(MD_LOG_TYPE_ERROR, "OS: callback was NULL");
+        md_logf(MD_LOG_TYPE_ERROR, "OS: callback was NULL");
         return false;
     }
 
@@ -727,7 +727,7 @@ bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
     mach_port_t self = mach_task_self();
     kern_return_t ret = semaphore_create(self, &sema, SYNC_POLICY_FIFO, initial_count);
     if (ret != KERN_SUCCESS) {
-        md_print(MD_LOG_TYPE_ERROR, "Failed to initialize semaphore");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to initialize semaphore");
     }
     semaphore->_data[0] = (void*)(uint64_t)sema;
     return ret == KERN_SUCCESS;

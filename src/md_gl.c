@@ -290,7 +290,7 @@ static bool compile_shader_from_source(GLuint shader, char* shader_src, const ch
         const char* src = shader_src;
         char version_str[32] = {0};
         if (!extract_version_string(version_str, sizeof(version_str), &src)) {
-            md_print(MD_LOG_TYPE_ERROR, "Missing version string as first line in shader!");
+            md_log(MD_LOG_TYPE_ERROR, "Missing version string as first line in shader!");
             return false;
         }
 
@@ -306,7 +306,7 @@ static bool compile_shader_from_source(GLuint shader, char* shader_src, const ch
             const char search_str[] = "#pragma EXTRA_SRC";
             char* pos = strstr(src, search_str);
             if (!pos) {
-                md_print(MD_LOG_TYPE_ERROR, "Missing insertion point marked as '#pragma EXTRA_SRC' in shader!");
+                md_log(MD_LOG_TYPE_ERROR, "Missing insertion point marked as '#pragma EXTRA_SRC' in shader!");
                 return false;
             }
 
@@ -334,7 +334,7 @@ static bool compile_shader_from_source(GLuint shader, char* shader_src, const ch
     if (!success) {
         char err_buf[256];
         glGetShaderInfoLog(shader, ARRAY_SIZE(err_buf), NULL, err_buf);
-        md_printf(MD_LOG_TYPE_ERROR, "Shader compile error:\n%s\n", err_buf);
+        md_logf(MD_LOG_TYPE_ERROR, "Shader compile error:\n%s\n", err_buf);
         return false;
     }
     
@@ -351,11 +351,11 @@ static bool compile_shader_from_file(GLuint shader, const char* filename, const 
         const bool success = compile_shader_from_source(shader, buffer, defines, extra_src);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_DEBUG : MD_LOG_TYPE_ERROR;
         const char* res_str = success ? "Success" : "Fail";
-        md_printf(log_type,  "Compiling shader %-40s %s", filename, res_str);
+        md_logf(log_type,  "Compiling shader %-40s %s", filename, res_str);
         md_file_close(file);
         return success;
     } else {
-        md_printf(MD_LOG_TYPE_ERROR, "Could not open file file '%s'", filename);
+        md_logf(MD_LOG_TYPE_ERROR, "Could not open file file '%s'", filename);
         return false;
     }
 }
@@ -369,7 +369,7 @@ static bool link_program(GLuint program, const GLuint shader[], uint32_t count) 
         if (glIsShader(shader[i]) && compile_status) {
             glAttachShader(program, shader[i]);
         } else {
-            md_print(MD_LOG_TYPE_ERROR, "Program link error: One or more shaders are invalid\n");
+            md_log(MD_LOG_TYPE_ERROR, "Program link error: One or more shaders are invalid\n");
             return false;
         }
     }
@@ -380,7 +380,7 @@ static bool link_program(GLuint program, const GLuint shader[], uint32_t count) 
     if (!success) {
         char err_buf[256];
         glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
-        md_printf(MD_LOG_TYPE_ERROR, "Program link error:\n%s\n", err_buf);
+        md_logf(MD_LOG_TYPE_ERROR, "Program link error:\n%s\n", err_buf);
         return false;
     }
     
@@ -402,7 +402,7 @@ static bool link_program_transform_feedback(GLuint program, const GLuint shader[
         if (glIsShader(shader[i]) && compile_status) {
             glAttachShader(program, shader[i]);
         } else {
-            md_print(MD_LOG_TYPE_ERROR, "One or more shaders are invalid");
+            md_log(MD_LOG_TYPE_ERROR, "One or more shaders are invalid");
             return false;
         }
     }
@@ -414,7 +414,7 @@ static bool link_program_transform_feedback(GLuint program, const GLuint shader[
     if (!link_status) {
         char err_buf[256];
         glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
-        md_printf(MD_LOG_TYPE_ERROR, "Program link error:\n%s\n", err_buf);
+        md_logf(MD_LOG_TYPE_ERROR, "Program link error:\n%s\n", err_buf);
         return false;
     }
     
@@ -427,7 +427,7 @@ static bool link_program_transform_feedback(GLuint program, const GLuint shader[
 
 static inline bool validate_context() {
     if (ctx.version == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "MD GL module has not been initialized");
+        md_log(MD_LOG_TYPE_ERROR, "MD GL module has not been initialized");
         return false;
     }
     return true;
@@ -437,20 +437,20 @@ bool md_gl_molecule_set_atom_position(md_gl_molecule_t* ext_mol, uint32_t offset
     if (ext_mol && x && y && z) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Molecule position buffer missing");
+            md_log(MD_LOG_TYPE_ERROR, "Molecule position buffer missing");
             return false;
         }
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Molecule previous position buffer missing");
+            md_log(MD_LOG_TYPE_ERROR, "Molecule previous position buffer missing");
             return false;
         }
         if (offset + count > mol->atom_count) {
-            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
             return false;
         }
 
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
             return false;
         }
 
@@ -476,10 +476,10 @@ bool md_gl_molecule_set_atom_position(md_gl_molecule_t* ext_mol, uint32_t offset
             return true;
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule position buffer");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to map molecule position buffer");
         return false;
     }
-    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing, must pass x, y and z for position.");
+    md_log(MD_LOG_TYPE_ERROR, "One or more arguments are missing, must pass x, y and z for position.");
     return false;
 }
 
@@ -487,11 +487,11 @@ bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* ext_mol, uint32_t offset
     if (ext_mol && x && y && z) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Molecule position buffer missing");
+            md_log(MD_LOG_TYPE_ERROR, "Molecule position buffer missing");
             return false;
         }
         if (offset + count > mol->atom_count) {
-            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
             return false;
         }
         byte_stride = MAX(sizeof(float), byte_stride);
@@ -508,10 +508,10 @@ bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* ext_mol, uint32_t offset
             return true;
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule position buffer");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to map molecule position buffer");
         return false;
     }
-    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    md_log(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
     return false;
 }
 
@@ -519,11 +519,11 @@ bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, 
     if (ext_mol && radius) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Molecule radius buffer missing");
+            md_log(MD_LOG_TYPE_ERROR, "Molecule radius buffer missing");
             return false;
         }
         if (offset + count > mol->atom_count) {
-            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
             return false;
         }
         byte_stride = MAX(sizeof(float), byte_stride);
@@ -539,7 +539,7 @@ bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, 
                 return true;
             }
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-            md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule radius buffer");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to map molecule radius buffer");
             return false;
         }
         else {
@@ -547,7 +547,7 @@ bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, 
             return true;
         }
     }
-    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    md_log(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
     return false;
 }
 
@@ -555,11 +555,11 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
     if (ext_mol && flag_data) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Molecule flags buffer missing");
+            md_log(MD_LOG_TYPE_ERROR, "Molecule flags buffer missing");
             return false;
         }
         if (offset + count > mol->atom_count) {
-            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
             return false;
         }
         byte_stride = MAX(sizeof(md_flags_t), byte_stride);
@@ -574,7 +574,7 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
                 glBindBuffer(GL_ARRAY_BUFFER, 0);
                 return true;
             }
-            md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule flags buffer");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to map molecule flags buffer");
             glBindBuffer(GL_ARRAY_BUFFER, 0);
             return false;
         }
@@ -583,7 +583,7 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
             return true;
         }
     }
-    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    md_log(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
     return false;
 }
 
@@ -591,11 +591,11 @@ bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* ext_mol, uint32_t offse
     if (ext_mol && bonds) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Molecule bond buffer buffer missing");
+            md_log(MD_LOG_TYPE_ERROR, "Molecule bond buffer buffer missing");
             return false;
         }
         if (offset + count > mol->bond_count) {
-            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
             return false;
         }
         byte_stride = MAX(sizeof(md_bond_t), byte_stride);
@@ -611,7 +611,7 @@ bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* ext_mol, uint32_t offse
                 return true;
             }
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-            md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule bond buffer");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to map molecule bond buffer");
             return false;
         }
         else {
@@ -619,7 +619,7 @@ bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* ext_mol, uint32_t offse
             return true;
         }
     }
-    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    md_log(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
     return false;
 }
 
@@ -627,11 +627,11 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, 
     if (ext_mol && secondary_structure) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Molecule secondary structure buffer missing");
+            md_log(MD_LOG_TYPE_ERROR, "Molecule secondary structure buffer missing");
             return false;
         }
         if (offset + count > mol->backbone_count) {
-            md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+            md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
             return false;
         }
         byte_stride = MAX(sizeof(md_secondary_structure_t), byte_stride);
@@ -647,7 +647,7 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, 
                 return true;
             }
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-            md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule secondary structure buffer");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to map molecule secondary structure buffer");
             return false;
         }
         else {
@@ -655,7 +655,7 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, 
             return true;
         }
     }
-    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    md_log(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
     return false;
 }
 
@@ -665,18 +665,18 @@ bool md_gl_molecule_compute_velocity(md_gl_molecule_t* ext_mol, const float pbc_
     }
 
     if (!ext_mol) {
-        md_print(MD_LOG_TYPE_ERROR, "Molecule was null");
+        md_log(MD_LOG_TYPE_ERROR, "Molecule was null");
         return false;
     }
     internal_mol_t* mol = (internal_mol_t*)ext_mol;
 
     if (mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Velocity buffer is zero");
+        md_log(MD_LOG_TYPE_ERROR, "Velocity buffer is zero");
         return false;
     }
 
     if (mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Velocity buffer is zero");
+        md_log(MD_LOG_TYPE_ERROR, "Velocity buffer is zero");
         return false;
     }
 
@@ -715,7 +715,7 @@ bool md_gl_molecule_zero_velocity(md_gl_molecule_t* ext_mol) {
     if (ext_mol) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id) {
-            md_print(MD_LOG_TYPE_ERROR, "Molecule position buffer missing");
+            md_log(MD_LOG_TYPE_ERROR, "Molecule position buffer missing");
             return false;
         }
         glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
@@ -727,10 +727,10 @@ bool md_gl_molecule_zero_velocity(md_gl_molecule_t* ext_mol) {
             return true;
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        md_print(MD_LOG_TYPE_ERROR, "Failed to map molecule velocity buffer");
+        md_log(MD_LOG_TYPE_ERROR, "Failed to map molecule velocity buffer");
         return false;
     }
-    md_print(MD_LOG_TYPE_ERROR, "Molecule was null");
+    md_log(MD_LOG_TYPE_ERROR, "Molecule was null");
     return false;
 }
 
@@ -746,7 +746,7 @@ bool md_gl_representation_set_color(md_gl_representation_t* ext_rep, uint32_t of
         internal_rep_t* rep = (internal_rep_t*)ext_rep;
         if (rep->mol && glIsBuffer(rep->color.id)) {
             if (offset + count > rep->mol->atom_count) {
-                md_print(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
+                md_log(MD_LOG_TYPE_ERROR, "Attempting to write out of bounds");
                 return false;
             }
 
@@ -770,11 +770,11 @@ bool md_gl_representation_set_color(md_gl_representation_t* ext_rep, uint32_t of
             }
             //md_update_visible_atom_color_range(rep);
         } else {
-            md_print(MD_LOG_TYPE_ERROR, "Representation's molecule is missing");
+            md_log(MD_LOG_TYPE_ERROR, "Representation's molecule is missing");
             return false;
         }
     }
-    md_print(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
+    md_log(MD_LOG_TYPE_ERROR, "One or more arguments are missing");
     return false;
 }
 
@@ -808,7 +808,7 @@ bool create_permuted_program(gl_program_t* program_permutations, const char* ver
 
 bool md_gl_initialize() {
     if (gl3wInit() != GL3W_OK) {
-        md_print(MD_LOG_TYPE_ERROR, "Could not load OpenGL extensions");
+        md_log(MD_LOG_TYPE_ERROR, "Could not load OpenGL extensions");
         return false;
     }
 
@@ -817,7 +817,7 @@ bool md_gl_initialize() {
     glGetIntegerv(GL_MINOR_VERSION, &minor);
 
     if (major < 3 && minor < 3) {
-        md_printf(MD_LOG_TYPE_ERROR, "OpenGL version %i.%i is not supported", major, minor);
+        md_logf(MD_LOG_TYPE_ERROR, "OpenGL version %i.%i is not supported", major, minor);
         return false;
     }
 
@@ -943,7 +943,7 @@ void md_gl_shutdown() {
 
 bool md_gl_shaders_init(md_gl_shaders_t* ext_shaders, const char* custom_shader_snippet) {
     if (!ext_shaders) {
-        md_print(MD_LOG_TYPE_ERROR, "Supplied shaders object is NULL");
+        md_log(MD_LOG_TYPE_ERROR, "Supplied shaders object is NULL");
         return false;
     }
 
@@ -980,7 +980,7 @@ bool md_gl_shaders_free(md_gl_shaders_t* ext_shaders) {
 bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
     if (ext_mol && mol) {
         if (mol->atom.count == 0) {
-            md_print(MD_LOG_TYPE_ERROR, "The supplied molecule has no atoms.");
+            md_log(MD_LOG_TYPE_ERROR, "The supplied molecule has no atoms.");
             return false;
         }
         internal_mol_t* gl_mol = (internal_mol_t*)ext_mol;
@@ -1141,11 +1141,11 @@ bool md_gl_representation_init(md_gl_representation_t* ext_rep, const md_gl_mole
     if (ext_rep && ext_mol) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (mol->atom_count == 0) {
-            md_print(MD_LOG_TYPE_ERROR, "Supplied molecule has no atoms.");
+            md_log(MD_LOG_TYPE_ERROR, "Supplied molecule has no atoms.");
             return false;
         }
         if (mol->magic != MAGIC) {
-            md_print(MD_LOG_TYPE_ERROR, "Supplied molecule is corrupt.");
+            md_log(MD_LOG_TYPE_ERROR, "Supplied molecule is corrupt.");
             return false;
         }
 
@@ -1176,7 +1176,7 @@ bool md_gl_representation_free(md_gl_representation_t* ext_rep) {
     if (ext_rep) {
         internal_rep_t* rep = (internal_rep_t*)ext_rep;
         if (rep->magic != MAGIC) {
-            md_print(MD_LOG_TYPE_ERROR, "Attempting to free representation which have not been initialized.");
+            md_log(MD_LOG_TYPE_ERROR, "Attempting to free representation which have not been initialized.");
             return false;
         }
         gl_buffer_conditional_delete(&rep->color);
@@ -1225,13 +1225,13 @@ typedef struct draw_mol_t {
 
 bool md_gl_draw(const md_gl_draw_args_t* args) {
     if (!args) {
-        md_print(MD_LOG_TYPE_ERROR, "draw args object was NULL");
+        md_log(MD_LOG_TYPE_ERROR, "draw args object was NULL");
         return false;
     }
     if (!validate_context()) return false;
 
     if (!args->shaders) {
-        md_print(MD_LOG_TYPE_ERROR, "shaders object was NULL");
+        md_log(MD_LOG_TYPE_ERROR, "shaders object was NULL");
         return false;
     }
     internal_shaders_t* shaders = (internal_shaders_t*)args->shaders;
@@ -1252,18 +1252,18 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
         const internal_rep_t* rep = (internal_rep_t*)draw_op->rep;
         if (rep && rep->mol) {
             if (rep->magic != MAGIC) {
-                md_print(MD_LOG_TYPE_ERROR, "Representation is corrupt");
+                md_log(MD_LOG_TYPE_ERROR, "Representation is corrupt");
                 continue;
             }
 
             if (rep->mol_version != rep->mol->version) {
-                md_print(MD_LOG_TYPE_ERROR, "Representation was not created for the current molecule");
+                md_log(MD_LOG_TYPE_ERROR, "Representation was not created for the current molecule");
                 continue;
             }
 
             if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {
                 if (!(rep->mol->flags & MOL_FLAG_HAS_BACKBONE)) {
-                    md_print(MD_LOG_TYPE_ERROR, "Molecule is missing a backbone, therefore the chosen representation cannot be drawn");
+                    md_log(MD_LOG_TYPE_ERROR, "Molecule is missing a backbone, therefore the chosen representation cannot be drawn");
                     continue;
                 }
             }
@@ -1340,7 +1340,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             draw_cartoon(shaders->cartoon[program_permutation], rep, scale);
             break;
         default:
-            md_print(MD_LOG_TYPE_ERROR, "Representation had unexpected type");
+            md_log(MD_LOG_TYPE_ERROR, "Representation had unexpected type");
             return false;
             break;
         }
@@ -1620,7 +1620,7 @@ static bool compute_spline(const internal_mol_t* mol) {
     ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
 
     if (mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Backbone data buffer is zero, which is required to compute the backbone. Is the molecule missing a backbone?");
+        md_log(MD_LOG_TYPE_ERROR, "Backbone data buffer is zero, which is required to compute the backbone. Is the molecule missing a backbone?");
         return false;
     }
 

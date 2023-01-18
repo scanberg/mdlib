@@ -116,7 +116,7 @@ void md_tracking_allocator_destroy(struct md_allocator_i* alloc) {
     md_mutex_lock(&tracking->mutex);
     int64_t size = md_array_size(tracking->allocations);
     for (int64_t i = 0; i < size; ++i) {
-        md_printf(MD_LOG_TYPE_DEBUG, "Allocation never freed, in file '%s', at line '%i'.", tracking->allocations[i].file, tracking->allocations[i].line);
+        md_logf(MD_LOG_TYPE_DEBUG, "Allocation never freed, in file '%s', at line '%i'.", tracking->allocations[i].file, tracking->allocations[i].line);
     }
     md_mutex_unlock(&tracking->mutex);
     md_mutex_destroy(&tracking->mutex);

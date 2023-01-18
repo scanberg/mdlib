@@ -189,7 +189,7 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const vec3_t* pos, int64_t co
     ASSERT(alloc);
 
     if (count < 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Invalid count");
+        md_log(MD_LOG_TYPE_ERROR, "Invalid count");
         return false;
     }
 
@@ -204,7 +204,7 @@ bool md_spatial_hash_init_soa(md_spatial_hash_t* hash, const float* x, const flo
     ASSERT(alloc);
 
     if (count < 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Invalid count");
+        md_log(MD_LOG_TYPE_ERROR, "Invalid count");
         return false;
     }
 
@@ -381,12 +381,12 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
 
 bool validate_spatial_hash(const md_spatial_hash_t* spatial_hash) {
     if (!spatial_hash) {
-        md_print(MD_LOG_TYPE_ERROR, "spatial_hash is null");
+        md_log(MD_LOG_TYPE_ERROR, "spatial_hash is null");
         return false;
     }
     
     if (spatial_hash->magic != MD_SPATIAL_HASH_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "spatial_hash has invalid magic");
+        md_log(MD_LOG_TYPE_ERROR, "spatial_hash has invalid magic");
         return false;
     }
 

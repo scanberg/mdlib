@@ -183,51 +183,51 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 
 	double first_real_to_check = -2e10;
 	if (!read_real(&first_real_to_check, 1, fp)) {
-		md_print(MD_LOG_TYPE_ERROR, "Failed to read header");
+		md_log(MD_LOG_TYPE_ERROR, "Failed to read header");
 		return false;
 	}
 
 	if (first_real_to_check > -1e10) {
 		file_version = 1;
 		if (!xdrfile_read_int(&dum, 1, fp->xdr)) {
-			md_print(MD_LOG_TYPE_ERROR, "Failed to read header step");
+			md_log(MD_LOG_TYPE_ERROR, "Failed to read header step");
 			return false;
 		}
 		t = first_real_to_check;
 		step = dum;
 	} else {
 		if (!xdrfile_read_int(&magic, 1, fp->xdr)) {
-			md_print(MD_LOG_TYPE_ERROR, "Failed to read header magic");
+			md_log(MD_LOG_TYPE_ERROR, "Failed to read header magic");
 			return false;
 		}
 		if (magic != ENX_HEADER_MAGIC) {
-			md_print(MD_LOG_TYPE_ERROR, "Magic number mismatch in header, invalid edr file");
+			md_log(MD_LOG_TYPE_ERROR, "Magic number mismatch in header, invalid edr file");
 			return false;
 		}
 		file_version = ENX_VERSION;
 		if (!xdrfile_read_int(&file_version, 1, fp->xdr)) {
-			md_print(MD_LOG_TYPE_ERROR, "Falied to read header file version");
+			md_log(MD_LOG_TYPE_ERROR, "Falied to read header file version");
 			return false;
 		}
 		if (file_version > ENX_VERSION) {
-			md_print(MD_LOG_TYPE_ERROR, "Unsuported edr file version");
+			md_log(MD_LOG_TYPE_ERROR, "Unsuported edr file version");
 			return false;
 		}
 		if (!xdrfile_read_double(&t, 1, fp->xdr)) {
-			md_print(MD_LOG_TYPE_ERROR, "Falied to read time");
+			md_log(MD_LOG_TYPE_ERROR, "Falied to read time");
 			return false;
 		}
 		if (!xdrfile_read_int64(&step, 1, fp->xdr)) {
-			md_print(MD_LOG_TYPE_ERROR, "Falied to read step");
+			md_log(MD_LOG_TYPE_ERROR, "Falied to read step");
 			return false;
 		}
 		if (!xdrfile_read_int(&nsum, 1, fp->xdr)) {
-			md_print(MD_LOG_TYPE_ERROR, "Falied to read nsum");
+			md_log(MD_LOG_TYPE_ERROR, "Falied to read nsum");
 			return false;
 		}
 		if (file_version >= 3) {
 			if (!xdrfile_read_int64(&nsteps, 1, fp->xdr)) {
-				md_print(MD_LOG_TYPE_ERROR, "Falied to read nsteps");
+				md_log(MD_LOG_TYPE_ERROR, "Falied to read nsteps");
 				return false;
 			}
 		} else {
@@ -235,7 +235,7 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 		}
 		if (file_version >= 5) {
 			if (!xdrfile_read_double(&dt, 1, fp->xdr)) {
-				md_print(MD_LOG_TYPE_ERROR, "Falied to read dt");
+				md_log(MD_LOG_TYPE_ERROR, "Falied to read dt");
 				return false;
 			}
 		} else {
@@ -243,35 +243,35 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 		}
 	}
 	if (!xdrfile_read_int(&nre, 1, fp->xdr)) {
-		md_print(MD_LOG_TYPE_ERROR, "Falied to read nre");
+		md_log(MD_LOG_TYPE_ERROR, "Falied to read nre");
 		return false;
 	}
 	if (file_version < 4) {
 		if (!xdrfile_read_int(&ndisre, 1, fp->xdr)) {
-			md_print(MD_LOG_TYPE_ERROR, "Falied to read ndisre");
+			md_log(MD_LOG_TYPE_ERROR, "Falied to read ndisre");
 			return false;
 		}
 	}
 	else {
 		// Reserved for possible future use
 		if (!xdrfile_read_int(&dum, 1, fp->xdr)) {
-			md_print(MD_LOG_TYPE_ERROR, "Falied to read data");
+			md_log(MD_LOG_TYPE_ERROR, "Falied to read data");
 			return false;
 		}
 	}
 
 	if (!xdrfile_read_int(&nblock, 1, fp->xdr)) {
-		md_print(MD_LOG_TYPE_ERROR, "Falied to read nblock");
+		md_log(MD_LOG_TYPE_ERROR, "Falied to read nblock");
 		return false;
 	}
 	if (nblock < 0) {
-		md_print(MD_LOG_TYPE_ERROR, "Negative number of blocks, edr is corrupt");
+		md_log(MD_LOG_TYPE_ERROR, "Negative number of blocks, edr is corrupt");
 		return false;
 	}
 
 	if (ndisre != 0) {
 		if (file_version >= 4) {
-			md_print(MD_LOG_TYPE_ERROR, "Distance restraint blocks in old style in new style file");
+			md_log(MD_LOG_TYPE_ERROR, "Distance restraint blocks in old style in new style file");
 			return false;
 		}
 		nblock += 1;
@@ -287,7 +287,7 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 
 	// we now know what these should be, or we've already bailed out because of wrong precision
 	if (file_version == 1 && (t < 0 || t > 1e20 || step < 0)) {
-		md_print(MD_LOG_TYPE_ERROR, "edr file with negative step number or unreasonable time (and without version number).");
+		md_log(MD_LOG_TYPE_ERROR, "edr file with negative step number or unreasonable time (and without version number).");
 		return false;
 	}
 
@@ -479,12 +479,12 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 	char	buf[1024];
 
 	if (!read_header(fp, frame, -1, NULL, alloc)) {
-		md_printf(MD_LOG_TYPE_ERROR, "Last energy frame read %d time %8.3f", (int)frame_num - 1, frame_time);
+		md_logf(MD_LOG_TYPE_ERROR, "Last energy frame read %d time %8.3f", (int)frame_num - 1, frame_time);
 		return false;
 	}
 
 	if (frame->step < 0) {
-		md_print(MD_LOG_TYPE_ERROR, "Something went wrong when reading header");
+		md_log(MD_LOG_TYPE_ERROR, "Something went wrong when reading header");
 		return false;
 	}
 
@@ -497,7 +497,7 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 	}
 
 	if (!sane) {
-		md_print(MD_LOG_TYPE_ERROR, "Something went wrong when reading header");
+		md_log(MD_LOG_TYPE_ERROR, "Something went wrong when reading header");
 		return false;
 	}
 
@@ -570,15 +570,15 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 				}
 				break;
 			default:
-				md_print(MD_LOG_TYPE_DEBUG, "Reading unknown block data type: this file is corrupted or from a future version");
+				md_log(MD_LOG_TYPE_DEBUG, "Reading unknown block data type: this file is corrupted or from a future version");
 				ok = false;
 			}
 		}
 	}
 
 	if (!ok) {
-		md_printf(MD_LOG_TYPE_ERROR, "\nLast energy frame read %d", (int)frame_num - 1);
-		md_printf(MD_LOG_TYPE_ERROR, "\nWARNING: Incomplete energy frame: nr %d time %8.3f\n", (int)frame_num, frame->t);
+		md_logf(MD_LOG_TYPE_ERROR, "\nLast energy frame read %d", (int)frame_num - 1);
+		md_logf(MD_LOG_TYPE_ERROR, "\nWARNING: Incomplete energy frame: nr %d time %8.3f\n", (int)frame_num, frame->t);
 		return false;
 	}
 
@@ -591,7 +591,7 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 
 	int magic;
 	if (!xdrfile_read_int(&magic, 1, fp->xdr)) {
-		md_print(MD_LOG_TYPE_ERROR, "Failed to read magic from edr file");
+		md_log(MD_LOG_TYPE_ERROR, "Failed to read magic from edr file");
 		goto done;
 	}
 
@@ -604,13 +604,13 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 		fp->old.read_first_step = false;
 	} else {
 		if (magic != ENX_STRING_MAGIC) {
-			md_print(MD_LOG_TYPE_ERROR, "Failed to open edr file: magic number mismatch when reading edr file strings");
+			md_log(MD_LOG_TYPE_ERROR, "Failed to open edr file: magic number mismatch when reading edr file strings");
 			goto done;
 		}
 		*file_version = ENX_VERSION;
 		xdrfile_read_int(file_version, 1, fp->xdr);
 		if (*file_version > ENX_VERSION) {
-			md_print(MD_LOG_TYPE_ERROR, "Failed to open edr file: unsupported file version in edr file");
+			md_log(MD_LOG_TYPE_ERROR, "Failed to open edr file: unsupported file version in edr file");
 			goto done;
 		}
 		xdrfile_read_int(&nre, 1, fp->xdr);
@@ -626,7 +626,7 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 
 		len = xdrfile_read_string(buf, sizeof(buf), fp->xdr);
 		if (!len) {
-			md_print(MD_LOG_TYPE_ERROR, "Failed to read expected number of strings within edr file");
+			md_log(MD_LOG_TYPE_ERROR, "Failed to read expected number of strings within edr file");
 			goto done;
 		}
 
@@ -638,7 +638,7 @@ static bool read_strings(edr_fp_t* fp, md_enxframe_t* frame, int* file_version, 
 		if (*file_version > 1) {
 			len = xdrfile_read_string(buf, sizeof(buf), fp->xdr);
 			if (!len) {
-				md_print(MD_LOG_TYPE_ERROR, "Failed to read expected number of strings within edr file");
+				md_log(MD_LOG_TYPE_ERROR, "Failed to read expected number of strings within edr file");
 				goto done;
 			}
 		} else {
@@ -663,7 +663,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 
 	fp->xdr = xdrfile_open(path.ptr, "r");
 	if (!fp->xdr) {
-		md_printf(MD_LOG_TYPE_ERROR, "Failed to open file '%.*s'", (int)path.len, path.ptr);
+		md_logf(MD_LOG_TYPE_ERROR, "Failed to open file '%.*s'", (int)path.len, path.ptr);
 		return false;
 	}
 
@@ -676,7 +676,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 		read_header(fp, &frame, frame.nre, &wrong_precision, arena) && !wrong_precision &&
 		frame.e_size && (frame.nre * 4 * (int64_t)(sizeof(float)) == frame.e_size))
 	{
-		md_printf(MD_LOG_TYPE_INFO, "Opened '%.*s' as single precision energy file", (int)path.len, path.ptr);
+		md_logf(MD_LOG_TYPE_INFO, "Opened '%.*s' as single precision energy file", (int)path.len, path.ptr);
 	} else {
 		xdr_seek(fp->xdr, 0, SEEK_SET);
 		frame = (md_enxframe_t){0};
@@ -686,9 +686,9 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 			read_header(fp, &frame, frame.nre, NULL, arena) &&
 			frame.e_size && (frame.nre * 4 * (int64_t)(sizeof(double)) == frame.e_size))
 		{
-			md_printf(MD_LOG_TYPE_INFO, "Opened '%.*s' as double precision energy file", (int)path.len, path.ptr);
+			md_logf(MD_LOG_TYPE_INFO, "Opened '%.*s' as double precision energy file", (int)path.len, path.ptr);
 		} else {
-			md_print(MD_LOG_TYPE_ERROR, "Failed to open edr file: format was not recognized");
+			md_log(MD_LOG_TYPE_ERROR, "Failed to open edr file: format was not recognized");
 			goto done;
 		}
 	}
@@ -748,7 +748,7 @@ static md_unit_t unit_from_str(str_t str) {
 		return unit_div(unit_kilogram(), unit_pow(unit_meter(), 3));
 	}
 
-	md_printf(MD_LOG_TYPE_INFO, "Failed to match supplied unit '%.*s'", (int)str.len, str.ptr);
+	md_logf(MD_LOG_TYPE_INFO, "Failed to match supplied unit '%.*s'", (int)str.len, str.ptr);
 	return (md_unit_t) {0, 1};
 }
 
@@ -768,7 +768,7 @@ bool md_edr_energies_read_file(md_edr_energies_t* energies, str_t filename, stru
 	}
 
 	if (energies->count > 0 && energies->alloc != 0) {
-		md_print(MD_LOG_TYPE_DEBUG, "Reading energies into non-zero energy structure, potential memory leak here");
+		md_log(MD_LOG_TYPE_DEBUG, "Reading energies into non-zero energy structure, potential memory leak here");
 	}
 	*energies = (md_edr_energies_t){0};
 	energies->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
@@ -785,7 +785,7 @@ bool md_edr_energies_read_file(md_edr_energies_t* energies, str_t filename, stru
 
 	while (true) {
 		if (!read_frame(&fp, &frame, file_version, arena)) {
-			md_print(MD_LOG_TYPE_ERROR, "Failed to read complete edr file!");
+			md_log(MD_LOG_TYPE_ERROR, "Failed to read complete edr file!");
 			md_edr_energies_free(energies);
 			goto done;
 		}

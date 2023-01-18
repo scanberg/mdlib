@@ -2,7 +2,7 @@
 
 #include <core/md_common.h>
 
-#define MD_ERROR(fmt, ...) md_printf(MD_LOG_TYPE_ERROR, fmt " (" __FUNCTION__ ":" STRINGIFY_VAL(__LINE__)")", ##__VA_ARGS__)
+#define MD_ERROR(fmt, ...) md_logf(MD_LOG_TYPE_ERROR, fmt " [%s]", ##__VA_ARGS__, __func__)
 
 typedef struct md_logger_o md_logger_o;
 
@@ -24,8 +24,8 @@ extern "C" {
 void md_logger_add(const md_logger_i* logger);
 void md_logger_remove(const md_logger_i* logger);
 
-int  md_print(md_log_type_t log_type, const char* msg);
-int  md_printf(md_log_type_t log_type, const char* format, ...);
+int  md_log (md_log_type_t log_type, const char* msg);
+int  md_logf(md_log_type_t log_type, const char* format, ...);
 
 // This is added implicitly
 // If you do not want to have this, you remove it explicitly

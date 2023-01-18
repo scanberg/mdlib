@@ -674,7 +674,7 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
     if (bytes > 0) {
         data->ptr = md_alloc(alloc, bytes);
         if (!data->ptr) {
-            md_print(MD_LOG_TYPE_ERROR, "Failed to allocate data in script!");
+            md_log(MD_LOG_TYPE_ERROR, "Failed to allocate data in script!");
             return false;
         }
         // @NOTE (Robin): This could be a very wasteful operation most times as the memory will be overwritten anyways.
@@ -903,7 +903,7 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
     md_array_push(ir->errors, error, ir->arena);
 
     // @TODO: Remove at some point
-    md_printf(MD_LOG_TYPE_DEBUG, "%s line %i: %s", ir->stage, token.line_beg, buffer);
+    md_logf(MD_LOG_TYPE_DEBUG, "%s line %i: %s", ir->stage, token.line_beg, buffer);
 
     if (token.str.ptr && token.str.len) {
         MEMSET(buffer, 0, ARRAY_SIZE(buffer));
@@ -921,8 +921,8 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
             ++end;
         }
         static const char* long_ass_carret = "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~";
-        md_printf(MD_LOG_TYPE_DEBUG, "%.*s", (end-beg), beg);
-        md_printf(MD_LOG_TYPE_DEBUG, "%*s^%.*s", (token.str.ptr - beg), "", token.str.len-1, long_ass_carret);
+        md_logf(MD_LOG_TYPE_DEBUG, "%.*s", (end-beg), beg);
+        md_logf(MD_LOG_TYPE_DEBUG, "%*s^%.*s", (token.str.ptr - beg), "", token.str.len-1, long_ass_carret);
     }
 }
 
@@ -2426,7 +2426,7 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
         if (is_variable_length(arg_type)) {
             if (!finalize_type(&arg_type, args[i], ctx)) {
-                md_print(MD_LOG_TYPE_ERROR, "Failed to finalize dynamic type in procedure call");
+                md_log(MD_LOG_TYPE_ERROR, "Failed to finalize dynamic type in procedure call");
                 result = -1;
                 goto done;
             }
@@ -2600,7 +2600,7 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
             type_info_t type = args[i]->data.type;
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, args[i], ctx)) {
-                    md_printf(MD_LOG_TYPE_DEBUG, "evaluate_array: Failed to finalize type for variable length argument...");
+                    md_logf(MD_LOG_TYPE_DEBUG, "evaluate_array: Failed to finalize type for variable length argument...");
                     return false;
                 }
             }
@@ -2944,7 +2944,7 @@ static bool finalize_type_array(type_info_t* type, const ast_node_t* node, eval_
             }
         }
         if (!type_info_equal(type_info_element_type(c_type), type_info_element_type(*type))) {
-            md_printf(MD_LOG_TYPE_DEBUG, "finalize_type_array: Base element mismatch");
+            md_logf(MD_LOG_TYPE_DEBUG, "finalize_type_array: Base element mismatch");
             return false;
         }
         length += (int)type_info_array_len(c_type);
@@ -4169,7 +4169,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     const uint64_t STACK_RESET_POINT = md_vm_arena_get_pos(&vm_arena);
 
     //int thread_id = (md_thread_id() & 0xFFFF);
-    //md_printf(MD_LOG_TYPE_DEBUG, "Starting evaluation on thread %i, range (%i,%i) arena size: %.2f MB", thread_id, (int)frame_beg, (int)frame_end, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
+    //md_logf(MD_LOG_TYPE_DEBUG, "Starting evaluation on thread %i, range (%i,%i) arena size: %.2f MB", thread_id, (int)frame_beg, (int)frame_end, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
     //uint64_t max_arena_pos = 0;
 
     md_trajectory_frame_header_t init_header = { 0 };
@@ -4221,7 +4221,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         result = md_trajectory_load_frame(traj, f_idx, &curr_header, curr_x, curr_y, curr_z);
 
         if (!result) {
-            md_printf(MD_LOG_TYPE_ERROR, "Something went wrong when loading the frames during evaluation");
+            md_logf(MD_LOG_TYPE_ERROR, "Something went wrong when loading the frames during evaluation");
             goto done;
         }
         
@@ -4237,7 +4237,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             type_info_t type = expr[i]->node->data.type;
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, expr[i]->node, &ctx)) {
-                    md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s', failed to finalize its type", expr[i]->ident->name.len, expr[i]->ident->name.ptr);
+                    md_logf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s', failed to finalize its type", expr[i]->ident->name.len, expr[i]->ident->name.ptr);
                     result = false;
                     goto done;
                 }
@@ -4250,7 +4250,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 data[i].value_range.end = +FLT_MAX;
             }
             if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
-                md_printf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
+                md_logf(MD_LOG_TYPE_ERROR, "Evaluation error when evaluating identifier '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
                 result = false;
                 goto done;
             }
@@ -4351,7 +4351,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         //max_arena_pos = MAX(max_arena_pos, vm_arena.commit_pos);
     }
 done:
-    //md_printf(MD_LOG_TYPE_DEBUG, "Finished evaluation on thread %i, max arena size: %.2f MB", thread_id, (double)max_arena_pos / (double)MEGABYTES(1));
+    //md_logf(MD_LOG_TYPE_DEBUG, "Finished evaluation on thread %i, max arena size: %.2f MB", thread_id, (double)max_arena_pos / (double)MEGABYTES(1));
     FREE_TEMP_ALLOC();
     return result;
 }
@@ -4362,7 +4362,7 @@ static inline bool validate_ir(const md_script_ir_t* ir) {
     }
 
     if (ir->magic != SCRIPT_IR_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "Script object is corrupt or invalid.");
+        md_log(MD_LOG_TYPE_ERROR, "Script object is corrupt or invalid.");
         return false;
     }
 
@@ -4371,12 +4371,12 @@ static inline bool validate_ir(const md_script_ir_t* ir) {
 
 static inline bool validate_eval(const md_script_eval_t* eval) {
     if (!eval) {
-        md_print(MD_LOG_TYPE_ERROR, "Eval object is NULL.");
+        md_log(MD_LOG_TYPE_ERROR, "Eval object is NULL.");
         return false;
     }
 
     if (eval->magic != SCRIPT_EVAL_MAGIC) {
-        md_print(MD_LOG_TYPE_ERROR, "Eval object is corrupt or invalid.");
+        md_log(MD_LOG_TYPE_ERROR, "Eval object is corrupt or invalid.");
         return false;
     }
 
@@ -4511,7 +4511,7 @@ bool extract_identifiers(md_script_ir_t* ir) {
 
 md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
     if (!alloc) {
-        md_print(MD_LOG_TYPE_ERROR, "Script Create: Allocator was null");
+        md_log(MD_LOG_TYPE_ERROR, "Script Create: Allocator was null");
         return NULL;
     }
     return create_ir(alloc);
@@ -4519,17 +4519,17 @@ md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
 
 bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, const md_script_ir_t* ctx_ir) {
     if (!validate_ir(ir)) {
-        md_print(MD_LOG_TYPE_ERROR, "Script Compile: IR is not valid");
+        md_log(MD_LOG_TYPE_ERROR, "Script Compile: IR is not valid");
         return false;
     }
 
     if (str_empty(src)) {
-        md_print(MD_LOG_TYPE_ERROR, "Script Compile: Source string was empty");
+        md_log(MD_LOG_TYPE_ERROR, "Script Compile: Source string was empty");
         return false;
     }
 
     if (!mol) {
-        md_print(MD_LOG_TYPE_ERROR, "Script Compile: Molecule was null");
+        md_log(MD_LOG_TYPE_ERROR, "Script Compile: Molecule was null");
         return false;
     }
 
@@ -4557,12 +4557,12 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
     for (int64_t i = 0; i < num_expr; ++i) {
         uint64_t hash = hash_node(ir->type_checked_expressions[i]->node);
 #if DEBUG
-        //md_printf(MD_LOG_TYPE_DEBUG, "%llu", hash);
+        //md_logf(MD_LOG_TYPE_DEBUG, "%llu", hash);
 #endif
         ir->fingerprint ^= hash;
     }
 #if DEBUG
-    //md_print(MD_LOG_TYPE_DEBUG, "---");
+    //md_log(MD_LOG_TYPE_DEBUG, "---");
 #endif
 
     return ir->compile_success;
@@ -4570,7 +4570,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
 
 bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, int64_t count) {
     if (!validate_ir(ir)) {
-        md_print(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: IR is not valid");
+        md_log(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: IR is not valid");
         return false;
     }
 
@@ -4578,11 +4578,11 @@ bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_b
         for (int64_t i = 0; i < count; ++i) {
             str_t name = bitfield_identifiers[i].identifier_name;
             if (!md_script_identifier_name_valid(name)) {
-                md_printf(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: Invalid identifier name: '%.*s')", (int)name.len, name.ptr);
+                md_logf(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: Invalid identifier name: '%.*s')", (int)name.len, name.ptr);
                 return false;
             }
             if (find_identifier(name, ir->identifiers, md_array_size(ir->identifiers))) {
-                md_printf(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: Identifier name collision: '%.*s')", (int)name.len, name.ptr);
+                md_logf(MD_LOG_TYPE_ERROR, "Script Add Bitfield Identifiers: Identifier name collision: '%.*s')", (int)name.len, name.ptr);
                 return false;
             }
             
@@ -4675,19 +4675,19 @@ static md_script_eval_t* create_eval(md_allocator_i* alloc) {
 
 md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, md_allocator_i* alloc) {
     if (num_frames == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: Number of frames was 0");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: Number of frames was 0");
         return NULL;
     }
     if (!ir) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: IR was null");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: IR was null");
         return NULL;
     }
     if (!md_script_ir_valid(ir)) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: IR was not valid");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: IR was not valid");
         return NULL;
     }
     if (!alloc) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: Allocator was null");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: Allocator was null");
         return NULL;
     }
 
@@ -4743,30 +4743,30 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
     ASSERT(eval);
 
     if (!ir) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: Immediate representation was null");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: Immediate representation was null");
         return false;
     }
     if (!mol) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: Molecule was null");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: Molecule was null");
         return false;
     }
     if (!traj) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was null");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was null");
         return false;
     }
 
     const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
     if (num_frames == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was empty");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: Trajectory was empty");
         return false;
     }
     if (frame_beg > frame_end || frame_end > num_frames) {
-        md_print(MD_LOG_TYPE_ERROR, "Script eval: Invalid frame range");
+        md_log(MD_LOG_TYPE_ERROR, "Script eval: Invalid frame range");
         return false;
     }
 
     if (md_array_size(eval->properties) == 0) {
-        md_print(MD_LOG_TYPE_INFO, "Script eval: No properties present, nothing to evaluate");
+        md_log(MD_LOG_TYPE_INFO, "Script eval: No properties present, nothing to evaluate");
         return false;
     }
     
@@ -4854,7 +4854,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
 
     if (ir->errors) {
         for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
-            md_printf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
+            md_logf(MD_LOG_TYPE_ERROR, "%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
         }
     }
 
@@ -4973,17 +4973,17 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
     ASSERT(mol);
 
     if (!dst_bf || !md_bitfield_validate(dst_bf)) {
-        md_printf(MD_LOG_TYPE_ERROR, "md_filter: Passed in bitfield was NULL or not valid.");
+        md_logf(MD_LOG_TYPE_ERROR, "md_filter: Passed in bitfield was NULL or not valid.");
         return false;
     }
 
     if (!mol) {
-        md_printf(MD_LOG_TYPE_ERROR, "md_filter: Passed in molecule was NULL");
+        md_logf(MD_LOG_TYPE_ERROR, "md_filter: Passed in molecule was NULL");
         return false;
     }
 
     if (mol->atom.count == 0) {
-        md_printf(MD_LOG_TYPE_ERROR, "md_filter: Passed in molecule was empty");
+        md_logf(MD_LOG_TYPE_ERROR, "md_filter: Passed in molecule was empty");
         return false;
     }
 
@@ -5053,7 +5053,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                     success = true;
                 }
             } else {
-                md_printf(MD_LOG_TYPE_ERROR, "md_filter: Expression did not evaluate to a valid bitfield\n");
+                md_logf(MD_LOG_TYPE_ERROR, "md_filter: Expression did not evaluate to a valid bitfield\n");
                 return false;
             }
         }
@@ -5129,7 +5129,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         type_info_t type = node->data.type;
         if (is_variable_length(type)) {
             if (!finalize_type(&type, node, ctx)) {
-                md_print(MD_LOG_TYPE_DEBUG, "Vis Eval: Failed to finalize type for variable length expression");
+                md_log(MD_LOG_TYPE_DEBUG, "Vis Eval: Failed to finalize type for variable length expression");
                 return;
             }
         }
