@@ -438,7 +438,7 @@ static inline vec4_t vec4_zero() {
 static inline vec4_t vec4_set(float x, float y, float z, float w) {
     vec4_t res;
 #if MD_VEC_MATH_USE_SIMD
-    res.f32x4 = md_simd_set_f32x4(w, z, y, x);
+    res.f32x4 = md_simd_set_f32x4(x, y, z, w);
 #else
     res.x = x;
     res.y = y;
@@ -466,8 +466,13 @@ static inline vec4_t vec4_from_float(float v) {
 }
 
 static inline vec4_t vec4_from_vec3(vec3_t v, float w) {
-    vec4_t r = {v.x, v.y, v.z, w};
-    return r;
+    vec4_t res;
+#if MD_VEC_MATH_USE_SIMD
+    res.f32x4 = md_simd_set_f32x4(v.x, v.y, v.z, w);
+#else
+    res = {v.x, v.y, v.z, w};
+#endif
+    return res;
 }
 
 static inline vec4_t vec4_mul(vec4_t a, vec4_t b) {

@@ -154,6 +154,19 @@
 #define CONCAT(x, y) CONCAT_INTERNAL(x, y)
 #endif
 
+#ifndef STRINGIFY
+#define STRINGIFY_VAL(s) STRINGIFY(s)
+#define STRINGIFY(s) #s
+#endif
+
+#ifndef __FUNC____
+#if MD_COMPILER_MSVC
+#define __FUNC__ __FUNCSIG__
+#else
+#define __FUNC__ __PRETTY_FUNCTION__
+#endif
+#endif
+
 // Provide declarations for common intrinsic functions which all of the supported compilers expose
 #ifndef ASSERT
 
@@ -170,7 +183,7 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
                 : md_assert_impl( \
                     __FILE__, \
                     __LINE__, \
-                    __func__, \
+                    __FUNC__, \
                     #__e) \
             )
 #   else

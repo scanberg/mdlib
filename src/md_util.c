@@ -8,6 +8,8 @@
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 #include <core/md_simd.h>
+#include <core/md_spatial_hash.h>
+#include <core/md_bitfield.h>
 
 #include <md_trajectory.h>
 #include <md_molecule.h>
@@ -309,6 +311,34 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
     return true;
 }
 
+bool md_util_element_from_mass(md_element_t element[], const float mass[], int64_t count) {
+    if (!element) {
+        MD_ERROR("element is null");
+        return false;
+    }
+
+    if (!mass) {
+        MD_ERROR("element is null");
+        return false;
+    }
+
+    const float eps = 1.0e-2;
+    for (int64_t i = 0; i < count; ++i) {
+        md_element_t elem = 0;
+        const float m = mass[i];
+        for (uint8_t j = 1; j < (uint8_t)ARRAY_SIZE(element_atomic_mass); ++j) {
+            if (fabs(m - element_atomic_mass[j]) < eps) {
+                elem = j;
+                break;
+            }
+        }
+
+        element[i] = elem;
+    }
+
+    return false;
+}
+
 str_t md_util_element_symbol(md_element_t element) {
     element = element < Num_Elements ? element : 0;
     return element_symbols[element];
@@ -536,115 +566,226 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
-static inline bool covelent_bond_heuristic(float dist_squared, const md_element_t elem[2]) {
-    const float d = element_covalent_radii[elem[0]] + element_covalent_radii[elem[1]];
+static inline bool covelent_bond_heuristic(float dist_squared, md_element_t elem_a, md_element_t elem_b) {
+    const float d = element_covalent_radii[elem_a] + element_covalent_radii[elem_b];
     const float d_min = d - 0.5f;
     const float d_max = d + 0.3f;
     return (d_min * d_min) < dist_squared && dist_squared < (d_max * d_max);
 }
 
-bool md_util_extract_covalent_bonds(md_molecule_t* mol, struct md_allocator_i* alloc) {
-    ASSERT(mol);
+bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const float* x, const float* y, const float* z, const md_element_t* element, const md_residue_idx_t* res_idx, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
-    if (mol->covalent_bond.bond) {
-        md_array_shrink(mol->covalent_bond.bond, 0);
+    if (!bond_data) {
+        MD_ERROR("missing parameter bond_data");
+        return false;
     }
 
-    md_array_resize(mol->residue.internal_covalent_bond_range, mol->residue.count, alloc);
-    MEMSET(mol->residue.internal_covalent_bond_range, 0, md_array_bytes(mol->residue.internal_covalent_bond_range));
+    if (!x) {
+        MD_ERROR("missing parameter atom_x");
+        return false;
+    }
 
-    md_array_resize(mol->residue.complete_covalent_bond_range, mol->residue.count, alloc);
-    MEMSET(mol->residue.complete_covalent_bond_range, 0, md_array_bytes(mol->residue.complete_covalent_bond_range));
+    if (!y) {
+        MD_ERROR("missing parameter atom_y");
+        return false;
+    }
 
-    md_array_resize(mol->atom.valence, mol->atom.count, alloc);
-    MEMSET(mol->atom.valence, 0, md_array_bytes(mol->atom.valence));
+    if (!z) {
+        MD_ERROR("missing parameter atom_z");
+        return false;
+    }
 
-    const vec4_t period = vec4_from_vec3(md_util_compute_unit_cell_extent(mol->coord_frame), 0);
+    if (!element) {
+        MD_ERROR("missing parameter atom_element");
+        return false;
+    }
 
-    if (mol->residue.count > 0) {
-        // Residues are defined,
-        // First find connections within residues, then between residues
+    bond_data->count = 0;
+    md_array_shrink(bond_data->bond, 0);
 
-        for (int64_t ri = 0; ri < mol->residue.count; ++ri) {
-            const int64_t pre_internal_bond_count = md_array_size(mol->covalent_bond.bond);
+    const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0);
 
-            // Compute internal bonds (within residue)
-            for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end - 1; ++i) {
-                const vec4_t a = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
-                for (int64_t j = i + 1; j < mol->residue.atom_range[ri].end; ++j) {
-                    const vec4_t b = {mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], 0};
-                    const float d2 = vec4_periodic_distance_squared(a, b, period);
-                    const md_element_t elem[2] = { mol->atom.element[i], mol->atom.element[j] };
-                    if (covelent_bond_heuristic(d2, elem)) {
-                        md_bond_t bond = {(int32_t)i, (int32_t)j};
-                        md_array_push(mol->covalent_bond.bond, bond, alloc);
-                        mol->atom.valence[i] += 1;
-                        mol->atom.valence[j] += 1;
+    if (res_idx != NULL) {
+        // atom residue indices are given,
+        // First find connections first within the residue, then to the next residue
+
+        md_range_t range = {0, 0};
+        md_range_t prev_range = {0, 0};
+        for (int i = 0; i < (int)count; ++i) {
+            while (i < (int)count && res_idx[i] == res_idx[range.beg]) ++i;
+            range.end = i;
+
+            for (int j = prev_range.beg; j < prev_range.end; ++j) {
+                for (int k = range.beg; k < range.end; ++k) {
+                    const vec4_t a = {x[j], y[j], z[j], 0};
+                    const vec4_t b = {x[k], y[k], z[k], 0};
+                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext4);
+                    if (covelent_bond_heuristic(d2, element[j], element[k])) {
+                        md_array_push(bond_data->bond, ((md_bond_t){j, k}), alloc);
+                    }
+                }
+            }
+            
+            for (int j = range.beg; j < range.end - 1; ++j) {
+                for (int k = j + 1; k < range.end; ++k) {
+                    const vec4_t a = {x[j], y[j], z[j], 0};
+                    const vec4_t b = {x[k], y[k], z[k], 0};
+                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext4);
+                    if (covelent_bond_heuristic(d2, element[j], element[k])) {
+                        md_array_push(bond_data->bond, ((md_bond_t){j, k}), alloc);
                     }
                 }
             }
 
-            const int64_t post_internal_bond_count = md_array_size(mol->covalent_bond.bond);
-
-            if (mol->residue.internal_covalent_bond_range) {
-                mol->residue.internal_covalent_bond_range[ri].beg = (uint32_t)pre_internal_bond_count;
-                mol->residue.internal_covalent_bond_range[ri].end = (uint32_t)post_internal_bond_count;
-            }
-
-            const int64_t rj = ri + 1;
-            if (rj < mol->residue.count) {
-                // Compute external bonds (between residues)
-                for (int64_t i = mol->residue.atom_range[ri].beg; i < mol->residue.atom_range[ri].end; ++i) {
-                    const vec4_t a = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
-                    for (int64_t j = mol->residue.atom_range[rj].beg; j < mol->residue.atom_range[rj].end; ++j) {
-                        const vec4_t b = {mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], 0};
-                        const float d2 = vec4_periodic_distance_squared(a, b, period);
-                        const md_element_t elem[2] = { mol->atom.element[i], mol->atom.element[j] };
-                        if (covelent_bond_heuristic(d2, elem)) {
-                            md_bond_t bond = {(int32_t)i, (int32_t)j};
-                            md_array_push(mol->covalent_bond.bond, bond, alloc);
-                            mol->atom.valence[i] += 1;
-                            mol->atom.valence[j] += 1;
-                        }
-                    }
-                }
-
-                const int64_t post_external_bond_count = md_array_size(mol->covalent_bond.bond);
-
-                if (mol->residue.complete_covalent_bond_range) {
-                    mol->residue.complete_covalent_bond_range[ri].end = (uint32_t)post_external_bond_count;
-                    mol->residue.complete_covalent_bond_range[rj].beg = (uint32_t)post_internal_bond_count;
-                }
-            }
-        }
-
-        if (mol->residue.complete_covalent_bond_range) {
-            ASSERT(mol->residue.count > 0);
-            mol->residue.complete_covalent_bond_range[0].beg = 0;
-            mol->residue.complete_covalent_bond_range[mol->residue.count - 1].end = (uint32_t)md_array_size(mol->covalent_bond.bond);
+            prev_range = range;
+            range.beg  = range.end;
         }
     }
     else {
         // No residues present, test all against all
-        // @TODO: This should be accelerated by spatial hashing
-        for (int64_t i = 0; i < mol->atom.count - 1; ++i) {
-            const vec4_t a = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
-            for (int64_t j = i + 1; j < mol->atom.count; ++j) {
-                const vec4_t b = {mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], 0};
-                const float d2 = vec4_periodic_distance_squared(a, b, period);
-                const md_element_t elem[2] = { mol->atom.element[i], mol->atom.element[j] };
-                if (covelent_bond_heuristic(d2, elem)) {
-                    md_bond_t bond = {(int32_t)i, (int32_t)j};
-                    md_array_push(mol->covalent_bond.bond, bond, alloc);
-                    mol->atom.valence[i] += 1;
-                    mol->atom.valence[j] += 1;
+        // Utilize spatial hashing for speeding up spatial queries
+        
+        md_spatial_hash_t sh = {0};
+        md_spatial_hash_init_soa(&sh, x, y, z, count, pbc_ext, default_allocator);
+
+        const float cutoff = 5.0f;
+
+        md_ring_allocator_t* ring_alloc = get_thread_ring_allocator();
+        md_allocator_i temp_alloc = md_ring_allocator_create_interface(ring_alloc);
+        uint64_t reset_pos = md_ring_allocator_get_pos(ring_alloc);
+
+        for (int i = 0; i < (int)count; ++i) {
+            const vec3_t pos = {x[i], y[i], z[i]};
+            
+            // Reset ring allocator pos
+            md_ring_allocator_set_pos(ring_alloc, reset_pos);
+            md_array(uint32_t) indices = md_spatial_hash_query_idx(&sh, pos, cutoff, &temp_alloc);
+
+            for (int64_t iter = 0; iter < md_array_size(indices); ++iter) {
+                const int j = indices[iter];
+                // Only store monotonic bonds (idx[0] < idx[1])
+                if (j <= i) {
+                    continue;
+                }
+                const vec4_t pos_a = vec4_from_vec3(pos, 0);
+                const vec4_t pos_b = {x[j], y[j], z[j], 0};
+                const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext4);
+                if (covelent_bond_heuristic(d2, element[i], element[j])) {
+                    md_array_push(bond_data->bond, ((md_bond_t){i, j}), alloc);
                 }
             }
         }
+
+        md_spatial_hash_free(&sh);
     }
 
-    mol->covalent_bond.count = md_array_size(mol->covalent_bond.bond);
+    bond_data->count = md_array_size(bond_data->bond);
+    return true;
+}
+
+bool md_util_compute_chain_data(md_molecule_chain_data_t* chain_data, const md_residue_idx_t* res_idx, int64_t atom_count, const md_bond_t* bonds, int64_t bond_count, md_allocator_i* alloc) {
+    if (!chain_data) {
+        MD_ERROR("chain data is missing");
+        return false;
+    }
+    
+    if (!res_idx) {
+        MD_ERROR("residue index is null");
+        return false;
+    }
+
+    if (!bonds) {
+        MD_ERROR("bonds is null");
+        return false;
+    }
+
+    md_allocator_i* temp_alloc = default_temp_allocator;
+    
+    md_array(md_range_t) res_atom_range = 0;
+    
+    int res_count = 0;
+    for (int i = 0; i < (int)atom_count; ++i) {
+        res_count = MAX(res_count, res_idx[i]);
+        if (res_count >= md_array_size(res_atom_range)) {
+            md_range_t atom_range = {i, i};
+            md_array_push(res_atom_range, atom_range, temp_alloc);
+        }
+        res_atom_range[res_idx[i]].end += 1;
+    }
+    
+    md_array(bool) res_bond_to_next = 0;
+    md_array_resize(res_bond_to_next, res_count, temp_alloc);
+    MEMSET(res_bond_to_next, 0, md_array_bytes(res_bond_to_next));
+
+    // Iterate over bonds and determine bonds between residues (res_bonds)
+    for (int64_t i = 0; i < bond_count; ++i) {
+        const md_bond_t bond = bonds[i];
+        const md_residue_idx_t res_a = res_idx[bond.idx[0]];
+        const md_residue_idx_t res_b = res_idx[bond.idx[1]];
+        
+        if (res_b == res_a + 1) {
+            res_bond_to_next[res_a] = true;
+        }
+    }
+
+    md_array_shrink(chain_data->id, 0);
+    md_array_shrink(chain_data->atom_range, 0);
+    md_array_shrink(chain_data->residue_range, 0);
+    chain_data->count = 0;
+
+    char next_char = 0;
+    int beg_idx = 0;
+    for (int i = 0; i < res_count; ++i) {
+        if (res_bond_to_next[i] == false || i == res_count - 1) {
+            int end_idx = i + 1;
+            if (end_idx - beg_idx > 1) {
+                const md_label_t id = {.buf = {'A' + next_char}, .len = 1};
+                const md_range_t atom_range = {res_atom_range[beg_idx].beg, res_atom_range[end_idx - 1].end};
+                const md_range_t res_range  = {beg_idx, end_idx};
+                
+                md_array_push(chain_data->id, id, alloc);
+                md_array_push(chain_data->atom_range, atom_range, alloc);
+                md_array_push(chain_data->residue_range, res_range, alloc);
+                
+                next_char = (next_char + 1) % 26;
+                chain_data->count += 1;
+            }
+            beg_idx = i + 1;
+        }
+    }
+
+    return chain_data;
+}
+
+bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count) {
+    if (!atom_valence) {
+        MD_ERROR("Missing input: atom_valence");
+        return false;
+    }
+
+    if (atom_count < 0) {
+        MD_ERROR("Invalid input: atom_count");
+        return false;
+    }
+
+    if (!bonds) {
+        MD_ERROR("Missing input: bonds");
+        return false;
+    }
+
+    if (bond_count < 0) {
+        MD_ERROR("Invalid input: bond_count");
+        return false;
+    }
+
+    MEMSET(atom_valence, 0, sizeof(md_valence_t) * atom_count);
+
+    for (int64_t i = 0; i < bond_count; ++i) {
+        const md_bond_t bond = bonds[i];
+        atom_valence[bond.idx[0]] += 1;
+        atom_valence[bond.idx[1]] += 1;
+    }
 
     return true;
 }
@@ -738,7 +879,7 @@ static void insert_ring(md_array(md_array(int))* rings, md_array(int) ring, md_a
 // Since it is essentially a breadth first search, it is conceptually similar to a flood-fill algorithm
 // Which means we only touch each atom once (with the exception of backtracking when a ring is found).
 
-static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_idx, md_allocator_i* alloc) {
+static int** find_residue_rings(md_range_t atom_range, const md_bond_t* atom_bonds, int atom_bond_count, md_allocator_i* alloc) {
     const int MAX_DEPTH = 99999;
 
     fifo_t queue  = {0};
@@ -747,21 +888,19 @@ static int** find_residue_rings(const md_molecule_t* mol, md_residue_idx_t res_i
     md_array(int)  depth = 0;
     md_array(int)  pred  = 0;
 
-    md_range_t bond_range = mol->residue.internal_covalent_bond_range[res_idx];
-    md_range_t atom_range = mol->residue.atom_range[res_idx];
     int offset = atom_range.beg;
     int count  = atom_range.end - atom_range.beg;
     md_array_resize(edges, count, alloc);
     md_array_resize(depth, count, alloc);
     md_array_resize(pred,  count, alloc);
     
-    const int max_edge_count = 2 * (bond_range.end - bond_range.beg);
+    const int max_edge_count = 2 * atom_bond_count;
     fifo_init(&queue, max_edge_count, alloc);
     
     MEMSET(edges, 0 , md_array_bytes(edges));
-    for (int i = bond_range.beg; i < bond_range.end; ++i) {
-        int a = mol->covalent_bond.bond[i].idx[0] - offset;
-        int b = mol->covalent_bond.bond[i].idx[1] - offset;
+    for (int i = 0; i < atom_bond_count; ++i) {
+        int a = atom_bonds[i].idx[0] - offset;
+        int b = atom_bonds[i].idx[1] - offset;
         md_array_push(edges[a], b, alloc);
         md_array_push(edges[b], a, alloc);
     }
@@ -843,17 +982,33 @@ bool md_util_extract_rings(md_molecule_t* mol, md_allocator_i* alloc) {
     ASSERT(alloc);
 
     if (mol->covalent_bond.count == 0) {
-        md_print(MD_LOG_TYPE_ERROR, "The molecule did not contain any covalent bonds, which are required to compute rings.");
+        MD_ERROR("The molecule did not contain any covalent bonds, which are required to compute rings.");
         return false;
     }
 
     md_ring_allocator_t* ring_alloc = get_thread_ring_allocator();
     md_allocator_i temp_alloc = md_ring_allocator_create_interface(ring_alloc);
+
+    md_array(md_range_t) residue_bond_range = 0;
+    md_array_resize(residue_bond_range, mol->residue.count, &temp_alloc);
+    MEMSET(residue_bond_range, 0, md_array_bytes(residue_bond_range));
+    
+    for (int i = 0; i < mol->covalent_bond.count; ++i) {
+        const md_residue_idx_t res_a = mol->atom.residue_idx[mol->covalent_bond.bond[i].idx[0]];
+        const md_residue_idx_t res_b = mol->atom.residue_idx[mol->covalent_bond.bond[i].idx[1]];
+        if (res_a == res_b) {
+            md_range_t* range = &residue_bond_range[res_a];
+            if (range->beg == 0 && range->end == 0) range->beg = i;
+            range->end = i + 1;
+        }
+    }
     
     uint64_t reset_point = md_ring_allocator_get_pos(ring_alloc);
-    for (int i = 0; i < mol->residue.count; ++i) {
+    for (int i = 0; i < (int)mol->residue.count; ++i) {
         md_ring_allocator_set_pos(ring_alloc, reset_point);
-        int** rings = find_residue_rings(mol, i, &temp_alloc);
+        const md_bond_t* bonds = mol->covalent_bond.bond + residue_bond_range[i].beg;
+        int bond_count = residue_bond_range[i].end - residue_bond_range[i].beg;
+        int** rings = find_residue_rings(mol->residue.atom_range[i], bonds, bond_count, &temp_alloc);
         
         if (rings) {
             for (int j = 0; j < (int)md_array_size(rings); ++j) {
@@ -1709,8 +1864,15 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
    
     if (flags & MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT) {
         if (mol->covalent_bond.count == 0) {
-            // Use heuristical method of finding covalent bonds
-            md_util_extract_covalent_bonds(mol, alloc);
+            const vec3_t pbc_ext = md_util_compute_unit_cell_extent(mol->coord_frame);
+            md_util_compute_covalent_bonds(&mol->covalent_bond, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, alloc);
+        }
+    }
+
+    if (flags & MD_UTIL_POSTPROCESS_VALENCE_BIT) {
+        if (mol->atom.valence == 0 && mol->covalent_bond.count > 0) {
+            md_array_resize(mol->atom.valence, mol->atom.count, alloc);
+            md_util_compute_atom_valence(mol->atom.valence, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count);    
         }
     }
     
@@ -1721,7 +1883,24 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     }
 
     if (flags & MD_UTIL_POSTPROCESS_CHAINS_BIT) {
-        if (mol->chain.count == 0 && mol->residue.count > 0) {
+        if (mol->chain.count == 0 && mol->residue.count > 0 && mol->covalent_bond.count > 0) {
+            md_util_compute_chain_data(&mol->chain, mol->atom.residue_idx, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count, alloc);
+
+            if (mol->chain.count) {
+                md_array_resize(mol->atom.chain_idx, mol->atom.count, alloc);
+                for (int i = 0; i < (int)mol->atom.count; ++i) {
+                    mol->atom.chain_idx[i] = -1;
+                }
+
+                // Update references from atoms and residues to chains
+                for (md_chain_idx_t c = 0; c < (md_chain_idx_t)mol->chain.count; ++c) {
+                    md_range_t atom_range = mol->chain.atom_range[c];
+                    for (int i = atom_range.beg; i < atom_range.end; ++i) {
+                        mol->atom.chain_idx[i] = c;
+                    }
+                }
+            }
+            /*
             // Compute artificial chains and label them A - Z
             if (mol->residue.complete_covalent_bond_range) {
                 // Identify connected residues (through covalent bonds) if more than one, we store it as a chain
@@ -1776,6 +1955,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
                     }
                 }
             }
+            */
         }
     }
 

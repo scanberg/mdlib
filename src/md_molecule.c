@@ -29,8 +29,6 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->residue.name) md_array_free(mol->residue.name, alloc);
     if (mol->residue.id) md_array_free(mol->residue.id, alloc);
     if (mol->residue.atom_range) md_array_free(mol->residue.atom_range, alloc);
-    if (mol->residue.internal_covalent_bond_range) md_array_free(mol->residue.internal_covalent_bond_range, alloc);
-    if (mol->residue.complete_covalent_bond_range) md_array_free(mol->residue.complete_covalent_bond_range, alloc);
 
     // Chain
     if (mol->chain.id) md_array_free(mol->chain.id, alloc);
@@ -133,14 +131,8 @@ void md_molecule_append(md_molecule_t* dst, const md_molecule_t* src, md_allocat
     ARRAY_PUSH(residue, name);
     ARRAY_PUSH(residue, id);
     ARRAY_PUSH(residue, atom_range);
-    ARRAY_PUSH(residue, internal_covalent_bond_range);
-    ARRAY_PUSH(residue, complete_covalent_bond_range);
     ARRAY_INCREMENT_FIELD(residue, atom_range, beg, (int32_t)dst->atom.count);
     ARRAY_INCREMENT_FIELD(residue, atom_range, end, (int32_t)dst->atom.count);
-    ARRAY_INCREMENT_FIELD(residue, internal_covalent_bond_range, beg, (int32_t)dst->covalent_bond.count);
-    ARRAY_INCREMENT_FIELD(residue, internal_covalent_bond_range, end, (int32_t)dst->covalent_bond.count);
-    ARRAY_INCREMENT_FIELD(residue, complete_covalent_bond_range, beg, (int32_t)dst->covalent_bond.count);
-    ARRAY_INCREMENT_FIELD(residue, complete_covalent_bond_range, end, (int32_t)dst->covalent_bond.count);
 
     dst->atom.count           += src->atom.count;
     dst->backbone.count       += src->backbone.count;
@@ -188,8 +180,6 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(residue, name);
     ARRAY_PUSH(residue, id);
     ARRAY_PUSH(residue, atom_range);
-    ARRAY_PUSH(residue, internal_covalent_bond_range);
-    ARRAY_PUSH(residue, complete_covalent_bond_range);
 
     dst->atom.count           = src->atom.count;
     dst->backbone.count       = src->backbone.count;

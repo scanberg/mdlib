@@ -1,5 +1,9 @@
 #pragma once
 
+#include <core/md_common.h>
+
+#define MD_ERROR(fmt, ...) md_printf(MD_LOG_TYPE_ERROR, fmt " (" __FUNCTION__ ":" STRINGIFY_VAL(__LINE__)")", ##__VA_ARGS__)
+
 typedef struct md_logger_o md_logger_o;
 
 typedef enum md_log_type_t {

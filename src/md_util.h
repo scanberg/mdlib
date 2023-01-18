@@ -11,25 +11,18 @@ extern "C" {
 #endif
 
 typedef enum md_util_postprocess_flags_t {
-    MD_UTIL_POSTPROCESS_ELEMENT_BIT         = 1,
-    MD_UTIL_POSTPROCESS_RADIUS_BIT          = 2,
-    MD_UTIL_POSTPROCESS_MASS_BIT            = 4,
-    MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT  = 8,
-    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 16,
-    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 32,
-    MD_UTIL_POSTPROCESS_RING_BIT            = 64,
+    MD_UTIL_POSTPROCESS_ELEMENT_BIT         = 0x01,
+    MD_UTIL_POSTPROCESS_RADIUS_BIT          = 0x02,
+    MD_UTIL_POSTPROCESS_MASS_BIT            = 0x04,
+    MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT  = 0x08,
+    MD_UTIL_POSTPROCESS_VALENCE_BIT         = 0x10,
+    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x20,
+    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x40,
+    MD_UTIL_POSTPROCESS_RING_BIT            = 0x80,
 
-    MD_UTIL_POSTPROCESS_ALL             = -1,
-    MD_UTIL_POSTPROCESS_COARSE_GRAINED  = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
+    MD_UTIL_POSTPROCESS_ALL                 = -1,
+    MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
 } md_util_postprocess_flags_t;
-
-// Structure Of Array layout version of vec3_t
-// This is to simplify the interfaces a bit when dealing with multiple coordinate streams
-typedef struct md_vec3_soa_t {
-    float* x;
-    float* y;
-    float* z;
-} md_vec3_soa_t;
 
 // Cluster of a range with bounding box
 typedef struct md_cluster_t {
@@ -66,23 +59,12 @@ static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);
 }
 
-// Convenience functions to extract vec3_soa streams from molecule
-static inline md_vec3_soa_t md_molecule_coord(md_molecule_t* mol) {
-    ASSERT(mol);
-    md_vec3_soa_t soa = {mol->atom.x, mol->atom.y, mol->atom.z};
-    return soa;
-}
-
-static inline md_vec3_soa_t md_molecule_vel(md_molecule_t* mol) {
-    ASSERT(mol);
-    md_vec3_soa_t soa = {mol->atom.vx, mol->atom.vy, mol->atom.vz};
-    return soa;
-}
-
 // This operation tries to deduce the element from the atom type/name which usually contains alot of cruft.
 // It also tries resolve some ambiguities: Such as CA, is that Carbon Alpha or is it calcium?
 // We can resolve that by looking at the residue name and in the case of Carbon Alpha, the residue name should be matched to an amino acid.
 bool md_util_element_decode(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol);
+
+bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], int64_t count);
 
 // Extracts the atom indices which are central for a segment within the backbone for a single residue
 bool md_util_backbone_atoms_extract_from_residue_idx(md_backbone_atoms_t* backbone_atoms, md_residue_idx_t res_idx, const md_molecule_t* mol);
@@ -98,12 +80,19 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const struct md_molecule_t* mol);
 
-// the result is an md_array allocated using the supplied allocator, since we cannot determine how many bonds will be formed.
-bool md_util_extract_covalent_bonds(struct md_molecule_t* mol, struct md_allocator_i* alloc);
-bool md_util_extract_hydrogen_bonds(struct md_molecule_t* mol, struct md_allocator_i* alloc);
+// The result is an md_array allocated using the supplied allocator, since we cannot determine how many bonds will be formed.
+bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, const md_residue_idx_t* atom_residue_idx /* OPTIONAL */, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+bool md_util_compute_hydrogen_bonds(md_molecule_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+
+// Computes chains from connected residues
+// The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
+// This means that single residues which are not connected to any other residue will not classify as a chain.
+bool md_util_compute_chain_data(md_molecule_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t covalent_bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
+
+// Compute the valence of atoms given the covalent bonds
+bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
 
 bool md_util_extract_rings(struct md_molecule_t* mol, struct md_allocator_i* alloc);
-bool md_util_extract_rings_from_subset(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);

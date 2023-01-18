@@ -80,7 +80,7 @@ UTEST(util, ring) {
     md_molecule_t mol = {0};
     
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
     md_util_extract_rings(&mol, arena);
     EXPECT_EQ(md_molecule_ring_data_count(&mol.ring), 0);
     
@@ -88,7 +88,7 @@ UTEST(util, ring) {
     MEMSET(&mol, 0, sizeof(md_molecule_t));
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
     md_util_extract_rings(&mol, arena);
     EXPECT_EQ(md_molecule_ring_data_count(&mol.ring), 5);
 
@@ -96,7 +96,7 @@ UTEST(util, ring) {
     MEMSET(&mol, 0, sizeof(md_molecule_t));
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
     md_util_extract_rings(&mol, arena);
     EXPECT_EQ(md_molecule_ring_data_count(&mol.ring), 1064);
     

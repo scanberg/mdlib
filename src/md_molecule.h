@@ -19,6 +19,7 @@ typedef uint32_t    md_secondary_structure_t;
 typedef uint32_t    md_flags_t;
 typedef uint8_t     md_element_t;
 typedef uint8_t     md_ramachandran_type_t;
+typedef uint8_t     md_valence_t;
 typedef mat3_t      md_coordinate_frame_t;
 
 // We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
@@ -72,6 +73,17 @@ typedef struct md_label_t {
 #endif
 } md_label_t;
 
+// Structure Of Array layout version of vec3_t
+// This is to simplify the interfaces a bit when dealing with multiple coordinate streams
+typedef struct md_vec3_soa_t {
+    float* x;
+    float* y;
+    float* z;
+    // The stride signifies the byte stride between each entry of the pointers.
+    // If the arrays are packed and not part of a larger struct, this value would be sizeof(float) == 4
+    uint64_t stride;
+} md_vec3_soa_t;
+
 typedef struct md_molecule_atom_data_t {
     int64_t count;
     // Coordinates
@@ -85,7 +97,7 @@ typedef struct md_molecule_atom_data_t {
     // Misc
     float* radius;
     float* mass;
-    uint8_t* valence;
+    md_valence_t* valence;
     md_element_t* element;
     md_label_t* name;
     md_flags_t* flags;                          // Auxillary bit buffer for flagging individual atoms
@@ -98,8 +110,6 @@ typedef struct md_molecule_residue_data_t {
     md_label_t* name;
     md_residue_id_t* id;
     md_range_t* atom_range;
-    md_range_t* internal_covalent_bond_range;   // Range of covalent bonds strictly within the atoms of the resuidue
-    md_range_t* complete_covalent_bond_range;   // Range of covalent bonds that in anyway is connected to the residue
 } md_molecule_residue_data_t;
 
 typedef struct md_molecule_chain_data_t {
@@ -204,6 +214,28 @@ static inline md_label_t make_label(str_t str) {
         lbl.len = (uint8_t)len;
     }
     return lbl;
+}
+
+// Convenience functions to extract vec3_soa streams from molecule
+static inline md_vec3_soa_t md_molecule_soa_coord(md_molecule_atom_data_t* atom_data) {
+    md_vec3_soa_t soa = {atom_data->x, atom_data->y, atom_data->z, sizeof(float)};
+    return soa;
+}
+
+static inline md_vec3_soa_t md_molecule_soa_vel(md_molecule_atom_data_t* atom_data) {
+    md_vec3_soa_t soa = {atom_data->vx, atom_data->vy, atom_data->vz, sizeof(float)};
+    return soa;
+}
+
+static inline md_vec3_soa_t md_vec3_soa_from_vec3(vec3_t* ptr) {
+    md_vec3_soa_t soa = {&ptr->x, &ptr->y, &ptr->z, sizeof(vec3_t)};
+    return soa;
+}
+
+static inline vec3_t md_vec3_soa_get(md_vec3_soa_t soa, int64_t idx) {
+    ASSERT(soa.stride != 0);
+    vec3_t v = {*(float*)((char*)soa.x + idx * soa.stride), *(float*)((char*)soa.y + idx * soa.stride), *(float*)((char*)soa.z + idx * soa.stride)};
+    return v;
 }
 
 // Access to ring data
