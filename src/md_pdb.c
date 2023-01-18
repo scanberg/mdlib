@@ -209,22 +209,22 @@ int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
     ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
 
     if (!pdb->filesize) {
-        md_log(MD_LOG_TYPE_ERROR, "File size is zero");
+        MD_LOG_ERROR("File size is zero");
         return 0;
     }
 
     if (!pdb->file) {
-        md_log(MD_LOG_TYPE_ERROR, "File handle is NULL");
+        MD_LOG_ERROR("File handle is NULL");
         return 0;
     }
 
     if (!pdb->frame_offsets) {
-        md_log(MD_LOG_TYPE_ERROR, "Frame offsets is empty");
+        MD_LOG_ERROR("Frame offsets is empty");
         return 0;
     }
 
     if (!(0 <= frame_idx && frame_idx < (int64_t)md_array_size(pdb->frame_offsets) - 1)) {
-        md_log(MD_LOG_TYPE_ERROR, "Frame index is out of range");
+        MD_LOG_ERROR("Frame index is out of range");
         return 0;
     }
 
@@ -251,7 +251,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        md_log(MD_LOG_TYPE_ERROR, "Error when decoding frame header, pdb magic did not match");
+        MD_LOG_ERROR("Error when decoding frame header, pdb magic did not match");
         return false;
     }
 
@@ -420,7 +420,7 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
                 // make sure we send complete lines for parsing so we locate the last '\n'
                 const int64_t last_new_line = str_rfind_char(str, '\n');
                 if (last_new_line == -1) {
-                    md_log(MD_LOG_TYPE_ERROR, "Could not locate new line character when parsing PDB file");
+                    MD_LOG_ERROR("Could not locate new line character when parsing PDB file");
                     goto done;
                 }
                 ASSERT(str.ptr[last_new_line] == '\n');
@@ -443,7 +443,7 @@ done:
         md_file_close(file);
         return true;
     }
-    md_logf(MD_LOG_TYPE_ERROR, "Could not open file '%.*s'", filename.len, filename.ptr);
+    MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
     return false;
 }
 
@@ -597,7 +597,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
                     }
                 } else {
                     // Fatal error
-                    md_log(MD_LOG_TYPE_ERROR, "Malformed PDB dataset, an assembly refers to a non existing chain id");
+                    MD_LOG_ERROR("Malformed PDB dataset, an assembly refers to a non existing chain id");
                     return false;
                 }
             }
@@ -662,7 +662,7 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
 
         return success;
     }
-    md_logf(MD_LOG_TYPE_ERROR, "Could not open file '%.*s'", filename.len, filename.ptr);
+    MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
     return false;
 }
 
@@ -680,7 +680,7 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
 
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        md_log(MD_LOG_TYPE_ERROR, "Error when decoding frame coord, xtc magic did not match");
+        MD_LOG_ERROR("Error when decoding frame coord, xtc magic did not match");
         return false;
     }
 
@@ -694,7 +694,7 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         void* frame_data = md_alloc(alloc, frame_size);
         const int64_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
-            md_log(MD_LOG_TYPE_ERROR, "Failed to read the expected size");
+            MD_LOG_ERROR("Failed to read the expected size");
             md_free(alloc, frame_data, frame_size);
             return false;
         }
@@ -718,28 +718,28 @@ static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_ato
 
         read_bytes = md_file_read(file, &magic, sizeof(uint64_t));
         if (read_bytes != sizeof(uint64_t) || magic != CACHE_MAGIC) {
-            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, magic was incorrect or corrupt");
+            MD_LOG_ERROR("Failed to read offset cache, magic was incorrect or corrupt");
             result = false;
             goto done;
         }
 
         read_bytes = md_file_read(file, num_atoms, sizeof(int64_t));
         if (read_bytes != sizeof(int64_t) || num_atoms == 0) {
-            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of atoms was zero or corrupt");
+            MD_LOG_ERROR("Failed to read offset cache, number of atoms was zero or corrupt");
             result = false;
             goto done;
         }
 
         read_bytes = md_file_read(file, box, sizeof(float[3][3]));
         if (read_bytes != sizeof(float[3][3])) {
-            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, box was corrupt");
+            MD_LOG_ERROR("Failed to read offset cache, box was corrupt");
             result = false;
             goto done;
         }
 
         read_bytes = md_file_read(file, &num_offsets, sizeof(int64_t));
         if (read_bytes != sizeof(int64_t) || num_offsets == 0) {
-            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, number of frames was zero or corrupted");
+            MD_LOG_ERROR("Failed to read offset cache, number of frames was zero or corrupted");
             result = false;
             goto done;
         }
@@ -749,7 +749,7 @@ static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_ato
 
         read_bytes = md_file_read(file, tmp_offsets, num_offsets * sizeof(int64_t));
         if (read_bytes != (int64_t)(num_offsets * sizeof(int64_t))) {
-            md_log(MD_LOG_TYPE_ERROR, "Failed to read offset cache, offsets are incomplete");
+            MD_LOG_ERROR("Failed to read offset cache, offsets are incomplete");
             md_array_free(tmp_offsets, alloc);
             result = false;
             goto done;
@@ -790,7 +790,7 @@ static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms, f
         return true;
     }
 
-    md_logf(MD_LOG_TYPE_ERROR, "Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    MD_LOG_ERROR("Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
     return false;
 }
 
@@ -805,7 +805,7 @@ void pdb_trajectory_free(struct md_trajectory_o* inst) {
 md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to open file for PDB trajectory");
+        MD_LOG_ERROR("Failed to open file for PDB trajectory");
         return false;
     }
 
@@ -827,7 +827,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         }
 
         if (data.num_models <= 1) {
-            md_log(MD_LOG_TYPE_ERROR, "The PDB file did not contain multiple model entries and cannot be read as a trajectory");
+            MD_LOG_ERROR("The PDB file did not contain multiple model entries and cannot be read as a trajectory");
             md_pdb_data_free(&data, default_allocator);
             return false;
         }
@@ -838,7 +838,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
             for (int64_t i = 1; i < data.num_models; ++i) {
                 const int64_t length = data.models[i].end_atom_index - data.models[i].beg_atom_index;
                 if (length != ref_length) {
-                    md_log(MD_LOG_TYPE_ERROR, "The PDB file models are not of equal length and cannot be read as a trajectory");
+                    MD_LOG_ERROR("The PDB file models are not of equal length and cannot be read as a trajectory");
                     md_pdb_data_free(&data, default_allocator);
                     return false;
                 }
@@ -909,7 +909,7 @@ void md_pdb_trajectory_free(md_trajectory_i* traj) {
     ASSERT(traj->inst);
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)traj->inst;
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        md_logf(MD_LOG_TYPE_ERROR, "Trajectory is not a valid PDB trajectory.");
+        MD_LOG_ERROR("Trajectory is not a valid PDB trajectory.");
         ASSERT(false);
         return;
     }

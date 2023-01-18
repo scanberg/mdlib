@@ -853,7 +853,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);    
 
     if (size == 0) {
-        md_logf(MD_LOG_TYPE_ERROR, "Failed, to decompress bitfield.");
+        MD_LOG_ERROR("Failed, to decompress bitfield.");
         return false;
     }
 
@@ -863,7 +863,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     const uint16_t* block_data = (const uint16_t*)(block_indices + block_count);
 
     if (block_count == 0) {
-        md_logf(MD_LOG_TYPE_ERROR, "Block count was zero");
+        MD_LOG_ERROR("Block count was zero");
         return false;
     }
 

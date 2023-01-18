@@ -54,36 +54,36 @@ static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, m
     int result, magic;
 
     if ((result = xdrfile_read_int(&magic, 1, xd)) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read magic number in header");
+        MD_LOG_ERROR("XTC: Failed to read magic number in header");
         return false;
     }
     if (magic != XTC_MAGIC) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Magic number did not match");
+        MD_LOG_ERROR("XTC: Magic number did not match");
         return false;
     }
     if ((result = xdrfile_read_int(natoms, 1, xd)) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read number of atoms");
+        MD_LOG_ERROR("XTC: Failed to read number of atoms");
         return false;
     }
     if ((result = xdrfile_read_int(step, 1, xd)) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read step");
+        MD_LOG_ERROR("XTC: Failed to read step");
         return false;
     }
     if ((result = xdrfile_read_float(time, 1, xd)) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read timestamp");
+        MD_LOG_ERROR("XTC: Failed to read timestamp");
         return false;
     }
     if ((result = xdrfile_read_float(box[0], DIM * DIM, xd)) != DIM * DIM) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read box dimensions");
+        MD_LOG_ERROR("XTC: Failed to read box dimensions");
         return false;
     }
     /*
     if ((result = xdrfile_read_int(&natoms2, 1, xd)) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to read number of atoms (second)");
+        MD_LOG_ERROR("Failed to read number of atoms (second)");
         return false;
     }
     if (*natoms != natoms2) {
-        md_log(MD_LOG_TYPE_ERROR, "Number of atoms did not match second number of atoms, header might be corrupt");
+        MD_LOG_ERROR("Number of atoms did not match second number of atoms, header might be corrupt");
         return false;
     }
     */
@@ -97,7 +97,7 @@ static bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
 
     result = xdrfile_decompress_coord_float(x[0], &natoms, &prec, xd);
     if (result != natoms) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read coordinates");
+        MD_LOG_ERROR("XTC: Failed to read coordinates");
         return false;
     }
 
@@ -142,7 +142,7 @@ static bool xtc_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
         }
 
         if (xdrfile_read_int(&framebytes, 1, xd) == 0) {
-            md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read framebytes");
+            MD_LOG_ERROR("XTC: Failed to read framebytes");
             return false;
         }
         framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
@@ -158,7 +158,7 @@ static bool xtc_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
             /* Skip `framebytes` and next header */
             result = xdr_seek(xd, (int64_t)(framebytes + XTC_HEADER_SIZE), SEEK_CUR);
             if (result != exdrOK) {
-                md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to skip framebytes");
+                MD_LOG_ERROR("XTC: Failed to skip framebytes");
                 md_array_free(arr, alloc);
                 return false;
             }
@@ -195,17 +195,17 @@ static int64_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_
     ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
 
     if (!xtc->file) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: File handle is NULL");
+        MD_LOG_ERROR("XTC: File handle is NULL");
         return 0;
     }
 
     if (!xtc->frame_offsets) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Frame offsets is empty");
+        MD_LOG_ERROR("XTC: Frame offsets is empty");
         return 0;
     }
 
     if (frame_idx < 0 || md_array_size(xtc->frame_offsets) <= frame_idx + 1) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Frame index is out of range");
+        MD_LOG_ERROR("XTC: Frame index is out of range");
         return 0;
     }
 
@@ -235,12 +235,12 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
 
     xtc_t* xtc = (xtc_t*)inst;
     if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Error when decoding frame coord, xtc magic did not match");
+        MD_LOG_ERROR("XTC: Error when decoding frame coord, xtc magic did not match");
         return false;
     }
 
     if ((x || y || z) && !(x && y && z)) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: User supplied coordinates (x,y,z) cannot be partially supplied");
+        MD_LOG_ERROR("XTC: User supplied coordinates (x,y,z) cannot be partially supplied");
         return false;
     }
 
@@ -288,7 +288,7 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
 
     xtc_t* xtc = (xtc_t*)inst;
     if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        md_log(MD_LOG_TYPE_ERROR, "XTC: Error when decoding frame coord, xtc magic did not match");
+        MD_LOG_ERROR("XTC: Error when decoding frame coord, xtc magic did not match");
         return false;
     }
 
@@ -322,13 +322,13 @@ static int64_t* try_read_offset_cache(str_t cache_file, md_allocator_i* alloc) {
 
         read_bytes = md_file_read(file, &magic, sizeof(magic));
         if (read_bytes != sizeof(magic) || magic != OFFSET_MAGIC) {
-            md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read offset cache, magic was incorrect");
+            MD_LOG_ERROR("XTC: Failed to read offset cache, magic was incorrect");
             goto done;
         }
 
         read_bytes = md_file_read(file, &num_frames, sizeof(num_frames));
         if (read_bytes != sizeof(num_frames) || num_frames == 0) {
-            md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read offset cache, number of frames was zero or corrupted");
+            MD_LOG_ERROR("XTC: Failed to read offset cache, number of frames was zero or corrupted");
             goto done;
         }
 
@@ -336,7 +336,7 @@ static int64_t* try_read_offset_cache(str_t cache_file, md_allocator_i* alloc) {
 
         read_bytes = md_file_read(file, offsets, num_frames * sizeof(int64_t));
         if (read_bytes != (int64_t)(num_frames * sizeof(int64_t))) {
-            md_log(MD_LOG_TYPE_ERROR, "XTC: Failed to read offset cache, offsets are incomplete");
+            MD_LOG_ERROR("XTC: Failed to read offset cache, offsets are incomplete");
             md_array_free(offsets, alloc);
             offsets = 0;
             goto done;
@@ -368,7 +368,7 @@ static bool write_offset_cache(str_t cache_file, int64_t* offsets) {
         return true;
     }
 
-    md_logf(MD_LOG_TYPE_ERROR, "XTC: Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    MD_LOG_ERROR("XTC: Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
     return false;
 }
 
@@ -456,7 +456,7 @@ void md_xtc_trajectory_free(md_trajectory_i* traj) {
     ASSERT(traj->inst);
     xtc_t* xtc = (xtc_t*)traj->inst;
     if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        md_logf(MD_LOG_TYPE_ERROR, "XTC: Cannot free trajectory, is not a valid XTC trajectory.");
+        MD_LOG_ERROR("XTC: Cannot free trajectory, is not a valid XTC trajectory.");
         ASSERT(false);
         return;
     }

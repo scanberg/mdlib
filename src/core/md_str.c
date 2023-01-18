@@ -161,7 +161,7 @@ str_t str_find_str(str_t haystack, str_t needle) {
     if (haystack.len == 0) goto done;
     if (needle.len == 0) goto done;
     if (needle.len > haystack.len) {
-        md_log(MD_LOG_TYPE_ERROR, "Trying to find 'needle' which is larger than supplied 'haystack'");
+        MD_LOG_ERROR("Trying to find 'needle' which is larger than supplied 'haystack'");
         goto done;
     }
 
@@ -283,10 +283,10 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
                 result.len = file_size;
             }
             else {
-                md_log(MD_LOG_TYPE_ERROR, "Failed to read full textfile");
+                MD_LOG_ERROR("Failed to read full textfile");
             }
         } else {
-            md_logf(MD_LOG_TYPE_ERROR, "Could not allocate memory for file %d", 10);
+            MD_LOG_ERROR("Could not allocate memory for file %d", 10);
         }
         md_file_close(file);
     }

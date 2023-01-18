@@ -17,32 +17,32 @@ bool md_cube_valid(const md_cube_t* cube) {
 	vec3_t z = vec3_set(cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
 
 	if (fabsf(vec3_dot(x, vec3_cross(y, z))) < 1.e-3f) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: The coordinate axes do not span a volume");
+		MD_LOG_ERROR("CUBE: The coordinate axes do not span a volume");
 		return false;
 	}
 
 	if (cube->data.num_x <= 0 || cube->data.num_y <= 0 || cube->data.num_z <= 0 || cube->data.num_m <= 0) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: One or more data dimensions are zero");
+		MD_LOG_ERROR("CUBE: One or more data dimensions are zero");
 		return false;
 	}
 
 	if (cube->atom.count < 0) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: Geom count is negative");
+		MD_LOG_ERROR("CUBE: Geom count is negative");
 		return false;
 	}
 
 	if (!cube->atom.coord) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: coord was NULL");
+		MD_LOG_ERROR("CUBE: coord was NULL");
 		return false;
 	}
 
 	if (!cube->atom.number) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: number was NULL");
+		MD_LOG_ERROR("CUBE: number was NULL");
 		return false;
 	}
 
 	if (!cube->atom.charge) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: charge was NULL");
+		MD_LOG_ERROR("CUBE: charge was NULL");
 		return false;
 	}
 
@@ -53,13 +53,13 @@ static bool open_file(md_file_o* file, str_t path) {
 	ASSERT(file);
 
 	if (str_empty(path)) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: Path was empty");
+		MD_LOG_ERROR("CUBE: Path was empty");
 		return false;
 	}
 
 	file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
 	if (!file) {
-		md_logf(MD_LOG_TYPE_ERROR, "CUBE: Could not open file: '%.*s'", path.len, path.ptr);
+		MD_LOG_ERROR("CUBE: Could not open file: '%.*s'", path.len, path.ptr);
 		return false;
 	}
 
@@ -79,7 +79,7 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 	str_t str = {0};
 
 	if (!md_cube_valid(cube)) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: cube-object was invalid");
+		MD_LOG_ERROR("CUBE: cube-object was invalid");
 		goto done;
 	}
 
@@ -137,7 +137,7 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
     if (!(str_extract_line(&title,	 &str) &&
 		  str_extract_line(&comment, &str)))
 	{
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: Could not extract comment section");
+		MD_LOG_ERROR("CUBE: Could not extract comment section");
 		return false;
 	}
     cube->title   = str_copy(title, alloc);
@@ -226,16 +226,16 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
 	return md_cube_valid(cube);
 
 line_error:
-	md_log(MD_LOG_TYPE_ERROR, "CUBE: Could not extract line");
+	MD_LOG_ERROR("CUBE: Could not extract line");
 	return false;
 parse_error:
-	md_log(MD_LOG_TYPE_ERROR, "CUBE: Could not parse expected value");
+	MD_LOG_ERROR("CUBE: Could not parse expected value");
 	return false;
 }
 
 bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
 	if (!cube) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: cube-object was NULL");
+		MD_LOG_ERROR("CUBE: cube-object was NULL");
 		return false;
 	}
 
@@ -251,7 +251,7 @@ bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
 
 bool md_cube_file_store(const md_cube_t* cube, str_t path) {
 	if (!md_cube_valid(cube)) {
-		md_log(MD_LOG_TYPE_ERROR, "CUBE: cube-object was invalid");
+		MD_LOG_ERROR("CUBE: cube-object was invalid");
 		return false;
 	}
 

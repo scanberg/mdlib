@@ -302,7 +302,7 @@ md_unit_t unit_scl(md_unit_t unit, double scl) {
 
 bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
     if (!unit_base_equal(cur_unit, new_unit)) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to perform unit conversion, the current unit cannot be converted into new unit");
+        MD_LOG_ERROR("Failed to perform unit conversion, the current unit cannot be converted into new unit");
         return false;
     }
 
@@ -331,7 +331,7 @@ bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_un
 
 bool unit_convert_inplace_f(float* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
     if (!unit_base_equal(cur_unit, new_unit)) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to perform unit conversion, the current unit cannot be converted into new unit");
+        MD_LOG_ERROR("Failed to perform unit conversion, the current unit cannot be converted into new unit");
         return false;
     }
 
@@ -655,7 +655,7 @@ md_unit_t unit_from_string(str_t str) {
         return unit;
     }
 
-    md_logf(MD_LOG_TYPE_ERROR, "Could not convert string to unit: '%.*s'", (int)str.len, str.ptr);
+    MD_LOG_ERROR("Could not convert string to unit: '%.*s'", (int)str.len, str.ptr);
     return (md_unit_t) {0};
 }
 

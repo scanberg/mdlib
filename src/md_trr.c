@@ -70,12 +70,12 @@ static bool n_float_size(const trr_header_t* sh, int* nflsz) {
     } else if (sh->f_size) {
         nflsize = sh->f_size / (sh->natoms * DIM);
     } else {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Unexpected size in header");
+        MD_LOG_ERROR("TRR: Unexpected size in header");
         return false;
     }
 
     if (((nflsize != sizeof(float)) && (nflsize != sizeof(double)))) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Unexpected float size in header");
+        MD_LOG_ERROR("TRR: Unexpected float size in header");
         return false;
     }
 
@@ -98,24 +98,24 @@ static bool trr_read_frame_header(XDRFILE* xd, trr_header_t* sh) {
     int magic, slen, nflsz;
 
     if (xdrfile_read_int(&magic, 1, xd) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header magic number");
+        MD_LOG_ERROR("TRR: Failed to read header magic number");
         return false;
     }
     if (magic != TRR_MAGIC) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Magic number did not match");
+        MD_LOG_ERROR("TRR: Magic number did not match");
         return false;
     }
 
     if (xdrfile_read_int(&slen, 1, xd) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header version string length");
+        MD_LOG_ERROR("TRR: Failed to read header version string length");
         return false;
     }
     if (slen != sizeof(version)) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Incorrect version string length");
+        MD_LOG_ERROR("TRR: Incorrect version string length");
         return false;
     }
     if (xdrfile_read_string(buf, sizeof(buf), xd) <= 0) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header version string");
+        MD_LOG_ERROR("TRR: Failed to read header version string");
         return false;
     }
 
@@ -131,7 +131,7 @@ static bool trr_read_frame_header(XDRFILE* xd, trr_header_t* sh) {
         xdrfile_read_int(&sh->f_size,    1, xd) != 1 ||
         xdrfile_read_int(&sh->natoms,    1, xd) != 1)
     {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header fields");
+        MD_LOG_ERROR("TRR: Failed to read header fields");
         return false;
     }
 
@@ -142,31 +142,31 @@ static bool trr_read_frame_header(XDRFILE* xd, trr_header_t* sh) {
     sh->use_double = (nflsz == sizeof(double));
 
     if (xdrfile_read_int(&sh->step, 1, xd) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header step");
+        MD_LOG_ERROR("TRR: Failed to read header step");
         return false;
     }
     if (xdrfile_read_int(&sh->nre, 1, xd) != 1) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header \"nre\"");
+        MD_LOG_ERROR("TRR: Failed to read header \"nre\"");
         return false;
     }
 
     if (sh->use_double) {
         if (xdrfile_read_double(&sh->t, 1, xd) != 1) {
-            md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header t");
+            MD_LOG_ERROR("TRR: Failed to read header t");
             return false;
         }
         if (xdrfile_read_double(&sh->lambda, 1, xd) != 1) {
-            md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header lambda");
+            MD_LOG_ERROR("TRR: Failed to read header lambda");
             return false;
         }
     } else {
         float tf, lf;
         if (xdrfile_read_float(&tf, 1, xd) != 1) {
-            md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header t");
+            MD_LOG_ERROR("TRR: Failed to read header t");
             return false;
         }
         if (xdrfile_read_float(&lf, 1, xd) != 1) {
-            md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read header lambda");
+            MD_LOG_ERROR("TRR: Failed to read header lambda");
             return false;
         }
         sh->t = tf;
@@ -194,7 +194,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                     }
                 }
             } else {
-                md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read frame box");
+                MD_LOG_ERROR("TRR: Failed to read frame box");
                 return false;
             }
         }
@@ -227,13 +227,13 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                         x->y[i] = (float)(c[1] * 10);
                         x->z[i] = (float)(c[2] * 10);
                     } else {
-                        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read coordinate entry in frame");
+                        MD_LOG_ERROR("TRR: Failed to read coordinate entry in frame");
                         return false;
                     }
                 }
             } else {
                 if (xdr_seek(xd, sh->x_size, SEEK_CUR) != exdrOK) {
-                    md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to skip coordinate section in frame");
+                    MD_LOG_ERROR("TRR: Failed to skip coordinate section in frame");
                     return false;
                 }
             }
@@ -248,13 +248,13 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                         v->y[i] = (float)(c[1] * 10);
                         v->z[i] = (float)(c[2] * 10);
                     } else {
-                        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read velocity entry in frame");
+                        MD_LOG_ERROR("TRR: Failed to read velocity entry in frame");
                         return false;
                     }
                 }
             } else {
                 if (xdr_seek(xd, sh->v_size, SEEK_CUR) != exdrOK) {
-                    md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to skip velocity section in frame");
+                    MD_LOG_ERROR("TRR: Failed to skip velocity section in frame");
                     return false;
                 }
             }
@@ -268,13 +268,13 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                         f->y[i] = (float)c[1];
                         f->z[i] = (float)c[2];
                     } else {
-                        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read force entry in frame");
+                        MD_LOG_ERROR("TRR: Failed to read force entry in frame");
                         return false;
                     }
                 }
             } else {
                 if (xdr_seek(xd, sh->f_size, SEEK_CUR) != exdrOK) {
-                    md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to skip force section in frame");
+                    MD_LOG_ERROR("TRR: Failed to skip force section in frame");
                     return false;
                 }
             }
@@ -299,7 +299,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                     }
                 }
             } else {
-                md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read frame box");
+                MD_LOG_ERROR("TRR: Failed to read frame box");
                 return false;
             }
         }
@@ -332,13 +332,13 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                         x->y[i] = c[1] * 10;
                         x->z[i] = c[2] * 10;
                     } else {
-                        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read coordinate entry in frame");
+                        MD_LOG_ERROR("TRR: Failed to read coordinate entry in frame");
                         return false;
                     }
                 }
             } else {
                 if (xdr_seek(xd, sh->x_size, SEEK_CUR) != exdrOK) {
-                    md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to skip coordinate section in frame");
+                    MD_LOG_ERROR("TRR: Failed to skip coordinate section in frame");
                     return false;
                 }
             }
@@ -353,13 +353,13 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                         v->y[i] = c[1] * 10;
                         v->z[i] = c[2] * 10;
                     } else {
-                        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read velocity entry in frame");
+                        MD_LOG_ERROR("TRR: Failed to read velocity entry in frame");
                         return false;
                     }
                 }
             } else {
                 if (xdr_seek(xd, sh->v_size, SEEK_CUR) != exdrOK) {
-                    md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to skip velocity section in frame");
+                    MD_LOG_ERROR("TRR: Failed to skip velocity section in frame");
                     return false;
                 }
             }
@@ -373,13 +373,13 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                         f->y[i] = c[1];
                         f->z[i] = c[2];
                     } else {
-                        md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read force entry in frame");
+                        MD_LOG_ERROR("TRR: Failed to read force entry in frame");
                         return false;
                     }
                 }
             } else {
                 if (xdr_seek(xd, sh->f_size, SEEK_CUR) != exdrOK) {
-                    md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to skip force section in frame");
+                    MD_LOG_ERROR("TRR: Failed to skip force section in frame");
                     return false;
                 }
             }
@@ -460,17 +460,17 @@ static int64_t trr_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_
     ASSERT(trr->magic == MD_TRR_TRAJ_MAGIC);
 
     if (!trr->file) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: File handle is NULL");
+        MD_LOG_ERROR("TRR: File handle is NULL");
         return 0;
     }
 
     if (!trr->frame_offsets) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Frame offsets is empty");
+        MD_LOG_ERROR("TRR: Frame offsets is empty");
         return 0;
     }
 
     if (frame_idx < 0 || md_array_size(trr->frame_offsets) <= frame_idx + 1) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Frame index is out of range");
+        MD_LOG_ERROR("TRR: Frame index is out of range");
         return 0;
     }
 
@@ -500,12 +500,12 @@ static bool trr_decode_frame_data(struct md_trajectory_o* inst, const void* fram
 
     trr_t* trr = (trr_t*)inst;
     if (trr->magic != MD_TRR_TRAJ_MAGIC) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Error when decoding frame coord, trr magic did not match");
+        MD_LOG_ERROR("TRR: Error when decoding frame coord, trr magic did not match");
         return false;
     }
 
     if ((x || y || z) && !(x && y && z)) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: User supplied coordinates (x,y,z) cannot be partially supplied");
+        MD_LOG_ERROR("TRR: User supplied coordinates (x,y,z) cannot be partially supplied");
         return false;
     }
 
@@ -537,7 +537,7 @@ bool trr_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
 
     trr_t* trr = (trr_t*)inst;
     if (trr->magic != MD_TRR_TRAJ_MAGIC) {
-        md_log(MD_LOG_TYPE_ERROR, "TRR: Error when decoding frame coord, trr magic did not match");
+        MD_LOG_ERROR("TRR: Error when decoding frame coord, trr magic did not match");
         return false;
     }
 
@@ -571,13 +571,13 @@ static int64_t* try_read_offset_cache(str_t cache_file, md_allocator_i* alloc) {
 
         read_bytes = md_file_read(file, &magic, sizeof(magic));
         if (read_bytes != sizeof(magic) || magic != OFFSET_MAGIC) {
-            md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read offset cache, magic was incorrect");
+            MD_LOG_ERROR("TRR: Failed to read offset cache, magic was incorrect");
             goto done;
         }
 
         read_bytes = md_file_read(file, &num_frames, sizeof(num_frames));
         if (read_bytes != sizeof(num_frames) || num_frames == 0) {
-            md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read offset cache, number of frames was zero or corrupted");
+            MD_LOG_ERROR("TRR: Failed to read offset cache, number of frames was zero or corrupted");
             goto done;
         }
 
@@ -585,7 +585,7 @@ static int64_t* try_read_offset_cache(str_t cache_file, md_allocator_i* alloc) {
 
         read_bytes = md_file_read(file, offsets, num_frames * sizeof(int64_t));
         if (read_bytes != (int64_t)(num_frames * sizeof(int64_t))) {
-            md_log(MD_LOG_TYPE_ERROR, "TRR: Failed to read offset cache, offsets are incomplete");
+            MD_LOG_ERROR("TRR: Failed to read offset cache, offsets are incomplete");
             md_array_free(offsets, alloc);
             offsets = 0;
             goto done;
@@ -617,7 +617,7 @@ static bool write_offset_cache(str_t cache_file, int64_t* offsets) {
         return true;
     }
 
-    md_logf(MD_LOG_TYPE_ERROR, "TRR: Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    MD_LOG_ERROR("TRR: Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
     return false;
 }
 
@@ -703,7 +703,7 @@ void md_trr_trajectory_free(md_trajectory_i* traj) {
     ASSERT(traj->inst);
     trr_t* trr = (trr_t*)traj->inst;
     if (trr->magic != MD_TRR_TRAJ_MAGIC) {
-        md_logf(MD_LOG_TYPE_ERROR, "TRR: Cannot free trajectory, is not a valid trr trajectory.");
+        MD_LOG_ERROR("TRR: Cannot free trajectory, is not a valid trr trajectory.");
         ASSERT(false);
         return;
     }

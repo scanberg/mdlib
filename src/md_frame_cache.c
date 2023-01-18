@@ -26,7 +26,7 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
 
     int64_t num_traj_frames = md_trajectory_num_frames(traj);
     if (num_traj_frames == 0) {
-        md_log(MD_LOG_TYPE_ERROR, "Frame Cache: The supplied trajectory has no frames");
+        MD_LOG_ERROR("Frame Cache: The supplied trajectory has no frames");
     }
     if (num_cache_frames == 0) {
         num_cache_frames = num_traj_frames;
@@ -45,7 +45,7 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     md_logf(MD_LOG_TYPE_DEBUG, "Allocating %.2f MB as frame cache.", (double)total_bytes / (double)MEGABYTES(1) );
     md_array_resize(cache->buf, total_bytes, alloc);
     if (!cache->buf) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to allocate requested memory for frame_cache.");
+        MD_LOG_ERROR("Failed to allocate requested memory for frame_cache.");
         MEMSET(cache, 0, sizeof(md_frame_cache_t));
         return false;
     }

@@ -313,12 +313,12 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
 
 bool md_util_element_from_mass(md_element_t element[], const float mass[], int64_t count) {
     if (!element) {
-        MD_ERROR("element is null");
+        MD_LOG_ERROR("element is null");
         return false;
     }
 
     if (!mass) {
-        MD_ERROR("element is null");
+        MD_LOG_ERROR("element is null");
         return false;
     }
 
@@ -577,27 +577,27 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
     ASSERT(alloc);
 
     if (!bond_data) {
-        MD_ERROR("missing parameter bond_data");
+        MD_LOG_ERROR("missing parameter bond_data");
         return false;
     }
 
     if (!x) {
-        MD_ERROR("missing parameter atom_x");
+        MD_LOG_ERROR("missing parameter atom_x");
         return false;
     }
 
     if (!y) {
-        MD_ERROR("missing parameter atom_y");
+        MD_LOG_ERROR("missing parameter atom_y");
         return false;
     }
 
     if (!z) {
-        MD_ERROR("missing parameter atom_z");
+        MD_LOG_ERROR("missing parameter atom_z");
         return false;
     }
 
     if (!element) {
-        MD_ERROR("missing parameter atom_element");
+        MD_LOG_ERROR("missing parameter atom_element");
         return false;
     }
 
@@ -686,17 +686,17 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
 
 bool md_util_compute_chain_data(md_molecule_chain_data_t* chain_data, const md_residue_idx_t* res_idx, int64_t atom_count, const md_bond_t* bonds, int64_t bond_count, md_allocator_i* alloc) {
     if (!chain_data) {
-        MD_ERROR("chain data is missing");
+        MD_LOG_ERROR("chain data is missing");
         return false;
     }
     
     if (!res_idx) {
-        MD_ERROR("residue index is null");
+        MD_LOG_ERROR("residue index is null");
         return false;
     }
 
     if (!bonds) {
-        MD_ERROR("bonds is null");
+        MD_LOG_ERROR("bonds is null");
         return false;
     }
 
@@ -760,22 +760,22 @@ bool md_util_compute_chain_data(md_molecule_chain_data_t* chain_data, const md_r
 
 bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count) {
     if (!atom_valence) {
-        MD_ERROR("Missing input: atom_valence");
+        MD_LOG_ERROR("Missing input: atom_valence");
         return false;
     }
 
     if (atom_count < 0) {
-        MD_ERROR("Invalid input: atom_count");
+        MD_LOG_ERROR("Invalid input: atom_count");
         return false;
     }
 
     if (!bonds) {
-        MD_ERROR("Missing input: bonds");
+        MD_LOG_ERROR("Missing input: bonds");
         return false;
     }
 
     if (bond_count < 0) {
-        MD_ERROR("Invalid input: bond_count");
+        MD_LOG_ERROR("Invalid input: bond_count");
         return false;
     }
 
@@ -982,7 +982,7 @@ bool md_util_extract_rings(md_molecule_t* mol, md_allocator_i* alloc) {
     ASSERT(alloc);
 
     if (mol->covalent_bond.count == 0) {
-        MD_ERROR("The molecule did not contain any covalent bonds, which are required to compute rings.");
+        MD_LOG_ERROR("Molecule is missing covalent bonds!");
         return false;
     }
 

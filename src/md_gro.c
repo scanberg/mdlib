@@ -39,7 +39,7 @@ static inline int64_t compute_position_field_width(str_t line) {
 static inline bool parse_header(str_t* str, md_gro_data_t* data) {
     str_t line = {0};
     if (!str_extract_line(&line, str)) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to read title");
+        MD_LOG_ERROR("Failed to read title");
         return false;
     }
 
@@ -49,7 +49,7 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
     data->title[len] = '\0';
 
     if (!str_extract_line(&line, str)) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to read number of atoms");
+        MD_LOG_ERROR("Failed to read number of atoms");
         return false;
     }
 
@@ -57,7 +57,7 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
     const int64_t min_bounds = 1;
     const int64_t max_bounds = 10000000;
     if (data->num_atoms < min_bounds || max_bounds < data->num_atoms) {
-        md_logf(MD_LOG_TYPE_ERROR, "Number of atoms (%lli) outside of plausible range [%lli, %lli]", data->num_atoms, min_bounds, max_bounds);
+        MD_LOG_ERROR("Number of atoms (%lli) outside of plausible range [%lli, %lli]", data->num_atoms, min_bounds, max_bounds);
         return false;
     }
 
@@ -93,7 +93,7 @@ static inline bool parse_unitcell(str_t str, md_gro_data_t* data) {
 
     str_t line = {0,0};
     if (!str_extract_line(&line, &str)) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to extract line for unit cell.");
+        MD_LOG_ERROR("Failed to extract line for unit cell.");
         return false;
     }
 
@@ -109,7 +109,7 @@ bool md_gro_data_parse_str(md_gro_data_t* data, str_t str, struct md_allocator_i
     ASSERT(alloc);
     
     if (!parse_header(&str, data)) {
-        md_log(MD_LOG_TYPE_ERROR, "Failed to parse gro header!");
+        MD_LOG_ERROR("Failed to parse gro header!");
         return false;
     }
 
@@ -119,7 +119,7 @@ bool md_gro_data_parse_str(md_gro_data_t* data, str_t str, struct md_allocator_i
     str = parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
 
     if (num_atoms_read != data->num_atoms) {
-        md_logf(MD_LOG_TYPE_ERROR, "There was a descrepancy between the number of atoms read (%lli) compared to the number of atoms specified in the header (%lli)", num_atoms_read, data->num_atoms);
+        MD_LOG_ERROR("There was a descrepancy between the number of atoms read (%lli) compared to the number of atoms specified in the header (%lli)", num_atoms_read, data->num_atoms);
         return false;
     }
 
@@ -146,20 +146,20 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
             str_t str = {.ptr = buf, .len = md_file_read(file, buf, header_size) };
 
             if (!parse_header(&str, data)) {
-                md_log(MD_LOG_TYPE_ERROR, "Failed to parse gro header!");
+                MD_LOG_ERROR("Failed to parse gro header!");
                 goto done;
             }
 
             pos_field_width = compute_position_field_width(str);
             if (!pos_field_width) {
-                md_log(MD_LOG_TYPE_ERROR, "Failed to determine position field width");
+                MD_LOG_ERROR("Failed to determine position field width");
                 goto done;
             }
 
             // Once we have read the header, we set the file position to just after the header
             const int64_t seek_target = str.ptr - buf;
             if (!md_file_seek(file, seek_target, MD_FILE_BEG)) {
-                md_log(MD_LOG_TYPE_ERROR, "Failed to seek in file");
+                MD_LOG_ERROR("Failed to seek in file");
                 goto done;
             }
         }
@@ -180,7 +180,7 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
                 // We want to make sure we send complete lines for parsing so we locate the last '\n'
                 const int64_t last_new_line = str_rfind_char(str, '\n');
                 if (last_new_line == -1) {
-                    md_log(MD_LOG_TYPE_ERROR, "Unexpected structure within gro file, missing new lines?");
+                    MD_LOG_ERROR("Unexpected structure within gro file, missing new lines?");
                     goto done;
                 }
                 ASSERT(str.ptr[last_new_line] == '\n');
@@ -194,12 +194,12 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
         }
 
         if (num_atoms_read != data->num_atoms) {
-            md_logf(MD_LOG_TYPE_ERROR, "There was a descrepancy between the number of atoms read (%lli) compared to the number of atoms specified in the header (%lli)", num_atoms_read, data->num_atoms);
+            MD_LOG_ERROR("There was a descrepancy between the number of atoms read (%lli) compared to the number of atoms specified in the header (%lli)", num_atoms_read, data->num_atoms);
             goto done;
         }
 
         if (!parse_unitcell(str, data)) {
-            md_log(MD_LOG_TYPE_ERROR, "Failed to parse unitcell in gro file");
+            MD_LOG_ERROR("Failed to parse unitcell in gro file");
             goto done;
         }
 
@@ -208,7 +208,7 @@ done:
         md_file_close(file);
         return success;
     }
-    md_logf(MD_LOG_TYPE_ERROR, "Could not open file '%.*s'", filename.len, filename.ptr);
+    MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
     return false;
 }
 
