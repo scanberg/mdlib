@@ -547,7 +547,7 @@ static inline uint32_t gl_get_shader_type_bit(uint32_t shader_type) {
 }
 
 static gl_program_t gl_program_create_from_files(const char* shader_files[], uint32_t shader_file_count, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
-    uint32_t shaders[8];
+    uint32_t shaders[8] = {0};
     ASSERT(shader_file_count < ARRAY_SIZE(shaders));
     gl_program_t prog = {0};
 
