@@ -2,9 +2,11 @@
 
 #include <core/md_common.h>
 
-#define MD_LOG_INFO(fmt, ...)  md_logf(MD_LOG_TYPE_INFO,  fmt        , ##__VA_ARGS__)
+// @TODO: Use a selection macro which picks the correct version to use based on the number of arguments...
+
+#define MD_LOG_INFO(fmt, ...)  md_logf(MD_LOG_TYPE_INFO,  fmt           , ##__VA_ARGS__)
 #define MD_LOG_DEBUG(fmt, ...) md_logf(MD_LOG_TYPE_DEBUG, fmt " [%s:%d]", ##__VA_ARGS__, __FILE__, __LINE__)
-#define MD_LOG_ERROR(fmt, ...) md_logf(MD_LOG_TYPE_ERROR, fmt " [%s]", ##__VA_ARGS__, __func__)
+#define MD_LOG_ERROR(fmt, ...) md_logf(MD_LOG_TYPE_ERROR, fmt " [%s]"   , ##__VA_ARGS__, __func__)
 
 typedef struct md_logger_o md_logger_o;
 
