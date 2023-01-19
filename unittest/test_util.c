@@ -78,27 +78,31 @@ UTEST(util, rmsd) {
 UTEST(util, ring) {
     md_allocator_i* arena = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
     md_molecule_t mol = {0};
+    int64_t num_rings = 0;
     
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
-    md_util_extract_rings(&mol, arena);
-    EXPECT_EQ(md_molecule_ring_data_count(&mol.ring), 0);
+    md_util_compute_rings(&mol.ring, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
+    num_rings = md_molecule_ring_data_count(&mol.ring);
+    EXPECT_EQ(num_rings, 0);
     
     md_arena_allocator_reset(arena);
     MEMSET(&mol, 0, sizeof(md_molecule_t));
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
-    md_util_extract_rings(&mol, arena);
-    EXPECT_EQ(md_molecule_ring_data_count(&mol.ring), 5);
+    md_util_compute_rings(&mol.ring, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
+    num_rings = md_molecule_ring_data_count(&mol.ring);
+    EXPECT_EQ(num_rings, 5);
 
     md_arena_allocator_reset(arena);
     MEMSET(&mol, 0, sizeof(md_molecule_t));
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
-    md_util_extract_rings(&mol, arena);
-    EXPECT_EQ(md_molecule_ring_data_count(&mol.ring), 1064);
+    md_util_compute_rings(&mol.ring, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
+    num_rings = md_molecule_ring_data_count(&mol.ring);
+    EXPECT_EQ(num_rings, 2076);
     
     md_arena_allocator_destroy(arena);
 }

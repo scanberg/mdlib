@@ -92,7 +92,9 @@ bool md_util_compute_chain_data(md_molecule_chain_data_t* chain_data, const md_r
 // Compute the valence of atoms given the covalent bonds
 bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
 
-bool md_util_extract_rings(struct md_molecule_t* mol, struct md_allocator_i* alloc);
+bool md_util_compute_rings(md_molecule_ring_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+
+//bool md_util_extract_rings(struct md_molecule_t* mol, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
