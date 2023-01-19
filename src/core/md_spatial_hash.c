@@ -418,7 +418,7 @@ bool idx_fn(uint32_t idx, vec3_t pos, void* user_param) {
     (void)pos;
     idx_data_t* data = (idx_data_t*)user_param;
     md_array_push(data->arr, idx, data->alloc);
-    return false;
+    return true;
 }
 
 md_array(uint32_t) md_spatial_hash_query_idx(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_allocator_i* alloc) {

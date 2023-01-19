@@ -607,7 +607,7 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
 
     const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0);
 
-    if (res_idx != NULL) {
+    if (res_idx) {
         // atom residue indices are given,
         // First find connections first within the residue, then to the next residue
 
@@ -662,8 +662,9 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
             // Reset ring allocator pos
             md_ring_allocator_set_pos(ring_alloc, reset_pos);
             md_array(uint32_t) indices = md_spatial_hash_query_idx(&sh, pos, cutoff, &temp_alloc);
+            const int64_t num_indices = md_array_size(indices);
 
-            for (int64_t iter = 0; iter < md_array_size(indices); ++iter) {
+            for (int64_t iter = 0; iter < num_indices; ++iter) {
                 const int j = indices[iter];
                 // Only store monotonic bonds (idx[0] < idx[1])
                 if (j <= i) {
