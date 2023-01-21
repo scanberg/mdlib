@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+cmake_minimum_required(VERSION 3.20)
 
 project(mdlib VERSION 0.1.11 LANGUAGES C)
 
@@ -32,9 +32,17 @@ file(GLOB_RECURSE SHADER_FILES src/shaders/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
 
 set(MD_DEFINES)
-if (${MD_ENABLE_FMA})
-    set(MD_DEFINES ${MD_DEFINES} "__FMA__")
+
+if (CMAKE_C_BYTE_ORDER STREQUAL BIG_ENDIAN)
+    set(MD_DEFINES ${MD_DEFINES} __BIG_ENDIAN__)
+else()
+    set(MD_DEFINES ${MD_DEFINES} __LITTLE_ENDIAN__)
 endif()
+
+if (${MD_ENABLE_FMA})
+    list(APPEND MD_DEFINES __FMA__)
+endif()
+message(STATUS ${MD_DEFINES})
 set(MD_FLAGS_EXT)
 set(MD_FLAGS)
 set(MD_FLAGS_REL)
@@ -177,6 +185,7 @@ target_link_libraries(mdlib PRIVATE ${MD_LIBS})
 
 get_directory_property(has_parent PARENT_DIRECTORY)
 if (has_parent)
+    set(MD_DEFINES ${MD_DEFINES} PARENT_SCOPE)
     set(MD_FLAGS ${MD_FLAGS} PARENT_SCOPE)
     set(MD_FLAGS_DEB ${MD_FLAGS_DEB} PARENT_SCOPE)
     set(MD_FLAGS_REL ${MD_FLAGS_REL} PARENT_SCOPE)
