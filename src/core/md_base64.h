@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-// Gives the length in bytes of the encoded string which is required to be the minimum buffer size supplied as 'output' into base64_encode
+// Returns the length in bytes of the encoded string which is required to be the minimum buffer size supplied as 'output' into base64_encode
 int md_base64_encode_size_in_bytes(int length);
 
 // Encodes the given input bytes as Base64
