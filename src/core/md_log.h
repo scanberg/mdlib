@@ -29,10 +29,10 @@ void md_logger_add(const md_logger_i* logger);
 void md_logger_remove(const md_logger_i* logger);
 
 int  md_log (md_log_type_t log_type, const char* msg);
-int  md_logf(md_log_type_t log_type, const char* format, ...);
+int  md_logf(md_log_type_t log_type, const char* fmt, ...);
 
-// This is added implicitly
-// If you do not want to have this, you remove it explicitly
+// This is added from the beginning,
+// If you do not want to have this, you have to remove it explicitly
 extern struct md_logger_i* default_logger;
 
 #ifdef __cplusplus

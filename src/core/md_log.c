@@ -120,6 +120,13 @@ static void set_console_text_color(console_color_t color, bool intense) {
 
 static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
     (void)inst;
+    static char prev_msg[1024];
+    
+    if (strncmp(prev_msg, msg, sizeof(prev_msg)) == 0) {
+        return;
+    }
+    
+    strncpy(prev_msg, msg, sizeof(prev_msg));
 
     time_t now = time(0);
     struct tm tstruct;
@@ -192,7 +199,7 @@ int md_log(md_log_type_t log_type, const char* msg) {
 }
 
 int md_logf(md_log_type_t log_type, const char* format, ...) {
-    char buf[4096];
+    char buf[1024];
 
     va_list args;
     va_start(args, format);
