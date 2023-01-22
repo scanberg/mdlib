@@ -3507,11 +3507,9 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         com = vec3_div_f(com, (float)num_pos);
 
-        vec3_t eigen_vec[3];
-        float  eigen_val[3];
-        mat3_eigen(mat3_covariance_matrix_vec3(in_pos, com, num_pos), eigen_vec, eigen_val);
+        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(in_pos, com, num_pos));
 
-        vec3_t normal = vec3_normalize(eigen_vec[2]);
+        vec3_t normal = vec3_normalize(eigen.vectors.col[2]);
         float d = vec3_dot(normal, com);
         vec4_t plane = {normal.x, normal.y, normal.z, d};
 
@@ -3523,8 +3521,8 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             position_visualize(arg[0], ctx);
             if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                vec3_t v = vec3_mul_f(eigen_vec[0], eigen_val[0]);
-                vec3_t u = vec3_mul_f(eigen_vec[1], eigen_val[1]);
+                vec3_t v = vec3_mul_f(eigen.vectors.col[0], eigen.values.elem[0]);
+                vec3_t u = vec3_mul_f(eigen.vectors.col[1], eigen.values.elem[1]);
 
                 // Draw something plane-ish
                 uint32_t ci = push_vertex(com, ctx->vis);
@@ -4097,10 +4095,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
-        mat3_t eigen_vecs;
-        vec3_t eigen_vals;
-        mat3_eigen(mat3_covariance_matrix(ref[0].x, ref[0].y, ref[0].z, ref_com[0], ref_size), eigen_vecs.col, eigen_vals.elem);
-        mat4_t A = mat4_from_mat3(mat3_transpose(eigen_vecs));
+        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix(ref[0].x, ref[0].y, ref[0].z, ref_com[0], ref_size));
+        mat4_t A = mat4_from_mat3(mat3_transpose(eigen.vectors));
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
         mat4_t V = compute_volume_matrix(cutoff);

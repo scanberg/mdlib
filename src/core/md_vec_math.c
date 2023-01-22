@@ -5,22 +5,27 @@
 
 #define SWAP(x, y) {int t = x; x = y; y = t;}
 
-void mat3_svd(const mat3_t M, mat3_t* U, mat3_t* S, mat3_t* V) {
+mat3_svd_t mat3_svd(const mat3_t M) {
     mat3_t Mt = mat3_transpose(M);
     // the external svd library uses row major matrix convention...
-    svd((const float(*)[3])Mt.elem, U->elem, S->elem, V->elem);
-    *U = mat3_transpose(*U);
-    *S = mat3_transpose(*S);
-    *V = mat3_transpose(*V);
+    mat3_t U,S,V;
+    svd((const float(*)[3])Mt.elem, U.elem, S.elem, V.elem);
+    
+    mat3_svd_t res = {
+        .U = mat3_transpose(U),
+        .V = mat3_transpose(V),
+        .s = {S.elem[0][0], S.elem[1][1], S.elem[2][2]},
+    };
+    
+    return res;
 }
 
-void mat3_eigen(mat3_t M, vec3_t vectors[3], float values[3]) {
-    mat3_t U, S, V;
-    mat3_svd(M, &U, &S, &V);
+mat3_eigen_t mat3_eigen(mat3_t M) {
+    mat3_svd_t svd = mat3_svd(M);
 
-    const float max_val = MAX(S.elem[0][0], MAX(S.elem[1][1], S.elem[2][2]));
-    const float  e_val[] = {S.elem[0][0] / max_val, S.elem[1][1] / max_val, S.elem[2][2] / max_val};
-    const vec3_t e_vec[] = {U.col[0], U.col[1], U.col[2]};
+    const float max_val = MAX(svd.s.elem[0], MAX(svd.s.elem[1], svd.s.elem[2]));
+    const float  e_val[] = {svd.s.elem[0] / max_val, svd.s.elem[1] / max_val, svd.s.elem[2] / max_val};
+    const vec3_t e_vec[] = {svd.U.col[0], svd.U.col[1], svd.U.col[2]};
 
     int l[3] = {0, 1, 2};
 
@@ -28,13 +33,13 @@ void mat3_eigen(mat3_t M, vec3_t vectors[3], float values[3]) {
     if (e_val[l[1]] < e_val[l[2]]) SWAP(l[1], l[2]);
     if (e_val[l[0]] < e_val[l[1]]) SWAP(l[0], l[1]);
 
-    values[0] = e_val[l[0]];
-    values[1] = e_val[l[1]];
-    values[2] = e_val[l[2]];
-
-    vectors[0] = e_vec[l[0]];
-    vectors[1] = e_vec[l[1]];
-    vectors[2] = e_vec[l[2]];
+    mat3_eigen_t res;
+    res.values = (vec3_t){e_val[l[0]], e_val[l[1]], e_val[l[2]]},
+    res.vectors.col[0] = e_vec[l[0]];
+    res.vectors.col[1] = e_vec[l[1]];
+    res.vectors.col[2] = e_vec[l[2]];
+    
+    return res;
 }
 
 mat3_t mat3_covariance_matrix( const float* x, const float* y, const float* z, vec3_t com, int64_t count) {
@@ -167,13 +172,12 @@ mat3_t mat3_weighted_cross_covariance_matrix(
 }
 
 mat3_t mat3_extract_rotation(mat3_t M) {
-    mat3_t U, S, V;
-    mat3_svd(M, &U, &S, &V);
+    mat3_svd_t svd = mat3_svd(M);
 
-    mat3_t Ut = mat3_transpose(U);
-    float  d = mat3_determinant(mat3_mul(V, Ut));
+    mat3_t Ut = mat3_transpose(svd.U);
+    float  d = mat3_determinant(mat3_mul(svd.V, Ut));
     mat3_t D = {1, 0, 0, 0, 1, 0, 0, 0, d};
-    mat3_t R = mat3_mul(mat3_mul(V, D), Ut);
+    mat3_t R = mat3_mul(mat3_mul(svd.V, D), Ut);
     return R;
 }
 

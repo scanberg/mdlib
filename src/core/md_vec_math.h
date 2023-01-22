@@ -1137,9 +1137,20 @@ static inline float mat3_determinant(mat3_t M) {
     return d;
 }
 
-void   mat3_eigen(const mat3_t M, vec3_t vectors[3], float values[3]);
-void   mat3_svd(const mat3_t M, mat3_t* U, mat3_t* S, mat3_t* V);
-mat3_t mat3_extract_rotation(const mat3_t M);
+typedef struct mat3_eigen_t {
+    mat3_t vectors;
+    vec3_t values;
+} mat3_eigen_t;
+
+typedef struct mat3_svd_t {
+    mat3_t U;
+    mat3_t V;
+    vec3_t s;
+} mat3_svd_t;
+
+mat3_eigen_t mat3_eigen(mat3_t M);
+mat3_svd_t   mat3_svd(mat3_t M);
+mat3_t       mat3_extract_rotation(mat3_t M);
 
 mat3_t mat3_covariance_matrix(
     const float* x, const float* y, const float* z,
