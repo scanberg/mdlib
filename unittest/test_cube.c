@@ -6,7 +6,7 @@
 UTEST(cube, read_benzene) {
 	md_cube_t cube = {0};
 	bool result = md_cube_file_load(&cube, STR(MD_UNITTEST_DATA_DIR "/benzene-pot.cube"), default_allocator);
-	EXPECT_TRUE(result);
+	ASSERT_TRUE(result);
 
 	EXPECT_NEAR(-9.053142, cube.origin[0], 1e-5);
 	EXPECT_NEAR(-9.077350, cube.origin[1], 1e-5);

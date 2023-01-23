@@ -821,6 +821,12 @@ static void fifo_init(fifo_t* fifo, int64_t capacity, md_allocator_i* alloc) {
     MEMSET(fifo->data, 0, sizeof(int) * fifo->cap);
 }
 
+static inline fifo_t fifo_create(int64_t capacity, md_allocator_i* alloc) {
+    fifo_t fifo;
+    fifo_init(&fifo, capacity, alloc);
+    return fifo;
+}
+
 static void fifo_free(fifo_t* fifo) {
     ASSERT(fifo);
     md_free(fifo->alloc, fifo->data, sizeof(int) * fifo->cap);
@@ -858,11 +864,11 @@ static inline bool compare_ring(const int* ring_a, int ring_a_size, const int* r
     return true;
 }
 
-static bool has_ring(const md_molecule_ring_data_t* ring_data, const int* ring, int ring_size) {
-    const int64_t num_rings = md_molecule_ring_data_count(ring_data);
+static bool has_ring(const md_molecule_substructure_data_t* ring_data, const int* ring, int ring_size) {
+    const int64_t num_rings = md_molecule_substructure_data_count(ring_data);
     for (int64_t i = 0; i < num_rings; ++i) {
-        const int* ring_i     = md_molecule_ring_beg(ring_data, i);
-        const int ring_i_size = (int)md_molecule_ring_size(ring_data, i);
+        const int* ring_i     = md_molecule_substructure_beg(ring_data, i);
+        const int ring_i_size = (int)md_molecule_substructure_size(ring_data, i);
         if (compare_ring(ring_i, ring_i_size, ring, ring_size)) return true;
     }
     return false;
@@ -884,10 +890,93 @@ static void sort_arr(int* arr, int n) {
     }
 }
 
+// This is some helper data structure which stores the edges for each vertex
+typedef struct edge_data_t {
+    md_array(md_range_t) range;
+    md_array(int) indices;
+} edge_data_t;
+
+static inline edge_data_t edge_data_create(int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
+    edge_data_t data = { 0 };
+    
+    md_array_resize(data.range, atom_count, alloc);
+    MEMSET(data.range, 0, md_array_bytes(data.range));
+    
+    // This have length of 2 * bond_count (2 == one for direction)
+    md_array_resize(data.indices, 2 * bond_count, alloc);
+
+    uint32_t* local_offset = 0;
+    md_array_resize(local_offset, bond_count, alloc);
+
+    // Two packed 16-bit local offsets for each of the bond idx
+    // Accumulate the length of each range in the .end component
+    for (int64_t i = 0; i < bond_count; ++i) {
+        const uint32_t off0 = (uint32_t)data.range[bonds[i].idx[0]].end++;
+        const uint32_t off1 = (uint32_t)data.range[bonds[i].idx[1]].end++;
+        local_offset[i] = (off1 << 16) | off0;
+    }
+
+    // Compute complete edge ranges (compute beg and add to end in order to convert the stored length to a proper absolute offset)
+    for (int64_t i = 1; i < atom_count; ++i) {
+        data.range[i].beg = data.range[i - 1].end;
+        data.range[i].end += data.range[i].beg;
+    }
+
+    // Write edge indices to correct location
+    for (int64_t i = 0; i < bond_count; ++i) {
+        const md_bond_t bond = bonds[i];
+        const int atom_a = bond.idx[0];
+        const int atom_b = bond.idx[1];
+        const int local_a = (int)(local_offset[i] & 0xFFFF);
+        const int local_b = (int)(local_offset[i] >> 16);
+        const md_range_t range_a = data.range[atom_a];
+        const md_range_t range_b = data.range[atom_b];
+
+        const int idx_a = range_a.beg + local_a;
+        const int idx_b = range_b.beg + local_b;
+        ASSERT(idx_a < range_a.end);
+        ASSERT(idx_b < range_b.end);
+
+        ASSERT(idx_a < md_array_size(data.indices));
+        ASSERT(idx_b < md_array_size(data.indices));
+
+        // Store the cross references to the 'other' atom index signified by the bond in the correct location
+        data.indices[idx_a] = atom_b;
+        data.indices[idx_b] = atom_a;
+    }
+
+    md_array_free(local_offset, alloc);
+
+    return data;
+}
+
+static inline void edge_data_free(edge_data_t* data, md_allocator_i* alloc) {
+    md_array_free(data->range,  alloc);
+    md_array_free(data->indices, alloc);
+}
+
+static inline const int* edge_beg(const edge_data_t* data, int vertex_idx) {
+    ASSERT(data);
+    ASSERT(0 <= vertex_idx && vertex_idx < md_array_size(data->range));
+    return data->indices + data->range[vertex_idx].beg;
+}
+
+static inline const int* edge_end(const edge_data_t* data, int vertex_idx) {
+    ASSERT(data);
+    ASSERT(0 <= vertex_idx && vertex_idx < md_array_size(data->range));
+    return data->indices + data->range[vertex_idx].end;
+}
+
+static inline int edge_count(const edge_data_t* data, int vertex_idx) {
+    ASSERT(data);
+    ASSERT(0 <= vertex_idx && vertex_idx < md_array_size(data->range));
+    return data->range[vertex_idx].end - data->range[vertex_idx].beg;
+}
+
 #define MIN_RING_SIZE 3
 #define MAX_RING_SIZE 6
 
-bool md_util_compute_rings(md_molecule_ring_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
+bool md_util_compute_rings(md_molecule_substructure_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
     ASSERT(alloc);
     
     if (!ring_data) {
@@ -905,71 +994,24 @@ bool md_util_compute_rings(md_molecule_ring_data_t* ring_data, int64_t atom_coun
         return false;
     }
     
+    md_molecule_substructure_data_clear(ring_data);
+    
     md_vm_arena_t arena = {0};
     md_vm_arena_init(&arena, GIGABYTES(1));
     md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
 
-    md_molecule_ring_data_clear(ring_data);
-
-    // This have length of 2 * bond_count (2 == one for direction)
-    int* edge_indices = md_vm_arena_push(&arena, 2 * bond_count * sizeof(int));
+    edge_data_t edge_data = edge_data_create(atom_count, bonds, bond_count, &arena_alloc);
     
-    // These have length of atom_count
-    int* edge_offset = md_vm_arena_push(&arena, atom_count * sizeof(int));
-    int* edge_length = md_vm_arena_push(&arena, atom_count * sizeof(int));
-    int* depth       = md_vm_arena_push(&arena, atom_count * sizeof(int));
-    int* pred        = md_vm_arena_push(&arena, atom_count * sizeof(int));
+    int* depth = md_vm_arena_push(&arena, atom_count * sizeof(int));
+    MEMSET(depth, 0, atom_count * sizeof(int));
     
+    int* pred = md_vm_arena_push(&arena, atom_count * sizeof(int));
     for (int64_t i = 0; i < atom_count; ++i) {
-        edge_offset[i] = 0;
-        edge_length[i] = 0;
-        depth[i] = 0;
         pred[i] = -1;
     }
 
-    uint32_t* local_offset = md_vm_arena_push(&arena, bond_count * sizeof(uint32_t));
-
-    // Two packed 16-bit local offsets for each of the bond idx
-    for (int64_t i = 0; i < bond_count; ++i) {
-        const uint32_t off0 = (uint32_t)edge_length[bonds[i].idx[0]]++;
-        const uint32_t off1 = (uint32_t)edge_length[bonds[i].idx[1]]++;
-        local_offset[i] = (off1 << 16) | off0;
-    }
-
-    // Compute complete edge ranges
-    for (int64_t i = 1; i < atom_count; ++i) {
-        edge_offset[i] = edge_offset[i-1] + edge_length[i-1];
-    }
-
-    // Write edge indices to correct location
-    for (int64_t i = 0; i < bond_count; ++i) {
-        const md_bond_t bond = bonds[i];
-        const int atom_a = bond.idx[0];
-        const int atom_b = bond.idx[1];
-        const int offset_a = edge_offset[atom_a];
-        const int offset_b = edge_offset[atom_b];
-        const int local_a  = (int)(local_offset[i] & 0xFFFF);
-        const int local_b  = (int)(local_offset[i] >> 16);
-
-        ASSERT(local_a < edge_length[atom_a]);
-        ASSERT(local_b < edge_length[atom_b]);
-
-        ASSERT(offset_a + local_a < 2 * bond_count);
-        ASSERT(offset_b + local_b < 2 * bond_count);
-
-        // Store the cross references to the 'other' atom index signified by the bond in the correct location
-        edge_indices[offset_a + local_a] = atom_b;
-        edge_indices[offset_b + local_b] = atom_a;
-    }
-
-    // pop local offset
-    md_vm_arena_pop(&arena, bond_count * sizeof(uint32_t));
-
-    // @NOTE: It's not trivial to determine up front the size of the queue required.
-    // It is ultimately coverened by the number of bonds and topology of the system.
-    // The fifo is dynamic and will grow upon demand, but should have a good starting capacity
-    fifo_t queue = {0};
-    fifo_init(&queue, MAX(64, bond_count / 8), &arena_alloc);
+    // The capacity is arbitrary here, but will be resized if needed.
+    fifo_t queue = fifo_create(64, &arena_alloc);
 
     for (int i = 0; i < atom_count; ++i) {
         // Skip any atom which has alread been touched
@@ -981,10 +1023,10 @@ bool md_util_compute_rings(md_molecule_ring_data_t* ring_data, int64_t atom_coun
         while (!fifo_empty(&queue)) {
             int idx = fifo_pop(&queue);
 
-            const int* edges = edge_indices + edge_offset[idx];
-            const int num_edges = edge_length[idx];
-            for (int j = 0; j < num_edges; ++j) {
-                int next = edges[j];
+            const int* eb = edge_beg(&edge_data, idx);
+            const int* ee = edge_end(&edge_data, idx);
+            for (const int* it = eb; it != ee; ++it) {
+                int next = *it;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
 
                 if (depth[next]) {
@@ -1023,7 +1065,7 @@ bool md_util_compute_rings(md_molecule_ring_data_t* ring_data, int64_t atom_coun
                     if (MIN_RING_SIZE <= n && n <= MAX_RING_SIZE) {
                         sort_arr(ring, n);
                         if (!has_ring(ring_data, ring, n)) {
-                            md_molecule_ring_data_push(ring_data, ring, n, alloc);
+                            md_molecule_substructure_data_push(ring_data, ring, n, alloc);
                         }
                     }
 
@@ -1043,6 +1085,73 @@ bool md_util_compute_rings(md_molecule_ring_data_t* ring_data, int64_t atom_coun
 
 #undef MIN_RING_SIZE
 #undef MAX_RING_SIZE
+
+bool md_util_compute_structures(md_molecule_substructure_data_t* structure_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc) {
+    ASSERT(alloc);
+
+    if (!structure_data) {
+        MD_LOG_ERROR("structure data is missing");
+        return false;
+    }
+
+    if (!bonds) {
+        MD_LOG_ERROR("bonds are missing");
+        return false;
+    }
+
+    if (bond_count < 0) {
+        MD_LOG_ERROR("invalid bond count");
+        return false;
+    }
+
+    md_molecule_substructure_data_clear(structure_data);
+
+    md_vm_arena_t arena = { 0 };
+    md_vm_arena_init(&arena, GIGABYTES(1));
+    md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
+
+    edge_data_t edge_data = edge_data_create(atom_count, bonds, bond_count, &arena_alloc);
+
+    int* depth = md_vm_arena_push(&arena, atom_count * sizeof(int));
+    MEMSET(depth, 0, atom_count * sizeof(int));
+
+    // The capacity is arbitrary here, but will be resized if needed.
+    fifo_t queue = fifo_create(64, &arena_alloc);
+
+    md_array(int) indices = 0;
+
+    for (int i = 0; i < atom_count; ++i) {
+        // Skip any atom which has already been touched
+        if (depth[i]) continue;
+
+        md_array_shrink(indices, 0);
+        
+        fifo_clear(&queue);
+        fifo_push(&queue, i);
+        depth[i] = 1;
+        while (!fifo_empty(&queue)) {
+            int idx = fifo_pop(&queue);
+            md_array_push(indices, idx, &arena_alloc);
+            
+            const int* eb = edge_beg(&edge_data, idx);
+            const int* ee = edge_end(&edge_data, idx);
+            for (const int* it = eb; it != ee; ++it) {
+                int next = *it;
+                if (depth[next] == 0) {
+                    depth[next] = depth[idx] + 1;
+                    fifo_push(&queue, next);
+                }
+            }
+        }
+        
+        // Here we should have exhausted every atom that is connected to index i.
+        md_molecule_substructure_data_push(structure_data, indices, md_array_size(indices), alloc);
+    }
+    
+    md_vm_arena_free(&arena);
+
+    return true;
+}
 
 void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count) {
     md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
@@ -1304,7 +1413,6 @@ static inline double compute_com(const float* in_x, const float* in_w, int64_t c
 
 // Love the elegance of using trigonometric functions, unsure of the performance...
 // @TODO: sin, cos and atan2 can and should of course be vectorized.
-/*
 vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_xyz);
     ASSERT(count >= 0);
@@ -1317,9 +1425,9 @@ vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int
     }
 
     // We need to pick the version based on each component of pdc_ext, since one or more may be zero
-    double x = pbc_ext.x > 0 ? compute_com_periodic(in_xyz->elem, in_w, count, pbc_ext.x, 3) : compute_com(in_xyz->elem, in_w, count, 1);
-    double y = pbc_ext.y > 0 ? compute_com_periodic(in_xyz->elem, in_w, count, pbc_ext.y, 3) : compute_com(in_xyz->elem, in_w, count, 1);
-    double z = pbc_ext.z > 0 ? compute_com_periodic(in_xyz->elem, in_w, count, pbc_ext.z, 3) : compute_com(in_xyz->elem, in_w, count, 1);
+    double x = pbc_ext.x > 0 ? compute_com_periodic(in_xyz->elem + 0, in_w, count, pbc_ext.x, 3) : compute_com(in_xyz->elem + 0, in_w, count, 3);
+    double y = pbc_ext.y > 0 ? compute_com_periodic(in_xyz->elem + 1, in_w, count, pbc_ext.y, 3) : compute_com(in_xyz->elem + 1, in_w, count, 3);
+    double z = pbc_ext.z > 0 ? compute_com_periodic(in_xyz->elem + 2, in_w, count, pbc_ext.z, 3) : compute_com(in_xyz->elem + 2, in_w, count, 3);
 
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
@@ -1344,8 +1452,8 @@ vec3_t md_util_compute_com_periodic_soa(const float* in_x, const float* in_y, co
 
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
-*/
 
+/*
 vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_xyz);
 
@@ -1400,6 +1508,7 @@ vec3_t md_util_compute_com_periodic_soa(const float* in_x, const float* in_y, co
 
     return (vec3_t){com_x, com_y, com_z};
 }
+*/
 
 // From here: https://www.arianarab.com/post/crystal-structure-software
 mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma) {
@@ -1899,11 +2008,16 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
             md_util_compute_atom_valence(mol->atom.valence, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count);    
         }
     }
+
+    if (flags & MD_UTIL_POSTPROCESS_SUBSTRUCTURE_BIT) {
+        if (mol->covalent_bond.count > 0) {
+            md_util_compute_structures(&mol->structure, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count, alloc);
+        }
+    }
     
     if (flags & MD_UTIL_POSTPROCESS_RING_BIT) {
         if (mol->covalent_bond.count > 0) {
             md_util_compute_rings(&mol->ring, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count, alloc);
-            //md_util_extract_rings(mol, alloc);
         }
     }
 

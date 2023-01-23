@@ -11,14 +11,15 @@ extern "C" {
 #endif
 
 typedef enum md_util_postprocess_flags_t {
-    MD_UTIL_POSTPROCESS_ELEMENT_BIT         = 0x01,
-    MD_UTIL_POSTPROCESS_RADIUS_BIT          = 0x02,
-    MD_UTIL_POSTPROCESS_MASS_BIT            = 0x04,
-    MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT  = 0x08,
-    MD_UTIL_POSTPROCESS_VALENCE_BIT         = 0x10,
-    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x20,
-    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x40,
-    MD_UTIL_POSTPROCESS_RING_BIT            = 0x80,
+    MD_UTIL_POSTPROCESS_ELEMENT_BIT         = 0x0001,
+    MD_UTIL_POSTPROCESS_RADIUS_BIT          = 0x0002,
+    MD_UTIL_POSTPROCESS_MASS_BIT            = 0x0004,
+    MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT  = 0x0008,
+    MD_UTIL_POSTPROCESS_VALENCE_BIT         = 0x0010,
+    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0020,
+    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0040,
+    MD_UTIL_POSTPROCESS_SUBSTRUCTURE_BIT    = 0x0080,
+    MD_UTIL_POSTPROCESS_RING_BIT            = 0x0100,
 
     MD_UTIL_POSTPROCESS_ALL                 = -1,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
@@ -92,9 +93,11 @@ bool md_util_compute_chain_data(md_molecule_chain_data_t* chain_data, const md_r
 // Compute the valence of atoms given the covalent bonds
 bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
 
-bool md_util_compute_rings(md_molecule_ring_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+// Compute rings formed by covalent bonds
+bool md_util_compute_rings(md_molecule_substructure_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
 
-//bool md_util_extract_rings(struct md_molecule_t* mol, struct md_allocator_i* alloc);
+// Identify isolated structures by covalent bonds
+bool md_util_compute_structures(md_molecule_substructure_data_t* structure_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);

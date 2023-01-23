@@ -2115,14 +2115,14 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         md_bitfield_t* bf_arr = as_bitfield(*dst);
         
-        int64_t num_rings = md_molecule_ring_data_count(&ctx->mol->ring);
+        int64_t num_rings = md_molecule_substructure_data_count(&ctx->mol->ring);
         int64_t dst_idx = 0;
         for (int64_t i = 0; i < num_rings; ++i) {
             md_bitfield_t* bf = &bf_arr[dst_idx];
             
             // Only accept the ring if it is fully within the given context
-            const md_atom_idx_t* ring_beg = md_molecule_ring_beg(&ctx->mol->ring, i);
-            const md_atom_idx_t* ring_end = md_molecule_ring_end(&ctx->mol->ring, i);
+            const md_atom_idx_t* ring_beg = md_molecule_substructure_beg(&ctx->mol->ring, i);
+            const md_atom_idx_t* ring_end = md_molecule_substructure_end(&ctx->mol->ring, i);
 
             if (ctx->mol_ctx) {
                 bool discard = false;
@@ -2149,11 +2149,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We need to check if the ring is within the given context
         if (ctx->mol_ctx) {
             int count = 0;
-            int64_t num_rings = md_molecule_ring_data_count(&ctx->mol->ring);
+            int64_t num_rings = md_molecule_substructure_data_count(&ctx->mol->ring);
             for (int64_t i = 0; i < num_rings; ++i) {
                 bool discard = false;
-                const md_atom_idx_t* ring_beg = md_molecule_ring_beg(&ctx->mol->ring, i);
-                const md_atom_idx_t* ring_end = md_molecule_ring_end(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_beg = md_molecule_substructure_beg(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_end = md_molecule_substructure_end(&ctx->mol->ring, i);
                 for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
                     if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
                         discard = true;
@@ -2166,7 +2166,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             result = count;
         } else {
-            return (int)md_molecule_ring_data_count(&ctx->mol->ring);
+            return (int)md_molecule_substructure_data_count(&ctx->mol->ring);
         }
     }
 
