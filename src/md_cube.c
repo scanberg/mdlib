@@ -7,7 +7,6 @@
 #include "core/md_array.h"
 
 #include <string.h>
-#include <tgmath.h>
 
 bool md_cube_valid(const md_cube_t* cube) {
 	if (!cube) return false;
