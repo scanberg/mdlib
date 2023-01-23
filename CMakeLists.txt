@@ -40,9 +40,9 @@ else()
 endif()
 
 if (${MD_ENABLE_FMA})
-    list(APPEND MD_DEFINES __FMA__)
+    set(MD_DEFINES ${MD_DEFINES} __FMA__)
 endif()
-message(STATUS ${MD_DEFINES})
+
 set(MD_FLAGS_EXT)
 set(MD_FLAGS)
 set(MD_FLAGS_REL)
