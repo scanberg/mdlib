@@ -789,6 +789,11 @@ MD_SIMD_INLINE md_f64x4_t md_simd_sign_f64x4(md_f64x4_t a) { return _mm256_xor_p
 #define md_simd_blend_f32x8 _mm256_blendv_ps
 #define md_simd_blend_f64x4 _mm256_blendv_pd
 
+#define md_simd_blend_mask_f32x4 _mm_blend_ps
+#define md_simd_blend_mask_f64x2 _mm_blend_pd
+#define md_simd_blend_mask_f32x8 _mm256_blend_ps
+#define md_simd_blend_mask_f64x4 _mm256_blend_pd
+
 #define md_simd_sqrt_f32x4 _mm_sqrt_ps
 #define md_simd_sqrt_f64x2 _mm_sqrt_pd
 #define md_simd_sqrt_f32x8 _mm256_sqrt_ps
