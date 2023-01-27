@@ -84,7 +84,7 @@ typedef struct md_vec3_soa_t {
     uint64_t stride;
 } md_vec3_soa_t;
 
-typedef struct md_molecule_atom_data_t {
+typedef struct md_atom_data_t {
     int64_t count;
     // Coordinates
     float* x;
@@ -103,23 +103,23 @@ typedef struct md_molecule_atom_data_t {
     md_flags_t* flags;                          // Auxillary bit buffer for flagging individual atoms
     md_residue_idx_t* residue_idx;
     md_chain_idx_t* chain_idx;
-} md_molecule_atom_data_t;
+} md_atom_data_t;
 
-typedef struct md_molecule_residue_data_t {
+typedef struct md_residue_data_t {
     int64_t count;
     md_label_t* name;
     md_residue_id_t* id;
     md_range_t* atom_range;
-} md_molecule_residue_data_t;
+} md_residue_data_t;
 
-typedef struct md_molecule_chain_data_t {
+typedef struct md_chain_data_t {
     int64_t count;
     md_label_t* id;
     md_range_t* residue_range;
     md_range_t* atom_range;
-} md_molecule_chain_data_t;
+} md_chain_data_t;
 
-typedef struct md_molecule_backbone_data_t {
+typedef struct md_backbone_data_t {
     // This holds the consecutive ranges which form the backbones
     int64_t range_count;
     md_range_t* range;
@@ -131,41 +131,44 @@ typedef struct md_molecule_backbone_data_t {
     md_secondary_structure_t* secondary_structure;
     md_ramachandran_type_t* ramachandran_type;
     md_residue_idx_t* residue_idx;            // Index to the residue which contains the backbone
-} md_molecule_backbone_data_t;
+} md_backbone_data_t;
 
-typedef struct md_molecule_bond_data_t {
+// Container structure for ranges of indices.
+// It stores a set of indices for every stored entity. (Think of it as an Array of Arrays of integers)
+// The indices are packed into a single array and we store explicit ranges referencing spans within this index array.
+// It is used to represent connected structures, rings and atom connectivity etc.
+typedef struct md_index_data_t {
+    md_array(md_range_t) ranges;
+    md_array(int32_t)    indices;
+} md_index_data_t;
+
+// BOND DATA
+typedef struct md_bond_data_t {
     int64_t count;
-    md_bond_t* bond;
-} md_molecule_bond_data_t;
-
-// Container structure for substructures within the molecule
-// Each structure is an isolated island of atoms connected by covalent bonds
-// We cannot assume that these substructures can be expressed as simple ranges within the atom entries
-typedef struct md_molecule_substructure_data_t {
-    md_array(md_range_t)    ranges;
-    md_array(md_atom_idx_t) indices;
-} md_molecule_substructure_data_t;
+    md_array(md_bond_t) bond;
+    md_index_data_t connectivity;   // Connectivity of atoms
+    md_index_data_t structures;     // Isolated structures formed by bonds
+    md_index_data_t rings;          // Rings structures formed by bonds
+} md_bond_data_t;
 
 // This represents symmetries which are instanced, commonly found
 // in PDB data. It is up to the renderer to properly render this instanced data.
-typedef struct md_molecule_instance_data_t {
+typedef struct md_instance_data_t {
     int64_t count;
     md_range_t* atom_range;
     md_label_t* label;
     mat4_t* transform;
-} md_molecule_instance_data_t;
+} md_instance_data_t;
 
 typedef struct md_molecule_t {
-    md_coordinate_frame_t           coord_frame;
-    md_molecule_atom_data_t         atom;
-    md_molecule_residue_data_t      residue;
-    md_molecule_chain_data_t        chain;
-    md_molecule_backbone_data_t     backbone;
-    md_molecule_bond_data_t         covalent_bond;
-    md_molecule_bond_data_t         hydrogen_bond;
-    md_molecule_substructure_data_t structure;  // Structures formed by covalent bonds (isolated units)
-    md_molecule_substructure_data_t ring;       // Rings within the data of specific sizes formed by covalent bonds
-    md_molecule_instance_data_t     instance;
+    md_coordinate_frame_t   coord_frame;
+    md_atom_data_t          atom;
+    md_residue_data_t       residue;
+    md_chain_data_t         chain;
+    md_backbone_data_t      backbone;
+    md_bond_data_t          covalent;
+    md_bond_data_t          hydrogen;
+    md_instance_data_t      instance;
 } md_molecule_t;
 
 /*
@@ -218,12 +221,12 @@ static inline md_label_t make_label(str_t str) {
 }
 
 // Convenience functions to extract vec3_soa streams from molecule
-static inline md_vec3_soa_t md_molecule_soa_coord(md_molecule_atom_data_t* atom_data) {
+static inline md_vec3_soa_t md_molecule_soa_coord(md_atom_data_t* atom_data) {
     md_vec3_soa_t soa = {atom_data->x, atom_data->y, atom_data->z, sizeof(float)};
     return soa;
 }
 
-static inline md_vec3_soa_t md_molecule_soa_vel(md_molecule_atom_data_t* atom_data) {
+static inline md_vec3_soa_t md_molecule_soa_vel(md_atom_data_t* atom_data) {
     md_vec3_soa_t soa = {atom_data->vx, atom_data->vy, atom_data->vz, sizeof(float)};
     return soa;
 }
@@ -240,53 +243,68 @@ static inline vec3_t md_vec3_soa_get(md_vec3_soa_t soa, int64_t idx) {
 }
 
 // Access to substructure data
-static inline void md_molecule_substructure_data_free (md_molecule_substructure_data_t* data, md_allocator_i* alloc) {
+static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
     md_array_free(data->ranges,  alloc);
     md_array_free(data->indices, alloc);
 }
 
-static inline void md_molecule_substructure_data_push (md_molecule_substructure_data_t* data, md_atom_idx_t* index_data, int64_t index_count, md_allocator_i* alloc) {
+static inline int64_t md_index_data_push (md_index_data_t* data, int32_t* index_data, int64_t index_count, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
     ASSERT(index_count >= 0);
-    if (!index_data || index_count == 0) {
-        return;
-    }
-    md_range_t range = {(int)md_array_size(data->indices), (int)md_array_size(data->indices) + (int)index_count};
-    md_array_push_array(data->indices, index_data, index_count, alloc);
+
+    const int64_t range_idx = md_array_size(data->ranges);
+    const md_range_t range = {(int)md_array_size(data->indices), (int)md_array_size(data->indices) + (int)index_count};
     md_array_push(data->ranges, range, alloc);
+    if (index_count > 0) {
+        ASSERT(index_data);
+        md_array_push_array(data->indices, index_data, index_count, alloc);
+    }
+
+    return range_idx;
 }
 
-static inline void md_molecule_substructure_data_clear(md_molecule_substructure_data_t* data) {
+static inline void md_index_data_data_clear(md_index_data_t* data) {
     ASSERT(data);
     md_array_shrink(data->ranges,  0);
     md_array_shrink(data->indices, 0);
 }
 
-static inline int64_t md_molecule_substructure_data_count(const md_molecule_substructure_data_t* data) {
+FORCE_INLINE int64_t md_index_data_count(const md_index_data_t* data) {
     ASSERT(data);
     return md_array_size(data->ranges);
 }
 
 // Access to individual substructures
-static inline md_atom_idx_t* md_molecule_substructure_beg(const md_molecule_substructure_data_t* data, int64_t idx) {
+static inline int32_t* md_index_range_beg(const md_index_data_t* data, int64_t idx) {
     ASSERT(data);
     ASSERT(idx >= 0 && idx < md_array_size(data->ranges));
     return data->indices + data->ranges[idx].beg;
 }
 
-static inline md_atom_idx_t* md_molecule_substructure_end(const md_molecule_substructure_data_t* data, int64_t idx) {
+static inline int32_t* md_index_range_end(const md_index_data_t* data, int64_t idx) {
     ASSERT(data);
     ASSERT(idx >= 0 && idx < md_array_size(data->ranges));
     return data->indices + data->ranges[idx].end;
 }
 
-static inline int64_t md_molecule_substructure_size(const md_molecule_substructure_data_t* data, int64_t idx) {
+static inline int64_t md_index_range_size(const md_index_data_t* data, int64_t idx) {
     ASSERT(data);
     ASSERT(idx >= 0 && idx < md_array_size(data->ranges));
     return data->ranges[idx].end - data->ranges[idx].beg;
+}
+
+static inline void md_bond_data_clear(md_bond_data_t* data) {
+    ASSERT(data);
+    md_array_shrink(data->bond, 0);
+    md_index_data_data_clear(&data->connectivity);
+}
+
+static inline int64_t md_bond_count(const md_bond_data_t* bond_data) {
+    ASSERT(bond_data);
+    return md_array_size(bond_data->bond);
 }
 
 #ifdef __cplusplus

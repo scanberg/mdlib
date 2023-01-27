@@ -1112,10 +1112,10 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_mol->flags |= MOL_FLAG_HAS_BACKBONE;
         }
 
-        gl_mol->bond_count = (uint32_t)mol->covalent_bond.count;
+        gl_mol->bond_count = (uint32_t)mol->covalent.count;
         gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES] = gl_buffer_create(gl_mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
 
-        if (mol->covalent_bond.bond) gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], 0, gl_mol->bond_count * sizeof(uint32_t) * 2, mol->covalent_bond.bond);
+        if (mol->covalent.bond) gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], 0, gl_mol->bond_count * sizeof(uint32_t) * 2, mol->covalent.bond);
        
         gl_mol->magic = MAGIC;
         return true;

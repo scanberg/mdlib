@@ -2115,14 +2115,14 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         md_bitfield_t* bf_arr = as_bitfield(*dst);
         
-        int64_t num_rings = md_molecule_substructure_data_count(&ctx->mol->ring);
+        int64_t num_rings = md_index_data_count(&ctx->mol->covalent.rings);
         int64_t dst_idx = 0;
         for (int64_t i = 0; i < num_rings; ++i) {
             md_bitfield_t* bf = &bf_arr[dst_idx];
             
             // Only accept the ring if it is fully within the given context
-            const md_atom_idx_t* ring_beg = md_molecule_substructure_beg(&ctx->mol->ring, i);
-            const md_atom_idx_t* ring_end = md_molecule_substructure_end(&ctx->mol->ring, i);
+            const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->covalent.rings, i);
+            const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->covalent.rings, i);
 
             if (ctx->mol_ctx) {
                 bool discard = false;
@@ -2149,11 +2149,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We need to check if the ring is within the given context
         if (ctx->mol_ctx) {
             int count = 0;
-            int64_t num_rings = md_molecule_substructure_data_count(&ctx->mol->ring);
+            int64_t num_rings = md_index_data_count(&ctx->mol->covalent.rings);
             for (int64_t i = 0; i < num_rings; ++i) {
                 bool discard = false;
-                const md_atom_idx_t* ring_beg = md_molecule_substructure_beg(&ctx->mol->ring, i);
-                const md_atom_idx_t* ring_end = md_molecule_substructure_end(&ctx->mol->ring, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->covalent.rings, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->covalent.rings, i);
                 for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
                     if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
                         discard = true;
@@ -2166,7 +2166,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             result = count;
         } else {
-            return (int)md_molecule_substructure_data_count(&ctx->mol->ring);
+            return (int)md_index_data_count(&ctx->mol->covalent.rings);
         }
     }
 
@@ -4177,18 +4177,6 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 /*
 // This is some experimental future work, for matching structures using maximum common subgraph
-typedef struct node_t {
-    uint32_t id;
-} node_t;
-
-typedef struct edge_t {
-    uint32_t idx[2];
-} edge_t;
-
-typedef struct graph_t {
-    node_t* nodes;
-    edge_t* edges;
-} graph_t;
 
 static int32_t greedy_align(const md_bitfield_t* a, const md_bitfield_t* b, const md_molecule_t* mol) {
     const int64_t a_size = md_bitfield_popcount(a);

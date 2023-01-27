@@ -44,8 +44,8 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->backbone.residue_idx) md_array_free(mol->backbone.residue_idx, alloc);
 
     // Bonds
-    if (mol->covalent_bond.bond) md_array_free(mol->covalent_bond.bond, alloc);
-    if (mol->hydrogen_bond.bond) md_array_free(mol->hydrogen_bond.bond, alloc);
+    if (mol->covalent.bond) md_array_free(mol->covalent.bond, alloc);
+    if (mol->hydrogen.bond) md_array_free(mol->hydrogen.bond, alloc);
 
     // Instance
     if (mol->instance.atom_range) md_array_free(mol->instance.atom_range, alloc);
@@ -120,13 +120,13 @@ void md_molecule_append(md_molecule_t* dst, const md_molecule_t* src, md_allocat
     ARRAY_INCREMENT_FIELD(chain, atom_range,    beg, (int32_t)dst->atom.count);
     ARRAY_INCREMENT_FIELD(chain, atom_range,    end, (int32_t)dst->atom.count);
 
-    ARRAY_PUSH(covalent_bond, bond);
-    ARRAY_INCREMENT_FIELD(covalent_bond, bond, idx[0], (int32_t)dst->atom.count);
-    ARRAY_INCREMENT_FIELD(covalent_bond, bond, idx[1], (int32_t)dst->atom.count);
+    ARRAY_PUSH(covalent, bond);
+    ARRAY_INCREMENT_FIELD(covalent, bond, idx[0], (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(covalent, bond, idx[1], (int32_t)dst->atom.count);
 
-    ARRAY_PUSH(hydrogen_bond, bond);
-    ARRAY_INCREMENT_FIELD(hydrogen_bond, bond, idx[0], (int32_t)dst->atom.count);
-    ARRAY_INCREMENT_FIELD(hydrogen_bond, bond, idx[1], (int32_t)dst->atom.count);
+    ARRAY_PUSH(hydrogen, bond);
+    ARRAY_INCREMENT_FIELD(hydrogen, bond, idx[0], (int32_t)dst->atom.count);
+    ARRAY_INCREMENT_FIELD(hydrogen, bond, idx[1], (int32_t)dst->atom.count);
 
     ARRAY_PUSH(residue, name);
     ARRAY_PUSH(residue, id);
@@ -138,8 +138,8 @@ void md_molecule_append(md_molecule_t* dst, const md_molecule_t* src, md_allocat
     dst->backbone.count       += src->backbone.count;
     dst->backbone.range_count += src->backbone.range_count;
     dst->chain.count          += src->chain.count;
-    dst->covalent_bond.count  += src->covalent_bond.count;
-    dst->hydrogen_bond.count  += src->hydrogen_bond.count;
+    dst->covalent.count  += src->covalent.count;
+    dst->hydrogen.count  += src->hydrogen.count;
     dst->residue.count        += src->residue.count;
 }
 
@@ -174,8 +174,8 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(chain, residue_range);
     ARRAY_PUSH(chain, atom_range);
 
-    ARRAY_PUSH(covalent_bond, bond);
-    ARRAY_PUSH(hydrogen_bond, bond);
+    ARRAY_PUSH(covalent, bond);
+    ARRAY_PUSH(hydrogen, bond);
 
     ARRAY_PUSH(residue, name);
     ARRAY_PUSH(residue, id);
@@ -185,8 +185,8 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     dst->backbone.count       = src->backbone.count;
     dst->backbone.range_count = src->backbone.range_count;
     dst->chain.count          = src->chain.count;
-    dst->covalent_bond.count  = src->covalent_bond.count;
-    dst->hydrogen_bond.count  = src->hydrogen_bond.count;
+    dst->covalent.count  = src->covalent.count;
+    dst->hydrogen.count  = src->hydrogen.count;
     dst->residue.count        = src->residue.count;
 }
 
