@@ -25,7 +25,7 @@ UTEST(vec_math, mat4) {
 	float z_[2];
 
 	mat4_batch_transform2(x_, y_, z_, x, y, z, 1.0f, 2, M);
-	mat4_batch_transform(x, y, z, 1.0f, 2, M);
+	mat4_batch_transform_inplace(x, y, z, 1.0f, 2, M);
 
 	v[0] = mat4_mul_vec4(M, v[0]);
 	v[1] = mat4_mul_vec4(M, v[1]);

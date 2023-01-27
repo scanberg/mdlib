@@ -301,7 +301,7 @@ void vec3_batch_translate2(float* out_x, float* out_y, float* out_z, const float
     }
 }
 
-void mat4_batch_transform(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, float w_comp, int64_t count, mat4_t M) {
+void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, float w_comp, int64_t count, mat4_t M) {
     const md_simd_f32_t m11 = md_simd_set1_f32(M.elem[0][0]);
     const md_simd_f32_t m12 = md_simd_set1_f32(M.elem[0][1]);
     const md_simd_f32_t m13 = md_simd_set1_f32(M.elem[0][2]);
