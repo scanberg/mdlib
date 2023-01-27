@@ -1378,7 +1378,7 @@ vec3_t md_util_compute_com_indexed_soa(const float *x, const float* y, const flo
     return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
 }
 
-static inline double compute_com_periodic(const float* in_x, const float* in_w, int64_t count, float pbc_ext, size_t stride_x) {
+static inline double compute_com_periodic_trig(const float* in_x, const float* in_w, int64_t count, float pbc_ext, size_t stride_x) {
     double com;
 
     double acc_c = 0;
@@ -1403,13 +1403,35 @@ static inline double compute_com_periodic(const float* in_x, const float* in_w, 
     return com;
 }
 
+static inline double compute_com_periodic_regular(const float* in_x, const float* in_w, int64_t count, float pbc_ext, size_t stride_x) {
+    if (count <= 0) {
+        return 0;
+    }
+
+    double acc_x = in_x[0];
+    double acc_w = in_w ? in_w[0] : 1.0;
+    double prev_x = in_x[0];
+
+    stride_x = MAX(1, stride_x);
+
+    for (int64_t i = 1; i < count; ++i) {
+        double x = in_x[stride_x * i];
+        double dx = deperiodize(x, prev_x, (double)pbc_ext);
+        double w = in_w ? in_w[i] : 1.0;
+        acc_x += dx * w;
+        acc_w += w;
+        prev_x = dx;
+    }
+
+    return acc_x / acc_w;
+}
+
 static inline double compute_com(const float* in_x, const float* in_w, int64_t count, size_t stride_x) {
     double com = 0;
     double acc_x = 0;
     double acc_w = 0;
 
     stride_x = MAX(1, stride_x);
-
     for (int64_t i = 0; i < count; ++i) {
         double x = in_x[stride_x * i];
         double w = in_w ? in_w[i] : 1.0;
@@ -1435,9 +1457,9 @@ vec3_t md_util_compute_com_ortho(const vec3_t* in_xyz, const float* in_w, int64_
     }
 
     // We need to pick the version based on each component of pdc_ext, since one or more may be zero
-    double x = pbc_ext.x > 0 ? compute_com_periodic(in_xyz->elem + 0, in_w, count, pbc_ext.x, 3) : compute_com(in_xyz->elem + 0, in_w, count, 3);
-    double y = pbc_ext.y > 0 ? compute_com_periodic(in_xyz->elem + 1, in_w, count, pbc_ext.y, 3) : compute_com(in_xyz->elem + 1, in_w, count, 3);
-    double z = pbc_ext.z > 0 ? compute_com_periodic(in_xyz->elem + 2, in_w, count, pbc_ext.z, 3) : compute_com(in_xyz->elem + 2, in_w, count, 3);
+    double x = pbc_ext.x > 0 ? compute_com_periodic_regular(in_xyz->elem + 0, in_w, count, pbc_ext.x, 3) : compute_com(in_xyz->elem + 0, in_w, count, 3);
+    double y = pbc_ext.y > 0 ? compute_com_periodic_regular(in_xyz->elem + 1, in_w, count, pbc_ext.y, 3) : compute_com(in_xyz->elem + 1, in_w, count, 3);
+    double z = pbc_ext.z > 0 ? compute_com_periodic_regular(in_xyz->elem + 2, in_w, count, pbc_ext.z, 3) : compute_com(in_xyz->elem + 2, in_w, count, 3);
 
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
@@ -1456,17 +1478,11 @@ vec3_t md_util_compute_com_ortho_soa(const float* in_x, const float* in_y, const
     }
 
     // We need to pick the version based on each component of pdc_ext, since one or more may be zero
-    double x = pbc_ext.x > 0 ? compute_com_periodic(in_x, in_w, count, pbc_ext.x, 1) : compute_com(in_x, in_w, count, 1);
-    double y = pbc_ext.y > 0 ? compute_com_periodic(in_y, in_w, count, pbc_ext.y, 1) : compute_com(in_y, in_w, count, 1);
-    double z = pbc_ext.z > 0 ? compute_com_periodic(in_z, in_w, count, pbc_ext.z, 1) : compute_com(in_z, in_w, count, 1);
+    double x = pbc_ext.x > 0 ? compute_com_periodic_regular(in_x, in_w, count, pbc_ext.x, 1) : compute_com(in_x, in_w, count, 1);
+    double y = pbc_ext.y > 0 ? compute_com_periodic_regular(in_y, in_w, count, pbc_ext.y, 1) : compute_com(in_y, in_w, count, 1);
+    double z = pbc_ext.z > 0 ? compute_com_periodic_regular(in_z, in_w, count, pbc_ext.z, 1) : compute_com(in_z, in_w, count, 1);
 
     return (vec3_t) {(float)x, (float)y, (float)z};
-}
-
-static inline vec4_t minimum_image(vec4_t x, vec4_t ext, vec4_t inv_ext) {
-    const vec4_t s = vec4_mul(x, inv_ext);
-    const vec4_t dx = vec4_mul(ext, vec4_sub(s, vec4_round(s)));
-    return vec4_blend(dx, x, vec4_cmp_eq(ext, vec4_zero()));
 }
 
 vec3_t md_util_compute_com_ortho_indexed_soa(const float *in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t box) {
@@ -1480,29 +1496,29 @@ vec3_t md_util_compute_com_ortho_indexed_soa(const float *in_x, const float* in_
         return (vec3_t){0, 0, 0};
     }
     
-    const vec4_t ext     = vec4_from_vec3(box, 0);
-    const vec4_t inv_ext = vec4_set(box.x ? 1.0f / box.x : 0, box.y ? 1.0f / box.y : 0, box.z ? 1.0f / box.z : 0, 0);
+    const vec4_t ext = vec4_from_vec3(box, 0);
 
-    vec4_t xyzw_acc = {in_x[0], in_y[0], in_z[0], in_w ? in_w[0] : 1};
+    const int idx0 = indices[0];
+    vec4_t acc = {in_x[idx0], in_y[idx0], in_z[idx0], in_w ? in_w[idx0] : 1};
+    vec4_t ref = acc;
 
     if (in_w) {
         for (int64_t i = 1; i < count; ++i) {
             const int idx = indices[i];
-            const vec4_t com     = vec4_div_f(xyzw_acc, xyzw_acc.w);
-            const vec4_t xyzw    = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), com, ext);
-            xyzw_acc = vec4_add(xyzw_acc, vec4_mul_f(xyzw, in_w[idx]));
+            const vec4_t xyzw = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), ref, ext);
+            acc = vec4_add(acc, vec4_mul_f(xyzw, in_w[idx]));
+            ref = xyzw;
         }
     } else {
         for (int64_t i = 1; i < count; ++i) {
             const int idx = indices[i];
-            const vec4_t com     = vec4_div_f(xyzw_acc, xyzw_acc.w);
-            const vec4_t xyzw    = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), com, ext);
-            xyzw_acc = vec4_add(xyzw_acc, xyzw);
+            const vec4_t xyzw = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), ref, ext);
+            acc = vec4_add(acc, xyzw);
+            ref = xyzw;
         }
     }
 
-
-    return vec3_from_vec4(vec4_div_f(xyzw_acc, xyzw_acc.w));
+    return vec3_from_vec4(vec4_div_f(acc, acc.w));
 }
 
 /*

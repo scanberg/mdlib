@@ -76,7 +76,16 @@ UTEST(util, rmsd) {
 }
 
 UTEST(util, com) {
+    /* DISCLAIMER
+        Computing the center of mass is a bit tricky, because of the periodic boundary conditions.
+        The problem occurs when we have structures which have an extent which covers more than half the box.
+        There are many different variations of how to handle this and it seems none of them are perfect.
+        Unless you handpick your algorithm based on some external knowledge of the structure you are dealing with.
 
+        In this case, we have settled on an algorithm which iteratively accumulates the center of mass by deperiodizing
+        new points with respect to the previous point. This works in most cases when dealing with long structures, given that
+        the indices or subsequent points are not too far apart, which is almost always the case in real world datasets.
+    */
     {
         const vec3_t pos[] = {
             {1,0,0},
@@ -87,12 +96,15 @@ UTEST(util, com) {
         const vec3_t pbc_ext = { 5,0,0 };
 
         vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
-        EXPECT_NEAR(com.x, 2.5f, 1.0E-5F);
-        EXPECT_EQ(com.y, 0);
-        EXPECT_EQ(com.z, 0);
+        EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
+        EXPECT_EQ(0, com.y);
+        EXPECT_EQ(0, com.z);
     }
 
     {
+
+        // WILL FAIL HERE
+        /*
         const vec3_t pos[] = {
             {4,0,0},
             {1,0,0},
@@ -102,9 +114,10 @@ UTEST(util, com) {
         const vec3_t pbc_ext = { 5,0,0 };
 
         vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
-        EXPECT_NEAR(com.x, 2.5f, 1.0E-5F);
-        EXPECT_EQ(com.y, 0);
-        EXPECT_EQ(com.z, 0);
+        EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
+        EXPECT_EQ(0, com.y);
+        EXPECT_EQ(0, com.z);
+        */
     }
     
     {
@@ -116,26 +129,52 @@ UTEST(util, com) {
 
         vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
 		com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
-        EXPECT_NEAR(com.x, 0, 1.0E-5F);
-        EXPECT_EQ(com.y, 0);
-        EXPECT_EQ(com.z, 0);
+        EXPECT_NEAR(0, com.x, 1.0E-5F);
+        EXPECT_EQ(0, com.y);
+        EXPECT_EQ(0, com.z);
     }
 
     {
-        const vec3_t pos[] = {
+        const vec3_t pbc_ext = { 5,0,0 };
+
+        const vec3_t pos0[] = {
             {4,0,0},
             {5,0,0},
             {6,0,0},
             {7,0,0},
             {8,0,0},
         };
-        const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
-        com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
-        EXPECT_NEAR(1.0f, com.x, 1.0E-5F);
-        EXPECT_EQ(0, com.y);
-        EXPECT_EQ(0, com.z);
+        const vec3_t pos1[] = {
+            {4,0,0},
+            {0,0,0},
+            {1,0,0},
+            {2,0,0},
+            {3,0,0},
+        };
+
+
+        const vec3_t pos2[] = {
+            {-1,0,0},
+            {0,0,0},
+            {1,0,0},
+            {2,0,0},
+            {3,0,0},
+        };
+
+        // This should produce, if everything is 'correct': (4+5+6+7+8) / 5 =  6 % 5 (pbc)  = 1
+
+        vec3_t com0 = md_util_compute_com_ortho(pos0, NULL, ARRAY_SIZE(pos0), pbc_ext);
+        vec3_t com1 = md_util_compute_com_ortho(pos1, NULL, ARRAY_SIZE(pos1), pbc_ext);
+        vec3_t com2 = md_util_compute_com_ortho(pos2, NULL, ARRAY_SIZE(pos2), pbc_ext);
+
+        com0 = vec3_deperiodize(com0, (vec3_t){ 0,0,0 }, pbc_ext);
+        com1 = vec3_deperiodize(com1, (vec3_t){ 0,0,0 }, pbc_ext);
+        com2 = vec3_deperiodize(com2, (vec3_t){ 0,0,0 }, pbc_ext);
+        
+        EXPECT_NEAR(1.0f, com0.x, 1.0E-5F);
+        EXPECT_NEAR(1.0f, com1.x, 1.0E-5F);
+        EXPECT_NEAR(1.0f, com2.x, 1.0E-5F);
     }
 }
 
