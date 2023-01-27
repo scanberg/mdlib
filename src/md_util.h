@@ -14,12 +14,10 @@ typedef enum md_util_postprocess_flags_t {
     MD_UTIL_POSTPROCESS_ELEMENT_BIT         = 0x0001,
     MD_UTIL_POSTPROCESS_RADIUS_BIT          = 0x0002,
     MD_UTIL_POSTPROCESS_MASS_BIT            = 0x0004,
-    MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT  = 0x0008,
+    MD_UTIL_POSTPROCESS_COVALENT_BIT        = 0x0008,
     MD_UTIL_POSTPROCESS_VALENCE_BIT         = 0x0010,
     MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0020,
     MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0040,
-    MD_UTIL_POSTPROCESS_SUBSTRUCTURE_BIT    = 0x0080,
-    MD_UTIL_POSTPROCESS_RING_BIT            = 0x0100,
 
     MD_UTIL_POSTPROCESS_ALL                 = -1,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
@@ -81,23 +79,25 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const struct md_molecule_t* mol);
 
-// The result is an md_array allocated using the supplied allocator, since we cannot determine how many bonds will be formed.
-bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, const md_residue_idx_t* atom_residue_idx /* OPTIONAL */, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-bool md_util_compute_hydrogen_bonds(md_molecule_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+// Computes the covalent bonds based from a heuristic approcah, uses the covalent radius (derived from element) to determine the appropriate bond
+// length. atom_residue_idx is an optional parameter and if supplied, it will limit the covalent bonds to only those within the same or adjacent residues.
+// Returns true if succesfull or false upon error.
+bool md_util_compute_covalent_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, const md_residue_idx_t* atom_residue_idx, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
 // Computes chains from connected residues
 // The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
 // This means that single residues which are not connected to any other residue will not classify as a chain.
-bool md_util_compute_chain_data(md_molecule_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t covalent_bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
+bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t covalent_bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
 
 // Compute the valence of atoms given the covalent bonds
 bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
 
 // Compute rings formed by covalent bonds
-bool md_util_compute_rings(md_molecule_substructure_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
 
 // Identify isolated structures by covalent bonds
-bool md_util_compute_structures(md_molecule_substructure_data_t* structure_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+bool md_util_compute_structures(md_index_data_t* structures, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
@@ -108,7 +108,18 @@ vec3_t md_util_compute_unit_cell_extent(mat3_t M);
 
 // Applies periodic boundary conditions to coordinates of atoms within molecule
 // It ensures that residues and chains reside within the same period
-bool md_util_apply_pbc(struct md_molecule_t* mol, vec3_t pbc_ext);
+//bool md_util_pbc_ortho(struct md_molecule_t* mol, vec3_t pbc_ext);
+
+bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box);
+
+bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* structures, vec3_t box);
+
+// Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
+// If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
+bool md_util_deperiodize_system_ortho(float* x, float* y, float* z, const float* w, int64_t count, const md_index_data_t* structures, vec3_t box);
+
+//bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_bond_data_t* covalent_data, vec3_t pbc_ext);
+
 
 // Computes the miminum axis aligned bounding box for a set of points
 void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count);
@@ -117,55 +128,63 @@ void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x
 void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, int64_t count);
 
 // Computes the miminum axis aligned bounding box for a set of points within a periodic box (0,0,0) -> (pbc_ext)
-void md_util_compute_aabb_periodic_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count, uint64_t stride, vec3_t pbc_ext);
+void md_util_compute_aabb_ortho_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count, uint64_t stride, vec3_t box);
 
 // Computes the center of mass for a set of points with a given weight
-// x, y, z -> Arrays containing coordinates
-// w -> Array of weights (optional): set as NULL to use equal weights
-// count -> Length of all arrays
+// x, y, z: Arrays containing coordinates
+// w:       Array of weights (optional): set as NULL to use equal weights
+// count:   Length of all arrays
 vec3_t md_util_compute_com(const vec3_t* xyz, const float* w, int64_t count);
 vec3_t md_util_compute_com_soa(const float* x, const float* y, const float* z, const float* w, int64_t count);
+vec3_t md_util_compute_com_indexed_soa(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count);
 
 // Computes the center of mass for a set of points with a given weight given in periodic boundary conditions
-// x, y, z -> Arrays containing coordinates
-// w -> Array of weights (optional): set as NULL to use equal weights
-// count -> Length of all arrays
-// pbc_ext -> Extent of periodic boundary (optional): Set to zero if pbc does not apply in that dimension
-vec3_t md_util_compute_com_periodic(const vec3_t* xyz, const float* w, int64_t count, vec3_t pbc_ext);
-vec3_t md_util_compute_com_periodic_soa(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t pbc_ext);
+// x, y, z: Arrays containing coordinates
+// w:       Array of weights (optional): set as NULL to use equal weights
+// count:   Length of all arrays
+// box:     Extent of periodic boundary box (optional per component): Set to zero if pbc does not apply in that dimension
+vec3_t md_util_compute_com_ortho(const vec3_t* xyz, const float* w, int64_t count, vec3_t box);
+vec3_t md_util_compute_com_ortho_soa(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t box);
+
+// Computes the center of mass for a set of points with a given weight given in periodic boundary conditions
+// The indices used to access the arrays are given in the indices array
+// indices:     Array of indices into the arrays (x,y,z,w)
+// index_count: Length of indices array
+vec3_t md_util_compute_com_ortho_indexed_soa(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count, vec3_t box);
+
 
 // Computes the optimal rotation between two configurations of a set of points with corresponding weights weights
-// coords -> coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
-// com -> center of mass [2] (xyz0), (xyz1)
-// w -> array of weights (optional): set as NULL to use equal weights
-// count -> Length of all arrays (coords + w)
+// coords:  Coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
+// com:     Center of mass [2] (xyz0), (xyz1)
+// w:       Array of weights (optional): set as NULL to use equal weights
+// count:   Length of all arrays (coords + w)
 mat3_t md_util_compute_optimal_rotation(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
 // The rmsd is the root mean squared deviation between the two sets of aligned vectors.
-// coords -> coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
-// com -> center of mass [2] (xyz0), (xyz1)
-// w -> array of weights (optional): set as NULL to use equal weights
-// count -> Length of all arrays (coords + w)
+// coords:  Coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
+// com:     Center of mass [2] (xyz0), (xyz1)
+// w:       Array of weights (optional): set as NULL to use equal weights
+// count:   Length of all arrays (coords + w)
 double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
 
 // Perform linear interpolation of supplied coordinates
-// dst_coord -> destination arrays (x,y,z)
-// src_coord -> source arrays [2] (x0, y0, z0), (x1, y1, z1)
-// count -> count of coordinates (this implies that all coordinate arrays must be equal in length)
-// pbc_ext -> Extent of periodic boundary (optional) set to zero if should be ignored
-// t -> interpolation factor (0..1)
-bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], int64_t count, vec3_t pbc_ext, float t);
+// dst_coord:   Destination arrays (x,y,z)
+// src_coord:   Source arrays [2] (x0, y0, z0), (x1, y1, z1)
+// count:       Count of coordinates (this implies that all coordinate arrays must be equal in length)
+// box:         Extent of periodic boundary box (optional) set to zero if should be ignored
+// t: interpolation factor (0..1)
+bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], int64_t count, vec3_t box, float t);
 
 // Perform cubic interpolation of supplied coordinates
-// dst_coord -> destination arrays (x,y,z)
-// src_coord -> source arrays [4] (x0, y0, z0), (x1, y1, z1), (x2, y2, z2), (x3, y3, z3)
-// count -> count of coordinates (this implies that all coordinate arrays must be equal in length)
-// pbc_ext -> Extent of periodic boundary (optional): Set to zero if pbc does not apply in that dimension
-// t -> interpolation factor (0..1)
-// s -> scaling factor (0..1), 0 is jerky, 0.5 is catmul rom, 1.0 is silky smooth
-bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float s);
+// dst_coord:   Destination arrays (x,y,z)
+// src_coord:   Source arrays [4] (x0, y0, z0), (x1, y1, z1), (x2, y2, z2), (x3, y3, z3)
+// count:       Count of coordinates (this implies that all coordinate arrays must be equal in length)
+// box:         Extent of periodic boundary (optional): Set to zero if pbc does not apply in that dimension
+// t:           Interpolation factor (0..1)
+// s:           Scaling factor (0..1), 0 is jerky, 0.5 is catmul rom, 1.0 is silky smooth
+bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t box, float t, float s);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.

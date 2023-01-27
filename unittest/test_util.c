@@ -86,7 +86,7 @@ UTEST(util, com) {
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_periodic(pos, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
         EXPECT_NEAR(com.x, 2.5f, 1.0E-5F);
         EXPECT_EQ(com.y, 0);
         EXPECT_EQ(com.z, 0);
@@ -101,7 +101,7 @@ UTEST(util, com) {
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_periodic(pos, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
         EXPECT_NEAR(com.x, 2.5f, 1.0E-5F);
         EXPECT_EQ(com.y, 0);
         EXPECT_EQ(com.z, 0);
@@ -114,29 +114,44 @@ UTEST(util, com) {
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_periodic(pos, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
 		com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(com.x, 0, 1.0E-5F);
         EXPECT_EQ(com.y, 0);
         EXPECT_EQ(com.z, 0);
     }
+
+    {
+        const vec3_t pos[] = {
+            {4,0,0},
+            {5,0,0},
+            {6,0,0},
+            {7,0,0},
+            {8,0,0},
+        };
+        const vec3_t pbc_ext = { 5,0,0 };
+
+        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
+        com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
+        EXPECT_NEAR(1.0f, com.x, 1.0E-5F);
+        EXPECT_EQ(0, com.y);
+        EXPECT_EQ(0, com.z);
+    }
 }
 
-UTEST(util, substructure) {
+UTEST(util, structure) {
     md_allocator_i* arena = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
     md_molecule_t mol = {0};
     int64_t num_rings = 0;
     int64_t num_structures = 0;
 
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
 
-    md_util_compute_structures(&mol.structure, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
-    num_structures = md_molecule_substructure_data_count(&mol.structure);
+    num_structures = md_index_data_count(&mol.covalent.structures);
 	EXPECT_EQ(num_structures, 1);
     
-    md_util_compute_rings(&mol.ring, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
-    num_rings = md_molecule_substructure_data_count(&mol.ring);
+    num_rings = md_index_data_count(&mol.covalent.rings);
     EXPECT_EQ(num_rings, 0);
     
     md_arena_allocator_reset(arena);
@@ -145,14 +160,12 @@ UTEST(util, substructure) {
     
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
     
-    md_util_compute_structures(&mol.structure, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
-    num_structures = md_molecule_substructure_data_count(&mol.structure);
+    num_structures = md_index_data_count(&mol.covalent.structures);
     EXPECT_EQ(num_structures, 1);
 
-    md_util_compute_rings(&mol.ring, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
-    num_rings = md_molecule_substructure_data_count(&mol.ring);
+    num_rings = md_index_data_count(&mol.covalent.rings);
     EXPECT_EQ(num_rings, 5);
 
     md_arena_allocator_reset(arena);
@@ -161,15 +174,13 @@ UTEST(util, substructure) {
     
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT | MD_UTIL_POSTPROCESS_CHAINS_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT | MD_UTIL_POSTPROCESS_CHAINS_BIT);
     
-    md_util_compute_structures(&mol.structure, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
-    num_structures = md_molecule_substructure_data_count(&mol.structure);
+    num_structures = md_index_data_count(&mol.covalent.structures);
     const int64_t expected_count = mol.chain.count + 61;
     EXPECT_EQ(num_structures, expected_count);
 
-    md_util_compute_rings(&mol.ring, mol.atom.count, mol.covalent_bond.bond, mol.covalent_bond.count, arena);
-    num_rings = md_molecule_substructure_data_count(&mol.ring);
+    num_rings = md_index_data_count(&mol.covalent.rings);
     EXPECT_EQ(num_rings, 2076);
     
     md_arena_allocator_destroy(arena);

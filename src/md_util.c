@@ -567,6 +567,60 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
+static md_index_data_t compute_connectivity_data(int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
+    md_index_data_t data = { 0 };
+
+    md_array_resize(data.ranges, atom_count, alloc);
+    MEMSET(data.ranges, 0, md_array_bytes(data.ranges));
+
+    // This have length of 2 * bond_count (2 == one for direction)
+    md_array_resize(data.indices, 2 * bond_count, alloc);
+
+    uint32_t* local_offset = 0;
+    md_array_resize(local_offset, bond_count, alloc);
+
+    // Two packed 16-bit local offsets for each of the bond idx
+    // Accumulate the length of each range in the .end component
+    for (int64_t i = 0; i < bond_count; ++i) {
+        const uint32_t off0 = (uint32_t)data.ranges[bonds[i].idx[0]].end++;
+        const uint32_t off1 = (uint32_t)data.ranges[bonds[i].idx[1]].end++;
+        local_offset[i] = (off1 << 16) | off0;
+    }
+
+    // Compute complete edge ranges (compute beg and add to end in order to convert the stored length to a proper absolute offset)
+    for (int64_t i = 1; i < atom_count; ++i) {
+        data.ranges[i].beg = data.ranges[i - 1].end;
+        data.ranges[i].end += data.ranges[i].beg;
+    }
+
+    // Write edge indices to correct location
+    for (int64_t i = 0; i < bond_count; ++i) {
+        const md_bond_t bond = bonds[i];
+        const int atom_a = bond.idx[0];
+        const int atom_b = bond.idx[1];
+        const int local_a = (int)(local_offset[i] & 0xFFFF);
+        const int local_b = (int)(local_offset[i] >> 16);
+        const md_range_t range_a = data.ranges[atom_a];
+        const md_range_t range_b = data.ranges[atom_b];
+
+        const int idx_a = range_a.beg + local_a;
+        const int idx_b = range_b.beg + local_b;
+        ASSERT(idx_a < range_a.end);
+        ASSERT(idx_b < range_b.end);
+
+        ASSERT(idx_a < md_array_size(data.indices));
+        ASSERT(idx_b < md_array_size(data.indices));
+
+        // Store the cross references to the 'other' atom index signified by the bond in the correct location
+        data.indices[idx_a] = atom_b;
+        data.indices[idx_b] = atom_a;
+    }
+
+    md_array_free(local_offset, alloc);
+
+    return data;
+}
+
 static inline bool covelent_bond_heuristic(float dist_squared, md_element_t elem_a, md_element_t elem_b) {
     const float d = element_covalent_radii[elem_a] + element_covalent_radii[elem_b];
     const float d_min = d - 0.5f;
@@ -574,7 +628,7 @@ static inline bool covelent_bond_heuristic(float dist_squared, md_element_t elem
     return (d_min * d_min) < dist_squared && dist_squared < (d_max * d_max);
 }
 
-bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const float* x, const float* y, const float* z, const md_element_t* element, const md_residue_idx_t* res_idx, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc) {
+bool md_util_compute_covalent_bonds(md_bond_data_t* bond_data, const float* x, const float* y, const float* z, const md_element_t* element, const md_residue_idx_t* res_idx, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
     if (!bond_data) {
@@ -602,9 +656,6 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
         return false;
     }
 
-    bond_data->count = 0;
-    md_array_shrink(bond_data->bond, 0);
-
     const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0);
 
     if (res_idx) {
@@ -627,7 +678,7 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
                     }
                 }
             }
-            
+
             for (int j = range.beg; j < range.end - 1; ++j) {
                 for (int k = j + 1; k < range.end; ++k) {
                     const vec4_t a = {x[j], y[j], z[j], 0};
@@ -642,15 +693,14 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
             prev_range = range;
             range.beg  = range.end;
         }
+        
+        bond_data->connectivity = compute_connectivity_data(count, bond_data->bond, md_array_size(bond_data->bond), alloc);
     }
     else {
-        // No residues present, test all against all
-        // Utilize spatial hashing for speeding up spatial queries
-        
         md_spatial_hash_t sh = {0};
         md_spatial_hash_init_soa(&sh, x, y, z, count, pbc_ext, default_allocator);
 
-        const float cutoff = 5.0f;
+        const float cutoff = 3.0f;
 
         md_ring_allocator_t* ring_alloc = get_thread_ring_allocator();
         md_allocator_i temp_alloc = md_ring_allocator_create_interface(ring_alloc);
@@ -662,20 +712,29 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
             // Reset ring allocator pos
             md_ring_allocator_set_pos(ring_alloc, reset_pos);
             md_array(uint32_t) indices = md_spatial_hash_query_idx(&sh, pos, cutoff, &temp_alloc);
+            md_array(int32_t) atom_connectivity = 0;
+        
             const int64_t num_indices = md_array_size(indices);
-
             for (int64_t iter = 0; iter < num_indices; ++iter) {
                 const int j = indices[iter];
-                // Only store monotonic bonds (idx[0] < idx[1])
-                if (j <= i) {
+
+                if (res_idx && abs(res_idx[j] - res_idx[i]) > 2) {
                     continue;
                 }
+
                 const vec4_t pos_a = vec4_from_vec3(pos, 0);
                 const vec4_t pos_b = {x[j], y[j], z[j], 0};
                 const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext4);
                 if (covelent_bond_heuristic(d2, element[i], element[j])) {
-                    md_array_push(bond_data->bond, ((md_bond_t){i, j}), alloc);
+                    if (i < j) {
+                        // Only store monotonic bonds connections
+                        md_array_push(bond_data->bond, ((md_bond_t){i, j}), alloc);
+                    }
+                    // Store all connectivity to atom
+                    md_array_push(atom_connectivity, j, &temp_alloc);
                 }
+            
+                md_index_data_push(&bond_data->connectivity, atom_connectivity, md_array_size(atom_connectivity), alloc);
             }
         }
 
@@ -686,7 +745,7 @@ bool md_util_compute_covalent_bonds(md_molecule_bond_data_t* bond_data, const fl
     return true;
 }
 
-bool md_util_compute_chain_data(md_molecule_chain_data_t* chain_data, const md_residue_idx_t* res_idx, int64_t atom_count, const md_bond_t* bonds, int64_t bond_count, md_allocator_i* alloc) {
+bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t* res_idx, int64_t atom_count, const md_bond_t* bonds, int64_t bond_count, md_allocator_i* alloc) {
     if (!chain_data) {
         MD_LOG_ERROR("chain data is missing");
         return false;
@@ -864,11 +923,11 @@ static inline bool compare_ring(const int* ring_a, int ring_a_size, const int* r
     return true;
 }
 
-static bool has_ring(const md_molecule_substructure_data_t* ring_data, const int* ring, int ring_size) {
-    const int64_t num_rings = md_molecule_substructure_data_count(ring_data);
+static bool has_ring(const md_index_data_t* ring_data, const int* ring, int ring_size) {
+    const int64_t num_rings = md_index_data_count(ring_data);
     for (int64_t i = 0; i < num_rings; ++i) {
-        const int* ring_i     = md_molecule_substructure_beg(ring_data, i);
-        const int ring_i_size = (int)md_molecule_substructure_size(ring_data, i);
+        const int* ring_i     = md_index_range_beg(ring_data, i);
+        const int ring_i_size = (int)md_index_range_size(ring_data, i);
         if (compare_ring(ring_i, ring_i_size, ring, ring_size)) return true;
     }
     return false;
@@ -890,93 +949,10 @@ static void sort_arr(int* arr, int n) {
     }
 }
 
-// This is some helper data structure which stores the edges for each vertex
-typedef struct edge_data_t {
-    md_array(md_range_t) range;
-    md_array(int) indices;
-} edge_data_t;
-
-static inline edge_data_t edge_data_create(int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
-    edge_data_t data = { 0 };
-    
-    md_array_resize(data.range, atom_count, alloc);
-    MEMSET(data.range, 0, md_array_bytes(data.range));
-    
-    // This have length of 2 * bond_count (2 == one for direction)
-    md_array_resize(data.indices, 2 * bond_count, alloc);
-
-    uint32_t* local_offset = 0;
-    md_array_resize(local_offset, bond_count, alloc);
-
-    // Two packed 16-bit local offsets for each of the bond idx
-    // Accumulate the length of each range in the .end component
-    for (int64_t i = 0; i < bond_count; ++i) {
-        const uint32_t off0 = (uint32_t)data.range[bonds[i].idx[0]].end++;
-        const uint32_t off1 = (uint32_t)data.range[bonds[i].idx[1]].end++;
-        local_offset[i] = (off1 << 16) | off0;
-    }
-
-    // Compute complete edge ranges (compute beg and add to end in order to convert the stored length to a proper absolute offset)
-    for (int64_t i = 1; i < atom_count; ++i) {
-        data.range[i].beg = data.range[i - 1].end;
-        data.range[i].end += data.range[i].beg;
-    }
-
-    // Write edge indices to correct location
-    for (int64_t i = 0; i < bond_count; ++i) {
-        const md_bond_t bond = bonds[i];
-        const int atom_a = bond.idx[0];
-        const int atom_b = bond.idx[1];
-        const int local_a = (int)(local_offset[i] & 0xFFFF);
-        const int local_b = (int)(local_offset[i] >> 16);
-        const md_range_t range_a = data.range[atom_a];
-        const md_range_t range_b = data.range[atom_b];
-
-        const int idx_a = range_a.beg + local_a;
-        const int idx_b = range_b.beg + local_b;
-        ASSERT(idx_a < range_a.end);
-        ASSERT(idx_b < range_b.end);
-
-        ASSERT(idx_a < md_array_size(data.indices));
-        ASSERT(idx_b < md_array_size(data.indices));
-
-        // Store the cross references to the 'other' atom index signified by the bond in the correct location
-        data.indices[idx_a] = atom_b;
-        data.indices[idx_b] = atom_a;
-    }
-
-    md_array_free(local_offset, alloc);
-
-    return data;
-}
-
-static inline void edge_data_free(edge_data_t* data, md_allocator_i* alloc) {
-    md_array_free(data->range,  alloc);
-    md_array_free(data->indices, alloc);
-}
-
-static inline const int* edge_beg(const edge_data_t* data, int vertex_idx) {
-    ASSERT(data);
-    ASSERT(0 <= vertex_idx && vertex_idx < md_array_size(data->range));
-    return data->indices + data->range[vertex_idx].beg;
-}
-
-static inline const int* edge_end(const edge_data_t* data, int vertex_idx) {
-    ASSERT(data);
-    ASSERT(0 <= vertex_idx && vertex_idx < md_array_size(data->range));
-    return data->indices + data->range[vertex_idx].end;
-}
-
-static inline int edge_count(const edge_data_t* data, int vertex_idx) {
-    ASSERT(data);
-    ASSERT(0 <= vertex_idx && vertex_idx < md_array_size(data->range));
-    return data->range[vertex_idx].end - data->range[vertex_idx].beg;
-}
-
 #define MIN_RING_SIZE 3
 #define MAX_RING_SIZE 6
 
-bool md_util_compute_rings(md_molecule_substructure_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
+bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
     ASSERT(alloc);
     
     if (!ring_data) {
@@ -994,13 +970,13 @@ bool md_util_compute_rings(md_molecule_substructure_data_t* ring_data, int64_t a
         return false;
     }
     
-    md_molecule_substructure_data_clear(ring_data);
+    md_index_data_data_clear(ring_data);
     
     md_vm_arena_t arena = {0};
     md_vm_arena_init(&arena, GIGABYTES(1));
     md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
 
-    edge_data_t edge_data = edge_data_create(atom_count, bonds, bond_count, &arena_alloc);
+    md_index_data_t edge_data = compute_connectivity_data(atom_count, bonds, bond_count, &arena_alloc);
     
     int* depth = md_vm_arena_push(&arena, atom_count * sizeof(int));
     MEMSET(depth, 0, atom_count * sizeof(int));
@@ -1023,8 +999,8 @@ bool md_util_compute_rings(md_molecule_substructure_data_t* ring_data, int64_t a
         while (!fifo_empty(&queue)) {
             int idx = fifo_pop(&queue);
 
-            const int* eb = edge_beg(&edge_data, idx);
-            const int* ee = edge_end(&edge_data, idx);
+            const int* eb = md_index_range_beg(&edge_data, idx);
+            const int* ee = md_index_range_end(&edge_data, idx);
             for (const int* it = eb; it != ee; ++it) {
                 int next = *it;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
@@ -1065,7 +1041,7 @@ bool md_util_compute_rings(md_molecule_substructure_data_t* ring_data, int64_t a
                     if (MIN_RING_SIZE <= n && n <= MAX_RING_SIZE) {
                         sort_arr(ring, n);
                         if (!has_ring(ring_data, ring, n)) {
-                            md_molecule_substructure_data_push(ring_data, ring, n, alloc);
+                            md_index_data_push(ring_data, ring, n, alloc);
                         }
                     }
 
@@ -1086,7 +1062,7 @@ bool md_util_compute_rings(md_molecule_substructure_data_t* ring_data, int64_t a
 #undef MIN_RING_SIZE
 #undef MAX_RING_SIZE
 
-bool md_util_compute_structures(md_molecule_substructure_data_t* structure_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc) {
+bool md_util_compute_structures(md_index_data_t* structure_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
     if (!structure_data) {
@@ -1104,13 +1080,13 @@ bool md_util_compute_structures(md_molecule_substructure_data_t* structure_data,
         return false;
     }
 
-    md_molecule_substructure_data_clear(structure_data);
+    md_index_data_data_clear(structure_data);
 
     md_vm_arena_t arena = { 0 };
     md_vm_arena_init(&arena, GIGABYTES(1));
     md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
 
-    edge_data_t edge_data = edge_data_create(atom_count, bonds, bond_count, &arena_alloc);
+    md_index_data_t edge_data = compute_connectivity_data(atom_count, bonds, bond_count, &arena_alloc);
 
     int* depth = md_vm_arena_push(&arena, atom_count * sizeof(int));
     MEMSET(depth, 0, atom_count * sizeof(int));
@@ -1133,8 +1109,8 @@ bool md_util_compute_structures(md_molecule_substructure_data_t* structure_data,
             int idx = fifo_pop(&queue);
             md_array_push(indices, idx, &arena_alloc);
             
-            const int* eb = edge_beg(&edge_data, idx);
-            const int* ee = edge_end(&edge_data, idx);
+            const int* eb = md_index_range_beg(&edge_data, idx);
+            const int* ee = md_index_range_end(&edge_data, idx);
             for (const int* it = eb; it != ee; ++it) {
                 int next = *it;
                 if (depth[next] == 0) {
@@ -1143,9 +1119,11 @@ bool md_util_compute_structures(md_molecule_substructure_data_t* structure_data,
                 }
             }
         }
+
+        sort_arr(indices, (int)md_array_size(indices));
         
         // Here we should have exhausted every atom that is connected to index i.
-        md_molecule_substructure_data_push(structure_data, indices, md_array_size(indices), alloc);
+        md_index_data_push(structure_data, indices, md_array_size(indices), alloc);
     }
     
     md_vm_arena_free(&arena);
@@ -1249,7 +1227,7 @@ void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* 
     *aabb_max = (vec3_t){x_max, y_max, z_max};
 }
 
-void md_util_compute_aabb_periodic_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count, uint64_t stride, vec3_t pbc_ext) {
+void md_util_compute_aabb_ortho_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count, uint64_t stride, vec3_t pbc_ext) {
     md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
     md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
     md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
@@ -1354,15 +1332,47 @@ vec3_t md_util_compute_com_soa(const float* x, const float* y, const float* z, c
     vec4_t sum_xyzw = {0,0,0,0};
     if (w) {
         for (int64_t i = 0; i < count; ++i) {
-            vec4_t xyz1 = {x[i], y[i], z[i], 1.0f};
+            const vec4_t xyz1 = vec4_set(x[i], y[i], z[i], 1.0f);
             sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, w[i]));
         }
     } else {
         for (int64_t i = 0; i < count; ++i) {
-            vec4_t xyz0 = {x[i], y[i], z[i], 0};
+            const vec4_t xyz0 = vec4_set(x[i], y[i], z[i], 0);
             sum_xyzw = vec4_add(sum_xyzw, xyz0);
         }
         sum_xyzw.w = (float)count;
+    }
+
+    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
+}
+
+vec3_t md_util_compute_com_indexed_soa(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count) {
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
+    ASSERT(indices);
+    ASSERT(index_count >= 0);
+
+    if (index_count == 0) {
+        return (vec3_t) {0,0,0};
+    }
+
+    // Use vec4 here so we can utilize SSE vectorization if applicable
+    // @TODO: Vectorize with full register width
+    vec4_t sum_xyzw = {0,0,0,0};
+    if (w) {
+        for (int64_t i = 0; i < index_count; ++i) {
+            const int idx = indices[i];
+            const vec4_t xyz1 = vec4_set(x[idx], y[idx], z[idx], 1.0f);
+            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, w[idx]));
+        }
+    } else {
+        for (int64_t i = 0; i < index_count; ++i) {
+            const int idx = indices[i];
+            const vec4_t xyz0 = vec4_set(x[idx], y[idx], z[idx], 0);
+            sum_xyzw = vec4_add(sum_xyzw, xyz0);
+        }
+        sum_xyzw.w = (float)index_count;
     }
 
     return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
@@ -1413,7 +1423,7 @@ static inline double compute_com(const float* in_x, const float* in_w, int64_t c
 
 // Love the elegance of using trigonometric functions, unsure of the performance...
 // @TODO: sin, cos and atan2 can and should of course be vectorized.
-vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
+vec3_t md_util_compute_com_ortho(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_xyz);
     ASSERT(count >= 0);
     ASSERT(pbc_ext.x >= 0);
@@ -1432,7 +1442,7 @@ vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
 
-vec3_t md_util_compute_com_periodic_soa(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
+vec3_t md_util_compute_com_ortho_soa(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -1453,8 +1463,50 @@ vec3_t md_util_compute_com_periodic_soa(const float* in_x, const float* in_y, co
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
 
+static inline vec4_t minimum_image(vec4_t x, vec4_t ext, vec4_t inv_ext) {
+    const vec4_t s = vec4_mul(x, inv_ext);
+    const vec4_t dx = vec4_mul(ext, vec4_sub(s, vec4_round(s)));
+    return vec4_blend(dx, x, vec4_cmp_eq(ext, vec4_zero()));
+}
+
+vec3_t md_util_compute_com_ortho_indexed_soa(const float *in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t box) {
+    ASSERT(in_x);
+    ASSERT(in_y);
+    ASSERT(in_z);
+    ASSERT(indices);
+    ASSERT(count >= 0);
+
+    if (count == 0) {
+        return (vec3_t){0, 0, 0};
+    }
+    
+    const vec4_t ext     = vec4_from_vec3(box, 0);
+    const vec4_t inv_ext = vec4_set(box.x ? 1.0f / box.x : 0, box.y ? 1.0f / box.y : 0, box.z ? 1.0f / box.z : 0, 0);
+
+    vec4_t xyzw_acc = {in_x[0], in_y[0], in_z[0], in_w ? in_w[0] : 1};
+
+    if (in_w) {
+        for (int64_t i = 1; i < count; ++i) {
+            const int idx = indices[i];
+            const vec4_t com     = vec4_div_f(xyzw_acc, xyzw_acc.w);
+            const vec4_t xyzw    = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), com, ext);
+            xyzw_acc = vec4_add(xyzw_acc, vec4_mul_f(xyzw, in_w[idx]));
+        }
+    } else {
+        for (int64_t i = 1; i < count; ++i) {
+            const int idx = indices[i];
+            const vec4_t com     = vec4_div_f(xyzw_acc, xyzw_acc.w);
+            const vec4_t xyzw    = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), com, ext);
+            xyzw_acc = vec4_add(xyzw_acc, xyzw);
+        }
+    }
+
+
+    return vec3_from_vec4(vec4_div_f(xyzw_acc, xyzw_acc.w));
+}
+
 /*
-vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
+vec3_t md_util_compute_com_ortho(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_xyz);
 
     float w = in_w ? in_w[0] : 1.0f;
@@ -1483,7 +1535,7 @@ vec3_t md_util_compute_com_periodic(const vec3_t* in_xyz, const float* in_w, int
     return (vec3_t){com_x, com_y, com_z};
 }
 
-vec3_t md_util_compute_com_periodic_soa(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
+vec3_t md_util_compute_com_ortho_soa(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
     float w = in_w ? in_w[0] : 1.0f;
     float sum_x = in_x[0] * w;
     float sum_y = in_y[0] * w;
@@ -1551,7 +1603,229 @@ vec3_t md_util_compute_unit_cell_extent(mat3_t M) {
     return ext;
 }
 
-bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
+bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box_ext) {
+    if (!x || !y || !z) {
+        MD_LOG_ERROR("Missing required input: x,y or z");
+        return false;
+    }
+
+    if (count < 0) {
+        MD_LOG_ERROR("Invalid count");
+        return false;
+    }
+
+    if (box_ext.x < 0 || box_ext.y < 0 || box_ext.z < 0) {
+        MD_LOG_ERROR("Invalid PBC extent: One or more components were negative.");
+        return false;
+    }
+
+    if (vec3_equal(box_ext, vec3_zero())) {
+        MD_LOG_ERROR("PBC extent is zero, unable to apply it!");
+        return false;
+    }
+
+    const vec4_t ext = vec4_from_vec3(box_ext, 0);
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+    for (int64_t i = 0; i < count; ++i) {
+        vec4_t pos = {x[i], y[i], z[i], 0};
+        pos = vec4_deperiodize(pos, ref, ext);
+        x[i] = pos.x;
+        y[i] = pos.y;
+        z[i] = pos.z;
+    }
+
+    return true;
+}
+
+bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* structures, vec3_t box_ext) {
+    if (!x || !y || !z) {
+        MD_LOG_ERROR("Missing required input: x,y or z");
+        return false;
+    }
+
+    if (!structures) {
+        MD_LOG_ERROR("Missing required input: structures");
+        return false;
+    }
+
+    if (box_ext.x < 0 || box_ext.y < 0 || box_ext.z < 0) {
+        MD_LOG_ERROR("Invalid box extent: One or more components were negative.");
+        return false;
+    }
+
+    if (vec3_equal(box_ext, vec3_zero())) {
+        MD_LOG_ERROR("Box extent is zero.");
+        return false;
+    }
+
+    const vec4_t ext = vec4_from_vec3(box_ext, 0);
+    
+    const int64_t num_structures = md_index_data_count(structures);
+    for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
+        const int* indices = md_index_range_beg(structures, s_idx);
+        const int count = (int)md_index_range_size(structures, s_idx);
+        
+        // Indices are sorted with respect to covalent bond 'depth' from the first atom
+        // This means we can use the inherent order of indices to iterate and unwrap.
+        int idx = indices[0];
+        vec4_t ref_pos = {x[idx], y[idx], z[idx], 0};
+        for (int i = 1; i < count; ++i) {
+            idx = indices[i];
+            const vec4_t pos = vec4_deperiodize((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
+            x[idx] = pos.x;
+            y[idx] = pos.y;
+            z[idx] = pos.z;
+            ref_pos = pos;
+        }
+    }
+    return true;
+}
+
+bool md_util_deperiodize_system_ortho(float* x, float* y, float* z, const float* w, int64_t count, const md_index_data_t* structures, vec3_t box) {
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
+    
+    md_util_pbc_ortho(x,y,z, count, box);
+    if (structures) {
+        md_util_unwrap_ortho(x,y,z, structures, box);
+    
+        // Place any defined covalent structure such that its center of mass is within the correct periodic image
+        const vec4_t ext = vec4_from_vec3(box, 0);
+        const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+        const int64_t num_structures = md_index_data_count(structures);
+        for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
+            const int32_t* indices = md_index_range_beg(structures, s_idx);
+            const int64_t num_indices = md_index_range_size(structures, s_idx);
+
+            const vec4_t com = vec4_from_vec3(md_util_compute_com_indexed_soa(x, y, z, w, indices, num_indices), 0);
+            const vec4_t pbc_com = vec4_deperiodize(com, ref, ext);
+            const vec4_t delta = vec4_sub(pbc_com, com);
+            if (vec4_dot(delta, delta) > 0.001f) {
+                for (int64_t i = 0; i < num_indices; ++i) {
+                    const int32_t j = indices[i];
+                    x[j] += delta.x;
+                    y[j] += delta.y;
+                    z[j] += delta.z;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+#if 0
+bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_bond_data_t* covalent, vec3_t pbc_ext) {
+    if (!x || !y || !z) {
+        MD_LOG_ERROR("Missing required input: x,y or z");
+        return false;
+    }
+
+    if (!covalent) {
+        MD_LOG_ERROR("Missing required input: covalent_data");
+        return false;
+    }
+
+    if (pbc_ext.x < 0 || pbc_ext.y < 0 || pbc_ext.z < 0) {
+        MD_LOG_ERROR("Invalid PBC extent: One or more components were negative.");
+        return false;
+    }
+
+    if (vec3_equal(pbc_ext, vec3_zero())) {
+        MD_LOG_ERROR("PBC extent is zero, unable to apply it!");
+        return false;
+    }
+
+    const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
+
+    fifo_t queue = fifo_create(64, default_temp_allocator);
+    md_array(int)  pred = 0;
+
+    md_array(vec3_t) xyz = 0;
+    const int64_t num_structures = md_index_data_count(&covalent->structures);
+    for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
+        md_array_shrink(xyz, 0);
+        md_array_shrink(pred, 0);
+        
+        const md_atom_idx_t* beg_idx = md_index_range_beg(&covalent->structures, s_idx);
+        const md_atom_idx_t* end_idx = md_index_range_end(&covalent->structures, s_idx);
+        
+        for (const md_atom_idx_t* it = beg_idx; it != end_idx; ++it) {
+            int i = *it;
+            const vec3_t pos = {x[i], y[i], z[i]};
+            md_array_push(xyz, pos, default_temp_allocator);
+            md_array_push(pred, -1, default_temp_allocator);
+        }
+        
+        //const vec4_t com = vec4_from_vec3(md_util_compute_com_ortho(xyz, NULL, md_array_size(xyz), pbc_ext), 0);
+        const vec4_t com = vec4_mul_f(ext, 0.5f);
+        
+        /*
+        for (int64_t i = 0; i < md_array_size(xyz); ++i) {
+            const vec4_t pos = vec4_from_vec3(xyz[i], 0);
+            const vec4_t dp  = vec4_deperiodize(pos, ref, vec4_from_vec3(pbc_ext, 0));
+            const int idx = beg_idx[i];
+            x[idx] = dp.x;
+            y[idx] = dp.y;
+            z[idx] = dp.z;
+        }
+        */
+
+        // NOTE: This is some black box magic, dark voodoo shit.
+        // The problem is: Even if we have a valid center of mass of our structure, and we would like to deperiodize the atoms within the structure
+        // such that every atom reside within the same period as the center of mass, it is not possible if the structure has an extent which is more than
+        // half a period. In such case, the _deperiodize function will fail and place the atom in the next period, since that was closer to the reference (com).
+        // Since we know that every atom within this structure is connected by covalent bonds, we can pick the atom which is the closest to the center of mass.
+        // Then perform a breadth-first traversal which propagates outwards from this reference atom. When iterating, we deperiodize the atoms with respect to its
+        // Predecessor. This should enforce that the entire structure resides within the same period (Even if it was split into periods before).
+
+        // Find index of atom which is closest to com
+        int ref_idx = -1;
+        float ref_dist = FLT_MAX;
+        for (int i = 0; i < md_array_size(xyz); ++i) {
+            const float d2 = vec4_distance_squared(com, vec4_from_vec3(xyz[i], 0));
+            if (d2 < ref_dist) {
+                ref_dist = d2;
+                ref_idx = i;
+            }
+        }
+
+        fifo_clear(&queue);
+        fifo_push(&queue, ref_idx);
+        pred[ref_idx] = ref_idx;
+        
+        while (!fifo_empty(&queue)) {
+            const int idx = fifo_pop(&queue);
+
+            const vec4_t ref = vec4_from_vec3(xyz[idx], 0);
+
+            const int* n_beg = md_index_range_beg(&covalent->connectivity, idx);
+            const int* n_end = md_index_range_end(&covalent->connectivity, idx);
+            for (const int* it = n_beg; it < n_end; ++it) {
+                const int neighbor_idx = *it;
+                if (pred[neighbor_idx] != -1) continue;
+                pred[neighbor_idx] = idx;
+
+                const vec4_t p = vec4_from_vec3(xyz[neighbor_idx], 0);
+                const vec4_t dp = vec4_deperiodize(p, ref, ext);
+                const int i = beg_idx[idx];
+                x[i] = dp.x;
+                y[i] = dp.y;
+                z[i] = dp.z;
+                
+                fifo_push(&queue, neighbor_idx);
+            }
+        }        
+    }
+    
+    return true;
+}
+#endif
+
+/*
+bool md_util_pbc_ortho(md_molecule_t* mol, vec3_t pbc_ext) {
     if (!mol) return false;
 
     vec3_t* residue_com = 0;
@@ -1562,7 +1836,7 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
     for (int64_t i = 0; i < mol->residue.count; ++i) {
         md_range_t atom_range = mol->residue.atom_range[i];
 
-        vec3_t com = md_util_compute_com_periodic_soa(
+        vec3_t com = md_util_compute_com_ortho_soa(
             mol->atom.x + atom_range.beg,
             mol->atom.y + atom_range.beg,
             mol->atom.z + atom_range.beg,
@@ -1592,7 +1866,7 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
 
     for (int64_t j = 0; j < mol->chain.count; ++j) {
         md_range_t res_range = mol->chain.residue_range[j];
-        vec3_t chain_com = md_util_compute_com_periodic(residue_com + res_range.beg, 0, res_range.end - res_range.beg, pbc_ext);
+        vec3_t chain_com = md_util_compute_com_ortho(residue_com + res_range.beg, 0, res_range.end - res_range.beg, pbc_ext);
 
         {
             vec3_t dp;
@@ -1693,7 +1967,7 @@ bool md_util_apply_pbc(md_molecule_t* mol, vec3_t pbc_ext) {
     }
     return true;
 }
-
+*/
 
 mat3_t md_util_compute_optimal_rotation(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count) {
     if (count < 1) {
@@ -1995,35 +2269,25 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
         }
     }
    
-    if (flags & MD_UTIL_POSTPROCESS_COVALENT_BONDS_BIT) {
-        if (mol->covalent_bond.count == 0) {
+    if (flags & MD_UTIL_POSTPROCESS_COVALENT_BIT) {
+        if (mol->covalent.count == 0) {
             const vec3_t pbc_ext = md_util_compute_unit_cell_extent(mol->coord_frame);
-            md_util_compute_covalent_bonds(&mol->covalent_bond, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, alloc);
+            md_util_compute_covalent_bonds(&mol->covalent, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, alloc);
+            md_util_compute_structures(&mol->covalent.structures, mol->atom.count, mol->covalent.bond, mol->covalent.count, alloc);
+            md_util_compute_rings(&mol->covalent.rings, mol->atom.count, mol->covalent.bond, mol->covalent.count, alloc);
         }
     }
 
     if (flags & MD_UTIL_POSTPROCESS_VALENCE_BIT) {
-        if (mol->atom.valence == 0 && mol->covalent_bond.count > 0) {
+        if (mol->atom.valence == 0 && mol->covalent.count > 0) {
             md_array_resize(mol->atom.valence, mol->atom.count, alloc);
-            md_util_compute_atom_valence(mol->atom.valence, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count);    
-        }
-    }
-
-    if (flags & MD_UTIL_POSTPROCESS_SUBSTRUCTURE_BIT) {
-        if (mol->covalent_bond.count > 0) {
-            md_util_compute_structures(&mol->structure, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count, alloc);
-        }
-    }
-    
-    if (flags & MD_UTIL_POSTPROCESS_RING_BIT) {
-        if (mol->covalent_bond.count > 0) {
-            md_util_compute_rings(&mol->ring, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count, alloc);
+            md_util_compute_atom_valence(mol->atom.valence, mol->atom.count, mol->covalent.bond, mol->covalent.count);    
         }
     }
 
     if (flags & MD_UTIL_POSTPROCESS_CHAINS_BIT) {
-        if (mol->chain.count == 0 && mol->residue.count > 0 && mol->covalent_bond.count > 0) {
-            md_util_compute_chain_data(&mol->chain, mol->atom.residue_idx, mol->atom.count, mol->covalent_bond.bond, mol->covalent_bond.count, alloc);
+        if (mol->chain.count == 0 && mol->residue.count > 0 && mol->covalent.count > 0) {
+            md_util_compute_chain_data(&mol->chain, mol->atom.residue_idx, mol->atom.count, mol->covalent.bond, mol->covalent.count, alloc);
 
             if (mol->chain.count) {
                 md_array_resize(mol->atom.chain_idx, mol->atom.count, alloc);
@@ -2039,62 +2303,6 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
                     }
                 }
             }
-            /*
-            // Compute artificial chains and label them A - Z
-            if (mol->residue.complete_covalent_bond_range) {
-                // Identify connected residues (through covalent bonds) if more than one, we store it as a chain
-                md_range_t res_range = { 0, 1 };
-                for (int64_t res_idx = 0; res_idx < mol->residue.count - 1; ++res_idx) {
-                    if (ranges_overlap(mol->residue.complete_covalent_bond_range[res_idx],
-                        mol->residue.complete_covalent_bond_range[res_idx + 1])) {
-                        res_range.end += 1;
-                    }
-                    else {
-                        if (res_range.end - res_range.beg > 1) {
-                            md_array_push(mol->chain.residue_range, res_range, alloc);
-                        }
-                        res_range.beg = (int32_t)res_idx + 1;
-                        res_range.end = (int32_t)res_idx + 2;
-                    }
-                }
-
-                if (res_range.beg == 0 && res_range.end > 1) {
-                    md_array_push(mol->chain.residue_range, res_range, alloc);
-                }
-
-                mol->chain.count = md_array_size(mol->chain.residue_range);
-                if (mol->chain.count) {
-                    const char* id_arr[] = { "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z" };
-
-                    // Add labels
-                    md_array_resize(mol->chain.id, mol->chain.count, alloc);
-                    for (int64_t i = 0; i < mol->chain.count; ++i) {
-                        str_t id = { id_arr[i % ARRAY_SIZE(id_arr)], 1 };
-                        mol->chain.id[i] = make_label(id);
-                    }
-
-                    // Add atom ranges
-                    md_array_resize(mol->chain.atom_range, mol->chain.count, alloc);
-                    for (int64_t i = 0; i < mol->chain.count; ++i) {
-                        md_range_t range = mol->chain.residue_range[i];
-                        mol->chain.atom_range[i].beg = mol->residue.atom_range[range.beg].beg;
-                        mol->chain.atom_range[i].end = mol->residue.atom_range[range.end - 1].end;
-                    }
-
-                    // Set atom chain indices
-                    md_array_resize(mol->atom.chain_idx, mol->atom.count, alloc);
-                    for (int64_t i = 0; i < mol->atom.count; ++i) {
-                        mol->atom.chain_idx[i] = -1;
-                    }
-
-                    for (int64_t ci = 0; ci < mol->chain.count; ++ci) {
-                        for (int64_t ai = (int64_t)mol->chain.atom_range[ci].beg; ai < (int64_t)mol->chain.atom_range[ci].end; ++ai) {
-                            mol->atom.chain_idx[ai] = (md_chain_idx_t)ci;
-                        }
-                    }
-                }
-            }
-            */
         }
     }
 
