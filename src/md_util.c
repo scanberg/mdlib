@@ -628,7 +628,7 @@ static inline bool covelent_bond_heuristic(float dist_squared, md_element_t elem
     return (d_min * d_min) < dist_squared && dist_squared < (d_max * d_max);
 }
 
-bool md_util_compute_covalent_bonds(md_bond_data_t* bond_data, const float* x, const float* y, const float* z, const md_element_t* element, const md_residue_idx_t* res_idx, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc) {
+bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* bond_data, const float* x, const float* y, const float* z, const md_element_t* element, const md_residue_idx_t* res_idx, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
     if (!bond_data) {
@@ -2272,7 +2272,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     if (flags & MD_UTIL_POSTPROCESS_COVALENT_BIT) {
         if (mol->covalent.count == 0) {
             const vec3_t pbc_ext = md_util_compute_unit_cell_extent(mol->coord_frame);
-            md_util_compute_covalent_bonds(&mol->covalent, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, alloc);
+            md_util_compute_covalent_bonds_and_connectivity(&mol->covalent, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, alloc);
             md_util_compute_structures(&mol->covalent.structures, mol->atom.count, mol->covalent.bond, mol->covalent.count, alloc);
             md_util_compute_rings(&mol->covalent.rings, mol->atom.count, mol->covalent.bond, mol->covalent.count, alloc);
         }

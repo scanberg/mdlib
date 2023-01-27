@@ -79,10 +79,10 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const struct md_molecule_t* mol);
 
-// Computes the covalent bonds based from a heuristic approcah, uses the covalent radius (derived from element) to determine the appropriate bond
+// Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_residue_idx is an optional parameter and if supplied, it will limit the covalent bonds to only those within the same or adjacent residues.
 // Returns true if succesfull or false upon error.
-bool md_util_compute_covalent_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, const md_residue_idx_t* atom_residue_idx, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, const md_residue_idx_t* atom_residue_idx, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
 // Computes chains from connected residues
