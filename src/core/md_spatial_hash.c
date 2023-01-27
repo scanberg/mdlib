@@ -14,20 +14,11 @@
 #define CELL_EXT (6.0f)
 #define INV_CELL_EXT (1.0f / CELL_EXT)
 #define SQRT_CELL_EXT (8.4852813742385702f)
+#define LENGTH_BITS 10
 
-static inline vec3_t unpack_unorm_vec3(uint32_t p) {
-    float x = ((p >>  0) & 0x3FF) / 1023.0f;
-    float y = ((p >> 10) & 0x3FF) / 1023.0f;
-    float z = ((p >> 20) & 0x3FF) / 1023.0f;
-    return (vec3_t) {x,y,z};
-}
+#define SCL (CELL_EXT / 1023.f)
 
-static inline uint32_t pack_unorm_vec3(vec3_t v) {
-    uint32_t x = (uint32_t)(v.x * 1023.0f + 0.5f);
-    uint32_t y = (uint32_t)(v.y * 1023.0f + 0.5f);
-    uint32_t z = (uint32_t)(v.z * 1023.0f + 0.5f);
-    return (z << 20) | (y << 10) | x;
-}
+#define UNPACK_CELL_COORD(p) vec4_set( ((p >>  0) & 0x3FF) * SCL, ((p >> 10) & 0x3FF) * SCL, ((p >> 20) & 0x3FF) * SCL, 0)
 
 bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec3_t pbc_ext, md_allocator_i* alloc) {
     ASSERT(hash); 
@@ -47,7 +38,7 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
     vec4_t aabb_min = {0};
     vec4_t aabb_max = {0};
-    md_util_compute_aabb_periodic_xyz((vec3_t*)(&aabb_min), (vec3_t*)(&aabb_max), in_x, in_y, in_z, count, stride, pbc_ext);
+    md_util_compute_aabb_ortho_xyz((vec3_t*)(&aabb_min), (vec3_t*)(&aabb_max), in_x, in_y, in_z, count, stride, pbc_ext);
 
     const int32_t cell_min[3] = {
         (int32_t)floorf(aabb_min.x * INV_CELL_EXT),
@@ -256,23 +247,19 @@ static inline bool query_pos_rad(const md_spatial_hash_t* hash, vec3_t position,
             cc_min.y = (cell_min[1] + cc[1]) * CELL_EXT;
             for (cc[0] = cell_beg[0]; cc[0] < cell_end[0]; ++cc[0]) {
                 cc_min.x = (cell_min[0] + cc[0]) * CELL_EXT;
-                //vec3_t cc_mid = vec3_add_f(cc_min, 0.5f * CELL_EXT);
-                // Check the distance from cell centrum to the point, for early discard of entire cell
-                //if (vec3_distance_squared(cc_mid, xyz) < cell_rad2) {
-                    uint32_t cell_idx = cc[2] * cell_dim[1] * cell_dim[0] + cc[1] * cell_dim[0] + cc[0];
-                    uint32_t cell_data = hash->cells[cell_idx];
-                    uint32_t cell_offset = cell_data >> 10;
-                    uint32_t cell_length = cell_data & 1023;
-                    for (uint32_t i = cell_offset; i < cell_offset + cell_length; ++i) {
-                        vec4_t p = vec4_add(cc_min, vec4_mul_f(vec4_from_vec3(unpack_unorm_vec3(hash->coords[i]), 0), CELL_EXT));
-                        const float d2 = vec4_distance_squared(p, pos);
-                        if (d2 < rad2) {
-                            if (!iter(hash->indices[i], vec3_from_vec4(p), user_param)) {
-                                return false;
-                            }
+                const uint32_t cell_idx = cc[2] * cell_dim[1] * cell_dim[0] + cc[1] * cell_dim[0] + cc[0];
+                const uint32_t cell_data = hash->cells[cell_idx];
+                const uint32_t cell_offset = cell_data >> 10;
+                const uint32_t cell_length = cell_data & 1023;
+                for (uint32_t i = cell_offset; i < cell_offset + cell_length; ++i) {
+                    const vec4_t p = vec4_add(cc_min, UNPACK_CELL_COORD(hash->coords[i]));
+                    const float d2 = vec4_distance_squared(p, pos);
+                    if (d2 < rad2) {
+                        if (!iter(hash->indices[i], vec3_from_vec4(p), user_param)) {
+                            return false;
                         }
                     }
-                //}
+                }
             }
         }
     }
@@ -364,7 +351,7 @@ static inline bool query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
                 uint32_t cell_offset = cell_data >> 10;
                 uint32_t cell_length = cell_data & 1023;
                 for (uint32_t i = cell_offset; i < cell_offset + cell_length; ++i) {
-                    vec4_t p = vec4_add(cc_min, vec4_mul_f(vec4_from_vec3(unpack_unorm_vec3(hash->coords[i]), 0), CELL_EXT));
+                    const vec4_t p = vec4_add(cc_min, UNPACK_CELL_COORD(hash->coords[i]));
                     const float d2 = vec4_periodic_distance_squared(p, pos, pbc_ext);
                     if (d2 < rad2) {
                         if (!iter(hash->indices[i], vec3_from_vec4(p), user_param)) {
