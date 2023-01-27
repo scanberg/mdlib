@@ -84,11 +84,10 @@ uint64_t md_bitfield_scan_reverse(const md_bitfield_t* bf, uint64_t beg, uint64_
 // Copy the contents of the bitfield into an external buffer
 //bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_bitfield_t* src);
 
-// Will create an md_array of uint32_t containing the indices of all set bits.
-// The md_array is allocated using the supplied allocator.
-// User is responsible for freeing the memory of the returned array (md_array_free).
-uint32_t* md_bitfield_extract_indices_u32(const md_bitfield_t* bf, struct md_allocator_i* alloc);
-uint32_t* md_bitfield_extract_bits_u32(const md_bitfield_t* bf, struct md_allocator_i* alloc);
+
+// Writes the indices of all bits set in the bitfield to the given buffer.
+// The buffer must be large enough to hold all indices and can be queried by md_bitfield_popcount
+void md_bitfield_extract_indices(int32_t* index_buffer, const md_bitfield_t* bf);
 
 // Returns the maximum serialization size in bytes of a bitfield
 uint64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf);

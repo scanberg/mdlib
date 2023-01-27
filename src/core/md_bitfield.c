@@ -698,23 +698,19 @@ bool md_bitfield_extract_u64(uint64_t* dst_ptr, uint64_t num_bits, const md_bitf
     return true;
 }
 
-uint32_t* md_bitfield_extract_indices_u32(const md_bitfield_t* bf, md_allocator_i* alloc) {
+void md_bitfield_extract_indices(int32_t* buffer, const md_bitfield_t* bf) {
+    ASSERT(buffer);
     ASSERT(bf);
-    ASSERT(alloc);
     ASSERT(md_bitfield_validate(bf));
-
-    uint32_t* indices = 0;
 
     int64_t beg_bit = bf->beg_bit;
     int64_t end_bit = bf->end_bit;
     while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
-        uint32_t bit_idx = (uint32_t)(beg_bit - 1);
-        md_array_push(indices, bit_idx, alloc);
+        *buffer++ = (int32_t)(beg_bit - 1);
     }
-
-    return indices;
 }
 
+/*
 uint32_t* md_bitfield_extract_bits_u32(const md_bitfield_t* bf, struct md_allocator_i* alloc) {
     ASSERT(bf);
     ASSERT(alloc);
@@ -734,6 +730,7 @@ uint32_t* md_bitfield_extract_bits_u32(const md_bitfield_t* bf, struct md_alloca
 
     return bits;
 }
+*/
 
 #define BLOCK_IDX_FLAG_ALL_SET (0x8000)
 
