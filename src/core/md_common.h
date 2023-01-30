@@ -188,21 +188,26 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 #ifdef  __cplusplus
 extern "C" void * __cdecl memcpy(void*, const void*, unsigned long long);
 extern "C" void * __cdecl memset(void*, int, unsigned long long);
+extern "C" void * __cdecl memmove(void*, const void*, unsigned long long);
 
 #else
 void * __cdecl memcpy(void* dst, const void* src, unsigned long long size);
 void * __cdecl memset(void* dst, int val, unsigned long long size);
+void * __cdecl memmove(void* dst, const void* src, unsigned long long size);
 
 #endif
 #pragma intrinsic(memcpy)
 #pragma intrinsic(memset)
+#pragma intrinsic(memmove)
 
 #define MEMCPY memcpy
 #define MEMSET memset
+#define MEMMOVE memmove
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 #define MEMCPY __builtin_memcpy
 #define MEMSET __builtin_memset
+#define MEMMOVE __buildint_memmove
 
 #endif
 
