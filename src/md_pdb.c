@@ -436,7 +436,7 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
 
             // Copy remainder to beginning of buffer
             buf_offset = buf_size - str.len;
-            MEMCPY(buf, str.ptr + str.len, buf_offset);
+            MEMMOVE(buf, str.ptr + str.len, buf_offset);
             file_offset += buf_size - buf_offset;
         }
 done:
