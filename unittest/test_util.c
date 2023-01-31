@@ -100,25 +100,6 @@ UTEST(util, com) {
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
     }
-
-    {
-
-        // WILL FAIL HERE
-        /*
-        const vec3_t pos[] = {
-            {4,0,0},
-            {1,0,0},
-            {3,0,0},
-            {2,0,0},
-        };
-        const vec3_t pbc_ext = { 5,0,0 };
-
-        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
-        EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
-        EXPECT_EQ(0, com.y);
-        EXPECT_EQ(0, com.z);
-        */
-    }
     
     {
         const vec3_t pos[] = {
@@ -130,6 +111,20 @@ UTEST(util, com) {
         vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
 		com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
+        EXPECT_EQ(0, com.y);
+        EXPECT_EQ(0, com.z);
+    }
+
+    {
+        const vec3_t pos[] = {
+            {0,0,0},
+            {4,0,0},
+        };
+        const vec3_t pbc_ext = { 5,0,0 };
+
+        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
+        com = vec3_deperiodize(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
+        EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
     }
@@ -152,7 +147,6 @@ UTEST(util, com) {
             {2,0,0},
             {3,0,0},
         };
-
 
         const vec3_t pos2[] = {
             {-1,0,0},
