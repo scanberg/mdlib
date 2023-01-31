@@ -207,7 +207,7 @@ void * __cdecl memmove(void* dst, const void* src, unsigned long long size);
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 #define MEMCPY __builtin_memcpy
 #define MEMSET __builtin_memset
-#define MEMMOVE __buildint_memmove
+#define MEMMOVE __builtin_memmove
 
 #endif
 
