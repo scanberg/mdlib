@@ -53,11 +53,11 @@
 #define RELEASE 0
 
 #ifdef NDEBUG
-#undef  RELEASE
-#define RELEASE 1
+#   undef  RELEASE
+#   define RELEASE 1
 #else
-#undef  DEBUG
-#define DEBUG 1
+#   undef  DEBUG
+#   define DEBUG 1
 #endif // NDEBUG
 
 #ifndef ARRAY_SIZE
@@ -168,7 +168,7 @@ extern "C" void md_assert_impl(const char* file, int line, const char* func_name
 void md_assert_impl(const char* file, int line, const char* func_name, const char* expr);
 #   endif
 
-#   if DEBUG
+#   if DEBUG || __FORCE_ASSERTIONS__
 #       define ASSERT(__e) \
             ((__e) \
                 ? (void)0 \
@@ -200,8 +200,8 @@ void * __cdecl memmove(void* dst, const void* src, unsigned long long size);
 #pragma intrinsic(memset)
 #pragma intrinsic(memmove)
 
-#define MEMCPY memcpy
-#define MEMSET memset
+#define MEMCPY  memcpy
+#define MEMSET  memset
 #define MEMMOVE memmove
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG

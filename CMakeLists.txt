@@ -18,6 +18,7 @@ option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
 option(MD_USE_RELATIVE_RESOURCE_PATH "Use relative path for resources, this will copy the relevant files into the binary folder upon building" ON)
 option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
 option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
+option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 
 if(MD_UNITTEST)
@@ -43,10 +44,17 @@ if (${MD_ENABLE_FMA})
     set(MD_DEFINES ${MD_DEFINES} __FMA__)
 endif()
 
+if (MD_FORCE_ASSERTIONS)
+    set(MD_DEFINES ${MD_DEFINES} __FORCE_ASSERTIONS__=1)
+else()
+    set(MD_DEFINES ${MD_DEFINES} __FORCE_ASSERTIONS__=0)    
+endif()
+
 set(MD_FLAGS_EXT)
 set(MD_FLAGS)
 set(MD_FLAGS_REL)
 set(MD_FLAGS_DEB)
+
 if (MD_USE_RELATIVE_RESOURCE_PATH)
   set(MD_SHADER_DIR "shaders")
   set(MD_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
@@ -133,7 +141,8 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       "/wd26451"
       "/MP"
       "/GR-"
-      "/Oi")
+      "/Oi"
+      "/fp:except-")
 
     if (MD_ENABLE_AVX2)
         set(MD_FLAGS ${MD_FLAGS} "/arch:AVX2" "/fp:fast")
