@@ -144,13 +144,13 @@ vec3_t md_util_compute_com_indexed_soa(const float *x, const float* y, const flo
 // count:   Length of all arrays
 // box:     Extent of periodic boundary box (optional per component): Set to zero if pbc does not apply in that dimension
 vec3_t md_util_compute_com_ortho(const vec3_t* xyz, const float* w, int64_t count, vec3_t box);
-vec3_t md_util_compute_com_ortho_soa(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t box);
+vec3_t md_util_compute_com_soa_ortho(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t box);
 
 // Computes the center of mass for a set of points with a given weight given in periodic boundary conditions
 // The indices used to access the arrays are given in the indices array
 // indices:     Array of indices into the arrays (x,y,z,w)
 // index_count: Length of indices array
-vec3_t md_util_compute_com_ortho_indexed_soa(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count, vec3_t box);
+vec3_t md_util_compute_com_indexed_soa_ortho(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count, vec3_t box);
 
 
 // Computes the optimal rotation between two configurations of a set of points with corresponding weights weights

@@ -1464,7 +1464,7 @@ vec3_t md_util_compute_com_ortho(const vec3_t* in_xyz, const float* in_w, int64_
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
 
-vec3_t md_util_compute_com_ortho_soa(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
+vec3_t md_util_compute_com_soa_ortho(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -1485,7 +1485,7 @@ vec3_t md_util_compute_com_ortho_soa(const float* in_x, const float* in_y, const
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
 
-vec3_t md_util_compute_com_ortho_indexed_soa(const float *in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t box) {
+vec3_t md_util_compute_com_indexed_soa_ortho(const float *in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t box) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
