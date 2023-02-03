@@ -243,11 +243,14 @@ static inline int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str) {
 }
 
 // Extracts token with whitespace as delimiter
-bool extract_next_token(str_t* tok, str_t* str);
-// Extracts token with specific delimiter
-bool extract_next_token_delim(str_t* tok, str_t* str, char delim);
+bool extract_token(str_t* tok, str_t* str);
 
+// Extract multiple tokens with whitespace as delimiter
 int64_t extract_tokens(str_t token_arr[], int64_t token_cap, str_t* str);
+
+// Extracts token with specific delimiter
+bool extract_token_delim(str_t* tok, str_t* str, char delim);
+
 
 #ifdef __cplusplus
 }
