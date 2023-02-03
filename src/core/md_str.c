@@ -262,7 +262,7 @@ int64_t parse_int(str_t str) {
         sign = -1;
     }
     while (c != end && is_digit(*c)) {
-        val = val * 10 + ((int)(*c) - '0');
+        val = val * 10 + ((int64_t)(*c) - (int64_t)'0');
         ++c;
     }
     return sign * val;
@@ -323,7 +323,7 @@ str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
     va_list args;
 
     va_start(args, format);
-    int len = vsnprintf(NULL, 0, format, args);
+    int64_t len = vsnprintf(NULL, 0, format, args);
     va_end(args);
 
     char* buf = md_alloc(alloc, len + 1);
@@ -408,7 +408,7 @@ str_t extract_path_without_file(str_t path) {
 bool extract_next_token(str_t* tok, str_t* str) {
     ASSERT(tok);
     ASSERT(str);
-    if (!str->ptr || str->len == 0) return false;
+    if (str_empty(*str)) return false;
 
     const char* end = str->ptr + str->len;
     const char* c = str->ptr;
@@ -425,6 +425,18 @@ bool extract_next_token(str_t* tok, str_t* str) {
     str->len = end - str->ptr;
 
     return true;
+}
+
+int64_t extract_tokens(str_t token_arr[], int64_t token_cap, str_t* str) {
+    ASSERT(token_arr);
+    ASSERT(token_cap >= 0);
+    ASSERT(str);
+    
+    int64_t num_tokens = 0;
+    while (num_tokens < token_cap && extract_next_token(&token_arr[num_tokens], str)) {
+        num_tokens += 1;
+    }
+    return num_tokens;
 }
 
 bool extract_next_token_delim(str_t* tok, str_t* str, char delim) {

@@ -230,10 +230,24 @@ static inline void convert_to_upper(char* str, int64_t len) {
     }
 }
 
+// Copies the contents of a str_t into a char buffer and ensures zero termination
+// Returns the number of characters written (excluding the zero termination character)
+static inline int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str) {
+    ASSERT(buf);
+    if (cap == 0) return 0;
+    if (str_empty(str)) return 0;
+    const int64_t len = CLAMP(str.len, 0, cap - 1);
+    MEMCPY(buf, str.ptr, (size_t)len);
+    buf[len] = '\0';
+    return len;
+}
+
 // Extracts token with whitespace as delimiter
 bool extract_next_token(str_t* tok, str_t* str);
 // Extracts token with specific delimiter
 bool extract_next_token_delim(str_t* tok, str_t* str, char delim);
+
+int64_t extract_tokens(str_t token_arr[], int64_t token_cap, str_t* str);
 
 #ifdef __cplusplus
 }

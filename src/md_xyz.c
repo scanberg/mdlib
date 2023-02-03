@@ -21,31 +21,14 @@ extern "C" {
 #define MD_XYZ_TRAJ_MAGIC 0x2312ad7b78a9bc78
 
 enum {
-    XYZ_ELEMENT_SYMBOL  = 1,
-    XYZ_ATOMIC_NUMBER   = 2,
-    XYZ_TINKER          = 4,
-    XYZ_TINKER_ARC      = 8,
+    XYZ_TINKER          = 1,
+    XYZ_ARC             = 2,
 };
 
 typedef struct xyz_span_t {
     int beg;
     int end;
 } xyz_span_t;
-
-typedef struct xyz_format_t {
-    uint32_t flags;
-    xyz_span_t element;
-    xyz_span_t x;
-    xyz_span_t y;
-    xyz_span_t z;
-    xyz_span_t atom_index;
-    xyz_span_t atom_type;
-
-    // Header info
-    xyz_span_t coord_count;
-    xyz_span_t cell_ext[3];
-    xyz_span_t cell_angle[3];
-} xyz_format_t;
 
 // The opaque blob
 typedef struct xyz_molecule_t {
@@ -61,7 +44,7 @@ typedef struct xyz_trajectory_t {
     md_trajectory_header_t header;
     md_allocator_i* allocator;
     md_mutex_t mutex;
-    xyz_format_t format;
+    uint32_t flags;
 } xyz_trajectory_t;
 
 // We massage the beg and end indices here to correspond the xyz specification
@@ -117,8 +100,8 @@ static inline bool is_string(str_t str) {
     return true;
 }
 
-static inline bool extract_format(xyz_format_t* format, str_t str) {
-    ASSERT(format);
+static inline bool extract_flags(uint32_t* flags, str_t str) {
+    ASSERT(flags);
     if (str_empty(str)) return false;
 
     // Extract first three lines
@@ -126,9 +109,6 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
     str_extract_line(&lines[0], &str);
     str_extract_line(&lines[1], &str);
     str_extract_line(&lines[2], &str);
-
-#define BEG(x) (int32_t)(x.ptr - base)
-#define END(x) (int32_t)(x.ptr - base + x.len)
 
     {
         // Test if first line has an unsigned integer as first token (Should be universally applicable to all XYZ + ARC formats
@@ -138,230 +118,167 @@ static inline bool extract_format(xyz_format_t* format, str_t str) {
             MD_LOG_ERROR("Invalid format for XYZ: Missing coordinate count");
             return false;
         }
-
-        const char* base = lines[0].ptr;
-        format->coord_count.beg = 0;
-        format->coord_count.end = END(token);
     }
 
     {
         // Test if we have an ARC trajectory
         // Second line should then contain exactly 6 floats
-        size_t token_count = 0;
-        str_t token[16];
+        str_t token[8];
         str_t line = lines[1];
-        while (token_count < ARRAY_SIZE(token) && extract_next_token(&token[token_count], &line)) {
-            if (!is_float(token[token_count])) {
-                break;
-            }
-            token_count += 1;
-        }
-        if (token_count == 6) {
-            const char* base = lines[1].ptr;
-            format->flags |= XYZ_TINKER_ARC;
-            format->cell_ext[0].beg = END(token[0]) - 11;
-            format->cell_ext[0].end = END(token[0]);
-            format->cell_ext[1].beg = END(token[1]) - 11;
-            format->cell_ext[1].end = END(token[1]);
-            format->cell_ext[2].beg = END(token[2]) - 11;
-            format->cell_ext[2].end = END(token[2]);
+        const int64_t num_tokens = extract_tokens(token, ARRAY_SIZE(token), &line);
 
-            format->cell_angle[0].beg = END(token[3]) - 11;
-            format->cell_angle[0].end = END(token[3]);
-            format->cell_angle[1].beg = END(token[4]) - 11;
-            format->cell_angle[1].end = END(token[4]);
-            format->cell_angle[2].beg = END(token[5]) - 11;
-            format->cell_angle[2].end = END(token[5]);
+        if (num_tokens == 6 &&
+            is_float(token[0]) && is_float(token[1]) && is_float(token[2]) &&
+            is_float(token[3]) && is_float(token[4]) && is_float(token[5]))
+        {
+            *flags |= XYZ_ARC;
         }
     }
 
-    // Determine coordinate structure
-    // Traditional XYZ only holds 4 fields (atomic number or element symbol and coordinates)
-    // Tinker holds additional fields (atom index, atom type and connectivity) at least 6 fields
-    size_t token_count = 0;
-    str_t token[16];
-    str_t line = lines[2];
-    while (token_count < ARRAY_SIZE(token) && extract_next_token(&token[token_count], &line)) {
-        token_count += 1;
-    }
-    if (token_count >= 6){
-        if (is_unsigned_int(token[0]) &&
-            (is_string(token[1]) || is_unsigned_int(token[1])) &&
-            is_float(token[2]) && is_float(token[3]) && is_float(token[4]) &&
-            is_unsigned_int(token[5])) {
-            format->flags |= XYZ_TINKER;
+    {
+        // Determine coordinate structure
+        // Traditional XYZ only holds 4 fields (atomic number or element symbol and coordinates)
+        // Tinker holds additional fields (atom index, atom type and connectivity) at least 6 fields
+        str_t token[8];
+        str_t line = lines[2];
+        const int64_t num_tokens = extract_tokens(token, ARRAY_SIZE(token), &line);
 
-            const char* base = lines[2].ptr;
-
-            // Determine tinker spans
-            format->atom_index.beg = 0;
-            format->atom_index.end = BEG(token[1]);
-
-            format->element.beg = END(token[0]);
-            format->element.end = END(token[2]) - 11;
-
-            if (is_string(token[1])) {
-                format->flags |= XYZ_ELEMENT_SYMBOL;
-            } else if (is_unsigned_int(token[1])) {
-                format->flags |= XYZ_ATOMIC_NUMBER;
+        if (num_tokens >= 6){
+            if (is_unsigned_int(token[0]) &&
+                (is_string(token[1]) || is_unsigned_int(token[1])) &&
+                is_float(token[2]) && is_float(token[3]) && is_float(token[4]) &&
+                is_unsigned_int(token[5]))
+            {
+                *flags |= XYZ_TINKER;
             } else {
-                MD_LOG_ERROR("Invalid format for element");
+                MD_LOG_ERROR("Invalid format for XYZ: Unknown variation of Tinker format");
                 return false;
             }
-
-            format->x.beg = END(token[2]) - 11;
-            format->x.end = END(token[2]);
-
-            format->y.beg = END(token[3]) - 11;
-            format->y.end = END(token[3]);
-
-            format->z.beg = END(token[4]) - 11;
-            format->z.end = END(token[4]);
-
-            format->atom_type.beg = END(token[5]) - 6;
-            format->atom_type.end = END(token[5]);
-
+        }
+        else if (num_tokens == 4) {
+            if (!(is_string(token[0]) || is_unsigned_int(token[0])) ||
+                !(is_float(token[1]) && is_float(token[2]) && is_float(token[3])))
+            {
+                MD_LOG_ERROR("Invalid format for XYZ: Unknown variation of format");
+                return false;
+            }
         } else {
-            MD_LOG_ERROR("Invalid format for XYZ: Unknown variation of Tinker format?");
+            MD_LOG_ERROR("Invalid format for XYZ");
             return false;
         }
     }
-    else if (token_count == 4) {
-        if ((is_string(token[0]) || is_unsigned_int(token[0])) &&
-            is_float(token[1]) && is_float(token[2]) && is_float(token[3])) {
-            
-            const char* base = lines[2].ptr;
-
-            // Determine standard xyz spans
-            format->element.beg = 0;
-            format->element.end = END(token[1]) - 11;
-
-            if (is_string(token[0])) {
-                format->flags |= XYZ_ELEMENT_SYMBOL;
-            } else if (is_unsigned_int(token[0])) {
-                format->flags |= XYZ_ATOMIC_NUMBER;
-            } else {
-                MD_LOG_ERROR("Invalid format for element");
-                return false;
-            }
-
-            format->x.beg = END(token[1]) - 11;
-            format->x.end = END(token[1]);
-
-            format->y.beg = END(token[2]) - 11;
-            format->y.end = END(token[2]);
-
-            format->z.beg = END(token[3]) - 11;
-            format->z.end = END(token[3]);
-        } else {
-            MD_LOG_ERROR("Invalid format for XYZ: Unknown variation of Tinker format?");
-            return false;
-        }
-    } else {
-        MD_LOG_ERROR("Invalid format for XYZ");
-        return false;
-    }
-
-#undef BEG
-#undef END
 
     return true;
 }
 
-static inline bool extract_coord(md_xyz_coordinate_t* coord, const xyz_format_t* format, str_t line) {
+static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line) {
     ASSERT(coord);
-    ASSERT(format);
-    
-    if (format->flags & XYZ_ELEMENT_SYMBOL) {
-        str_t element = str_trim(str_substr(line, format->element.beg, format->element.end - format->element.beg));
-        size_t len    = (size_t)MIN(element.len, (int64_t)sizeof(coord->element_symbol)-1);
-        MEMCPY(coord->element_symbol, element.ptr, len);
-        coord->element_symbol[len] = '\0';
-    } else if (format->flags & XYZ_ATOMIC_NUMBER) {
-        coord->atomic_number = extract_int(line, format->element.beg, format->element.end);
-    } else {
-        MD_LOG_ERROR("Undetermined format for element type in XYZ coordinate");
+
+    str_t tokens[16];
+    int num_tokens = 0;
+
+    while (num_tokens < ARRAY_SIZE(tokens) && extract_next_token(&tokens[num_tokens], &line)) {
+        num_tokens += 1;
+    }
+
+    if (num_tokens < 4) {
+        MD_LOG_ERROR("Invalid number of tokens in XYZ coordinate");
         return false;
     }
 
-    coord->x = extract_float(line, format->x.beg, format->x.end);
-    coord->y = extract_float(line, format->y.beg, format->y.end);
-    coord->z = extract_float(line, format->z.beg, format->z.end);
+    ASSERT(!str_empty(tokens[0]));    
+    if (is_alpha(tokens[0].ptr[0])) {
+        const size_t len = MIN((size_t)tokens[0].len, sizeof(coord->element_symbol)-1);
+        MEMCPY(coord->element_symbol, tokens[0].ptr, len);
+        coord->element_symbol[len] = '\0';
+    } else {
+        coord->atomic_number = (int)parse_int(tokens[0]);
+    }
 
-    if (format->flags & XYZ_TINKER) {
-        coord->atom_type = extract_int(line, format->atom_type.beg, format->atom_type.end);
+    coord->x = (float)parse_float(tokens[1]);
+    coord->y = (float)parse_float(tokens[2]);
+    coord->z = (float)parse_float(tokens[3]);
+    
+    if (num_tokens > 4) {
+        coord->atom_type = (int)parse_int(tokens[4]);
+
         // Connectivity follows atom_type
-        str_t token;
-        line = str_substr(line, format->atom_type.end, -1);
-        int connection_count = 0;
-        while (extract_next_token(&token, &line)) {
-            token = str_trim(token);
-            if (token.len > 0) {
-                int connection = (int)parse_int(token);
-                if (connection) {
-                    coord->connectivity[connection_count++] = connection;
-                } else {
-                    MD_LOG_ERROR("Invalid connectivity information in XYZ file");
-                    return false;
-                }
+        for (int i = 5; i < num_tokens; ++i) {
+            if (!is_digit(tokens[i].ptr[0])) {
+                MD_LOG_ERROR("Invalid connectivity information in XYZ file");
+                return false;
             }
+            coord->connectivity[i-5] = (int)parse_int(tokens[i]);
         }
     }
 
     return true;
 }
 
-static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, const xyz_format_t* format, int32_t* coord_count) {
+static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, uint32_t flags, int32_t* coord_count) {
     ASSERT(model);
     ASSERT(str);
-    ASSERT(format);
     ASSERT(coord_count);
 
     if (str->len == 0) return false;
 
     str_t line[2];
+    str_t tokens[8];
+    str_t comment = {0};
+    int32_t count = 0;
 
     if (!str_extract_line(&line[0], str)) {
         MD_LOG_ERROR("Failed to extract header line");
         return false;
     }
 
-    int32_t count = extract_int(line[0], format->coord_count.beg, format->coord_count.end);
-    if (count <= 0) {
-        MD_LOG_ERROR("Failed to parse coordinate count in header");
-        return false;
-    }
-
-    if (!(format->flags & XYZ_TINKER) || (format->flags & XYZ_TINKER_ARC)) {
+    // Check for exact match here
+    // Arc files are also flagged as tinker, but only pure tinker files uses 1 line for its header.
+    if (!(flags == XYZ_TINKER)) {
+        // Tinker is the only format that only uses 1 line for the header
+        // The others uses 2 lines
         if (!str_extract_line(&line[1], str)) {
-            MD_LOG_ERROR("Failed to extract extra line");  
-            return false;
+            MD_LOG_ERROR("Failed to extract extra line");
         }
     }
 
-    str_t comment = {0};
-    if (format->flags & XYZ_TINKER) {
-        // Comment is in the first line following the coordinate count
-        comment = str_substr(line[0], format->coord_count.end, -1);
+    // Parse data from first line, we only need the first two tokens even though more may exist
+    const int64_t num_tok = extract_tokens(tokens, 2, &line[0]);
+    if (num_tok) {
+        count = (int32_t)parse_int(tokens[0]);
+    }
+
+    if (count <= 0) {
+        MD_LOG_ERROR("Failed to extract coordinate count in XYZ header");  
+        return false;
+    }
+
+    if (flags & XYZ_TINKER) {
+        // Comment encoded after the first token
+        comment = str_substr(line[0], (int64_t)(tokens[1].ptr - line[0].ptr), -1);
     } else {
-        // Comment is the second line
+        // Second line is the comment
         comment = line[1];
     }
 
     if (comment.len > 0) {
-        size_t len = MIN(sizeof(model->comment)-1, (size_t)comment.len);
-        MEMCPY(model->comment, comment.ptr, len);
-        model->comment[len] = '\0';
+        str_copy_to_char_buf(model->comment, sizeof(model->comment), comment);
     }
 
-    if (format->flags & XYZ_TINKER_ARC) {
-        model->cell_extent[0] = extract_float(line[1], format->cell_ext[0].beg, format->cell_ext[0].end);
-        model->cell_extent[1] = extract_float(line[1], format->cell_ext[1].beg, format->cell_ext[1].end);
-        model->cell_extent[2] = extract_float(line[1], format->cell_ext[2].beg, format->cell_ext[2].end);
+    if (flags & XYZ_ARC) {
+        const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line[1]);
+        
+        if (num_tokens != 6) {
+            MD_LOG_ERROR("Unexpected number of tokens (%i) when parsing XYZ Arc Cell data");
+            return false;
+        }
+        model->cell_extent[0] = (float)parse_float(tokens[0]);
+        model->cell_extent[1] = (float)parse_float(tokens[1]);
+        model->cell_extent[2] = (float)parse_float(tokens[2]);
 
-        model->cell_angle[0] = extract_float(line[1], format->cell_angle[0].beg, format->cell_angle[0].end);
-        model->cell_angle[1] = extract_float(line[1], format->cell_angle[1].beg, format->cell_angle[1].end);
-        model->cell_angle[2] = extract_float(line[1], format->cell_angle[2].beg, format->cell_angle[2].end);
+        model->cell_angle[0] = (float)parse_float(tokens[3]);
+        model->cell_angle[1] = (float)parse_float(tokens[4]);
+        model->cell_angle[2] = (float)parse_float(tokens[5]);
     }
 
     *coord_count = count;
@@ -369,10 +286,10 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, str_t* str, con
     return true;
 }
 
-static inline int32_t xyz_parse_model_coordinates(md_xyz_data_t* data, str_t* str, const xyz_format_t* format, int32_t count, struct md_allocator_i* alloc) {
+/*
+static inline int32_t xyz_parse_model_coordinates(md_xyz_data_t* data, str_t* str, int32_t count, struct md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(str);
-    ASSERT(format);
     ASSERT(count);
     ASSERT(alloc);
 
@@ -382,7 +299,7 @@ static inline int32_t xyz_parse_model_coordinates(md_xyz_data_t* data, str_t* st
         if (!str_extract_line(&line, str))
             break;
         md_xyz_coordinate_t coord;
-        if (extract_coord(&coord, format, line)) {
+        if (extract_coord(&coord, line)) {
             md_array_push(data->coordinates, coord, alloc);
         } else {
             MD_LOG_ERROR("Failed to parse model coordinate");
@@ -392,6 +309,7 @@ static inline int32_t xyz_parse_model_coordinates(md_xyz_data_t* data, str_t* st
 
     return i;
 }
+*/
 
 bool xyz_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
@@ -473,23 +391,27 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     md_xyz_model_t model = {0};
     int32_t coord_count = 0;
-    if (!xyz_parse_model_header(&model, &str, &xyz->format, &coord_count)) {
+    if (!xyz_parse_model_header(&model, &str, xyz->flags, &coord_count)) {
         MD_LOG_ERROR("Error when decoding header");
         return false;
     }
 
-
     int64_t i = 0;
     str_t line;
+    str_t tokens[4];
     while (str_extract_line(&line, &str) && i < xyz->header.num_atoms) {
         if (line.len < 6) continue;
 
-        float coord_x = extract_float(line, xyz->format.x.beg, xyz->format.x.end);
-        float coord_y = extract_float(line, xyz->format.y.beg, xyz->format.y.end);
-        float coord_z = extract_float(line, xyz->format.z.beg, xyz->format.z.end);
-        if (x) x[i] = coord_x;
-        if (y) y[i] = coord_y;
-        if (z) z[i] = coord_z;
+        const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
+
+        if (num_tokens < 4) {
+            MD_LOG_ERROR("Error when decoding coordinate");
+            return false;
+        }
+        
+        if (x) x[i] = (float)parse_float(tokens[1]);
+        if (y) y[i] = (float)parse_float(tokens[2]);
+        if (z) z[i] = (float)parse_float(tokens[3]);
 
         i += 1;
     }
@@ -498,17 +420,17 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->num_atoms = i;
         header->index = step;
         header->timestamp = (double)(step); // This information is missing from xyz trajectories
-        mat3_t box = {0};
+        mat3_t cell = {0};
         if (model.cell_extent[0] != 0) {
             if (model.cell_angle[0] != 90 && model.cell_angle[1] != 90 && model.cell_angle[2] != 90) {
-                box = md_util_compute_unit_cell_basis(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
+                cell = md_util_compute_unit_cell_basis(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
             } else {
-                box.elem[0][0] = model.cell_extent[0];
-                box.elem[1][1] = model.cell_extent[1];
-                box.elem[2][2] = model.cell_extent[2];
+                cell.elem[0][0] = model.cell_extent[0];
+                cell.elem[1][1] = model.cell_extent[1];
+                cell.elem[2][2] = model.cell_extent[2];
             }
         }
-        header->box = box;
+        header->box = cell;
     }
 
     return true;
@@ -526,8 +448,8 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 // (given that the number of coordinates are the same)
 
 bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i* alloc) {
-    xyz_format_t format = {0};
-    if (!extract_format(&format, str)) {
+    uint32_t flags = 0;
+    if (!extract_flags(&flags, str)) {
         MD_LOG_ERROR("Parse XYZ: Invalid format");
         return false;
     }
@@ -537,14 +459,14 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
     const char* base_offset = str.ptr;
     int64_t byte_offset = 0;
 
-    while (xyz_parse_model_header(&mdl, &str, &format, &expected_count)) {
+    while (xyz_parse_model_header(&mdl, &str, flags, &expected_count)) {
         mdl.byte_offset = byte_offset;
 
         mdl.beg_coord_index = (int32_t)md_array_size(data->coordinates);
         for (int32_t i = 0; i < expected_count; ++i) {
             str_t line;
             md_xyz_coordinate_t coord;
-            if (str_extract_line(&line, &str) && extract_coord(&coord, &format, line)) {
+            if (str_extract_line(&line, &str) && extract_coord(&coord, line)) {
                 md_array_push(data->coordinates, coord, alloc);
             } else {
                 MD_LOG_ERROR("Parse XYZ, Failed to parse coordinate");
@@ -573,12 +495,12 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
     }
 
     char buf[256];
-    xyz_format_t format = {0};
     md_xyz_model_t mdl = {0};
     int32_t expected_count = 0;
     str_t chunk = {buf, md_file_read(file, buf, sizeof(buf))};
+    uint32_t flags = 0;
 
-    if (!extract_format(&format, chunk)) {
+    if (!extract_flags(&flags, chunk)) {
         MD_LOG_ERROR("Parse XYZ: Invalid format");
         goto done;
     }
@@ -592,7 +514,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
 
         mdl.byte_offset = md_file_tell(file) - chunk.len;
 
-        if (!xyz_parse_model_header(&mdl, &chunk, &format, &expected_count)) {
+        if (!xyz_parse_model_header(&mdl, &chunk, flags, &expected_count)) {
             MD_LOG_ERROR("Parse XYZ: Failed to read header");
             goto done;
         }
@@ -604,7 +526,7 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
         for (int32_t i = 0; i < expected_count; ++i) {
             str_t line = {buf, md_file_read_line(file, buf, sizeof(buf))};
             md_xyz_coordinate_t coord = {0};
-            if (extract_coord(&coord, &format, line)) {
+            if (extract_coord(&coord, line)) {
                 md_array_push(data->coordinates, coord, alloc);
             } else {
                 MD_LOG_ERROR("Parse XYZ, Failed to parse coordinate");
@@ -696,18 +618,18 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     }
 
     char buf[256];
-    xyz_format_t format = {0};
     md_xyz_data_t data = {0};
     md_xyz_model_t mdl = {0};
     int32_t expected_count = 0;
+    uint32_t flags = 0;
     str_t chunk = {buf, md_file_read(file, buf, sizeof(buf))};
 
-    if (!extract_format(&format, chunk)) {
+    if (!extract_flags(&flags, chunk)) {
         MD_LOG_ERROR("Parse XYZ: Invalid format");
         goto done;
     }
 
-    if (!xyz_parse_model_header(&mdl, &chunk, &format, &expected_count)) {
+    if (!xyz_parse_model_header(&mdl, &chunk, flags, &expected_count)) {
         MD_LOG_ERROR("Failed to read xyz header");
         goto done;
     }
@@ -718,7 +640,7 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     for (int32_t i = 0; i < expected_count; ++i) {
         str_t line = {buf, md_file_read_line(file, buf, sizeof(buf))};
         md_xyz_coordinate_t coord = {0};
-        if (extract_coord(&coord, &format, line)) {
+        if (extract_coord(&coord, line)) {
             md_array_push(data.coordinates, coord, alloc);
         } else {
             MD_LOG_ERROR("Parse XYZ, Failed to parse coordinate");
@@ -870,11 +792,11 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
         return false;
     }
 
-    xyz_format_t format = {0};
+    uint32_t flags = 0;
     {
         char buf[1024];
         int64_t len = md_file_read(file, buf, sizeof(buf));
-        if (!extract_format(&format, (str_t){buf, len})) {
+        if (!extract_flags(&flags, (str_t){buf, len})) {
             MD_LOG_ERROR("Failed to interpret format for XYZ trajectory");
             return false;
         }
@@ -951,7 +873,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
     };
-    xyz->format = format;
+    xyz->flags = flags;
 
     traj->inst = (struct md_trajectory_o*)xyz;
     traj->get_header = xyz_get_header;
