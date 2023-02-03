@@ -237,7 +237,7 @@ static inline int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str) {
     if (cap == 0) return 0;
     if (str_empty(str)) return 0;
     const int64_t len = CLAMP(str.len, 0, cap - 1);
-    MEMCPY(buf, str.ptr, (size_t)len);
+    MEMCPY(buf, str.ptr, (uint64_t)len);
     buf[len] = '\0';
     return len;
 }
