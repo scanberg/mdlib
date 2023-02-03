@@ -114,7 +114,7 @@ static inline bool extract_flags(uint32_t* flags, str_t str) {
         // Test if first line has an unsigned integer as first token (Should be universally applicable to all XYZ + ARC formats
         str_t token;
         str_t line = lines[0];
-        if (!extract_next_token(&token, &line) || !is_unsigned_int(token)) {
+        if (!extract_token(&token, &line) || !is_unsigned_int(token)) {
             MD_LOG_ERROR("Invalid format for XYZ: Missing coordinate count");
             return false;
         }
@@ -177,7 +177,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line) {
     str_t tokens[16];
     int num_tokens = 0;
 
-    while (num_tokens < ARRAY_SIZE(tokens) && extract_next_token(&tokens[num_tokens], &line)) {
+    while (num_tokens < ARRAY_SIZE(tokens) && extract_token(&tokens[num_tokens], &line)) {
         num_tokens += 1;
     }
 

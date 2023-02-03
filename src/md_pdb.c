@@ -356,7 +356,7 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
                     while (next_idx < ARRAY_SIZE(assembly->apply_to_chains) && assembly->apply_to_chains[next_idx] != 0) {
                         next_idx += 1;
                     }
-                    while (extract_next_token_delim(&chain, &chains, ',') && next_idx < ARRAY_SIZE(assembly->apply_to_chains)) {
+                    while (extract_token_delim(&chain, &chains, ',') && next_idx < ARRAY_SIZE(assembly->apply_to_chains)) {
                         assembly->apply_to_chains[next_idx] = str_trim(chain).ptr[0];
                         next_idx += 1;
                     }

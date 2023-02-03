@@ -90,7 +90,7 @@ bool str_extract_i32(int* val, str_t* str) {
     ASSERT(str);
 
     str_t tok;
-    if (!extract_next_token(&tok, str)) return false;
+    if (!extract_token(&tok, str)) return false;
     *val = (int)parse_int(str_trim(tok));
     
     return true;
@@ -101,7 +101,7 @@ bool str_extract_i64(int64_t* val, str_t* str) {
     ASSERT(str);
 
     str_t tok;
-    if (!extract_next_token(&tok, str)) return false;
+    if (!extract_token(&tok, str)) return false;
     *val = parse_int(str_trim(tok));
 
     return true;
@@ -112,7 +112,7 @@ bool str_extract_f32(float* val, str_t* str) {
     ASSERT(str);
 
     str_t tok;
-    if (!extract_next_token(&tok, str)) return false;
+    if (!extract_token(&tok, str)) return false;
     *val = (float)parse_float(str_trim(tok));
 
     return true;
@@ -123,7 +123,7 @@ bool str_extract_f64(double* val, str_t* str) {
     ASSERT(str);
 
     str_t tok;
-    if (!extract_next_token(&tok, str)) return false;
+    if (!extract_token(&tok, str)) return false;
     *val = parse_float(str_trim(tok));
 
     return true;
@@ -405,7 +405,7 @@ str_t extract_path_without_file(str_t path) {
     return res;
 }
 
-bool extract_next_token(str_t* tok, str_t* str) {
+bool extract_token(str_t* tok, str_t* str) {
     ASSERT(tok);
     ASSERT(str);
     if (str_empty(*str)) return false;
@@ -433,13 +433,13 @@ int64_t extract_tokens(str_t token_arr[], int64_t token_cap, str_t* str) {
     ASSERT(str);
     
     int64_t num_tokens = 0;
-    while (num_tokens < token_cap && extract_next_token(&token_arr[num_tokens], str)) {
+    while (num_tokens < token_cap && extract_token(&token_arr[num_tokens], str)) {
         num_tokens += 1;
     }
     return num_tokens;
 }
 
-bool extract_next_token_delim(str_t* tok, str_t* str, char delim) {
+bool extract_token_delim(str_t* tok, str_t* str, char delim) {
     ASSERT(tok);
     ASSERT(str);
     if (!str->ptr || str->len == 0) return false;
