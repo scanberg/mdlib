@@ -621,7 +621,7 @@ static md_index_data_t compute_connectivity_data(int64_t atom_count, const md_bo
     return data;
 }
 
-static inline bool covelent_bond_heuristic(float dist_squared, md_element_t elem_a, md_element_t elem_b) {
+static inline bool covalent_bond_heuristic(float dist_squared, md_element_t elem_a, md_element_t elem_b) {
     const float d = element_covalent_radii[elem_a] + element_covalent_radii[elem_b];
     const float d_min = d - 0.5f;
     const float d_max = d + 0.3f;
@@ -673,7 +673,7 @@ bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* bond_data, 
                     const vec4_t a = {x[j], y[j], z[j], 0};
                     const vec4_t b = {x[k], y[k], z[k], 0};
                     const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext4);
-                    if (covelent_bond_heuristic(d2, element[j], element[k])) {
+                    if (covalent_bond_heuristic(d2, element[j], element[k])) {
                         md_array_push(bond_data->bond, ((md_bond_t){j, k}), alloc);
                     }
                 }
@@ -684,7 +684,7 @@ bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* bond_data, 
                     const vec4_t a = {x[j], y[j], z[j], 0};
                     const vec4_t b = {x[k], y[k], z[k], 0};
                     const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext4);
-                    if (covelent_bond_heuristic(d2, element[j], element[k])) {
+                    if (covalent_bond_heuristic(d2, element[j], element[k])) {
                         md_array_push(bond_data->bond, ((md_bond_t){j, k}), alloc);
                     }
                 }
@@ -697,48 +697,64 @@ bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* bond_data, 
         bond_data->connectivity = compute_connectivity_data(count, bond_data->bond, md_array_size(bond_data->bond), alloc);
     }
     else {
-        md_spatial_hash_t sh = {0};
-        md_spatial_hash_init_soa(&sh, x, y, z, count, pbc_ext, default_allocator);
-
-        const float cutoff = 3.0f;
-
-        md_ring_allocator_t* ring_alloc = get_thread_ring_allocator();
-        md_allocator_i temp_alloc = md_ring_allocator_create_interface(ring_alloc);
-        uint64_t reset_pos = md_ring_allocator_get_pos(ring_alloc);
-
-        for (int i = 0; i < (int)count; ++i) {
-            const vec3_t pos = {x[i], y[i], z[i]};
-            
-            // Reset ring allocator pos
-            md_ring_allocator_set_pos(ring_alloc, reset_pos);
-            md_array(uint32_t) indices = md_spatial_hash_query_idx(&sh, pos, cutoff, &temp_alloc);
-            md_array(int32_t) atom_connectivity = 0;
-        
-            const int64_t num_indices = md_array_size(indices);
-            for (int64_t iter = 0; iter < num_indices; ++iter) {
-                const int j = indices[iter];
-
-                if (res_idx && abs(res_idx[j] - res_idx[i]) > 2) {
-                    continue;
-                }
-
-                const vec4_t pos_a = vec4_from_vec3(pos, 0);
-                const vec4_t pos_b = {x[j], y[j], z[j], 0};
-                const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext4);
-                if (covelent_bond_heuristic(d2, element[i], element[j])) {
-                    if (i < j) {
-                        // Only store monotonic bonds connections
+        if (count < 100) {
+            // If the system is small, just brute-force it
+            for (int i = 0; i < (int)count - 1; ++i) {
+                for (int j = i + 1; j < (int)count; ++j) {
+                    const vec4_t a = {x[i], y[i], z[i], 0};
+                    const vec4_t b = {x[j], y[j], z[j], 0};
+                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext4);
+                    if (covalent_bond_heuristic(d2, element[i], element[j])) {
                         md_array_push(bond_data->bond, ((md_bond_t){i, j}), alloc);
                     }
-                    // Store all connectivity to atom
-                    md_array_push(atom_connectivity, j, &temp_alloc);
                 }
-            
-                md_index_data_push(&bond_data->connectivity, atom_connectivity, md_array_size(atom_connectivity), alloc);
             }
-        }
+            bond_data->connectivity = compute_connectivity_data(count, bond_data->bond, md_array_size(bond_data->bond), alloc);
+        } else {
+            // Resort to spatial acceleration structure
+            md_spatial_hash_t sh = {0};
+            md_spatial_hash_init_soa(&sh, x, y, z, count, pbc_ext, default_allocator);
 
-        md_spatial_hash_free(&sh);
+            const float cutoff = 3.0f;
+
+            md_ring_allocator_t* ring_alloc = get_thread_ring_allocator();
+            md_allocator_i temp_alloc = md_ring_allocator_create_interface(ring_alloc);
+            uint64_t reset_pos = md_ring_allocator_get_pos(ring_alloc);
+
+            for (int i = 0; i < (int)count; ++i) {
+                const vec3_t pos = {x[i], y[i], z[i]};
+            
+                // Reset ring allocator pos
+                md_ring_allocator_set_pos(ring_alloc, reset_pos);
+                md_array(uint32_t) indices = md_spatial_hash_query_idx(&sh, pos, cutoff, &temp_alloc);
+                md_array(int32_t) atom_connectivity = 0;
+        
+                const int64_t num_indices = md_array_size(indices);
+                for (int64_t iter = 0; iter < num_indices; ++iter) {
+                    const int j = indices[iter];
+
+                    if (res_idx && abs(res_idx[j] - res_idx[i]) > 2) {
+                        continue;
+                    }
+
+                    const vec4_t pos_a = vec4_from_vec3(pos, 0);
+                    const vec4_t pos_b = {x[j], y[j], z[j], 0};
+                    const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext4);
+                    if (covalent_bond_heuristic(d2, element[i], element[j])) {
+                        if (i < j) {
+                            // Only store monotonic bonds connections
+                            md_array_push(bond_data->bond, ((md_bond_t){i, j}), alloc);
+                        }
+                        // Store all connectivity to atom
+                        md_array_push(atom_connectivity, j, &temp_alloc);
+                    }
+            
+                    md_index_data_push(&bond_data->connectivity, atom_connectivity, md_array_size(atom_connectivity), alloc);
+                }
+            }
+
+            md_spatial_hash_free(&sh);
+        }
     }
 
     bond_data->count = md_array_size(bond_data->bond);
@@ -877,7 +893,10 @@ static void fifo_init(fifo_t* fifo, int64_t capacity, md_allocator_i* alloc) {
     fifo->tail = 0;
     fifo->cap = next_power_of_two32((uint32_t)capacity);
     fifo->data = md_alloc(alloc, sizeof(int) * fifo->cap);
+#if DEBUG
+    // Clear memory to make debugging easier
     MEMSET(fifo->data, 0, sizeof(int) * fifo->cap);
+#endif
 }
 
 static inline fifo_t fifo_create(int64_t capacity, md_allocator_i* alloc) {
@@ -934,6 +953,7 @@ static bool has_ring(const md_index_data_t* ring_data, const int* ring, int ring
 }
 
 // Simplistic inplace bubble sort for small arrays
+// In practice, this is only used to sort the small rings
 static void sort_arr(int* arr, int n) {
     bool swapped = true;
     while (swapped) {
@@ -1718,12 +1738,14 @@ bool md_util_deperiodize_system_ortho(float* x, float* y, float* z, const float*
             const vec4_t com = vec4_from_vec3(md_util_compute_com_indexed_soa(x, y, z, w, indices, num_indices), 0);
             const vec4_t pbc_com = vec4_deperiodize(com, ref, ext);
             const vec4_t delta = vec4_sub(pbc_com, com);
-            if (vec4_dot(delta, delta) > 0.001f) {
+            const vec4_t abs_delta = vec4_abs(delta);
+            
+            if (vec4_dot(delta, delta) > 0) {
                 for (int64_t i = 0; i < num_indices; ++i) {
                     const int32_t j = indices[i];
-                    x[j] += delta.x;
-                    y[j] += delta.y;
-                    z[j] += delta.z;
+                    if (abs_delta.x > 0) x[j] += delta.x;
+                    if (abs_delta.y > 0) y[j] += delta.y;
+                    if (abs_delta.z > 0) z[j] += delta.z;
                 }
             }
         }

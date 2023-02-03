@@ -15,6 +15,7 @@
 #define INV_CELL_EXT (1.0f / CELL_EXT)
 #define SQRT_CELL_EXT (8.4852813742385702f)
 #define LENGTH_BITS 10
+#define MAX_CELL_DIM 100000
 
 #define SCL (CELL_EXT / 1023.f)
 
@@ -57,6 +58,14 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
         MAX(1, cell_max[1] - cell_min[1]),
         MAX(1, cell_max[2] - cell_min[2]),
     };
+
+    if (cell_dim[0] > MAX_CELL_DIM ||
+        cell_dim[1] > MAX_CELL_DIM ||
+        cell_dim[2] > MAX_CELL_DIM)
+    {
+        MD_LOG_ERROR("Spatial hash cell dimension is too large: {%i %i %i}", cell_dim[0], cell_dim[1], cell_dim[2]);
+        return false;
+    }
 
     const uint32_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
 
