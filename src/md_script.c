@@ -4491,7 +4491,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     }
 }
 
-bool extract_tokens(md_script_ir_t* ir) {
+bool extract_vis_tokens(md_script_ir_t* ir) {
     const int64_t num_expr = md_array_size(ir->type_checked_expressions);
     for (int64_t i = 0; i < num_expr; ++i) {
         expression_t* expr = ir->type_checked_expressions[i];
@@ -4545,7 +4545,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
         static_type_check(ir, mol) &&
         static_evaluation(ir, mol) &&
         extract_dynamic_evaluation_targets(ir) &&
-        extract_tokens(ir) &&
+        extract_vis_tokens(ir) &&
         extract_identifiers(ir);
 
 #if MD_DEBUG
