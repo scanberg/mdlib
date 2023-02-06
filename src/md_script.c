@@ -4984,6 +4984,8 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
         return false;
     }
 
+    md_bitfield_clear(dst_bf);
+
     bool success = false;
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
@@ -5035,18 +5037,22 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                 }
                 */
 
-                ASSERT(type_info_array_len(node->data.type) == 1);
+                if (type_info_array_len(node->data.type) == 1) {
+                    data_t data = {0};
+                    data.type = node->data.type;
+                    data.ptr = dst_bf;
+                    data.size = sizeof(md_bitfield_t);
 
-                data_t data = {0};
-                data.type = node->data.type;
-                data.ptr = dst_bf;
-                data.size = sizeof(md_bitfield_t);
-
-                if (evaluate_node(&data, node, &ctx)) {
-                    success = true;
-                    if (is_dynamic) {
-                        *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
+                    if (evaluate_node(&data, node, &ctx)) {
+                        success = true;
+                        if (is_dynamic) {
+                            *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
+                        }
                     }
+                }
+                else {
+                    MD_LOG_ERROR("md_filter: Expression did not evaluate to a valid bitfield\n");
+                    snprintf(err_buf, err_cap, "Expression did not evaluate to a valid bitfield\n");
                 }
             } else {
                 MD_LOG_ERROR("md_filter: Expression did not evaluate to a valid bitfield\n");
