@@ -15,11 +15,11 @@ struct md_molecule_api;
 
 typedef struct md_gro_atom_t {
     int32_t res_id;
-    char res_name[8];
-    char atom_name[8];
     float x;
     float y;
     float z;
+    char res_name[8];
+    char atom_name[8];
 } md_gro_atom_t;
 
 typedef struct md_gro_data_t {

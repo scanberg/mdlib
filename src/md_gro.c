@@ -37,16 +37,13 @@ static inline int64_t compute_position_field_width(str_t line) {
 }
 
 static inline bool parse_header(str_t* str, md_gro_data_t* data) {
-    str_t line = {0};
+    str_t line;
     if (!str_extract_line(&line, str)) {
         MD_LOG_ERROR("Failed to read title");
         return false;
     }
 
-    line = str_trim(line);
-    const int64_t len = MIN((int64_t)ARRAY_SIZE(data->title) - 1, line.len);
-    strncpy(data->title, line.ptr, len);
-    data->title[len] = '\0';
+    str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
     if (!str_extract_line(&line, str)) {
         MD_LOG_ERROR("Failed to read number of atoms");
@@ -67,20 +64,21 @@ static inline bool parse_header(str_t* str, md_gro_data_t* data) {
 static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_field_width, int64_t* read_count, int64_t read_target, md_allocator_i* alloc) {
     str_t line = {0};
     while ((*read_count < read_target) && str_extract_line(&line, &str)) {
-        int64_t res_id  = parse_int(str_trim(str_substr(line, 0, 5)));
+        int32_t res_id  = (int32_t)parse_int(str_trim(str_substr(line, 0, 5)));
         str_t res_name  = str_trim(str_substr(line, 5, 5));
         str_t atom_name = str_trim(str_substr(line, 10, 5));
-        double x = parse_float(str_trim(str_substr(line, 20 + 0 * pos_field_width, pos_field_width)));
-        double y = parse_float(str_trim(str_substr(line, 20 + 1 * pos_field_width, pos_field_width)));
-        double z = parse_float(str_trim(str_substr(line, 20 + 2 * pos_field_width, pos_field_width)));
+        float x = (float)parse_float(str_trim(str_substr(line, 20 + 0 * pos_field_width, pos_field_width)));
+        float y = (float)parse_float(str_trim(str_substr(line, 20 + 1 * pos_field_width, pos_field_width)));
+        float z = (float)parse_float(str_trim(str_substr(line, 20 + 2 * pos_field_width, pos_field_width)));
 
-        md_gro_atom_t atom = {0};
-        atom.res_id = (int32_t)res_id;
-        strncpy(atom.res_name, res_name.ptr, MIN(res_name.len, (int64_t)ARRAY_SIZE(atom.res_name) - 1));
-        strncpy(atom.atom_name, atom_name.ptr, MIN(atom_name.len, (int64_t)ARRAY_SIZE(atom.atom_name) - 1));
-        atom.x = (float)x;
-        atom.y = (float)y;
-        atom.z = (float)z;
+        md_gro_atom_t atom = {
+            .res_id = res_id,
+            .x = (float)x,
+            .y = (float)y,
+            .z = (float)z,
+        };
+        str_copy_to_char_buf(atom.res_name, sizeof(atom.res_name), res_name);
+        str_copy_to_char_buf(atom.atom_name, sizeof(atom.atom_name), atom_name);
         md_array_push(data->atom_data, atom, alloc);
         *read_count += 1;
     }
@@ -238,8 +236,8 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
         const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
         const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
-        str_t atom_name = (str_t){data->atom_data[i].atom_name, strnlen(data->atom_data[i].atom_name, ARRAY_SIZE(data->atom_data[i].atom_name))};
-        str_t res_name = (str_t){data->atom_data[i].res_name, strnlen(data->atom_data[i].res_name, ARRAY_SIZE(data->atom_data[i].res_name))};
+        str_t atom_name = (str_t){data->atom_data[i].atom_name, strnlen(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name))};
+        str_t res_name = (str_t){data->atom_data[i].res_name, strnlen(data->atom_data[i].res_name, sizeof(data->atom_data[i].res_name))};
 
         int32_t res_id = data->atom_data[i].res_id;
         if (res_id != cur_res_id) {
