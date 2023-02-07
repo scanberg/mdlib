@@ -5051,11 +5051,11 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                     }
                 }
                 else {
-                    MD_LOG_ERROR("md_filter: Expression did not evaluate to a valid bitfield\n");
+                    MD_LOG_DEBUG("md_filter: Expression did not evaluate to a valid bitfield\n");
                     snprintf(err_buf, err_cap, "Expression did not evaluate to a valid bitfield\n");
                 }
             } else {
-                MD_LOG_ERROR("md_filter: Expression did not evaluate to a valid bitfield\n");
+                MD_LOG_DEBUG("md_filter: Expression did not evaluate to a valid bitfield\n");
                 snprintf(err_buf, err_cap, "Expression did not evaluate to a bitfield\n");
             }
         }
