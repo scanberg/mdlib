@@ -17,7 +17,7 @@
 typedef struct thread_data_t {
     md_frame_cache_t* cache;
     float* ref_coords;
-    mat3_t* ref_boxes;
+    md_unit_cell_t ref_cell;
     int corrupt_count;
     int thread_rank;
 } thread_data_t;
@@ -36,14 +36,14 @@ void thread_func(void* user_data) {
     float *y = (float*)mem_ptr + num_atoms * 1;
     float *z = (float*)mem_ptr + num_atoms * 2;
 
-    float box[3][3];
+    md_unit_cell_t cell;
 
     // Load frame by frame and memcmp to reference
     // Offset the frame_index 'randomly' so we really stress the cache
     const int64_t offset = (int64_t)(md_thread_id() % num_frames);
     for (int64_t i = 0; i < (int64_t)num_frames; ++i) {
         int64_t frame_idx = (offset + i) % num_frames;
-        md_frame_cache_load_frame_data(data->cache, frame_idx, x, y, z, box, NULL);
+        md_frame_cache_load_frame_data(data->cache, frame_idx, x, y, z, &cell, NULL);
 
         const float* ref_x = data->ref_coords + frame_stride * frame_idx + num_atoms * 0;
         const float* ref_y = data->ref_coords + frame_stride * frame_idx + num_atoms * 1;
@@ -53,7 +53,7 @@ void thread_func(void* user_data) {
         if (memcmp(ref_x, x, num_atoms * sizeof(float)) != 0) corrupt = true;
         if (memcmp(ref_y, y, num_atoms * sizeof(float)) != 0) corrupt = true;
         if (memcmp(ref_z, z, num_atoms * sizeof(float)) != 0) corrupt = true;
-        if (memcmp(data->ref_boxes[i].elem, box, sizeof(box)) != 0) corrupt = true;
+        if (memcmp(&data->ref_cell, &cell, sizeof(cell)) != 0) corrupt = true;
 
         if (corrupt) {
             data->corrupt_count += 1;
@@ -82,13 +82,13 @@ UTEST(frame_cache, parallel_workload) {
 
     const int64_t frame_stride = num_atoms * 3;
     float* ref_coords = md_alloc(alloc, num_frames * num_atoms * 3 * sizeof(float));
-    mat3_t* ref_boxes = md_alloc(alloc, num_frames * sizeof(mat3_t));
+    md_unit_cell_t* ref_cells = md_alloc(alloc, num_frames * sizeof(md_unit_cell_t));
 
     for (int64_t i = 0; i < num_frames; ++i) {
         float* ref_x = ref_coords + frame_stride * i + num_atoms * 0;
         float* ref_y = ref_coords + frame_stride * i + num_atoms * 1;
         float* ref_z = ref_coords + frame_stride * i + num_atoms * 2;
-        EXPECT_TRUE(md_frame_cache_load_frame_data(&cache, i, ref_x, ref_y, ref_z, ref_boxes[i].elem, NULL));
+        EXPECT_TRUE(md_frame_cache_load_frame_data(&cache, i, ref_x, ref_y, ref_z, &ref_cells[i], NULL));
     }
 
     thread_data_t thread_data[NUM_THREADS] = {0};
@@ -98,7 +98,7 @@ UTEST(frame_cache, parallel_workload) {
         for (int i = 0; i < NUM_THREADS; ++i) {
             thread_data[i].cache = &cache;
             thread_data[i].ref_coords = ref_coords;
-            thread_data[i].ref_boxes = ref_boxes;
+            thread_data[i].ref_cell   = ref_cells[i];
             thread_data[i].corrupt_count = 0;
             threads[i] = md_thread_create(thread_func, &thread_data[i]);
         }

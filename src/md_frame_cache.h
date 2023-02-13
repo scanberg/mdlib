@@ -53,7 +53,7 @@ int64_t md_frame_cache_num_frames(const md_frame_cache_t* cache);
 // This will load the data from a frame into the memory of the supplied pointers.
 // The pointers are each optional and if the value of NULL is passed for that pointer, then no data will be written to that adress.
 // If the frame is not already in the cache, it will be loaded into the cache and if the postprocess function is supplied, that will be called.
-bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, float box[3][3], double* timestamp);
+bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, md_unit_cell_t* cell, double* timestamp);
 
 // ### DANGER ZONE ###
 // // These are operations which should be handled with care since they expose explicit locks for frames
