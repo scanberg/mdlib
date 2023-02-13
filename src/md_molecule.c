@@ -44,7 +44,7 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->backbone.residue_idx) md_array_free(mol->backbone.residue_idx, alloc);
 
     // Bonds
-    if (mol->persistent_bonds) md_array_free(mol->persistent_bonds, alloc);
+    if (mol->bonds) md_array_free(mol->bonds, alloc);
     md_index_data_free(&mol->connectivity, alloc);
     md_index_data_free(&mol->structures, alloc);
     md_index_data_free(&mol->rings, alloc);
@@ -106,7 +106,7 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(chain, atom_range);
 
     md_array_push_array(dst->hydrogen_bonds, src->hydrogen_bonds, md_array_size(src->hydrogen_bonds), alloc);
-    md_array_push_array(dst->persistent_bonds, src->persistent_bonds, md_array_size(src->persistent_bonds), alloc);
+    md_array_push_array(dst->bonds, src->bonds, md_array_size(src->bonds), alloc);
 
     ARRAY_PUSH(residue, name);
     ARRAY_PUSH(residue, id);

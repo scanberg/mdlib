@@ -86,7 +86,7 @@ bool md_gl_molecule_compute_velocity(md_gl_molecule_t* mol, const float pbc_ext[
 // Clear the velocity to zero.
 bool md_gl_molecule_zero_velocity(md_gl_molecule_t* mol);
 
-bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride);
+bool md_gl_molecule_set_bonds(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride);
 bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
 /*

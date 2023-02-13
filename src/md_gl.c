@@ -591,7 +591,7 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
     return false;
 }
 
-bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride) {
+bool md_gl_molecule_set_bonds(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride) {
     if (ext_mol && bonds) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
         if (!mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id) {
@@ -1112,11 +1112,11 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_mol->flags |= MOL_FLAG_HAS_BACKBONE;
         }
 
-        gl_mol->bond_count = (uint32_t)md_array_size(mol->persistent_bonds);
+        gl_mol->bond_count = (uint32_t)md_array_size(mol->bonds);
         gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES] = gl_buffer_create(gl_mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
 
-        if (mol->persistent_bonds) {
-            md_gl_molecule_set_covalent_bonds(ext_mol, 0, gl_mol->bond_count, mol->persistent_bonds, sizeof(md_bond_t));
+        if (mol->bonds) {
+            md_gl_molecule_set_bonds(ext_mol, 0, gl_mol->bond_count, mol->bonds, sizeof(md_bond_t));
         }
        
         gl_mol->magic = MAGIC;

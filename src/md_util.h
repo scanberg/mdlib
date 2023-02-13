@@ -87,7 +87,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 // Computes chains from connected residues
 // The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
 // This means that single residues which are not connected to any other residue will not classify as a chain.
-bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t persistent_bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
+bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
 
 // Compute the valence of atoms given the covalent bonds
 //bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
