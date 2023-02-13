@@ -1,6 +1,6 @@
 #pragma once
 
-// THIS IS INSIRED BY OUR MACHINERY'S IMPLEMENTATION OF MD ARRAY AT A PERVERTED LEVEL. 
+// THIS IS INSIRED BY OUR MACHINERY'S IMPLEMENTATION OF ARRAY AT A PERVERTED LEVEL. 
 // (https://ourmachinery.com)
 
 #include <core/md_common.h>
@@ -8,8 +8,9 @@
 #include <stdint.h>
 
 #if MD_COMPILER_GCC
-// Ignore warning of unused value when returning last pushed element in md_array_push
-#pragma GCC diagnostic ignored "-Wunused-value"
+#   pragma GCC diagnostic ignored "-Wunused-value"      // Ignore warning of unused value when returning last pushed element in md_array_push
+#elif MD_COMPILER_MSVC
+#   pragma warning( disable : 6011 6387 )               // Dereferencing NULL pointer, Could be 0
 #endif
 
 typedef struct md_array_header_t {
@@ -31,12 +32,25 @@ typedef struct md_array_header_t {
 #define md_array_swap_back_and_pop(a,i) ((a)[i] = (a)[--md_array_header(a)->size])
 
 // Allocator time!
+#define md_array_create(type, n, alloc) ((type*)md_array_create_internal( (n), sizeof(type), alloc, __FILE__, __LINE__))
 #define md_array_grow(a, n, alloc)      ((*(void **)&(a)) = md_array_capacity(a) >= (n) ? (a) : md_array_set_capacity_internal((void*)(a), md_array_grow_cap((void*)(a), (n)), sizeof(*(a)), alloc, __FILE__, __LINE__))
 #define md_set_capacity(a, n, alloc)    ((*(void **)&(a)) = md_array_set_capacity_internal((void*)(a), (n), sizeof(*(a)), alloc, __FILE__, __LINE__))
 #define md_array_resize(a, n, alloc)    ((md_array_needs_to_grow((a), (n)) ? md_set_capacity((a), (n), alloc) : 0), (a) ? md_array_header(a)->size = (n) : 0)
 #define md_array_ensure(a, n, alloc)    (md_array_needs_to_grow((a), (n)) ? md_array_grow((a), (n), alloc) : 0)
+#if MD_COMPILER_MSVC
+// Suppress incorrect warnings for macros in MSVC
+#define md_array_push(a, item, alloc) \
+    __pragma(warning(suppress:6011 6387)) \
+    (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = (item), (a) + md_array_header(a)->size - 1)
+
+#define md_array_push_array(a, items, n, alloc) \
+    __pragma(warning(suppress:6011 6387)) \
+    ((n) ? ((md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)), 0) : 0)
+
+#else
 #define md_array_push(a, item, alloc)   (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = (item), (a) + md_array_header(a)->size - 1)
 #define md_array_push_array(a, items, n, alloc) ((n) ? ((md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)), 0) : 0)
+#endif
 #define md_array_free(a, alloc)         ((*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__))
 
 #ifdef __cplusplus
@@ -68,6 +82,13 @@ static inline void* md_array_set_capacity_internal(void* arr, int64_t new_cap, i
         md_array_header(new_arr)->capacity = new_cap;
     }
     return new_arr;
+}
+
+static inline void* md_array_create_internal(int64_t size, int64_t item_size, struct md_allocator_i* alloc, const char* file, uint32_t line) {
+    ASSERT(size >= 0);
+    void* arr = md_array_set_capacity_internal(NULL, size, item_size, alloc, file, line);
+    md_array_header(arr)->size = size;
+    return arr;
 }
 
 static inline int64_t md_array_grow_cap(void* arr, int64_t n) {

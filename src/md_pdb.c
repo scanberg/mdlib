@@ -20,7 +20,9 @@ extern "C" {
 #endif
 
 #define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
-#define PARSE_BIOMT 1
+#define MD_PDB_CACHE_MAGIC 0x89172bab
+#define MD_PDB_CACHE_VERSION 13
+#define MD_PDB_PARSE_BIOMT 1
 
 // The opaque blob
 
@@ -29,7 +31,7 @@ typedef struct pdb_trajectory_t {
     md_file_o* file;
     uint64_t filesize;
     int64_t* frame_offsets;
-    mat3_t box;                // For pdb trajectories we have a static box
+    md_unit_cell_t cell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
     md_allocator_i* allocator;
     md_mutex_t mutex;
@@ -280,7 +282,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     if (header) {
         header->num_atoms = i;
         header->timestamp = (double)(step-1); // This information is missing from PDB trajectories
-        header->box = pdb->box;
+        header->cell = pdb->cell;
     }
 
     return true;
@@ -560,7 +562,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
     // Create instances from assemblies
     for (int64_t aidx = 0; aidx < data->num_assemblies; ++aidx) {
         const md_pdb_assembly_t* assembly = &data->assemblies[aidx];
-        md_label_t instance_label;
+        md_label_t instance_label = {0};
         instance_label.len = (uint8_t)snprintf(instance_label.buf, sizeof(instance_label.buf), "ASM_%i", assembly->id);
 
         for (int64_t tidx = assembly->transform_offset; tidx < assembly->transform_offset + assembly->transform_count; ++tidx) {
@@ -706,92 +708,83 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return result;
 }
 
-#define CACHE_MAGIC 0x8281123489172bab
-static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_atoms, float box[3][3], md_allocator_i* alloc) {
+static bool try_read_cache(str_t cache_file, md_array(int64_t)* offsets, int64_t* num_atoms, md_unit_cell_t* cell, md_allocator_i* alloc) {
     md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
+    bool result = false;
     if (file) {
-        int64_t read_bytes = 0;
         int64_t num_offsets = 0;
-        uint64_t magic = 0;
+        uint32_t magic = 0;
+        uint32_t version = 0;
 
-        bool result = true;
-
-        read_bytes = md_file_read(file, &magic, sizeof(uint64_t));
-        if (read_bytes != sizeof(uint64_t) || magic != CACHE_MAGIC) {
+        if (md_file_read(file, &magic, sizeof(magic)) != sizeof(magic) || magic != MD_PDB_CACHE_MAGIC) {
             MD_LOG_ERROR("Failed to read offset cache, magic was incorrect or corrupt");
-            result = false;
             goto done;
         }
 
-        read_bytes = md_file_read(file, num_atoms, sizeof(int64_t));
-        if (read_bytes != sizeof(int64_t) || num_atoms == 0) {
+        if (md_file_read(file, &version, sizeof(version)) != sizeof(version) || version != MD_PDB_CACHE_VERSION) {
+            MD_LOG_ERROR("Failed to read offset cache, version was incorrect");
+            goto done;
+        }
+
+        if (md_file_read(file, num_atoms, sizeof(num_atoms)) != sizeof(num_atoms) || num_atoms == 0) {
             MD_LOG_ERROR("Failed to read offset cache, number of atoms was zero or corrupt");
-            result = false;
             goto done;
         }
 
-        read_bytes = md_file_read(file, box, sizeof(float[3][3]));
-        if (read_bytes != sizeof(float[3][3])) {
-            MD_LOG_ERROR("Failed to read offset cache, box was corrupt");
-            result = false;
+        if (md_file_read(file, cell, sizeof(md_unit_cell_t)) != sizeof(md_unit_cell_t)) {
+            MD_LOG_ERROR("Failed to read offset cache, cell was corrupt");
             goto done;
         }
 
-        read_bytes = md_file_read(file, &num_offsets, sizeof(int64_t));
-        if (read_bytes != sizeof(int64_t) || num_offsets == 0) {
+        if (md_file_read(file, &num_offsets, sizeof(num_offsets)) != sizeof(num_offsets) || num_offsets == 0) {
             MD_LOG_ERROR("Failed to read offset cache, number of frames was zero or corrupted");
-            result = false;
             goto done;
         }
 
-        int64_t* tmp_offsets = 0;
-        md_array_resize(tmp_offsets, num_offsets, alloc);
+        md_array_resize(*offsets, num_offsets, alloc);
 
-        read_bytes = md_file_read(file, tmp_offsets, num_offsets * sizeof(int64_t));
-        if (read_bytes != (int64_t)(num_offsets * sizeof(int64_t))) {
+        const int64_t offset_bytes = md_array_bytes(*offsets);
+        if (md_file_read(file, *offsets, offset_bytes) != offset_bytes) {
             MD_LOG_ERROR("Failed to read offset cache, offsets are incomplete");
-            md_array_free(tmp_offsets, alloc);
-            result = false;
+            md_array_free(*offsets, alloc);
             goto done;
         }
 
-        *offsets = tmp_offsets;
+        result = true;
     done:
         md_file_close(file);
-        return result;
     }
-
-    return false;
+    return result;
 }
 
-static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms, float box[3][3]) {
+static bool write_cache(str_t cache_file, const int64_t* offsets, int64_t num_offsets, int64_t num_atoms, const md_unit_cell_t* cell) {
+    bool result = false;
     md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
     if (file) {
-        int64_t num_offsets = md_array_size(offsets);
-        int64_t written_bytes = 0;
-        const uint64_t magic = CACHE_MAGIC;
+        const uint32_t magic    = MD_PDB_CACHE_MAGIC;
+        const uint32_t version  = MD_PDB_CACHE_VERSION;
+        const int64_t offset_bytes = num_offsets * sizeof(int64_t);
 
-        written_bytes = md_file_write(file, &magic, sizeof(uint64_t));
-        ASSERT(written_bytes == sizeof(uint64_t));
+        if (md_file_write(file, &magic,         sizeof(uint32_t))   != sizeof(uint32_t) ||
+            md_file_write(file, &version,       sizeof(uint32_t))   != sizeof(uint32_t) ||
+            md_file_write(file, &num_atoms,     sizeof(int64_t))    != sizeof(int64_t)  ||
+            md_file_write(file, cell,           sizeof(md_unit_cell_t))  != sizeof(md_unit_cell_t)||
+            md_file_write(file, &num_offsets,   sizeof(int64_t))    != sizeof(int64_t)  ||
+            md_file_write(file, offsets,        offset_bytes)       != offset_bytes)
+        {
+            MD_LOG_ERROR("Failed to write pdb cache");
+            goto done;
+        }
 
-        written_bytes = md_file_write(file, &num_atoms, sizeof(int64_t));
-        ASSERT(written_bytes == sizeof(int64_t));
-
-        written_bytes = md_file_write(file, box, sizeof(float[3][3]));
-        ASSERT(written_bytes == sizeof(float[3][3]));
-
-        written_bytes = md_file_write(file, &num_offsets, sizeof(int64_t));
-        ASSERT(written_bytes == sizeof(int64_t));
-
-        written_bytes = md_file_write(file, offsets, num_offsets * sizeof(int64_t));
-        ASSERT(written_bytes == (int64_t)(num_offsets * sizeof(int64_t)));
-
+        result = true;
+        
+        done:
         md_file_close(file);
-        return true;
+    } else {
+        MD_LOG_ERROR("Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
     }
-
-    MD_LOG_ERROR("Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
-    return false;
+    
+    return result;
 }
 
 void pdb_trajectory_free(struct md_trajectory_o* inst) {
@@ -816,11 +809,11 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
     str_t cache_file = {buf, len};
 
-    mat3_t box = {0};
+    md_unit_cell_t cell = {0};
     int64_t num_atoms = 0;
     int64_t* offsets = 0;
 
-    if (!try_read_cache(cache_file, &offsets, &num_atoms, box.elem, alloc)) {
+    if (!try_read_cache(cache_file, &offsets, &num_atoms, &cell, alloc)) {
         md_pdb_data_t data = {0};
         if (!md_pdb_data_parse_file(&data, filename, default_allocator)) {
             return false;
@@ -855,15 +848,11 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
             if (data.num_cryst1 > 1) {
                 md_log(MD_LOG_TYPE_INFO, "The PDB file contains multiple CRYST1 entries, will pick the first one for determining the simulation box");
             }
-            if (data.cryst1[0].alpha != 90.0f || data.cryst1[0].beta != 90.0f || data.cryst1[0].gamma != 90.0f) {
-                md_log(MD_LOG_TYPE_INFO, "The PDB file CRYST1 entry has one or more non-orthogonal axes, these are ignored");
-            }
-            box.elem[0][0] = data.cryst1[0].a;
-            box.elem[1][1] = data.cryst1[0].b;
-            box.elem[2][2] = data.cryst1[0].c;
+            // If it is in fact a box, that will be handled as well
+            cell = md_util_unit_cell_triclinic(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
         }
 
-        write_cache(cache_file, offsets, num_atoms, box.elem);
+        write_cache(cache_file, offsets, md_array_size(offsets), num_atoms, &cell);
     }
 
     int64_t max_frame_size = 0;
@@ -893,7 +882,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
     };
-    pdb->box = box;
+    pdb->cell = cell;
 
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;

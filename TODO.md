@@ -134,3 +134,28 @@
         - Propagate flags
         - Yield the type checking if the flag is found on a node.
         - Assert on evaluation that if the length is unknown (-1) then make sure that the flag is set (otherwise a bug).
+
+
+### Hydrogen Bonds ###
+
+Notes:
+
+
+Compute Hydrogen bond order
+
+Molecular Geometry
+
+Coordination number
+   (1)- Terminal
+    2 - Linear, Bent
+    3 - Trigonal Planar, Trogonal Pyramidal, T-shaped
+    4 - Tetrahedral, Square planar, Seesaw
+    5 - Trigonal bipyramidal, Square pyramidal, Pentagonal Planar
+    6 - Octahedral, Trigonal Prismatic, Pentagonal Pyramidal
+    7 - Pentagonal Bipyramidal, Capped Octahedral, Capped Trigonal Prismatic
+    8 - Square antiprismatic, Dodecahedral, Bicapped Trigonal Prismatic,
+    9 - Tricapped Trigonal Prismatic, Capped Square Antiprismatic
+
+Tetrahedral - 4 connected components (substituents) to a central one
+    When all connected components are of the same type, the bond angles are acos(-1/3) = 109.4712206
+

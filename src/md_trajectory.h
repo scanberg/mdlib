@@ -2,24 +2,23 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <core/md_str.h>
+#include <md_types.h>
 #include <core/md_unit.h>
-#include <core/md_vec_math.h>
 
 struct md_trajectory_o;
 
 typedef struct md_trajectory_header_t {
-	int64_t num_frames;
-	int64_t num_atoms;
-	int64_t max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
+	int64_t   num_frames;
+	int64_t   num_atoms;
+	int64_t   max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
 	md_unit_t time_unit;
 } md_trajectory_header_t;
 
 typedef struct md_trajectory_frame_header_t {
-	int64_t num_atoms;
-	int64_t index;
-	double  timestamp;
-	mat3_t	box;
+	int64_t   num_atoms;
+	int64_t   index;
+	double    timestamp;
+	md_unit_cell_t cell;
 } md_trajectory_frame_header_t;
 
 #ifdef __cplusplus

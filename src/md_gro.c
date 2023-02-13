@@ -73,9 +73,9 @@ static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_
 
         md_gro_atom_t atom = {
             .res_id = res_id,
-            .x = (float)x,
-            .y = (float)y,
-            .z = (float)z,
+            .x = x,
+            .y = y,
+            .z = z,
         };
         str_copy_to_char_buf(atom.res_name, sizeof(atom.res_name), res_name);
         str_copy_to_char_buf(atom.atom_name, sizeof(atom.atom_name), atom_name);
@@ -262,11 +262,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
     }
 
-    mol->coord_frame = (mat3_t) {
-        data->cell_ext[0] * 10.0f, 0, 0,
-        0, data->cell_ext[1] * 10.0f, 0,
-        0, 0, data->cell_ext[2] * 10.0f,
-    };
+    mol->cell = md_util_unit_cell_ortho(data->cell_ext[0] * 10.0, data->cell_ext[1] * 10.0, data->cell_ext[2] * 10.0);
 
     return true;
 }

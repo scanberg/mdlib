@@ -171,7 +171,7 @@ bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, 
     return false;
 }
 
-bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, float box[3][3], double* timestamp) {
+bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, float* x, float* y, float* z, md_unit_cell_t* cell, double* timestamp) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
@@ -189,14 +189,14 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
         ASSERT(data && (int64_t)data->header.index == frame_idx);
     }
 
-    if (x || y || z || box || timestamp) {
+    if (x || y || z || cell || timestamp) {
         ASSERT(data);
         ASSERT(lock);
 
-        if (x)   MEMCPY(x,   data->x,   data->header.num_atoms * sizeof(float));
-        if (y)   MEMCPY(y,   data->y,   data->header.num_atoms * sizeof(float));
-        if (z)   MEMCPY(z,   data->z,   data->header.num_atoms * sizeof(float));
-        if (box) MEMCPY(box, data->header.box.elem, sizeof(data->header.box));
+        if (x)    MEMCPY(x,   data->x,   data->header.num_atoms * sizeof(float));
+        if (y)    MEMCPY(y,   data->y,   data->header.num_atoms * sizeof(float));
+        if (z)    MEMCPY(z,   data->z,   data->header.num_atoms * sizeof(float));
+        if (cell) MEMCPY(cell, &data->header.cell, sizeof(data->header.cell));
         if (timestamp) *timestamp = data->header.timestamp;
     }
 

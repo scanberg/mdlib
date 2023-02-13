@@ -214,6 +214,10 @@ typedef struct internal_rep_t {
     gl_buffer_t color;
 } internal_rep_t;
 
+typedef struct internal_bond_t {
+    uint32_t atom_idx[2];
+} internal_bond_t;
+
 STATIC_ASSERT(sizeof(internal_shaders_t) <= sizeof(md_gl_shaders_t), "internal draw shaders does not fit into containing structure");
 STATIC_ASSERT(sizeof(internal_mol_t) <= sizeof(md_gl_molecule_t), "internal draw mol does not fit into containing structure");
 STATIC_ASSERT(sizeof(internal_rep_t) <= sizeof(md_gl_representation_t), "internal draw rep does not fit into containing structure");
@@ -599,25 +603,21 @@ bool md_gl_molecule_set_covalent_bonds(md_gl_molecule_t* ext_mol, uint32_t offse
             return false;
         }
         byte_stride = MAX(sizeof(md_bond_t), byte_stride);
-        if (byte_stride > sizeof(md_bond_t)) {
-            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
-            md_bond_t* bond_data = (md_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-            if (bond_data) {
-                for (uint32_t i = offset; i < count; ++i) {
-                    bond_data[i] = *(const md_bond_t*)((const uint8_t*)bond_data + byte_stride * i);
-                }
-                glUnmapBuffer(GL_ARRAY_BUFFER);
-                glBindBuffer(GL_ARRAY_BUFFER, 0);
-                return true;
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
+        internal_bond_t* bond_data = (internal_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+        if (bond_data) {
+            for (uint32_t i = offset; i < count; ++i) {
+                const md_bond_t* bond = (const md_bond_t*)((const uint8_t*)bonds + byte_stride * i);
+                bond_data[i].atom_idx[0] = bond->idx[0];
+                bond_data[i].atom_idx[1] = bond->idx[1];
             }
+            glUnmapBuffer(GL_ARRAY_BUFFER);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
-            MD_LOG_ERROR("Failed to map molecule bond buffer");
-            return false;
-        }
-        else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], offset * sizeof(md_bond_t), count * sizeof(md_bond_t), bonds);
             return true;
         }
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        MD_LOG_ERROR("Failed to map molecule bond buffer");
+        return false;
     }
     MD_LOG_ERROR("One or more arguments are missing");
     return false;
@@ -1112,10 +1112,12 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_mol->flags |= MOL_FLAG_HAS_BACKBONE;
         }
 
-        gl_mol->bond_count = (uint32_t)mol->covalent.count;
+        gl_mol->bond_count = (uint32_t)md_array_size(mol->persistent_bonds);
         gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES] = gl_buffer_create(gl_mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
 
-        if (mol->covalent.bond) gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES], 0, gl_mol->bond_count * sizeof(uint32_t) * 2, mol->covalent.bond);
+        if (mol->persistent_bonds) {
+            md_gl_molecule_set_covalent_bonds(ext_mol, 0, gl_mol->bond_count, mol->persistent_bonds, sizeof(md_bond_t));
+        }
        
         gl_mol->magic = MAGIC;
         return true;

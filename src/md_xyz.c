@@ -420,17 +420,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->num_atoms = i;
         header->index = step;
         header->timestamp = (double)(step); // This information is missing from xyz trajectories
-        mat3_t cell = {0};
-        if (model.cell_extent[0] != 0) {
-            if (model.cell_angle[0] != 90 && model.cell_angle[1] != 90 && model.cell_angle[2] != 90) {
-                cell = md_util_compute_unit_cell_basis(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
-            } else {
-                cell.elem[0][0] = model.cell_extent[0];
-                cell.elem[1][1] = model.cell_extent[1];
-                cell.elem[2][2] = model.cell_extent[2];
-            }
-        }
-        header->box = cell;
+        header->cell = md_util_unit_cell_triclinic(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
     }
 
     return true;

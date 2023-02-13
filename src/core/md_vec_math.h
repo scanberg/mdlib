@@ -1158,11 +1158,41 @@ MD_VEC_INLINE mat3_t mat3_transpose(mat3_t M) {
     return T;
 }
 
+static inline mat3_t mat3_inverse(mat3_t M) {
+    const float one_over_det = 1.0f / (
+        + M.elem[0][0] * (M.elem[1][1] * M.elem[2][2] - M.elem[2][1] * M.elem[1][2])
+        - M.elem[1][0] * (M.elem[0][1] * M.elem[2][2] - M.elem[2][1] * M.elem[0][2])
+        + M.elem[2][0] * (M.elem[0][1] * M.elem[1][2] - M.elem[1][1] * M.elem[0][2]));
+
+    mat3_t I;
+
+    I.elem[0][0] = + (M.elem[1][1] * M.elem[2][2] - M.elem[2][1] * M.elem[1][2]) * one_over_det;
+    I.elem[1][0] = - (M.elem[1][0] * M.elem[2][2] - M.elem[2][0] * M.elem[1][2]) * one_over_det;
+    I.elem[2][0] = + (M.elem[1][0] * M.elem[2][1] - M.elem[2][0] * M.elem[1][1]) * one_over_det;
+    I.elem[0][1] = - (M.elem[0][1] * M.elem[2][2] - M.elem[2][1] * M.elem[0][2]) * one_over_det;
+    I.elem[1][1] = + (M.elem[0][0] * M.elem[2][2] - M.elem[2][0] * M.elem[0][2]) * one_over_det;
+    I.elem[2][1] = - (M.elem[0][0] * M.elem[2][1] - M.elem[2][0] * M.elem[0][1]) * one_over_det;
+    I.elem[0][2] = + (M.elem[0][1] * M.elem[1][2] - M.elem[1][1] * M.elem[0][2]) * one_over_det;
+    I.elem[1][2] = - (M.elem[0][0] * M.elem[1][2] - M.elem[1][0] * M.elem[0][2]) * one_over_det;
+    I.elem[2][2] = + (M.elem[0][0] * M.elem[1][1] - M.elem[1][0] * M.elem[0][1]) * one_over_det;
+
+    return I;
+}
+
 MD_VEC_INLINE float mat3_determinant(mat3_t M) {
     float d = M.elem[0][0] * (M.elem[1][1] * M.elem[2][2] - M.elem[2][1] * M.elem[1][2])
             - M.elem[1][0] * (M.elem[0][1] * M.elem[2][2] - M.elem[2][1] * M.elem[0][2])
             + M.elem[2][0] * (M.elem[0][1] * M.elem[1][2] - M.elem[1][1] * M.elem[0][2]);
     return d;
+}
+
+MD_VEC_INLINE float mat3_trace(mat3_t M) {
+    return M.elem[0][0] + M.elem[1][1] + M.elem[2][2];
+}
+
+MD_VEC_INLINE vec3_t mat3_diag(mat3_t M) {
+    vec3_t v = {M.elem[0][0], M.elem[1][1], M.elem[2][2]};
+    return v;
 }
 
 typedef struct mat3_eigen_t {
@@ -1302,7 +1332,6 @@ MD_VEC_INLINE mat4_t mat4_sub(mat4_t A, mat4_t B) {
     M.col[1] = vec4_sub(A.col[1], B.col[1]);
     M.col[2] = vec4_sub(A.col[2], B.col[2]);
     M.col[3] = vec4_sub(A.col[3], B.col[3]);
-    return M;
     return M;
 }
 

@@ -82,7 +82,7 @@ static char CWD[4096];
 #if MD_PLATFORM_WINDOWS
 // https://docs.microsoft.com/en-us/windows/win32/debug/retrieving-the-last-error-code
 void print_windows_error() {
-    LPVOID msg_buf;
+    LPVOID msg_buf = 0;
     DWORD err_code = GetLastError();
 
     FormatMessage(
@@ -464,8 +464,9 @@ double md_time_as_seconds(md_timestamp_t t) {
 
 uint64_t md_physical_ram() {
 #if MD_PLATFORM_WINDOWS
-    MEMORYSTATUSEX status;
-    status.dwLength = sizeof(status);
+    MEMORYSTATUSEX status = {
+        .dwLength = sizeof(MEMORYSTATUSEX),
+    };
     GlobalMemoryStatusEx(&status);
     return status.ullTotalPhys;
 #elif MD_PLATFORM_UNIX
@@ -534,6 +535,9 @@ void md_vm_commit(void* ptr, uint64_t size) {
 
 void md_vm_decommit(void* ptr, uint64_t size) {
 #if MD_PLATFORM_WINDOWS
+#if MD_COMPILER_MSVC
+#   pragma warning(suppress : 6250)
+#endif
     VirtualFree(ptr, size, MEM_DECOMMIT);
 #elif MD_PLATFORM_UNIX
     int res;
@@ -778,7 +782,6 @@ bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count) {
     ASSERT(semaphore);
     ASSERT(count);
 #if MD_PLATFORM_WINDOWS
-
     _NtQuerySemaphore NtQuerySemaphore = (_NtQuerySemaphore)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQuerySemaphore");
 
     if (NtQuerySemaphore) {

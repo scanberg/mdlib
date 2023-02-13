@@ -2136,14 +2136,14 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         md_bitfield_t* bf_arr = as_bitfield(*dst);
         
-        int64_t num_rings = md_index_data_count(&ctx->mol->covalent.rings);
+        int64_t num_rings = md_index_data_count(&ctx->mol->rings);
         int64_t dst_idx = 0;
         for (int64_t i = 0; i < num_rings; ++i) {
             md_bitfield_t* bf = &bf_arr[dst_idx];
             
             // Only accept the ring if it is fully within the given context
-            const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->covalent.rings, i);
-            const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->covalent.rings, i);
+            const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->rings, i);
+            const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->rings, i);
 
             if (ctx->mol_ctx) {
                 bool discard = false;
@@ -2170,11 +2170,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We need to check if the ring is within the given context
         if (ctx->mol_ctx) {
             int count = 0;
-            int64_t num_rings = md_index_data_count(&ctx->mol->covalent.rings);
+            int64_t num_rings = md_index_data_count(&ctx->mol->rings);
             for (int64_t i = 0; i < num_rings; ++i) {
                 bool discard = false;
-                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->covalent.rings, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->covalent.rings, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(&ctx->mol->rings, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(&ctx->mol->rings, i);
                 for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
                     if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
                         discard = true;
@@ -2187,7 +2187,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             result = count;
         } else {
-            return (int)md_index_data_count(&ctx->mol->covalent.rings);
+            return (int)md_index_data_count(&ctx->mol->rings);
         }
     }
 
@@ -2856,7 +2856,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));            
             if (ctx->frame_header) {
-                vec4_t vp = vec4_from_vec3(mat3_mul_vec3(ctx->frame_header->box, (vec3_t){1,1,1}), 1.0f);
+                vec4_t vp = vec4_from_vec3(mat3_diag(ctx->frame_header->cell.basis), 1.0f);
                 vec4_t va = vec4_from_vec3(a, 0.0f);
                 vec4_t vb = vec4_from_vec3(b, 0.0f);
                 as_float(*dst) = vec4_periodic_distance(va, vb, vp);
@@ -3866,7 +3866,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             ASSERT(dst->ptr);
             float* bins = as_float_arr(*dst);
             if (ref_len > 0 && trg_len > 0) {
-                const vec3_t pbc_ext = ctx->frame_header ? mat3_mul_vec3(ctx->frame_header->box, (vec3_t){1,1,1}) : (vec3_t){0,0,0};
+                const vec3_t pbc_ext = ctx->frame_header ? mat3_diag(ctx->frame_header->cell.basis) : (vec3_t){0,0,0};
                 compute_rdf(bins, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, pbc_ext, ctx->temp_alloc);
             }
         }
@@ -4095,11 +4095,11 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         };
 
         float* ref_w = mem + ref_size * 6;
-        vec3_t ref_com[2];
+        vec3_t ref_com[2] = {0};
 
         // Fetch initial reference positions
         extract_xyzw(ref[0].x, ref[0].y, ref[0].z, ref_w, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, ref_bf);
-        const vec3_t pbc_ext = ctx->frame_header ? mat3_mul_vec3(ctx->frame_header->box, (vec3_t){1,1,1}) : (vec3_t){0,0,0};
+        const vec3_t pbc_ext = ctx->frame_header ? mat3_diag(ctx->frame_header->cell.basis) : (vec3_t){0,0,0};
 
         // Fetch target positions
         vec3_t* target_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield, ctx->temp_alloc);

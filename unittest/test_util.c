@@ -181,10 +181,10 @@ UTEST(util, structure) {
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
 
-    num_structures = md_index_data_count(&mol.covalent.structures);
+    num_structures = md_index_data_count(&mol.structures);
 	EXPECT_EQ(num_structures, 1);
     
-    num_rings = md_index_data_count(&mol.covalent.rings);
+    num_rings = md_index_data_count(&mol.rings);
     EXPECT_EQ(num_rings, 0);
     
     md_arena_allocator_reset(arena);
@@ -195,10 +195,10 @@ UTEST(util, structure) {
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
     
-    num_structures = md_index_data_count(&mol.covalent.structures);
+    num_structures = md_index_data_count(&mol.structures);
     EXPECT_EQ(num_structures, 1);
 
-    num_rings = md_index_data_count(&mol.covalent.rings);
+    num_rings = md_index_data_count(&mol.rings);
     EXPECT_EQ(num_rings, 5);
 
     md_arena_allocator_reset(arena);
@@ -209,11 +209,11 @@ UTEST(util, structure) {
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT | MD_UTIL_POSTPROCESS_CHAINS_BIT);
     
-    num_structures = md_index_data_count(&mol.covalent.structures);
+    num_structures = md_index_data_count(&mol.structures);
     const int64_t expected_count = mol.chain.count + 61;
     EXPECT_EQ(num_structures, expected_count);
 
-    num_rings = md_index_data_count(&mol.covalent.rings);
+    num_rings = md_index_data_count(&mol.rings);
     EXPECT_EQ(num_rings, 2076);
     
     md_arena_allocator_destroy(arena);

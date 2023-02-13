@@ -25,7 +25,7 @@ In order to interface with your application, the shaders have a customizable out
 A function called 'write_fragment' is called in the fragment shader to finalize and write the fragments to the respective outputs.
 This part is customizable by providing a snipped which controls what parameters to write and to which channels of the framebuffer.
 
-If no custom_shader_snippet is supplied to md_gl_context_init, then a default_shader_snippet is used which is listed bellow:
+If no custom_shader_snippet is supplied to md_gl_context_init, then a default_shader_snippet is used which is listed below:
 
 layout(location = 0) out vec4 out_color;
 

@@ -89,16 +89,18 @@ static inline float extract_zfar(const mat4_t Pinv) {
 }
 
 static inline vec2_t extract_jitter_uv(const mat4_t P) {
-    vec2_t jitter;
     if (is_ortho_proj_matrix(P)) {
-        jitter.x = -P.elem[3][0] * 0.5f;
-        jitter.y = -P.elem[3][1] * 0.5f;
+        return (vec2_t) {
+            -P.elem[3][0] * 0.5f,
+            -P.elem[3][1] * 0.5f,
+        };
     }
     else {
-        jitter.x = P.elem[2][0] * 0.5f;
-        jitter.y = P.elem[2][1] * 0.5f;
+        return (vec2_t) {
+            P.elem[2][0] * 0.5f,
+            P.elem[2][1] * 0.5f,
+        };
     }
-    return jitter;
 }
 
 static inline uint32_t compute_mip_count(uint32_t width, uint32_t height) {
@@ -830,7 +832,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
             ctx.ss_vel_tex = gl_texture_create(width, height, 1, GL_RG16F);
 
             gl_buffer_destroy(&ctx.visibility_buf);
-            ctx.visibility_buf = gl_buffer_create(width * height * sizeof(uint64_t), 0, 0);
+            ctx.visibility_buf = gl_buffer_create(width * height * (uint32_t)sizeof(uint64_t), 0, 0);
 
             glNamedFramebufferTexture(ctx.fbo_id, GL_DEPTH_ATTACHMENT, ctx.depth_tex.id,  0);
             glNamedFramebufferTexture(ctx.fbo_id, GL_COLOR_ATTACHMENT0 + COLOR_TEX_ATTACHMENT,  ctx.color_tex.id,  0);
@@ -906,7 +908,7 @@ static void field_free(allocation_field_t* field, allocation_range_t range) {
 
 md_gfx_handle_t md_gfx_structure_create_from_mol(const md_molecule_t* mol) {
     ASSERT(mol);
-    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)mol->covalent.count, (uint32_t)mol->backbone.count, (uint32_t)mol->backbone.range_count, (uint32_t)mol->residue.count, (uint32_t)mol->instance.count);
+    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)md_array_size(mol->persistent_bonds), (uint32_t)mol->backbone.count, (uint32_t)mol->backbone.range_count, (uint32_t)mol->residue.count, (uint32_t)mol->instance.count);
 }
 
 md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t group_count, uint32_t instance_count) {
@@ -1007,7 +1009,7 @@ uint32_t* create_cluster_ranges_from_groups(range_t* groups, uint32_t group_coun
         }
     }
 
-    uint32_t range = (cluster_offset << 8) | cluster_size;
+    const uint32_t range = (cluster_offset << 8) | cluster_size;
     md_array_push(ranges, range, alloc);
 
     return ranges;

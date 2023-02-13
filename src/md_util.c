@@ -19,6 +19,8 @@
 #include <string.h>
 #include <float.h>
 
+#define bake(str) {str, sizeof(str)-1}
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -33,8 +35,6 @@ enum {
     Fr, Ra, Ac, Th, Pa, U, Np, Pu, Am, Cm, Bk, Cf, Es, Fm, Md, No, Lr, Rf, Db, Sg, Bh,
     Hs, Mt, Ds, Rg, Cn, Nh, Fl, Mc, Lv, Ts, Og, Num_Elements
 };
-
-#define bake(str) {str, sizeof(str)-1}
 
 static const str_t element_symbols[] = {
     bake("Xx"), bake("H"),  bake("He"), bake("Li"), bake("Be"), bake("B"),  bake("C"),  bake("N"),  bake("O"),  bake("F"),  bake("Ne"), bake("Na"), bake("Mg"), bake("Al"), bake("Si"), bake("P"),  bake("S"),  bake("Cl"), bake("Ar"), bake("K"),  bake("Ca"), bake("Sc"), bake("Ti"), bake("V"),
@@ -60,8 +60,6 @@ static const str_t element_names[] = {
     bake("Hassium"),     bake("Meitnerium"),   bake("Darmstadtium"), bake("Roentgenium"), bake("Copernicium"), bake("Nihonium"),      bake("Flerovium"),  bake("Moscovium"),  bake("Livermorium"),
     bake("Tennessine"),  bake("Oganesson"),                          
 };
-
-#undef bake
 
 // http://dx.doi.org/10.1039/b801115j
 static float element_covalent_radii[] = {
@@ -109,11 +107,16 @@ static uint8_t element_max_valence[] = {
     1, 2, 3, 4, 5, 6, 7, 7, 7, 6, 5, 5, 4, 3, 3, 3, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 };
 
+#define RGBA(r,g,b,a) ( ((a & 255) << 24) | ((b & 255) << 16) | ((g & 255) << 8) | (r & 255) )
+#define RGB(r,g,b) RGBA(r,g,b,255)
+
+// Based on this with some values modified
+// Some stem from Jmol, some from Rasmol
 // http://jmol.sourceforge.net/jscolors/
 static uint32_t element_cpk_colors[] = {
     0xFFFF00FF, 0xFFFFFFFF, 0xFFFFFFD9, 0xFF2222B2, 0xFF00FFC2, 0xFFB5B5FF, 0xFFB0B0B0, 0xFFFF8F8F, 0xFF0000F0, 0xFF50E090, 0xFFF5E3B3, 0xFFF25CAB,
     0xFF00FF8A, 0xFF908080, 0xFFA0C8F0, 0xFF00A5FF, 0xFF32C8FF, 0xFF1FF01F, 0xFFE3D180, 0xFFD4408F, 0xFF908080, 0xFFE6E6E6, 0xFF908080, 0xFFABA6A6,
-    0xFF908080, 0xFF908080, 0xFF00A5FF, 0xFFA090F0, 0xFF2A2AA5, 0xFF2A2AA5, 0xFF2A2AA5, 0xFF8F8FC2, 0xFF8F8F66, 0xFFE380BD, 0xFF00A1FF, 0xFF2A2AA5,
+    0xFF908080, 0xFF908080, 0xFF3366E0, 0xFFA090F0, 0xFF2A2AA5, 0xFF2A2AA5, 0xFF2A2AA5, 0xFF8F8FC2, 0xFF8F8F66, 0xFFE380BD, 0xFF00A1FF, 0xFF2A2AA5,
     0xFFD1B85C, 0xFFB02E70, 0xFF00FF00, 0xFFFFFF94, 0xFFE0E094, 0xFFC9C273, 0xFFB5B554, 0xFF9E9E3B, 0xFF8F8F24, 0xFF8C7D0A, 0xFF856900, 0xFF908080,
     0xFF8FD9FF, 0xFF7375A6, 0xFF808066, 0xFFB5639E, 0xFF007AD4, 0xFF940094, 0xFFB09E42, 0xFF8F1757, 0xFF00A5FF, 0xFFFFD470, 0xFFC7FFFF, 0xFFC7FFD9,
     0xFFC7FFC7, 0xFFC7FFA3, 0xFFC7FF8F, 0xFFC7FF61, 0xFFC7FF45, 0xFFC7FF30, 0xFFC7FF1F, 0xFF9CFF00, 0xFF75E600, 0xFF52D400, 0xFF38BF00, 0xFF24AB00,
@@ -123,25 +126,52 @@ static uint32_t element_cpk_colors[] = {
     0xFF2E00E6, 0xFF2600EB, 0xFF2200F0, 0xFF2000F6, 0xFF1E00F8, 0xFF1C00FA, 0xFF1A00FC, 0xFF1800FD, 0xFF1600FE, 0xFF1400FF, 0xFF1200FF
 };
 
+// This has been filled with some entries found in molstar (github.com/molstar)
 static const char* amino_acids[] = {
     "ALA", "ARG", "ASN", "ASP", "CYS", "CYX", "GLN", "GLU",
     "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER",
     "THR", "TRP", "TYR", "VAL", "SEC", "PYL", "ASC", "GLX", "XLE", "HISE"
+    
+    // CCD
+    "UNK",
+    "MSE", "SEP", "TPO", "PTR", "PCA",
+
+    // Charmm
+    "HSD", "HSP", "LSN", "ASPP", "GLUP",
+
+    // Amber
+    "HID", "HIE", "HIP", "LYN", "ASH", "GLH",
 };
 
-static const char* dna[] = {"DA", "DA3", "DA5", "DC", "DC3", "DC5", "DG", "DG3", "DG5", "DT", "DT3", "DT5"};
+static const char* rna[] = {"A", "C", "T", "G", "I", "U", "N"};
+static const char* dna[] = {"DA", "DC", "DG", "DT"};
+
 static const char* acidic[] = { "ASP", "GLU" };
 static const char* basic[] = { "ARG", "HIS", "LYS" };
 
 static const char* neutral[] = { "VAL", "PHE", "GLN", "TYR", "HIS", "CYS", "MET", "TRP", "ASX", "GLX", "PCA", "HYP" };
-static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4" };
+static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4", "W", "DOD", "D30" };
 static const char* hydrophobic[] = { "ALA", "VAL", "ILE", "LEU", "MET", "PHE", "TYR", "TRP", "CYX" };
 
-static inline int64_t match_str_in_array(str_t str, const char* arr[], int64_t arr_len) {
+static inline int64_t find_str_in_array(str_t str, const char* arr[], int64_t arr_len) {
     for (int64_t i = 0; i < arr_len; ++i) {
         if (str_equal_cstr(str, arr[i])) return i;
     }
     return -1;
+}
+
+
+// Trim whitespace, digits and 'X's
+static inline str_t trim_label(str_t lbl) {
+    const char* beg = str_beg(lbl);
+    const char* end = str_end(lbl);
+    const char* c = beg;
+    while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
+    beg = c;
+    while (c < end && is_alpha(*c) && !(*c == 'x' || *c == 'X')) ++c;
+    end = c;
+
+    return (str_t) { .ptr = beg, .len = end-beg };
 }
 
 static inline md_simd_f32_t simd_deperiodize(md_simd_f32_t x, md_simd_f32_t r, md_simd_f32_t period) {
@@ -150,33 +180,44 @@ static inline md_simd_f32_t simd_deperiodize(md_simd_f32_t x, md_simd_f32_t r, m
     dx = md_simd_sub(dx, md_simd_round(dx));
     return md_simd_add(r, md_simd_mul(dx, period));
 }
+
+bool md_util_resname_rna(str_t str) {
+    str = trim_label(str);
+    return find_str_in_array(str, rna, ARRAY_SIZE(rna)) != -1;
+}
     
 bool md_util_resname_dna(str_t str) {
-    return match_str_in_array(str, dna, ARRAY_SIZE(dna)) != -1;
+    str = trim_label(str);
+    return find_str_in_array(str, dna, ARRAY_SIZE(dna)) != -1;
+}
+
+bool md_util_resname_nucleic_acid(str_t str) {
+    str = trim_label(str);
+    return find_str_in_array(str, rna, ARRAY_SIZE(rna)) > -1 || find_str_in_array(str, dna, ARRAY_SIZE(dna)) > -1;
 }
     
 bool md_util_resname_acidic(str_t str) {
-    return match_str_in_array(str, acidic, ARRAY_SIZE(acidic)) != -1;
+    return find_str_in_array(str, acidic, ARRAY_SIZE(acidic)) != -1;
 }
 
 bool md_util_resname_basic(str_t str) {
-    return match_str_in_array(str, basic, ARRAY_SIZE(basic)) != -1;
+    return find_str_in_array(str, basic, ARRAY_SIZE(basic)) != -1;
 }
     
 bool md_util_resname_neutral(str_t str) {
-    return match_str_in_array(str, neutral, ARRAY_SIZE(neutral)) != -1;
+    return find_str_in_array(str, neutral, ARRAY_SIZE(neutral)) != -1;
 }
     
 bool md_util_resname_water(str_t str) {
-    return match_str_in_array(str, water, ARRAY_SIZE(water)) != -1;
+    return find_str_in_array(str, water, ARRAY_SIZE(water)) != -1;
 }
     
 bool md_util_resname_hydrophobic(str_t str) {
-    return match_str_in_array(str, hydrophobic, ARRAY_SIZE(hydrophobic)) != -1;
+    return find_str_in_array(str, hydrophobic, ARRAY_SIZE(hydrophobic)) != -1;
 }
     
 bool md_util_resname_amino_acid(str_t str) {
-    return match_str_in_array(str, amino_acids, ARRAY_SIZE(amino_acids)) != -1;
+    return find_str_in_array(str, amino_acids, ARRAY_SIZE(amino_acids)) != -1;
 }
 
 md_element_t md_util_element_lookup(str_t str) {
@@ -205,21 +246,6 @@ md_element_t md_util_element_lookup_ignore_case(str_t str) {
     return 0;
 }
 
-// Trim whitespace, digits and 'X's
-str_t trim_type(str_t type) {
-    const char* beg = str_beg(type);
-    const char* end = str_end(type);
-    const char* c = beg;
-    while (c < end && *c && (is_digit(*c) || is_whitespace(*c) || *c == 'x' || *c == 'X')) ++c;
-    beg = c;
-
-    c = beg;
-    while (c < end && is_alpha(*c) && !(*c == 'x' || *c == 'X')) ++c;
-    end = c;
-
-    return (str_t) { .ptr = beg, .len = end-beg };
-}
-
 static bool amino_acid_heuristic(const md_label_t labels[], int size) {
     // This is the minimal set of types which needs to be present in the case of Glycine and excluding hydrogen
 #define BIT_N  1
@@ -231,7 +257,7 @@ static bool amino_acid_heuristic(const md_label_t labels[], int size) {
     int bits  = 0;
     for (int i = 0; i < size; ++i) {
         str_t lbl = { labels[i].buf, labels[i].len };
-        lbl = trim_type(lbl);
+        lbl = trim_label(lbl);
         if (lbl.len && lbl.ptr[0] != 'H') {
             if (str_equal_cstr(lbl, "N")) bits |= BIT_N;
             else if (str_equal_cstr(lbl, "CA")) bits |= BIT_CA;
@@ -260,7 +286,7 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
         str_t original = {mol->atom.name[i].buf, mol->atom.name[i].len};
 
         // Trim whitespace, digits and 'X's
-        str_t name = trim_type(original);
+        str_t name = trim_label(original);
 
         if (name.len > 0) {
 
@@ -268,23 +294,32 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
             if ((elem = md_util_element_lookup(name)) != 0) goto done;
 
             // If amino acid, try to deduce the element from that
-            if (mol->atom.residue_idx && mol->residue.name) {
-                str_t resname = str_trim(LBL_TO_STR(mol->residue.name[mol->atom.residue_idx[i]]));
-                md_range_t res_range = mol->residue.atom_range[mol->atom.residue_idx[i]];
-                if (md_util_resname_amino_acid(resname) ||
-                    amino_acid_heuristic(mol->atom.name + res_range.beg, res_range.end - res_range.beg))
-                {
-                    // EASY-PEASY, we just try to match against the first character
+            if (mol->atom.residue_idx) {
+                const md_range_t res_range = mol->residue.atom_range[mol->atom.residue_idx[i]];
+                const int res_len = res_range.end - res_range.beg;
+                
+                if (res_len < 4) {
+                    // This is too small to be an amino acid or nucleotide
                     name.len = 1;
                     elem = md_util_element_lookup_ignore_case(name);
                     goto done;
+                } else if (mol->residue.name) {
+                    str_t resname = LBL_TO_STR(mol->residue.name[mol->atom.residue_idx[i]]);
+                    if (md_util_resname_amino_acid(resname) ||
+                        amino_acid_heuristic(mol->atom.name + res_range.beg, res_range.end - res_range.beg) ||
+                        md_util_resname_dna(resname))
+                    {
+                        // EASY-PEASY, we just try to match against the first character
+                        name.len = 1;
+                        elem = md_util_element_lookup_ignore_case(name);
+                        goto done;
+                    }
                 }
             }
 
             // Heuristic cases
 
             // CA -> Carbon, not Calcium (if part of a residue > 2 atoms)
-
 
             // 2 letters + 1 digit (e.g. HO[0-9]) usually means just look at the first letter
             if (original.len == 3 && is_digit(original.ptr[2])) {
@@ -323,7 +358,7 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], int64
         return false;
     }
 
-    const float eps = 1.0e-2;
+    const float eps = 1.0e-2f;
     for (int64_t i = 0; i < count; ++i) {
         md_element_t elem = 0;
         const float m = mass[i];
@@ -397,7 +432,8 @@ static inline bool extract_backbone_atoms(md_backbone_atoms_t* backbone_atoms, c
     }
 
     // If we have CA, C and O, we have enough for computing the backbone
-    if ((bits & (2|4|8)) == (2|4|8)) {
+    const uint32_t bb_bits = 2 | 4 | 8;
+    if ((bits & bb_bits) == bb_bits) {
         if (backbone_atoms) *backbone_atoms = bb;
         return true;
     }
@@ -567,13 +603,12 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
-static md_index_data_t compute_connectivity_data(int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
-    md_index_data_t data = { 0 };
-
+static md_index_data_t md_compute_connectivity(const md_bond_t bonds[], int64_t bond_count, int64_t atom_count, md_allocator_i* alloc) {
+    md_index_data_t data = {0};
     md_array_resize(data.ranges, atom_count, alloc);
     MEMSET(data.ranges, 0, md_array_bytes(data.ranges));
 
-    // This have length of 2 * bond_count (2 == one for direction)
+    // This have length of 2 * bond_count (2 = one for direction)
     md_array_resize(data.indices, 2 * bond_count, alloc);
 
     uint32_t* local_offset = 0;
@@ -589,7 +624,7 @@ static md_index_data_t compute_connectivity_data(int64_t atom_count, const md_bo
 
     // Compute complete edge ranges (compute beg and add to end in order to convert the stored length to a proper absolute offset)
     for (int64_t i = 1; i < atom_count; ++i) {
-        data.ranges[i].beg = data.ranges[i - 1].end;
+        data.ranges[i].beg =  data.ranges[i - 1].end;
         data.ranges[i].end += data.ranges[i].beg;
     }
 
@@ -621,6 +656,135 @@ static md_index_data_t compute_connectivity_data(int64_t atom_count, const md_bo
     return data;
 }
 
+// If an entry exists in this table, it has order 2
+static const char* intra_bond_order_table[] = {
+    "HIS|CD2|CG",
+    "HIS|CE1|ND1",
+    "ARG|CZ|NH2",
+    "PHE|CE1|CZ",
+    "PHE|CD2|CE2",
+    "PHE|CD1|CG",
+    "TRP|CD1|CG",
+    "TRP|CD2|CE2",
+    "TRP|CE3|CZ3",
+    "TRP|CH2|CZ2",
+    "ASN|CG|OD1",
+    "GLN|CD|OE1",
+    "TYR|CD1|CG",
+    "TYR|CD2|CE2",
+    "TYR|CE1|CZ",
+    "ASP|CG|OD1",
+    "GLU|CD|OE1",
+
+    "G|C8|N7",
+    "G|C4|C5",
+    "G|C2|N3",
+    "G|C6|O6",
+    "C|C4|N3",
+    "C|C5|C6",
+    "C|C2|O2",
+    "A|C2|N3",
+    "A|C6|N1",
+    "A|C4|C5",
+    "A|C8|N7",
+    "U|C5|C6",
+    "U|C2|O2",
+    "U|C4|O4",
+
+    "DG|C8|N7",
+    "DG|C4|C5",
+    "DG|C2|N3",
+    "DG|C6|O6",
+    "DC|C4|N3",
+    "DC|C5|C6",
+    "DC|C2|O2",
+    "DA|C2|N3",
+    "DA|C6|N1",
+    "DA|C4|C5",
+    "DA|C8|N7",
+    "DT|C5|C6",
+    "DT|C2|O2",
+    "DT|C4|O4",
+};
+
+static inline int build_key(char* buf, str_t res, str_t a, str_t b) {
+    int len = 0;
+    while (res.len) {
+        buf[len++] = *res.ptr++;
+        res.len--;
+    }
+    buf[len++] = '|';
+    while (a.len) {
+        buf[len++] = *a.ptr++;
+        a.len--;
+    }
+    buf[len++] = '|';
+    while (b.len) {
+        buf[len++] = *b.ptr++;
+        b.len--;
+    }
+    buf[len] = '\0';
+    return len;
+}
+
+// This is a c implementation of the tabular data found in Molstar (github.com/molstar)
+md_array(md_order_t) md_util_compute_covalent_bond_order(const md_bond_t* bonds, int64_t bond_count, const md_label_t* atom_label, const md_residue_idx_t* atom_res_idx, const md_label_t* res_name, md_allocator_i* alloc) {
+    ASSERT(bonds);
+    ASSERT(alloc);
+
+    md_array(md_order_t) order = 0;
+    md_array_resize(order, bond_count, alloc);
+
+    if (!atom_label || !atom_res_idx || !res_name) {
+        MD_LOG_DEBUG("No atom label or atom residue indices or residue names were given, will default to covalent order of 1 for all bonds.");
+        STATIC_ASSERT(sizeof(md_order_t) == 1, "Incorrect size of md_order_t");
+        MEMSET(order, 1, md_array_bytes(order));
+        return order;
+    }
+    
+    for (int64_t i = 0; i < bond_count; ++i) {
+        const int atom_a = bonds[i].idx[0];
+        const int atom_b = bonds[i].idx[1];
+        str_t atomname_a = LBL_TO_STR(atom_label[atom_a]);
+        str_t atomname_b = LBL_TO_STR(atom_label[atom_b]);
+        const int res_a = atom_res_idx[atom_a];
+        const int res_b = atom_res_idx[atom_b];
+        str_t resname_a = LBL_TO_STR(res_name[res_a]);
+        str_t resname_b = LBL_TO_STR(res_name[res_b]);
+
+        if (str_equal(resname_a, resname_b)) {
+            if (strcmp(atomname_a.ptr, atomname_b.ptr) > 0) {
+                str_t temp = atomname_a;
+                atomname_a = atomname_b;
+                atomname_b = temp;
+            }
+            // Intra
+            if (md_util_resname_amino_acid(resname_a) && str_equal_cstr(atomname_a, "C") && str_equal_cstr(atomname_a, "O")) {
+                order[i] = 2;
+                continue;
+            }
+            
+            char buf[32];
+            int len = build_key(buf, resname_a, atomname_a, atomname_b);
+            if (find_str_in_array((str_t){buf,len}, intra_bond_order_table, ARRAY_SIZE(intra_bond_order_table)) >= 0) {
+                order[i] = 2;
+            } else {
+                order[i] = 1;
+            }
+        } else {
+            // Inter
+            if ( (str_equal_cstr(resname_a, "LYS") && str_equal_cstr(atomname_a, "CZ") && str_equal_cstr(resname_b, "RET") && str_equal_cstr(atomname_b, "C15")) ||
+                 (str_equal_cstr(resname_b, "LYS") && str_equal_cstr(atomname_b, "CZ") && str_equal_cstr(resname_a, "RET") && str_equal_cstr(atomname_a, "C15")) ){
+                order[i] = 2;
+            } else {
+                order[i] = 1;
+            }
+        }
+    }
+    
+    return order;
+}
+
 static inline bool covalent_bond_heuristic(float dist_squared, md_element_t elem_a, md_element_t elem_b) {
     const float d = element_covalent_radii[elem_a] + element_covalent_radii[elem_b];
     const float d_min = d - 0.5f;
@@ -628,64 +792,71 @@ static inline bool covalent_bond_heuristic(float dist_squared, md_element_t elem
     return (d_min * d_min) < dist_squared && dist_squared < (d_max * d_max);
 }
 
-bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* bond_data, const float* x, const float* y, const float* z, const md_element_t* element, const md_residue_idx_t* res_idx, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc) {
+int64_t md_util_compute_covalent_bounds_upper_bound(const md_element_t* element, int64_t count) {
+    int64_t result = 0;
+    for (int64_t i = 0; i < count; ++i) {
+        result += md_util_element_max_valence(element[i]);
+    }
+    return result;
+}
+
+md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+    ASSERT(atom);
     ASSERT(alloc);
 
-    if (!bond_data) {
-        MD_LOG_ERROR("missing parameter bond_data");
-        return false;
+    md_array(md_bond_t) bonds = 0;
+
+    if (atom->count < 0) {
+        MD_LOG_ERROR("Incorrect number of atoms: %i", (int)atom->count);
+        return bonds;
+    }
+    
+    if (!atom->x || !atom->y || !atom->z) {
+        MD_LOG_ERROR("Missing atom field (x/y/z)");
+        return bonds;
     }
 
-    if (!x) {
-        MD_LOG_ERROR("missing parameter atom_x");
-        return false;
+    if (!atom->element) {
+        MD_LOG_ERROR("Missing atom field element");
+        return bonds;
     }
 
-    if (!y) {
-        MD_LOG_ERROR("missing parameter atom_y");
-        return false;
+    if (cell->flags & MD_CELL_TRICLINIC) {
+        MD_LOG_ERROR("Triclinic cells are not supported yet! Sorry!");
+        return bonds;
     }
-
-    if (!z) {
-        MD_LOG_ERROR("missing parameter atom_z");
-        return false;
-    }
-
-    if (!element) {
-        MD_LOG_ERROR("missing parameter atom_element");
-        return false;
-    }
-
-    const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0);
-
-    if (res_idx) {
+    
+    const vec4_t pbc_ext = cell ? vec4_from_vec3(mat3_diag(cell->basis), 0) : vec4_zero();
+    const int atom_count = (int)atom->count;
+    
+    if (atom->residue_idx) {
         // atom residue indices are given,
         // First find connections first within the residue, then to the next residue
 
         md_range_t range = {0, 0};
         md_range_t prev_range = {0, 0};
-        for (int i = 0; i < (int)count; ++i) {
-            while (i < (int)count && res_idx[i] == res_idx[range.beg]) ++i;
+        for (int i = 0; i < atom_count; ++i) {
+            while (i < atom_count && atom->residue_idx[i] == atom->residue_idx[range.beg]) ++i;
             range.end = i;
 
             for (int j = prev_range.beg; j < prev_range.end; ++j) {
                 for (int k = range.beg; k < range.end; ++k) {
-                    const vec4_t a = {x[j], y[j], z[j], 0};
-                    const vec4_t b = {x[k], y[k], z[k], 0};
-                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext4);
-                    if (covalent_bond_heuristic(d2, element[j], element[k])) {
-                        md_array_push(bond_data->bond, ((md_bond_t){j, k}), alloc);
+                    const vec4_t a = {atom->x[j], atom->y[j], atom->z[j], 0};
+                    const vec4_t b = {atom->x[k], atom->y[k], atom->z[k], 0};
+                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext);
+                    if (covalent_bond_heuristic(d2, atom->element[j], atom->element[k])) {
+                        md_array_push(bonds, ((md_bond_t){j, k}), alloc);
                     }
                 }
             }
 
             for (int j = range.beg; j < range.end - 1; ++j) {
                 for (int k = j + 1; k < range.end; ++k) {
-                    const vec4_t a = {x[j], y[j], z[j], 0};
-                    const vec4_t b = {x[k], y[k], z[k], 0};
-                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext4);
-                    if (covalent_bond_heuristic(d2, element[j], element[k])) {
-                        md_array_push(bond_data->bond, ((md_bond_t){j, k}), alloc);
+                    const vec4_t a = {atom->x[j], atom->y[j], atom->z[j], 0};
+                    const vec4_t b = {atom->x[k], atom->y[k], atom->z[k], 0};
+                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext);
+                    if (covalent_bond_heuristic(d2, atom->element[j], atom->element[k])) {
+                        md_array_push(bonds, ((md_bond_t){j, k}), alloc);
                     }
                 }
             }
@@ -693,27 +864,24 @@ bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* bond_data, 
             prev_range = range;
             range.beg  = range.end;
         }
-        
-        bond_data->connectivity = compute_connectivity_data(count, bond_data->bond, md_array_size(bond_data->bond), alloc);
     }
     else {
-        if (count < 100) {
+        if (atom_count < 100) {
             // If the system is small, just brute-force it
-            for (int i = 0; i < (int)count - 1; ++i) {
-                for (int j = i + 1; j < (int)count; ++j) {
-                    const vec4_t a = {x[i], y[i], z[i], 0};
-                    const vec4_t b = {x[j], y[j], z[j], 0};
-                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext4);
-                    if (covalent_bond_heuristic(d2, element[i], element[j])) {
-                        md_array_push(bond_data->bond, ((md_bond_t){i, j}), alloc);
+            for (int i = 0; i < (int)atom_count - 1; ++i) {
+                for (int j = i + 1; j < (int)atom_count; ++j) {
+                    const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
+                    const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
+                    const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext);
+                    if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
+                        md_array_push(bonds, ((md_bond_t){i, j}), alloc);
                     }
                 }
             }
-            bond_data->connectivity = compute_connectivity_data(count, bond_data->bond, md_array_size(bond_data->bond), alloc);
         } else {
             // Resort to spatial acceleration structure
             md_spatial_hash_t sh = {0};
-            md_spatial_hash_init_soa(&sh, x, y, z, count, pbc_ext, default_allocator);
+            md_spatial_hash_init_soa(&sh, atom->x, atom->y, atom->z, atom->count, vec3_from_vec4(pbc_ext), default_allocator);
 
             const float cutoff = 3.0f;
 
@@ -721,35 +889,30 @@ bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* bond_data, 
             md_allocator_i temp_alloc = md_ring_allocator_create_interface(ring_alloc);
             uint64_t reset_pos = md_ring_allocator_get_pos(ring_alloc);
 
-            for (int i = 0; i < (int)count; ++i) {
-                const vec3_t pos = {x[i], y[i], z[i]};
-            
+            for (int i = 0; i < (int)atom_count; ++i) {
+                const vec3_t pos = {atom->x[i], atom->y[i], atom->z[i]};
+
                 // Reset ring allocator pos
                 md_ring_allocator_set_pos(ring_alloc, reset_pos);
                 md_array(uint32_t) indices = md_spatial_hash_query_idx(&sh, pos, cutoff, &temp_alloc);
-                md_array(int32_t) atom_connectivity = 0;
-        
+
                 const int64_t num_indices = md_array_size(indices);
                 for (int64_t iter = 0; iter < num_indices; ++iter) {
                     const int j = indices[iter];
 
-                    if (res_idx && abs(res_idx[j] - res_idx[i]) > 2) {
+                    if (atom->residue_idx && abs(atom->residue_idx[j] - atom->residue_idx[i]) > 2) {
                         continue;
                     }
 
                     const vec4_t pos_a = vec4_from_vec3(pos, 0);
-                    const vec4_t pos_b = {x[j], y[j], z[j], 0};
-                    const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext4);
-                    if (covalent_bond_heuristic(d2, element[i], element[j])) {
+                    const vec4_t pos_b = {atom->x[j], atom->y[j], atom->z[j], 0};
+                    const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext);
+                    if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
                         if (i < j) {
                             // Only store monotonic bonds connections
-                            md_array_push(bond_data->bond, ((md_bond_t){i, j}), alloc);
+                            md_array_push(bonds, ((md_bond_t){i, j}), alloc);
                         }
-                        // Store all connectivity to atom
-                        md_array_push(atom_connectivity, j, &temp_alloc);
                     }
-            
-                    md_index_data_push(&bond_data->connectivity, atom_connectivity, md_array_size(atom_connectivity), alloc);
                 }
             }
 
@@ -757,11 +920,10 @@ bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* bond_data, 
         }
     }
 
-    bond_data->count = md_array_size(bond_data->bond);
-    return true;
+    return bonds;
 }
 
-bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t* res_idx, int64_t atom_count, const md_bond_t* bonds, int64_t bond_count, md_allocator_i* alloc) {
+bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t res_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
     if (!chain_data) {
         MD_LOG_ERROR("chain data is missing");
         return false;
@@ -791,8 +953,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_id
         res_atom_range[res_idx[i]].end += 1;
     }
     
-    md_array(bool) res_bond_to_next = 0;
-    md_array_resize(res_bond_to_next, res_count, temp_alloc);
+    md_array(bool) res_bond_to_next = md_array_create(bool, res_count, temp_alloc);
     MEMSET(res_bond_to_next, 0, md_array_bytes(res_bond_to_next));
 
     // Iterate over bonds and determine bonds between residues (res_bonds)
@@ -972,31 +1133,22 @@ static void sort_arr(int* arr, int n) {
 #define MIN_RING_SIZE 3
 #define MAX_RING_SIZE 6
 
-bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
+md_index_data_t md_util_compute_rings(const md_index_data_t* connectivity, md_allocator_i* alloc) {
+    ASSERT(connectivity);
     ASSERT(alloc);
     
-    if (!ring_data) {
-        MD_LOG_ERROR("ring data is missing");
-        return false;
-    }
+    md_index_data_t ring_data = {0};
+    const int64_t atom_count = md_array_size(connectivity->ranges);
 
-    if (!bonds) {
-        MD_LOG_ERROR("bonds are missing");
-        return false;
-    }
-
-    if (bond_count < 0) {
-        MD_LOG_ERROR("invalid bond count");
-        return false;
+    if (atom_count == 0) {
+        return ring_data;
     }
     
-    md_index_data_data_clear(ring_data);
-    
+    // We don't know how large datasets we operate on here, so its better to go for the big dog (vm arena) directly
+    // Instead of risking not being able to fit into the temp ring buffer
     md_vm_arena_t arena = {0};
     md_vm_arena_init(&arena, GIGABYTES(1));
     md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
-
-    md_index_data_t edge_data = compute_connectivity_data(atom_count, bonds, bond_count, &arena_alloc);
     
     int* depth = md_vm_arena_push(&arena, atom_count * sizeof(int));
     MEMSET(depth, 0, atom_count * sizeof(int));
@@ -1019,8 +1171,8 @@ bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const
         while (!fifo_empty(&queue)) {
             int idx = fifo_pop(&queue);
 
-            const int* eb = md_index_range_beg(&edge_data, idx);
-            const int* ee = md_index_range_end(&edge_data, idx);
+            const int* eb = md_index_range_beg(connectivity, idx);
+            const int* ee = md_index_range_end(connectivity, idx);
             for (const int* it = eb; it != ee; ++it) {
                 int next = *it;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
@@ -1060,8 +1212,8 @@ bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const
 
                     if (MIN_RING_SIZE <= n && n <= MAX_RING_SIZE) {
                         sort_arr(ring, n);
-                        if (!has_ring(ring_data, ring, n)) {
-                            md_index_data_push(ring_data, ring, n, alloc);
+                        if (!has_ring(&ring_data, ring, n)) {
+                            md_index_data_push(&ring_data, ring, n, alloc);
                         }
                     }
 
@@ -1076,47 +1228,34 @@ bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const
 
     md_vm_arena_free(&arena);
 
-    return true;
+    return ring_data;
 }
 
 #undef MIN_RING_SIZE
 #undef MAX_RING_SIZE
 
-bool md_util_compute_structures(md_index_data_t* structure_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc) {
+md_index_data_t md_util_compute_structures(const md_index_data_t* connectivity, struct md_allocator_i* alloc) {
+    ASSERT(connectivity);
     ASSERT(alloc);
 
-    if (!structure_data) {
-        MD_LOG_ERROR("structure data is missing");
-        return false;
-    }
+    md_index_data_t structures = {0};
 
-    if (!bonds) {
-        MD_LOG_ERROR("bonds are missing");
-        return false;
-    }
-
-    if (bond_count < 0) {
-        MD_LOG_ERROR("invalid bond count");
-        return false;
-    }
-
-    md_index_data_data_clear(structure_data);
+    const int64_t num_atoms = md_array_size(connectivity->ranges);
 
     md_vm_arena_t arena = { 0 };
     md_vm_arena_init(&arena, GIGABYTES(1));
     md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
 
-    md_index_data_t edge_data = compute_connectivity_data(atom_count, bonds, bond_count, &arena_alloc);
-
-    int* depth = md_vm_arena_push(&arena, atom_count * sizeof(int));
-    MEMSET(depth, 0, atom_count * sizeof(int));
+    int* depth = md_vm_arena_push(&arena, num_atoms * sizeof(int));
+    MEMSET(depth, 0, num_atoms * sizeof(int));
 
     // The capacity is arbitrary here, but will be resized if needed.
     fifo_t queue = fifo_create(64, &arena_alloc);
 
     md_array(int) indices = 0;
+    md_array_ensure(indices, 256, &arena_alloc);
 
-    for (int i = 0; i < atom_count; ++i) {
+    for (int i = 0; i < num_atoms; ++i) {
         // Skip any atom which has already been touched
         if (depth[i]) continue;
 
@@ -1129,8 +1268,8 @@ bool md_util_compute_structures(md_index_data_t* structure_data, int64_t atom_co
             int idx = fifo_pop(&queue);
             md_array_push(indices, idx, &arena_alloc);
             
-            const int* eb = md_index_range_beg(&edge_data, idx);
-            const int* ee = md_index_range_end(&edge_data, idx);
+            const int* eb = md_index_range_beg(connectivity, idx);
+            const int* ee = md_index_range_end(connectivity, idx);
             for (const int* it = eb; it != ee; ++it) {
                 int next = *it;
                 if (depth[next] == 0) {
@@ -1143,12 +1282,12 @@ bool md_util_compute_structures(md_index_data_t* structure_data, int64_t atom_co
         sort_arr(indices, (int)md_array_size(indices));
         
         // Here we should have exhausted every atom that is connected to index i.
-        md_index_data_push(structure_data, indices, md_array_size(indices), alloc);
+        md_index_data_push(&structures, indices, md_array_size(indices), alloc);
     }
     
     md_vm_arena_free(&arena);
 
-    return true;
+    return structures;
 }
 
 void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count) {
@@ -1598,6 +1737,9 @@ vec3_t md_util_compute_com_ortho_soa(const float* in_x, const float* in_y, const
 }
 */
 
+#pragma warning( push )
+#pragma warning( disable : 4244 )
+
 // From here: https://www.arianarab.com/post/crystal-structure-software
 mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma) {
     alpha = DEG_TO_RAD(alpha);
@@ -1616,28 +1758,98 @@ mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alph
     return M;
 }
 
-// This is a bit silly, but I want to make sure we are conservative and not always compute the length of the vectors
-// In the odd case that we don't exactly get back what we had due to precision errors sqrtf(^2).
-vec3_t md_util_compute_unit_cell_extent(mat3_t M) {
-    vec3_t ext = {0};
+md_unit_cell_t md_util_unit_cell_ortho(double x, double y, double z) {
+    if (x == 0.0 && y == 0.0 && z == 0.0) {
+        return (md_unit_cell_t) {0};
+    }
 
-    if (M.elem[0][1] == 0 && M.elem[0][2] == 0)
-        ext.x = M.elem[0][0];
-    else
-        ext.x = vec3_length(M.col[0]);
-
-    if (M.elem[1][0] == 0 && M.elem[1][2] == 0)
-        ext.y = M.elem[1][1];
-    else
-        ext.y = vec3_length(M.col[1]);
-
-    if (M.elem[2][0] == 0 && M.elem[2][1] == 0)
-        ext.z = M.elem[2][2];
-    else
-        ext.z = vec3_length(M.col[2]);
-
-    return ext;
+    md_unit_cell_t cell = {
+        .basis = {
+            (float)x, 0, 0,
+            0, (float)y, 0,
+            0, 0, (float)z,
+        },
+        .inv_basis = {
+            x != 0.0 ? 1.0/x : 0, 0, 0,
+            0, y != 0.0 ? 1.0/y : 0, 0,
+            0, 0, z != 0.0 ? 1.0/z : 0,
+        },
+        .flags = MD_CELL_ORTHOGONAL | (x != 0.0 ? MD_CELL_X : 0) | (y != 0.0 ? MD_CELL_Y : 0) | (z != 0.0 ? MD_CELL_Z : 0),
+    };
+    return cell;
 }
+
+md_unit_cell_t md_util_unit_cell_triclinic(double a, double b, double c, double alpha, double beta, double gamma) {
+    if (a == 0 && b == 0 && c == 0) {
+        return (md_unit_cell_t) {0};
+    }
+
+    if (alpha == 90.0 && beta == 90.0 && gamma == 90.0) {
+        return md_util_unit_cell_ortho(a,b,c);
+    }
+
+    alpha = DEG_TO_RAD(alpha);
+    beta  = DEG_TO_RAD(beta);
+    gamma = DEG_TO_RAD(gamma);
+
+    const double cosa = cos(alpha);
+    const double cosb = cos(beta);
+    const double cosg = cos(gamma);
+    const double sing = sin(gamma);
+    const double x = (cosa - cosb * cosg) / sing;
+
+    // Values for basis. Keep in double precision for inverse
+    const double M[9] = {
+               a,        0,                             0,
+        b * cosg, b * sing,                             0,
+        c * cosb,    c * x, c * sqrt(1 - cosb*cosb - x*x),
+    };
+
+    // Inverse of M
+    const double I[9] = {
+                                        1.0/M[0],                 0,        0,
+                               -M[3]/(M[0]*M[4]),          1.0/M[4],        0,
+        (M[3]*M[7]/(M[0]*M[4]) - M[6]/M[0])/M[8], -M[7]/(M[4]*M[8]), 1.0/M[8],
+    };
+    
+    md_unit_cell_t cell = {
+        .basis = {
+            M[0], M[1], M[2], M[3], M[4], M[5], M[6], M[7], M[8],
+        },
+        .inv_basis = {
+            I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
+        },
+        .flags = MD_CELL_TRICLINIC | MD_CELL_X | MD_CELL_Y | MD_CELL_Z,
+    };
+
+    return cell;
+}
+
+md_unit_cell_t md_util_unit_cell_mat3(mat3_t M) {
+    if (M.elem[0][1] == 0 && M.elem[0][2] == 0 && M.elem[1][0] == 0 && M.elem[1][2] == 0 && M.elem[2][0] == 0 && M.elem[2][1] == 0) {
+        return md_util_unit_cell_ortho(M.elem[0][0], M.elem[1][1], M.elem[2][2]);
+    } else {
+        const float* N = &M.elem[0][0];
+        
+        // Inverse of M
+        const double I[9] = {
+            1.0/(double)N[0], 0, 0,
+            -(double)N[3]/((double)N[0]*(double)N[4]), 1.0/(double)N[4], 0,
+            ((double)N[3]*(double)N[7]/((double)N[0]*(double)N[4]) - (double)N[6]/(double)N[0])/(double)N[8], -(double)N[7]/((double)N[4]*(double)N[8]), 1.0/(double)N[8],
+        };
+        
+        md_unit_cell_t cell = {
+            .basis = M,
+            .inv_basis = {
+                I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
+            },
+            .flags = MD_CELL_TRICLINIC | MD_CELL_X | MD_CELL_Y | MD_CELL_Z,
+        };
+        return cell;
+    }
+}
+
+#pragma warning( pop )
 
 bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box_ext) {
     if (!x || !y || !z) {
@@ -1717,20 +1929,32 @@ bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* s
     return true;
 }
 
-bool md_util_deperiodize_system_ortho(float* x, float* y, float* z, const float* w, int64_t count, const md_index_data_t* structures, vec3_t box) {
+bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell_t* cell, const md_molecule_t* mol) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
+    ASSERT(cell);
+
+    const float* w = mol->atom.mass;
+    const int64_t num_atoms = mol->atom.count;
+    const int64_t num_structures = md_index_data_count(&mol->structures);
+    const md_index_data_t* structures = &mol->structures;
+
+    if (cell->flags & MD_CELL_TRICLINIC) {
+        MD_LOG_ERROR("Triclinic cells are not supported");
+        return false;
+    }
+
+    const vec3_t box = mat3_diag(cell->basis);
     
-    md_util_pbc_ortho(x,y,z, count, box);
-    if (structures) {
-        md_util_unwrap_ortho(x,y,z, structures, box);
+    md_util_pbc_ortho(x, y, z, num_atoms, box);
+    if (num_structures > 0) {
+        md_util_unwrap_ortho(x, y, z, &mol->structures, box);
     
         // Place any defined covalent structure such that its center of mass is within the correct periodic image
         const vec4_t ext = vec4_from_vec3(box, 0);
         const vec4_t ref = vec4_mul_f(ext, 0.5f);
 
-        const int64_t num_structures = md_index_data_count(structures);
         for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
             const int32_t* indices = md_index_range_beg(structures, s_idx);
             const int64_t num_indices = md_index_range_size(structures, s_idx);
@@ -2308,24 +2532,19 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     }
    
     if (flags & MD_UTIL_POSTPROCESS_COVALENT_BIT) {
-        if (mol->covalent.count == 0) {
-            const vec3_t pbc_ext = md_util_compute_unit_cell_extent(mol->coord_frame);
-            md_util_compute_covalent_bonds_and_connectivity(&mol->covalent, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.element, mol->atom.residue_idx, mol->atom.count, pbc_ext, alloc);
-            md_util_compute_structures(&mol->covalent.structures, mol->atom.count, mol->covalent.bond, mol->covalent.count, alloc);
-            md_util_compute_rings(&mol->covalent.rings, mol->atom.count, mol->covalent.bond, mol->covalent.count, alloc);
-        }
-    }
-
-    if (flags & MD_UTIL_POSTPROCESS_VALENCE_BIT) {
-        if (mol->atom.valence == 0 && mol->covalent.count > 0) {
-            md_array_resize(mol->atom.valence, mol->atom.count, alloc);
-            md_util_compute_atom_valence(mol->atom.valence, mol->atom.count, mol->covalent.bond, mol->covalent.count);    
+        if (mol->persistent_bonds == 0) {
+            mol->persistent_bonds = md_util_compute_covalent_bonds(&mol->atom, &mol->cell, alloc);
+            if (mol->persistent_bonds) {
+                mol->connectivity        = md_compute_connectivity(mol->persistent_bonds, md_array_size(mol->persistent_bonds), mol->atom.count, alloc);
+                mol->structures          = md_util_compute_structures(&mol->connectivity, alloc);
+                mol->rings               = md_util_compute_rings(&mol->connectivity, alloc);
+            }
         }
     }
 
     if (flags & MD_UTIL_POSTPROCESS_CHAINS_BIT) {
-        if (mol->chain.count == 0 && mol->residue.count > 0 && mol->covalent.count > 0) {
-            md_util_compute_chain_data(&mol->chain, mol->atom.residue_idx, mol->atom.count, mol->covalent.bond, mol->covalent.count, alloc);
+        if (mol->chain.count == 0 && mol->residue.count > 0 && mol->persistent_bonds) {
+            md_util_compute_chain_data(&mol->chain, mol->atom.residue_idx, mol->atom.count, mol->persistent_bonds, md_array_size(mol->persistent_bonds), alloc);
 
             if (mol->chain.count) {
                 md_array_resize(mol->atom.chain_idx, mol->atom.count, alloc);

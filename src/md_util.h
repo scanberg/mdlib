@@ -15,9 +15,8 @@ typedef enum md_util_postprocess_flags_t {
     MD_UTIL_POSTPROCESS_RADIUS_BIT          = 0x0002,
     MD_UTIL_POSTPROCESS_MASS_BIT            = 0x0004,
     MD_UTIL_POSTPROCESS_COVALENT_BIT        = 0x0008,
-    MD_UTIL_POSTPROCESS_VALENCE_BIT         = 0x0010,
-    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0020,
-    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0040,
+    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0010,
+    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0020,
 
     MD_UTIL_POSTPROCESS_ALL                 = -1,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
@@ -80,31 +79,35 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int
 bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const struct md_molecule_t* mol);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
-// length. atom_residue_idx is an optional parameter and if supplied, it will limit the covalent bonds to only those within the same or adjacent residues.
-// Returns true if succesfull or false upon error.
-bool md_util_compute_covalent_bonds_and_connectivity(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, const md_residue_idx_t* atom_residue_idx, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+// length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
+//md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
+
+//bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
 // Computes chains from connected residues
 // The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
 // This means that single residues which are not connected to any other residue will not classify as a chain.
-bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t covalent_bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
+bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t persistent_bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
 
 // Compute the valence of atoms given the covalent bonds
-bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
+//bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
 
 // Compute rings formed by covalent bonds
-bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+//bool md_util_compute_rings(md_index_data_t* ring_data, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
 
 // Identify isolated structures by covalent bonds
-bool md_util_compute_structures(md_index_data_t* structures, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+//bool md_util_compute_structures(md_index_data_t* structures, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
 
+
+// ### CELL ###
+
+md_unit_cell_t md_util_unit_cell_ortho(double x, double y, double z);
 // Compute a mat3 basis from cell extents a,b,c and cell axis angles alpha, beta, gamma (in degrees)
-mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma);
-vec3_t md_util_compute_unit_cell_extent(mat3_t M);
+md_unit_cell_t md_util_unit_cell_triclinic(double a, double b, double c, double alpha, double beta, double gamma);
+md_unit_cell_t md_util_unit_cell_mat3(mat3_t M);
 
 // Applies periodic boundary conditions to coordinates of atoms within molecule
 // It ensures that residues and chains reside within the same period
@@ -116,7 +119,7 @@ bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* s
 
 // Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
-bool md_util_deperiodize_system_ortho(float* x, float* y, float* z, const float* w, int64_t count, const md_index_data_t* structures, vec3_t box);
+bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell_t* cell, const struct md_molecule_t* mol);
 
 //bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_bond_data_t* covalent_data, vec3_t pbc_ext);
 

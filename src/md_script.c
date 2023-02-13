@@ -4229,7 +4229,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         ctx.identifiers = 0;
 
         if (ir->flags & FLAG_SPATIAL_QUERY) {
-            vec3_t pbc_ext = mat3_mul_vec3(curr_header.box, vec3_set1(1));
+            vec3_t pbc_ext = mat3_mul_vec3(curr_header.cell.basis, vec3_set1(1));
             md_spatial_hash_init_soa(&spatial_hash, curr_x, curr_y, curr_z, mol->atom.count, pbc_ext, &temp_alloc);
         }
 
@@ -4914,7 +4914,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
         if (static_check_node(node, &ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
                 if (ir->flags & FLAG_SPATIAL_QUERY) {
-                    vec3_t pbc_ext = mat3_mul_vec3(mol->coord_frame, vec3_set1(1));
+                    const vec3_t pbc_ext = mat3_mul_vec3(mol->cell.basis, vec3_set1(1));
                     md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
                 }
 
@@ -5220,7 +5220,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
 
     md_spatial_hash_t spatial_hash = {0};
     if (args.ir->flags & FLAG_SPATIAL_QUERY) {
-        vec3_t pbc_ext = mat3_mul_vec3(header.box, vec3_set1(1));
+        vec3_t pbc_ext = mat3_mul_vec3(header.cell.basis, vec3_set1(1));
         md_spatial_hash_init_soa(&spatial_hash, x, y, z, num_atoms, pbc_ext, &temp_alloc);
     }
 
