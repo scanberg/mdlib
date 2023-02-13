@@ -13,7 +13,8 @@ include(cmake/common.cmake)
 include(cmake/FindAVX.cmake)
 
 # Options
-option(MD_UNITTEST "Enable unittest" ON)
+option(MD_UNITTEST "Enable unittests" ON)
+option(MD_BENCHMARK "Enable benchmarks" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
 option(MD_USE_RELATIVE_RESOURCE_PATH "Use relative path for resources, this will copy the relevant files into the binary folder upon building" ON)
 option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
@@ -21,9 +22,13 @@ option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 
-if(MD_UNITTEST)
+if (MD_UNITTEST)
   enable_testing()
   add_subdirectory(unittest)
+endif()
+
+if (MD_BENCHMARK)
+  add_subdirectory(benchmark)
 endif()
 
 file(GLOB SRC_FILES src/*.h src/*.c src/*.inl)
