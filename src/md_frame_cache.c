@@ -196,7 +196,7 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
         if (x)    MEMCPY(x,   data->x,   data->header.num_atoms * sizeof(float));
         if (y)    MEMCPY(y,   data->y,   data->header.num_atoms * sizeof(float));
         if (z)    MEMCPY(z,   data->z,   data->header.num_atoms * sizeof(float));
-        if (cell) MEMCPY(cell, &data->header.cell, sizeof(data->header.cell));
+        if (cell) MEMCPY(cell, &data->header.cell, sizeof(md_unit_cell_t));
         if (timestamp) *timestamp = data->header.timestamp;
     }
 
