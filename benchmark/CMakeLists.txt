@@ -4,7 +4,7 @@ project(md_benchmark VERSION 0.1 LANGUAGES C)
 
 add_executable(md_benchmark benchmark.c)
 target_link_libraries(md_benchmark PRIVATE mdlib)
-target_compile_definitions(md_benchmark PRIVATE MD_BENCHMARK_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../data\")
+target_compile_definitions(md_benchmark PRIVATE MD_BENCHMARK_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\")
 
 target_sources(md_benchmark
   PRIVATE
