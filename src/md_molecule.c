@@ -45,7 +45,7 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
 
     // Bonds
     if (mol->bonds) md_array_free(mol->bonds, alloc);
-    md_index_data_free(&mol->connectivity, alloc);
+    //md_index_data_free(&mol->connectivity, alloc);
     md_index_data_free(&mol->structures, alloc);
     md_index_data_free(&mol->rings, alloc);
     

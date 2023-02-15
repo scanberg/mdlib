@@ -215,5 +215,5 @@ static inline int32_t* md_index_range_end(md_index_data_t data, int64_t idx) {
 
 static inline int64_t md_index_range_size(md_index_data_t data, int64_t idx) {
     ASSERT(idx >= 0 && idx < md_array_size(data.ranges));
-    return data.ranges[idx].end - data.ranges[idx].beg;66
+    return data.ranges[idx].end - data.ranges[idx].beg;
 }

@@ -990,7 +990,7 @@ md_array(md_hbond_data_t) md_util_compute_hbond_data(const md_molecule_t* mol, m
     md_array(md_order_t) order = md_util_compute_covalent_bond_order(mol->bonds, md_array_size(mol->bonds), mol->atom.name, mol->atom.residue_idx, mol->residue.name, default_temp_allocator);
 
     for (int64_t i = 0; i < md_array_size(mol->bonds); ++i) {
-        const md_atom_idx_t idx[2] = mol->bonds[i].idx;
+        const md_atom_idx_t *idx = mol->bonds[i].idx;
         atom_valence[idx[0]] += order[i];
         atom_valence[idx[1]] += order[i];
 
@@ -1023,8 +1023,12 @@ md_array(md_hbond_data_t) md_util_compute_hbond_data(const md_molecule_t* mol, m
             charge = 0;
             implicit_hcount = MAX(0, 4 - valence + MAX(0, -charge));
             geom = degree + implicit_hcount + MAX(0, -charge);
+            break;
         case N:
             // @TODO: Complete this
+            break;
+        default:
+            break;
         }
     }
 }
