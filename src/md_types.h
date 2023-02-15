@@ -38,13 +38,28 @@ typedef int32_t     md_residue_idx_t;
 typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_residue_id_t;
 typedef int32_t     md_chain_idx_t;
-typedef int32_t     md_molecule_idx_t;
+typedef int32_t     md_bond_idx_t;
 typedef uint32_t    md_secondary_structure_t;
 typedef uint32_t    md_flags_t;
 typedef uint8_t     md_element_t;
 typedef uint8_t     md_ramachandran_type_t;
 typedef uint8_t     md_valence_t;
 typedef uint8_t     md_order_t;
+
+typedef struct md_atom_span_t {
+    md_atom_idx_t* ptr;
+    int64_t        len;
+};
+
+typedef struct md_residue_span_t {
+    md_residue_idx_t* ptr;
+    int64_t           len;
+};
+
+typedef struct md_bond_span_t {
+    md_bond_idx_t* ptr;
+    int64_t        len;
+};
 
 // Structure Of Array layout version of vec3_t
 // This is to simplify the interfaces a bit when dealing with multiple coordinate streams
@@ -183,26 +198,22 @@ static inline void md_index_data_data_clear(md_index_data_t* data) {
     md_array_shrink(data->indices, 0);
 }
 
-FORCE_INLINE int64_t md_index_data_count(const md_index_data_t* data) {
-    ASSERT(data);
-    return md_array_size(data->ranges);
+static inline int64_t md_index_data_count(md_index_data_t data) {
+    return md_array_size(data.ranges);
 }
 
 // Access to individual substructures
-static inline int32_t* md_index_range_beg(const md_index_data_t* data, int64_t idx) {
-    ASSERT(data);
-    ASSERT(idx >= 0 && idx < md_array_size(data->ranges));
-    return data->indices + data->ranges[idx].beg;
+static inline int32_t* md_index_range_beg(md_index_data_t data, int64_t idx) {
+    ASSERT(idx >= 0 && idx < md_array_size(data.ranges));
+    return data.indices + data.ranges[idx].beg;
 }
 
-static inline int32_t* md_index_range_end(const md_index_data_t* data, int64_t idx) {
-    ASSERT(data);
-    ASSERT(idx >= 0 && idx < md_array_size(data->ranges));
-    return data->indices + data->ranges[idx].end;
+static inline int32_t* md_index_range_end(md_index_data_t data, int64_t idx) {
+    ASSERT(idx >= 0 && idx < md_array_size(data.ranges));
+    return data.indices + data.ranges[idx].end;
 }
 
-static inline int64_t md_index_range_size(const md_index_data_t* data, int64_t idx) {
-    ASSERT(data);
-    ASSERT(idx >= 0 && idx < md_array_size(data->ranges));
-    return data->ranges[idx].end - data->ranges[idx].beg;
+static inline int64_t md_index_range_size(md_index_data_t data, int64_t idx) {
+    ASSERT(idx >= 0 && idx < md_array_size(data.ranges));
+    return data.ranges[idx].end - data.ranges[idx].beg;66
 }

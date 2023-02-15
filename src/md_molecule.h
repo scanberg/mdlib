@@ -63,17 +63,43 @@ typedef struct md_instance_data_t {
     mat4_t* transform;
 } md_instance_data_t;
 
+/*
+typedef struct md_bond_data_t {
+    // Should have the same length
+    md_array(md_bond_t)     bonds;
+    md_array(md_order_t)    order;
+
+    md_array(md_range_t)    ranges; // should have length atom.count
+    md_array(md_bond_idx_t) atom_bonds;
+    md_array(md_atom_idx_t) atom_connections;
+} md_bond_data_t;
+*/
+
+typedef struct md_hbond_data_t {
+    int8_t charge;
+    int8_t impl_h;
+    int8_t total_h;
+    int8_t ideal_geom;
+} md_hbond_data_t;
+
 typedef struct md_molecule_t {
     md_unit_cell_t          cell;
     md_atom_data_t          atom;
     md_residue_data_t       residue;
     md_chain_data_t         chain;
     md_backbone_data_t      backbone;
+    
     md_array(md_bond_t)     bonds;              // Strong bonds which persist throughout the simulation
-    md_index_data_t         structures;         // Isolated structures connected by persistent bonds
+    
+    // @TODO: move this into some containing structure
+    md_array(md_hbond_data_t)  hbond_data;     
+    //md_index_data_t         atom_connectivity;
+    //md_index_data_t         atom_bond_indices;
+
     md_index_data_t         rings;              // Ring structures formed by persistent bonds
-    md_index_data_t         connectivity;       // Connectivity for each atom (indices to other atoms) formed by persistent bonds
-    md_instance_data_t      instance;
+    md_index_data_t         structures;         // Isolated structures connected by persistent bonds
+
+    md_instance_data_t      instance;           // Symmetry instances of the molecule (duplications of ranges with new transforms)
     
     // @NOTE(Robin): This should probably move elsewhere.
     // Hydrogen bonds are of interest to be evaluated and analyzed over the trajectory

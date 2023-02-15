@@ -603,6 +603,59 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
+static md_index_data_t md_compute_atom_bond_indices(const md_bond_t bonds[], int64_t bond_count, int64_t atom_count, md_allocator_i* alloc) {
+    md_index_data_t data = {0};
+    md_array_resize(data.ranges, atom_count, alloc);
+    MEMSET(data.ranges, 0, md_array_bytes(data.ranges));
+
+    // This have length of 2 * bond_count (2 = one for each atom involved)
+    md_array_resize(data.indices, 2 * bond_count, alloc);
+
+    uint32_t* local_offset = 0;
+    md_array_resize(local_offset, bond_count, alloc);
+
+    // Two packed 16-bit local offsets for each of the bond idx
+    // Accumulate the length of each range in the .end component
+    for (int64_t i = 0; i < bond_count; ++i) {
+        const uint32_t off0 = (uint32_t)data.ranges[bonds[i].idx[0]].end++;
+        const uint32_t off1 = (uint32_t)data.ranges[bonds[i].idx[1]].end++;
+        local_offset[i] = (off1 << 16) | off0;
+    }
+
+    // Compute complete edge ranges (compute beg and add to end in order to convert the stored length to a proper absolute offset)
+    for (int64_t i = 1; i < atom_count; ++i) {
+        data.ranges[i].beg =  data.ranges[i - 1].end;
+        data.ranges[i].end += data.ranges[i].beg;
+    }
+
+    // Write edge indices to correct location
+    for (int i = 0; i < (int)bond_count; ++i) {
+        const md_bond_t bond = bonds[i];
+        const int atom_a = bond.idx[0];
+        const int atom_b = bond.idx[1];
+        const int local_a = (int)(local_offset[i] & 0xFFFF);
+        const int local_b = (int)(local_offset[i] >> 16);
+        const md_range_t range_a = data.ranges[atom_a];
+        const md_range_t range_b = data.ranges[atom_b];
+
+        const int idx_a = range_a.beg + local_a;
+        const int idx_b = range_b.beg + local_b;
+        ASSERT(idx_a < range_a.end);
+        ASSERT(idx_b < range_b.end);
+
+        ASSERT(idx_a < md_array_size(data.indices));
+        ASSERT(idx_b < md_array_size(data.indices));
+
+        // Store the cross references to the 'other' atom index signified by the bond in the correct location
+        data.indices[idx_a] = i;
+        data.indices[idx_b] = i;
+    }
+
+    md_array_free(local_offset, alloc);
+
+    return data;
+}
+
 static md_index_data_t md_compute_connectivity(const md_bond_t bonds[], int64_t bond_count, int64_t atom_count, md_allocator_i* alloc) {
     md_index_data_t data = {0};
     md_array_resize(data.ranges, atom_count, alloc);
@@ -923,6 +976,65 @@ md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, c
     return bonds;
 }
 
+// Compute the prerequisite fields to enable hydrogen bond determination
+// Heavily inspired by molstar
+// https://github.com/molstar/molstar/blob/master/src/mol-model-props/computed/chemistry/valence-model.ts
+
+md_array(md_hbond_data_t) md_util_compute_hbond_data(const md_molecule_t* mol, md_index_data_t connectivity, md_allocator_i* alloc) {
+    md_array(md_valence_t) atom_valence = md_array_create(md_valence_t, mol->atom.count, default_temp_allocator);
+    memset(atom_valence, 0, md_array_bytes(atom_valence));
+
+    md_array(int8_t) atom_hcount = md_array_create(int8_t, mol->atom.count, default_temp_allocator);
+    memset(atom_hcount, 0, md_array_bytes(atom_hcount));
+
+    md_array(md_order_t) order = md_util_compute_covalent_bond_order(mol->bonds, md_array_size(mol->bonds), mol->atom.name, mol->atom.residue_idx, mol->residue.name, default_temp_allocator);
+
+    for (int64_t i = 0; i < md_array_size(mol->bonds); ++i) {
+        const md_atom_idx_t idx[2] = mol->bonds[i].idx;
+        atom_valence[idx[0]] += order[i];
+        atom_valence[idx[1]] += order[i];
+
+        if (mol->atom.element[idx[0]] == H) atom_hcount[idx[1]] += 1;
+        if (mol->atom.element[idx[1]] == H) atom_hcount[idx[0]] += 1;
+    }
+
+    for (int64_t i = 0; i < mol->atom.count; ++i) {
+        md_element_t elem = mol->atom.element[i];
+        int charge  = 0;
+        int implicit_hcount = 0;
+        int degree  = md_index_range_size(connectivity, i);
+        int valence = atom_valence[i];
+        int geom    = 0;
+
+        bool multi_bond = (valence - degree) > 0;
+
+        switch (elem)
+        {
+        case H:
+            if (degree == 0) {
+                charge = 1;
+                geom = 0;
+            } else if (degree == 1) {
+                charge = 0;
+                geom = 1;
+            }
+            break;
+        case C:
+            charge = 0;
+            implicit_hcount = MAX(0, 4 - valence + MAX(0, -charge));
+            geom = degree + implicit_hcount + MAX(0, -charge);
+        case N:
+            // @TODO: Complete this
+        }
+    }
+}
+
+md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_molecule_t* mol, md_allocator_i* alloc) {
+    for (int64_t i = 0; i < mol->atom.count; ++i) {
+
+    }
+}
+
 bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t res_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
     if (!chain_data) {
         MD_LOG_ERROR("chain data is missing");
@@ -1103,7 +1215,7 @@ static inline bool compare_ring(const int* ring_a, int ring_a_size, const int* r
     return true;
 }
 
-static bool has_ring(const md_index_data_t* ring_data, const int* ring, int ring_size) {
+static inline bool has_ring(md_index_data_t ring_data, const int* ring, int ring_size) {
     const int64_t num_rings = md_index_data_count(ring_data);
     for (int64_t i = 0; i < num_rings; ++i) {
         const int* ring_i     = md_index_range_beg(ring_data, i);
@@ -1133,12 +1245,11 @@ static void sort_arr(int* arr, int n) {
 #define MIN_RING_SIZE 3
 #define MAX_RING_SIZE 6
 
-md_index_data_t md_util_compute_rings(const md_index_data_t* connectivity, md_allocator_i* alloc) {
-    ASSERT(connectivity);
+md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allocator_i* alloc) {
     ASSERT(alloc);
     
     md_index_data_t ring_data = {0};
-    const int64_t atom_count = md_array_size(connectivity->ranges);
+    const int64_t atom_count = md_index_data_count(atom_connectivity);    
 
     if (atom_count == 0) {
         return ring_data;
@@ -1171,8 +1282,8 @@ md_index_data_t md_util_compute_rings(const md_index_data_t* connectivity, md_al
         while (!fifo_empty(&queue)) {
             int idx = fifo_pop(&queue);
 
-            const int* eb = md_index_range_beg(connectivity, idx);
-            const int* ee = md_index_range_end(connectivity, idx);
+            const int* eb = md_index_range_beg(atom_connectivity, idx);
+            const int* ee = md_index_range_end(atom_connectivity, idx);
             for (const int* it = eb; it != ee; ++it) {
                 int next = *it;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
@@ -1212,7 +1323,7 @@ md_index_data_t md_util_compute_rings(const md_index_data_t* connectivity, md_al
 
                     if (MIN_RING_SIZE <= n && n <= MAX_RING_SIZE) {
                         sort_arr(ring, n);
-                        if (!has_ring(&ring_data, ring, n)) {
+                        if (!has_ring(ring_data, ring, n)) {
                             md_index_data_push(&ring_data, ring, n, alloc);
                         }
                     }
@@ -1234,13 +1345,11 @@ md_index_data_t md_util_compute_rings(const md_index_data_t* connectivity, md_al
 #undef MIN_RING_SIZE
 #undef MAX_RING_SIZE
 
-md_index_data_t md_util_compute_structures(const md_index_data_t* connectivity, struct md_allocator_i* alloc) {
-    ASSERT(connectivity);
+md_index_data_t md_util_compute_structures(md_index_data_t atom_connectivity, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
     md_index_data_t structures = {0};
-
-    const int64_t num_atoms = md_array_size(connectivity->ranges);
+    const int64_t num_atoms = md_index_data_count(atom_connectivity);
 
     md_vm_arena_t arena = { 0 };
     md_vm_arena_init(&arena, GIGABYTES(1));
@@ -1268,8 +1377,8 @@ md_index_data_t md_util_compute_structures(const md_index_data_t* connectivity, 
             int idx = fifo_pop(&queue);
             md_array_push(indices, idx, &arena_alloc);
             
-            const int* eb = md_index_range_beg(connectivity, idx);
-            const int* ee = md_index_range_end(connectivity, idx);
+            const int* eb = md_index_range_beg(atom_connectivity, idx);
+            const int* ee = md_index_range_end(atom_connectivity, idx);
             for (const int* it = eb; it != ee; ++it) {
                 int next = *it;
                 if (depth[next] == 0) {
@@ -1737,8 +1846,10 @@ vec3_t md_util_compute_com_ortho_soa(const float* in_x, const float* in_y, const
 }
 */
 
-#pragma warning( push )
-#pragma warning( disable : 4244 )
+#if MD_COMPILER_MSVC
+#   pragma warning( push )
+#   pragma warning( disable : 4244 )
+#endif
 
 // From here: https://www.arianarab.com/post/crystal-structure-software
 mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma) {
@@ -1849,7 +1960,9 @@ md_unit_cell_t md_util_unit_cell_mat3(mat3_t M) {
     }
 }
 
-#pragma warning( pop )
+#if MD_COMPILER_MSVC
+#   pragma warning( pop )
+#endif
 
 bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box_ext) {
     if (!x || !y || !z) {
@@ -1885,14 +1998,9 @@ bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box_e
     return true;
 }
 
-bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* structures, vec3_t box_ext) {
+bool md_util_unwrap_ortho(float* x, float* y, float* z, md_index_data_t structures, vec3_t box_ext) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
-        return false;
-    }
-
-    if (!structures) {
-        MD_LOG_ERROR("Missing required input: structures");
         return false;
     }
 
@@ -1937,8 +2045,8 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell
 
     const float* w = mol->atom.mass;
     const int64_t num_atoms = mol->atom.count;
-    const int64_t num_structures = md_index_data_count(&mol->structures);
-    const md_index_data_t* structures = &mol->structures;
+    const int64_t num_structures = md_index_data_count(mol->structures);
+    const md_index_data_t structures = mol->structures;
 
     if (cell->flags & MD_CELL_TRICLINIC) {
         MD_LOG_ERROR("Triclinic cells are not supported");
@@ -1949,7 +2057,7 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell
     
     md_util_pbc_ortho(x, y, z, num_atoms, box);
     if (num_structures > 0) {
-        md_util_unwrap_ortho(x, y, z, &mol->structures, box);
+        md_util_unwrap_ortho(x, y, z, structures, box);
     
         // Place any defined covalent structure such that its center of mass is within the correct periodic image
         const vec4_t ext = vec4_from_vec3(box, 0);
@@ -2063,8 +2171,8 @@ bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_
 
             const vec4_t ref = vec4_from_vec3(xyz[idx], 0);
 
-            const int* n_beg = md_index_range_beg(&covalent->connectivity, idx);
-            const int* n_end = md_index_range_end(&covalent->connectivity, idx);
+            const int* n_beg = md_index_range_beg(&covalent->atom_connectivity, idx);
+            const int* n_end = md_index_range_end(&covalent->atom_connectivity, idx);
             for (const int* it = n_beg; it < n_end; ++it) {
                 const int neighbor_idx = *it;
                 if (pred[neighbor_idx] != -1) continue;
@@ -2535,9 +2643,9 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
         if (mol->bonds == 0) {
             mol->bonds = md_util_compute_covalent_bonds(&mol->atom, &mol->cell, alloc);
             if (mol->bonds) {
-                mol->connectivity        = md_compute_connectivity(mol->bonds, md_array_size(mol->bonds), mol->atom.count, alloc);
-                mol->structures          = md_util_compute_structures(&mol->connectivity, alloc);
-                mol->rings               = md_util_compute_rings(&mol->connectivity, alloc);
+                md_index_data_t connectivity = md_compute_connectivity(mol->bonds, md_array_size(mol->bonds), mol->atom.count, alloc);
+                mol->structures              = md_util_compute_structures(connectivity, alloc);
+                mol->rings                   = md_util_compute_rings(connectivity, alloc);
             }
         }
     }
