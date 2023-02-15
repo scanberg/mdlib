@@ -12,7 +12,7 @@
 #endif
 
 #ifndef MD_VEC_INLINE
-#define MD_VEC_INLINE FORCE_INLINE
+#define MD_VEC_INLINE static FORCE_INLINE
 #endif
 
 #if MD_COMPILER_GCC
@@ -134,17 +134,17 @@ typedef struct mat4_t {
 #	pragma warning(pop)
 #endif
 
-static inline float stepf(float edge, float x) { return (float)((x - edge) > 0); }
-static inline double step(double edge, double x) { return (double)((x - edge) > 0); }
+MD_VEC_INLINE float stepf(float edge, float x) { return (float)((x - edge) > 0); }
+MD_VEC_INLINE double step(double edge, double x) { return (double)((x - edge) > 0); }
 
-static inline float fractf(float x) { return x - (int32_t)x; }
-static inline double fract(double x) { return x - (int64_t)x; }
+MD_VEC_INLINE float fractf(float x) { return x - floorf(x); }
+MD_VEC_INLINE double fract(double x) { return x - floor(x); }
 
 // This is the version which seems to result in the best codegen for all compilers
-static inline int   signf(float x) { return (int)((x > 0.0f) - (x < 0.0f)); }
-static inline int   sign(double x) { return (int)((x > 0.0) - (x < 0.0)); }
+MD_VEC_INLINE int   signf(float x) { return (int)((x > 0.0f) - (x < 0.0f)); }
+MD_VEC_INLINE int   sign(double x) { return (int)((x > 0.0) - (x < 0.0)); }
 
-static inline float deperiodizef(float val, float ref, float period) {
+MD_VEC_INLINE float deperiodizef(float val, float ref, float period) {
     if (period == 0.0f) return val;
     float d = (val - ref) / period;
     d = fractf(d);
@@ -152,7 +152,7 @@ static inline float deperiodizef(float val, float ref, float period) {
     return d * period + ref;
 }
 
-static inline double deperiodize(double val, double ref, double period) {
+MD_VEC_INLINE double deperiodize(double val, double ref, double period) {
     if (period == 0.0) return val;
     double d = (val - ref) / period;
     d = fract(d);
@@ -160,12 +160,12 @@ static inline double deperiodize(double val, double ref, double period) {
     return d * period + ref;
 }
 
-static inline float lerpf(float a, float b, float t) {
+MD_VEC_INLINE float lerpf(float a, float b, float t) {
     t = CLAMP(t, 0.0f, 1.0f);
     return a * (1.0f - t) + b * t;
 }
 
-static inline float cubic_splinef(float p0, float p1, float p2, float p3, float t, float s) {
+MD_VEC_INLINE float cubic_splinef(float p0, float p1, float p2, float p3, float t, float s) {
     const float v0 = (p2 - p0) * s;
     const float v1 = (p3 - p1) * s;
     const float t2 = t * t;
