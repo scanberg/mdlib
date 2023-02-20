@@ -3,6 +3,7 @@
 #include <core/md_common.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
+#include <core/md_parse.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
 #include <core/md_log.h>
@@ -406,42 +407,27 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
 }
 
 bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_allocator_i* alloc) {
+    bool result = false;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        const int64_t buf_size = KILOBYTES(64ULL);
-        char* buf = md_alloc(default_temp_allocator, buf_size);
+        const int64_t cap = MEGABYTES(1);
+        char* buf = md_alloc(default_allocator, cap);
 
-        int64_t file_offset = 0;
+        int64_t bytes_total = 0;
         int64_t bytes_read = 0;
-        int64_t buf_offset = 0;
-        while ((bytes_read = md_file_read(file, buf + buf_offset, buf_size - buf_offset)) > 0) {
-            str_t str = {.ptr = buf, .len = buf_offset + bytes_read};
-
-            // If we read a complete block, that means the buffer is cut-off
-            if (bytes_read == buf_size - buf_offset) {
-                // make sure we send complete lines for parsing so we locate the last '\n'
-                const int64_t last_new_line = str_rfind_char(str, '\n');
-                if (last_new_line == -1) {
-                    MD_LOG_ERROR("Could not locate new line character when parsing PDB file");
-                    goto done;
-                }
-                ASSERT(str.ptr[last_new_line] == '\n');
-                str.len = last_new_line + 1;
-            }
-
+        while (bytes_read = md_file_read_lines(file, buf, cap)) {
             const int64_t pre_num_models = data->num_models;
-            md_pdb_data_parse_str(data, str, alloc);
+            md_pdb_data_parse_str(data, (str_t){buf, bytes_read}, alloc);
 
+            // Update byte offsets for models
             for (int64_t i = pre_num_models; i < data->num_models; ++i) {
-                data->models[i].byte_offset += file_offset;
+                data->models[i].byte_offset += bytes_total;
             }
 
-            // Copy remainder to beginning of buffer
-            buf_offset = buf_size - str.len;
-            MEMMOVE(buf, str.ptr + str.len, buf_offset);
-            file_offset += buf_size - buf_offset;
+            bytes_total += bytes_read;
         }
-done:
+        
+        md_free(default_allocator, buf, cap);
         md_file_close(file);
         return true;
     }

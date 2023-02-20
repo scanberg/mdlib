@@ -115,7 +115,7 @@ md_unit_cell_t md_util_unit_cell_mat3(mat3_t M);
 
 bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box);
 
-bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* structures, vec3_t box);
+bool md_util_unwrap_ortho(float* x, float* y, float* z, md_index_data_t structures, vec3_t box);
 
 // Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.

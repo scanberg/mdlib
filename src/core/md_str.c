@@ -5,6 +5,7 @@
 #include "md_allocator.h"
 #include "md_array.h"
 #include "md_log.h"
+#include "md_parse.h"
 
 #include <string.h>
 #include <stdarg.h>
@@ -186,6 +187,7 @@ done:
     return result;
 }
 
+/*
 #if MD_COMPILER_MSVC
     double __cdecl pow(double x, double y);
 #   pragma intrinsic(pow)
@@ -193,80 +195,9 @@ done:
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 #   define POW __builtin_pow
 #endif
+*/
 
-double parse_float(str_t str) {
-    ASSERT(str.ptr);
-    static const double pow10[32] = {
-        1e+0,  1e+1,  1e+2,  1e+3,  1e+4,  1e+5,  1e+6,  1e+7,
-        1e+8,  1e+9,  1e+10, 1e+11, 1e+12, 1e+13, 1e+14, 1e+15,
-        1e+16, 1e+17, 1e+18, 1e+19, 1e+20, 1e+21, 1e+22, 1e+23,
-        1e+24, 1e+25, 1e+26, 1e+27, 1e+28, 1e+29, 1e+30, 1e+31,
-    };
 
-    const char* c = str.ptr;
-    const char* end = str.ptr + str.len;
-
-    while (c < end && is_whitespace(*c)) ++c;
-
-    double val = 0;
-    double sign = 1;
-    if (*c == '-') {
-        ++c;
-        sign = -1;
-    }
-    while (c < end && is_digit(*c)) {
-        val = val * 10 + ((int)(*c) - '0');
-        ++c;
-    }
-
-    if (c < end && *c == '.') {
-        const char* dec = ++c;
-        while (c < end && (c - dec) < (int64_t)ARRAY_SIZE(pow10) - 1 && is_digit(*c)) {
-            val = val * 10 + ((int)(*c) - '0');
-            ++c;
-        }
-        int64_t count = c - dec;
-        val /= pow10[count];
-    }
-
-    if (c < end && (*c == 'e' || *c == 'E')) {
-        ++c;
-        int exp_sign = 1;
-        if (c < end && (*c == '+' || *c == '-')) {
-            exp_sign = *c == '+' ? 1 : -1;
-            ++c;
-        }
-        int exp_val = 0;
-        while (c < end && is_digit(*c)) {
-            exp_val = exp_val * 10 + ((int)(*c) - '0');
-            ++c;
-        }
-        while (exp_val) {
-            int ev = MIN(exp_val, (int)ARRAY_SIZE(pow10)-1);
-            val = exp_sign > 0 ? val * pow10[ev] : val / pow10[ev];
-            exp_val -= ev;
-        }
-    }
-
-    return sign * val;
-}
-
-int64_t parse_int(str_t str) {
-    int64_t val = 0;
-    const char* c = str.ptr;
-    const char* end = str.ptr + str.len;
-    while (c < end && is_whitespace(*c)) ++c;
-    int64_t sign = 1;
-    if (*c == '-') {
-        ++c;
-        sign = -1;
-    }
-    while (c != end && is_digit(*c)) {
-        val = val * 10 + ((int64_t)(*c) - (int64_t)'0');
-        ++c;
-    }
-    return sign * val;
-}
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     ASSERT(alloc);
@@ -403,58 +334,4 @@ str_t extract_path_without_file(str_t path) {
         res.len = pos+1;    // include '/' or '\'
     }
     return res;
-}
-
-bool extract_token(str_t* tok, str_t* str) {
-    ASSERT(tok);
-    ASSERT(str);
-    if (str_empty(*str)) return false;
-
-    const char* end = str->ptr + str->len;
-    const char* c = str->ptr;
-    while (c < end && is_whitespace(*c)) ++c;
-    if (c >= end) return false;
-
-    const char* tok_beg = c;
-    while (c < end && !is_whitespace(*c)) ++c;
-     
-    tok->ptr = tok_beg;
-    tok->len = c - tok_beg;
-
-    str->ptr = c < end ? c + 1 : end;
-    str->len = end - str->ptr;
-
-    return true;
-}
-
-int64_t extract_tokens(str_t token_arr[], int64_t token_cap, str_t* str) {
-    ASSERT(token_arr);
-    ASSERT(token_cap >= 0);
-    ASSERT(str);
-    
-    int64_t num_tokens = 0;
-    while (num_tokens < token_cap && extract_token(&token_arr[num_tokens], str)) {
-        num_tokens += 1;
-    }
-    return num_tokens;
-}
-
-bool extract_token_delim(str_t* tok, str_t* str, char delim) {
-    ASSERT(tok);
-    ASSERT(str);
-    if (!str->ptr || str->len == 0) return false;
-
-    const char* beg = str->ptr;
-    const char* end = str->ptr + str->len;
-    const char* c = str->ptr;
-    while (c != end && *c != delim) {
-        ++c;
-    }
-    tok->ptr = beg;
-    tok->len = c - beg;
-
-    str->ptr = c != end ? c + 1 : end;
-    str->len = end - str->ptr;
-
-    return true;
 }

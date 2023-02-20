@@ -1,6 +1,7 @@
 #include "utest.h"
 
 #include <core/md_str.h>
+#include <core/md_parse.h>
 #include <core/md_os.h>
 #include <float.h>
 
@@ -28,21 +29,22 @@ UTEST(str, parse_int) {
 UTEST(str, perf_int) {
     const str_t str = STR("128326746123");
     const int64_t num_iter = 1000000;
+    int64_t acc = 0;
 
     md_timestamp_t t0 = md_time_current();
-    for (int64_t i = 0; i < 100000; ++i) {
-        int64_t x = atol(str.ptr);
+    for (int64_t i = 0; i < num_iter; ++i) {
+        acc += atol(str.ptr);
     }
     md_timestamp_t t1 = md_time_current();    
-    for (int64_t i = 0; i < 100000; ++i) {
-        int64_t x = parse_int(str);
+    for (int64_t i = 0; i < num_iter; ++i) {
+        acc += parse_int(str);
     }
     md_timestamp_t t2 = md_time_current();
 
     double t_atoi  = md_time_as_milliseconds(t1 - t0);
     double t_parse = md_time_as_milliseconds(t2 - t1);
 
-    printf("Time to parse %iM int. atoi: %.3f ms, parse_int: %.3f ms, speedup: %.2f\n", (int)(num_iter / 1000000), t_atoi, t_parse, t_atoi / t_parse);
+    printf("Time to parse %iM int. atoi: %.3f ms, parse_int: %.3f ms, speedup: %.2f, %i\n", (int)(num_iter / 1000000), t_atoi, t_parse, t_atoi / t_parse, (int)acc);
 }
 
 
@@ -77,21 +79,22 @@ UTEST(str, parse_float) {
 UTEST(str, perf_float) {
     const str_t str = STR("-248.271233e-2");
     const int64_t num_iter = 1000000;
+    double acc = 0;
 
     md_timestamp_t t0 = md_time_current();
-    for (int64_t i = 0; i < 100000; ++i) {
-        double x = atof(str.ptr);
+    for (int64_t i = 0; i < num_iter; ++i) {
+        acc += atof(str.ptr);
     }
     md_timestamp_t t1 = md_time_current();    
-    for (int64_t i = 0; i < 100000; ++i) {
-        double x = parse_float(str);
+    for (int64_t i = 0; i < num_iter; ++i) {
+        acc += parse_float(str);
     }
     md_timestamp_t t2 = md_time_current();
 
     double t_atof  = md_time_as_milliseconds(t1 - t0);
     double t_parse = md_time_as_milliseconds(t2 - t1);
 
-    printf("Time to parse %iM floats. atof: %.3f ms, parse_float: %.3f ms, speedup: %.2f\n", (int)(num_iter / 1000000), t_atof, t_parse, t_atof / t_parse);
+    printf("Time to parse %iM floats. atof: %.3f ms, parse_float: %.3f ms, speedup: %.2f, acc: %.1f\n", (int)(num_iter / 1000000), t_atof, t_parse, t_atof / t_parse, acc);
 }
 
 UTEST(str, extract_line) {

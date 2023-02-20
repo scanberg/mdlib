@@ -109,3 +109,28 @@ UTEST(os, semaphore) {
 
     EXPECT_TRUE(md_semaphore_destroy(&sema));
 }
+
+#include <core/md_str_builder.h>
+
+UTEST(os, file_read_lines) {
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/pftaa.gro");
+    str_t ref = load_textfile(path, default_allocator);
+
+    
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    
+    md_strb_t sb = md_strb_create(default_allocator);
+    
+    const int64_t cap = KILOBYTES(1);
+    char* buf = md_alloc(default_allocator, cap);
+    
+    int64_t bytes_read;
+    while (bytes_read = md_file_read_lines(file, buf, cap)) {
+        md_strb_push_str(&sb, (str_t){buf, bytes_read});
+    }
+
+    str_t str = md_strb_to_str(&sb);
+    EXPECT_TRUE(str_equal(str, ref));
+
+    md_free(default_allocator, buf, cap);
+}

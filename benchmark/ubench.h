@@ -70,6 +70,8 @@
 #define UBENCH_C_FUNC
 #endif
 
+
+
 #if defined(__cplusplus)
 #define UBENCH_NULL NULL
 #else
@@ -277,6 +279,8 @@ UBENCH_C_FUNC __declspec(dllimport) int __stdcall QueryPerformanceFrequency(
 #define UBENCH_COLOUR_OUTPUT() (isatty(STDOUT_FILENO))
 #endif
 
+#define UBENCH_SET_BYTES(x) ubench_run_state->bytes = (x)
+
 static UBENCH_INLINE ubench_int64_t ubench_ns(void) {
 #ifdef _MSC_VER
   ubench_large_integer counter;
@@ -304,6 +308,7 @@ struct ubench_run_state_s {
   ubench_int64_t *ns;
   ubench_int64_t size;
   ubench_int64_t sample;
+  ubench_int64_t bytes;
 };
 
 typedef void (*ubench_benchmark_t)(struct ubench_run_state_s *ubs);
@@ -652,6 +657,7 @@ int ubench_main(int argc, const char *const argv[]) {
     ubs.ns = ns;
     ubs.size = 1;
     ubs.sample = 0;
+    ubs.bytes = 0;
 
     /* Time once to work out the base number of iterations to use. */
     ubench_state.benchmarks[index].func(&ubs);
@@ -737,6 +743,8 @@ int ubench_main(int argc, const char *const argv[]) {
       printf("%s%s%s %s (mean ", colour, status, colours[RESET],
              ubench_state.benchmarks[index].name);
 
+      double MB_per_s = (ubs.bytes / 1000000.0) / (best_avg_ns / 1000000000.0);
+
       for (mndex = 0; mndex < 2; mndex++) {
         if (best_avg_ns <= 1000000) {
           break;
@@ -757,8 +765,14 @@ int ubench_main(int argc, const char *const argv[]) {
       }
 
       printf("%" UBENCH_PRId64 ".%03" UBENCH_PRId64
-             "%s, confidence interval +- %f%%)\n",
+             "%s, confidence interval +- %f%%) ",
              best_avg_ns / 1000, best_avg_ns % 1000, unit, best_confidence);
+
+      if (ubs.bytes) {
+        printf("(%.3f MB/s)", MB_per_s);
+      }
+
+      printf("\n");
     }
   }
 

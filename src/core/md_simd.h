@@ -16,17 +16,7 @@
 #include "md_common.h"
 #include "md_intrinsics.h"
 
-#if defined(__x86_64__) || defined(_M_X64)
-#   ifndef __x86_64__
-#       define __x86_64__ 1
-#   endif
-#endif
-
 #if defined(__x86_64__)
-#   ifndef __SSE2__
-#       define __SSE2__ 1
-#   endif
-
 // x86 integer intrinsics does not have distinct types
 // so we define distinct types for each in order to enable C11 Generics
 typedef struct md_i32x4_t {

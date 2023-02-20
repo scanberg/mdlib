@@ -85,8 +85,8 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 	md_strb_t sb = {0};
 	md_strb_init(&sb, default_allocator);
 	
-	md_strb_str(&sb, tidy_comment(cube->title));   md_strb_char(&sb, '\n');
-	md_strb_str(&sb, tidy_comment(cube->comment)); md_strb_char(&sb, '\n');
+	md_strb_push_str(&sb, tidy_comment(cube->title));   md_strb_push_char(&sb, '\n');
+	md_strb_push_str(&sb, tidy_comment(cube->comment)); md_strb_push_char(&sb, '\n');
 
 	int atom_count = cube->data.id ? -cube->atom.count : cube->atom.count;
 	int num_val = cube->data.id ? 1 : cube->data.num_m;
@@ -104,17 +104,17 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 		for (int i = 0; i < cube->data.num_m; ++i) {
 			md_strb_fmt(&sb, "%5d", cube->data.id[i]);
 			if (i % 23 == 22) {
-				md_strb_char(&sb, '\n');
+				md_strb_push_char(&sb, '\n');
 			}
 		}
-		md_strb_char(&sb, '\n');
+		md_strb_push_char(&sb, '\n');
 	}
 	
 	const int64_t data_count = cube->data.num_x * cube->data.num_y * cube->data.num_z;
 	for (int64_t i = 0; i < data_count; ++i) {
         md_strb_fmt(&sb, " %12.5E", cube->data.val[i]);
         if (i % 6 == 5) {
-			md_strb_char(&sb, '\n');
+			md_strb_push_char(&sb, '\n');
 		}
 	}
 	

@@ -2,6 +2,18 @@
 
 #include "md_compiler.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
+#   ifndef __x86_64__
+#       define __x86_64__ 1
+#   endif
+#endif
+
+#if defined(__x86_64__)
+#   ifndef __SSE2__
+#       define __SSE2__ 1
+#   endif
+#endif
+
 #if MD_COMPILER_MSVC
 #ifndef STATIC_ASSERT
 #define STATIC_ASSERT _Static_assert
@@ -185,17 +197,17 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 #endif
 
 #if MD_COMPILER_MSVC
+
 #ifdef  __cplusplus
 extern "C" void * __cdecl memcpy(void*, const void*, unsigned long long);
 extern "C" void * __cdecl memset(void*, int, unsigned long long);
 extern "C" void * __cdecl memmove(void*, const void*, unsigned long long);
-
 #else
 void * __cdecl memcpy(void* dst, const void* src, unsigned long long size);
 void * __cdecl memset(void* dst, int val, unsigned long long size);
 void * __cdecl memmove(void* dst, const void* src, unsigned long long size);
-
 #endif
+
 #pragma intrinsic(memcpy)
 #pragma intrinsic(memset)
 #pragma intrinsic(memmove)

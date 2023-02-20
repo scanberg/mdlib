@@ -7,6 +7,7 @@
 #include <core/md_log.h>
 #include <core/md_os.h>
 #include <core/md_array.h>
+#include <core/md_parse.h>
 #include <md_util.h>
 
 #include <string.h>
@@ -22,192 +23,97 @@ static inline bool ranges_overlap(md_range_t a, md_range_t b) {
     return (a.beg < b.end && b.beg < a.end);
 }
 
-static inline int64_t compute_position_field_width(str_t line) {
-    // First float starts at offset 20, count
-    if (line.len > 20) {
-        const char* c = line.ptr + 20;
-        const char* end = line.ptr + line.len;
-        while (c != end && *c != '\n' && *c == ' ') ++c;
-        while (c != end && *c != '\n' && *c != ' ') ++c;
-        if (c != end) {
-            return (int64_t)(c - (line.ptr + 20));
-        }
-    }
-    return 0;
-}
-
-static inline bool parse_header(str_t* str, md_gro_data_t* data) {
+static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* line_reader, struct md_allocator_i* alloc) {
+    ASSERT(data);
+    ASSERT(line_reader);
+    ASSERT(alloc);
     str_t line;
-    if (!str_extract_line(&line, str)) {
-        MD_LOG_ERROR("Failed to read title");
+    str_t tokens[8];
+
+    if (!md_buffered_line_reader_extract_line(&line, line_reader)) {
+        MD_LOG_ERROR("Failed to parse gro title");
         return false;
     }
-
     str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
-    if (!str_extract_line(&line, str)) {
-        MD_LOG_ERROR("Failed to read number of atoms");
+    if (!md_buffered_line_reader_extract_line(&line, line_reader)) {
+        MD_LOG_ERROR("Failed to parse gro num atoms");
         return false;
     }
-
     data->num_atoms = parse_int(str_trim(line));
+
     const int64_t min_bounds = 1;
     const int64_t max_bounds = 10000000;
     if (data->num_atoms < min_bounds || max_bounds < data->num_atoms) {
-        MD_LOG_ERROR("Number of atoms (%lli) outside of plausible range [%lli, %lli]", data->num_atoms, min_bounds, max_bounds);
+        MD_LOG_ERROR("Number of atoms (%i) outside of plausible range [%i, %i]", (int)data->num_atoms, (int)min_bounds, (int)max_bounds);
         return false;
     }
 
-    return true;
-}
-
-static inline str_t parse_atom_data(str_t str, md_gro_data_t* data, int64_t pos_field_width, int64_t* read_count, int64_t read_target, md_allocator_i* alloc) {
-    str_t line = {0};
-    while ((*read_count < read_target) && str_extract_line(&line, &str)) {
-        int32_t res_id  = (int32_t)parse_int(str_trim(str_substr(line, 0, 5)));
-        str_t res_name  = str_trim(str_substr(line, 5, 5));
-        str_t atom_name = str_trim(str_substr(line, 10, 5));
-        float x = (float)parse_float(str_trim(str_substr(line, 20 + 0 * pos_field_width, pos_field_width)));
-        float y = (float)parse_float(str_trim(str_substr(line, 20 + 1 * pos_field_width, pos_field_width)));
-        float z = (float)parse_float(str_trim(str_substr(line, 20 + 2 * pos_field_width, pos_field_width)));
-
+    for (int64_t i = 0; i < data->num_atoms; ++i) {
+        if (!md_buffered_line_reader_extract_line(&line, line_reader)) {
+            MD_LOG_ERROR("Failed to extract atom line");
+            return false;
+        }
+        str_t line_coords = str_substr(line, 20, -1);
+        const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line_coords);
+        if (num_tokens < 3) {
+            MD_LOG_ERROR("Failed to parse atom coordinates, expected at least 3 tokens, got %i", (int)num_tokens);
+            return false;
+        }
         md_gro_atom_t atom = {
-            .res_id = res_id,
-            .x = x,
-            .y = y,
-            .z = z,
+            .res_id = (int32_t)parse_int(str_trim(str_substr(line, 0, 5))),
+            .x = (float)parse_float(tokens[0]),
+            .y = (float)parse_float(tokens[1]),
+            .z = (float)parse_float(tokens[2]),
         };
-        str_copy_to_char_buf(atom.res_name, sizeof(atom.res_name), res_name);
-        str_copy_to_char_buf(atom.atom_name, sizeof(atom.atom_name), atom_name);
+        str_copy_to_char_buf(atom.res_name,  sizeof(atom.res_name),  str_trim(str_substr(line,  5, 5)));
+        str_copy_to_char_buf(atom.atom_name, sizeof(atom.atom_name), str_trim(str_substr(line, 10, 5)));
         md_array_push(data->atom_data, atom, alloc);
-        *read_count += 1;
     }
 
-    return str;
-}
-
-static inline bool parse_unitcell(str_t str, md_gro_data_t* data) {
-    ASSERT(data);
-
-    str_t line = {0,0};
-    if (!str_extract_line(&line, &str)) {
-        MD_LOG_ERROR("Failed to extract line for unit cell.");
+    if (!md_buffered_line_reader_extract_line(&line, line_reader)) {
+        MD_LOG_ERROR("Failed to extract unitcell line");
         return false;
     }
 
-    data->cell_ext[0] = (float)parse_float(str_trim(str_substr(line, 0, 10)));
-    data->cell_ext[1] = (float)parse_float(str_trim(str_substr(line, 10, 10)));
-    data->cell_ext[2] = (float)parse_float(str_trim(str_substr(line, 20, 10)));
+    const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 
+    if (num_tokens != 3) {
+        MD_LOG_ERROR("Failed to parse cell extent, expected 3 tokens, got %i", (int)num_tokens);
+        return false;
+    }
+    
+    data->cell_ext[0] = (float)parse_float(tokens[0]);
+    data->cell_ext[1] = (float)parse_float(tokens[1]);
+    data->cell_ext[2] = (float)parse_float(tokens[2]);
+    
     return true;
 }
 
 bool md_gro_data_parse_str(md_gro_data_t* data, str_t str, struct md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
-    
-    if (!parse_header(&str, data)) {
-        MD_LOG_ERROR("Failed to parse gro header!");
-        return false;
-    }
 
-    const int64_t pos_field_width = compute_position_field_width(str);
-
-    int64_t num_atoms_read = 0;
-    str = parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
-
-    if (num_atoms_read != data->num_atoms) {
-        MD_LOG_ERROR("There was a descrepancy between the number of atoms read (%lli) compared to the number of atoms specified in the header (%lli)", num_atoms_read, data->num_atoms);
-        return false;
-    }
-
-    if (!parse_unitcell(str, data)) {
-        return false;
-    }
-
-    return true;
+    md_buffered_reader_t line_reader = md_buffered_line_reader_from_str(str);
+    return md_gro_data_parse(data, &line_reader, alloc);
 }
 
 bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_allocator_i* alloc) {
+    bool result = false;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        bool success = false;
-        const int64_t buf_size = KILOBYTES(64ULL);
-        char* buf = md_alloc(default_temp_allocator, buf_size);
+        const int64_t cap = MEGABYTES(1);
+        char* buf = md_alloc(default_allocator, cap);
+        md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
+
+        result = md_gro_data_parse(data, &line_reader, alloc);
         
-        int64_t pos_field_width = 0;
-        int64_t num_atoms_read = 0;
-
-        // Read header explicitly
-        {
-            const int64_t header_size = KILOBYTES(1);
-            str_t str = {.ptr = buf, .len = md_file_read(file, buf, header_size) };
-
-            if (!parse_header(&str, data)) {
-                MD_LOG_ERROR("Failed to parse gro header!");
-                goto done;
-            }
-
-            pos_field_width = compute_position_field_width(str);
-            if (!pos_field_width) {
-                MD_LOG_ERROR("Failed to determine position field width");
-                goto done;
-            }
-
-            // Once we have read the header, we set the file position to just after the header
-            const int64_t seek_target = str.ptr - buf;
-            if (!md_file_seek(file, seek_target, MD_FILE_BEG)) {
-                MD_LOG_ERROR("Failed to seek in file");
-                goto done;
-            }
-        }
-
-        int64_t bytes_read = 0;
-        int64_t buf_offset = 0;
-        str_t str = {.ptr = buf};
-
-        // Read fields in chunks
-        while ((bytes_read = md_file_read(file, buf + buf_offset, buf_size - buf_offset)) > 0) {
-            str.len = bytes_read + buf_offset;
-
-            // Have we read all bytes in file?
-            if (bytes_read < buf_size - buf_offset) {
-                str = parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
-                break;
-            } else {
-                // We want to make sure we send complete lines for parsing so we locate the last '\n'
-                const int64_t last_new_line = str_rfind_char(str, '\n');
-                if (last_new_line == -1) {
-                    MD_LOG_ERROR("Unexpected structure within gro file, missing new lines?");
-                    goto done;
-                }
-                ASSERT(str.ptr[last_new_line] == '\n');
-                str.len = last_new_line + 1;
-                parse_atom_data(str, data, pos_field_width, &num_atoms_read, data->num_atoms, alloc);
-            }
-
-            // Copy remainder to beginning of buffer
-            buf_offset = buf_size - str.len;
-            MEMCPY(buf, str.ptr + str.len, buf_offset);
-        }
-
-        if (num_atoms_read != data->num_atoms) {
-            MD_LOG_ERROR("There was a descrepancy between the number of atoms read (%lli) compared to the number of atoms specified in the header (%lli)", num_atoms_read, data->num_atoms);
-            goto done;
-        }
-
-        if (!parse_unitcell(str, data)) {
-            MD_LOG_ERROR("Failed to parse unitcell in gro file");
-            goto done;
-        }
-
-        success = true;
-done:
+        md_free(default_allocator, buf, cap);
         md_file_close(file);
-        return success;
+    } else {
+        MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
     }
-    MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
-    return false;
+    return result;
 }
 
 void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc) {

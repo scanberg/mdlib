@@ -32,11 +32,11 @@ void md_strb_free(md_strb_t* sb) {
 	sb->alloc = NULL;
 }
 
-void md_strb_cstr(md_strb_t* sb, const char* cstr) {
-	md_strb_cstrl(sb, cstr, (int64_t)strlen(cstr));
+void md_strb_push_cstr(md_strb_t* sb, const char* cstr) {
+	md_strb_push_cstrl(sb, cstr, (int64_t)strlen(cstr));
 }
 
-void md_strb_cstrl(md_strb_t* sb, const char* cstr, int64_t len) {
+void md_strb_push_cstrl(md_strb_t* sb, const char* cstr, int64_t len) {
 	ASSERT(sb);
 	if (len > 0) {
 		if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
@@ -63,7 +63,7 @@ void md_strb_fmt(md_strb_t* sb, const char* format, ...) {
 	}
 }
 
-void md_strb_str(md_strb_t* sb, str_t str) {
+void md_strb_push_str(md_strb_t* sb, str_t str) {
 	ASSERT(sb);
 	if (str.len > 0) {
 		if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
@@ -79,7 +79,7 @@ void md_strb_pop(md_strb_t* sb, int64_t n) {
 	md_array_push(sb->buf, '\0', sb->alloc);
 }
 
-void md_strb_char(md_strb_t* sb, char c) {
+void md_strb_push_char(md_strb_t* sb, char c) {
     ASSERT(sb);
     if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
     md_array_push(sb->buf, c, sb->alloc);
@@ -101,6 +101,7 @@ int64_t md_strb_len(const md_strb_t* sb) {
 
 str_t md_strb_to_str(const md_strb_t* sb) {
 	ASSERT(sb);
-	return (str_t) { md_array_size(sb->buf) ? sb->buf : 0, md_array_size(sb->buf) };
+	const int64_t len = md_array_size(sb->buf);
+	return (str_t) { len ? sb->buf : 0, MAX(0, len-1) };
 }
 

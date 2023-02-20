@@ -368,7 +368,7 @@ int64_t md_file_size(md_file_o* file) {
 // Returns the number of successfully written/read bytes
 int64_t md_file_read(md_file_o* file, void* ptr, int64_t num_bytes) {
     ASSERT(file);
-    return fread(ptr, 1, num_bytes, (FILE*)file);
+    return (int64_t)fread(ptr, 1, num_bytes, (FILE*)file);
 }
 
 int64_t md_file_read_line(md_file_o* file, char* buf, int64_t cap) {
@@ -378,18 +378,20 @@ int64_t md_file_read_line(md_file_o* file, char* buf, int64_t cap) {
     return res ? len : 0;
 }
 
-int64_t md_file_read_lines(md_file_o* file, char* buf, int64_t cap, int64_t line_count) {
-    if (!file || !buf || cap < 1 || line_count < -1) return 0;
-    line_count = (line_count == -1) ? INT64_MAX : line_count;
-    int64_t tot_size = 0;
-    for (int64_t i = 0; i < line_count && cap > 0; ++i) {
-        int64_t read_size = md_file_read_line(file, buf, cap);
-        if (read_size == 0) break;
-        buf += read_size;
-        cap -= read_size;
-        tot_size += read_size;
+int64_t md_file_read_lines(md_file_o* file, char* buf, int64_t cap) {
+    if (!file || !buf || cap < 1) return 0;
+    
+    int64_t len = (int64_t)fread(buf, 1, cap, (FILE*)file);
+    if (len == cap) {
+        const str_t str = {buf, len};
+        const int64_t loc = str_rfind_char(str, '\n');
+        if (loc != -1) {
+            const long offset = (long)loc + 1 - (long)len;
+            fseek((FILE*)file, offset, SEEK_CUR);
+            len = loc + 1;
+        }
     }
-    return tot_size;
+    return len;
 }
 
 int64_t md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes) {

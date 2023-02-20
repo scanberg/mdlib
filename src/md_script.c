@@ -37,6 +37,7 @@
 #include "core/md_bitfield.h"
 #include "core/md_allocator.h"
 #include "core/md_str.h"
+#include "core/md_parse.h"
 #include "core/md_array.h"
 #include "core/md_arena_allocator.h"
 #include "core/md_bitop.h"
@@ -4432,10 +4433,10 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
         if (node->data.type.base_type != TYPE_BITFIELD) {
             char val_buf[128] = {0};
             int val_len = print_value(val_buf, sizeof(val_buf), node->data);
-            md_strb_cstrl(&sb, val_buf, val_len);
+            md_strb_push_cstrl(&sb, val_buf, val_len);
         }
     } else {
-        md_strb_str(&sb, STR("[dynamic]"));
+        md_strb_push_str(&sb, STR("[dynamic]"));
     }
 
     char type_buf[128];

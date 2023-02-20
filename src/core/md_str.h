@@ -184,11 +184,6 @@ bool str_starts_with(str_t str, str_t prefix);
 bool str_ends_with(str_t str, str_t suffix);
 str_t str_find_str(str_t str, str_t str_to_find);
 
-// Make sure you ave trimmed all whitespace before using these!
-// They are lean and mean
-double  parse_float(str_t str);
-int64_t parse_int(str_t str);
-
 // Will allocate one extra character for zero termination
 str_t alloc_str(uint64_t len, struct md_allocator_i* alloc);
 void  str_free(str_t str, struct md_allocator_i* alloc);
@@ -241,16 +236,6 @@ static inline int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str) {
     buf[len] = '\0';
     return len;
 }
-
-// Extracts token with whitespace as delimiter
-bool extract_token(str_t* tok, str_t* str);
-
-// Extract multiple tokens with whitespace as delimiter
-int64_t extract_tokens(str_t token_arr[], int64_t token_cap, str_t* str);
-
-// Extracts token with specific delimiter
-bool extract_token_delim(str_t* tok, str_t* str, char delim);
-
 
 #ifdef __cplusplus
 }

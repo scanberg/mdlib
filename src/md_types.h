@@ -46,21 +46,6 @@ typedef uint8_t     md_ramachandran_type_t;
 typedef uint8_t     md_valence_t;
 typedef uint8_t     md_order_t;
 
-typedef struct md_atom_span_t {
-    md_atom_idx_t* ptr;
-    int64_t        len;
-};
-
-typedef struct md_residue_span_t {
-    md_residue_idx_t* ptr;
-    int64_t           len;
-};
-
-typedef struct md_bond_span_t {
-    md_bond_idx_t* ptr;
-    int64_t        len;
-};
-
 // Structure Of Array layout version of vec3_t
 // This is to simplify the interfaces a bit when dealing with multiple coordinate streams
 typedef struct md_vec3_soa_t {

@@ -51,9 +51,12 @@ bool        md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t 
 int64_t     md_file_size(md_file_o* file);
 
 // Reads a line from the file by searching for the first occurrence of new-line character '\n'.
-// Returns the number of characters read (up to cap-1)
+// Returns the number of bytes read (up to cap-1)
 int64_t     md_file_read_line(md_file_o* file, char* buf, int64_t cap);
-//int64_t     md_file_read_lines(md_file_o* file, char* buf, int64_t cap, int64_t line_count);
+
+// Reads multiple lines from the file by filling the buffer with as many complete lines as possible.
+// returns the number of bytes read (up to cap-1)
+int64_t     md_file_read_lines(md_file_o* file, char* buf, int64_t cap);
 
 int64_t     md_file_read(md_file_o* file, void* ptr, int64_t num_bytes);
 int64_t     md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes);

@@ -12,5 +12,8 @@ target_sources(md_benchmark
     ${CMAKE_CURRENT_SOURCE_DIR}/test_spatial_hash.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xtc.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_gro.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_pdb.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_xyz.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_str.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_util.c
   )
