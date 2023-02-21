@@ -46,34 +46,56 @@ UBENCH_EX(str, buffered_reader) {
 
 UBENCH_EX(str, parse_int) {
     str_t str[] = {
+        STR("8123"),
+        STR("1123"),
+        STR("19228123"),
+        STR("1921238123"),
         STR("1928123"),
         STR("19"),
-        STR("12323"),
-        STR("0"),
+        STR("11232323"),
+        STR("-20"),
+        STR("1928123123123"),
+        STR("-11239"),
+        STR("11232323"),
+        STR("220"),
+        STR("1928123"),
+        STR("1231419"),
+        STR("123123223"),
+        STR("02"),
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < ARRAY_SIZE(str); ++i) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
 
+
+    int64_t acc = 0;
     int i = 0;
     UBENCH_DO_BENCHMARK() {
-        parse_int(str[i++]);
-        parse_int(str[i++]);
-        parse_int(str[i++]);
-        parse_int(str[i++]);
+		acc += str_parse_int_simd(str[0]);
+        acc += str_parse_int_simd(str[1]);
+        acc += str_parse_int_simd(str[2]);
+        acc += str_parse_int_simd(str[3]);
+        
+        acc += str_parse_int_simd(str[4]);
+        acc += str_parse_int_simd(str[5]);
+        acc += str_parse_int_simd(str[6]);
+        acc += str_parse_int_simd(str[7]);
+        
+        acc += str_parse_int_simd(str[8]);
+        acc += str_parse_int_simd(str[9]);
+        acc += str_parse_int_simd(str[10]);
+        acc += str_parse_int_simd(str[11]);
 
-        i = 0;
-
-        parse_int(str[i++]);
-        parse_int(str[i++]);
-        parse_int(str[i++]);
-        parse_int(str[i++]);
-
-        i = 0;
+        acc += str_parse_int_simd(str[12]);
+        acc += str_parse_int_simd(str[13]);
+        acc += str_parse_int_simd(str[14]);
+        acc += str_parse_int_simd(str[15]);
     }
+
+    printf("acc: %i\n", (int)acc);
 }
 
 UBENCH_EX(str, parse_float) {
@@ -89,21 +111,25 @@ UBENCH_EX(str, parse_float) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
+
+    double acc = 0;
     
     int i = 0;
     UBENCH_DO_BENCHMARK() {
-        parse_float(str[i++]);
-        parse_float(str[i++]);
-        parse_float(str[i++]);
-        parse_float(str[i++]);
+        acc += parse_float(str[i++]);
+        acc += parse_float(str[i++]);
+        acc += parse_float(str[i++]);
+        acc += parse_float(str[i++]);
         
         i = 0;
         
-        parse_float(str[i++]);
-        parse_float(str[i++]);
-        parse_float(str[i++]);
-        parse_float(str[i++]);
+        acc += parse_float(str[i++]);
+        acc += parse_float(str[i++]);
+        acc += parse_float(str[i++]);
+        acc += parse_float(str[i++]);
 
         i = 0;
     }
+
+    //printf("acc: %f\n", acc);
 }
