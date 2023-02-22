@@ -158,7 +158,6 @@ static inline int64_t parse_int(str_t str) {
     int64_t val = 0;
     const char* c   = str.ptr;
     const char* end = str.ptr + str.len;
-    //while (c < end && is_whitespace(*c)) ++c;
     bool neg = (*c == '-');
 
     if (neg)
@@ -171,46 +170,63 @@ static inline int64_t parse_int(str_t str) {
     return neg ? -val : val;
 }
 
-static int64_t parse_int_simd(const char* ptr, int64_t len) {
-	bool neg = *ptr == '-' ? true : false;
+static inline __m128i mask(int64_t n) {
+    //ALIGNAS(32) static const char mask[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
+    //return _mm_loadu_si128((const __m128i*)(mask + n));
+    return _mm_cmpgt_epi8(_mm_set1_epi8((char)n), _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
+}
+
+static inline int find_char(__m128i v, char c) {
+    __m128i m = _mm_cmpeq_epi8(v, _mm_set1_epi8(c));
+    int r = _mm_movemask_epi8(m);
+    return ctz32(r);
+}
+
+static inline uint64_t parse_uint64_simd(const char* ptr, int64_t len) {
+    __m128i m = mask(len);
+    __m128i v = _mm_lddqu_si128((const __m128i*)(ptr+len-16));
+    v = _mm_subs_epu8(v, _mm_set1_epi8('0'));
+    v = _mm_and_si128(v, m);
+
+    v = _mm_maddubs_epi16(v, _mm_set_epi8(1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10));
+    v = _mm_madd_epi16(v, _mm_set_epi16(1, 100, 1, 100, 1, 100, 1, 100));
+    v = _mm_packus_epi32(v, v);
+    v = _mm_madd_epi16(v, _mm_set_epi16(1, 10000, 1, 10000, 1, 10000, 1, 10000));
+
+    return (int64_t)_mm_cvtsi128_si32(v) * 100000000 + (int64_t)_mm_extract_epi32(v, 1);
+}
+
+static inline int64_t parse_int_simd(const char* ptr, int64_t len) {
+    len = MIN(len, 16);
+	bool neg = (*ptr == '-');
     if (neg) {
         ++ptr;
         --len;
     }
-
-    __m128i m = _mm_cmplt_epi8(_mm_set1_epi8((char)len), _mm_setr_epi8(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16));
-    __m128i v = _mm_loadu_si128((const __m128i*)(ptr-(16-len)));
-    v = _mm_subs_epu8(v, _mm_set1_epi8('0'));
-    v = _mm_and_si128(v, m);
-    //v = _mm_srli_si128(v, len);
-
-    {
-        __m128i mult = _mm_set_epi8(
-            1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10
-        );
-        //mult = _mm_and_si128(mult, m);
-        v = _mm_maddubs_epi16(v, mult);
-    }
-    {
-        __m128i mult = _mm_set_epi16(1, 100, 1, 100, 1, 100, 1, 100);
-        //mult = _mm_and_si128(mult, m);
-        v = _mm_madd_epi16(v, mult);
-    }
-    {
-        v = _mm_packus_epi32(v, v);
-        __m128i mult = _mm_set_epi16(0, 0, 0, 0, 1, 10000, 1, 10000);
-        //mult = _mm_and_si128(mult, m);
-        v = _mm_madd_epi16(v, mult);
-    }
-
-    uint32_t hi = _mm_extract_epi32(v, 1);
-	uint32_t lo = _mm_cvtsi128_si32(v);
-    int64_t res = (lo * 100000000) + hi;
-    return neg ? -res : res;
+    int64_t val = parse_uint64_simd(ptr, len);
+    return neg ? -val : val;
 }
 
 static inline int64_t str_parse_int_simd(str_t s) {
     return parse_int_simd(s.ptr, s.len);
+}
+
+static inline double parse_float_simd(const char* ptr, int64_t len) {
+    len = MIN(len, 16);
+    bool neg = (*ptr == '-');
+    __m128i v = _mm_lddqu_si128((const __m128i*)ptr);
+    int dec = find_char(v, '.');
+    dec = MIN(dec, 16);
+    __m128i whole = _mm_lddqu_si128((const __m128i*)(ptr + dec - 16));
+    whole = _mm_and_si128(whole, mask(dec));
+    __m128i fract = _mm_lddqu_si128((const __m128i*)(ptr + len - 16));
+    fract = _mm_and_si128(fract, mask(len-(dec+1)));
+
+    return 0.0;
+}
+
+static inline double str_parse_float_simd(str_t str) {
+    return parse_float_simd(str.ptr, str.len);
 }
 
 // Extracts token with whitespace as delimiter

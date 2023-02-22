@@ -46,22 +46,10 @@ UBENCH_EX(str, buffered_reader) {
 
 UBENCH_EX(str, parse_int) {
     str_t str[] = {
-        STR("8123"),
+        STR("1928123123123"),
         STR("1123"),
         STR("19228123"),
         STR("1921238123"),
-        STR("1928123"),
-        STR("19"),
-        STR("11232323"),
-        STR("-20"),
-        STR("1928123123123"),
-        STR("-11239"),
-        STR("11232323"),
-        STR("220"),
-        STR("1928123"),
-        STR("1231419"),
-        STR("123123223"),
-        STR("02"),
     };
 
     int64_t num_bytes = 0;
@@ -70,32 +58,64 @@ UBENCH_EX(str, parse_int) {
     }
     UBENCH_SET_BYTES(num_bytes);
 
+    uint64_t num_iter = 0;
+    uint64_t min = -1;
+    uint64_t max = 0;
+    uint64_t avg = 0;
 
     int64_t acc = 0;
-    int i = 0;
     UBENCH_DO_BENCHMARK() {
-		acc += str_parse_int_simd(str[0]);
+        const uint64_t st = __rdtsc();
+		acc += parse_int(str[0]);
+        acc += parse_int(str[1]);
+        acc += parse_int(str[2]);
+        acc += parse_int(str[3]);
+        const uint64_t et = __rdtsc() - st;
+        
+        avg += et;
+        min = MIN(min, et);
+        max = MAX(max, et);
+        num_iter += 4;
+    }
+
+    printf("avg cycles: %f, min cycles: %llu, acc: %lli\n", (double)(avg) / (double)num_iter, min / 4, acc);
+}
+
+UBENCH_EX(str, parse_int_simd) {
+    str_t str[] = {
+        STR("1928123123123"),
+        STR("1123"),
+        STR("19228123"),
+        STR("1921238123"),
+    };
+
+    int64_t num_bytes = 0;
+    for (int i = 0; i < ARRAY_SIZE(str); ++i) {
+        num_bytes += str[i].len;
+    }
+    UBENCH_SET_BYTES(num_bytes);
+
+    uint64_t num_iter = 0;
+    uint64_t min = -1;
+    uint64_t max = 0;
+    uint64_t avg = 0;
+
+    int64_t acc = 0;
+    UBENCH_DO_BENCHMARK() {
+        const uint64_t st = __rdtsc();
+        acc += str_parse_int_simd(str[0]);
         acc += str_parse_int_simd(str[1]);
         acc += str_parse_int_simd(str[2]);
         acc += str_parse_int_simd(str[3]);
-        
-        acc += str_parse_int_simd(str[4]);
-        acc += str_parse_int_simd(str[5]);
-        acc += str_parse_int_simd(str[6]);
-        acc += str_parse_int_simd(str[7]);
-        
-        acc += str_parse_int_simd(str[8]);
-        acc += str_parse_int_simd(str[9]);
-        acc += str_parse_int_simd(str[10]);
-        acc += str_parse_int_simd(str[11]);
+        const uint64_t et = __rdtsc() - st;
 
-        acc += str_parse_int_simd(str[12]);
-        acc += str_parse_int_simd(str[13]);
-        acc += str_parse_int_simd(str[14]);
-        acc += str_parse_int_simd(str[15]);
+        avg += et;
+        min = MIN(min, et);
+        max = MAX(max, et);
+        num_iter += 4;
     }
 
-    printf("acc: %i\n", (int)acc);
+    printf("avg cycles: %f, min cycles: %llu, acc: %lli\n", (double)(avg) / (double)num_iter, min / 4, acc);
 }
 
 UBENCH_EX(str, parse_float) {
@@ -111,25 +131,63 @@ UBENCH_EX(str, parse_float) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
+    
+    uint64_t num_iter = 0;
+    uint64_t min = -1;
+    uint64_t max = 0;
+    uint64_t avg = 0;
 
     double acc = 0;
-    
-    int i = 0;
     UBENCH_DO_BENCHMARK() {
-        acc += parse_float(str[i++]);
-        acc += parse_float(str[i++]);
-        acc += parse_float(str[i++]);
-        acc += parse_float(str[i++]);
-        
-        i = 0;
-        
-        acc += parse_float(str[i++]);
-        acc += parse_float(str[i++]);
-        acc += parse_float(str[i++]);
-        acc += parse_float(str[i++]);
+        const uint64_t st = __rdtsc();
+        acc += parse_float(str[0]);
+        acc += parse_float(str[1]);
+        acc += parse_float(str[2]);
+        acc += parse_float(str[3]);
+        const uint64_t et = __rdtsc() - st;
 
-        i = 0;
+        avg += et;
+        min = MIN(min, et);
+        max = MAX(max, et);
+        num_iter += 4;
     }
 
-    //printf("acc: %f\n", acc);
+    printf("avg cycles: %f, min cycles: %llu, acc: %f\n", (double)(avg) / (double)num_iter, min / 4, acc);
+}
+
+UBENCH_EX(str, parse_float_simd) {
+    str_t str[] = {
+        STR("1928123.2767"),
+        STR("19.2"),
+        STR("12323"),
+        STR("0.000000"),
+    };
+
+    int64_t num_bytes = 0;
+    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
+        num_bytes += str[i].len;
+    }
+    UBENCH_SET_BYTES(num_bytes);
+
+    uint64_t num_iter = 0;
+    uint64_t min = -1;
+    uint64_t max = 0;
+    uint64_t avg = 0;
+
+    double acc = 0;
+    UBENCH_DO_BENCHMARK() {
+        const uint64_t st = __rdtsc();
+        acc += str_parse_float_simd(str[0]);
+        acc += str_parse_float_simd(str[1]);
+        acc += str_parse_float_simd(str[2]);
+        acc += str_parse_float_simd(str[3]);
+        const uint64_t et = __rdtsc() - st;
+
+        avg += et;
+        min = MIN(min, et);
+        max = MAX(max, et);
+        num_iter += 4;
+    }
+
+    printf("avg cycles: %f, min cycles: %llu, acc: %f\n", (double)(avg) / (double)num_iter, min / 4, acc);
 }
