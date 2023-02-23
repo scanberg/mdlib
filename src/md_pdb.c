@@ -22,7 +22,7 @@ extern "C" {
 
 #define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
 #define MD_PDB_CACHE_MAGIC 0x89172bab
-#define MD_PDB_CACHE_VERSION 13
+#define MD_PDB_CACHE_VERSION 14
 #define MD_PDB_PARSE_BIOMT 1
 
 // The opaque blob

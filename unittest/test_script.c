@@ -425,8 +425,9 @@ UTEST(script, parallel_evaluation) {
 
 #if 0
     printf("Ref Values:\n");
-    for (int64_t i = 0; i < ref_eval.properties[0].data.num_values; ++i) {
-        printf("[%lli]: %g\n", i, ref_eval.properties[0].data.values[i]);
+    const md_script_property_t* ref_prop = md_script_eval_properties(ref_eval);
+    for (int64_t i = 0; i < ref_prop->data.num_values; ++i) {
+        printf("[%lli]: %g\n", i, ref_prop->data.values[i]);
     }
 #endif
 

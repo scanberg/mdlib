@@ -829,7 +829,6 @@ uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
     }
 
     int lz_bytes = fastlz_compress_level(2, data, (int)(md_array_size(data) * sizeof(uint16_t)), dst);
-    md_logf(MD_LOG_TYPE_INFO, "LZ:\t%lli number of bits compressed into %i bytes\n", md_bitfield_popcount(bf), lz_bytes);
 
     md_array_free(data, alloc);
     md_array_free(indices, alloc);
@@ -876,14 +875,11 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     block_t* dst_block = (block_t*)bf->bits;
     int64_t src_offset = 0;
     for (int64_t i = 0; i < block_count; ++i) {
-        md_logf(MD_LOG_TYPE_INFO, "i: %i", (int)i);
         uint16_t blk_idx = block_indices[i];
         if (blk_idx & BLOCK_IDX_FLAG_ALL_SET) {
             blk_idx &= ~BLOCK_IDX_FLAG_ALL_SET;
-            md_logf(MD_LOG_TYPE_INFO, "memset block %i", (int)blk_idx);
             MEMSET(dst_block + blk_idx, 0xFFFFFFFF, sizeof(block_t));
         } else {
-            md_logf(MD_LOG_TYPE_INFO, "memcpy block %i", (int)blk_idx);
             MEMCPY(dst_block + blk_idx, block_data + src_offset, sizeof(block_t));
             src_offset += sizeof(block_t) / sizeof(uint16_t);
         }

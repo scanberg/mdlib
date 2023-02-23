@@ -13,6 +13,7 @@ typedef struct md_strb_t {
 #ifdef __cplusplus
 	md_strb_t& operator += (str_t str);
 	md_strb_t& operator += (const char* cstr);
+	md_strb_t& operator += (int c);
 	operator str_t() const;
 #endif
 
@@ -54,6 +55,11 @@ inline md_strb_t& md_strb_t::operator += (str_t str) {
 
 inline md_strb_t& md_strb_t::operator += (const char* cstr) {
 	md_strb_push_cstr(this, cstr);
+	return *this;
+}
+
+inline md_strb_t& md_strb_t::operator += (int c) {
+	md_strb_push_char(this, (char)c);
 	return *this;
 }
 

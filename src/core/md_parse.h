@@ -212,7 +212,11 @@ static inline int find_first_char(__m128i v, char c) {
     return MIN(r, 16);
 }
 
-static inline uint64_t parse_uint64_si128(__m128i v, __m128i m) {
+static inline uint64_t
+#if MD_COMPILER_GCC || MD_COMPILER_CLANG
+__attribute__((target("sse4.1")))
+#endif
+parse_uint64_si128(__m128i v, __m128i m) {
     v = _mm_subs_epu8(v, _mm_set1_epi8('0'));
     v = _mm_and_si128(v, m);
 
@@ -226,7 +230,7 @@ static inline uint64_t parse_uint64_si128(__m128i v, __m128i m) {
 
 static inline uint64_t parse_uint64_simd(const char* ptr, int64_t len) {
     __m128i m = mask(len);
-    __m128i v = _mm_lddqu_si128((const __m128i*)(ptr+len-16));
+    __m128i v = _mm_loadu_si128((const __m128i*)(ptr+len-16));
     return parse_uint64_si128(v, m);
 }
 
@@ -249,9 +253,9 @@ static inline double parse_float_simd(const char* ptr, int64_t len) {
     static const double pow10[16] = { 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16 };
     len = MIN(len, 16);
     bool neg = (*ptr == '-');
-    __m128i v = _mm_lddqu_si128((const __m128i*)ptr);
+    __m128i v = _mm_loadu_si128((const __m128i*)ptr);
     int dec = find_first_char(v, '.');
-	double whole = (double)parse_uint64_si128(_mm_lddqu_si128((const __m128i*)(ptr + dec - 16)), mask(dec));
+	double whole = (double)parse_uint64_si128(_mm_loadu_si128((const __m128i*)(ptr + dec - 16)), mask(dec));
     double fract = 0.0;
     if (dec < 16) {
         for (int64_t i = dec + 1; i < len; ++i) {
