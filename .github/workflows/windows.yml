@@ -12,6 +12,10 @@ jobs:
         steps:
         - uses: actions/checkout@v2
 
+        - name: prepare
+          run: |
+            git submodule update --init --recursive
+
         - name: Cmake Version
           run: cmake --version
 
