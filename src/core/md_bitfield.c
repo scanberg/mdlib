@@ -286,7 +286,13 @@ static inline void ensure_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
     bf->end_bit = (uint32_t)new_end_bit;
 }
 
-void md_bitfield_init(md_bitfield_t* bf, struct md_allocator_i* alloc) {
+md_bitfield_t md_bitfield_create(md_allocator_i* alloc) {
+    md_bitfield_t bf = {0};
+    md_bitfield_init(&bf, alloc);
+    return bf;
+}
+
+void md_bitfield_init(md_bitfield_t* bf, md_allocator_i* alloc) {
     ASSERT(bf);
     ASSERT(alloc);
     if (bf->magic == MAGIC && bf->bits) {

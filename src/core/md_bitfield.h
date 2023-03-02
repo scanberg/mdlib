@@ -20,6 +20,7 @@ extern "C" {
 // The bitfield type is a semi-dense bitfield which only needs to hold the range of bits which are set.
 // Because there is no explicit number of bits for the bitfield, some operations require explicit range parameters beg, end.
 
+md_bitfield_t md_bitfield_create(struct md_allocator_i* alloc);
 void md_bitfield_init           (md_bitfield_t* bf, struct md_allocator_i* alloc);
 bool md_bitfield_free           (md_bitfield_t* bf);
 bool md_bitfield_validate       (const md_bitfield_t* bf);
