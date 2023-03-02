@@ -4919,15 +4919,6 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
                     md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
                 }
 
-                /*
-                // Evaluate dynamic targets if available
-                for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
-                    data_t data = {0};
-                    allocate_data(&data, ir->eval_targets[i]->node->data.type, &temp_alloc);
-                    evaluate_node(&data, ir->eval_targets[i]->node, &ctx);
-                }
-                */
-
                 data_t data = {0};
                 allocate_data(&data, node->data.type, &temp_alloc);
 
@@ -5010,6 +5001,8 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
     ir->stage = "Filter evaluate";
     ir->record_errors = true;
 
+    md_spatial_hash_t spatial_hash = {0};
+
     ast_node_t* node = parse_expression(&parse_ctx);
     node = prune_expressions(node);
     if (node) {
@@ -5025,20 +5018,17 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                 .z = mol->atom.z,
             },
             .eval_flags = EVAL_FLAG_FLATTEN,
+            .spatial_hash = &spatial_hash,
         };
 
         if (static_check_node(node, &ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
-                /*
-                // Evaluate dynamic targets if available
-                for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
-                    data_t data = {0};
-                    allocate_data(&data, ir->eval_targets[i]->node->data.type, &temp_alloc);
-                    evaluate_node(&data, ir->eval_targets[i]->node, &ctx);
-                }
-                */
-
                 if (type_info_array_len(node->data.type) == 1) {
+                    if (ir->flags & FLAG_SPATIAL_QUERY) {
+                        vec3_t pbc_ext = mat3_diag(mol->cell.basis);
+                        md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
+                    }
+
                     data_t data = {0};
                     data.type = node->data.type;
                     data.ptr = dst_bf;
