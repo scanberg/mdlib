@@ -37,6 +37,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_util.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_unit.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_script.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_filter.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_frame_cache.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_spatial_hash.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_string_builder.c
