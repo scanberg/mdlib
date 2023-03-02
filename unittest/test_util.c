@@ -178,6 +178,17 @@ UTEST(util, structure) {
     int64_t num_rings = 0;
     int64_t num_structures = 0;
 
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), arena));
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
+
+    num_structures = md_index_data_count(mol.structures);
+    EXPECT_EQ(num_structures, 2);
+
+    num_rings = md_index_data_count(mol.rings);
+    EXPECT_EQ(num_rings, 4);
+
+    
+
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
 

@@ -1288,6 +1288,9 @@ md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allo
 
             const int* eb = md_index_range_beg(atom_connectivity, idx);
             const int* ee = md_index_range_end(atom_connectivity, idx);
+            ASSERT(eb);
+            ASSERT(ee);
+            ASSERT(eb <= ee);
             for (const int* it = eb; it != ee; ++it) {
                 int next = *it;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
@@ -1308,13 +1311,13 @@ md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allo
                     int ring[MAX_RING_SIZE + 3];
 
                     int d = MAX(depth[l], depth[r]);
-                    while (d-- && n < MAX_RING_SIZE) {
-                        if (depth[l] >= d) {
+                    while (--d && n < MAX_RING_SIZE) {
+                        if (l > -1 && depth[l] >= d) {
                             ring[n++] = l;
                             l = pred[l];
                         }
 
-                        if (depth[r] >= d) {
+                        if (r > -1 && depth[r] >= d) {
                             ring[n++] = r;
                             r = pred[r];
                         }
