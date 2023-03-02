@@ -322,6 +322,10 @@ void md_file_close(md_file_o* file) {
     fclose((FILE*)file);
 }
 
+bool md_file_eof(md_file_o* file) {
+    return feof((FILE*)file);
+}
+
 int64_t md_file_tell(md_file_o* file) {
 #if MD_PLATFORM_WINDOWS
     return _ftelli64((FILE*)file);

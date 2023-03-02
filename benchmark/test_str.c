@@ -35,7 +35,7 @@ UBENCH_EX(str, buffered_reader) {
     UBENCH_DO_BENCHMARK() {
         md_file_seek(file, 0, MD_FILE_BEG);
         str_t line;
-        while (md_buffered_line_reader_extract_line(&line, &reader)) {
+        while (md_buffered_reader_extract_line(&line, &reader)) {
             // do nothing
         }
     }

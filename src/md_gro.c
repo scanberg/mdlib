@@ -23,20 +23,20 @@ static inline bool ranges_overlap(md_range_t a, md_range_t b) {
     return (a.beg < b.end && b.beg < a.end);
 }
 
-static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* line_reader, struct md_allocator_i* alloc) {
+static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
     ASSERT(data);
-    ASSERT(line_reader);
+    ASSERT(reader);
     ASSERT(alloc);
     str_t line;
     str_t tokens[8];
 
-    if (!md_buffered_line_reader_extract_line(&line, line_reader)) {
+    if (!md_buffered_reader_extract_line(&line, reader)) {
         MD_LOG_ERROR("Failed to parse gro title");
         return false;
     }
     str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
-    if (!md_buffered_line_reader_extract_line(&line, line_reader)) {
+    if (!md_buffered_reader_extract_line(&line, reader)) {
         MD_LOG_ERROR("Failed to parse gro num atoms");
         return false;
     }
@@ -50,7 +50,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* line_re
     }
 
     for (int64_t i = 0; i < data->num_atoms; ++i) {
-        if (!md_buffered_line_reader_extract_line(&line, line_reader)) {
+        if (!md_buffered_reader_extract_line(&line, reader)) {
             MD_LOG_ERROR("Failed to extract atom line");
             return false;
         }
@@ -71,7 +71,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* line_re
         md_array_push(data->atom_data, atom, alloc);
     }
 
-    if (!md_buffered_line_reader_extract_line(&line, line_reader)) {
+    if (!md_buffered_reader_extract_line(&line, reader)) {
         MD_LOG_ERROR("Failed to extract unitcell line");
         return false;
     }
@@ -94,7 +94,7 @@ bool md_gro_data_parse_str(md_gro_data_t* data, str_t str, struct md_allocator_i
     ASSERT(data);
     ASSERT(alloc);
 
-    md_buffered_reader_t line_reader = md_buffered_line_reader_from_str(str);
+    md_buffered_reader_t line_reader = md_buffered_reader_from_str(str);
     return md_gro_data_parse(data, &line_reader, alloc);
 }
 
@@ -104,8 +104,8 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
     if (file) {
         const int64_t cap = MEGABYTES(1);
         char* buf = md_alloc(default_allocator, cap);
+        
         md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
-
         result = md_gro_data_parse(data, &line_reader, alloc);
         
         md_free(default_allocator, buf, cap);

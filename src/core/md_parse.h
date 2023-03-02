@@ -73,26 +73,56 @@ static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, int64
     return lr;
 }
 
-static inline md_buffered_reader_t md_buffered_line_reader_from_str(str_t str) {
+static inline md_buffered_reader_t md_buffered_reader_from_str(str_t str) {
     md_buffered_reader_t reader = {
         .str = str,
+        .cap = str.len,
     };
     return reader;
 }
 
-static inline bool md_buffered_line_reader_extract_line(str_t* line, md_buffered_reader_t* lr) {
-    ASSERT(lr);
+static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_reader_t* r) {
+    ASSERT(r);
     ASSERT(line);
-    if (lr->file && !lr->str.len) {
-        ASSERT(lr->buf);
-        ASSERT(lr->cap > 0);
-        const int64_t bytes_read = md_file_read_lines(lr->file, lr->buf, lr->cap);
+    if (r->file && !r->str.len) {
+        ASSERT(r->buf);
+        ASSERT(r->cap > 0);
+        const int64_t bytes_read = md_file_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
-            lr->str.ptr = lr->buf;
-            lr->str.len = bytes_read;
+            r->str.ptr = r->buf;
+            r->str.len = bytes_read;
         }
     }
-    return str_extract_line(line, &lr->str); 
+    return str_extract_line(line, &r->str); 
+}
+
+static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {
+    ASSERT(r);
+    if (r->file) {
+        md_file_seek(r->file, 0, MD_FILE_BEG);
+        r->str.ptr = NULL;
+        r->str.len = 0;
+    } else {
+        ASSERT(r->str.ptr && "Cannot reset uninitialized reader");
+        r->str.ptr += r->str.len - r->cap;
+        r->str.len = r->cap;
+    }
+}
+
+static inline bool md_buffered_reader_eof(md_buffered_reader_t r) {
+    if (r.file) {
+        return md_file_eof(r.file) && r.str.len == 0;
+    } else {
+        return r.str.len == 0;
+    }
+}
+
+static inline int64_t md_buffered_reader_tellg(md_buffered_reader_t r) {
+    if (r.file) {
+        return md_file_tell(r.file) - r.str.len;
+    } else {
+        return r.cap - r.str.len;
+    }
 }
 
 static inline double parse_float_dec(const char* ptr, int64_t len) {

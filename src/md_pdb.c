@@ -282,6 +282,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     if (header) {
         header->num_atoms = i;
+        header->index = step;
         header->timestamp = (double)(step-1); // This information is missing from PDB trajectories
         header->cell = pdb->cell;
     }
@@ -291,10 +292,13 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
 // PUBLIC PROCEDURES
 
-bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i* alloc) {
+bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc, bool stop_after_first_model) {
+    ASSERT(data);
+    ASSERT(reader);
+    ASSERT(alloc);
+
     str_t line;
-    const char* base_offset = str.ptr;
-    while (str_extract_line(&line, &str)) {
+    while (md_buffered_reader_extract_line(&line, reader)) {
         if (line.len < 6) continue;
         if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
@@ -319,12 +323,19 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
             }
         }
         else if (str_equal_cstr_n(line, "MODEL", 5)) {
+            if (stop_after_first_model && md_array_size(data->models) > 0) {
+                break;
+            }
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
+            // This is a bit nasty, we want to get the correct offset to the beginning of the current line.
+            // Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
+            // all the way back in case there were skipped \r characters.
+            const int64_t offset = md_buffered_reader_tellg(*reader) - (reader->str.ptr - line.ptr);
             md_pdb_model_t model = {
                 .serial = (int32_t)parse_int(str_substr(line, 6, -1)),
                 .beg_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1,
                 .beg_atom_index = num_coords,
-                .byte_offset = line.ptr - base_offset,
+                .byte_offset = offset,
             };
             md_array_push(data->models, model, alloc);
         }
@@ -406,33 +417,27 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, struct md_allocator_i
     return true;
 }
 
-bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_allocator_i* alloc) {
+bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, md_allocator_i* alloc) {
+    md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+    return pdb_parse(data, &reader, alloc, false);
+}
+
+bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i* alloc) {
     bool result = false;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         const int64_t cap = MEGABYTES(1);
         char* buf = md_alloc(default_allocator, cap);
-
-        int64_t bytes_total = 0;
-        int64_t bytes_read = 0;
-        while (bytes_read = md_file_read_lines(file, buf, cap)) {
-            const int64_t pre_num_models = data->num_models;
-            md_pdb_data_parse_str(data, (str_t){buf, bytes_read}, alloc);
-
-            // Update byte offsets for models
-            for (int64_t i = pre_num_models; i < data->num_models; ++i) {
-                data->models[i].byte_offset += bytes_total;
-            }
-
-            bytes_total += bytes_read;
-        }
+        
+        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+        result = pdb_parse(data, &reader, alloc, false);
         
         md_free(default_allocator, buf, cap);
         md_file_close(file);
-        return true;
+    } else {
+        MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
     }
-    MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
-    return false;
+    return result;
 }
 
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc) {
@@ -616,38 +621,18 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
 static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
+        int64_t cap = MEGABYTES(1);
+        char *buf = md_alloc(default_allocator, cap);
+        ASSERT(buf);
+        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+        
         md_pdb_data_t data = {0};
-
-        const int64_t buf_size = KILOBYTES(64);
-        char* buf = md_alloc(default_temp_allocator, buf_size);
-        int64_t bytes_read = 0;
-        int64_t buf_offset = 0;
-        while ((bytes_read = md_file_read(file, buf + buf_offset, buf_size - buf_offset)) > 0) {
-            str_t str = { .ptr = buf, .len = buf_offset + bytes_read };
-
-            // Make sure we send complete lines for parsing so we locate the last '\n'
-            const int64_t last_new_line = str_rfind_char(str, '\n');
-            if (last_new_line == -1) break;
-
-            ASSERT(str.ptr[last_new_line] == '\n');
-            str.len = last_new_line + 1;
-
-            md_pdb_data_parse_str(&data, str, default_allocator);
-
-            if (data.num_models > 1) {
-                // We only need 1 model to derive the molecule data. We consider the rest as trajectory data.
-                break;
-            }
-
-            // Copy remainder to beginning of buffer
-            buf_offset = buf_size - str.len;
-            MEMCPY(buf, str.ptr + str.len, buf_offset);
-        }
-        md_file_close(file);
-
-        bool success = md_pdb_molecule_init(mol, &data, alloc);
+        bool parse   = pdb_parse(&data, &reader, default_allocator, true);
+        bool success = parse && md_pdb_molecule_init(mol, &data, alloc);
+        
         md_pdb_data_free(&data, default_allocator);
-
+        md_free(default_allocator, buf, cap);
+        
         return success;
     }
     MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
