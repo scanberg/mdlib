@@ -1002,7 +1002,7 @@ md_array(md_hbond_data_t) md_util_compute_hbond_data(const md_molecule_t* mol, m
         md_element_t elem = mol->atom.element[i];
         int charge  = 0;
         int implicit_hcount = 0;
-        int degree  = md_index_range_size(connectivity, i);
+        int degree  = (int)md_index_range_size(connectivity, i);
         int valence = atom_valence[i];
         int geom    = 0;
 
@@ -1067,6 +1067,11 @@ bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_id
             md_array_push(res_atom_range, atom_range, temp_alloc);
         }
         res_atom_range[res_idx[i]].end += 1;
+    }
+
+    if (res_count == 0) {
+        MD_LOG_DEBUG("Dataset only contains single residue, no artificial chains can be created");
+        return false;
     }
     
     md_array(bool) res_bond_to_next = md_array_create(bool, res_count, temp_alloc);
@@ -1311,7 +1316,7 @@ md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allo
                     int ring[MAX_RING_SIZE + 3];
 
                     int d = MAX(depth[l], depth[r]);
-                    while (--d && n < MAX_RING_SIZE) {
+                    while (d-- && n < MAX_RING_SIZE) {
                         if (l > -1 && depth[l] >= d) {
                             ring[n++] = l;
                             l = pred[l];
