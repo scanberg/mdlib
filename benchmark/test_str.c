@@ -103,10 +103,10 @@ UBENCH_EX(str, parse_int_simd) {
     int64_t acc = 0;
     UBENCH_DO_BENCHMARK() {
         const uint64_t st = __rdtsc();
-        acc += parse_uint64_simd(str[0].ptr, str[0].len);
-        acc += parse_uint64_simd(str[1].ptr, str[1].len);
-        acc += parse_uint64_simd(str[2].ptr, str[2].len);
-        acc += parse_uint64_simd(str[3].ptr, str[3].len);
+        acc += parse_int_wide(str[0].ptr, str[0].len);
+        acc += parse_int_wide(str[1].ptr, str[1].len);
+        acc += parse_int_wide(str[2].ptr, str[2].len);
+        acc += parse_int_wide(str[3].ptr, str[3].len);
         const uint64_t et = __rdtsc() - st;
 
         avg += et;

@@ -125,11 +125,14 @@ static inline int64_t md_buffered_reader_tellg(md_buffered_reader_t r) {
     }
 }
 
+static const double pow10_table[32] = {
+    1e+0,  1e+1,  1e+2,  1e+3,  1e+4,  1e+5,  1e+6,  1e+7,
+    1e+8,  1e+9,  1e+10, 1e+11, 1e+12, 1e+13, 1e+14, 1e+15,
+    1e+16, 1e+17, 1e+18, 1e+19, 1e+20, 1e+21, 1e+22, 1e+23,
+    1e+24, 1e+25, 1e+26, 1e+27, 1e+28, 1e+29, 1e+30, 1e+31,
+};
+
 static inline double parse_float_dec(const char* ptr, int64_t len) {
-    static const double pow10[22] = {
-        1.0 / 1e+0,  1.0 / 1e+1,  1.0 / 1e+2,  1.0 / 1e+3,  1.0 / 1e+4,  1.0 / 1e+5,  1.0 / 1e+6,  1.0 / 1e+7,
-        1.0 / 1e+8,  1.0 / 1e+9,  1.0 / 1e+10, 1.0 / 1e+11, 1.0 / 1e+12, 1.0 / 1e+13, 1.0 / 1e+14, 1.0 / 1e+15,
-        1.0 / 1e+16, 1.0 / 1e+17, 1.0 / 1e+18, 1.0 / 1e+19, 1.0 / 1e+20, 1.0 / 1e+21};
 
     const char* c = ptr;
     const char* end = ptr + len;
@@ -149,20 +152,16 @@ static inline double parse_float_dec(const char* ptr, int64_t len) {
             val = val * 10 + ((int)(*c) - '0');
             ++c;
         }
-        val *= pow10[c - dec];
+        val *= pow10_table[c - dec];
     }
 
     return neg ? -val : val;
 }
 
+// It is not exact but it is fast
+
 static inline double parse_float(str_t str) {
     ASSERT(str.ptr);
-    static const double pow10[32] = {
-        1e+0,  1e+1,  1e+2,  1e+3,  1e+4,  1e+5,  1e+6,  1e+7,
-        1e+8,  1e+9,  1e+10, 1e+11, 1e+12, 1e+13, 1e+14, 1e+15,
-        1e+16, 1e+17, 1e+18, 1e+19, 1e+20, 1e+21, 1e+22, 1e+23,
-        1e+24, 1e+25, 1e+26, 1e+27, 1e+28, 1e+29, 1e+30, 1e+31,
-    };
 
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
@@ -170,11 +169,11 @@ static inline double parse_float(str_t str) {
     while (c < end && is_whitespace(*c)) ++c;
 
     double val = 0;
-    double sign = 1;
-    if (*c == '-') {
+    bool negate = (*c == '-');
+    
+    if (*c == '-')
         ++c;
-        sign = -1;
-    }
+    
     while (c < end && is_digit(*c)) {
         val = val * 10 + ((int)(*c) - '0');
         ++c;
@@ -182,12 +181,13 @@ static inline double parse_float(str_t str) {
 
     if (c < end && *c == '.') {
         const char* dec = ++c;
-        while (c < end && (c - dec) < (int64_t)ARRAY_SIZE(pow10) - 1 && is_digit(*c)) {
+        while (c < end && is_digit(*c)) {
             val = val * 10 + ((int)(*c) - '0');
             ++c;
         }
         int64_t count = c - dec;
-        val /= pow10[count];
+        count = MIN(count, (int64_t)ARRAY_SIZE(pow10_table) - 1);
+        val /= pow10_table[count];
     }
 
     if (c < end && (*c == 'e' || *c == 'E')) {
@@ -203,13 +203,13 @@ static inline double parse_float(str_t str) {
             ++c;
         }
         while (exp_val) {
-            int ev = MIN(exp_val, (int)ARRAY_SIZE(pow10)-1);
-            val = exp_sign > 0 ? val * pow10[ev] : val / pow10[ev];
+            int ev = MIN(exp_val, (int)ARRAY_SIZE(pow10_table)-1);
+            val = exp_sign > 0 ? val * pow10_table[ev] : val / pow10_table[ev];
             exp_val -= ev;
         }
     }
 
-    return sign * val;
+    return negate ? -val : val;
 }
 
 static inline int64_t parse_int(str_t str) {
@@ -220,7 +220,7 @@ static inline int64_t parse_int(str_t str) {
     const char* end = str.ptr + str.len;
     bool neg = (*c == '-');
 
-    if (neg)
+    if (*c == '-')
         ++c;
 
     while (c < end && is_digit(*c)) {
@@ -238,8 +238,7 @@ static inline __m128i mask(int64_t n) {
 
 static inline int find_first_char(__m128i v, char c) {
     __m128i m = _mm_cmpeq_epi8(v, _mm_set1_epi8(c));
-    int r = ctz32(_mm_movemask_epi8(m));
-    return MIN(r, 16);
+    return ctz32(_mm_movemask_epi8(m));
 }
 
 static inline uint64_t
@@ -258,45 +257,123 @@ parse_uint64_si128(__m128i v, __m128i m) {
     return (uint64_t)_mm_cvtsi128_si32(v) * 100000000 + (int64_t)_mm_extract_epi32(v, 1);
 }
 
-static inline uint64_t parse_uint64_simd(const char* ptr, int64_t len) {
+static inline uint64_t
+#if MD_COMPILER_GCC || MD_COMPILER_CLANG
+__attribute__((target("sse4.1")))
+#endif
+parse_uint32x2_si128(__m128i v, __m128i m) {
+    v = _mm_subs_epu8(v, _mm_set1_epi8('0'));
+    v = _mm_and_si128(v, m);
+    v = _mm_maddubs_epi16(v, _mm_set_epi8(1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10));
+    v = _mm_madd_epi16(v, _mm_set_epi16(1, 100, 1, 100, 1, 100, 1, 100));
+    v = _mm_packus_epi32(v, v);
+    v = _mm_madd_epi16(v, _mm_set_epi16(1, 10000, 1, 10000, 1, 10000, 1, 10000));
+    return _mm_cvtsi128_si64(v);
+}
+
+static inline uint64_t parse_u64(const char* ptr, int64_t len) {
     __m128i m = mask(len);
     __m128i v = _mm_loadu_si128((const __m128i*)(ptr+len-16));
     return parse_uint64_si128(v, m);
 }
 
-static inline int64_t parse_int_simd(const char* ptr, int64_t len) {
-    len = MIN(len, 16);
+static inline uint32_t parse_eight_digits_unrolled_masked(uint64_t v, uint64_t m) {
+    const uint64_t mask = 0x000000FF000000FF;
+    const uint64_t mul1 = 0x000F424000000064; // 100 + (1000000ULL << 32)
+    const uint64_t mul2 = 0x0000271000000001; // 1 + (10000ULL << 32)
+    v -= 0x3030303030303030;
+    v &= m;
+    v = (v * 10) + (v >> 8); // val = (val * 2561) >> 8;
+    v = (((v & mask) * mul1) + (((v >> 16) & mask) * mul2)) >> 32;
+    return (uint32_t)v;
+}
+
+static inline uint64_t load_u64(const char* ptr) {
+    uint64_t val;
+    memcpy(&val, ptr, sizeof(val));
+    return val;
+}
+
+static inline uint32_t parse_u32(const char* ptr, int64_t len) {
+    uint64_t val  = load_u64(ptr + len - 8);
+    uint64_t mask = 0xFFFFFFFFFFFFFFFF >> (64 - (len << 3));
+    uint64_t res = parse_eight_digits_unrolled_masked(val, mask);
+    return res;
+}
+
+static inline uint64_t parse_uint_wide(const char* ptr, int64_t len) {
+    uint64_t val;
+    switch (len >> 3) {
+        case 0:  val = parse_u32(ptr, len); break;
+        default: val = parse_u64(ptr, len);
+    }
+    return val;
+}
+
+static inline int64_t parse_int_wide(const char* ptr, int64_t len) {
 	bool neg = (*ptr == '-');
-    if (neg) {
+    if (*ptr == '-') {
         ++ptr;
         --len;
     }
-    int64_t val = parse_uint64_simd(ptr, len);
+
+    int64_t val = parse_uint_wide(ptr, len);
     return neg ? -val : val;
 }
 
-static inline int64_t str_parse_int_simd(str_t s) {
-    return parse_int_simd(s.ptr, s.len);
+static inline __m128i shift_left(__m128i in, int n) {
+    static const char shift_shuffle_lookup[32] = {
+        -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128,
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
+    };
+
+    const char*   lookup_center = shift_shuffle_lookup + 16;
+    const __m128i shuffle = _mm_lddqu_si128((const __m128i*)(lookup_center - n));
+    return _mm_shuffle_epi8(in, shuffle);
 }
 
+// https://github.com/fastfloat/fast_float/blob/main/include/fast_float/ascii_number.h
+static inline uint32_t parse_eight_digits_unrolled(uint64_t val) {
+    const uint64_t mask = 0x000000FF000000FF;
+    const uint64_t mul1 = 0x000F424000000064; // 100 + (1000000ULL << 32)
+    const uint64_t mul2 = 0x0000271000000001; // 1 + (10000ULL << 32)
+    val -= 0x3030303030303030; // '0'
+    val = (val * 10) + (val >> 8); // val = (val * 2561) >> 8;
+    val = (((val & mask) * mul1) + (((val >> 16) & mask) * mul2)) >> 32;
+    return (uint32_t)val;
+}
+
+static inline int find_dot(const char* ptr) {
+    uint64_t val = load_u64(ptr);
+    uint64_t msk = val & 0x2E2E2E2E2E2E2E2E; // '.'
+    return msk ? (int)clz64(msk) >> 1 : 0;
+}
+
+struct float_token_t {
+    const char* ptr;
+    uint8_t whole_beg;
+    uint8_t whole_end;
+    uint8_t fract_beg;
+    uint8_t fract_end;
+    uint8_t exp_beg;
+    uint8_t exp_end;
+    uint8_t flags;
+    uint8_t _unused;
+};
+
 static inline double parse_float_simd(const char* ptr, int64_t len) {
-    static const double pow10[16] = { 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16 };
-    len = MIN(len, 16);
-    bool neg = (*ptr == '-');
-    __m128i v = _mm_loadu_si128((const __m128i*)ptr);
-    int dec = find_first_char(v, '.');
-	double whole = (double)parse_uint64_si128(_mm_loadu_si128((const __m128i*)(ptr + dec - 16)), mask(dec));
-    double fract = 0.0;
-    if (dec < 16) {
-        for (int64_t i = dec + 1; i < len; ++i) {
-            fract = fract * 10 + ((int)(ptr[i]) - '0');
-        }
-        fract /= pow10[len-dec];
+    int neg = (*ptr == '-');
+    if (*ptr == '-') {
+        ++ptr;
+        --len;
     }
-
-    //uint64_t fract = parse_uint64_si128(_mm_lddqu_si128((const __m128i*)(ptr + len - 16)), mask(len - (dec + 1)));
-
-    return (double)whole + fract;
+    int dec = find_first_char(_mm_loadu_si128((const __m128i*)ptr), '.');
+    int frac_len = (int)len - (dec + 1);
+	uint32_t whole = parse_u32(ptr, dec);
+    uint32_t fract = parse_u32(ptr + dec + 1, frac_len);
+       
+    double result = (double)whole + fract / pow10_table[frac_len];
+    return neg ? -result : result;
 }
 
 static inline double str_parse_float_simd(str_t str) {
