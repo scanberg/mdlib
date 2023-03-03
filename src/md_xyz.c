@@ -568,7 +568,8 @@ static bool xyz_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
     md_xyz_data_t data = {0};
     
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-    bool result = xyz_parse(&data, &reader, alloc, true);
+    bool result = xyz_parse(&data, &reader, default_allocator, true);
+    result = result && md_xyz_molecule_init(mol, &data, alloc);
     md_xyz_data_free(&data, default_allocator);
     
     return result;
