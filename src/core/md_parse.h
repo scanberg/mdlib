@@ -168,27 +168,31 @@ static inline double parse_float(str_t str) {
 
     while (c < end && is_whitespace(*c)) ++c;
 
-    double val = 0;
     bool negate = (*c == '-');
+    uint64_t whole = 0;
+    uint64_t fract = 0;
+    int      fract_len = 0;
     
     if (*c == '-')
         ++c;
     
     while (c < end && is_digit(*c)) {
-        val = val * 10 + ((int)(*c) - '0');
+        whole = whole * 10 + ((int)(*c) - '0');
         ++c;
     }
 
     if (c < end && *c == '.') {
-        const char* dec = ++c;
-        while (c < end && is_digit(*c)) {
-            val = val * 10 + ((int)(*c) - '0');
+        ++c;
+        const char* fbeg = c;
+        const char* fend = MIN(end, c + 19);
+        while (c < fend && is_digit(*c)) {
+            fract = fract * 10 + ((int)(*c) - '0');
             ++c;
         }
-        int64_t count = c - dec;
-        count = MIN(count, (int64_t)ARRAY_SIZE(pow10_table) - 1);
-        val /= pow10_table[count];
+        fract_len = c - fbeg;
     }
+
+    double val = whole + fract / pow10_table[fract_len];
 
     if (c < end && (*c == 'e' || *c == 'E')) {
         ++c;

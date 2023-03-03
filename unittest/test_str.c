@@ -77,7 +77,7 @@ UTEST(str, parse_float) {
 }
 
 UTEST(str, perf_float) {
-    const str_t str = STR("-248.271233e-2");
+    const str_t str = STR("-248.271233");
     const int64_t num_iter = 1000000;
     double acc = 0;
 
