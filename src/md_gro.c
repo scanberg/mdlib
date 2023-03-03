@@ -19,8 +19,31 @@ typedef struct gro_molecule {
     struct md_allocator_i* allocator;
 } gro_molecule_t;
 
-static inline bool ranges_overlap(md_range_t a, md_range_t b) {
-    return (a.beg < b.end && b.beg < a.end);
+static int64_t extract_float_tokens(str_t* tok_arr, int64_t tok_cap, str_t str) {
+    int64_t n = 0;
+    const char* c = str.ptr;
+    const char* end = str.ptr + str.len;
+    
+    while (n < tok_cap && c < end) {
+        // Find beg of float token
+        while (c < end && !(is_digit(*c) || *c == '-'))
+            ++c;
+
+        if (c == end) {
+            break;
+        }
+        const char* beg = c;
+        ++c; // Skip the first found character (may be -, then we don't have to check against that again).
+        
+        // Find end of float token
+        while (c < end && (is_digit(*c) || *c == '.'))
+            ++c;
+        if (beg != c) {
+            tok_arr[n++] = (str_t) {beg, c-beg};
+        }
+    }
+    
+    return n;
 }
 
 static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
@@ -54,8 +77,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
             MD_LOG_ERROR("Failed to extract atom line");
             return false;
         }
-        str_t line_coords = str_substr(line, 20, -1);
-        const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line_coords);
+        const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, -1));
         if (num_tokens < 3) {
             MD_LOG_ERROR("Failed to parse atom coordinates, expected at least 3 tokens, got %i", (int)num_tokens);
             return false;
@@ -76,7 +98,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
         return false;
     }
 
-    const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
+    const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), line);
 
     if (num_tokens != 3) {
         MD_LOG_ERROR("Failed to parse cell extent, expected 3 tokens, got %i", (int)num_tokens);
