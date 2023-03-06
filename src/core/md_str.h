@@ -158,13 +158,14 @@ static inline int64_t str_count_occur_char(str_t str, char character) {
 
 static inline str_t str_substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
     if (offset < 0 || offset > str.len) {
-        str_t res = {0, 0};
+        str_t res = {0,0};
         return res;
     }
-    if (offset + length > str.len || length < 0) length = str.len - offset;
-    str.ptr = str.ptr + offset;
-    str.len = length;
-    return str;
+    const int64_t max_len = str.len - offset;
+    length = length < 0 ? max_len : MIN(length, max_len);
+
+    str_t res = { str.ptr + offset, length};
+    return res;
 }
 
 bool str_skip_line(str_t* in_out_str);
