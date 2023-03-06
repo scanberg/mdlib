@@ -180,22 +180,16 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line) {
     ASSERT(coord);
 
     str_t tokens[16];
-    int num_tokens = 0;
-
-    while (num_tokens < ARRAY_SIZE(tokens) && extract_token(&tokens[num_tokens], &line)) {
-        num_tokens += 1;
-    }
+    const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 
     if (num_tokens < 4) {
         MD_LOG_ERROR("Invalid number of tokens in XYZ coordinate");
         return false;
     }
 
-    ASSERT(!str_empty(tokens[0]));    
+    ASSERT(!str_empty(tokens[0]));
     if (is_alpha(tokens[0].ptr[0])) {
-        const size_t len = MIN((size_t)tokens[0].len, sizeof(coord->element_symbol)-1);
-        MEMCPY(coord->element_symbol, tokens[0].ptr, len);
-        coord->element_symbol[len] = '\0';
+        str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tokens[0]);
     } else {
         coord->atomic_number = (int)parse_int(tokens[0]);
     }
@@ -451,13 +445,16 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
     int64_t byte_offset = 0;
 
     while (xyz_parse_model_header(&mdl, reader, flags, &expected_count)) {
+        md_array_ensure(data->coordinates, md_array_size(data->coordinates) + expected_count, alloc);
+        
         mdl.byte_offset = byte_offset;
-
         mdl.beg_coord_index = (int32_t)md_array_size(data->coordinates);
         for (int32_t i = 0; i < expected_count; ++i) {
             str_t line;
             md_xyz_coordinate_t coord = {0};
-            if (md_buffered_reader_extract_line(&line, reader) && extract_coord(&coord, line)) {
+            if (md_buffered_reader_extract_line(&line, reader) &&
+                extract_coord(&coord, line))
+            {
                 md_array_push(data->coordinates, coord, alloc);
             } else {
                 MD_LOG_ERROR("Parse XYZ, Failed to parse coordinate");

@@ -63,14 +63,14 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
         MD_LOG_ERROR("Failed to parse gro num atoms");
         return false;
     }
+    
     data->num_atoms = parse_int(str_trim(line));
-
-    const int64_t min_bounds = 1;
-    const int64_t max_bounds = 10000000;
-    if (data->num_atoms < min_bounds || max_bounds < data->num_atoms) {
-        MD_LOG_ERROR("Number of atoms (%i) outside of plausible range [%i, %i]", (int)data->num_atoms, (int)min_bounds, (int)max_bounds);
+    if (!data->num_atoms) {
+        MD_LOG_ERROR("Failed to parse gro num atoms");
         return false;
     }
+
+    md_array_resize(data->atom_data, data->num_atoms, alloc);
 
     for (int64_t i = 0; i < data->num_atoms; ++i) {
         if (!md_buffered_reader_extract_line(&line, reader)) {
@@ -82,15 +82,16 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
             MD_LOG_ERROR("Failed to parse atom coordinates, expected at least 3 tokens, got %i", (int)num_tokens);
             return false;
         }
-        md_gro_atom_t atom = {
-            .res_id = (int32_t)parse_int(str_trim(str_substr(line, 0, 5))),
-            .x = (float)parse_float(tokens[0]),
-            .y = (float)parse_float(tokens[1]),
-            .z = (float)parse_float(tokens[2]),
-        };
-        str_copy_to_char_buf(atom.res_name,  sizeof(atom.res_name),  str_trim(str_substr(line,  5, 5)));
-        str_copy_to_char_buf(atom.atom_name, sizeof(atom.atom_name), str_trim(str_substr(line, 10, 5)));
-        md_array_push(data->atom_data, atom, alloc);
+        
+        md_gro_atom_t* atom = &data->atom_data[i];
+        
+        atom->res_id = (int32_t)parse_int(str_trim(str_substr(line, 0, 5)));
+        atom->x = (float)parse_float_wide(tokens[0].ptr, tokens[0].len);
+        atom->y = (float)parse_float_wide(tokens[1].ptr, tokens[1].len);
+        atom->z = (float)parse_float_wide(tokens[2].ptr, tokens[2].len);
+        
+        str_copy_to_char_buf(atom->res_name,  sizeof(atom->res_name),  str_trim(str_substr(line,  5, 5)));
+        str_copy_to_char_buf(atom->atom_name, sizeof(atom->atom_name), str_trim(str_substr(line, 10, 5)));
     }
 
     if (!md_buffered_reader_extract_line(&line, reader)) {
