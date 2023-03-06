@@ -56,6 +56,7 @@ typedef struct md_buffered_reader_t {
     char*   buf;
     int64_t cap;
     md_file_o* file;
+    int64_t prev_line_length;
 } md_buffered_reader_t;
 
 static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, int64_t cap, md_file_o* file) {
@@ -93,7 +94,24 @@ static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_read
             r->str.len = bytes_read;
         }
     }
-    return str_extract_line(line, &r->str); 
+    const int64_t i = r->prev_line_length;
+    if (i < r->str.len && r->str.ptr[i] == '\n') {
+        line->ptr = r->str.ptr;
+        line->len = (i > 0 && r->str.ptr[i - 1] == '\r') ? i - 1 : i;
+        
+        r->str.ptr += i + 1;
+        r->str.len -= i + 1;
+        return true;
+    }
+    
+    if (str_extract_line(line, &r->str)) {
+        r->prev_line_length = line->len;
+        if (line->ptr[line->len] == '\r')
+            r->prev_line_length += 1;
+        return true;
+    }
+
+    return false;
 }
 
 static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {
@@ -141,7 +159,7 @@ static inline double parse_float_dec(const char* ptr, int64_t len) {
 	if (*c == '-' || *c == '+') ++c;
 
     double val = 0.0;
-	while (c < end && '0' <= *c && *c <= '9') {
+	while (c < end && ('0' <= *c && *c <= '9')) {
 		val = val * 10 + (*c - '0');
 		++c;
 	}
@@ -171,7 +189,7 @@ static inline double parse_float(str_t str) {
     bool negate = (*c == '-');
     uint64_t whole = 0;
     uint64_t fract = 0;
-    int      fract_len = 0;
+    uint64_t fract_len = 0;
     
     if (*c == '-')
         ++c;
@@ -184,7 +202,7 @@ static inline double parse_float(str_t str) {
     if (c < end && *c == '.') {
         ++c;
         const char* fbeg = c;
-        const char* fend = MIN(end, c + 19);
+        const char* fend = MIN(end, c + 19); // Will overflow if we go beyond this
         while (c < fend && is_digit(*c)) {
             fract = fract * 10 + ((int)(*c) - '0');
             ++c;
@@ -192,13 +210,12 @@ static inline double parse_float(str_t str) {
         fract_len = c - fbeg;
     }
 
-    double val = whole + fract / pow10_table[fract_len];
+    double val = (double)whole + (double)fract / pow10_table[fract_len];
 
     if (c < end && (*c == 'e' || *c == 'E')) {
         ++c;
-        int exp_sign = 1;
+        bool exp_neg = *c == '-';
         if (c < end && (*c == '+' || *c == '-')) {
-            exp_sign = *c == '+' ? 1 : -1;
             ++c;
         }
         int exp_val = 0;
@@ -208,7 +225,7 @@ static inline double parse_float(str_t str) {
         }
         while (exp_val) {
             int ev = MIN(exp_val, (int)ARRAY_SIZE(pow10_table)-1);
-            val = exp_sign > 0 ? val * pow10_table[ev] : val / pow10_table[ev];
+            val = exp_neg ? val / pow10_table[ev] : val * pow10_table[ev];
             exp_val -= ev;
         }
     }
@@ -281,17 +298,6 @@ static inline uint64_t parse_u64(const char* ptr, int64_t len) {
     return parse_uint64_si128(v, m);
 }
 
-static inline uint32_t parse_eight_digits_unrolled_masked(uint64_t v, uint64_t m) {
-    const uint64_t mask = 0x000000FF000000FF;
-    const uint64_t mul1 = 0x000F424000000064; // 100 + (1000000ULL << 32)
-    const uint64_t mul2 = 0x0000271000000001; // 1 + (10000ULL << 32)
-    v -= 0x3030303030303030;
-    v &= m;
-    v = (v * 10) + (v >> 8); // val = (val * 2561) >> 8;
-    v = (((v & mask) * mul1) + (((v >> 16) & mask) * mul2)) >> 32;
-    return (uint32_t)v;
-}
-
 static inline uint64_t load_u64(const char* ptr) {
     uint64_t val;
     memcpy(&val, ptr, sizeof(val));
@@ -299,10 +305,16 @@ static inline uint64_t load_u64(const char* ptr) {
 }
 
 static inline uint32_t parse_u32(const char* ptr, int64_t len) {
-    uint64_t val  = load_u64(ptr + len - 8);
-    uint64_t mask = 0xFFFFFFFFFFFFFFFF >> (64 - (len << 3));
-    uint64_t res = parse_eight_digits_unrolled_masked(val, mask);
-    return res;
+    const uint64_t mask = 0x000000FF000000FF;
+    const uint64_t mul1 = 0x000F424000000064; // 100 + (1000000ULL << 32)
+    const uint64_t mul2 = 0x0000271000000001; // 1 + (10000ULL << 32)
+    uint64_t shift = (64 - (len << 3));
+    uint64_t val = load_u64(ptr);
+    val = val << shift;
+    val -= 0x3030303030303030 << shift; // '0'
+    val = (val * 10) + (val >> 8); // val = (val * 2561) >> 8;
+    val = (((val & mask) * mul1) + (((val >> 16) & mask) * mul2)) >> 32;
+    return (uint32_t)val;
 }
 
 static inline uint64_t parse_uint_wide(const char* ptr, int64_t len) {
@@ -365,23 +377,22 @@ struct float_token_t {
     uint8_t _unused;
 };
 
-static inline double parse_float_simd(const char* ptr, int64_t len) {
+static inline double parse_float_wide(const char* ptr, int64_t len) {
     int neg = (*ptr == '-');
     if (*ptr == '-') {
         ++ptr;
         --len;
     }
     int dec = find_first_char(_mm_loadu_si128((const __m128i*)ptr), '.');
+    dec = MIN(dec, len);
     int frac_len = (int)len - (dec + 1);
+    frac_len = MAX(0, frac_len);
+
 	uint32_t whole = parse_u32(ptr, dec);
     uint32_t fract = parse_u32(ptr + dec + 1, frac_len);
-       
-    double result = (double)whole + fract / pow10_table[frac_len];
-    return neg ? -result : result;
-}
 
-static inline double str_parse_float_simd(str_t str) {
-    return parse_float_simd(str.ptr, str.len);
+    double result = whole + fract / pow10_table[frac_len];
+    return neg ? -result : result;
 }
 
 // Extracts token with whitespace as delimiter

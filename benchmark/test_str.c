@@ -83,10 +83,10 @@ UBENCH_EX(str, parse_int) {
 
 UBENCH_EX(str, parse_int_simd) {
     str_t str[] = {
-        STR("1928123123123"),
+        STR("19312312"),
         STR("1123"),
         STR("19228123"),
-        STR("1921238123"),
+        STR("19212381"),
     };
 
     int64_t num_bytes = 0;
@@ -103,10 +103,10 @@ UBENCH_EX(str, parse_int_simd) {
     int64_t acc = 0;
     UBENCH_DO_BENCHMARK() {
         const uint64_t st = __rdtsc();
-        acc += parse_int_wide(str[0].ptr, str[0].len);
-        acc += parse_int_wide(str[1].ptr, str[1].len);
-        acc += parse_int_wide(str[2].ptr, str[2].len);
-        acc += parse_int_wide(str[3].ptr, str[3].len);
+        acc += parse_u32(str[0].ptr, str[0].len);
+        acc += parse_u32(str[1].ptr, str[1].len);
+        acc += parse_u32(str[2].ptr, str[2].len);
+        acc += parse_u32(str[3].ptr, str[3].len);
         const uint64_t et = __rdtsc() - st;
 
         avg += et;
@@ -177,10 +177,10 @@ UBENCH_EX(str, parse_float_simd) {
     double acc = 0;
     UBENCH_DO_BENCHMARK() {
         const uint64_t st = __rdtsc();
-        acc += str_parse_float_simd(str[0]);
-        acc += str_parse_float_simd(str[1]);
-        acc += str_parse_float_simd(str[2]);
-        acc += str_parse_float_simd(str[3]);
+        acc += parse_float_wide(str[0].ptr, str[0].len);
+        acc += parse_float_wide(str[1].ptr, str[1].len);
+        acc += parse_float_wide(str[2].ptr, str[2].len);
+        acc += parse_float_wide(str[3].ptr, str[3].len);
         const uint64_t et = __rdtsc() - st;
 
         avg += et;
