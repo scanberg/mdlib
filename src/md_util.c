@@ -321,8 +321,20 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
 
             // CA -> Carbon, not Calcium (if part of a residue > 2 atoms)
 
-            // 2 letters + 1 digit (e.g. HO[0-9]) usually means just look at the first letter
-            if (original.len == 3 && is_digit(original.ptr[2])) {
+            int num_alpha = 0;
+            while (num_alpha < original.len && is_alpha(original.ptr[num_alpha])) ++num_alpha;
+            
+            int num_digits = 0;
+            str_t digits = str_substr(original, num_alpha, -1);
+            while (num_digits < digits.len && is_digit(digits.ptr[num_digits])) ++num_digits;
+
+            if (str_equal_cstr(name, "HOH")) {
+                elem = H;
+                goto done;
+            }
+
+            // 2-3 letters + 1-2 digit (e.g. HO(H)[0-99]) usually means just look at the first letter
+            if ((num_alpha == 2 || num_alpha == 3) && (num_digits == 1 || num_digits == 2)) {
                 elem = md_util_element_lookup_ignore_case(str_substr(original, 0, 1));
                 goto done;
             }
