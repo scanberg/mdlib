@@ -31,6 +31,8 @@ typedef struct md_trajectory_i {
 	bool (*get_header)(struct md_trajectory_o* inst, md_trajectory_header_t* header);
 
 	// --- EASY MODE ---
+    // Loads data for frame 'idx' into the supplied buffers. The buffers must be large enough to hold the data.
+    // each field is optional and can be NULL if you don't need it.
 	bool (*load_frame)(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 
 	// --- ADVANCED MODE ---
