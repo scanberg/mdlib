@@ -1861,24 +1861,30 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     const float radius = as_float(arg[0]);
 
+
     if (dst || ctx->vis) {
         const vec3_t* in_pos = position_extract(arg[1], ctx);
         const int64_t num_pos = md_array_size(in_pos);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
-            md_bitfield_t* dst_bf = as_bitfield(*dst);
-            for (int64_t i = 0; i < num_pos; ++i) {
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+            if (ctx->spatial_hash) {
+                ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+                md_bitfield_t* dst_bf = as_bitfield(*dst);
+                for (int64_t i = 0; i < num_pos; ++i) {
+                    md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+                }
             }
         } else {
             ASSERT(ctx->vis);
             position_visualize(arg[1], ctx);
-            // Visualize
-            md_bitfield_t* dst_bf = ctx->vis->atom_mask;
-            for (int64_t i = 0; i < num_pos; ++i) {
-                push_sphere(vec4_from_vec3(in_pos[i], radius), ctx->vis);
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+
+            if (ctx->spatial_hash) {
+                // Visualize
+                md_bitfield_t* dst_bf = ctx->vis->atom_mask;
+                for (int64_t i = 0; i < num_pos; ++i) {
+                    push_sphere(vec4_from_vec3(in_pos[i], radius), ctx->vis);
+                    md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+                }
             }
         }
     }
@@ -1906,21 +1912,24 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const int64_t num_pos = md_array_size(in_pos);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
-            md_bitfield_t* dst_bf = as_bitfield(*dst);
-            for (int64_t i = 0; i < num_pos; ++i) {
-                // @TODO: Should be periodic if applicable
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+            if (ctx->spatial_hash) {
+                ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+                md_bitfield_t* dst_bf = as_bitfield(*dst);
+                for (int64_t i = 0; i < num_pos; ++i) {
+                    md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+                }
             }
         }
         else {
             // Visualize
             ASSERT(ctx->vis);
             visualize_atom_mask(ctx->mol_ctx, ctx->vis);
-            md_bitfield_t* dst_bf = ctx->vis->atom_mask;
-            for (int64_t i = 0; i < num_pos; ++i) {
-                push_sphere(vec4_from_vec3(in_pos[i], radius), ctx->vis);
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+            if (ctx->spatial_hash) {
+                md_bitfield_t* dst_bf = ctx->vis->atom_mask;
+                for (int64_t i = 0; i < num_pos; ++i) {
+                    push_sphere(vec4_from_vec3(in_pos[i], radius), ctx->vis);
+                    md_spatial_hash_query(ctx->spatial_hash, in_pos[i], radius, within_float_iter, dst_bf);
+                }
             }
         }
     }
@@ -1965,30 +1974,34 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const vec3_t* in_pos = as_vec3_arr(arg[1]);
         const int64_t num_pos = element_count(arg[1]);
 
-        if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
-            md_bitfield_t* dst_bf = as_bitfield(*dst);
-            within_frng_payload_t payload = {
-                .bf = dst_bf,
-                .rad_range = rad_range,
-            };
-            for (int64_t i = 0; i < num_pos; ++i) {
-                float  rad = rad_range.end;
-                payload.ref_pos = in_pos[i];
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+        if (ctx->spatial_hash) {
+            if (dst) {
+                ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+
+                md_bitfield_t* dst_bf = as_bitfield(*dst);
+                within_frng_payload_t payload = {
+                    .bf = dst_bf,
+                    .rad_range = rad_range,
+                };
+                for (int64_t i = 0; i < num_pos; ++i) {
+                    float  rad = rad_range.end;
+                    payload.ref_pos = in_pos[i];
+                    md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                }
             }
-        } else {
-            // Visualize
-            md_bitfield_t* dst_bf = ctx->vis->atom_mask;
-            within_frng_payload_t payload = {
-                .bf = dst_bf,
-                .rad_range = rad_range,
-            };
-            for (int64_t i = 0; i < num_pos; ++i) {
-                float  rad = rad_range.end;
-                payload.ref_pos = in_pos[i];
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
-                push_sphere(vec4_from_vec3(in_pos[i], rad), ctx->vis);
+            else {
+                // Visualize
+                md_bitfield_t* dst_bf = ctx->vis->atom_mask;
+                within_frng_payload_t payload = {
+                    .bf = dst_bf,
+                    .rad_range = rad_range,
+                };
+                for (int64_t i = 0; i < num_pos; ++i) {
+                    float  rad = rad_range.end;
+                    payload.ref_pos = in_pos[i];
+                    md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                    push_sphere(vec4_from_vec3(in_pos[i], rad), ctx->vis);
+                }
             }
         }
     }
@@ -2014,31 +2027,33 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec3_t* in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
         const int64_t num_pos = md_array_size(in_pos);
 
-        if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
-            md_bitfield_t* dst_bf = as_bitfield(*dst);
-            within_frng_payload_t payload = {
-                .bf = dst_bf,
-                .rad_range = rad_range,
-            };
-            for (int64_t i = 0; i < num_pos; ++i) {
-                float  rad = rad_range.end;
-                payload.ref_pos = in_pos[i];
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+        if (ctx->spatial_hash) {
+            if (dst) {
+                ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+                md_bitfield_t* dst_bf = as_bitfield(*dst);
+                within_frng_payload_t payload = {
+                    .bf = dst_bf,
+                    .rad_range = rad_range,
+                };
+                for (int64_t i = 0; i < num_pos; ++i) {
+                    float  rad = rad_range.end;
+                    payload.ref_pos = in_pos[i];
+                    md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                }
             }
-        }
-        else {
-            // Visualize
-            md_bitfield_t* dst_bf = ctx->vis->atom_mask;
-            within_frng_payload_t payload = {
-                .bf = dst_bf,
-                .rad_range = rad_range,
-            };
-            for (int64_t i = 0; i < num_pos; ++i) {
-                float  rad = rad_range.end;
-                payload.ref_pos = in_pos[i];
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
-                push_sphere(vec4_from_vec3(in_pos[i], rad), ctx->vis);
+            else {
+                // Visualize
+                md_bitfield_t* dst_bf = ctx->vis->atom_mask;
+                within_frng_payload_t payload = {
+                    .bf = dst_bf,
+                    .rad_range = rad_range,
+                };
+                for (int64_t i = 0; i < num_pos; ++i) {
+                    float  rad = rad_range.end;
+                    payload.ref_pos = in_pos[i];
+                    md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                    push_sphere(vec4_from_vec3(in_pos[i], rad), ctx->vis);
+                }
             }
         }
     }
@@ -2483,6 +2498,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->mol && ctx->mol->atom.residue_idx && ctx->mol->residue.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
+            const int64_t capacity = type_info_array_len(dst->type);
 
             int i = 0;
             int64_t beg = tmp_bf.beg_bit;
@@ -2492,7 +2508,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 md_range_t range = ctx->mol->residue.atom_range[res_idx];
                 ASSERT(i < element_count(*dst));
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
-                i += 1;
+                i = (capacity == 1) ? i : i + 1;
                 beg = range.end;
             }
             result = 0; // OK
@@ -2512,6 +2528,9 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 count += 1;
                 // Skip rest of atoms in residue
                 beg = ctx->mol->residue.atom_range[res_idx].end;
+            }
+            if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+                count = MIN(1, count);
             }
             result = count;
         }
@@ -2535,6 +2554,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->mol && ctx->mol->atom.chain_idx && ctx->mol->chain.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
+            const int64_t capacity = element_count(*dst);
 
             int i = 0;
             int64_t beg = tmp_bf.beg_bit;
@@ -2544,7 +2564,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 md_range_t range = ctx->mol->chain.atom_range[chain_idx];
                 ASSERT(i < element_count(*dst));
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
-                i += 1;
+                i = (capacity == 1) ? i : i + 1;
                 beg = range.end;
             }
             ASSERT(i == element_count(*dst));
@@ -2558,6 +2578,9 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 count += 1;
                 // Skip rest of atoms in chain
                 beg = ctx->mol->chain.atom_range[chain_idx].end;
+            }
+            if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+                count = MIN(1, count);
             }
             result = count;
         }
