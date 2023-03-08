@@ -2324,8 +2324,71 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
+static bool ion_element_table[256] = {
+    false, true, 
+};
+
+static bool test_ion(const md_molecule_t* mol, int res_idx) {
+    if (mol->residue.atom_range) {
+        const md_range_t range = mol->residue.atom_range[res_idx];
+        const int len = range.end - range.beg;
+        if (len <= 4) {
+            md_element_t elem = mol->atom.element[range.beg];
+            for (int i = range.beg+1; i < range.end; ++i) {
+                if (mol->atom.element[i] != elem) {
+                    return false;
+                }
+            }
+            // All good, we have some form of structure with all the same elements
+            // TODO: Dear god use a table!
+            switch (elem) {
+                case 1:   // H+ / H-
+                case 3:   // Li+
+                case 9:   // F-
+                case 11:  // Na+
+                case 17:  // Cl-
+                case 19:  // K+
+                case 35:  // Br-
+                case 37:  // Rb+
+                case 47:  // Ag+
+                case 53:  // I-
+                case 55:  // Cs+
+                    return len == 1;
+                case 4:   // Be2+
+                case 8:   // O2-
+                case 12:  // Mg2+
+                case 20:  // Ca2+
+                case 16:  // S2-
+                case 30:  // Zn2+
+                case 34:  // Se2-
+                case 38:  // Sr2+
+                case 48:  // Cd2+
+                case 56:  // Ba2+
+                case 66:  // Hg2+
+                    return len == 2;
+                case 7:   // N3-
+                case 13:  // Al3+
+                case 15:  // P3-
+                    return len == 3;
+                case 29:  // Cu1+ / Cu2+
+                    return len == 1 || len == 2;
+                case 24:  // Cr2+ / Cr3+
+                case 25:  // Mn2+ / Mn3+
+                case 26:  // Fe2+ / Fe3+
+                case 27:  // Co2+ / Co3+
+                    return len == 2 || len == 3;
+                case 50:  // Sn2+ / Sn4+
+                case 68:  // Pb2+ / Pb4+
+                    return len == 2 || len == 4;
+                default: return false;
+            }
+        }
+    }
+    return false;
+}
+
 static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->residue.atom_range && ctx->mol->atom.element);
+    ASSERT(ctx && ctx->mol);
     (void)arg;
 
     int result = 0;
@@ -2333,86 +2396,24 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst) {
         ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        
         md_bitfield_t* bf = as_bitfield(*dst);
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            const md_range_t range = ctx->mol->residue.atom_range[res_indices[i]];
-            // Currently only check for monatomic ions
-            // We don't know the charges.
-            // We make the assumption that if it is a residue of size 1 and of the correct element then its an ion
-            if (range.end - range.beg == 1) {
-                md_element_t elem = ctx->mol->atom.element[range.beg];
-                switch (elem) {
-                case 1:  goto set_bit;  // H+ / H-
-                case 3:  goto set_bit;  // Li+
-                case 4:  goto set_bit;  // Be2+
-                case 7:  goto set_bit;  // N3-
-                case 8:  goto set_bit;  // O2-
-                case 9:  goto set_bit;  // F-
-                case 11: goto set_bit;  // Na+
-                case 12: goto set_bit;  // Mg2+
-                case 13: goto set_bit;  // Al3+
-                case 15: goto set_bit;  // P3-
-                case 16: goto set_bit;  // S2-
-                case 17: goto set_bit;  // Cl-
-                case 19: goto set_bit;  // K+
-                case 20: goto set_bit;  // Ca2+
-                case 24: goto set_bit;  // Cr2+ / Cr3+
-                case 25: goto set_bit;  // Mn2+ / Mn3+
-                case 26: goto set_bit;  // Fe2+ / Fe3+
-                case 27: goto set_bit;  // Co2+ / Co3+
-                case 29: goto set_bit;  // Cu1+ / Cu2+
-                case 30: goto set_bit;  // Zn2+
-                case 34: goto set_bit;  // Se2-
-                case 35: goto set_bit;  // Br-
-                case 37: goto set_bit;  // Rb+
-                case 38: goto set_bit;  // Sr2+
-                case 47: goto set_bit;  // Ag+
-                case 48: goto set_bit;  // Cd2+
-                case 50: goto set_bit;  // Sn2+ / Sn4+
-                case 53: goto set_bit;  // I-
-                case 55: goto set_bit;  // Cs+
-                case 56: goto set_bit;  // Ba2+
-                case 66: goto set_bit;  // Hg2+
-                case 68: goto set_bit;  // Pb2+ / Pb4+
-                default: continue;
-                }
-            set_bit:
-                md_bitfield_set_bit(bf, range.beg);
+            if (test_ion(ctx->mol, (int)res_indices[i])) {
+                md_range_t range = ctx->mol->residue.atom_range[res_indices[i]];
+                md_bitfield_set_range(bf, range.beg, range.end);
             }
         }
     }
     else {
         int count = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            const md_range_t range = ctx->mol->residue.atom_range[res_indices[i]];
-            // Currently only check for monatomic ions
-            // We don't know the charges.
-            // We make the assumption that if it is a residue of size 1 and of the correct element then its an ion
-            if (range.end - range.beg == 1) {
-                md_element_t elem = ctx->mol->atom.element[range.beg];
-                switch (elem) {
-                case 1:  goto count_res;  // H+ / H-
-                case 3:  goto count_res;  // Li+
-                case 4:  goto count_res;  // Be2+
-                case 8:  goto count_res;  // O2-
-                case 9:  goto count_res;  // F-
-                case 11: goto count_res;  // Na+
-                case 12: goto count_res;  // Mg2+
-                case 13: goto count_res;  // Al3+
-                case 16: goto count_res;  // S2-
-                case 17: goto count_res;  // Cl-
-                case 19: goto count_res;  // K+
-                case 20: goto count_res;  // Ca2+
-                case 35: goto count_res;  // Br-
-                case 47: goto count_res;  // Ag+
-                case 53: goto count_res;  // I-
-                case 55: goto count_res;  // Cs+
-                case 56: goto count_res;  // Ba2+
-                default: continue;
-                }
-            count_res:
+            if (test_ion(ctx->mol, res_indices[i])) {
                 count += 1;
             }
+        }
+        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+            count = MIN(1, count);
         }
         result = count;
     }

@@ -298,12 +298,7 @@ bool md_util_element_guess(md_element_t element[], int64_t capacity, const struc
                 const md_range_t res_range = mol->residue.atom_range[mol->atom.residue_idx[i]];
                 const int res_len = res_range.end - res_range.beg;
                 
-                if (res_len <= 2) {
-                    // This is too small to be an amino acid or nucleotide
-                    // Probably ion
-                    elem = md_util_element_lookup_ignore_case(name);
-                    goto done;
-                } else if (mol->residue.name) {
+                if (res_len > 4 && mol->residue.name) {
                     str_t resname = LBL_TO_STR(mol->residue.name[mol->atom.residue_idx[i]]);
                     if (md_util_resname_amino_acid(resname) ||
                         amino_acid_heuristic(mol->atom.name + res_range.beg, res_range.end - res_range.beg) ||
