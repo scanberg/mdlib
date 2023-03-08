@@ -60,7 +60,7 @@ static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
 // This operation tries to deduce the element from the atom type/name which usually contains alot of cruft.
 // It also tries resolve some ambiguities: Such as CA, is that Carbon Alpha or is it calcium?
 // We can resolve that by looking at the residue name and in the case of Carbon Alpha, the residue name should be matched to an amino acid.
-bool md_util_element_decode(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol);
+bool md_util_element_guess(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol);
 
 bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], int64_t count);
 

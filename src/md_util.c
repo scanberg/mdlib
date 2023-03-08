@@ -273,7 +273,7 @@ static bool amino_acid_heuristic(const md_label_t labels[], int size) {
 #undef BIT_O
 }
 
-bool md_util_element_decode(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol) {
+bool md_util_element_guess(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol) {
     ASSERT(capacity >= 0);
     ASSERT(mol);
     ASSERT(mol->atom.count >= 0);
@@ -298,9 +298,9 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
                 const md_range_t res_range = mol->residue.atom_range[mol->atom.residue_idx[i]];
                 const int res_len = res_range.end - res_range.beg;
                 
-                if (res_len < 4) {
+                if (res_len <= 2) {
                     // This is too small to be an amino acid or nucleotide
-                    name.len = 1;
+                    // Probably ion
                     elem = md_util_element_lookup_ignore_case(name);
                     goto done;
                 } else if (mol->residue.name) {
@@ -318,8 +318,6 @@ bool md_util_element_decode(md_element_t element[], int64_t capacity, const stru
             }
 
             // Heuristic cases
-
-            // CA -> Carbon, not Calcium (if part of a residue > 2 atoms)
 
             int num_alpha = 0;
             while (num_alpha < original.len && is_alpha(original.ptr[num_alpha])) ++num_alpha;
@@ -2646,7 +2644,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
             md_array_resize(mol->atom.element, mol->atom.count, alloc);
             MEMSET(mol->atom.element, 0, mol->atom.count * sizeof(*mol->atom.element));
         }
-        md_util_element_decode(mol->atom.element, mol->atom.count, mol);
+        md_util_element_guess(mol->atom.element, mol->atom.count, mol);
     }
 
     if (flags & MD_UTIL_POSTPROCESS_RADIUS_BIT) {
