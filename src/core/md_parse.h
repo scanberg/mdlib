@@ -384,7 +384,7 @@ static inline double parse_float_wide(const char* ptr, int64_t len) {
         --len;
     }
     int dec = find_first_char(_mm_loadu_si128((const __m128i*)ptr), '.');
-    dec = MIN(dec, len);
+    dec = MIN(dec, (int)len);
     int frac_len = (int)len - (dec + 1);
     frac_len = MAX(0, frac_len);
 
