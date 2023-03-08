@@ -1387,7 +1387,7 @@ static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, flo
 
     glEnableVertexAttribArray(3);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
-    glVertexAttribIPointer(3, 1, GL_UNSIGNED_INT, 0, 0);
+    glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, 0, 0);
 
     glEnableVertexAttribArray(4);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);
@@ -1434,7 +1434,7 @@ static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float
 
     glEnableVertexAttribArray(2);
     glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
-    glVertexAttribIPointer(2, 1, GL_UNSIGNED_INT, 0, 0);
+    glVertexAttribIPointer(2, 1, GL_UNSIGNED_BYTE, 0, 0);
 
     glEnableVertexAttribArray(3);
     glBindBuffer(GL_ARRAY_BUFFER, rep->color.id);
