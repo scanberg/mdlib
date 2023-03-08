@@ -155,7 +155,7 @@ typedef struct md_gl_draw_op_t {
 } md_gl_draw_op_t;
 
 typedef struct md_gl_draw_args_t {
-    md_gl_shaders_t* shaders;
+    const md_gl_shaders_t* shaders;
 
     struct {
         uint32_t count;
