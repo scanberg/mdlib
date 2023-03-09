@@ -2324,10 +2324,6 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static bool ion_element_table[256] = {
-    false, true, 
-};
-
 static bool test_ion(const md_molecule_t* mol, int res_idx) {
     if (mol->residue.atom_range) {
         const md_range_t range = mol->residue.atom_range[res_idx];

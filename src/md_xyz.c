@@ -405,7 +405,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     int64_t i = 0;
     str_t line;
-    str_t tokens[4];
+    str_t tokens[8];
     while (md_buffered_reader_extract_line(&line, &reader) && i < xyz->header.num_atoms) {
         if (line.len < 6) continue;
 
@@ -416,9 +416,14 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
             return false;
         }
         
-        if (x) x[i] = (float)parse_float(tokens[1]);
-        if (y) y[i] = (float)parse_float(tokens[2]);
-        if (z) z[i] = (float)parse_float(tokens[3]);
+        int offset = 1;
+        if (num_tokens > 4) {
+            offset += 1;
+        }
+        
+        if (x) x[i] = (float)parse_float(tokens[offset + 0]);
+        if (y) y[i] = (float)parse_float(tokens[offset + 1]);
+        if (z) z[i] = (float)parse_float(tokens[offset + 2]);
 
         i += 1;
     }
