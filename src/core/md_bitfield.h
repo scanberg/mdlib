@@ -61,8 +61,9 @@ void md_bitfield_copy           (md_bitfield_t* dst, const md_bitfield_t* src);
 uint64_t md_bitfield_popcount    (const md_bitfield_t* bf);
 uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
-// Test if single bit in field is set
+// Test if bits are set
 bool md_bitfield_test_bit   (const md_bitfield_t* bf, uint64_t idx);
+bool md_bitfield_test_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 /*
  Bit scan forward, finds the first bit set within a given range (beg, end)

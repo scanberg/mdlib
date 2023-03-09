@@ -153,6 +153,8 @@ static inline bool block_test_bit(block_t blk, uint64_t bit_idx) {
     return blk.u64[bit_idx / 64] & (1ULL << (bit_idx & 63));
 }
 
+
+
 // Posix convention, returns 0 if no bit is set
 // otherwise it returns the index of the first set bit in the interval (1-512)
 static inline uint64_t block_scan_forward(block_t blk) {
@@ -641,6 +643,21 @@ bool md_bitfield_test_bit(const md_bitfield_t* bf, uint64_t idx) {
     if (idx < bf->beg_bit || bf->end_bit <= idx) return false;
     return block_test_bit(get_block(bf, block_idx(idx)), idx - block_bit(idx));
     //return bit_test((uint64_t*)bf->bits, idx - block_bit(bf->beg_bit));
+}
+
+bool md_bitfield_test_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
+    ASSERT(md_bitfield_validate(bf));
+    
+    if (end < bf->beg_bit || bf->end_bit < beg) return false;
+    beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
+    end = CLAMP(end, bf->beg_bit, bf->end_bit);
+    if (end <= beg) return false;
+    for (uint64_t idx = beg; idx < end; ++idx) {
+        if (!block_test_bit(get_block(bf, block_idx(idx)), idx - block_bit(idx))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Test if bitfields are equivalent
