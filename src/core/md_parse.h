@@ -56,7 +56,6 @@ typedef struct md_buffered_reader_t {
     char*   buf;
     int64_t cap;
     md_file_o* file;
-    int64_t prev_line_length;
 } md_buffered_reader_t;
 
 static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, int64_t cap, md_file_o* file) {
@@ -94,24 +93,8 @@ static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_read
             r->str.len = bytes_read;
         }
     }
-    const int64_t i = r->prev_line_length;
-    if (i < r->str.len && r->str.ptr[i] == '\n') {
-        line->ptr = r->str.ptr;
-        line->len = (i > 0 && r->str.ptr[i - 1] == '\r') ? i - 1 : i;
-        
-        r->str.ptr += i + 1;
-        r->str.len -= i + 1;
-        return true;
-    }
     
-    if (str_extract_line(line, &r->str)) {
-        r->prev_line_length = line->len;
-        if (line->ptr[line->len] == '\r')
-            r->prev_line_length += 1;
-        return true;
-    }
-
-    return false;
+    return str_extract_line(line, &r->str);
 }
 
 static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {

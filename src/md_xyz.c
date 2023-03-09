@@ -451,7 +451,6 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
         return false;
     }
 
-
     int32_t expected_count = 0;
     md_xyz_model_t mdl = {0};
     int64_t byte_offset = 0;
