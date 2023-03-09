@@ -14,12 +14,12 @@ UTEST(xyz, xyz_standard) {
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
-    EXPECT_EQ(data.num_models, 10);
-    EXPECT_EQ(data.num_coordinates, 2280 * 10);
+    EXPECT_EQ(10, data.num_models);
+    EXPECT_EQ(2280 * 10, data.num_coordinates);
 
-    EXPECT_NEAR(data.coordinates[0].x, 57.834f, 1.0e-5f);
-    EXPECT_NEAR(data.coordinates[0].y, 36.568f, 1.0e-5f);
-    EXPECT_NEAR(data.coordinates[0].z, 62.491f, 1.0e-5f);
+    EXPECT_NEAR(57.834f, data.coordinates[0].x, 1.0e-5f);
+    EXPECT_NEAR(36.568f, data.coordinates[0].y, 1.0e-5f);
+    EXPECT_NEAR(62.491f, data.coordinates[0].z, 1.0e-5f);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
@@ -39,13 +39,13 @@ UTEST(xyz, xyz_xmol) {
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
-    EXPECT_EQ(data.num_models, 50);
-    EXPECT_EQ(data.num_coordinates, 50 * 540);
+    EXPECT_EQ(50, data.num_models);
+    EXPECT_EQ(50 * 540, data.num_coordinates);
 
-    EXPECT_STREQ(data.coordinates[0].element_symbol, "Au");
-    EXPECT_NEAR( data.coordinates[0].x, -2.264467f, 1.0e-5f);
-    EXPECT_NEAR( data.coordinates[0].y,  1.246472f, 1.0e-5f);
-    EXPECT_NEAR( data.coordinates[0].z,  3.629187f, 1.0e-5f);
+    EXPECT_STREQ("Au", data.coordinates[0].element_symbol);
+    EXPECT_NEAR(-2.264467f, data.coordinates[0].x, 1.0e-5f);
+    EXPECT_NEAR( 1.246472f, data.coordinates[0].y, 1.0e-5f);
+    EXPECT_NEAR( 3.629187f, data.coordinates[0].z, 1.0e-5f);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
@@ -65,18 +65,18 @@ UTEST(xyz, xyz_tinker) {
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
-    EXPECT_EQ(data.num_models, 1);
-    EXPECT_EQ(data.num_coordinates, 404);
+    EXPECT_EQ(1, data.num_models);
+    EXPECT_EQ(404, data.num_coordinates);
 
-    EXPECT_EQ(   data.coordinates[0].atom_index, 1);
-    EXPECT_STREQ(data.coordinates[0].element_symbol, "C");
-    EXPECT_NEAR( data.coordinates[0].x, 18.673994f, 1.0e-5f);
-    EXPECT_NEAR( data.coordinates[0].y,  1.292906f, 1.0e-5f);
-    EXPECT_NEAR( data.coordinates[0].z,  0.733642f, 1.0e-5f);
-    EXPECT_EQ(   data.coordinates[0].atom_type, 2);
-    EXPECT_EQ(   data.coordinates[0].connectivity[0], 2);
-    EXPECT_EQ(   data.coordinates[0].connectivity[1], 20);
-    EXPECT_EQ(   data.coordinates[0].connectivity[2], 270);
+    EXPECT_EQ(1,            data.coordinates[0].atom_index);
+    EXPECT_STREQ("C",       data.coordinates[0].element_symbol);
+    EXPECT_NEAR(18.673994f, data.coordinates[0].x, 1.0e-5f);
+    EXPECT_NEAR(1.292906f,  data.coordinates[0].y, 1.0e-5f);
+    EXPECT_NEAR(0.733642f,  data.coordinates[0].z, 1.0e-5f);
+    EXPECT_EQ(2,            data.coordinates[0].atom_type);
+    EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
+    EXPECT_EQ(20,           data.coordinates[0].connectivity[1]);
+    EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
     
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
@@ -96,18 +96,18 @@ UTEST(xyz, xyz_tinker_arc) {
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
-    EXPECT_EQ(data.num_models, 10);
-    EXPECT_EQ(data.num_coordinates, 10 * 404);
+    EXPECT_EQ(10, data.num_models);
+    EXPECT_EQ(10 * 404, data.num_coordinates);
 
-    EXPECT_EQ(   data.coordinates[0].atom_index, 1);
-    EXPECT_STREQ(data.coordinates[0].element_symbol, "C");
-    EXPECT_NEAR( data.coordinates[0].x, 17.935708f, 1.0e-5f);
-    EXPECT_NEAR( data.coordinates[0].y,  1.368677f, 1.0e-5f);
-    EXPECT_NEAR( data.coordinates[0].z,  0.600876f, 1.0e-5f);
-    EXPECT_EQ(   data.coordinates[0].atom_type, 2);
-    EXPECT_EQ(   data.coordinates[0].connectivity[0], 2);
-    EXPECT_EQ(   data.coordinates[0].connectivity[1], 20);
-    EXPECT_EQ(   data.coordinates[0].connectivity[2], 270);
+    EXPECT_EQ(1,            data.coordinates[0].atom_index);
+    EXPECT_STREQ("C",       data.coordinates[0].element_symbol);
+    EXPECT_NEAR(17.935708f, data.coordinates[0].x, 1.0e-5f);
+    EXPECT_NEAR(1.368677f,  data.coordinates[0].y, 1.0e-5f);
+    EXPECT_NEAR(0.600876f,  data.coordinates[0].z, 1.0e-5f);
+    EXPECT_EQ(2,            data.coordinates[0].atom_type);
+    EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
+    EXPECT_EQ(20,           data.coordinates[0].connectivity[1]);
+    EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
@@ -127,15 +127,15 @@ UTEST(xyz, o2_arc) {
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
-    EXPECT_EQ(data.num_models, 2000);
-    EXPECT_EQ(data.num_coordinates, 2000 * 2);
+    EXPECT_EQ(2000, data.num_models);
+    EXPECT_EQ(2000 * 2, data.num_coordinates);
 
-    EXPECT_STREQ(data.coordinates[0].element_symbol, "O");
-    EXPECT_NEAR( data.coordinates[0].x, -1.977261f, 1.0e-5f);
-    EXPECT_NEAR( data.coordinates[0].y, -1.149547f, 1.0e-5f);
-    EXPECT_NEAR( data.coordinates[0].z, -0.000606f, 1.0e-5f);
-    EXPECT_EQ(   data.coordinates[0].atom_type, 7);
-    EXPECT_EQ(   data.coordinates[0].connectivity[0], 2);
+    EXPECT_STREQ("O", data.coordinates[0].element_symbol);
+    EXPECT_NEAR(-1.977261f, data.coordinates[0].x, 1.0e-5f);
+    EXPECT_NEAR(-1.149547f, data.coordinates[0].y, 1.0e-5f);
+    EXPECT_NEAR(-0.000606f, data.coordinates[0].z, 1.0e-5f);
+    EXPECT_EQ(7,            data.coordinates[0].atom_type);
+    EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
@@ -155,8 +155,8 @@ UTEST(xyz, h2o_arc) {
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
-    EXPECT_EQ(data.num_models, 2000);
-    EXPECT_EQ(data.num_coordinates, 2000 * 3);
+    EXPECT_EQ(2000, data.num_models);
+    EXPECT_EQ(2000 * 3, data.num_coordinates);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
@@ -176,8 +176,8 @@ UTEST(xyz, ch4_arc) {
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, default_allocator);
     EXPECT_TRUE(result);
-    EXPECT_EQ(data.num_models, 2000);
-    EXPECT_EQ(data.num_coordinates, 2000 * 5);
+    EXPECT_EQ(2000, data.num_models);
+    EXPECT_EQ(2000 * 5, data.num_coordinates);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
@@ -220,8 +220,8 @@ UTEST(xyz, trajectory_i) {
     md_trajectory_i* traj = md_xyz_trajectory_create(path, default_allocator);
     ASSERT_TRUE(traj);
 
-    EXPECT_EQ(md_trajectory_num_atoms(traj), 2280);
-    EXPECT_EQ(md_trajectory_num_frames(traj), 10);
+    EXPECT_EQ(2280, md_trajectory_num_atoms(traj));
+    EXPECT_EQ(10, md_trajectory_num_frames(traj));
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
     void* mem_ptr = md_alloc(default_temp_allocator, mem_size);
@@ -233,7 +233,7 @@ UTEST(xyz, trajectory_i) {
 
     for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
-        EXPECT_EQ(header.num_atoms, 2280);
+        EXPECT_EQ(2280, header.num_atoms);
     }
 
     md_free(default_temp_allocator, mem_ptr, mem_size);

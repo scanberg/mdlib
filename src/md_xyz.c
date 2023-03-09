@@ -179,11 +179,13 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
 static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line) {
     ASSERT(coord);
 
+    str_t original = line;
+
     str_t tokens[16];
     const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 
     if (num_tokens < 4) {
-        MD_LOG_ERROR("Invalid number of tokens in XYZ coordinate");
+        MD_LOG_ERROR("Invalid number of tokens in XYZ coordinate when parsing line: '%.*s', expected >= 4, got %i", (int)original.len, original.ptr, (int)num_tokens);
         return false;
     }
 
@@ -209,7 +211,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line) {
         // Connectivity follows atom_type
         for (int i = tok_idx; i < num_tokens; ++i) {
             if (!is_digit(tokens[i].ptr[0])) {
-                MD_LOG_ERROR("Invalid connectivity information in XYZ file");
+                MD_LOG_ERROR("Invalid connectivity information in XYZ file when parsing line: '%.*s', token: '%.*s', number of tokens: %i", (int)original.len, original.ptr, (int)tokens[i].len, tokens[i].ptr, (int)num_tokens);
                 return false;
             }
             coord->connectivity[i-tok_idx] = (int)parse_int(tokens[i]);
