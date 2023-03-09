@@ -338,6 +338,7 @@ uint64_t md_bitfield_end_bit(const md_bitfield_t* bf) {
 
 void md_bitfield_set_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     ASSERT(md_bitfield_validate(bf));
+    if (end <= beg) return;
 
     ensure_range(bf, beg, end);
     bit_set((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), end - beg);
