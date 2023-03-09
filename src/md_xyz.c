@@ -187,27 +187,32 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line) {
         return false;
     }
 
-    ASSERT(!str_empty(tokens[0]));
-    if (is_alpha(tokens[0].ptr[0])) {
-        str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tokens[0]);
-    } else {
-        coord->atomic_number = (int)parse_int(tokens[0]);
+    int tok_idx = 0;
+    if (num_tokens > 4) {
+        coord->atom_index = (int)parse_int(tokens[tok_idx++]);
     }
 
-    coord->x = (float)parse_float(tokens[1]);
-    coord->y = (float)parse_float(tokens[2]);
-    coord->z = (float)parse_float(tokens[3]);
+    ASSERT(!str_empty(tokens[tok_idx]));
+    if (is_alpha(tokens[tok_idx].ptr[0])) {
+        str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tokens[tok_idx++]);
+    } else {
+        coord->atomic_number = (int)parse_int(tokens[tok_idx++]);
+    }
+
+    coord->x = (float)parse_float(tokens[tok_idx++]);
+    coord->y = (float)parse_float(tokens[tok_idx++]);
+    coord->z = (float)parse_float(tokens[tok_idx++]);
     
-    if (num_tokens > 4) {
-        coord->atom_type = (int)parse_int(tokens[4]);
+    if (tok_idx < num_tokens) {
+        coord->atom_type = (int)parse_int(tokens[tok_idx++]);
 
         // Connectivity follows atom_type
-        for (int i = 5; i < num_tokens; ++i) {
+        for (int i = tok_idx; i < num_tokens; ++i) {
             if (!is_digit(tokens[i].ptr[0])) {
                 MD_LOG_ERROR("Invalid connectivity information in XYZ file");
                 return false;
             }
-            coord->connectivity[i-5] = (int)parse_int(tokens[i]);
+            coord->connectivity[i-tok_idx] = (int)parse_int(tokens[i]);
         }
     }
 

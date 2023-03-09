@@ -17,6 +17,10 @@ UTEST(xyz, xyz_standard) {
     EXPECT_EQ(data.num_models, 10);
     EXPECT_EQ(data.num_coordinates, 2280 * 10);
 
+    EXPECT_NEAR(data.coordinates[0].x, 57.834f, 1.0e-5f);
+    EXPECT_NEAR(data.coordinates[0].y, 36.568f, 1.0e-5f);
+    EXPECT_NEAR(data.coordinates[0].z, 62.491f, 1.0e-5f);
+
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
     for (int64_t i = 0; i < data.num_models; ++i) {
@@ -37,6 +41,11 @@ UTEST(xyz, xyz_xmol) {
     EXPECT_TRUE(result);
     EXPECT_EQ(data.num_models, 50);
     EXPECT_EQ(data.num_coordinates, 50 * 540);
+
+    EXPECT_STREQ(data.coordinates[0].element_symbol, "Au");
+    EXPECT_NEAR( data.coordinates[0].x, -2.264467f, 1.0e-5f);
+    EXPECT_NEAR( data.coordinates[0].y,  1.246472f, 1.0e-5f);
+    EXPECT_NEAR( data.coordinates[0].z,  3.629187f, 1.0e-5f);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
@@ -59,6 +68,16 @@ UTEST(xyz, xyz_tinker) {
     EXPECT_EQ(data.num_models, 1);
     EXPECT_EQ(data.num_coordinates, 404);
 
+    EXPECT_EQ(   data.coordinates[0].atom_index, 1);
+    EXPECT_STREQ(data.coordinates[0].element_symbol, "C");
+    EXPECT_NEAR( data.coordinates[0].x, 18.673994f, 1.0e-5f);
+    EXPECT_NEAR( data.coordinates[0].y,  1.292906f, 1.0e-5f);
+    EXPECT_NEAR( data.coordinates[0].z,  0.733642f, 1.0e-5f);
+    EXPECT_EQ(   data.coordinates[0].atom_type, 2);
+    EXPECT_EQ(   data.coordinates[0].connectivity[0], 2);
+    EXPECT_EQ(   data.coordinates[0].connectivity[1], 20);
+    EXPECT_EQ(   data.coordinates[0].connectivity[2], 270);
+    
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
     for (int64_t i = 0; i < data.num_models; ++i) {
@@ -80,6 +99,16 @@ UTEST(xyz, xyz_tinker_arc) {
     EXPECT_EQ(data.num_models, 10);
     EXPECT_EQ(data.num_coordinates, 10 * 404);
 
+    EXPECT_EQ(   data.coordinates[0].atom_index, 1);
+    EXPECT_STREQ(data.coordinates[0].element_symbol, "C");
+    EXPECT_NEAR( data.coordinates[0].x, 17.935708f, 1.0e-5f);
+    EXPECT_NEAR( data.coordinates[0].y,  1.368677f, 1.0e-5f);
+    EXPECT_NEAR( data.coordinates[0].z,  0.600876f, 1.0e-5f);
+    EXPECT_EQ(   data.coordinates[0].atom_type, 2);
+    EXPECT_EQ(   data.coordinates[0].connectivity[0], 2);
+    EXPECT_EQ(   data.coordinates[0].connectivity[1], 20);
+    EXPECT_EQ(   data.coordinates[0].connectivity[2], 270);
+
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
     for (int64_t i = 0; i < data.num_models; ++i) {
@@ -100,6 +129,13 @@ UTEST(xyz, o2_arc) {
     EXPECT_TRUE(result);
     EXPECT_EQ(data.num_models, 2000);
     EXPECT_EQ(data.num_coordinates, 2000 * 2);
+
+    EXPECT_STREQ(data.coordinates[0].element_symbol, "O");
+    EXPECT_NEAR( data.coordinates[0].x, -1.977261f, 1.0e-5f);
+    EXPECT_NEAR( data.coordinates[0].y, -1.149547f, 1.0e-5f);
+    EXPECT_NEAR( data.coordinates[0].z, -0.000606f, 1.0e-5f);
+    EXPECT_EQ(   data.coordinates[0].atom_type, 7);
+    EXPECT_EQ(   data.coordinates[0].connectivity[0], 2);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_NE((FILE*)file, NULL);
