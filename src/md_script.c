@@ -4658,10 +4658,16 @@ uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir) {
 }
 
 int64_t md_script_ir_num_identifiers(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return 0;
+    }
     return md_array_size(ir->identifier_names);
 }
 
 const str_t* md_script_ir_identifiers(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return NULL;
+    }
     return ir->identifier_names;
 }
 
