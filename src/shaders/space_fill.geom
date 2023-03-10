@@ -56,22 +56,24 @@ void emit_vertex_persp(vec4 clip_coord) {
     EmitVertex();
 }
 
-// From Inigo Quilez!
-void proj_sphere(in vec4 sphere, 
-                 in vec2 fle,
-                 out vec2 axis_a,
-                 out vec2 axis_b,
-                 out vec2 center) {
-    vec3  o = sphere.xyz;
-    float r2 = sphere.w*sphere.w;
-    float z2 = o.z*o.z; 
-    float l2 = dot(o,o);
-    float c = -r2*(r2-l2)/((l2-z2)*(r2-z2));
+// 2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere. Michael Mara, Morgan McGuire. 2013
+// Should work for asymmetric projection matrices
+vec4 project_sphere(vec4 S, mat4 P) {
+    vec2 cx = vec2(S.x, S.z);
+    vec2 vx = vec2(sqrt(dot(cx, cx) - S.w * S.w), S.w);
+    vec2 minx = mat2(vx.x, -vx.y, vx.y, vx.x) * cx;
+    vec2 maxx = mat2(vx.x, vx.y, -vx.y, vx.x) * cx;
+
+    vec2 cy = vec2(S.y, S.z);
+    vec2 vy = vec2(sqrt(dot(cy, cy) - S.w * S.w), S.w);
+    vec2 miny = mat2(vy.x, -vy.y, vy.y, vy.x) * cy;
+    vec2 maxy = mat2(vy.x, vy.y, -vy.y, vy.x) * cy;
     
-    // axis
-    axis_a = fle*sqrt(c/(r2-z2)) * vec2( o.x,o.y);
-    axis_b = fle*sqrt(c/(r2-l2)) * vec2(-o.y,o.x);
-    center = -fle*o.z*o.xy/(z2-r2);
+    return vec4(
+        -minx.x / minx.y * P[0][0] - P[2][0],
+        -maxx.x / maxx.y * P[0][0] - P[2][0],
+        -miny.x / miny.y * P[1][1] - P[2][1],
+        -maxy.x / maxy.y * P[1][1] - P[2][1]);
 }
 
 void main()
@@ -99,16 +101,13 @@ void main()
 #else
     // Focal length
     float clip_z = -u_view_to_clip[2][2] - u_view_to_clip[3][2] / (in_vert[0].view_sphere.z + in_vert[0].view_sphere.w);
-    vec2 fle = vec2(u_view_to_clip[0][0], u_view_to_clip[1][1]);
-    vec2 axis_a;
-    vec2 axis_b;
-    vec2 center;
-    proj_sphere(in_vert[0].view_sphere, fle, axis_a, axis_b, center);
+    vec4 aabb = project_sphere(in_vert[0].view_sphere, u_view_to_clip);
 
-    emit_vertex_persp(vec4(center -axis_a -axis_b, clip_z, 1));
-    emit_vertex_persp(vec4(center +axis_a -axis_b, clip_z, 1));
-    emit_vertex_persp(vec4(center -axis_a +axis_b, clip_z, 1));
-    emit_vertex_persp(vec4(center +axis_a +axis_b, clip_z, 1));
+    emit_vertex_persp(vec4(aabb.x, aabb.z, clip_z, 1));
+    emit_vertex_persp(vec4(aabb.y, aabb.z, clip_z, 1));
+    emit_vertex_persp(vec4(aabb.x, aabb.w, clip_z, 1));
+    emit_vertex_persp(vec4(aabb.y, aabb.w, clip_z, 1));
+
     EndPrimitive();
 #endif
 }
