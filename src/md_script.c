@@ -5055,6 +5055,23 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                             *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
                         }
                     }
+                } else if (len > 1) {
+                    data_t data = {0};
+                    allocate_data(&data, node->data.type, &temp_alloc);
+                    
+                    if (evaluate_node(&data, node, &ctx)) {
+                        success = true;
+                        if (is_dynamic) {
+                            *is_dynamic = (bool)(node->flags & FLAG_DYNAMIC);
+                        }
+                    }
+
+                    if (success) {
+                        const md_bitfield_t* src_bf = (const md_bitfield_t*)data.ptr;
+                        for (int i = 0; i < len; ++i) {
+                            md_bitfield_or_inplace(dst_bf, &src_bf[i]);
+                        }
+                    }
                 }
                 else {
                     MD_LOG_DEBUG("md_filter: Expression did not evaluate to a valid bitfield\n");
