@@ -75,6 +75,10 @@ bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* mol, uint32_t atom_offse
 bool md_gl_molecule_set_atom_radius  (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* radius, uint32_t byte_stride);
 bool md_gl_molecule_set_atom_flags   (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const md_flags_t* flags, uint32_t byte_stride);
 
+// This is a simpler version which assumes packed xyz data (identical to the internal representation and therefore faster to copy)
+// Also does not currently update old position data, to save some time.
+bool md_gl_molecule_set_atom_position_xyz(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const vec3_t* xyz);
+
 // Call this function after setting new atomic positions to update velocities
 // It will compute a new velocity as the difference between new and old atomic positions
 // 

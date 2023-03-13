@@ -453,11 +453,6 @@ bool md_gl_molecule_set_atom_position(md_gl_molecule_t* ext_mol, uint32_t offset
             return false;
         }
 
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
-            MD_LOG_ERROR("Attempting to write out of bounds");
-            return false;
-        }
-
         // Copy position buffer to previous position buffer
         uint32_t buffer_size = gl_buffer_size(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]);
         glBindBuffer(GL_COPY_READ_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
@@ -484,6 +479,38 @@ bool md_gl_molecule_set_atom_position(md_gl_molecule_t* ext_mol, uint32_t offset
         return false;
     }
     MD_LOG_ERROR("One or more arguments are missing, must pass x, y and z for position.");
+    return false;
+}
+
+bool md_gl_molecule_set_atom_position_xyz(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const vec3_t* xyz) {
+    if (ext_mol && xyz) {
+        internal_mol_t* mol = (internal_mol_t*)ext_mol;
+        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
+            MD_LOG_ERROR("Molecule position buffer missing");
+            return false;
+        }
+        if (offset + count > mol->atom_count) {
+            MD_LOG_ERROR("Attempting to write out of bounds");
+            return false;
+        }
+        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
+            MD_LOG_ERROR("Attempting to write out of bounds");
+            return false;
+        }
+
+        // Copy position buffer to previous position buffer
+#if 0
+        uint32_t buffer_size = gl_buffer_size(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]);
+        glBindBuffer(GL_COPY_READ_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV].id);
+        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, buffer_size);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+#endif
+
+        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION], offset * sizeof(vec3_t), count * sizeof(vec3_t), xyz);
+    }
+    MD_LOG_ERROR("One or more arguments are missing, must pass xyz for position.");
     return false;
 }
 
