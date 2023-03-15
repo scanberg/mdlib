@@ -3272,7 +3272,9 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
 // #################
 
 static int _cast_int_to_flt(data_t* dst, data_t arg[], eval_context_t* ctx){
-    ASSERT(dst && type_info_equal(dst->type, (type_info_t)TI_FLOAT));
+    if (!dst) return 0;
+    
+    ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT));
     ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_INT));
     (void)ctx;
     as_float(*dst) = (float)as_int(arg[0]);
@@ -3280,7 +3282,9 @@ static int _cast_int_to_flt(data_t* dst, data_t arg[], eval_context_t* ctx){
 }
 
 static int _cast_int_to_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && type_info_equal(dst->type, (type_info_t)TI_IRANGE));
+    if (!dst) return 0;
+    
+    ASSERT(type_info_equal(dst->type, (type_info_t)TI_IRANGE));
     ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_INT));
     (void)ctx;
     as_irange(*dst) = (irange_t){as_int(arg[0]), as_int(arg[0])};
@@ -3288,7 +3292,9 @@ static int _cast_int_to_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cast_irng_to_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && type_info_equal(dst->type, (type_info_t)TI_FRANGE));
+    if (!dst) return 0;
+    
+    ASSERT(type_info_equal(dst->type, (type_info_t)TI_FRANGE));
     ASSERT(type_info_equal(arg[0].type, (type_info_t)TI_IRANGE));
     (void)ctx;
     as_frange(*dst) = (frange_t){(float)as_irange(arg[0]).beg, (float)as_irange(arg[0]).end};
@@ -3296,7 +3302,9 @@ static int _cast_irng_to_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _cast_int_arr_to_irng_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_IRANGE_ARR));
+    if (!dst) return 0;
+
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_IRANGE_ARR));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
@@ -3313,7 +3321,9 @@ static int _cast_int_arr_to_irng_arr(data_t* dst, data_t arg[], eval_context_t* 
 }
 
 static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+    if (!dst) return 0;
+    
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_INT_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
@@ -3329,7 +3339,9 @@ static int _cast_int_arr_to_flt_arr(data_t* dst, data_t arg[], eval_context_t* c
 }
 
 static int _cast_irng_arr_to_frng_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_FRANGE_ARR));
+    if (!dst) return 0;
+    
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FRANGE_ARR));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
     (void)ctx;
     const int64_t dst_len = element_count(*dst);
@@ -3438,7 +3450,9 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
 
 static int _flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
-    ASSERT(dst && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+    if (!dst) return 0;
+
+    ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
 
     md_bitfield_t* dst_bf = as_bitfield(*dst);
