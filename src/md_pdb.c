@@ -81,10 +81,9 @@ static inline md_pdb_coordinate_t extract_coord(str_t line) {
         .temp_factor = extract_float(line, 61, 66),
         .element = {0},
         .charge = {0},
-        .is_hetatm = str_equal_cstr_n(line, "HETATM", 6),
     };
     copy_str_field(coord.atom_name, sizeof(coord.atom_name),    line, 13, 16);
-    copy_str_field(coord.res_name,  sizeof(coord.res_name),     line, 18, 20);
+    copy_str_field(coord.res_name,  sizeof(coord.res_name),     line, 18, 21);
     copy_str_field(coord.element,   sizeof(coord.element),      line, 77, 78);
     copy_str_field(coord.charge,    sizeof(coord.charge),       line, 79, 80);
     return coord;

@@ -95,11 +95,10 @@ typedef struct md_pdb_sheet_t {
 typedef struct md_pdb_coordinate_t {
     int32_t atom_serial;
     char atom_name[4];
-    char res_name[4];
+    char res_name[5];
     char alt_loc;
     char chain_id;
     char icode;
-    bool is_hetatm;
     int32_t res_seq;
     float x;
     float y;
