@@ -893,7 +893,9 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     // Allocate the blocks
     
     fit_to_range(bf, beg_blk_idx * BITS_PER_BLOCK, end_blk_idx * BITS_PER_BLOCK + (BITS_PER_BLOCK-1));
-    MEMSET(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+
+    int nblocks = num_blocks(bf->beg_bit, bf->end_bit);
+    MEMSET(bf->bits, 0, nblocks * sizeof(block_t));
 
     // Fetch block_data and store
     block_t* dst_block = (block_t*)bf->bits;
@@ -902,9 +904,11 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
         uint16_t blk_idx = block_indices[i];
         if (blk_idx & BLOCK_IDX_FLAG_ALL_SET) {
             blk_idx &= ~BLOCK_IDX_FLAG_ALL_SET;
-            MEMSET(dst_block + blk_idx, 0xFFFFFFFF, sizeof(block_t));
+            block_t* blk_ptr = get_block_ptr(bf, blk_idx);
+            MEMSET(blk_ptr, 0xFFFFFFFF, sizeof(block_t));
         } else {
-            MEMCPY(dst_block + blk_idx, block_data + src_offset, sizeof(block_t));
+            block_t* blk_ptr = get_block_ptr(bf, blk_idx);
+            MEMCPY(blk_ptr, block_data + src_offset, sizeof(block_t));
             src_offset += sizeof(block_t);
         }
     }

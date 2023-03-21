@@ -3,6 +3,8 @@
 #include <core/md_bitfield.h>
 #include <core/md_tracking_allocator.h>
 #include <core/md_log.h>
+#include <core/md_str.h>
+#include <core/md_base64.h>
 
 #include <string.h>
 #include <stdint.h>
@@ -252,4 +254,22 @@ UTEST(bitfield, serialization) {
     md_bitfield_free(&a);
     md_bitfield_free(&b);
     md_bitfield_free(&c);
+}
+
+UTEST(bitfield, deserialize_base64) {
+    str_t str = STR("P38AhACFAIcAiACJAIoAiwCMAI0AjgCPgJCAkYCSgJOAH5SAlYCWgJeAmICZgJqAm4CcgJ2AnoCfgKCAoYCigKOAH6SApYCmgKeAqICpgKqAq4CsgK2AroCvgLCAsYCygLOAH7SAtYC2gLeAuIC5gLqAu4C8gL2AvoC/gMCAwYDCgMOAH8SAxYDGgMeAyIDJgMqAy4DMgM2AzoDPgNCA0YDSgNOAH9SA1YDWgNeA2IDZgNqA24DcgN2A3oDfgOCA4YDigOOAH+SA5YDmgOeA6IDpgOqA64DsgO2A7oDvgPCA8YDygPOAH/SA9YD2gPeA+ID5gPqA+4D8gP0ANgE3ATgBOQE6ATsBAADgMwAIJzsO/v/vzgYC4DNE4AcABQSACIBz/+ADAAR/NzMcBOAGJgOAACII4AQSAYA/YA4EwP4RwQNgCeAQAAuhEQQg9z8m9+tvNPQgZgUfDzPyiGDgEC0KAABEgwAAue+7+w8gLOAQAAMbAiKCICsBAO+gIQLP//5ACQD3QATgBgAJv+GOIAiIeBEBBuACwQGg++ALKsAAINvhBmMG8AcAyD31F0BkAOPAJeBHACDLA79B9EDgG1YAOyCICNeBs7v8ffR/0CAwAL8gA+A7AAAfIVLgHABgbADfgs4AwGAMoAAAD2A+AICADYIZAOCADIAAAAdgHwNAF++lYAjgFQCAMoAAIZNAACD4IADgCmWgACAcIACAZeAEAADwIBYi2wUAAPwBAODgBBngEQABPAwg26HvgMvgBAAA+CBQ4AaYgAAgZeABAKD+gBDgBDKAAOAAmEAAAPxgQOEMhgQAAAAAAA==");
+    md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
+
+    const int64_t cap = md_base64_decode_size_in_bytes(str.len);
+    void* mem = md_alloc(alloc, cap);
+    int   len = md_base64_decode(mem, str.ptr, str.len);
+
+    md_bitfield_t bf = md_bitfield_create(alloc);
+    EXPECT_TRUE(md_bitfield_deserialize(&bf, mem, len));
+    md_bitfield_free(&bf);
+
+    md_free(alloc, mem, cap);
+
+    md_tracking_allocator_destroy(alloc);
+    
 }
