@@ -2410,6 +2410,13 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
     int result = 0;
 
+    const bool visualize_only = ctx->vis && !dst;
+    if (visualize_only && !(proc->flags & FLAG_VISUALIZE)) {
+        // If the node has not been flagged with visualize, it should not be called during visualization
+        // Unless there is some data (dst) which should be filled in.
+        return result;
+    }
+
     data_t  arg_data  [MAX_SUPPORTED_PROC_ARGS] = {0};
     token_t arg_tokens[MAX_SUPPORTED_PROC_ARGS] = {0};
     flags_t arg_flags [MAX_SUPPORTED_PROC_ARGS] = {0};
