@@ -178,20 +178,22 @@ bool str_extract_i64(int64_t* val, str_t* in_out_str);
 bool str_extract_f32(float* val,  str_t* in_out_str);
 bool str_extract_f64(double* val,  str_t* in_out_str);
 
+// Returns the offset where the item was found or -1 if nothing was found.
 int64_t str_find_char(str_t str, int c);
 int64_t str_rfind_char(str_t str, int c);
+int64_t str_find_str(str_t str, str_t str_to_find);
 
 bool str_starts_with(str_t str, str_t prefix);
 bool str_ends_with(str_t str, str_t suffix);
-str_t str_find_str(str_t str, str_t str_to_find);
 
 // Will allocate one extra character for zero termination
 str_t alloc_str(uint64_t len, struct md_allocator_i* alloc);
 void  str_free(str_t str, struct md_allocator_i* alloc);
 str_t str_copy(str_t str, struct md_allocator_i* alloc);
+
+// This should probably be removed
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
 str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...);
-str_t str_concat(str_t a, str_t b, struct md_allocator_i* alloc);
 
 int64_t str_read_line(str_t* in_out_str, char* buf, int64_t cap);
 

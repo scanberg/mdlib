@@ -154,16 +154,16 @@ bool str_ends_with(str_t str, str_t suffix) {
     return str.len >= suffix.len && strncmp(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
 }
 
-str_t str_find_str(str_t haystack, str_t needle) {
+int64_t str_find_str(str_t haystack, str_t needle) {
     const char* h_beg = haystack.ptr;
     const char* h_end = haystack.ptr + haystack.len;
-    str_t result = {0};
+    int64_t loc = -1;
 
-    if (haystack.len == 0) goto done;
-    if (needle.len == 0) goto done;
+    if (haystack.len == 0) return loc;
+    if (needle.len == 0) return loc;
     if (needle.len > haystack.len) {
         MD_LOG_ERROR("Trying to find 'needle' which is larger than supplied 'haystack'");
-        goto done;
+        return loc;
     }
 
     int64_t i = 0;
@@ -177,14 +177,12 @@ str_t str_find_str(str_t haystack, str_t needle) {
         }
 
         if (i == needle.len) {
-            result.ptr = n_beg;
-            result.len = needle.len;
-            goto done;
+            loc = n_beg - h_beg;
+            break;
         }
     }
 
-done:
-    return result;
+    return loc;
 }
 
 /*
@@ -264,20 +262,6 @@ str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
     va_end(args);
 
     return (str_t) {buf, len};
-}
-
-str_t str_concat(str_t a, str_t b, struct md_allocator_i* alloc) {
-    char* buf = md_alloc(alloc, a.len + b.len + 1);
-    int64_t len = a.len + b.len;
-    
-    if (!str_empty(a)) {
-        MEMCPY(buf, a.ptr, a.len);
-    }
-    if (!str_empty(b)) {
-        MEMCPY(buf + a.len, b.ptr, b.len);
-    }
-    buf[a.len + b.len] = '\0';
-    return (str_t){buf, len};
 }
 
 // c:/folder/file.ext -> ext
