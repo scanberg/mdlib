@@ -28,3 +28,24 @@ function(create_copy_resource_dir_target target_name SRC_DIR DST_DIR)
     endforeach(FILE)
     add_custom_target(${target_name} DEPENDS ${DST_FILES})
 endfunction()
+
+# https://stackoverflow.com/questions/11813271/embed-resources-eg-shader-code-images-into-executable-library-with-cmake
+# Creates C resources file from files in given directory
+function(create_resources input_list output_file)
+    # Create empty output file
+    file(WRITE ${output_file} "")
+    message(STATUS "Writing resources to ${output_file}")
+    # Iterate through input files
+    foreach(bin ${input_list})
+        # Get short filename
+        string(REGEX MATCH "([^/]+)$" filename ${bin})
+        # Replace filename spaces & extension separator for C compatibility
+        string(REGEX REPLACE "\\.| |-" "_" ident ${filename})
+        # Read hex data from file
+        file(READ "${bin}" filedata HEX)
+        # Convert hex data for C compatibility
+        string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," filedata ${filedata})
+        # Append data to output file
+        file(APPEND ${output_file} "const unsigned char ${ident}[] = {${filedata}};\nconst unsigned ${ident}_size = sizeof(${ident});\n")
+    endforeach()
+endfunction()

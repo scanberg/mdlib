@@ -16,7 +16,6 @@ include(cmake/FindAVX.cmake)
 option(MD_UNITTEST "Enable unittests" ON)
 option(MD_BENCHMARK "Enable benchmarks" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
-option(MD_USE_RELATIVE_RESOURCE_PATH "Use relative path for resources, this will copy the relevant files into the binary folder upon building" ON)
 option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
 option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
@@ -34,8 +33,26 @@ endif()
 file(GLOB SRC_FILES src/*.h src/*.c src/*.inl)
 file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
 file(GLOB_RECURSE EXT_FILES ext/*)
-file(GLOB_RECURSE SHADER_FILES src/shaders/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
+
+set(SHADER_FILES 
+    src/shaders/compute_spline.vert
+    src/shaders/compute_spline.geom
+    src/shaders/compute_velocity.vert
+    src/shaders/extract_control_points.vert
+    src/shaders/cartoon.vert
+    src/shaders/cartoon.geom
+    src/shaders/cartoon.frag
+    src/shaders/licorice.vert
+    src/shaders/licorice.geom
+    src/shaders/licorice.frag
+    src/shaders/ribbons.vert
+    src/shaders/ribbons.geom
+    src/shaders/ribbons.frag
+    src/shaders/spacefill.vert
+    src/shaders/spacefill.geom
+    src/shaders/spacefill.frag
+)
 
 set(MD_DEFINES)
 
@@ -55,19 +72,12 @@ else()
     set(MD_DEFINES ${MD_DEFINES} __FORCE_ASSERTIONS__=0)    
 endif()
 
-set(MD_FLAGS_EXT)
 set(MD_FLAGS)
+set(MD_FLAGS_EXT)
 set(MD_FLAGS_REL)
 set(MD_FLAGS_DEB)
 
-if (MD_USE_RELATIVE_RESOURCE_PATH)
-  set(MD_SHADER_DIR "shaders")
-  set(MD_SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
-  set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
-else()
-  set(MD_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
-endif()
-set(MD_LIBS)
+create_resources("${SHADER_FILES}" "gen/gl_shaders.inl")
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
@@ -136,7 +146,6 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
         "Threads::Threads")
 elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     message(STATUS "mdlib: MSVC configuration was used")
-    set(MD_SHADER_DST_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/$<CONFIG>/shaders")
     set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "/W2")
     set(MD_FLAGS ${MD_FLAGS}
       "/W4"
@@ -178,20 +187,21 @@ else()
     set_property(TARGET mdlib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
-if (MD_USE_RELATIVE_RESOURCE_PATH)
-  create_copy_resource_dir_target(md_copy_shaders ${MD_SHADER_SRC_DIR} ${MD_SHADER_DST_DIR})
-  add_dependencies(mdlib md_copy_shaders) 
-endif()
-
-target_include_directories(mdlib PUBLIC
+target_include_directories(mdlib
+  PUBLIC
   src/
-  ext/dcd/
-  ext/fastlz/
   ext/gl3w/
-  ext/svd3/
-  ext/xtc/)
 
-target_compile_definitions(mdlib PUBLIC MD_SHADER_DIR="${MD_SHADER_DIR}" PRIVATE ${MD_DEFINES})
+  PRIVATE
+  ext/fastlz/
+  ext/dcd/
+  ext/xtc/
+  ext/svd3/
+  ext/stb/
+  gen/
+)
+
+target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
 target_compile_features(mdlib PRIVATE c_std_11)

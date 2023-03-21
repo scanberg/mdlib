@@ -40,7 +40,7 @@ typedef struct md_gl_shaders_t {
     uint64_t _opaque[4];
 } md_gl_shaders_t;
 
-bool md_gl_shaders_init(md_gl_shaders_t* shaders, const char* custom_shader_snippet);
+bool md_gl_shaders_init(md_gl_shaders_t* shaders, str_t custom_shader_snippet);
 bool md_gl_shaders_free(md_gl_shaders_t* shaders);
 
 

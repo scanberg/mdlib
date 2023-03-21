@@ -1,7 +1,6 @@
+#include <md_gl.h>
+#include <md_util.h>
 
-#include "md_gl.h"
-#include "md_util.h"
-#include <GL/gl3w.h>
 #include <core/md_common.h>
 #include <core/md_compiler.h>
 #include <core/md_log.h>
@@ -9,12 +8,16 @@
 #include <core/md_os.h>
 #include <core/md_allocator.h>
 #include <core/md_array.h>
+#include <core/md_str_builder.h>
 
 #include <stdbool.h>
 #include <string.h>
-//#include <stdlib.h>     // qsort
 #include <stdio.h>      // printf etc
 #include <stddef.h>     // offsetof
+
+#include <GL/gl3w.h>
+// Baked shaders
+#include <gl_shaders.inl>
 
 #define MAGIC 0xfacb8172U
 #define SPLINE_MAX_SUBDIVISION_COUNT 8
@@ -31,21 +34,22 @@
 #define UBO_SIZE (1 << 10)
 #define SHADER_BUF_SIZE KILOBYTES(14)
 
-static const char* default_shader_output = 
+#define BAKE_STR(s) {s"", sizeof(s)}
+
+static const str_t default_shader_output = BAKE_STR(
 "layout(location = 0) out vec4 out_color;\n"
 "void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {\n"
 "    out_color = color;\n"
-"}\n";
+"}\n");
+
+#undef BAKE_STR
 
 enum {
     GL_VERSION_UNKNOWN = 0,
-    GL_VERSION_330,
-    GL_VERSION_430
+    GL_VERSION_330
 };
 
 enum {
-    GL_PROGRAM_COMPUTE_AABB,
-    GL_PROGRAM_CULL_AABB,
     GL_PROGRAM_EXTRACT_CONTROL_POINTS,
     GL_PROGRAM_COMPUTE_SPLINE,
     GL_PROGRAM_COMPUTE_VELOCITY,
@@ -62,23 +66,23 @@ enum {
 };
 
 enum {
-    GL_BUFFER_MOL_ATOM_POSITION,                   // vec3
-    GL_BUFFER_MOL_ATOM_POSITION_PREV,              // vec3
-    GL_BUFFER_MOL_ATOM_RADIUS,                     // float
-    GL_BUFFER_MOL_ATOM_VELOCITY,                   // vec3
-    GL_BUFFER_MOL_ATOM_FLAGS,                      // u8
-    GL_BUFFER_MOL_RESIDUE_ATOM_RANGE,              // u32[2]   (beg, end)
-    GL_BUFFER_MOL_RESIDUE_AABB,                    // vec3[2]  (aabb_min, aabb_max)
-    GL_BUFFER_MOL_RESIDUE_VISIBLE,                 // int
-    GL_BUFFER_MOL_BOND_ATOM_INDICES,               // u32[2]
-    GL_BUFFER_MOL_BACKBONE_DATA,                   // u32[5] residue index, segment index, CA index, C index and O Index
-    GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE,    // u8[4]  (0: Unknown, 1: Coil, 2: Helix, 3: Sheet)
-    GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA,     // Extracted control points before spline subdivision
-    GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX,    // u32, LINE_STRIP_ADJACENCY Indices for spline subdivision, seperated by primitive restart index 0xFFFFFFFF
-    GL_BUFFER_MOL_BACKBONE_SPLINE_DATA,            // Subdivided control points of spline
-    GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX,           // u32, LINE_STRIP indices for rendering, seperated by primitive restart index 0xFFFFFFFF
-    GL_BUFFER_MOL_INSTANCE_TRANSFORM,              // mat4 instance transformation matrices
-    GL_BUFFER_MOL_COUNT
+    GL_BUFFER_ATOM_POSITION,                   // vec3
+    GL_BUFFER_ATOM_POSITION_PREV,              // vec3
+    GL_BUFFER_ATOM_RADIUS,                     // float
+    GL_BUFFER_ATOM_VELOCITY,                   // vec3
+    GL_BUFFER_ATOM_FLAGS,                      // u8
+    GL_BUFFER_RESIDUE_ATOM_RANGE,              // u32[2]   (beg, end)
+    GL_BUFFER_RESIDUE_AABB,                    // vec3[2]  (aabb_min, aabb_max)
+    GL_BUFFER_RESIDUE_VISIBLE,                 // int
+    GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
+    GL_BUFFER_BACKBONE_DATA,                   // u32[5] residue index, segment index, CA index, C index and O Index
+    GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE,    // u8[4]  (0: Unknown, 1: Coil, 2: Helix, 3: Sheet)
+    GL_BUFFER_BACKBONE_CONTROL_POINT_DATA,     // Extracted control points before spline subdivision
+    GL_BUFFER_BACKBONE_CONTROL_POINT_INDEX,    // u32, LINE_STRIP_ADJACENCY Indices for spline subdivision, seperated by primitive restart index 0xFFFFFFFF
+    GL_BUFFER_BACKBONE_SPLINE_DATA,            // Subdivided control points of spline
+    GL_BUFFER_BACKBONE_SPLINE_INDEX,           // u32, LINE_STRIP indices for rendering, seperated by primitive restart index 0xFFFFFFFF
+    GL_BUFFER_INSTANCE_TRANSFORM,              // mat4 instance transformation matrices
+    GL_BUFFER_COUNT
 };
 
 enum {
@@ -107,18 +111,6 @@ static inline void extract_jitter_uv(float jitter[2], const mat4_t  M) {
         jitter[1] = M.elem[2][1] * 0.5f;
     }
 }
-
-static inline uint32_t compute_mip_count(uint32_t width, uint32_t height) {
-    uint32_t mips = 1;
-    uint32_t max_dim = MAX(width, height);
-    while (max_dim >>= 1) ++mips;
-    return mips;
-}
-
-typedef struct gl_aabb_t {
-    float min[3];
-    float max[3];
-} gl_aabb_t;
 
 typedef struct gl_buffer_t {
     GLuint id;
@@ -183,14 +175,14 @@ typedef struct context_t {
 static context_t ctx = {0};
 
 typedef struct internal_shaders_t {
-    gl_program_t space_fill[MAX_SHADER_PERMUTATIONS];
+    gl_program_t spacefill[MAX_SHADER_PERMUTATIONS];
     gl_program_t licorice[MAX_SHADER_PERMUTATIONS];
     gl_program_t ribbons[MAX_SHADER_PERMUTATIONS];
     gl_program_t cartoon[MAX_SHADER_PERMUTATIONS];
 } internal_shaders_t;
 
 typedef struct internal_mol_t {
-    gl_buffer_t buffer[GL_BUFFER_MOL_COUNT];
+    gl_buffer_t buffer[GL_BUFFER_COUNT];
     uint32_t version;
     uint32_t flags;
     uint32_t magic;
@@ -269,72 +261,48 @@ static inline uint32_t gl_texture_height(gl_texture_t tex, uint32_t level) {
     return (uint32_t)height;
 }
 
-bool extract_version_string(char version_str[], uint32_t version_cap, const char** src) {
-    ASSERT(version_str);
-    ASSERT(version_cap > 0);
-    ASSERT(src);
-    if (strncmp(*src, "#version", 8) == 0) {
-        const char* endline;
-        if ((endline = strchr(*src, '\n')) != NULL) {
-            ++endline;
-            const size_t length = endline - *src;
-            strncpy(version_str, *src, MIN(version_cap, length));
-        }
-        *src = endline;
-        return true;
-    }
-    return false;
-}
-
-static bool compile_shader_from_source(GLuint shader, char* shader_src, const char* defines, const char* extra_src) {
-    const char* sources[8] = {0};
-    uint32_t num_sources = 0;
-
-    if (defines || extra_src) {
-        const char* src = shader_src;
-        char version_str[32] = {0};
-        if (!extract_version_string(version_str, sizeof(version_str), &src)) {
-            MD_LOG_ERROR("Missing version string as first line in shader!");
-            return false;
-        }
-
-        sources[num_sources++] = version_str;
-        sources[num_sources++] = "\n";
-
-        if (defines) {
-            sources[num_sources++] = defines;
-            sources[num_sources++] = "\n";
-        }
-
-        if (extra_src) {
-            const char search_str[] = "#pragma EXTRA_SRC";
-            char* pos = strstr(src, search_str);
-            if (!pos) {
-                MD_LOG_ERROR("Missing insertion point marked as '#pragma EXTRA_SRC' in shader!");
-                return false;
-            }
-
-            // Insert termination character to separate string.
-            *pos = '\0';
-            const char* pre_extra_src = src;
-            const char* post_extra_src = pos + sizeof(search_str);
-
-            sources[num_sources++] = pre_extra_src;
-            sources[num_sources++] = extra_src;
-            sources[num_sources++] = post_extra_src;
-        } else {
-            sources[num_sources++] = src;
-        }
-
-        glShaderSource(shader, num_sources, sources, 0);
-    } else {
-        const char* c_src = shader_src;
-        glShaderSource(shader, 1, &c_src, 0);
+static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, str_t extra_src) {
+    md_strb_t sb = md_strb_create(default_temp_allocator);
+    
+    if (!str_equal_cstr_n(src, "#version ", 9)) {
+        MD_LOG_ERROR("Missing version string as first line in shader!");
+        return false;
     }
     
-    GLint success;
+    if (!str_empty(defines)) {
+        str_t version_line;
+        str_extract_line(&version_line, &src);
+        md_strb_push_str(&sb, version_line);
+        md_strb_push_char(&sb, '\n');
+        md_strb_push_str(&sb, defines);
+        md_strb_push_char(&sb, '\n');
+    }
+
+    if (!str_empty(extra_src)) {
+        str_t line;
+        while (str_extract_line(&line, &src)) {
+            if (!str_equal_cstr_n(line, "#pragma EXTRA_SRC", 17)) {
+                md_strb_push_str(&sb, line);
+                md_strb_push_char(&sb, '\n');
+            } else {
+                md_strb_push_str(&sb, extra_src);
+                md_strb_push_char(&sb, '\n');
+            }
+        }
+    } else {
+        md_strb_push_str(&sb, src);
+    }
+
+    const char* csrc = md_strb_to_cstr(&sb);
+    
+    glShaderSource(shader, 1, &csrc, 0);
     glCompileShader(shader);
+    
+    GLint success;
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+
+    md_strb_free(&sb);
+
     if (!success) {
         char err_buf[256];
         glGetShaderInfoLog(shader, ARRAY_SIZE(err_buf), NULL, err_buf);
@@ -343,25 +311,6 @@ static bool compile_shader_from_source(GLuint shader, char* shader_src, const ch
     }
     
     return true;
-}
-
-static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const char* extra_src) {
-    md_file_o* file = md_file_open((str_t){.ptr = filename, .len = strlen(filename)}, MD_FILE_READ | MD_FILE_BINARY);
-    if (file) {
-        char buffer[SHADER_BUF_SIZE] = {0};
-        uint64_t file_size = md_file_size(file);
-        const uint64_t size = MIN(file_size, ARRAY_SIZE(buffer) - 1);
-        md_file_read(file, buffer, size);
-        const bool success = compile_shader_from_source(shader, buffer, defines, extra_src);
-        const md_log_type_t log_type = success ? MD_LOG_TYPE_DEBUG : MD_LOG_TYPE_ERROR;
-        const char* res_str = success ? "Success" : "Fail";
-        md_logf(log_type,  "Compiling shader %-40s %s", filename, res_str);
-        md_file_close(file);
-        return success;
-    } else {
-        MD_LOG_ERROR("Could not open file file '%s'", filename);
-        return false;
-    }
 }
 
 static bool link_program(GLuint program, const GLuint shader[], uint32_t count) {
@@ -440,11 +389,11 @@ static inline bool validate_context() {
 bool md_gl_molecule_set_atom_position(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
     if (ext_mol && x && y && z) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
+        if (!mol->buffer[GL_BUFFER_ATOM_POSITION].id) {
             MD_LOG_ERROR("Molecule position buffer missing");
             return false;
         }
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV].id) {
+        if (!mol->buffer[GL_BUFFER_ATOM_POSITION_PREV].id) {
             MD_LOG_ERROR("Molecule previous position buffer missing");
             return false;
         }
@@ -454,15 +403,15 @@ bool md_gl_molecule_set_atom_position(md_gl_molecule_t* ext_mol, uint32_t offset
         }
 
         // Copy position buffer to previous position buffer
-        uint32_t buffer_size = gl_buffer_size(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]);
-        glBindBuffer(GL_COPY_READ_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV].id);
+        uint32_t buffer_size = gl_buffer_size(mol->buffer[GL_BUFFER_ATOM_POSITION]);
+        glBindBuffer(GL_COPY_READ_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION_PREV].id);
         glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, buffer_size);
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
 
         byte_stride = MAX(sizeof(float), byte_stride);
-        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
         float* data = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (data) {
             for (uint32_t i = offset; i < count; ++i) {
@@ -485,7 +434,7 @@ bool md_gl_molecule_set_atom_position(md_gl_molecule_t* ext_mol, uint32_t offset
 bool md_gl_molecule_set_atom_position_xyz(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const vec3_t* xyz) {
     if (ext_mol && xyz) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
+        if (!mol->buffer[GL_BUFFER_ATOM_POSITION].id) {
             MD_LOG_ERROR("Molecule position buffer missing");
             return false;
         }
@@ -493,22 +442,22 @@ bool md_gl_molecule_set_atom_position_xyz(md_gl_molecule_t* ext_mol, uint32_t of
             MD_LOG_ERROR("Attempting to write out of bounds");
             return false;
         }
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
+        if (!mol->buffer[GL_BUFFER_ATOM_POSITION].id) {
             MD_LOG_ERROR("Attempting to write out of bounds");
             return false;
         }
 
         // Copy position buffer to previous position buffer
 #if 0
-        uint32_t buffer_size = gl_buffer_size(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]);
-        glBindBuffer(GL_COPY_READ_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
-        glBindBuffer(GL_COPY_WRITE_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV].id);
+        uint32_t buffer_size = gl_buffer_size(mol->buffer[GL_BUFFER_ATOM_POSITION]);
+        glBindBuffer(GL_COPY_READ_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+        glBindBuffer(GL_COPY_WRITE_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION_PREV].id);
         glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, buffer_size);
         glBindBuffer(GL_COPY_READ_BUFFER, 0);
         glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
 #endif
 
-        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION], offset * sizeof(vec3_t), count * sizeof(vec3_t), xyz);
+        gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_POSITION], offset * sizeof(vec3_t), count * sizeof(vec3_t), xyz);
     }
     MD_LOG_ERROR("One or more arguments are missing, must pass xyz for position.");
     return false;
@@ -517,7 +466,7 @@ bool md_gl_molecule_set_atom_position_xyz(md_gl_molecule_t* ext_mol, uint32_t of
 bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const float* x, const float* y, const float* z, uint32_t byte_stride) {
     if (ext_mol && x && y && z) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id) {
+        if (!mol->buffer[GL_BUFFER_ATOM_POSITION].id) {
             MD_LOG_ERROR("Molecule position buffer missing");
             return false;
         }
@@ -526,7 +475,7 @@ bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* ext_mol, uint32_t offset
             return false;
         }
         byte_stride = MAX(sizeof(float), byte_stride);
-        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
         float* data = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (data) {
             for (uint32_t i = offset; i < count; ++i) {
@@ -549,7 +498,7 @@ bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* ext_mol, uint32_t offset
 bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const float* radius, uint32_t byte_stride) {
     if (ext_mol && radius) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id) {
+        if (!mol->buffer[GL_BUFFER_ATOM_RADIUS].id) {
             MD_LOG_ERROR("Molecule radius buffer missing");
             return false;
         }
@@ -559,7 +508,7 @@ bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, 
         }
         byte_stride = MAX(sizeof(float), byte_stride);
         if (byte_stride > sizeof(float)) {
-            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id);
+            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_RADIUS].id);
             float* radius_data = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (radius_data) {
                 for (uint32_t i = offset; i < count; ++i) {
@@ -574,7 +523,7 @@ bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, 
             return false;
         }
         else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS], offset * sizeof(float), count * sizeof(float), radius);
+            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_RADIUS], offset * sizeof(float), count * sizeof(float), radius);
             return true;
         }
     }
@@ -585,7 +534,7 @@ bool md_gl_molecule_set_atom_radius(md_gl_molecule_t* ext_mol, uint32_t offset, 
 bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_flags_t* flag_data, uint32_t byte_stride) {
     if (ext_mol && flag_data) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id) {
+        if (!mol->buffer[GL_BUFFER_ATOM_FLAGS].id) {
             MD_LOG_ERROR("Molecule flags buffer missing");
             return false;
         }
@@ -595,7 +544,7 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
         }
         byte_stride = MAX(sizeof(md_flags_t), byte_stride);
         if (byte_stride > sizeof(md_flags_t)) {
-            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
             md_flags_t* data = (md_flags_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (data) {
                 for (uint32_t i = offset; i < count; ++i) {
@@ -610,7 +559,7 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
             return false;
         }
         else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS], offset * sizeof(md_flags_t), count * sizeof(md_flags_t), flag_data);
+            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_ATOM_FLAGS], offset * sizeof(md_flags_t), count * sizeof(md_flags_t), flag_data);
             return true;
         }
     }
@@ -621,7 +570,7 @@ bool md_gl_molecule_set_atom_flags(md_gl_molecule_t* ext_mol, uint32_t offset, u
 bool md_gl_molecule_set_bonds(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride) {
     if (ext_mol && bonds) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id) {
+        if (!mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id) {
             MD_LOG_ERROR("Molecule bond buffer buffer missing");
             return false;
         }
@@ -630,7 +579,7 @@ bool md_gl_molecule_set_bonds(md_gl_molecule_t* ext_mol, uint32_t offset, uint32
             return false;
         }
         byte_stride = MAX(sizeof(md_bond_t), byte_stride);
-        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
         internal_bond_t* bond_data = (internal_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (bond_data) {
             for (uint32_t i = offset; i < count; ++i) {
@@ -653,7 +602,7 @@ bool md_gl_molecule_set_bonds(md_gl_molecule_t* ext_mol, uint32_t offset, uint32
 bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
     if (ext_mol && secondary_structure) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id) {
+        if (!mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id) {
             MD_LOG_ERROR("Molecule secondary structure buffer missing");
             return false;
         }
@@ -663,7 +612,7 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, 
         }
         byte_stride = MAX(sizeof(md_secondary_structure_t), byte_stride);
         if (byte_stride > sizeof(md_secondary_structure_t)) {
-            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
+            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
             md_secondary_structure_t* data = (md_secondary_structure_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (data) {
                 for (uint32_t i = offset; i < count; ++i) {
@@ -678,7 +627,7 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* ext_mol, 
             return false;
         }
         else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE], offset * sizeof(md_secondary_structure_t), count * sizeof(md_secondary_structure_t), secondary_structure);
+            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE], offset * sizeof(md_secondary_structure_t), count * sizeof(md_secondary_structure_t), secondary_structure);
             return true;
         }
     }
@@ -697,12 +646,12 @@ bool md_gl_molecule_compute_velocity(md_gl_molecule_t* ext_mol, const float pbc_
     }
     internal_mol_t* mol = (internal_mol_t*)ext_mol;
 
-    if (mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id == 0) {
+    if (mol->buffer[GL_BUFFER_ATOM_VELOCITY].id == 0) {
         MD_LOG_ERROR("Velocity buffer is zero");
         return false;
     }
 
-    if (mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id == 0) {
+    if (mol->buffer[GL_BUFFER_ATOM_VELOCITY].id == 0) {
         MD_LOG_ERROR("Velocity buffer is zero");
         return false;
     }
@@ -710,11 +659,11 @@ bool md_gl_molecule_compute_velocity(md_gl_molecule_t* ext_mol, const float pbc_
     glEnable(GL_RASTERIZER_DISCARD);
     glBindVertexArray(ctx.vao);
 
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV].id);
+    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_POSITION_PREV].id);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
@@ -726,7 +675,7 @@ bool md_gl_molecule_compute_velocity(md_gl_molecule_t* ext_mol, const float pbc_
 
     glUseProgram(program);
     glUniform3fv(pbc_ext_loc, 1, pbc_ext);
-    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
     glBeginTransformFeedback(GL_POINTS);
     glDrawArrays(GL_POINTS, 0, mol->atom_count);
     glEndTransformFeedback();
@@ -741,11 +690,11 @@ bool md_gl_molecule_compute_velocity(md_gl_molecule_t* ext_mol, const float pbc_
 bool md_gl_molecule_zero_velocity(md_gl_molecule_t* ext_mol) {
     if (ext_mol) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        if (!mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id) {
+        if (!mol->buffer[GL_BUFFER_ATOM_VELOCITY].id) {
             MD_LOG_ERROR("Molecule position buffer missing");
             return false;
         }
-        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
         float* data = (float*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (data) {
             MEMSET(data, 0, sizeof(float) * 3 * mol->atom_count);
@@ -805,21 +754,24 @@ bool md_gl_representation_set_color(md_gl_representation_t* ext_rep, uint32_t of
     return false;
 }
 
-bool create_permuted_program(gl_program_t* program_permutations, const char* vert_file, const char* geom_file, const char* frag_file, const char* frag_output_src) {
+bool create_permuted_program(gl_program_t* program_permutations, str_t vert_src, str_t geom_src, str_t frag_src, str_t frag_output_src) {
     GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
     GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
     GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
+    const str_t perm_str[] = {
+        STR("#define ORTHO 0"),
+        STR("#define ORTHO 1"),
+    };
+    
+    ASSERT(ARRAY_SIZE(perm_str) <= MAX_SHADER_PERMUTATIONS);
+
     for (uint32_t perm = 0; perm < MAX_SHADER_PERMUTATIONS; ++perm) {
+        const str_t defines = perm_str[perm];
 
-        char defines[128] = {0};
-        int  at = 0;
-
-        at += snprintf(defines + at, ARRAY_SIZE(defines) - at, "#define ORTHO %i\n",     (int)((perm & PERMUTATION_BIT_ORTHO) != 0));
-
-        if (vert_file && !compile_shader_from_file(vert_shader, vert_file, defines, NULL)) return false;
-        if (geom_file && !compile_shader_from_file(geom_shader, geom_file, defines, NULL)) return false;
-        if (frag_file && !compile_shader_from_file(frag_shader, frag_file, defines, frag_output_src)) return false;
+        if (!str_empty(vert_src) && !compile_shader_from_source(vert_shader, vert_src, defines, (str_t){0})) return false;
+        if (!str_empty(geom_src) && !compile_shader_from_source(geom_shader, geom_src, defines, (str_t){0})) return false;
+        if (!str_empty(frag_src) && !compile_shader_from_source(frag_shader, frag_src, defines, frag_output_src)) return false;
 
         program_permutations[perm].id = glCreateProgram();
         const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
@@ -860,49 +812,12 @@ bool md_gl_initialize() {
     for (uint32_t i = 0; i < GL_TEXTURE_COUNT; ++i) {
         glGenTextures(1, &ctx.texture[i].id);
     }
-
-    if (ctx.version >= 430) {
-        GLuint comp_shader = glCreateShader(GL_COMPUTE_SHADER);
-
-        bool err;
-        if ((err = compile_shader_from_file(comp_shader, MD_SHADER_DIR "/compute_aabb.comp", NULL, NULL)) != true) {
-            return err;
-        }
-        ctx.program[GL_PROGRAM_COMPUTE_AABB].id = glCreateProgram();
-        const GLuint shaders[] = { comp_shader };
-        if ((err = link_program(ctx.program[GL_PROGRAM_COMPUTE_AABB].id, shaders, ARRAY_SIZE(shaders))) != true) {
-            return err;
-        }
-
-        glDeleteShader(comp_shader);
-    }
-
-    if (ctx.version >= 430) {
-        GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
-        GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
-        GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
-
-        bool err;
-        if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/draw_aabb.vert", NULL, NULL)) != true ||
-            (err = compile_shader_from_file(geom_shader, MD_SHADER_DIR "/draw_aabb.geom", NULL, NULL)) != true ||
-            (err = compile_shader_from_file(frag_shader, MD_SHADER_DIR "/cull_aabb.frag", NULL, NULL)) != true) {
-            return err;
-        }
-        ctx.program[GL_PROGRAM_CULL_AABB].id = glCreateProgram();
-        const GLuint shaders[] = { vert_shader, geom_shader, frag_shader };
-        if ((err = link_program(ctx.program[GL_PROGRAM_CULL_AABB].id, shaders, ARRAY_SIZE(shaders))) != true) {
-            return err;
-        }
-
-        glDeleteShader(vert_shader);
-        glDeleteShader(geom_shader);
-        glDeleteShader(frag_shader);
-    }
+    
+    const str_t empty_str = {0};
 
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
-
-        if (!compile_shader_from_file(vert_shader, MD_SHADER_DIR "/extract_control_points.vert", NULL, NULL)) {
+        if (!compile_shader_from_source(vert_shader, (str_t){(const char*)extract_control_points_vert, extract_control_points_vert_size}, empty_str, empty_str)) {
             return false;
         }
         ctx.program[GL_PROGRAM_EXTRACT_CONTROL_POINTS].id = glCreateProgram();
@@ -918,7 +833,7 @@ bool md_gl_initialize() {
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
 
-        if (!compile_shader_from_file(vert_shader, MD_SHADER_DIR "/compute_velocity.vert", NULL, NULL)) {
+        if (!compile_shader_from_source(vert_shader, (str_t){(const char*)compute_velocity_vert, compute_velocity_vert_size}, empty_str, empty_str)) {
             return false;
         }
         ctx.program[GL_PROGRAM_COMPUTE_VELOCITY].id = glCreateProgram();
@@ -935,12 +850,11 @@ bool md_gl_initialize() {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
         GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
 
-        char defines[64];
-        snprintf(defines, sizeof(defines), "#define NUM_SUBDIVISIONS %i", SPLINE_MAX_SUBDIVISION_COUNT);
+        const str_t defines = STR("#define NUM_SUBDIVISIONS " STRINGIFY_VAL(SPLINE_MAX_SUBDIVISION_COUNT));
 
         bool err;
-        if ((err = compile_shader_from_file(vert_shader, MD_SHADER_DIR "/compute_spline.vert", defines, NULL)) != true ||
-            (err = compile_shader_from_file(geom_shader, MD_SHADER_DIR "/compute_spline.geom", defines, NULL)) != true) {
+        if ((err = compile_shader_from_source(vert_shader, (str_t){(const char*)compute_spline_vert, compute_spline_vert_size}, defines, empty_str)) != true ||
+            (err = compile_shader_from_source(geom_shader, (str_t){(const char*)compute_spline_geom, compute_spline_geom_size}, defines, empty_str)) != true) {
             return err;
         }
         ctx.program[GL_PROGRAM_COMPUTE_SPLINE].id = glCreateProgram();
@@ -968,7 +882,7 @@ void md_gl_shutdown() {
     }
 }
 
-bool md_gl_shaders_init(md_gl_shaders_t* ext_shaders, const char* custom_shader_snippet) {
+bool md_gl_shaders_init(md_gl_shaders_t* ext_shaders, str_t custom_shader_snippet) {
     if (!ext_shaders) {
         MD_LOG_ERROR("Supplied shaders object is NULL");
         return false;
@@ -978,13 +892,13 @@ bool md_gl_shaders_init(md_gl_shaders_t* ext_shaders, const char* custom_shader_
     MEMSET(shaders, 0, sizeof(internal_shaders_t));
 
     {
-        if (!custom_shader_snippet) {
+        if (str_empty(custom_shader_snippet)) {
             custom_shader_snippet = default_shader_output;
         }
-        if (!create_permuted_program(shaders->space_fill, MD_SHADER_DIR "/space_fill.vert", MD_SHADER_DIR "/space_fill.geom", MD_SHADER_DIR "/space_fill.frag",  custom_shader_snippet)) return false;
-        if (!create_permuted_program(shaders->licorice,   MD_SHADER_DIR "/licorice.vert",   MD_SHADER_DIR "/licorice.geom",   MD_SHADER_DIR "/licorice.frag",    custom_shader_snippet)) return false;
-        if (!create_permuted_program(shaders->ribbons,    MD_SHADER_DIR "/ribbons.vert",    MD_SHADER_DIR "/ribbons.geom",    MD_SHADER_DIR "/ribbons.frag",     custom_shader_snippet)) return false;
-        if (!create_permuted_program(shaders->cartoon,    MD_SHADER_DIR "/cartoon.vert",    MD_SHADER_DIR "/cartoon.geom",    MD_SHADER_DIR "/cartoon.frag",     custom_shader_snippet)) return false;
+        if (!create_permuted_program(shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_geom, spacefill_geom_size},   (str_t){(const char*)spacefill_frag, spacefill_frag_size},    custom_shader_snippet)) return false;
+        if (!create_permuted_program(shaders->licorice,   (str_t){(const char*)licorice_vert, licorice_vert_size},   (str_t){(const char*)licorice_geom, licorice_geom_size},     (str_t){(const char*)licorice_frag, licorice_frag_size},      custom_shader_snippet)) return false;
+        if (!create_permuted_program(shaders->ribbons,    (str_t){(const char*)ribbons_vert, ribbons_vert_size},     (str_t){(const char*)ribbons_geom, ribbons_geom_size},       (str_t){(const char*)ribbons_frag, ribbons_frag_size},        custom_shader_snippet)) return false;
+        if (!create_permuted_program(shaders->cartoon,    (str_t){(const char*)cartoon_vert, cartoon_vert_size},     (str_t){(const char*)cartoon_geom, cartoon_geom_size},       (str_t){(const char*)cartoon_frag, cartoon_frag_size},        custom_shader_snippet)) return false;
     }
 
     return true;
@@ -994,7 +908,7 @@ bool md_gl_shaders_free(md_gl_shaders_t* ext_shaders) {
     if (ext_shaders) {
         internal_shaders_t* shaders = (internal_shaders_t*)ext_shaders;
         for (int i = 0; i < MAX_SHADER_PERMUTATIONS; ++i) {
-            if (glIsProgram(shaders->space_fill[i].id)) glDeleteProgram(shaders->space_fill[i].id);
+            if (glIsProgram(shaders->spacefill[i].id))  glDeleteProgram(shaders->spacefill[i].id);
             if (glIsProgram(shaders->licorice[i].id))   glDeleteProgram(shaders->licorice[i].id);
             if (glIsProgram(shaders->ribbons[i].id))    glDeleteProgram(shaders->ribbons[i].id);
             if (glIsProgram(shaders->cartoon[i].id))    glDeleteProgram(shaders->cartoon[i].id);
@@ -1013,11 +927,11 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         internal_mol_t* gl_mol = (internal_mol_t*)ext_mol;
 
         gl_mol->atom_count = (uint32_t)mol->atom.count;
-        gl_mol->buffer[GL_BUFFER_MOL_ATOM_POSITION]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_DRAW);
-        gl_mol->buffer[GL_BUFFER_MOL_ATOM_POSITION_PREV]   = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
-        gl_mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
-        gl_mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS]          = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 1, NULL, GL_STATIC_DRAW);
-        gl_mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS]           = gl_buffer_create(gl_mol->atom_count * sizeof(md_flags_t), NULL, GL_STATIC_DRAW);
+        gl_mol->buffer[GL_BUFFER_ATOM_POSITION]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_DRAW);
+        gl_mol->buffer[GL_BUFFER_ATOM_POSITION_PREV]   = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
+        gl_mol->buffer[GL_BUFFER_ATOM_VELOCITY]        = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 3, NULL, GL_DYNAMIC_COPY);
+        gl_mol->buffer[GL_BUFFER_ATOM_RADIUS]          = gl_buffer_create(gl_mol->atom_count * sizeof(float) * 1, NULL, GL_STATIC_DRAW);
+        gl_mol->buffer[GL_BUFFER_ATOM_FLAGS]           = gl_buffer_create(gl_mol->atom_count * sizeof(md_flags_t), NULL, GL_STATIC_DRAW);
 
         if (mol->atom.x && mol->atom.y && mol->atom.z) {
             md_gl_molecule_set_atom_position(ext_mol, 0, gl_mol->atom_count, mol->atom.x, mol->atom.y, mol->atom.z, 0);
@@ -1028,12 +942,12 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         if (mol->atom.flags)  md_gl_molecule_set_atom_flags(ext_mol,  0, gl_mol->atom_count, mol->atom.flags, 0);
 
         gl_mol->residue_count = (uint32_t)mol->residue.count;
-        gl_mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
-        gl_mol->buffer[GL_BUFFER_MOL_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
-        gl_mol->buffer[GL_BUFFER_MOL_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
+        gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
+        gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
+        gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
 
-        if (mol->residue.atom_range)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_MOL_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
-        //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
+        if (mol->residue.atom_range)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
+        //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
         if (mol->backbone.range_count > 0 && mol->backbone.range && mol->backbone.atoms && mol->residue.atom_range && mol->backbone.secondary_structure) {
             uint32_t backbone_residue_count = 0;
@@ -1050,16 +964,16 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
             const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1); // primitive restart between each chain
 
-            gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
-            gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
-            gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA]  = gl_buffer_create(backbone_control_point_data_count  * sizeof(gl_control_point_t),         NULL, GL_DYNAMIC_COPY);
-            gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX] = gl_buffer_create(backbone_control_point_index_count * sizeof(uint32_t),                   NULL, GL_STATIC_DRAW);
-            gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA]         = gl_buffer_create(backbone_spline_data_count         * sizeof(gl_control_point_t),         NULL, GL_DYNAMIC_COPY);
-            gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX]        = gl_buffer_create(backbone_spline_index_count        * sizeof(uint32_t),                   NULL, GL_STATIC_DRAW);
+            gl_mol->buffer[GL_BUFFER_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
+            gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
+            gl_mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_DATA]  = gl_buffer_create(backbone_control_point_data_count  * sizeof(gl_control_point_t),         NULL, GL_DYNAMIC_COPY);
+            gl_mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_INDEX] = gl_buffer_create(backbone_control_point_index_count * sizeof(uint32_t),                   NULL, GL_STATIC_DRAW);
+            gl_mol->buffer[GL_BUFFER_BACKBONE_SPLINE_DATA]         = gl_buffer_create(backbone_spline_data_count         * sizeof(gl_control_point_t),         NULL, GL_DYNAMIC_COPY);
+            gl_mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX]        = gl_buffer_create(backbone_spline_index_count        * sizeof(uint32_t),                   NULL, GL_STATIC_DRAW);
 
-            //gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE], 0, desc->backbone.count * sizeof(uint8_t) * 4, desc->backbone.secondary_structure);
+            //gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE], 0, desc->backbone.count * sizeof(uint8_t) * 4, desc->backbone.secondary_structure);
 
-            glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id);
+            glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_DATA].id);
             gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
@@ -1078,7 +992,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
                 return false;
             }
 
-            glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
+            glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
             uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (secondary_structure) {
                 uint32_t idx = 0;
@@ -1093,7 +1007,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
                 return false;
             }
 
-            glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX].id);
+            glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_INDEX].id);
             uint32_t* control_point_index = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (control_point_index) {
                 uint32_t idx = 0;
@@ -1112,7 +1026,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
                 return false;
             }
 
-            glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX].id);
+            glBindBuffer(GL_ARRAY_BUFFER, gl_mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX].id);
             uint32_t* spline_index = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (spline_index) {
                 uint32_t idx = 0;
@@ -1140,7 +1054,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         }
 
         gl_mol->bond_count = (uint32_t)md_array_size(mol->bonds);
-        gl_mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES] = gl_buffer_create(gl_mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
+        gl_mol->buffer[GL_BUFFER_BOND_ATOM_INDICES] = gl_buffer_create(gl_mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
 
         if (mol->bonds) {
             md_gl_molecule_set_bonds(ext_mol, 0, gl_mol->bond_count, mol->bonds, sizeof(md_bond_t));
@@ -1155,7 +1069,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
 bool md_gl_molecule_free(md_gl_molecule_t* ext_mol) {
     if (ext_mol) {
         internal_mol_t* mol = (internal_mol_t*)ext_mol;
-        for (uint32_t i = 0; i < GL_BUFFER_MOL_COUNT; ++i) {
+        for (uint32_t i = 0; i < GL_BUFFER_COUNT; ++i) {
             gl_buffer_conditional_delete(&mol->buffer[i]);
         }
         uint32_t new_version = mol->version + 1;
@@ -1357,7 +1271,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 
         switch (rep->type) {
         case MD_GL_REP_SPACE_FILL:
-            draw_space_fill(shaders->space_fill[program_permutation], rep, scale);
+            draw_space_fill(shaders->spacefill[program_permutation], rep, scale);
             break;
         case MD_GL_REP_LICORICE:
             draw_licorice(shaders->licorice[program_permutation], rep, scale);
@@ -1389,10 +1303,10 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
 static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, float scale) {
     ASSERT(rep);
     ASSERT(rep->mol);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_RADIUS].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     ASSERT(rep->color.id);
 
     const float radius_scale = rep->args.space_fill.radius_scale * scale;
@@ -1401,19 +1315,19 @@ static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, flo
     glBindVertexArray(ctx.vao);
 
     glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_ATOM_POSITION].id);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(2);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_RADIUS].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_ATOM_RADIUS].id);
     glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(3);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, 0, 0);
 
     glEnableVertexAttribArray(4);
@@ -1440,10 +1354,10 @@ static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, flo
 static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float scale) {
     ASSERT(rep);
     ASSERT(rep->mol);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
     ASSERT(rep->color.id);
 
     const float radius = rep->args.licorice.radius * 0.5f * scale;
@@ -1452,15 +1366,15 @@ static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float
     glBindVertexArray(ctx.vao);
 
     glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_ATOM_POSITION].id);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0, 0);
 
     glEnableVertexAttribArray(2);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     glVertexAttribIPointer(2, 1, GL_UNSIGNED_BYTE, 0, 0);
 
     glEnableVertexAttribArray(3);
@@ -1469,7 +1383,7 @@ static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BOND_ATOM_INDICES].id);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
 
     glUseProgram(program.id);
     glDrawElements(GL_LINES, rep->mol->bond_count * 2, GL_UNSIGNED_INT, 0);
@@ -1490,9 +1404,9 @@ static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float
 bool draw_ribbons(gl_program_t program, const internal_rep_t* rep, float scale) {
     ASSERT(rep);
     ASSERT(rep->mol);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_DATA].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     ASSERT(rep->color.id);
 
     const float profile_scale[2] = {
@@ -1502,7 +1416,7 @@ bool draw_ribbons(gl_program_t program, const internal_rep_t* rep, float scale) 
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(profile_scale), &profile_scale);
 
     glBindVertexArray(ctx.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_DATA].id);
 
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, position));
@@ -1524,7 +1438,7 @@ bool draw_ribbons(gl_program_t program, const internal_rep_t* rep, float scale) 
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX].id);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX].id);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_0].id);
@@ -1532,7 +1446,7 @@ bool draw_ribbons(gl_program_t program, const internal_rep_t* rep, float scale) 
 
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_1].id);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
 
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFF);
@@ -1561,9 +1475,9 @@ bool draw_ribbons(gl_program_t program, const internal_rep_t* rep, float scale) 
 static bool draw_cartoon(gl_program_t program, const internal_rep_t* rep, float scale) {
     ASSERT(rep);
     ASSERT(rep->mol);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX].id);
-    ASSERT(rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_DATA].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX].id);
+    ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     ASSERT(rep->color.id);
 
     const float profile_scale[2] = {
@@ -1573,7 +1487,7 @@ static bool draw_cartoon(gl_program_t program, const internal_rep_t* rep, float 
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(profile_scale), &profile_scale);
 
     glBindVertexArray(ctx.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
+    glBindBuffer(GL_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_DATA].id);
 
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, position));
@@ -1601,7 +1515,7 @@ static bool draw_cartoon(gl_program_t program, const internal_rep_t* rep, float 
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_INDEX].id);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX].id);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_0].id);
@@ -1609,7 +1523,7 @@ static bool draw_cartoon(gl_program_t program, const internal_rep_t* rep, float 
 
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_1].id);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, rep->mol->buffer[GL_BUFFER_MOL_ATOM_FLAGS].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_R8UI, rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
 
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFF);
@@ -1640,15 +1554,15 @@ static bool compute_spline(const internal_mol_t* mol) {
     ASSERT(ctx.program[GL_PROGRAM_COMPUTE_SPLINE].id);
     ASSERT(mol);
 
-    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id);
-    ASSERT(mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
-    ASSERT(mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
-    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
-    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA].id);
-    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX].id);
-    ASSERT(mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
+    ASSERT(mol->buffer[GL_BUFFER_BACKBONE_DATA].id);
+    ASSERT(mol->buffer[GL_BUFFER_ATOM_POSITION].id);
+    ASSERT(mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
+    ASSERT(mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
+    ASSERT(mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_DATA].id);
+    ASSERT(mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_INDEX].id);
+    ASSERT(mol->buffer[GL_BUFFER_BACKBONE_SPLINE_DATA].id);
 
-    if (mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id == 0) {
+    if (mol->buffer[GL_BUFFER_BACKBONE_DATA].id == 0) {
         MD_LOG_ERROR("Backbone data buffer is zero, which is required to compute the backbone. Is the molecule missing a backbone?");
         return false;
     }
@@ -1657,7 +1571,7 @@ static bool compute_spline(const internal_mol_t* mol) {
     glBindVertexArray(ctx.vao);
 
     // Step 1: Extract control points
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_DATA].id);
+    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_DATA].id);
 
     glEnableVertexAttribArray(0);
     glVertexAttribIPointer(0, 1, GL_UNSIGNED_INT, sizeof(gl_backbone_data_t), (const void*)offsetof(gl_backbone_data_t, residue_idx));
@@ -1676,15 +1590,15 @@ static bool compute_spline(const internal_mol_t* mol) {
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_0].id);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_MOL_ATOM_POSITION].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_POSITION].id);
 
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_1].id);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_MOL_ATOM_VELOCITY].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGB32F, mol->buffer[GL_BUFFER_ATOM_VELOCITY].id);
 
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_2].id);
-    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, mol->buffer[GL_BUFFER_MOL_BACKBONE_SECONDARY_STRUCTURE].id);
+    glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
 
     GLuint program = ctx.program[GL_PROGRAM_EXTRACT_CONTROL_POINTS].id;
     const GLint buf_atom_pos_loc            = glGetUniformLocation(program, "u_buf_atom_pos");
@@ -1695,14 +1609,14 @@ static bool compute_spline(const internal_mol_t* mol) {
     glUniform1i(buf_atom_pos_loc, 0);
     glUniform1i(buf_atom_vel_loc, 1);
     glUniform1i(buf_secondary_structure_loc, 2);
-    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA].id);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_DATA].id);
     glBeginTransformFeedback(GL_POINTS);
     glDrawArrays(GL_POINTS, 0, mol->backbone_count);
     glEndTransformFeedback();
     glUseProgram(0);
 
     // Step 2: Compute splines using control points
-    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_DATA].id);
+    glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_DATA].id);
 
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,        sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, position));
@@ -1726,13 +1640,13 @@ static bool compute_spline(const internal_mol_t* mol) {
     glVertexAttribPointer(6, 3, GL_SHORT, GL_TRUE,         sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, support_vector));
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mol->buffer[GL_BUFFER_MOL_BACKBONE_CONTROL_POINT_INDEX].id);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_CONTROL_POINT_INDEX].id);
 
     glEnable(GL_PRIMITIVE_RESTART);
     glPrimitiveRestartIndex(0xFFFFFFFF);
 
     glUseProgram(ctx.program[GL_PROGRAM_COMPUTE_SPLINE].id);
-    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, mol->buffer[GL_BUFFER_MOL_BACKBONE_SPLINE_DATA].id);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, mol->buffer[GL_BUFFER_BACKBONE_SPLINE_DATA].id);
     glBeginTransformFeedback(GL_POINTS);
     glDrawElements(GL_LINE_STRIP_ADJACENCY, mol->backbone_control_point_index_count, GL_UNSIGNED_INT, 0);
     glEndTransformFeedback();
