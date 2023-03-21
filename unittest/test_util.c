@@ -214,8 +214,6 @@ UTEST(util, structure) {
 
     md_arena_allocator_reset(arena);
     MEMSET(&mol, 0, sizeof(md_molecule_t));
-  
-    
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), arena));
     md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT | MD_UTIL_POSTPROCESS_CHAINS_BIT);

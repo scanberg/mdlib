@@ -1239,25 +1239,38 @@ static inline bool has_ring(md_index_data_t ring_data, const int* ring, int ring
     return false;
 }
 
+#include <stdlib.h>
+
+static int compare_int(void const* a, void const* b) {
+    return ( *(const int*)a - *(const int*)b );
+}
+
 // Simplistic inplace bubble sort for small arrays
 // In practice, this is only used to sort the small rings
 static void sort_arr(int* arr, int n) {
-    bool swapped = true;
-    while (swapped) {
-        swapped = false;
-        for (int i = 0; i < n - 1; ++i) {
-            if (arr[i] > arr[i + 1]) {
-                int tmp = arr[i];
-                arr[i] = arr[i + 1];
-                arr[i + 1] = tmp;
-                swapped = true;
+    if (n < 16) {
+        bool swapped = true;
+        while (swapped) {
+            swapped = false;
+            for (int i = 0; i < n - 1; ++i) {
+                if (arr[i] > arr[i + 1]) {
+                    int tmp = arr[i];
+                    arr[i] = arr[i + 1];
+                    arr[i + 1] = tmp;
+                    swapped = true;
+                }
             }
         }
+    } else {
+        qsort(arr, n, sizeof(int), compare_int);
     }
 }
 
 #define MIN_RING_SIZE 3
 #define MAX_RING_SIZE 6
+
+#define STB_DS_IMPLEMENTATION
+#include <stb_ds.h>
 
 md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allocator_i* alloc) {
     ASSERT(alloc);
@@ -1285,6 +1298,13 @@ md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allo
 
     // The capacity is arbitrary here, but will be resized if needed.
     fifo_t queue = fifo_create(64, &arena_alloc);
+
+    typedef struct T {
+        uint64_t key;
+    } T;
+    
+    T* hm = NULL;
+    size_t seed = 12;
 
     for (int i = 0; i < atom_count; ++i) {
         // Skip any atom which has alread been touched
@@ -1334,13 +1354,17 @@ md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allo
 
                         if (l == r) {
                             ring[n++] = l;
+                            if (l == -1)
+                                n = 0;
                             break;
                         }
                     }
 
                     if (MIN_RING_SIZE <= n && n <= MAX_RING_SIZE) {
                         sort_arr(ring, n);
-                        if (!has_ring(ring_data, ring, n)) {
+                        size_t key = stbds_hash_bytes(ring, n * sizeof(int), seed);
+                        if (hmgeti(hm, key) == -1) {
+                            hmputs(hm, (T){key});
                             md_index_data_push(&ring_data, ring, n, alloc);
                         }
                     }
@@ -1353,7 +1377,7 @@ md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allo
             }
         }
     }
-
+    hmfree(hm);
     md_vm_arena_free(&arena);
 
     return ring_data;
