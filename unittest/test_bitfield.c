@@ -273,3 +273,30 @@ UTEST(bitfield, deserialize_base64) {
     md_tracking_allocator_destroy(alloc);
     
 }
+
+UTEST(bitfield, iterator) {
+    md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
+
+    md_bitfield_t bf = md_bitfield_create(alloc);
+
+    md_bitfield_set_bit(&bf, 60);
+    md_bitfield_set_bit(&bf, 64);
+    md_bitfield_set_bit(&bf, 1000);
+    
+    md_bitfield_iter_t it = md_bitfield_iter(&bf);
+    
+    EXPECT_TRUE(md_bitfield_iter_next(&it));
+    EXPECT_EQ(md_bitfield_iter_idx(&it), 60);
+
+    EXPECT_TRUE(md_bitfield_iter_next(&it));
+    EXPECT_EQ(md_bitfield_iter_idx(&it), 64);
+
+    EXPECT_TRUE(md_bitfield_iter_next(&it));
+    EXPECT_EQ(md_bitfield_iter_idx(&it), 1000);
+
+    EXPECT_FALSE(md_bitfield_iter_next(&it));
+
+    md_bitfield_free(&bf);
+
+    md_tracking_allocator_destroy(alloc);
+}

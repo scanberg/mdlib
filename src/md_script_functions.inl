@@ -2404,7 +2404,7 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         int count = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            if (test_ion(ctx->mol, res_indices[i])) {
+            if (test_ion(ctx->mol, (int)res_indices[i])) {
                 count += 1;
             }
         }

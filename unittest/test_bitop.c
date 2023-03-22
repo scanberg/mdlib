@@ -1,9 +1,11 @@
 #include "utest.h"
 #include <core/md_allocator.h>
-#include <core/md_bitop.h>
 
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
+
+#include <core/md_bitop.inl>
 
 static uint64_t set_bits(uint64_t* bits, const char* bit_str) {    
     const uint64_t num_bits = strlen(bit_str);

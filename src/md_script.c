@@ -40,7 +40,6 @@
 #include "core/md_parse.h"
 #include "core/md_array.h"
 #include "core/md_arena_allocator.h"
-#include "core/md_bitop.h"
 #include "core/md_os.h"
 #include "core/md_unit.h"
 #include "core/md_spatial_hash.h"
@@ -5044,10 +5043,10 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                     md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
                     ctx.spatial_hash = &spatial_hash;
                 }
-                int len = type_info_array_len(node->data.type);
+                int len = (int)type_info_array_len(node->data.type);
                 if (len == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
                     finalize_type(&node->data.type, node, &ctx);
-                    len = type_info_array_len(node->data.type);
+                    len = (int)type_info_array_len(node->data.type);
                 }
                 
                 if (len == 1) {

@@ -4,11 +4,10 @@
 #include "md_array.h"
 
 #include "md_common.h"
-#include "md_bitop.h"
 #include "md_intrinsics.h"
 #include "md_simd.h"
+#include "md_bitop.inl"
 
-#include <string.h>
 #include <fastlz.h>
 
 #define MAGIC 0xcad86278
@@ -28,6 +27,18 @@ typedef union block_t {
 } block_t;
 
 #define BITS_PER_BLOCK (sizeof(block_t) * 8)
+
+static inline const uint64_t* u64_base(const md_bitfield_t* bf) {
+    ASSERT(bf);
+    const uint64_t offset = ((uint64_t)bf->beg_bit >> 9) << 3;
+    return (const uint64_t*)bf->bits - offset;
+}
+
+static inline uint64_t* u64_base_mut(md_bitfield_t* bf) {
+    ASSERT(bf);
+    const uint64_t offset = ((uint64_t)bf->beg_bit >> 9) << 3;
+    return (uint64_t*)bf->bits - offset;
+}
 
 static inline uint64_t block_idx(uint64_t bit_idx) {
     return bit_idx / BITS_PER_BLOCK;
@@ -341,7 +352,7 @@ void md_bitfield_set_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     if (end <= beg) return;
 
     ensure_range(bf, beg, end);
-    bit_set((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), end - beg);
+    bit_set(u64_base_mut(bf), beg, end);
 }
 
 void md_bitfield_set_bit(md_bitfield_t* bf, uint64_t bit_idx) {
@@ -349,7 +360,6 @@ void md_bitfield_set_bit(md_bitfield_t* bf, uint64_t bit_idx) {
 
     ensure_range(bf, bit_idx, bit_idx+1);
     block_set_bit(get_block_ptr(bf, block_idx(bit_idx)), bit_idx - block_bit(bit_idx));
-    //bit_set((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit), 1);
 }
 
 void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, uint64_t num_indices) {
@@ -374,14 +384,14 @@ void md_bitfield_clear_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
     end = CLAMP(end, bf->beg_bit, bf->end_bit);
     if (end-beg == 0) return;
-    bit_clear((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), end - beg);
+    bit_clear(u64_base_mut(bf), beg, end);
 }
 
 void md_bitfield_clear_bit(md_bitfield_t* bf, uint64_t bit_idx) {
     ASSERT(md_bitfield_validate(bf));
 
     if (bf->beg_bit <= bit_idx && bit_idx < bf->end_bit) {
-        bit_clear_idx((uint64_t*)bf->bits, bit_idx - block_bit(bf->beg_bit));
+        bit_clear_idx(u64_base_mut(bf), bit_idx);
     }
 }
 
@@ -617,12 +627,8 @@ void md_bitfield_copy(md_bitfield_t* dst, const md_bitfield_t* src) {
 uint64_t md_bitfield_popcount(const md_bitfield_t* bf) {
     ASSERT(md_bitfield_validate(bf));
 
-    const uint64_t count = bf->end_bit - bf->beg_bit;
-    if (count == 0) return 0;
-
-    // If we can find a way to efficiently generating a mask for a block we should use the block_popcount proc instead...
-
-    return bit_count((uint64_t*)bf->bits, bf->beg_bit - block_bit(bf->beg_bit), count);
+    if (bf->bits == NULL || bf->beg_bit == bf->end_bit) return 0;
+    return bit_count(u64_base(bf), bf->beg_bit, bf->end_bit);
 }
 
 uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
@@ -632,9 +638,9 @@ uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint6
     if (bf->bits == NULL) return 0;
     beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
     end = CLAMP(end, bf->beg_bit, bf->end_bit);
-    const int64_t count = end - beg;
-    if (count == 0) return 0;
-    return bit_count((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), count);
+    if (beg == end) return 0;
+
+    return bit_count(u64_base(bf), beg, end);
 }
 
 // Test if single bit in field is set
@@ -674,14 +680,38 @@ uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     end = CLAMP(end, bf->beg_bit, bf->end_bit);
     if (beg == end)
         return 0;
-    int64_t result = bit_scan((uint64_t*)bf->bits, beg - block_bit(bf->beg_bit), end - beg);
-    if (!result)
-        return 0;
-    return result + block_bit(bf->beg_bit);
+    
+    return bit_scan(u64_base(bf), beg, end);
 }
 
-static inline uint64_t bit_pattern(uint64_t bit_idx) {
-    return 1LLU << (bit_idx & 63);
+md_bitfield_iter_t md_bitfield_iter(const md_bitfield_t* bf) {
+    md_bitfield_iter_t iter = {
+        .bf = bf,
+        .idx = bf->beg_bit,
+    };
+    return iter;
+}
+
+md_bitfield_iter_t md_bitfield_iter_reverse(const md_bitfield_t* bf) {
+    md_bitfield_iter_t iter = {
+        .bf = bf,
+        .idx = bf->end_bit,
+    };
+    return iter;
+}
+
+bool md_bitfield_iter_next(md_bitfield_iter_t* it) {
+    ASSERT(it);
+    ASSERT(md_bitfield_validate(it->bf));
+    
+    uint64_t res = bit_scan(u64_base(it->bf), it->idx, it->bf->end_bit);
+    if (res) {
+        it->idx = res;
+        return true;
+    }
+    
+    it->idx = it->bf->end_bit;
+    return false;
 }
 
 static inline uint64_t get_u64(const md_bitfield_t* bf, uint64_t idx_u64) {
@@ -689,7 +719,7 @@ static inline uint64_t get_u64(const md_bitfield_t* bf, uint64_t idx_u64) {
 
     const uint64_t beg_u64 = bf->beg_bit / 64;
     const uint64_t end_u64 = bf->end_bit / 64;
-    
+
     if (beg_u64 < idx_u64 && idx_u64 < end_u64) {
         return ((uint64_t*)bf->bits)[idx_u64 - beg_u64];
     }
@@ -894,11 +924,10 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_by
     
     fit_to_range(bf, beg_blk_idx * BITS_PER_BLOCK, end_blk_idx * BITS_PER_BLOCK + (BITS_PER_BLOCK-1));
 
-    int nblocks = num_blocks(bf->beg_bit, bf->end_bit);
+    uint64_t nblocks = num_blocks(bf->beg_bit, bf->end_bit);
     MEMSET(bf->bits, 0, nblocks * sizeof(block_t));
 
     // Fetch block_data and store
-    block_t* dst_block = (block_t*)bf->bits;
     int64_t  src_offset = 0;
     for (int64_t i = 0; i < block_count; ++i) {
         uint16_t blk_idx = block_indices[i];

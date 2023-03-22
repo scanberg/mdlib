@@ -9,6 +9,7 @@
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 #include <core/md_bitfield.h>
+#include <core/md_bitop.inl>
 #include <core/md_os.h>
 #include <md_script.h>
 #include <md_molecule.h>

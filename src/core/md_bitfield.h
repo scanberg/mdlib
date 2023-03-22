@@ -13,6 +13,11 @@ typedef struct md_bitfield_t {
     uint32_t flags;
 } md_bitfield_t;
 
+typedef struct md_bitfield_iter_t {
+    const md_bitfield_t* bf;
+    uint64_t idx;
+} md_bitfield_iter_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -80,8 +85,16 @@ bool md_bitfield_test_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end
 */
 uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
-uint64_t md_bitfield_scan_reverse(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
+// Create iterator object (forward iteration)
+md_bitfield_iter_t md_bitfield_iter(const md_bitfield_t* bf);
 
+// Go to the next bit set in the bitfield, returns true if found, false if not found
+bool md_bitfield_iter_next(md_bitfield_iter_t* iter);
+
+// Returns the actual index to the bit pointed to by the iterator
+static inline uint64_t md_bitfield_iter_idx(const md_bitfield_iter_t* it) {
+    return it->idx - 1;
+}
 
 // Copy the contents of the bitfield into an external buffer
 //bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_bitfield_t* src);
