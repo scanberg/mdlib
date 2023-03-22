@@ -1074,6 +1074,8 @@ bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_id
         res_atom_range[res_idx[i]].end += 1;
     }
 
+    res_count += 1;
+
     if (res_count == 0) {
         MD_LOG_DEBUG("Dataset only contains single residue, no artificial chains can be created");
         return false;
