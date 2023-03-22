@@ -14,14 +14,20 @@
 #   endif
 #endif
 
-#if MD_COMPILER_MSVC
-#ifndef STATIC_ASSERT
-#define STATIC_ASSERT _Static_assert
-#endif
+#ifdef __cplusplus
+#   ifndef STATIC_ASSERT
+#       define STATIC_ASSERT static_assert
+#   endif
 #else
-#ifndef STATIC_ASSERT
-#define STATIC_ASSERT _Static_assert
-#endif
+#   if MD_COMPILER_MSVC
+#       ifndef STATIC_ASSERT
+#           define STATIC_ASSERT _Static_assert
+#       endif
+#   else
+#       ifndef STATIC_ASSERT
+#           define STATIC_ASSERT _Static_assert
+#       endif
+#   endif
 #endif
 
 #if MD_COMPILER_MSVC
