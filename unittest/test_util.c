@@ -179,7 +179,7 @@ UTEST(util, structure) {
     int64_t num_structures = 0;
 
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT);
 
     num_structures = md_index_data_count(mol.structures);
     EXPECT_EQ(num_structures, 2);
@@ -190,7 +190,7 @@ UTEST(util, structure) {
     
 
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT);
 
     num_structures = md_index_data_count(mol.structures);
 	EXPECT_EQ(num_structures, 1);
@@ -204,7 +204,7 @@ UTEST(util, structure) {
     
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT);
     
     num_structures = md_index_data_count(mol.structures);
     EXPECT_EQ(num_structures, 1);
@@ -216,7 +216,7 @@ UTEST(util, structure) {
     MEMSET(&mol, 0, sizeof(md_molecule_t));
     
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), arena));
-    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_COVALENT_BIT | MD_UTIL_POSTPROCESS_CHAINS_BIT);
+    md_util_postprocess_molecule(&mol, arena, MD_UTIL_POSTPROCESS_ELEMENT_BIT | MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT | MD_UTIL_POSTPROCESS_CHAINS_BIT);
     
     num_structures = md_index_data_count(mol.structures);
     const int64_t expected_count = mol.chain.count + 61;

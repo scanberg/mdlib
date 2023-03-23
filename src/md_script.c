@@ -4540,7 +4540,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
         return false;
     }
 
-    reset_ir(ir);
+    //reset_ir(ir);
     
     ir->str = str_copy(src, ir->arena);
 

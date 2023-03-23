@@ -93,9 +93,8 @@ typedef struct md_molecule_t {
     
     // @TODO: move this into some containing structure
     md_array(md_hbond_data_t)  hbond_data;     
-    //md_index_data_t         atom_connectivity;
-    //md_index_data_t         atom_bond_indices;
 
+    md_index_data_t         connectivity;       // Connectivity graph of the atoms within the molecule
     md_index_data_t         rings;              // Ring structures formed by persistent bonds
     md_index_data_t         structures;         // Isolated structures connected by persistent bonds
 

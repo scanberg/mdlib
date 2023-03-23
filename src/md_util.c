@@ -2676,20 +2676,25 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     }
 
     if (flags & MD_UTIL_POSTPROCESS_MASS_BIT) {
-        if (mol->atom.mass == 0) md_array_resize(mol->atom.mass, mol->atom.count, alloc);
-        for (int64_t i = 0; i < mol->atom.count; ++i) {
-            mol->atom.mass[i] = mol->atom.element ? md_util_element_atomic_mass(mol->atom.element[i]) : 1.0f;
+        if (!mol->atom.mass) {
+            md_array_resize(mol->atom.mass, mol->atom.count, alloc);
+            for (int64_t i = 0; i < mol->atom.count; ++i) {
+                mol->atom.mass[i] = mol->atom.element ? md_util_element_atomic_mass(mol->atom.element[i]) : 1.0f;
+            }
         }
     }
    
-    if (flags & MD_UTIL_POSTPROCESS_COVALENT_BIT) {
-        if (mol->bonds == 0) {
+    if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
+        if (!mol->bonds) {
             mol->bonds = md_util_compute_covalent_bonds(&mol->atom, &mol->cell, alloc);
-            if (mol->bonds) {
-                md_index_data_t connectivity = md_compute_connectivity(mol->bonds, md_array_size(mol->bonds), mol->atom.count, alloc);
-                mol->structures              = md_util_compute_structures(connectivity, alloc);
-                mol->rings                   = md_util_compute_rings(connectivity, alloc);
-            }
+        }
+    }
+
+    if (flags & MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT) {
+        if (mol->bonds) {
+            mol->connectivity   = md_compute_connectivity(mol->bonds, md_array_size(mol->bonds), mol->atom.count, alloc);
+            mol->structures     = md_util_compute_structures(mol->connectivity, alloc);
+            mol->rings          = md_util_compute_rings(mol->connectivity, alloc);
         }
     }
 

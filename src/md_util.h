@@ -10,17 +10,21 @@ struct md_allocator_i;
 extern "C" {
 #endif
 
-typedef enum md_util_postprocess_flags_t {
+enum {
+    MD_UTIL_POSTPROCESS_NONE                = 0,
     MD_UTIL_POSTPROCESS_ELEMENT_BIT         = 0x0001,
     MD_UTIL_POSTPROCESS_RADIUS_BIT          = 0x0002,
     MD_UTIL_POSTPROCESS_MASS_BIT            = 0x0004,
-    MD_UTIL_POSTPROCESS_COVALENT_BIT        = 0x0008,
-    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0010,
-    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0020,
+    MD_UTIL_POSTPROCESS_BOND_BIT            = 0x0008,
+    MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT    = 0x0010,
+    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0020,
+    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0040,
 
     MD_UTIL_POSTPROCESS_ALL                 = -1,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
-} md_util_postprocess_flags_t;
+};
+
+typedef uint32_t md_util_postprocess_flags_t;
 
 // Cluster of a range with bounding box
 typedef struct md_cluster_t {
