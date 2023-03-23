@@ -703,6 +703,8 @@ md_bitfield_iter_t md_bitfield_iter_reverse(const md_bitfield_t* bf) {
 bool md_bitfield_iter_next(md_bitfield_iter_t* it) {
     ASSERT(it);
     ASSERT(md_bitfield_validate(it->bf));
+
+    if (it->idx >= it->bf->end_bit) return false;
     
     uint64_t res = bit_scan(u64_base(it->bf), it->idx, it->bf->end_bit);
     if (res) {

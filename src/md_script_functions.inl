@@ -442,10 +442,10 @@ static procedure_t operators[] = {
     {CSTR("and"),    TI_BOOL,           2,  {TI_BOOL,   TI_BOOL},       _op_and_b_b},
 
     // BITFIELD NOT
-    {CSTR("not"),    TI_BITFIELD,       1,  {TI_BITFIELD},              _not},
-    {CSTR("and"),    TI_BITFIELD,       2,  {TI_BITFIELD, TI_BITFIELD}, _and},
-    {CSTR("or"),     TI_BITFIELD,       2,  {TI_BITFIELD, TI_BITFIELD}, _or},
-    {CSTR("xor"),    TI_BITFIELD,       2,  {TI_BITFIELD, TI_BITFIELD}, _xor},
+    {CSTR("not"),    TI_BITFIELD,       1,  {TI_BITFIELD_ARR},                  _not},
+    {CSTR("and"),    TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _and},
+    {CSTR("or"),     TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _or},
+    {CSTR("xor"),    TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _xor},
 
     // Binary add
     {CSTR("+"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_add_f_f},
@@ -1386,17 +1386,32 @@ static int _max_farr  (data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _not  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+static inline md_bitfield_t _internal_flatten_bf(const md_bitfield_t* bf_arr, int64_t count, md_allocator_i* alloc) {
+    if (count == 1) {
+        return bf_arr[0];
+    }
+    
+    md_bitfield_t bf = md_bitfield_create(alloc);
+    for (int64_t i = 0; i < count; ++i) {
+        md_bitfield_or_inplace(&bf, &bf_arr[i]);
+    }
+    return bf;
+}
+
+static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
 
     if (dst) {
         md_bitfield_t* bf_dst = dst->ptr;
         const md_bitfield_t* bf_src = arg[0].ptr;
 
-        //ASSERT(bf_dst->num_bits == bf_src->num_bits);
-
-        md_bitfield_not(bf_dst, bf_src, 0, ctx->mol->atom.count);
+        md_bitfield_clear_range(bf_dst, 0, ctx->mol->atom.count);
+        const int64_t count = element_count(arg[0]);
+        for (int64_t i = 0; i < count; ++i) {
+            md_bitfield_or_inplace(bf_dst, &bf_src[i]);
+        }
+        md_bitfield_not_inplace(bf_dst, 0, ctx->mol->atom.count);
 
         if (ctx->mol_ctx) {
             // This is a bit conceptually strange,
@@ -1408,16 +1423,23 @@ static int _not  (data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _and  (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
+static int _and(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
 
     if (dst) {
         md_bitfield_t* bf_dst = dst->ptr;
         const md_bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
+        const int64_t bf_src_len[2] = {element_count(arg[0]), element_count(arg[1])};
 
-        md_bitfield_and(bf_dst, bf_src[0], bf_src[1]);
+        for (int64_t i = 0; i < bf_src_len[0]; ++i) {
+            md_bitfield_or_inplace(bf_dst, &bf_src[0][i]);
+        }
+
+        md_bitfield_t bf = _internal_flatten_bf(bf_src[1], bf_src_len[1], ctx->temp_alloc);
+        md_bitfield_and_inplace(bf_dst, &bf);
+
         if (ctx->mol_ctx) {
             md_bitfield_and_inplace(bf_dst, ctx->mol_ctx);
         }
@@ -1426,16 +1448,24 @@ static int _and  (data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _or   (data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
+static int _or(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
 
     if (dst) {
         md_bitfield_t* bf_dst = dst->ptr;
-        md_bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
+        const md_bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
+        const int64_t bf_src_len[2] = {element_count(arg[0]), element_count(arg[1])};
 
-        md_bitfield_or(bf_dst, bf_src[0], bf_src[1]);
+        for (int64_t i = 0; i < bf_src_len[0]; ++i) {
+            md_bitfield_or_inplace(bf_dst, &bf_src[0][i]);
+        }
+
+        for (int64_t i = 0; i < bf_src_len[1]; ++i) {
+            md_bitfield_or_inplace(bf_dst, &bf_src[1][i]);
+        }
+        
         if (ctx->mol_ctx) {
             md_bitfield_and_inplace(bf_dst, ctx->mol_ctx);
         }
@@ -1446,14 +1476,21 @@ static int _or   (data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _xor(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD_ARR));
 
     if (dst) {
         md_bitfield_t* bf_dst = dst->ptr;
-        md_bitfield_t* bf_src[2] = { arg[0].ptr, arg[1].ptr };
+        const md_bitfield_t* bf_src[2] = { arg[0].ptr, arg[1].ptr };
+        const int64_t bf_src_len[2] = {element_count(arg[0]), element_count(arg[1])};
 
-        md_bitfield_xor(bf_dst, bf_src[0], bf_src[1]);
+        for (int64_t i = 0; i < bf_src_len[0]; ++i) {
+            md_bitfield_or_inplace(bf_dst, &bf_src[0][i]);
+        }
+
+        md_bitfield_t bf = _internal_flatten_bf(bf_src[1], bf_src_len[1], ctx->temp_alloc);
+        md_bitfield_xor_inplace(bf_dst, &bf);
+
         if (ctx->mol_ctx) {
             md_bitfield_and_inplace(bf_dst, ctx->mol_ctx);
         }
@@ -1860,7 +1897,6 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
 
     const float radius = as_float(arg[0]);
-
 
     if (dst || ctx->vis) {
         const vec3_t* in_pos = position_extract(arg[1], ctx);
@@ -2498,15 +2534,16 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t capacity = type_info_array_len(dst->type);
 
             int i = 0;
-            int64_t beg = tmp_bf.beg_bit;
-            int64_t end = tmp_bf.end_bit;
-            while ((beg = md_bitfield_scan(&tmp_bf, beg, end)) != 0) {
-                const int64_t res_idx = ctx->mol->atom.residue_idx[beg - 1];
+            md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
+            while (md_bitfield_iter_next(&it)) {
+                const int64_t idx = md_bitfield_iter_idx(&it);
+                const int64_t res_idx = ctx->mol->atom.residue_idx[idx];
                 md_range_t range = ctx->mol->residue.atom_range[res_idx];
                 ASSERT(i < element_count(*dst));
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
                 i = (capacity == 1) ? i : i + 1;
-                beg = range.end;
+                // Skip to end of residue
+                it.idx = range.end;
             }
             result = 0; // OK
         } else {
@@ -2518,13 +2555,13 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
 
-            int64_t beg = tmp_bf.beg_bit;
-            int64_t end = tmp_bf.end_bit;
-            while ((beg = md_bitfield_scan(&tmp_bf, beg, end)) != 0) {
-                const int64_t res_idx = ctx->mol->atom.residue_idx[beg - 1];
+            md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
+            while (md_bitfield_iter_next(&it)) {
+                const int64_t idx = md_bitfield_iter_idx(&it);
+                const int64_t res_idx = ctx->mol->atom.residue_idx[idx];
                 count += 1;
-                // Skip rest of atoms in residue
-                beg = ctx->mol->residue.atom_range[res_idx].end;
+                // Skip to end of residue
+                it.idx = ctx->mol->residue.atom_range[res_idx].end;
             }
             if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
                 count = MIN(1, count);
@@ -3201,7 +3238,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_equivalent(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     ASSERT(ctx && ctx->mol && ctx->mol->atom.mass);
 
     bool result = 0;
@@ -3211,15 +3248,16 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(ctx->initial_configuration.x && ctx->initial_configuration.y && ctx->initial_configuration.z);
 
         if (dst->ptr) {
-            const md_bitfield_t* bf = as_bitfield(arg[0]);
+            const md_bitfield_t* src_bf = as_bitfield(arg[0]);
+            md_bitfield_t bf = _internal_flatten_bf(src_bf, element_count(arg[0]), ctx->temp_alloc);
             md_bitfield_t tmp_bf = {0};
 
             if (ctx->mol_ctx) {
                 md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-                md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
-                bf = &tmp_bf;
+                md_bitfield_and(&tmp_bf, &bf, ctx->mol_ctx);
+                bf = tmp_bf;
             }
-            const int64_t count = md_bitfield_popcount(bf);
+            const int64_t count = md_bitfield_popcount(&bf);
 
             if (count > 0) {
                 const int64_t stride = ALIGN_TO(count, md_simd_f32_width);
@@ -3240,8 +3278,8 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 float* w  = coord_data + stride * 6;
 
 
-                extract_xyz (coord[0].x, coord[0].y, coord[0].z, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, bf);
-                extract_xyzw(coord[1].x, coord[1].y, coord[1].z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+                extract_xyz (coord[0].x, coord[0].y, coord[0].z, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, &bf);
+                extract_xyzw(coord[1].x, coord[1].y, coord[1].z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
 
                 const vec3_t com[2] = {
                     md_util_compute_com_soa(coord[0].x, coord[0].y, coord[0].z, w, count),
@@ -3781,7 +3819,9 @@ bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
     if (d == 0) {
         while(0);
     }
-    if (data->min_cutoff < d && d < data->max_cutoff) {
+    // This bias is only here to counter the lack of precision due to storing compressed coordinates within spatial hash.
+    const float bias = 0.02f;
+    if (data->min_cutoff + bias < d && d < data->max_cutoff) {
         int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
         bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
         data->bins[bin_idx] += 1.0f;
