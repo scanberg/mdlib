@@ -663,6 +663,109 @@ MD_SIMD_INLINE md_i64x4_t md_simd_blend_i64x4(md_i64x4_t a, md_i64x4_t b, md_i64
 #define md_simd_xor_f32x8 _mm256_xor_ps
 #define md_simd_xor_f64x4 _mm256_xor_pd
 
+// This is probably not portable beyond MSVC and clang + gcc, but we don't care since
+// those are the only compilers we aim to support.
+
+MD_SIMD_INLINE md_f32x4_t md_simd_gather_f32x4(const float* base, md_i32x4_t indices) {
+#if __AVX2__
+    return _mm_i32gather_ps(base, indices.m128i, 1);
+#else
+#   if MD_COMPILER_MSVC
+    return _mm_set_ps(
+        base[indices.m128i.m128i_i32[0]],
+        base[indices.m128i.m128i_i32[1]],
+        base[indices.m128i.m128i_i32[2]],
+        base[indices.m128i.m128i_i32[3]]
+    );
+#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
+    return _mm_set_ps(
+        base[indices.m128i[0]],
+        base[indices.m128i[1]],
+        base[indices.m128i[2]],
+        base[indices.m128i[3]]
+    );
+#   else
+#       error "Unsupported compiler :<"
+#   endif
+#endif
+}
+
+MD_SIMD_INLINE md_f64x2_t md_simd_gather_f64x2(const double* base, md_i32x4_t indices) {
+#if __AVX2__
+    return _mm_i32gather_pd(base, indices.m128i, 1);
+#else
+#   if MD_COMPILER_MSVC
+    return _mm_set_pd(
+        base[indices.m128i.m128i_i32[0]],
+        base[indices.m128i.m128i_i32[1]]
+    );
+#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
+    return _mm_set_pd(
+        base[indices.m128i[0]],
+        base[indices.m128i[1]]
+    );
+#   else
+#       error "Unsupported compiler :<"
+#   endif
+#endif
+}
+
+MD_SIMD_INLINE md_f32x8_t md_simd_gather_f32x8(const float* base, md_i32x8_t indices) {
+#if __AVX2__
+    return _mm256_i32gather_ps(base, indices.m256i, 1);
+#else
+#   if MD_COMPILER_MSVC
+    return _mm256_set_ps(
+        base[indices.m256i.m256i_i32[0]],
+        base[indices.m256i.m256i_i32[1]],
+        base[indices.m256i.m256i_i32[2]],
+        base[indices.m256i.m256i_i32[3]],
+        base[indices.m256i.m256i_i32[4]],
+        base[indices.m256i.m256i_i32[5]],
+        base[indices.m256i.m256i_i32[6]],
+        base[indices.m256i.m256i_i32[7]]
+    );
+#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
+    return _mm_set_ps(
+        base[indices.m256i[0]],
+        base[indices.m256i[1]],
+        base[indices.m256i[2]],
+        base[indices.m256i[3]],
+        base[indices.m256i[4]],
+        base[indices.m256i[5]],
+        base[indices.m256i[6]],
+        base[indices.m256i[7]]
+    );
+#   else
+#       error "Unsupported compiler :<"
+#   endif
+#endif
+}
+
+MD_SIMD_INLINE md_f64x4_t md_simd_gather_f64x4(const double* base, md_i32x4_t indices) {
+#if __AVX2__
+    return _mm256_i32gather_pd(base, indices.m128i, 1);
+#else
+#   if MD_COMPILER_MSVC
+    return _mm256_set_pd(
+        base[indices.m128i.m128i_i32[0]],
+        base[indices.m128i.m128i_i32[1]],
+        base[indices.m128i.m128i_i32[2]],
+        base[indices.m128i.m128i_i32[3]]
+    );
+#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
+    return _mm_set_pd(
+        base[indices.m128i[0]],
+        base[indices.m128i[1]],
+        base[indices.m128i[2]],
+        base[indices.m128i[3]]
+    );
+#   else
+#       error "Unsupported compiler :<"
+#   endif
+#endif
+}
+
 MD_SIMD_INLINE md_f32x4_t md_simd_and_not_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_andnot_ps(b, a); }
 MD_SIMD_INLINE md_f32x8_t md_simd_and_not_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_andnot_ps(b, a); }
 MD_SIMD_INLINE md_f64x2_t md_simd_and_not_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_andnot_pd(b, a); }

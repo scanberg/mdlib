@@ -1,10 +1,12 @@
 #include "md_spatial_hash.h"
 
 #include "md_allocator.h"
+#include "md_arena_allocator.h"
 #include "md_log.h"
 #include "md_array.h"
 #include "md_simd.h"
 #include "md_util.h"
+#include "md_bitfield.h"
 
 #include <float.h>
 #include <string.h>
@@ -21,31 +23,82 @@
 
 #define UNPACK_CELL_COORD(p) vec4_set( ((p >>  0) & 0x3FF) * SCL, ((p >> 10) & 0x3FF) * SCL, ((p >> 20) & 0x3FF) * SCL, 0)
 
-bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec3_t pbc_ext, md_allocator_i* alloc) {
-    ASSERT(hash); 
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
-    ASSERT(alloc);
+static void compute_aabb(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec4_t pbc_ext) {
+    ASSERT(md_simd_f32_width == md_simd_i32_width);
 
-    stride = MAX(stride, sizeof(float));
+    md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
+    md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
+    md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
 
-    md_allocator_i* temp_alloc = default_temp_allocator;
-    uint32_t* cell_coord        = md_alloc(temp_alloc, sizeof(uint32_t) * count);
-    uint32_t* packed_cell_coord = md_alloc(temp_alloc, sizeof(uint32_t) * count);
-    uint32_t* local_idx         = md_alloc(temp_alloc, sizeof(uint32_t) * count);
+    md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
+    md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
+    md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
 
-    const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
+    const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
-    vec4_t aabb_min = {0};
-    vec4_t aabb_max = {0};
-    md_util_compute_aabb_ortho_xyz((vec3_t*)(&aabb_min), (vec3_t*)(&aabb_max), in_x, in_y, in_z, count, stride, pbc_ext);
+    const size_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
 
-    const int32_t cell_min[3] = {
-        (int32_t)floorf(aabb_min.x * INV_CELL_EXT),
-        (int32_t)floorf(aabb_min.y * INV_CELL_EXT),
-        (int32_t)floorf(aabb_min.z * INV_CELL_EXT),
+    size_t i = 0;
+    for (; i < simd_count; i += md_simd_f32_width) {
+        md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
+        md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * stride));
+        md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * stride));
+
+        x = md_simd_deperiodize(x, md_simd_set1_f32(ref.x), md_simd_set1_f32(ext.x));
+        y = md_simd_deperiodize(y, md_simd_set1_f32(ref.y), md_simd_set1_f32(ext.y));
+        z = md_simd_deperiodize(z, md_simd_set1_f32(ref.z), md_simd_set1_f32(ext.z));
+
+        vx_min = md_simd_min(vx_min, x);
+        vy_min = md_simd_min(vy_min, y);
+        vz_min = md_simd_min(vz_min, z);
+
+        vx_max = md_simd_max(vx_max, x);
+        vy_max = md_simd_max(vy_max, y);
+        vz_max = md_simd_max(vz_max, z);
+    }
+
+    vec4_t aabb_min = {
+        md_simd_hmin(vx_min),
+        md_simd_hmin(vy_min),
+        md_simd_hmin(vz_min),
+        0
     };
+
+    vec4_t aabb_max = {
+        md_simd_hmax(vx_max),
+        md_simd_hmax(vy_max),
+        md_simd_hmax(vz_max),
+        0
+    };
+
+    // Handle remainder
+    for (; i < count; ++i) {
+        vec4_t c = {
+            *(const float*)((const char*)in_x + i * stride),
+            *(const float*)((const char*)in_y + i * stride),
+            *(const float*)((const char*)in_z + i * stride),
+            0
+        };
+        c = vec4_deperiodize(c, ref, ext);
+
+        aabb_min = vec4_min(aabb_min, c);
+        aabb_max = vec4_max(aabb_max, c);
+    }
+
+    *out_aabb_min = aabb_min;
+    *out_aabb_max = aabb_max;
+}
+
+static void compute_cell_coords(int32_t cell_min[3], int32_t cell_dim[3], uint32_t* cell_index, uint32_t* fract_coord, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, const float pbc_ext[3]) {
+    ASSERT(md_simd_f32_width == md_simd_i32_width);
+
+    vec4_t aabb_min, aabb_max;
+    compute_aabb(&aabb_min, &aabb_max, in_x, in_y, in_z, count, stride, vec4_set(pbc_ext[0], pbc_ext[1], pbc_ext[2], 0));
+
+    // Compute the cell indices
+    cell_min[0] = (int32_t)floorf(aabb_min.x * INV_CELL_EXT);
+    cell_min[1] = (int32_t)floorf(aabb_min.y * INV_CELL_EXT);
+    cell_min[2] = (int32_t)floorf(aabb_min.z * INV_CELL_EXT);
 
     const int32_t cell_max[3] = {
         (int32_t)floorf(aabb_max.x * INV_CELL_EXT) + 1,
@@ -53,75 +106,155 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
         (int32_t)floorf(aabb_max.z * INV_CELL_EXT) + 1,
     };
 
-    const int32_t cell_dim[3] = {
-        MAX(1, cell_max[0] - cell_min[0]),
-        MAX(1, cell_max[1] - cell_min[1]),
-        MAX(1, cell_max[2] - cell_min[2]),
-    };
+    cell_dim[0] = MAX(1, cell_max[0] - cell_min[0]);
+    cell_dim[1] = MAX(1, cell_max[1] - cell_min[1]);
+    cell_dim[2] = MAX(1, cell_max[2] - cell_min[2]);
+
+    const vec4_t ext = vec4_set(pbc_ext[0], pbc_ext[1], pbc_ext[2], 0);
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+    const size_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
+
+    const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
+    
+    size_t i = 0;
+    for (; i < simd_count; i += md_simd_f32_width) {
+        md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
+        md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * stride));
+        md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * stride));
+
+        x = md_simd_deperiodize(x, md_simd_set1_f32(ref.x), md_simd_set1_f32(ext.x));
+        y = md_simd_deperiodize(y, md_simd_set1_f32(ref.y), md_simd_set1_f32(ext.y));
+        z = md_simd_deperiodize(z, md_simd_set1_f32(ref.z), md_simd_set1_f32(ext.z));
+
+        x = md_simd_mul(x, md_simd_set1_f32(INV_CELL_EXT));
+        y = md_simd_mul(y, md_simd_set1_f32(INV_CELL_EXT));
+        z = md_simd_mul(z, md_simd_set1_f32(INV_CELL_EXT));
+
+        md_simd_f32_t fx = md_simd_floor(x);
+        md_simd_f32_t fy = md_simd_floor(y);
+        md_simd_f32_t fz = md_simd_floor(z);
+
+        md_simd_i32_t ccx = md_simd_sub(md_simd_convert_f32(fx), md_simd_set1_i32(cell_min[0]));
+        md_simd_i32_t ccy = md_simd_sub(md_simd_convert_f32(fy), md_simd_set1_i32(cell_min[1]));
+        md_simd_i32_t ccz = md_simd_sub(md_simd_convert_f32(fz), md_simd_set1_i32(cell_min[2]));
+
+        md_simd_i32_t pcx = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(x, fx), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
+        md_simd_i32_t pcy = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(y, fy), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
+        md_simd_i32_t pcz = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(z, fz), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
+
+        //md_simd_i32_t cc = md_simd_or(md_simd_shift_left(ccz, 20), md_simd_or(md_simd_shift_left(ccy, 10), ccx));
+        
+        // This is a bit of a hack to get around the multiplication for integers in SSE/AVX
+        // The multiplication operations (of integers) of element sizes most often store the result in 2x element size
+        // This means we loose our lanes if we perform the operation with epi32
+        // Unless we resort to the mullo instruction which have half the throughput and twice the latency
+        // Therefore we resport to 16-bit operations which yield 32-bit results.
+        // 16-bits should be sufficient for the sizes which we operate on
+#ifdef __AVX2__
+        ccz = (md_simd_i32_t){_mm256_madd_epi16(ccz.m256i, _mm256_set1_epi32(cell_dim_01))};
+        ccy = (md_simd_i32_t){_mm256_madd_epi16(ccy.m256i, _mm256_set1_epi32(cell_dim[0]))};
+#elif defined(__AVX__)
+        // Have to emulate the wide instruction for AVX
+        ccz = (md_simd_i32_t){MD_SIMD_DOUBLE_PUMP2_SI128(ccz.m256i, _mm256_set1_epi32(cell_dim_01), _mm_madd_epi16)};
+        ccy = (md_simd_i32_t){MD_SIMD_DOUBLE_PUMP2_SI128(ccy.m256i, _mm256_set1_epi32(cell_dim[0]), _mm_madd_epi16)};
+#elif defined(__x86_64__)
+        // SSE2
+        ccz = (md_simd_i32_t){_mm_madd_epi16(ccz.m128i, _mm_set1_epi32(cell_dim_01))};
+        ccy = (md_simd_i32_t){_mm_madd_epi16(ccy.m128i, _mm_set1_epi32(cell_dim[0]))};
+#else
+#error "Unsupported architecture :<"
+#endif
+
+        md_simd_i32_t ci = md_simd_add(ccz, md_simd_add(ccy, ccx));
+        md_simd_i32_t pc = md_simd_or(md_simd_shift_left(pcz, 20), md_simd_or(md_simd_shift_left(pcy, 10), pcx));
+
+        md_simd_store((int*)cell_index  + i, ci);
+        md_simd_store((int*)fract_coord + i, pc);
+    }
+
+    // Handle remainder
+    for (; i < count; ++i) {
+        vec4_t c = {
+            *(const float*)((const char*)in_x + i * stride),
+            *(const float*)((const char*)in_y + i * stride),
+            *(const float*)((const char*)in_z + i * stride),
+            0
+        };
+        c = vec4_mul_f(vec4_deperiodize(c, ref, ext), INV_CELL_EXT);
+
+        vec4_t f = vec4_floor(c);
+        vec4_t p = vec4_fmadd(vec4_sub(c, f), vec4_set1(1023.0f), vec4_set1(0.5f));
+        uint32_t ci = ((int32_t)f.z - cell_min[2]) * cell_dim_01 + ((int32_t)f.y - cell_min[1]) * cell_dim[0] + ((int32_t)f.x - cell_min[0]);
+
+        cell_index[i] = ci;
+        fract_coord[i] = ((uint32_t)p.z << 20) | ((uint32_t)p.y << 10) | (uint32_t)p.x;
+    }
+}
+
+static void compute_cell_coords_indexed(uint32_t* whole_cell_coord, uint32_t* fract_cell_coord, const float* in_x, const float* in_y, const float* in_z, const int* indices, size_t count, size_t stride, const int cell_min[3], const float pbc_ext[3]) {
+    ASSERT(md_simd_f32_width == md_simd_i32_width);
+
+    const vec4_t ext = vec4_set(pbc_ext[0], pbc_ext[1], pbc_ext[2], 0);
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+    size_t dst_idx = 0;
+    for (size_t i = 0; i < count; ++i) {
+        int src_idx = indices[i];
+        vec4_t c = {
+            *(const float*)((const char*)in_x + src_idx * stride),
+            *(const float*)((const char*)in_y + src_idx * stride),
+            *(const float*)((const char*)in_z + src_idx * stride),
+            0
+        };
+        c = vec4_mul_f(vec4_deperiodize(c, ref, ext), INV_CELL_EXT);
+
+        vec4_t f = vec4_floor(c);
+        vec4_t p = vec4_fmadd(vec4_sub(c, f), vec4_set1(1023.0f), vec4_set1(0.5f));
+        uint32_t cc =
+            (((int32_t)f.z - cell_min[2]) << 20) |
+            (((int32_t)f.y - cell_min[1]) << 10) |
+             ((int32_t)f.x - cell_min[0]);
+
+        whole_cell_coord[dst_idx] = cc;
+        fract_cell_coord[dst_idx] = ((uint32_t)p.z << 20) | ((uint32_t)p.y << 10) | (uint32_t)p.x;
+
+        dst_idx += 1;
+    }
+    ASSERT(dst_idx == count);
+}
+
+static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const float* in_z, const int* indices, size_t count, size_t stride, vec3_t pbc_ext, md_allocator_i* alloc) {
+    ASSERT(hash);
+    ASSERT(in_x);
+    ASSERT(in_y);
+    ASSERT(in_z);
+    ASSERT(alloc);
+
+    bool result = false;
+
+    stride = MAX(stride, sizeof(float));
+
+    md_allocator_i* temp_alloc = default_allocator;
+    size_t bytes = sizeof(uint32_t) * count * 3;
+    void* mem = md_alloc(temp_alloc, bytes);
+
+    uint32_t* fract_cell_coord  = (uint32_t*)mem;
+    uint32_t* cell_index        = (uint32_t*)mem + count;
+    uint32_t* local_idx         = (uint32_t*)mem + count * 2;
+
+    int32_t cell_min[3];
+    int32_t cell_dim[3];
+    compute_cell_coords(cell_min, cell_dim, cell_index, fract_cell_coord, in_x, in_y, in_z, count, stride, pbc_ext.elem);
 
     if (cell_dim[0] > MAX_CELL_DIM ||
         cell_dim[1] > MAX_CELL_DIM ||
         cell_dim[2] > MAX_CELL_DIM)
     {
         MD_LOG_ERROR("Spatial hash cell dimension is too large: {%i %i %i}", cell_dim[0], cell_dim[1], cell_dim[2]);
-        return false;
+        goto done;
     }
 
     const uint32_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
-
-    {
-        size_t i = 0;
-        const size_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
-        ASSERT(md_simd_f32_width == md_simd_i32_width);
-        for (; i < simd_count; i += md_simd_f32_width) {
-            md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
-            md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * stride));
-            md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * stride));
-
-            x = md_simd_mul(md_simd_deperiodize(x, md_simd_set1_f32(ref.x), md_simd_set1_f32(ext.x)), md_simd_set1_f32(INV_CELL_EXT));
-            y = md_simd_mul(md_simd_deperiodize(y, md_simd_set1_f32(ref.y), md_simd_set1_f32(ext.y)), md_simd_set1_f32(INV_CELL_EXT));
-            z = md_simd_mul(md_simd_deperiodize(z, md_simd_set1_f32(ref.z), md_simd_set1_f32(ext.z)), md_simd_set1_f32(INV_CELL_EXT));
-
-            md_simd_f32_t fx = md_simd_floor(x);
-            md_simd_f32_t fy = md_simd_floor(y);
-            md_simd_f32_t fz = md_simd_floor(z);
-
-            md_simd_i32_t ccx = md_simd_sub(md_simd_convert_f32(fx), md_simd_set1_i32(cell_min[0]));
-            md_simd_i32_t ccy = md_simd_sub(md_simd_convert_f32(fy), md_simd_set1_i32(cell_min[1]));
-            md_simd_i32_t ccz = md_simd_sub(md_simd_convert_f32(fz), md_simd_set1_i32(cell_min[2]));
-
-            md_simd_i32_t pcx = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(x, fx), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
-            md_simd_i32_t pcy = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(y, fy), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
-            md_simd_i32_t pcz = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(z, fz), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
-
-            md_simd_i32_t cc = md_simd_or(md_simd_shift_left(ccz, 20), md_simd_or(md_simd_shift_left(ccy, 10), ccx));
-            md_simd_i32_t pc = md_simd_or(md_simd_shift_left(pcz, 20), md_simd_or(md_simd_shift_left(pcy, 10), pcx));
-
-            md_simd_store((int*)cell_coord + i, cc);
-            md_simd_store((int*)packed_cell_coord + i, pc);
-        }
-
-        // Handle remainder
-        for (; i < count; ++i) {
-            vec4_t c = {
-                *(const float*)((const char*)in_x + i * stride),
-                *(const float*)((const char*)in_y + i * stride),
-                *(const float*)((const char*)in_z + i * stride),
-                0
-            };
-            c = vec4_mul_f(vec4_deperiodize(c, ref, ext), INV_CELL_EXT);
-
-            vec4_t f = vec4_floor(c);
-            vec4_t p = vec4_fmadd(vec4_sub(c, f), vec4_set1(1023.0f), vec4_set1(0.5f));
-            uint32_t cc =
-                (((int32_t)f.z - cell_min[2]) << 20) |
-                (((int32_t)f.y - cell_min[1]) << 10) |
-                 ((int32_t)f.x - cell_min[0]);
-
-            cell_coord[i]        = cc;
-            packed_cell_coord[i] = ((uint32_t)p.z << 20) | ((uint32_t)p.y << 10) | (uint32_t)p.x;
-        }
-    }
 
     // Allocate needed data
     uint32_t* cells         = md_alloc(alloc, sizeof(uint32_t) * cell_count);
@@ -131,11 +264,7 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
     MEMSET(cells, 0, sizeof(uint32_t) * cell_count);
 
     for (size_t i = 0; i < count; ++i) {
-        uint32_t cc = cell_coord[i];
-        uint32_t cz = ((cc >> 20) & 0x3FF);
-        uint32_t cy = ((cc >> 10) & 0x3FF);
-        uint32_t cx = ((cc >>  0) & 0x3FF);
-        uint32_t idx = cz * (cell_dim[0] * cell_dim[1]) + cy * cell_dim[0] + cx;
+        uint32_t idx = cell_index[i];
         ASSERT(idx < cell_count);
 
         local_idx[i] = cells[idx]++;
@@ -156,19 +285,10 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
 
     // Write data to correct location
     for (size_t i = 0; i < count; ++i) {
-        uint32_t cc = cell_coord[i];
-        uint32_t cz = ((cc >> 20) & 0x3FF);
-        uint32_t cy = ((cc >> 10) & 0x3FF);
-        uint32_t cx = ((cc >>  0) & 0x3FF);
-        uint32_t cell_idx = cz * (cell_dim[0] * cell_dim[1]) + cy * cell_dim[0] + cx;
-        uint32_t dst_idx = (cells[cell_idx] >> 10) + local_idx[i];
-        coords[dst_idx]  = packed_cell_coord[i];
-        original_idx[dst_idx] = (uint32_t)i;
+        uint32_t dst_idx        = (cells[cell_index[i]] >> 10) + local_idx[i];
+        coords[dst_idx]         = fract_cell_coord[i];
+        original_idx[dst_idx]   = (uint32_t)i;
     }
-
-    md_free(temp_alloc, local_idx,          sizeof(uint32_t) * count);
-    md_free(temp_alloc, packed_cell_coord,  sizeof(uint32_t) * count);
-    md_free(temp_alloc, cell_coord,         sizeof(uint32_t) * count);
 
     hash->cells    = cells;
     hash->coords   = coords;
@@ -180,7 +300,10 @@ bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, const f
     hash->magic = MD_SPATIAL_HASH_MAGIC;
     hash->pbc_ext = vec4_from_vec3(pbc_ext, 0);
 
-    return true;
+    result = true;
+done:
+    md_free(temp_alloc, mem, bytes);
+    return result;
 }
 
 bool md_spatial_hash_init(md_spatial_hash_t* hash, const vec3_t* pos, int64_t count, vec3_t pbc_ext, md_allocator_i* alloc) {
@@ -193,7 +316,7 @@ bool md_spatial_hash_init(md_spatial_hash_t* hash, const vec3_t* pos, int64_t co
         return false;
     }
 
-    return init(hash, &pos->x, &pos->y, &pos->z, (size_t)count, sizeof(vec3_t), pbc_ext, alloc);
+    return init(hash, &pos->x, &pos->y, &pos->z, NULL, (size_t)count, sizeof(vec3_t), pbc_ext, alloc);
 }
 
 bool md_spatial_hash_init_soa(md_spatial_hash_t* hash, const float* x, const float* y, const float* z, int64_t count, vec3_t pbc_ext, md_allocator_i* alloc) {
@@ -208,7 +331,7 @@ bool md_spatial_hash_init_soa(md_spatial_hash_t* hash, const float* x, const flo
         return false;
     }
 
-    return init(hash, x, y, z, (size_t)count, 0, pbc_ext, alloc);
+    return init(hash, x, y, z, NULL, (size_t)count, 0, pbc_ext, alloc);
 }
 
 bool md_spatial_hash_free(md_spatial_hash_t* hash) {
@@ -412,17 +535,21 @@ typedef struct {
 
 bool idx_fn(uint32_t idx, vec3_t pos, void* user_param) {
     (void)pos;
-    idx_data_t* data = (idx_data_t*)user_param;
-    md_array_push(data->arr, idx, data->alloc);
+    md_bitfield_t* bf = (md_bitfield_t*)user_param;
+    md_bitfield_set_bit(bf, idx);
     return true;
 }
 
-md_array(uint32_t) md_spatial_hash_query_idx(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_allocator_i* alloc) {
-    idx_data_t data = {
-        .arr = NULL,
-        .alloc = alloc,
-    };
+int64_t md_spatial_hash_query_idx(int32_t* buf, int64_t cap, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius) {
+    md_bitfield_t bf = md_bitfield_create(default_temp_allocator);
+    md_bitfield_reserve_range(&bf, 0, spatial_hash->coord_count);
 
-    md_spatial_hash_query(spatial_hash, pos, radius, idx_fn, &data);
-    return data.arr;
+    md_spatial_hash_query(spatial_hash, pos, radius, idx_fn, &bf);
+#if DEBUG
+    if ((int64_t)md_bitfield_popcount(&bf) > cap) {
+        MD_LOG_DEBUG("Size exceeds the capacity, some elements will not be written");
+    }
+#endif
+
+    return md_bitfield_extract_indices(buf, cap, &bf);
 }

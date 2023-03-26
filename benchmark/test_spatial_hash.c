@@ -41,3 +41,67 @@ UBENCH_EX_F(spatial_hash, perf_test_init) {
 
     md_vm_arena_temp_end(temp);
 }
+
+/*
+static inline void do_it(float* out_xyzw, const float* in_x, const float* in_y, const float* in_z, const float in_w, size_t count) {
+    __m128 wwww = _mm_set1_ps(in_w);
+    for (size_t i = 0; i < count; i += 4) {
+        __m128 xxxx = _mm_load_ps(in_x + i);
+        __m128 yyyy = _mm_load_ps(in_y + i);
+        __m128 zzzz = _mm_load_ps(in_z + i);
+
+        __m128 _Tmp0 = _mm_shuffle_ps((xxxx), (yyyy), 0x44);
+        __m128 _Tmp2 = _mm_shuffle_ps((xxxx), (yyyy), 0xEE);
+        __m128 _Tmp1 = _mm_shuffle_ps((zzzz), (wwww), 0x44);
+        __m128 _Tmp3 = _mm_shuffle_ps((zzzz), (wwww), 0xEE);
+
+        __m128 xyzw0 = _mm_shuffle_ps(_Tmp0, _Tmp1, 0x88);
+        __m128 xyzw1 = _mm_shuffle_ps(_Tmp0, _Tmp1, 0xDD);
+        __m128 xyzw2 = _mm_shuffle_ps(_Tmp2, _Tmp3, 0x88);
+        __m128 xyzw3 = _mm_shuffle_ps(_Tmp2, _Tmp3, 0xDD);
+
+        _mm_store_ps(out_xyzw + i * 4 + 0, xyzw0);
+        _mm_store_ps(out_xyzw + i * 4 + 1, xyzw1);
+        _mm_store_ps(out_xyzw + i * 4 + 2, xyzw2);
+        _mm_store_ps(out_xyzw + i * 4 + 3, xyzw3);
+    }
+}
+
+static inline void do_it2(vec4_t* out_xyzw, const float* in_x, const float* in_y, const float* in_z, const float in_w, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        out_xyzw[i] = vec4_set(in_x[i], in_y[i], in_z[i], in_w);
+    }
+}
+
+UBENCH_EX_F(spatial_hash, testink_1) {
+    md_molecule_t* mol = &ubench_fixture->mol;
+    md_allocator_i* alloc = &ubench_fixture->alloc;
+    vec3_t pbc_ext = ubench_fixture->pbc_ext;
+
+    md_spatial_hash_t spatial_hash = {0};
+
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
+    vec4_t* data = md_vm_arena_push(&ubench_fixture->arena, sizeof(vec4_t) * mol->atom.count);
+    UBENCH_DO_BENCHMARK() {
+        do_it(data, mol->atom.x, mol->atom.y, mol->atom.z, 1.0f, mol->atom.count);
+    }
+
+    md_vm_arena_temp_end(temp);
+}
+
+UBENCH_EX_F(spatial_hash, testink_2) {
+    md_molecule_t* mol = &ubench_fixture->mol;
+    md_allocator_i* alloc = &ubench_fixture->alloc;
+    vec3_t pbc_ext = ubench_fixture->pbc_ext;
+
+    md_spatial_hash_t spatial_hash = {0};
+
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
+    vec4_t* data = md_vm_arena_push(&ubench_fixture->arena, sizeof(vec4_t) * mol->atom.count);
+    UBENCH_DO_BENCHMARK() {
+        do_it2(data, mol->atom.x, mol->atom.y, mol->atom.z, 1.0f, mol->atom.count);
+    }
+
+    md_vm_arena_temp_end(temp);
+}
+*/
