@@ -100,9 +100,11 @@ static inline uint64_t md_bitfield_iter_idx(const md_bitfield_iter_t* it) {
 //bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_bitfield_t* src);
 
 
-// Writes the indices of all bits set in the bitfield to the given buffer.
-// The buffer must be large enough to hold all indices and can be queried by md_bitfield_popcount
-void md_bitfield_extract_indices(int32_t* index_buffer, const md_bitfield_t* bf);
+// Writes the indices of bits set in the bitfield to the given buffer.
+// cap is the capacity (num elements) of the buffer.
+// returns the number of indices written to the buffer
+// Use popcount to determine required capacity of buffer.
+int64_t md_bitfield_extract_indices(int32_t* buf, int64_t cap, const md_bitfield_t* bf);
 
 // Returns the maximum serialization size in bytes of a bitfield
 uint64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf);

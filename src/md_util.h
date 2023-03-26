@@ -5,6 +5,7 @@
 #include <core/md_vec_math.h>
 
 struct md_allocator_i;
+struct md_bitfield_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -86,12 +87,20 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
 //md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
 
+// Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
+// Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
+void md_util_grow_mask_by_bonds(struct md_bitfield_t* mask, const struct md_molecule_t* mol, int extent, const struct md_bitfield_t* viable_mask);
+
+// Grow a mask by radius (in Angstrom)
+// Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
+void md_util_grow_mask_by_radius(struct md_bitfield_t* mask, const struct md_molecule_t* mol, float radius, const struct md_bitfield_t* viable_mask);
+
 //bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
 // Computes chains from connected residues
 // The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
 // This means that single residues which are not connected to any other residue will not classify as a chain.
-bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
+//bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t atom_residue_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t covelent_bond_count, struct md_allocator_i* alloc);
 
 // Compute the valence of atoms given the covalent bonds
 //bool md_util_compute_atom_valence(md_valence_t atom_valence[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count);
@@ -125,17 +134,13 @@ bool md_util_unwrap_ortho(float* x, float* y, float* z, md_index_data_t structur
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
 bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell_t* cell, const struct md_molecule_t* mol);
 
-//bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_bond_data_t* covalent_data, vec3_t pbc_ext);
+// Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional)
+void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const vec3_t* xyz, const float* r, int64_t count);
+void md_util_compute_aabb_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, int64_t count);
 
-
-// Computes the miminum axis aligned bounding box for a set of points
-void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count);
-
-// Computes the minimum axis aligned bounding box for a set of points with a given radius
-void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, int64_t count);
-
-// Computes the miminum axis aligned bounding box for a set of points within a periodic box (0,0,0) -> (pbc_ext)
-void md_util_compute_aabb_ortho_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, int64_t count, uint64_t stride, vec3_t box);
+// Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional), indices are used to select a subset of points
+void md_util_compute_aabb_indexed(vec3_t* aabb_min, vec3_t* aabb_max, const vec3_t* xyz, const float* r, const int32_t* indices, int64_t index_count);
+void md_util_compute_aabb_indexed_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, int64_t index_count);
 
 // Computes the center of mass for a set of points with a given weight
 // x, y, z: Arrays containing coordinates

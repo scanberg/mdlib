@@ -942,19 +942,13 @@ md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, c
             md_spatial_hash_init_soa(&sh, atom->x, atom->y, atom->z, atom->count, vec3_from_vec4(pbc_ext), default_allocator);
 
             const float cutoff = 3.0f;
-
-            md_ring_allocator_t* ring_alloc = get_thread_ring_allocator();
-            md_allocator_i temp_alloc = md_ring_allocator_create_interface(ring_alloc);
-            uint64_t reset_pos = md_ring_allocator_get_pos(ring_alloc);
+            
+            int indices[128];
 
             for (int i = 0; i < (int)atom_count; ++i) {
                 const vec3_t pos = {atom->x[i], atom->y[i], atom->z[i]};
 
-                // Reset ring allocator pos
-                md_ring_allocator_set_pos(ring_alloc, reset_pos);
-                md_array(uint32_t) indices = md_spatial_hash_query_idx(&sh, pos, cutoff, &temp_alloc);
-
-                const int64_t num_indices = md_array_size(indices);
+                const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), &sh, pos, cutoff);
                 for (int64_t iter = 0; iter < num_indices; ++iter) {
                     const int j = indices[iter];
 
@@ -1442,103 +1436,125 @@ md_index_data_t md_util_compute_structures(md_index_data_t atom_connectivity, st
     return structures;
 }
 
-void md_util_compute_aabb_xyz(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count) {
-    md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
-    md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
-    md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
+void md_util_grow_mask_by_bonds(md_bitfield_t* mask, const struct md_molecule_t* mol, int extent, const md_bitfield_t* viable_mask) {
+    ASSERT(mask);
+    ASSERT(mol);
 
-    md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
-    md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
-    md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
+    if (extent <= 0) return;
+    if (extent >= 255) {
+        MD_LOG_DEBUG("Maximum supported growth extent is 255, the extent will be clamped to 255");
+        extent = 255;
+    }
+    
+    const int64_t mask_size = md_bitfield_popcount(mask);
+    if (!mask_size) return;
 
-    int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
-    for (; i < simd_count; i += md_simd_f32_width) {
-        md_simd_f32_t x = md_simd_load_f32(in_x + i);
-        md_simd_f32_t y = md_simd_load_f32(in_y + i);
-        md_simd_f32_t z = md_simd_load_f32(in_z + i);
+    md_vm_arena_t arena = { 0 };
+    md_vm_arena_init(&arena, GIGABYTES(1));
+    md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
 
-        vx_min = md_simd_min(vx_min, x);
-        vy_min = md_simd_min(vy_min, y);
-        vz_min = md_simd_min(vz_min, z);
+    int* indices = md_vm_arena_push(&arena, mask_size * sizeof(int));
+    const int64_t num_indices = md_bitfield_extract_indices(indices, mask_size, mask);
+    ASSERT(num_indices == mask_size);
 
-        vx_max = md_simd_max(vx_max, x);
-        vy_max = md_simd_max(vy_max, y);
-        vz_max = md_simd_max(vz_max, z);
+    fifo_t queue = fifo_create(64, &arena_alloc);
+
+    int64_t num_atoms = mol->atom.count;
+    uint8_t* depth = md_vm_arena_push(&arena, num_atoms * sizeof(uint8_t));
+    MEMSET(depth, 0, num_atoms * sizeof(uint8_t));
+
+    {
+        md_bitfield_iter_t it = md_bitfield_iter(mask);
+        while (md_bitfield_iter_next(&it)) {
+            int idx = (int)md_bitfield_iter_idx(&it);
+            depth[idx] = 1;
+        }
+    }
+    
+    for (int j = 0; j < num_indices; ++j) {
+        int i = indices[j];
+
+        fifo_clear(&queue);
+        fifo_push(&queue, i);
+        
+        while (!fifo_empty(&queue)) {
+            int idx = fifo_pop(&queue);
+            md_bitfield_set_bit(mask, idx);
+
+            const int* eb = md_index_range_beg(mol->connectivity, idx);
+            const int* ee = md_index_range_end(mol->connectivity, idx);
+            for (const int* it = eb; it != ee; ++it) {
+                int next = *it;
+                if (viable_mask && md_bitfield_test_bit(viable_mask, next) == false) {
+                    continue;
+                }
+                // Only explore the path if it is not already marked and it is within the extent.
+                // Or if the current path is 'cheaper'
+                const uint8_t dc = depth[idx] + 1;
+                const uint8_t dn = depth[next];
+                if (dn == 0 || dc < dn) {
+                    depth[next] = dc;
+                    if (dc <= extent) {
+                        fifo_push(&queue, next);
+                    }
+                }
+            }
+        }
     }
 
-    float x_min = md_simd_hmin(vx_min);
-    float y_min = md_simd_hmin(vy_min);
-    float z_min = md_simd_hmin(vz_min);
-
-    float x_max = md_simd_hmax(vx_max);
-    float y_max = md_simd_hmax(vy_max);
-    float z_max = md_simd_hmax(vz_max);
-
-    for (; i < count; ++i) {
-        x_min = MIN(x_min, in_x[i]);
-        y_min = MIN(y_min, in_y[i]);
-        z_min = MIN(z_min, in_z[i]);
-
-        x_max = MAX(x_max, in_x[i]);
-        y_max = MAX(y_max, in_y[i]);
-        z_max = MAX(z_max, in_z[i]);
-    }
-
-    *aabb_min = (vec3_t){x_min, y_min, z_min};
-    *aabb_max = (vec3_t){x_max, y_max, z_max};
+    fifo_free(&queue);
+    md_array_free(indices, default_temp_allocator);
 }
 
-void md_util_compute_aabb_xyzr(vec3_t* aabb_min, vec3_t* aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, int64_t count) {
-    md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
-    md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
-    md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
+void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t* mol, float radius, const md_bitfield_t* viable_mask) {
+    ASSERT(mask);
+    ASSERT(mol);
+    
+    if (radius <= 0.0f) return;
+    
+    md_spatial_hash_t ctx = {0};
+    const vec3_t pbc_ext = mat3_mul_vec3(mol->cell.basis, vec3_set1(1));
 
-    md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
-    md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
-    md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
+    md_vm_arena_t arena = { 0 };
+    md_vm_arena_init(&arena, GIGABYTES(1));
+    md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
+        
+    if (viable_mask) {
+        md_bitfield_t tmp_bf = md_bitfield_create(&arena_alloc);
+        md_bitfield_andnot(&tmp_bf, viable_mask, mask);
+            
+        const int64_t num_atoms = md_bitfield_popcount(&tmp_bf);
+        vec3_t* xyz = (vec3_t*)md_vm_arena_push(&arena, num_atoms * sizeof(vec3_t));
+            
+        md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
 
-    int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
-    for (; i < simd_count; i += md_simd_f32_width) {
-        md_simd_f32_t x = md_simd_load_f32(in_x + i);
-        md_simd_f32_t y = md_simd_load_f32(in_y + i);
-        md_simd_f32_t z = md_simd_load_f32(in_z + i);
-        md_simd_f32_t r = md_simd_load_f32(in_r + i);
-
-        vx_min = md_simd_min(vx_min, md_simd_sub(x, r));
-        vy_min = md_simd_min(vy_min, md_simd_sub(y, r));
-        vz_min = md_simd_min(vz_min, md_simd_sub(z, r));
-
-        vx_max = md_simd_max(vx_max, md_simd_add(x, r));
-        vy_max = md_simd_max(vy_max, md_simd_add(y, r));
-        vz_max = md_simd_max(vz_max, md_simd_add(z, r));
+        int64_t i = 0;
+        while (md_bitfield_iter_next(&it)) {
+            const int idx = (int)md_bitfield_iter_idx(&it);
+            xyz[i++] = vec3_set(mol->atom.x[idx], mol->atom.y[idx], mol->atom.z[idx]);
+        }
+        ASSERT(i == num_atoms);
+        md_spatial_hash_init(&ctx, xyz, num_atoms, pbc_ext, &arena_alloc);
+    } else {
+        md_spatial_hash_init_soa(&ctx, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &arena_alloc);
     }
 
-    float x_min = md_simd_hmin(vx_min);
-    float y_min = md_simd_hmin(vy_min);
-    float z_min = md_simd_hmin(vz_min);
+    int indices[4096];
 
-    float x_max = md_simd_hmax(vx_max);
-    float y_max = md_simd_hmax(vy_max);
-    float z_max = md_simd_hmax(vz_max);
-
-    for (; i < count; ++i) {
-        float r = in_r[i];
-        x_min = MIN(x_min, in_x[i] - r);
-        y_min = MIN(y_min, in_y[i] - r);
-        z_min = MIN(z_min, in_z[i] - r);
-
-        x_max = MAX(x_max, in_x[i] + r);
-        y_max = MAX(y_max, in_y[i] + r);
-        z_max = MAX(z_max, in_z[i] + r);
+    md_bitfield_iter_t it = md_bitfield_iter(mask);
+    while (md_bitfield_iter_next(&it)) {
+        int idx = (int)md_bitfield_iter_idx(&it);
+        const vec3_t pos = {mol->atom.x[idx], mol->atom.y[idx], mol->atom.z[idx]};
+        const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), &ctx, pos, radius);
+        for (int i = 0; i < num_indices; ++i) {
+            md_bitfield_set_bit(mask, indices[i]);
+        }
     }
 
-    *aabb_min = (vec3_t){x_min, y_min, z_min};
-    *aabb_max = (vec3_t){x_max, y_max, z_max};
+    md_vm_arena_free(&arena);
 }
 
-void md_util_compute_aabb_ortho_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, int64_t count, uint64_t stride, vec3_t pbc_ext) {
+static void compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, int64_t count, uint64_t xyz_stride) {
     md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
     md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
     md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
@@ -1546,28 +1562,39 @@ void md_util_compute_aabb_ortho_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_max, 
     md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
     md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
     md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
-
-    vec4_t ext = vec4_from_vec3(pbc_ext, 0);
-    vec4_t ref = vec4_mul_f(ext, 0.5f);
 
     int64_t i = 0;
     const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
-    for (; i < simd_count; i += md_simd_f32_width) {
-        md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
-        md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * stride));
-        md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * stride));
 
-        x = md_simd_deperiodize(x, md_simd_set1_f32(ref.x), md_simd_set1_f32(ext.x));
-        y = md_simd_deperiodize(y, md_simd_set1_f32(ref.y), md_simd_set1_f32(ext.y));
-        z = md_simd_deperiodize(z, md_simd_set1_f32(ref.z), md_simd_set1_f32(ext.z));
+    if (in_r) {
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * xyz_stride));
+            md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * xyz_stride));
+            md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * xyz_stride));
+            md_simd_f32_t r = md_simd_load_f32(in_r + i);            
 
-        vx_min = md_simd_min(vx_min, x);
-        vy_min = md_simd_min(vy_min, y);
-        vz_min = md_simd_min(vz_min, z);
+            vx_min = md_simd_min(vx_min, md_simd_sub(x, r));
+            vy_min = md_simd_min(vy_min, md_simd_sub(y, r));
+            vz_min = md_simd_min(vz_min, md_simd_sub(z, r));
 
-        vx_max = md_simd_max(vx_max, x);
-        vy_max = md_simd_max(vy_max, y);
-        vz_max = md_simd_max(vz_max, z);
+            vx_max = md_simd_max(vx_max, md_simd_add(x, r));
+            vy_max = md_simd_max(vy_max, md_simd_add(y, r));
+            vz_max = md_simd_max(vz_max, md_simd_add(z, r));
+        }
+    } else {
+        for (; i < simd_count; i += md_simd_f32_width) {
+            md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * xyz_stride));
+            md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * xyz_stride));
+            md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * xyz_stride));
+
+            vx_min = md_simd_min(vx_min, x);
+            vy_min = md_simd_min(vy_min, y);
+            vz_min = md_simd_min(vz_min, z);
+
+            vx_max = md_simd_max(vx_max, x);
+            vy_max = md_simd_max(vy_max, y);
+            vz_max = md_simd_max(vz_max, z);
+        }
     }
 
     vec4_t aabb_min = {
@@ -1585,20 +1612,97 @@ void md_util_compute_aabb_ortho_xyz(vec3_t* out_aabb_min, vec3_t* out_aabb_max, 
     };
 
     // Handle remainder
-    for (; i < count; ++i) {
-        vec4_t c = {
-            *(const float*)((const char*)in_x + i * stride),
-            *(const float*)((const char*)in_y + i * stride),
-            *(const float*)((const char*)in_z + i * stride),
-            0
-        };
-        c = vec4_deperiodize(c, ref, ext);
-        aabb_min = vec4_min(aabb_min, c);
-        aabb_max = vec4_max(aabb_max, c);
+    if (in_r) {
+        for (; i < count; ++i) {
+            for (; i < count; ++i) {
+                vec4_t c = {
+                    *(const float*)((const char*)in_x + i * xyz_stride),
+                    *(const float*)((const char*)in_y + i * xyz_stride),
+                    *(const float*)((const char*)in_z + i * xyz_stride),
+                    0
+                };
+                vec4_t r = vec4_set1(in_r[i]);
+                
+                aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
+                aabb_max = vec4_max(aabb_max, vec4_add(c, r));
+            }
+        }
+    } else {
+        for (; i < count; ++i) {
+            vec4_t c = {
+                *(const float*)((const char*)in_x + i * xyz_stride),
+                *(const float*)((const char*)in_y + i * xyz_stride),
+                *(const float*)((const char*)in_z + i * xyz_stride),
+                0
+            };
+            
+            aabb_min = vec4_min(aabb_min, c);
+            aabb_max = vec4_max(aabb_max, c);
+        }
     }
 
     *out_aabb_min = vec3_from_vec4(aabb_min);
     *out_aabb_max = vec3_from_vec4(aabb_max);
+}
+
+static void compute_aabb_indexed(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int* indices, int64_t count, uint64_t xyz_stride) {   
+    if (count == 0) return;
+    
+    vec4_t aabb_min = vec4_set1( FLT_MAX);
+    vec4_t aabb_max = vec4_set1(-FLT_MAX);
+
+    // @PERF(Robin), we are only using 4 lanes here since we are using idirect loads from supplied indices.
+    // This could boil down to a gather instruction. However, the gather instruction
+    // does not allow arbitrary strides, but perhaps there could be a work around where the indices are scaled directly
+    // HOWEVER this only applies for AVX2 and above, so its not a big deal for now.
+
+    if (in_r) {
+        for (int64_t i = 0; i < count; ++i) {
+            int idx = indices[i];
+            vec4_t c = {
+                *(const float*)((const char*)in_x + idx * xyz_stride),
+                *(const float*)((const char*)in_y + idx * xyz_stride),
+                *(const float*)((const char*)in_z + idx * xyz_stride),
+                0
+            };
+            vec4_t r = vec4_set1(in_r[idx]);
+
+            aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
+            aabb_max = vec4_max(aabb_max, vec4_add(c, r));
+        }
+    } else {
+        for (int64_t i = 0; i < count; ++i) {
+            int idx = indices[i];
+            vec4_t c = {
+                *(const float*)((const char*)in_x + idx * xyz_stride),
+                *(const float*)((const char*)in_y + idx * xyz_stride),
+                *(const float*)((const char*)in_z + idx * xyz_stride),
+                0
+            };
+
+            aabb_min = vec4_min(aabb_min, c);
+            aabb_max = vec4_max(aabb_max, c);
+        }
+    }
+
+    *out_aabb_min = vec3_from_vec4(aabb_min);
+    *out_aabb_max = vec3_from_vec4(aabb_max);
+}
+
+void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const vec3_t* xyz, const float* r, int64_t count) {
+    compute_aabb(aabb_min, aabb_max, &xyz->x, &xyz->y, &xyz->z, r, count, sizeof(vec3_t));
+}
+void md_util_compute_aabb_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, int64_t count) {
+    compute_aabb(aabb_min, aabb_max, x, y, z, r, count, sizeof(float));
+}
+
+// Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional), indices are used to select a subset of points
+void md_util_compute_aabb_indexed(vec3_t* aabb_min, vec3_t* aabb_max, const vec3_t* xyz, const float* r, const int32_t* indices, int64_t index_count) {
+    compute_aabb_indexed(aabb_min, aabb_max, &xyz->x, &xyz->y, &xyz->z, r, indices, index_count, sizeof(vec3_t));
+}
+
+void md_util_compute_aabb_indexed_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, int64_t index_count) {
+    compute_aabb_indexed(aabb_min, aabb_max, x, y, z, r, indices, index_count, sizeof(float));
 }
 
 vec3_t md_util_compute_com(const vec3_t* xyz, const float* w, int64_t count) {
@@ -1669,7 +1773,7 @@ vec3_t md_util_compute_com_indexed_soa(const float *x, const float* y, const flo
     }
 
     // Use vec4 here so we can utilize SSE vectorization if applicable
-    // @TODO: Vectorize with full register width
+    // @TODO: Vectorize with full register width (gather operations)
     vec4_t sum_xyzw = {0,0,0,0};
     if (w) {
         for (int64_t i = 0; i < index_count; ++i) {

@@ -754,16 +754,20 @@ bool md_bitfield_extract_u64(uint64_t* dst_ptr, uint64_t num_bits, const md_bitf
     return true;
 }
 
-void md_bitfield_extract_indices(int32_t* buffer, const md_bitfield_t* bf) {
-    ASSERT(buffer);
+int64_t md_bitfield_extract_indices(int32_t* buf, int64_t cap, const md_bitfield_t* bf) {
+    ASSERT(buf);
     ASSERT(bf);
     ASSERT(md_bitfield_validate(bf));
+    ASSERT(cap >= 0);
 
-    int64_t beg_bit = bf->beg_bit;
-    int64_t end_bit = bf->end_bit;
-    while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
-        *buffer++ = (int32_t)(beg_bit - 1);
+    int64_t len = 0;
+    md_bitfield_iter_t it = md_bitfield_iter(bf);
+
+    while (len < cap && md_bitfield_iter_next(&it)) {
+        buf[len++] = (int32_t)md_bitfield_iter_idx(&it);
     }
+
+    return len;
 }
 
 /*
