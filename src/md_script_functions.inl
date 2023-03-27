@@ -639,7 +639,7 @@ static procedure_t procedures[] = {
     {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD_ARR},  _count, FLAG_FLATTEN},
     {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _flatten_bf_arr, FLAG_FLATTEN},
     {CSTR("residue"),   TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_FLATTEN},
-    {CSTR("chain"),     TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_FLATTEN},
+    {CSTR("chain"),     TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH},
 
 };
 
@@ -2539,7 +2539,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 const int64_t idx = md_bitfield_iter_idx(&it);
                 const int64_t res_idx = ctx->mol->atom.residue_idx[idx];
                 md_range_t range = ctx->mol->residue.atom_range[res_idx];
-                ASSERT(i < element_count(*dst));
+                ASSERT(i < capacity);
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
                 i = (capacity == 1) ? i : i + 1;
                 // Skip to end of residue
@@ -2591,27 +2591,26 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t capacity = element_count(*dst);
 
             int i = 0;
-            int64_t beg = tmp_bf.beg_bit;
-            int64_t end = tmp_bf.end_bit;
-            while ((beg = md_bitfield_scan(&tmp_bf, beg, end)) != 0) {
-                const int64_t chain_idx = ctx->mol->atom.chain_idx[beg - 1];
+			md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
+            while (md_bitfield_iter_next(&it)) {
+				const int64_t idx = md_bitfield_iter_idx(&it);
+                const int64_t chain_idx = ctx->mol->atom.chain_idx[idx];
                 md_range_t range = ctx->mol->chain.atom_range[chain_idx];
-                ASSERT(i < element_count(*dst));
+                ASSERT(i < capacity);
                 md_bitfield_set_range(&dst_bf[i], range.beg, range.end);
                 i = (capacity == 1) ? i : i + 1;
-                beg = range.end;
+                it.idx = range.end;
             }
-            ASSERT(i == element_count(*dst));
         } else {
             int count = 0;
 
-            int64_t beg = tmp_bf.beg_bit;
-            int64_t end = tmp_bf.end_bit;
-            while ((beg = md_bitfield_scan(&tmp_bf, beg, end)) != 0) {
-                const int64_t chain_idx = ctx->mol->atom.chain_idx[beg - 1];
+            md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
+            while (md_bitfield_iter_next(&it)) {
+                const int64_t idx = md_bitfield_iter_idx(&it);
+                const int64_t chain_idx = ctx->mol->atom.chain_idx[idx];
                 count += 1;
                 // Skip rest of atoms in chain
-                beg = ctx->mol->chain.atom_range[chain_idx].end;
+                it.idx = ctx->mol->chain.atom_range[chain_idx].end;
             }
             if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
                 count = MIN(1, count);
