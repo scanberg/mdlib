@@ -146,8 +146,8 @@ static void compute_cell_coords(int32_t cell_min[3], int32_t cell_dim[3], uint32
         
         // This is a bit of a hack to get around the multiplication for integers in SSE/AVX
         // The multiplication operations (of integers) of element sizes most often store the result in 2x element size
-        // This means we loose our lanes if we perform the operation with epi32
-        // Unless we resort to the mullo instruction which have half the throughput and twice the latency
+        // This means we loose our lanes if we perform the operation with epi32 -> result in epi64
+        // Unless we resort to the mullo instruction which have half the throughput and twice the latency which is not ideal
         // Therefore we resport to 16-bit operations which yield 32-bit results.
         // 16-bits should be sufficient for the sizes which we operate on
 #ifdef __AVX2__

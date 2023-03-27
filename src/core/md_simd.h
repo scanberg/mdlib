@@ -726,7 +726,7 @@ MD_SIMD_INLINE md_f32x8_t md_simd_gather_f32x8(const float* base, md_i32x8_t ind
         base[indices.m256i.m256i_i32[7]]
     );
 #   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
-    return _mm_set_ps(
+    return _mm256_set_ps(
         base[indices.m256i[0]],
         base[indices.m256i[1]],
         base[indices.m256i[2]],
@@ -754,7 +754,7 @@ MD_SIMD_INLINE md_f64x4_t md_simd_gather_f64x4(const double* base, md_i32x4_t in
         base[indices.m128i.m128i_i32[3]]
     );
 #   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
-    return _mm_set_pd(
+    return _mm256_set_pd(
         base[indices.m128i[0]],
         base[indices.m128i[1]],
         base[indices.m128i[2]],
