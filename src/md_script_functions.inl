@@ -3599,7 +3599,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         com = vec3_div_f(com, (float)num_pos);
 
-        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(in_pos, com, num_pos));
+        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(in_pos, 0, com, num_pos));
 
         vec3_t normal = vec3_normalize(eigen.vectors.col[2]);
         float d = vec3_dot(normal, com);
@@ -4189,7 +4189,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
-        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix(ref[0].x, ref[0].y, ref[0].z, ref_com[0], ref_size));
+        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix(ref[0].x, ref[0].y, ref[0].z, 0, ref_com[0], ref_size));
         mat4_t A = mat4_from_mat3(mat3_transpose(eigen.vectors));
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
@@ -4206,7 +4206,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             extract_xyz(ref[1].x, ref[1].y, ref[1].z, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, bf);
             ref_com[1] = md_util_compute_com_soa(ref[1].x, ref[1].y, ref[1].z, ref_w, ref_size);
-            mat3_t R = md_util_compute_optimal_rotation(ref, ref_com, ref_w, ref_size);
+            mat3_t R = mat3_optimal_rotation(ref[0].x, ref[0].y, ref[0].z, ref[1].x, ref[1].y, ref[1].z, ref_w, ref_com[0], ref_com[1], ref_size);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
             if (vol) {

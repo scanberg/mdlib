@@ -1210,26 +1210,32 @@ mat3_eigen_t mat3_eigen(mat3_t M);
 mat3_svd_t   mat3_svd(mat3_t M);
 mat3_t       mat3_extract_rotation(mat3_t M);
 
+// Computes the covariance matrix for a set of coordinates with a given center of mass.
+// w corresponds to the weight for each point and is optional.
 mat3_t mat3_covariance_matrix(
-    const float* x, const float* y, const float* z,
+    const float* x, const float* y, const float* z, const float* w,
     vec3_t com,
     int64_t count);
 
-mat3_t mat3_covariance_matrix_vec3(const vec3_t* xyz, vec3_t com, int64_t count);
+mat3_t mat3_covariance_matrix_indexed(const float* x, const float* y, const float* z, const float* w, const int* indices,
+    vec3_t com,
+    int64_t count);
 
+mat3_t mat3_covariance_matrix_vec3(const vec3_t* xyz, const float* w, vec3_t com, int64_t count);
+
+// Computes the cross covariance matrix for two set of coordinates with given center of mass.
+// The set of points are assumed to have equal length and if w is not NULL, the same weight.
 mat3_t mat3_cross_covariance_matrix(
     const float* x0, const float* y0, const float* z0,
     const float* x1, const float* y1, const float* z1,
+    const float* w,
     vec3_t com0,
     vec3_t com1,
     int64_t count);
 
-mat3_t mat3_weighted_covariance_matrix(
-    const float* x, const float* y, const float* z, const float* weight,
-    vec3_t com,
-    int64_t count);
-
-mat3_t mat3_weighted_cross_covariance_matrix(
+// Computes the optimal rotation matrix that minimizes the RMSD between two sets of coordinates.
+// The set of points are assumed to have equal length and if w is not NULL, the same weight.
+mat3_t mat3_optimal_rotation(
     const float* x0, const float* y0, const float* z0,
     const float* x1, const float* y1, const float* z1,
     const float* weight,
@@ -1469,11 +1475,11 @@ static inline vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_m
 }
 
 // These are routines for performing the same operation on many items
-void vec3_batch_translate(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, int64_t count, vec3_t translation);
-void vec3_batch_translate2(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation);
+void vec3_batch_translate_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, int64_t count, vec3_t translation);
+void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation);
 
 void mat4_batch_transform_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, float w_comp, int64_t count, mat4_t transform);
-void mat4_batch_transform2(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t transform);
+void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t transform);
 
 #ifdef __cplusplus
 }

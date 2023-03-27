@@ -164,21 +164,13 @@ vec3_t md_util_compute_com_soa_ortho(const float* x, const float* y, const float
 // index_count: Length of indices array
 vec3_t md_util_compute_com_indexed_soa_ortho(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count, vec3_t box);
 
-
-// Computes the optimal rotation between two configurations of a set of points with corresponding weights weights
-// coords:  Coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
-// com:     Center of mass [2] (xyz0), (xyz1)
-// w:       Array of weights (optional): set as NULL to use equal weights
-// count:   Length of all arrays (coords + w)
-mat3_t md_util_compute_optimal_rotation(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
-
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
 // The rmsd is the root mean squared deviation between the two sets of aligned vectors.
 // coords:  Coordinate arrays [2] (x0, y0, z0), (x1, y1, z1)
 // com:     Center of mass [2] (xyz0), (xyz1)
 // w:       Array of weights (optional): set as NULL to use equal weights
-// count:   Length of all arrays (coords + w)
+// count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
 double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
 
 // Perform linear interpolation of supplied coordinates
