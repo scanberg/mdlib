@@ -9,6 +9,7 @@ struct spatial_hash {
     md_vm_arena_t arena;
     md_allocator_i alloc;
     md_molecule_t mol;
+    md_spatial_hash_t sh;
     vec3_t pbc_ext;
 };
 
@@ -21,13 +22,14 @@ UBENCH_F_SETUP(spatial_hash) {
     md_gro_data_parse_file(&gro_data, STR(MD_BENCHMARK_DATA_DIR "/centered.gro"), &ubench_fixture->alloc);
     md_gro_molecule_init(&ubench_fixture->mol, &gro_data, &ubench_fixture->alloc);
     ubench_fixture->pbc_ext = mat3_mul_vec3(ubench_fixture->mol.cell.basis, vec3_set1(1.f));
+    md_spatial_hash_init_soa(&ubench_fixture->sh, ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, ubench_fixture->mol.atom.count, ubench_fixture->pbc_ext, &ubench_fixture->alloc);
 }
 
 UBENCH_F_TEARDOWN(spatial_hash) {
     md_vm_arena_free(&ubench_fixture->arena);
 }
 
-UBENCH_EX_F(spatial_hash, perf_test_init) {
+UBENCH_EX_F(spatial_hash, init) {
     md_molecule_t* mol = &ubench_fixture->mol;
     md_allocator_i* alloc = &ubench_fixture->alloc;
     vec3_t pbc_ext = ubench_fixture->pbc_ext;
@@ -40,6 +42,69 @@ UBENCH_EX_F(spatial_hash, perf_test_init) {
     }
 
     md_vm_arena_temp_end(temp);
+}
+
+static bool func(uint32_t idx, vec3_t pos, void* param) {
+    (void)idx;
+    (void)pos;
+    uint32_t* count = param;
+    (*count)++;
+    return true;
+}
+
+UBENCH_EX_F(spatial_hash, query) {
+    const vec3_t pos[10] = {
+        {24, 8,  4},
+        {14, 1,  1},
+        {44, 57, 30},
+        {24, 48, 5},
+        {24, 32, 8},
+        {14, 10, 34},
+        {04, 19, 44},
+        {24, 0,  14},
+        {34, 100,24},
+        {23, 29, 1}
+    };
+    const float rad = 10.0f;
+    
+    uint32_t count = 0;
+    UBENCH_DO_BENCHMARK() {
+        for (int i = 0; i < 10000; ++i) {
+            md_spatial_hash_query(&ubench_fixture->sh, pos[i % 10], rad, func, &count);
+        }
+    }
+}
+
+UBENCH_EX_F(spatial_hash, bruteforce_query) {
+    const vec3_t pos[10] = {
+        {24, 8,  4},
+        {14, 1,  1},
+        {44, 57, 30},
+        {24, 48, 5},
+        {24, 32, 8},
+        {14, 10, 34},
+        {04, 19, 44},
+        {24, 0,  14},
+        {34, 100,24},
+        {23, 29, 1}
+    };
+    const float rad = 10.0f;
+
+    const md_molecule_t* mol = &ubench_fixture->mol;
+
+    uint32_t count = 0;
+    UBENCH_DO_BENCHMARK() {
+        for (int iter = 0; iter < 10000; ++iter) {
+            const vec4_t p = vec4_from_vec3(pos[iter % 10], 0);
+            for (int64_t i = 0; i < mol->atom.count; ++i) {
+                const vec4_t c = vec4_set(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0);
+                if (vec4_distance_squared(p, c) < rad * rad) {
+                    count += 1;
+                    UBENCH_DO_NOTHING(&count);
+                }
+            }
+        }
+    }
 }
 
 /*

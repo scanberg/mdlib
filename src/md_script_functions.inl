@@ -742,12 +742,11 @@ static inline vec3_t extract_com(const float* x, const float* y, const float* z,
     ASSERT(bitfield);
 
     vec4_t sum = {0};
-    int64_t beg_bit = bitfield->beg_bit;
-    int64_t end_bit = bitfield->end_bit;
-    while ((beg_bit = md_bitfield_scan(bitfield, beg_bit, end_bit)) != 0) {
-        const int64_t idx = beg_bit - 1;
+    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    while (md_bitfield_iter_next(&it)) {
+        const int64_t idx = md_bitfield_iter_idx(&it);
         const float weight = w ? w[idx] : 1.0f;
-        vec4_t v = {x[idx], y[idx], z[idx], 1.0f};
+        vec4_t v = vec4_set(x[idx], y[idx], z[idx], 1.0f);
         v = vec4_mul_f(v, weight);
         sum = vec4_add(sum, v);
     }
@@ -764,12 +763,10 @@ static inline vec3_t* extract_vec3(const float* x, const float* y, const float* 
 
     vec3_t* pos = 0;
 
-    int64_t beg_bit = bitfield->beg_bit;
-    int64_t end_bit = bitfield->end_bit;
-    while ((beg_bit = md_bitfield_scan(bitfield, beg_bit, end_bit)) != 0) {
-        const int64_t idx = beg_bit - 1;
-        vec3_t p = { x[idx], y[idx], z[idx] };
-        md_array_push(pos, p, alloc);
+    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    while (md_bitfield_iter_next(&it)) {
+        const int64_t idx = md_bitfield_iter_idx(&it);
+        md_array_push(pos, vec3_set(x[idx], y[idx], z[idx]), alloc);
     }
     return pos;
 }
@@ -3824,11 +3821,8 @@ bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
     (void)idx;
     rdf_payload_t* data = user_param;
     const float d = vec3_distance(coord, data->pos);
-    if (d == 0) {
-        while(0);
-    }
     // This bias is only here to counter the lack of precision due to storing compressed coordinates within spatial hash.
-    const float bias = 0.02f;
+    const float bias = 0.0305f; // sqrt(3 * (6.0/1024))
     if (data->min_cutoff + bias < d && d < data->max_cutoff) {
         int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
         bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
@@ -3838,7 +3832,7 @@ bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
     return true;
 }
 
-#define RDF_BRUTE_FORCE_LIMIT 1000
+#define RDF_BRUTE_FORCE_LIMIT (1000)
 
 static inline double spherical_shell_volume(double r_inner, double r_outer) {
     return (4.0f / 3.0f) * PI * (r_outer * r_outer * r_outer - r_inner * r_inner * r_inner);
@@ -3853,11 +3847,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
     if (sum < RDF_BRUTE_FORCE_LIMIT) {
         for (int64_t i = 0; i < ref_size; ++i) {
             for (int64_t j = 0; j < target_size; ++j) {
-
                 const float d = vec3_distance(ref_pos[i], target_pos[j]);
-                if (d == 0) {
-                    while (0);
-                }
                 if (min_cutoff < d && d < max_cutoff) {
                     int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_cutoff_range) * num_bins);
                     bin_idx = CLAMP(bin_idx, 0, num_bins - 1);

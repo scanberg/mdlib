@@ -24,6 +24,7 @@
 #define UNPACK_CELL_COORD(p) vec4_set( ((p >>  0) & 0x3FF) * SCL, ((p >> 10) & 0x3FF) * SCL, ((p >> 20) & 0x3FF) * SCL, 0)
 
 static void compute_aabb(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec4_t pbc_ext) {
+    /*
     ASSERT(md_simd_f32_width == md_simd_i32_width);
 
     md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
@@ -70,9 +71,16 @@ static void compute_aabb(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float
         md_simd_hmax(vz_max),
         0
     };
+    */
+
+    const vec4_t ext = pbc_ext;
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+    vec4_t aabb_min = vec4_set1(+FLT_MAX);
+    vec4_t aabb_max = vec4_set1(-FLT_MAX);
 
     // Handle remainder
-    for (; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         vec4_t c = {
             *(const float*)((const char*)in_x + i * stride),
             *(const float*)((const char*)in_y + i * stride),
@@ -143,6 +151,7 @@ static void compute_cell_coords(int32_t cell_min[3], int32_t cell_dim[3], uint32
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
     
     size_t i = 0;
+    /*
     for (; i < simd_count; i += md_simd_f32_width) {
         md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
         md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * stride));
@@ -152,21 +161,26 @@ static void compute_cell_coords(int32_t cell_min[3], int32_t cell_dim[3], uint32
         y = md_simd_deperiodize(y, md_simd_set1_f32(ref.y), md_simd_set1_f32(ext.y));
         z = md_simd_deperiodize(z, md_simd_set1_f32(ref.z), md_simd_set1_f32(ext.z));
 
-        x = md_simd_mul(x, md_simd_set1_f32(INV_CELL_EXT));
-        y = md_simd_mul(y, md_simd_set1_f32(INV_CELL_EXT));
-        z = md_simd_mul(z, md_simd_set1_f32(INV_CELL_EXT));
+        // Cell relative coordinates
+        md_simd_f32_t cx = md_simd_mul(x, md_simd_set1_f32(INV_CELL_EXT));
+        md_simd_f32_t cy = md_simd_mul(y, md_simd_set1_f32(INV_CELL_EXT));
+        md_simd_f32_t cz = md_simd_mul(z, md_simd_set1_f32(INV_CELL_EXT));
 
-        md_simd_f32_t fx = md_simd_floor(x);
-        md_simd_f32_t fy = md_simd_floor(y);
-        md_simd_f32_t fz = md_simd_floor(z);
+        md_simd_f32_t flx = md_simd_floor(cx);
+        md_simd_f32_t fly = md_simd_floor(cy);
+        md_simd_f32_t flz = md_simd_floor(cz);
 
-        md_simd_i32_t ccx = md_simd_sub(md_simd_convert_f32(fx), md_simd_set1_i32(cell_min[0]));
-        md_simd_i32_t ccy = md_simd_sub(md_simd_convert_f32(fy), md_simd_set1_i32(cell_min[1]));
-        md_simd_i32_t ccz = md_simd_sub(md_simd_convert_f32(fz), md_simd_set1_i32(cell_min[2]));
+        md_simd_i32_t ccx = md_simd_sub(md_simd_convert_f32(flx), md_simd_set1_i32(cell_min[0]));
+        md_simd_i32_t ccy = md_simd_sub(md_simd_convert_f32(fly), md_simd_set1_i32(cell_min[1]));
+        md_simd_i32_t ccz = md_simd_sub(md_simd_convert_f32(flz), md_simd_set1_i32(cell_min[2]));
 
-        md_simd_i32_t pcx = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(x, fx), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
-        md_simd_i32_t pcy = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(y, fy), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
-        md_simd_i32_t pcz = md_simd_convert_f32(md_simd_fmadd(md_simd_sub(z, fz), md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
+        md_simd_f32_t frx = md_simd_sub(cx, flx);
+        md_simd_f32_t fry = md_simd_sub(cy, fly);
+        md_simd_f32_t frz = md_simd_sub(cz, flz);
+
+        md_simd_i32_t pcx = md_simd_convert_f32(md_simd_fmadd(frx, md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
+        md_simd_i32_t pcy = md_simd_convert_f32(md_simd_fmadd(fry, md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
+        md_simd_i32_t pcz = md_simd_convert_f32(md_simd_fmadd(frz, md_simd_set1_f32(1023.0f), md_simd_set1_f32(0.5f)));
 
         //md_simd_i32_t cc = md_simd_or(md_simd_shift_left(ccz, 20), md_simd_or(md_simd_shift_left(ccy, 10), ccx));
         
@@ -194,26 +208,44 @@ static void compute_cell_coords(int32_t cell_min[3], int32_t cell_dim[3], uint32
         md_simd_i32_t ci = md_simd_add(ccz, md_simd_add(ccy, ccx));
         md_simd_i32_t pc = md_simd_or(md_simd_shift_left(pcz, 20), md_simd_or(md_simd_shift_left(pcy, 10), pcx));
 
+        md_simd_f32_t xx = _mm256_cvtepi32_ps(pcx.m256i);
+        md_simd_f32_t yy = _mm256_cvtepi32_ps(pcy.m256i);
+        md_simd_f32_t zz = _mm256_cvtepi32_ps(pcz.m256i);
+
+        md_simd_f32_t qx = md_simd_add(md_simd_mul(flx, md_simd_set1_f32(CELL_EXT)), md_simd_mul(xx, md_simd_set1_f32(SCL)));
+        md_simd_f32_t qy = md_simd_add(md_simd_mul(fly, md_simd_set1_f32(CELL_EXT)), md_simd_mul(yy, md_simd_set1_f32(SCL)));
+        md_simd_f32_t qz = md_simd_add(md_simd_mul(flz, md_simd_set1_f32(CELL_EXT)), md_simd_mul(zz, md_simd_set1_f32(SCL)));
+
+        md_simd_f32_t dx = md_simd_abs(md_simd_sub(x, qx));
+        md_simd_f32_t dy = md_simd_abs(md_simd_sub(y, qy));
+        md_simd_f32_t dz = md_simd_abs(md_simd_sub(z, qz));
+
         md_simd_store((int*)cell_index  + i, ci);
         md_simd_store((int*)fract_coord + i, pc);
     }
+    */
 
     // Handle remainder
     for (; i < count; ++i) {
-        vec4_t c = {
+        vec4_t coord = {
             *(const float*)((const char*)in_x + i * stride),
             *(const float*)((const char*)in_y + i * stride),
             *(const float*)((const char*)in_z + i * stride),
             0
         };
-        c = vec4_mul_f(vec4_deperiodize(c, ref, ext), INV_CELL_EXT);
+        
+        vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
 
-        vec4_t f = vec4_floor(c);
-        vec4_t p = vec4_fmadd(vec4_sub(c, f), vec4_set1(1023.0f), vec4_set1(0.5f));
-        uint32_t ci = ((int32_t)f.z - cell_min[2]) * cell_dim_01 + ((int32_t)f.y - cell_min[1]) * cell_dim[0] + ((int32_t)f.x - cell_min[0]);
+        vec4_t whole = vec4_floor(cell);
+        vec4_t fract = vec4_sub(cell, whole);
+        vec4_t packed = vec4_fmadd(fract, vec4_set1(1023.0f), vec4_set1(0.5f));
+        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]);
+        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]);
+        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]);
+        uint32_t ci = cz * cell_dim_01 + cy * cell_dim[0] + cx;
 
         cell_index[i] = ci;
-        fract_coord[i] = ((uint32_t)p.z << 20) | ((uint32_t)p.y << 10) | (uint32_t)p.x;
+        fract_coord[i] = ((uint32_t)packed.z << 20) | ((uint32_t)packed.y << 10) | (uint32_t)packed.x;
     }
 }
 
@@ -367,7 +399,8 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
                             0);
                 
                     const float d2 = vec4_periodic_distance_squared(p, ref_pos, vec4_from_vec3(pbc_ext, 0.0f));
-                    if (d2 > 0.1f) {
+                    const float c2 = (SCL * SCL) * 3.0f;
+                    if (d2 > c2) {
                         ASSERT(false);
                     }
                 }
