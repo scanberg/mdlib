@@ -1433,12 +1433,17 @@ static int _and(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const md_bitfield_t* bf_src[2] = {arg[0].ptr, arg[1].ptr};
         const int64_t bf_src_len[2] = {element_count(arg[0]), element_count(arg[1])};
 
-        for (int64_t i = 0; i < bf_src_len[0]; ++i) {
-            md_bitfield_or_inplace(bf_dst, &bf_src[0][i]);
+        if (bf_src_len[0] == 1 && bf_src_len[1] == 1) {
+            md_bitfield_and(bf_dst, bf_src[0], bf_src[1]);
         }
+        else {
+            for (int64_t i = 0; i < bf_src_len[0]; ++i) {
+                md_bitfield_or_inplace(bf_dst, bf_src[0] + i);
+            }
 
-        md_bitfield_t bf = _internal_flatten_bf(bf_src[1], bf_src_len[1], ctx->temp_alloc);
-        md_bitfield_and_inplace(bf_dst, &bf);
+            md_bitfield_t bf = _internal_flatten_bf(bf_src[1], bf_src_len[1], ctx->temp_alloc);
+            md_bitfield_and_inplace(bf_dst, &bf);
+        }
 
         if (ctx->mol_ctx) {
             md_bitfield_and_inplace(bf_dst, ctx->mol_ctx);
@@ -1484,12 +1489,16 @@ static int _xor(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const md_bitfield_t* bf_src[2] = { arg[0].ptr, arg[1].ptr };
         const int64_t bf_src_len[2] = {element_count(arg[0]), element_count(arg[1])};
 
-        for (int64_t i = 0; i < bf_src_len[0]; ++i) {
-            md_bitfield_or_inplace(bf_dst, &bf_src[0][i]);
-        }
+        if (bf_src_len[0] == 1 && bf_src_len[1] == 1) {
+            md_bitfield_xor(bf_dst, bf_src[0], bf_src[1]);
+        } else {
+            for (int64_t i = 0; i < bf_src_len[0]; ++i) {
+                md_bitfield_or_inplace(bf_dst, &bf_src[0][i]);
+            }
 
-        md_bitfield_t bf = _internal_flatten_bf(bf_src[1], bf_src_len[1], ctx->temp_alloc);
-        md_bitfield_xor_inplace(bf_dst, &bf);
+            md_bitfield_t bf = _internal_flatten_bf(bf_src[1], bf_src_len[1], ctx->temp_alloc);
+            md_bitfield_xor_inplace(bf_dst, &bf);
+        }
 
         if (ctx->mol_ctx) {
             md_bitfield_and_inplace(bf_dst, ctx->mol_ctx);

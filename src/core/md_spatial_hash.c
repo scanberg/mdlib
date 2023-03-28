@@ -347,6 +347,35 @@ static bool init(md_spatial_hash_t* hash, const float* in_x, const float* in_y, 
         }
     }
 
+#if 0
+    for (int32_t z = 0; z < cell_dim[2]; z++) {
+        for (int32_t y = 0; y < cell_dim[1]; y++) {
+            for (int32_t x = 0; x < cell_dim[0]; x++) {
+                const int32_t ci = z * cell_dim[1] * cell_dim[0] + y * cell_dim[0] + x;
+                const uint32_t cell_data = cells[ci];
+                const uint32_t cell_offset = cell_data >> 10;
+                const uint32_t cell_length = cell_data & 1023;
+                vec4_t cc_min = vec4_set((cell_min[0] + x) * CELL_EXT, (cell_min[1] + y) * CELL_EXT, (cell_min[2] + z) * CELL_EXT, 0);
+                for (uint32_t i = cell_offset; i < cell_offset + cell_length; ++i) {
+                    const vec4_t p = vec4_add(cc_min, UNPACK_CELL_COORD(coords[i]));
+
+                    int32_t idx = original_idx[i];
+                    const vec4_t ref_pos = vec4_set(
+                            *(const float*)((const char*)in_x + idx * stride),
+                            *(const float*)((const char*)in_y + idx * stride),
+                            *(const float*)((const char*)in_z + idx * stride),
+                            0);
+                
+                    const float d2 = vec4_periodic_distance_squared(p, ref_pos, vec4_from_vec3(pbc_ext, 0.0f));
+                    if (d2 > 0.1f) {
+                        ASSERT(false);
+                    }
+                }
+            }
+        }
+    }
+#endif
+
     hash->cells    = cells;
     hash->coords   = coords;
     hash->indices  = original_idx;
@@ -401,7 +430,7 @@ bool md_spatial_hash_init_soa(md_spatial_hash_t* hash, const float* x, const flo
         return false;
     }
 
-    return init(hash, x, y, z, NULL, (size_t)count, 0, pbc_ext, alloc);
+    return init(hash, x, y, z, NULL, (size_t)count, sizeof(float), pbc_ext, alloc);
 }
 
 bool md_spatial_hash_init_indexed_soa(md_spatial_hash_t* hash, const float* x, const float* y, const float* z, const int32_t* indices, int64_t index_count, vec3_t pbc_ext, md_allocator_i* alloc) {
@@ -416,7 +445,7 @@ bool md_spatial_hash_init_indexed_soa(md_spatial_hash_t* hash, const float* x, c
         return false;
     }
 
-    return init(hash, x, y, z, indices, (size_t)index_count, 0, pbc_ext, alloc);
+    return init(hash, x, y, z, indices, (size_t)index_count, sizeof(float), pbc_ext, alloc);
 }
 
 bool md_spatial_hash_free(md_spatial_hash_t* hash) {
