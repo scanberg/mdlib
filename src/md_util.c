@@ -2438,119 +2438,77 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
 }
 
 bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t pbc_ext, float t, float s) {
-    const bool use_pbc = !vec3_equal(pbc_ext, (vec3_t){0,0,0});
     t = CLAMP(t, 0.0f, 1.0f);
     s = CLAMP(s, 0.0f, 1.0f);
 
-    if (use_pbc) {
-        md_simd_f32_t box_ext_x = md_simd_set1_f32(pbc_ext.x);
-        md_simd_f32_t box_ext_y = md_simd_set1_f32(pbc_ext.y);
-        md_simd_f32_t box_ext_z = md_simd_set1_f32(pbc_ext.z);
+    int64_t i = 0;
+    const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+    for (; i < simd_count; i += md_simd_f32_width) {
+        md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
+        md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
+        md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
 
-        int64_t i = 0;
-        const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
-        for (; i < simd_count; i += md_simd_f32_width) {
-            md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
-            md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
-            md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
+        md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
+        md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
+        md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
 
-            md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
-            md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
-            md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
+        md_simd_f32_t x2 = md_simd_load_f32(src_coord[2].x + i);
+        md_simd_f32_t y2 = md_simd_load_f32(src_coord[2].y + i);
+        md_simd_f32_t z2 = md_simd_load_f32(src_coord[2].z + i);
 
-            md_simd_f32_t x2 = md_simd_load_f32(src_coord[2].x + i);
-            md_simd_f32_t y2 = md_simd_load_f32(src_coord[2].y + i);
-            md_simd_f32_t z2 = md_simd_load_f32(src_coord[2].z + i);
+        md_simd_f32_t x3 = md_simd_load_f32(src_coord[3].x + i);
+        md_simd_f32_t y3 = md_simd_load_f32(src_coord[3].y + i);
+        md_simd_f32_t z3 = md_simd_load_f32(src_coord[3].z + i);
 
-            md_simd_f32_t x3 = md_simd_load_f32(src_coord[3].x + i);
-            md_simd_f32_t y3 = md_simd_load_f32(src_coord[3].y + i);
-            md_simd_f32_t z3 = md_simd_load_f32(src_coord[3].z + i);
-
+        if (pbc_ext.x > 0.0f) {
+            const md_simd_f32_t box_ext_x = md_simd_set1_f32(pbc_ext.x);
             x0 = simd_deperiodize(x0, x1, box_ext_x);
             x2 = simd_deperiodize(x2, x1, box_ext_x);
             x3 = simd_deperiodize(x3, x2, box_ext_x);
+        }
 
+        if (pbc_ext.y > 0.0f) {
+            const md_simd_f32_t box_ext_y = md_simd_set1_f32(pbc_ext.y);
             y0 = simd_deperiodize(y0, y1, box_ext_y);
             y2 = simd_deperiodize(y2, y1, box_ext_y);
             y3 = simd_deperiodize(y3, y2, box_ext_y);
+        }
 
+        if (pbc_ext.z > 0.0f) {
+            const md_simd_f32_t box_ext_z = md_simd_set1_f32(pbc_ext.z);
             z0 = simd_deperiodize(z0, z1, box_ext_z);
             z2 = simd_deperiodize(z2, z1, box_ext_z);
             z3 = simd_deperiodize(z3, z2, box_ext_z);
-
-            md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-            md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-            md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-
-            md_simd_store(dst_coord.x + i, x);
-            md_simd_store(dst_coord.y + i, y);
-            md_simd_store(dst_coord.z + i, z);
         }
 
-        // Do the rest
-        const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0.0f);
-        for (; i < count; ++i) {
-            vec4_t src[4] = {
-                {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
-                {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
-                {src_coord[2].x[i], src_coord[2].y[i], src_coord[2].z[i], 1},
-                {src_coord[3].x[i], src_coord[3].y[i], src_coord[3].z[i], 1},
-            };
+        const md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(s));
+        const md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(s));
+        const md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(s));
 
-            src[0] = vec4_deperiodize(src[0], src[1], pbc_ext4);
-            src[2] = vec4_deperiodize(src[2], src[1], pbc_ext4);
-            src[3] = vec4_deperiodize(src[3], src[2], pbc_ext4);
+        md_simd_store(dst_coord.x + i, x);
+        md_simd_store(dst_coord.y + i, y);
+        md_simd_store(dst_coord.z + i, z);
+    }
 
-            const vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, s);
+    // Do the rest
+    const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0.0f);
+    for (; i < count; ++i) {
+        vec4_t src[4] = {
+            {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
+            {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
+            {src_coord[2].x[i], src_coord[2].y[i], src_coord[2].z[i], 1},
+            {src_coord[3].x[i], src_coord[3].y[i], src_coord[3].z[i], 1},
+        };
 
-            dst_coord.x[i] = coord.x;
-            dst_coord.y[i] = coord.y;
-            dst_coord.z[i] = coord.z;
-        }
-    } else {
-        int64_t i = 0;
-        const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
-        for (; i < simd_count; i += md_simd_f32_width) {
-            md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
-            md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
-            md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
+        src[0] = vec4_deperiodize(src[0], src[1], pbc_ext4);
+        src[2] = vec4_deperiodize(src[2], src[1], pbc_ext4);
+        src[3] = vec4_deperiodize(src[3], src[2], pbc_ext4);
 
-            md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
-            md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
-            md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
+        const vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, s);
 
-            md_simd_f32_t x2 = md_simd_load_f32(src_coord[2].x + i);
-            md_simd_f32_t y2 = md_simd_load_f32(src_coord[2].y + i);
-            md_simd_f32_t z2 = md_simd_load_f32(src_coord[2].z + i);
-
-            md_simd_f32_t x3 = md_simd_load_f32(src_coord[3].x + i);
-            md_simd_f32_t y3 = md_simd_load_f32(src_coord[3].y + i);
-            md_simd_f32_t z3 = md_simd_load_f32(src_coord[3].z + i);
-
-            md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-            md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-            md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-
-            md_simd_store_f32(dst_coord.x + i, x);
-            md_simd_store_f32(dst_coord.y + i, y);
-            md_simd_store_f32(dst_coord.z + i, z);
-        }
-
-        // Do the rest
-        for (; i < count; ++i) {
-            vec4_t src[4] = {
-                {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
-                {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
-                {src_coord[2].x[i], src_coord[2].y[i], src_coord[2].z[i], 1},
-                {src_coord[3].x[i], src_coord[3].y[i], src_coord[3].z[i], 1},
-            };
-
-            vec4_t coord = vec4_cubic_spline(src[0], src[1], src[2], src[3], t, s);
-
-            dst_coord.x[i] = coord.x;
-            dst_coord.y[i] = coord.y;
-            dst_coord.z[i] = coord.z;
-        }
+        dst_coord.x[i] = coord.x;
+        dst_coord.y[i] = coord.y;
+        dst_coord.z[i] = coord.z;
     }
 
     return true;
