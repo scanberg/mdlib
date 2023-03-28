@@ -2342,7 +2342,7 @@ bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_
 #endif
 
 double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count) {
-    const mat3_t R = mat3_optimal_rotation(coord[0].x, coord[0].y, coord[0].z, coord[1].x, coord[1].y, coord[2].z, w, com[0], com[1], count);
+    const mat3_t R = mat3_optimal_rotation(coord[0].x, coord[0].y, coord[0].z, coord[1].x, coord[1].y, coord[1].z, w, com[0], com[1], count);
     double d_sum = 0;
     double w_sum = 0;
     for (int64_t i = 0; i < count; ++i) {
