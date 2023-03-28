@@ -927,7 +927,8 @@ MD_SIMD_INLINE double md_simd_hsum_f64x4(__m256d x) {
 
 // https://stackoverflow.com/questions/6996764/fastest-way-to-do-horizontal-sse-vector-sum-or-other-reduction
 MD_SIMD_INLINE float md_simd_hsum_f32x4(__m128 x) {
-    __m128 shuf = _mm_movehdup_ps(x);        // broadcast elements 3,1 to 2,0
+    //__m128 shuf = _mm_movehdup_ps(x);        // broadcast elements 3,1 to 2,0 (this instruction is SSE3 and we avoid it by using shuffle instead)
+    __m128 shuf = _mm_shuffle_ps(x, x, _MM_SHUFFLE(3, 3, 1, 1));
     __m128 sums = _mm_add_ps(x, shuf);
     shuf        = _mm_movehl_ps(shuf, sums); // high half -> low half
     sums        = _mm_add_ss(sums, shuf);
