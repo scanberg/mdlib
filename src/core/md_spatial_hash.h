@@ -24,6 +24,7 @@
  */
 
 struct md_allocator_i;
+struct md_bitfield_t;
 
 // Callback function for when a point is found within the search space of the query
 // The return value (bool) signifies if it should continue its search (true) or if it should early exit (false).
@@ -67,6 +68,7 @@ bool md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, fl
 // Get a list of indices which fall within the search space (pos + radius)
 // Writes directly to the supplied buffer and will return the number of indices written.
 int64_t md_spatial_hash_query_idx(int32_t* buf_idx, int64_t buf_cap, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius);
+void    md_spatial_hash_query_bits(struct md_bitfield_t* bf, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius);
 
 #ifdef __cplusplus
 }

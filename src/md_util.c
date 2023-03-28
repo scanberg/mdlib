@@ -1502,8 +1502,7 @@ void md_util_grow_mask_by_bonds(md_bitfield_t* mask, const struct md_molecule_t*
         }
     }
 
-    fifo_free(&queue);
-    md_array_free(indices, default_temp_allocator);
+    md_vm_arena_free(&arena);
 }
 
 void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t* mol, float radius, const md_bitfield_t* viable_mask) {
@@ -1520,35 +1519,28 @@ void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t
     md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
         
     if (viable_mask) {
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&arena);
         md_bitfield_t tmp_bf = md_bitfield_create(&arena_alloc);
         md_bitfield_andnot(&tmp_bf, viable_mask, mask);
             
         const int64_t num_atoms = md_bitfield_popcount(&tmp_bf);
-        vec3_t* xyz = (vec3_t*)md_vm_arena_push(&arena, num_atoms * sizeof(vec3_t));
-            
-        md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
-
-        int64_t i = 0;
-        while (md_bitfield_iter_next(&it)) {
-            const int idx = (int)md_bitfield_iter_idx(&it);
-            xyz[i++] = vec3_set(mol->atom.x[idx], mol->atom.y[idx], mol->atom.z[idx]);
-        }
-        ASSERT(i == num_atoms);
-        md_spatial_hash_init(&ctx, xyz, num_atoms, pbc_ext, &arena_alloc);
+        int32_t* indices = md_vm_arena_push(&arena, num_atoms * sizeof(int32_t));
+        const int64_t len = md_bitfield_extract_indices(indices, num_atoms, &tmp_bf);
+        
+        md_spatial_hash_init_indexed_soa(&ctx, mol->atom.x, mol->atom.y, mol->atom.z, indices, len, pbc_ext, &arena_alloc);
+        md_vm_arena_temp_end(temp);
     } else {
         md_spatial_hash_init_soa(&ctx, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &arena_alloc);
     }
+    
+    md_bitfield_t old_mask = md_bitfield_create(&arena_alloc);
+    md_bitfield_copy(&old_mask, mask);
 
-    int indices[4096];
-
-    md_bitfield_iter_t it = md_bitfield_iter(mask);
+    md_bitfield_iter_t it = md_bitfield_iter(&old_mask);
     while (md_bitfield_iter_next(&it)) {
         int idx = (int)md_bitfield_iter_idx(&it);
         const vec3_t pos = {mol->atom.x[idx], mol->atom.y[idx], mol->atom.z[idx]};
-        const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), &ctx, pos, radius);
-        for (int i = 0; i < num_indices; ++i) {
-            md_bitfield_set_bit(mask, indices[i]);
-        }
+        md_spatial_hash_query_bits(mask, &ctx, pos, radius);
     }
 
     md_vm_arena_free(&arena);
