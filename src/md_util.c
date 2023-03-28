@@ -2351,87 +2351,52 @@ double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], c
 }
 
 bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], int64_t count, vec3_t pbc_ext, float t) {
-    const bool use_pbc = !vec3_equal(pbc_ext, (vec3_t){0,0,0});
     t = CLAMP(t, 0.0f, 1.0f);
 
-    if (use_pbc) {
-        md_simd_f32_t box_ext_x = md_simd_set1_f32(pbc_ext.x);
-        md_simd_f32_t box_ext_y = md_simd_set1_f32(pbc_ext.y);
-        md_simd_f32_t box_ext_z = md_simd_set1_f32(pbc_ext.z);
+    int64_t i = 0;
+    const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
+    for (; i < simd_count; i += md_simd_f32_width) {
+        md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
+        md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
+        md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
 
-        int64_t i = 0;
-        const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
-        for (; i < simd_count; i += md_simd_f32_width) {
-            md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
-            md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
-            md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
+        md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
+        md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
+        md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
 
-            md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
-            md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
-            md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
-
-            x1 = simd_deperiodize(x1, x0, box_ext_x);
-            y1 = simd_deperiodize(y1, y0, box_ext_y);
-            z1 = simd_deperiodize(z1, z0, box_ext_z);
-
-            md_simd_f32_t x = md_simd_lerp(x0, x1, t);
-            md_simd_f32_t y = md_simd_lerp(y0, y1, t);
-            md_simd_f32_t z = md_simd_lerp(z0, z1, t);
-
-            md_simd_store(dst_coord.x + i, x);
-            md_simd_store(dst_coord.y + i, y);
-            md_simd_store(dst_coord.z + i, z);
+        if (pbc_ext.x > 0.0f) {
+            x1 = simd_deperiodize(x1, x0, md_simd_set1_f32(pbc_ext.x));
+        }
+        if (pbc_ext.y > 0.0f) {
+            y1 = simd_deperiodize(y1, y0, md_simd_set1_f32(pbc_ext.y));
+        }
+        if (pbc_ext.z > 0.0f) {
+            z1 = simd_deperiodize(z1, z0, md_simd_set1_f32(pbc_ext.z));
         }
 
-        // Do the rest
-        const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0.0f);
-        for (; i < count; ++i) {
-            vec4_t src[2] = {
-                {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
-                {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
-            };
+        md_simd_f32_t x = md_simd_lerp(x0, x1, t);
+        md_simd_f32_t y = md_simd_lerp(y0, y1, t);
+        md_simd_f32_t z = md_simd_lerp(z0, z1, t);
 
-            src[1] = vec4_deperiodize(src[1], src[0], pbc_ext4);
-            const vec4_t coord = vec4_lerp(src[0], src[1], t);
+        md_simd_store(dst_coord.x + i, x);
+        md_simd_store(dst_coord.y + i, y);
+        md_simd_store(dst_coord.z + i, z);
+    }
 
-            dst_coord.x[i] = coord.x;
-            dst_coord.y[i] = coord.y;
-            dst_coord.z[i] = coord.z;
-        }
-    } else {
-        int64_t i = 0;
-        const int64_t simd_count = (count / md_simd_f32_width) * md_simd_f32_width;
-        for (; i < simd_count; i += md_simd_f32_width) {
-            md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
-            md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
-            md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
+    // Do the rest
+    const vec4_t pbc_ext4 = vec4_from_vec3(pbc_ext, 0.0f);
+    for (; i < count; ++i) {
+        vec4_t src[2] = {
+            {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
+            {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
+        };
 
-            md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
-            md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
-            md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
+        src[1] = vec4_deperiodize(src[1], src[0], pbc_ext4);
+        const vec4_t coord = vec4_lerp(src[0], src[1], t);
 
-            md_simd_f32_t x = md_simd_lerp(x0, x1, t);
-            md_simd_f32_t y = md_simd_lerp(y0, y1, t);
-            md_simd_f32_t z = md_simd_lerp(z0, z1, t);
-
-            md_simd_store(dst_coord.x + i, x);
-            md_simd_store(dst_coord.y + i, y);
-            md_simd_store(dst_coord.z + i, z);
-        }
-
-        // Do the rest
-        for (; i < count; ++i) {
-            vec4_t src[2] = {
-                {src_coord[0].x[i], src_coord[0].y[i], src_coord[0].z[i], 1},
-                {src_coord[1].x[i], src_coord[1].y[i], src_coord[1].z[i], 1},
-            };
-
-            const vec4_t coord = vec4_lerp(src[0], src[1], t);
-
-            dst_coord.x[i] = coord.x;
-            dst_coord.y[i] = coord.y;
-            dst_coord.z[i] = coord.z;
-        }
+        dst_coord.x[i] = coord.x;
+        dst_coord.y[i] = coord.y;
+        dst_coord.z[i] = coord.z;
     }
 
     return true;
