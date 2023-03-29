@@ -16,6 +16,11 @@ struct md_trajectory_api;
 struct md_molecule_api;
 struct md_mat4_t;
 
+enum {
+	MD_PDB_COORD_FLAG_HETATM        = 1 << 0,
+    MD_PDB_COORD_FLAG_TERMINATOR    = 1 << 1,   // Terminator for chain
+};
+
 typedef enum md_pdb_helix_class_t {
     Helix_Unknown           = 0,
     Helix_RH_alpha          = 1,
@@ -107,6 +112,7 @@ typedef struct md_pdb_coordinate_t {
     float temp_factor;
     char element[4];
     char charge[4];
+	uint32_t flags; // MD_PDB_COORD_FLAG_
 } md_pdb_coordinate_t;
 
 typedef struct md_pdb_connect_t {

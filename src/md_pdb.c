@@ -301,7 +301,15 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
         if (line.len < 6) continue;
         if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
+			const uint32_t flags = (line.ptr[0] == 'H') ? MD_PDB_COORD_FLAG_HETATM : 0;
+            coord.flags |= MD_PDB_COORD_FLAG_HETATM;
             md_array_push(data->atom_coordinates, coord, alloc);
+        }
+        else if (str_equal_cstr_n(line, "TER", 3)) {
+			md_pdb_coordinate_t* last = md_array_last(data->atom_coordinates);
+            if (last) {
+				last->flags |= MD_PDB_COORD_FLAG_TERMINATOR;
+            }
         }
         else if (str_equal_cstr_n(line, "HELIX", 5)) {
             md_pdb_helix_t helix = extract_helix(line);
@@ -505,8 +513,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
             }
         }
 
-        char chain_id = data->atom_coordinates[i].chain_id;
-        if (chain_id != ' ' && chain_id != cur_chain_id) {
+        const char chain_id = data->atom_coordinates[i].chain_id;
+		const bool term = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR);
+        if (term || (chain_id != ' ' && chain_id != cur_chain_id)) {
             cur_chain_id = chain_id;
             
             str_t chain_str = { &data->atom_coordinates[i].chain_id, 1 };
