@@ -799,7 +799,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         }
 
         if (data.num_models <= 1) {
-            MD_LOG_ERROR("The PDB file did not contain multiple model entries and cannot be read as a trajectory");
+            MD_LOG_INFO("The PDB file does not contain multiple model entries and cannot be read as a trajectory");
             md_pdb_data_free(&data, default_allocator);
             return false;
         }
@@ -832,6 +832,8 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         }
 
         write_cache(cache_file, offsets, md_array_size(offsets), num_atoms, &cell);
+        md_pdb_data_free(&data, default_allocator);
+
     }
 
     int64_t max_frame_size = 0;
