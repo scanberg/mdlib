@@ -578,7 +578,7 @@ static procedure_t procedures[] = {
     {CSTR("atom"),      TI_BITFIELD, 1, {TI_IRANGE_ARR},    _atom_irng,         FLAG_STATIC_VALIDATION},
     {CSTR("atom"),      TI_BITFIELD, 1, {TI_INT_ARR},       _atom_int,          FLAG_STATIC_VALIDATION},
     
-    {CSTR("ring"),      TI_BITFIELD_ARR, 0, {0},            _ring,              FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
+    {CSTR("ring"),      TI_BITFIELD_ARR, 0, {0},            _ring,              FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE},
 
     // Residue level
     {CSTR("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
@@ -2189,38 +2189,66 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     int result = 0;
 
-    if (dst && dst->ptr) {
-        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        md_bitfield_t* bf_arr = as_bitfield(*dst);
-        
-        int64_t num_rings = md_index_data_count(ctx->mol->rings);
-        int64_t dst_idx = 0;
-        for (int64_t i = 0; i < num_rings; ++i) {
-            md_bitfield_t* bf = &bf_arr[dst_idx];
+    if (dst || ctx->vis) {
+        if (dst) {
+            if (!dst->ptr) return 0;
             
-            // Only accept the ring if it is fully within the given context
-            const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->rings, i);
-            const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->rings, i);
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+            md_bitfield_t* bf_arr = as_bitfield(*dst);
+        
+            int64_t num_rings = md_index_data_count(ctx->mol->rings);
+            int64_t dst_idx = 0;
+            for (int64_t i = 0; i < num_rings; ++i) {
+                md_bitfield_t* bf = &bf_arr[dst_idx];
+            
+                // Only accept the ring if it is fully within the given context
+                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->rings, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->rings, i);
 
-            if (ctx->mol_ctx) {
-                bool discard = false;
-                for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
-                    if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
-                        discard = true;
-                        break;
-                    }
-                }
-                if (!discard) {
+                if (ctx->mol_ctx) {
+                    bool discard = false;
                     for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
-                        md_bitfield_set_bit(bf, *it);
+                        if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
+                            discard = true;
+                            break;
+                        }
                     }
-                    dst_idx += 1;
+                    if (discard) continue;
                 }
-            } else {
+
                 for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
                     md_bitfield_set_bit(bf, *it);
                 }
                 dst_idx += 1;
+            }
+        } else {
+            ASSERT(ctx->vis);
+            int64_t num_rings = md_index_data_count(ctx->mol->rings);
+            for (int64_t i = 0; i < num_rings; ++i) {
+                // Only visualize the ring if it is fully within the given context
+                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->rings, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->rings, i);
+
+                if (ctx->mol_ctx) {
+                    bool discard = false;
+                    for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
+                        if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
+                            discard = true;
+                            break;
+                        }
+                    }
+                    if (discard) continue;
+                }
+
+                const uint32_t v_beg = (uint32_t)ctx->vis->vertex.count;
+                for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
+                    push_vertex(vec3_set(ctx->mol->atom.x[*it], ctx->mol->atom.y[*it], ctx->mol->atom.z[*it]), ctx->vis);
+                }
+                const uint32_t v_end = (uint32_t)ctx->vis->vertex.count;
+                for (uint32_t i = v_beg; i < v_end - 1; ++i) {
+                    push_line(i, i + 1, ctx->vis);
+                }
+                push_line(v_end - 1, v_beg, ctx->vis);
             }
         }
     } else {
