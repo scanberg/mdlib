@@ -273,6 +273,9 @@ static bool amino_acid_heuristic(const md_label_t labels[], int size) {
 #undef BIT_O
 }
 
+#define MIN_RES_LEN 4
+#define MAX_RES_LEN 25
+
 bool md_util_element_guess(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol) {
     ASSERT(capacity >= 0);
     ASSERT(mol);
@@ -298,7 +301,7 @@ bool md_util_element_guess(md_element_t element[], int64_t capacity, const struc
                 const md_range_t res_range = mol->residue.atom_range[mol->atom.residue_idx[i]];
                 const int res_len = res_range.end - res_range.beg;
                 
-                if (res_len > 4 && mol->residue.name) {
+                if (MIN_RES_LEN < res_len && res_len < MAX_RES_LEN && mol->residue.name) {
                     str_t resname = LBL_TO_STR(mol->residue.name[mol->atom.residue_idx[i]]);
                     if (md_util_resname_amino_acid(resname) ||
                         amino_acid_heuristic(mol->atom.name + res_range.beg, res_range.end - res_range.beg) ||
