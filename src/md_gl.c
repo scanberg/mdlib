@@ -1480,9 +1480,11 @@ static bool draw_cartoon(gl_program_t program, const internal_rep_t* rep, float 
     ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     ASSERT(rep->color.id);
 
-    const float profile_scale[2] = {
-        rep->args.ribbons.width_scale * scale,
-        rep->args.ribbons.thickness_scale * scale,
+    const float profile_scale[4] = {
+        rep->args.cartoon.coil_scale * scale,
+        rep->args.cartoon.helix_scale * scale,
+        rep->args.cartoon.sheet_scale * scale,
+        0
     };
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(profile_scale), &profile_scale);
 

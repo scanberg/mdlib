@@ -14,10 +14,8 @@ layout (std140) uniform ubo {
     uint _pad0;
     uint _pad1;
     uint _pad2;
-    float u_width_scale;
-    float u_height_scale;
+    vec4 u_scale;
 };
-
 
 in Fragment {
     smooth vec3 view_coord;

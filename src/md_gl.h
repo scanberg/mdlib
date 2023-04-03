@@ -100,7 +100,7 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* mol, uint
 typedef struct md_gl_representation_t md_gl_representation_t;
 
 struct md_gl_representation_t { // This is an opaque blob which matches the size of internal memory used by the structure
-    char _mem[32];
+    char _mem[64];
 };
 
 typedef uint16_t md_gl_representation_type_t;
@@ -126,8 +126,9 @@ typedef union md_gl_representation_args_t {
     } ribbons;
 
     struct {
-        float width_scale;
-        float thickness_scale;
+        float coil_scale;
+        float sheet_scale;
+        float helix_scale;
     } cartoon;
 
     struct {

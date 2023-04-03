@@ -18,10 +18,8 @@ layout (std140) uniform ubo {
     uint _pad0;
     uint _pad1;
     uint _pad2;
-    float u_width_scale;
-    float u_height_scale;
+    vec4 u_scale;
 };
-
 
 layout(lines) in;
 layout(triangle_strip, max_vertices = NUM_VERTS) out;
@@ -75,8 +73,9 @@ void main() {
     vec4 n0[RES];
     vec4 n1[RES];
     
+    float flip = sign(dot(in_vert[0].support_vector, in_vert[1].support_vector));
     x[0] = in_vert[0].support_vector;
-    x[1] = in_vert[1].support_vector * sign(dot(in_vert[0].support_vector, in_vert[1].support_vector));
+    x[1] = in_vert[1].support_vector * flip;
     z[0] = in_vert[0].support_tangent;
     z[1] = in_vert[1].support_tangent;
     y[0] = vec4(normalize(cross(z[0].xyz, x[0].xyz)), 0); // To maintain right-handedness
@@ -96,14 +95,12 @@ void main() {
     ss[1] = in_vert[1].secondary_structure;
 
     // Elipse profile scaling based on secondary structure
-    const vec2 coil_scale  = vec2(0.2, 0.2);
-    const vec2 helix_scale = vec2(1.2, 0.2);
-    const vec2 sheet_scale = vec2(1.5, 0.1);
+    vec2 coil_scale  = vec2(0.2, 0.2) * u_scale[0];
+    vec2 helix_scale = vec2(1.2, 0.2) * u_scale[1];
+    vec2 sheet_scale = vec2(1.5, 0.1) * u_scale[2];
 
-    vec2 scale = vec2(u_width_scale, u_height_scale);
-
-    s[0] = scale * (ss[0].x * coil_scale + ss[0].y * helix_scale + ss[0].z * sheet_scale);
-    s[1] = scale * (ss[1].x * coil_scale + ss[1].y * helix_scale + ss[1].z * sheet_scale);
+    s[0] = ss[0].x * coil_scale + ss[0].y * helix_scale + ss[0].z * sheet_scale;
+    s[1] = ss[1].x * coil_scale + ss[1].y * helix_scale + ss[1].z * sheet_scale;
 
     for (int i = 0; i < RES; ++i) {
         float t = float(i) / float(RES) * TWO_PI;
