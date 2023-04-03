@@ -3886,31 +3886,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
                 }
             }
         }
-        float* bins2 = md_alloc(default_temp_allocator, sizeof(float) * num_bins);
-        memset(bins2, 0, sizeof(float) * num_bins);
-        int tot_count2 = 0;
-        for (int64_t i = 0; i < ref_len; ++i) {
-            for (int64_t j = 0; j < trg_len; ++j) {
-                const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(ref_pos[i], 0), vec4_from_vec3(trg_pos[j], 0), ext);
-                if (min_cutoff * min_cutoff < d2 && d2 < max_cutoff * max_cutoff) {
-                    const float d = sqrtf(d2);
-                    int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_cutoff_range) * num_bins);
-                    bin_idx = CLAMP(bin_idx, 0, num_bins - 1);
-                    bins2[bin_idx] += 1.0f;
-                    tot_count2 += 1;
-                }
-            }
-        }
-
-        for (int i = 0; i < num_bins; ++i) {
-            bins[i] /= total_count;
-            bins2[i] /= tot_count2;
-            bins2[i] -= bins[i];
-        }
-
-        while(0) {};
-    }
-    else {
+    } else {
         md_spatial_hash_t hash = {0};
         md_spatial_hash_init(&hash, trg_pos, trg_len, pbc_ext, alloc);
 
@@ -3932,7 +3908,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
     }
 
     // Reference rho
-    const double ref_rho = total_count / (sphere_volume(max_cutoff) - sphere_volume(min_cutoff));
+    const double one_over_ref_rho = (sphere_volume(max_cutoff) - sphere_volume(min_cutoff)) / total_count;
 
     // Normalize bins
     // With respect to the nominal distribution rho
@@ -3945,7 +3921,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
         const double bin_vol = curr_sphere_vol - prev_sphere_vol;
         const double norm = bin_vol;
         const double rho = bins[i] / norm;
-        bins[i] = rho / ref_rho;
+        bins[i] = (float)(rho * one_over_ref_rho);
         prev_sphere_vol = curr_sphere_vol;
     }
 }

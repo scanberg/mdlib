@@ -47,9 +47,18 @@ typedef struct md_spatial_hash_t {
     vec4_t pbc_ext;
 } md_spatial_hash_t;
 
+typedef struct md_spatial_acc_t md_spatial_acc_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+    
+md_spatial_acc_t* md_spatial_acc_create_vec3(const vec3_t* xyz, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+md_spatial_acc_t* md_spatial_acc_create_vec3_indexed(const vec3_t* xyz, const int32_t* indices, int64_t index_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+md_spatial_acc_t* md_spatial_acc_create_soa(const float* x, const float* y, const float* z, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+md_spatial_acc_t* md_spatial_acc_create_soa_indexed(const float* x, const float* y, const float* z, const int32_t* indices, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+
+void              md_spatial_acc_free(md_spatial_acc_t* acc);
 
 // Initialize a spatial hash structure with a set of coordinates given by array of vec3_t (xyz) or separate arrays (x,y,z).
 // pbc_ext is optional and supplies the periodic extent for each axis. To disable periodicity, supply (0,0,0).

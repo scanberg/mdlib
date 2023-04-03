@@ -23,72 +23,33 @@
 
 #define UNPACK_CELL_COORD(p) vec4_set( ((p >>  0) & 0x3FF) * SCL, ((p >> 10) & 0x3FF) * SCL, ((p >> 20) & 0x3FF) * SCL, 0)
 
-static void compute_aabb(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec4_t pbc_ext) {
-    /*
-    ASSERT(md_simd_f32_width == md_simd_i32_width);
+typedef struct elem_t {
+    vec3_t coord;
+	uint32_t idx;
+} elem_t;
 
-    md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
-    md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
-    md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
+typedef uint32_t cell_t;
 
-    md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
-    md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
-    md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
+struct md_spatial_acc_t {
+    vec4_t cell_ext;
+    md_array(elem_t) elems;
+	md_array(cell_t) cells;
+    md_allocator_i* alloc;
+    int cell_min[3];
+    int cell_dim[3];
+};
 
-    const vec4_t ext = pbc_ext;
-    const vec4_t ref = vec4_mul_f(ext, 0.5f);
-    const size_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
-
-    size_t i = 0;
-    for (; i < simd_count; i += md_simd_f32_width) {
-        md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * stride));
-        md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * stride));
-        md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * stride));
-
-        x = md_simd_deperiodize(x, md_simd_set1_f32(ref.x), md_simd_set1_f32(ext.x));
-        y = md_simd_deperiodize(y, md_simd_set1_f32(ref.y), md_simd_set1_f32(ext.y));
-        z = md_simd_deperiodize(z, md_simd_set1_f32(ref.z), md_simd_set1_f32(ext.z));
-
-        vx_min = md_simd_min(vx_min, x);
-        vy_min = md_simd_min(vy_min, y);
-        vz_min = md_simd_min(vz_min, z);
-
-        vx_max = md_simd_max(vx_max, x);
-        vy_max = md_simd_max(vy_max, y);
-        vz_max = md_simd_max(vz_max, z);
-    }
-
-    vec4_t aabb_min = {
-        md_simd_hmin(vx_min),
-        md_simd_hmin(vy_min),
-        md_simd_hmin(vz_min),
-        0
-    };
-
-    vec4_t aabb_max = {
-        md_simd_hmax(vx_max),
-        md_simd_hmax(vy_max),
-        md_simd_hmax(vz_max),
-        0
-    };
-    */
-
+static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const vec3_t* in_xyz, const int32_t* indices, size_t count, vec4_t pbc_ext) {
     const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
 
     vec4_t aabb_min = vec4_set1(+FLT_MAX);
     vec4_t aabb_max = vec4_set1(-FLT_MAX);
-
-    // Handle remainder
+    
     for (size_t i = 0; i < count; ++i) {
-        vec4_t c = {
-            *(const float*)((const char*)in_x + i * stride),
-            *(const float*)((const char*)in_y + i * stride),
-            *(const float*)((const char*)in_z + i * stride),
-            0
-        };
+        int32_t idx =  indices ? indices[i] : i;
+        vec4_t c = vec4_from_vec3(in_xyz[idx], 0);
         c = vec4_deperiodize(c, ref, ext);
-
         aabb_min = vec4_min(aabb_min, c);
         aabb_max = vec4_max(aabb_max, c);
     }
@@ -97,30 +58,169 @@ static void compute_aabb(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float
     *out_aabb_max = aabb_max;
 }
 
-static void compute_aabb_indexed(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const int32_t* indices, size_t index_count, size_t stride, vec4_t pbc_ext) {
+static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const int32_t* indices, size_t index_count, vec4_t pbc_ext) {
     const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
 
     vec4_t aabb_min = vec4_set1(FLT_MAX);
     vec4_t aabb_max = vec4_set1(-FLT_MAX);
 
-    // Handle remainder
     for (size_t i = 0; i < index_count; ++i) {
-        const int32_t idx = indices[i];
-        vec4_t c = {
-            *(const float*)((const char*)in_x + idx * stride),
-            *(const float*)((const char*)in_y + idx * stride),
-            *(const float*)((const char*)in_z + idx * stride),
-            0
-        };
+        const int32_t idx = indices ? indices[i] : i;
+        vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 0 };
         c = vec4_deperiodize(c, ref, ext);
-
         aabb_min = vec4_min(aabb_min, c);
         aabb_max = vec4_max(aabb_max, c);
     }
 
     *out_aabb_min = aabb_min;
     *out_aabb_max = aabb_max;
+}
+
+static void init_cell_vec3(int cell_min[3], int cell_dim[3], uint32_t* cell_indices, const vec3_t* in_xyz, const int32_t* indices, int64_t count, vec4_t pbc_ext) {
+    const vec4_t ext = pbc_ext;
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+    vec4_t aabb_min, aabb_max;
+	compute_aabb_vec3(&aabb_min, &aabb_max, in_xyz, indices, count, pbc_ext);
+
+    // We want to have cells ~CELL_EXT 
+	vec4_t cell_ext = vec4_div_f(vec4_sub(aabb_max, aabb_min), CELL_EXT);
+    
+    cell_min[0] = (int)floorf(aabb_min.x / cell_ext.x);
+    cell_min[1] = (int)floorf(aabb_min.y / cell_ext.y);
+    cell_min[2] = (int)floorf(aabb_min.z / cell_ext.z);
+
+    cell_dim[0] = (int)ceilf(cell_ext.x);
+    cell_dim[0] = (int)ceilf(cell_ext.y);
+    cell_dim[0] = (int)ceilf(cell_ext.z);
+
+	int cell_dim_01 = cell_dim[0] * cell_dim[1];
+    for (int64_t i = 0; i < count; ++i) {
+        const int32_t idx = indices ? indices[i] : i;
+        vec4_t coord = vec4_from_vec3(in_xyz[idx], 0);
+        coord = vec4_deperiodize(coord, ref, ext);
+
+        vec4_t cell = vec4_mul(vec4_deperiodize(coord, ref, ext), cell_ext);
+        vec4_t cc = vec4_floor(cell);
+
+        uint32_t cell_idx = (uint32_t)(((int)cc.x - cell_min[0]) + ((int)cc.y - cell_min[1]) * cell_dim[0] + ((int)cc.z - cell_min[2]) * cell_dim_01);
+        cell_indices[i] = cell_idx;
+    }
+}
+
+static void init_cell_soa(int cell_min[3], int cell_dim[3], uint32_t* cell_indices, const float* in_x, const float* in_y, const float* in_z, const int32_t* indices, int64_t count, vec4_t pbc_ext) {
+    const vec4_t ext = pbc_ext;
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+    vec4_t aabb_min, aabb_max;
+    compute_aabb_soa(&aabb_min, &aabb_max, in_x, in_y, in_z, indices, count, pbc_ext);
+
+    // We want to have cells ~CELL_EXT 
+    vec4_t cell_ext = vec4_div_f(vec4_sub(aabb_max, aabb_min), CELL_EXT);
+
+    cell_min[0] = (int)floorf(aabb_min.x / cell_ext.x);
+    cell_min[1] = (int)floorf(aabb_min.y / cell_ext.y);
+    cell_min[2] = (int)floorf(aabb_min.z / cell_ext.z);
+
+    cell_dim[0] = (int)ceilf(cell_ext.x);
+    cell_dim[0] = (int)ceilf(cell_ext.y);
+    cell_dim[0] = (int)ceilf(cell_ext.z);
+
+    int cell_dim_01 = cell_dim[0] * cell_dim[1];
+
+    for (int64_t i = 0; i < count; ++i) {
+        const int32_t idx = indices ? indices[i] : i;
+        vec4_t coord = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0);
+        coord = vec4_deperiodize(coord, ref, ext);
+
+        vec4_t cell = vec4_mul(vec4_deperiodize(coord, ref, ext), cell_ext);
+        vec4_t cc = vec4_floor(cell);
+
+        uint32_t cell_idx = (uint32_t)(((int)cc.x - cell_min[0]) + ((int)cc.y - cell_min[1]) * cell_dim[0] + ((int)cc.z - cell_min[2]) * cell_dim_01);
+        cell_indices[i] = cell_idx;
+    }
+}
+
+static void finalize_elem_soa(elem_t* elem, const cell_t* cells, const uint32_t* cell_index, const uint16_t* local_index, const float* x, const float* y, const float* z, const int32_t* indices, int64_t count) {
+    for (int64_t i = 0; i < count; ++i) {
+        const uint32_t ci = cell_index[i];
+        const uint32_t dst_idx = (cells[ci] >> 10) + local_index[i];
+        const uint32_t src_idx = indices ? indices[i] : i;
+        elem[dst_idx] = (elem_t){ x[src_idx], y[src_idx], z[src_idx], src_idx };
+    }
+}
+
+static void finalize_elem_vec3(elem_t* elem, const cell_t* cells, const uint32_t* cell_index, const uint16_t* local_index, const vec3_t* xyz, const int32_t* indices, int64_t count) {
+    for (int64_t i = 0; i < count; ++i) {
+        const uint32_t ci = cell_index[i];
+        const uint32_t dst_idx = (cells[ci] >> 10) + local_index[i];
+		const uint32_t src_idx = indices ? indices[i] : i;
+        elem[dst_idx] = (elem_t){ xyz[src_idx], src_idx };
+    }
+}
+
+static void finalize_cells(cell_t* cells, uint16_t* local_index, const uint32_t* cell_index, int64_t cell_count, int64_t count) {
+    MEMSET(cells, 0, sizeof(uint32_t) * cell_count);
+
+    for (int64_t i = 0; i < count; ++i) {
+        uint32_t idx = cell_index[i];
+        ASSERT(idx < cell_count);
+
+        ASSERT(cells[idx] < 1024 && "Too many entities per cell");
+        local_index[i] = (uint16_t)cells[idx]++;
+    }
+
+    uint32_t offset = cells[0];
+    for (uint32_t i = 1; i < cell_count; ++i) {
+        const uint32_t length = cells[i];
+        cells[i] = (offset << 10) | length;
+        offset += length;
+    }
+
+#if DEBUG
+    uint32_t cell = cells[cell_count - 1];
+    ASSERT((cell >> 10) + (cell & 1023) == count);
+#endif
+}
+
+md_spatial_acc_t* md_spatial_acc_create_vec3(const vec3_t* xyz, int64_t count, vec3_t pbc_ext, md_allocator_i* alloc) {
+	uint32_t* cell_index  = md_alloc(default_temp_allocator, sizeof(uint32_t) * count);
+	uint16_t* local_index = md_alloc(default_temp_allocator, sizeof(uint16_t) * count);
+    ASSERT(cell_index);
+    ASSERT(local_index);
+    
+    int cell_min[3];
+    int cell_dim[3];
+	init_cell_vec3(cell_min, cell_dim, cell_index, xyz, NULL, count, vec4_from_vec3(pbc_ext, 0));
+    
+	const int64_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
+    md_array(cell_t) cells = md_array_create(cell_t, cell_count, alloc);
+    finalize_cells(cells, local_index, cell_index, cell_count, count);
+
+    md_array(elem_t) elems = md_array_create(elem_t, count, alloc);
+	finalize_elem_vec3(elems, cells, cell_index, local_index, xyz, NULL, count);
+
+    md_spatial_acc_t* acc = md_alloc(alloc, sizeof(md_spatial_acc_t));
+    acc->alloc = alloc;
+    acc->pbc_ext = pbc_ext;
+    acc->cells = cells;
+    acc->elems = elems;
+
+    md_free(default_temp_allocator, local_index, sizeof(uint16_t) * count);
+    md_free(default_temp_allocator, cell_index,  sizeof(uint32_t) * count);
+
+    return acc;
+}
+
+void md_spatial_acc_free(md_spatial_acc_t* acc) {
+    if (acc) {
+        ASSERT(acc->alloc);
+		md_array_free(acc->cells, acc->alloc);
+        md_array_free(acc->elems, acc->alloc);
+        MEMSET(acc, 0, sizeof(md_spatial_acc_t));
+		md_free(acc->alloc, acc);
+    }
 }
 
 static void compute_cell_coords(int32_t cell_min[3], int32_t cell_dim[3], uint32_t* cell_index, uint32_t* fract_coord, const float* in_x, const float* in_y, const float* in_z, size_t count, size_t stride, vec3_t pbc_ext) {
