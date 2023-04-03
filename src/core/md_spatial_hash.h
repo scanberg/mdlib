@@ -31,7 +31,7 @@ struct md_bitfield_t;
 typedef bool (*md_spatial_hash_iterator_fn)(uint32_t idx, vec3_t coord, void* user_param);
 
 typedef struct md_spatial_hash_elem_t {
-    ALIGNAS(16) vec3_t coord;
+    vec3_t coord;
     uint32_t idx;
 } md_spatial_hash_elem_t;
 

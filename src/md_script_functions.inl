@@ -2245,8 +2245,8 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     push_vertex(vec3_set(ctx->mol->atom.x[*it], ctx->mol->atom.y[*it], ctx->mol->atom.z[*it]), ctx->vis);
                 }
                 const uint32_t v_end = (uint32_t)ctx->vis->vertex.count;
-                for (uint32_t i = v_beg; i < v_end - 1; ++i) {
-                    push_line(i, i + 1, ctx->vis);
+                for (uint32_t j = v_beg; j < v_end - 1; ++j) {
+                    push_line(j, j + 1, ctx->vis);
                 }
                 push_line(v_end - 1, v_beg, ctx->vis);
             }
@@ -3862,21 +3862,23 @@ bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
 
 #define RDF_BRUTE_FORCE_LIMIT (1000)
 
-static inline double spherical_shell_volume(double r_inner, double r_outer) {
-    return (4.0f / 3.0f) * PI * (r_outer * r_outer * r_outer - r_inner * r_inner * r_inner);
+static inline double sphere_volume(double r) {
+    return (4.0 / 3.0) * PI * (r * r * r);
 }
 
-static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_t ref_size, const vec3_t* target_pos, int64_t target_size, float min_cutoff, float max_cutoff, vec3_t pbc_ext, md_allocator_i* alloc) {
-    const int64_t sum = ref_size * target_size;
+static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_t ref_len, const vec3_t* trg_pos, int64_t trg_len, float min_cutoff, float max_cutoff, vec3_t pbc_ext, md_allocator_i* alloc) {
+    //const int64_t sum = ref_size * trg_size;
     const float inv_cutoff_range = 1.0f / (max_cutoff - min_cutoff);
 
     int total_count = 0;
 
-    if (sum < RDF_BRUTE_FORCE_LIMIT) {
-        for (int64_t i = 0; i < ref_size; ++i) {
-            for (int64_t j = 0; j < target_size; ++j) {
-                const float d = vec3_distance(ref_pos[i], target_pos[j]);
-                if (min_cutoff < d && d < max_cutoff) {
+    const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
+    if ((ref_len * trg_len) < (INT64_MAX)) {
+        for (int64_t i = 0; i < ref_len - 1; ++i) {
+            for (int64_t j = i; j < trg_len; ++j) {
+                const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(ref_pos[i], 0), vec4_from_vec3(trg_pos[j], 0), ext);
+                if (min_cutoff * min_cutoff < d2 && d2 < max_cutoff * max_cutoff) {
+                    const float d = sqrtf(d2);
                     int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_cutoff_range) * num_bins);
                     bin_idx = CLAMP(bin_idx, 0, num_bins - 1);
                     bins[bin_idx] += 1.0f;
@@ -3884,10 +3886,33 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
                 }
             }
         }
+        float* bins2 = md_alloc(default_temp_allocator, sizeof(float) * num_bins);
+        memset(bins2, 0, sizeof(float) * num_bins);
+        int tot_count2 = 0;
+        for (int64_t i = 0; i < ref_len; ++i) {
+            for (int64_t j = 0; j < trg_len; ++j) {
+                const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(ref_pos[i], 0), vec4_from_vec3(trg_pos[j], 0), ext);
+                if (min_cutoff * min_cutoff < d2 && d2 < max_cutoff * max_cutoff) {
+                    const float d = sqrtf(d2);
+                    int32_t bin_idx = (int32_t)(((d - min_cutoff) * inv_cutoff_range) * num_bins);
+                    bin_idx = CLAMP(bin_idx, 0, num_bins - 1);
+                    bins2[bin_idx] += 1.0f;
+                    tot_count2 += 1;
+                }
+            }
+        }
+
+        for (int i = 0; i < num_bins; ++i) {
+            bins[i] /= total_count;
+            bins2[i] /= tot_count2;
+            bins2[i] -= bins[i];
+        }
+
+        while(0) {};
     }
     else {
         md_spatial_hash_t hash = {0};
-        md_spatial_hash_init(&hash, target_pos, target_size, pbc_ext, alloc);
+        md_spatial_hash_init(&hash, trg_pos, trg_len, pbc_ext, alloc);
 
         rdf_payload_t payload = {
             .min_cutoff = min_cutoff,
@@ -3898,27 +3923,30 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
             .total_count = 0,
         };
 
-        for (int64_t i = 0; i < ref_size; ++i) {
+        for (int64_t i = 0; i < ref_len; ++i) {
             payload.pos = ref_pos[i];
             payload.idx = (uint32_t)i;
             md_spatial_hash_query(&hash, ref_pos[i], max_cutoff, rdf_iter, &payload);
         }
         total_count = payload.total_count;
-
     }
 
     // Reference rho
-    const double ref_rho = total_count / spherical_shell_volume(min_cutoff, max_cutoff);
+    const double ref_rho = total_count / (sphere_volume(max_cutoff) - sphere_volume(min_cutoff));
 
     // Normalize bins
     // With respect to the nominal distribution rho
     // Each bin is normalized with respect to the nominal distribution
     const double dr = (max_cutoff - min_cutoff) / (float)num_bins;
+    double acc = 0;
+    double prev_sphere_vol = 0;
     for (int64_t i = 0; i < num_bins; ++i) {
-        const double r_inner = min_cutoff + (i + 0) * dr;
-        const double r_outer = min_cutoff + (i + 1) * dr;
-        const double rho = bins[i] / spherical_shell_volume(r_inner, r_outer);
-        bins[i] = (float)(rho / ref_rho);
+        const double curr_sphere_vol = sphere_volume(min_cutoff + (i + 0.5) * dr);
+        const double bin_vol = curr_sphere_vol - prev_sphere_vol;
+        const double norm = bin_vol;
+        const double rho = bins[i] / norm;
+        bins[i] = rho / ref_rho;
+        prev_sphere_vol = curr_sphere_vol;
     }
 }
 
