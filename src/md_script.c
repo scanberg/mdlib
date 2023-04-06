@@ -4190,8 +4190,6 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     float* curr_y = curr_coords + 1 * stride;
     float* curr_z = curr_coords + 2 * stride;
 
-    md_spatial_hash_t spatial_hash = {0};
-
     // We want a mutable molecule which we can modify the atom coordinate section of
     md_molecule_t mutable_mol = *mol;
     mutable_mol.atom.x = curr_x;
@@ -4211,7 +4209,6 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             .y = init_y,
             .z = init_z,
         },
-        .spatial_hash = &spatial_hash,
     };
 
     // Fill the data for the initial configuration (needed by rmsd and SDF as a 'reference')
@@ -4236,8 +4233,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         ctx.identifiers = 0;
 
         if (ir->flags & FLAG_SPATIAL_QUERY) {
-            vec3_t pbc_ext = mat3_mul_vec3(curr_header.cell.basis, vec3_set1(1));
-            md_spatial_hash_init_soa(&spatial_hash, curr_x, curr_y, curr_z, mol->atom.count, pbc_ext, &temp_alloc);
+            ctx.spatial_hash = md_spatial_hash_create_soa(curr_x, curr_y, curr_z, NULL, mol->atom.count, &curr_header.unit_cell, &temp_alloc);
         }
 
         for (int64_t i = 0; i < num_expr; ++i) {
@@ -4907,8 +4903,6 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     ast_node_t* node = parse_expression(&parse_ctx);
     node = prune_expressions(node);
     if (node) {
-        md_spatial_hash_t spatial_hash = {0};
-
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
@@ -4926,9 +4920,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
         if (static_check_node(node, &ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
                 if (ir->flags & FLAG_SPATIAL_QUERY) {
-                    vec3_t pbc_ext = mat3_diag(mol->cell.basis);
-                    md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
-                    ctx.spatial_hash = &spatial_hash;
+                    ctx.spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc);
                 }
                 
                 if (type_info_array_len(node->data.type) == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
@@ -5017,8 +5009,6 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
     ir->stage = "Filter evaluate";
     ir->record_errors = true;
 
-    md_spatial_hash_t spatial_hash = {0};
-
     ast_node_t* node = parse_expression(&parse_ctx);
     node = prune_expressions(node);
     if (node) {
@@ -5039,9 +5029,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
         if (static_check_node(node, &ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
                 if (ir->flags & FLAG_SPATIAL_QUERY) {
-                    vec3_t pbc_ext = mat3_diag(mol->cell.basis);
-                    md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &temp_alloc);
-                    ctx.spatial_hash = &spatial_hash;
+                    ctx.spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc);
                 }
                 int len = (int)type_info_array_len(node->data.type);
                 if (len == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
@@ -5247,12 +5235,6 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
         z = args.mol->atom.z;
     }
 
-    md_spatial_hash_t spatial_hash = {0};
-    if (args.ir->flags & FLAG_SPATIAL_QUERY) {
-        vec3_t pbc_ext = mat3_mul_vec3(header.cell.basis, vec3_set1(1));
-        md_spatial_hash_init_soa(&spatial_hash, x, y, z, num_atoms, pbc_ext, &temp_alloc);
-    }
-
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)args.ir,
         .mol = args.mol,
@@ -5266,8 +5248,11 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
             .y = y,
             .z = z
         },
-        .spatial_hash = &spatial_hash,
     };
+    if (args.ir->flags & FLAG_SPATIAL_QUERY) {
+        ctx.spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, num_atoms, &header.unit_cell, &temp_alloc);
+    }
+
     vis->atom_mask = &vis->o->atom_mask;
 
     visualize_node((ast_node_t*)args.payload, &ctx);

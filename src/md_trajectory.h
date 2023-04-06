@@ -18,7 +18,7 @@ typedef struct md_trajectory_frame_header_t {
 	int64_t   num_atoms;
 	int64_t   index;
 	double    timestamp;
-	md_unit_cell_t cell;
+	md_unit_cell_t unit_cell;
 } md_trajectory_frame_header_t;
 
 #ifdef __cplusplus

@@ -434,7 +434,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->num_atoms = i;
         header->index = step;
         header->timestamp = (double)(step); // This information is missing from xyz trajectories
-        header->cell = md_util_unit_cell_triclinic(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
+        header->unit_cell = md_util_unit_cell_triclinic(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
     }
 
     return true;

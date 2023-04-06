@@ -2946,7 +2946,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));            
             if (ctx->frame_header) {
-                vec4_t vp = vec4_from_vec3(mat3_diag(ctx->frame_header->cell.basis), 1.0f);
+                vec4_t vp = vec4_from_vec3(mat3_diag(ctx->frame_header->unit_cell.basis), 1.0f);
                 vec4_t va = vec4_from_vec3(a, 0.0f);
                 vec4_t vb = vec4_from_vec3(b, 0.0f);
                 as_float(*dst) = vec4_periodic_distance(va, vb, vp);
@@ -3835,23 +3835,25 @@ static int _position_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 typedef struct {
-    vec3_t pos;
+    vec4_t pos;
+    vec4_t pbc_ext;
     float min_cutoff;
+    float min_cutoff2;
     float max_cutoff;
+    float max_cutoff2;
     float inv_cutoff_range;
     float* bins;
     int32_t num_bins;
     uint32_t idx;
-    int32_t total_count;
+    uint64_t total_count;
 } rdf_payload_t;
 
 bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
     (void)idx;
     rdf_payload_t* data = user_param;
-    const float d = vec3_distance(coord, data->pos);
-    // This bias is only here to counter the lack of precision due to storing compressed coordinates within spatial hash.
-    const float bias = 0.0305f; // sqrt(3 * (6.0/1024))
-    if (data->min_cutoff + bias < d && d < data->max_cutoff) {
+    const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(coord, 0), data->pos, data->pbc_ext);
+    if (data->min_cutoff2 < d2 && d2 < data->max_cutoff2) {
+        const float d = sqrtf(d2);
         int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
         bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
         data->bins[bin_idx] += 1.0f;
@@ -3860,22 +3862,24 @@ bool rdf_iter(uint32_t idx, vec3_t coord, void* user_param) {
     return true;
 }
 
-#define RDF_BRUTE_FORCE_LIMIT (1000)
+#define RDF_BRUTE_FORCE_LIMIT (10000)
 
 static inline double sphere_volume(double r) {
     return (4.0 / 3.0) * PI * (r * r * r);
 }
 
-static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_t ref_len, const vec3_t* trg_pos, int64_t trg_len, float min_cutoff, float max_cutoff, vec3_t pbc_ext, md_allocator_i* alloc) {
-    //const int64_t sum = ref_size * trg_size;
+static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_t ref_len, const vec3_t* trg_pos, int64_t trg_len, float min_cutoff, float max_cutoff, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
     const float inv_cutoff_range = 1.0f / (max_cutoff - min_cutoff);
 
-    int total_count = 0;
+    uint64_t total_count = 0;
 
-    const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
-    if ((ref_len * trg_len) < (INT64_MAX)) {
-        for (int64_t i = 0; i < ref_len - 1; ++i) {
-            for (int64_t j = i; j < trg_len; ++j) {
+    // Add a small bias to avoid adding 'zero' distances
+    min_cutoff += 1.0e-3f;
+
+    const vec4_t ext = unit_cell ? vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0) : vec4_zero();
+    if ((ref_len * trg_len) < RDF_BRUTE_FORCE_LIMIT) {
+        for (int64_t i = 0; i < ref_len; ++i) {
+            for (int64_t j = 0; j < trg_len; ++j) {
                 const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(ref_pos[i], 0), vec4_from_vec3(trg_pos[j], 0), ext);
                 if (min_cutoff * min_cutoff < d2 && d2 < max_cutoff * max_cutoff) {
                     const float d = sqrtf(d2);
@@ -3887,12 +3891,14 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
             }
         }
     } else {
-        md_spatial_hash_t hash = {0};
-        md_spatial_hash_init(&hash, trg_pos, trg_len, pbc_ext, alloc);
+        md_spatial_hash_t* hash = md_spatial_hash_create_vec3(trg_pos, NULL, trg_len, unit_cell, alloc);
 
         rdf_payload_t payload = {
+            .pbc_ext = ext,
             .min_cutoff = min_cutoff,
+            .min_cutoff2 = min_cutoff * min_cutoff,
             .max_cutoff = max_cutoff,
+            .max_cutoff2 = max_cutoff * max_cutoff,
             .inv_cutoff_range = inv_cutoff_range,
             .bins = bins,
             .num_bins = num_bins,
@@ -3900,9 +3906,9 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
         };
 
         for (int64_t i = 0; i < ref_len; ++i) {
-            payload.pos = ref_pos[i];
+            payload.pos = vec4_from_vec3(ref_pos[i], 0);
             payload.idx = (uint32_t)i;
-            md_spatial_hash_query(&hash, ref_pos[i], max_cutoff, rdf_iter, &payload);
+            md_spatial_hash_query(hash, ref_pos[i], max_cutoff, rdf_iter, &payload);
         }
         total_count = payload.total_count;
     }
@@ -3914,15 +3920,14 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
     // With respect to the nominal distribution rho
     // Each bin is normalized with respect to the nominal distribution
     const double dr = (max_cutoff - min_cutoff) / (float)num_bins;
-    double acc = 0;
     double prev_sphere_vol = 0;
     for (int64_t i = 0; i < num_bins; ++i) {
-        const double curr_sphere_vol = sphere_volume(min_cutoff + (i + 0.5) * dr);
-        const double bin_vol = curr_sphere_vol - prev_sphere_vol;
+        const double sphere_vol = sphere_volume(min_cutoff + (i + 0.5) * dr);
+        const double bin_vol = sphere_vol - prev_sphere_vol;
         const double norm = bin_vol;
         const double rho = bins[i] / norm;
         bins[i] = (float)(rho * one_over_ref_rho);
-        prev_sphere_vol = curr_sphere_vol;
+        prev_sphere_vol = sphere_vol;
     }
 }
 
@@ -3970,8 +3975,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             ASSERT(dst->ptr);
             float* bins = as_float_arr(*dst);
             if (ref_len > 0 && trg_len > 0) {
-                const vec3_t pbc_ext = ctx->frame_header ? mat3_diag(ctx->frame_header->cell.basis) : (vec3_t){0,0,0};
-                compute_rdf(bins, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, pbc_ext, ctx->temp_alloc);
+                compute_rdf(bins, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, &ctx->frame_header->unit_cell, ctx->temp_alloc);
             }
         }
         if (ctx->vis) {
@@ -4132,7 +4136,7 @@ bool sdf_iter(uint32_t idx, vec3_t xyz, void* user_param) {
     const md_f32x4_t b = md_simd_cmp_lt_f32x4(coord.f32x4, md_simd_set_f32x4(VOL_DIM, VOL_DIM, VOL_DIM, 0));
     const md_f32x4_t c = md_simd_and_f32x4(a, b);
 
-    // Count the number of lanes which is not zero
+    // Count the number of lanes which are not zero
     // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
     if (_mm_movemask_ps(c) == 0x7) {
         data->vol[(uint32_t)coord.z * (VOL_DIM * VOL_DIM) + (uint32_t)coord.y * VOL_DIM + (uint32_t)coord.x] += 1.0f;
@@ -4203,7 +4207,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Fetch initial reference positions
         extract_xyzw(ref[0].x, ref[0].y, ref[0].z, ref_w, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, ref_bf);
-        const vec3_t pbc_ext = ctx->frame_header ? mat3_diag(ctx->frame_header->cell.basis) : (vec3_t){0,0,0};
+        const vec3_t pbc_ext = ctx->frame_header ? mat3_diag(ctx->frame_header->unit_cell.basis) : (vec3_t){0,0,0};
 
         // Fetch target positions
         vec3_t* target_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield, ctx->temp_alloc);
@@ -4212,11 +4216,11 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // Need to measure this better
         const bool brute_force = target_size < 10000;
 
-        md_spatial_hash_t spatial_hash;
+        md_spatial_hash_t* spatial_hash = NULL;
         const float spatial_hash_radius = sqrtf(cutoff * cutoff * 3); // distance from center of volume to corners of the volume.
 
         if (!brute_force) {
-            md_spatial_hash_init(&spatial_hash, target_xyz, target_size, pbc_ext, ctx->temp_alloc);
+            spatial_hash = md_spatial_hash_create_vec3(target_xyz, NULL, target_size, &ctx->frame_header->unit_cell, ctx->temp_alloc);
         }
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
@@ -4248,7 +4252,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                         .M = mat4_mul(VA, RT),
                         .vol = vol,
                     };
-                    md_spatial_hash_query(&spatial_hash, ref_com[1], spatial_hash_radius, sdf_iter, &payload);
+                    md_spatial_hash_query(spatial_hash, ref_com[1], spatial_hash_radius, sdf_iter, &payload);
                 }
             }
             if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_SDF) {

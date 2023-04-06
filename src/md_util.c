@@ -941,8 +941,7 @@ md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, c
             }
         } else {
             // Resort to spatial acceleration structure
-            md_spatial_hash_t sh = {0};
-            md_spatial_hash_init_soa(&sh, atom->x, atom->y, atom->z, atom->count, vec3_from_vec4(pbc_ext), default_allocator);
+            md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x, atom->y, atom->z, NULL, atom->count, cell, default_allocator);
 
             const float cutoff = 3.0f;
             
@@ -951,7 +950,7 @@ md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, c
             for (int i = 0; i < (int)atom_count; ++i) {
                 const vec3_t pos = {atom->x[i], atom->y[i], atom->z[i]};
 
-                const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), &sh, pos, cutoff);
+                const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, pos, cutoff);
                 for (int64_t iter = 0; iter < num_indices; ++iter) {
                     const int j = indices[iter];
 
@@ -971,7 +970,7 @@ md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, c
                 }
             }
 
-            md_spatial_hash_free(&sh);
+            md_spatial_hash_free(sh);
         }
     }
 
@@ -1514,27 +1513,25 @@ void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t
     
     if (radius <= 0.0f) return;
     
-    md_spatial_hash_t ctx = {0};
-    const vec3_t pbc_ext = mat3_mul_vec3(mol->cell.basis, vec3_set1(1));
 
     md_vm_arena_t arena = { 0 };
     md_vm_arena_init(&arena, GIGABYTES(1));
     md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
+    
+    int32_t* indices = 0;
+    int64_t count = mol->atom.count;
         
     if (viable_mask) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&arena);
         md_bitfield_t tmp_bf = md_bitfield_create(&arena_alloc);
         md_bitfield_andnot(&tmp_bf, viable_mask, mask);
             
         const int64_t num_atoms = md_bitfield_popcount(&tmp_bf);
-        int32_t* indices = md_vm_arena_push(&arena, num_atoms * sizeof(int32_t));
-        const int64_t len = md_bitfield_extract_indices(indices, num_atoms, &tmp_bf);
-        
-        md_spatial_hash_init_indexed_soa(&ctx, mol->atom.x, mol->atom.y, mol->atom.z, indices, len, pbc_ext, &arena_alloc);
-        md_vm_arena_temp_end(temp);
-    } else {
-        md_spatial_hash_init_soa(&ctx, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, &arena_alloc);
+        indices = md_vm_arena_push(&arena, num_atoms * sizeof(int32_t));
+        count = md_bitfield_extract_indices(indices, num_atoms, &tmp_bf);
     }
+
+    const vec3_t pbc_ext = mat3_mul_vec3(mol->unit_cell.basis, vec3_set1(1));
+    md_spatial_hash_t* ctx = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, indices, count, &mol->unit_cell, &arena_alloc);
     
     md_bitfield_t old_mask = md_bitfield_create(&arena_alloc);
     md_bitfield_copy(&old_mask, mask);
@@ -1543,7 +1540,7 @@ void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t
     while (md_bitfield_iter_next(&it)) {
         int idx = (int)md_bitfield_iter_idx(&it);
         const vec3_t pos = {mol->atom.x[idx], mol->atom.y[idx], mol->atom.z[idx]};
-        md_spatial_hash_query_bits(mask, &ctx, pos, radius);
+        md_spatial_hash_query_bits(mask, ctx, pos, radius);
     }
 
     md_vm_arena_free(&arena);
@@ -2548,7 +2545,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
         if (!mol->bonds) {
-            mol->bonds = md_util_compute_covalent_bonds(&mol->atom, &mol->cell, alloc);
+            mol->bonds = md_util_compute_covalent_bonds(&mol->atom, &mol->unit_cell, alloc);
         }
     }
 

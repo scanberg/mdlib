@@ -32,7 +32,7 @@ typedef struct pdb_trajectory_t {
     md_file_o* file;
     uint64_t filesize;
     int64_t* frame_offsets;
-    md_unit_cell_t cell;                // For pdb trajectories we have a static cell
+    md_unit_cell_t unit_cell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
     md_allocator_i* allocator;
     md_mutex_t mutex;
@@ -283,7 +283,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->num_atoms = i;
         header->index = step;
         header->timestamp = (double)(step-1); // This information is missing from PDB trajectories
-        header->cell = pdb->cell;
+        header->unit_cell = pdb->unit_cell;
     }
 
     return true;
@@ -863,7 +863,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
     };
-    pdb->cell = cell;
+    pdb->unit_cell = cell;
 
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;

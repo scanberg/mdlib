@@ -83,7 +83,7 @@ typedef struct md_hbond_data_t {
 } md_hbond_data_t;
 
 typedef struct md_molecule_t {
-    md_unit_cell_t          cell;
+    md_unit_cell_t          unit_cell;
     md_atom_data_t          atom;
     md_residue_data_t       residue;
     md_chain_data_t         chain;

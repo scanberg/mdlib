@@ -3,7 +3,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include <core/md_array.h>
 #include <core/md_vec_math.h>
 
 /*
@@ -25,54 +24,75 @@
 
 struct md_allocator_i;
 struct md_bitfield_t;
+struct md_unit_cell_t;
 
 // Callback function for when a point is found within the search space of the query
 // The return value (bool) signifies if it should continue its search (true) or if it should early exit (false).
 typedef bool (*md_spatial_hash_iterator_fn)(uint32_t idx, vec3_t coord, void* user_param);
 
-typedef struct md_spatial_hash_elem_t {
-    vec3_t coord;
-    uint32_t idx;
-} md_spatial_hash_elem_t;
-
-typedef struct md_spatial_hash_t {
-    uint32_t*               cells;
-    uint32_t*               coords;     // Compressed coordinates 10 bits precision relative to cell
-    uint32_t*               indices;    // original given index
-    struct md_allocator_i*  alloc;
-    int32_t cell_min[3];
-    uint32_t coord_count;
-    int32_t cell_dim[3];
-    uint32_t magic;
-    vec4_t pbc_ext;
-} md_spatial_hash_t;
-
-typedef struct md_spatial_acc_t md_spatial_acc_t;
+typedef struct md_spatial_hash_t md_spatial_hash_t;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
     
-md_spatial_acc_t* md_spatial_acc_create_vec3(const vec3_t* xyz, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-md_spatial_acc_t* md_spatial_acc_create_vec3_indexed(const vec3_t* xyz, const int32_t* indices, int64_t index_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-md_spatial_acc_t* md_spatial_acc_create_soa(const float* x, const float* y, const float* z, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-md_spatial_acc_t* md_spatial_acc_create_soa_indexed(const float* x, const float* y, const float* z, const int32_t* indices, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+#if 0
+typedef struct md_spatial_acc_t md_spatial_acc_t;
+// Create spatial acceleration structures from a set of coordinates as input. Either supplied as vec3 or separate x, y, z streams with optional indices.
+// If indices are supplied, then the count represents the number of indices which are supplied, otherwise count represents the number of coordinates to read directly
+// as packed array elements.
+// unit_cell is optional and represents the periodic bounds of the system (if applicable).
+md_spatial_acc_t* md_spatial_acc_create_vec3(const vec3_t* xyz, const int32_t* indices, int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_acc_t* md_spatial_acc_create_soa (const float* x, const float* y, const float* z, const int32_t* indices, int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
 
-void              md_spatial_acc_free(md_spatial_acc_t* acc);
+// Free a spatial acceleration structure
+void md_spatial_acc_free(md_spatial_acc_t* acc);
+
+typedef struct md_spatial_acc_iter_t {
+    const md_spatial_acc_t* acc;
+
+    uint32_t cell_idx_end;
+    uint32_t cell_idx;
+
+    int32_t cc[3];
+    int32_t cc_beg[3];
+    int32_t cc_ext[3];
+    int32_t cc_pbc[3];
+
+    vec3_t   elem_pos;
+    uint32_t elem_idx;
+
+    vec3_t   query_pos;
+    float    query_rad2;
+} md_spatial_acc_iter_t;
+
+// Query the spatial acceleration structure for all potential elements within the search space of the query
+md_spatial_acc_iter_t md_spatial_acc_query(const md_spatial_acc_t* acc, vec3_t pos, float radius);
+
+// Iterate over all potential elements within the search space of the query
+bool md_spatial_acc_iter_next(md_spatial_acc_iter_t* iter);
+
+// Get the index of the current element
+static inline uint32_t md_spatial_acc_iter_idx(const md_spatial_acc_iter_t* iter) {
+    return iter->elem_idx;
+}
+
+static inline vec3_t md_spatial_acc_iter_pos(const md_spatial_acc_iter_t* iter) {
+    return iter->elem_pos;
+}
+
+#endif
 
 // Initialize a spatial hash structure with a set of coordinates given by array of vec3_t (xyz) or separate arrays (x,y,z).
 // pbc_ext is optional and supplies the periodic extent for each axis. To disable periodicity, supply (0,0,0).
-bool md_spatial_hash_init(md_spatial_hash_t* spatial_hash, const vec3_t* xyz, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-bool md_spatial_hash_init_indexed(md_spatial_hash_t* spatial_hash, const vec3_t* xyz, const int32_t* indices, int64_t index_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* xyz, const int32_t* indices, int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_soa (const float* x, const float* y, const float* z, const int32_t* indices, int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
 
-bool md_spatial_hash_init_soa(md_spatial_hash_t* spatial_hash, const float* x, const float* y, const float* z, int64_t count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-bool md_spatial_hash_init_indexed_soa(md_spatial_hash_t* spatial_hash, const float* x, const float* y, const float* z, const int32_t* indices, int64_t index_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
-
-bool md_spatial_hash_free(md_spatial_hash_t* spatial_hash);
+void md_spatial_hash_free(md_spatial_hash_t* spatial_hash);
 
 // Perform a spatial query for a given position + radius in a periodic domain given by pbc_min and pbc_max.
 // This will also include periodic occurrences of points accross the periodic boundries.
-bool md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_iterator_fn iter, void* user_param);
+void md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_iterator_fn iter, void* user_param);
 
 // Get a list of indices which fall within the search space (pos + radius)
 // Writes directly to the supplied buffer and will return the number of indices written.

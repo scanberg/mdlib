@@ -9,7 +9,7 @@ struct spatial_hash {
     md_vm_arena_t arena;
     md_allocator_i alloc;
     md_molecule_t mol;
-    md_spatial_hash_t sh;
+    md_spatial_hash_t* sh;
     vec3_t pbc_ext;
 };
 
@@ -21,8 +21,7 @@ UBENCH_F_SETUP(spatial_hash) {
     md_gro_data_t gro_data = {0};
     md_gro_data_parse_file(&gro_data, STR(MD_BENCHMARK_DATA_DIR "/centered.gro"), &ubench_fixture->alloc);
     md_gro_molecule_init(&ubench_fixture->mol, &gro_data, &ubench_fixture->alloc);
-    ubench_fixture->pbc_ext = mat3_mul_vec3(ubench_fixture->mol.cell.basis, vec3_set1(1.f));
-    md_spatial_hash_init_soa(&ubench_fixture->sh, ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, ubench_fixture->mol.atom.count, ubench_fixture->pbc_ext, &ubench_fixture->alloc);
+    ubench_fixture->sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, &ubench_fixture->mol.unit_cell, &ubench_fixture->alloc);
 }
 
 UBENCH_F_TEARDOWN(spatial_hash) {
@@ -34,11 +33,10 @@ UBENCH_EX_F(spatial_hash, init) {
     md_allocator_i* alloc = &ubench_fixture->alloc;
     vec3_t pbc_ext = ubench_fixture->pbc_ext;
 
-    md_spatial_hash_t spatial_hash = {0};
 
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
-    UBENCH_DO_BENCHMARK() {    
-        md_spatial_hash_init_soa(&spatial_hash, mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.count, pbc_ext, alloc);
+    UBENCH_DO_BENCHMARK() {
+        md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, alloc);
     }
 
     md_vm_arena_temp_end(temp);
@@ -70,7 +68,7 @@ UBENCH_EX_F(spatial_hash, query) {
     uint32_t count = 0;
     UBENCH_DO_BENCHMARK() {
         for (int i = 0; i < 10000; ++i) {
-            md_spatial_hash_query(&ubench_fixture->sh, pos[i % 10], rad, func, &count);
+            md_spatial_hash_query(ubench_fixture->sh, pos[i % 10], rad, func, &count);
         }
     }
 }
