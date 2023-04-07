@@ -567,6 +567,8 @@ v8sf cos256_ps(v8sf x) { // any x
 }
 #endif
 
+#ifdef __AVX__ || __AVX2__
+
 /* since sin256_ps and cos256_ps are almost identical, sincos256_ps could replace both of them..
 it is almost as fast, and gives you a free cosine with your sine */
 void sincos256_ps(v8sf x, v8sf *s, v8sf *c) {
@@ -754,6 +756,8 @@ UTEST(simd, sin_cos) {
 	EXPECT_TRUE(validate_close1f(sin, sinf(1.0f), 0.0001f));
 	EXPECT_TRUE(validate_close1f(cos, cosf(1.0f), 0.0001f));
 }
+
+#endif
 
 UTEST(simd, hsum) {
 #if md_simd_f32_width >= 4
