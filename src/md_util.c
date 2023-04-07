@@ -981,6 +981,7 @@ md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, c
 // Heavily inspired by molstar
 // https://github.com/molstar/molstar/blob/master/src/mol-model-props/computed/chemistry/valence-model.ts
 
+/*
 md_array(md_hbond_data_t) md_util_compute_hbond_data(const md_molecule_t* mol, md_index_data_t connectivity, md_allocator_i* alloc) {
     md_array(md_valence_t) atom_valence = md_array_create(md_valence_t, mol->atom.count, default_temp_allocator);
     memset(atom_valence, 0, md_array_bytes(atom_valence));
@@ -1039,6 +1040,7 @@ md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_molecule_t* mol, md_
 
     }
 }
+*/
 
 bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_idx_t res_idx[], int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, md_allocator_i* alloc) {
     if (!chain_data) {
@@ -1530,7 +1532,6 @@ void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t
         count = md_bitfield_extract_indices(indices, num_atoms, &tmp_bf);
     }
 
-    const vec3_t pbc_ext = mat3_mul_vec3(mol->unit_cell.basis, vec3_set1(1));
     md_spatial_hash_t* ctx = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, indices, count, &mol->unit_cell, &arena_alloc);
     
     md_bitfield_t old_mask = md_bitfield_create(&arena_alloc);

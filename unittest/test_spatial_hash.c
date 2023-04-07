@@ -26,7 +26,7 @@ UTEST(spatial_hash, small_periodic) {
 
     md_unit_cell_t unit_cell = md_util_unit_cell_ortho(10, 0, 0);
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, 10, &unit_cell, default_allocator);
-    ASSERT_NE(NULL, spatial_hash);
+    ASSERT_TRUE(spatial_hash);
     
     uint32_t count = 0;
     md_spatial_hash_query(spatial_hash, (vec3_t){5,0,0}, 1.5f, func, &count);
@@ -50,7 +50,7 @@ UTEST(spatial_hash, big) {
     ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
-    ASSERT_NE(NULL, spatial_hash);
+    ASSERT_TRUE(spatial_hash);
 
     vec3_t pos = {24, 48, 24};
     float  rad = 10.0f;
@@ -100,9 +100,11 @@ UTEST_F(spatial_hash, test_correctness_non_periodic) {
     vec3_t pbc_ext = utest_fixture->pbc_ext;
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, NULL, alloc);
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
+    ASSERT_TRUE(spatial_hash);
+    
     
     srand(31);
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     const uint32_t num_iter = 100;
     for (uint32_t iter = 0; iter < num_iter; ++iter) {
@@ -134,11 +136,11 @@ UTEST_F(spatial_hash, test_correctness_periodic_centered) {
     vec3_t pbc_ext = utest_fixture->pbc_ext;
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, alloc);
+    ASSERT_TRUE(spatial_hash);
+    
+    srand(31);
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
-    srand(31);
-
-    md_timestamp_t t = 0;
     const uint32_t num_iter = 100;
     const vec4_t period = vec4_from_vec3(pbc_ext, 0);
     for (uint32_t iter = 0; iter < num_iter; ++iter) {
@@ -169,9 +171,10 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
     md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MEGABYTES(4));
 
     md_molecule_t mol;
-    md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/water.gro"), alloc);
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/water.gro"), alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
+    ASSERT_TRUE(spatial_hash);
 
     const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(mol.unit_cell.basis, vec3_set1(1)), 0);
 

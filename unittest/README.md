@@ -24,6 +24,8 @@ utest.h supports some command line options:
 * `--list-tests` will list testnames, one per line. Output names can be passed to `--filter`.
 * `--output=<output>` will output an xunit XML file with the test results (that
   Jenkins, travis-ci, and appveyor can parse for the test results).
+* `--enable-mixed-units` will enable the per-test output to contain mixed units (s/ms/us/ns).
+* `--random-order[=<seed>]` will randomize the order that the tests are ran in. If the optional <seed> argument is not provided, then a random starting seed is used.
 
 ## Design
 
@@ -333,8 +335,8 @@ Asserts that the strings x and y are not equal.
 UTEST(foo, bar) {
   char* a = "foo";
   char* b = "bar";
-  ASSERT_STREQ(a, b); // pass!
-  ASSERT_STREQ(a, a); // fail!
+  ASSERT_STRNE(a, b); // pass!
+  ASSERT_STRNE(a, a); // fail!
 }
 ```
 
@@ -362,6 +364,37 @@ UTEST(foo, bar) {
   char* b = "bar";
   ASSERT_STRNNE(a, b); // pass!
   ASSERT_STRNNE(a, a); // fail!
+}
+```
+
+### ASSERT_NEAR(x, y, epsilon)
+
+Asserts that the floating-point values x and y are within epsilon distance of
+each other.
+
+```c
+UTEST(foo, bar) {
+  float a = 42.0f;
+  float b = 42.01f;
+  ASSERT_NEAR(a, b, 0.01f);  // pass!
+  ASSERT_NEAR(a, b, 0.001f); // fail!
+}
+```
+
+### ASSERT_EXCEPTION(x, exception_type)
+
+Asserts that exception_type will be thrown when code x is executed.
+
+```cpp
+void foo(int bar) {
+  if (bar == 1)
+    throw std::range_error;
+}
+
+UTEST(foo, bar) {
+  ASSERT_EXCEPTION(foo(1), std::range_error); // pass!
+  ASSERT_EXCEPTION(foo(2), std::range_error); // fail!
+  ASSERT_EXCEPTION(foo(1), std::exception);   // fail!
 }
 ```
 
@@ -543,6 +576,51 @@ UTEST(foo, bar) {
   char* b = "bar";
   EXPECT_STRNNE(a, b); // pass!
   EXPECT_STRNNE(a, a); // fail!
+}
+```
+
+### EXPECT_NEAR(x, y, epsilon)
+
+Expects that the floating-point values x and y are within epsilon distance of
+each other.
+
+```c
+UTEST(foo, bar) {
+  float a = 42.0f;
+  float b = 42.01f;
+  EXPECT_NEAR(a, b, 0.01f);  // pass!
+  EXPECT_NEAR(a, b, 0.001f); // fail!
+}
+```
+
+### EXPECT_EXCEPTION(x, exception_type)
+
+Expects that exception_type will be thrown when code x is executed.
+
+```cpp
+void foo(int bar) {
+  if (bar == 1)
+    throw std::range_error;
+}
+
+UTEST(foo, bar) {
+  EXPECT_EXCEPTION(foo(1), std::range_error); // pass!
+  EXPECT_EXCEPTION(foo(2), std::range_error); // fail!
+  EXPECT_EXCEPTION(foo(1), std::exception);   // fail!
+}
+```
+
+### UTEST_SKIP(msg)
+
+This macro lets you mark a test case as being skipped - eg. that the test case
+is not to be executed. The test will stop running as you execute the macro,
+report the `msg` as the reason for the skipped, and mark the test as
+_'skipped'_. These will be reported at the end of execution before failures, and
+skipped test cases will **not** cause the process to exit with a non-zero code.
+
+```c
+UTEST(foo, bar) {
+  UTEST_SKIP("Need to implement this test!");
 }
 ```
 

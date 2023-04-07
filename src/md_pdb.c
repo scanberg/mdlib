@@ -39,13 +39,7 @@ typedef struct pdb_trajectory_t {
 } pdb_trajectory_t;
 
 static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64_t beg, int64_t end) {
-    if (line.len < end) {
-        ASSERT(dst_size > 0);
-        dst[0] = '\0';
-    }
-    str_t src = str_trim(str_substr(line, beg - 1, end-beg + 1));
-    ASSERT(dst_size >= src.len);
-    MEMCPY(dst, src.ptr, src.len);
+    str_copy_to_char_buf(dst, dst_size, str_trim(str_substr(line, beg - 1, end-beg + 1)));
 }
 
 // We massage the beg and end indices here to correspond the pdb specification
@@ -301,7 +295,6 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
         if (line.len < 6) continue;
         if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
-			const uint32_t flags = (line.ptr[0] == 'H') ? MD_PDB_COORD_FLAG_HETATM : 0;
             coord.flags |= MD_PDB_COORD_FLAG_HETATM;
             md_array_push(data->atom_coordinates, coord, alloc);
         }

@@ -4,17 +4,9 @@ project(md_unittest VERSION 0.1 LANGUAGES C)
 
 add_executable(md_unittest unittest.c)
 
-if (CMAKE_C_COMPILER_ID MATCHES "Clang")
-  target_compile_options(md_unittest PRIVATE -march=native)
-elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
-  target_compile_options(md_unittest PRIVATE -march=native)
-elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
-  target_compile_options(md_unittest PRIVATE /MP /GR- /fp:fast /arch:AVX $<$<CONFIG:Release>:/Oi /GS->)
-endif()
-
+target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" UTEST_USE_OLD_QPC ${MD_DEFINES})
+target_compile_options(md_unittest PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
 target_link_libraries(md_unittest PRIVATE mdlib ${VIAMD_STDLIBS})
-
-target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" UTEST_USE_OLD_QPC)
 
 target_sources(md_unittest
   PRIVATE

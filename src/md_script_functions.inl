@@ -4207,7 +4207,6 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Fetch initial reference positions
         extract_xyzw(ref[0].x, ref[0].y, ref[0].z, ref_w, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, ref_bf);
-        const vec3_t pbc_ext = ctx->frame_header ? mat3_diag(ctx->frame_header->unit_cell.basis) : (vec3_t){0,0,0};
 
         // Fetch target positions
         vec3_t* target_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield, ctx->temp_alloc);

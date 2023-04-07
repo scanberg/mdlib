@@ -21,15 +21,6 @@ option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 
-if (MD_UNITTEST)
-  enable_testing()
-  add_subdirectory(unittest)
-endif()
-
-if (MD_BENCHMARK)
-  add_subdirectory(benchmark)
-endif()
-
 file(GLOB SRC_FILES src/*.h src/*.c src/*.inl)
 file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
 file(GLOB_RECURSE EXT_FILES ext/*)
@@ -171,6 +162,15 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     set(MD_FLAGS_REL ${MD_FLAGS_REL}
         "/GS-")
     set(PROJ_FILES ${PROJ_FILES} "mdlib.natvis")
+endif()
+
+if (MD_UNITTEST)
+  enable_testing()
+  add_subdirectory(unittest)
+endif()
+
+if (MD_BENCHMARK)
+  add_subdirectory(benchmark)
 endif()
 
 source_group("src" FILES ${SRC_FILES}) 
