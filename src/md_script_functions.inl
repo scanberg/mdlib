@@ -782,13 +782,31 @@ static inline int64_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, cons
 
     int64_t count = 0;
 
-    int64_t beg_bit = bitfield->beg_bit;
-    int64_t end_bit = bitfield->end_bit;
-    while ((beg_bit = md_bitfield_scan(bitfield, beg_bit, end_bit)) != 0) {
-        const int64_t idx = beg_bit - 1;
+    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    while (md_bitfield_iter_next(&it)) {
+        const int64_t idx = md_bitfield_iter_idx(&it);
         dst_x[count] = src_x[idx];
         dst_y[count] = src_y[idx];
         dst_z[count] = src_z[idx];
+        count += 1;
+    }
+
+    return count;
+}
+
+static inline int64_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bitfield) {
+    ASSERT(dst_xyz);
+    ASSERT(src_x);
+    ASSERT(src_y);
+    ASSERT(src_z);
+    ASSERT(bitfield);
+
+    int64_t count = 0;
+
+    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    while (md_bitfield_iter_next(&it)) {
+        const int64_t idx = md_bitfield_iter_idx(&it);
+        dst_xyz[count] = vec3_set(src_x[idx], src_y[idx], src_z[idx]);
         count += 1;
     }
 
@@ -821,6 +839,27 @@ static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, flo
 
     return count;
 }
+
+static inline int64_t extract_xyzw_vec3(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bitfield) {
+    ASSERT(dst_xyzw);
+    ASSERT(src_x);
+    ASSERT(src_y);
+    ASSERT(src_z);
+    ASSERT(src_w);
+    ASSERT(bitfield);
+
+    int64_t count = 0;
+
+    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    while (md_bitfield_iter_next(&it)) {
+        const int64_t idx = md_bitfield_iter_idx(&it);
+        dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], src_w[idx]);
+        count += 1;
+    }
+
+    return count;
+}
+
 
 // @TODO: All these have poor names
 
@@ -1099,9 +1138,11 @@ static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
         ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
+        md_array_ensure(positions, element_count(arg), ctx->temp_alloc);
         md_array_push_array(positions, as_vec3_arr(arg), element_count(arg), ctx->temp_alloc);
         break;
     case TYPE_INT: {
+        md_array_ensure(positions, element_count(arg), ctx->temp_alloc);
         int* indices = as_int_arr(arg);
         int64_t num_idx = element_count(arg);
         for (int64_t i = 0; i < num_idx; ++i) {
@@ -1120,15 +1161,16 @@ static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
             range = clamp_range(range, ctx_range);
 
             if (ctx->mol_ctx) {
-                int64_t beg_bit = range.beg;
-                int64_t end_bit = range.end;
-                while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
-                    const int64_t idx = beg_bit - 1;
+                md_array_ensure(positions, md_bitfield_popcount_range(ctx->mol_ctx, range.beg, range.end), ctx->temp_alloc);
+                md_bitfield_iter_t it = md_bitfield_iter_range(ctx->mol_ctx, range.beg, range.end);
+                while (md_bitfield_iter_next(&it)) {
+                    const int64_t idx = md_bitfield_iter_idx(&it);
                     vec3_t pos = { ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx] };
                     md_array_push(positions, pos, ctx->temp_alloc);
                 }
             }
             else {
+                md_array_ensure(positions, range.end - range.beg, ctx->temp_alloc);
                 for (int64_t j = range.beg; j < range.end; ++j) {
                     vec3_t pos = { ctx->mol->atom.x[j], ctx->mol->atom.y[j], ctx->mol->atom.z[j] };
                     md_array_push(positions, pos, ctx->temp_alloc);
@@ -1215,12 +1257,10 @@ static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
             range = clamp_range(range, ctx_range);
 
             if (ctx->mol_ctx) {
-                int64_t beg_bit = range.beg;
-                int64_t end_bit = range.end;
-                while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
-                    const int64_t idx = beg_bit - 1;
-                    vec4_t xyzw = { ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], 1.0f };
-                    xyzw = vec4_mul_f(xyzw, ctx->mol->atom.mass[idx]);
+                md_bitfield_iter_t it = md_bitfield_iter(ctx->mol_ctx);
+                while (md_bitfield_iter_next(&it)) {
+                    const int64_t idx = md_bitfield_iter_idx(&it);
+                    const vec4_t xyzw = vec4_mul_f(vec4_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], 1.0f), ctx->mol->atom.mass[idx]);
                     sum = vec4_add(sum, xyzw);
                 }
             }
@@ -3296,7 +3336,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 const int64_t stride = ALIGN_TO(count, md_simd_f32_width);
                 const int64_t coord_bytes = stride * 7 * sizeof(float);
                 float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
-                md_vec3_soa_t coord[2] = {
+                const md_vec3_soa_t coord[2] = {
                     {
                         coord_data + stride * 0,
                         coord_data + stride * 1,
@@ -3310,7 +3350,6 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 };
                 float* w  = coord_data + stride * 6;
 
-
                 extract_xyz (coord[0].x, coord[0].y, coord[0].z, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, &bf);
                 extract_xyzw(coord[1].x, coord[1].y, coord[1].z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
 
@@ -3320,10 +3359,9 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 };
 
                 as_float(*dst) = (float)md_util_compute_rmsd(coord, com, w, count);
+                md_free(ctx->temp_alloc, coord_data, coord_bytes);
             }
         }
-
-        // No need to free anything, this will be taken care of in the procedure call
     }
     else {
         // Validate args

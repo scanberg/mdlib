@@ -2413,6 +2413,13 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
     if (visualize_only && !(proc->flags & FLAG_VISUALIZE)) {
         // If the node has not been flagged with visualize, it should not be called during visualization
         // Unless there is some data (dst) which should be filled in.
+
+        // Do however propagate the evaluation to the children
+        for (int64_t i = 0; i < num_args; ++i) {
+            if (!evaluate_node(NULL, args[i], ctx)) {
+                return -1;
+            }
+        }
         return result;
     }
 
@@ -5156,15 +5163,16 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         }
 
         allocate_data(&data, type, ctx->temp_alloc);
-        evaluate_node(&data, node, ctx);
-
-        ASSERT(data.ptr);
-        const md_bitfield_t* bf_arr = data.ptr;
-        for (int64_t i = 0; i < element_count(data); ++i) {
-            md_bitfield_or_inplace(ctx->vis->atom_mask, &bf_arr[i]);
+        if (data.ptr) {
+            evaluate_node(&data, node, ctx);
+            const md_bitfield_t* bf_arr = data.ptr;
+            for (int64_t i = 0; i < element_count(data); ++i) {
+                md_bitfield_or_inplace(ctx->vis->atom_mask, &bf_arr[i]);
+            }
+            free_data(&data, ctx->temp_alloc);
+        } else {
+            md_log(MD_LOG_TYPE_DEBUG,"Failed to allocate data for bitfield visualization");
         }
-
-        free_data(&data, ctx->temp_alloc);
     } else {
         evaluate_node(NULL, node, ctx);
     }

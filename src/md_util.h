@@ -27,14 +27,6 @@ enum {
 
 typedef uint32_t md_util_postprocess_flags_t;
 
-// Cluster of a range with bounding box
-typedef struct md_cluster_t {
-    vec3_t aabb_min;
-    uint32_t offset;
-    vec3_t aabb_max;
-    uint32_t size;
-} md_cluster_t;
-
 // This assumes the string exactly matches the value within the look up table
 // The match is case sensitive and expects elements to be formatted with Big first letter and small second letter:
 // E.g. H, He, Fe, Na, C
