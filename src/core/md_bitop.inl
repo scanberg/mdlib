@@ -195,7 +195,7 @@ static inline uint64_t bit_scan(const uint64_t* bits, uint64_t beg_bit, uint64_t
 
     uint64_t val;
     if (beg_idx == end_idx) {
-        val  = bits[beg_idx] & (beg_mask & end_mask);
+        val = bits[beg_idx] & (beg_mask & end_mask);
         if (val) return (beg_idx << 6) + ctz64(val) + 1;
         return 0;
     }

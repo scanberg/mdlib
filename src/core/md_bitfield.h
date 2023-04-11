@@ -16,6 +16,8 @@ typedef struct md_bitfield_t {
 typedef struct md_bitfield_iter_t {
     const md_bitfield_t* bf;
     uint64_t idx;
+    uint32_t beg_bit;
+    uint32_t end_bit;
 } md_bitfield_iter_t;
 
 #ifdef __cplusplus
@@ -85,8 +87,11 @@ bool md_bitfield_test_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end
 */
 uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
-// Create iterator object (forward iteration)
+// Create default iterator full range
 md_bitfield_iter_t md_bitfield_iter(const md_bitfield_t* bf);
+
+// Create iterator with range
+md_bitfield_iter_t md_bitfield_iter_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 // Go to the next bit set in the bitfield, returns true if found, false if not found
 bool md_bitfield_iter_next(md_bitfield_iter_t* iter);

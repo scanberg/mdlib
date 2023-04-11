@@ -688,14 +688,18 @@ md_bitfield_iter_t md_bitfield_iter(const md_bitfield_t* bf) {
     md_bitfield_iter_t iter = {
         .bf = bf,
         .idx = bf->beg_bit,
+        .beg_bit = bf->beg_bit,
+        .end_bit = bf->end_bit,
     };
     return iter;
 }
 
-md_bitfield_iter_t md_bitfield_iter_reverse(const md_bitfield_t* bf) {
+md_bitfield_iter_t md_bitfield_iter_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     md_bitfield_iter_t iter = {
         .bf = bf,
-        .idx = bf->end_bit,
+        .idx = bf->beg_bit,
+        .beg_bit = MAX((uint32_t)beg, bf->beg_bit),
+        .end_bit = MIN((uint32_t)end, bf->end_bit),
     };
     return iter;
 }
@@ -704,15 +708,15 @@ bool md_bitfield_iter_next(md_bitfield_iter_t* it) {
     ASSERT(it);
     ASSERT(md_bitfield_validate(it->bf));
 
-    if (it->idx >= it->bf->end_bit) return false;
+    if (it->idx >= it->end_bit) return false;
     
-    uint64_t res = bit_scan(u64_base(it->bf), it->idx, it->bf->end_bit);
+    const uint64_t res = bit_scan(u64_base(it->bf), it->idx, it->end_bit);
     if (res) {
         it->idx = res;
         return true;
     }
     
-    it->idx = it->bf->end_bit;
+    it->idx = it->end_bit;
     return false;
 }
 
