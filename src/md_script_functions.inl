@@ -1,9 +1,13 @@
 // This is to mark that the procedure supports a varying length
 #define ANY_LENGTH -1
-//#define ANY_LEVEL -1
 
-#define DIST_BINS 1024
-#define VOL_DIM 128
+#ifndef MD_DIST_BINS
+#define MD_DIST_BINS 1024
+#endif
+
+#ifndef MD_VOL_DIM
+#define MD_VOL_DIM 128
+#endif
 
 #define STATIC_VALIDATION_ERROR -2
 
@@ -21,8 +25,11 @@
 #define TI_FLOAT44      {TYPE_FLOAT, {4,4,1}, 2}
 #define TI_FLOAT44_ARR  {TYPE_FLOAT, {4,4,ANY_LENGTH}, 2}
 
-#define TI_DISTRIBUTION {TYPE_FLOAT, {DIST_BINS,1}, 1}
-#define TI_VOLUME       {TYPE_FLOAT, {VOL_DIM,VOL_DIM,VOL_DIM,1}, 3}
+// When storing a distribution, we store it as a float array with 1024 elements
+// But for the second dimension we also stored the associated weight of each bin
+// This is required later if we want to resample the distribution into different set of bins.
+#define TI_DISTRIBUTION {TYPE_FLOAT, {MD_DIST_BINS,2}, 1}
+#define TI_VOLUME       {TYPE_FLOAT, {MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM,1}, 3}
 
 #define TI_INT          {TYPE_INT, {1}, 0}
 #define TI_INT_ARR      {TYPE_INT, {ANY_LENGTH}, 0}
@@ -1161,7 +1168,7 @@ static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
             range = clamp_range(range, ctx_range);
 
             if (ctx->mol_ctx) {
-                md_array_ensure(positions, md_bitfield_popcount_range(ctx->mol_ctx, range.beg, range.end), ctx->temp_alloc);
+                md_array_ensure(positions, (int64_t)md_bitfield_popcount_range(ctx->mol_ctx, (uint64_t)range.beg, (uint64_t)range.end), ctx->temp_alloc);
                 md_bitfield_iter_t it = md_bitfield_iter_range(ctx->mol_ctx, range.beg, range.end);
                 while (md_bitfield_iter_next(&it)) {
                     const int64_t idx = md_bitfield_iter_idx(&it);
@@ -3906,7 +3913,7 @@ static inline double sphere_volume(double r) {
     return (4.0 / 3.0) * PI * (r * r * r);
 }
 
-static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_t ref_len, const vec3_t* trg_pos, int64_t trg_len, float min_cutoff, float max_cutoff, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+static void compute_rdf(float* bins, float* weights, int num_bins, const vec3_t* ref_pos, int64_t ref_len, const vec3_t* trg_pos, int64_t trg_len, float min_cutoff, float max_cutoff, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
     const float inv_cutoff_range = 1.0f / (max_cutoff - min_cutoff);
 
     uint64_t total_count = 0;
@@ -3952,7 +3959,7 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
     }
 
     // Reference rho
-    const double one_over_ref_rho = (sphere_volume(max_cutoff) - sphere_volume(min_cutoff)) / total_count;
+    const double ref_rho = total_count / (sphere_volume(max_cutoff) - sphere_volume(min_cutoff));
 
     // Normalize bins
     // With respect to the nominal distribution rho
@@ -3965,11 +3972,12 @@ static void compute_rdf(float* bins, int num_bins, const vec3_t* ref_pos, int64_
         const double norm = bin_vol;
         const double rho = bins[i] / norm;
         bins[i] = (float)(rho * one_over_ref_rho);
+        
         prev_sphere_vol = sphere_vol;
     }
 }
 
-static int rdf_visualize(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* target_pos, int64_t target_size, float min_cutoff, float max_cutoff, eval_context_t* ctx) {
+static int visualize_rdf(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* target_pos, int64_t target_size, float min_cutoff, float max_cutoff, eval_context_t* ctx) {
     const float min_cutoff2 = min_cutoff * min_cutoff;
     const float max_cutoff2 = max_cutoff * max_cutoff;
 
@@ -4000,7 +4008,7 @@ static int rdf_visualize(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* 
 
 static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
     if (dst || ctx->vis) {
-        const int num_bins = DIST_BINS;
+        const int num_bins = MD_DIST_BINS;
 
         const vec3_t* ref_pos = position_extract(arg[0], ctx);
         const int64_t ref_len = md_array_size(ref_pos);
@@ -4012,12 +4020,13 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_DISTRIBUTION));
             ASSERT(dst->ptr);
             float* bins = as_float_arr(*dst);
+			float* weights = as_float_arr(*dst) + num_bins;
             if (ref_len > 0 && trg_len > 0) {
-                compute_rdf(bins, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, &ctx->frame_header->unit_cell, ctx->temp_alloc);
+                compute_rdf(bins, weights, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, &ctx->frame_header->unit_cell, ctx->temp_alloc);
             }
         }
         if (ctx->vis) {
-            return rdf_visualize(ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, ctx);
+            return visualize_rdf(ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, ctx);
         }
         return 0;
     }
@@ -4134,13 +4143,13 @@ static inline void populate_volume(float* vol, const vec3_t* xyz, int64_t num_po
 
         // Dwelling into bitland here, is a bit unsure if we should expose these as vec4 operations
         const md_f32x4_t a = md_simd_cmp_lt_f32x4(md_simd_zero_f32x4(), coord.f32x4);
-        const md_f32x4_t b = md_simd_cmp_lt_f32x4(coord.f32x4, md_simd_set_f32x4(VOL_DIM, VOL_DIM, VOL_DIM, 0));
+        const md_f32x4_t b = md_simd_cmp_lt_f32x4(coord.f32x4, md_simd_set_f32x4(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0));
         const md_f32x4_t c = md_simd_and_f32x4(a, b);
 
         // Count the number of lanes which is not zero
         // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
         if (_mm_movemask_ps(c) == 0x7) {
-            vol[(uint32_t)coord.z * (VOL_DIM * VOL_DIM) + (uint32_t)coord.y * VOL_DIM + (uint32_t)coord.x] += 1.0f;
+            vol[(uint32_t)coord.z * (MD_VOL_DIM * MD_VOL_DIM) + (uint32_t)coord.y * MD_VOL_DIM + (uint32_t)coord.x] += 1.0f;
         }
     }
 }
@@ -4148,12 +4157,12 @@ static inline void populate_volume(float* vol, const vec3_t* xyz, int64_t num_po
 static inline mat4_t compute_volume_matrix(float radius) {
     // We have the cutoff as a radius, meaning our volume radius has the length 'r' for each axis.
     // Thus this means the diameter is 2*r.
-    // We have the resolution VOL_DIM for each axis, meaning each voxel has the extent of 2*r / VOL_RES units
-    const float voxel_ext = (2*radius) / VOL_DIM;
+    // We have the resolution MD_VOL_DIM for each axis, meaning each voxel has the extent of 2*r / VOL_RES units
+    const float voxel_ext = (2*radius) / MD_VOL_DIM;
     const float s = 1.0f / voxel_ext;
     mat4_t S = mat4_scale(s, s, s);
 
-    const float t = (VOL_DIM / 2);
+    const float t = (MD_VOL_DIM / 2);
     mat4_t T = mat4_translate(t, t, t);
 
     return mat4_mul(T, S);
@@ -4171,13 +4180,13 @@ bool sdf_iter(uint32_t idx, vec3_t xyz, void* user_param) {
 
     // Dwelling into bitland here, is a bit unsure if we should expose these as vec4 operations
     const md_f32x4_t a = md_simd_cmp_lt_f32x4(md_simd_zero_f32x4(), coord.f32x4);
-    const md_f32x4_t b = md_simd_cmp_lt_f32x4(coord.f32x4, md_simd_set_f32x4(VOL_DIM, VOL_DIM, VOL_DIM, 0));
+    const md_f32x4_t b = md_simd_cmp_lt_f32x4(coord.f32x4, md_simd_set_f32x4(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0));
     const md_f32x4_t c = md_simd_and_f32x4(a, b);
 
     // Count the number of lanes which are not zero
     // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
     if (_mm_movemask_ps(c) == 0x7) {
-        data->vol[(uint32_t)coord.z * (VOL_DIM * VOL_DIM) + (uint32_t)coord.y * VOL_DIM + (uint32_t)coord.x] += 1.0f;
+        data->vol[(uint32_t)coord.z * (MD_VOL_DIM * MD_VOL_DIM) + (uint32_t)coord.y * MD_VOL_DIM + (uint32_t)coord.x] += 1.0f;
     }
     return true;
 }

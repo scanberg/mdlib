@@ -3882,11 +3882,11 @@ static inline bool is_temporal_type(type_info_t ti) {
 }
 
 static inline bool is_distribution_type(type_info_t ti) {
-    return (ti.base_type == TYPE_FLOAT && ti.dim[0] == DIST_BINS && ti.dim[1] > 0 && ti.dim[2] == 0);
+    return (ti.base_type == TYPE_FLOAT && ti.dim[0] == MD_DIST_BINS && ti.dim[1] > 0 && ti.dim[2] == 0);
 }
 
 static inline bool is_volume_type(type_info_t ti) {
-    return (ti.base_type == TYPE_FLOAT && ti.dim[0] == VOL_DIM && ti.dim[1] == VOL_DIM && ti.dim[2] == VOL_DIM && ti.dim[3] > 0);
+    return (ti.base_type == TYPE_FLOAT && ti.dim[0] == MD_VOL_DIM && ti.dim[1] == MD_VOL_DIM && ti.dim[2] == MD_VOL_DIM && ti.dim[3] > 0);
 }
 
 static inline bool is_property_type(type_info_t ti) {
@@ -3974,6 +3974,7 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
     int64_t num_values = 0;
     MEMCPY(prop->data.dim, type.dim, sizeof(type.dim));
 
+    bool aggregate         = false;
     int64_t aggregate_size = 0;
 
     if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
@@ -3984,26 +3985,21 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
         prop->data.dim[1] = (int32_t)num_frames;
         num_values = prop->data.dim[0] * prop->data.dim[1];
         aggregate_size = num_frames;
+        aggregate = (type_info_array_len(type) > 1);
     }
     else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
         ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) == 0);
         ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) == 0);
 
         // For distributions we only store and expose the aggregate
-        num_values = DIST_BINS;
-        prop->data.dim[0] = DIST_BINS;
-        aggregate_size = num_values;
+        num_values = MD_DIST_BINS * 2;
     }
     else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
         ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) == 0);
         ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) == 0);
 
         // For volumes we only store and expose the aggregate
-        num_values = VOL_DIM * VOL_DIM * VOL_DIM;
-        prop->data.dim[0] = VOL_DIM;
-        prop->data.dim[1] = VOL_DIM;
-        prop->data.dim[2] = VOL_DIM;
-        aggregate_size = num_values;
+        num_values = MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM;
     }
     else {
         ASSERT(false);
@@ -4013,7 +4009,7 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
     MEMSET(prop->data.values, 0, num_values * sizeof(float));
     prop->data.num_values = num_values;
 
-    if (type_info_array_len(type) > 1) {
+    if (aggregate) {
         // Need to allocate data for aggregate as well.
         prop->data.aggregate = md_alloc(alloc, sizeof(md_script_aggregate_t));
 

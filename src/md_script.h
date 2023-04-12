@@ -23,7 +23,6 @@ in order to make it work within VIAMD
 
 
 // This is represents an opaque marker of something which can be visualized
-//struct md_script_vis_token_t;
 typedef struct md_script_vis_payload_t md_script_vis_payload_t;
 
 typedef enum md_script_property_flags_t {
@@ -39,7 +38,6 @@ typedef enum md_script_property_flags_t {
 typedef struct md_script_range_marker_t {
     int beg;
     int end;
-
 } md_script_range_marker_t;
 
 typedef struct md_script_vis_token_t {
@@ -115,7 +113,6 @@ int[3] md_script_prop_vol_extent(md_script_ir_t* eval, pid_t id);
 vec3_t md_script_prop_vol_extent(md_script_ir_t* eval, pid_t id);
 
 const float* md_script_prop_values(pid_t);
-
 
 #endif
 
