@@ -25,10 +25,7 @@
 #define TI_FLOAT44      {TYPE_FLOAT, {4,4,1}, 2}
 #define TI_FLOAT44_ARR  {TYPE_FLOAT, {4,4,ANY_LENGTH}, 2}
 
-// When storing a distribution, we store it as a float array with 1024 elements
-// But for the second dimension we also stored the associated weight of each bin
-// This is required later if we want to resample the distribution into different set of bins.
-#define TI_DISTRIBUTION {TYPE_FLOAT, {MD_DIST_BINS,2}, 1}
+#define TI_DISTRIBUTION {TYPE_FLOAT, {MD_DIST_BINS,1}, 1}
 #define TI_VOLUME       {TYPE_FLOAT, {MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM,1}, 3}
 
 #define TI_INT          {TYPE_INT, {1}, 0}
@@ -4377,6 +4374,3 @@ static int _align(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 }
 */
-
-#undef ANY_LENGTH
-//#undef ANY_LEVEL

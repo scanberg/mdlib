@@ -362,6 +362,7 @@ struct ast_node_t {
     flags_t             flags;      // Flags for node (set during static type checking)
 
     // PAYLOAD
+    ast_node_t*         parent;     // Parent node
     ast_node_t**        children;   // For AND, OR, NOT, procedure arguments etc.
     value_t             value;      // Scalar values for storing data directly inside the node
     data_t              data;       // Structure for passing as argument into procedure. (Holds pointer, length and type)
@@ -495,7 +496,7 @@ static inline uint32_t operator_precedence(ast_type_t type) {
 }
 
 static inline bool compare_type_info_dim(type_info_t a, type_info_t b) {
-    return (memcmp(&a.dim, &b.dim, sizeof(a.dim)) == 0) && (a.len_dim == b.len_dim);
+    return (MEMCMP(&a.dim, &b.dim, sizeof(a.dim)) == 0) && (a.len_dim == b.len_dim);
 }
 
 static inline bool type_info_equal(type_info_t a, type_info_t b) {
@@ -505,11 +506,11 @@ static inline bool type_info_equal(type_info_t a, type_info_t b) {
         }
         return false;
     }*/
-    return memcmp(&a, &b, sizeof(type_info_t)) == 0;
+    return MEMCMP(&a, &b, sizeof(type_info_t)) == 0;
 }
 
 static inline bool is_undefined_type(type_info_t ti) {
-    return memcmp(&ti, &(type_info_t){0}, sizeof(type_info_t)) == 0;
+    return MEMCMP(&ti, &(type_info_t){0}, sizeof(type_info_t)) == 0;
 }
 
 static inline bool is_array(type_info_t ti) {
@@ -523,12 +524,6 @@ static inline bool is_scalar(type_info_t ti) {
 static inline bool is_variable_length(type_info_t ti) {
     return ti.dim[ti.len_dim] == -1;
 }
-
-/*
-static inline bool is_incomplete_bitfield(type_info_t ti) {
-    return ti.base_type == TYPE_BITFIELD && ti.level == -1;
-}
-*/
 
 static inline int64_t type_info_array_len(type_info_t ti) {
     ASSERT(ti.len_dim < MAX_SUPPORTED_TYPE_DIMS);
@@ -708,8 +703,8 @@ static void free_data(data_t* data, md_allocator_i* alloc) {
     if (data->ptr && data->size) {
         if (data->type.base_type == TYPE_BITFIELD) {
             md_bitfield_t* bf = data->ptr;
-            const uint64_t num_elem = element_count(*data);
-            for (uint64_t i = 0; i < num_elem; ++i) {
+            const int64_t num_elem = element_count(*data);
+            for (int64_t i = 0; i < num_elem; ++i) {
                 md_bitfield_free(&bf[i]);
             }
         }
@@ -1322,34 +1317,19 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
         }
         
         else if (is_symbol(buf[i])) {
-            typedef struct Symbol {
+            typedef struct symbol_t {
                 const char* str;
                 token_type_t type;
-            } Symbol;
+            } symbol_t;
             
-            static Symbol symbols_2[] = {
+            static const symbol_t symbols_2[] = {
                 {"<=", TOKEN_LE},
                 {">=", TOKEN_GE},
                 {"==", TOKEN_EQ}
             };
             
-            static char symbols_1[] = {
-                '(',
-                ')',
-                '[',
-                ']',
-                '{',
-                '}',
-                '<',
-                '>',
-                '*',
-                '+',
-                '-',
-                '/',
-                '=',
-                ':',
-                ';',
-                ',',
+            static const char symbols_1[] = {
+                '(', ')', '[', ']', '{', '}', '<', '>', '*', '+', '-', '/', '=', ':', ';', ',', '.'
             };
             
             // Potential symbol count in buf to match (only care about 1 or 2)
@@ -3241,6 +3221,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             ctx->eval_flags = ctx->eval_flags & (~EVAL_FLAG_FLATTEN);
         }
 
+        
         // Perform new child check here since children may have changed due to conversions etc.
         result = result && static_check_children(node, ctx) && finalize_proc_call(node, ctx);
 
@@ -3862,6 +3843,25 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol) {
     FREE_TEMP_ALLOC();
 
     return result;
+}
+
+static void assign_node_parent(ast_node_t* node) {
+    for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+        node->children[i]->parent = node;
+        assign_node_parent(node->children[i]);
+    }
+}
+
+// We want to finalize the tree by setting parents to all children
+static bool finalize_ast(md_script_ir_t* ir) {
+    ASSERT(ir);
+    for (int64_t i = 0; i < md_array_size(ir->expressions); ++i) {
+        ast_node_t* node = ir->expressions[i]->node;
+        if (node) {
+            assign_node_parent(node);
+        }
+    }
+    return true;
 }
 
 static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
@@ -4541,8 +4541,6 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
         MD_LOG_ERROR("Script Compile: Molecule was null");
         return false;
     }
-
-    //reset_ir(ir);
     
     ir->str = str_copy(src, ir->arena);
 
@@ -4552,6 +4550,8 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
 
     ir->compile_success = parse_script(ir) &&
         static_type_check(ir, mol) &&
+        finalize_ast(ir) &&
+        // optimize ast?
         static_evaluation(ir, mol) &&
         extract_dynamic_evaluation_targets(ir) &&
         extract_vis_tokens(ir) &&
@@ -5174,6 +5174,29 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         }
     } else {
         evaluate_node(NULL, node, ctx);
+    }
+
+    if (node->parent && node->parent->type == AST_PROC_CALL) {
+        // This is an argument node to a proc call.
+        // This could be a reference to atomic indices, such as integers and iranges or similar. (given by the arg_type which is then POSITION)
+        // In such case, we want to visualize these atoms using the position
+        int64_t arg_idx = -1;
+        for (int64_t i = 0; i < md_array_size(node->parent->children); ++i) {
+            if (node->parent->children[i] == node) {
+                arg_idx = i;
+                break;
+            }
+        }
+        ASSERT(arg_idx != -1);
+        
+        const procedure_t* proc = node->parent->proc;
+        if (is_type_equivalent(proc->arg_type[arg_idx], (type_info_t)TI_POSITION) || is_type_equivalent(proc->arg_type[arg_idx], (type_info_t)TI_POSITION_ARR)) {
+            if (node->data.ptr) {
+                position_visualize(node->data, ctx);
+            } else {
+                // Could potentially evaluate the non constant value expression here into a data_t item and visualize it.
+            }
+        }
     }
 }
 
