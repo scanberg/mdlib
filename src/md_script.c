@@ -304,6 +304,9 @@ typedef struct md_script_visualization_o {
     uint32_t flags;
 } md_script_visualization_o;
 
+// The backchannel is used to provide additional information of the data during static analysis.
+// Ideally this should perhaps reside together with the data_t struct, but for now we keep it separate.
+// The reason is because we do not pass in data_t during static analysis. which may be a mistake.
 typedef struct static_backchannel_t {
     flags_t   flags;
     md_unit_t unit;
@@ -4280,9 +4283,9 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
 
                 if (prop->data.aggregate) {
                     prop->data.aggregate->population_mean[f_idx] = mean;
-                    prop->data.aggregate->population_var[f_idx] = var;
-                    prop->data.aggregate->population_min[f_idx] = min;
-                    prop->data.aggregate->population_max[f_idx] = max;
+                    prop->data.aggregate->population_var [f_idx] = var;
+                    prop->data.aggregate->population_min [f_idx] = min;
+                    prop->data.aggregate->population_max [f_idx] = max;
                 }
 
                 // Update range if not explicitly set

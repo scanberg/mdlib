@@ -3959,7 +3959,8 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const vec3_t*
     }
 
     // Reference rho
-    const double ref_rho = total_count / (sphere_volume(max_cutoff) - sphere_volume(min_cutoff));
+    const double total_vol = sphere_volume(max_cutoff) - sphere_volume(min_cutoff);
+    const double ref_rho   = total_count / total_vol;
 
     // Normalize bins
     // With respect to the nominal distribution rho
@@ -3969,10 +3970,8 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const vec3_t*
     for (int64_t i = 0; i < num_bins; ++i) {
         const double sphere_vol = sphere_volume(min_cutoff + (i + 0.5) * dr);
         const double bin_vol = sphere_vol - prev_sphere_vol;
-        const double norm = bin_vol;
-        const double rho = bins[i] / norm;
-        bins[i] = (float)(rho * one_over_ref_rho);
-        
+        const double rho = bins[i] / bin_vol;
+        bins[i] = (float)(rho / ref_rho);   
         prev_sphere_vol = sphere_vol;
     }
 }
