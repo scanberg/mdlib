@@ -57,6 +57,12 @@ static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const 
     const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
 
+    if (count == 0) {
+        *out_aabb_min = vec4_zero();
+        *out_aabb_max = vec4_zero();
+        return;
+    }
+
     vec4_t aabb_min = vec4_set1(+FLT_MAX);
     vec4_t aabb_max = vec4_set1(-FLT_MAX);
     
@@ -72,14 +78,20 @@ static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const 
     *out_aabb_max = aabb_max;
 }
 
-static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const int32_t* indices, int64_t index_count, vec4_t pbc_ext) {
+static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const int32_t* indices, int64_t count, vec4_t pbc_ext) {
     const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+    if (count == 0) {
+        *out_aabb_min = vec4_zero();
+        *out_aabb_max = vec4_zero();
+        return;
+    }
 
     vec4_t aabb_min = vec4_set1(FLT_MAX);
     vec4_t aabb_max = vec4_set1(-FLT_MAX);
 
-    for (int64_t i = 0; i < index_count; ++i) {
+    for (int64_t i = 0; i < count; ++i) {
         const int32_t idx = indices ? indices[i] : (int32_t)i;
         vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 0 };
         c = vec4_deperiodize(c, ref, ext);

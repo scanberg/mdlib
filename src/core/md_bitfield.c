@@ -759,10 +759,11 @@ bool md_bitfield_extract_u64(uint64_t* dst_ptr, uint64_t num_bits, const md_bitf
 }
 
 int64_t md_bitfield_extract_indices(int32_t* buf, int64_t cap, const md_bitfield_t* bf) {
-    ASSERT(buf);
     ASSERT(bf);
     ASSERT(md_bitfield_validate(bf));
     ASSERT(cap >= 0);
+
+    if (!buf || cap == 0) return 0;
 
     int64_t len = 0;
     md_bitfield_iter_t it = md_bitfield_iter(bf);
