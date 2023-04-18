@@ -26,11 +26,21 @@ struct md_allocator_i;
 struct md_bitfield_t;
 struct md_unit_cell_t;
 
+typedef struct md_spatial_hash_t md_spatial_hash_t;
+
+typedef struct md_spatial_hash_elem_t {
+    vec3_t   xyz;
+    uint32_t idx;
+} md_spatial_hash_elem_t;
+
 // Callback function for when a point is found within the search space of the query
 // The return value (bool) signifies if it should continue its search (true) or if it should early exit (false).
-typedef bool (*md_spatial_hash_iterator_fn)(uint32_t idx, vec3_t coord, void* user_param);
+typedef bool (*md_spatial_hash_iterator_fn)(const md_spatial_hash_elem_t* elem, void* user_param);
 
-typedef struct md_spatial_hash_t md_spatial_hash_t;
+// This is a bit quirky, but it better maps to how the elements are processed internally (in batches).
+// elem_mask contains the set bits of elements which passed the test for the query.
+// To iterate over the elem_array, just find the set bits and clear them. Or just do a popcount for example if counting occurrences.
+typedef bool (*md_spatial_hash_batch_iter_fn)(const md_spatial_hash_elem_t* elem_ptr, int elem_mask, void* user_param);
 
 #ifdef __cplusplus
 extern "C" {
@@ -93,6 +103,8 @@ void md_spatial_hash_free(md_spatial_hash_t* spatial_hash);
 // Perform a spatial query for a given position + radius in a periodic domain given by pbc_min and pbc_max.
 // This will also include periodic occurrences of points accross the periodic boundries.
 void md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_iterator_fn iter, void* user_param);
+
+void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_batch_iter_fn iter, void* user_param);
 
 // Get a list of indices which fall within the search space (pos + radius)
 // Writes directly to the supplied buffer and will return the number of indices written.

@@ -766,6 +766,52 @@ MD_SIMD_INLINE md_f64x4_t md_simd_gather_f64x4(const double* base, md_i32x4_t in
 #endif
 }
 
+#define LOAD_STRIDED_128(ptr, offset, stride) _mm_load_ps((const float*)((const char*)ptr + offset * stride_in_bytes))
+
+MD_SIMD_INLINE void md_simd_unpack_xyz_f32x4(md_f32x4_t* out_x, md_f32x4_t* out_y, md_f32x4_t* out_z, const float* in_xyz, size_t stride_in_bytes) {
+    __m128  r0, r1, r2, r3;
+    __m128  t0, t1, t2, t3;
+
+    r0 = LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes);
+    r1 = LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes);
+    r2 = LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes);
+    r3 = LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes);
+
+    t0 = _mm_unpacklo_ps(r0,r1); // xxyy xxyy
+    t1 = _mm_unpackhi_ps(r0,r1); // zzww zzww
+    t2 = _mm_unpacklo_ps(r2,r3); // xxyy xxyy
+    t3 = _mm_unpackhi_ps(r2,r3); // zzww zzww
+
+    *out_x = _mm_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
+    *out_y = _mm_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
+    *out_z = _mm_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
+}
+
+MD_SIMD_INLINE void md_simd_unpack_xyz_f32x8(md_f32x8_t* out_x, md_f32x8_t* out_y, md_f32x8_t* out_z, const float* in_xyz, size_t stride_in_bytes) {
+#if __AVX__
+    __m256 r0, r1, r2, r3;
+    __m256 t0, t1, t2, t3;
+
+    r0 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 4, stride_in_bytes), 1);
+    r1 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 5, stride_in_bytes), 1);
+    r2 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
+    r3 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
+
+    t0 = _mm256_unpacklo_ps(r0,r1); // xxyy xxyy
+    t1 = _mm256_unpackhi_ps(r0,r1); // zzww zzww
+    t2 = _mm256_unpacklo_ps(r2,r3); // xxyy xxyy
+    t3 = _mm256_unpackhi_ps(r2,r3); // zzww zzww
+
+    *out_x = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
+    *out_y = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
+    *out_z = _mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
+#else 
+#error "Not implemented"
+#endif
+}
+
+#undef LOAD_STRIDED_128
+
 MD_SIMD_INLINE md_f32x4_t md_simd_and_not_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_andnot_ps(b, a); }
 MD_SIMD_INLINE md_f32x8_t md_simd_and_not_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_andnot_ps(b, a); }
 MD_SIMD_INLINE md_f64x2_t md_simd_and_not_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_andnot_pd(b, a); }
@@ -1033,6 +1079,22 @@ MD_SIMD_INLINE md_f64x4_t md_simd_deperiodize_f64x4(md_f64x4_t x, md_f64x4_t r, 
     dx = md_simd_sub_f64x4(dx, md_simd_round_f64x4(dx));
     md_f64x4_t x_prim = md_simd_add_f64x4(r, md_simd_mul_f64x4(dx, p));
     return md_simd_blend_f64x4(x_prim, x, md_simd_cmp_eq_f64x4(p, md_simd_zero_f64x4()));
+}
+
+MD_SIMD_INLINE md_f32x4_t md_simd_minimum_image_f32x4(md_f32x4_t dx, md_f32x4_t p, md_f32x4_t rp) {
+    return md_simd_sub_f32x4(dx, md_simd_mul_f32x4(p, md_simd_round_f32x4(md_simd_mul_f32x4(dx, rp))));
+}
+
+MD_SIMD_INLINE md_f32x8_t md_simd_minimum_image_f32x8(md_f32x8_t dx, md_f32x8_t p, md_f32x8_t rp) {
+    return md_simd_sub_f32x8(dx, md_simd_mul_f32x8(p, md_simd_round_f32x8(md_simd_mul_f32x8(dx, rp))));
+}
+
+MD_SIMD_INLINE md_f64x2_t md_simd_minimum_image_f64x2(md_f64x2_t dx, md_f64x2_t p, md_f64x2_t rp) {
+    return md_simd_sub_f64x2(dx, md_simd_mul_f64x2(p, md_simd_round_f64x2(md_simd_mul_f64x2(dx, rp))));
+}
+
+MD_SIMD_INLINE md_f64x4_t md_simd_minimum_image_f64x4(md_f64x4_t dx, md_f64x4_t p, md_f64x4_t rp) {
+    return md_simd_sub_f64x4(dx, md_simd_mul_f64x4(p, md_simd_round_f64x4(md_simd_mul_f64x4(dx, rp))));
 }
 
 MD_SIMD_INLINE md_f32x4_t md_simd_cubic_spline_f32x4(md_f32x4_t p0, md_f32x4_t p1, md_f32x4_t p2, md_f32x4_t p3, md_f32x4_t t, md_f32x4_t s) {
@@ -1401,7 +1463,7 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
             const md_i64x2_t : md_simd_cmp_gt_i64x2,  \
             const md_i64x4_t : md_simd_cmp_gt_i64x4)(a,b)
 
-#define md_simd_cmp_lt(x) _Generic((a),         \
+#define md_simd_cmp_lt(a,b) _Generic((a),         \
             md_f32x4_t : md_simd_cmp_lt_f32x4,  \
             md_f32x8_t : md_simd_cmp_lt_f32x8,  \
             md_f64x2_t : md_simd_cmp_lt_f64x2,  \
@@ -1549,6 +1611,16 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
             const md_i64x2_t : md_simd_blend_i64x2,   \
             const md_i64x4_t : md_simd_blend_i64x4)(a,b,mask)
 
+#define md_simd_movemask(a) _Generic((a),       \
+            md_f32x4_t : md_simd_movemask_f32x4,\
+            md_f32x8_t : md_simd_movemask_f32x8,\
+            md_f64x2_t : md_simd_movemask_f64x2,\
+            md_f64x4_t : md_simd_movemask_f64x4,\
+            const md_f32x4_t : md_simd_movemask_f32x4,\
+            const md_f32x8_t : md_simd_movemask_f32x8,\
+            const md_f64x2_t : md_simd_movemask_f64x2,\
+            const md_f64x4_t : md_simd_movemask_f64x4)(a)
+
 #define md_simd_hmin(x) _Generic((x),           \
             md_f32x4_t : md_simd_hmin_f32x4,    \
             md_f32x8_t : md_simd_hmin_f32x8,    \
@@ -1589,6 +1661,16 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
             const md_f64x2_t : md_simd_deperiodize_f64x2, \
             const md_f64x4_t : md_simd_deperiodize_f64x4)(x, r, p)
 
+#define md_simd_minimum_image(dx, p, rp) _Generic((dx),  \
+            md_f32x4_t : md_simd_minimum_image_f32x4, \
+            md_f32x8_t : md_simd_minimum_image_f32x8, \
+            md_f64x2_t : md_simd_minimum_image_f64x2, \
+            md_f64x4_t : md_simd_minimum_image_f64x4, \
+            const md_f32x4_t : md_simd_minimum_image_f32x4, \
+            const md_f32x8_t : md_simd_minimum_image_f32x8, \
+            const md_f64x2_t : md_simd_minimum_image_f64x2, \
+            const md_f64x4_t : md_simd_minimum_image_f64x4)(dx, p, rp)
+
 #define md_simd_step(edge, x) _Generic((x),  \
             md_f32x4_t : md_simd_step_f32x4, \
             md_f32x8_t : md_simd_step_f32x8, \
@@ -1619,6 +1701,10 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
             const md_f64x2_t : md_simd_cubic_spline_f64x2, \
             const md_f64x4_t : md_simd_cubic_spline_f64x4)(p0, p1, p2, p3, t, s)
 
+#define md_simd_unpack_xyz(x, y, z, stream, stride) _Generic(x,  \
+            md_f32x4_t* : md_simd_unpack_xyz_f32x4, \
+            md_f32x8_t* : md_simd_unpack_xyz_f32x8)(x, y, z, stream, stride)
+
 #define md_simd_shift_left(x, i) _Generic((x),      \
             md_i32x4_t : md_simd_shift_left_i32x4,  \
             md_i32x8_t : md_simd_shift_left_i32x8,  \
@@ -1628,7 +1714,6 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
             const md_i32x8_t : md_simd_shift_left_i32x8,  \
             const md_i64x2_t : md_simd_shift_left_i64x2,  \
             const md_i64x4_t : md_simd_shift_left_i64x4)(x, i)
-
 
 #define md_simd_shift_right(x, i) _Generic((x),     \
             md_i32x4_t : md_simd_shift_right_i32x4, \

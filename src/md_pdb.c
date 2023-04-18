@@ -551,6 +551,12 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         if (mol->chain.count)   md_array_push(mol->atom.chain_idx, (md_chain_idx_t)(mol->chain.count - 1), alloc);
     }
 
+    if (data->num_cryst1) {
+        // Use first crystal
+        const md_pdb_cryst1_t* cryst = &data->cryst1[0];
+        mol->unit_cell = md_util_unit_cell_triclinic(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
+    };
+
     // Create instances from assemblies
     for (int64_t aidx = 0; aidx < data->num_assemblies; ++aidx) {
         const md_pdb_assembly_t* assembly = &data->assemblies[aidx];

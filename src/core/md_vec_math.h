@@ -140,7 +140,7 @@ MD_VEC_INLINE double step(double edge, double x) { return (double)((x - edge) > 
 MD_VEC_INLINE float fractf(float x) { return x - floorf(x); }
 MD_VEC_INLINE double fract(double x) { return x - floor(x); }
 
-// This is the version which seems to result in the best codegen for all compilers
+// This is the version which seems to result in the best codegen for all tested compilers (msvc, gcc, clang)
 MD_VEC_INLINE int   signf(float x) { return (int)((x > 0.0f) - (x < 0.0f)); }
 MD_VEC_INLINE int   sign(double x) { return (int)((x > 0.0) - (x < 0.0)); }
 
