@@ -31,13 +31,12 @@ typedef md_spatial_hash_elem_t elem_t;
 typedef uint32_t cell_t;
 
 typedef struct md_spatial_hash_t {
-    cell_t* cell_data;
-    elem_t* elem_data;
+    vec4_t pbc_ext;
     int32_t cell_min[3];
     uint32_t elem_count;
     int32_t cell_dim[3];
     uint32_t magic;
-    vec4_t pbc_ext;
+    void* data;
     md_allocator_i* alloc;
 } md_spatial_hash_t;
 
@@ -500,12 +499,13 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
     const uint32_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
 
     // Allocate needed data
-    const int64_t tot_bytes = sizeof(md_spatial_hash_t) + sizeof(cell_t) * cell_count + sizeof(elem_t) * count;
+    const int64_t tot_bytes = sizeof(md_spatial_hash_t) + sizeof(elem_t) * ROUND_UP(count, md_simd_f32_width) + sizeof(cell_t) * cell_count;
     void* mem = md_alloc(alloc, tot_bytes);
+    void* data = (char*)mem + sizeof(md_spatial_hash_t);
 
     hash = mem;
-    cell_t* cell_data = (cell_t*)((char*)mem + sizeof(md_spatial_hash_t));
-    elem_t* elem_data = (elem_t*)((char*)mem + sizeof(md_spatial_hash_t) + sizeof(cell_t) * cell_count);
+    elem_t* elem_data = data;
+    cell_t* cell_data = (cell_t*)((char*)data + sizeof(elem_t) * ROUND_UP(count, md_simd_f32_width));
     MEMSET(cell_data, 0, sizeof(cell_t) * cell_count);
 
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
@@ -516,8 +516,6 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
         const vec4_t coord = vec4_from_vec3(in_xyz[idx], 0);
         vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
         vec4_t whole = vec4_floor(cell);
-        //vec4_t fract = vec4_sub(cell, whole);
-        //vec4_t packed = vec4_fmadd(fract, vec4_set1(1023.0f), vec4_set1(0.5f));
         
         int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]);
         int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]);
@@ -529,8 +527,6 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
 
         local_idx[i]  = cell_data[ci]++;
         ASSERT(cell_data[ci] < LENGTH_CAP && "Too many entities per cell");
-
-        //fract_coord[i] = ((uint32_t)packed.z << 20) | ((uint32_t)packed.y << 10) | (uint32_t)packed.x;
     }
 
     uint32_t offset = cell_data[0];
@@ -543,21 +539,20 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
     }
 
     for (int64_t i = 0; i < count; ++i) {
-        const int64_t cell_idx  = cell_index[i];
-        const int64_t src_idx   = in_indices ? in_indices[i] : i;
-        const int64_t dst_idx   = (cell_data[cell_idx] >> LENGTH_BITS) + local_idx[i];
-        const vec4_t coord      = vec4_deperiodize(vec4_from_vec3(in_xyz[src_idx], 0), ref, ext);
-        elem_data[dst_idx]      = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};
+        const int64_t cell_idx = cell_index[i];
+        const int64_t src_idx  = in_indices ? in_indices[i] : i;
+        const int64_t dst_idx  = (cell_data[cell_idx] >> LENGTH_BITS) + local_idx[i];
+        const vec4_t coord     = vec4_deperiodize(vec4_from_vec3(in_xyz[src_idx], 0), ref, ext);
+        elem_data[dst_idx]     = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};
     }
 
-    hash->cell_data = cell_data;
-    hash->elem_data = elem_data;
-    hash->alloc    = alloc;
+    hash->pbc_ext = ext;
     MEMCPY(hash->cell_min, cell_min, sizeof(cell_min));
     hash->elem_count = (uint32_t)count;
     MEMCPY(hash->cell_dim, cell_dim, sizeof(cell_dim));
     hash->magic = MD_SPATIAL_HASH_MAGIC;
-    hash->pbc_ext = ext;
+    hash->data  = data;
+    hash->alloc = alloc;
 
 done:
     md_free(temp_alloc, temp_mem, temp_bytes);
@@ -624,12 +619,13 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
     const uint32_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
 
     // Allocate needed data
-    const int64_t tot_bytes = sizeof(md_spatial_hash_t) + sizeof(cell_t) * cell_count + sizeof(elem_t) * ROUND_UP(count, md_simd_f32_width);
+    const int64_t tot_bytes = sizeof(md_spatial_hash_t) + sizeof(elem_t) * ROUND_UP(count, md_simd_f32_width) + sizeof(cell_t) * cell_count;
     void* mem = md_alloc(alloc, tot_bytes);
+    void* data = (char*)mem + sizeof(md_spatial_hash_t);
 
     hash = mem;
-    cell_t* cell_data = (cell_t*)((char*)mem + sizeof(md_spatial_hash_t));
-    elem_t* elem_data = (elem_t*)((char*)mem + sizeof(md_spatial_hash_t) + sizeof(cell_t) * cell_count);
+    elem_t* elem_data = data;
+    cell_t* cell_data = (cell_t*)((char*)data + sizeof(elem_t) * ROUND_UP(count, md_simd_f32_width));
     MEMSET(cell_data, 0, sizeof(cell_t) * cell_count);
 
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
@@ -750,14 +746,13 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
         elem_data[dst_idx]      = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};
     }
     
-    hash->cell_data = cell_data;
-    hash->elem_data = elem_data;
-    hash->alloc    = alloc;
+    hash->pbc_ext = ext;
     MEMCPY(hash->cell_min, cell_min, sizeof(cell_min));
     hash->elem_count = (uint32_t)count;
     MEMCPY(hash->cell_dim, cell_dim, sizeof(cell_dim));
     hash->magic = MD_SPATIAL_HASH_MAGIC;
-    hash->pbc_ext = ext;
+    hash->data  = data;
+    hash->alloc = alloc;
 
 done:
     md_free(temp_alloc, temp_mem, temp_bytes);
@@ -786,6 +781,8 @@ static inline void query_pos_rad(const md_spatial_hash_t* hash, vec3_t position,
 
     const int32_t* cell_min = hash->cell_min;
     const int32_t* cell_dim = hash->cell_dim;
+    const elem_t* elems = hash->data;
+    const cell_t* cells = (const cell_t*)((const char*)hash->data + sizeof(elem_t) * ROUND_UP(hash->elem_count, md_simd_f32_width));
 
     int32_t cell_beg[3] = {
         CLAMP((int32_t)(floorf((pos.x - rad) * INV_CELL_EXT)) - cell_min[0], 0, cell_dim[0] - 1),
@@ -804,14 +801,14 @@ static inline void query_pos_rad(const md_spatial_hash_t* hash, vec3_t position,
         for (cc[1] = cell_beg[1]; cc[1] < cell_end[1]; ++cc[1]) {
             for (cc[0] = cell_beg[0]; cc[0] < cell_end[0]; ++cc[0]) {
                 const uint32_t cell_idx = cc[2] * cell_dim[1] * cell_dim[0] + cc[1] * cell_dim[0] + cc[0];
-                const uint32_t cell_data = hash->cell_data[cell_idx];
+                const uint32_t cell_data = cells[cell_idx];
                 if (cell_data == 0) {
                     continue;
                 }
                 const uint32_t cell_offset = cell_data >> LENGTH_BITS;
                 const uint32_t cell_length = cell_data  & LENGTH_MASK;
                 for (uint32_t i = cell_offset; i < cell_offset + cell_length; ++i) {
-                    const elem_t* elem = &hash->elem_data[i];
+                    const elem_t* elem = &elems[i];
                     const vec4_t p = vec4_from_vec3(elem->xyz, 0);
                     const float d2 = vec4_distance_squared(p, pos);
                     if (d2 < rad2) {
@@ -834,6 +831,8 @@ static inline void query_pos_rad_batch(const md_spatial_hash_t* hash, vec3_t pos
 
     const int32_t* cell_min = hash->cell_min;
     const int32_t* cell_dim = hash->cell_dim;
+    const elem_t* elems = hash->data;
+    const cell_t* cells = (const cell_t*)((const char*)hash->data + sizeof(elem_t) * ROUND_UP(hash->elem_count, md_simd_f32_width));
 
     const int32_t cc_beg_x = (int32_t)(floorf((pos.x - radius) * INV_CELL_EXT)) - cell_min[0];
     const int32_t cc_beg_y = (int32_t)(floorf((pos.y - radius) * INV_CELL_EXT)) - cell_min[1];
@@ -865,7 +864,7 @@ static inline void query_pos_rad_batch(const md_spatial_hash_t* hash, vec3_t pos
             const int32_t czy = cz + cc[1] * cd_0;
             for (cc[0] = cc_beg[0]; cc[0] < cc_end[0]; ++cc[0]) {
                 const uint32_t cell_idx  = czy + cc[0];
-                const uint32_t cell_data = hash->cell_data[cell_idx];
+                const uint32_t cell_data = cells[cell_idx];
 
                 if (cell_data == 0) {
                     continue;
@@ -874,7 +873,7 @@ static inline void query_pos_rad_batch(const md_spatial_hash_t* hash, vec3_t pos
                 const uint32_t cell_length = cell_data  & LENGTH_MASK;
 
                 int len = cell_length;
-                const elem_t* elem = hash->elem_data + cell_offset;
+                const elem_t* elem = elems + cell_offset;
 
                 while (len > 0) {
                     md_simd_f32_t vx,vy,vz;
@@ -930,8 +929,10 @@ static inline void query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
     const vec4_t pos = vec4_from_vec3(position, 0);
     float rad2 = rad * rad;
 
-    const int* cell_min = hash->cell_min;
-    const int* cell_dim = hash->cell_dim;
+    const int32_t* cell_min = hash->cell_min;
+    const int32_t* cell_dim = hash->cell_dim;
+    const elem_t* elems = hash->data;
+    const cell_t* cells = (const cell_t*)((const char*)hash->data + sizeof(elem_t) * ROUND_UP(hash->elem_count, md_simd_f32_width));
 
     const int cell_max[3] = {
         cell_min[0] + cell_dim[0],
@@ -1019,7 +1020,7 @@ static inline void query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
                 ASSERT(0 <= cix && cix < cell_dim[0]);
 
                 const uint32_t cell_idx = idx_yz + cix;
-                const uint32_t cell_data = hash->cell_data[cell_idx];
+                const uint32_t cell_data = cells[cell_idx];
                 if (cell_data == 0) {
                     continue;
                 }
@@ -1027,7 +1028,7 @@ static inline void query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
                 const int cell_offset = cell_data >> LENGTH_BITS;
                 const int cell_length = cell_data & LENGTH_MASK;
 
-                const elem_t* cell_elem = hash->elem_data + cell_offset;               
+                const elem_t* cell_elem = elems + cell_offset;               
                 
                 for (int i = 0; i < cell_length; ++i) {
                     const elem_t* elem = cell_elem + i;
@@ -1057,19 +1058,21 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
     const vec4_t pos = vec4_from_vec3(position, 0);
     float rad2 = rad * rad;
 
-    const int* cell_min = hash->cell_min;
-    const int* cell_dim = hash->cell_dim;
+    const int32_t* cell_min = hash->cell_min;
+    const int32_t* cell_dim = hash->cell_dim;
+    const elem_t* elems = hash->data;
+    const cell_t* cells = (const cell_t*)((const char*)hash->data + sizeof(elem_t) * ROUND_UP(hash->elem_count, md_simd_f32_width));
 
-    const int cell_max[3] = {
+    const int32_t cell_max[3] = {
         cell_min[0] + cell_dim[0],
         cell_min[1] + cell_dim[1],
         cell_min[2] + cell_dim[2],
     };
 
-    const int cell_pbc[3] = {
-        MAX((int)ceilf(pbc_ext.x * INV_CELL_EXT), 1),
-        MAX((int)ceilf(pbc_ext.y * INV_CELL_EXT), 1),
-        MAX((int)ceilf(pbc_ext.z * INV_CELL_EXT), 1),
+    const int32_t cell_pbc[3] = {
+        MAX((int32_t)ceilf(pbc_ext.x * INV_CELL_EXT), 1),
+        MAX((int32_t)ceilf(pbc_ext.y * INV_CELL_EXT), 1),
+        MAX((int32_t)ceilf(pbc_ext.z * INV_CELL_EXT), 1),
     };
 
     // Deperiodize the extent of the search (pos +/- rad) with respect to the periodic domain
@@ -1080,21 +1083,21 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
     const vec4_t cell_pos_max = vec4_ceil (vec4_mul_f(pos_max, INV_CELL_EXT));
 
     // cell_pos_min is within the correct period, now we can skip forward to the first cell which actually contains data (cell_min)
-    int cell_beg[3] = {
-        MAX((int)cell_pos_min.x, cell_min[0]),
-        MAX((int)cell_pos_min.y, cell_min[1]),
-        MAX((int)cell_pos_min.z, cell_min[2]),
+    int32_t cell_beg[3] = {
+        MAX((int32_t)cell_pos_min.x, cell_min[0]),
+        MAX((int32_t)cell_pos_min.y, cell_min[1]),
+        MAX((int32_t)cell_pos_min.z, cell_min[2]),
     };
 
     // Extent in cells to search
-    int cell_ext[3] = {
-        MAX(MIN((int)cell_pos_max.x - cell_beg[0], cell_pbc[0] - 1) + 1, 1),
-        MAX(MIN((int)cell_pos_max.y - cell_beg[1], cell_pbc[1] - 1) + 1, 1),
-        MAX(MIN((int)cell_pos_max.z - cell_beg[2], cell_pbc[2] - 1) + 1, 1),
+    int32_t cell_ext[3] = {
+        MAX(MIN((int32_t)cell_pos_max.x - cell_beg[0], cell_pbc[0] - 1) + 1, 1),
+        MAX(MIN((int32_t)cell_pos_max.y - cell_beg[1], cell_pbc[1] - 1) + 1, 1),
+        MAX(MIN((int32_t)cell_pos_max.z - cell_beg[2], cell_pbc[2] - 1) + 1, 1),
     };
 
     // How far ahead we need skip in order to end up within the occupied cell domain of the next period
-    const int cell_jmp[3] = {
+    const int32_t cell_jmp[3] = {
         cell_pbc[0] - cell_dim[0],
         cell_pbc[1] - cell_dim[1],
         cell_pbc[2] - cell_dim[2],
@@ -1102,32 +1105,32 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
 
     // If cell beg is outside of occupied cell domain [cell_min, cell_dim[ we skip forward to next period and accomodate for that jump
     if (cell_beg[0] >= cell_max[0]) {
-        const int jmp = cell_pbc[0] - cell_beg[0] + cell_min[0];
+        const int32_t jmp = cell_pbc[0] - cell_beg[0] + cell_min[0];
         cell_beg[0] = cell_min[0];
         cell_ext[0] -= jmp;
         if (cell_ext[0] <= 0) return;
     }
     if (cell_beg[1] >= cell_max[1]) {
-        const int jmp = cell_pbc[1] - cell_beg[1] + cell_min[1];
+        const int32_t jmp = cell_pbc[1] - cell_beg[1] + cell_min[1];
         cell_beg[1] = cell_min[1];
         cell_ext[1] -= jmp;
         if (cell_ext[1] <= 0) return;
     }
     if (cell_beg[2] >= cell_max[2]) {
-        const int jmp = cell_pbc[2] - cell_beg[2] + cell_min[2];
+        const int32_t jmp = cell_pbc[2] - cell_beg[2] + cell_min[2];
         cell_beg[2] = cell_min[2];
         cell_ext[2] -= jmp;
         if (cell_ext[2] <= 0) return;
     }
 
-    const int cell_end[3] = {
+    const int32_t cell_end[3] = {
         cell_beg[0] + cell_ext[0],
         cell_beg[1] + cell_ext[1],
         cell_beg[2] + cell_ext[2],
     };
 
-    const int cd_0  = cell_dim[0];
-    const int cd_01 = cell_dim[0] * cell_dim[1];
+    const int32_t cd_0  = cell_dim[0];
+    const int32_t cd_01 = cell_dim[0] * cell_dim[1];
 
     const md_simd_f32_t rx = md_simd_set1_f32(pos.x);
     const md_simd_f32_t ry = md_simd_set1_f32(pos.y);
@@ -1141,30 +1144,30 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
     const md_simd_f32_t rpy = pbc_ext.y ? md_simd_div(md_simd_set1_f32(1.0f), py) : md_simd_zero_f32();
     const md_simd_f32_t rpz = pbc_ext.z ? md_simd_div(md_simd_set1_f32(1.0f), pz) : md_simd_zero_f32();
 
-    for (int cz = cell_beg[2]; cz < cell_end[2]; inc_cell2(&cz, cell_max[2], cell_jmp[2])) {
-        const int ciz = (cz % cell_pbc[2]) - cell_min[2];
+    for (int32_t cz = cell_beg[2]; cz < cell_end[2]; inc_cell2(&cz, cell_max[2], cell_jmp[2])) {
+        const int32_t ciz = (cz % cell_pbc[2]) - cell_min[2];
         ASSERT(0 <= ciz && ciz < cell_dim[2]);
-        const int idx_z = ciz * cd_01;
-        for (int cy = cell_beg[1]; cy < cell_end[1]; inc_cell2(&cy, cell_max[1], cell_jmp[1])) {
-            const int ciy = (cy % cell_pbc[1]) - cell_min[1];
+        const int32_t idx_z = ciz * cd_01;
+        for (int32_t cy = cell_beg[1]; cy < cell_end[1]; inc_cell2(&cy, cell_max[1], cell_jmp[1])) {
+            const int32_t ciy = (cy % cell_pbc[1]) - cell_min[1];
             ASSERT(0 <= ciy && ciy < cell_dim[1]);
-            const int idx_yz = idx_z + ciy * cd_0;
-            for (int cx = cell_beg[0]; cx < cell_end[0]; inc_cell2(&cx, cell_max[0], cell_jmp[0])) {
-                const int cix = (cx % cell_pbc[0]) - cell_min[0];
+            const int32_t idx_yz = idx_z + ciy * cd_0;
+            for (int32_t cx = cell_beg[0]; cx < cell_end[0]; inc_cell2(&cx, cell_max[0], cell_jmp[0])) {
+                const int32_t cix = (cx % cell_pbc[0]) - cell_min[0];
                 ASSERT(0 <= cix && cix < cell_dim[0]);
 
                 const uint32_t cell_idx = idx_yz + cix;
-                const uint32_t cell_data = hash->cell_data[cell_idx];
+                const uint32_t cell_data = cells[cell_idx];
                 if (cell_data == 0) {
                     continue;
                 }
 
-                const int cell_offset = cell_data >> LENGTH_BITS;
-                const int cell_length = cell_data  & LENGTH_MASK;
+                const int32_t cell_offset = cell_data >> LENGTH_BITS;
+                const int32_t cell_length = cell_data  & LENGTH_MASK;
 
-                int len = cell_length;
+                int32_t len = cell_length;
 
-                const elem_t* elem = hash->elem_data + cell_offset;
+                const elem_t* elem = elems + cell_offset;
 
                 while (len > 0) {
                     md_simd_f32_t vx,vy,vz;
@@ -1176,9 +1179,9 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
                     md_simd_f32_t d2 = md_simd_add(md_simd_add(md_simd_mul(dx, dx), md_simd_mul(dy, dy)), md_simd_mul(dz, dz));
                     md_simd_f32_t vmask = md_simd_cmp_lt(d2, md_simd_set1_f32(rad2));
 
-                    const int step = mini(len, md_simd_f32_width);
-                    const int lane_mask = (1 << step) - 1;
-                    const int mask = md_simd_movemask(vmask) & lane_mask;
+                    const int32_t step = mini(len, md_simd_f32_width);
+                    const int32_t lane_mask = (1 << step) - 1;
+                    const int32_t mask = md_simd_movemask(vmask) & lane_mask;
 
                     if (!iter(elem, mask, user_param)) {
                         return;

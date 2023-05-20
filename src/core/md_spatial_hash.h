@@ -29,7 +29,7 @@ struct md_unit_cell_t;
 typedef struct md_spatial_hash_t md_spatial_hash_t;
 
 typedef struct md_spatial_hash_elem_t {
-    vec3_t   xyz;
+    ALIGNAS(16) vec3_t xyz;
     uint32_t idx;
 } md_spatial_hash_elem_t;
 

@@ -301,6 +301,10 @@ UTEST_F(spatial_hash, test_correctness_periodic_centered) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f\n", iter, pos.x, pos.y, pos.z, radius);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
