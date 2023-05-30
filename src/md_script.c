@@ -2722,7 +2722,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             const uint64_t elem_size = type_info_byte_stride(dst->type);
             data.type = lhs_types[i];
             data.ptr = (char*)dst->ptr + elem_size * dst_idx;
-            data.size = elem_size;
+            data.size = type_info_total_byte_size(lhs_types[i]);;
 
             int64_t offset = type_info_array_len(lhs_types[i]);
             dst_idx += offset;
