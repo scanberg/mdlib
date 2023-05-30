@@ -1944,6 +1944,8 @@ static bool within_float_iter(const md_spatial_hash_elem_t* elem, int mask, void
     return true;
 }
 
+#define WITHIN_CUTOFF (3000)
+
 static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
@@ -1970,7 +1972,6 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             
             in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, &bf, ctx->temp_alloc);
-            
             md_bitfield_not_inplace(&bf, 0, ctx->mol->atom.count);
             
             const int count = (int)md_bitfield_popcount(&bf);
@@ -3972,7 +3973,7 @@ bool rdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
     return true;
 }
 
-#define RDF_BRUTE_FORCE_LIMIT (10000)
+#define RDF_BRUTE_FORCE_LIMIT (3000)
 
 static inline double sphere_volume(double r) {
     return (4.0 / 3.0) * PI * (r * r * r);
@@ -4329,7 +4330,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ref_com[0] = md_util_compute_com_soa(ref[0].x, ref[0].y, ref[0].z, ref_w, ref_size);
 
         // Need to measure this better
-        const bool brute_force = target_size < 10000;
+        const bool brute_force = target_size < 3000;
 
         md_spatial_hash_t* spatial_hash = NULL;
         const float spatial_hash_radius = sqrtf(cutoff * cutoff * 3); // distance from center of volume to corners of the volume.

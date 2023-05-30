@@ -121,8 +121,8 @@ typedef enum token_type_t {
     TOKEN_NE, // '!='
     TOKEN_EQ, // '=='
     TOKEN_AND,
-    TOKEN_XOR,
     TOKEN_OR,
+    TOKEN_XOR,
     TOKEN_NOT,
     TOKEN_OF,     // Reserved
     TOKEN_IN,     // Operator for setting the evaluation context.
@@ -182,10 +182,11 @@ typedef enum flags_t {
     FLAG_DYNAMIC_LENGTH             = 0x00008, // Return type has a varying length which is not constant over frames
     FLAG_QUERYABLE_LENGTH           = 0x00010, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
     FLAG_STATIC_VALIDATION          = 0x00020, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
-    FLAG_CONSTANT                   = 0x00040, // Hints that the identifier is constant and should not be modified.
-
-    FLAG_FLATTEN                    = 0x00100, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
-    FLAG_NO_FLATTEN                 = 0x00200, // Hints that a procedure do not want flattened bitfields as input, e.g. com
+    FLAG_FLATTEN                    = 0x00040, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
+    FLAG_NO_FLATTEN                 = 0x00080, // Hints that a procedure do not want flattened bitfields as input, e.g. com
+    
+    FLAG_CONSTANT                   = 0x00100, // Marks the identifier as constant and should not be modified.
+    FLAG_CONTEXTS_EQUIVALENT        = 0x00200, // Marks the contexts in the node as equivalent, meaning it 
 
     // Flags from 0x10000 and upwards are automatically propagated upwards the Nodes of the AST_TREE
     FLAG_DYNAMIC                    = 0x10000, // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependency on atomic positions)
@@ -3046,11 +3047,20 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     node->flags |= node->proc->flags & FLAG_AST_PROPAGATION_MASK;
     ctx->ir->flags |= node->proc->flags & FLAG_IR_PROPAGATION_MASK;
 
+    // @TODO: Test if all contexts are equivalent
+    // In such case, we can make an exception from the DYNAMIC_LENGTH flag
+    if (node->context && !(node->flags & FLAG_CONTEXTS_EQUIVALENT) && (node->proc->flags & FLAG_QUERYABLE_LENGTH)) {
+        node->flags |= FLAG_DYNAMIC_LENGTH;
+        return true;
+    }
+    
+    /*
     // Need to flag with DYNAMIC_LENGTH if we evaluate within a context since the return type length may depend on its context.
     if (ctx->mol_ctx && (node->proc->flags & FLAG_QUERYABLE_LENGTH)) {
         node->flags |= FLAG_DYNAMIC_LENGTH;
         return true;
     }
+    */
 
     if (is_variable_length(node->data.type)) {
         if (node->proc->flags & FLAG_QUERYABLE_LENGTH) {
@@ -3581,6 +3591,8 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     // We differentiate here if the LHS is a bitfield or not
                     // if LHS is a bitfield of length 1, the resulting bitfield length is the same as RHS (M)
                     // if LHS is a bitfield of length N, the resulting bitfield length is (N*M), N may vary for each context.
+
+                    const bool contexts_equivalent = are_bitfields_equivalent(contexts, num_contexts, ctx->mol); 
                         
                     node->lhs_context_types = 0;
                     int64_t arr_len = 0;
@@ -3617,6 +3629,9 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     node->data.value_range = lhs->data.value_range;
 
                     propagate_context(lhs, contexts);
+                    if (contexts_equivalent) {
+                        lhs->flags |= FLAG_CONTEXTS_EQUIVALENT;
+                    }
 
                     result = true;
 
