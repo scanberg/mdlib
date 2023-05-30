@@ -221,12 +221,14 @@ void md_vm_arena_set_pos(md_vm_arena_t* arena, uint64_t pos) {
     ASSERT(arena && arena->magic == VM_MAGIC);
     ASSERT(pos <= arena->pos);
     arena->pos = pos;
+#if 0
     uint64_t decommit_pos = ALIGN_TO(pos, VM_COMMIT_SIZE);
     uint64_t over_commited = arena->commit_pos - decommit_pos;
     if (decommit_pos > 0 && over_commited >= VM_DECOMMIT_THRESHOLD) {
         md_vm_decommit((char*)arena->base + decommit_pos, over_commited);
         arena->commit_pos -= over_commited;
     }
+#endif
 }
 
 uint64_t md_vm_arena_get_pos(md_vm_arena_t* arena) {
