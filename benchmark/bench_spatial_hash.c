@@ -37,7 +37,7 @@ UBENCH_EX_F(spatial_hash, init_regular) {
 
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
     UBENCH_DO_BENCHMARK() {
-        md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, NULL, alloc);
+        UBENCH_DO_NOTHING(md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, NULL, alloc));
     }
 
     md_vm_arena_temp_end(temp);
@@ -49,40 +49,47 @@ UBENCH_EX_F(spatial_hash, init_periodic) {
 
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
     UBENCH_DO_BENCHMARK() {
-        md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, alloc);
+        UBENCH_DO_NOTHING(md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, alloc));
     }
 
     md_vm_arena_temp_end(temp);
 }
 
-static bool func(uint32_t idx, vec3_t pos, void* user_data) {
-    (void)idx;
-    (void)pos;
+static bool func(const md_spatial_hash_elem_t* elem, void* user_data) {
+    (void)elem;
     uint32_t* count = user_data;
     (*count)++;
     return true;
 }
 
-#define COUNT 10000
+#define COUNT 3000
 #define RAD 10.0f
 
 UBENCH_EX_F(spatial_hash, query_regular) {
+    const md_molecule_t* mol = &ubench_fixture->mol;
+
     uint32_t count = 0;
     UBENCH_DO_BENCHMARK() {
         for (int i = 0; i < COUNT; ++i) {
-            const vec3_t pos = vec3_set(ubench_fixture->mol.atom.x[i], ubench_fixture->mol.atom.y[i], ubench_fixture->mol.atom.z[i]);
+            const vec3_t pos = vec3_set(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i]);
             md_spatial_hash_query(ubench_fixture->reg_sh, pos, RAD, func, &count);
         }
+
+        UBENCH_DO_NOTHING(&count);
     }
 }
 
 UBENCH_EX_F(spatial_hash, query_periodic) {
+    const md_molecule_t* mol = &ubench_fixture->mol;
+
     uint32_t count = 0;
     UBENCH_DO_BENCHMARK() {
         for (int i = 0; i < COUNT; ++i) {
-            const vec3_t pos = vec3_set(ubench_fixture->mol.atom.x[i], ubench_fixture->mol.atom.y[i], ubench_fixture->mol.atom.z[i]);
+            const vec3_t pos = vec3_set(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i]);
             md_spatial_hash_query(ubench_fixture->pbc_sh, pos, RAD, func, &count);
         }
+
+        UBENCH_DO_NOTHING(&count);
     }
 }
 
@@ -94,22 +101,30 @@ static bool batch_func(const md_spatial_hash_elem_t* elem, int mask, void* user_
 }
 
 UBENCH_EX_F(spatial_hash, query_regular_batch) {
+    const md_molecule_t* mol = &ubench_fixture->mol;
+
     uint32_t count = 0;
     UBENCH_DO_BENCHMARK() {
         for (int i = 0; i < COUNT; ++i) {
-            const vec3_t pos = vec3_set(ubench_fixture->mol.atom.x[i], ubench_fixture->mol.atom.y[i], ubench_fixture->mol.atom.z[i]);
+            const vec3_t pos = vec3_set(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i]);
             md_spatial_hash_query_batch(ubench_fixture->reg_sh, pos, RAD, batch_func, &count);
         }
+
+        UBENCH_DO_NOTHING(&count);
     }
 }
 
 UBENCH_EX_F(spatial_hash, query_periodic_batch) {
+    const md_molecule_t* mol = &ubench_fixture->mol;
+
     uint32_t count = 0;
     UBENCH_DO_BENCHMARK() {
         for (int i = 0; i < COUNT; ++i) {
-            const vec3_t pos = vec3_set(ubench_fixture->mol.atom.x[i], ubench_fixture->mol.atom.y[i], ubench_fixture->mol.atom.z[i]);
+            const vec3_t pos = vec3_set(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i]);
             md_spatial_hash_query_batch(ubench_fixture->pbc_sh, pos, RAD, batch_func, &count);
         }
+        
+        UBENCH_DO_NOTHING(&count);
     }
 }
 
@@ -117,17 +132,18 @@ UBENCH_EX_F(spatial_hash, query_bruteforce) {
     const md_molecule_t* mol = &ubench_fixture->mol;
 
     uint32_t count = 0;
+    const float RAD2 = RAD * RAD;
     UBENCH_DO_BENCHMARK() {
-        for (int i = 0; i < 20; ++i) {
+        for (int i = 0; i < COUNT; ++i) {
             const vec4_t p = vec4_set(mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0);
-            for (int64_t j = 0; j < 20; ++j) {
+            for (int j = 0; j < COUNT; ++j) {
                 const vec4_t c = vec4_set(mol->atom.x[j], mol->atom.y[j], mol->atom.z[j], 0);
-                if (vec4_distance_squared(p, c) < RAD * RAD) {
+                if (vec4_distance_squared(p, c) < RAD2) {
                     count += 1;
-                    UBENCH_DO_NOTHING(&count);
                 }
             }
         }
+        UBENCH_DO_NOTHING(&count);
     }
 }
 

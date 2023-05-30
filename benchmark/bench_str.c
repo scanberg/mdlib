@@ -59,7 +59,7 @@ UBENCH_EX(str, parse_int) {
     UBENCH_SET_BYTES(num_bytes);
 
     uint64_t num_iter = 0;
-    uint64_t min = -1;
+    uint64_t min = ~0;
     uint64_t max = 0;
     uint64_t avg = 0;
 
@@ -96,7 +96,7 @@ UBENCH_EX(str, parse_int_simd) {
     UBENCH_SET_BYTES(num_bytes);
 
     uint64_t num_iter = 0;
-    uint64_t min = -1;
+    uint64_t min = ~0;
     uint64_t max = 0;
     uint64_t avg = 0;
 
@@ -133,7 +133,7 @@ UBENCH_EX(str, parse_float) {
     UBENCH_SET_BYTES(num_bytes);
     
     uint64_t num_iter = 0;
-    uint64_t min = -1;
+    uint64_t min = ~0;
     uint64_t max = 0;
     uint64_t avg = 0;
 
@@ -170,7 +170,7 @@ UBENCH_EX(str, parse_float_simd) {
     UBENCH_SET_BYTES(num_bytes);
 
     uint64_t num_iter = 0;
-    uint64_t min = -1;
+    uint64_t min = ~0;
     uint64_t max = 0;
     uint64_t avg = 0;
 
