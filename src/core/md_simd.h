@@ -805,8 +805,9 @@ MD_SIMD_INLINE void md_simd_unpack_xyz_f32x8(md_f32x8_t* out_x, md_f32x8_t* out_
     *out_x = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
     *out_y = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
     *out_z = _mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
-#else 
-#error "Not implemented"
+#else
+    // Not implemented
+    ASSERT(false);
 #endif
 }
 
