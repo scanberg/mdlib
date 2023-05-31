@@ -1240,15 +1240,10 @@ void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t p
     }
 }
 
-typedef struct {
-    md_array(uint32_t) arr;
-    md_allocator_i* alloc;
-} idx_data_t;
-
 bool idx_fn(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) {
     md_bitfield_t* bf = (md_bitfield_t*)user_param;
     while (mask) {
-        const int idx = bsf32(mask);
+        const int idx = ctz32(mask);
         md_bitfield_set_bit(bf, elem_arr[idx].idx);
         mask = mask & ~(1 << idx);
     }
