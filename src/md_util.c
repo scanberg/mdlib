@@ -1449,6 +1449,8 @@ void md_util_grow_mask_by_bonds(md_bitfield_t* mask, const struct md_molecule_t*
         MD_LOG_DEBUG("Maximum supported growth extent is 255, the extent will be clamped to 255");
         extent = 255;
     }
+    // The initial depth is 1, so we need to add one.
+    extent += 1;
     
     const int64_t mask_size = md_bitfield_popcount(mask);
     if (!mask_size) return;
