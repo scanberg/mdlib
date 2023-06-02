@@ -788,10 +788,11 @@ MD_SIMD_INLINE void md_simd_unpack_xyz_f32x4(md_f32x4_t* out_x, md_f32x4_t* out_
 }
 
 MD_SIMD_INLINE void md_simd_unpack_xyz_f32x8(md_f32x8_t* out_x, md_f32x8_t* out_y, md_f32x8_t* out_z, const float* in_xyz, size_t stride_in_bytes) {
-#if __AVX__
     __m256 r0, r1, r2, r3;
     __m256 t0, t1, t2, t3;
 
+    // @TODO: Try and implement this using 256-bit loads and then shuffle all the way.
+    // It's a tradeoff between the number of loads issued and the port pressure on the generally few ports that are used for shuffle instructions.
     r0 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 4, stride_in_bytes), 1);
     r1 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 5, stride_in_bytes), 1);
     r2 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
@@ -805,10 +806,6 @@ MD_SIMD_INLINE void md_simd_unpack_xyz_f32x8(md_f32x8_t* out_x, md_f32x8_t* out_
     *out_x = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
     *out_y = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
     *out_z = _mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
-#else
-    // Not implemented
-    ASSERT(0);
-#endif
 }
 
 #undef LOAD_STRIDED_128
