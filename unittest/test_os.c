@@ -25,7 +25,7 @@ UTEST(os, path) {
 }
 
 UTEST(os, ram) {
-    uint64_t physical_ram = md_physical_ram();
+    uint64_t physical_ram = md_os_physical_ram();
     printf("total physical ram %i GB\n", (int)(physical_ram / GIGABYTES(1)));
     EXPECT_GT(physical_ram, 0);
 }

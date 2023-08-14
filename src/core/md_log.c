@@ -118,9 +118,10 @@ static void set_console_text_color(console_color_t color, bool intense) {
 #endif
 }
 
+static char prev_msg[1024] = {0};
+
 static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
     (void)inst;
-    static char prev_msg[1024];
     
     if (strncmp(prev_msg, msg, sizeof(prev_msg)) == 0) {
         return;

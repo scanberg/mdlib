@@ -567,7 +567,7 @@ v8sf cos256_ps(v8sf x) { // any x
 }
 #endif
 
-#ifdef __AVX__ || __AVX2__
+#if defined (__AVX__) || defined(__AVX2__)
 
 /* since sin256_ps and cos256_ps are almost identical, sincos256_ps could replace both of them..
 it is almost as fast, and gives you a free cosine with your sine */

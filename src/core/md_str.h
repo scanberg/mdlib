@@ -191,6 +191,8 @@ bool str_ends_with(str_t str, str_t suffix);
 str_t alloc_str(uint64_t len, struct md_allocator_i* alloc);
 void  str_free(str_t str, struct md_allocator_i* alloc);
 str_t str_copy(str_t str, struct md_allocator_i* alloc);
+str_t str_copy_cstr(const char* cstr, struct md_allocator_i* alloc);
+str_t str_copy_cstrn(const char* cstr, int64_t len, struct md_allocator_i* alloc);
 
 // This should probably be removed
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
@@ -212,18 +214,21 @@ str_t extract_path_without_file(str_t path);
 
 // Converts Windows backslashes '\\' to forward slashes '/'
 static inline void convert_backslashes(char* str, int64_t len) {
+    ASSERT(str);
     for (char* c = str; c != str + len; ++c) {
         if (*c == '\\') *c = '/';
     }
 }
 
 static inline void convert_to_lower(char* str, int64_t len) {
+    ASSERT(str);
     for (char* c = str; c != str + len; ++c) {
         *c = (char)to_lower(*c);
     }
 }
 
 static inline void convert_to_upper(char* str, int64_t len) {
+    ASSERT(str);
     for (char* c = str; c != str + len; ++c) {
         *c = (char)to_upper(*c);
     }

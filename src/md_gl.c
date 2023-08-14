@@ -16,11 +16,9 @@
 #include <stddef.h>     // offsetof
 
 #include <GL/gl3w.h>
+
 // Baked shaders
 #include <gl_shaders.inl>
-
-#define MAGIC 0xfacb8172U
-#define SPLINE_MAX_SUBDIVISION_COUNT 8
 
 #define PUSH_GPU_SECTION(lbl)                                                                   \
 {                                                                                               \
@@ -30,6 +28,9 @@
 {                                           \
     if (glPopDebugGroup) glPopDebugGroup(); \
 }
+
+#define MAGIC 0xfacb8172U
+#define SPLINE_MAX_SUBDIVISION_COUNT 8
 
 #define UBO_SIZE (1 << 10)
 #define SHADER_BUF_SIZE KILOBYTES(14)

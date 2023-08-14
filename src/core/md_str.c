@@ -185,18 +185,6 @@ int64_t str_find_str(str_t haystack, str_t needle) {
     return loc;
 }
 
-/*
-#if MD_COMPILER_MSVC
-    double __cdecl pow(double x, double y);
-#   pragma intrinsic(pow)
-#   define POW pow
-#elif MD_COMPILER_GCC || MD_COMPILER_CLANG
-#   define POW __builtin_pow
-#endif
-*/
-
-
-
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
@@ -235,7 +223,7 @@ void str_free(str_t str, struct md_allocator_i* alloc) {
     md_free(alloc, (void*)str.ptr, str.len + 1);
 }
 
-str_t str_copy(const str_t str, struct md_allocator_i* alloc) {
+str_t str_copy(const str_t str, md_allocator_i* alloc) {
     ASSERT(alloc);
     str_t result = {0,0};
     if (str.ptr && str.len > 0) {
@@ -244,6 +232,33 @@ str_t str_copy(const str_t str, struct md_allocator_i* alloc) {
         MEMCPY(data, str.ptr, str.len);
         result.ptr = data;
         result.len = str.len;
+    }
+    return result;
+}
+
+str_t str_copy_cstr(const char* cstr, md_allocator_i* alloc) {
+    ASSERT(alloc);
+    str_t result = {0,0};
+    if (cstr) {
+        int64_t len = strlen(cstr);
+        char* data = md_alloc(alloc, len + 1);
+        data[len] = '\0';
+        MEMCPY(data, cstr, len);
+        result.ptr = data;
+        result.len = len;
+    }
+    return result;
+}
+
+str_t str_copy_cstrn(const char* cstr, int64_t len, md_allocator_i* alloc) {
+    ASSERT(alloc);
+    str_t result = {0,0};
+    if (cstr) {
+        char* data = md_alloc(alloc, len + 1);
+        data[len] = '\0';
+        MEMCPY(data, cstr, len);
+        result.ptr = data;
+        result.len = len;
     }
     return result;
 }

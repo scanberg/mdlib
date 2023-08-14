@@ -80,7 +80,7 @@ static char CWD[4096];
 
 #if MD_PLATFORM_WINDOWS
 // https://docs.microsoft.com/en-us/windows/win32/debug/retrieving-the-last-error-code
-void print_windows_error() {
+static void print_windows_error() {
     LPVOID msg_buf = 0;
     DWORD err_code = GetLastError();
 
@@ -99,32 +99,18 @@ void print_windows_error() {
 }
 #endif
 
-str_t md_path_cwd() {
+static inline int64_t fullpath(char* buf, int64_t cap, str_t path) {
+    str_t zpath = str_copy(path, default_temp_allocator); // Zero terminate
 #if MD_PLATFORM_WINDOWS
-    char* val = _getcwd(CWD, sizeof(CWD));
-    ASSERT(val != 0);
-#elif MD_PLATFORM_UNIX
-    getcwd(CWD, sizeof(CWD));
-#else
-    ASSERT(false);
-#endif
-    str_t res = { .ptr = CWD, .len = (int64_t)strnlen(CWD, sizeof(CWD)) };
-    return res;
-}
-
-static inline str_t internal_fullpath(str_t path, md_allocator_i* alloc) {
-    path = str_copy(path, default_temp_allocator); // Zero terminate
-
-    char sz_buf[MD_MAX_PATH] = "";
-#if MD_PLATFORM_WINDOWS
-    int64_t len = (int64_t)GetFullPathName(path.ptr, sizeof(sz_buf), sz_buf, NULL);
+    int64_t len = (int64_t)GetFullPathName(zpath.ptr, (int)cap, buf, NULL);
     if (len == 0) {
         print_windows_error();
     }
+    return len;
 #elif MD_PLATFORM_UNIX
     int64_t len = 0;
-    if (realpath(path.ptr, sz_buf) != NULL) {
-        len = (int64_t)strnlen(sz_buf, sizeof(sz_buf));
+    if (realpath(zpath.ptr, buf) != NULL) {
+        len = (int64_t)strnlen(buf, cap);
     }
     else {
         switch (errno) {
@@ -139,71 +125,88 @@ static inline str_t internal_fullpath(str_t path, md_allocator_i* alloc) {
         default:            MD_LOG_ERROR("Undefined error"); break;
         }
     }
+    return len;
+#else
+#error "Platform not supported"
+#endif
+}
+
+str_t md_path_cwd() {
+#if MD_PLATFORM_WINDOWS
+    char* val = _getcwd(CWD, sizeof(CWD));
+    ASSERT(val != 0);
+#elif MD_PLATFORM_UNIX
+    getcwd(CWD, sizeof(CWD));
 #else
     ASSERT(false);
 #endif
-    str_t result = { 0 };
-    if (len > 0) {
-        result = str_copy((str_t) { sz_buf, len }, alloc);
-    }
-    return result;
+    str_t res = { .ptr = CWD, .len = (int64_t)strnlen(CWD, sizeof(CWD)) };
+    return res;
 }
 
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
+    char buf[MAX_PATH];
+    const int64_t len = fullpath(buf, sizeof(buf), path);
+    str_t result = {0};
 
-    path = internal_fullpath(path, alloc);
+    if (path.len > 0 && len == 0) {
+        MD_LOG_ERROR("Failed to create canonical path from '%.*s'", (int)path.len, path.ptr);
+        return result;
+    }
 
-    if (path.len > 0) {
 #if MD_PLATFORM_WINDOWS
-        convert_backslashes((char*)path.ptr, path.len);
+    convert_backslashes(buf, len);
 #endif
-    }
-    else {
-        MD_LOG_ERROR("Failed to create canonical path!");
-    }
-
-    return path;
+    
+    return str_copy_cstrn(buf, len, alloc);
 }
 
 str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
-    char sz_buf[MD_MAX_PATH] = "";
+    char  rel_buf[MD_MAX_PATH];
+    char from_buf[MD_MAX_PATH];
+    char   to_buf[MD_MAX_PATH];
 
     str_t relative_str = { 0 };
-    bool result = false;
+    bool success = false;
 
     // Make 2 canonical paths
-    from = internal_fullpath(from, default_temp_allocator);
-    to = internal_fullpath(to, default_temp_allocator);
+    const int64_t from_len = fullpath(from_buf, sizeof(from_buf), from);
+    const int64_t to_len   = fullpath(to_buf, sizeof(to_buf), to);
 
 #if MD_PLATFORM_WINDOWS
-    result = PathRelativePathTo(sz_buf, from.ptr, FILE_ATTRIBUTE_NORMAL, to.ptr, FILE_ATTRIBUTE_NORMAL);
-    convert_backslashes(sz_buf, sizeof(sz_buf));
+    (void)from_len;
+    (void)to_len;
+    success = PathRelativePathTo(rel_buf, from_buf, FILE_ATTRIBUTE_NORMAL, to_buf, FILE_ATTRIBUTE_NORMAL);
+    convert_backslashes(rel_buf, sizeof(rel_buf));
 #elif MD_PLATFORM_UNIX
 
     // Find the common base
     int64_t count = str_count_equal_chars(from, to);
-    result = count > 0;
+    success = count > 0;
 
-    if (result) {
+    if (success) {
+        str_t abs_from = {from_buf, from_len};
+        str_t abs_to   = {to_buf, to_len};
+        
         // Count number of folders as N in from and add N times '../'
-        str_t rfrom = str_substr(from, count, -1);
-        str_t rto = str_substr(to, count, -1);
+        str_t rel_from = str_substr(abs_from, count, -1);
+        str_t rel_to   = str_substr(abs_to,   count, -1);
 
-        const int64_t folder_count = str_count_occur_char(rfrom, '/');
+        const int64_t folder_count = str_count_occur_char(rel_from, '/');
 
         str_t folder_up = STR("../");
         int len = 0;
         for (int64_t i = 0; i < folder_count; ++i) {
             len += snprintf(sz_buf + len, sizeof(sz_buf) - len, "%.*s", (int)folder_up.len, folder_up.ptr);
         }
-        len += snprintf(sz_buf + len, sizeof(sz_buf) - len, "%.*s", (int)rto.len, rto.ptr);
+        len += snprintf(sz_buf + len, sizeof(sz_buf) - len, "%.*s", (int)rel_to.len, rel_to.ptr);
     }
 #else
     ASSERT(false);
 #endif
-    if (result) {
-        relative_str = str_copy((str_t) { .ptr = sz_buf, .len = (int64_t)strnlen(sz_buf, sizeof(sz_buf)) }, alloc);
+    if (success) {
+        relative_str = str_copy((str_t) { .ptr = rel_buf, .len = (int64_t)strnlen(rel_buf, sizeof(rel_buf)) }, alloc);
     }
     else {
         MD_LOG_ERROR("Failed to extract relative path.");
@@ -243,6 +246,8 @@ bool md_path_is_directory(str_t path) {
 
 
 // ### FILE ###
+
+// Ensures that md_file_o is always binary compatible with FILE and can thus be casted to FILE*
 struct md_file_o {
     FILE handle;
 };
@@ -413,6 +418,7 @@ int64_t md_file_printf(md_file_o* file, const char* format, ...) {
 
 
 // ### TIME ###
+
 md_timestamp_t md_time_current() {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER t;
@@ -467,7 +473,7 @@ double md_time_as_seconds(md_timestamp_t t) {
 // Linux equivalent of virtual memory allocation is partly taken from here
 // https://forums.pcsx2.net/Thread-blog-VirtualAlloc-on-Linux
 
-uint64_t md_physical_ram() {
+uint64_t md_os_physical_ram(void) {
 #if MD_PLATFORM_WINDOWS
     MEMORYSTATUSEX status = {
         .dwLength = sizeof(MEMORYSTATUSEX),
@@ -478,6 +484,21 @@ uint64_t md_physical_ram() {
     long pages = sysconf(_SC_PHYS_PAGES);
     long page_size = sysconf(_SC_PAGE_SIZE);
     return pages * page_size;
+#else
+    ASSERT(false);
+    return 0;
+#endif
+}
+
+uint64_t md_os_num_processors(void) {
+#if MD_PLATFORM_WINDOWS
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    int num_cpu = sysinfo.dwNumberOfProcessors;
+    return (uint64_t)num_cpu;
+#elif MD_PLATFORM_UNIX
+    int num_cpu = sysconf(_SC_NPROCESSORS_ONLN);
+    return (uint64_t)num_cpu;
 #else
     ASSERT(false);
     return 0;
@@ -497,7 +518,7 @@ uint64_t md_vm_page_size(void) {
 }
 
 void* md_vm_reserve(uint64_t size) {
-    uint64_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+    const uint64_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
 #if MD_PLATFORM_WINDOWS
     return VirtualAlloc(0, gb_snapped_size, MEM_RESERVE, PAGE_NOACCESS);
 #elif MD_PLATFORM_UNIX
@@ -526,7 +547,7 @@ void md_vm_release(void* ptr, uint64_t size) {
 }
 
 void md_vm_commit(void* ptr, uint64_t size) {
-    uint64_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+    const uint64_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
 #if MD_PLATFORM_WINDOWS
     void* result = VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
     ASSERT(result != NULL);
@@ -652,7 +673,7 @@ void md_thread_sleep(uint64_t milliseconds) {
 #endif
 }
 
-// Mutex
+// ### MUTEX ###
 
 bool md_mutex_init(md_mutex_t* mutex) {
 #if MD_PLATFORM_WINDOWS
@@ -723,7 +744,7 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 
 
 
-// Semaphore
+// ### SEMAPHORE ###
 
 bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 #if MD_PLATFORM_WINDOWS
@@ -787,14 +808,16 @@ bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count) {
     ASSERT(semaphore);
     ASSERT(count);
 #if MD_PLATFORM_WINDOWS
-    _NtQuerySemaphore NtQuerySemaphore = (_NtQuerySemaphore)GetProcAddress(GetModuleHandle("ntdll.dll"), "NtQuerySemaphore");
-
-    if (NtQuerySemaphore) {
-        SEMAPHORE_BASIC_INFORMATION basic_info = {0};
-        NTSTATUS status = NtQuerySemaphore((HANDLE)semaphore->_data[0], 0 /*SemaphoreBasicInformation*/,  &basic_info, sizeof (SEMAPHORE_BASIC_INFORMATION), NULL);
-        if (status == ERROR_SUCCESS) {
-            *count = basic_info.CurrentCount;
-            return true;
+    HMODULE hntdll = GetModuleHandle("ntdll.dll");
+    if (hntdll) {
+        _NtQuerySemaphore NtQuerySemaphore = (_NtQuerySemaphore)GetProcAddress(hntdll, "NtQuerySemaphore");
+        if (NtQuerySemaphore) {
+            SEMAPHORE_BASIC_INFORMATION basic_info = {0};
+            NTSTATUS status = NtQuerySemaphore((HANDLE)semaphore->_data[0], 0 /*SemaphoreBasicInformation*/,  &basic_info, sizeof (SEMAPHORE_BASIC_INFORMATION), NULL);
+            if (status == ERROR_SUCCESS) {
+                *count = basic_info.CurrentCount;
+                return true;
+            }
         }
     }
     return false;
@@ -818,7 +841,7 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 #endif
 }
 
-// Common high level operations
+// Common high level Semaphore operations
 
 md_semaphore_t md_semaphore_create(int32_t initial_count) {
     md_semaphore_t semaphore;

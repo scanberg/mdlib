@@ -12,18 +12,23 @@ struct  md_allocator_i;
 extern "C" {
 #endif
 
+// ### MISC OS ###
+// returns total physical ram available on the machine
+uint64_t md_os_physical_ram();
+// returns number of processors available on machine
+uint64_t md_os_num_processors();
+
 // ### PATH ###
 // Gets the current working directory
 // Returns a non owning reference to a shared static string buffer
-str_t   md_path_cwd(void);
+str_t md_path_cwd(void);
 
-str_t   md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
-str_t   md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
+str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
+str_t md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
 
 // Checks if a path to a file or directory is valid: i.e. it points to an actual file / dir on disk.
-bool	md_path_is_valid(str_t path);
-bool	md_path_is_directory(str_t path);
-
+bool md_path_is_valid(str_t path);
+bool md_path_is_directory(str_t path);
 
 // ### FILE ###
 
@@ -82,10 +87,7 @@ double  md_time_as_seconds(md_timestamp_t t);
 // If you are using this, the assumption is that you know what you are doing
 // pointer and size should be aligned on page_size, otherwise it will most certainly crash on some OS
 
-// returns total physical ram available on the machine
-uint64_t    md_physical_ram();
-
-// Virtual Memory
+// ### VIRTUAL MEMORY ###
 uint64_t	md_vm_page_size(void);
 void*		md_vm_reserve(uint64_t size);
 void		md_vm_release(void* ptr, uint64_t size);
@@ -102,7 +104,7 @@ md_thread_t*    md_thread_create(md_thread_entry func, void* data);
 void			md_thread_detach(md_thread_t* thread);
 bool			md_thread_join(md_thread_t* thread);
 
-// Register a callback 
+// Register Callbacks
 bool			md_thread_on_exit(md_thread_exit callback);
 
 // Get ID from supplied thread object
@@ -114,7 +116,7 @@ md_thread_id_t	md_thread_id(void);
 // Put the current thread to sleep for a supplied number of milliseconds
 void			md_thread_sleep(uint64_t milliseconds);
 
-// ### Mutex ###
+// ### MUTEX ###
 typedef struct md_mutex_t {
     union {
         void* _align;
