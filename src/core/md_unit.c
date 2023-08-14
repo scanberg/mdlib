@@ -85,7 +85,7 @@ typedef struct {
 #define UNIT_BAR            {.base = {.dim = {.mass = 1, .length = -1, .time = -2,}}, .mult = 1.0e5}
 #define UNIT_JOULE          {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = 1.0}
 #define UNIT_NEWTON         {.base = {.dim = {.mass = 1, .length =  1, .time = -2,}}, .mult = 1.0}
-//#define UNIT_NEWTONMETER    {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = 1.0}
+#define UNIT_NEWTONMETER    {.base = {.dim = {.mass = 1, .length =  2, .time = -2,}}, .mult = 1.0}
 
 #define UNIT_VOLT           {.base = {.dim = {.mass = 1, .length =  2, .time = -3, .current = -1}}, .mult = 1.0}
 #define UNIT_WATT           {.base = {.dim = {.mass = 1, .length =  2, .time = -3}}, .mult = 1.0}
@@ -118,6 +118,7 @@ static const unit_name_t predefined_units[] = {
     {UNIT_BAR,          S(u8"bar")},
     {UNIT_JOULE,        S(u8"J")},
     {UNIT_NEWTON,       S(u8"N")},
+    {UNIT_NEWTONMETER,  S(u8"Nm")},
     {UNIT_VOLT,         S(u8"V")},
     {UNIT_WATT,         S(u8"W")},
     {UNIT_COULOMB,      S(u8"C")},
