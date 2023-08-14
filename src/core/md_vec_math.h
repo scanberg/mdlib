@@ -165,6 +165,7 @@ MD_VEC_INLINE float lerpf(float a, float b, float t) {
     return a * (1.0f - t) + b * t;
 }
 
+// Cardinal cubic spline
 MD_VEC_INLINE float cubic_splinef(float p0, float p1, float p2, float p3, float t, float s) {
     const float v0 = (p2 - p0) * s;
     const float v1 = (p3 - p1) * s;
@@ -386,6 +387,10 @@ MD_VEC_INLINE float vec3_dot(vec3_t a, vec3_t b) {
 
 MD_VEC_INLINE float vec3_length(vec3_t v) {
     return sqrtf(vec3_dot(v,v));
+}
+
+MD_VEC_INLINE float vec3_length_squared(vec3_t v) {
+    return vec3_dot(v,v);
 }
 
 MD_VEC_INLINE float vec3_distance(vec3_t a, vec3_t b) {
