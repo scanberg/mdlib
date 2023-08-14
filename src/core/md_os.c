@@ -76,7 +76,7 @@ STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t 
 
 #define SZBUF_FROM_STR(buf, str) strncpy(buf, str.ptr, MIN(sizeof(buf)-1, str.len))
 
-static char CWD[4096];
+static char CWD[MD_MAX_PATH];
 
 #if MD_PLATFORM_WINDOWS
 // https://docs.microsoft.com/en-us/windows/win32/debug/retrieving-the-last-error-code
@@ -146,7 +146,7 @@ str_t md_path_cwd() {
 
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
-    char buf[MAX_PATH];
+    char buf[MD_MAX_PATH];
     const int64_t len = fullpath(buf, sizeof(buf), path);
     str_t result = {0};
 
@@ -198,9 +198,9 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
         str_t folder_up = STR("../");
         int len = 0;
         for (int64_t i = 0; i < folder_count; ++i) {
-            len += snprintf(sz_buf + len, sizeof(sz_buf) - len, "%.*s", (int)folder_up.len, folder_up.ptr);
+            len += snprintf(rel_buf + len, sizeof(rel_buf) - len, "%.*s", (int)folder_up.len, folder_up.ptr);
         }
-        len += snprintf(sz_buf + len, sizeof(sz_buf) - len, "%.*s", (int)rel_to.len, rel_to.ptr);
+        len += snprintf(rel_buf + len, sizeof(rel_buf) - len, "%.*s", (int)rel_to.len, rel_to.ptr);
     }
 #else
     ASSERT(false);
