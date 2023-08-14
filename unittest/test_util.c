@@ -123,6 +123,12 @@ UTEST(util, com) {
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
+        /*
+        Here we expect the 4 to wrap around to -1,
+        then added to the 0, producing a center of mass of -0.5.
+        which is then placed within the period to 4.5.
+        */
+
         vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
         com = vec3_deperiodize(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
@@ -157,7 +163,12 @@ UTEST(util, com) {
             {3,0,0},
         };
 
-        // This should produce, if everything is 'correct': (4+5+6+7+8) / 5 =  6 % 5 (pbc)  = 1
+        // All of the given positions, are the same under PBC. We can also see that the mid point in the sequence is 1.
+        // But the sequence itself spans the entire extent of the periodic bounds.
+        // What is the expected center of mass?
+        // The result will differ depending on the underlying technique used.
+        // If the trigonometric version is used, the points will be evenly spread across the domain, resulting in a atan2(0,0) which is not defined.
+        // In such case, we fall back to picking the center of the domain.
 
         vec3_t com0 = md_util_compute_com_ortho(pos0, NULL, ARRAY_SIZE(pos0), pbc_ext);
         vec3_t com1 = md_util_compute_com_ortho(pos1, NULL, ARRAY_SIZE(pos1), pbc_ext);

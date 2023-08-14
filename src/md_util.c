@@ -455,14 +455,19 @@ bool md_util_backbone_atoms_extract_from_residue_idx(md_backbone_atoms_t* backbo
     return extract_backbone_atoms(backbone_atoms, mol->atom.name, mol->residue.atom_range[res_idx]);
 }
 
-static inline bool zhang_skolnick_ss(const md_molecule_t* args, md_range_t bb_range, int i, const float distances[3], float delta) {
+static inline bool zhang_skolnick_ss(const md_molecule_t* mol, md_range_t bb_range, int i, const float distances[3], float delta) {
+    ASSERT(mol);
+    ASSERT(mol->atom.x);
+    ASSERT(mol->atom.y);
+    ASSERT(mol->atom.z);
+    ASSERT(mol->backbone.atoms);
     for (int j = MAX((int)bb_range.beg, i - 2); j <= i; ++j) {
         for (int k = 2; k < 5; ++k) {
             if (j + k >= (int)bb_range.end) continue;
-            const int ca_j = args->backbone.atoms[j].ca;
-            const int ca_k = args->backbone.atoms[j + k].ca;
-            const vec3_t pos_j = {args->atom.x[ca_j], args->atom.y[ca_j], args->atom.z[ca_j]};
-            const vec3_t pos_k = {args->atom.x[ca_k], args->atom.y[ca_k], args->atom.z[ca_k]};
+            const int ca_j = mol->backbone.atoms[j].ca;
+            const int ca_k = mol->backbone.atoms[j + k].ca;
+            const vec3_t pos_j = {mol->atom.x[ca_j], mol->atom.y[ca_j], mol->atom.z[ca_j]};
+            const vec3_t pos_k = {mol->atom.x[ca_k], mol->atom.y[ca_k], mol->atom.z[ca_k]};
             const float d = vec3_distance(pos_j, pos_k);
             if (ABS(d - distances[k - 2]) > delta) {
                 return false;
@@ -1788,14 +1793,14 @@ vec3_t md_util_compute_com_indexed_soa(const float *x, const float* y, const flo
     return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
 }
 
-static inline double compute_com_periodic_trig(const float* in_x, const float* in_w, int64_t count, float pbc_ext, size_t stride_x) {
+static inline double compute_com_periodic_trig(const float* in_x, const float* in_w, int64_t count, float x_max, size_t stride_x) {
     double com;
 
     double acc_c = 0;
     double acc_s = 0;
     double acc_w = 0;
 
-    const double scl = TWO_PI / pbc_ext;
+    const double scl = TWO_PI / x_max;
     stride_x = MAX(1, stride_x);
 
     for (int64_t i = 0; i < count; ++i) {
@@ -1807,13 +1812,21 @@ static inline double compute_com_periodic_trig(const float* in_x, const float* i
     }
 
     acc_w = (acc_w == 0) ? count : acc_w;
-    const double theta_prim = atan2(-acc_s / acc_w, -acc_c / acc_w) + PI;
-    com = (theta_prim / TWO_PI) * pbc_ext;
+    const double y = acc_s / acc_w;
+    const double x = acc_c / acc_w;
+    const double r2 = x*x + y*y;
+
+    double theta_prim = PI;
+    if (r2 > 1.0e-15) {
+        theta_prim += atan2(-y, -x);
+    }
+
+    com = (theta_prim / TWO_PI) * x_max;
 
     return com;
 }
 
-static inline double compute_com_periodic_regular(const float* in_x, const float* in_w, int64_t count, float pbc_ext, size_t stride_x) {
+static inline double compute_com_periodic_regular(const float* in_x, const float* in_w, int64_t count, float x_max, size_t stride_x) {
     if (count <= 0) {
         return 0;
     }
@@ -1826,7 +1839,7 @@ static inline double compute_com_periodic_regular(const float* in_x, const float
 
     for (int64_t i = 1; i < count; ++i) {
         double x = in_x[stride_x * i];
-        double dx = deperiodize(x, prev_x, (double)pbc_ext);
+        double dx = deperiodize(x, prev_x, (double)x_max);
         double w = in_w ? in_w[i] : 1.0;
         acc_x += dx * w;
         acc_w += w;
@@ -1905,14 +1918,19 @@ vec3_t md_util_compute_com_indexed_soa_ortho(const float *in_x, const float* in_
     if (count == 0) {
         return (vec3_t){0, 0, 0};
     }
+    const int idx0 = indices[0];
+
+    if (count == 0) {
+        return (vec3_t){in_x[idx0], in_y[idx0], in_z[idx0]};
+    }
     
     const vec4_t ext = vec4_from_vec3(box, 0);
 
-    const int idx0 = indices[0];
-    vec4_t acc = {in_x[idx0], in_y[idx0], in_z[idx0], in_w ? in_w[idx0] : 1};
-    vec4_t ref = acc;
+    vec4_t ref = vec4_set(in_x[idx0], in_y[idx0], in_z[idx0], 1.0f);
+    vec4_t acc = ref;
 
     if (in_w) {
+        acc = vec4_mul_f(acc, in_w[idx0]);
         for (int64_t i = 1; i < count; ++i) {
             const int idx = indices[i];
             const vec4_t xyzw = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), ref, ext);
@@ -2072,7 +2090,7 @@ md_unit_cell_t md_util_unit_cell_triclinic(double a, double b, double c, double 
         .inv_basis = {
             I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
         },
-        .flags = MD_CELL_TRICLINIC | MD_CELL_X | MD_CELL_Y | MD_CELL_Z,
+        .flags = MD_CELL_TRICLINIC | (a != 0.0 ? MD_CELL_X : 0) | (b != 0.0 ? MD_CELL_Y : 0) | (c != 0.0 ? MD_CELL_Z : 0),
     };
 
     return cell;
@@ -2091,12 +2109,16 @@ md_unit_cell_t md_util_unit_cell_mat3(mat3_t M) {
             ((double)N[3]*(double)N[7]/((double)N[0]*(double)N[4]) - (double)N[6]/(double)N[0])/(double)N[8], -(double)N[7]/((double)N[4]*(double)N[8]), 1.0/(double)N[8],
         };
         
+        const float a = vec3_length_squared(M.col[0]);
+        const float b = vec3_length_squared(M.col[1]);
+        const float c = vec3_length_squared(M.col[2]);
+        
         md_unit_cell_t cell = {
             .basis = M,
             .inv_basis = {
                 I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
             },
-            .flags = MD_CELL_TRICLINIC | MD_CELL_X | MD_CELL_Y | MD_CELL_Z,
+            .flags = MD_CELL_TRICLINIC | (a != 0 ? MD_CELL_X : 0) | (b != 0 ? MD_CELL_Y : 0) | (c != 0 ? MD_CELL_Z : 0),
         };
         return cell;
     }
