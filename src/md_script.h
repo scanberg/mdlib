@@ -121,6 +121,7 @@ typedef struct md_script_property_data_t {
 
     int64_t num_values; // Raw 1D length of values
     float*  values;     // Raw linear access to values, check dim for the dimensions of the data
+    float*  weights;    // Optional, only applicable to distributions
 
     md_script_aggregate_t* aggregate; // optional, only computed if the values are computed as an aggregate
 

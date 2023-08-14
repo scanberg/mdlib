@@ -25,7 +25,8 @@
 #define TI_FLOAT44      {TYPE_FLOAT, {4,4,1}, 2}
 #define TI_FLOAT44_ARR  {TYPE_FLOAT, {4,4,ANY_LENGTH}, 2}
 
-#define TI_DISTRIBUTION {TYPE_FLOAT, {MD_DIST_BINS,1}, 1}
+// The second dimension in the distribution encodes weights for each bin
+#define TI_DISTRIBUTION {TYPE_FLOAT, {MD_DIST_BINS,2}, 1}
 #define TI_VOLUME       {TYPE_FLOAT, {MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM,1}, 3}
 
 #define TI_INT          {TYPE_INT, {1}, 0}
@@ -4028,7 +4029,7 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const vec3_t*
     const double total_vol = sphere_volume(max_cutoff) - sphere_volume(min_cutoff);
     const double ref_rho   = total_count / total_vol;
 
-    // Normalize bins
+    // Compute normalization factor of bins
     // With respect to the nominal distribution rho
     // Each bin is normalized with respect to the nominal distribution
     const double dr = (max_cutoff - min_cutoff) / (float)num_bins;
@@ -4036,9 +4037,8 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const vec3_t*
     for (int64_t i = 0; i < num_bins; ++i) {
         const double sphere_vol = sphere_volume(min_cutoff + (i + 0.5) * dr);
         const double bin_vol = sphere_vol - prev_sphere_vol;
-        const double rho = bins[i] / bin_vol;
-        bins[i] = (float)(rho / ref_rho);   
         prev_sphere_vol = sphere_vol;
+        weights[i] = (float)(ref_rho * bin_vol);
     }
 }
 
@@ -4084,7 +4084,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_DISTRIBUTION));
             ASSERT(dst->ptr);
-            float* bins = as_float_arr(*dst);
+            float* bins    = as_float_arr(*dst);
 			float* weights = as_float_arr(*dst) + num_bins;
             if (ref_len > 0 && trg_len > 0) {
                 compute_rdf(bins, weights, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, &ctx->frame_header->unit_cell, ctx->temp_alloc);
