@@ -509,7 +509,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
 
         const char chain_id = data->atom_coordinates[i].chain_id;
 		const bool term = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR);
-        if (term || (chain_id != ' ' && chain_id != cur_chain_id)) {
+        if (chain_id != ' ' && (term || chain_id != cur_chain_id)) {
             cur_chain_id = chain_id;
             
             str_t chain_str = { &data->atom_coordinates[i].chain_id, 1 };
