@@ -89,7 +89,7 @@ bool md_bitfield_test_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end
 uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 // Create default iterator full range
-md_bitfield_iter_t md_bitfield_iter(const md_bitfield_t* bf);
+md_bitfield_iter_t md_bitfield_iter_create(const md_bitfield_t* bf);
 
 // Create iterator with range
 md_bitfield_iter_t md_bitfield_iter_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);

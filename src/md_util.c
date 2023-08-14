@@ -1470,7 +1470,7 @@ void md_util_grow_mask_by_bonds(md_bitfield_t* mask, const struct md_molecule_t*
     MEMSET(depth, 0, num_atoms * sizeof(uint8_t));
 
     {
-        md_bitfield_iter_t it = md_bitfield_iter(mask);
+        md_bitfield_iter_t it = md_bitfield_iter_create(mask);
         while (md_bitfield_iter_next(&it)) {
             int idx = (int)md_bitfield_iter_idx(&it);
             depth[idx] = 1;
@@ -1539,7 +1539,7 @@ void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t
     md_bitfield_t old_mask = md_bitfield_create(&arena_alloc);
     md_bitfield_copy(&old_mask, mask);
 
-    md_bitfield_iter_t it = md_bitfield_iter(&old_mask);
+    md_bitfield_iter_t it = md_bitfield_iter_create(&old_mask);
     while (md_bitfield_iter_next(&it)) {
         int idx = (int)md_bitfield_iter_idx(&it);
         const vec3_t pos = {mol->atom.x[idx], mol->atom.y[idx], mol->atom.z[idx]};

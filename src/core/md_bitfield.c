@@ -684,7 +684,7 @@ uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     return bit_scan(u64_base(bf), beg, end);
 }
 
-md_bitfield_iter_t md_bitfield_iter(const md_bitfield_t* bf) {
+md_bitfield_iter_t md_bitfield_iter_create(const md_bitfield_t* bf) {
     md_bitfield_iter_t iter = {
         .bf = bf,
         .idx = bf->beg_bit,
@@ -766,7 +766,7 @@ int64_t md_bitfield_extract_indices(int32_t* buf, int64_t cap, const md_bitfield
     if (!buf || cap == 0) return 0;
 
     int64_t len = 0;
-    md_bitfield_iter_t it = md_bitfield_iter(bf);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
 
     while (len < cap && md_bitfield_iter_next(&it)) {
         buf[len++] = (int32_t)md_bitfield_iter_idx(&it);

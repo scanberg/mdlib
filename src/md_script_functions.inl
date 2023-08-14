@@ -746,7 +746,7 @@ static inline vec3_t extract_com(const float* x, const float* y, const float* z,
     ASSERT(bitfield);
 
     vec4_t sum = {0};
-    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         const float weight = w ? w[idx] : 1.0f;
@@ -767,7 +767,7 @@ static inline vec3_t* extract_vec3(const float* x, const float* y, const float* 
 
     vec3_t* pos = 0;
 
-    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         md_array_push(pos, vec3_set(x[idx], y[idx], z[idx]), alloc);
@@ -786,7 +786,7 @@ static inline int64_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, cons
 
     int64_t count = 0;
 
-    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         dst_x[count] = src_x[idx];
@@ -807,7 +807,7 @@ static inline int64_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, cons
 
     int64_t count = 0;
 
-    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         dst_xyz[count] = vec3_set(src_x[idx], src_y[idx], src_z[idx]);
@@ -854,7 +854,7 @@ static inline int64_t extract_xyzw_vec3(vec4_t* dst_xyzw, const float* src_x, co
 
     int64_t count = 0;
 
-    md_bitfield_iter_t it = md_bitfield_iter(bitfield);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], src_w[idx]);
@@ -1261,7 +1261,7 @@ static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
             range = clamp_range(range, ctx_range);
 
             if (ctx->mol_ctx) {
-                md_bitfield_iter_t it = md_bitfield_iter(ctx->mol_ctx);
+                md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
                 while (md_bitfield_iter_next(&it)) {
                     const int64_t idx = md_bitfield_iter_idx(&it);
                     const vec4_t xyzw = vec4_mul_f(vec4_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], 1.0f), ctx->mol->atom.mass[idx]);
@@ -2669,7 +2669,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t capacity = type_info_array_len(dst->type);
 
             int i = 0;
-            md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
+            md_bitfield_iter_t it = md_bitfield_iter_create(&tmp_bf);
             while (md_bitfield_iter_next(&it)) {
                 const int64_t idx = md_bitfield_iter_idx(&it);
                 const int64_t res_idx = ctx->mol->atom.residue_idx[idx];
@@ -2692,7 +2692,7 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
 
-            md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
+            md_bitfield_iter_t it = md_bitfield_iter_create(&tmp_bf);
             while (md_bitfield_iter_next(&it)) {
                 const int64_t idx = md_bitfield_iter_idx(&it);
                 const int64_t res_idx = ctx->mol->atom.residue_idx[idx];
@@ -2730,7 +2730,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t capacity = element_count(*dst);
 
             int i = 0;
-			md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
+			md_bitfield_iter_t it = md_bitfield_iter_create(&tmp_bf);
             while (md_bitfield_iter_next(&it)) {
 				const int64_t idx = md_bitfield_iter_idx(&it);
                 const int64_t chain_idx = ctx->mol->atom.chain_idx[idx];
@@ -2745,7 +2745,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             int count = 0;
 
-            md_bitfield_iter_t it = md_bitfield_iter(&tmp_bf);
+            md_bitfield_iter_t it = md_bitfield_iter_create(&tmp_bf);
             while (md_bitfield_iter_next(&it)) {
                 const int64_t idx = md_bitfield_iter_idx(&it);
                 const int64_t chain_idx = ctx->mol->atom.chain_idx[idx];
