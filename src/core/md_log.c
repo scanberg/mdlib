@@ -1,7 +1,7 @@
-#include "md_log.h"
-#include "core/md_common.h"
-#include "core/md_compiler.h"
-#include "core/md_platform.h"
+#include <core/md_log.h>
+#include <core/md_common.h>
+#include <core/md_compiler.h>
+#include <core/md_platform.h>
 
 #if MD_PLATFORM_WINDOWS
 #ifndef NOMINMAX

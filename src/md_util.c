@@ -1,4 +1,7 @@
-#include "md_util.h"
+#include <md_util.h>
+
+#include <md_trajectory.h>
+#include <md_molecule.h>
 
 #include <core/md_compiler.h>
 #include <core/md_common.h>
@@ -11,9 +14,6 @@
 #include <core/md_simd.h>
 #include <core/md_spatial_hash.h>
 #include <core/md_bitfield.h>
-
-#include <md_trajectory.h>
-#include <md_molecule.h>
 
 #include <math.h>
 #include <string.h>

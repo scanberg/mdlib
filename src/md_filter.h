@@ -1,9 +1,10 @@
 #pragma once
 
+#include <core/md_array.h>
+#include <core/md_str.h>
+
 #include <stdint.h>
 #include <stdbool.h>
-#include <core/md_str.h>
-#include <core/md_array.h>
 
 struct md_allocator_i;
 struct md_bitfield_t;

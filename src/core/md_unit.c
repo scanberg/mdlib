@@ -1,12 +1,11 @@
-﻿#include "md_unit.h"
+﻿#include <core/md_unit.h>
 
-#include "md_log.h"
-#include "md_common.h"
-#include "md_str.h"
+#include <core/md_log.h>
+#include <core/md_common.h>
+#include <core/md_str.h>
 
-#include <stdio.h>
-#include <math.h>
-#include <string.h>
+#include <math.h>  // fpclassify
+#include <stdio.h> // snprintf
 
 #define S(str) {str"", sizeof(str)-1}
 

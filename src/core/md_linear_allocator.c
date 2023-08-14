@@ -1,5 +1,4 @@
-#include "md_linear_allocator.h"
-#include <string.h>
+#include <core/md_linear_allocator.h>
 
 static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)file;

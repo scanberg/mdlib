@@ -1,4 +1,4 @@
-#include "md_vec_math.h"
+#include <core/md_vec_math.h>
 
 #include <svd3.h>
 #include <math.h>

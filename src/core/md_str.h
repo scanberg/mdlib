@@ -1,8 +1,9 @@
 #pragma once
 
-#include "md_common.h"  // ASSERT, MIN, MAX
 #include <stdint.h>
 #include <stdbool.h>
+
+#include <core/md_common.h>  // ASSERT, MIN, MAX
 
 #ifdef __cplusplus
 #define DEF_VAL(x) = x

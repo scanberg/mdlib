@@ -1,12 +1,13 @@
-#include "md_spatial_hash.h"
+#include <core/md_spatial_hash.h>
 
-#include "md_allocator.h"
-#include "md_arena_allocator.h"
-#include "md_log.h"
-#include "md_array.h"
-#include "md_simd.h"
-#include "md_util.h"
-#include "md_bitfield.h"
+#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_log.h>
+#include <core/md_array.h>
+#include <core/md_simd.h>
+#include <core/md_bitfield.h>
+
+#include <md_util.h>
 
 #include <float.h>
 #include <string.h>

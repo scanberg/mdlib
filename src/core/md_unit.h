@@ -1,9 +1,9 @@
 #pragma once
 
+#include <core/md_str.h>
+
 #include <stdint.h>
 #include <stdbool.h>
-
-#include "md_str.h"
 
 struct md_allocator_i;
 

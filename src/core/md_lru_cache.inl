@@ -1,8 +1,9 @@
 // We do not want any include guard:
 // This is only meant to be used directly inside translation units
 
-#include <stdint.h>
 #include <core/md_intrinsics.h>
+
+#include <stdint.h>
 
 // 8-way fully associative cache using Least Recently Used (LRU) eviction policy
 // Based on the '8x8 bit matrix technique' presented in Hacker's Delight

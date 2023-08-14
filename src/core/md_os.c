@@ -1,16 +1,15 @@
-#include "md_os.h"
+#include <core/md_os.h>
 
-#include "md_common.h"
-#include "md_platform.h"
-#include "md_log.h"
-#include "md_allocator.h"
+#include <core/md_common.h>
+#include <core/md_platform.h>
+#include <core/md_log.h>
+#include <core/md_allocator.h>
 
 #include <stdio.h>
 #include <stdarg.h>
+#include <time.h>
 
 #define MD_MAX_PATH 4096
-
-#include <time.h>
 
 #if MD_PLATFORM_WINDOWS
 

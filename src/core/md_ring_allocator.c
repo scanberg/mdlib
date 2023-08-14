@@ -1,5 +1,4 @@
-#include "md_ring_allocator.h"
-#include <string.h> // memcpy
+#include <core/md_ring_allocator.h>
 
 void* ring_realloc(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;    

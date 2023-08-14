@@ -1,6 +1,7 @@
 #pragma once
 
-#include "md_common.h"
+#include <core/md_common.h>
+
 #include <stdint.h>
 
 #if (MD_COMPILER_CLANG || MD_COMPILER_GCC)

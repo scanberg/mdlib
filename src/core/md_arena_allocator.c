@@ -1,8 +1,8 @@
-#include "md_arena_allocator.h"
+#include <core/md_arena_allocator.h>
 
-#include "md_allocator.h"
-#include "md_array.h"
-#include "md_os.h"
+#include <core/md_allocator.h>
+#include <core/md_array.h>
+#include <core/md_os.h>
 
 #define MAGIC_NUMBER 0xfdc1728d827856cb
 #define DEFAULT_ALIGNMENT (sizeof(void*)*2) // Should be 16 when compiled for x64

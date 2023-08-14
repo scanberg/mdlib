@@ -1,6 +1,6 @@
 #pragma once
 
-#include "md_compiler.h"
+#include <core/md_compiler.h>
 
 #if defined(__x86_64__) || defined(_M_X64)
 #   ifndef __x86_64__

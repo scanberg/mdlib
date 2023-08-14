@@ -1,9 +1,10 @@
 #pragma once
 
-#include <stdint.h>
-#include <stdbool.h>
 #include <md_types.h>
 #include <core/md_unit.h>
+
+#include <stdint.h>
+#include <stdbool.h>
 
 struct md_trajectory_o;
 

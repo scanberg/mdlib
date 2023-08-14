@@ -1,20 +1,18 @@
-#include "md_gfx.h"
+#include <md_gfx.h>
 
-#include "md_util.h"
-#include <GL/gl3w.h>
+#include <md_molecule.h>
+#include <md_util.h>
 
 #include <core/md_common.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
 #include <core/md_vec_math.h>
-#include <core/md_compiler.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 
-#include <stdio.h>      // snprintf
+#include <GL/gl3w.h>
+
 #include <string.h>     // memset, memcpy, strstr
-#include <stdlib.h>     // malloc
 #include <stddef.h>
 #include <float.h>
 

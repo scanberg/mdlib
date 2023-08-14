@@ -1,12 +1,13 @@
-#include "md_frame_cache.h"
+#include <md_frame_cache.h>
 
-#include "core/md_allocator.h"
-#include "core/md_simd.h"
-#include "core/md_log.h"
-#include "core/md_os.h"
-#include "core/md_array.h"
-#include "md_trajectory.h"
-#include "md_util.h"
+#include <md_trajectory.h>
+#include <md_util.h>
+
+#include <core/md_allocator.h>
+#include <core/md_simd.h>
+#include <core/md_log.h>
+#include <core/md_os.h>
+#include <core/md_array.h>
 
 #include <string.h>
 

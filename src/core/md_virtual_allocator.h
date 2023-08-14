@@ -1,6 +1,6 @@
 #pragma once
 
-#include "md_allocator.h"
+#include <core/md_allocator.h>
 
 #define MD_VM_ALLOCATOR_RESERVATION_SIZE (4 * 1024ULL * 1024ULL)
 

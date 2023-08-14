@@ -1,6 +1,7 @@
-#include "md_molecule.h"
-#include "core/md_array.h"
-#include "core/md_allocator.h"
+#include <md_molecule.h>
+
+#include <core/md_array.h>
+#include <core/md_allocator.h>
 
 #ifdef __cplusplus
 extern "C" {

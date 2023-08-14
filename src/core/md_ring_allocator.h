@@ -1,7 +1,8 @@
 #pragma once
 
-#include "core/md_allocator.h"
-#include "core/md_common.h"
+#include <core/md_allocator.h>
+#include <core/md_common.h>
+
 #include <stdint.h>
 
 #ifdef __cplusplus

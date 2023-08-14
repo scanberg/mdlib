@@ -1,14 +1,14 @@
-#include "md_edr.h"
+#include <md_edr.h>
+
+#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_array.h>
+#include <core/md_log.h>
 
 #include <string.h>
 #include <stdio.h>
 
 #include <xdrfile.h>
-#include <core/md_allocator.h>
-#include <core/md_arena_allocator.h>
-#include <core/md_log.h>
-
-#include <core/md_array.h>
 
 #define ENX_STRING_MAGIC -55555
 #define ENX_HEADER_MAGIC -7777777

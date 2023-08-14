@@ -1,6 +1,7 @@
 #pragma once
 
-#include "md_molecule.h"
+#include <md_molecule.h>
+
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 

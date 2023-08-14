@@ -13,8 +13,8 @@
 
 #pragma once
 
-#include "md_common.h"
-#include "md_intrinsics.h"
+#include <core/md_common.h>
+#include <core/md_intrinsics.h>
 
 #if defined(__x86_64__)
 // x86 integer intrinsics does not have distinct types

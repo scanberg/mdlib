@@ -1,4 +1,6 @@
-#include "md_gro.h"
+#include <md_gro.h>
+
+#include <md_util.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
@@ -8,7 +10,6 @@
 #include <core/md_os.h>
 #include <core/md_array.h>
 #include <core/md_parse.h>
-#include <md_util.h>
 
 #include <string.h>
 

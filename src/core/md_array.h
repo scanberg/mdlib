@@ -5,6 +5,7 @@
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
+
 #include <stdint.h>
 
 #if MD_COMPILER_GCC

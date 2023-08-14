@@ -1,12 +1,12 @@
-#include "md_bitfield.h"
-#include "md_allocator.h"
-#include "md_log.h"
-#include "md_array.h"
+#include <core/md_bitfield.h>
 
-#include "md_common.h"
-#include "md_intrinsics.h"
-#include "md_simd.h"
-#include "md_bitop.inl"
+#include <core/md_allocator.h>
+#include <core/md_log.h>
+#include <core/md_array.h>
+#include <core/md_common.h>
+#include <core/md_intrinsics.h>
+#include <core/md_simd.h>
+#include <core/md_bitop.inl>
 
 #include <fastlz.h>
 

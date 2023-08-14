@@ -1,10 +1,11 @@
 ﻿#pragma once
 
-#include <stdint.h>
 
 #include <core/md_str.h>
 #include <core/md_array.h>
 #include <core/md_vec_math.h>
+
+#include <stdint.h>
 
 // We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
 // This allows us later on to interpolate between them

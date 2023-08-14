@@ -1,6 +1,7 @@
-#include "md_base64.h"
+#include <core/md_base64.h>
 
-#include "md_log.h"
+#include <core/md_log.h>
+
 #include <stdint.h>
 
 #ifndef NULL

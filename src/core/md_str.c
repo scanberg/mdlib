@@ -1,13 +1,13 @@
-#include "md_str.h"
+#include <core/md_str.h>
 
-#include "md_common.h"
-#include "md_os.h"
-#include "md_allocator.h"
-#include "md_array.h"
-#include "md_log.h"
-#include "md_parse.h"
+#include <core/md_common.h>
+#include <core/md_os.h>
+#include <core/md_allocator.h>
+#include <core/md_array.h>
+#include <core/md_log.h>
+#include <core/md_parse.h>
 
-#include <string.h>
+#include <string.h>  // strlen, memchr
 #include <stdarg.h>
 #include <stdio.h>
 

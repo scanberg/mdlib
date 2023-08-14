@@ -1,9 +1,9 @@
 #pragma once
 
+#include <core/md_vec_math.h>
+
 #include <stdint.h>
 #include <stdbool.h>
-
-#include <core/md_vec_math.h>
 
 /*
  *  This is an attempt of a spatial hashing structure intended for accelerated spatial queries.

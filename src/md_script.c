@@ -25,26 +25,27 @@
 *    
 **/
 
-#include "md_script.h"
-#include "md_molecule.h"
-#include "md_trajectory.h"
-#include "md_filter.h"
-#include "md_util.h"
+#include <md_script.h>
 
-#include "core/md_common.h"
-#include "core/md_compiler.h"
-#include "core/md_log.h"
-#include "core/md_bitfield.h"
-#include "core/md_allocator.h"
-#include "core/md_str.h"
-#include "core/md_parse.h"
-#include "core/md_array.h"
-#include "core/md_arena_allocator.h"
-#include "core/md_os.h"
-#include "core/md_unit.h"
-#include "core/md_spatial_hash.h"
-#include "core/md_vec_math.h"
-#include "core/md_str_builder.h"
+#include <md_molecule.h>
+#include <md_trajectory.h>
+#include <md_filter.h>
+#include <md_util.h>
+
+#include <core/md_common.h>
+#include <core/md_compiler.h>
+#include <core/md_log.h>
+#include <core/md_bitfield.h>
+#include <core/md_allocator.h>
+#include <core/md_str.h>
+#include <core/md_parse.h>
+#include <core/md_array.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_os.h>
+#include <core/md_unit.h>
+#include <core/md_spatial_hash.h>
+#include <core/md_vec_math.h>
+#include <core/md_str_builder.h>
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
@@ -319,8 +320,8 @@ typedef struct eval_context_t {
     const md_molecule_t* mol;
     const md_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
 
-    md_vm_arena_t* raw_temp_alloc;
-    md_allocator_i* temp_alloc;         // For allocating transient data (Generic interface to raw_temp_alloc)
+    md_vm_arena_t* temp_arena;
+    md_allocator_i* temp_alloc;         // For allocating transient data (Generic interface to temp_arena)
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
 
     // Contextual information for static checking 
@@ -3838,7 +3839,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol) {
 
     eval_context_t ctx = {
         .ir = ir,
-        .raw_temp_alloc = &vm_arena,
+        .temp_arena = &vm_arena,
         .temp_alloc = &temp_alloc,
         .alloc = ir->arena,
         .mol = mol,
@@ -3970,7 +3971,7 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     eval_context_t ctx = {
         .ir = ir,
         .mol = mol,
-        .raw_temp_alloc = &vm_arena,
+        .temp_arena = &vm_arena,
         .temp_alloc = &temp_alloc,
     };
 
@@ -3989,11 +3990,10 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
 }
 
 static void allocate_property_data(md_script_property_t* prop, type_info_t type, int64_t num_frames, md_allocator_i* alloc) {
-    int64_t num_values = 0;
     MEMCPY(prop->data.dim, type.dim, sizeof(type.dim));
 
-    bool aggregate         = false;
-    int64_t aggregate_size = 0;
+    bool    aggregate  = false;
+    int64_t num_values = 0;
 
     if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
         ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) == 0);
@@ -4002,7 +4002,6 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
         // For temporal data, we store and expose all values, this enables filtering to be performed afterwards to create distributions
         prop->data.dim[1] = (int32_t)num_frames;
         num_values = prop->data.dim[0] * prop->data.dim[1];
-        aggregate_size = num_frames;
         aggregate = (type_info_array_len(type) > 1);
     }
     else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
@@ -4010,7 +4009,7 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
         ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) == 0);
 
         // For distributions we only store and expose the aggregate
-        num_values = MD_DIST_BINS * 2;
+        num_values = prop->data.dim[0] * prop->data.dim[1];
     }
     else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
         ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) == 0);
@@ -4023,11 +4022,20 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
         ASSERT(false);
     }
 
-    prop->data.values = md_alloc(alloc, num_values * sizeof(float));
-    MEMSET(prop->data.values, 0, num_values * sizeof(float));
+    const int64_t num_bytes = num_values * sizeof(float);
+    prop->data.values = md_alloc(alloc, num_bytes);
+    MEMSET(prop->data.values, 0, num_bytes);
     prop->data.num_values = num_values;
 
+    if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+        prop->data.weights = prop->data.values + prop->data.dim[0];
+        for (int64_t i = 0; i < num_values; ++i) {
+            prop->data.weights[i] = 1.0f;
+        }
+    }
+
     if (aggregate) {
+        const int64_t aggregate_size = num_frames;
         // Need to allocate data for aggregate as well.
         prop->data.aggregate = md_alloc(alloc, sizeof(md_script_aggregate_t));
 
@@ -4220,7 +4228,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
         .mol = &mutable_mol,
-        .raw_temp_alloc = &vm_arena,
+        .temp_arena = &vm_arena,
         .temp_alloc = &temp_alloc,
         .alloc = &temp_alloc,
         .frame_header = &curr_header,
@@ -4312,21 +4320,26 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 ASSERT(prop->data.values);
 
                 float min, max, mean, var;
-                compute_min_max_mean_variance(&min, &max, &mean, &var, values, size);
+                compute_min_max_mean_variance(&min, &max, &mean, &var, values, prop->data.dim[0]);
 
                 // ATOMIC WRITE
                 md_mutex_lock(&eval->prop_dist_mutex[p_idx]);
                 {
                     // Cumulative moving average
                     const uint32_t count = eval->prop_dist_count[p_idx]++;
-                    const md_simd_f32_t N = md_simd_set1_f32((float)(count));
+                    const md_simd_f32_t N   = md_simd_set1_f32((float)(count));
                     const md_simd_f32_t scl = md_simd_set1_f32(1.0f / (float)(count + 1));
 
-                    for (int64_t i = 0; i < ALIGN_TO(prop->data.num_values, md_simd_f32_width); i += md_simd_f32_width) {
+                    const int64_t length = ALIGN_TO(prop->data.dim[0], md_simd_f32_width);
+                    for (int64_t i = 0; i < length; i += md_simd_f32_width) {
                         md_simd_f32_t old_val = md_simd_mul(md_simd_load_f32(prop->data.values + i), N);
                         md_simd_f32_t new_val = md_simd_load_f32(values + i);
                         md_simd_store(prop->data.values + i, md_simd_mul(md_simd_add(new_val, old_val), scl));
                     }
+
+                    // Copy weights
+                    MEMCPY(prop->data.weights, values + prop->data.dim[0], prop->data.dim[0] * sizeof(float));
+                    
                     // Determine min max values
                     prop->data.min_value = MIN(prop->data.min_value, min);
                     prop->data.max_value = MAX(prop->data.max_value, max);
@@ -4870,7 +4883,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .raw_temp_alloc = &vm_arena,
+            .temp_arena = &vm_arena,
             .temp_alloc = &temp_alloc,       
         };
 
@@ -4927,7 +4940,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .raw_temp_alloc = &vm_arena,
+            .temp_arena = &vm_arena,
             .temp_alloc = &temp_alloc,
             .alloc = &temp_alloc,
             .initial_configuration = {
@@ -5036,7 +5049,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .raw_temp_alloc = &vm_arena,
+            .temp_arena = &vm_arena,
             .temp_alloc = &temp_alloc,
             .alloc = &temp_alloc,
             .initial_configuration = {
@@ -5283,7 +5296,7 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)args.ir,
         .mol = args.mol,
-        .raw_temp_alloc = &vm_arena,
+        .temp_arena = &vm_arena,
         .temp_alloc = &temp_alloc,
         .vis = vis,
         .frame_header = &header,

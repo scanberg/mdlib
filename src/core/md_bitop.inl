@@ -1,6 +1,6 @@
-#include "md_intrinsics.h"
-#include "md_common.h"
-#include "md_compiler.h"
+#include <core/md_intrinsics.h>
+#include <core/md_common.h>
+#include <core/md_compiler.h>
 
 #include <stdint.h>
 #include <stdbool.h>

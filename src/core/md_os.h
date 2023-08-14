@@ -1,7 +1,8 @@
 #pragma once
 
 #include <stdint.h>
-#include "md_str.h"
+
+#include <core/md_str.h>
 
 // Collection of OS specific things
 
