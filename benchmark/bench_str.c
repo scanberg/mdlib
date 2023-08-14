@@ -5,6 +5,8 @@
 #include <core/md_os.h>
 #include <core/md_allocator.h>
 
+#include <inttypes.h>
+
 UBENCH_EX(str, read_lines) {
     md_file_o* file = md_file_open(STR(MD_BENCHMARK_DATA_DIR "/centered.gro"), MD_FILE_READ | MD_FILE_BINARY);
 
@@ -78,7 +80,7 @@ UBENCH_EX(str, parse_int) {
         num_iter += 4;
     }
 
-    printf("avg cycles: %f, min cycles: %llu, acc: %lli\n", (double)(avg) / (double)num_iter, min / 4, acc);
+    printf("avg cycles: %f, min cycles: %"PRIu64", acc: %"PRIi64"\n", (double)(avg) / (double)num_iter, min / 4, acc);
 }
 
 UBENCH_EX(str, parse_int_simd) {
@@ -115,7 +117,7 @@ UBENCH_EX(str, parse_int_simd) {
         num_iter += 4;
     }
 
-    printf("avg cycles: %f, min cycles: %llu, acc: %lli\n", (double)(avg) / (double)num_iter, min / 4, acc);
+    printf("avg cycles: %f, min cycles: %"PRIu64", acc: %"PRIi64"\n", (double)(avg) / (double)num_iter, min / 4, acc);
 }
 
 UBENCH_EX(str, parse_float) {
@@ -152,7 +154,7 @@ UBENCH_EX(str, parse_float) {
         num_iter += 4;
     }
 
-    printf("avg cycles: %f, min cycles: %llu, acc: %f\n", (double)(avg) / (double)num_iter, min / 4, acc);
+    printf("avg cycles: %f, min cycles: %"PRIu64", acc: %f\n", (double)(avg) / (double)num_iter, min / 4, acc);
 }
 
 UBENCH_EX(str, parse_float_simd) {
@@ -189,5 +191,5 @@ UBENCH_EX(str, parse_float_simd) {
         num_iter += 4;
     }
 
-    printf("avg cycles: %f, min cycles: %llu, acc: %f\n", (double)(avg) / (double)num_iter, min / 4, acc);
+    printf("avg cycles: %f, min cycles: %"PRIu64", acc: %f\n", (double)(avg) / (double)num_iter, min / 4, acc);
 }
