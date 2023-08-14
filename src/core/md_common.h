@@ -116,10 +116,6 @@
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #endif
 
-#ifndef ABS
-#define ABS(x) ((x) > 0 ? (x) : -(x))
-#endif
-
 #ifndef CLAMP
 #define CLAMP(val, _min, _max) MIN(MAX(val, _min), _max)
 #endif
@@ -205,26 +201,52 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 #if MD_COMPILER_MSVC
 
 #ifdef  __cplusplus
-extern "C" void * __cdecl memcpy(void*, const void*, unsigned long long);
-extern "C" void * __cdecl memset(void*, int, unsigned long long);
-extern "C" void * __cdecl memmove(void*, const void*, unsigned long long);
-extern "C" int    __cdecl memcmp(const void*, const void*, unsigned long long);
-#else
-void * __cdecl memcpy(void*, const void*, unsigned long long);
-void * __cdecl memset(void*, int, unsigned long long);
-void * __cdecl memmove(void*, const void*, unsigned long long);
-int    __cdecl memcmp(const void*, const void*, unsigned long long);
+extern "C" {
+#endif
+void *  __cdecl memcpy(void*, const void*, unsigned long long);
+void *  __cdecl memset(void*, int, unsigned long long);
+void *  __cdecl memmove(void*, const void*, unsigned long long);
+int     __cdecl memcmp(const void*, const void*, unsigned long long);
+float  __cdecl  fabsf(float);
+double  __cdecl fabs(double);
+int     __cdecl abs(int);
+long    __cdecl labs(long);
+long long __cdecl llabs(long long);
+__int64 __cdecl _abs64(__int64 n);
+#ifdef __cplusplus
+}
 #endif
 
 #pragma intrinsic(memcpy)
 #pragma intrinsic(memset)
 #pragma intrinsic(memmove)
 #pragma intrinsic(memcmp)
+//#pragma intrinsic(fabsf)
+#pragma intrinsic(fabs)
+#pragma intrinsic(abs)
+#pragma intrinsic(labs)
+#pragma intrinsic(llabs)
+#pragma intrinsic(_abs64)
 
 #define MEMCPY  memcpy
 #define MEMSET  memset
 #define MEMMOVE memmove
 #define MEMCMP  memcmp
+
+#if __STDC_VERSION__ == 201112L
+// We have C11 generics
+#ifndef ABS
+#define ABS(x) _Generic((x), float:  fabsf, \
+                             double: fabs,  \
+                             int:    abs,   \
+                             long:   labs,  \
+                        long long:   llabs)(x)
+#endif
+#else
+#ifndef ABS
+#define ABS(x) ((x) > 0 ? (x) : -(x))
+#endif
+#endif
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 #define MEMCPY  __builtin_memcpy
