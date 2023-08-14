@@ -469,7 +469,7 @@ static inline bool zhang_skolnick_ss(const md_molecule_t* mol, md_range_t bb_ran
             const vec3_t pos_j = {mol->atom.x[ca_j], mol->atom.y[ca_j], mol->atom.z[ca_j]};
             const vec3_t pos_k = {mol->atom.x[ca_k], mol->atom.y[ca_k], mol->atom.z[ca_k]};
             const float d = vec3_distance(pos_j, pos_k);
-            if (ABS(d - distances[k - 2]) > delta) {
+            if (fabsf(d - distances[k - 2]) > delta) {
                 return false;
             }
         }
