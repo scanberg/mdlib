@@ -40,7 +40,7 @@ UTEST(cube, read_benzene) {
 UTEST(cube, read_A2B2) {
 	md_cube_t cube = {0};
 	bool result = md_cube_file_load(&cube, STR(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube"), default_allocator);
-	EXPECT_TRUE(result);
+	ASSERT_TRUE(result);
 
 	EXPECT_NEAR(-16.311785, cube.origin[0], 1e-5);
 	EXPECT_NEAR(-21.859915, cube.origin[1], 1e-5);
@@ -65,6 +65,7 @@ UTEST(cube, read_A2B2) {
 	EXPECT_EQ(1, cube.data.num_m);
 	EXPECT_EQ(1, cube.data.id[0]);
 
+	ASSERT_TRUE(cube.data.val);
 	EXPECT_NEAR(-2.02559E-11, cube.data.val[0],		1e-5);
 	EXPECT_NEAR(5.31713E-10, cube.data.val[66*88*88*1 - 1], 1e-5);
 

@@ -217,6 +217,7 @@ bool md_cube_deserialize(md_cube_t* cube, str_t str, struct md_allocator_i* allo
 	int64_t num_data = cube->data.num_x * cube->data.num_y * cube->data.num_z * cube->data.num_m;
     for (int64_t i = 0; i < num_data; ++i) {
         float val;
+
         if (!str_extract_f32(&val, &str)) {
 			goto parse_error;
 		}

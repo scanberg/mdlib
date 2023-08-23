@@ -22,11 +22,11 @@ UTEST(xyz, xyz_standard) {
     EXPECT_NEAR(62.491f, data.coordinates[0].z, 1.0e-5f);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    ASSERT_NE((FILE*)file, NULL);
+    ASSERT_TRUE(file);
     for (int64_t i = 0; i < data.num_models; ++i) {
         char str[8] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
-        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_TRUE(fgets(str, sizeof(str), (FILE*)file));
         EXPECT_EQ(strncmp(str, "2280", 4), 0);
     }
     md_file_close(file);
@@ -48,11 +48,11 @@ UTEST(xyz, xyz_xmol) {
     EXPECT_NEAR( 3.629187f, data.coordinates[0].z, 1.0e-5f);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    ASSERT_NE((FILE*)file, NULL);
+    ASSERT_TRUE(file);
     for (int64_t i = 0; i < data.num_models; ++i) {
         char str[8] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
-        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_TRUE(fgets(str, sizeof(str), (FILE*)file));
         EXPECT_EQ(strncmp(str, "   540", 6), 0);
     }
     md_file_close(file);
@@ -83,7 +83,7 @@ UTEST(xyz, xyz_tinker) {
     for (int64_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
-        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_TRUE(fgets(str, sizeof(str), (FILE*)file));
         EXPECT_EQ(strncmp(str, "         404  molden generated tinker .xyz (mm3 param.)", 54), 0);
     }
     md_file_close(file);
@@ -110,11 +110,11 @@ UTEST(xyz, xyz_tinker_arc) {
     EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    ASSERT_NE((FILE*)file, NULL);
+    ASSERT_TRUE(file);
     for (int64_t i = 0; i < data.num_models; ++i) {
         char str[64];
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
-        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_TRUE(fgets(str, sizeof(str), (FILE*)file));
         EXPECT_EQ(strncmp(str, "   404  molden generated tinker .xyz (mm3 param.)", 48), 0);
     }
     md_file_close(file);
@@ -138,11 +138,11 @@ UTEST(xyz, o2_arc) {
     EXPECT_EQ(2,            data.coordinates[0].connectivity[0]);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    ASSERT_NE((FILE*)file, NULL);
+    ASSERT_TRUE(file);
     for (int64_t i = 0; i < data.num_models; ++i) {
         char str[64];
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
-        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_TRUE(fgets(str, sizeof(str), (FILE*)file));
         EXPECT_EQ(strncmp(str, "     2", 6), 0);
     }
     md_file_close(file);
@@ -159,11 +159,11 @@ UTEST(xyz, h2o_arc) {
     EXPECT_EQ(2000 * 3, data.num_coordinates);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    ASSERT_NE((FILE*)file, NULL);
+    ASSERT_TRUE(file);
     for (int64_t i = 0; i < data.num_models; ++i) {
         char str[64];
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
-        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_TRUE(fgets(str, sizeof(str), (FILE*)file));
         EXPECT_EQ(strncmp(str, "     3  molden generated tinker .xyz (mm3 param.)", 49), 0);
     }
     md_file_close(file);
@@ -180,11 +180,11 @@ UTEST(xyz, ch4_arc) {
     EXPECT_EQ(2000 * 5, data.num_coordinates);
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    ASSERT_NE((FILE*)file, NULL);
+    ASSERT_TRUE(file);
     for (int64_t i = 0; i < data.num_models; ++i) {
         char str[64];
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
-        fgets(str, sizeof(str), (FILE*)file);
+        EXPECT_TRUE(fgets(str, sizeof(str), (FILE*)file));
         EXPECT_EQ(strncmp(str, "     5  molden generated tinker .xyz (mm3 param.)", 49), 0);
     }
     md_file_close(file);

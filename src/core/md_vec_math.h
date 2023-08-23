@@ -161,9 +161,14 @@ MD_VEC_INLINE double deperiodize(double val, double ref, double period) {
 }
 
 MD_VEC_INLINE float lerpf(float a, float b, float t) {
-    t = CLAMP(t, 0.0f, 1.0f);
+    //t = CLAMP(t, 0.0f, 1.0f);
     return a * (1.0f - t) + b * t;
 }
+
+// Collision with std::lerp in math.h on GCC (fucking hell) 
+// MD_VEC_INLINE double lerp(double a, double b, double t) {
+//    return a * (1.0 - t) + b * t;
+//}
 
 // Cardinal cubic spline
 MD_VEC_INLINE float cubic_splinef(float p0, float p1, float p2, float p3, float t, float s) {
