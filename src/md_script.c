@@ -31,6 +31,7 @@
 #include <md_trajectory.h>
 #include <md_filter.h>
 #include <md_util.h>
+#include <md_xvg.h>
 
 #include <core/md_common.h>
 #include <core/md_compiler.h>
@@ -86,11 +87,6 @@
 // ################################
 // ###   FORWARD DECLARATIONS   ###
 // ################################
-//typedef int token_type_t;
-//typedef int ast_type_t;
-//typedef int base_type_t;
-//typedef int flags_t;
-//typedef int eval_flags_t;
 
 typedef struct tokenizer_t tokenizer_t;
 typedef struct token_t token_t;
@@ -106,6 +102,7 @@ typedef struct constant_t constant_t;
 typedef struct static_backchannel_t static_backchannel_t;
 typedef struct parse_context_t parse_context_t;
 typedef struct eval_context_t eval_context_t;
+typedef struct table_t table_t;
 
 typedef union value_t value_t;
 
@@ -137,8 +134,10 @@ typedef enum token_type_t {
 typedef enum ast_type_t {
     AST_UNDEFINED = 0,
     AST_EXPRESSION,         // Parenthesis wrapped expression, We need to have it up here to ensure its precedence over things
+    AST_STATIC_PROC,
     AST_PROC_CALL,          // Procedure call, Operators are directly translated into procedure calls as well.
     AST_CONSTANT_VALUE,
+    AST_TABLE_VALUE,
     AST_IDENTIFIER,
     AST_ARRAY,              // This is also just to declare an array in tree form, the node tells us the types, the children contains the values... inefficient, yes.
     AST_ARRAY_SUBSCRIPT,    // [..]
@@ -357,6 +356,12 @@ struct procedure_t {
     flags_t flags;
 };
 
+struct table_t {
+    int num_cols;
+    int num_rows;
+    float* data;
+};
+
 struct ast_node_t {
     // @OPTIMIZE: Make specific types for each type of Ast_node, where the first member is the type which we can use and cast after.
     ast_type_t          type;    
@@ -372,6 +377,8 @@ struct ast_node_t {
     const procedure_t*  proc;       // Procedure reference
     uint32_t            proc_flags; // Additional flags used for e.g. swapping arguments which may be required for the procedure call
     str_t               ident;      // Identifier reference (also used for procedure name lookup)
+
+    table_t             table;
 
     // CONTEXT
     type_info_t* lhs_context_types; // For static type checking
@@ -455,8 +462,10 @@ static inline uint64_t generate_fingerprint() {
 static inline uint32_t operator_precedence(ast_type_t type) {
     switch(type) {
     case AST_EXPRESSION:
+    case AST_STATIC_PROC:
     case AST_PROC_CALL:
     case AST_CONSTANT_VALUE:
+    case AST_TABLE_VALUE:
     case AST_IDENTIFIER:
     case AST_ARRAY:
     case AST_ARRAY_SUBSCRIPT:
@@ -936,6 +945,13 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
 // Returns if the value type can be operated on using logical operators
 static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
     return type == TYPE_BOOL || type == TYPE_BITFIELD;
+}
+
+static inline bool is_identifier_static_procedure(str_t ident) {
+    if (str_equal(ident, STR("import"))) {
+        return true;   
+    }
+    return false;
 }
 
 static inline bool is_identifier_procedure(str_t ident) {
@@ -1884,7 +1900,12 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
     ast_node_t* node = 0;
     constant_t* c = 0;
     
-    if (is_identifier_procedure(ident)) {
+    if (is_identifier_static_procedure(ident)) {
+        node = parse_procedure_call(ctx, token);
+        if (node) {
+            node->type = AST_STATIC_PROC;
+        }
+    } else if (is_identifier_procedure(ident)) {
         // The identifier has matched some procedure name
         node = parse_procedure_call(ctx, token);
     } else if ((c = find_constant(ident)) != 0) {
@@ -2491,6 +2512,53 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
     return true;
 }
 
+// Interpolates a row into dst from the table at x
+// The first value in the row is assumed to be the x value and is skipped when writing out
+// Assumes that the table is sorted in ascending order
+// Assumes that the table has at least 2 rows
+static void table_interpolate_row(float dst[], const table_t* table, const double x) {
+    ASSERT(table);
+    ASSERT(table->num_cols > 0);
+    ASSERT(table->num_rows > 0);
+
+    // Find the row index
+    int row_index = 0;
+    for (int i = 0; i < table->num_rows; ++i) {
+        if (table->data[i * table->num_cols] > (float)x) {
+            break;
+        }
+        row_index = i;
+    }
+
+    // Interpolate
+    const float x0 = table->data[row_index * table->num_cols];
+    const float x1 = table->data[(row_index + 1) * table->num_cols];
+    
+    const float t = CLAMP(((float)x - x0) / (x1 - x0), 0.0f, 1.0f);
+    
+    for (int i = 1; i < table->num_cols; ++i) {
+        const float y0 = table->data[row_index * table->num_cols + i];
+        const float y1 = table->data[(row_index + 1) * table->num_cols + i];
+        dst[i - 1] = lerpf(y0, y1, t);
+    }
+}
+
+static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node && node->type == AST_TABLE_VALUE);
+
+    if (dst) {
+        ASSERT(ctx->frame_header);
+        is_type_equivalent(dst->type, node->data.type);
+
+        const double x = ctx->frame_header->timestamp;
+        
+        ASSERT(dst->ptr && (size_t)dst->size >= (node->table.num_cols-1) * sizeof(float));
+        table_interpolate_row((float*)dst->ptr, &node->table, x);
+    }
+
+    return true;
+}
+
 static identifier_t* find_static_identifier(str_t name, eval_context_t* ctx) {
     ASSERT(ctx);
 
@@ -2771,6 +2839,8 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
             return evaluate_array_subscript(dst, node, ctx);
         case AST_CONSTANT_VALUE:
             return evaluate_constant_value(dst, node, ctx);
+        case AST_TABLE_VALUE:
+            return evaluate_table_value(dst, node, ctx);
         case AST_IDENTIFIER:
             return evaluate_identifier_reference(dst, node, ctx);
         case AST_CONTEXT:
@@ -3176,6 +3246,80 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
     return result;
 }
 
+static int extract_argument_types(type_info_t arg_type[], int cap, const ast_node_t* node) {
+    ASSERT(arg_type);
+    ASSERT(node);
+    const int num_args = MIN(cap, (int)md_array_size(node->children));
+    for (int i = 0; i < num_args; ++i) {
+        arg_type[i] = node->children[i]->data.type;
+    }
+    return num_args;
+}
+
+static int print_argument_list(char* buf, int cap, const type_info_t arg_type[], int num_args) {
+    int len = 0;
+    for (uint64_t i = 0; i < num_args; ++i) {
+        len += print_type_info(buf + len, cap - len, arg_type[i]);
+        if (i + 1 != num_args) {
+            len += snprintf(buf + len, cap - len, ",");
+        }
+    }
+    return len;
+}
+
+static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
+    str_t path = node->children[0]->value._string;
+    str_t ext = extract_ext(path);
+
+    if (str_equal_cstr_ignore_case(ext, "xvg")) {
+        // do xvg import
+        md_xvg_t xvg = {0};
+        bool result = md_xvg_init_from_file(&xvg, path, ctx->temp_alloc);
+        if (!result) {
+            create_error(ctx->ir, node->token, "import: failed to import xvg file '%.*s'", (int)path.len, path.ptr);
+            return false;
+        }
+        const size_t num_bytes = xvg.num_cols * xvg.num_rows * sizeof(float);
+        node->table.data = md_alloc(ctx->alloc, num_bytes);
+        node->table.num_cols = xvg.num_cols;
+        node->table.num_rows = xvg.num_rows;
+        MEMCPY(node->table.data, xvg.values, num_bytes);
+        md_xvg_free(&xvg, ctx->temp_alloc);
+        node->type = AST_TABLE_VALUE;
+        node->data.type = (type_info_t) {TYPE_FLOAT, {node->table.num_cols-1,0}, 0};
+        node->flags |= FLAG_DYNAMIC; // It is not a constant value, but will change depending on what time we evaluate it.
+        return true;
+    } else if (str_equal_cstr_ignore_case(ext, "csv")) {
+        // do csv import
+    } else {
+        create_error(ctx->ir, node->token, "import: unsupported file extension '%.*s'", (int)ext.len, ext.ptr);
+    }
+    return false;
+}
+
+static bool static_check_static_proc(ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node->type == AST_STATIC_PROC);
+    type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
+    int num_args = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
+
+    if (str_equal(node->ident, STR("import"))) {
+        if (num_args != 1 || !is_type_equivalent(arg_type[0], (type_info_t)TI_STRING)) {
+            create_error(ctx->ir, node->token, "import takes a single string as argument");
+            return false;
+        }
+        return static_check_import(node, ctx);
+    }
+    
+    char buf[512];
+    int len = print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
+        
+    create_error(ctx->ir, node->token,
+        "Could not find matching static procedure '%.*s' which takes the following argument(s) (%.*s)",
+        (int)node->ident.len, node->ident.ptr, len, buf);
+    
+    return false;
+}
+
 static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node->type == AST_PROC_CALL);
     uint32_t backup_flags = ctx->eval_flags;
@@ -3185,16 +3329,15 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     if (!node->proc) {
         result = static_check_children(node, ctx);
         if (result) {
-            const uint64_t num_args = md_array_size(node->children);
+            const int num_args = (int)md_array_size(node->children);
             const str_t proc_name = node->ident;
 
             // One or more arguments
             ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
-            type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS] = {0};
-
-            for (uint64_t i = 0; i < num_args; ++i) {
-                arg_type[i] = node->children[i]->data.type;
-            }
+            type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
+            
+            int arg_len = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
+            ASSERT(arg_len == num_args);
 
             procedure_match_result_t res = find_procedure_supporting_arg_types(proc_name, arg_type, num_args, true);
             result = result && res.success;
@@ -3207,18 +3350,12 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
                     create_error(ctx->ir, node->token,
                         "Could not find matching procedure '%.*s' which takes no arguments", (int)proc_name.len, proc_name.ptr);
                 } else {
-                    char buf[512] = {0};
-                    int  cur = 0;
-                    for (uint64_t i = 0; i < num_args; ++i) {
-                        cur += print_type_info(buf + cur, ARRAY_SIZE(buf) - cur, arg_type[i]);
-                        if (i + 1 != num_args) {
-                            cur += snprintf(buf + cur, ARRAY_SIZE(buf) - cur, ",");
-                        }
-                    }
+                    char buf[512];
+                    int len = print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
 
                     create_error(ctx->ir, node->token,
                         "Could not find matching procedure '%.*s' which takes the following argument(s) (%.*s)",
-                        (int)proc_name.len, proc_name.ptr, cur, buf);
+                        (int)proc_name.len, proc_name.ptr, len, buf);
                 }
             }
         }
@@ -3673,6 +3810,8 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
         return static_check_array_subscript(node, ctx);
     case AST_IDENTIFIER:
         return static_check_identifier_reference(node, ctx);
+    case AST_STATIC_PROC:
+        return static_check_static_proc(node, ctx);
     case AST_PROC_CALL:
         return static_check_proc_call(node, ctx);
     case AST_CONTEXT:

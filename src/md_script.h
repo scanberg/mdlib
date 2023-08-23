@@ -230,6 +230,7 @@ typedef struct md_script_bitfield_identifier_t {
     str_t identifier_name;
     const struct md_bitfield_t* bitfield;
 } md_script_bitfield_identifier_t;
+
 bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, int64_t count);
 
 bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const md_script_ir_t* ctx_ir);
