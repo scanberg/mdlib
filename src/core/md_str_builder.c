@@ -95,13 +95,18 @@ const char* md_strb_to_cstr(const md_strb_t* sb) {
 	return sb->buf;
 }
 
-int64_t md_strb_len(const md_strb_t* sb) {
+int64_t md_strb_size(const md_strb_t* sb) {
 	return md_array_size(sb->buf);
+}
+
+int64_t md_strb_len(const md_strb_t* sb) {
+    const int64_t size = md_array_size(sb->buf);
+    return size ? size - 1 : 0;
 }
 
 str_t md_strb_to_str(const md_strb_t* sb) {
 	ASSERT(sb);
-	const int64_t len = md_array_size(sb->buf);
-	return (str_t) { len ? sb->buf : 0, MAX(0, len-1) };
+	int64_t len = md_strb_len(sb);
+	return (str_t) { len ? sb->buf : NULL, len };
 }
 

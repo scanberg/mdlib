@@ -42,7 +42,12 @@ void md_strb_push_str(md_strb_t* sb, str_t str);
 void md_strb_reset(md_strb_t* sb);
 void md_strb_pop(md_strb_t* sb, int64_t n);
 
+// Length of string in bytes (excluding zero terminator)
 int64_t     md_strb_len(const md_strb_t* sb);
+
+// Size of buffer in bytes (including zero terminator)
+int64_t     md_strb_size(const md_strb_t* sb);
+
 const char* md_strb_to_cstr(const md_strb_t* sb);
 str_t       md_strb_to_str(const md_strb_t* sb);
 

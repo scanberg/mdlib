@@ -170,7 +170,7 @@ static inline str_t str_substr(str_t str, int64_t offset, int64_t length DEF_VAL
 }
 
 bool str_skip_line(str_t* in_out_str);
-bool peek_line(str_t* out_line, const str_t* in_str);
+bool str_peek_line(str_t* out_line, const str_t* in_str);
 bool str_extract_line(str_t* out_line, str_t* in_out_str);
 
 bool str_extract_i32  (int* val, str_t* in_out_str);
@@ -188,7 +188,7 @@ bool str_starts_with(str_t str, str_t prefix);
 bool str_ends_with(str_t str, str_t suffix);
 
 // Will allocate one extra character for zero termination
-str_t alloc_str(uint64_t len, struct md_allocator_i* alloc);
+str_t str_alloc(uint64_t len, struct md_allocator_i* alloc);
 void  str_free(str_t str, struct md_allocator_i* alloc);
 str_t str_copy(str_t str, struct md_allocator_i* alloc);
 str_t str_copy_cstr(const char* cstr, struct md_allocator_i* alloc);
@@ -197,8 +197,6 @@ str_t str_copy_cstrn(const char* cstr, int64_t len, struct md_allocator_i* alloc
 // This should probably be removed
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
 str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...);
-
-int64_t str_read_line(str_t* in_out_str, char* buf, int64_t cap);
 
 // c:/folder/file.ext -> ext
 str_t extract_ext(str_t path);
