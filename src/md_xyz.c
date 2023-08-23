@@ -57,20 +57,6 @@ static inline float extract_float(str_t line, int64_t beg, int64_t end) {
     return (float)parse_float(str_trim(str_substr(line, beg, end-beg)));
 }
 
-static inline bool is_float(str_t str) {
-    str = str_trim(str);
-    const char* c = str.ptr;
-    const char* end = str.ptr + str.len;
-
-    if (c >= end) return false;
-    if (*c == '-') ++c;
-    while (c < end && is_digit(*c)) ++c;
-    if (*c != '.') return false;
-    ++c;
-    while (c < end && is_digit(*c)) ++c;
-    return c == end;
-}
-
 static inline bool is_unsigned_int(str_t str) {
     str = str_trim(str);
     const char* c = str.ptr;

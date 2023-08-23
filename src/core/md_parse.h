@@ -97,6 +97,37 @@ static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_read
     return str_extract_line(line, &r->str);
 }
 
+static inline bool md_buffered_reader_peek_line(str_t* line, md_buffered_reader_t* r) {
+    ASSERT(r);
+    ASSERT(line);
+    if (r->file && !r->str.len) {
+        ASSERT(r->buf);
+        ASSERT(r->cap > 0);
+        const int64_t bytes_read = md_file_read_lines(r->file, r->buf, r->cap);
+        if (bytes_read > 0) {
+            r->str.ptr = r->buf;
+            r->str.len = bytes_read;
+        }
+    }
+
+    return str_peek_line(line, &r->str);
+}
+
+static inline bool md_buffered_reader_skip_line(md_buffered_reader_t* r) {
+    ASSERT(r);
+    if (r->file && !r->str.len) {
+        ASSERT(r->buf);
+        ASSERT(r->cap > 0);
+        const int64_t bytes_read = md_file_read_lines(r->file, r->buf, r->cap);
+        if (bytes_read > 0) {
+            r->str.ptr = r->buf;
+            r->str.len = bytes_read;
+        }
+    }
+
+    return str_skip_line(&r->str);
+}
+
 static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {
     ASSERT(r);
     if (r->file) {
@@ -126,6 +157,55 @@ static inline int64_t md_buffered_reader_tellg(md_buffered_reader_t r) {
     }
 }
 
+// Check if token is a valid float
+// Make sure str is trimmed from whitespace
+static inline bool is_float(str_t str) {
+    const char* c = str.ptr;
+    const char* end = str.ptr + str.len;
+
+    if (c >= end) return false;
+    if (*c == '-' || *c == '+') ++c;
+    while (c < end && is_digit(*c)) ++c;
+    if (*c == '.') {
+        ++c;
+        while (c < end && is_digit(*c)) ++c;
+    }
+    if (*c == 'e' || *c == 'E') {
+        ++c;
+        if (*c == '-' || *c == '+') ++c;
+        while (c < end && is_digit(*c)) ++c;
+    }
+    return c == end;
+}
+
+// Check if token is a valid decimal float
+// Make sure str is trimmed from whitespace
+static inline bool is_float_dec(str_t str) {
+    const char* c = str.ptr;
+    const char* end = str.ptr + str.len;
+
+    if (c >= end) return false;
+    if (*c == '-' || *c == '+') ++c;
+    while (c < end && is_digit(*c)) ++c;
+    if (*c == '.') {
+        ++c;
+        while (c < end && is_digit(*c)) ++c;
+    }
+    return c == end;
+}
+
+// Check if token is a valid integer
+// Make sure str is trimmed from whitespace
+static inline bool is_int(str_t str) {
+    const char* c = str.ptr;
+    const char* end = str.ptr + str.len;
+
+    if (c >= end) return false;
+    if (*c == '-' || *c == '+') ++c;
+    while (c < end && is_digit(*c)) ++c;
+    return c == end;
+}
+
 static const double pow10_table[32] = {
     1e+0,  1e+1,  1e+2,  1e+3,  1e+4,  1e+5,  1e+6,  1e+7,
     1e+8,  1e+9,  1e+10, 1e+11, 1e+12, 1e+13, 1e+14, 1e+15,
@@ -133,19 +213,20 @@ static const double pow10_table[32] = {
     1e+24, 1e+25, 1e+26, 1e+27, 1e+28, 1e+29, 1e+30, 1e+31,
 };
 
+// Parsing routine for floating point numbers without scientific notation (exponent)
 static inline double parse_float_dec(const char* ptr, int64_t len) {
 
     const char* c = ptr;
     const char* end = ptr + len;
 
     bool neg = (*c == '-');
-	if (*c == '-' || *c == '+') ++c;
+    if (*c == '-' || *c == '+') ++c;
 
     double val = 0.0;
-	while (c < end && ('0' <= *c && *c <= '9')) {
-		val = val * 10 + (*c - '0');
-		++c;
-	}
+    while (c < end && ('0' <= *c && *c <= '9')) {
+        val = val * 10 + (*c - '0');
+        ++c;
+    }
 
     if (c < end && *c == '.') {
         const char* dec = ++c;
@@ -159,8 +240,8 @@ static inline double parse_float_dec(const char* ptr, int64_t len) {
     return neg ? -val : val;
 }
 
-// It is not exact but it is fast
-
+// It is not exact beyond a certain number of decimal digits, but it is fast and will suffice
+// for most text based formats we deal with
 static inline double parse_float(str_t str) {
     ASSERT(str.ptr);
 
