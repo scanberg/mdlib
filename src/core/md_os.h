@@ -22,6 +22,7 @@ uint64_t md_os_num_processors();
 // Gets the current working directory
 // Returns a non owning reference to a shared static string buffer
 str_t md_path_cwd(void);
+bool  md_path_set_cwd(str_t path);
 
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
 str_t md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);

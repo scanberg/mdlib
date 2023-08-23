@@ -144,6 +144,36 @@ str_t md_path_cwd() {
     return res;
 }
 
+bool md_path_set_cwd(str_t path) {
+    // Ensure zero termination of path
+    char buf[MD_MAX_PATH];
+    str_copy_to_char_buf(buf, sizeof(buf), path);
+#if MD_PLATFORM_WINDOWS
+    if (SetCurrentDirectory(buf)) {
+        return true;
+    }
+    print_windows_error();
+#elif MD_PLATFORM_UNIX
+    if (chdir(buf) == 0) {
+        return true;
+    }
+    switch (errno) {
+    case EACCES:        MD_LOG_ERROR("CWD: Permission denied for some component of the path '%.*s'", (int)path.len, path.ptr); break;
+    case EFAULT:        MD_LOG_ERROR("CWD: Path points outside of accessible address space '%.*s'", (int)path.len, path.ptr); break;
+    case EIO:           MD_LOG_ERROR("CWD: I/O Error '%.*s'", (int)path.len, path.ptr); break;
+    case ELOOP:         MD_LOG_ERROR("CWD: Too many symbolic links encountered in resolving path '%.*s'", (int)path.len, path.ptr); break;
+    case ENAMETOOLONG:  MD_LOG_ERROR("CWD: Path is too long '%.*s'", (int)path.len, path.ptr); break;
+    case ENOENT:        MD_LOG_ERROR("CWD: Path does not exist '%.*s'", (int)path.len, path.ptr); break;
+    case ENOMEM:        MD_LOG_ERROR("CWD: Insufficient kernel memory '%.*s'", (int)path.len, path.ptr); break;
+    case ENOTDIR:       MD_LOG_ERROR("CWD: Path is not a directory '%.*s'", (int)path.len, path.ptr); break;
+    default:            MD_LOG_ERROR("CWD: Undefined error"); break;
+    }
+#else
+    ASSERT(false);
+#endif
+    return false;
+}
+
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char buf[MD_MAX_PATH];
