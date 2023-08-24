@@ -47,10 +47,10 @@ typedef struct md_script_vis_token_t {
     const md_script_vis_payload_t* payload;
 } md_script_vis_token_t;
 
-typedef struct md_script_error_t {
+typedef struct md_log_token_t {
     md_script_range_marker_t range;
     str_t text;
-} md_script_error_t;
+} md_log_token_t;
 
 // Opaque Immediate Representation (compilation result)
 typedef struct md_script_ir_t md_script_ir_t;
@@ -233,10 +233,13 @@ typedef struct md_script_bitfield_identifier_t {
 
 bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, int64_t count);
 
-bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const md_script_ir_t* ctx_ir);
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const md_script_ir_t* ctx_ir);
 
 int64_t md_script_ir_num_errors(const md_script_ir_t* ir);
-const md_script_error_t* md_script_ir_errors(const md_script_ir_t* ir);
+const md_log_token_t* md_script_ir_errors(const md_script_ir_t* ir);
+
+int64_t md_script_ir_num_warnings(const md_script_ir_t* ir);
+const md_log_token_t* md_script_ir_warnings(const md_script_ir_t* ir);
 
 int64_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir);
 const md_script_vis_token_t* md_script_ir_vis_tokens(const md_script_ir_t* ir);

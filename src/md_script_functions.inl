@@ -1001,13 +1001,13 @@ static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
             const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
 
             if (!(ctx_range.beg <= idx && idx < ctx_range.end)) {
-                create_error(ctx->ir, ctx->arg_tokens[arg_idx], "supplied index (%i) is not within expected range (%i:%i)",
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[arg_idx], "supplied index (%i) is not within expected range (%i:%i)",
                     (int)idx, 1, ctx_size);
                 return STATIC_VALIDATION_ERROR;
             }
             if (ctx->mol_ctx) {
                 if (!md_bitfield_test_bit(ctx->mol_ctx, idx)) {
-                    create_error(ctx->ir, ctx->arg_tokens[arg_idx], "supplied index (%i) is not represented within the supplied context", (int)idx);
+                    LOG_ERROR(ctx->ir, ctx->arg_tokens[arg_idx], "supplied index (%i) is not represented within the supplied context", (int)idx);
                     return STATIC_VALIDATION_ERROR;
                 }
             }
@@ -1045,7 +1045,7 @@ static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
                 }
             }
             else {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
                     ranges[i].beg, ranges[i].end, 1, ctx_size);
                 return STATIC_VALIDATION_ERROR;
             }
@@ -1721,7 +1721,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We are only validating the arguments here, making sure that they are represented within the potential context
         for (int64_t j = 0; j < num_str; ++j) {
             if (!validate_query(str[j])) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
                 return -1;
             }
             bool match = false;
@@ -1734,7 +1734,7 @@ static int _name(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!match) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any atom label within the structure", str[j].len, str[j].ptr);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any atom label within the structure", str[j].len, str[j].ptr);
                 return -1;
             }
         }
@@ -1749,7 +1749,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (!ctx->mol->atom.element) {
         if (!dst) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "Dataset does not contain elements, perhaps it is coarse grained?");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Dataset does not contain elements, perhaps it is coarse grained?");
             return -1;
         }
         return 0;
@@ -1765,13 +1765,13 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (elem)
             md_array_push(elem_idx, elem, ctx->temp_alloc);
         else if (!dst) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "Failed to map '%.*s' into any Element.", str[i].len, str[i].ptr);
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Failed to map '%.*s' into any Element.", str[i].len, str[i].ptr);
             return -1;
         }
     }
     const int64_t num_elem = md_array_size(elem_idx);
     if (!dst && num_elem == 0) {
-        create_error(ctx->ir, ctx->arg_tokens[0], "No valid arguments in Element");
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "No valid arguments in Element");
         return -1;
     }
 
@@ -1801,7 +1801,7 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!found) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "Element '%.*s' was not found within structure.", str[j].len, str[j].ptr);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Element '%.*s' was not found within structure.", str[j].len, str[j].ptr);
                 return -1;
             }
         }
@@ -1842,7 +1842,7 @@ static int _element_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!match) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "No element within range (%i:%i) was found within structure.", ranges[j].beg, ranges[j].end);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "No element within range (%i:%i) was found within structure.", ranges[j].beg, ranges[j].end);
                 return -1;
             }
         }
@@ -2011,7 +2011,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         if (position_validate(arg[1], 1, ctx) < 0) return -1;
         if (radius <= 0) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
             return -1;
         }
     }
@@ -2080,11 +2080,11 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
     else {
         if (radius <= 0) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
             return -1;
         }
         if (!ctx->mol_ctx) {
-            create_error(ctx->ir, ctx->op_token, "The operation is missing its context");
+            LOG_ERROR(ctx->ir, ctx->op_token, "The operation is missing its context");
             return -1;
         }
     }
@@ -2153,7 +2153,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         if (position_validate(arg[0], 0, ctx) < 0) return -1;
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
             return -1;
         }
     }
@@ -2203,11 +2203,11 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
     else {
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
             return -1;
         }
         if (!ctx->mol_ctx) {
-            create_error(ctx->ir, ctx->op_token, "The operation is missing its context");
+            LOG_ERROR(ctx->ir, ctx->op_token, "The operation is missing its context");
             return -1;
         }
     }
@@ -2244,7 +2244,7 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < num_ranges; ++i) {
             irange_t range = ranges[i];
             if (!range_in_range(remap_range_to_context(range, ctx_range), ctx_range)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
                     range.beg, range.end, 1, ctx_range.end - ctx_range.beg);
                 return -1;
             }
@@ -2275,7 +2275,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(ctx->arg_tokens);
         for (int64_t i = 0; i < num_indices; ++i) {
             if (!idx_in_range(remap_index_to_context(indices[i], ctx_range), ctx_range)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)",
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)",
                     indices[i], 1, ctx_range.end - ctx_range.beg);
                 return -1;
             }
@@ -2448,7 +2448,7 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     if (!ctx->mol->residue.count) {
-        create_error(ctx->ir, ctx->op_token, "The molecule does not contain any residues");
+        LOG_ERROR(ctx->ir, ctx->op_token, "The molecule does not contain any residues");
         return -1;
     }
 
@@ -2637,7 +2637,7 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < num_ranges; ++i) {
             irange_t range = remap_range_to_context(ranges[i], ctx_range);
             if (!range_in_range(range, ctx_range)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
                     ranges[i].beg, ranges[i].end, 1, ctx_size);
                 return -1;
             }
@@ -2772,7 +2772,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     if (!ctx->mol->residue.name) {
-        create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue names");
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue names");
         return -1;
     }
 
@@ -2817,7 +2817,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = 0;
         for (int64_t j = 0; j < num_queries; ++j) {
             if (!validate_query(queries[j])) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", queries[j].len, queries[j].ptr);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", queries[j].len, queries[j].ptr);
                 return -1;
             }
             bool match = false;
@@ -2829,7 +2829,7 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (!match) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any residue within the context", queries[j].len, queries[j].ptr);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any residue within the context", queries[j].len, queries[j].ptr);
                 return -1;
             }
         }
@@ -2851,7 +2851,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     if (!ctx->mol->residue.id) {
-        create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue ids");
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any residue ids");
         return -1;
     }
 
@@ -2900,7 +2900,7 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             if (!match) {
                 // @TODO: Should this just be a soft warning instead?
-                create_error(ctx->ir, ctx->arg_tokens[0], "No matching residue id was found within the range (%i:%i)", rid[j].beg, rid[j].end);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "No matching residue id was found within the range (%i:%i)", rid[j].beg, rid[j].end);
                 return -1;
             }
         }
@@ -2918,7 +2918,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     if (ctx->mol->chain.count == 0 || !ctx->mol->chain.atom_range) {
-        create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
     }
 
@@ -2957,7 +2957,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (int64_t i = 0; i < num_ranges; ++i) {
             irange_t range = remap_range_to_context(ranges[i], ctx_range);
             if (!range_in_range(range, ctx_range)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
                     ranges[i].beg, ranges[i].end, 1, ctx_size);
                 return -1;
             }
@@ -2978,7 +2978,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_STRING_ARR));
 
     if (ctx->mol->chain.count == 0 || !ctx->mol->chain.id) {
-        create_error(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
+        LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
     }
 
@@ -3017,7 +3017,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int count = 0;
         for (int64_t j = 0; j < num_str; ++j) {
             if (!validate_query(str[j])) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' is not a valid query", str[j].len, str[j].ptr);
                 return -1;
             }
             int pre_count = count;
@@ -3027,7 +3027,7 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 }
             }
             if (pre_count == count) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any chain within the structure", str[j].len, str[j].ptr);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The string '%.*s' did not match any chain within the structure", str[j].len, str[j].ptr);
                 return -1;
             }
         }
@@ -3260,7 +3260,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         int64_t count = (int64_t)res0 * (int64_t)res1;
         if (count > 1000000) {
-            create_error(ctx->ir, ctx->op_token, "The size produced by the operation is %"PRId64", which exceeds the upper limit of 1'000'000", count);
+            LOG_ERROR(ctx->ir, ctx->op_token, "The size produced by the operation is %"PRId64", which exceeds the upper limit of 1'000'000", count);
             return STATIC_VALIDATION_ERROR;
         }
         result = (int)count;
@@ -3567,12 +3567,12 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
 
             if (!(ctx_range.beg <= idx && idx < ctx_range.end)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)", (int)idx, 1, ctx_size);
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)", (int)idx, 1, ctx_size);
                 return -1;
             }
             if (ctx->mol_ctx) {
                 if (!md_bitfield_test_bit(ctx->mol_ctx, idx)) {
-                    create_error(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not represented within the supplied context", (int)idx);
+                    LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not represented within the supplied context", (int)idx);
                     return -1;
                 }
             }
@@ -3617,7 +3617,7 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
         for (int64_t i = 0; i < num_ranges; ++i) {
             irange_t range = remap_range_to_context(ranges[i], ctx_range);
             if (!range_in_range(range, ctx_range)) {
-                create_error(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
+                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
                     ranges[i].beg, ranges[i].end, 1, ctx_size);
                 return -1;
             }
@@ -3780,7 +3780,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
     } else {
         if (position_validate(arg[0], 0, ctx) < 0) return -1;
         if (num_pos < 3) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
             return -1;
         }
     }
@@ -4101,19 +4101,19 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
 
         // Validate input
         if (ref_len <= 0) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "empty reference positions");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "empty reference positions");
             return STATIC_VALIDATION_ERROR;
         }
         if (trg_len <= 0) {
-            create_error(ctx->ir, ctx->arg_tokens[1], "empty target positions");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "empty target positions");
             return STATIC_VALIDATION_ERROR;
         }
         if (min_cutoff < 0.0f || max_cutoff <= min_cutoff) {
-            create_error(ctx->ir, ctx->arg_tokens[2], "Invalid cutoff");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[2], "Invalid cutoff");
             return STATIC_VALIDATION_ERROR;
         }
         if (ctx->arg_flags[2] & FLAG_DYNAMIC) {
-            create_error(ctx->ir, ctx->arg_tokens[2], "Cutoff needs to have a static value in order to determine the upper bound if the distribution");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[2], "Cutoff needs to have a static value in order to determine the upper bound if the distribution");
             return STATIC_VALIDATION_ERROR;
         }
         if (ctx->backchannel) {
@@ -4388,25 +4388,25 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     } else {
         // Validation
         if (num_ref_bitfields < 1) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "Number of bitfields which serve as reference frame must be 1 or more");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Number of bitfields which serve as reference frame must be 1 or more");
             return -1;
         }
 
         const int64_t ref_bit_count = md_bitfield_popcount(ref_bf);
         if (ref_bit_count <= 0) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfield(s) are empty");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfield(s) are empty");
             return -1;
         }
 
         // Test for equivalence
         if (!are_bitfields_equivalent(ref_bitfields, num_ref_bitfields, ctx->mol)) {
-            create_error(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfields are not identical: the number of atoms and their corresponding elements do not match between all supplied bitfields");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied reference bitfields are not identical: the number of atoms and their corresponding elements do not match between all supplied bitfields");
             return -1;
         }
 
         const int64_t target_bit_count = md_bitfield_popcount(target_bitfield);
         if (target_bit_count <= 0) {
-            create_error(ctx->ir, ctx->arg_tokens[1], "The supplied target bitfield is empty");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied target bitfield is empty");
             return -1;
         }
 

@@ -110,6 +110,11 @@ typedef union value_t value_t;
 // ###   TYPE DECLARATIONS   ###
 // #############################
 
+typedef enum log_level_t {
+    LOG_LEVEL_WARNING,
+    LOG_LEVEL_ERROR
+} log_level_t;
+
 typedef enum token_type_t {
     TOKEN_UNDEF = 0,
     // Reserve the first indices for character literals
@@ -318,6 +323,7 @@ typedef struct eval_context_t {
     md_script_ir_t* ir;
     const md_molecule_t* mol;
     const md_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
+    const md_trajectory_i* traj;
 
     md_vm_arena_t* temp_arena;
     md_allocator_i* temp_alloc;         // For allocating transient data (Generic interface to temp_arena)
@@ -330,6 +336,7 @@ typedef struct eval_context_t {
     identifier_t* identifiers;          // Evaluated identifiers for references
                                       
     md_script_visualization_t* vis;     // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
+
     md_trajectory_frame_header_t* frame_header;
 
     struct {
@@ -360,6 +367,7 @@ struct table_t {
     int num_cols;
     int num_rows;
     float* data;
+    bool interpolate;
 };
 
 struct ast_node_t {
@@ -417,12 +425,13 @@ struct md_script_ir_t {
     md_array(identifier_t)  identifiers;                // List of identifiers, notice that the data in a const context should only be used if it is flagged as
 
     // These are the final products which can be read through the public part of the structure
-    md_array(md_script_error_t)     errors;
+    md_array(md_log_token_t)     warnings;
+    md_array(md_log_token_t)     errors;
     md_array(md_script_vis_token_t) vis_tokens;
     md_array(str_t)                 identifier_names;
 
     const char* stage;  // This is just to supply a context for the errors i.e. which stage the error occured
-    bool record_errors; // This is to toggle if new errors should be registered... We don't want to flood the errors
+    bool record_log; // This is to toggle if new errors should be registered... We don't want to flood the errors
     bool compile_success;
 };
 
@@ -885,33 +894,43 @@ static const char* get_value_type_str(base_type_t type) {
     }
 }
 
-static void create_error(md_script_ir_t* ir, token_t token, const char* format, ...) {
-    if (!ir->record_errors) return;
-    ir->record_errors = false;
+#define LOG_WARNING(ir, tok, fmt, ...)  create_log_token(LOG_LEVEL_WARNING, ir, tok, fmt, ##__VA_ARGS__)
+#define LOG_ERROR(ir, tok, fmt, ...)    create_log_token(LOG_LEVEL_ERROR, ir, tok, fmt, ##__VA_ARGS__)
 
-    char buffer[512] = {0};
+static void create_log_token(log_level_t level, md_script_ir_t* ir, token_t token, const char* format, ...) {
+    if (!ir->record_log) return;
+
+    if (level >= LOG_LEVEL_ERROR) {
+        // Stop after first error
+        ir->record_log = false;
+    }
+    
+    char buf[512] = {0};
     va_list args;
     va_start(args, format);
-    int len = vsnprintf(buffer, ARRAY_SIZE(buffer), format, args);
+    int len = vsnprintf(buf, ARRAY_SIZE(buf), format, args);
     va_end(args);
 
-    ASSERT(len > 0);
-    ASSERT(len < (int)ARRAY_SIZE(buffer));
-
-    char* err_str = md_alloc(ir->arena, (uint64_t)len + 1);
-    MEMCPY(err_str, buffer, len);
-    err_str[len] = '\0';
-
-    md_script_error_t error = {
+    md_log_token_t log_tok = {
         .range = {
             .beg = token.beg,
             .end = token.end,
         },
-        .text = {.ptr = err_str, .len = (uint64_t)len},
+        .text = str_copy_cstrn(buf, len, ir->arena),
     };
-    md_array_push(ir->errors, error, ir->arena);
 
-    // @TODO: Remove at some point
+    switch (level) {
+    case LOG_LEVEL_WARNING:
+        md_array_push(ir->warnings, log_tok, ir->arena);
+        break;
+    case LOG_LEVEL_ERROR:
+        md_array_push(ir->errors, log_tok, ir->arena);
+        break;
+    default:
+        break;
+    }
+
+    /*
     md_logf(MD_LOG_TYPE_DEBUG, "%s line %i: %s", ir->stage, token.line_beg, buffer);
 
     if (token.str.ptr && token.str.len) {
@@ -933,6 +952,7 @@ static void create_error(md_script_ir_t* ir, token_t token, const char* format, 
         md_logf(MD_LOG_TYPE_DEBUG, "%.*s", (end-beg), beg);
         md_logf(MD_LOG_TYPE_DEBUG, "%*s^%.*s", (token.str.ptr - beg), "", token.str.len-1, long_ass_carret);
     }
+    */
 }
 
 // Include all procedures, operators and defines
@@ -1214,7 +1234,7 @@ static inline bool is_token_type_comparison(token_type_t type) {
 
 static bool expect_token_type(md_script_ir_t* ir, token_t token, token_type_t type) {
     if (token.type != type) {
-        create_error(ir, token, "Unexpected token '%.*s', expected token '%s'", token.str.len, token.str.ptr, get_token_type_str(type));
+        LOG_ERROR(ir, token, "Unexpected token '%.*s', expected token '%s'", token.str.len, token.str.ptr, get_token_type_str(type));
         return false;
     }
     return true;
@@ -1836,7 +1856,7 @@ static ast_node_t** parse_comma_separated_arguments_until_token(parse_context_t*
     while (next = tokenizer_peek_next(ctx->tokenizer), next.type != TOKEN_END) {
         if (next.type == token_type) goto done;
         if (next.type == ',') {
-            create_error(ctx->ir, next, "Empty argument in argument list");
+            LOG_ERROR(ctx->ir, next, "Empty argument in argument list");
             return NULL;
         }
         ctx->node = 0;
@@ -1849,7 +1869,7 @@ static ast_node_t** parse_comma_separated_arguments_until_token(parse_context_t*
             else // (next.type == token_type)
                 goto done;
         } else {
-            create_error(ctx->ir, next, "Unexpected token in argument list");
+            LOG_ERROR(ctx->ir, next, "Unexpected token in argument list");
             return NULL;
         }
     }
@@ -1877,7 +1897,7 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
             // Expand proc call to contain entire argument list ')'
             node->token = concat_tokens(node->token, next);
         } else {
-            create_error(ctx->ir, token, "Unexpected end of argument list");
+            LOG_ERROR(ctx->ir, token, "Unexpected end of argument list");
         }
     } else {
         node = create_node(ctx->ir, AST_PROC_CALL, token);
@@ -1892,7 +1912,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
     ASSERT(token.type == TOKEN_IDENT);
 
     if (ctx->node && (ctx->node->token.type == TOKEN_IDENT)) {
-        create_error(ctx->ir, concat_tokens(ctx->node->token, token), "Invalid syntax, identifiers must be separated by operation");
+        LOG_ERROR(ctx->ir, concat_tokens(ctx->node->token, token), "Invalid syntax, identifiers must be separated by operation");
         return NULL;
     }
     
@@ -1922,7 +1942,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         token_t next = tokenizer_peek_next(ctx->tokenizer);
         if (next.type == '(') {
             // This is an intended procedure call, but has no matching procedure by that name
-            create_error(ctx->ir, token, "Undefined procedure '%.*s'", ident.len, ident.ptr);
+            LOG_ERROR(ctx->ir, token, "Undefined procedure '%.*s'", ident.len, ident.ptr);
 
             token_type_t token_types[] = {'(', ')', ';'};
             int paren_bal = 0;
@@ -1946,10 +1966,10 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         else if (next.type == '=') {
             // Assignment, therefore a new identifier
             if (find_constant(ident)) {
-                create_error(ctx->ir, token, "The identifier is occupied by a constant and cannot be assigned.");
+                LOG_ERROR(ctx->ir, token, "The identifier is occupied by a constant and cannot be assigned.");
             }
             else if (get_identifier(ctx->ir, ident)) {
-                create_error(ctx->ir, token, "The identifier is already taken. Variables cannot be reassigned.");
+                LOG_ERROR(ctx->ir, token, "The identifier is already taken. Variables cannot be reassigned.");
             }
             else {
                 node = create_node(ctx->ir, AST_IDENTIFIER, token);
@@ -1985,12 +2005,12 @@ ast_node_t* parse_logical(parse_context_t* ctx) {
     ast_node_t* rhs = parse_expression(ctx);
 
     if (type != AST_NOT && !lhs) {
-        create_error(ctx->ir, token, "Left hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
+        LOG_ERROR(ctx->ir, token, "Left hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
         return NULL;
     }
 
     if (!rhs) {
-        create_error(ctx->ir, token, "Right hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
+        LOG_ERROR(ctx->ir, token, "Right hand side of '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
         return NULL;
     }
 
@@ -2010,18 +2030,18 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
     ast_node_t* rhs = parse_expression(ctx);
     
     if (!lhs || lhs->type != AST_IDENTIFIER) {
-        create_error(ctx->ir, token,
+        LOG_ERROR(ctx->ir, token,
                      "Left hand side of '%s' is not a valid identifier.", get_token_type_str(token.type));
         return NULL;
     }
     if (!rhs) {
-        create_error(ctx->ir, token,
+        LOG_ERROR(ctx->ir, token,
                      "Right hand side of token '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
         return NULL;
     }
 
     if (rhs->type == AST_ASSIGNMENT) {
-        create_error(ctx->ir, token, "Syntax error: Invalid assignment");
+        LOG_ERROR(ctx->ir, token, "Syntax error: Invalid assignment");
         return NULL;
     }
     
@@ -2068,7 +2088,7 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
     ast_node_t* rhs = parse_expression(ctx);
    
     if (!rhs) {
-        create_error(ctx->ir, token, "Invalid artihmetic expression, right operand is undefined.");
+        LOG_ERROR(ctx->ir, token, "Invalid artihmetic expression, right operand is undefined.");
     } else {
         ast_type_t type = 0;
         switch(token.type) {
@@ -2187,13 +2207,13 @@ ast_node_t* parse_array_subscript(parse_context_t* ctx) {
 
                 return node;
             } else {
-                create_error(ctx->ir, token, "Empty array subscripts are not allowed.");
+                LOG_ERROR(ctx->ir, token, "Empty array subscripts are not allowed.");
             }
         } else {
-            create_error(ctx->ir, token, "Unexpected end of argument list");
+            LOG_ERROR(ctx->ir, token, "Unexpected end of argument list");
         }
     } else {
-        create_error(ctx->ir, token, "Missing left hand side expression to apply subscript operator");
+        LOG_ERROR(ctx->ir, token, "Missing left hand side expression to apply subscript operator");
     }
     return NULL;
 }
@@ -2215,11 +2235,11 @@ ast_node_t* parse_array(parse_context_t* ctx) {
             node->token = concat_tokens(node->token, next);
             return node;
         } else {
-            create_error(ctx->ir, token, "Empty arrays are not allowed.");
+            LOG_ERROR(ctx->ir, token, "Empty arrays are not allowed.");
         }
     }
     else {
-        create_error(ctx->ir, token, "Unexpected end of argument list");
+        LOG_ERROR(ctx->ir, token, "Unexpected end of argument list");
     }
     return NULL;
 }
@@ -2233,10 +2253,10 @@ ast_node_t* parse_in(parse_context_t* ctx) {
     ast_node_t* rhs = parse_expression(ctx);
 
     if (!lhs) {
-        create_error(ctx->ir, token, "Left hand side of 'in' did not evaluate into a valid expression.");
+        LOG_ERROR(ctx->ir, token, "Left hand side of 'in' did not evaluate into a valid expression.");
     }
     else if(!rhs) {
-        create_error(ctx->ir, token, "Right hand side of 'in' did not evaluate into a valid expression.");
+        LOG_ERROR(ctx->ir, token, "Right hand side of 'in' did not evaluate into a valid expression.");
     }
     else {
         ast_node_t* node = create_node(ctx->ir, AST_CONTEXT, token);
@@ -2255,7 +2275,7 @@ ast_node_t* parse_out(parse_context_t* ctx) {
     ast_node_t* rhs = parse_expression(ctx);
 
     if(!rhs) {
-        create_error(ctx->ir, token, "Right hand side of 'out' did not evaluate into a valid expression.");
+        LOG_ERROR(ctx->ir, token, "Right hand side of 'out' did not evaluate into a valid expression.");
     }
     else {
         ast_node_t* node = create_node(ctx->ir, AST_OUT, token);
@@ -2270,7 +2290,7 @@ ast_node_t* parse_parentheses(parse_context_t* ctx) {
     ASSERT(token.type == '(');
     ast_node_t* expr = parse_expression(ctx);
     if (!expr) {
-        create_error(ctx->ir, token, "Expression inside parentheses did not evaluate into a valid expression.");
+        LOG_ERROR(ctx->ir, token, "Expression inside parentheses did not evaluate into a valid expression.");
         return NULL;
     }
     token_t next = tokenizer_consume_next(ctx->tokenizer);
@@ -2312,11 +2332,11 @@ static ast_node_t* parse_argument(parse_context_t* ctx) {
         fix_precedence(&ctx->node);
         break;
     case TOKEN_UNDEF:
-        create_error(ctx->ir, next, "Undefined marker!");
+        LOG_ERROR(ctx->ir, next, "Undefined marker!");
         tokenizer_consume_next(ctx->tokenizer);
         return NULL;
     default:
-        create_error(ctx->ir, next, "Unexpected marker value! '%.*s'",
+        LOG_ERROR(ctx->ir, next, "Unexpected marker value! '%.*s'",
             next.str.len, next.str.ptr);
         return NULL;
     }
@@ -2384,11 +2404,11 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
             case ';':
             goto done;
             case TOKEN_UNDEF:
-            create_error(ctx->ir, token, "Invalid token!");
+            LOG_ERROR(ctx->ir, token, "Invalid token!");
             tokenizer_consume_next(ctx->tokenizer);
             return NULL;
             default:
-            create_error(ctx->ir, token, "Unexpected token: '%.*s'", token.str.len, token.str.ptr);
+            LOG_ERROR(ctx->ir, token, "Unexpected token: '%.*s'", token.str.len, token.str.ptr);
             return NULL;
         }
         if (!ctx->node) goto done;
@@ -2512,11 +2532,20 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
     return true;
 }
 
+static void table_extract_row_skip_first_col(float dst[], const table_t* table, int row) {
+    ASSERT(table);
+    ASSERT(table->num_cols > 0);
+    ASSERT(table->num_rows > 0);
+    ASSERT(row >= 0 && row < table->num_rows);
+
+    MEMCPY(dst, table->data + row * table->num_cols + 1, (table->num_cols - 1) * sizeof(float));
+}
+
 // Interpolates a row into dst from the table at x
 // The first value in the row is assumed to be the x value and is skipped when writing out
 // Assumes that the table is sorted in ascending order
 // Assumes that the table has at least 2 rows
-static void table_interpolate_row(float dst[], const table_t* table, const double x) {
+static void table_interpolate_row_skip_first_col(float dst[], const table_t* table, const double x) {
     ASSERT(table);
     ASSERT(table->num_cols > 0);
     ASSERT(table->num_rows > 0);
@@ -2528,6 +2557,18 @@ static void table_interpolate_row(float dst[], const table_t* table, const doubl
             break;
         }
         row_index = i;
+    }
+
+    if (row_index == 0) {
+        // We are at the first row, just copy it
+        table_extract_row_skip_first_col(dst, table, row_index);
+        return;
+    }
+
+    if (row_index == table->num_rows - 1) {
+        // We are at the last row, just copy it
+        table_extract_row_skip_first_col(dst, table, row_index);
+        return;
     }
 
     // Interpolate
@@ -2553,7 +2594,11 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
         const double x = ctx->frame_header->timestamp;
         
         ASSERT(dst->ptr && (size_t)dst->size >= (node->table.num_cols-1) * sizeof(float));
-        table_interpolate_row((float*)dst->ptr, &node->table, x);
+        if (node->table.interpolate) {
+            table_interpolate_row_skip_first_col((float*)dst->ptr, &node->table, x);
+        } else {
+            table_extract_row_skip_first_col((float*)dst->ptr, &node->table, (int)ctx->frame_header->index);
+        }
     }
 
     return true;
@@ -2905,7 +2950,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
                         to.dim[to.len_dim] = query_result;
                     }
                     else {
-                        create_error(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
+                        LOG_ERROR(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
                         return false;
                     }
                 }
@@ -2989,7 +3034,7 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
         if (query_result >= 0) { // Zero length is valid
             type->dim[type->len_dim] = query_result;
         } else {
-            create_error(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
+            LOG_ERROR(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
             return false;
         }
     }
@@ -3107,7 +3152,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             for (int64_t i = 1; i < num_args; ++i) {
                 int64_t len = type_info_array_len(args[i]->data.type);
                 if (len != expected_len) {
-                    create_error(ctx->ir, node->token, "Expected array-length of arguments to match. arg 0 has length %i, arg %i has length %i.", (int)expected_len, (int)i, (int)len);
+                    LOG_ERROR(ctx->ir, node->token, "Expected array-length of arguments to match. arg 0 has length %i, arg %i has length %i.", (int)expected_len, (int)i, (int)len);
                     return false;
                 }
             }
@@ -3155,7 +3200,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 node->data.type.dim[node->data.type.len_dim] = query_result;
                 return true;
             } else {
-                create_error(ctx->ir, node->token, "Failed to determine length of procedure return type!");
+                LOG_ERROR(ctx->ir, node->token, "Failed to determine length of procedure return type!");
                 return false;
             }
         } else if (node->proc->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
@@ -3171,7 +3216,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             node->data.type.dim[node->data.type.len_dim] = (int32_t)max_len;
             return true;
         } else {
-            create_error(ctx->ir, node->token, "Procedure returns variable length, but its length cannot be determined.");
+            LOG_ERROR(ctx->ir, node->token, "Procedure returns variable length, but its length cannot be determined.");
             return false;
         }
     }
@@ -3235,7 +3280,7 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
             for (int i = 0; i < num_args; ++i) {
                 if (arg[i]) print_type_info(arg_type_str[i], ARRAY_SIZE(arg_type_str[i]), arg[i]->data.type);                
             }
-            create_error(ctx->ir, node->token,
+            LOG_ERROR(ctx->ir, node->token,
                 "Could not find supporting operator '%s' with left hand side type (%s) and right hand side type (%s)",
                 get_token_type_str(node->token.type), arg_type_str[0], arg_type_str[1]);
         }
@@ -3276,13 +3321,59 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
         md_xvg_t xvg = {0};
         bool result = md_xvg_init_from_file(&xvg, path, ctx->temp_alloc);
         if (!result) {
-            create_error(ctx->ir, node->token, "import: failed to import xvg file '%.*s'", (int)path.len, path.ptr);
+            LOG_ERROR(ctx->ir, node->token, "import: failed to import xvg file '%.*s'", (int)path.len, path.ptr);
             return false;
         }
+
+        if (xvg.num_cols < 2) {
+            LOG_ERROR(ctx->ir, node->token, "import: xvg file '%.*s' has less than 2 columns", (int)path.len, path.ptr);
+            return false;
+        }
+
+        bool interpolate = true;
+
+        if (ctx->traj) {
+            int num_frames = (int)md_trajectory_num_frames(ctx->traj);
+            if (num_frames == 0) {
+                LOG_ERROR(ctx->ir, node->token, "import: trajectory has no frames");
+                return false;
+            } else
+
+            if (num_frames == xvg.num_rows) {
+                md_trajectory_frame_header_t first_frame, last_frame;
+                if (!md_trajectory_load_frame(ctx->traj, 0, &first_frame, 0, 0, 0)) {
+                    MD_LOG_DEBUG("Failed to load first frame in trajectory");
+                }
+                if (!md_trajectory_load_frame(ctx->traj, num_frames - 1,  &last_frame, 0, 0, 0)) {
+                    MD_LOG_DEBUG("Failed to load last frame in trajectory");
+                }
+
+                const float first_frame_time = (float)first_frame.timestamp;
+                const float last_frame_time  = (float)last_frame.timestamp;
+
+                const float first_table_time = md_xvg_value(&xvg, 0, 0);
+                const float last_table_time  = md_xvg_value(&xvg, 0, xvg.num_rows - 1);
+
+                if (first_frame_time == first_table_time && last_frame_time == last_table_time) {
+                    // everything matches, we do not have to interpolate values
+                    interpolate = false;
+                } else {
+                    LOG_WARNING(ctx->ir, node->token, "import: frame time mismatch in table compared to trajectory. The data will be interpolated.", (int)path.len,
+                        path.ptr, xvg.num_rows, num_frames);
+                }
+            } else {
+                LOG_WARNING(ctx->ir, node->token, "import: number of rows in xvg file '%.*s' (%d) does not match number of trajectory frames (%d). The data will be interpolated.", (int)path.len,
+                    path.ptr, xvg.num_rows, num_frames);
+            }
+        } else {
+            LOG_WARNING(ctx->ir, node->token, "import: no trajectory present, cannot perform static validation");
+        }
+        
         const size_t num_bytes = xvg.num_cols * xvg.num_rows * sizeof(float);
         node->table.data = md_alloc(ctx->alloc, num_bytes);
         node->table.num_cols = xvg.num_cols;
         node->table.num_rows = xvg.num_rows;
+        node->table.interpolate = interpolate;
         MEMCPY(node->table.data, xvg.values, num_bytes);
         md_xvg_free(&xvg, ctx->temp_alloc);
         node->type = AST_TABLE_VALUE;
@@ -3292,7 +3383,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     } else if (str_equal_cstr_ignore_case(ext, "csv")) {
         // do csv import
     } else {
-        create_error(ctx->ir, node->token, "import: unsupported file extension '%.*s'", (int)ext.len, ext.ptr);
+        LOG_ERROR(ctx->ir, node->token, "import: unsupported file extension '%.*s'", (int)ext.len, ext.ptr);
     }
     return false;
 }
@@ -3304,7 +3395,7 @@ static bool static_check_static_proc(ast_node_t* node, eval_context_t* ctx) {
 
     if (str_equal(node->ident, STR("import"))) {
         if (num_args != 1 || !is_type_equivalent(arg_type[0], (type_info_t)TI_STRING)) {
-            create_error(ctx->ir, node->token, "import takes a single string as argument");
+            LOG_ERROR(ctx->ir, node->token, "import takes a single string as argument");
             return false;
         }
         return static_check_import(node, ctx);
@@ -3313,7 +3404,7 @@ static bool static_check_static_proc(ast_node_t* node, eval_context_t* ctx) {
     char buf[512];
     int len = print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
         
-    create_error(ctx->ir, node->token,
+    LOG_ERROR(ctx->ir, node->token,
         "Could not find matching static procedure '%.*s' which takes the following argument(s) (%.*s)",
         (int)node->ident.len, node->ident.ptr, len, buf);
     
@@ -3347,13 +3438,13 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 node->proc_flags = res.flags;
             } else {
                 if (num_args == 0) {
-                    create_error(ctx->ir, node->token,
+                    LOG_ERROR(ctx->ir, node->token,
                         "Could not find matching procedure '%.*s' which takes no arguments", (int)proc_name.len, proc_name.ptr);
                 } else {
                     char buf[512];
                     int len = print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
 
-                    create_error(ctx->ir, node->token,
+                    LOG_ERROR(ctx->ir, node->token,
                         "Could not find matching procedure '%.*s' which takes the following argument(s) (%.*s)",
                         (int)proc_name.len, proc_name.ptr, len, buf);
                 }
@@ -3402,7 +3493,7 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
         // Make sure the range is given in an ascending format, lo:hi
         irange_t rng = node->value._irange;
         if (rng.beg > rng.end) {
-            create_error(ctx->ir, node->token, "The range is invalid, a range must have an ascending format, did you mean '%i:%i'?", rng.end, rng.beg);
+            LOG_ERROR(ctx->ir, node->token, "The range is invalid, a range must have an ascending format, did you mean '%i:%i'?", rng.end, rng.beg);
             return false;
         }
     }
@@ -3456,14 +3547,14 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
                         for (int64_t j = 0; j < i; ++j) {
                             if (!is_type_directly_compatible(elem_type, array_type) &&
                                 !is_type_implicitly_convertible(elem_type, array_type)) {
-                                create_error(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
+                                LOG_ERROR(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
                                 return false;
                             }
                         }
                     }
                     else {
                         // Incompatible types...
-                        create_error(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
+                        LOG_ERROR(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
                         return false;
                     }
                 }
@@ -3517,11 +3608,11 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
     ast_node_t**    elem = node->children;
 
     if (num_elem < 2) {
-        create_error(ctx->ir, node->token, "Missing arguments in array subscript");
+        LOG_ERROR(ctx->ir, node->token, "Missing arguments in array subscript");
         return false;
     }
     else if (num_elem > 2) {
-        create_error(ctx->ir, elem[2]->token, "Only single entries are allowed inside array subscript");
+        LOG_ERROR(ctx->ir, elem[2]->token, "Only single entries are allowed inside array subscript");
         return false;
     }
 
@@ -3536,12 +3627,12 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
     ast_node_t* arg = elem[1];
 
     if (is_variable_length(lhs->data.type)) {
-        create_error(ctx->ir, lhs->token, "Array subscript operator can only be applied to expressions which have a static length");
+        LOG_ERROR(ctx->ir, lhs->token, "Array subscript operator can only be applied to expressions which have a static length");
         return false;
     }
 
     if (arg->flags & FLAG_DYNAMIC) {
-        create_error(ctx->ir, arg->token, "Only static expressions are allowed within array subscript");
+        LOG_ERROR(ctx->ir, arg->token, "Only static expressions are allowed within array subscript");
         return false;
     }
 
@@ -3571,15 +3662,15 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
                 node->data.unit = lhs->data.unit;
                 return true;
             } else {
-                create_error(ctx->ir, arg->token, "Invalid Array subscript range");
+                LOG_ERROR(ctx->ir, arg->token, "Invalid Array subscript range");
                 return false;
             }
         } else {
-            create_error(ctx->ir, arg->token, "Only int and int-ranges are allowed inside array subscript");
+            LOG_ERROR(ctx->ir, arg->token, "Only int and int-ranges are allowed inside array subscript");
             return false;
         }
     } else {
-        create_error(ctx->ir, arg->token, "No arrays are allowed inside array subscript");
+        LOG_ERROR(ctx->ir, arg->token, "No arrays are allowed inside array subscript");
         return false;
     }
 }
@@ -3594,7 +3685,7 @@ static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* 
     identifier_t* ident = get_identifier(ctx->ir, node->ident);
     if (ident && ident->node) {
         if (ident->node->data.type.base_type == TYPE_UNDEFINED) {
-            create_error(ctx->ir, node->token, "Identifier (%.*s) has an unresolved type", ident->name.len, ident->name.ptr);
+            LOG_ERROR(ctx->ir, node->token, "Identifier (%.*s) has an unresolved type", ident->name.len, ident->name.ptr);
         } else {
             node->flags = ident->node->flags;
             if (ident->data) {
@@ -3606,7 +3697,7 @@ static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* 
             return true;
         }
     } else {
-        create_error(ctx->ir, node->token, "Unresolved reference to identifier (%.*s)", node->ident.len, node->ident.ptr);
+        LOG_ERROR(ctx->ir, node->token, "Unresolved reference to identifier (%.*s)", node->ident.len, node->ident.ptr);
     }
     return false;
 }
@@ -3620,7 +3711,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(rhs);
 
     if (lhs->type != AST_IDENTIFIER) {
-        create_error(ctx->ir, node->token, "Left hand side of assignment is not an identifier");
+        LOG_ERROR(ctx->ir, node->token, "Left hand side of assignment is not an identifier");
         return false;
     }
 
@@ -3746,7 +3837,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
 
                         if (lhs->flags & FLAG_DYNAMIC_LENGTH) {
                             if (!finalize_type(&type, lhs, &local_ctx)) {
-                                create_error(ctx->ir, lhs->token, "Failed to deduce length of type which is required for determining type and size of context");
+                                LOG_ERROR(ctx->ir, lhs->token, "Failed to deduce length of type which is required for determining type and size of context");
                                 return false;
                             }
                         }
@@ -3774,18 +3865,18 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     result = true;
 
                 } else {
-                    create_error(ctx->ir, node->token, "Right hand side of 'in' failed to evaluate at compile time.");
+                    LOG_ERROR(ctx->ir, node->token, "Right hand side of 'in' failed to evaluate at compile time.");
                 }
             } else {
-                create_error(ctx->ir, node->token, "The context is empty.");
+                LOG_ERROR(ctx->ir, node->token, "The context is empty.");
             }
         } else {
-            create_error(ctx->ir, node->token, "Right hand side of 'in' cannot be evaluated at compile time.");
+            LOG_ERROR(ctx->ir, node->token, "Right hand side of 'in' cannot be evaluated at compile time.");
         }
     } else {
         char buf[128] = {0};
         print_type_info(buf, ARRAY_SIZE(buf), rhs->data.type);
-        create_error(ctx->ir, node->token, "Right hand side of keyword 'in' has an incompatible type: Expected bitfield, got '%s'.", buf);
+        LOG_ERROR(ctx->ir, node->token, "Right hand side of keyword 'in' has an incompatible type: Expected bitfield, got '%s'.", buf);
     }
 
     return result;
@@ -3930,13 +4021,13 @@ static bool parse_script(md_script_ir_t* ir) {
         const char* beg = tok.str.ptr;
 
         ctx.node = 0;
-        ir->record_errors = true;   // We reset the error recording flag before each statement
+        ir->record_log = true;   // We reset the error recording flag before each statement
         ast_node_t* raw_node = parse_expression(&ctx);
         ast_node_t* pruned_node = prune_expressions(raw_node);
         if (pruned_node) {
             tok = tokenizer_consume_next(ctx.tokenizer);
             if (tok.type != ';') {
-                create_error(ir, pruned_node->token, "Missing ';' to mark end of statement.");
+                LOG_ERROR(ir, pruned_node->token, "Missing ';' to mark end of statement.");
                 result = false;
                 continue;
             }
@@ -3968,7 +4059,7 @@ static bool parse_script(md_script_ir_t* ir) {
     return result;
 }
 
-static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol) {
+static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, const md_trajectory_i* traj) {
     ASSERT(ir);
     ASSERT(mol);
 
@@ -3982,11 +4073,12 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol) {
         .temp_alloc = &temp_alloc,
         .alloc = ir->arena,
         .mol = mol,
+        .traj = traj,
     };
     ir->stage = "Static Type Checking";
 
     for (int64_t i = 0; i < md_array_size(ir->expressions); ++i) {
-        ir->record_errors = true;   // We reset the error recording flag before each statement
+        ir->record_log = true;   // We reset the error recording flag before each statement
         if (static_check_node(ir->expressions[i]->node, &ctx)) {
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
             ir->flags |= (ir->expressions[i]->node->flags & FLAG_IR_PROPAGATION_MASK);
@@ -4095,7 +4187,7 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
                 node->children[0]->data = node->data;
             }
         } else {
-            create_error(ctx->ir, node->token, "Could not allocate data for node during static evaluation");
+            LOG_ERROR(ctx->ir, node->token, "Could not allocate data for node during static evaluation");
         }
     }
 
@@ -4693,7 +4785,7 @@ md_script_ir_t* md_script_ir_create(md_allocator_i* alloc) {
     return create_ir(alloc);
 }
 
-bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, const md_script_ir_t* ctx_ir) {
+bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_molecule_t* mol, const md_trajectory_i* traj, const md_script_ir_t* ctx_ir) {
     if (!validate_ir(ir)) {
         MD_LOG_ERROR("Script Compile: IR is not valid");
         return false;
@@ -4705,7 +4797,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
     }
 
     if (!mol) {
-        MD_LOG_ERROR("Script Compile: Molecule was null");
+        MD_LOG_ERROR("Script Compile: Molecule was not supplied");
         return false;
     }
     
@@ -4716,7 +4808,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
     }
 
     ir->compile_success = parse_script(ir) &&
-        static_type_check(ir, mol) &&
+        static_type_check(ir, mol, traj) &&
         finalize_ast(ir) &&
         // optimize ast?
         static_evaluation(ir, mol) &&
@@ -4790,6 +4882,20 @@ void md_script_ir_clear(md_script_ir_t* ir) {
     }
 }
 
+int64_t md_script_ir_num_warnings(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return 0;
+    }
+    return md_array_size(ir->warnings);
+}
+
+const md_log_token_t* md_script_ir_warnings(const md_script_ir_t* ir) {
+    if (!validate_ir(ir)) {
+        return NULL;
+    }
+    return ir->warnings;
+}
+
 int64_t md_script_ir_num_errors(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return 0;
@@ -4797,7 +4903,7 @@ int64_t md_script_ir_num_errors(const md_script_ir_t* ir) {
     return md_array_size(ir->errors);
 }
 
-const md_script_error_t* md_script_ir_errors(const md_script_ir_t* ir) {
+const md_log_token_t* md_script_ir_errors(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return NULL;
     }
@@ -5071,7 +5177,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     };
 
     ir->stage = "Filter evaluate";
-    ir->record_errors = true;
+    ir->record_log = true;
 
     ast_node_t* node = parse_expression(&parse_ctx);
     node = prune_expressions(node);
@@ -5180,7 +5286,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
     };
 
     ir->stage = "Filter evaluate";
-    ir->record_errors = true;
+    ir->record_log = true;
 
     ast_node_t* node = parse_expression(&parse_ctx);
     node = prune_expressions(node);
