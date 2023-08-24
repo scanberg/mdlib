@@ -15,6 +15,12 @@ float* md_xvg_row(md_xvg_t* xvg, int row_index) {
 	return xvg->values + xvg->num_cols * row_index;
 }
 
+float md_xvg_value(md_xvg_t* xvg, int col_index, int row_index) {
+	ASSERT(xvg);
+	ASSERT(xvg->values);
+	return xvg->values[xvg->num_cols * row_index + col_index];
+}
+
 bool md_xvg_valid(const md_xvg_t* xvg) {
 	if (!xvg) {
 		MD_LOG_ERROR("XVG: object is NULL");

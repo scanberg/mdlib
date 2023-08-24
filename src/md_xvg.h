@@ -23,6 +23,7 @@ extern "C" {
 #endif
 
 float* md_xvg_row(md_xvg_t* xvg, int row_index);
+float  md_xvg_value(md_xvg_t* xvg, int col_index, int row_index);
 
 str_t md_xvg_serialize_to_str(const md_xvg_t* xvg, struct md_allocator_i* str_alloc);
 bool  md_xvg_deserialize_from_str(md_xvg_t* xvg, str_t data, struct md_allocator_i* alloc);
