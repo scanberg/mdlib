@@ -11,9 +11,9 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_molecule_t;
-struct md_molecule_api;
+struct md_molecule_loader_i;
 struct md_trajectory_i;
-struct md_trajectory_api;
+struct md_trajectory_loader_i;
 
 typedef struct md_xyz_coordinate_t {
 	int atom_index;
@@ -51,13 +51,13 @@ void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc);
 // MOLECULE
 bool md_xyz_molecule_init(struct md_molecule_t* mol, const md_xyz_data_t* data, struct md_allocator_i* alloc);
 
-struct md_molecule_api* md_xyz_molecule_api();
+struct md_molecule_loader_i* md_xyz_molecule_api();
 
 // TRAJECTORY
 struct md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* alloc);
 void md_xyz_trajectory_free(struct md_trajectory_i* traj);
 
-struct md_trajectory_api* md_xyz_trajectory_api();
+struct md_trajectory_loader_i* md_xyz_trajectory_loader();
 
 #ifdef __cplusplus
 }

@@ -141,19 +141,35 @@ static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {
     }
 }
 
-static inline bool md_buffered_reader_eof(md_buffered_reader_t r) {
-    if (r.file) {
-        return md_file_eof(r.file) && r.str.len == 0;
+static inline bool md_buffered_reader_eof(const md_buffered_reader_t* r) {
+    if (r->file) {
+        return md_file_eof(r->file) && r->str.len == 0;
     } else {
-        return r.str.len == 0;
+        return r->str.len == 0;
     }
 }
 
-static inline int64_t md_buffered_reader_tellg(md_buffered_reader_t r) {
-    if (r.file) {
-        return md_file_tell(r.file) - r.str.len;
+#if 0
+static inline void md_buffered_reader_seekg(md_buffered_reader_t* r, int64_t pos) {
+    if (r->file) {
+        return md_file_seek(r->file, pos, MD_FILE_BEG);
+        r->str.ptr = NULL;
+        r->str.len = 0;
     } else {
-        return r.cap - r.str.len;
+        // This is not correct, simply copied from reset
+        ASSERT(r->str.ptr && "Cannot seekg uninitialized reader");
+        r->str.ptr += r->str.len - r->cap;
+        r->str.len = r->cap;
+    }
+}
+#endif
+
+// Gets the current position within the buffer
+static inline int64_t md_buffered_reader_tellg(const md_buffered_reader_t* r) {
+    if (r->file) {
+        return md_file_tell(r->file) - r->str.len;
+    } else {
+        return r->cap - r->str.len;
     }
 }
 

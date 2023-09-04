@@ -1749,6 +1749,7 @@ static int xdr_int(XDR* xdrs, int* ip) {
             return 0;
         }
         *ip = (int)i32;
+        return 1;
     case XDR_FREE:
         return 1;
     }
@@ -1768,6 +1769,7 @@ static int xdr_u_int(XDR* xdrs, unsigned int* up) {
             return 0;
         }
         *up = (uint32_t)ui32;
+        return 1;
     case XDR_FREE:
         return 1;
     }

@@ -89,7 +89,7 @@ static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule_t* m
     ASSERT(bitfield);
     ASSERT(mol);
     data_t data = {0};
-    if (eval_expression(&data, expr, mol, default_temp_allocator)) {
+    if (eval_expression(&data, expr, mol, md_temp_allocator)) {
         if (data.type.base_type == TYPE_BITFIELD) {
             md_bitfield_t* res = (md_bitfield_t*)data.ptr;
             const int64_t len = type_info_array_len(data.type);
@@ -127,7 +127,7 @@ static void print_bits(uint64_t* bits, uint64_t num_bits) {
 UTEST(script, basic_expressions) {
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, STR("'this is a string'"), &test_mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, STR("'this is a string'"), &test_mol, md_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_STRING);
         str_t str = as_string(data);
         EXPECT_STREQ(str.ptr, "this is a string");
@@ -135,21 +135,21 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, STR("2 + 5"), &test_mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, STR("2 + 5"), &test_mol, md_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_INT);
         EXPECT_EQ(as_int(data), 7);
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, STR("2 + 5.0"), &test_mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, STR("2 + 5.0"), &test_mol, md_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
         EXPECT_EQ(as_float(data), 7.0);
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, STR("{2,1} + {1,8}"), &test_mol, default_temp_allocator));
+        EXPECT_TRUE(eval_expression(&data, STR("{2,1} + {1,8}"), &test_mol, md_temp_allocator));
         EXPECT_EQ(data.type.base_type, TYPE_INT);
         EXPECT_EQ(data.type.dim[0], 2);
         EXPECT_EQ(as_int_arr(data)[0], 3);
@@ -161,7 +161,7 @@ static bool test_selection(const char* expr, const char* ref_bit_str) {
     bool result = false;
     uint64_t ref = make_bits(ref_bit_str);
     md_bitfield_t bf = {0};
-    md_bitfield_init(&bf, default_temp_allocator);
+    md_bitfield_init(&bf, md_temp_allocator);
 
     if (!eval_selection(&bf, str_from_cstr(expr), &test_mol)) {
         printf("Failed evaluation of expression: '%s'\n", expr);
@@ -192,7 +192,7 @@ UTEST(script, selection) {
 }
 
 UTEST(script, compile_script) {
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(128));
     const str_t gro_file = STR(MD_UNITTEST_DATA_DIR "/centered.gro");
 
     md_gro_data_t gro_data = {0};
@@ -212,7 +212,7 @@ UTEST(script, compile_script) {
 }
 
 UTEST(script, semantic) {
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(128));
 
     md_molecule_t mol = { 0 };
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
@@ -227,7 +227,7 @@ UTEST(script, semantic) {
 }
 
 UTEST(script, selection_big) {
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, KILOBYTES(128));
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(128));
 
     const str_t gro_file = STR(MD_UNITTEST_DATA_DIR "/centered.gro");
 
@@ -249,7 +249,7 @@ UTEST(script, selection_big) {
 }
 
 UTEST(script, dynamic_length) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
     const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
@@ -277,7 +277,7 @@ UTEST(script, dynamic_length) {
 }
 
 UTEST(script, property_compute) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
     const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
@@ -403,7 +403,7 @@ void func(void* user_data) {
 }
 
 UTEST(script, parallel_evaluation) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
     const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     const str_t script = STR("p1 = distance(1,10);");
 
@@ -479,10 +479,10 @@ UTEST(script, parallel_evaluation) {
 }
 
 UTEST(script, parse_unary_binary) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
     const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
-    md_molecule_api* pdb = md_pdb_molecule_api();
+    md_molecule_loader_i* pdb = md_pdb_molecule_api();
     md_molecule_t mol;
     ASSERT_TRUE(pdb->init_from_file(&mol, pdb_file, alloc));
     md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);

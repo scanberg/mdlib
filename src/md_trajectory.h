@@ -13,6 +13,7 @@ typedef struct md_trajectory_header_t {
 	int64_t   num_atoms;
 	int64_t   max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
 	md_unit_t time_unit;
+    const double* frame_times;  // Array of length num_frames
 } md_trajectory_header_t;
 
 typedef struct md_trajectory_frame_header_t {
@@ -44,10 +45,10 @@ typedef struct md_trajectory_i {
 	bool (*decode_frame_data)(struct md_trajectory_o* inst, const void* data_ptr, int64_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 } md_trajectory_i;
 
-typedef struct md_trajectory_api {
+typedef struct md_trajectory_loader_i {
 	md_trajectory_i* (*create)(str_t filename, struct md_allocator_i* alloc);
 	void (*destroy)(md_trajectory_i* traj);
-} md_trajectory_api;
+} md_trajectory_loader_i;
 
 #ifdef __cplusplus
 }
@@ -85,6 +86,14 @@ static inline md_unit_t md_trajectory_time_unit(const md_trajectory_i* traj) {
 	}
 	md_unit_t unit = {0};
 	return unit;
+}
+
+static inline const double* md_trajectory_frame_times(const md_trajectory_i* traj) {
+	md_trajectory_header_t header;
+	if (traj && traj->get_header && traj->get_header(traj->inst, &header)) {
+		return header.frame_times;
+	}
+	return NULL;
 }
 
 // Easy mode operations

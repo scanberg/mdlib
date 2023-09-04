@@ -1,43 +1,46 @@
 #pragma once
 
 #include <core/md_str.h>
+#include <core/md_array.h>
 
 struct md_allocator_i;
 
 // Utils for xmgrace multicolum files (XVG)
-// 
-// Num rows dictates how many rows there are.
-// Num cols dictates how many columns there are.
-// The values are stored in a contigous array in row major format.
-// This means that each row is stored linearly in memory followed by next row.
-// meta_data is the data encoded in the @ section, it is unfiltered
+
+typedef struct md_xvg_header_info_t {
+	str_t header;	// Complete header
+	str_t comment;
+	str_t meta;
+	str_t title;
+	str_t xaxis_label;
+	str_t yaxis_label;
+
+	int64_t num_legends;
+	md_array(str_t) legends;
+} md_xvg_header_info_t;
+
 typedef struct md_xvg_t {
-	int num_rows;
-	int num_cols;
-	float* values;
-	str_t meta_data;
+	md_xvg_header_info_t header_info;
+	int64_t num_fields;
+	int64_t num_values;
+	md_array(md_array(float)) fields;
 } md_xvg_t;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-float* md_xvg_row(md_xvg_t* xvg, int row_index);
-float  md_xvg_value(md_xvg_t* xvg, int col_index, int row_index);
+bool md_xvg_parse_str (md_xvg_t* xvg, str_t str, struct md_allocator_i* alloc);
+bool md_xvg_parse_file(md_xvg_t* xvg, str_t path_to_file, struct md_allocator_i* alloc);
 
-str_t md_xvg_serialize_to_str(const md_xvg_t* xvg, struct md_allocator_i* str_alloc);
-bool  md_xvg_deserialize_from_str(md_xvg_t* xvg, str_t data, struct md_allocator_i* alloc);
-	
-bool  md_xvg_serialize_to_file(const md_xvg_t* xvg, str_t path_to_file);
-bool  md_xvg_init_from_file(md_xvg_t* xvg, str_t path_to_file, struct md_allocator_i* alloc);
+void md_xvg_free(md_xvg_t* xvg, struct md_allocator_i* alloc);
 
-bool  md_xvg_valid(const md_xvg_t* xvg);
+// Format a header string for xvg files. cap signifies the maximum number of characters that can be written to buf.
+// Returns the number of characters written to buf.
+str_t	md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, int64_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc);
+str_t	md_xvg_format		(str_t header, int64_t num_fields, int64_t num_values, const float** field_values, struct md_allocator_i* str_alloc);
 
-// Initialize the memory of an xvg struct allocating the sufficient space required.
-// values are optional and if it is supplied it is interpreted as row major and expected to have the
-// same length as num_cols * num_rows. If values are NULL, then the memory will be allocated and set to zero.
-bool  md_xvg_init(md_xvg_t* xvg, int num_cols, int num_rows, const float* values, str_t meta_data, struct md_allocator_i* alloc);
-void  md_xvg_free(md_xvg_t* xvg, struct md_allocator_i* alloc);
+str_t	md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* str_alloc);
 
 #ifdef __cplusplus
 }

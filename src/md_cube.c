@@ -84,7 +84,7 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 	}
 
 	md_strb_t sb = {0};
-	md_strb_init(&sb, default_allocator);
+	md_strb_init(&sb, md_heap_allocator);
 	
 	md_strb_push_str(&sb, tidy_comment(cube->title));   md_strb_push_char(&sb, '\n');
 	md_strb_push_str(&sb, tidy_comment(cube->comment)); md_strb_push_char(&sb, '\n');
@@ -241,10 +241,10 @@ bool md_cube_file_load(md_cube_t* cube, str_t path, md_allocator_i* alloc) {
 	}
 
 	bool success = false;
-    str_t str = load_textfile(path, default_allocator);
+    str_t str = load_textfile(path, md_heap_allocator);
 	if (!str_empty(str)) {
         success = md_cube_deserialize(cube, str, alloc);
-		str_free(str, default_allocator);
+		str_free(str, md_heap_allocator);
 	}
 	
 	return success;
@@ -259,10 +259,10 @@ bool md_cube_file_store(const md_cube_t* cube, str_t path) {
 	md_file_o* file = NULL;
 	bool success = false;
 	if (open_file(file, path)) {
-		str_t str = md_cube_serialize(cube, default_allocator);
+		str_t str = md_cube_serialize(cube, md_heap_allocator);
         if (!str_empty(str)) {
 			success = md_file_write(file, str_ptr(str), str_len(str)) == str_len(str);
-			str_free(str, default_allocator);
+			str_free(str, md_heap_allocator);
         }
 		md_file_close(file);
 	}

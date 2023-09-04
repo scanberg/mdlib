@@ -27,7 +27,6 @@ extern "C" {
 #define MD_PDB_PARSE_BIOMT 1
 
 // The opaque blob
-
 typedef struct pdb_trajectory_t {
     uint64_t magic;
     md_file_o* file;
@@ -331,7 +330,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
             // This is a bit nasty, we want to get the correct offset to the beginning of the current line.
             // Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
             // all the way back in case there were skipped \r characters.
-            const int64_t offset = md_buffered_reader_tellg(*reader) - (reader->str.ptr - line.ptr);
+            const int64_t offset = md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr);
             md_pdb_model_t model = {
                 .serial = (int32_t)parse_int(str_substr(line, 6, -1)),
                 .beg_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1,
@@ -428,12 +427,12 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i*
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         const int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(default_allocator, cap);
+        char* buf = md_alloc(md_heap_allocator, cap);
         
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         result = pdb_parse(data, &reader, alloc, false);
         
-        md_free(default_allocator, buf, cap);
+        md_free(md_heap_allocator, buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
@@ -619,9 +618,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
 static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
     md_pdb_data_t data = {0};
 
-    md_pdb_data_parse_str(&data, str, default_allocator);
+    md_pdb_data_parse_str(&data, str, md_heap_allocator);
     bool success = md_pdb_molecule_init(mol, &data, alloc);
-    md_pdb_data_free(&data, default_allocator);
+    md_pdb_data_free(&data, md_heap_allocator);
     
     return success;
 }
@@ -630,16 +629,16 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         int64_t cap = MEGABYTES(1);
-        char *buf = md_alloc(default_allocator, cap);
+        char *buf = md_alloc(md_heap_allocator, cap);
         ASSERT(buf);
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         
         md_pdb_data_t data = {0};
-        bool parse   = pdb_parse(&data, &reader, default_allocator, true);
+        bool parse   = pdb_parse(&data, &reader, md_heap_allocator, true);
         bool success = parse && md_pdb_molecule_init(mol, &data, alloc);
         
-        md_pdb_data_free(&data, default_allocator);
-        md_free(default_allocator, buf, cap);
+        md_pdb_data_free(&data, md_heap_allocator);
+        md_free(md_heap_allocator, buf, cap);
         
         return success;
     }
@@ -647,12 +646,12 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     return false;
 }
 
-static md_molecule_api pdb_molecule_api = {
+static md_molecule_loader_i pdb_molecule_api = {
     pdb_init_from_str,
     pdb_init_from_file,
 };
 
-md_molecule_api* md_pdb_molecule_api() {
+md_molecule_loader_i* md_pdb_molecule_api() {
     return &pdb_molecule_api;
 }
 
@@ -666,12 +665,12 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     // Should this be exposed?
-    md_allocator_i* alloc = default_temp_allocator;
+    md_allocator_i* alloc = md_temp_allocator;
 
     bool result = true;
     const int64_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        // This is a borderline case if one should use the default_temp_allocator as the raw frame size could potentially be several megabytes...
+        // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
         void* frame_data = md_alloc(alloc, frame_size);
         const int64_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
@@ -736,7 +735,7 @@ static bool try_read_cache(str_t cache_file, md_array(int64_t)* offsets, int64_t
     return result;
 }
 
-static bool write_cache(str_t cache_file, const int64_t* offsets, int64_t num_offsets, int64_t num_atoms, const md_unit_cell_t* cell) {
+static bool write_cache(str_t cache_file, const md_array(int64_t) offsets, int64_t num_offsets, int64_t num_atoms, const md_unit_cell_t* cell) {
     bool result = false;
     md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
     if (file) {
@@ -771,6 +770,7 @@ void pdb_trajectory_free(struct md_trajectory_o* inst) {
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     if (pdb->file) md_file_close(pdb->file);
     if (pdb->frame_offsets) md_array_free(pdb->frame_offsets, pdb->allocator);
+    if (pdb->header.frame_times) md_array_free(pdb->header.frame_times, pdb->allocator);
     md_mutex_destroy(&pdb->mutex);
 }
 
@@ -794,13 +794,13 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
 
     if (!try_read_cache(cache_file, &offsets, &num_atoms, &cell, alloc)) {
         md_pdb_data_t data = {0};
-        if (!md_pdb_data_parse_file(&data, filename, default_allocator)) {
+        if (!md_pdb_data_parse_file(&data, filename, md_heap_allocator)) {
             return false;
         }
 
         if (data.num_models <= 1) {
             MD_LOG_INFO("The PDB file does not contain multiple model entries and cannot be read as a trajectory");
-            md_pdb_data_free(&data, default_allocator);
+            md_pdb_data_free(&data, md_heap_allocator);
             return false;
         }
 
@@ -811,7 +811,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
                 const int64_t length = data.models[i].end_atom_index - data.models[i].beg_atom_index;
                 if (length != ref_length) {
                     MD_LOG_ERROR("The PDB file models are not of equal length and cannot be read as a trajectory");
-                    md_pdb_data_free(&data, default_allocator);
+                    md_pdb_data_free(&data, md_heap_allocator);
                     return false;
                 }
             }
@@ -832,16 +832,23 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         }
 
         write_cache(cache_file, offsets, md_array_size(offsets), num_atoms, &cell);
-        md_pdb_data_free(&data, default_allocator);
+        md_pdb_data_free(&data, md_heap_allocator);
 
     }
 
+    const int64_t num_frames = md_array_size(offsets) - 1;
+
     int64_t max_frame_size = 0;
-    for (int64_t i = 0; i < md_array_size(offsets) - 1; ++i) {
+    for (int64_t i = 0; i < num_frames; ++i) {
         const int64_t beg = offsets[i + 0];
         const int64_t end = offsets[i + 1];
         const int64_t frame_size = end - beg;
         max_frame_size = MAX(max_frame_size, frame_size);
+    }
+
+    md_array(double) frame_times = md_array_create(double, num_frames, alloc);
+    for (int64_t i = 0; i < num_frames; ++i) {
+        frame_times[i] = (double)i;
     }
 
     void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
@@ -862,6 +869,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         .num_atoms = num_atoms,
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
+        .frame_times = frame_times,
     };
     pdb->unit_cell = cell;
 
@@ -889,13 +897,13 @@ void md_pdb_trajectory_free(md_trajectory_i* traj) {
     md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
 }
 
-static md_trajectory_api pdb_traj_api = {
+static md_trajectory_loader_i pdb_traj_loader = {
     md_pdb_trajectory_create,
     md_pdb_trajectory_free,
 };
 
-md_trajectory_api* md_pdb_trajectory_api() {
-    return &pdb_traj_api;
+md_trajectory_loader_i* md_pdb_trajectory_loader() {
+    return &pdb_traj_loader;
 }
 
 #ifdef __cplusplus

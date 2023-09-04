@@ -10,7 +10,7 @@
 UTEST(pdb, parse_ordinary) {
     str_t path = STR(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(&pdb_data, path, default_allocator);
+    bool result = md_pdb_data_parse_file(&pdb_data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 0);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 9084);
@@ -19,13 +19,13 @@ UTEST(pdb, parse_ordinary) {
     EXPECT_EQ(pdb_data.num_helices, 24);
     EXPECT_EQ(pdb_data.num_sheets, 102);
 
-    md_pdb_data_free(&pdb_data, default_allocator);
+    md_pdb_data_free(&pdb_data, md_heap_allocator);
 }
 
 UTEST(pdb, unmatched_model_entry) {
     str_t path = STR(MD_UNITTEST_DATA_DIR"/dppc64.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(&pdb_data, path, default_allocator);
+    bool result = md_pdb_data_parse_file(&pdb_data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 0);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 14738);
@@ -34,13 +34,13 @@ UTEST(pdb, unmatched_model_entry) {
     EXPECT_EQ(pdb_data.num_helices, 0);
     EXPECT_EQ(pdb_data.num_sheets, 0);
 
-    md_pdb_data_free(&pdb_data, default_allocator);
+    md_pdb_data_free(&pdb_data, md_heap_allocator);
 }
 
 UTEST(pdb, parse_trajectory) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_pdb_data_t pdb_data = {0};
-    bool result = md_pdb_data_parse_file(&pdb_data, path, default_allocator);
+    bool result = md_pdb_data_parse_file(&pdb_data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(pdb_data.num_models, 38);
     EXPECT_EQ(pdb_data.num_atom_coordinates, 5814);
@@ -59,19 +59,19 @@ UTEST(pdb, parse_trajectory) {
     }
     md_file_close(file);
 
-    md_pdb_data_free(&pdb_data, default_allocator);
+    md_pdb_data_free(&pdb_data, md_heap_allocator);
 }
 
 UTEST(pdb, trajectory_i) {
     const str_t path = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-    md_trajectory_i* traj = md_pdb_trajectory_create(path, default_allocator);
+    md_trajectory_i* traj = md_pdb_trajectory_create(path, md_heap_allocator);
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(md_trajectory_num_atoms(traj), 153);
     EXPECT_EQ(md_trajectory_num_frames(traj), 38);
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(default_temp_allocator, mem_size);
+    void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
@@ -82,12 +82,12 @@ UTEST(pdb, trajectory_i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
     }
 
-    md_free(default_temp_allocator, mem_ptr, mem_size);
+    md_free(md_temp_allocator, mem_ptr, mem_size);
     md_pdb_trajectory_free(traj);
 }
 
 UTEST(pdb, create_molecule) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
     str_t path = STR(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
 
     md_pdb_data_t pdb_data = {0};

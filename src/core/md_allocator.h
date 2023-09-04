@@ -46,15 +46,20 @@ static inline void md_aligned_free(struct md_allocator_i* alloc, void* ptr, uint
 extern "C" {
 #endif
 
-uint64_t default_temp_allocator_max_allocation_size();
+uint64_t md_temp_allocator_max_allocation_size();
 
-extern struct md_allocator_i* default_allocator;
+// General allocator interface to heap (malloc)
+extern struct md_allocator_i* md_heap_allocator;
 
 // General allocator interface to thread local ring buffer
-extern struct md_allocator_i* default_temp_allocator;
+extern struct md_allocator_i* md_temp_allocator;
 
 // Direct interface to the thread local ring buffer (Prefer this)
-struct md_ring_allocator_t* get_thread_ring_allocator();
+struct md_ring_allocator_t* md_thread_ring_allocator();
+
+// Simple interface to the thread local ring buffer
+void* md_temp_push(uint64_t bytes);
+void  md_temp_pop (uint64_t bytes);
 
 #ifdef __cplusplus
 }

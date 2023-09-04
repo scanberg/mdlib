@@ -36,52 +36,52 @@
 
 // COMMON TESTS
 UTEST(allocator, default) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
     COMMON_ALLOCATOR_TEST_BODY
 }
 
 UTEST(allocator, default_temp) {
-    md_allocator_i* alloc = default_temp_allocator;
+    md_allocator_i* alloc = md_temp_allocator;
     COMMON_ALLOCATOR_TEST_BODY
 }
 
 UTEST(allocator, arena) {
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
     COMMON_ALLOCATOR_TEST_BODY
     md_arena_allocator_destroy(alloc);
 }
 
 UTEST(allocator, linear_generic) {
-    void* buf = md_alloc(default_allocator, MEGABYTES(32));
+    void* buf = md_alloc(md_heap_allocator, MEGABYTES(32));
     md_linear_allocator_t linear;
     md_linear_allocator_init(&linear, buf, MEGABYTES(32));
     md_allocator_i linear_alloc = md_linear_allocator_create_interface(&linear);
     md_allocator_i* alloc = &linear_alloc;
     COMMON_ALLOCATOR_TEST_BODY
-    md_free(default_allocator, buf, MEGABYTES(32));
+    md_free(md_heap_allocator, buf, MEGABYTES(32));
 }
 
 UTEST(allocator, ring_generic) {
-    void* buf = md_alloc(default_allocator, MEGABYTES(1));
+    void* buf = md_alloc(md_heap_allocator, MEGABYTES(1));
     md_ring_allocator_t ring;
     md_ring_allocator_init(&ring, buf, MEGABYTES(1));
     md_allocator_i ring_alloc = md_ring_allocator_create_interface(&ring);
     md_allocator_i* alloc = &ring_alloc;
     COMMON_ALLOCATOR_TEST_BODY
-    md_free(default_allocator, buf, MEGABYTES(1));
+    md_free(md_heap_allocator, buf, MEGABYTES(1));
 }
 
 
 // @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
 
 UTEST(allocator, pool) {
-    md_allocator_i* pool = md_pool_allocator_create(default_allocator, sizeof(uint64_t));
+    md_allocator_i* pool = md_pool_allocator_create(md_heap_allocator, sizeof(uint64_t));
 
     uint64_t **items = {0};
 
     for (int j = 0; j < 1000; ++j) {
         for (int i = 0; i < 1000; ++i) {
-            uint64_t *item = *md_array_push(items, md_alloc(pool, sizeof(uint64_t)), default_allocator);
+            uint64_t *item = *md_array_push(items, md_alloc(pool, sizeof(uint64_t)), md_heap_allocator);
             *item = i;
         }
 
@@ -103,11 +103,11 @@ UTEST(allocator, pool) {
         }
     }
 
-    md_array_free(items, default_allocator);
+    md_array_free(items, md_heap_allocator);
 }
 
 UTEST(allocator, arena_extended) {
-    md_allocator_i* arena = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    md_allocator_i* arena = md_arena_allocator_create(md_heap_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
 
     for (int j = 0; j < 1000; ++j) {
         EXPECT_EQ((uint64_t)md_alloc(arena, 16) % 16, 0ULL); // Expect to be aligned to 16 bytes
@@ -198,7 +198,7 @@ UTEST(allocator, vm) {
 }
 
 UTEST(allocator, linear) {
-    void* buf = md_alloc(default_allocator, MEGABYTES(64));
+    void* buf = md_alloc(md_heap_allocator, MEGABYTES(64));
     md_linear_allocator_t linear;
     md_linear_allocator_init(&linear, buf, MEGABYTES(64));
 
@@ -214,11 +214,11 @@ UTEST(allocator, linear) {
         md_linear_allocator_push_aligned(&linear, sizeof(uint64_t), 32);
     }
 
-    md_free(default_allocator, buf, MEGABYTES(64));
+    md_free(md_heap_allocator, buf, MEGABYTES(64));
 }
 
 UTEST(allocator, ring) {
-    void* buf = md_alloc(default_allocator, KILOBYTES(32));
+    void* buf = md_alloc(md_heap_allocator, KILOBYTES(32));
     md_ring_allocator_t ring;
     md_ring_allocator_init(&ring, buf, KILOBYTES(32));
 
@@ -234,5 +234,5 @@ UTEST(allocator, ring) {
         md_ring_allocator_push_aligned(&ring, sizeof(uint64_t), 32);
     }
 
-    md_free(default_allocator, buf, KILOBYTES(32));
+    md_free(md_heap_allocator, buf, KILOBYTES(32));
 }

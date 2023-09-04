@@ -13,7 +13,7 @@ UBENCH_EX(str, read_lines) {
     UBENCH_SET_BYTES(md_file_size(file));
 
     const int64_t cap = MEGABYTES(1);
-    char* buf = md_alloc(default_allocator, cap);
+    char* buf = md_alloc(md_heap_allocator, cap);
 
     UBENCH_DO_BENCHMARK() {
         md_file_seek(file, 0, MD_FILE_BEG);
@@ -22,13 +22,13 @@ UBENCH_EX(str, read_lines) {
         }
     }
 
-    md_free(default_allocator, buf, cap);
+    md_free(md_heap_allocator, buf, cap);
 }
 
 UBENCH_EX(str, buffered_reader) {
     md_file_o* file = md_file_open(STR(MD_BENCHMARK_DATA_DIR "/centered.gro"), MD_FILE_READ | MD_FILE_BINARY);
     const int64_t cap = MEGABYTES(1);
-    char* buf = md_alloc(default_allocator, cap);
+    char* buf = md_alloc(md_heap_allocator, cap);
     
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 
@@ -42,7 +42,7 @@ UBENCH_EX(str, buffered_reader) {
         }
     }
 
-    md_free(default_allocator, buf, cap);
+    md_free(md_heap_allocator, buf, cap);
     md_file_close(file);
 }
 

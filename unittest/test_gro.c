@@ -8,7 +8,7 @@
 #include <core/md_os.h>
 
 UTEST(gro, parse_small) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
 
     str_t path = STR(MD_UNITTEST_DATA_DIR"/catalyst.gro");
     md_gro_data_t gro_data = {0};
@@ -37,7 +37,7 @@ UTEST(gro, parse_small) {
 }
 
 UTEST(gro, parse_big) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
 
     str_t path = STR(MD_UNITTEST_DATA_DIR"/centered.gro");
     md_gro_data_t gro_data = { 0 };

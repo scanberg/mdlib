@@ -11,7 +11,7 @@ extern "C" {
 
 struct md_allocator_i;
 struct md_molecule_t;
-struct md_molecule_api;
+struct md_molecule_loader_i;
 
 typedef struct md_gro_atom_t {
     int32_t res_id;
@@ -39,7 +39,7 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc);
 // Molecule
 bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* gro_data, struct md_allocator_i* alloc);
 
-struct md_molecule_api* md_gro_molecule_api();
+struct md_molecule_loader_i* md_gro_molecule_api();
 
 #ifdef __cplusplus
 }

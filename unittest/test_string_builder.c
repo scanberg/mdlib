@@ -5,7 +5,7 @@
 
 UTEST(string_builder, all) {
 	md_strb_t sb = {0};
-	md_strb_init(&sb, default_allocator);
+	md_strb_init(&sb, md_heap_allocator);
 	str_t str;
 
 	str = md_strb_to_str(&sb);

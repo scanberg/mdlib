@@ -120,10 +120,10 @@ molecule data only the first part of the file is used.
 extern "C" {
 #endif
 
-typedef struct md_molecule_api {
+typedef struct md_molecule_loader_i {
     bool (*init_from_str) (md_molecule_t* mol, str_t string,   struct md_allocator_i* alloc);
     bool (*init_from_file)(md_molecule_t* mol, str_t filename, struct md_allocator_i* alloc);
-} md_molecule_api;
+} md_molecule_loader_i;
 
 // @NOTE(Robin): This is just to be thorough,
 // I would recommend using an explicit arena allocator for the molecule and just clearing that in one go instead of calling this.

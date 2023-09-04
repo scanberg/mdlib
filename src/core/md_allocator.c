@@ -13,7 +13,7 @@
 
 #define MAX_TEMP_ALLOCATION_SIZE (MD_TEMP_ALLOC_SIZE / 2)
 
-uint64_t default_temp_allocator_max_allocation_size() {
+uint64_t md_temp_allocator_max_allocation_size() {
     return MAX_TEMP_ALLOCATION_SIZE;
 }
 
@@ -41,7 +41,7 @@ extern void* ring_realloc(struct md_allocator_o* inst, void* ptr, uint64_t old_s
 
 static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
     (void)inst;
-    return ring_realloc((md_allocator_o*)get_thread_ring_allocator(), ptr, old_size, new_size, file, line);
+    return ring_realloc((md_allocator_o*)md_thread_ring_allocator(), ptr, old_size, new_size, file, line);
 }
 
 static void release_ring_buffer(void* data) {
@@ -52,7 +52,7 @@ static void release_ring_buffer(void* data) {
     }
 }
 
-struct md_ring_allocator_t* get_thread_ring_allocator() {
+struct md_ring_allocator_t* md_thread_ring_allocator() {
     if (!_ring_alloc.ptr) {
         _ring_alloc.ptr = malloc(MD_TEMP_ALLOC_SIZE);
         ASSERT(_ring_alloc.ptr);
@@ -71,5 +71,13 @@ static struct md_allocator_i _default_temp_allocator = {
     ring_realloc_internal,
 };
 
-struct md_allocator_i* default_allocator = &_default_allocator;
-struct md_allocator_i* default_temp_allocator = &_default_temp_allocator;
+struct md_allocator_i* md_heap_allocator = &_default_allocator;
+struct md_allocator_i* md_temp_allocator = &_default_temp_allocator;
+
+void* md_temp_push(uint64_t bytes) {
+    return md_ring_allocator_push(md_thread_ring_allocator(), bytes);
+}
+
+void md_temp_pop (uint64_t bytes) {
+    md_ring_allocator_pop(md_thread_ring_allocator(), bytes);
+}

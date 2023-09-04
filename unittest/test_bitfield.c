@@ -39,9 +39,9 @@ UTEST(bitfield, bit_op) {
     md_bitfield_t b = {0};
     md_bitfield_t c = {0};
 
-    md_bitfield_init(&a, default_allocator);
-    md_bitfield_init(&b, default_allocator);
-    md_bitfield_init(&c, default_allocator);
+    md_bitfield_init(&a, md_heap_allocator);
+    md_bitfield_init(&b, md_heap_allocator);
+    md_bitfield_init(&c, md_heap_allocator);
 
     set_bitfield(&a, "10001110101");
     set_bitfield(&b, "01101011101");
@@ -73,7 +73,7 @@ UTEST(bitfield, bit_op) {
 }
 
 UTEST(bitfield, general) {
-    md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
+    md_allocator_i* alloc = md_tracking_allocator_create(md_heap_allocator);
 
     md_bitfield_t bf = {0};
     md_bitfield_init(&bf, alloc);
@@ -158,7 +158,7 @@ UTEST(bitfield, general) {
     EXPECT_EQ(md_bitfield_popcount(&bf), 0);
 
     md_bitfield_t mask = {0};
-    md_bitfield_init(&mask, default_allocator);
+    md_bitfield_init(&mask, md_heap_allocator);
     md_bitfield_set_range(&mask, 100, 200);
     EXPECT_EQ(md_bitfield_popcount(&mask), 100);
 
@@ -201,7 +201,7 @@ UTEST(bitfield, general) {
 }
 
 UTEST(bitfield, serialization) {
-    md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
+    md_allocator_i* alloc = md_tracking_allocator_create(md_heap_allocator);
 
     md_bitfield_t a = {0};
     md_bitfield_init(&a, alloc);
@@ -258,7 +258,7 @@ UTEST(bitfield, serialization) {
 
 UTEST(bitfield, deserialize_base64) {
     str_t str = STR("P38AhACFAIcAiACJAIoAiwCMAI0AjgCPgJCAkYCSgJOAH5SAlYCWgJeAmICZgJqAm4CcgJ2AnoCfgKCAoYCigKOAH6SApYCmgKeAqICpgKqAq4CsgK2AroCvgLCAsYCygLOAH7SAtYC2gLeAuIC5gLqAu4C8gL2AvoC/gMCAwYDCgMOAH8SAxYDGgMeAyIDJgMqAy4DMgM2AzoDPgNCA0YDSgNOAH9SA1YDWgNeA2IDZgNqA24DcgN2A3oDfgOCA4YDigOOAH+SA5YDmgOeA6IDpgOqA64DsgO2A7oDvgPCA8YDygPOAH/SA9YD2gPeA+ID5gPqA+4D8gP0ANgE3ATgBOQE6ATsBAADgMwAIJzsO/v/vzgYC4DNE4AcABQSACIBz/+ADAAR/NzMcBOAGJgOAACII4AQSAYA/YA4EwP4RwQNgCeAQAAuhEQQg9z8m9+tvNPQgZgUfDzPyiGDgEC0KAABEgwAAue+7+w8gLOAQAAMbAiKCICsBAO+gIQLP//5ACQD3QATgBgAJv+GOIAiIeBEBBuACwQGg++ALKsAAINvhBmMG8AcAyD31F0BkAOPAJeBHACDLA79B9EDgG1YAOyCICNeBs7v8ffR/0CAwAL8gA+A7AAAfIVLgHABgbADfgs4AwGAMoAAAD2A+AICADYIZAOCADIAAAAdgHwNAF++lYAjgFQCAMoAAIZNAACD4IADgCmWgACAcIACAZeAEAADwIBYi2wUAAPwBAODgBBngEQABPAwg26HvgMvgBAAA+CBQ4AaYgAAgZeABAKD+gBDgBDKAAOAAmEAAAPxgQOEMhgQAAAAAAA==");
-    md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
+    md_allocator_i* alloc = md_tracking_allocator_create(md_heap_allocator);
 
     const int cap = md_base64_decode_size_in_bytes((int)str.len);
     void* mem = md_alloc(alloc, cap);
@@ -275,7 +275,7 @@ UTEST(bitfield, deserialize_base64) {
 }
 
 UTEST(bitfield, iterator) {
-    md_allocator_i* alloc = md_tracking_allocator_create(default_allocator);
+    md_allocator_i* alloc = md_tracking_allocator_create(md_heap_allocator);
 
     md_bitfield_t bf = md_bitfield_create(alloc);
 

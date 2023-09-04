@@ -321,3 +321,48 @@ str_t extract_path_without_file(str_t path) {
     }
     return res;
 }
+
+// Ported from Martin Ettl's version available on
+// https://rosettacode.org/wiki/Levenshtein_distance#C++
+
+int str_edit_distance(str_t s1, str_t s2) {
+    const int m = (int)str_len(s1);
+    const int n = (int)str_len(s2);
+
+    if (m == 0) return n;
+    if (n == 0) return m;
+
+    const int64_t bytes = ALIGN_TO(sizeof(int) * (n + 1), 16);
+    int* costs = md_temp_push(bytes);
+
+    for (int k=0; k<=n; k++) {
+        // Seller's variant (=0) for fuzzy matching
+        costs[k] = k;
+    }
+
+    int i = 0;
+    for (const char* c1 = str_beg(s1); c1 != str_end(s1); ++c1) {
+        costs[0] = i+1;
+        int corner = i;
+        int j = 0;
+
+        for (const char* c2 = str_beg(s2); c2 != str_end(s2); ++c2) {
+            int upper = costs[j+1];
+            if (*c1 == *c2) {
+                costs[j+1] = corner;
+            } else {
+                int t = MIN(upper, corner);
+                costs[j+1] = MIN(costs[j], t) + 1;
+            }
+
+            corner = upper;
+            j++;
+        }
+        i++;
+    }
+
+    int result = costs[n];
+    md_temp_pop(bytes);
+
+    return result;
+}

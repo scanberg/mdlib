@@ -946,7 +946,7 @@ md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, c
             }
         } else {
             // Resort to spatial acceleration structure
-            md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x, atom->y, atom->z, NULL, atom->count, cell, default_allocator);
+            md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x, atom->y, atom->z, NULL, atom->count, cell, md_heap_allocator);
 
             const float cutoff = 3.0f;
             
@@ -988,13 +988,13 @@ md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom, c
 
 /*
 md_array(md_hbond_data_t) md_util_compute_hbond_data(const md_molecule_t* mol, md_index_data_t connectivity, md_allocator_i* alloc) {
-    md_array(md_valence_t) atom_valence = md_array_create(md_valence_t, mol->atom.count, default_temp_allocator);
+    md_array(md_valence_t) atom_valence = md_array_create(md_valence_t, mol->atom.count, md_temp_allocator);
     memset(atom_valence, 0, md_array_bytes(atom_valence));
 
-    md_array(int8_t) atom_hcount = md_array_create(int8_t, mol->atom.count, default_temp_allocator);
+    md_array(int8_t) atom_hcount = md_array_create(int8_t, mol->atom.count, md_temp_allocator);
     memset(atom_hcount, 0, md_array_bytes(atom_hcount));
 
-    md_array(md_order_t) order = md_util_compute_covalent_bond_order(mol->bonds, md_array_size(mol->bonds), mol->atom.name, mol->atom.residue_idx, mol->residue.name, default_temp_allocator);
+    md_array(md_order_t) order = md_util_compute_covalent_bond_order(mol->bonds, md_array_size(mol->bonds), mol->atom.name, mol->atom.residue_idx, mol->residue.name, md_temp_allocator);
 
     for (int64_t i = 0; i < md_array_size(mol->bonds); ++i) {
         const md_atom_idx_t *idx = mol->bonds[i].idx;
@@ -1063,7 +1063,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain_data, const md_residue_id
         return false;
     }
 
-    md_allocator_i* temp_alloc = default_temp_allocator;
+    md_allocator_i* temp_alloc = md_temp_allocator;
     
     md_array(md_range_t) res_atom_range = 0;
     
@@ -2274,7 +2274,7 @@ bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_
 
     const vec4_t ext = vec4_from_vec3(pbc_ext, 0);
 
-    fifo_t queue = fifo_create(64, default_temp_allocator);
+    fifo_t queue = fifo_create(64, md_temp_allocator);
     md_array(int)  pred = 0;
 
     md_array(vec3_t) xyz = 0;
@@ -2289,8 +2289,8 @@ bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_
         for (const md_atom_idx_t* it = beg_idx; it != end_idx; ++it) {
             int i = *it;
             const vec3_t pos = {x[i], y[i], z[i]};
-            md_array_push(xyz, pos, default_temp_allocator);
-            md_array_push(pred, -1, default_temp_allocator);
+            md_array_push(xyz, pos, md_temp_allocator);
+            md_array_push(pred, -1, md_temp_allocator);
         }
         
         //const vec4_t com = vec4_from_vec3(md_util_compute_com_ortho(xyz, NULL, md_array_size(xyz), pbc_ext), 0);
@@ -2618,7 +2618,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
                 for (int64_t res_idx = mol->chain.residue_range[chain_idx].beg; res_idx < mol->chain.residue_range[chain_idx].end; ++res_idx) {
                     md_backbone_atoms_t atoms;
                     if (md_util_backbone_atoms_extract_from_residue_idx(&atoms, (int32_t)res_idx, mol)) {
-                        md_array_push(backbone, atoms, default_allocator);
+                        md_array_push(backbone, atoms, md_heap_allocator);
                     } else {
                         if (md_array_size(backbone) >= MIN_BACKBONE_LENGTH) {
                             // Commit the backbone
@@ -2637,7 +2637,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
                 md_array_shrink(backbone, 0);
             }
 
-            md_array_free(backbone, default_allocator);
+            md_array_free(backbone, md_heap_allocator);
 
             mol->backbone.range_count = md_array_size(mol->backbone.range);
             mol->backbone.count = md_array_size(mol->backbone.atoms);
@@ -2752,7 +2752,7 @@ static void radixPass(uint32_t* destination, const uint32_t* source, const uint3
 void md_util_spatial_sort_soa(uint32_t* source, const float* x, const float* y, const float* z, int64_t count) {
     if (!source || !z || !y || !z || count <= 0) return;
 
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
 
     uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
     computeOrder(keys, x, y, z, count, 0);
@@ -2778,7 +2778,7 @@ void md_util_spatial_sort_soa(uint32_t* source, const float* x, const float* y, 
 void md_util_spatial_sort(uint32_t* source, const vec3_t* xyz, int64_t count) {
     if (!source || !xyz || count <= 0) return;
 
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
 
     uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
     const float* base = (const float*)xyz;

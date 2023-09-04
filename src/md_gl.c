@@ -263,7 +263,7 @@ static inline uint32_t gl_texture_height(gl_texture_t tex, uint32_t level) {
 }
 
 static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, str_t extra_src) {
-    md_strb_t sb = md_strb_create(default_temp_allocator);
+    md_strb_t sb = md_strb_create(md_temp_allocator);
     
     if (!str_equal_cstr_n(src, "#version ", 9)) {
         MD_LOG_ERROR("Missing version string as first line in shader!");
@@ -1212,7 +1212,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 }
             }
 
-            md_array_push(draw_ops, draw_op, default_temp_allocator);
+            md_array_push(draw_ops, draw_op, md_temp_allocator);
                 
             int64_t mol_idx = -1;
             for (int64_t j = 0; j < md_array_size(draw_mols); j++) {
@@ -1224,7 +1224,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             // Not found
             if (mol_idx == -1) {
                 mol_idx = md_array_size(draw_mols);
-                md_array_push(draw_mols, ((draw_mol_t){ rep->mol, 0 }), default_temp_allocator);
+                md_array_push(draw_mols, ((draw_mol_t){ rep->mol, 0 }), md_temp_allocator);
             }
 
             if (rep->type == MD_GL_REP_RIBBONS || rep->type == MD_GL_REP_CARTOON) {

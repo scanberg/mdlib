@@ -136,29 +136,24 @@ static md_unit_t find_unit_from_predefined(str_t name) {
 
 static str_t find_name_from_predefined(md_unit_t unit) {
     for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
-        if (unit_equal(predefined_units[i].unit, unit)) {
+        if (md_unit_equal(predefined_units[i].unit, unit)) {
             return predefined_units[i].str;
         }
     }
     return (str_t){0};
 }
 
-// b is allowed to match or be a subset of a (with the same sign), but not vice-versa
-static inline int compute_match_score(md_unit_t a, md_unit_t b) {
+static inline int compute_match_score(md_unit_t unit, md_unit_t ref) {
     int score = 0;
-    for (int i = 0; i < (int)ARRAY_SIZE(b.base.arr); ++i) {
-        
-        int sign_a = (a.base.arr[i] > 0) - (a.base.arr[i] < 0);
-        int sign_b = (b.base.arr[i] > 0) - (b.base.arr[i] < 0);
-
-        if (sign_b) {
-            score += (sign_b == sign_a);
+    for (int i = 0; i < (int)ARRAY_SIZE(ref.base.arr); ++i) {
+        if (ref.base.arr[i] != 0 && unit.base.arr[i] == ref.base.arr[i]) {
+            score += 10;
         }
     }
     return score;
 }
 
-static md_unit_t find_best_matching_predefined(md_unit_t unit) {
+static int find_best_matching_predefined(md_unit_t unit) {
     int best_match_score = 0;
     int best_match_idx   = -1;
     for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
@@ -168,10 +163,7 @@ static md_unit_t find_best_matching_predefined(md_unit_t unit) {
             best_match_idx = i;
         }
     }
-    if (best_match_idx != -1) {
-        return predefined_units[best_match_idx].unit;
-    }
-    return (md_unit_t){0};
+    return best_match_idx;
 }
 
 static int print_exponent(char* buf, int cap, int exp) {
@@ -188,8 +180,8 @@ static int print_exponent(char* buf, int cap, int exp) {
 }
 
 
-bool unit_equal(md_unit_t a, md_unit_t b) {
-    if (!unit_base_equal(a, b)) return false;
+bool md_unit_equal(md_unit_t a, md_unit_t b) {
+    if (!md_unit_base_equal(a, b)) return false;
 
     // Compare multiplier
     if (a.mult == b.mult) return true;
@@ -205,7 +197,7 @@ bool unit_equal(md_unit_t a, md_unit_t b) {
     return fabs(d) < 5e-13;
 }
 
-md_unit_t unit_mul(md_unit_t a, md_unit_t b) {
+md_unit_t md_unit_mul(md_unit_t a, md_unit_t b) {
     md_unit_t result = {
         .base = {
             .dim.length     = a.base.dim.length  + b.base.dim.length,
@@ -223,7 +215,7 @@ md_unit_t unit_mul(md_unit_t a, md_unit_t b) {
     return result;
 }
 
-md_unit_t unit_div(md_unit_t a, md_unit_t b) {
+md_unit_t md_unit_div(md_unit_t a, md_unit_t b) {
     md_unit_t result = {
         .base = {
             .dim.length     = a.base.dim.length  - b.base.dim.length,
@@ -241,23 +233,21 @@ md_unit_t unit_div(md_unit_t a, md_unit_t b) {
     return result;
 }
 
-md_unit_t unit_add(md_unit_t a, md_unit_t b) {
-    md_unit_t result = {0};
+md_unit_t md_unit_add(md_unit_t a, md_unit_t b) {
     if (a.base.raw_bits == b.base.raw_bits) {
-        result = a;
+        return a;
     }
-    return result;
+    return md_unit_none();
 }
 
-md_unit_t unit_sub(md_unit_t a, md_unit_t b) {
-    md_unit_t result = {0};
+md_unit_t md_unit_sub(md_unit_t a, md_unit_t b) {
     if (a.base.raw_bits == b.base.raw_bits) {
-        result = a;
+        return a;
     }
-    return result;
+    return md_unit_none();
 }
 
-md_unit_t unit_inv(md_unit_t unit) {
+md_unit_t md_unit_inv(md_unit_t unit) {
     md_unit_t inv = {
         .base = {
             .dim = {
@@ -275,8 +265,8 @@ md_unit_t unit_inv(md_unit_t unit) {
     return inv;
 }
 
-md_unit_t unit_pow(md_unit_t unit, int pow) {
-    md_unit_t unit_pow = {
+md_unit_t md_unit_pow(md_unit_t unit, int pow) {
+    md_unit_t md_unit_pow = {
         .base = {
             .dim = {
                 .length     = (int8_t)(unit.base.dim.length  * pow),
@@ -291,22 +281,22 @@ md_unit_t unit_pow(md_unit_t unit, int pow) {
         },
         .mult = unit.mult,
     };
-    return unit_pow;
+    return md_unit_pow;
 }
 
-md_unit_t unit_scl(md_unit_t unit, double scl) {
-    md_unit_t unit_scl = unit;
-    unit_scl.mult *= scl;
-    return unit_scl;
+md_unit_t md_unit_scl(md_unit_t unit, double scl) {
+    md_unit_t md_unit_scl = unit;
+    md_unit_scl.mult *= scl;
+    return md_unit_scl;
 }
 
-bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
-    if (!unit_base_equal(cur_unit, new_unit)) {
+bool md_unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
+    if (!md_unit_base_equal(cur_unit, new_unit)) {
         MD_LOG_ERROR("Failed to perform unit conversion, the current unit cannot be converted into new unit");
         return false;
     }
 
-    if (unit_equal(cur_unit, new_unit)) {
+    if (md_unit_equal(cur_unit, new_unit)) {
         // Easy peasy, do nothing
         return true;
     }
@@ -329,13 +319,13 @@ bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_un
     return true;
 }
 
-bool unit_convert_inplace_f(float* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
-    if (!unit_base_equal(cur_unit, new_unit)) {
+bool md_unit_convert_inplace_f(float* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit) {
+    if (!md_unit_base_equal(cur_unit, new_unit)) {
         MD_LOG_ERROR("Failed to perform unit conversion, the current unit cannot be converted into new unit");
         return false;
     }
 
-    if (unit_equal(cur_unit, new_unit)) {
+    if (md_unit_equal(cur_unit, new_unit)) {
         // Easy peasy, do nothing
         return true;
     }
@@ -399,7 +389,7 @@ md_unit_t mask_neg(md_unit_t unit) {
     return unit_neg;
 }
 
-// A bit wierd name, counts the number of base unit dimensions which is not zero
+// A bit wierd name, counts the number of base unit dimensions that are not zero
 uint8_t base_count(md_unit_t unit) {
     uint8_t count = 0;
     count += unit.base.dim.length  != 0;
@@ -453,7 +443,7 @@ int internal_print_dims_SI(char* buf, int cap, md_unit_t unit) {
 int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
     int len = 0;
 
-    if (unit_empty(unit) || unit_unitless(unit)) {
+    if (md_unit_empty(unit) || md_unit_unitless(unit)) {
         return 0;
     }
 
@@ -469,9 +459,9 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
         return len;
     }
 
-    // Try to match inverted against predefined units in table
+    // Try to match inverted against predefined units (exact)
     {
-        str_t str = find_name_from_predefined(unit_inv(unit));
+        str_t str = find_name_from_predefined(md_unit_inv(unit));
         if (!str_empty(str)) {
             PRINT("1/%.*s", (int)str.len, str.ptr);
             return len;
@@ -480,7 +470,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
 
     // Try to match find an exact matching base and see if we can apply a prefix
     for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
-        if (unit_base_equal(unit, predefined_units[i].unit)) {
+        if (md_unit_base_equal(unit, predefined_units[i].unit)) {
             // We found a matching base, we just need to work out a matching prefix scaling
             str_t str  = predefined_units[i].str;
             double mult  = unit.mult / predefined_units[i].unit.mult;
@@ -498,7 +488,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
             return len;
         }
         // Test for inverted
-        if (unit_base_equal(unit_inv(unit), predefined_units[i].unit)) {
+        if (md_unit_base_equal(md_unit_inv(unit), predefined_units[i].unit)) {
             // We found a matching unit, we just need to work out a matching prefix scaling
             str_t str  = predefined_units[i].str;
             double mult  = unit.mult / predefined_units[i].unit.mult;
@@ -507,7 +497,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
             if (mult != 1.0) {
                 prefix = find_prefix_str_from_value((float)mult);
                 if (str_empty(prefix)) {
-                    md_log(MD_LOG_TYPE_DEBUG, "Unable to find suitable prefix?");
+                    MD_LOG_DEBUG("Unable to find suitable prefix?");
                     return 0;
                 }
             }
@@ -519,29 +509,68 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
 
     // Try to find best matching base and see where we can go from there
     {
-        md_unit_t best_match = find_best_matching_predefined(unit);
-        if (!unit_empty(best_match)) {
-            double mult  = unit.mult / best_match.mult;
-            str_t prefix = STR("");
+        md_unit_t original_unit = unit;
 
-            if (mult != 1.0) {
-                prefix = find_prefix_str_from_value((float)mult);
+        int num_arr[32];
+        int num_count = 0;
+        int den_arr[32];
+        int den_count = 0;
+        for (int i = 0; i < ARRAY_SIZE(num_arr); ++i) {
+            int idx = find_best_matching_predefined(unit);
+            if (idx == -1) {
+                break;
+            }
+            num_arr[num_count++] = idx;
+            unit = md_unit_div(unit, predefined_units[idx].unit);
+            if (unit.base.raw_bits == 0) {
+                break;
+            }
+        }
+        if (unit.base.raw_bits != 0) {
+            for (int i = 0; i < ARRAY_SIZE(den_arr); ++i) {
+                int idx = find_best_matching_predefined(md_unit_inv(unit));
+                if (idx == -1) {
+                    break;
+                }
+                den_arr[den_count++] = idx;
+                unit = md_unit_mul(unit, predefined_units[idx].unit);
+                if (unit.base.raw_bits == 0) {
+                    break;
+                }
+            }
+        }
+
+        if (unit.base.raw_bits == 0) {
+            str_t prefix = STR("");
+            if (unit.mult != 1.0) {
+                prefix = find_prefix_str_from_value((float)unit.mult);
                 if (str_empty(prefix)) {
-                    // Error, could not determine prefix
-                    md_log(MD_LOG_TYPE_DEBUG, "Could not determine prefix");
+                    MD_LOG_DEBUG("Unable to find suitable prefix?");
                     return 0;
                 }
             }
 
-            if (unit.base.raw_bits == best_match.base.raw_bits) {
-                // Easy peasy, exact match with optional prefix
-                
-                PRINT("%.*s", (int)prefix.len, prefix.ptr);
+            PRINT("%.*s", (int)prefix.len, prefix.ptr);
+            for (int i = 0; i < num_count; ++i) {
+                int idx = num_arr[i];
+                str_t str = predefined_units[idx].str;
+                PRINT("%.*s", (int)str.len, str.ptr);
             }
+            if (den_count > 0) {
+                PRINT("/");
+                for (int i = 0; i < den_count; ++i) {
+                    int idx = den_arr[i];
+                    str_t str = predefined_units[idx].str;
+                    PRINT("%.*s", (int)str.len, str.ptr);
+                }
+            }
+            return len;
         }
+        
+        unit = original_unit;
     }
 
-    // Last resort, just print out whatever there is in metric units
+    // Last resort, just print out whatever there is in SI units
     {
         str_t prefix = find_prefix_str_from_value((float)unit.mult);
         if (!str_empty(prefix)) {
@@ -554,22 +583,22 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
         len += internal_print_dims_SI(buf + len, cap - len, mask_pos(unit));
         if (base_count(mask_neg(unit))) {
             PRINT("/");
-            len += internal_print_dims_SI(buf + len, cap - len, unit_inv(mask_neg(unit)));
+            len += internal_print_dims_SI(buf + len, cap - len, md_unit_inv(mask_neg(unit)));
         }   
     }
 
     return len;
 }
 
-int unit_print(char* buf, int cap, md_unit_t unit) {
+int md_unit_print(char* buf, int cap, md_unit_t unit) {
     return internal_print(buf, cap, unit, 0);
 }
 
-str_t unit_to_string(md_unit_t unit, struct md_allocator_i* alloc) {
+str_t md_unit_to_string(md_unit_t unit, struct md_allocator_i* alloc) {
     str_t str = {0};
 
     char buf[128];
-    int len = unit_print(buf, sizeof(buf), unit);
+    int len = md_unit_print(buf, sizeof(buf), unit);
     if (len > 0) {
         str = str_copy((str_t){buf, len}, alloc);
     }
@@ -577,7 +606,7 @@ str_t unit_to_string(md_unit_t unit, struct md_allocator_i* alloc) {
     return str;
 }
 
-md_unit_t unit_from_string(str_t str) {
+md_unit_t md_unit_from_string(str_t str) {
     str = str_trim(str);
     if (str_empty(str)) {
         return (md_unit_t) {0};
@@ -589,26 +618,26 @@ md_unit_t unit_from_string(str_t str) {
     if (delim != -1) {
         str_t num = str_substr(str, 0, delim);
         str_t den = str_substr(str, delim + 1, str.len);
-        return unit_div(unit_from_string(num), unit_from_string(den));
+        return md_unit_div(md_unit_from_string(num), md_unit_from_string(den));
     }
 
     delim = str_find_char(str, '*');
     if (delim != -1) {
         str_t p1 = str_substr(str, 0, delim);
         str_t p2 = str_substr(str, delim + 1, str.len);
-        return unit_mul(unit_from_string(p1), unit_from_string(p2));
+        return md_unit_mul(md_unit_from_string(p1), md_unit_from_string(p2));
     }
     
     delim = str_find_char(str, ' ');
     if (delim != -1) {
         str_t p1 = str_substr(str, 0, delim);
         str_t p2 = str_substr(str, delim + 1, str.len);
-        return unit_mul(unit_from_string(p1), unit_from_string(p2));
+        return md_unit_mul(md_unit_from_string(p1), md_unit_from_string(p2));
     }
     
     // Try to match against defined units (exact)
     md_unit_t exact = find_unit_from_predefined(str);
-    if (!unit_empty(exact)) {
+    if (!md_unit_empty(exact)) {
         return exact;
     }
         
@@ -644,12 +673,12 @@ md_unit_t unit_from_string(str_t str) {
         if (!str_empty(exp)) {
             int pow;
             if (str_extract_i32(&pow, &exp)) {
-                unit = unit_pow(unit, pow);
+                unit = md_unit_pow(unit, pow);
             }
         }
 
         if (!str_empty(rest)) {
-            unit = unit_mul(unit, unit_from_string(rest));
+            unit = md_unit_mul(unit, md_unit_from_string(rest));
         }
 
         return unit;
@@ -659,70 +688,70 @@ md_unit_t unit_from_string(str_t str) {
     return (md_unit_t) {0};
 }
 
-md_unit_t unit_none() {
+md_unit_t md_unit_none() {
     return (md_unit_t)UNIT_NONE;
 }
 
-md_unit_t unit_meter() {
+md_unit_t md_unit_meter() {
     return (md_unit_t)UNIT_METER;
 }
 
-md_unit_t unit_nanometer() {
+md_unit_t md_unit_nanometer() {
     return (md_unit_t)UNIT_NANOMETER;
 }
 
-md_unit_t unit_angstrom() {
+md_unit_t md_unit_angstrom() {
     return (md_unit_t)UNIT_ANGSTROM;
 }
 
-md_unit_t unit_kilogram() {
+md_unit_t md_unit_kilogram() {
     return (md_unit_t)UNIT_KILOGRAM;
 }
 
-md_unit_t unit_second() {
+md_unit_t md_unit_second() {
     return (md_unit_t)UNIT_SECOND;
 }
 
-md_unit_t unit_nanosecond() {
+md_unit_t md_unit_nanosecond() {
     return (md_unit_t)UNIT_NANOSECOND;
 }
 
-md_unit_t unit_pikosecond() {
+md_unit_t md_unit_pikosecond() {
     return (md_unit_t)UNIT_PIKOSECOND;
 }
 
-md_unit_t unit_ampere() {
+md_unit_t md_unit_ampere() {
     return (md_unit_t)UNIT_AMPERE;
 }
 
-md_unit_t unit_mole() {
+md_unit_t md_unit_mole() {
     return (md_unit_t)UNIT_MOLE;
 }
 
-md_unit_t unit_kelvin() {
+md_unit_t md_unit_kelvin() {
     return (md_unit_t)UNIT_KELVIN;
 }
 
-md_unit_t unit_radian() {
+md_unit_t md_unit_radian() {
     return (md_unit_t)UNIT_RADIAN;
 }
 
-md_unit_t unit_degree() {
+md_unit_t md_unit_degree() {
     return (md_unit_t)UNIT_DEGREE;
 }
 
-md_unit_t unit_count() {
+md_unit_t md_unit_count() {
     return (md_unit_t)UNIT_COUNT;
 }
 
-md_unit_t unit_joule() {
+md_unit_t md_unit_joule() {
     return (md_unit_t)UNIT_JOULE;
 }
 
-md_unit_t unit_pascal() {
+md_unit_t md_unit_pascal() {
     return (md_unit_t)UNIT_PASCAL;
 }
 
-md_unit_t unit_bar() {
+md_unit_t md_unit_bar() {
     return (md_unit_t)UNIT_BAR;
 }

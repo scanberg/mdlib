@@ -465,7 +465,7 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
         if (stop_after_first_model) {
             break;
         }
-        byte_offset = md_buffered_reader_tellg(*reader);
+        byte_offset = md_buffered_reader_tellg(reader);
     }
 
     data->num_coordinates = md_array_size(data->coordinates);
@@ -495,13 +495,13 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(default_allocator, cap);
+        char* buf = md_alloc(md_heap_allocator, cap);
         ASSERT(buf);
         
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         result = xyz_parse(data, &reader, alloc, false);
         
-        md_free(default_allocator, buf, cap);
+        md_free(md_heap_allocator, buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
@@ -563,9 +563,9 @@ static bool xyz_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
     md_xyz_data_t data = {0};
     
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-    bool result = xyz_parse(&data, &reader, default_allocator, true);
+    bool result = xyz_parse(&data, &reader, md_heap_allocator, true);
     result = result && md_xyz_molecule_init(mol, &data, alloc);
-    md_xyz_data_free(&data, default_allocator);
+    md_xyz_data_free(&data, md_heap_allocator);
     
     return result;
 }
@@ -577,15 +577,15 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(default_allocator, cap);
+        char* buf = md_alloc(md_heap_allocator, cap);
         ASSERT(buf);
 
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-        result = xyz_parse(&data, &reader, default_allocator, true);
+        result = xyz_parse(&data, &reader, md_heap_allocator, true);
         result = result && md_xyz_molecule_init(mol, &data, alloc);
 
-        md_xyz_data_free(&data, default_allocator);
-        md_free(default_allocator, buf, cap);
+        md_xyz_data_free(&data, md_heap_allocator);
+        md_free(md_heap_allocator, buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Init XYZ from file: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
@@ -593,12 +593,12 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
     return result;
 }
 
-static md_molecule_api xyz_molecule_api = {
+static md_molecule_loader_i xyz_molecule_api = {
     xyz_init_from_str,
     xyz_init_from_file,
 };
 
-md_molecule_api* md_xyz_molecule_api() {
+md_molecule_loader_i* md_xyz_molecule_api() {
     return &xyz_molecule_api;
 }
 
@@ -612,12 +612,12 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     // Should this be exposed?
-    md_allocator_i* alloc = default_temp_allocator;
+    md_allocator_i* alloc = md_temp_allocator;
 
     bool result = true;
     const int64_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        // This is a borderline case if one should use the default_temp_allocator as the raw frame size could potentially be several megabytes...
+        // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
         void* frame_data = md_alloc(alloc, frame_size);
         const int64_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
@@ -748,13 +748,13 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
 
     if (!try_read_cache(cache_file, &offsets, &num_atoms, alloc)) {
         md_xyz_data_t data = {0};
-        if (!md_xyz_data_parse_file(&data, filename, default_allocator)) {
+        if (!md_xyz_data_parse_file(&data, filename, md_heap_allocator)) {
             return false;
         }
 
         if (data.num_models <= 1) {
             md_log(MD_LOG_TYPE_INFO, "The xyz file did not contain multiple entries and cannot be read as a trajectory");
-            md_xyz_data_free(&data, default_allocator);
+            md_xyz_data_free(&data, md_heap_allocator);
             return false;
         }
 
@@ -765,7 +765,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
                 const int64_t length = data.models[i].end_coord_index - data.models[i].beg_coord_index;
                 if (length != ref_length) {
                     MD_LOG_ERROR("The xyz file models are not of equal length and cannot be read as a trajectory");
-                    md_xyz_data_free(&data, default_allocator);
+                    md_xyz_data_free(&data, md_heap_allocator);
                     return false;
                 }
             }
@@ -833,13 +833,13 @@ void md_xyz_trajectory_free(md_trajectory_i* traj) {
     md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(xyz_trajectory_t));
 }
 
-static md_trajectory_api xyz_traj_api = {
+static md_trajectory_loader_i xyz_traj_loader = {
     md_xyz_trajectory_create,
     md_xyz_trajectory_free,
 };
 
-md_trajectory_api* md_xyz_trajectory_api() {
-    return &xyz_traj_api;
+md_trajectory_loader_i* md_xyz_trajectory_loader() {
+    return &xyz_traj_loader;
 }
 
 #ifdef __cplusplus

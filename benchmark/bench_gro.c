@@ -6,7 +6,7 @@
 #include <core/md_os.h>
 
 UBENCH_EX(gro, load) {
-    md_allocator_i* alloc = md_arena_allocator_create(default_allocator, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
     str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
     md_file_o* file = md_file_open(path, MD_FILE_READ);

@@ -32,6 +32,8 @@
 #include <md_filter.h>
 #include <md_util.h>
 #include <md_xvg.h>
+#include <md_edr.h>
+#include <md_csv.h>
 
 #include <core/md_common.h>
 #include <core/md_compiler.h>
@@ -102,7 +104,6 @@ typedef struct constant_t constant_t;
 typedef struct static_backchannel_t static_backchannel_t;
 typedef struct parse_context_t parse_context_t;
 typedef struct eval_context_t eval_context_t;
-typedef struct table_t table_t;
 
 typedef union value_t value_t;
 
@@ -142,7 +143,7 @@ typedef enum ast_type_t {
     AST_STATIC_PROC,
     AST_PROC_CALL,          // Procedure call, Operators are directly translated into procedure calls as well.
     AST_CONSTANT_VALUE,
-    AST_TABLE_VALUE,
+    AST_TABLE,
     AST_IDENTIFIER,
     AST_ARRAY,              // This is also just to declare an array in tree form, the node tells us the types, the children contains the values... inefficient, yes.
     AST_ARRAY_SUBSCRIPT,    // [..]
@@ -363,12 +364,38 @@ struct procedure_t {
     flags_t flags;
 };
 
-struct table_t {
-    int num_cols;
-    int num_rows;
-    float* data;
-    bool interpolate;
-};
+typedef struct table_t {
+    str_t name;
+    int64_t num_fields;
+    int64_t num_values;
+    
+    md_array(str_t) field_names;
+    md_array(md_unit_t) field_units;
+    md_array(md_array(double)) field_values;
+} table_t;
+
+void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double* data, int64_t count, md_allocator_i* alloc) {
+    ASSERT(count == table->num_values);
+    md_array_push(table->field_names, str_copy(name, alloc), alloc);
+    md_array_push(table->field_units, unit, alloc);
+    md_array(double) field_data = md_array_create(double, table->num_values, alloc);
+    MEMCPY(field_data, data, sizeof(double) * table->num_values);
+    md_array_push(table->field_values, field_data, alloc);
+    table->num_fields = md_array_size(table->field_names);
+}
+
+
+void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float* data, int64_t count, md_allocator_i* alloc) {
+    ASSERT(count == table->num_values);
+    md_array_push(table->field_names, str_copy(name, alloc), alloc);
+    md_array_push(table->field_units, unit, alloc);
+    md_array(double) field_data = md_array_create(double, table->num_values, alloc);
+    for (int64_t i = 0; i < table->num_values; ++i) {
+        field_data[i] = data[i];
+    }
+    md_array_push(table->field_values, field_data, alloc);
+    table->num_fields = md_array_size(table->field_names);
+}
 
 struct ast_node_t {
     // @OPTIMIZE: Make specific types for each type of Ast_node, where the first member is the type which we can use and cast after.
@@ -386,7 +413,8 @@ struct ast_node_t {
     uint32_t            proc_flags; // Additional flags used for e.g. swapping arguments which may be required for the procedure call
     str_t               ident;      // Identifier reference (also used for procedure name lookup)
 
-    table_t             table;
+    const table_t*      table;
+    md_array(int)       table_field_indices;  // Indices into the table fields which are used for this node
 
     // CONTEXT
     type_info_t* lhs_context_types; // For static type checking
@@ -423,6 +451,7 @@ struct md_script_ir_t {
     md_array(expression_t*) eval_targets;               // List of dynamic expressions which needs to be evaluated per frame
     
     md_array(identifier_t)  identifiers;                // List of identifiers, notice that the data in a const context should only be used if it is flagged as
+    md_array(table_t) tables;                           // List of tables which are used in the script
 
     // These are the final products which can be read through the public part of the structure
     md_array(md_log_token_t)     warnings;
@@ -474,7 +503,7 @@ static inline uint32_t operator_precedence(ast_type_t type) {
     case AST_STATIC_PROC:
     case AST_PROC_CALL:
     case AST_CONSTANT_VALUE:
-    case AST_TABLE_VALUE:
+    case AST_TABLE:
     case AST_IDENTIFIER:
     case AST_ARRAY:
     case AST_ARRAY_SUBSCRIPT:
@@ -605,7 +634,7 @@ static inline bool is_type_dim_compatible(type_info_t from, type_info_t to) {
 }
 
 static inline bool is_type_equivalent(type_info_t a, type_info_t b) {
-    return memcmp(&a, &b, sizeof(type_info_t)) == 0;
+    return MEMCMP(&a, &b, sizeof(type_info_t)) == 0;
 }
 
 static inline bool is_type_position_compatible(type_info_t type) {
@@ -988,7 +1017,7 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
     MEMSET(node, 0, sizeof(ast_node_t));
     node->type = type;
     node->token = token;
-    node->data.unit = unit_none();
+    node->data.unit = md_unit_none();
     md_array_push(ir->nodes, node, ir->arena);
     return node;
 }
@@ -1509,7 +1538,7 @@ static int print_bitfield(char* buf, int buf_size, const md_bitfield_t* bitfield
     return len;
 }
 
-static int print_value(char* buf, int buf_size, data_t data) {
+static int print_data_value(char* buf, int buf_size, data_t data) {
     int len = 0;
     if (is_variable_length(data.type)) return 0;
     if (buf_size <= 0) return 0;
@@ -1532,7 +1561,7 @@ static int print_value(char* buf, int buf_size, data_t data) {
                     .size = data.size,
                     .type = type,
                 };
-                len += print_value(buf + len, buf_size - len, elem_data);
+                len += print_data_value(buf + len, buf_size - len, elem_data);
                 if (i < arr_len - 1) PRINT(",");
             }
             PRINT("}");
@@ -1592,8 +1621,8 @@ static int print_value(char* buf, int buf_size, data_t data) {
     else {
         PRINT("NULL");
     }
-    if (!unit_empty(data.unit)) {
-        len += unit_print(buf + len, MAX(0, (int)sizeof(buf) - len), data.unit);
+    if (!md_unit_empty(data.unit)) {
+        len += md_unit_print(buf + len, MAX(0, (int)sizeof(buf) - len), data.unit);
     }
     return len;
 }
@@ -1603,7 +1632,7 @@ static int print_value(char* buf, int buf_size, data_t data) {
 #if MD_DEBUG
 
 /*
-static void print_value(FILE* file, data_t data) {
+static void print_data_value(FILE* file, data_t data) {
     if (is_variable_length(data.type)) return;
 
     if (is_array(data.type)) {
@@ -1624,7 +1653,7 @@ static void print_value(FILE* file, data_t data) {
                 .type = type,
                 .unit = data.unit,
             };
-            print_value(file, new_data);
+            print_data_value(file, new_data);
             if (i < len - 1) fprintf(file, ", ");
         }
         fprintf(file, "]");
@@ -1692,7 +1721,7 @@ static void print_label(FILE* file, const ast_node_t* node) {
     char buf[1024];
     switch(node->type) {
     case AST_CONSTANT_VALUE:
-        print_value(buf, sizeof(buf), node->data);
+        print_data_value(buf, sizeof(buf), node->data);
         fprintf(file, "%s", buf);
         break;
     case AST_PROC_CALL:
@@ -1750,7 +1779,7 @@ static void print_label(FILE* file, const ast_node_t* node) {
     if (node->type != AST_ASSIGNMENT) {
         if (node->data.ptr) {
             fprintf(file, " = ");
-            print_value(buf, sizeof(buf), node->data);
+            print_data_value(buf, sizeof(buf), node->data);
             fprintf(file, "%s", buf);
         }
     }
@@ -2532,73 +2561,92 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
     return true;
 }
 
-static void table_extract_row_skip_first_col(float dst[], const table_t* table, int row) {
-    ASSERT(table);
-    ASSERT(table->num_cols > 0);
-    ASSERT(table->num_rows > 0);
-    ASSERT(row >= 0 && row < table->num_rows);
-
-    MEMCPY(dst, table->data + row * table->num_cols + 1, (table->num_cols - 1) * sizeof(float));
-}
-
-// Interpolates a row into dst from the table at x
-// The first value in the row is assumed to be the x value and is skipped when writing out
-// Assumes that the table is sorted in ascending order
-// Assumes that the table has at least 2 rows
-static void table_interpolate_row_skip_first_col(float dst[], const table_t* table, const double x) {
-    ASSERT(table);
-    ASSERT(table->num_cols > 0);
-    ASSERT(table->num_rows > 0);
-
-    // Find the row index
-    int row_index = 0;
-    for (int i = 0; i < table->num_rows; ++i) {
-        if (table->data[i * table->num_cols] > (float)x) {
-            break;
-        }
-        row_index = i;
-    }
-
-    if (row_index == 0) {
-        // We are at the first row, just copy it
-        table_extract_row_skip_first_col(dst, table, row_index);
-        return;
-    }
-
-    if (row_index == table->num_rows - 1) {
-        // We are at the last row, just copy it
-        table_extract_row_skip_first_col(dst, table, row_index);
-        return;
-    }
-
-    // Interpolate
-    const float x0 = table->data[row_index * table->num_cols];
-    const float x1 = table->data[(row_index + 1) * table->num_cols];
-    
-    const float t = CLAMP(((float)x - x0) / (x1 - x0), 0.0f, 1.0f);
-    
-    for (int i = 1; i < table->num_cols; ++i) {
-        const float y0 = table->data[row_index * table->num_cols + i];
-        const float y1 = table->data[(row_index + 1) * table->num_cols + i];
-        dst[i - 1] = lerpf(y0, y1, t);
-    }
-}
-
 static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(node && node->type == AST_TABLE_VALUE);
+    ASSERT(node && node->type == AST_TABLE);
 
     if (dst) {
-        ASSERT(ctx->frame_header);
-        is_type_equivalent(dst->type, node->data.type);
-
-        const double x = ctx->frame_header->timestamp;
+        ASSERT(dst->ptr && dst->size >= type_info_total_byte_size(node->data.type));
         
-        ASSERT(dst->ptr && (size_t)dst->size >= (node->table.num_cols-1) * sizeof(float));
-        if (node->table.interpolate) {
-            table_interpolate_row_skip_first_col((float*)dst->ptr, &node->table, x);
-        } else {
-            table_extract_row_skip_first_col((float*)dst->ptr, &node->table, (int)ctx->frame_header->index);
+        if (!ctx->frame_header) {
+            MD_LOG_ERROR("Missing frame header, cannot determine timestamp for table lookup");
+            return false;
         }
+        if (!is_type_equivalent(dst->type, node->data.type)) {
+            MD_LOG_ERROR("Type mismatch when evaluating table value");
+            return false;
+        }
+        if (!node->table || !node->table_field_indices) {
+            MD_LOG_ERROR("Missing table and or field mappings when evaluating table value");
+            return false;
+        }
+
+        const int64_t num_rows = node->table->num_values;
+        const double* time = node->table->field_values[0];
+
+        if (!time) {
+            MD_LOG_DEBUG("Missing time field when evaluating table value");
+            return false;
+        }
+
+        const double ref_time = ctx->frame_header->timestamp;
+
+        // Find the row_index in the table which corresponds to the current time
+        const int64_t num_frames = md_trajectory_num_frames(ctx->traj);
+
+        if (!num_frames) {
+            MD_LOG_DEBUG("Number of frames were 0");
+            return false;
+        }
+
+        double t0 = 0.0;
+        double t1 = 1.0;
+        const double* traj_times = md_trajectory_frame_times(ctx->traj);
+        if (traj_times) {
+            t0 = traj_times[0];
+            t1 = traj_times[num_frames - 1];
+        }
+
+        const double t = (ref_time - t0) / (t1 - t0);
+
+        // Guess row index from t
+        int64_t row_index = CLAMP((int64_t)(t * num_rows), 0, num_rows - 1);
+
+        if (time[row_index] < ref_time) {
+            for (int64_t i = row_index; i < num_rows; ++i) {
+                if (time[i] == ref_time) {
+                    row_index = i;
+                    break;
+                }
+                else if (time[i] > ref_time) {
+                    row_index = -1;
+                }
+            }
+        }
+        else if (time[row_index] > ref_time) {
+            for (int64_t i = row_index; i >= 0; --i) {
+                if (time[i] == ref_time) {
+                    row_index = i;
+                    break;
+                }
+                else if (time[i] < ref_time) {
+                    row_index = -1;
+                }
+            }
+        }
+
+        if (row_index == -1) {
+            MD_LOG_DEBUG("Unable to find matching time value when evaluating table");
+            return false;
+        }
+
+        ASSERT(0 <= row_index && row_index < num_rows);              
+        for (int64_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
+            int idx = node->table_field_indices[i];
+            ((float*)dst->ptr)[i] = (float)node->table->field_values[idx][row_index];
+        }
+    }
+    else if (ctx->vis) {
+        
     }
 
     return true;
@@ -2884,7 +2932,7 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
             return evaluate_array_subscript(dst, node, ctx);
         case AST_CONSTANT_VALUE:
             return evaluate_constant_value(dst, node, ctx);
-        case AST_TABLE_VALUE:
+        case AST_TABLE:
             return evaluate_table_value(dst, node, ctx);
         case AST_IDENTIFIER:
             return evaluate_identifier_reference(dst, node, ctx);
@@ -2923,6 +2971,7 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
 
 static bool static_check_node(ast_node_t*, eval_context_t*);
 static bool finalize_proc_call(ast_node_t*, eval_context_t*);
+static bool static_eval_node(ast_node_t*, eval_context_t*);
 
 static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t* ctx) {
     const type_info_t from = node->data.type;
@@ -3263,10 +3312,10 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
             if (num_args == 2) {
                 switch (node->type) {
                 // These are the only operators which potentially modify or conserve units.
-                case AST_ADD: node->data.unit = unit_add(arg[0]->data.unit, arg[1]->data.unit); break;
-                case AST_SUB: node->data.unit = unit_sub(arg[0]->data.unit, arg[1]->data.unit); break;
-                case AST_MUL: node->data.unit = unit_mul(arg[0]->data.unit, arg[1]->data.unit); break;
-                case AST_DIV: node->data.unit = unit_div(arg[0]->data.unit, arg[1]->data.unit); break;
+                case AST_ADD: node->data.unit = md_unit_add(arg[0]->data.unit, arg[1]->data.unit); break;
+                case AST_SUB: node->data.unit = md_unit_sub(arg[0]->data.unit, arg[1]->data.unit); break;
+                case AST_MUL: node->data.unit = md_unit_mul(arg[0]->data.unit, arg[1]->data.unit); break;
+                case AST_DIV: node->data.unit = md_unit_div(arg[0]->data.unit, arg[1]->data.unit); break;
                 default: break;
                 }
             }
@@ -3312,94 +3361,361 @@ static int print_argument_list(char* buf, int cap, const type_info_t arg_type[],
     return len;
 }
 
-static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
-    str_t path = node->children[0]->value._string;
-    str_t ext = extract_ext(path);
+static table_t* find_table(md_script_ir_t* ir, str_t name) {
+    for (int64_t i = 0; i < md_array_size(ir->tables); ++i) {
+        if (str_equal(ir->tables[i].name, name)) {
+            return &ir->tables[i];
+        }
+    }
+    return NULL;
+}
 
-    if (str_equal_cstr_ignore_case(ext, "xvg")) {
-        // do xvg import
+// This is a bit of heuristics here,
+// we try to match the frame times of the trajectory and the table.
+// If the table has more frames than the trajectory, we assume that the table is a subset of the trajectory.
+static bool frame_times_compatible(const double* traj_times, int64_t num_traj_frames, const double* table_times, int64_t num_table_frames) {
+    if (!traj_times) return false;
+    if (!table_times) return false;
+
+    if (num_table_frames < num_traj_frames) {
+        return false;
+    }
+
+    // We want to ensure that every frame time in the trajectory is present in the table.
+    int64_t table_idx = 0;
+    for (int64_t i = 0; i < num_traj_frames; ++i) {
+        while (table_idx < num_table_frames && table_times[table_idx] < traj_times[i]) {
+            ++table_idx;
+        }
+        if (table_times[table_idx] != traj_times[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool frame_times_compatible_f(const double* traj_times, int64_t num_traj_frames, const float* table_times, int64_t num_table_frames) {
+    if (!traj_times) return false;
+    if (!table_times) return false;
+
+    if (num_table_frames < num_traj_frames) {
+        return false;
+    }
+
+    // We want to ensure that every frame time in the trajectory is present in the table.
+    int64_t table_idx = 0;
+    for (int64_t i = 0; i < num_traj_frames; ++i) {
+        while (table_idx < num_table_frames && table_times[table_idx] < traj_times[i]) {
+            ++table_idx;
+        }
+        if ((double)table_times[table_idx] != traj_times[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Find the possible occurrence of parenthesis and try to match its contents to a unit.
+static md_unit_t extract_unit_from_label(str_t label) {
+    md_unit_t unit = md_unit_none();
+    const int64_t beg_paren = str_find_char(label, '(');
+    const int64_t end_paren = str_rfind_char(label, ')');
+    if (beg_paren != -1 && end_paren != -1) {
+        str_t unit_str = str_substr(label, beg_paren + 1, end_paren - beg_paren - 1);
+        md_unit_t xvg_unit = md_unit_from_string(unit_str);
+        if (!md_unit_empty(xvg_unit)) {
+            unit = xvg_unit;
+        }
+    }
+    return unit;
+}
+
+static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file, const md_trajectory_i* traj) {
+    str_t ext = extract_ext(path_to_file);
+    table_t* table = NULL;
+    const int64_t num_frames = md_trajectory_num_frames(traj);
+    bool temporal_table = false;
+    
+    if (str_equal_cstr_ignore_case(ext, "edr")) {
+        md_edr_energies_t edr = {0};
+        if (md_edr_energies_parse_file(&edr, path_to_file, md_heap_allocator)) {
+            if (frame_times_compatible(md_trajectory_frame_times(traj), num_frames, edr.frame_time, edr.num_frames)) {
+                table = md_array_push(ir->tables, (table_t){.num_values = edr.num_frames}, ir->arena);
+                table->name = str_copy(path_to_file, ir->arena);
+
+                table_push_field_d(table, STR("Time"), md_unit_pikosecond(), edr.frame_time, edr.num_frames, ir->arena);
+                for (int64_t i = 0; i < edr.num_energies; ++i) {
+                    table_push_field_f(table, edr.energy[i].name, edr.energy[i].unit, edr.energy[i].values, edr.num_frames, ir->arena);
+                }
+
+                temporal_table = true;
+            } else {
+                LOG_ERROR(ir, tok, "EDR file is not compatible with loaded trajectory, frame times did not match");
+            }
+        }
+        md_edr_energies_free(&edr);
+    } else if (str_equal_cstr_ignore_case(ext, "xvg")) {
         md_xvg_t xvg = {0};
-        bool result = md_xvg_init_from_file(&xvg, path, ctx->temp_alloc);
-        if (!result) {
-            LOG_ERROR(ctx->ir, node->token, "import: failed to import xvg file '%.*s'", (int)path.len, path.ptr);
-            return false;
-        }
+        if (md_xvg_parse_file(&xvg, path_to_file, md_heap_allocator)) {
+            if (str_equal(xvg.header_info.xaxis_label, STR("Time (ps)"))) {
+                if (frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, xvg.fields[0], xvg.num_values)) {
+                    table = md_array_push(ir->tables, (table_t){.num_values = xvg.num_values}, ir->arena);
+                    table->name = str_copy(path_to_file, ir->arena);
+                    
+                    table_push_field_f(table, STR("Time"), md_unit_pikosecond(), xvg.fields[0], xvg.num_values, ir->arena);
+                    md_unit_t unit = extract_unit_from_label(xvg.header_info.yaxis_label);
 
-        if (xvg.num_cols < 2) {
-            LOG_ERROR(ctx->ir, node->token, "import: xvg file '%.*s' has less than 2 columns", (int)path.len, path.ptr);
-            return false;
-        }
-
-        bool interpolate = true;
-
-        if (ctx->traj) {
-            int num_frames = (int)md_trajectory_num_frames(ctx->traj);
-            if (num_frames == 0) {
-                LOG_ERROR(ctx->ir, node->token, "import: trajectory has no frames");
-                return false;
-            } else
-
-            if (num_frames == xvg.num_rows) {
-                md_trajectory_frame_header_t first_frame, last_frame;
-                if (!md_trajectory_load_frame(ctx->traj, 0, &first_frame, 0, 0, 0)) {
-                    MD_LOG_DEBUG("Failed to load first frame in trajectory");
-                }
-                if (!md_trajectory_load_frame(ctx->traj, num_frames - 1,  &last_frame, 0, 0, 0)) {
-                    MD_LOG_DEBUG("Failed to load last frame in trajectory");
-                }
-
-                const float first_frame_time = (float)first_frame.timestamp;
-                const float last_frame_time  = (float)last_frame.timestamp;
-
-                const float first_table_time = md_xvg_value(&xvg, 0, 0);
-                const float last_table_time  = md_xvg_value(&xvg, 0, xvg.num_rows - 1);
-
-                if (first_frame_time == first_table_time && last_frame_time == last_table_time) {
-                    // everything matches, we do not have to interpolate values
-                    interpolate = false;
+                    for (int64_t i = 1; i < xvg.num_fields; ++i) {
+                        str_t name = STR("");
+                        if (i-1 < md_array_size(xvg.header_info.legends)) {
+                            name = xvg.header_info.legends[i-1];
+                        }
+                        table_push_field_f(table, name, unit, xvg.fields[i], xvg.num_values, ir->arena);
+                    }
                 } else {
-                    LOG_WARNING(ctx->ir, node->token, "import: frame time mismatch in table compared to trajectory. The data will be interpolated.", (int)path.len,
-                        path.ptr, xvg.num_rows, num_frames);
+                    LOG_ERROR(ir, tok, "XVG file is not compatible with loaded trajectory, frame times did not match");
                 }
             } else {
-                LOG_WARNING(ctx->ir, node->token, "import: number of rows in xvg file '%.*s' (%d) does not match number of trajectory frames (%d). The data will be interpolated.", (int)path.len,
-                    path.ptr, xvg.num_rows, num_frames);
+                LOG_ERROR(ir, tok, "Expected first column in XVG to contain time in picoseconds with label 'Time (ps)', got '%.*s'",
+                          (int)xvg.header_info.xaxis_label.len, xvg.header_info.xaxis_label.ptr);
             }
-        } else {
-            LOG_WARNING(ctx->ir, node->token, "import: no trajectory present, cannot perform static validation");
+
+            md_xvg_free(&xvg, md_heap_allocator);
+        }
+    } else if (str_equal_cstr_ignore_case(ext, "csv")) {
+        md_csv_t csv = {0};
+        if (md_csv_parse_file(&csv, path_to_file, md_heap_allocator)) {
+            if (frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, csv.field_values[0], csv.num_values)) {
+                table = md_array_push(ir->tables, (table_t){.num_values = csv.num_values}, ir->arena);
+                table->name = str_copy(path_to_file, ir->arena);
+
+                for (int64_t i = 0; i < csv.num_fields; ++i) {
+                    md_unit_t unit = md_unit_none();
+                    str_t name = STR("");
+                    if (csv.field_names) {
+                        name = csv.field_names[i];
+                        unit = extract_unit_from_label(csv.field_names[i]);
+                    }
+                    table_push_field_f(table, name, unit, csv.field_values[i], csv.num_values, ir->arena);
+                }
+            } else {
+                LOG_ERROR(ir, tok, "import: CSV file is not compatible with loaded trajectory, frame times could not be matched to first column");
+            }
+            md_csv_free(&csv, md_heap_allocator);
+        }
+    } else {
+        LOG_ERROR(ir, (token_t){0}, "import: unsupported file extension '%.*s'", (int)ext.len, ext.ptr);
+        return NULL;
+    }
+
+    return table;
+}
+
+static void swap_int(int* a, int* b) {
+    int tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
+// The number of matches may be more than number of candidates, therefore the true number of matches computed are returned
+static int64_t str_find_n_best_matches(int match_idx[], int64_t num_idx, str_t str, str_t candidates[], int64_t num_candidates) {
+    num_idx = MIN(num_idx, num_candidates);
+    int* distances = md_temp_push(sizeof(int) * num_idx);
+    for (int64_t i = 0; i < num_idx; ++i) {
+        distances[i] = INT32_MAX;
+    }
+    for (int64_t i = 0; i < num_candidates; ++i) {
+        str_t can = candidates[i];
+        int dist = str_edit_distance(str, can);
+        
+        // If the first characters differ, then add a penalty
+        const int64_t min_len = MIN(str.len, can.len);
+        for (int64_t j = 0; j < MIN(3, min_len); ++j) {
+            if (to_lower(str.ptr[j]) != to_lower(can.ptr[j])) {
+                dist += 10;
+            }
         }
         
-        const size_t num_bytes = xvg.num_cols * xvg.num_rows * sizeof(float);
-        node->table.data = md_alloc(ctx->alloc, num_bytes);
-        node->table.num_cols = xvg.num_cols;
-        node->table.num_rows = xvg.num_rows;
-        node->table.interpolate = interpolate;
-        MEMCPY(node->table.data, xvg.values, num_bytes);
-        md_xvg_free(&xvg, ctx->temp_alloc);
-        node->type = AST_TABLE_VALUE;
-        node->data.type = (type_info_t) {TYPE_FLOAT, {node->table.num_cols-1,0}, 0};
-        node->flags |= FLAG_DYNAMIC; // It is not a constant value, but will change depending on what time we evaluate it.
-        return true;
-    } else if (str_equal_cstr_ignore_case(ext, "csv")) {
-        // do csv import
-    } else {
-        LOG_ERROR(ctx->ir, node->token, "import: unsupported file extension '%.*s'", (int)ext.len, ext.ptr);
+        if (dist < distances[num_idx - 1]) {
+            // Insertion sort
+            distances[num_idx - 1] = dist;
+            match_idx[num_idx - 1] = (int)i;
+            int64_t j = num_idx - 1;
+            while (j > 0 && distances[j] < distances[j - 1]) {
+                swap_int(&distances[j], &distances[j-1]);
+                swap_int(&match_idx[j], &match_idx[j-1]);
+                --j;
+            }
+        }
     }
-    return false;
+    return num_idx;
+}
+
+static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node);
+    ASSERT(ctx);
+
+    const int64_t num_args = md_array_size(node->children);
+    const ast_node_t** args = node->children;
+
+    if (num_args == 0) {
+        LOG_ERROR(ctx->ir, node->token, "import: expected at least one argument");
+        return false;
+    }
+
+    if (num_args > 2) {
+        LOG_ERROR(ctx->ir, node->token, "import: to many arguments");
+        return false;
+    }
+
+    if (!is_type_equivalent(args[0]->data.type, (type_info_t)TI_STRING) || (args[0]->type != AST_CONSTANT_VALUE)) {
+        LOG_ERROR(ctx->ir, node->token, "import: requires as minimum a constant string containing the path to the file to import");
+        return false;
+    }
+
+    str_t full_path = md_path_make_canonical(args[0]->value._string, ctx->temp_alloc);
+    if (str_empty(full_path)) {
+        LOG_ERROR(ctx->ir, node->token, "import: failed to resolve path '%.*s'", (int)full_path.len, full_path.ptr);
+        return false;
+    }
+
+    table_t* table = find_table(ctx->ir, full_path);
+    if (!table) {
+        table = import_table(ctx->ir, node->token, full_path, ctx->traj);
+        if (!table) {
+            LOG_ERROR(ctx->ir, node->token, "import: failed to import file '%.*s'", (int)full_path.len, full_path.ptr);
+            return false;
+        }
+    }
+
+    md_array(int) field_indices = 0;
+
+    // Resolve mappings if supplied (what fields to load)
+    if (num_args == 2) {
+        const ast_node_t* arg = args[1];
+        type_info_t type = arg->data.type;
+
+        if (arg->flags & FLAG_DYNAMIC) {
+            LOG_ERROR(ctx->ir, node->token, "import: second argument must be a constant");
+            return false;
+        }
+       
+        if (is_type_directly_compatible(type, (type_info_t)TI_INT_ARR)) {
+            const int64_t count = element_count(arg->data);
+            const int* ints = as_int_arr(arg->data);
+            for (int64_t i = 0; i < count; ++i) {
+                int idx = ints[i];
+                if (idx < 1 || idx >= (int)table->num_fields) {
+                    LOG_ERROR(ctx->ir, node->token, "import: second argument must be a valid field index within range [1, %d]",
+                        (int)table->num_fields-1);
+                    return false;
+                }
+                md_array_push(field_indices, idx, ctx->ir->arena);
+            }
+        } else if (is_type_directly_compatible(type, (type_info_t)TI_IRANGE_ARR)) {
+            const int64_t count = element_count(arg->data);
+            const irange_t* ranges = as_irange_arr(arg->data);
+
+            for (int64_t i = 0; i < count; ++i) {
+                irange_t range = ranges[i];
+                if (range.end < range.beg) {
+                    LOG_ERROR(ctx->ir, node->token, "import: invalid range");
+                    return false;
+                }
+                if (range.beg == INT32_MIN) range.beg = 1;
+                if (range.end == INT32_MAX) range.end = (int)table->num_fields;
+                for (int idx = range.beg - 1; idx < range.end; ++idx) {
+                    if (idx < 1 || idx >= (int)table->num_fields) {
+                        LOG_ERROR(ctx->ir, node->token, "import: second argument must be a valid field index within range [1, %d]",
+                            (int)table->num_fields-1);
+                        return false;
+                    }
+                    md_array_push(field_indices, idx, ctx->ir->arena);
+                }
+            }
+        } else if (is_type_directly_compatible(type, (type_info_t)TI_STRING_ARR)) {
+            const int64_t count = element_count(arg->data);
+            const str_t* strings = as_string_arr(arg->data);
+            for (int64_t i = 0; i < count; ++i) {
+                str_t str = strings[i];
+                if (str.len == 0) {
+                    LOG_ERROR(ctx->ir, node->token, "import: empty string not allowed");
+                    return false;
+                }
+                int match_idx = -1;
+                for (int j = 1; j < (int)table->num_fields; ++j) {
+                    if (str_equal(str, table->field_names[j])) {
+                        match_idx = j;
+                        break;
+                    }
+                }
+                if (match_idx == -1) {
+                    char buf[512];
+                    int len = 0;
+                    int best_idx[3];
+                    const int64_t num_best_matches = str_find_n_best_matches(best_idx, ARRAY_SIZE(best_idx), str, table->field_names + 1, table->num_fields - 1);
+                    for (int64_t j = 0; j < num_best_matches; ++j) {
+                        int idx = best_idx[j] + 1;  // +1 because we skip the first field (which is the x axis (time))
+                        str_t name = table->field_names[idx];
+                        len += snprintf(buf + len, sizeof(buf) - len, "'%.*s'\n", (int)name.len, name.ptr);
+                    }
+                    
+                    LOG_ERROR(ctx->ir, node->token, "import: field '%.*s' not found, closest field names are:\n%s", (int)str.len, str.ptr, buf);
+                    return false;
+                }
+                md_array_push(field_indices, match_idx, ctx->ir->arena);
+            }
+        } else {
+            LOG_ERROR(ctx->ir, node->token, "import: unexpected type of second argument");
+            return false;
+        }
+    } else {
+        ASSERT(num_args == 1);
+        // Setup node table fields to hold all available fields within the imported table
+        for (int i = 1; i < table->num_fields; ++i) {
+            md_array_push(field_indices, i, ctx->ir->arena);
+        }
+    }
+
+    if (md_array_size(field_indices) == 0) {
+        LOG_ERROR(ctx->ir, node->token, "import: no fields");
+        return false;
+    }
+
+    md_unit_t unit = table->field_units[field_indices[0]];
+    for (int64_t i = 1; i < md_array_size(field_indices); ++i) {
+        if (!md_unit_equal(unit, table->field_units[field_indices[i]])) {
+            // If we have conflicting units, we make it unitless and let the user know.
+            //LOG_WARNING(ctx->ir, node->token, "import: conflicting units, perhaps separate the import into two separate");
+            unit = md_unit_none();
+        }
+    }
+
+    node->type = AST_TABLE;
+    node->data.type = (type_info_t) {TYPE_FLOAT, {(int)md_array_size(field_indices),0}, 0};
+    node->data.unit = unit;
+    node->table = table;
+    node->table_field_indices = field_indices;
+    node->flags |= FLAG_DYNAMIC; // It is not a constant value, but will change depending on what time we evaluate it.
+
+    return true;
 }
 
 static bool static_check_static_proc(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node->type == AST_STATIC_PROC);
-    type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
-    int num_args = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
+
+    if (!static_check_children(node, ctx)) {
+        return false;
+    }
 
     if (str_equal(node->ident, STR("import"))) {
-        if (num_args != 1 || !is_type_equivalent(arg_type[0], (type_info_t)TI_STRING)) {
-            LOG_ERROR(ctx->ir, node->token, "import takes a single string as argument");
-            return false;
-        }
         return static_check_import(node, ctx);
     }
+
+    type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
+    int num_args = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
     
     char buf[512];
     int len = print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
@@ -3518,7 +3834,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
         int64_t array_len = 0;
         type_info_t array_type = {0};
-        md_unit_t array_unit = unit_none();
+        md_unit_t array_unit = md_unit_none();
         
         // Pass 1: find a suitable base_type for the array
         for (int64_t i = 0; i < num_elem; ++i) {
@@ -3578,8 +3894,8 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         if (num_elem > 0) {
             array_unit = elem[0]->data.unit;
             for (int64_t i = 1; i < num_elem; ++i) {
-                if (!unit_equal(elem[i]->data.unit, array_unit)) {
-                    array_unit = unit_none();
+                if (!md_unit_equal(elem[i]->data.unit, array_unit)) {
+                    array_unit = md_unit_none();
                     break;
                 }
             }
@@ -3589,6 +3905,18 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         array_type.dim[array_type.len_dim] = (int32_t)array_len;
         node->data.type = array_type;
         node->data.unit = array_unit;
+
+        bool children_constant = true;
+        for (int64_t i = 0; i < num_elem; ++i) {
+            if (elem[i]->type != AST_CONSTANT_VALUE) {
+                children_constant = false;
+                break;
+            }
+        }
+
+        if (children_constant) {
+            return static_eval_node(node, ctx);
+        }
 
         return true;
     }
@@ -3890,25 +4218,36 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 
     ASSERT(node);
 
+    bool result = false;
+
     switch (node->type) {
     case AST_ASSIGNMENT:
-        return static_check_assignment(node, ctx);
+        result = static_check_assignment(node, ctx);
+        break;
     case AST_CONSTANT_VALUE:
-        return static_check_constant_value(node, ctx);
+        result = static_check_constant_value(node, ctx);
+        break;
     case AST_ARRAY:
-        return static_check_array(node, ctx);
+        result = static_check_array(node, ctx);
+        break;
     case AST_ARRAY_SUBSCRIPT:
-        return static_check_array_subscript(node, ctx);
+        result = static_check_array_subscript(node, ctx);
+        break;
     case AST_IDENTIFIER:
-        return static_check_identifier_reference(node, ctx);
+        result = static_check_identifier_reference(node, ctx);
+        break;
     case AST_STATIC_PROC:
-        return static_check_static_proc(node, ctx);
+        result = static_check_static_proc(node, ctx);
+        break;
     case AST_PROC_CALL:
-        return static_check_proc_call(node, ctx);
+        result = static_check_proc_call(node, ctx);
+        break;
     case AST_CONTEXT:
-        return static_check_context(node, ctx);
+        result = static_check_context(node, ctx);
+        break;
     case AST_OUT:
-        return static_check_out(node, ctx);
+        result = static_check_out(node, ctx);
+        break;
     case AST_ADD:
     case AST_SUB:
     case AST_MUL:
@@ -3924,13 +4263,18 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     case AST_LT:
     case AST_GT:
     case AST_UNARY_NEG:
-        return static_check_operator(node, ctx);
+        result = static_check_operator(node, ctx);
+        break;
     case AST_CAST: // Should never happen since we insert casts here in type checking phase.
     default:
         ASSERT(false);
     }
 
-    return false;
+    if (result && !(node->flags & FLAG_DYNAMIC)) {
+        static_eval_node(node, ctx);
+    }
+
+    return result;
 }
 
 static inline uint64_t hash64(const char* key, uint64_t len) {
@@ -4009,7 +4353,7 @@ static bool parse_script(md_script_ir_t* ir) {
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
-        .temp_alloc = default_temp_allocator,
+        .temp_alloc = md_temp_allocator,
     };
 
     ir->stage = "Parsing";
@@ -4459,6 +4803,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
         .mol = &mutable_mol,
+        .traj = traj,
         .temp_arena = &vm_arena,
         .temp_alloc = &temp_alloc,
         .alloc = &temp_alloc,
@@ -4694,28 +5039,53 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     ASSERT(node->type != AST_UNDEFINED);
 
     md_strb_t sb = {0};
-    md_strb_init(&sb, default_temp_allocator);
-
-    if (!(node->flags & FLAG_DYNAMIC)) {
-        if (node->data.type.base_type != TYPE_BITFIELD) {
-            char val_buf[128] = {0};
-            int val_len = print_value(val_buf, sizeof(val_buf), node->data);
-            md_strb_push_cstrl(&sb, val_buf, val_len);
-        }
-    } else {
-        md_strb_push_str(&sb, STR("[dynamic]"));
-    }
+    md_strb_init(&sb, md_temp_allocator);
 
     char type_buf[128];
     int type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
-    md_strb_fmt(&sb, " %.*s", type_len, type_buf);
+    md_strb_fmt(&sb, "%.*s", type_len, type_buf);
 
     char unit_buf[128];
-    int unit_len = unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit);
+    int unit_len = md_unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit);
     if (unit_len) {
-        md_strb_fmt(&sb, " %.*s", unit_len, unit_buf);
+        md_strb_fmt(&sb, " (%.*s)", unit_len, unit_buf);
     }
 
+    if (node->type == AST_TABLE) {
+        // Write header contents of table to provide an overview of what is there
+        md_strb_push_char(&sb, '\n');
+        bool matching_units = true;
+        for (int64_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
+            int idx = node->table_field_indices[i];
+            str_t name = node->table->field_names[idx];
+            md_strb_fmt(&sb, "[%i]: \"%.*s\"", (int)(i+1), (int)name.len, name.ptr);
+            md_unit_t unit = node->table->field_units[idx];
+            if (!md_unit_empty(unit) && !md_unit_unitless(unit)) {
+                str_t unit_str = md_unit_to_string(unit, md_temp_allocator);
+                if (!str_empty(unit_str)) {
+                    md_strb_fmt(&sb, " (%.*s)", (int)unit_str.len, unit_str.ptr);
+                }
+            }
+            if (!md_unit_equal(node->data.unit, unit)) {
+                matching_units = false;
+            }
+            md_strb_push_char(&sb, '\n');
+        }
+        if (!matching_units) {
+            md_strb_fmt(&sb, "Cannot assign unit to data due to conflicting units in fields.");
+        }
+    } else if (!(node->flags & FLAG_DYNAMIC)) {
+        if (node->data.type.base_type != TYPE_BITFIELD) {
+            md_strb_push_char(&sb, '\n');
+            char val_buf[128] = {0};
+            int val_len = print_data_value(val_buf, sizeof(val_buf), node->data);
+            md_strb_push_cstrl(&sb, val_buf, val_len);
+        }
+    } else {
+        md_strb_push_str(&sb, STR(" [d]"));
+    }
+
+#if 0
     if (node->data.size) {
         if (node->data.size / MEGABYTES(1)) {
             md_strb_fmt(&sb, " [%.2fMB]", (double)node->data.size / (double)MEGABYTES(1));
@@ -4725,6 +5095,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
             md_strb_fmt(&sb, " [%iB]", (int)node->data.size);
         }
     }
+#endif
 
     vis.range.beg = node->token.beg;
     vis.range.end = node->token.end;
@@ -4811,7 +5182,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
         static_type_check(ir, mol, traj) &&
         finalize_ast(ir) &&
         // optimize ast?
-        static_evaluation(ir, mol) &&
+        //static_evaluation(ir, mol) &&
         extract_dynamic_evaluation_targets(ir) &&
         extract_vis_tokens(ir) &&
         extract_identifiers(ir);
@@ -4986,7 +5357,7 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
     md_bitfield_init(&eval->completed_frames, eval->arena);
     md_bitfield_reserve_range(&eval->completed_frames, 0, num_frames);
 
-    //md_array(expression_t*) prop_expr = extract_property_expressions(ir, default_temp_allocator);
+    //md_array(expression_t*) prop_expr = extract_property_expressions(ir, md_temp_allocator);
 
     int64_t num_prop_expr = 0;
     for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {

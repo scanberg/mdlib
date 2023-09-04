@@ -3083,7 +3083,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = unit_angstrom();
+            ctx->backchannel->unit = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3142,7 +3142,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = unit_angstrom();
+            ctx->backchannel->unit = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3200,7 +3200,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = unit_angstrom();
+            ctx->backchannel->unit = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3255,7 +3255,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res0 < 0) return res0;
         if (res1 < 0) return res1;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = unit_angstrom();
+            ctx->backchannel->unit = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         int64_t count = (int64_t)res0 * (int64_t)res1;
@@ -3316,7 +3316,7 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (position_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (position_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = unit_radian();
+            ctx->backchannel->unit = md_unit_radian();
             ctx->backchannel->value_range = (frange_t){0, PI};
         }
     }
@@ -3372,7 +3372,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (position_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (position_validate(arg[3], 3, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = unit_radian();
+            ctx->backchannel->unit = md_unit_radian();
             ctx->backchannel->value_range = (frange_t){-PI, PI};
         }
     }

@@ -114,8 +114,8 @@ md_spatial_acc_t* md_spatial_acc_create_vec3(const vec3_t* in_xyz, const int32_t
         return NULL;
     }
 
-    uint32_t* cell_index  = md_alloc(default_temp_allocator, sizeof(uint32_t) * count);
-    uint16_t* local_index = md_alloc(default_temp_allocator, sizeof(uint16_t) * count);
+    uint32_t* cell_index  = md_alloc(md_temp_allocator, sizeof(uint32_t) * count);
+    uint16_t* local_index = md_alloc(md_temp_allocator, sizeof(uint16_t) * count);
 
     ASSERT(cell_index);
     ASSERT(local_index);
@@ -207,8 +207,8 @@ md_spatial_acc_t* md_spatial_acc_create_vec3(const vec3_t* in_xyz, const int32_t
         //acc.elems[dst_idx] = (elem_t){ (uint32_t)src_idx };
     }
 
-    md_free(default_temp_allocator, local_index, sizeof(uint16_t) * count);
-    md_free(default_temp_allocator, cell_index,  sizeof(uint32_t) * count);
+    md_free(md_temp_allocator, local_index, sizeof(uint16_t) * count);
+    md_free(md_temp_allocator, cell_index,  sizeof(uint32_t) * count);
 
     md_spatial_acc_t* ptr = md_alloc(alloc, sizeof(md_spatial_acc_t));
     MEMCPY(ptr, &acc, sizeof(md_spatial_acc_t));
@@ -228,8 +228,8 @@ md_spatial_acc_t* md_spatial_acc_create_soa(const float* in_x, const float* in_y
         return NULL;
     }
 
-    uint32_t* cell_index  = md_alloc(default_temp_allocator, sizeof(uint32_t) * count);
-    uint16_t* local_index = md_alloc(default_temp_allocator, sizeof(uint16_t) * count);
+    uint32_t* cell_index  = md_alloc(md_temp_allocator, sizeof(uint32_t) * count);
+    uint16_t* local_index = md_alloc(md_temp_allocator, sizeof(uint16_t) * count);
 
     ASSERT(cell_index);
     ASSERT(local_index);
@@ -321,8 +321,8 @@ md_spatial_acc_t* md_spatial_acc_create_soa(const float* in_x, const float* in_y
         //acc.elems[dst_idx] = (elem_t){ (uint32_t)src_idx };
     }
 
-    md_free(default_temp_allocator, local_index, sizeof(uint16_t) * count);
-    md_free(default_temp_allocator, cell_index,  sizeof(uint32_t) * count);
+    md_free(md_temp_allocator, local_index, sizeof(uint16_t) * count);
+    md_free(md_temp_allocator, cell_index,  sizeof(uint32_t) * count);
 
     md_spatial_acc_t* ptr = md_alloc(alloc, sizeof(md_spatial_acc_t));
     MEMCPY(ptr, &acc, sizeof(md_spatial_acc_t));
@@ -454,7 +454,7 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
 
     md_spatial_hash_t* hash = NULL;
 
-    md_allocator_i* temp_alloc = default_allocator;
+    md_allocator_i* temp_alloc = md_heap_allocator;
     size_t temp_bytes = sizeof(uint32_t) * count * 2;
     void* temp_mem = md_alloc(temp_alloc, temp_bytes);
 
@@ -573,7 +573,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
 
     md_spatial_hash_t* hash = NULL;
 
-    md_allocator_i* temp_alloc = default_allocator;
+    md_allocator_i* temp_alloc = md_heap_allocator;
     size_t temp_bytes = sizeof(uint32_t) * count * 2;
     void* temp_mem = md_alloc(temp_alloc, temp_bytes);
 
@@ -1252,7 +1252,7 @@ bool idx_fn(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) 
 }
 
 int64_t md_spatial_hash_query_idx(int32_t* buf, int64_t cap, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius) {
-    md_bitfield_t bf = md_bitfield_create(default_temp_allocator);
+    md_bitfield_t bf = md_bitfield_create(md_temp_allocator);
     md_bitfield_reserve_range(&bf, 0, spatial_hash->elem_count);
 
     md_spatial_hash_query_batch(spatial_hash, pos, radius, idx_fn, &bf);

@@ -24,7 +24,12 @@ uint64_t md_os_num_processors();
 str_t md_path_cwd(void);
 bool  md_path_set_cwd(str_t path);
 
+// Writes a canonical path to buf.
+int64_t md_path_write_canonical(char* buf, int64_t buf_cap, str_t path);
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
+
+// Writes a relative path from path_from to path_to to buf.
+int64_t md_path_write_relative(char* buf, int64_t buf_cap, str_t path_from, str_t path_to);
 str_t md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
 
 // Checks if a path to a file or directory is valid: i.e. it points to an actual file / dir on disk.

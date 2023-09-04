@@ -244,6 +244,10 @@ static inline int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str) {
     return len;
 }
 
+// Returns the Levenshtein edit distance between two strings
+// https://en.wikipedia.org/wiki/Levenshtein_distance
+int str_edit_distance(str_t a, str_t b);
+
 #ifdef __cplusplus
 }
 #endif

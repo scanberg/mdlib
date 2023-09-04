@@ -15,6 +15,9 @@
 #include <string.h>
 #include <stdio.h>
 
+#define MD_XTC_CACHE_MAGIC   0x8281237
+#define MD_XTC_CACHE_VERSION 2
+
 #define MD_XTC_TRAJ_MAGIC 0x162365dac721995
 #define XTC_MAGIC 1995
 
@@ -53,9 +56,9 @@ typedef struct xtc_t {
 } xtc_t;
 
 static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, matrix box) {
-    int result, magic;
+    int magic;
 
-    if ((result = xdrfile_read_int(&magic, 1, xd)) != 1) {
+    if ((xdrfile_read_int(&magic, 1, xd)) != 1) {
         MD_LOG_ERROR("XTC: Failed to read magic number in header");
         return false;
     }
@@ -63,19 +66,19 @@ static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, m
         MD_LOG_ERROR("XTC: Magic number did not match");
         return false;
     }
-    if ((result = xdrfile_read_int(natoms, 1, xd)) != 1) {
+    if ((xdrfile_read_int(natoms, 1, xd)) != 1) {
         MD_LOG_ERROR("XTC: Failed to read number of atoms");
         return false;
     }
-    if ((result = xdrfile_read_int(step, 1, xd)) != 1) {
+    if ((xdrfile_read_int(step, 1, xd)) != 1) {
         MD_LOG_ERROR("XTC: Failed to read step");
         return false;
     }
-    if ((result = xdrfile_read_float(time, 1, xd)) != 1) {
+    if ((xdrfile_read_float(time, 1, xd)) != 1) {
         MD_LOG_ERROR("XTC: Failed to read timestamp");
         return false;
     }
-    if ((result = xdrfile_read_float(box[0], DIM * DIM, xd)) != DIM * DIM) {
+    if ((xdrfile_read_float(box[0], DIM * DIM, xd)) != DIM * DIM) {
         MD_LOG_ERROR("XTC: Failed to read box dimensions");
         return false;
     }
@@ -106,15 +109,14 @@ static bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
     return true;
 }
 
-static bool xtc_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
-    int i, result, est_nframes, framebytes, step, natoms, nframes;
+static bool xtc_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
+    int step, natoms;
     float time;
     float box[3][3];
 
-    int64_t* arr = 0;
-
     /* Go to file beg */
     if (xdr_seek(xd, 0L, SEEK_SET) != exdrOK) {
+        MD_LOG_ERROR("XTC: Failed to seek to beginning of file");
         return false;
     }
 
@@ -131,18 +133,37 @@ static bool xtc_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
 
     /* Dont bother with compression for nine atoms or less */
     if (natoms <= 9) {
-        xdrfile_close(xd);
-        framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
-        nframes = (int)(filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
-        for (i = 0; i < nframes; i++) {
-            md_array_push(arr, (int64_t)i * (int64_t)framebytes, alloc);
+        const int64_t framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
+        const int64_t num_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
+
+        md_array_push(*frame_offsets, 0, alloc);
+        md_array_push(*frame_times, time, alloc);
+
+        for (int64_t i = 1; i < num_frames; i++) {
+            const int64_t offset = i * framebytes;
+
+            if (xdr_seek(xd, offset, SEEK_SET) != exdrOK || !xtc_frame_header(xd, &natoms, &step, &time, box)) {
+                md_array_free(*frame_offsets, alloc);
+                md_array_free(*frame_times, alloc);
+                *frame_offsets = 0;
+                *frame_times = 0;
+                return false;
+            }
+
+            md_array_push(*frame_offsets, i * framebytes, alloc);
+            md_array_push(*frame_times, time, alloc);
         }
+        md_array_push(*frame_offsets, num_frames * framebytes, alloc);
+
+        return true;
     } else {
-        /* Go back to the beginning of the file */
+        int framebytes, est_nframes;
+
+        /* Move pos back to end of first header */
         if (xdr_seek(xd, (int64_t)XTC_HEADER_SIZE, SEEK_SET) != exdrOK) {
             return false;
         }
-
+        
         if (xdrfile_read_int(&framebytes, 1, xd) == 0) {
             MD_LOG_ERROR("XTC: Failed to read framebytes");
             return false;
@@ -153,31 +174,55 @@ static bool xtc_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
                 /* First `framebytes` might be larger than average, so we would underestimate `est_nframes`
                 */
         est_nframes += est_nframes / 5;
-        md_array_ensure(arr, est_nframes, alloc);
-        md_array_push(arr, 0, alloc);
+
+        /* Skip `framebytes` */
+        if (xdr_seek(xd, (int64_t)(framebytes), SEEK_CUR) != exdrOK) {
+            goto fail;
+        }
+        
+        md_array_ensure(*frame_offsets, est_nframes, alloc);
+        md_array_ensure(*frame_times,   est_nframes, alloc);
+
+        md_array_push(*frame_offsets, 0, alloc);
+        md_array_push(*frame_times, time, alloc);
 
         while (1) {
-            /* Skip `framebytes` and next header */
-            result = xdr_seek(xd, (int64_t)(framebytes + XTC_HEADER_SIZE), SEEK_CUR);
-            if (result != exdrOK) {
-                MD_LOG_ERROR("XTC: Failed to skip framebytes");
-                md_array_free(arr, alloc);
-                return false;
+            const int64_t offset = xdr_tell(xd);
+            if (offset == filesize) {
+                // Done, add final filesize as offset
+                md_array_push(*frame_offsets, offset, alloc);
+                return true;
+            }
+            if (!xtc_frame_header(xd, &natoms, &step, &time, box)) {
+                goto fail;
             }
 
             /* Store position in `offsets`, adjust for header */
-            md_array_push(arr, xdr_tell(xd) - (int64_t)(XTC_HEADER_SIZE), alloc);
+            md_array_push(*frame_offsets, offset, alloc);
+            md_array_push(*frame_times, time, alloc);
 
-            /* Read how much to skip next time */
+            if (xdr_seek(xd, offset + XTC_HEADER_SIZE, SEEK_SET) != exdrOK) {
+                goto fail;
+            }
+            /* Read how much to skip */
             if (xdrfile_read_int(&framebytes, 1, xd) == 0) {
-                *offsets = arr;
-                return true;
+                goto fail;
             }
             framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
-        }
-    }
 
-    return false;
+            /* Skip `framebytes` to next header */
+            if (xdr_seek(xd, framebytes, SEEK_CUR) != exdrOK) {
+                goto fail;
+            }
+        }
+
+    fail:
+        md_array_free(*frame_offsets, alloc);
+        md_array_free(*frame_times, alloc);
+        *frame_offsets = 0;
+        *frame_times = 0;
+        return false;
+    }
 }
 
 bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
@@ -266,7 +311,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
 
         if (x || y || z) {
             int64_t byte_size = natoms * sizeof(rvec);
-            rvec* pos = md_alloc(default_allocator, byte_size);
+            rvec* pos = md_alloc(md_heap_allocator, byte_size);
             result = xtc_frame_coords(file, natoms, pos);
             if (result) {            
                 // nm -> Ångström
@@ -276,7 +321,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
                     if (z) z[i] = pos[i][2] * 10.0f;
                 }
             }
-            md_free(default_allocator, pos, byte_size);
+            md_free(md_heap_allocator, pos, byte_size);
         }
     }
 
@@ -295,12 +340,12 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     // Should this be exposed?
-    md_allocator_i* alloc = default_temp_allocator;
+    md_allocator_i* alloc = md_temp_allocator;
 
     bool result = true;
     const int64_t frame_size = xtc_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        // This is a borderline case if one should use the default_temp_allocator as the raw frame size could potentially be several megabytes...
+        // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
         void* frame_data = md_alloc(alloc, frame_size);
         const int64_t read_size = xtc_fetch_frame_data(inst, frame_idx, frame_data);
         ASSERT(read_size == frame_size);
@@ -313,65 +358,104 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return result;
 }
 
-#define OFFSET_MAGIC 0x828123727bcbabc
-static int64_t* try_read_offset_cache(str_t cache_file, md_allocator_i* alloc) {
+static bool try_read_cache(md_array(int64_t)* frame_offsets, md_array(double)* frame_times, str_t cache_file, md_allocator_i* alloc) {
+    bool result = false;
     md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        int64_t* offsets = 0;
-        int64_t read_bytes = 0;
-        int64_t num_frames = 0;
-        uint64_t magic = 0;
+        int magic = 0;
+        int version = 0;
+        int64_t num_offsets = 0;
+        int64_t num_times = 0;
 
-        read_bytes = md_file_read(file, &magic, sizeof(magic));
-        if (read_bytes != sizeof(magic) || magic != OFFSET_MAGIC) {
-            MD_LOG_ERROR("XTC: Failed to read offset cache, magic was incorrect");
+        if (md_file_read(file, &magic, sizeof(magic)) != sizeof(magic)) {
+            MD_LOG_ERROR("XTC: Failed to read offset cache magic");
             goto done;
         }
 
-        read_bytes = md_file_read(file, &num_frames, sizeof(num_frames));
-        if (read_bytes != sizeof(num_frames) || num_frames == 0) {
-            MD_LOG_ERROR("XTC: Failed to read offset cache, number of frames was zero or corrupted");
+        if (magic != MD_XTC_CACHE_MAGIC) {
+            MD_LOG_ERROR("XTC: Incorrect cache magic");
             goto done;
         }
 
-        md_array_resize(offsets, num_frames, alloc);
+        if (md_file_read(file, &version, sizeof(version)) != sizeof(version)) {
+            MD_LOG_ERROR("XTC: Failed to read cache version");
+            goto done;
+        }
 
-        read_bytes = md_file_read(file, offsets, num_frames * sizeof(int64_t));
-        if (read_bytes != (int64_t)(num_frames * sizeof(int64_t))) {
+        if (version != MD_XTC_CACHE_VERSION) {
+            MD_LOG_ERROR("XTC: Cache version is incorrect");
+            goto done;
+        }
+
+        if (md_file_read(file, &num_offsets, sizeof(num_offsets)) != sizeof(num_offsets) || num_offsets == 0) {
+            MD_LOG_ERROR("XTC: Failed to read offset cache number of frames");
+            goto done;
+        }
+
+        md_array_resize(*frame_offsets, num_offsets, alloc);
+        const int64_t offset_bytes = md_array_bytes(*frame_offsets);
+        if (md_file_read(file, *frame_offsets, offset_bytes) != offset_bytes) {
             MD_LOG_ERROR("XTC: Failed to read offset cache, offsets are incomplete");
-            md_array_free(offsets, alloc);
-            offsets = 0;
             goto done;
         }
+
+        if (md_file_read(file, &num_times, sizeof(num_times)) != sizeof(num_times) || num_times == 0) {
+            MD_LOG_ERROR("XTC: Failed to read offset cache number of times");
+            goto done;
+        }
+
+        md_array_resize(*frame_times, num_times, alloc);
+        const int64_t time_bytes = md_array_bytes(*frame_times);
+        if (md_file_read(file, *frame_times, time_bytes) != time_bytes) {
+            MD_LOG_ERROR("XTC: Failed to read cache, times are incomplete");
+            goto done;
+        }
+        
+        result = true;
     done:
         md_file_close(file);
-        return offsets;
     }
 
-    return 0;
+    return result;
 }
 
-static bool write_offset_cache(str_t cache_file, int64_t* offsets) {
-    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
-    if (file) {
-        int64_t num_offsets = md_array_size(offsets);
-        int64_t written_bytes = 0;
-        const uint64_t magic = OFFSET_MAGIC;
-        written_bytes = md_file_write(file, &magic, sizeof(magic));
-        ASSERT(written_bytes == sizeof(OFFSET_MAGIC));
+static bool write_cache(str_t cache_file, const md_array(int64_t) frame_offsets, const md_array(double) frame_times) {
+    bool result = false;
 
-        written_bytes = md_file_write(file, &num_offsets, sizeof(num_offsets));
-        ASSERT(written_bytes == sizeof(num_offsets));
+    const int64_t num_offsets = md_array_size(frame_offsets);
+    const int64_t num_times = md_array_size(frame_times);
 
-        written_bytes = md_file_write(file, offsets, num_offsets * sizeof(int64_t));
-        ASSERT(written_bytes == (int64_t)(num_offsets * sizeof(int64_t)));
-
-        md_file_close(file);
-        return true;
+    if (num_offsets == 0 || num_times == 0 || num_offsets != num_times + 1) {
+        MD_LOG_DEBUG("XTC: cache offsets and times are not correct in length");
+        return false;
     }
 
-    MD_LOG_ERROR("XTC: Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
-    return false;
+    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
+    if (file) {
+        const int magic   = MD_XTC_CACHE_MAGIC;
+        const int version = MD_XTC_CACHE_VERSION;
+        const int64_t offset_bytes = md_array_bytes(frame_offsets);
+        const int64_t time_bytes = md_array_bytes(frame_times);
+        
+        if (md_file_write(file, &magic,         sizeof(magic))          != sizeof(magic) ||
+            md_file_write(file, &version,       sizeof(version))        != sizeof(version) ||
+            md_file_write(file, &num_offsets,   sizeof(num_offsets))    != sizeof(num_offsets) ||
+            md_file_write(file, frame_offsets,  offset_bytes)           != offset_bytes ||
+            md_file_write(file, &num_times,     sizeof(num_times))      != sizeof(num_times) ||
+            md_file_write(file, frame_times,    time_bytes)             != time_bytes)
+        {
+            MD_LOG_ERROR("XTC: Failed to write cache data");
+            goto done;
+        }
+        result = true;
+
+    done:
+        md_file_close(file);
+    } else {
+        MD_LOG_ERROR("XTC: Failed to write cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    }
+
+    return result;
 }
 
 void xtc_free(struct md_trajectory_o* inst) {
@@ -385,7 +469,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
     ASSERT(alloc);
 
     // Ensure that filename is zero terminated
-    filename = str_copy(filename, default_temp_allocator);
+    filename = str_copy(filename, md_temp_allocator);
     XDRFILE* file = xdrfile_open(filename.ptr, "r");
 
     if (file) {
@@ -397,29 +481,47 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
             return false;
         }
 
+        if (num_atoms == 0) {
+            MD_LOG_ERROR("XTC: Number of atoms in trajectory was zero");
+            xdrfile_close(file);
+            return false;
+        }
+
         char buf[1024];
         int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
         str_t cache_file = {buf, len};
 
-        int64_t* offsets = try_read_offset_cache(cache_file, alloc);
-        if (!offsets) {
-            if (!xtc_offsets(file, &offsets, alloc)) {
+        md_array(int64_t) frame_offsets = 0;
+        md_array(double)  frame_times   = 0;
+        if (!try_read_cache(&frame_offsets, &frame_times, cache_file, alloc)) {
+            md_array_shrink(frame_offsets, 0);
+            md_array_shrink(frame_times, 0);
+
+            MD_LOG_INFO("XTC: Attempting to create new cache file...");
+            if (!xtc_frame_offsets_and_times(file, &frame_offsets, &frame_times, alloc)) {
                 xdrfile_close(file);
                 return false;
             }
-            write_offset_cache(cache_file, offsets);
+            if (write_cache(cache_file, frame_offsets, frame_times)) {
+                MD_LOG_INFO("XTC: Successfully created cache file for trajectory");
+            }
+        }
+
+        if (!frame_offsets || !frame_times) {
+            MD_LOG_DEBUG("XTC: frame offsets or frame times was empty");
+            xdrfile_close(file);
+            return false;
         }
 
         int64_t max_frame_size = 0;
-        for (int64_t i = 0; i < md_array_size(offsets) - 1; ++i) {
-            const int64_t beg = offsets[i + 0];
-            const int64_t end = offsets[i + 1];
+        for (int64_t i = 0; i < md_array_size(frame_offsets) - 1; ++i) {
+            const int64_t beg = frame_offsets[i + 0];
+            const int64_t end = frame_offsets[i + 1];
             const int64_t frame_size = end - beg;
             max_frame_size = MAX(max_frame_size, frame_size);
         }
         
-        ASSERT(offsets);
-        ASSERT(num_atoms > 0);
+        const int64_t num_frames = md_array_size(frame_offsets) - 1;
 
         void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(xtc_t));
         ASSERT(mem);
@@ -431,14 +533,15 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* alloc)
         xtc->magic = MD_XTC_TRAJ_MAGIC;
         xtc->allocator = alloc;
         xtc->file = file;
-        xtc->frame_offsets = offsets;
+        xtc->frame_offsets = frame_offsets;
         xtc->mutex = md_mutex_create();
 
         xtc->header = (md_trajectory_header_t) {
-            .num_frames = md_array_size(offsets) - 1,
+            .num_frames = num_frames,
             .num_atoms = num_atoms,
             .max_frame_data_size = max_frame_size,
-            .time_unit = unit_pikosecond(),
+            .time_unit = md_unit_pikosecond(),
+            .frame_times = frame_times,
         };
 
         traj->inst = (struct md_trajectory_o*)xtc;
@@ -468,11 +571,11 @@ void md_xtc_trajectory_free(md_trajectory_i* traj) {
     md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(xtc_t));
 }
 
-static md_trajectory_api xtc_api = {
+static md_trajectory_loader_i xtc_loader = {
     md_xtc_trajectory_create,
     md_xtc_trajectory_free,
 };
 
-md_trajectory_api* md_xtc_trajectory_api(void) {
-    return &xtc_api;
+md_trajectory_loader_i* md_xtc_trajectory_loader(void) {
+    return &xtc_loader;
 }

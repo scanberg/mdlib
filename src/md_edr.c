@@ -34,12 +34,14 @@ enum
 };
 
 typedef enum {
+	MD_ENX_DATATYPE_INT32,
 	MD_ENX_DATATYPE_FLOAT,
 	MD_ENX_DATATYPE_DOUBLE,
-	MD_ENX_DATATYPE_INT32,
 	MD_ENX_DATATYPE_INT64,
-	MD_ENX_DATATYPE_UCHAR,
+	MD_ENX_DATATYPE_CHAR,
 	MD_ENX_DATATYPE_STRING,
+
+	MD_ENX_DATATYPE_COUNT
 } md_enx_datatype_t;
 
 typedef struct md_enxsubblock_t {
@@ -132,11 +134,11 @@ static bool read_real(double* ptr, int ndata, edr_fp_t* fp) {
 
 static void resize_data_subblock(md_enxsubblock_t* subblock, int64_t new_size, md_allocator_i* alloc) {
 	switch (subblock->type) {
+	case MD_ENX_DATATYPE_INT32:  md_array_resize(subblock->value.ival, new_size, alloc); break;
 	case MD_ENX_DATATYPE_FLOAT:  md_array_resize(subblock->value.fval, new_size, alloc); break;
 	case MD_ENX_DATATYPE_DOUBLE: md_array_resize(subblock->value.dval, new_size, alloc); break;
-	case MD_ENX_DATATYPE_INT32:  md_array_resize(subblock->value.ival, new_size, alloc); break;
 	case MD_ENX_DATATYPE_INT64:  md_array_resize(subblock->value.lval, new_size, alloc); break;
-	case MD_ENX_DATATYPE_UCHAR:  md_array_resize(subblock->value.cval, new_size, alloc); break;
+	case MD_ENX_DATATYPE_CHAR:   md_array_resize(subblock->value.cval, new_size, alloc); break;
 	case MD_ENX_DATATYPE_STRING: md_array_resize(subblock->value.sval, new_size, alloc); break;
 	default:
 		ASSERT(false);
@@ -160,7 +162,7 @@ static void add_blocks_enxframe(md_enxframe_t* frame, int64_t new_size, md_alloc
 }
 
 static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* wrong_precision, md_allocator_i* alloc) {
-	int magic = ENX_HEADER_MAGIC;
+	int magic = 0;
 	int dum = 0;
 	int ndisre = 0;
 	int startb = 0;
@@ -204,7 +206,6 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 			MD_LOG_ERROR("Magic number mismatch in header, invalid edr file");
 			return false;
 		}
-		file_version = ENX_VERSION;
 		if (!xdrfile_read_int(&file_version, 1, fp->xdr)) {
 			MD_LOG_ERROR("Falied to read header file version");
 			return false;
@@ -356,6 +357,18 @@ static bool read_header(edr_fp_t* fp, md_enxframe_t* frame, int nre_test, bool* 
 				if (!xdrfile_read_int(&nr, 1, fp->xdr)) {
 					return false;
 				}
+				if (typenr < 0 || typenr >= MD_ENX_DATATYPE_COUNT) {
+					MD_LOG_ERROR("EDR: Invalid typenr inside subblock");
+					return false;
+				}
+				/*
+				// Can this actually happen?
+				if (nr <= 0) {
+					MD_LOG_ERROR("EDR: Invalid nr inside subblock");
+					return false;
+				}
+				*/
+
 				if (frame) {
 					frame->block[b].sub[i].type = typenr;
 					frame->block[b].sub[i].nr = nr;
@@ -411,19 +424,15 @@ static void convert_full_sums(edr_fp_t* fp, md_enxframe_t* fr) {
 	if (fr->nsum > 0) {
 		ne = 0;
 		ns = 0;
-		for (i = 0; i < fr->nre; i++)
-		{
-			if (fr->ener[i].e != 0)
-			{
+		for (i = 0; i < fr->nre; i++) {
+			if (fr->ener[i].e != 0) {
 				ne++;
 			}
-			if (fr->ener[i].esum != 0)
-			{
+			if (fr->ener[i].esum != 0) {
 				ns++;
 			}
 		}
-		if (ne > 0 && ns == 0)
-		{
+		if (ne > 0 && ns == 0) {
 			/* We do not have all energy sums */
 			fr->nsum = 0;
 		}
@@ -431,12 +440,10 @@ static void convert_full_sums(edr_fp_t* fp, md_enxframe_t* fr) {
 
 	/* Convert old full simulation sums to sums between energy frames */
 	nstep_all = (int)fr->step - fp->old.first_step + 1;
-	if (fr->nsum > 1 && fr->nsum == nstep_all && fp->old.nsum_prev > 0)
-	{
+	if (fr->nsum > 1 && fr->nsum == nstep_all && fp->old.nsum_prev > 0) {
 		/* Set the new sum length: the frame step difference */
 		fr->nsum = (int)fr->step - fp->old.step_prev;
-		for (i = 0; i < fr->nre; i++)
-		{
+		for (i = 0; i < fr->nre; i++) {
 			esum_all         = fr->ener[i].esum;
 			eav_all          = fr->ener[i].eav;
 			fr->ener[i].esum = esum_all - fp->old.ener_prev[i].esum;
@@ -449,22 +456,16 @@ static void convert_full_sums(edr_fp_t* fp, md_enxframe_t* fr) {
 		}
 		fp->old.nsum_prev = nstep_all;
 	}
-	else if (fr->nsum > 0)
-	{
-		if (fr->nsum != nstep_all)
-		{
-			fprintf(stderr,
-				"\nWARNING: something is wrong with the energy sums, will not use exact "
-				"averages\n");
+	else if (fr->nsum > 0) {
+		if (fr->nsum != nstep_all) {
+			MD_LOG_ERROR("Something is wrong with the energy sums, will not use exact averages");
 			fp->old.nsum_prev = 0;
 		}
-		else
-		{
+		else {
 			fp->old.nsum_prev = nstep_all;
 		}
 		/* Copy all sums to ener_prev */
-		for (i = 0; i < fr->nre; i++)
-		{
+		for (i = 0; i < fr->nre; i++) {
 			fp->old.ener_prev[i].esum = fr->ener[i].esum;
 			fp->old.ener_prev[i].eav  = fr->ener[i].eav;
 		}
@@ -493,13 +494,13 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 
 	bool sane = (frame->nre > 0);
 	for (int i = 0; i < frame->nblock; ++i) {
-		sane = sane && (frame->block[i].nsub > 0);
+		sane = sane || (frame->block[i].nsub > 0);
 	}
 
-	if (!sane) {
-		MD_LOG_ERROR("Something went wrong when reading header");
-		return false;
-	}
+	if (!(frame->step >= 0 && sane)) {
+		MD_LOG_ERROR("EDR: Something went wrong when reading frame header");
+        return false;
+    }
 
 	if (frame->nre > md_array_size(frame->ener)) {
 		const int64_t new_size = frame->nre;
@@ -536,28 +537,28 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 	bool ok = true;
 	for (int b = 0; b < frame->nblock; ++b) {
 		/* now read the subblocks. */
-		int nsub = (int)md_array_size(frame->block[b].sub);
+        int nsub = frame->block[b].nsub;
 
 		for (int i = 0; i < nsub; i++) {
 			md_enxsubblock_t* sub = &(frame->block[b].sub[i]);
 
-			/* read/write data */
+			/* read data */
 			switch (sub->type)
 			{
 			case MD_ENX_DATATYPE_FLOAT:
-				ok &= xdrfile_read_float(sub->value.fval, (int)md_array_size(sub->value.fval), fp->xdr);
+				ok = ok && (sub->nr == xdrfile_read_float(sub->value.fval, sub->nr, fp->xdr));
 				break;
 			case MD_ENX_DATATYPE_DOUBLE:
-				ok &= xdrfile_read_double(sub->value.dval, (int)md_array_size(sub->value.dval), fp->xdr);
+				ok = ok && (sub->nr == xdrfile_read_double(sub->value.dval, sub->nr, fp->xdr));
 				break;
 			case MD_ENX_DATATYPE_INT32:
-				ok &= xdrfile_read_int(sub->value.ival, (int)md_array_size(sub->value.ival), fp->xdr);
+				ok = ok && (sub->nr == xdrfile_read_int(sub->value.ival, sub->nr, fp->xdr));
 				break;
 			case MD_ENX_DATATYPE_INT64:
-				ok &= xdrfile_read_int64(sub->value.lval, (int)md_array_size(sub->value.lval), fp->xdr);
+				ok = ok && (sub->nr == xdrfile_read_int64(sub->value.lval, sub->nr, fp->xdr));
 				break;
-			case MD_ENX_DATATYPE_UCHAR:
-				ok &= xdrfile_read_uchar(sub->value.cval, (int)md_array_size(sub->value.cval), fp->xdr);
+			case MD_ENX_DATATYPE_CHAR:
+				ok = ok && (sub->nr == xdrfile_read_uchar(sub->value.cval, sub->nr, fp->xdr));
 				break;
 			case MD_ENX_DATATYPE_STRING:
 				for (int j = 0; j < (int)md_array_size(sub->value.sval); ++j) {
@@ -566,16 +567,20 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 						sub->value.sval[j] = md_alloc(alloc, (int64_t)len);
 						strncpy(sub->value.sval[j], buf, len);
 					}
-					ok &= (len != 0);
+					ok = ok && (len != 0);
 				}
 				break;
 			default:
 				md_log(MD_LOG_TYPE_DEBUG, "Reading unknown block data type: this file is corrupted or from a future version");
 				ok = false;
 			}
+			if (!ok) {
+				goto done;
+			}
 		}
 	}
 
+done:
 	if (!ok) {
 		MD_LOG_ERROR("\nLast energy frame read %d", (int)frame_num - 1);
 		MD_LOG_ERROR("\nWARNING: Incomplete energy frame: nr %d time %8.3f\n", (int)frame_num, frame->t);
@@ -658,7 +663,7 @@ done:
 }
 
 static bool edr_file_open(edr_fp_t* fp, str_t filename) {
-	str_t path = str_copy(filename, default_temp_allocator);
+	str_t path = str_copy(filename, md_temp_allocator);
 	bool result = false;
 
 	fp->xdr = xdrfile_open(path.ptr, "r");
@@ -667,7 +672,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 		return false;
 	}
 
-	md_allocator_i* arena = md_arena_allocator_create(default_allocator, MEGABYTES(1));
+	md_allocator_i* arena = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
 	bool wrong_precision = false;
 	md_enxframe_t frame = {0};
 	int file_version;
@@ -694,7 +699,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 	}
 
 	if (fp->old.old_file_open) {
-		md_array_resize(fp->old.ener_prev, frame.nre, default_allocator);
+		md_array_resize(fp->old.ener_prev, frame.nre, md_heap_allocator);
 	}
 
 	xdr_seek(fp->xdr, 0, SEEK_END);
@@ -712,7 +717,7 @@ static void edr_file_close(edr_fp_t* fp) {
 		xdrfile_close(fp->xdr);
 	}
 	if (fp->old.step_prev) {
-		md_array_free(fp->old.ener_prev, default_allocator);
+		md_array_free(fp->old.ener_prev, md_heap_allocator);
 	}
 }
 
@@ -725,84 +730,96 @@ static md_unit_t unit_from_str(str_t str) {
 		return (md_unit_t) {0, 1};
 	}
 	if (str_equal_cstr(str, "kJ/mol")) {
-		md_unit_t kJ = unit_joule();
+		md_unit_t kJ = md_unit_joule();
 		kJ.mult = 1e3;
-		return unit_div(kJ, unit_mole());
+		return md_unit_div(kJ, md_unit_mole());
 	}
 	if (str_equal_cstr(str, "K")) {
-		return unit_kelvin();
+		return md_unit_kelvin();
 	}
 	if (str_equal_cstr(str, "bar")) {
-		return unit_bar();
+		return md_unit_bar();
 	}
 	if (str_equal_cstr(str, "bar nm")) {
-		return unit_mul(unit_bar(), unit_nanometer());
+		return md_unit_mul(md_unit_bar(), md_unit_nanometer());
 	}
 	if (str_equal_cstr(str, "nm")) {
-		return unit_nanometer();
+		return md_unit_nanometer();
 	}
 	if (str_equal_cstr(str, "nm^3")) {
-		return unit_pow(unit_nanometer(), 3);
+		return md_unit_pow(md_unit_nanometer(), 3);
 	}
 	if (str_equal_cstr(str, "kg/m^3")) {
-		return unit_div(unit_kilogram(), unit_pow(unit_meter(), 3));
+		return md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
+	}
+	if (str_equal_cstr(str, "nm/ps")) {
+		return md_unit_div(md_unit_nanometer(), md_unit_pikosecond());
 	}
 
 	md_logf(MD_LOG_TYPE_INFO, "Failed to match supplied unit '%.*s'", (int)str.len, str.ptr);
 	return (md_unit_t) {0, 1};
 }
 
-bool md_edr_energies_read_file(md_edr_energies_t* energies, str_t filename, struct md_allocator_i* alloc) {
+bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, struct md_allocator_i* alloc) {
 	bool result = false;
 	edr_fp_t fp = {0};
 	if (!edr_file_open(&fp, filename)) {
 		return false;
 	}
 
-	md_allocator_i* arena = md_arena_allocator_create(default_allocator, MEGABYTES(1));
+	md_allocator_i* temp = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
 	md_enxframe_t frame = {0};
 
 	int file_version = 0;
-	if (!read_strings(&fp, &frame, &file_version, arena)) {
+	if (!read_strings(&fp, &frame, &file_version, temp)) {
 		goto done;
 	}
 
-	if (energies->count > 0 && energies->alloc != 0) {
+	if (energies->energy != NULL && energies->alloc != 0) {
 		md_log(MD_LOG_TYPE_DEBUG, "Reading energies into non-zero energy structure, potential memory leak here");
 	}
 	*energies = (md_edr_energies_t){0};
 	energies->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
 
-	energies->count = frame.nre;
-	energies->num_values = 0;
+	energies->num_frames = 0;
+	energies->frame_time = NULL;
 
+	energies->num_energies = frame.nre;
+	md_array_resize(energies->energy, frame.nre, energies->alloc);
+	
 	for (int i = 0; i < frame.nre; ++i) {
-		md_array_push(energies->names, str_copy(frame.e_names[i], energies->alloc), energies->alloc);
-		md_array_push(energies->units, unit_from_str(frame.e_units[i]), energies->alloc);
-		md_array_push(energies->dvalues, NULL, energies->alloc);
-		md_array_push(energies->fvalues, NULL, energies->alloc);
+        energies->energy[i].name	 = str_copy(frame.e_names[i], energies->alloc);
+		energies->energy[i].unit_str = str_copy(frame.e_units[i], energies->alloc);
+        energies->energy[i].unit	 = unit_from_str(frame.e_units[i]);
+		energies->energy[i].values   = NULL;
 	}
 
 	while (true) {
-		if (!read_frame(&fp, &frame, file_version, arena)) {
+		if (!read_frame(&fp, &frame, file_version, temp)) {
 			MD_LOG_ERROR("Failed to read complete edr file!");
 			md_edr_energies_free(energies);
 			goto done;
 		}
 
-		for (int i = 0; i < frame.nre; ++i) {
-			md_array_push(energies->dvalues[i], frame.ener[i].e, energies->alloc);
-		}
-		energies->num_values += 1;
+		if (frame.nre > 0) {
+			// Only export frames which contain energies
+			md_array_push(energies->frame_time, frame.t, energies->alloc);
 
-		if (xdr_tell(fp.xdr) == fp.xdr_file_size) {
+			for (int i = 0; i < frame.nre; ++i) {
+				md_array_push(energies->energy[i].values, (float)frame.ener[i].e, energies->alloc);
+			}
+			energies->num_frames += 1;
+		}
+
+		int64_t pos = xdr_tell(fp.xdr);
+		if (pos == fp.xdr_file_size) {
 			break;
 		}
 	}
 	
 	result = true;
 done:
-	md_arena_allocator_destroy(arena);
+	md_arena_allocator_destroy(temp);
 	edr_file_close(&fp);
 	return result;
 }

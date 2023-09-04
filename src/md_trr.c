@@ -18,14 +18,15 @@
 #define MD_TRR_TRAJ_MAGIC 0x75CF81728AB71723
 
 #define MD_TRR_CACHE_MAGIC 0x67b7cbab
-#define MD_TRR_CACHE_VERSION 1
+#define MD_TRR_CACHE_VERSION 2
+
 #define TRR_MAGIC 1993
 
 #define TRR_MIN_HEADER_SIZE 72
 
 // This file cherry picks bits and pieces from the provided xdrfile_trr.c implementation.
 // See xdrfile_trr.c for the copyright specific to that file.
-// The implementation is modified from its original to use mdlibs allocator and error callbacks for clarity.
+// The implementation is modified from its original to use mdlibs allocator and error logging for clarity.
 
 typedef struct trr_t {
     uint64_t magic;
@@ -395,7 +396,7 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
     return true;
 }
 
-static bool trr_read_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* alloc) {
+static bool trr_read_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* offsets, md_array(double)* times, md_allocator_i* alloc) {
     int result = 0;
     trr_header_t sh = {0};
 
@@ -420,7 +421,8 @@ static bool trr_read_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* all
 
     /* Allocate memory for the frame index array */
     md_array_ensure(*offsets, est_nframes, alloc);
-    md_array_push(*offsets, 0, alloc);
+    md_array_ensure(*times,   est_nframes, alloc);
+    md_array_push(*offsets,    0, alloc);
 
     while (1) {
         /* Skip `framebytes` */
@@ -432,6 +434,7 @@ static bool trr_read_offsets(XDRFILE* xd, int64_t** offsets, md_allocator_i* all
         /* Store position in `offsets` */
         int64_t curr_offset = xdr_tell(xd);
         md_array_push(*offsets, curr_offset, alloc);
+        md_array_push(*times,   sh.t, alloc);
 
         if (curr_offset == filesize) {
             return true;
@@ -546,8 +549,8 @@ bool trr_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     // Should this be exposed?
-    // This is a borderline case if one should use the default_temp_allocator as the raw frame size could potentially be several megabytes...
-    md_allocator_i* alloc = default_allocator;
+    // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
+    md_allocator_i* alloc = md_heap_allocator;
 
     bool result = true;
     const int64_t frame_size = trr_fetch_frame_data(inst, frame_idx, NULL);
@@ -565,13 +568,14 @@ bool trr_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
 }
 
 
-static int64_t* try_read_cache(str_t cache_file, md_allocator_i* alloc) {
+static bool try_read_cache(md_array(int64_t)* frame_offsets, md_array(double)* frame_times, str_t cache_file, md_allocator_i* alloc) {
+    bool result = false;
     md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
-    int64_t* offsets = 0;
     if (file) {
-        int64_t  num_frames = 0;
         uint32_t magic = 0;
         uint32_t version = 0;
+        int64_t  num_offsets = 0;
+        int64_t  num_times = 0;
 
         if (md_file_read(file, &magic, sizeof(magic)) != sizeof(magic) || magic != MD_TRR_CACHE_MAGIC) {
             MD_LOG_DEBUG("TRR: Failed to read offset cache, magic was incorrect");
@@ -583,41 +587,68 @@ static int64_t* try_read_cache(str_t cache_file, md_allocator_i* alloc) {
             goto done;
         }
 
-        if (md_file_read(file, &num_frames, sizeof(num_frames)) != sizeof(num_frames) || num_frames == 0) {
-            MD_LOG_DEBUG("TRR: Failed to read offset cache, number of frames was zero or corrupted");
+        if (md_file_read(file, &num_offsets, sizeof(num_offsets)) != sizeof(num_offsets) || num_offsets == 0) {
+            MD_LOG_DEBUG("TRR: Failed to read offset cache, number of offsets was zero or corrupted");
             goto done;
         }
 
-        md_array_resize(offsets, num_frames, alloc);
-
-        const int64_t offset_bytes = md_array_bytes(offsets);
-        if (md_file_read(file, offsets, offset_bytes) != offset_bytes) {
-            MD_LOG_DEBUG("TRR: Failed to read offset cache, offsets are incomplete");
-            md_array_free(offsets, alloc);
-            offsets = 0;
+        md_array_resize(*frame_offsets, num_offsets, alloc);
+        const int64_t offset_bytes = md_array_bytes(*frame_offsets);
+        if (md_file_read(file, *frame_offsets, offset_bytes) != offset_bytes) {
+            MD_LOG_DEBUG("TRR: Failed to read offsets from cache, incomplete");
+            md_array_free(*frame_offsets, alloc);
+            *frame_offsets = 0;
+            goto done;
         }
+
+        if (md_file_read(file, &num_times, sizeof(num_times)) != sizeof(num_times) || num_times == 0) {
+            MD_LOG_DEBUG("TRR: Failed to read offset cache, number of times was zero or corrupted");
+            goto done;
+        }
+
+        md_array_resize(*frame_times, num_times, alloc);
+        const int64_t time_bytes = md_array_bytes(*frame_times);
+        if (md_file_read(file, *frame_times, time_bytes) != time_bytes) {
+            MD_LOG_DEBUG("TRR: Failed to read times from cache, incomplete");
+            md_array_free(*frame_times, alloc);
+            *frame_times = 0;
+            goto done;
+        }
+
+        result = true;
     done:
         md_file_close(file);
     }
 
-    return offsets;
+    return result;
 }
 
-static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_offsets) {
+static bool write_cache(str_t cache_file, const md_array(int64_t) frame_offsets, const md_array(double) frame_times) {
     bool result = false;
-    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
+
+    if (md_array_size(frame_offsets) == 0 || md_array_size(frame_times) == 0 ||
+        md_array_size(frame_offsets) != md_array_size(frame_times) + 1) {
+        MD_LOG_DEBUG("XTC: cache offsets and times are not correct in length");
+        return false;
+    }
     
+    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
     if (file) {
         const uint32_t magic = MD_TRR_CACHE_MAGIC;
         const uint32_t version = MD_TRR_CACHE_VERSION;
-        const int64_t offset_bytes = num_offsets * sizeof(*offsets);
+        const int64_t offset_bytes = md_array_bytes(frame_offsets);
+        const int64_t num_offsets = md_array_size(frame_offsets);
+        const int64_t time_bytes = md_array_bytes(frame_times);
+        const int64_t num_times = md_array_size(frame_times);
 
         if (md_file_write(file, &magic,         sizeof(magic))          != sizeof(magic) ||
             md_file_write(file, &version,       sizeof(version))        != sizeof(version) ||
             md_file_write(file, &num_offsets,   sizeof(num_offsets))    != sizeof(num_offsets) ||
-            md_file_write(file, offsets,        offset_bytes)           != offset_bytes)
+            md_file_write(file, frame_offsets,  offset_bytes)           != offset_bytes ||
+            md_file_write(file, &num_times,     sizeof(num_times))      != sizeof(num_times) ||
+            md_file_write(file, frame_times,    time_bytes)             != time_bytes)
         {
-            MD_LOG_ERROR("TRR: Failed to write offset cache data");
+            MD_LOG_ERROR("TRR: Failed to write cache data");
             goto done;
         }
         result = true;
@@ -625,7 +656,7 @@ static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_offsets)
         done:
         md_file_close(file);
     } else {
-        MD_LOG_ERROR("TRR: Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+        MD_LOG_ERROR("TRR: Failed to write cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
     }
 
     return result;
@@ -635,6 +666,7 @@ void trr_free(struct md_trajectory_o* inst) {
     trr_t* trr = (trr_t*)inst;
     if (trr->file) xdrfile_close(trr->file);
     if (trr->frame_offsets) md_array_free(trr->frame_offsets, trr->allocator);
+    if (trr->header.frame_times) md_array_free(trr->header.frame_times, trr->allocator);
     md_mutex_destroy(&trr->mutex);
 }
 
@@ -642,7 +674,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* alloc)
     ASSERT(alloc);
 
     // Ensure that filename is zero terminated
-    filename = str_copy(filename, default_temp_allocator);
+    filename = str_copy(filename, md_temp_allocator);
     XDRFILE* file = xdrfile_open(filename.ptr, "r");
 
     if (file) {
@@ -652,29 +684,44 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* alloc)
             return false;
         }
 
+        if (sh.natoms == 0) {
+            MD_LOG_ERROR("TRR: Number of atoms is zero");
+            xdrfile_close(file);
+            return false;
+        }
+
         char buf[2048];
         int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
         str_t cache_file = {buf, len};
 
-        md_array(int64_t) offsets = try_read_cache(cache_file, alloc);
-        if (!offsets) {
-            if (!trr_read_offsets(file, &offsets, alloc)) {
+        md_array(int64_t) frame_offsets = 0;
+        md_array(double)  frame_times   = 0;
+        if (!try_read_cache(&frame_offsets, &frame_times, cache_file, alloc)) {
+            md_array_shrink(frame_offsets, 0);
+            md_array_shrink(frame_times, 0);
+
+            if (!trr_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, alloc)) {
                 xdrfile_close(file);
                 return false;
             }
-            write_cache(cache_file, offsets, md_array_size(offsets));
+            write_cache(cache_file, frame_offsets, frame_times);
         }
 
+        if (!frame_offsets || !frame_times) {
+            MD_LOG_ERROR("TRR: Failed to read frame offsets and times");
+            xdrfile_close(file);
+            return false;
+        }
+
+        const int64_t num_frames = md_array_size(frame_offsets) - 1;
+
         int64_t max_frame_size = 0;
-        for (int64_t i = 0; i < md_array_size(offsets) - 1; ++i) {
-            const int64_t beg = offsets[i + 0];
-            const int64_t end = offsets[i + 1];
+        for (int64_t i = 0; i < num_frames; ++i) {
+            const int64_t beg = frame_offsets[i + 0];
+            const int64_t end = frame_offsets[i + 1];
             const int64_t frame_size = end - beg;
             max_frame_size = MAX(max_frame_size, frame_size);
         }
-        
-        ASSERT(offsets);
-        ASSERT(sh.natoms > 0);
 
         void* mem = md_alloc(alloc, sizeof(md_trajectory_i) + sizeof(trr_t));
         ASSERT(mem);
@@ -686,14 +733,15 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* alloc)
         trr->magic = MD_TRR_TRAJ_MAGIC;
         trr->allocator = alloc;
         trr->file = file;
-        trr->frame_offsets = offsets;
+        trr->frame_offsets = frame_offsets;
         trr->mutex = md_mutex_create();
 
         trr->header = (md_trajectory_header_t) {
-            .num_frames = md_array_size(offsets) - 1,
+            .num_frames = num_frames,
             .num_atoms = sh.natoms,
             .max_frame_data_size = max_frame_size,
-            .time_unit = unit_pikosecond(),
+            .time_unit = md_unit_pikosecond(),
+            .frame_times = frame_times,
         };
 
         traj->inst = (struct md_trajectory_o*)trr;
@@ -723,11 +771,11 @@ void md_trr_trajectory_free(md_trajectory_i* traj) {
     md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(trr_t));
 }
 
-static md_trajectory_api trr_api = {
+static md_trajectory_loader_i trr_loader = {
     md_trr_trajectory_create,
     md_trr_trajectory_free,
 };
 
-md_trajectory_api* md_trr_trajectory_api(void) {
-    return &trr_api;
+md_trajectory_loader_i* md_trr_trajectory_loader(void) {
+    return &trr_loader;
 }

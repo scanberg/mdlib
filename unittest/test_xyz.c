@@ -12,7 +12,7 @@
 UTEST(xyz, xyz_standard) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
     md_xyz_data_t data = {0};
-    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(10, data.num_models);
     EXPECT_EQ(2280 * 10, data.num_coordinates);
@@ -31,13 +31,13 @@ UTEST(xyz, xyz_standard) {
     }
     md_file_close(file);
 
-    md_xyz_data_free(&data, default_allocator);
+    md_xyz_data_free(&data, md_heap_allocator);
 }
 
 UTEST(xyz, xyz_xmol) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     md_xyz_data_t data = {0};
-    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(50, data.num_models);
     EXPECT_EQ(50 * 540, data.num_coordinates);
@@ -57,13 +57,13 @@ UTEST(xyz, xyz_xmol) {
     }
     md_file_close(file);
 
-    md_xyz_data_free(&data, default_allocator);
+    md_xyz_data_free(&data, md_heap_allocator);
 }
 
 UTEST(xyz, xyz_tinker) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/full.xyz");
     md_xyz_data_t data = {0};
-    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(1, data.num_models);
     EXPECT_EQ(404, data.num_coordinates);
@@ -88,13 +88,13 @@ UTEST(xyz, xyz_tinker) {
     }
     md_file_close(file);
 
-    md_xyz_data_free(&data, default_allocator);
+    md_xyz_data_free(&data, md_heap_allocator);
 }
 
 UTEST(xyz, xyz_tinker_arc) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/full.arc");
     md_xyz_data_t data = {0};
-    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(10, data.num_models);
     EXPECT_EQ(10 * 404, data.num_coordinates);
@@ -119,13 +119,13 @@ UTEST(xyz, xyz_tinker_arc) {
     }
     md_file_close(file);
 
-    md_xyz_data_free(&data, default_allocator);
+    md_xyz_data_free(&data, md_heap_allocator);
 }
 
 UTEST(xyz, o2_arc) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/o2.arc");
     md_xyz_data_t data = {0};
-    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(2000, data.num_models);
     EXPECT_EQ(2000 * 2, data.num_coordinates);
@@ -147,13 +147,13 @@ UTEST(xyz, o2_arc) {
     }
     md_file_close(file);
 
-    md_xyz_data_free(&data, default_allocator);
+    md_xyz_data_free(&data, md_heap_allocator);
 }
 
 UTEST(xyz, h2o_arc) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/h2o.arc");
     md_xyz_data_t data = {0};
-    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(2000, data.num_models);
     EXPECT_EQ(2000 * 3, data.num_coordinates);
@@ -168,13 +168,13 @@ UTEST(xyz, h2o_arc) {
     }
     md_file_close(file);
 
-    md_xyz_data_free(&data, default_allocator);
+    md_xyz_data_free(&data, md_heap_allocator);
 }
 
 UTEST(xyz, ch4_arc) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/ch4.arc");
     md_xyz_data_t data = {0};
-    bool result = md_xyz_data_parse_file(&data, path, default_allocator);
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
     EXPECT_TRUE(result);
     EXPECT_EQ(2000, data.num_models);
     EXPECT_EQ(2000 * 5, data.num_coordinates);
@@ -189,11 +189,11 @@ UTEST(xyz, ch4_arc) {
     }
     md_file_close(file);
 
-    md_xyz_data_free(&data, default_allocator);
+    md_xyz_data_free(&data, md_heap_allocator);
 }
 
 UTEST(xyz, create_molecule) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
     str_t path = STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
 
     md_xyz_data_t data = {0};
@@ -217,14 +217,14 @@ UTEST(xyz, create_molecule) {
 
 UTEST(xyz, trajectory_i) {
     const str_t path = STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
-    md_trajectory_i* traj = md_xyz_trajectory_create(path, default_allocator);
+    md_trajectory_i* traj = md_xyz_trajectory_create(path, md_heap_allocator);
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(2280, md_trajectory_num_atoms(traj));
     EXPECT_EQ(10, md_trajectory_num_frames(traj));
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(default_temp_allocator, mem_size);
+    void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
     float *z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
@@ -236,6 +236,6 @@ UTEST(xyz, trajectory_i) {
         EXPECT_EQ(2280, header.num_atoms);
     }
 
-    md_free(default_temp_allocator, mem_ptr, mem_size);
+    md_free(md_temp_allocator, mem_ptr, mem_size);
     md_xyz_trajectory_free(traj);
 }

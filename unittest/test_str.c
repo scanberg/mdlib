@@ -129,3 +129,16 @@ UTEST(str, extract_line) {
 
     EXPECT_FALSE(str_extract_line(&line, &str));
 }
+
+UTEST(str, edit_distance) {
+    int dist;
+
+    dist = str_edit_distance(STR("kitten"), STR("sitting"));
+    EXPECT_EQ(3, dist);
+    
+    dist = str_edit_distance(STR("rosettacode"), STR("raisethysword"));
+    EXPECT_EQ(8, dist);
+
+    dist = str_edit_distance(STR(""), STR("something"));
+    EXPECT_EQ(9, dist);
+}

@@ -12,7 +12,7 @@ extern "C" {
 struct md_trajectory_i* md_xtc_trajectory_create(str_t filename, struct md_allocator_i* alloc);
 void md_xtc_trajectory_free(struct md_trajectory_i* traj);
 
-struct md_trajectory_api* md_xtc_trajectory_api(void);
+struct md_trajectory_loader_i* md_xtc_trajectory_loader(void);
 
 #ifdef __cplusplus
 }

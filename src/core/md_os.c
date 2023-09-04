@@ -100,7 +100,7 @@ static void print_windows_error() {
 #endif
 
 static inline int64_t fullpath(char* buf, int64_t cap, str_t path) {
-    str_t zpath = str_copy(path, default_temp_allocator); // Zero terminate
+    str_t zpath = str_copy(path, md_temp_allocator); // Zero terminate
 #if MD_PLATFORM_WINDOWS
     int64_t len = (int64_t)GetFullPathName(zpath.ptr, (int)cap, buf, NULL);
     if (len == 0) {
@@ -174,6 +174,14 @@ bool md_path_set_cwd(str_t path) {
     return false;
 }
 
+int64_t md_path_write_canonical(char* buf, int64_t cap, str_t path) {
+    int64_t len = fullpath(buf, cap, path);
+#if MD_PLATFORM_WINDOWS
+    convert_backslashes(buf, len);
+#endif
+    return len;
+}
+
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char buf[MD_MAX_PATH];
@@ -192,13 +200,12 @@ str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     return str_copy_cstrn(buf, len, alloc);
 }
 
-str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
-    char  rel_buf[MD_MAX_PATH];
+int64_t md_path_write_relative(char* out_buf, int64_t out_cap, str_t from, str_t to) {
     char from_buf[MD_MAX_PATH];
     char   to_buf[MD_MAX_PATH];
 
-    str_t relative_str = { 0 };
     bool success = false;
+    int64_t len = 0;
 
     // Make 2 canonical paths
     const int64_t from_len = fullpath(from_buf, sizeof(from_buf), from);
@@ -207,8 +214,9 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
 #if MD_PLATFORM_WINDOWS
     (void)from_len;
     (void)to_len;
-    success = PathRelativePathTo(rel_buf, from_buf, FILE_ATTRIBUTE_NORMAL, to_buf, FILE_ATTRIBUTE_NORMAL);
-    convert_backslashes(rel_buf, sizeof(rel_buf));
+    success = PathRelativePathTo(out_buf, from_buf, FILE_ATTRIBUTE_NORMAL, to_buf, FILE_ATTRIBUTE_NORMAL);
+    len = (int64_t)strnlen(out_buf, out_cap);
+    convert_backslashes(out_buf, len);
 #elif MD_PLATFORM_UNIX
 
     // Find the common base
@@ -218,7 +226,7 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
     if (success) {
         str_t abs_from = {from_buf, from_len};
         str_t abs_to   = {to_buf, to_len};
-        
+
         // Count number of folders as N in from and add N times '../'
         str_t rel_from = str_substr(abs_from, count, -1);
         str_t rel_to   = str_substr(abs_to,   count, -1);
@@ -226,27 +234,35 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
         const int64_t folder_count = str_count_occur_char(rel_from, '/');
 
         str_t folder_up = STR("../");
-        int len = 0;
         for (int64_t i = 0; i < folder_count; ++i) {
-            len += snprintf(rel_buf + len, sizeof(rel_buf) - len, "%.*s", (int)folder_up.len, folder_up.ptr);
+            len += snprintf(out_buf + len, out_cap - len, "%.*s", (int)folder_up.len, folder_up.ptr);
         }
-        len += snprintf(rel_buf + len, sizeof(rel_buf) - len, "%.*s", (int)rel_to.len, rel_to.ptr);
+        len += snprintf(out_buf + len, out_cap - len, "%.*s", (int)rel_to.len, rel_to.ptr);
     }
 #else
     ASSERT(false);
 #endif
-    if (success) {
-        relative_str = str_copy((str_t) { .ptr = rel_buf, .len = (int64_t)strnlen(rel_buf, sizeof(rel_buf)) }, alloc);
-    }
-    else {
+    if (!success) {
         MD_LOG_ERROR("Failed to extract relative path.");
     }
-    return relative_str;
+    return len;
+}
+    
+
+str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
+    ASSERT(alloc);
+    char  rel_buf[MD_MAX_PATH];
+    int64_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
+    if (!len) {
+        MD_LOG_ERROR("Failed to extract relative path.");
+        return (str_t){0};
+    }
+    return str_copy_cstrn(rel_buf, len, alloc);
 }
 
 bool md_path_is_valid(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, default_temp_allocator);
+    path = str_copy(path, md_temp_allocator);
     bool result = PathFileExists(path.ptr);
 #elif MD_PLATFORM_UNIX
     bool result = (access(path.ptr, F_OK) == 0);
@@ -258,7 +274,7 @@ bool md_path_is_valid(str_t path) {
 
 bool md_path_is_directory(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, default_temp_allocator);
+    path = str_copy(path, md_temp_allocator);
     bool result = PathIsDirectory(path.ptr);
 #elif MD_PLATFORM_UNIX
     bool result = false;

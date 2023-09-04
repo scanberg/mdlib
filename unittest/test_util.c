@@ -14,7 +14,7 @@
 #include "rmsd.h"
 
 UTEST(util, rmsd) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
     const str_t path = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
@@ -185,7 +185,7 @@ UTEST(util, com) {
 }
 
 UTEST(util, structure) {
-    md_allocator_i* arena = md_arena_allocator_create(default_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    md_allocator_i* arena = md_arena_allocator_create(md_heap_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
     md_molecule_t mol = {0};
     int64_t num_rings = 0;
     int64_t num_structures = 0;

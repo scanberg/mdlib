@@ -10,47 +10,60 @@
 UTEST(xvg, rdf) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/rdf.xvg");
     md_xvg_t xvg = {0};
-    bool result = md_xvg_init_from_file(&xvg, path, default_allocator);
+    bool result = md_xvg_parse_file(&xvg, path, md_heap_allocator);
     ASSERT_TRUE(result);
     
-    EXPECT_EQ(2,    xvg.num_cols);
-    EXPECT_EQ(1024, xvg.num_rows);
+    EXPECT_EQ(2,    xvg.num_fields);
+    EXPECT_EQ(1024, xvg.num_values);
 
-    const float* row10 = md_xvg_row(&xvg, 10);
-    EXPECT_NEAR(0.010, row10[0], 1.0e-6f);
-    EXPECT_NEAR(0.000, row10[1], 1.0e-6f);
+    EXPECT_NEAR(0.010, xvg.fields[0][10], 1.0e-6f);
+    EXPECT_NEAR(0.000, xvg.fields[1][10], 1.0e-6f);
     
-    const float* row50 = md_xvg_row(&xvg, 50);
-    EXPECT_NEAR(0.049, row50[0], 1.0e-6f);
-    EXPECT_NEAR(0.000, row50[1], 1.0e-6f);
+    EXPECT_NEAR(0.049, xvg.fields[0][50], 1.0e-6f);
+    EXPECT_NEAR(0.000, xvg.fields[1][50], 1.0e-6f);
 
-    md_xvg_free(&xvg, default_allocator);
+    ASSERT_EQ(1, xvg.header_info.num_legends);
+    EXPECT_TRUE(str_equal(xvg.header_info.legends[0], STR("OW")));
+
+    EXPECT_TRUE(str_equal(xvg.header_info.title, STR("Radial distribution")));
+    EXPECT_TRUE(str_equal(xvg.header_info.xaxis_label, STR("r (nm)")));
+    EXPECT_TRUE(str_equal(xvg.header_info.yaxis_label, STR("g(r)")));
+
+    md_xvg_free(&xvg, md_heap_allocator);
 }
 
 UTEST(xvg, energy) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/energy.xvg");
     md_xvg_t xvg = {0};
-    bool result = md_xvg_init_from_file(&xvg, path, default_allocator);
+    bool result = md_xvg_parse_file(&xvg, path, md_heap_allocator);
     ASSERT_TRUE(result);
 
-    EXPECT_EQ(5,   xvg.num_cols);
-    EXPECT_EQ(356, xvg.num_rows);
+    EXPECT_EQ(5,   xvg.num_fields);
+    EXPECT_EQ(356, xvg.num_values);
 
-    const float* row9 = md_xvg_row(&xvg, 9);
     //    18.000000  -427.499512  -170.860535  -3487.963135  -2470.888916
-    EXPECT_NEAR(   18.000000, row9[0], 1.0e-6f);
-    EXPECT_NEAR( -427.499512, row9[1], 1.0e-6f);
-    EXPECT_NEAR( -170.860535, row9[2], 1.0e-6f);
-    EXPECT_NEAR(-3487.963135, row9[3], 1.0e-6f);
-    EXPECT_NEAR(-2470.888916, row9[4], 1.0e-6f);
+    EXPECT_NEAR(   18.000000, xvg.fields[0][9], 1.0e-6f);
+    EXPECT_NEAR( -427.499512, xvg.fields[1][9], 1.0e-6f);
+    EXPECT_NEAR( -170.860535, xvg.fields[2][9], 1.0e-6f);
+    EXPECT_NEAR(-3487.963135, xvg.fields[3][9], 1.0e-6f);
+    EXPECT_NEAR(-2470.888916, xvg.fields[4][9], 1.0e-6f);
 
     //   710.000000  -414.190063  -272.062927  -3277.823975  -2500.806641
-    const float* row355 = md_xvg_row(&xvg, 355);
-    EXPECT_NEAR(  710.000000, row355[0], 1.0e-6f);
-    EXPECT_NEAR( -414.190063, row355[1], 1.0e-6f);
-    EXPECT_NEAR( -272.062927, row355[2], 1.0e-6f);
-    EXPECT_NEAR(-3277.823975, row355[3], 1.0e-6f);
-    EXPECT_NEAR(-2500.806641, row355[4], 1.0e-6f);
+    EXPECT_NEAR(  710.000000, xvg.fields[0][355], 1.0e-6f);
+    EXPECT_NEAR( -414.190063, xvg.fields[1][355], 1.0e-6f);
+    EXPECT_NEAR( -272.062927, xvg.fields[2][355], 1.0e-6f);
+    EXPECT_NEAR(-3277.823975, xvg.fields[3][355], 1.0e-6f);
+    EXPECT_NEAR(-2500.806641, xvg.fields[4][355], 1.0e-6f);
 
-    md_xvg_free(&xvg, default_allocator);
+    ASSERT_EQ(4, xvg.header_info.num_legends);
+    EXPECT_TRUE(str_equal(xvg.header_info.legends[0], STR("Coul-SR:2S29-2S29")));
+    EXPECT_TRUE(str_equal(xvg.header_info.legends[1], STR("LJ-SR:2S29-2S29")));
+    EXPECT_TRUE(str_equal(xvg.header_info.legends[2], STR("Coul-SR:2S29-SOL")));
+    EXPECT_TRUE(str_equal(xvg.header_info.legends[3], STR("LJ-SR:2S29-SOL")));
+
+    EXPECT_TRUE(str_equal(xvg.header_info.title, STR("GROMACS Energies")));
+    EXPECT_TRUE(str_equal(xvg.header_info.xaxis_label, STR("Time (ps)")));
+    EXPECT_TRUE(str_equal(xvg.header_info.yaxis_label, STR("(kJ/mol)")));
+
+    md_xvg_free(&xvg, md_heap_allocator);
 }

@@ -401,7 +401,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
         return false;
     }
 
-    md_allocator_i* alloc = default_temp_allocator;
+    md_allocator_i* alloc = md_temp_allocator;
 
     char* buf = 0;
     md_array_ensure(buf, KILOBYTES(4), alloc);
@@ -480,7 +480,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
 }
 
 static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
-    str_t src = load_textfile(str_from_cstr(filename), default_temp_allocator);
+    str_t src = load_textfile(str_from_cstr(filename), md_temp_allocator);
     if (!str_empty(src)) {
         const bool success = compile_shader_from_source(shader, src.ptr, defines, include_files, include_file_count);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
@@ -697,16 +697,16 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         ctx.color.capacity = 4 * 1000 * 1000;
         ctx.color_buf = gl_buffer_create(ctx.color.capacity * sizeof(md_gfx_color_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
-#define CONCAT_STR(STR_A, STR_B) (alloc_printf(default_temp_allocator, "%s%s", STR_A, STR_B).ptr)
+#define CONCAT_STR(STR_A, STR_B) (alloc_printf(md_temp_allocator, "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
-        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), default_temp_allocator);
+        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), md_temp_allocator);
         if (str_empty(common_src)) {
             MD_LOG_ERROR("Failed to read common.h required for shaders");
             return false;
         }
 
-        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), default_temp_allocator);
+        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), md_temp_allocator);
         if (str_empty(culling_src)) {
             MD_LOG_ERROR("Failed to read culling.glsl required for shaders");
             return false;
@@ -933,8 +933,8 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
     s->bb_range = field_alloc(&ctx.bb_range, backbone_range_count);
     s->cluster  = field_alloc(&ctx.cluster, DIV_UP(atom_count, MIN_COUNT_PER_CLUSTER)); // Reserve the maximum amount of clusters we need (this changes dynamically when recomputing clusters)
 
-    md_array_ensure(s->groups, group_count, default_allocator);
-    md_array_ensure(s->instances, instance_count, default_allocator);
+    md_array_ensure(s->groups, group_count, md_heap_allocator);
+    md_array_ensure(s->instances, instance_count, md_heap_allocator);
 
     // Create external handle for user
     return (md_gfx_handle_t) {ctx.handles[s->h_idx].gen, s->h_idx};
@@ -959,7 +959,7 @@ bool md_gfx_structure_destroy(md_gfx_handle_t id) {
     field_free(&ctx.bb_seg,     s->bb_seg);
     field_free(&ctx.bb_range,   s->bb_range);
 
-    md_array_free(s->instances, default_allocator);
+    md_array_free(s->instances, md_heap_allocator);
 
     if (ctx.structure_count > 1) {
         // Swap back and pop resource array to keep it packed
@@ -1117,7 +1117,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
 
 
 void recompute_clusters(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
-    md_allocator_i* alloc = default_allocator;
+    md_allocator_i* alloc = md_heap_allocator;
 
     // Compute clusters
     // This is a tricky problem to solve in real-time
@@ -1461,7 +1461,7 @@ bool md_gfx_structure_set_instance_transforms(md_gfx_handle_t id, const struct m
         return false;
     }
 
-    md_array_resize(s->instances, count, default_allocator);
+    md_array_resize(s->instances, count, md_heap_allocator);
 
     byte_stride = MAX(byte_stride, sizeof(mat4_t));
     for (uint32_t i = 0; i < count; ++i) {

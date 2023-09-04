@@ -6,6 +6,7 @@
 #include <stdbool.h>
 
 struct md_allocator_i;
+struct md_strb_t;
 
 /*
 
@@ -43,73 +44,75 @@ typedef struct md_unit_t {
 extern "C" {
 #endif
 
-static inline bool unit_empty(md_unit_t unit) {
+static inline bool md_unit_empty(md_unit_t unit) {
     return unit.base.raw_bits == 0 && unit.mult == 0;
 }
 
-static inline bool unit_unitless(md_unit_t unit) {
+static inline bool md_unit_unitless(md_unit_t unit) {
     return unit.base.raw_bits == 0 && unit.mult != 0;
 }
 
-static inline bool unit_base_equal(md_unit_t a, md_unit_t b) {
+static inline bool md_unit_base_equal(md_unit_t a, md_unit_t b) {
     return a.base.raw_bits == b.base.raw_bits;
 }
 
-bool unit_equal(md_unit_t a, md_unit_t b);
+bool md_unit_equal(md_unit_t a, md_unit_t b);
 
-md_unit_t unit_mul(md_unit_t a, md_unit_t b);
-md_unit_t unit_div(md_unit_t a, md_unit_t b);
-md_unit_t unit_add(md_unit_t a, md_unit_t b);
-md_unit_t unit_sub(md_unit_t a, md_unit_t b);
-md_unit_t unit_inv(md_unit_t unit);
-md_unit_t unit_pow(md_unit_t unit, int pow);
+md_unit_t md_unit_mul(md_unit_t a, md_unit_t b);
+md_unit_t md_unit_div(md_unit_t a, md_unit_t b);
+// These are kind of pointless, but if the units differ, the result will be unitless
+md_unit_t md_unit_add(md_unit_t a, md_unit_t b);
+md_unit_t md_unit_sub(md_unit_t a, md_unit_t b);
+
+md_unit_t md_unit_inv(md_unit_t unit);
+md_unit_t md_unit_pow(md_unit_t unit, int pow);
 
 // Scales the multiplier with supplied value
-md_unit_t unit_scl(md_unit_t unit, double scl);
+md_unit_t md_unit_scl(md_unit_t unit, double scl);
 
 // Will convert values in its current unit into values in the new unit
-bool unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit);
-bool unit_convert_inplace_f(float*  values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit);
+bool md_unit_convert_inplace_d(double* values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit);
+bool md_unit_convert_inplace_f(float*  values, int64_t num_values, md_unit_t cur_unit, md_unit_t new_unit);
 
 //void unit_convert_d(double* dst_values, const double* src_values, int64_t num_values, md_unit_t* dst_unit, md_unit_t src_unit, md_unit_base_t new_base);
 //void unit_convert_f(float* dst_values, const float* src_values, int64_t num_values, md_unit_t* dst_unit, md_unit_t src_unit, md_unit_base_t new_base);
 
 // Print a unit into a supplied buffer
-int unit_print(char* buf, int cap, md_unit_t unit);
+int md_unit_print(char* buf, int cap, md_unit_t unit);
 
 // Write unit to a string allocated by supplied allocator
-str_t unit_to_string(md_unit_t unit, struct md_allocator_i* alloc);
+str_t md_unit_to_string(md_unit_t unit, struct md_allocator_i* alloc);
 
-// Create a unit from string
-md_unit_t unit_from_string(str_t str);
+// Parse unit from string
+md_unit_t md_unit_from_string(str_t str);
 
 // Some defined helper
-md_unit_t unit_none();  // Unitless quantity
+md_unit_t md_unit_none();  // Unitless quantity
  
 // Base units
-md_unit_t unit_meter();
-md_unit_t unit_nanometer();
-md_unit_t unit_angstrom();
+md_unit_t md_unit_meter();
+md_unit_t md_unit_nanometer();
+md_unit_t md_unit_angstrom();
 
-md_unit_t unit_kilogram();
+md_unit_t md_unit_kilogram();
 
-md_unit_t unit_second();
-md_unit_t unit_nanosecond();
-md_unit_t unit_pikosecond();
+md_unit_t md_unit_second();
+md_unit_t md_unit_nanosecond();
+md_unit_t md_unit_pikosecond();
 
-md_unit_t unit_ampere();
-md_unit_t unit_mole();
-md_unit_t unit_kelvin();
+md_unit_t md_unit_ampere();
+md_unit_t md_unit_mole();
+md_unit_t md_unit_kelvin();
 
-md_unit_t unit_radian();
-md_unit_t unit_degree();
+// Not real base units, but required to represent some quantities
+md_unit_t md_unit_radian();
+md_unit_t md_unit_degree();
+md_unit_t md_unit_count();
 
-md_unit_t unit_count();
-
-// Derived units
-md_unit_t unit_joule();
-md_unit_t unit_pascal();
-md_unit_t unit_bar();
+// Common units
+md_unit_t md_unit_joule();
+md_unit_t md_unit_pascal();
+md_unit_t md_unit_bar();
 
 #ifdef __cplusplus
 }
