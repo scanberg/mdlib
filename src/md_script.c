@@ -3626,7 +3626,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                 }
                 if (range.beg == INT32_MIN) range.beg = 1;
                 if (range.end == INT32_MAX) range.end = (int)table->num_fields;
-                for (int idx = range.beg - 1; idx < range.end; ++idx) {
+                for (int idx = range.beg; idx <= range.end; ++idx) {
                     if (idx < 1 || idx >= (int)table->num_fields) {
                         LOG_ERROR(ctx->ir, node->token, "import: second argument must be a valid field index within range [1, %d]",
                             (int)table->num_fields-1);
