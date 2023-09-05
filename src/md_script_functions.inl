@@ -1955,33 +1955,22 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const float radius = as_float(arg[0]);
 
     if (dst || ctx->vis) {
-        const md_spatial_hash_t* sh = 0;
+        const md_spatial_hash_t* sh = ctx->spatial_hash;
         const vec3_t* in_pos = 0;
         
-        if (is_type_equivalent(arg[1].type, (type_info_t)TI_BITFIELD)) {
-            // The convention we use is that if you supply a bitfield as the second argument,
-            // you will not include that within your search.
-            // IF you do want them anyways. you can always AND it later.
-            
+        if (is_type_equivalent(arg[1].type, (type_info_t)TI_BITFIELD)) {           
             const md_bitfield_t* in_bf = as_bitfield(arg[1]);
             
-            md_bitfield_t bf = md_bitfield_create(ctx->temp_alloc);
-            md_bitfield_copy(&bf, in_bf);
-            
             if (ctx->mol_ctx) {
-                md_bitfield_and_inplace(&bf, ctx->mol_ctx);
+                md_bitfield_t bf = md_bitfield_create(ctx->temp_alloc);
+                md_bitfield_and(&bf, in_bf, ctx->mol_ctx);
+                in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, &bf, ctx->temp_alloc);
+                md_bitfield_free(&bf);
+            } else {
+                in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, in_bf, ctx->temp_alloc);
             }
-            
-            in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, &bf, ctx->temp_alloc);
-            md_bitfield_not_inplace(&bf, 0, ctx->mol->atom.count);
-            
-            const int count = (int)md_bitfield_popcount(&bf);
-            int* indices = md_alloc(ctx->temp_alloc, sizeof(int) * count);
-            md_bitfield_extract_indices(indices, count, &bf);
-            sh = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, count, &ctx->mol->unit_cell, ctx->temp_alloc);
         } else {
             in_pos = position_extract(arg[1], ctx);
-            sh = ctx->spatial_hash;
         }
 
         const int64_t num_pos = md_array_size(in_pos);
@@ -2027,35 +2016,17 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-
-        const md_spatial_hash_t* sh = 0;
+        const md_spatial_hash_t* sh = ctx->spatial_hash;
         const vec3_t* in_pos = 0;
 
         if (is_type_equivalent(arg[1].type, (type_info_t)TI_BITFIELD)) {
-            // The convention we use is that if you supply a bitfield as the second argument,
-            // you will not include that within your search.
-            // IF you do want them anyways. you can always AND it later.
-
-            const md_bitfield_t* in_bf = ctx->mol_ctx;
-
-            md_bitfield_t bf = md_bitfield_create(ctx->temp_alloc);
-            md_bitfield_copy(&bf, in_bf);
-
-            in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, &bf, ctx->temp_alloc);
-
-            md_bitfield_not_inplace(&bf, 0, ctx->mol->atom.count);
-
-            const int count = (int)md_bitfield_popcount(&bf);
-            int* indices = md_alloc(ctx->temp_alloc, sizeof(int) * count);
-            md_bitfield_extract_indices(indices, count, &bf);
-            sh = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, indices, count, &ctx->mol->unit_cell, ctx->temp_alloc);
+            in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
         } else {
             in_pos = position_extract(arg[1], ctx);
-            sh = ctx->spatial_hash;
         }
 
         const int64_t num_pos = md_array_size(in_pos);
-
+        
         if (dst) {
             if (sh) {
                 ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));

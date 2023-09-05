@@ -1210,7 +1210,6 @@ bool validate_spatial_hash(const md_spatial_hash_t* spatial_hash) {
 }
 
 void md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_iterator_fn iter, void* user_param) {
-    ASSERT(spatial_hash);
     ASSERT(iter);
 
     if (!validate_spatial_hash(spatial_hash)) {
@@ -1226,7 +1225,6 @@ void md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, fl
 }
 
 void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius, md_spatial_hash_batch_iter_fn iter, void* user_param) {
-    ASSERT(spatial_hash);
     ASSERT(iter);
 
     if (!validate_spatial_hash(spatial_hash)) {
