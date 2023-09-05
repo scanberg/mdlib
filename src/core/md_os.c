@@ -101,6 +101,8 @@ static void print_windows_error() {
 
 static inline int64_t fullpath(char* buf, int64_t cap, str_t path) {
     str_t zpath = str_copy(path, md_temp_allocator); // Zero terminate
+    if (zpath.len == 0) return 0;
+    
 #if MD_PLATFORM_WINDOWS
     int64_t len = (int64_t)GetFullPathName(zpath.ptr, (int)cap, buf, NULL);
     if (len == 0) {
@@ -220,23 +222,30 @@ int64_t md_path_write_relative(char* out_buf, int64_t out_cap, str_t from, str_t
 #elif MD_PLATFORM_UNIX
 
     // Find the common base
-    int64_t count = str_count_equal_chars(from, to);
+    str_t abs_from = {from_buf, from_len};
+    str_t abs_to   = {to_buf, to_len};
+    
+    int64_t count = str_count_equal_chars(abs_from, abs_to);
     success = count > 0;
 
     if (success) {
-        str_t abs_from = {from_buf, from_len};
-        str_t abs_to   = {to_buf, to_len};
-
-        // Count number of folders as N in from and add N times '../'
         str_t rel_from = str_substr(abs_from, count, -1);
         str_t rel_to   = str_substr(abs_to,   count, -1);
 
-        const int64_t folder_count = str_count_occur_char(rel_from, '/');
+        MD_LOG_DEBUG("rel_from: '%.*s'", (int)rel_from.len, rel_from.ptr);
+        MD_LOG_DEBUG("rel_to:   '%.*s'", (int)rel_to.len, rel_to.ptr);
 
-        str_t folder_up = STR("../");
-        for (int64_t i = 0; i < folder_count; ++i) {
-            len += snprintf(out_buf + len, out_cap - len, "%.*s", (int)folder_up.len, folder_up.ptr);
+        // Count number of folders as N in from and add N times '../'
+        int64_t folder_count = str_count_occur_char(rel_from, '/');
+        if (folder_count) {
+            str_t folder_up = STR("../");
+            while (folder_count-- >= 0) {
+                len += snprintf(out_buf + len, out_cap - len, "%.*s", (int)folder_up.len, folder_up.ptr);
+            }
+        } else {
+            len += snprintf(out_buf + len, out_cap - len, ".");
         }
+
         len += snprintf(out_buf + len, out_cap - len, "%.*s", (int)rel_to.len, rel_to.ptr);
     }
 #else

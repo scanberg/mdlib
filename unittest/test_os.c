@@ -4,23 +4,42 @@
 #include <core/md_str.h>
 #include <core/md_os.h>
 
-UTEST(os, path) {
+UTEST(os, path_canonical) {
     {
-        char buf[4096];
         str_t cwd = md_path_cwd();
-        snprintf(buf, sizeof(buf), "%.*s/../../", (int)cwd.len, cwd.ptr);
-        str_t path = {buf, strnlen(buf, sizeof(buf))};
+        str_t path = alloc_printf(md_temp_allocator, "%.*s/../../", (int)cwd.len, cwd.ptr);   
         str_t result = md_path_make_canonical(path, md_temp_allocator);
         printf("result: '%.*s'\n", (int)result.len, result.ptr);
     }
     {
         /*
         // FAILS ON UNIX
+        // Probably because the file does not exist
         str_t path = STR("cool/fool/../bool/../file.txt");
         str_t result = md_path_make_canonical(path, md_temp_allocator);
         str_t ref = STR("cool/file.txt");
         EXPECT_TRUE(str_equal(result, ref));
         */
+    }
+    {
+        str_t path = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t result = md_path_make_canonical(path, md_temp_allocator);
+        printf("canonical: '%.*s'\n", (int)result.len, result.ptr);
+    }
+}
+
+UTEST(os, path_relative) {
+    {
+        str_t from = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t to   = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t result = md_path_make_relative(from, to, md_temp_allocator);
+        EXPECT_STREQ("../../40-40-2-ddba-dyna.xmol", result.ptr);
+    }
+    {
+        str_t from = STR(MD_UNITTEST_DATA_DIR "/" );
+        str_t to   = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t result = md_path_make_relative(from, to, md_temp_allocator);
+        EXPECT_STREQ("./40-40-2-ddba-dyna.xmol", result.ptr);
     }
 }
 

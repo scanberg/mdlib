@@ -141,8 +141,9 @@ static inline bool str_equal_cstr_ignore_case(str_t str, const char* cstr) {
 
 static inline int64_t str_count_equal_chars(str_t a, str_t b) {
     if (!a.ptr || a.len <= 0 || !b.ptr || b.len <= 0) return 0;
+    const int64_t len = MIN(a.len, b.len);
     int64_t i = 0;
-    for (; i < MIN(a.len, b.len); ++i) {
+    for (; i < len; ++i) {
         if (a.ptr[i] != b.ptr[i]) break;
     }
     return i;

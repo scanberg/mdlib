@@ -142,3 +142,17 @@ UTEST(str, edit_distance) {
     dist = str_edit_distance(STR(""), STR("something"));
     EXPECT_EQ(9, dist);
 }
+
+UTEST(str, count_equal_chars) {
+    int count;
+    count = str_count_equal_chars(STR("kitten"), STR("kittenz"));
+    EXPECT_EQ(6, count);
+
+    count = str_count_equal_chars(STR("kitten"), STR("sitting"));
+    EXPECT_EQ(0, count);
+
+    count = str_count_equal_chars(
+        STR("/mnt/e/git/viamd/ext/mdlib/test_data/dir/subdir"),
+        STR("/mnt/e/git/viamd/ext/mdlib/test_data/40-40-2-ddba-dyna.xmol"));
+    EXPECT_EQ(sizeof("/mnt/e/git/viamd/ext/mdlib/test_data/") - 1, count);
+}
