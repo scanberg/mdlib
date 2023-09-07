@@ -11,6 +11,7 @@
 
 void md_assert_impl(const char* file, int line, const char* func_name, const char* expr) {
     fprintf(stderr, "Assertion \"%s\" failed at line %i in %s:%s\n", expr, line, file, func_name);
+    fflush(stderr);
 #if MD_COMPILER_MSVC
     __debugbreak();
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
