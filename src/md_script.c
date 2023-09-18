@@ -207,6 +207,7 @@ typedef enum eval_flags_t {
     //EVAL_FLAG_STATIC_TYPE_CHECK     = 0x1,
     //EVAL_FLAG_EVALUATE              = 0x2,
     EVAL_FLAG_FLATTEN               = 0x100,
+    EVAL_FLAG_NO_STATIC_EVAL        = 0x200,
 } eval_flags_t;
 
 // Propagate upwards to parent nodes within the AST tree
@@ -3849,7 +3850,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     }
 
     // Resolve type of returned data
-    if (result && node->proc && node->data.type.base_type == TYPE_UNDEFINED) {
+    if (result && node->proc) {
         // If we have procedure flags modifying flatten state, then we need to recheck children with flags set
         if (node->proc->flags & FLAG_FLATTEN) {
             ctx->eval_flags |= EVAL_FLAG_FLATTEN;
@@ -4236,6 +4237,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     for (int64_t i = 0; i < num_contexts; ++i) {
                         eval_context_t local_ctx = *ctx;
                         local_ctx.mol_ctx = &contexts[i];
+                        local_ctx.eval_flags |= EVAL_FLAG_NO_STATIC_EVAL;
 
                         if (!static_check_node(lhs, &local_ctx)) {
                             return false;
@@ -4350,7 +4352,7 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
         ASSERT(false);
     }
 
-    if (result && !(node->flags & FLAG_DYNAMIC)) {
+    if (result && !(node->flags & FLAG_DYNAMIC) && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
         static_eval_node(node, ctx);
     }
 
