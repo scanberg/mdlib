@@ -6,6 +6,7 @@
 #include <core/md_str.h>
 #include <core/md_vec_math.h>
 #include <core/md_unit.h>
+#include <core/md_bitfield.h>
 
 struct md_bitfield_t;
 struct md_molecule_t;
@@ -23,7 +24,7 @@ in order to make it work within VIAMD
 
 
 // This is represents an opaque marker of something which can be visualized
-typedef struct md_script_vis_payload_t md_script_vis_payload_t;
+typedef struct md_script_vis_payload_o md_script_vis_payload_o;
 
 typedef enum md_script_property_flags_t {
     MD_SCRIPT_PROPERTY_FLAG_TEMPORAL        = 0x0001,
@@ -44,7 +45,7 @@ typedef struct md_script_vis_token_t {
     md_script_range_marker_t range;
     int depth;
     str_t text;
-    const md_script_vis_payload_t* payload;
+    const md_script_vis_payload_o* payload;
 } md_script_vis_token_t;
 
 typedef struct md_log_token_t {
@@ -62,8 +63,9 @@ typedef struct md_script_aggregate_t {
     int64_t num_values;
     float*  population_mean;
     float*  population_var;
-    float*  population_min;
-    float*  population_max;
+    vec2_t* population_ext; // min and max
+    //float*  population_min;
+    //float*  population_max;
 } md_script_aggregate_t;
 
 #if 0
@@ -142,12 +144,15 @@ typedef struct md_script_property_t {
     md_script_property_flags_t flags;
     md_script_property_data_t  data;
 
-    const struct md_script_vis_payload_t* vis_payload; // For visualization of the property
+    const md_script_vis_payload_o* vis_payload; // For visualization of the property
 } md_script_property_t;
 
-struct md_script_visualization_o;
-typedef struct md_script_visualization_t {
-    struct md_script_visualization_o* o;
+typedef struct md_script_vis_o md_script_vis_o;
+
+typedef struct md_script_vis_t {
+    md_script_vis_o* o;
+    uint64_t magic;
+    struct md_allocator_i* alloc;
 
     // Geometry
     struct {
@@ -186,12 +191,13 @@ typedef struct md_script_visualization_t {
 
     // Atoms
     struct {
+        int64_t count;
         struct md_bitfield_t* atom_masks;
     } structures;
 
-    struct md_bitfield_t* atom_mask;
-    
-} md_script_visualization_t;
+    // This is an all encompassing atom mask, when there may be no real 'substructures'
+    struct md_bitfield_t atom_mask;
+} md_script_vis_t;
 
 enum {
     MD_SCRIPT_VISUALIZE_DEFAULT     = 0, // Default is to visualize everything, equivalent to all flags
@@ -200,16 +206,13 @@ enum {
     MD_SCRIPT_VISUALIZE_SDF         = 4,
 };
 
-typedef uint32_t md_script_visualization_flags_t;
+typedef uint32_t md_script_vis_flags_t;
 
-typedef struct md_script_visualization_args_t {
-    const struct md_script_vis_payload_t* payload;
+typedef struct md_script_vis_ctx_t {
     const struct md_script_ir_t* ir;
     const struct md_molecule_t* mol;
     const struct md_trajectory_i* traj;
-    struct md_allocator_i* alloc;
-    md_script_visualization_flags_t flags;
-} md_script_visualization_args_t;
+} md_script_vis_ctx_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -258,7 +261,7 @@ const str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
 // Allocate and initialize the data for properties within the evaluation
 // We need to pass the number of frames we want the data to hold
 // Should be performed as soon as the IR has changed.
-md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
+md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, str_t label, struct md_allocator_i* alloc);
 
 uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval);
 
@@ -279,20 +282,27 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
 // This is perhaps the granularity to operate on in a threaded context, in order to be able to interrupt evaluations without too much wait time.
 //bool md_script_eval_frame(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_idx);
 
+str_t md_script_eval_label(const md_script_eval_t* eval);
+
+// Extract properties within in an evaluation
 int64_t md_script_eval_num_properties(const md_script_eval_t* eval);
 const md_script_property_t* md_script_eval_properties(const md_script_eval_t* eval);
 
 // Compile and evaluate a single property from a string
 //bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap);
 
-//uint32_t md_script_eval_num_frames_completed(const md_script_eval_t* eval);
-//uint32_t md_script_eval_num_frames_total(const md_script_eval_t* eval);
+// Get the frames encoded in a bitfield of the completed frames
 const struct md_bitfield_t* md_script_eval_completed_frames(const md_script_eval_t* eval);
-void     md_script_eval_interrupt(md_script_eval_t* eval);
+
+// Interrupt the current evaluation
+void md_script_eval_interrupt(md_script_eval_t* eval);
 
 // ### VISUALIZE ###
-bool md_script_visualization_init(md_script_visualization_t* vis, struct md_script_visualization_args_t args);
-bool md_script_visualization_free(md_script_visualization_t* vis);
+void md_script_vis_init(md_script_vis_t* vis, struct md_allocator_i* alloc);
+bool md_script_vis_free(md_script_vis_t* vis);
+
+bool md_script_vis_clear(md_script_vis_t* vis);
+bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payload_o* payload, int subidx, const md_script_vis_ctx_t* ctx, md_script_vis_flags_t flags);
 
 // ### MISC ###
 

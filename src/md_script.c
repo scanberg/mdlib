@@ -304,13 +304,6 @@ struct constant_t {
     md_unit_t unit;
 };
 
-typedef struct md_script_visualization_o {
-    uint64_t magic;
-    md_allocator_i* alloc;
-    md_bitfield_t atom_mask; // Global atom mask outside of context
-    uint32_t flags;
-} md_script_visualization_o;
-
 // The backchannel is used to provide additional information of the data during static analysis.
 // Ideally this should perhaps reside together with the data_t struct, but for now we keep it separate.
 // The reason is because we do not pass in data_t during static analysis. which may be a mistake.
@@ -336,7 +329,9 @@ typedef struct eval_context_t {
     flags_t* arg_flags;                 // Flags of arguments
     identifier_t* identifiers;          // Evaluated identifiers for references
                                       
-    md_script_visualization_t* vis;     // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
+    md_script_vis_t* vis;               // These are used when calling a procedure flagged with the VISUALIZE flag so the procedure can fill in the geometry
+    uint32_t vis_flags;                 // Visualization flags
+    md_bitfield_t* vis_structure;       // Current visualization structure to mark atoms in
 
     md_trajectory_frame_header_t* frame_header;
 
@@ -348,6 +343,11 @@ typedef struct eval_context_t {
     } initial_configuration;
 
     md_spatial_hash_t* spatial_hash;
+
+    // During evaluations, whenever we hit a array subscript operator, we store the indices
+    // In order to propagate what will be visible and or used by the array subscript operator
+    // This allows us to only visualize parts of an expression
+    md_array(irange_t) subscript_ranges;
 
     // This is information which is only present in the static check and serves as a backchannel for the procedure in order to deduce value range, units, flags and such
     static_backchannel_t* backchannel;
@@ -383,7 +383,6 @@ void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double
     md_array_push(table->field_values, field_data, alloc);
     table->num_fields = md_array_size(table->field_names);
 }
-
 
 void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float* data, int64_t count, md_allocator_i* alloc) {
     ASSERT(count == table->num_values);
@@ -474,6 +473,8 @@ struct md_script_eval_t {
 
     md_bitfield_t completed_frames;
     md_mutex_t    frame_mutex;
+
+    str_t label;
 
     md_script_property_t    *properties;
     volatile uint32_t       *prop_dist_count;   // Counters property distributions
@@ -2745,12 +2746,44 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
     return false;
 }
 
+static bool index_present_in_subscript_ranges(int idx, const md_array(irange_t) ranges) {
+    for (int64_t i = 0; i < md_array_size(ranges); ++i) {
+        if (ranges[i].beg <= idx && idx <= ranges[i].end) return true;
+    }
+    return false;
+}
+
+static md_array(irange_t) extract_subscript_ranges(const data_t data, md_allocator_i* alloc) {
+    md_array(irange_t) result = 0;
+
+    if (type_info_equal(data.type, (type_info_t)TI_INT)) {
+        int64_t len = type_info_array_len(data.type);
+        for (int64_t i = 0; i < len; ++i) {
+            int value = *(int*)data.ptr;
+            irange_t range = {value, value};
+            md_array_push(result, range, alloc);
+        }
+    } else if (type_info_equal(data.type, (type_info_t)TI_IRANGE)) {
+        int64_t len = type_info_array_len(data.type);
+        irange_t* ranges = (irange_t*)(data.ptr);
+        md_array_push_array(result, ranges, len, alloc);
+    } else {
+        ASSERT(false);
+    }
+
+    return result;
+}
+
 static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_ARRAY);
 
     // Even if we do not have a dst parameter we still want to propagate the evaluation to the children
     const int64_t num_args = md_array_size(node->children);
     ast_node_t** const args = node->children;
+    bool result = false;
+
+    md_array(irange_t) ranges = ctx->subscript_ranges;
+    ctx->subscript_ranges = 0;
 
     if (dst) {
         ASSERT(type_info_equal(type_info_element_type(dst->type), type_info_element_type(node->data.type)));
@@ -2761,7 +2794,7 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, args[i], ctx)) {
                     md_logf(MD_LOG_TYPE_DEBUG, "evaluate_array: Failed to finalize type for variable length argument...");
-                    return false;
+                    goto done;
                 }
             }
             data_t data = {
@@ -2769,22 +2802,36 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
                 .ptr = (char*)dst->ptr + byte_offset,
                 .size = type_info_total_byte_size(type)
             };
-            if (!evaluate_node(&data, args[i], ctx)) {
-                return false;
+            md_script_vis_t* vis = ctx->vis;
+            if (ranges && !index_present_in_subscript_ranges((int)i + 1, ranges)) {
+                ctx->vis = 0;
             }
+            if (!evaluate_node(&data, args[i], ctx)) {
+                goto done;
+            }
+            ctx->vis = vis;
             byte_offset += data.size;
         }
         ASSERT(byte_offset == dst->size);
     }
     else {
+
         for (int64_t i = 0; i < num_args; ++i) {
-            if (!evaluate_node(NULL, args[i], ctx)) {
-                return false;
+            md_script_vis_t* vis = ctx->vis;
+            if (ranges && !index_present_in_subscript_ranges((int)i + 1, ranges)) {
+                ctx->vis = 0;
             }
+            if (!evaluate_node(NULL, args[i], ctx)) {
+                goto done;
+            }
+            ctx->vis = vis;
         }
     }
 
-    return true;
+    result = true;
+done:
+    ctx->subscript_ranges = ranges;
+    return result;
 }
 
 static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
@@ -2800,12 +2847,36 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     if (!allocate_data(&arr_data, arr->data.type, ctx->temp_alloc)) return false;
     if (!allocate_data(&idx_data, idx->data.type, ctx->temp_alloc)) return false;
 
-    if (!evaluate_node(&arr_data, arr, ctx)) return false;
     if (!evaluate_node(&idx_data, idx, ctx)) return false;
+    md_array(irange_t) idx_ranges = extract_subscript_ranges(idx_data, ctx->temp_alloc);
+
+    md_array(irange_t) old_ranges = ctx->subscript_ranges;
+    ctx->subscript_ranges = idx_ranges;
+    if (!evaluate_node(&arr_data, arr, ctx)) return false;
+    ctx->subscript_ranges = old_ranges;
 
     ASSERT(arr_data.ptr);
     ASSERT(idx_data.ptr);
 
+    if (dst) {
+        ASSERT(type_info_equal(dst->type, node->data.type));
+        ASSERT(dst->ptr);
+        const int64_t elem_size = type_info_byte_stride(arr_data.type);
+        int64_t write_offset = 0;
+        for (int64_t i = 0; i < md_array_size(idx_ranges); ++i) {
+            irange_t range = idx_ranges[i];
+            range.beg -= 1; // Offset since script is one based
+            const int64_t bytes = elem_size * (range.end - range.beg);
+            const int64_t read_offset = elem_size * range.beg;
+            data_t dst_slice       = {dst->type, (char*)dst->ptr + write_offset, bytes};
+            const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, bytes};
+            copy_data(&dst_slice, &src_slice);
+            write_offset += bytes;
+        }
+    }
+
+
+    /*
     int offset = 0;
     int length = 1;
     if (type_info_equal(idx_data.type, (type_info_t)TI_INT)) {
@@ -2828,6 +2899,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
         const data_t src = {dst->type, (char*)arr_data.ptr + elem_size * offset, elem_size * length};
         copy_data(dst, &src);
     }
+    */
 
     return true;
 }
@@ -2869,7 +2941,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     data_t data = {0};
     data.unit = expr_node->data.unit;
     data.value_range = expr_node->data.value_range;
-    
+   
     data_t* sub_dst = dst ? &data : NULL;
 
     bool result = true;
@@ -2879,6 +2951,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     for (int64_t i = 0; i < num_ctx; ++i) {
         eval_context_t sub_ctx = *ctx;
         sub_ctx.mol_ctx = &ctx_bf[i];
+        sub_ctx.subscript_ranges = 0;
 
         if (dst) {
             const uint64_t elem_size = type_info_byte_stride(dst->type);
@@ -2890,14 +2963,18 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
             dst_idx += offset;
         }
 
-        md_bitfield_t* prev_vis_atom_mask = 0;
+        if (ctx->subscript_ranges) {
+            if (!index_present_in_subscript_ranges((int)i + 1, ctx->subscript_ranges)) {
+                // Clear the visualization context if this index is not present in subscript ranges to prevent visualization
+                sub_ctx.vis = 0;
+            }
+        }
+
+        md_bitfield_t* prev_vis_structure = 0;
         if (sub_ctx.vis) {
-            prev_vis_atom_mask = sub_ctx.vis->atom_mask;
-            if (sub_ctx.vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
-                md_bitfield_t bf = {0};
-                md_bitfield_init(&bf, sub_ctx.vis->o->alloc);
-                md_array_push(sub_ctx.vis->structures.atom_masks, bf, sub_ctx.vis->o->alloc);
-                sub_ctx.vis->atom_mask = md_array_last(sub_ctx.vis->structures.atom_masks);
+            prev_vis_structure = sub_ctx.vis_structure;
+            if (sub_ctx.vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+                sub_ctx.vis_structure = push_structure(sub_ctx.vis);
             }
         }
 
@@ -2907,10 +2984,12 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
 
         if (sub_ctx.vis) {
             // Reset atom mask
-            if (sub_ctx.vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
-                sub_ctx.vis->atom_mask = prev_vis_atom_mask;
+            if (sub_ctx.vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+                sub_ctx.vis_structure = prev_vis_structure;
             }
         }
+
+        sub_ctx.vis = ctx->vis;
 
         if (!result) break;
     }
@@ -3072,7 +3151,7 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
         ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
 
         // Perform the call
-        md_script_visualization_t* old_vis = ctx->vis;
+        md_script_vis_t* old_vis = ctx->vis;
         token_t old_token = ctx->op_token;
         ctx->op_token = node->token;
         ctx->vis = NULL;
@@ -3190,7 +3269,8 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 if (!convert_node(args[i], node->proc->arg_type[i], ctx)) {
                     return false;
                 }
-                node->flags |= args[i]->flags & FLAG_AST_PROPAGATION_MASK;
+                node->flags    |= args[i]->flags & FLAG_AST_PROPAGATION_MASK;
+                ctx->ir->flags |= args[i]->flags & FLAG_IR_PROPAGATION_MASK;
             }
         }
 
@@ -3209,7 +3289,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     }
 
     // Propagate procedure flags
-    node->flags |= node->proc->flags & FLAG_AST_PROPAGATION_MASK;
+    node->flags    |= node->proc->flags & FLAG_AST_PROPAGATION_MASK;
     ctx->ir->flags |= node->proc->flags & FLAG_IR_PROPAGATION_MASK;
 
     // @TODO: Test if all contexts are equivalent
@@ -4418,7 +4498,9 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
         .alloc = ir->arena,
         .mol = mol,
         .traj = traj,
+        .spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc)
     };
+
     ir->stage = "Static Type Checking";
 
     for (int64_t i = 0; i < md_array_size(ir->expressions); ++i) {
@@ -4627,11 +4709,16 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
         prop->data.aggregate->population_var = md_alloc(alloc, aggregate_size * sizeof(float));
         MEMSET(prop->data.aggregate->population_var, 0, aggregate_size * sizeof(float));
 
+        prop->data.aggregate->population_ext = md_alloc(alloc, aggregate_size * sizeof(vec2_t));
+        MEMSET(prop->data.aggregate->population_ext, 0, aggregate_size * sizeof(vec2_t));
+
+        /*
         prop->data.aggregate->population_min = md_alloc(alloc, aggregate_size * sizeof(float));
         MEMSET(prop->data.aggregate->population_min, 0, aggregate_size * sizeof(float));
 
         prop->data.aggregate->population_max = md_alloc(alloc, aggregate_size * sizeof(float));
         MEMSET(prop->data.aggregate->population_max, 0, aggregate_size * sizeof(float));
+        */
     }
 }
 
@@ -4645,7 +4732,7 @@ static void init_property(md_script_property_t* prop, int64_t num_frames, str_t 
     prop->ident = str_copy(ident, alloc);
     prop->flags = 0;
     prop->data = (md_script_property_data_t){0};
-    prop->vis_payload = (const md_script_vis_payload_t*)node;
+    prop->vis_payload = (const md_script_vis_payload_o*)node;
     prop->data.unit = node->data.unit;
 
     if (is_temporal_type(node->data.type)) {
@@ -4741,8 +4828,11 @@ static void clear_properties(md_script_property_t* props, int64_t num_props) {
         if (prop->data.aggregate) {
             MEMSET(prop->data.aggregate->population_mean, 0, prop->data.aggregate->num_values * sizeof(float));
             MEMSET(prop->data.aggregate->population_var,  0, prop->data.aggregate->num_values * sizeof(float));
+            MEMSET(prop->data.aggregate->population_ext,  0, prop->data.aggregate->num_values * sizeof(vec2_t));
+            /*
             MEMSET(prop->data.aggregate->population_min,  0, prop->data.aggregate->num_values * sizeof(float));
             MEMSET(prop->data.aggregate->population_max,  0, prop->data.aggregate->num_values * sizeof(float));
+            */
         }
         prop->data.min_value = +FLT_MAX;
         prop->data.max_value = -FLT_MAX;
@@ -4771,8 +4861,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     // coordinate data for reading trajectory frames into
     const int64_t stride = ALIGN_TO(mol->atom.count, md_simd_f32_width);    // Round up allocation size to simd width to allow for vectorized operations
     const int64_t coord_bytes = stride * 3 * sizeof(float);
-    float* init_coords = md_alloc(&temp_alloc, coord_bytes);
-    float* curr_coords = md_alloc(&temp_alloc, coord_bytes);
+    float* init_coords = md_vm_arena_push(&vm_arena, coord_bytes);
+    float* curr_coords = md_vm_arena_push(&vm_arena, coord_bytes);
     
     // This data is meant to hold the evaluated expressions
     data_t* data = md_vm_arena_push(&vm_arena, num_expr * sizeof(data_t));
@@ -4883,8 +4973,11 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 if (prop->data.aggregate) {
                     prop->data.aggregate->population_mean[f_idx] = mean;
                     prop->data.aggregate->population_var [f_idx] = var;
+                    prop->data.aggregate->population_ext [f_idx] = (vec2_t){min, max};
+                    /*
                     prop->data.aggregate->population_min [f_idx] = min;
                     prop->data.aggregate->population_max [f_idx] = max;
+                    */
                 }
 
                 // Update range if not explicitly set
@@ -5101,7 +5194,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     vis.range.end = node->token.end;
     vis.depth = depth;
     vis.text = str_copy(md_strb_to_str(&sb), ir->arena);
-    vis.payload = (const struct md_script_vis_payload_t*)(node_override ? node_override : node);
+    vis.payload = (const struct md_script_vis_payload_o*)(node_override ? node_override : node);
 
     // Parent marker should be last marker added (unless empty)
     md_script_vis_token_t* last = md_array_last(ir->vis_tokens);
@@ -5178,7 +5271,8 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
         add_ir_ctx(ir, ctx_ir);
     }
 
-    ir->compile_success = parse_script(ir) &&
+    ir->compile_success =
+        parse_script(ir) &&
         static_type_check(ir, mol, traj) &&
         finalize_ast(ir) &&
         // optimize ast?
@@ -5332,7 +5426,7 @@ static md_script_eval_t* create_eval(md_allocator_i* alloc) {
     return eval;
 }
 
-md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, md_allocator_i* alloc) {
+md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, str_t label, md_allocator_i* alloc) {
     if (num_frames == 0) {
         MD_LOG_ERROR("Script eval: Number of frames was 0");
         return NULL;
@@ -5351,6 +5445,9 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
     }
 
     md_script_eval_t* eval = create_eval(alloc);
+    if (!str_empty(label)) {
+        eval->label = str_copy(label, eval->arena);
+    }
 
     eval->ir_fingerprint = ir->fingerprint;
 
@@ -5455,6 +5552,14 @@ void md_script_eval_free(md_script_eval_t* eval) {
         md_arena_allocator_destroy(eval->arena);
     }
 }
+
+str_t md_script_eval_label(const md_script_eval_t* eval) {
+    if (validate_eval(eval)) {
+        return eval->label;
+    }
+    return (str_t){0,0};
+}
+
 
 int64_t md_script_eval_num_properties(const md_script_eval_t* eval) {
     if (validate_eval(eval)) {        
@@ -5742,56 +5847,27 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
 
 #define VIS_MAGIC 0xbc6169abd9628947
 
-/*
-static md_range_t node_range(const ast_node_t* node) {
-    md_range_t range = {node->token.col_beg, node->token.col_end};
-    const int64_t num_children = md_array_size(node->children);
-    ast_node_t** const children = node->children;
-    for (int64_t i = 0; i < num_children; ++i) {
-        md_range_t child_range = node_range(children[i]);
-        range.beg = MIN(range.beg, child_range.beg);
-        range.end = MAX(range.end, child_range.end);
-    }
-
-    return range;
-}
-
-static const ast_node_t* get_node(const ast_node_t* node, int32_t col) {
-    ASSERT(node);
-
-    const ast_node_t* result = 0;
-
-    const int64_t num_children = md_array_size(node->children);
-    if (num_children > 0) {
-        for (int64_t i = 0; i < num_children; ++i) {
-            md_range_t child_range = node_range(node->children[i]);
-            if (child_range.beg <= col && col < child_range.end) {
-                result = get_node(node->children[i], col);
-            }
-        }
-    }
-
-    if (!result) {
-        md_range_t range = node_range(node);
-        if (range.beg <= col && col < range.end) {
-            result = node;
-        }
-    }
-
-    return result;
-}
-*/
-
 static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
-    if (node->type == AST_IDENTIFIER) {
+
+    if (!node) {
+        MD_LOG_DEBUG("Vis Eval: Failed to visualize node: node was NULL\n");
+        return;
+    }
+    
+    // Take some shortcuts in specific cases
+    switch (node->type) {
+    case AST_IDENTIFIER:
         ASSERT(node->children);
         ASSERT(md_array_size(node->children) == 1);
         node = node->children[0];
-    }
-    else if (node->type == AST_ASSIGNMENT) {
+        break;
+    case AST_ASSIGNMENT:
         ASSERT(node->children);
         ASSERT(md_array_size(node->children) == 2);
         node = node->children[1];
+        break;
+    default:
+        break;
     }
 
     if (node->data.type.base_type == TYPE_BITFIELD) {
@@ -5810,7 +5886,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
             evaluate_node(&data, node, ctx);
             const md_bitfield_t* bf_arr = data.ptr;
             for (int64_t i = 0; i < element_count(data); ++i) {
-                md_bitfield_or_inplace(ctx->vis->atom_mask, &bf_arr[i]);
+                md_bitfield_or_inplace(&ctx->vis->atom_mask, &bf_arr[i]);
             }
             free_data(&data, ctx->temp_alloc);
         } else {
@@ -5834,7 +5910,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         ASSERT(arg_idx != -1);
         
         const procedure_t* proc = node->parent->proc;
-        if (is_type_equivalent(proc->arg_type[arg_idx], (type_info_t)TI_POSITION) || is_type_equivalent(proc->arg_type[arg_idx], (type_info_t)TI_POSITION_ARR)) {
+        if (is_type_directly_compatible(proc->arg_type[arg_idx], (type_info_t)TI_POSITION_ARR)) {
             if (node->data.ptr) {
                 position_visualize(node->data, ctx);
             } else {
@@ -5867,75 +5943,73 @@ static void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
     */
 }
 
-bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visualization_args_t args) {
+bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payload_o* payload, int subidx, const md_script_vis_ctx_t* vis_ctx, md_script_vis_flags_t flags) {
     ASSERT(vis);
-    if (!args.payload) return false;
-    if (!args.mol) return false;
-    if (!args.ir) return false;
-    if (!args.alloc) return false;
-
-    if (args.flags == 0) args.flags = 0xFFFFFFFF;
-
-    if (vis->o) {
-        ASSERT(vis->o->magic == VIS_MAGIC);
-        ASSERT(vis->o->alloc);
-        vis->o->flags = args.flags;
-        md_bitfield_clear(&vis->o->atom_mask);
-        md_arena_allocator_reset(vis->o->alloc);
-    } else {
-        md_allocator_i* arena = md_arena_allocator_create(args.alloc, MEGABYTES(1));
-        vis->o = md_alloc(arena, sizeof(md_script_visualization_o));
-        MEMSET(vis->o, 0, sizeof(md_script_visualization_o));
-        vis->o->alloc = arena;
-        vis->o->magic = VIS_MAGIC;
-        vis->o->flags = args.flags;
-        md_bitfield_init(&vis->o->atom_mask, arena);
+    ASSERT(payload);
+    ASSERT(vis_ctx);
+    
+    if (vis->magic != VIS_MAGIC) {
+        MD_LOG_ERROR("Visualize: vis object not initialized.");
+        return false;
     }
 
+    if (flags == 0) flags = 0xFFFFFFFFU;
+    
+    md_bitfield_clear(&vis->atom_mask);
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
-    int64_t num_atoms = md_trajectory_num_atoms(args.traj);
-    float* x = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
-    float* y = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
-    float* z = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
-    
+    int64_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
+    float* init_x = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
+    float* init_y = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
+    float* init_z = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
+
     md_trajectory_frame_header_t header = { 0 };
-    if (args.traj) {
-        md_trajectory_load_frame(args.traj, 0, &header, x, y, z);
+    if (vis_ctx->traj) {
+        md_trajectory_load_frame(vis_ctx->traj, 0, &header, init_x, init_y, init_z);
     } else {
-        x = args.mol->atom.x;
-        y = args.mol->atom.y;
-        z = args.mol->atom.z;
+        init_x = vis_ctx->mol->atom.x;
+        init_y = vis_ctx->mol->atom.y;
+        init_z = vis_ctx->mol->atom.z;
+    }
+
+    md_array(irange_t) ranges = 0;
+    if (subidx > 0) {
+        irange_t range = {subidx, subidx};
+        md_array_push(ranges, range, &temp_alloc);
     }
 
     eval_context_t ctx = {
-        .ir = (md_script_ir_t*)args.ir,
-        .mol = args.mol,
+        .ir = (md_script_ir_t*)vis_ctx->ir,
+        .mol = vis_ctx->mol,
+        .traj = vis_ctx->traj,
         .temp_arena = &vm_arena,
         .temp_alloc = &temp_alloc,
         .vis = vis,
+        .vis_flags = flags,
+        .vis_structure = &vis->atom_mask,
         .frame_header = &header,
         .initial_configuration = {
             .header = &header,
-            .x = x,
-            .y = y,
-            .z = z
+            .x = init_x,
+            .y = init_y,
+            .z = init_z
         },
+        .subscript_ranges = ranges,
     };
-    if (args.ir->flags & FLAG_SPATIAL_QUERY) {
-        ctx.spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, num_atoms, &header.unit_cell, &temp_alloc);
+
+    if (vis_ctx->ir->flags & FLAG_SPATIAL_QUERY) {
+        ctx.spatial_hash = md_spatial_hash_create_soa(vis_ctx->mol->atom.x, vis_ctx->mol->atom.y, vis_ctx->mol->atom.z, NULL, num_atoms, &vis_ctx->mol->unit_cell, &temp_alloc);
     }
 
-    vis->atom_mask = &vis->o->atom_mask;
-
-    visualize_node((ast_node_t*)args.payload, &ctx);
+    visualize_node((ast_node_t*)payload, &ctx);
 
     // This just to see that we conceptually did not make any errors when evaluating sub_contexts
-    ASSERT(vis->atom_mask == &vis->o->atom_mask);
+    ASSERT(ctx.vis_structure == &vis->atom_mask);
 
+    // Append all structures into the 'global' atom mask
     for (int64_t i = 0; i < md_array_size(vis->structures.atom_masks); ++i) {
-        md_bitfield_or_inplace(vis->atom_mask, &vis->structures.atom_masks[i]);
+        md_bitfield_or_inplace(&vis->atom_mask, &vis->structures.atom_masks[i]);
     }
 
     FREE_TEMP_ALLOC();
@@ -5943,14 +6017,39 @@ bool md_script_visualization_init(md_script_visualization_t* vis, md_script_visu
     return true;
 }
 
-bool md_script_visualization_free(md_script_visualization_t* vis) {
+void md_script_vis_init(md_script_vis_t* vis, md_allocator_i* alloc) {
     ASSERT(vis);
-    if (vis->o) {
-        ASSERT(vis->o->magic == VIS_MAGIC);
-        md_arena_allocator_destroy(vis->o->alloc);
-    }
-    MEMSET(vis, 0, sizeof(md_script_visualization_t));
+    ASSERT(alloc);
+    MEMSET(vis, 0, sizeof(md_script_vis_t));
+    vis->magic = VIS_MAGIC;
+    vis->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
 
+    md_bitfield_init(&vis->atom_mask, vis->alloc);
+}
+
+bool md_script_vis_free(md_script_vis_t* vis) {
+    ASSERT(vis);
+    if (vis->magic == VIS_MAGIC) {
+        ASSERT(vis->alloc);
+        md_arena_allocator_destroy(vis->alloc);
+    }
+    MEMSET(vis, 0, sizeof(md_script_vis_t));
+    return true;
+}
+
+bool md_script_vis_clear(md_script_vis_t* vis) {
+    if (vis->magic != VIS_MAGIC) {
+        MD_LOG_ERROR("Vis: Failed to clear object: not initialized");
+        return false;
+    }
+
+    md_arena_allocator_reset(vis->alloc);
+    md_allocator_i* alloc = vis->alloc;
+    MEMSET(vis, 0, sizeof(md_script_vis_t));
+    vis->magic = VIS_MAGIC;
+    vis->alloc = alloc;
+
+    md_bitfield_init(&vis->atom_mask, vis->alloc);
     return true;
 }
 

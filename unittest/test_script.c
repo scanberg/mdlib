@@ -299,7 +299,7 @@ UTEST(script, property_compute) {
         md_script_ir_compile_from_source(ir, src, &mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
@@ -318,7 +318,7 @@ UTEST(script, property_compute) {
         md_script_ir_compile_from_source(ir, STR("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
@@ -331,7 +331,7 @@ UTEST(script, property_compute) {
         md_script_ir_compile_from_source(ir, STR("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), &mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
@@ -357,7 +357,7 @@ UTEST(script, property_compute) {
         md_script_ir_clear(ir);
         md_script_ir_compile_from_source(ir, src, &mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
         md_script_eval_free(eval);
     }
@@ -426,7 +426,7 @@ UTEST(script, parallel_evaluation) {
     md_script_ir_compile_from_source(ir, script, &mol, traj, NULL);
     EXPECT_TRUE(md_script_ir_valid(ir));
 
-    md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, alloc);
+    md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
     ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, &mol, traj, 0, (uint32_t)num_frames));
 
     ASSERT_EQ(1, md_script_eval_num_properties(ref_eval));
@@ -442,7 +442,7 @@ UTEST(script, parallel_evaluation) {
 
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
-            eval[i] = md_script_eval_create(num_frames, ir, alloc);
+            eval[i] = md_script_eval_create(num_frames, ir, STR(""), alloc);
             EXPECT_NE(NULL, eval[i]);
         }
 

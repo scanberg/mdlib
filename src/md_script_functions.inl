@@ -650,85 +650,96 @@ static procedure_t procedures[] = {
 
 #undef CSTR
 
-static inline void visualize_atom_mask(const md_bitfield_t* mask, md_script_visualization_t* vis) {
-    ASSERT(vis);
-    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
-        md_bitfield_or_inplace(vis->atom_mask, mask);
+static inline void visualize_atom_mask(const md_bitfield_t* mask, eval_context_t* ctx) {
+    ASSERT(ctx->vis);
+    if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+        md_bitfield_or_inplace(ctx->vis_structure, mask);
     }
 }
 
-static inline void visualize_atom_range(irange_t range, md_script_visualization_t* vis) {
-    ASSERT(vis);
-    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
-        md_bitfield_set_range(vis->atom_mask, range.beg, range.end);
+static inline void visualize_atom_range(irange_t range, eval_context_t* ctx) {
+    ASSERT(ctx->vis);
+    if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+        md_bitfield_set_range(ctx->vis_structure, range.beg, range.end);
     }
 }
 
-static inline void visualize_atom_index(int64_t index, md_script_visualization_t* vis) {
-    ASSERT(vis);
-    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
-        md_bitfield_set_bit(vis->atom_mask, index);
+static inline void visualize_atom_index(int64_t index, eval_context_t* ctx) {
+    ASSERT(ctx->vis);
+    if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+        md_bitfield_set_bit(ctx->vis_structure, index);
     }
 }
 
-static inline void visualize_atom_indices32(const int32_t* indices, int64_t num_indices, md_script_visualization_t* vis) {
-    ASSERT(vis);
-    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+/*
+static inline void visualize_atom_indices32(const int32_t* indices, int64_t num_indices, eval_context_t* ctx) {
+    ASSERT(ctx->vis);
+    if (ctx->vis_flag & MD_SCRIPT_VISUALIZE_ATOMS) {
         for (int64_t i = 0; i < num_indices; ++i) {
             md_bitfield_set_bit(vis->atom_mask, indices[i]);
         }
     }
 }
 
-static inline void visualize_atom_indices64(const int64_t* indices, int64_t num_indices, md_script_visualization_t* vis) {
-    ASSERT(vis);
-    if (vis->o->flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+static inline void visualize_atom_indices64(const int64_t* indices, int64_t num_indices, eval_context_t* ctx) {
+    ASSERT(ctx->vis);
+    if (ctx->vis_flag & MD_SCRIPT_VISUALIZE_ATOMS) {
         for (int64_t i = 0; i < num_indices; ++i) {
-            md_bitfield_set_bit(vis->atom_mask, indices[i]);
+            md_bitfield_set_bit(ctx->vis->atom_mask, indices[i]);
         }
     }
 }
+*/
 
-static inline uint32_t push_vertex(vec3_t pos, md_script_visualization_t* vis) {
+static inline uint32_t push_vertex(vec3_t pos, md_script_vis_t* vis) {
     ASSERT(vis);
-    ASSERT(vis->o->alloc);
+    ASSERT(vis->alloc);
     const int64_t idx = vis->vertex.count;
-    md_array_push(vis->vertex.pos, pos, vis->o->alloc);
+    md_array_push(vis->vertex.pos, pos, vis->alloc);
     vis->vertex.count += 1;
     ASSERT(idx < UINT32_MAX);
     return (uint32_t)idx;
 }
 
-static inline void push_point(uint32_t v, md_script_visualization_t* vis) {
+static inline void push_point(uint32_t v, md_script_vis_t* vis) {
     ASSERT(vis);
-    ASSERT(vis->o->alloc);
-    md_array_push(vis->point.idx, v, vis->o->alloc);
+    ASSERT(vis->alloc);
+    md_array_push(vis->point.idx, v, vis->alloc);
     vis->point.count += 1;
 }
 
-static inline void push_line(uint32_t v0, uint32_t v1, md_script_visualization_t* vis) {
+static inline void push_line(uint32_t v0, uint32_t v1, md_script_vis_t* vis) {
     ASSERT(vis);
-    ASSERT(vis->o->alloc);
-    md_array_push(vis->line.idx, v0, vis->o->alloc);
-    md_array_push(vis->line.idx, v1, vis->o->alloc);
+    ASSERT(vis->alloc);
+    md_array_push(vis->line.idx, v0, vis->alloc);
+    md_array_push(vis->line.idx, v1, vis->alloc);
     vis->line.count += 1;
 }
 
-static inline void push_triangle(uint32_t v0, uint32_t v1, uint32_t v2, md_script_visualization_t* vis) {
+static inline void push_triangle(uint32_t v0, uint32_t v1, uint32_t v2, md_script_vis_t* vis) {
     ASSERT(vis);
-    ASSERT(vis->o->alloc);
-    md_array_push(vis->triangle.idx, v0, vis->o->alloc);
-    md_array_push(vis->triangle.idx, v1, vis->o->alloc);
-    md_array_push(vis->triangle.idx, v2, vis->o->alloc);
+    ASSERT(vis->alloc);
+    md_array_push(vis->triangle.idx, v0, vis->alloc);
+    md_array_push(vis->triangle.idx, v1, vis->alloc);
+    md_array_push(vis->triangle.idx, v2, vis->alloc);
     vis->triangle.count += 1;
 
 }
 
-static inline void push_sphere(vec4_t pos_rad, md_script_visualization_t* vis) {
+static inline void push_sphere(vec4_t pos_rad, md_script_vis_t* vis) {
     ASSERT(vis);
-    ASSERT(vis->o->alloc);
-    md_array_push(vis->sphere.pos_rad, pos_rad, vis->o->alloc);
+    ASSERT(vis->alloc);
+    md_array_push(vis->sphere.pos_rad, pos_rad, vis->alloc);
     vis->sphere.count += 1;
+}
+
+static inline md_bitfield_t* push_structure(md_script_vis_t* vis) {
+    ASSERT(vis);
+    ASSERT(vis->alloc);
+    md_bitfield_t* bf = md_array_push(vis->structures.atom_masks, (md_bitfield_t){0}, vis->alloc);
+    vis->structures.count += 1;
+    md_bitfield_init(bf, vis->alloc);
+    return bf;
 }
 
 static inline bool idx_in_range(int idx, irange_t range) {
@@ -1068,7 +1079,7 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
         ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
-        if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+        if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
             const vec3_t* pos = as_vec3_arr(arg);
             const int64_t len = element_count(arg);
             for (int64_t i = 0; i < len; ++i) {
@@ -1082,7 +1093,7 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
         const int64_t len = element_count(arg);
         for (int64_t i = 0; i < len; ++i) {
             const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
-            visualize_atom_index(idx, ctx->vis);
+            visualize_atom_index(idx, ctx);
         }
         break;
     }
@@ -1101,7 +1112,7 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
                 md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
                 bf = &tmp_bf;
             }
-            visualize_atom_mask(bf, ctx->vis);
+            visualize_atom_mask(bf, ctx);
         }
 
         if (ctx->mol_ctx) {
@@ -1120,11 +1131,11 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
                     int64_t end_bit = range.end;
                     while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
                         const int64_t idx = beg_bit - 1;
-                        visualize_atom_index(idx, ctx->vis);
+                        visualize_atom_index(idx, ctx);
                     }
                 }
                 else {
-                    visualize_atom_range(range, ctx->vis);
+                    visualize_atom_range(range, ctx);
                 }
             }
         }
@@ -1975,7 +1986,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             // Visualize
             ASSERT(ctx->vis);
-            bf_dst = ctx->vis->atom_mask;
+            bf_dst = ctx->vis_structure;
             position_visualize(arg[1], ctx);
             
             for (int64_t i = 0; i < num_pos; ++i) {
@@ -2028,8 +2039,8 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         else {
             // Visualize
             ASSERT(ctx->vis);
-            bf_dst = ctx->vis->atom_mask;
-            visualize_atom_mask(ctx->mol_ctx, ctx->vis);
+            bf_dst = ctx->vis_structure;
+            visualize_atom_mask(ctx->mol_ctx, ctx);
             for (int64_t i = 0; i < num_pos; ++i) {
                 push_sphere(vec4_from_vec3(in_pos[i], radius), ctx->vis);
                 md_spatial_hash_query_batch(ctx->spatial_hash, in_pos[i], radius, within_float_iter, bf_dst);
@@ -2109,7 +2120,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         else {
             // Visualize
-            bf_dst = ctx->vis->atom_mask;
+            bf_dst = ctx->vis_structure;
             payload.bf = bf_dst;
             for (int64_t i = 0; i < num_pos; ++i) {
                 const float rad = rad_range.end;
@@ -2169,7 +2180,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         else {
             // Visualize
-            bf_dst = ctx->vis->atom_mask;
+            bf_dst = ctx->vis_structure;
             payload.bf = bf_dst;
             for (int64_t i = 0; i < num_pos; ++i) {
                 const float rad = rad_range.end;
@@ -3046,7 +3057,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
             position_visualize(arg[0], ctx);
             position_visualize(arg[1], ctx);
 
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 uint32_t va = push_vertex(a, ctx->vis);
                 uint32_t vb = push_vertex(b, ctx->vis);
                 push_point(va, ctx->vis);
@@ -3103,7 +3114,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
             position_visualize(arg[0], ctx);
             position_visualize(arg[1], ctx);
 
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 if (a_pos && b_pos) {
                     uint32_t va = push_vertex(a_pos[min_i], ctx->vis);
                     uint32_t vb = push_vertex(b_pos[min_j], ctx->vis);
@@ -3162,7 +3173,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
             position_visualize(arg[0], ctx);
             position_visualize(arg[1], ctx);
 
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 if (a_pos && b_pos) {
                     uint32_t va = push_vertex(a_pos[max_i], ctx->vis);
                     uint32_t vb = push_vertex(b_pos[max_j], ctx->vis);
@@ -3215,7 +3226,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
             position_visualize(arg[0], ctx);
             position_visualize(arg[1], ctx);
 
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 for (int64_t i = 0; i < a_len; ++i) {
                     uint32_t va = push_vertex(a_pos[i], ctx->vis);
                     push_point(va, ctx->vis);
@@ -3269,7 +3280,7 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
             position_visualize(arg[1], ctx);
             position_visualize(arg[2], ctx);
 
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 uint32_t va = push_vertex(a, ctx->vis);
                 uint32_t vb = push_vertex(b, ctx->vis);
                 uint32_t vc = push_vertex(c, ctx->vis);
@@ -3324,7 +3335,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             position_visualize(arg[2], ctx);
             position_visualize(arg[3], ctx);
 
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
 
                 uint32_t va = push_vertex(a, ctx->vis);
                 uint32_t vb = push_vertex(b, ctx->vis);
@@ -3396,7 +3407,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                         coord_data + stride * 5,
                     },
                 };
-                float* w  = coord_data + stride * 6;
+                float* w = coord_data + stride * 6;
 
                 extract_xyz (coord[0].x, coord[0].y, coord[0].z, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, &bf);
                 extract_xyzw(coord[1].x, coord[1].y, coord[1].z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
@@ -3635,7 +3646,7 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         if (ctx->vis) {
             position_visualize(arg[0], ctx);
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 vec3_t* pos = position_extract(arg[0], ctx);
                 uint32_t c = push_vertex(com, ctx->vis);
                 push_point(c, ctx->vis);
@@ -3732,7 +3743,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         if (ctx->vis) {
             position_visualize(arg[0], ctx);
-            if (ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 vec3_t v = vec3_mul_f(eigen.vectors.col[0], eigen.values.elem[0]);
                 vec3_t u = vec3_mul_f(eigen.vectors.col[1], eigen.values.elem[1]);
 
@@ -4025,7 +4036,7 @@ static int visualize_rdf(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* 
     const float max_cutoff2 = max_cutoff * max_cutoff;
 
     // Visualize
-    if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+    if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
         const int64_t max_vertices = 10000;
         int64_t vertex_count = 0;
 
@@ -4307,7 +4318,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec3_t* target_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield, ctx->temp_alloc);
         ref_com[0] = md_util_compute_com_soa(ref[0].x, ref[0].y, ref[0].z, ref_w, ref_size);
 
-        // Need to measure this better
+        // @TODO(Robin): This should be measured
         const bool brute_force = target_size < 3000;
 
         md_spatial_hash_t* spatial_hash = NULL;
@@ -4325,7 +4336,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         mat4_t V = compute_volume_matrix(cutoff);
         mat4_t VA = mat4_mul(V, A);
 
-        if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_SDF) {
+        if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_SDF) {
             ctx->vis->sdf.count = num_ref_bitfields;
             ctx->vis->sdf.extent = cutoff;
         }
@@ -4349,8 +4360,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     md_spatial_hash_query_batch(spatial_hash, ref_com[1], spatial_hash_radius, sdf_iter, &payload);
                 }
             }
-            if (ctx->vis && ctx->vis->o->flags & MD_SCRIPT_VISUALIZE_SDF) {
-                md_allocator_i* alloc = ctx->vis->o->alloc;
+            if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_SDF) {
+                md_allocator_i* alloc = ctx->vis->alloc;
                 md_bitfield_t bf_cpy = {0};
                 md_bitfield_init(&bf_cpy, alloc);
                 md_bitfield_copy(&bf_cpy, bf);
