@@ -3330,6 +3330,8 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 node->data.type.dim[node->data.type.len_dim] = query_result;
                 return true;
             } else {
+                //node-> flags |= FLAG_DYNAMIC_LENGTH;
+                //return true;
                 LOG_ERROR(ctx->ir, node->token, "Failed to determine length of procedure return type!");
                 return false;
             }
@@ -5672,14 +5674,11 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
                 .z = mol->atom.z,
             },
             .eval_flags = 0,
+            .spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc),
         };
 
         if (static_check_node(node, &ctx)) {
-            if (node->data.type.base_type == TYPE_BITFIELD) {
-                if (ir->flags & FLAG_SPATIAL_QUERY) {
-                    ctx.spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc);
-                }
-                
+            if (node->data.type.base_type == TYPE_BITFIELD) {               
                 if (type_info_array_len(node->data.type) == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
                     finalize_type(&node->data.type, node, &ctx);
                 }
@@ -5781,13 +5780,11 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                 .z = mol->atom.z,
             },
             .eval_flags = EVAL_FLAG_FLATTEN,
+            .spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc),
         };
 
         if (static_check_node(node, &ctx)) {
             if (node->data.type.base_type == TYPE_BITFIELD) {
-                if (ir->flags & FLAG_SPATIAL_QUERY) {
-                    ctx.spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc);
-                }
                 int len = (int)type_info_array_len(node->data.type);
                 if (len == -1 && (node->flags & FLAG_DYNAMIC_LENGTH)) {
                     finalize_type(&node->data.type, node, &ctx);
