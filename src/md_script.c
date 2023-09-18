@@ -3848,14 +3848,14 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         }
     }
 
-    if (result && node->proc) {
+    // Resolve type of returned data
+    if (result && node->proc && node->data.type.base_type == TYPE_UNDEFINED) {
         // If we have procedure flags modifying flatten state, then we need to recheck children with flags set
         if (node->proc->flags & FLAG_FLATTEN) {
             ctx->eval_flags |= EVAL_FLAG_FLATTEN;
         } else if (node->proc->flags & FLAG_NO_FLATTEN) {
             ctx->eval_flags = ctx->eval_flags & (~EVAL_FLAG_FLATTEN);
         }
-
         
         // Perform new child check here since children may have changed due to conversions etc.
         result = result && static_check_children(node, ctx) && finalize_proc_call(node, ctx);
