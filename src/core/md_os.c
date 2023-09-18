@@ -99,20 +99,30 @@ static void print_windows_error() {
 }
 #endif
 
-static inline int64_t fullpath(char* buf, int64_t cap, str_t path) {
+static int64_t fullpath(char* buf, int64_t cap, str_t path) {
     str_t zpath = str_copy(path, md_temp_allocator); // Zero terminate
     if (zpath.len == 0) return 0;
     
 #if MD_PLATFORM_WINDOWS
-    int64_t len = (int64_t)GetFullPathName(zpath.ptr, (int)cap, buf, NULL);
+    int64_t len = (int64_t)GetFullPathName(zpath.ptr, (DWORD)cap, buf, NULL);
     if (len == 0) {
         print_windows_error();
+        return 0;
     }
     return len;
+
 #elif MD_PLATFORM_UNIX
     int64_t len = 0;
     if (realpath(zpath.ptr, buf) != NULL) {
+        // realpath will not append a trailing '/' if the path is a directory. We want this to
+        // be able to resolve relative paths more easily
         len = (int64_t)strnlen(buf, cap);
+        if (len > 0 && md_path_is_directory((str_t){buf, len}) && buf[len-1] != '/') {
+            if (len < cap) {
+                buf[len++] = '/';
+                buf[len]   = '\0';
+            }
+        }
     }
     else {
         switch (errno) {
@@ -216,34 +226,36 @@ int64_t md_path_write_relative(char* out_buf, int64_t out_cap, str_t from, str_t
 #if MD_PLATFORM_WINDOWS
     (void)from_len;
     (void)to_len;
+    //MD_LOG_DEBUG("rel_from: '%s'", from_buf);
+    //MD_LOG_DEBUG("rel_to:   '%s'", to_buf);
+    
     success = PathRelativePathTo(out_buf, from_buf, FILE_ATTRIBUTE_NORMAL, to_buf, FILE_ATTRIBUTE_NORMAL);
     len = (int64_t)strnlen(out_buf, out_cap);
     convert_backslashes(out_buf, len);
 #elif MD_PLATFORM_UNIX
 
     // Find the common base
-    str_t abs_from = {from_buf, from_len};
-    str_t abs_to   = {to_buf, to_len};
+    str_t can_from = {from_buf, from_len};
+    str_t can_to   = {to_buf, to_len};
+
+    //MD_LOG_DEBUG("rel_from: '%.*s'", (int)can_from.len, can_from.ptr);
+    //MD_LOG_DEBUG("rel_to:   '%.*s'", (int)can_to.len, can_to.ptr);
     
-    int64_t count = str_count_equal_chars(abs_from, abs_to);
+    int64_t count = str_count_equal_chars(can_from, can_to);
     success = count > 0;
 
     if (success) {
-        str_t rel_from = str_substr(abs_from, count, -1);
-        str_t rel_to   = str_substr(abs_to,   count, -1);
-
-        MD_LOG_DEBUG("rel_from: '%.*s'", (int)rel_from.len, rel_from.ptr);
-        MD_LOG_DEBUG("rel_to:   '%.*s'", (int)rel_to.len, rel_to.ptr);
+        str_t rel_from = str_substr(can_from, count, -1);
+        str_t rel_to   = str_substr(can_to,   count, -1);
 
         // Count number of folders as N in from and add N times '../'
         int64_t folder_count = str_count_occur_char(rel_from, '/');
         if (folder_count) {
-            str_t folder_up = STR("../");
-            while (folder_count-- >= 0) {
-                len += snprintf(out_buf + len, out_cap - len, "%.*s", (int)folder_up.len, folder_up.ptr);
+            while (folder_count-- > 0) {
+                len += snprintf(out_buf + len, out_cap - len, "../");
             }
         } else {
-            len += snprintf(out_buf + len, out_cap - len, ".");
+            len += snprintf(out_buf + len, out_cap - len, "./");
         }
 
         len += snprintf(out_buf + len, out_cap - len, "%.*s", (int)rel_to.len, rel_to.ptr);

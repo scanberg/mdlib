@@ -36,10 +36,28 @@ UTEST(os, path_relative) {
         EXPECT_STREQ("../../40-40-2-ddba-dyna.xmol", result.ptr);
     }
     {
+        str_t from = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t to   = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t result = md_path_make_relative(from, to, md_temp_allocator);
+        EXPECT_STREQ("./dir/subdir/", result.ptr);
+    }
+    {
         str_t from = STR(MD_UNITTEST_DATA_DIR "/" );
         str_t to   = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         str_t result = md_path_make_relative(from, to, md_temp_allocator);
         EXPECT_STREQ("./40-40-2-ddba-dyna.xmol", result.ptr);
+    }
+    {
+        str_t from = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t to = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t result = md_path_make_relative(from, to, md_temp_allocator);
+        EXPECT_STREQ("./file.txt", result.ptr);
+    }
+    {
+        str_t from = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t to = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t result = md_path_make_relative(from, to, md_temp_allocator);
+        EXPECT_STREQ("./", result.ptr);
     }
 }
 
