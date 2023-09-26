@@ -76,8 +76,6 @@ STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t 
 
 #define SZBUF_FROM_STR(buf, str) strncpy(buf, str.ptr, MIN(sizeof(buf)-1, str.len))
 
-static char CWD[MD_MAX_PATH];
-
 #if MD_PLATFORM_WINDOWS
 // https://docs.microsoft.com/en-us/windows/win32/debug/retrieving-the-last-error-code
 static void print_windows_error() {
@@ -143,17 +141,20 @@ static int64_t fullpath(char* buf, int64_t cap, str_t path) {
 #endif
 }
 
-str_t md_path_cwd() {
+int64_t md_path_write_cwd(char* buf, int64_t cap) {
+    char* val;
 #if MD_PLATFORM_WINDOWS
-    char* val = _getcwd(CWD, sizeof(CWD));
-    ASSERT(val != 0);
+    val = _getcwd(buf, (int)cap);
 #elif MD_PLATFORM_UNIX
-    getcwd(CWD, sizeof(CWD));
+    val = getcwd(buf, (size_t)cap);
 #else
     ASSERT(false);
 #endif
-    str_t res = { .ptr = CWD, .len = (int64_t)strnlen(CWD, sizeof(CWD)) };
-    return res;
+    if (!val) {
+    	MD_LOG_ERROR("Failed to get current working directory");
+		return 0;
+    }
+    return (int64_t)strnlen(buf, cap);
 }
 
 bool md_path_set_cwd(str_t path) {

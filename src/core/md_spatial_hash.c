@@ -81,6 +81,7 @@ static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const 
 static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const int32_t* indices, int64_t count, vec4_t pbc_ext) {
     const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
+    const bool deperiodize = !vec4_equal(pbc_ext, vec4_zero());
 
     if (count == 0) {
         *out_aabb_min = vec4_zero();
@@ -94,7 +95,9 @@ static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const f
     for (int64_t i = 0; i < count; ++i) {
         const int32_t idx = indices ? indices[i] : (int32_t)i;
         vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 0 };
-        c = vec4_deperiodize(c, ref, ext);
+        if (deperiodize) {
+            c = vec4_deperiodize(c, ref, ext);
+        }
         aabb_min = vec4_min(aabb_min, c);
         aabb_max = vec4_max(aabb_max, c);
     }
@@ -465,8 +468,14 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
     int32_t cell_dim[3];
 
     ASSERT(md_simd_f32_width == md_simd_i32_width);
-    const vec4_t ext = unit_cell ? vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0) : vec4_zero();
-    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+
+    vec4_t ext = {0};
+    vec4_t ref = {0};
+
+    if (unit_cell && !mat3_equal(unit_cell->basis, mat3_ident())) {
+        ext = vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0);
+        ref = vec4_mul_f(ext, 0.5f);
+    }
 
     vec4_t aabb_min, aabb_max;
     compute_aabb_vec3(&aabb_min, &aabb_max, in_xyz, in_indices, count, ext);
@@ -585,8 +594,13 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
 
     ASSERT(md_simd_f32_width == md_simd_i32_width);
 
-    const vec4_t ext = unit_cell ? vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0) : vec4_zero();
-    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+    vec4_t ext = {0};
+    vec4_t ref = {0};
+
+    if (unit_cell && !mat3_equal(unit_cell->basis, mat3_ident())) {
+        ext = vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0);
+        ref = vec4_mul_f(ext, 0.5f);
+    }
 
     vec4_t aabb_min, aabb_max;
     compute_aabb_soa(&aabb_min, &aabb_max, in_x, in_y, in_z, in_indices, count, ext);

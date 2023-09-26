@@ -40,7 +40,11 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, in
 	md_strb_fmt(&sb, "# Created by:\n");
 	md_strb_fmt(&sb, "# VIAMD \n");
 
-	md_strb_fmt(&sb, "@    title \"VIAMD export\"\n");
+	if (!str_empty(title)) {
+		md_strb_fmt(&sb, "@    title \"%.*s\"\n", (int)title.len, title.ptr);
+	} else {
+		md_strb_fmt(&sb, "@    title \"VIAMD export\"\n");
+	}
 	md_strb_fmt(&sb, "@    xaxis  label \"%.*s\"\n", (int)xaxis_label.len, xaxis_label.ptr);
 	md_strb_fmt(&sb, "@    yaxis  label \"%.*s\"\n", (int)yaxis_label.len, yaxis_label.ptr);
 	md_strb_fmt(&sb, "@ TYPE xy\n");
@@ -161,7 +165,7 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 		str_skip_line(&header);
 	}
 	
-	str_t comment = {header_info->header.ptr, line.ptr - header_info->header.ptr};
+	header_info->comment = (str_t){header_info->header.ptr, line.ptr - header_info->header.ptr};
 	
 	str_t tok[16];
 	

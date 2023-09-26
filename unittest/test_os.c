@@ -6,8 +6,9 @@
 
 UTEST(os, path_canonical) {
     {
-        str_t cwd = md_path_cwd();
-        str_t path = alloc_printf(md_temp_allocator, "%.*s/../../", (int)cwd.len, cwd.ptr);   
+        char buf[1024];
+        md_path_write_cwd(buf, sizeof(buf));
+        str_t path = alloc_printf(md_temp_allocator, "%s/../../", buf);
         str_t result = md_path_make_canonical(path, md_temp_allocator);
         printf("result: '%.*s'\n", (int)result.len, result.ptr);
     }

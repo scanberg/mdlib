@@ -1066,6 +1066,10 @@ MD_VEC_INLINE mat3_t mat3_ident() {
     return M;
 }
 
+MD_VEC_INLINE bool mat3_equal(mat3_t A, mat3_t B) {
+    return MEMCMP(A.elem, B.elem, sizeof(mat3_t)) == 0;
+}
+
 MD_VEC_INLINE mat3_t mat3_from_mat4(mat4_t M) {
     mat3_t R = {
         M.elem[0][0], M.elem[0][1], M.elem[0][2],

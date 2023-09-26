@@ -20,8 +20,8 @@ uint64_t md_os_num_processors();
 
 // ### PATH ###
 // Gets the current working directory
-// Returns a non owning reference to a shared static string buffer
-str_t md_path_cwd(void);
+// Writes into a buffer (up to buf_cap) and returns the number of characters written
+int64_t md_path_write_cwd(char* buf, int64_t buf_cap);
 bool  md_path_set_cwd(str_t path);
 
 // Writes a canonical path to buf.
