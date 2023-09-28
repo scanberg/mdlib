@@ -7,6 +7,7 @@
 #include <core/md_vec_math.h>
 #include <core/md_unit.h>
 #include <core/md_bitfield.h>
+#include <core/md_array.h>
 
 struct md_bitfield_t;
 struct md_molecule_t;
@@ -147,53 +148,35 @@ typedef struct md_script_property_t {
     const md_script_vis_payload_o* vis_payload; // For visualization of the property
 } md_script_property_t;
 
-typedef struct md_script_vis_o md_script_vis_o;
+typedef struct md_script_vis_vertex_t {
+    vec3_t pos;
+	uint32_t color;
+} md_script_vis_vertex_t;
+
+typedef struct md_script_vis_sphere_t {
+    vec3_t pos;
+    float radius;
+    uint32_t color;
+} md_script_vis_sphere_t;
 
 typedef struct md_script_vis_t {
-    md_script_vis_o* o;
     uint64_t magic;
     struct md_allocator_i* alloc;
 
-    // Geometry
-    struct {
-        int64_t count;
-        vec3_t* pos;        // Position xyz
-    } vertex;
-
-    struct {
-        int64_t count;      // number of points
-        uint32_t* idx;      // vertex indices;
-    } point;
-
-    struct {
-        int64_t count;      // number of lines
-        uint32_t* idx;      // p0 p1 vertex indices
-    } line;
-
-    struct {
-        int64_t count;      // number of triangles
-        uint32_t* idx;      // p0 p1 p2 vertex indices
-    } triangle;
-
-    struct {
-        int64_t count;
-        vec4_t* pos_rad;     // xyzr
-    } sphere;
+    md_array(md_script_vis_vertex_t) points;
+    md_array(md_script_vis_vertex_t) lines;
+    md_array(md_script_vis_vertex_t) triangles;
+    md_array(md_script_vis_sphere_t) spheres;
 
     // This is a bit of a shoe-horn case where we want to visualize the superimposed structures and the atoms involved
     // in computing an SDF, therefore this requires transformation matrices as well as the involved structures
     struct {
-        int64_t count;
-        mat4_t* matrices;
-        struct md_bitfield_t* structures;
+        md_array(mat4_t) matrices;
+        md_array(struct md_bitfield_t) structures;
         float extent;
     } sdf;
 
-    // Atoms
-    struct {
-        int64_t count;
-        struct md_bitfield_t* atom_masks;
-    } structures;
+    md_array(struct md_bitfield_t) structures;
 
     // This is an all encompassing atom mask, when there may be no real 'substructures'
     struct md_bitfield_t atom_mask;

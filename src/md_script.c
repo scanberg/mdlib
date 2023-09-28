@@ -2486,6 +2486,12 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
     //uint64_t stack_reset_point = md_stack_allocator_get_pos(ctx->stack_alloc);
 
+    md_script_vis_t* old_vis = ctx->vis;
+    // If we are in visualization mode and the procedure is flagged with visualization, we do not want to propagate the visualization to the arguments
+    if (ctx->vis && proc->flags & FLAG_VISUALIZE) {
+        ctx->vis = 0;
+    }
+
     for (int64_t i = 0; i < num_args; ++i) {
         // We need to evaluate the argument nodes first before we make the proc call.
         // In this context we are not interested in storing any data (since it is only used to be passed as arguments)
@@ -2509,6 +2515,8 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
             goto done;
         }
     }
+
+    ctx->vis = old_vis;
 
     flags_t* old_arg_flags  = ctx->arg_flags;
     token_t* old_arg_tokens = ctx->arg_tokens;
@@ -6007,8 +6015,8 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
     ASSERT(ctx.vis_structure == &vis->atom_mask);
 
     // Append all structures into the 'global' atom mask
-    for (int64_t i = 0; i < md_array_size(vis->structures.atom_masks); ++i) {
-        md_bitfield_or_inplace(&vis->atom_mask, &vis->structures.atom_masks[i]);
+    for (int64_t i = 0; i < md_array_size(vis->structures); ++i) {
+        md_bitfield_or_inplace(&vis->atom_mask, &vis->structures[i]);
     }
 
     FREE_TEMP_ALLOC();
