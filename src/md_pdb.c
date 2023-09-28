@@ -551,10 +551,15 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         if (mol->chain.count)   md_array_push(mol->atom.chain_idx, (md_chain_idx_t)(mol->chain.count - 1), alloc);
     }
 
-    if (data->num_cryst1) {
+    if (data->num_cryst1 > 0) {
         // Use first crystal
         const md_pdb_cryst1_t* cryst = &data->cryst1[0];
-        mol->unit_cell = md_util_unit_cell_triclinic(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
+        if (cryst->a == 1 && cryst->b == 1 && cryst->c == 1 && cryst->alpha == 90 && cryst->beta == 90 && cryst->gamma == 90) {
+            // This is a special case:
+            // This is the identity matrix, and in such case, we assume there is no unit cell (no periodic boundary conditions)
+        } else {
+            mol->unit_cell = md_util_unit_cell_from_extent_and_angles(cryst->a, cryst->b, cryst->c, cryst->alpha, cryst->beta, cryst->gamma);
+        }
     };
 
     // Create instances from assemblies
@@ -828,7 +833,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
                 md_log(MD_LOG_TYPE_INFO, "The PDB file contains multiple CRYST1 entries, will pick the first one for determining the simulation box");
             }
             // If it is in fact a box, that will be handled as well
-            cell = md_util_unit_cell_triclinic(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
+            cell = md_util_unit_cell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
         }
 
         write_cache(cache_file, offsets, md_array_size(offsets), num_atoms, &cell);

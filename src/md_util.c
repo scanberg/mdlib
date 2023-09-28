@@ -2029,7 +2029,7 @@ mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alph
     return M;
 }
 
-md_unit_cell_t md_util_unit_cell_ortho(double x, double y, double z) {
+md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z) {
     if (x == 0.0 && y == 0.0 && z == 0.0) {
         return (md_unit_cell_t) {0};
     }
@@ -2050,13 +2050,13 @@ md_unit_cell_t md_util_unit_cell_ortho(double x, double y, double z) {
     return cell;
 }
 
-md_unit_cell_t md_util_unit_cell_triclinic(double a, double b, double c, double alpha, double beta, double gamma) {
+md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
     if (a == 0 && b == 0 && c == 0) {
         return (md_unit_cell_t) {0};
     }
 
     if (alpha == 90.0 && beta == 90.0 && gamma == 90.0) {
-        return md_util_unit_cell_ortho(a,b,c);
+        return md_util_unit_cell_from_extent(a,b,c);
     }
 
     alpha = DEG_TO_RAD(alpha);
@@ -2096,9 +2096,9 @@ md_unit_cell_t md_util_unit_cell_triclinic(double a, double b, double c, double 
     return cell;
 }
 
-md_unit_cell_t md_util_unit_cell_mat3(mat3_t M) {
+md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M) {
     if (M.elem[0][1] == 0 && M.elem[0][2] == 0 && M.elem[1][0] == 0 && M.elem[1][2] == 0 && M.elem[2][0] == 0 && M.elem[2][1] == 0) {
-        return md_util_unit_cell_ortho(M.elem[0][0], M.elem[1][1], M.elem[2][2]);
+        return md_util_unit_cell_from_extent(M.elem[0][0], M.elem[1][1], M.elem[2][2]);
     } else {
         const float* N = &M.elem[0][0];
         
@@ -2121,6 +2121,204 @@ md_unit_cell_t md_util_unit_cell_mat3(mat3_t M) {
             .flags = MD_CELL_TRICLINIC | (a != 0 ? MD_CELL_X : 0) | (b != 0 ? MD_CELL_Y : 0) | (c != 0 ? MD_CELL_Z : 0),
         };
         return cell;
+    }
+}
+
+// Blatantly stolen from MDAnalysis project
+// https://github.com/MDAnalysis/mdanalysis/blob/develop/package/MDAnalysis/lib/include/calc_distances.h
+static void minimum_image_triclinic(float* dx, float box[9]) {
+    /*
+    * Minimum image convention for triclinic systems, modelled after domain.cpp
+    * in LAMMPS.
+    * Assumes that there is a maximum separation of 1 box length (enforced in
+    * dist functions by moving all particles to inside the box before
+    * calculating separations).
+    * Assumes box having zero values for box[1], box[2] and box[5]:
+    *   /  a_x   0    0   \                 /  0    1    2  \
+    *   |  b_x  b_y   0   |       indices:  |  3    4    5  |
+    *   \  c_x  c_y  c_z  /                 \  6    7    8  /
+    */
+    double dx_min[3] = {0.0, 0.0, 0.0};
+    double dsq_min = FLT_MAX;
+    double dsq;
+    double rx;
+    double ry[2];
+    double rz[3];
+    int ix, iy, iz;
+    for (ix = -1; ix < 2; ++ix) {
+        rx = dx[0] + box[0] * ix;
+        for (iy = -1; iy < 2; ++iy) {
+            ry[0] = rx + box[3] * iy;
+            ry[1] = dx[1] + box[4] * iy;
+            for (iz = -1; iz < 2; ++iz) {
+                rz[0] = ry[0] + box[6] * iz;
+                rz[1] = ry[1] + box[7] * iz;
+                rz[2] = dx[2] + box[8] * iz;
+                dsq = rz[0] * rz[0] + rz[1] * rz[1] + rz[2] * rz[2];
+                if (dsq < dsq_min) {
+                    dsq_min = dsq;
+                    dx_min[0] = rz[0];
+                    dx_min[1] = rz[1];
+                    dx_min[2] = rz[2];
+                }
+            }
+        }
+    }
+    dx[0] = (float)dx_min[0];
+    dx[1] = (float)dx_min[1];
+    dx[2] = (float)dx_min[2];
+}
+
+void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell) {
+    if (cell->flags == 0) {
+        for (int64_t i = 0; i < num_a; ++i) {
+        	for (int64_t j = 0; j < num_b; ++j) {
+                out_dist[i * num_b + j] = vec3_distance(coord_a[i], coord_b[j]);
+            }
+        }
+    }
+    else if (cell->flags & MD_CELL_ORTHOGONAL) {
+        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+        for (int64_t i = 0; i < num_a; ++i) {
+            for (int64_t j = 0; j < num_b; ++j) {
+                vec4_t a = vec4_from_vec3(coord_a[i], 0);
+                vec4_t b = vec4_from_vec3(coord_b[j], 0);
+                out_dist[i * num_b + j] = vec4_periodic_distance(a, b, box);
+            }
+        }
+    } else if (cell->flags & MD_CELL_TRICLINIC) {
+        // We make the assumption that we are not beyond 1 cell unit in distance
+        for (int64_t i = 0; i < num_a; ++i) {
+            for (int64_t j = 0; j < num_b; ++j) {
+                vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
+                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                return vec3_length(dx);
+            }
+        }
+    }
+}
+
+float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell) {
+    int64_t min_i, min_j;
+    float min_dist = FLT_MAX;
+
+    if (cell->flags == 0) {
+        for (int64_t i = 0; i < num_a; ++i) {
+            for (int64_t j = 0; j < num_b; ++j) {
+                const float d = vec3_distance(coord_a[i], coord_b[j]);
+                if (d < min_dist) {
+                    min_dist = d;
+                    min_i = i;
+                    min_j = j;
+                }
+            }
+        }
+    }
+    else if (cell->flags & MD_CELL_ORTHOGONAL) {
+        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+        for (int64_t i = 0; i < num_a; ++i) {
+            for (int64_t j = 0; j < num_b; ++j) {
+                vec4_t a = vec4_from_vec3(coord_a[i], 0);
+                vec4_t b = vec4_from_vec3(coord_b[j], 0);
+                const float d = vec4_periodic_distance(a, b, box);
+                if (d < min_dist) {
+                    min_dist = d;
+                    min_i = i;
+                    min_j = j;
+                }
+            }
+        }
+    } else if (cell->flags & MD_CELL_TRICLINIC) {
+        // We make the assumption that we are not beyond 1 cell unit in distance
+        for (int64_t i = 0; i < num_a; ++i) {
+            for (int64_t j = 0; j < num_b; ++j) {
+                vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
+                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                const float d = vec3_length(dx);
+                if (d < min_dist) {
+                    min_dist = d;
+                    min_i = i;
+                    min_j = j;
+                }
+            }
+        }
+    }
+    if (min_dist < FLT_MAX) {
+        *out_idx_a = min_i;
+        *out_idx_b = min_j;
+    }
+    return min_dist;
+}
+
+float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell) {
+    int64_t max_i, max_j;
+    float max_dist = 0;
+
+    if (cell->flags == 0) {
+        for (int64_t i = 0; i < num_a; ++i) {
+            for (int64_t j = 0; j < num_b; ++j) {
+                const float d = vec3_distance(coord_a[i], coord_b[j]);
+                if (d > max_dist) {
+                    max_dist = d;
+                    max_i = i;
+                    max_j = j;
+                }
+            }
+        }
+    }
+    else if (cell->flags & MD_CELL_ORTHOGONAL) {
+        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+        for (int64_t i = 0; i < num_a; ++i) {
+            for (int64_t j = 0; j < num_b; ++j) {
+                vec4_t a = vec4_from_vec3(coord_a[i], 0);
+                vec4_t b = vec4_from_vec3(coord_b[j], 0);
+                const float d = vec4_periodic_distance(a, b, box);
+                if (d > max_dist) {
+                    max_dist = d;
+                    max_i = i;
+                    max_j = j;
+                }
+            }
+        }
+    } else if (cell->flags & MD_CELL_TRICLINIC) {
+        // We make the assumption that we are not beyond 1 cell unit in distance
+        for (int64_t i = 0; i < num_a; ++i) {
+            for (int64_t j = 0; j < num_b; ++j) {
+                vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
+                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                const float d = vec3_length(dx);
+                if (d > max_dist) {
+                    max_dist = d;
+                    max_i = i;
+                    max_j = j;
+                }
+            }
+        }
+    }
+
+    if (max_dist > 0) {
+        if (out_idx_a) *out_idx_a = max_i;
+        if (out_idx_b) *out_idx_b = max_j;
+    }
+
+    return max_dist;
+}
+
+float md_util_unit_cell_distance(const vec3_t* a, const vec3_t* b, const md_unit_cell_t* cell) {
+    ASSERT(a);
+    ASSERT(b);
+    ASSERT(cell);
+
+    if (cell->flags & MD_CELL_TRICLINIC) {
+        
+    } else if (cell->flags & MD_CELL_ORTHOGONAL) {
+        vec4_t va = vec4_from_vec3(*a, 0);
+        vec4_t vb = vec4_from_vec3(*b, 0);
+        vec4_t ve = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+        return vec4_periodic_distance(va, vb, ve);
+    } else {
+        MD_LOG_ERROR("Invalid unit cell");
+        return 0;
     }
 }
 
@@ -2213,7 +2411,7 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell
     const md_index_data_t structures = mol->structures;
 
     if (cell->flags & MD_CELL_TRICLINIC) {
-        MD_LOG_ERROR("Triclinic cells are not supported");
+        MD_LOG_ERROR("Triclinic cells are not supported!");
         return false;
     }
 

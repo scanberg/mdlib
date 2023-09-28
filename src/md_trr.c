@@ -531,7 +531,7 @@ static bool trr_decode_frame_data(struct md_trajectory_o* inst, const void* fram
         header->num_atoms = sh.natoms;
         header->index = sh.step;
         header->timestamp = sh.t;
-        header->unit_cell = md_util_unit_cell_mat3(box);
+        header->unit_cell = md_util_unit_cell_from_matrix(box);
     }
 
     xdrfile_close(file);

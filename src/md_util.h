@@ -110,14 +110,31 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
 
 // ### CELL ###
 
-md_unit_cell_t md_util_unit_cell_ortho(double x, double y, double z);
-// Compute a mat3 basis from cell extents a,b,c and cell axis angles alpha, beta, gamma (in degrees)
-md_unit_cell_t md_util_unit_cell_triclinic(double a, double b, double c, double alpha, double beta, double gamma);
-md_unit_cell_t md_util_unit_cell_mat3(mat3_t M);
+// Construct cells from orthographic extents
+md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z);
+
+// Construct possibly a triclinic cell from extents a,b,c and axis angles alpha, beta, gamma (in degrees)
+md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma);
+
+// Construct cell from mat3 basis
+md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M);
+
+// Computes an array of distances between two sets of coordinates in a periodic domain (cell)
+// out_dist:  Output array of distances, must have length of (num_a * num_b)
+// coord_a:   Array of coordinates (a)
+// num_a:     Length of coord_a
+// coord_b:   Array of coordinates (b)
+// num_b:     Length of coord_b
+// cell:      Periodic boundary cell
+void md_util_unit_cell_distance_array(float* out_dist_arr, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell);
+
+float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell);
+float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell);
 
 // Applies periodic boundary conditions to coordinates of atoms within molecule
 // It ensures that residues and chains reside within the same period
 //bool md_util_pbc_ortho(struct md_molecule_t* mol, vec3_t pbc_ext);
+
 
 bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box);
 

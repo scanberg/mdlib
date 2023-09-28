@@ -1204,6 +1204,17 @@ MD_VEC_INLINE float mat3_trace(mat3_t M) {
     return M.elem[0][0] + M.elem[1][1] + M.elem[2][2];
 }
 
+MD_VEC_INLINE float mat3_abs_trace(mat3_t M) {
+    return fabsf(M.elem[0][0]) + fabsf(M.elem[1][1]) + fabsf(M.elem[2][2]);
+}
+
+MD_VEC_INLINE float mat3_abs_sum(mat3_t M) {
+    return
+        fabsf(M.elem[0][0]) + fabsf(M.elem[0][1]) + fabsf(M.elem[0][2]) +
+        fabsf(M.elem[1][0]) + fabsf(M.elem[1][1]) + fabsf(M.elem[1][2]) +
+        fabsf(M.elem[2][0]) + fabsf(M.elem[2][1]) + fabsf(M.elem[2][2]);
+}
+
 MD_VEC_INLINE vec3_t mat3_diag(mat3_t M) {
     vec3_t v = {M.elem[0][0], M.elem[1][1], M.elem[2][2]};
     return v;
