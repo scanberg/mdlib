@@ -130,7 +130,7 @@ static uint32_t element_cpk_colors[] = {
 static const char* amino_acids[] = {
     "ALA", "ARG", "ASN", "ASP", "CYS", "CYX", "GLN", "GLU",
     "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER",
-    "THR", "TRP", "TYR", "VAL", "SEC", "PYL", "ASC", "GLX", "XLE", "HISE"
+    "THR", "TRP", "TYR", "VAL", "SEC", "PYL", "ASC", "GLX", "XLE", "HISE",
     
     // CCD
     "UNK",
@@ -2126,7 +2126,7 @@ md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M) {
 
 // Blatantly stolen from MDAnalysis project
 // https://github.com/MDAnalysis/mdanalysis/blob/develop/package/MDAnalysis/lib/include/calc_distances.h
-static void minimum_image_triclinic(float* dx, float box[9]) {
+static void minimum_image_triclinic(float dx[3], const float box[3][3]) {
     /*
     * Minimum image convention for triclinic systems, modelled after domain.cpp
     * in LAMMPS.
@@ -2146,14 +2146,14 @@ static void minimum_image_triclinic(float* dx, float box[9]) {
     double rz[3];
     int ix, iy, iz;
     for (ix = -1; ix < 2; ++ix) {
-        rx = dx[0] + box[0] * ix;
+        rx = dx[0] + box[0][0] * ix;
         for (iy = -1; iy < 2; ++iy) {
-            ry[0] = rx + box[3] * iy;
-            ry[1] = dx[1] + box[4] * iy;
+            ry[0] = rx + box[1][0] * iy;
+            ry[1] = dx[1] + box[1][1] * iy;
             for (iz = -1; iz < 2; ++iz) {
-                rz[0] = ry[0] + box[6] * iz;
-                rz[1] = ry[1] + box[7] * iz;
-                rz[2] = dx[2] + box[8] * iz;
+                rz[0] = ry[0] + box[2][0] * iz;
+                rz[1] = ry[1] + box[2][1] * iz;
+                rz[2] = dx[2] + box[2][2] * iz;
                 dsq = rz[0] * rz[0] + rz[1] * rz[1] + rz[2] * rz[2];
                 if (dsq < dsq_min) {
                     dsq_min = dsq;
@@ -2192,14 +2192,15 @@ void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, in
             for (int64_t j = 0; j < num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
                 minimum_image_triclinic(dx.elem, cell->basis.elem);
-                return vec3_length(dx);
+                out_dist[i * num_b + j] = vec3_length(dx);
             }
         }
     }
 }
 
 float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell) {
-    int64_t min_i, min_j;
+    int64_t min_i = 0;
+    int64_t min_j = 0;
     float min_dist = FLT_MAX;
 
     if (cell->flags == 0) {
@@ -2251,7 +2252,8 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 }
 
 float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell) {
-    int64_t max_i, max_j;
+    int64_t max_i = 0;
+    int64_t max_j = 0;
     float max_dist = 0;
 
     if (cell->flags == 0) {
@@ -2302,24 +2304,6 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
     }
 
     return max_dist;
-}
-
-float md_util_unit_cell_distance(const vec3_t* a, const vec3_t* b, const md_unit_cell_t* cell) {
-    ASSERT(a);
-    ASSERT(b);
-    ASSERT(cell);
-
-    if (cell->flags & MD_CELL_TRICLINIC) {
-        
-    } else if (cell->flags & MD_CELL_ORTHOGONAL) {
-        vec4_t va = vec4_from_vec3(*a, 0);
-        vec4_t vb = vec4_from_vec3(*b, 0);
-        vec4_t ve = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
-        return vec4_periodic_distance(va, vb, ve);
-    } else {
-        MD_LOG_ERROR("Invalid unit cell");
-        return 0;
-    }
 }
 
 #if MD_COMPILER_MSVC
