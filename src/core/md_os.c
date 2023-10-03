@@ -494,7 +494,7 @@ md_timestamp_t md_time_current() {
     return t.QuadPart;
 #elif MD_PLATFORM_UNIX
     struct timespec t;
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
+    clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec * 1000000000 + t.tv_nsec;
 #else
     ASSERT(false);
@@ -507,7 +507,7 @@ double md_time_as_nanoseconds(md_timestamp_t t) {
     QueryPerformanceFrequency(&frequency);
     return (t * 1E6) / (double)frequency.QuadPart;
 #elif MD_PLATFORM_UNIX
-    return t * 1.0e-3;
+    return (double)t;
 #else
     ASSERT(false);
 #endif
