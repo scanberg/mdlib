@@ -634,12 +634,12 @@ void md_vm_decommit(void* ptr, uint64_t size) {
 #endif
     VirtualFree(ptr, size, MEM_DECOMMIT);
 #elif MD_PLATFORM_UNIX
-    int res;
+    int result;
     uint64_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
-    res = mprotect(ptr, page_snapped_size, PROT_NONE);
-    ASSERT(res == 0);
-    res = madvise(ptr, page_snapped_size, MADV_DONTNEED);
-    ASSERT(res == 0);
+    result = mprotect(ptr, page_snapped_size, PROT_NONE);
+    ASSERT(result == 0);
+    result = madvise(ptr, page_snapped_size, MADV_DONTNEED);
+    ASSERT(result == 0);
 #else
     ASSERT(false);
 #endif

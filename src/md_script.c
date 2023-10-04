@@ -3443,7 +3443,7 @@ static int extract_argument_types(type_info_t arg_type[], int cap, const ast_nod
 
 static int print_argument_list(char* buf, int cap, const type_info_t arg_type[], int num_args) {
     int len = 0;
-    for (uint64_t i = 0; i < num_args; ++i) {
+    for (int i = 0; i < num_args; ++i) {
         len += print_type_info(buf + len, cap - len, arg_type[i]);
         if (i + 1 != num_args) {
             len += snprintf(buf + len, cap - len, ",");
@@ -3649,7 +3649,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(ctx);
 
     const int64_t num_args = md_array_size(node->children);
-    const ast_node_t** args = node->children;
+    ast_node_t** const args = node->children;
 
     if (num_args == 0) {
         LOG_ERROR(ctx->ir, node->token, "import: expected at least one argument");

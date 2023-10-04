@@ -67,6 +67,7 @@ set(MD_FLAGS)
 set(MD_FLAGS_EXT)
 set(MD_FLAGS_REL)
 set(MD_FLAGS_DEB)
+set(MD_FLAGS_AVX)
 
 create_resources("${SHADER_FILES}" "gen/gl_shaders.inl")
 
@@ -84,13 +85,13 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-nested-anon-types")
 
     if (MD_ENABLE_AVX2)
-        set(MD_FLAGS ${MD_FLAGS} "-mavx2")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
-		set(MD_FLAGS ${MD_FLAGS} "-mavx")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
     endif()
 
     if (MD_ENABLE_FMA)
-		set(MD_FLAGS ${MD_FLAGS} "-mfma" "-ffp-contract=fast")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mfma" "-ffp-contract=fast")
     endif()
 
   if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -113,16 +114,17 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
       "-Wno-missing-field-initializers"
       "-Wno-missing-braces"
       "-Wno-unused-function"
-      "-Wno-unused-parameter")
+      "-Wno-unused-parameter"
+      "-Wno-format-truncation")
 
     if (MD_ENABLE_AVX2)
-        set(MD_FLAGS ${MD_FLAGS} "-mavx2")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
-		set(MD_FLAGS ${MD_FLAGS} "-mavx")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
     endif()
 
     if (MD_ENABLE_FMA)
-		set(MD_FLAGS ${MD_FLAGS} "-mfma" "-ffast-math")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mfma" "-ffast-math")
     endif()
 
     if (MD_LINK_STDLIB_STATIC)
@@ -150,9 +152,9 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       "/fp:except-")
 
     if (MD_ENABLE_AVX2)
-        set(MD_FLAGS ${MD_FLAGS} "/arch:AVX2" "/fp:fast")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX2" "/fp:fast")
     elseif (MD_ENABLE_AVX)
-		set(MD_FLAGS ${MD_FLAGS} "/arch:AVX" "/fp:fast")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX" "/fp:fast")
     endif()
       
     set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
@@ -160,9 +162,11 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
         "/Ob1")
     set(MD_FLAGS_REL ${MD_FLAGS_REL}
-        "/GS-")
+        "/GS-" "/GL")
     set(PROJ_FILES ${PROJ_FILES} "mdlib.natvis")
 endif()
+
+set(MD_FLAGS ${MD_FLAGS} ${MD_FLAGS_AVX})
 
 if (MD_UNITTEST)
   enable_testing()
@@ -213,4 +217,6 @@ if (has_parent)
     set(MD_FLAGS ${MD_FLAGS} PARENT_SCOPE)
     set(MD_FLAGS_DEB ${MD_FLAGS_DEB} PARENT_SCOPE)
     set(MD_FLAGS_REL ${MD_FLAGS_REL} PARENT_SCOPE)
+    set(MD_FLAGS_EXT ${MD_FLAGS_EXT} PARENT_SCOPE)
+    set(MD_FLAGS_AVX ${MD_FLAGS_AVX} PARENT_SCOPE)
 endif()

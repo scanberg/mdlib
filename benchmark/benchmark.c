@@ -1,3 +1,3 @@
 #include "ubench.h"
 
-UBENCH_MAIN();
+UBENCH_MAIN()

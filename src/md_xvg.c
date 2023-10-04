@@ -65,7 +65,7 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, in
 	return result;
 }
 
-str_t md_xvg_format(str_t header, int64_t num_fields, int64_t num_values, const float** field_values, struct md_allocator_i* str_alloc) {
+str_t md_xvg_format(str_t header, int64_t num_fields, int64_t num_values, const float* field_values[], struct md_allocator_i* str_alloc) {
 	ASSERT(str_alloc);
 	str_t str = {0};
 
@@ -252,7 +252,7 @@ bool md_xvg_parse_str(md_xvg_t* xvg, str_t str, md_allocator_i* alloc) {
 	ASSERT(alloc);
 
 	md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-	return (xvg, &reader, alloc);
+	return parse(xvg, &reader, alloc);
 }
 
 bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {

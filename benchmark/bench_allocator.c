@@ -11,7 +11,7 @@
 #define COMMON_ALLOCATOR_TEST_BODY \
     void* mem = 0; \
     uint32_t size[] = {16, 7238, 1, 2, 7, 3, 2, 4, 11, 12, 13, 14, 15, 17}; \
-    for (int64_t i = 0; i < ARRAY_SIZE(size); ++i) { \
+    for (uint64_t i = 0; i < ARRAY_SIZE(size); ++i) { \
         mem = md_alloc(alloc, size[i]); \
         md_free(alloc, mem, size[i]); \
     }

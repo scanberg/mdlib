@@ -55,7 +55,7 @@ UBENCH_EX(str, parse_int) {
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
@@ -92,7 +92,7 @@ UBENCH_EX(str, parse_int_simd) {
     };
 
     int64_t num_bytes = 0;
-    for (int i = 0; i < ARRAY_SIZE(str); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(str); ++i) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);

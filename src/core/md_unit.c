@@ -515,7 +515,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
         int num_count = 0;
         int den_arr[32];
         int den_count = 0;
-        for (int i = 0; i < ARRAY_SIZE(num_arr); ++i) {
+        for (int i = 0; i < (int)ARRAY_SIZE(num_arr); ++i) {
             int idx = find_best_matching_predefined(unit);
             if (idx == -1) {
                 break;
@@ -527,7 +527,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
             }
         }
         if (unit.base.raw_bits != 0) {
-            for (int i = 0; i < ARRAY_SIZE(den_arr); ++i) {
+            for (int i = 0; i < (int)ARRAY_SIZE(den_arr); ++i) {
                 int idx = find_best_matching_predefined(md_unit_inv(unit));
                 if (idx == -1) {
                     break;
