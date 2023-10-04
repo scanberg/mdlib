@@ -14,6 +14,8 @@ The current supported platforms are Linux, macOS and Windows.
 
 The current supported compilers are gcc, clang, MSVC's cl.exe, and clang-cl.exe.
 
+It also works with tcc but with a caveat: the latest release of the tcc compiler (version 0.9.27) lacks a feature for UTEST to work. Make sure to use a tcc that is patched with the constructor attribute extension. Recent Ubuntu and Debian Linux distros ship tcc with that patch already included. If you compile tcc yourself, use the trunk version and it will work as expected.
+
 ## Command Line Options
 
 utest.h supports some command line options:
@@ -506,7 +508,7 @@ UTEST(foo, bar) {
 }
 ```
 
-### EXPECT_GT(x, y)
+### EXPECT_GE(x, y)
 
 Expects that x is greater than or equal to y.
 
@@ -610,6 +612,23 @@ UTEST(foo, bar) {
 }
 ```
 
+### EXPECT_EXCEPTION_WITH_MESSAGE(x, exception_type, exception_message)
+
+Expects that exception_type will be thrown with message exception_message when code x is executed.
+
+```cpp
+void foo(int bar) {
+  if (bar == 1)
+    throw std::range_error("bad bar");
+}
+
+UTEST(foo, bar) {
+  EXPECT_EXCEPTION_WITH_MESSAGE(foo(1), std::range_error, "bad bar"); // pass!
+  EXPECT_EXCEPTION_WITH_MESSAGE(foo(2), std::range_error, "bad bar2"); // fail!
+  EXPECT_EXCEPTION_WITH_MESSAGE(foo(1), std::exception, "bad bar");   // fail!
+}
+```
+
 ### UTEST_SKIP(msg)
 
 This macro lets you mark a test case as being skipped - eg. that the test case
@@ -622,6 +641,32 @@ skipped test cases will **not** cause the process to exit with a non-zero code.
 UTEST(foo, bar) {
   UTEST_SKIP("Need to implement this test!");
 }
+```
+
+### Testing macros with custom message
+
+In addition, to give the possibility of having custom messages in the fault
+tests, all macros can be used with a suffix called "_MSG", which receives an
+extra parameter, which is the string with the custom message to print in case
+of failure.
+
+For example:
+
+```c
+UTEST(foo, bar) {
+  int i = 1;
+  EXPECT_TRUE_MSG(i, "custom message");  // pass!
+  EXPECT_TRUE_MSG(42, "custom message"); // pass!
+  EXPECT_TRUE_MSG(0, "custom message");  // fail! (with the following output)
+}
+```
+
+```
+test.cpp:42: Failure
+  Expected : true
+    Actual : false
+   Message : custom message
+[  FAILED  ] foo.bar (8086ns)
 ```
 
 ## Types Supported for Checks

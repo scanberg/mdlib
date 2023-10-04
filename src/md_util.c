@@ -1172,8 +1172,8 @@ static bool fifo_empty(fifo_t* fifo) { return fifo->head == fifo->tail; }
 static bool fifo_full(fifo_t* fifo)  { return ((fifo->head + 1) & (fifo->cap - 1)) == fifo->tail; }
 
 static void fifo_grow(fifo_t* fifo, int64_t new_capacity) {
-    uint32_t new_cap = next_power_of_two32((uint32_t)new_capacity);
-    fifo->data = md_realloc(fifo->alloc, fifo->data, fifo->cap, new_cap);
+    const uint32_t new_cap = next_power_of_two32((uint32_t)new_capacity);
+    md_array_grow(fifo->data, new_cap, fifo->alloc);
     fifo->cap = new_cap;
 }
 
@@ -1184,7 +1184,7 @@ static void fifo_init(fifo_t* fifo, int64_t capacity, md_allocator_i* alloc) {
     fifo->head = 0;
     fifo->tail = 0;
     fifo->cap = next_power_of_two32((uint32_t)capacity);
-    fifo->data = md_alloc(alloc, sizeof(int) * fifo->cap);
+    fifo->data = md_array_create(int, fifo->cap, alloc);
 #if DEBUG
     // Clear memory to make debugging easier
     MEMSET(fifo->data, 0, sizeof(int) * fifo->cap);
@@ -1204,7 +1204,8 @@ static void fifo_free(fifo_t* fifo) {
 }
 
 static void fifo_clear(fifo_t* fifo) {
-    fifo->head = fifo->tail = 0;
+    fifo->head = 0;
+    fifo->tail = 0;
 }
 
 static void fifo_push(fifo_t* fifo, int value) {
@@ -1391,6 +1392,14 @@ md_index_data_t md_util_compute_rings(md_index_data_t atom_connectivity, md_allo
 #undef MIN_RING_SIZE
 #undef MAX_RING_SIZE
 
+static inline bool test_bit(uint64_t* bits, int idx) {
+	return (bits[idx >> 6] & (1ULL << (idx & 63)));
+}
+
+static inline void set_bit(uint64_t* bits, int idx) {
+    bits[idx >> 6] |= (1ULL << (idx & 63));
+}
+
 md_index_data_t md_util_compute_structures(md_index_data_t atom_connectivity, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
@@ -1401,43 +1410,48 @@ md_index_data_t md_util_compute_structures(md_index_data_t atom_connectivity, st
     md_vm_arena_init(&arena, GIGABYTES(1));
     md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
 
-    int* depth = md_vm_arena_push(&arena, num_atoms * sizeof(int));
-    MEMSET(depth, 0, num_atoms * sizeof(int));
+    // Create a bitfield to keep track of which atoms have been visited
+    const uint64_t bytes = DIV_UP(num_atoms, 64) * sizeof(uint64_t);
+    uint64_t* visited = md_vm_arena_push(&arena, bytes);
 
-    // The capacity is arbitrary here, but will be resized if needed.
-    fifo_t queue = fifo_create(64, &arena_alloc);
+    // Clear the visited bitfield, this might be redundant due to virtual memory
+    MEMSET(visited, 0, bytes);
+
+    // The capacity is arbitrary here, and will be resized if needed.
+    fifo_t queue = fifo_create(128, &arena_alloc);
 
     md_array(int) indices = 0;
     md_array_ensure(indices, 256, &arena_alloc);
 
     for (int i = 0; i < num_atoms; ++i) {
         // Skip any atom which has already been touched
-        if (depth[i]) continue;
+        if (test_bit(visited, i)) continue;
 
-        md_array_shrink(indices, 0);
-        
         fifo_clear(&queue);
         fifo_push(&queue, i);
-        depth[i] = 1;
         while (!fifo_empty(&queue)) {
-            int idx = fifo_pop(&queue);
-            md_array_push(indices, idx, &arena_alloc);
+            int cur = fifo_pop(&queue);
+            if (test_bit(visited, cur)) continue;
+            set_bit(visited, cur);
+
+            md_array_push(indices, cur, &arena_alloc);
             
-            const int* eb = md_index_range_beg(atom_connectivity, idx);
-            const int* ee = md_index_range_end(atom_connectivity, idx);
+            const int* eb = md_index_range_beg(atom_connectivity, cur);
+            const int* ee = md_index_range_end(atom_connectivity, cur);
             for (const int* it = eb; it != ee; ++it) {
                 int next = *it;
-                if (depth[next] == 0) {
-                    depth[next] = depth[idx] + 1;
+                if (!test_bit(visited, next)) {
                     fifo_push(&queue, next);
                 }
             }
         }
 
+        // Sort the indices within the structure for more coherent memory access
         sort_arr(indices, (int)md_array_size(indices));
         
         // Here we should have exhausted every atom that is connected to index i.
         md_index_data_push(&structures, indices, md_array_size(indices), alloc);
+        md_array_shrink(indices, 0);
     }
     
     md_vm_arena_free(&arena);
