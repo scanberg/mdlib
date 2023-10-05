@@ -69,6 +69,10 @@ set(MD_FLAGS_REL)
 set(MD_FLAGS_DEB)
 set(MD_FLAGS_AVX)
 
+set(MD_LINK_FLAGS)
+set(MD_LINK_FLAGS_REL)
+set(MD_LINK_FLAGS_DEB)
+
 create_resources("${SHADER_FILES}" "gen/gl_shaders.inl")
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
@@ -159,10 +163,9 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       
     set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
     
-    set(MD_FLAGS_DEB ${MD_FLAGS_DEB}
-        "/Ob1")
-    set(MD_FLAGS_REL ${MD_FLAGS_REL}
-        "/GS-" "/GL")
+    set(MD_FLAGS_DEB ${MD_FLAGS_DEB} "/Ob1")
+    set(MD_FLAGS_REL ${MD_FLAGS_REL} "/GS-" "/GL")
+    set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} "/LTCG")
     set(PROJ_FILES ${PROJ_FILES} "mdlib.natvis")
 endif()
 
@@ -207,6 +210,7 @@ target_include_directories(mdlib
 
 target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
+target_link_options(mdlib PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 set_source_files_properties(${EXT_FILES}, PROPERTIES COMPILE_OPTIONS ${MD_FLAGS_EXT})
 target_compile_features(mdlib PRIVATE c_std_11)
 target_link_libraries(mdlib PRIVATE ${MD_LIBS})
@@ -219,4 +223,7 @@ if (has_parent)
     set(MD_FLAGS_REL ${MD_FLAGS_REL} PARENT_SCOPE)
     set(MD_FLAGS_EXT ${MD_FLAGS_EXT} PARENT_SCOPE)
     set(MD_FLAGS_AVX ${MD_FLAGS_AVX} PARENT_SCOPE)
+    set(MD_LINK_FLAGS ${MD_LINK_FLAGS} PARENT_SCOPE)
+    set(MD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB} PARENT_SCOPE)
+    set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} PARENT_SCOPE)
 endif()

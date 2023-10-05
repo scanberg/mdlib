@@ -3278,9 +3278,20 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
                             if (a_idx) {
                                 visualize_atom_index(a_idx[a], ctx);
+                            } else if (arg[0].type.base_type == TYPE_BITFIELD && element_count(arg[0]) > 1) {
+                                if (i < element_count(arg[0])) {
+                                	const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
+                                	visualize_atom_mask(&bf_arr[i], ctx);
+                                }
                             }
+
                             if (b_idx) {
                                 visualize_atom_index(b_idx[b], ctx);
+                            } else if (arg[1].type.base_type == TYPE_BITFIELD && element_count(arg[1]) > 1) {
+                                if (i < element_count(arg[1])) {
+                                    const md_bitfield_t* bf_arr = as_bitfield(arg[1]);
+                                    visualize_atom_mask(&bf_arr[i], ctx);
+                                }
                             }
                         }
 
