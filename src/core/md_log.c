@@ -2,6 +2,7 @@
 #include <core/md_common.h>
 #include <core/md_compiler.h>
 #include <core/md_platform.h>
+#include <core/md_os.h>
 
 #if MD_PLATFORM_WINDOWS
 #ifndef NOMINMAX
@@ -118,16 +119,31 @@ static void set_console_text_color(console_color_t color, bool intense) {
 #endif
 }
 
-static char prev_msg[1024] = {0};
+static uint32_t prev_hash = 0;
+static md_timestamp_t prev_time = 0;
+
+// http://www.cse.yorku.ca/~oz/hash.html
+uint32_t djb2_hash(const char *str) {
+    uint32_t hash = 5381;
+    int c;
+    while (c = *str++)
+        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+
+    return hash;
+}
 
 static void _log(md_logger_o* inst, md_log_type_t log_type, const char* msg) {
     (void)inst;
-    
-    if (strncmp(prev_msg, msg, sizeof(prev_msg)) == 0) {
+
+    // Prevent spamming the logger with the same message by comparing its hash
+    const md_timestamp_t t = md_time_current();
+    const uint32_t hash = djb2_hash(msg);
+
+    if (md_time_as_seconds(t - prev_time) < 1.0 && hash == prev_hash) {
         return;
     }
-    
-    strncpy(prev_msg, msg, sizeof(prev_msg));
+    prev_hash = hash;
+    prev_time = t;
 
     time_t now = time(0);
     struct tm tstruct;

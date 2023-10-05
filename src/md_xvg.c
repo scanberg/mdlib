@@ -65,7 +65,7 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, in
 	return result;
 }
 
-str_t md_xvg_format(str_t header, int64_t num_fields, int64_t num_values, const float* field_values[], struct md_allocator_i* str_alloc) {
+str_t md_xvg_format(str_t header, int64_t num_fields, int64_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc) {
 	ASSERT(str_alloc);
 	str_t str = {0};
 
@@ -105,7 +105,7 @@ done:
 str_t md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* alloc) {
 	ASSERT(alloc);
 	str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, md_heap_allocator);
-	str_t result = md_xvg_format(header, md_array_size(xvg->fields), xvg->fields ? md_array_size(xvg->fields[0]) : 0, xvg->fields, alloc);
+	str_t result = md_xvg_format(header, md_array_size(xvg->fields), xvg->fields ? md_array_size(xvg->fields[0]) : 0, (const float* const*)xvg->fields, alloc);
 	str_free(header, md_heap_allocator);
 	return result;
 }

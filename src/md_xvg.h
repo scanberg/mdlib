@@ -38,7 +38,7 @@ void md_xvg_free(md_xvg_t* xvg, struct md_allocator_i* alloc);
 // Format a header string for xvg files. cap signifies the maximum number of characters that can be written to buf.
 // Returns the number of characters written to buf.
 str_t	md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, int64_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc);
-str_t	md_xvg_format		(str_t header, int64_t num_fields, int64_t num_values, const float* field_values[], struct md_allocator_i* str_alloc);
+str_t	md_xvg_format		(str_t header, int64_t num_fields, int64_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc);
 
 str_t	md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* str_alloc);
 
