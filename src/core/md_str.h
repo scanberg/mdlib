@@ -35,6 +35,8 @@ typedef struct str_t {
 #define STR(cstr) (str_t){(cstr""), (sizeof(cstr)-1)}
 #endif
 
+#define STR_FMT(str) (int)str.len, str.ptr
+
 #ifdef __cplusplus
 extern "C" {
 #endif
