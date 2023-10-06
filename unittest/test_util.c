@@ -21,7 +21,7 @@ UTEST(util, rmsd) {
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, alloc));
 
     md_molecule_t mol = {0};
-    EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+    EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
     md_trajectory_i* traj = md_pdb_trajectory_create(path, alloc);
     EXPECT_TRUE(traj);

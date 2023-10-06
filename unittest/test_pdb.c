@@ -94,7 +94,7 @@ UTEST(pdb, create_molecule) {
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, alloc));
 
     md_molecule_t mol = {0};
-    EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+    EXPECT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
     ASSERT_EQ(mol.atom.count, pdb_data.num_atom_coordinates);
 
     for (int64_t i = 0; i < mol.atom.count; ++i) {

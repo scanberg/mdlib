@@ -46,7 +46,7 @@ UTEST(spatial_hash, big) {
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
 
     md_molecule_t mol = {0};
-    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
     ASSERT_TRUE(spatial_hash);

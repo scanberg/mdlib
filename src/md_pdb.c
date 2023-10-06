@@ -459,7 +459,7 @@ md_chain_idx_t find_chain_idx(char chain_id, md_molecule_t* mol) {
     return -1;
 }
 
-bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct md_allocator_i* alloc) {
+bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc) {
     ASSERT(mol);
     ASSERT(data);
     ASSERT(alloc);
@@ -468,7 +468,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
     int64_t end_atom_index = data->num_atom_coordinates;
 
     // if we have more than one model, interperet it as a trajectory and only load the first model
-    if (data->num_models > 0) {
+    if (data->num_models > 0 && !(options & MD_PDB_OPTION_CONCAT_MODELS)) {
         // Limit the scope of atom coordinate entries if we have a trajectory (only consider first model)
         beg_atom_index = data->models[0].beg_atom_index;
         end_atom_index = data->models[0].end_atom_index;
@@ -613,6 +613,32 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, struct 
         }
     }
 
+    // Do not use the connectivity information from the PDB, it is often not complete and only provides the connectivity for HETATM
+    // Instead, we leave the connectivity information empty and the postprocessing figure out connectivity.
+#if 0
+    for (int64_t j = 0; j < data->num_connections; ++j) {
+        const md_pdb_connect_t* c = &data->connections[j];
+        const int32_t a = c->atom_serial[0] - 1;
+        if (a < 0 || (int32_t)mol->atom.count <= a) {
+            goto error;
+        }
+
+		for (int32_t i = 1; i < (int32_t)ARRAY_SIZE(c->atom_serial); ++i) {
+            const int32_t b = c->atom_serial[i] - 1;
+            if (b == -1) break;
+            if ((int32_t)mol->atom.count <= b) {
+                goto error;
+            }
+            md_bond_t bond = {a, b};
+            md_array_push(mol->bonds, bond, alloc);
+        }
+        continue;
+    error:
+        MD_LOG_ERROR("Malformed PDB dataset, connection refers to a non existing atom");
+        return false;
+    }
+#endif
+
     mol->instance.count = md_array_size(mol->instance.atom_range);
     ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
     ASSERT(md_array_size(mol->instance.transform) == mol->instance.count);
@@ -624,7 +650,7 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
     md_pdb_data_t data = {0};
 
     md_pdb_data_parse_str(&data, str, md_heap_allocator);
-    bool success = md_pdb_molecule_init(mol, &data, alloc);
+    bool success = md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
     md_pdb_data_free(&data, md_heap_allocator);
     
     return success;
@@ -640,7 +666,7 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_
         
         md_pdb_data_t data = {0};
         bool parse   = pdb_parse(&data, &reader, md_heap_allocator, true);
-        bool success = parse && md_pdb_molecule_init(mol, &data, alloc);
+        bool success = parse && md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
         
         md_pdb_data_free(&data, md_heap_allocator);
         md_free(md_heap_allocator, buf, cap);

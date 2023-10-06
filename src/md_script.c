@@ -78,6 +78,7 @@
 
 #define MAX_SUPPORTED_PROC_ARGS 8
 #define MAX_SUPPORTED_TYPE_DIMS 4
+#define TIMESTAMP_ERROR_MARGIN 1.0e-4
 
 #define SETUP_TEMP_ALLOC(reserve_size) \
     md_vm_arena_t vm_arena; \
@@ -706,6 +707,10 @@ static inline int64_t type_info_total_element_count(type_info_t ti) {
 
 static inline int64_t bitfield_byte_size(int64_t num_bits) {
     return DIV_UP(num_bits, 64) * sizeof(int64_t);
+}
+
+static inline bool timestamps_approx_equal(double t0, double t1) {
+    return (t0 - t1) < TIMESTAMP_ERROR_MARGIN;
 }
 
 static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc) {
@@ -2623,22 +2628,22 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
 
         if (time[row_index] < ref_time) {
             for (int64_t i = row_index; i < num_rows; ++i) {
-                if (time[i] == ref_time) {
+                if (timestamps_approx_equal(time[i], ref_time)) {
                     row_index = i;
                     break;
                 }
-                else if (time[i] > ref_time) {
+                else if (time[i] - TIMESTAMP_ERROR_MARGIN > ref_time) {
                     row_index = -1;
                 }
             }
         }
         else if (time[row_index] > ref_time) {
             for (int64_t i = row_index; i >= 0; --i) {
-                if (time[i] == ref_time) {
+                if (timestamps_approx_equal(time[i], ref_time)) {
                     row_index = i;
                     break;
                 }
-                else if (time[i] < ref_time) {
+                else if (time[i] + TIMESTAMP_ERROR_MARGIN < ref_time) {
                     row_index = -1;
                 }
             }
@@ -3461,7 +3466,7 @@ static table_t* find_table(md_script_ir_t* ir, str_t name) {
     return NULL;
 }
 
-// This is a bit of heuristics here,
+// There are some heuristics/mumbo jumbo here,
 // we try to match the frame times of the trajectory and the table.
 // If the table has more frames than the trajectory, we assume that the table is a subset of the trajectory.
 static bool frame_times_compatible(const double* traj_times, int64_t num_traj_frames, const double* table_times, int64_t num_table_frames) {
@@ -3475,10 +3480,10 @@ static bool frame_times_compatible(const double* traj_times, int64_t num_traj_fr
     // We want to ensure that every frame time in the trajectory is present in the table.
     int64_t table_idx = 0;
     for (int64_t i = 0; i < num_traj_frames; ++i) {
-        while (table_idx < num_table_frames && table_times[table_idx] < traj_times[i]) {
+        while (table_idx < num_table_frames && table_times[table_idx] + TIMESTAMP_ERROR_MARGIN < traj_times[i]) {
             ++table_idx;
         }
-        if (table_times[table_idx] != traj_times[i]) {
+        if (!timestamps_approx_equal(table_times[table_idx], traj_times[i])) {
             return false;
         }
     }
@@ -3497,10 +3502,10 @@ static bool frame_times_compatible_f(const double* traj_times, int64_t num_traj_
     // We want to ensure that every frame time in the trajectory is present in the table.
     int64_t table_idx = 0;
     for (int64_t i = 0; i < num_traj_frames; ++i) {
-        while (table_idx < num_table_frames && table_times[table_idx] < traj_times[i]) {
+        while (table_idx < num_table_frames && (double)table_times[table_idx] + TIMESTAMP_ERROR_MARGIN < traj_times[i]) {
             ++table_idx;
         }
-        if ((double)table_times[table_idx] != traj_times[i]) {
+        if (!timestamps_approx_equal((double)table_times[table_idx], traj_times[i])) {
             return false;
         }
     }

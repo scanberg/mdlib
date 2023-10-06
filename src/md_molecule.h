@@ -108,7 +108,7 @@ typedef struct md_molecule_t {
 
 /*
 
-The molecule api is just a convenience API for abstracing the functionality of initializing molecule data
+The molecule loader api is just a convenience API for abstracing the functionality of initializing molecule data
 
 The reason for providing a distinct function for initializing from file is that some molecule files can
 also contain their trajectories, such as PDB files. In such case, the whole file would have to be read and passed, but for

@@ -17,9 +17,16 @@ struct md_molecule_loader_i;
 struct md_mat4_t;
 
 enum {
-	MD_PDB_COORD_FLAG_HETATM        = 1 << 0,
-    MD_PDB_COORD_FLAG_TERMINATOR    = 1 << 1,   // Terminator for chain
+	MD_PDB_COORD_FLAG_HETATM        = 1,
+    MD_PDB_COORD_FLAG_TERMINATOR    = 2,   // Terminator for chain
 };
+
+enum {
+    MD_PDB_OPTION_NONE = 0,
+    MD_PDB_OPTION_CONCAT_MODELS = 1,
+};
+
+typedef uint32_t md_pdb_options_t;
 
 typedef enum md_pdb_helix_class_t {
     Helix_Unknown           = 0,
@@ -167,7 +174,7 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, struct md_alloc
 void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
-bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* data, struct md_allocator_i* alloc);
+bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc);
 struct md_molecule_loader_i* md_pdb_molecule_api();
 
 // TRAJECTORY

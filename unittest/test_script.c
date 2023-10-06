@@ -256,7 +256,7 @@ UTEST(script, dynamic_length) {
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
 
     md_molecule_t mol = {0};
-    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
     md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
@@ -284,7 +284,7 @@ UTEST(script, property_compute) {
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
 
     md_molecule_t mol = {0};
-    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
     md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
@@ -411,7 +411,7 @@ UTEST(script, parallel_evaluation) {
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
 
     md_molecule_t mol = {0};
-    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, alloc));
+    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
     md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
     ASSERT_TRUE(traj);

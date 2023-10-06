@@ -573,16 +573,21 @@ uint64_t md_os_num_processors(void) {
 #endif
 }
 
+static uint64_t page_size = 0;
+
 uint64_t md_vm_page_size(void) {
+    if (!page_size) {
 #if MD_PLATFORM_WINDOWS
-    SYSTEM_INFO info;
-    GetSystemInfo(&info);
-    return info.dwPageSize;
+        SYSTEM_INFO info;
+        GetSystemInfo(&info);
+        page_size = info.dwPageSize;
 #elif MD_PLATFORM_UNIX
-    return sysconf(_SC_PAGE_SIZE);
+        page_size = sysconf(_SC_PAGE_SIZE);
 #else
-    ASSERT(false);
+        ASSERT(false);
 #endif
+    }
+    return page_size;
 }
 
 void* md_vm_reserve(uint64_t size) {
@@ -590,7 +595,7 @@ void* md_vm_reserve(uint64_t size) {
 #if MD_PLATFORM_WINDOWS
     return VirtualAlloc(0, gb_snapped_size, MEM_RESERVE, PAGE_NOACCESS);
 #elif MD_PLATFORM_UNIX
-    void* result = mmap(0, gb_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void* result = mmap(0, gb_snapped_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     ASSERT(result != MAP_FAILED);
     return result;
 #else
