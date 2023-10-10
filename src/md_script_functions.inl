@@ -761,35 +761,35 @@ static inline vec3_t extract_com(const float* x, const float* y, const float* z,
     return vec3_div_f(vec3_from_vec4(sum), sum.w);
 }
 
-static inline vec3_t* extract_vec3(const float* x, const float* y, const float* z, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
+static inline vec3_t* extract_vec3(const float* x, const float* y, const float* z, const md_bitfield_t* bf, md_allocator_i* alloc) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
-    ASSERT(bitfield);
+    ASSERT(bf);
     ASSERT(alloc);
 
-    vec3_t* pos = 0;
-
-    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
+    md_array(vec3_t) result = md_array_create(vec3_t, md_bitfield_popcount(bf), alloc);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
+    int64_t i = 0;
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
-        md_array_push(pos, vec3_set(x[idx], y[idx], z[idx]), alloc);
+        result[i++] = vec3_set(x[idx], y[idx], z[idx]);
     }
-    return pos;
+    return result;
 }
 
-static inline int64_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bitfield) {
+static inline int64_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bf) {
     ASSERT(dst_x);
     ASSERT(dst_y);
     ASSERT(dst_z);
     ASSERT(src_x);
     ASSERT(src_y);
     ASSERT(src_z);
-    ASSERT(bitfield);
+    ASSERT(bf);
 
     int64_t count = 0;
 
-    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         dst_x[count] = src_x[idx];
@@ -801,16 +801,16 @@ static inline int64_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, cons
     return count;
 }
 
-static inline int64_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bitfield) {
+static inline int64_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bf) {
     ASSERT(dst_xyz);
     ASSERT(src_x);
     ASSERT(src_y);
     ASSERT(src_z);
-    ASSERT(bitfield);
+    ASSERT(bf);
 
     int64_t count = 0;
 
-    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
+    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         dst_xyz[count] = vec3_set(src_x[idx], src_y[idx], src_z[idx]);
@@ -820,7 +820,7 @@ static inline int64_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, cons
     return count;
 }
 
-static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, float* dst_w, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bitfield) {
+static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, float* dst_w, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
     ASSERT(dst_x);
     ASSERT(dst_y);
     ASSERT(dst_z);
@@ -829,13 +829,13 @@ static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, flo
     ASSERT(src_y);
     ASSERT(src_z);
     ASSERT(src_w);
-    ASSERT(bitfield);
+    ASSERT(bf);
 
     int64_t count = 0;
 
-    int64_t beg_bit = bitfield->beg_bit;
-    int64_t end_bit = bitfield->end_bit;
-    while ((beg_bit = md_bitfield_scan(bitfield, beg_bit, end_bit)) != 0) {
+    int64_t beg_bit = bf->beg_bit;
+    int64_t end_bit = bf->end_bit;
+    while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
         const int64_t idx = beg_bit - 1;
         dst_x[count] = src_x[idx];
         dst_y[count] = src_y[idx];
@@ -847,17 +847,17 @@ static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, flo
     return count;
 }
 
-static inline int64_t extract_xyzw_vec3(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bitfield) {
+static inline int64_t extract_xyzw_vec3(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
     ASSERT(dst_xyzw);
     ASSERT(src_x);
     ASSERT(src_y);
     ASSERT(src_z);
     ASSERT(src_w);
-    ASSERT(bitfield);
+    ASSERT(bf);
 
     int64_t count = 0;
-
-    md_bitfield_iter_t it = md_bitfield_iter_create(bitfield);
+    
+    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
         dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], src_w[idx]);
@@ -1080,57 +1080,59 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
         }
         break;
     case TYPE_INT: {
-        const int* indices = as_int_arr(arg);
-        const int64_t len = element_count(arg);
-        for (int64_t i = 0; i < len; ++i) {
-            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
-            visualize_atom_index(idx, ctx);
+        if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+            const int* indices = as_int_arr(arg);
+            const int64_t len = element_count(arg);
+            for (int64_t i = 0; i < len; ++i) {
+                const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
+                visualize_atom_index(idx, ctx);
+            }
         }
         break;
     }
     case TYPE_IRANGE:
-    {
-        const irange_t* ranges = as_irange_arr(arg);
-        for (int64_t i = 0; i < element_count(arg); ++i) {
-            irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (range_in_range(range, ctx_range)) {
-                if (ctx->mol_ctx) {
-                    md_bitfield_iter_t it = md_bitfield_iter_range(ctx->mol_ctx, range.beg, range.end);
-                    while (md_bitfield_iter_next(&it)) {
-                        const int64_t idx = md_bitfield_iter_idx(&it);
-						visualize_atom_index(idx, ctx);
+        if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+            const irange_t* ranges = as_irange_arr(arg);
+            for (int64_t i = 0; i < element_count(arg); ++i) {
+                irange_t range = remap_range_to_context(ranges[i], ctx_range);
+                if (range_in_range(range, ctx_range)) {
+                    if (ctx->mol_ctx) {
+                        md_bitfield_iter_t it = md_bitfield_iter_range(ctx->mol_ctx, range.beg, range.end);
+                        while (md_bitfield_iter_next(&it)) {
+                            const int64_t idx = md_bitfield_iter_idx(&it);
+						    visualize_atom_index(idx, ctx);
+                        }
+                    }
+                    else {
+                        visualize_atom_range(range, ctx);
                     }
                 }
-                else {
-                    visualize_atom_range(range, ctx);
-                }
             }
         }
         break;
-    }
     case TYPE_BITFIELD:
-    {
-        md_bitfield_t tmp_bf = {0};
-        const md_bitfield_t* in_bf = as_bitfield(arg);
+        if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
+            md_bitfield_t tmp_bf = {0};
+            const md_bitfield_t* in_bf = as_bitfield(arg);
 
-        if (ctx->mol_ctx) {
-            md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-        }
-
-        for (int64_t i = 0; i < element_count(arg); ++i) {
-            const md_bitfield_t* bf = &in_bf[i];
             if (ctx->mol_ctx) {
-                md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
-                bf = &tmp_bf;
+                md_bitfield_init(&tmp_bf, ctx->temp_alloc);
             }
-            visualize_atom_mask(bf, ctx);
-        }
 
-        if (ctx->mol_ctx) {
-            md_bitfield_free(&tmp_bf);
+            for (int64_t i = 0; i < element_count(arg); ++i) {
+                const md_bitfield_t* bf = &in_bf[i];
+                if (ctx->mol_ctx) {
+                    md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                    bf = &tmp_bf;
+                }
+                visualize_atom_mask(bf, ctx);
+            }
+
+            if (ctx->mol_ctx) {
+                md_bitfield_free(&tmp_bf);
+            }
         }
         break;
-    }
     default:
         ASSERT(false);
     }
@@ -4024,6 +4026,7 @@ static int _position_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
 typedef struct {
     vec4_t pos;
     vec4_t pbc_ext;
+    const md_bitfield_t* exclusion_mask;
     float min_cutoff;
     float min_cutoff2;
     float max_cutoff;
@@ -4053,19 +4056,83 @@ bool rdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
     return true;
 }
 
+// iterator version which excludes the supplied index
+bool rdf_iter_excl_idx(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) {
+    rdf_payload_t* data = user_param;
+
+    while (mask) {
+        const int idx = ctz32(mask);
+        if (elem_arr[idx].idx != data->idx) {
+            const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
+            if (data->min_cutoff2 < d2 && d2 < data->max_cutoff2) {
+                const float d = sqrtf(d2);
+                int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
+                bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
+                data->bins[bin_idx] += 1.0f;
+                data->total_count += 1;
+            }
+        }
+        mask &= ~(1 << idx);
+    }
+    return true;
+}
+
+// iterator version which excludes indices that are present in the supplied exclusion_mask
+bool rdf_iter_excl_mask(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) {
+    rdf_payload_t* data = user_param;
+
+    while (mask) {
+        const int idx = ctz32(mask);
+        if (!md_bitfield_test_bit(data->exclusion_mask, elem_arr[idx].idx)) {
+            const float d2 = vec4_periodic_distance_squared(vec4_from_vec3(elem_arr[idx].xyz, 0), data->pos, data->pbc_ext);
+            if (data->min_cutoff2 < d2 && d2 < data->max_cutoff2) {
+                const float d = sqrtf(d2);
+                int32_t bin_idx = (int32_t)(((d - data->min_cutoff) * data->inv_cutoff_range) * data->num_bins);
+                bin_idx = CLAMP(bin_idx, 0, data->num_bins - 1);
+                data->bins[bin_idx] += 1.0f;
+                data->total_count += 1;
+            }
+        }
+        mask &= ~(1 << idx);
+    }
+    return true;
+}
+
 #define RDF_BRUTE_FORCE_LIMIT (3000)
 
 static inline double sphere_volume(double r) {
     return (4.0 / 3.0) * PI * (r * r * r);
 }
 
-static void compute_rdf(float* bins, float* weights, int num_bins, const vec3_t* ref_pos, int64_t ref_len, const vec3_t* trg_pos, int64_t trg_len, float min_cutoff, float max_cutoff, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+static void compute_rdf(float* bins, float* weights, int num_bins, const data_t arg[2], float min_cutoff, float max_cutoff, const md_unit_cell_t* unit_cell, md_allocator_i* alloc, eval_context_t* ctx) {
     const float inv_cutoff_range = 1.0f / (max_cutoff - min_cutoff);
 
     uint64_t total_count = 0;
 
     // Add a small bias to avoid adding 'zero' distances
-    min_cutoff += 1.0e-3f;
+    if (min_cutoff == 0) {
+        min_cutoff = 1.0e-3f;
+    }
+
+    const md_array(int32_t) ref_idx = position_extract_indices(arg[0], ctx);
+    md_array(vec3_t) ref_pos = 0;
+
+    const bool use_exclusion_masks = (arg[0].type.base_type == TYPE_BITFIELD) && (element_count(arg[0]) > 1);
+    const bool use_exclusion_indices = (ref_idx != 0);
+
+    if (ref_idx) {
+        md_array_resize(ref_pos, md_array_size(ref_idx), ctx->temp_alloc);
+        for (int64_t i = 0; i < md_array_size(ref_idx); ++i) {
+            const int64_t idx = ref_idx[i];
+			ref_pos[i] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
+		}
+    } else {
+		ref_pos = position_extract(arg[0], ctx);
+	}
+    int64_t ref_len = md_array_size(ref_pos);
+
+    md_array(vec3_t) trg_pos = position_extract(arg[1], ctx);
+    int64_t trg_len = md_array_size(trg_pos);
 
     const vec4_t ext = unit_cell ? vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0) : vec4_zero();
     if ((ref_len * trg_len) < RDF_BRUTE_FORCE_LIMIT) {
@@ -4096,11 +4163,25 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const vec3_t*
             .total_count = 0,
         };
 
-        for (int64_t i = 0; i < ref_len; ++i) {
-            payload.pos = vec4_from_vec3(ref_pos[i], 0);
-            payload.idx = (uint32_t)i;
-            md_spatial_hash_query_batch(hash, ref_pos[i], max_cutoff, rdf_iter, &payload);
+        if (use_exclusion_indices) {
+            for (int64_t i = 0; i < ref_len; ++i) {
+                payload.pos = vec4_from_vec3(ref_pos[i], 0);
+                payload.idx = (uint32_t)i;
+                md_spatial_hash_query_batch(hash, ref_pos[i], max_cutoff, rdf_iter_excl_idx, &payload);
+            }
+        } else if (use_exclusion_masks) {
+            for (int64_t i = 0; i < ref_len; ++i) {
+                payload.pos = vec4_from_vec3(ref_pos[i], 0);
+                payload.exclusion_mask = as_bitfield(arg[0]) + i;
+                md_spatial_hash_query_batch(hash, ref_pos[i], max_cutoff, rdf_iter_excl_mask, &payload);
+            }
+        } else {
+            for (int64_t i = 0; i < ref_len; ++i) {
+                payload.pos = vec4_from_vec3(ref_pos[i], 0);
+                md_spatial_hash_query_batch(hash, ref_pos[i], max_cutoff, rdf_iter, &payload);
+            }
         }
+
         total_count = payload.total_count;
     }
 
@@ -4121,24 +4202,29 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const vec3_t*
     }
 }
 
-static int visualize_rdf(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* target_pos, int64_t target_size, float min_cutoff, float max_cutoff, eval_context_t* ctx) {
-    const float min_cutoff2 = min_cutoff * min_cutoff;
-    const float max_cutoff2 = max_cutoff * max_cutoff;
+static int visualize_rdf(const data_t arg[2], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
+    ASSERT(ctx->vis);
 
+    //position_visualize(arg[0], ctx);
+    //position_visualize(arg[1], ctx);
     // Visualize
+#if 0
     if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+        const float min_cutoff2 = min_cutoff * min_cutoff;
+        const float max_cutoff2 = max_cutoff * max_cutoff;
+        // This is stupid: Will do an n^2 visualization of all references and targets of each reference.
+        // Clutters the visual space and tells you nothing in the end.
         const int64_t max_vertices = 10000;
         int64_t vertex_count = 0;
-
-        for (int64_t i = 0; i < ref_size; ++i) {
+        for (int64_t i = 0; i < ref_len; ++i) {
             md_script_vis_vertex_t r_v = vertex(ref_pos[i], COLOR_WHITE);
             vertex_count += 1;
             push_point(r_v, ctx->vis);
-            for (int64_t j = 0; j < target_size; ++j) {
-                const vec3_t d = vec3_sub(ref_pos[i], target_pos[j]);
+            for (int64_t j = 0; j < trg_len; ++j) {
+                const vec3_t d = vec3_sub(ref_pos[i], trg_pos[j]);
                 const float d2 = vec3_dot(d, d);
                 if (min_cutoff2 < d2 && d2 < max_cutoff2) {
-                    md_script_vis_vertex_t t_v = vertex(target_pos[j], COLOR_WHITE);
+                    md_script_vis_vertex_t t_v = vertex(trg_pos[j], COLOR_WHITE);
                     vertex_count += 1;
                     push_line(r_v, t_v, ctx->vis);
                     if (vertex_count > max_vertices) return 0;
@@ -4146,6 +4232,7 @@ static int visualize_rdf(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* 
             }
         }
     }
+#endif
 
     return 0;
 }
@@ -4153,24 +4240,16 @@ static int visualize_rdf(const vec3_t* ref_pos, int64_t ref_size, const vec3_t* 
 static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
     if (dst || ctx->vis) {
         const int num_bins = MD_DIST_BINS;
-
-        const vec3_t* ref_pos = position_extract(arg[0], ctx);
-        const int64_t ref_len = md_array_size(ref_pos);
-
-        const vec3_t* trg_pos = position_extract(arg[1], ctx);
-        const int64_t trg_len = md_array_size(trg_pos);
-        
+       
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_DISTRIBUTION));
             ASSERT(dst->ptr);
             float* bins    = as_float_arr(*dst);
 			float* weights = as_float_arr(*dst) + num_bins;
-            if (ref_len > 0 && trg_len > 0) {
-                compute_rdf(bins, weights, num_bins, ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, &ctx->mol->unit_cell, ctx->temp_alloc);
-            }
+            compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, &ctx->mol->unit_cell, ctx->temp_alloc, ctx);
         }
         if (ctx->vis) {
-            return visualize_rdf(ref_pos, ref_len, trg_pos, trg_len, min_cutoff, max_cutoff, ctx);
+            return visualize_rdf(arg, min_cutoff, max_cutoff, ctx);
         }
         return 0;
     }

@@ -30,7 +30,9 @@
 }
 
 #define MAGIC 0xfacb8172U
-#define SPLINE_MAX_SUBDIVISION_COUNT 8
+#ifndef MD_GL_SPLINE_SUBDIVISION_COUNT
+#define MD_GL_SPLINE_SUBDIVISION_COUNT 8
+#endif
 
 #define UBO_SIZE (1 << 10)
 #define SHADER_BUF_SIZE KILOBYTES(14)
@@ -851,7 +853,7 @@ bool md_gl_initialize() {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
         GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
 
-        const str_t defines = STR("#define NUM_SUBDIVISIONS " STRINGIFY_VAL(SPLINE_MAX_SUBDIVISION_COUNT));
+        const str_t defines = STR("#define NUM_SUBDIVISIONS " STRINGIFY_VAL(MD_GL_SPLINE_SUBDIVISION_COUNT));
 
         bool err;
         if ((err = compile_shader_from_source(vert_shader, (str_t){(const char*)compute_spline_vert, compute_spline_vert_size}, defines, empty_str)) != true ||
@@ -956,7 +958,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
                 uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
                 backbone_residue_count += res_count;
-                backbone_spline_count += (res_count - 1) * SPLINE_MAX_SUBDIVISION_COUNT;
+                backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT;
             }
 
             const uint32_t backbone_count                     = backbone_residue_count;
@@ -1035,7 +1037,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
                 for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
                     uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
                     if (res_count > 0) {
-                        for (uint32_t j = 0; j < (res_count - 1) * SPLINE_MAX_SUBDIVISION_COUNT; ++j) {
+                        for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT; ++j) {
                             spline_index[len++] = idx++;
                         }
                     }

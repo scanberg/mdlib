@@ -329,7 +329,7 @@ bool md_bitfield_validate(const md_bitfield_t* bf) {
     return bf && bf->magic == MAGIC;
 }
 
-void md_bitfield_reserve_range  (md_bitfield_t* bf, uint64_t beg_bit, uint64_t end_bit) {
+void md_bitfield_reserve_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t end_bit) {
     ASSERT(md_bitfield_validate(bf));
     ensure_range(bf, beg_bit, end_bit);
 }
@@ -340,7 +340,6 @@ bool md_bitfield_empty(const md_bitfield_t* bf) {
 
 uint64_t md_bitfield_beg_bit(const md_bitfield_t* bf) {
     return bf->bits ? bf->beg_bit : 0;
-    
 }
 
 uint64_t md_bitfield_end_bit(const md_bitfield_t* bf) {

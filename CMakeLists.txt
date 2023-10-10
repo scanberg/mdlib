@@ -18,8 +18,9 @@ option(MD_BENCHMARK "Enable benchmarks" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
 option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
 option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
-option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
+option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
+set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
 
 file(GLOB SRC_FILES src/*.h src/*.c src/*.inl)
 file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
@@ -45,7 +46,7 @@ set(SHADER_FILES
     src/shaders/spacefill.frag
 )
 
-set(MD_DEFINES)
+set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
 
 if (CMAKE_C_BYTE_ORDER STREQUAL BIG_ENDIAN)
     set(MD_DEFINES ${MD_DEFINES} __BIG_ENDIAN__)
@@ -170,6 +171,7 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
 endif()
 
 set(MD_FLAGS ${MD_FLAGS} ${MD_FLAGS_AVX})
+set(MD_PROPERTIES)
 
 if (MD_UNITTEST)
   enable_testing()
@@ -189,9 +191,12 @@ source_group("proj" FILES ${PROJ_FILES})
 add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES} ${PROJ_FILES})
 
 if (MD_LINK_STDLIB_STATIC)
-    set_property(TARGET mdlib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    #set_target_properties(mdlib PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
-    set_property(TARGET mdlib PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+
+    #set_target_properties(mdlib PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 target_include_directories(mdlib
@@ -207,6 +212,8 @@ target_include_directories(mdlib
   ext/stb/
   gen/
 )
+
+set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})
 
 target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
