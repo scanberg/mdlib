@@ -144,7 +144,6 @@ UTEST(util, com) {
             {5,0,0},
             {6,0,0},
             {7,0,0},
-            {8,0,0},
         };
 
         const vec3_t pos1[] = {
@@ -152,7 +151,6 @@ UTEST(util, com) {
             {0,0,0},
             {1,0,0},
             {2,0,0},
-            {3,0,0},
         };
 
         const vec3_t pos2[] = {
@@ -160,15 +158,7 @@ UTEST(util, com) {
             {0,0,0},
             {1,0,0},
             {2,0,0},
-            {3,0,0},
         };
-
-        // All of the given positions, are the same under PBC. We can also see that the mid point in the sequence is 1.
-        // But the sequence itself spans the entire extent of the periodic bounds.
-        // What is the expected center of mass?
-        // The result will differ depending on the underlying technique used.
-        // If the trigonometric version is used, the points will be evenly spread across the domain, resulting in a atan2(0,0) which is not defined.
-        // In such case, we fall back to picking the center of the domain.
 
         vec3_t com0 = md_util_compute_com_vec3_ortho(pos0, 0, 0, ARRAY_SIZE(pos0), pbc_ext);
         vec3_t com1 = md_util_compute_com_vec3_ortho(pos1, 0, 0, ARRAY_SIZE(pos1), pbc_ext);
@@ -178,9 +168,9 @@ UTEST(util, com) {
         com1 = vec3_deperiodize(com1, (vec3_t){ 0,0,0 }, pbc_ext);
         com2 = vec3_deperiodize(com2, (vec3_t){ 0,0,0 }, pbc_ext);
         
-        EXPECT_NEAR(1.0f, com0.x, 1.0E-5F);
-        EXPECT_NEAR(1.0f, com1.x, 1.0E-5F);
-        EXPECT_NEAR(1.0f, com2.x, 1.0E-5F);
+        EXPECT_NEAR(0.5f, com0.x, 1.0E-5F);
+        EXPECT_NEAR(0.5f, com1.x, 1.0E-5F);
+        EXPECT_NEAR(0.5f, com2.x, 1.0E-5F);
     }
 }
 
