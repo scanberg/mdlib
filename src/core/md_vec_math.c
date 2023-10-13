@@ -42,123 +42,47 @@ mat3_eigen_t mat3_eigen(mat3_t M) {
     return res;
 }
 
-mat3_t mat3_covariance_matrix( const float* in_x, const float* in_y, const float* in_z, const float* in_w, vec3_t com, int64_t count) {
+mat3_t mat3_covariance_matrix( const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, vec3_t com, int64_t count) {
     mat3_t A = {0};
-    if (in_w) {
-        for (int64_t i = 0; i < count; i++) {
-            const float x = in_x[i] - com.x;
-            const float y = in_y[i] - com.y;
-            const float z = in_z[i] - com.z;
-            const float w = in_w[i];
+    for (int64_t i = 0; i < count; i++) {
+        const int64_t idx = indices ? indices[i] : i;
+        const float x = in_x[idx] - com.x;
+        const float y = in_y[idx] - com.y;
+        const float z = in_z[idx] - com.z;
+        const float w = in_w ? in_w[idx] : 1.0f;
 
-            A.elem[0][0] += w * x * x;
-            A.elem[0][1] += w * x * y;
-            A.elem[0][2] += w * x * z;
-            A.elem[1][0] += w * y * x;
-            A.elem[1][1] += w * y * y;
-            A.elem[1][2] += w * y * z;
-            A.elem[2][0] += w * z * x;
-            A.elem[2][1] += w * z * y;
-            A.elem[2][2] += w * z * z;
-        }
-    } else {
-        for (int64_t i = 0; i < count; i++) {
-            const float x = in_x[i] - com.x;
-            const float y = in_y[i] - com.y;
-            const float z = in_z[i] - com.z;
-
-            A.elem[0][0] += x * x;
-            A.elem[0][1] += x * y;
-            A.elem[0][2] += x * z;
-            A.elem[1][0] += y * x;
-            A.elem[1][1] += y * y;
-            A.elem[1][2] += y * z;
-            A.elem[2][0] += z * x;
-            A.elem[2][1] += z * y;
-            A.elem[2][2] += z * z;
-        }
+        A.elem[0][0] += w * x * x;
+        A.elem[0][1] += w * x * y;
+        A.elem[0][2] += w * x * z;
+        A.elem[1][0] += w * y * x;
+        A.elem[1][1] += w * y * y;
+        A.elem[1][2] += w * y * z;
+        A.elem[2][0] += w * z * x;
+        A.elem[2][1] += w * z * y;
+        A.elem[2][2] += w * z * z;
     }
 
     return A;
 }
 
-mat3_t mat3_covariance_matrix_indexed( const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int* indices, vec3_t com, int64_t count) {
+mat3_t mat3_covariance_matrix_vec3(const vec3_t* in_xyz, const float* in_w, const int32_t* indices, vec3_t com, int64_t count) {
     mat3_t A = {0};
-    if (in_w) {
-        for (int64_t i = 0; i < count; i++) {
-            const int idx = indices[i];
-            const float x = in_x[idx] - com.x;
-            const float y = in_y[idx] - com.y;
-            const float z = in_z[idx] - com.z;
-            const float w = in_w[idx];
+    for (int64_t i = 0; i < count; i++) {
+        const int64_t idx = indices ? indices[i] : i;
+        const float x = in_xyz[idx].x - com.x;
+        const float y = in_xyz[idx].y - com.y;
+        const float z = in_xyz[idx].z - com.z;
+        const float w = in_w ? in_w[idx] : 1.0f;
 
-            A.elem[0][0] += w * x * x;
-            A.elem[0][1] += w * x * y;
-            A.elem[0][2] += w * x * z;
-            A.elem[1][0] += w * y * x;
-            A.elem[1][1] += w * y * y;
-            A.elem[1][2] += w * y * z;
-            A.elem[2][0] += w * z * x;
-            A.elem[2][1] += w * z * y;
-            A.elem[2][2] += w * z * z;
-        }
-    } else {
-        for (int64_t i = 0; i < count; i++) {
-            const int idx = indices[i];
-            const float x = in_x[idx] - com.x;
-            const float y = in_y[idx] - com.y;
-            const float z = in_z[idx] - com.z;
-
-            A.elem[0][0] += x * x;
-            A.elem[0][1] += x * y;
-            A.elem[0][2] += x * z;
-            A.elem[1][0] += y * x;
-            A.elem[1][1] += y * y;
-            A.elem[1][2] += y * z;
-            A.elem[2][0] += z * x;
-            A.elem[2][1] += z * y;
-            A.elem[2][2] += z * z;
-        }
-    }
-
-    return A;
-}
-
-mat3_t mat3_covariance_matrix_vec3(const vec3_t* in_xyz, const float* in_w, vec3_t com, int64_t count) {
-    mat3_t A = {0};
-    if (in_w) {
-        for (int64_t i = 0; i < count; i++) {
-            const float x = in_xyz[i].x - com.x;
-            const float y = in_xyz[i].y - com.y;
-            const float z = in_xyz[i].z - com.z;
-            const float w = in_w[i];
-
-            A.elem[0][0] += w * x * x;
-            A.elem[0][1] += w * x * y;
-            A.elem[0][2] += w * x * z;
-            A.elem[1][0] += w * y * x;
-            A.elem[1][1] += w * y * y;
-            A.elem[1][2] += w * y * z;
-            A.elem[2][0] += w * z * x;
-            A.elem[2][1] += w * z * y;
-            A.elem[2][2] += w * z * z;
-        }
-    } else {
-        for (int64_t i = 0; i < count; i++) {
-            const float px = in_xyz[i].x - com.x;
-            const float py = in_xyz[i].y - com.y;
-            const float pz = in_xyz[i].z - com.z;
-
-            A.elem[0][0] += px * px;
-            A.elem[0][1] += px * py;
-            A.elem[0][2] += px * pz;
-            A.elem[1][0] += py * px;
-            A.elem[1][1] += py * py;
-            A.elem[1][2] += py * pz;
-            A.elem[2][0] += pz * px;
-            A.elem[2][1] += pz * py;
-            A.elem[2][2] += pz * pz;
-        }
+        A.elem[0][0] += w * x * x;
+        A.elem[0][1] += w * x * y;
+        A.elem[0][2] += w * x * z;
+        A.elem[1][0] += w * y * x;
+        A.elem[1][1] += w * y * y;
+        A.elem[1][2] += w * y * z;
+        A.elem[2][0] += w * z * x;
+        A.elem[2][1] += w * z * y;
+        A.elem[2][2] += w * z * z;
     }
 
     return A;

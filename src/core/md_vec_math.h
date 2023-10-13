@@ -1236,17 +1236,13 @@ mat3_svd_t   mat3_svd(mat3_t M);
 mat3_t       mat3_extract_rotation(mat3_t M);
 
 // Computes the covariance matrix for a set of coordinates with a given center of mass.
-// w corresponds to the weight for each point and is optional.
-mat3_t mat3_covariance_matrix(
-    const float* x, const float* y, const float* z, const float* w,
-    vec3_t com,
-    int64_t count);
-
-mat3_t mat3_covariance_matrix_indexed(const float* x, const float* y, const float* z, const float* w, const int* indices,
-    vec3_t com,
-    int64_t count);
-
-mat3_t mat3_covariance_matrix_vec3(const vec3_t* xyz, const float* w, vec3_t com, int64_t count);
+// x,y,z / xyz: coordinates
+// w:           weights (optional)
+// indices:     indices of the coordinates to use (optional)
+// com:         center of mass
+// count:       number of coordinates or indices
+mat3_t mat3_covariance_matrix(const float* x, const float* y, const float* z, const float* w, const int32_t* indices, vec3_t com, int64_t count);
+mat3_t mat3_covariance_matrix_vec3(const vec3_t* xyz, const float* w, const int32_t* indices, vec3_t com, int64_t count);
 
 // Computes the cross covariance matrix for two set of coordinates with given center of mass.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.

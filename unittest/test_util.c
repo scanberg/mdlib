@@ -64,8 +64,8 @@ UTEST(util, rmsd) {
 
     // Our implementation
     vec3_t com[2] = {
-        md_util_compute_com_soa(coord[0].x, coord[0].y, coord[0].z, mol.atom.mass, mol.atom.count),
-        md_util_compute_com_soa(coord[1].x, coord[1].y, coord[1].z, mol.atom.mass, mol.atom.count),
+        md_util_compute_com(coord[0].x, coord[0].y, coord[0].z, mol.atom.mass, 0, mol.atom.count),
+        md_util_compute_com(coord[1].x, coord[1].y, coord[1].z, mol.atom.mass, 0, mol.atom.count),
     };
     double rmsd = md_util_compute_rmsd(coord, com, mol.atom.mass, mol.atom.count);
     
@@ -96,7 +96,7 @@ UTEST(util, com) {
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_vec3_ortho(pos, 0, 0, ARRAY_SIZE(pos), pbc_ext);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -109,7 +109,7 @@ UTEST(util, com) {
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_vec3_ortho(pos, 0, 0, ARRAY_SIZE(pos), pbc_ext);
 		com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -129,7 +129,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        vec3_t com = md_util_compute_com_ortho(pos, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_vec3_ortho(pos, 0, 0, ARRAY_SIZE(pos), pbc_ext);
         com = vec3_deperiodize(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -170,9 +170,9 @@ UTEST(util, com) {
         // If the trigonometric version is used, the points will be evenly spread across the domain, resulting in a atan2(0,0) which is not defined.
         // In such case, we fall back to picking the center of the domain.
 
-        vec3_t com0 = md_util_compute_com_ortho(pos0, NULL, ARRAY_SIZE(pos0), pbc_ext);
-        vec3_t com1 = md_util_compute_com_ortho(pos1, NULL, ARRAY_SIZE(pos1), pbc_ext);
-        vec3_t com2 = md_util_compute_com_ortho(pos2, NULL, ARRAY_SIZE(pos2), pbc_ext);
+        vec3_t com0 = md_util_compute_com_vec3_ortho(pos0, 0, 0, ARRAY_SIZE(pos0), pbc_ext);
+        vec3_t com1 = md_util_compute_com_vec3_ortho(pos1, 0, 0, ARRAY_SIZE(pos1), pbc_ext);
+        vec3_t com2 = md_util_compute_com_vec3_ortho(pos2, 0, 0, ARRAY_SIZE(pos2), pbc_ext);
 
         com0 = vec3_deperiodize(com0, (vec3_t){ 0,0,0 }, pbc_ext);
         com1 = vec3_deperiodize(com1, (vec3_t){ 0,0,0 }, pbc_ext);

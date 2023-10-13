@@ -153,26 +153,22 @@ void md_util_compute_aabb_indexed(vec3_t* aabb_min, vec3_t* aabb_max, const vec3
 void md_util_compute_aabb_indexed_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, int64_t index_count);
 
 // Computes the center of mass for a set of points with a given weight
-// x, y, z: Arrays containing coordinates
-// w:       Array of weights (optional): set as NULL to use equal weights
-// count:   Length of all arrays
-vec3_t md_util_compute_com(const vec3_t* xyz, const float* w, int64_t count);
-vec3_t md_util_compute_com_soa(const float* x, const float* y, const float* z, const float* w, int64_t count);
-vec3_t md_util_compute_com_indexed_soa(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count);
+// x,y,z / xyz: Arrays containing coordinates
+// w:           Array of weights (optional): set as NULL to use equal weights
+// indices:     Array of indices (optional): indices into the arrays (x,y,z,w)
+// count:       Length of all arrays
+vec3_t md_util_compute_com(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t count);
+vec3_t md_util_compute_com_vec3(const vec3_t* xyz, const float* w, const int32_t* indices, int64_t count);
 
-// Computes the center of mass for a set of points with a given weight given in periodic boundary conditions
-// x, y, z: Arrays containing coordinates
-// w:       Array of weights (optional): set as NULL to use equal weights
-// count:   Length of all arrays
-// box:     Extent of periodic boundary box (optional per component): Set to zero if pbc does not apply in that dimension
-vec3_t md_util_compute_com_ortho(const vec3_t* xyz, const float* w, int64_t count, vec3_t box);
-vec3_t md_util_compute_com_soa_ortho(const float* x, const float* y, const float* z, const float* w, int64_t count, vec3_t box);
-
-// Computes the center of mass for a set of points with a given weight given in periodic boundary conditions
+// Computes the center of mass for a set of points with a given weight given in orthogonal periodic boundary conditions
 // The indices used to access the arrays are given in the indices array
-// indices:     Array of indices into the arrays (x,y,z,w)
-// index_count: Length of indices array
-vec3_t md_util_compute_com_indexed_soa_ortho(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count, vec3_t box);
+// x,y,z / xyz: Array of coordinates
+// w:           Array of weights (optional): set as NULL to use equal weights
+// indices:     Array of indices (optional): indices into the arrays (x,y,z,w)
+// count:       Number of elements to process, either the length of the indices array or the length of the x,y,z,w arrays
+// box:         Extent of periodic boundary box (optional per component): Set to zero if pbc does not apply in that dimension
+vec3_t md_util_compute_com_ortho(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t count, vec3_t box);
+vec3_t md_util_compute_com_vec3_ortho(const vec3_t* xyz, const float* w, const int32_t* indices, int64_t count, vec3_t box);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
@@ -182,6 +178,9 @@ vec3_t md_util_compute_com_indexed_soa_ortho(const float *x, const float* y, con
 // w:       Array of weights (optional): set as NULL to use equal weights
 // count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
 double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
+
+// Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
+vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
 
 // Perform linear interpolation of supplied coordinates
 // dst_coord:   Destination arrays (x,y,z)

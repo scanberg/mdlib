@@ -124,37 +124,134 @@ static void print_bits(uint64_t* bits, uint64_t num_bits) {
     }
 }
 
+UTEST(script, type) {
+    {
+        type_info_t a = {.base_type = TYPE_INT, .dim = {1}, .len_dim = 0};
+        type_info_t b = {.base_type = TYPE_INT, .dim = {1}, .len_dim = 0};
+        EXPECT_TRUE(type_info_equal(a,b));
+    }
+    {
+        type_info_t a = {.base_type = TYPE_INT, .dim = {1,1}, .len_dim = 0};
+        type_info_t b = {.base_type = TYPE_INT, .dim = {1,0}, .len_dim = 0};
+        EXPECT_TRUE(type_info_equal(a,b));
+    }
+    {
+        type_info_t a = {.base_type = TYPE_INT, .dim = {1,0}, .len_dim = 0};
+        type_info_t b = {.base_type = TYPE_INT, .dim = {2,0}, .len_dim = 0};
+        EXPECT_FALSE(type_info_equal(a,b));
+    }
+}
+
 UTEST(script, basic_expressions) {
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, STR("'this is a string'"), &test_mol, md_temp_allocator));
-        EXPECT_EQ(data.type.base_type, TYPE_STRING);
-        str_t str = as_string(data);
-        EXPECT_STREQ(str.ptr, "this is a string");
+        bool result = eval_expression(&data, STR("'this is a string'"), &test_mol, md_temp_allocator);
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_STRING);
+            str_t str = as_string(data);
+            EXPECT_STREQ(str.ptr, "this is a string");
+        }
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, STR("2 + 5"), &test_mol, md_temp_allocator));
-        EXPECT_EQ(data.type.base_type, TYPE_INT);
-        EXPECT_EQ(as_int(data), 7);
+        bool result = eval_expression(&data, STR("2 + 5"), &test_mol, md_temp_allocator);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_INT);
+            EXPECT_EQ(as_int(data), 7);
+        }
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, STR("2 + 5.0"), &test_mol, md_temp_allocator));
-        EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
-        EXPECT_EQ(as_float(data), 7.0);
+        bool result = eval_expression(&data, STR("2 + 5.0"), &test_mol, md_temp_allocator);
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(as_float(data), 7.0);
+        }
     }
 
     {
         data_t data = {0};
-        EXPECT_TRUE(eval_expression(&data, STR("{2,1} + {1,8}"), &test_mol, md_temp_allocator));
-        EXPECT_EQ(data.type.base_type, TYPE_INT);
-        EXPECT_EQ(data.type.dim[0], 2);
-        EXPECT_EQ(as_int_arr(data)[0], 3);
-        EXPECT_EQ(as_int_arr(data)[1], 9);
+        bool result = eval_expression(&data, STR("{2,1} + {1,8}"), &test_mol, md_temp_allocator);
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_INT);
+            EXPECT_EQ(data.type.dim[0], 2);
+            EXPECT_EQ(as_int_arr(data)[0], 3);
+            EXPECT_EQ(as_int_arr(data)[1], 9);
+        }
     }
+}
+
+ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_molecule_t* mol, md_vm_arena_t* temp_arena) {
+    // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
+    // Which means that the actual string data is contained within the ir->arena => temp_alloc
+    ir->str = str_copy(expr, ir->arena);
+
+    md_allocator_i temp_alloc = md_vm_arena_create_interface(temp_arena);
+
+    tokenizer_t tokenizer = tokenizer_init(ir->str);
+    bool result = false;
+
+    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = &temp_alloc});
+    if (node) {
+        eval_context_t ctx = {
+            .ir = ir,
+            .mol = mol,
+            .temp_arena = temp_arena,
+            .temp_alloc = &temp_alloc,
+            .alloc = &temp_alloc,
+        };
+
+        if (static_check_node(node, &ctx)) {
+            return node;
+        }
+    }
+
+    if (ir->errors) {
+        for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
+            MD_LOG_ERROR("%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
+        }
+    }
+    return NULL;
+}
+
+UTEST(script, assignment) {
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
+    md_script_ir_t* ir = create_ir(&temp_alloc);
+
+    {
+        md_script_ir_clear(ir);
+
+        ast_node_t* node = parse_and_type_check_expression(STR("{a,b} = {1,2}"), ir, &test_mol, &vm_arena);
+        EXPECT_TRUE(node != NULL);
+        if (node) {
+            identifier_t* ident = get_identifier(ir, STR("a"));
+            EXPECT_NE(NULL, ident);
+            EXPECT_NE(NULL, ident->data);
+        }
+    }
+
+    {
+        md_script_ir_clear(ir);
+
+        ast_node_t* node = parse_and_type_check_expression(STR("{a,b} = {1,distance(1,2)}"), ir, &test_mol, &vm_arena);
+        EXPECT_TRUE(node != NULL);
+        if (node) {
+            identifier_t* a = get_identifier(ir, STR("a"));
+            EXPECT_NE(NULL, a);
+            EXPECT_NE(NULL, a->data);
+
+            identifier_t* b = get_identifier(ir, STR("b"));
+            EXPECT_NE(NULL, b);
+            EXPECT_NE(NULL, b->data);
+        }
+    }
+
+    FREE_TEMP_ALLOC();
 }
 
 static bool test_selection(const char* expr, const char* ref_bit_str) {

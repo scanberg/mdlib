@@ -381,6 +381,8 @@ static int _position_xz(data_t*, data_t[], eval_context_t*);  // (position[]) ->
 
 static int _position_yz(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
 
+static int _shape_weights(data_t*, data_t[], eval_context_t*); // (position[]) -> float
+
 // Linear algebra
 static int _dot           (data_t*, data_t[], eval_context_t*); // (float[], float[]) -> float
 static int _cross         (data_t*, data_t[], eval_context_t*); // (float[3], float[3]) -> float[3]
@@ -627,8 +629,9 @@ static procedure_t procedures[] = {
     {CSTR("sdf"),       TI_VOLUME, 3, {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
     // --- GEOMETRICAL OPERATIONS ---
-    {CSTR("com"),       TI_FLOAT3,      1,  {TI_POSITION_ARR},  _com,       FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("plane"),     TI_FLOAT4,      1,  {TI_POSITION_ARR},  _plane,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("com"),           TI_FLOAT3,      1,  {TI_POSITION_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("plane"),         TI_FLOAT4,      1,  {TI_POSITION_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("shape_weights"), TI_FLOAT3,      1,  {TI_POSITION_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
 
     {CSTR("position"),      TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
     {CSTR("position_x"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
@@ -639,6 +642,7 @@ static procedure_t procedures[] = {
     {CSTR("position_xz"),   TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
     {CSTR("position_yz"),   TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+
 
     // --- MISC ---
     {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD_ARR},  _count},
@@ -3502,8 +3506,8 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 extract_xyzw(coord[1].x, coord[1].y, coord[1].z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
 
                 const vec3_t com[2] = {
-                    md_util_compute_com_soa(coord[0].x, coord[0].y, coord[0].z, w, count),
-                    md_util_compute_com_soa(coord[1].x, coord[1].y, coord[1].z, w, count),
+                    md_util_compute_com(coord[0].x, coord[0].y, coord[0].z, w, 0, count),
+                    md_util_compute_com(coord[1].x, coord[1].y, coord[1].z, w, 0, count),
                 };
 
                 as_float(*dst) = (float)md_util_compute_rmsd(coord, com, w, count);
@@ -3815,6 +3819,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(num_pos >= 3);
         // Compute eigen vectors from covariance matrix
         // normal should be the third axis (i.e. the smallest eigen value)
+        // @TODO(Robin): Incorporate mass into this computation
 
         vec3_t com = {0,0,0};
         for (int64_t i = 0; i < num_pos; ++i) {
@@ -3822,7 +3827,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         com = vec3_div_f(com, (float)num_pos);
 
-        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(in_pos, 0, com, num_pos));
+        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec3(in_pos, 0, 0, com, num_pos));
 
         vec3_t normal = vec3_normalize(eigen.vectors.col[2]);
         float d = vec3_dot(normal, com);
@@ -3876,7 +3881,7 @@ static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
             const vec3_t* pos = position_extract(arg[0], ctx);
-            ASSERT(element_count(*dst) == md_array_size(pos));
+            ASSERT(dst->size == (int64_t)md_array_bytes(pos));
             MEMCPY(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
         }
         if (ctx->vis) {
@@ -4485,7 +4490,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Fetch target positions
         vec3_t* target_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield, ctx->temp_alloc);
-        ref_com[0] = md_util_compute_com_soa(ref[0].x, ref[0].y, ref[0].z, ref_w, ref_size);
+        ref_com[0] = md_util_compute_com(ref[0].x, ref[0].y, ref[0].z, ref_w, 0, ref_size);
 
         // @TODO(Robin): This should be measured
         const bool brute_force = target_size < 3000;
@@ -4498,7 +4503,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
-        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix(ref[0].x, ref[0].y, ref[0].z, 0, ref_com[0], ref_size));
+        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix(ref[0].x, ref[0].y, ref[0].z, ref_w, 0, ref_com[0], ref_size));
         mat4_t A = mat4_from_mat3(mat3_transpose(eigen.vectors));
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
@@ -4513,7 +4518,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const md_bitfield_t* bf = &ref_bitfields[i];
 
             extract_xyz(ref[1].x, ref[1].y, ref[1].z, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, bf);
-            ref_com[1] = md_util_compute_com_soa(ref[1].x, ref[1].y, ref[1].z, ref_w, ref_size);
+            ref_com[1] = md_util_compute_com(ref[1].x, ref[1].y, ref[1].z, ref_w, 0, ref_size);
             mat3_t R = mat3_optimal_rotation(ref[0].x, ref[0].y, ref[0].z, ref[1].x, ref[1].y, ref[1].z, ref_w, ref_com[0], ref_com[1], ref_size);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
@@ -4576,7 +4581,65 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
+static vec3_t compute_shape_weights(data_t arg[], eval_context_t* ctx) {
+    vec3_t weights = {0};
+    md_vm_arena_temp_t pos = md_vm_arena_temp_begin(ctx->temp_arena);
 
+    md_array(int) indices = 0;
+
+    if (arg[0].type.base_type == TYPE_BITFIELD && element_count(arg[0]) > 0) {
+        md_bitfield_t tmp_bf = {0};
+        md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+
+        const int64_t count = element_count(arg[0]);
+        const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
+        for (int64_t i = 0; i < count; ++i) {
+            const md_bitfield_t* bf = &bf_arr[i];
+            md_bitfield_or_inplace(&tmp_bf, bf);
+        }
+
+        if (ctx->mol_ctx) {
+            md_bitfield_and_inplace(&tmp_bf, ctx->mol_ctx);
+        }
+
+        const int64_t size = md_bitfield_popcount(&tmp_bf);
+        if (size > 0) {
+            md_array_resize(indices, size, ctx->temp_alloc);
+            md_bitfield_extract_indices(indices, size, &tmp_bf);
+        }
+    } else {
+        indices = position_extract_indices(arg[0], ctx);
+    }
+
+    if (indices) {
+        const int64_t count = md_array_size(indices);
+        const vec3_t com = md_util_compute_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, count);
+        const mat3_t M = mat3_covariance_matrix(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, com, count);
+        weights = md_util_shape_weights(&M);
+    }
+
+    md_vm_arena_temp_end(pos);
+    return weights;
+}
+
+static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx);
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));    
+    ASSERT(arg[0].ptr);
+
+    if (dst) {
+        ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT3));
+        vec3_t* weights = (vec3_t*)dst->ptr;
+        *weights = compute_shape_weights(arg, ctx);
+    } else {
+        if (ctx->backchannel) {
+			ctx->backchannel->unit = (md_unit_t){0};
+			ctx->backchannel->value_range = (frange_t){0, 1.0};
+		}
+    }
+
+    return 0;
+}
 /*
 // This is some experimental future work, for matching structures using maximum common subgraph
 

@@ -1719,95 +1719,7 @@ void md_util_compute_aabb_indexed_soa(vec3_t* aabb_min, vec3_t* aabb_max, const 
     compute_aabb_indexed(aabb_min, aabb_max, x, y, z, r, indices, index_count, sizeof(float));
 }
 
-vec3_t md_util_compute_com(const vec3_t* xyz, const float* w, int64_t count) {
-    ASSERT(xyz);
-    ASSERT(count >= 0);
-
-    if (count == 0) {
-        return (vec3_t) {0,0,0};
-    }
-
-    // Use vec4 here so we can utilize SSE vectorization if applicable
-    // @TODO: Vectorize with full register width
-    vec4_t sum_xyzw = {0,0,0,0};
-    if (w) {
-        for (int64_t i = 0; i < count; ++i) {
-            vec4_t xyz1 = vec4_from_vec3(xyz[i], 1.0f);
-            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, w[i]));
-        }
-    } else {
-        for (int64_t i = 0; i < count; ++i) {
-            vec4_t xyz0 = vec4_from_vec3(xyz[i], 0);
-            sum_xyzw = vec4_add(sum_xyzw, xyz0);
-        }
-        sum_xyzw.w = (float)count;
-    }
-
-    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
-}
-
-vec3_t md_util_compute_com_soa(const float* x, const float* y, const float* z, const float* w, int64_t count) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
-    ASSERT(count >= 0);
-
-    if (count == 0) {
-        return (vec3_t) {0,0,0};
-    }
-
-    // Use vec4 here so we can utilize SSE vectorization if applicable
-    // @TODO: Vectorize with full register width
-    vec4_t sum_xyzw = {0,0,0,0};
-    if (w) {
-        for (int64_t i = 0; i < count; ++i) {
-            const vec4_t xyz1 = vec4_set(x[i], y[i], z[i], 1.0f);
-            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, w[i]));
-        }
-    } else {
-        for (int64_t i = 0; i < count; ++i) {
-            const vec4_t xyz0 = vec4_set(x[i], y[i], z[i], 0);
-            sum_xyzw = vec4_add(sum_xyzw, xyz0);
-        }
-        sum_xyzw.w = (float)count;
-    }
-
-    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
-}
-
-vec3_t md_util_compute_com_indexed_soa(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t index_count) {
-    ASSERT(x);
-    ASSERT(y);
-    ASSERT(z);
-    ASSERT(indices);
-    ASSERT(index_count >= 0);
-
-    if (index_count == 0) {
-        return (vec3_t) {0,0,0};
-    }
-
-    // Use vec4 here so we can utilize SSE vectorization if applicable
-    // @TODO: Vectorize with full register width (gather operations)
-    vec4_t sum_xyzw = {0,0,0,0};
-    if (w) {
-        for (int64_t i = 0; i < index_count; ++i) {
-            const int idx = indices[i];
-            const vec4_t xyz1 = vec4_set(x[idx], y[idx], z[idx], 1.0f);
-            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, w[idx]));
-        }
-    } else {
-        for (int64_t i = 0; i < index_count; ++i) {
-            const int idx = indices[i];
-            const vec4_t xyz0 = vec4_set(x[idx], y[idx], z[idx], 0);
-            sum_xyzw = vec4_add(sum_xyzw, xyz0);
-        }
-        sum_xyzw.w = (float)index_count;
-    }
-
-    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
-}
-
-static inline double compute_com_periodic_trig(const float* in_x, const float* in_w, int64_t count, float x_max, size_t stride_x) {
+static double compute_com_periodic_trig(const float* in_x, const float* in_w, const int32_t* indices, int64_t count, float x_max, size_t element_stride_x) {
     double com;
 
     double acc_c = 0;
@@ -1815,11 +1727,12 @@ static inline double compute_com_periodic_trig(const float* in_x, const float* i
     double acc_w = 0;
 
     const double scl = TWO_PI / x_max;
-    stride_x = MAX(1, stride_x);
+    element_stride_x = MAX(1, element_stride_x);
 
     for (int64_t i = 0; i < count; ++i) {
-        double theta = in_x[stride_x * i] * scl;
-        double w = in_w ? in_w[i] : 1.0;
+        int64_t idx = indices ? indices[i] : i;
+        double theta = in_x[element_stride_x * idx] * scl;
+        double w = in_w ? in_w[idx] : 1.0;
         acc_c += w * cos(theta);
         acc_s += w * sin(theta);
         acc_w += w;
@@ -1840,21 +1753,25 @@ static inline double compute_com_periodic_trig(const float* in_x, const float* i
     return com;
 }
 
-static inline double compute_com_periodic_regular(const float* in_x, const float* in_w, int64_t count, float x_max, size_t stride_x) {
+// Regular version, deperiodization is done with respect to the previous element
+static double compute_com_periodic_reg(const float* in_x, const float* in_w, const int32_t* indices, int64_t count, float x_max, size_t element_stride_x) {
     if (count <= 0) {
         return 0;
     }
 
-    double acc_x = in_x[0];
-    double acc_w = in_w ? in_w[0] : 1.0;
-    double prev_x = in_x[0];
+    int32_t idx0 = indices ? indices[0] : 0;
+    double acc_x = in_x[idx0];
+    double acc_w = in_w ? in_w[idx0] : 1.0;
+    double prev_x = in_x[idx0];
+    double d_x_max = x_max;
 
-    stride_x = MAX(1, stride_x);
+    element_stride_x = MAX(1, element_stride_x);
 
     for (int64_t i = 1; i < count; ++i) {
-        double x = in_x[stride_x * i];
-        double dx = deperiodize(x, prev_x, (double)x_max);
-        double w = in_w ? in_w[i] : 1.0;
+        int64_t idx = indices ? indices[i] : i;
+        double x = in_x[element_stride_x * idx];
+        double dx = deperiodize(x, prev_x, d_x_max);
+        double w = in_w ? in_w[idx] : 1.0;
         acc_x += dx * w;
         acc_w += w;
         prev_x = dx;
@@ -1863,15 +1780,16 @@ static inline double compute_com_periodic_regular(const float* in_x, const float
     return acc_x / acc_w;
 }
 
-static inline double compute_com(const float* in_x, const float* in_w, int64_t count, size_t stride_x) {
+static double compute_com(const float* in_x, const float* in_w, const int32_t* indices, int64_t count, size_t stride_x) {
     double com = 0;
     double acc_x = 0;
     double acc_w = 0;
 
     stride_x = MAX(1, stride_x);
     for (int64_t i = 0; i < count; ++i) {
-        double x = in_x[stride_x * i];
-        double w = in_w ? in_w[i] : 1.0;
+        int64_t idx = indices ? indices[i] : i;
+        double x = in_x[stride_x * idx];
+        double w = in_w ? in_w[idx] : 1.0;
         acc_x += x * w;
         acc_w += w;
     }
@@ -1880,28 +1798,93 @@ static inline double compute_com(const float* in_x, const float* in_w, int64_t c
     return com;
 }
 
+vec3_t md_util_compute_com_vec3(const vec3_t* in_xyz, const float* in_w, const int32_t* indices, int64_t count) {
+    ASSERT(in_xyz);
+
+    if (count <= 0) {
+        return (vec3_t) {0,0,0};
+    }
+
+    // Use vec4 here so we can utilize SSE vectorization if applicable
+    // @TODO: Vectorize with full register width
+    vec4_t sum_xyzw = {0,0,0,0};
+    if (in_w) {
+        for (int64_t i = 0; i < count; ++i) {
+            int64_t idx = indices ? indices[i] : i;
+            const vec4_t xyz1 = vec4_from_vec3(in_xyz[idx], 1.0f);
+            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, in_w[idx]));
+        }
+    } else {
+        for (int64_t i = 0; i < count; ++i) {
+            int64_t idx = indices ? indices[i] : i;
+            const vec4_t xyz0 = vec4_from_vec3(in_xyz[idx], 0);
+            sum_xyzw = vec4_add(sum_xyzw, xyz0);
+        }
+        sum_xyzw.w = (float)count;
+    }
+
+    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
+}
+
+vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count) {
+    ASSERT(in_x);
+    ASSERT(in_y);
+    ASSERT(in_z);
+
+    if (count <= 0) {
+        return (vec3_t) {0,0,0};
+    }
+
+    // Use vec4 here so we can utilize SSE vectorization if applicable
+    // @TODO: Vectorize with full register width
+    vec4_t sum_xyzw = {0,0,0,0};
+    if (in_w) {
+        for (int64_t i = 0; i < count; ++i) {
+            int64_t idx = indices ? indices[i] : i;
+            const vec4_t xyz1 = vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f);
+            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, in_w[idx]));
+        }
+    } else {
+        for (int64_t i = 0; i < count; ++i) {
+            int64_t idx = indices ? indices[i] : i;
+            const vec4_t xyz0 = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0);
+            sum_xyzw = vec4_add(sum_xyzw, xyz0);
+        }
+        sum_xyzw.w = (float)count;
+    }
+
+    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
+}
+
+#ifndef MD_UTIL_COMPUTE_COM_USE_TRIG
+#define MD_UTIL_COMPUTE_COM_USE_TRIG 1
+#endif
+
 // Love the elegance of using trigonometric functions, unsure of the performance...
 // @TODO: sin, cos and atan2 can and should of course be vectorized.
-vec3_t md_util_compute_com_ortho(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
+vec3_t md_util_compute_com_vec3_ortho(const vec3_t* in_xyz, const float* in_w, const int32_t* indices, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_xyz);
-    ASSERT(count >= 0);
-    ASSERT(pbc_ext.x >= 0);
-    ASSERT(pbc_ext.y >= 0);
-    ASSERT(pbc_ext.z >= 0);
 
-    if (count == 0) {
+    if (count <= 0) {
         return (vec3_t) {0,0,0};
     }
 
+#if MD_UTIL_COMPUTE_COM_USE_TRIG
     // We need to pick the version based on each component of pdc_ext, since one or more may be zero
-    double x = pbc_ext.x > 0 ? compute_com_periodic_regular(in_xyz->elem + 0, in_w, count, pbc_ext.x, 3) : compute_com(in_xyz->elem + 0, in_w, count, 3);
-    double y = pbc_ext.y > 0 ? compute_com_periodic_regular(in_xyz->elem + 1, in_w, count, pbc_ext.y, 3) : compute_com(in_xyz->elem + 1, in_w, count, 3);
-    double z = pbc_ext.z > 0 ? compute_com_periodic_regular(in_xyz->elem + 2, in_w, count, pbc_ext.z, 3) : compute_com(in_xyz->elem + 2, in_w, count, 3);
+    double x = pbc_ext.x > 0 ? compute_com_periodic_trig(in_xyz->elem + 0, in_w, indices, count, pbc_ext.x, 3) : compute_com(in_xyz->elem + 0, in_w, indices, count, 3);
+    double y = pbc_ext.y > 0 ? compute_com_periodic_trig(in_xyz->elem + 1, in_w, indices, count, pbc_ext.y, 3) : compute_com(in_xyz->elem + 1, in_w, indices, count, 3);
+    double z = pbc_ext.z > 0 ? compute_com_periodic_trig(in_xyz->elem + 2, in_w, indices, count, pbc_ext.z, 3) : compute_com(in_xyz->elem + 2, in_w, indices, count, 3);
+#else
+    // We need to pick the version based on each component of pdc_ext, since one or more may be zero
+    double x = pbc_ext.x > 0 ? compute_com_periodic_reg(in_xyz->elem + 0, in_w, indices, count, pbc_ext.x, 3) : compute_com(in_xyz->elem + 0, in_w, indices, count, 3);
+    double y = pbc_ext.y > 0 ? compute_com_periodic_reg(in_xyz->elem + 1, in_w, indices, count, pbc_ext.y, 3) : compute_com(in_xyz->elem + 1, in_w, indices, count, 3);
+    double z = pbc_ext.z > 0 ? compute_com_periodic_reg(in_xyz->elem + 2, in_w, indices, count, pbc_ext.z, 3) : compute_com(in_xyz->elem + 2, in_w, indices, count, 3);
+#endif
 
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
 
-vec3_t md_util_compute_com_soa_ortho(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
+vec3_t md_util_compute_com_ortho(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -1914,25 +1897,31 @@ vec3_t md_util_compute_com_soa_ortho(const float* in_x, const float* in_y, const
         return (vec3_t) {0,0,0};
     }
 
+#if MD_UTIL_COMPUTE_COM_USE_TRIG
     // We need to pick the version based on each component of pdc_ext, since one or more may be zero
-    double x = pbc_ext.x > 0 ? compute_com_periodic_regular(in_x, in_w, count, pbc_ext.x, 1) : compute_com(in_x, in_w, count, 1);
-    double y = pbc_ext.y > 0 ? compute_com_periodic_regular(in_y, in_w, count, pbc_ext.y, 1) : compute_com(in_y, in_w, count, 1);
-    double z = pbc_ext.z > 0 ? compute_com_periodic_regular(in_z, in_w, count, pbc_ext.z, 1) : compute_com(in_z, in_w, count, 1);
+    double x = pbc_ext.x > 0 ? compute_com_periodic_trig(in_x, in_w, indices, count, pbc_ext.x, 1) : compute_com(in_x, in_w, indices, count, 1);
+    double y = pbc_ext.y > 0 ? compute_com_periodic_trig(in_y, in_w, indices, count, pbc_ext.y, 1) : compute_com(in_y, in_w, indices, count, 1);
+    double z = pbc_ext.z > 0 ? compute_com_periodic_trig(in_z, in_w, indices, count, pbc_ext.z, 1) : compute_com(in_z, in_w, indices, count, 1);
+#else
+    // We need to pick the version based on each component of pdc_ext, since one or more may be zero
+    double x = pbc_ext.x > 0 ? compute_com_periodic_reg(in_x, in_w, indices, count, pbc_ext.x, 1) : compute_com(in_x, in_w, indices, count, 1);
+    double y = pbc_ext.y > 0 ? compute_com_periodic_reg(in_y, in_w, indices, count, pbc_ext.y, 1) : compute_com(in_y, in_w, indices, count, 1);
+    double z = pbc_ext.z > 0 ? compute_com_periodic_reg(in_z, in_w, indices, count, pbc_ext.z, 1) : compute_com(in_z, in_w, indices, count, 1);
+#endif
 
     return (vec3_t) {(float)x, (float)y, (float)z};
 }
 
-vec3_t md_util_compute_com_indexed_soa_ortho(const float *in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t box) {
+/*
+vec3_t md_util_compute_com_ortho(const float *in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t box) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
-    ASSERT(indices);
-    ASSERT(count >= 0);
 
-    if (count == 0) {
+    if (count <= 0) {
         return (vec3_t){0, 0, 0};
     }
-    const int idx0 = indices[0];
+    const int idx0 = indices ? indices[0] : 0;
 
     if (count == 0) {
         return (vec3_t){in_x[idx0], in_y[idx0], in_z[idx0]};
@@ -1946,14 +1935,14 @@ vec3_t md_util_compute_com_indexed_soa_ortho(const float *in_x, const float* in_
     if (in_w) {
         acc = vec4_mul_f(acc, in_w[idx0]);
         for (int64_t i = 1; i < count; ++i) {
-            const int idx = indices[i];
+            const int idx = indices ? indices[i] : i;
             const vec4_t xyzw = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), ref, ext);
             acc = vec4_add(acc, vec4_mul_f(xyzw, in_w[idx]));
             ref = xyzw;
         }
     } else {
         for (int64_t i = 1; i < count; ++i) {
-            const int idx = indices[i];
+            const int idx = indices ? indices[i] : i;
             const vec4_t xyzw = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), ref, ext);
             acc = vec4_add(acc, xyzw);
             ref = xyzw;
@@ -1963,8 +1952,7 @@ vec3_t md_util_compute_com_indexed_soa_ortho(const float *in_x, const float* in_
     return vec3_from_vec4(vec4_div_f(acc, acc.w));
 }
 
-/*
-vec3_t md_util_compute_com_ortho(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
+vec3_t md_util_compute_com_vec3_ortho(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_xyz);
 
     float w = in_w ? in_w[0] : 1.0f;
@@ -2427,7 +2415,7 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell
             const int32_t* indices = md_index_range_beg(structures, s_idx);
             const int64_t num_indices = md_index_range_size(structures, s_idx);
 
-            const vec4_t com = vec4_from_vec3(md_util_compute_com_indexed_soa(x, y, z, w, indices, num_indices), 0);
+            const vec4_t com = vec4_from_vec3(md_util_compute_com(x, y, z, w, indices, num_indices), 0);
             const vec4_t pbc_com = vec4_deperiodize(com, ref, ext);
             const vec4_t delta = vec4_sub(pbc_com, com);
             const vec4_t abs_delta = vec4_abs(delta);
@@ -2489,7 +2477,7 @@ bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_
             md_array_push(pred, -1, md_temp_allocator);
         }
         
-        //const vec4_t com = vec4_from_vec3(md_util_compute_com_ortho(xyz, NULL, md_array_size(xyz), pbc_ext), 0);
+        //const vec4_t com = vec4_from_vec3(md_util_compute_com_vec3_ortho(xyz, NULL, md_array_size(xyz), pbc_ext), 0);
         const vec4_t com = vec4_mul_f(ext, 0.5f);
         
         /*
@@ -2569,6 +2557,14 @@ double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], c
     }
 
     return sqrt(d_sum / w_sum);
+}
+
+vec3_t md_util_shape_weights(const mat3_t* covariance_matrix) {
+    ASSERT(covariance_matrix);
+	mat3_eigen_t eigen = mat3_eigen(*covariance_matrix);
+	float scl = 1.0f / (eigen.values.x + eigen.values.y + eigen.values.z);
+	vec3_t weights = {(eigen.values.x - eigen.values.y) * scl, 2.0f * (eigen.values.y - eigen.values.z) * scl, 3.0f * eigen.values.z * scl};
+	return weights;
 }
 
 bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], int64_t count, vec3_t pbc_ext, float t) {

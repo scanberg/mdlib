@@ -192,7 +192,7 @@ typedef enum flags_t {
     FLAG_FLATTEN                    = 0x00040, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
     FLAG_NO_FLATTEN                 = 0x00080, // Hints that a procedure do not want flattened bitfields as input, e.g. com
     
-    FLAG_CONSTANT                   = 0x00100, // Marks the identifier as constant and should not be modified.
+    FLAG_CONSTANT                   = 0x00100, // Marks the node as constant and should not be modified. It should also have data in its ptr
     FLAG_CONTEXTS_EQUIVALENT        = 0x00200, // Marks the contexts in the node as equivalent, meaning it 
 
     // Flags from 0x10000 and upwards are automatically propagated upwards the Nodes of the AST_TREE
@@ -414,6 +414,9 @@ struct ast_node_t {
     uint32_t            proc_flags; // Additional flags used for e.g. swapping arguments which may be required for the procedure call
     str_t               ident;      // Identifier reference (also used for procedure name lookup)
 
+    uint32_t            data_offset;
+    uint32_t            data_stride;
+
     const table_t*      table;
     md_array(int)       table_field_indices;  // Indices into the table fields which are used for this node
 
@@ -431,7 +434,7 @@ typedef struct tokenizer_t {
 
 typedef struct expression_t {
     ast_node_t*   node;     
-    identifier_t* ident;
+    //identifier_t* ident;
     str_t str;
 } expression_t;
 
@@ -496,11 +499,11 @@ struct parse_context_t {
 // ###   CORE FUNCTIONS   ###
 // ##########################
 
-static inline uint64_t generate_fingerprint() {
+static uint64_t generate_fingerprint() {
     return md_time_current();
 }
 
-static inline uint32_t operator_precedence(ast_type_t type) {
+static uint32_t operator_precedence(ast_type_t type) {
     switch(type) {
     case AST_EXPRESSION:
     case AST_STATIC_PROC:
@@ -547,49 +550,52 @@ static inline uint32_t operator_precedence(ast_type_t type) {
     return 0;
 }
 
-static inline bool compare_type_info_dim(type_info_t a, type_info_t b) {
+static bool compare_type_info_dim(type_info_t a, type_info_t b) {
     return (MEMCMP(&a.dim, &b.dim, sizeof(a.dim)) == 0) && (a.len_dim == b.len_dim);
 }
 
-static inline bool type_info_equal(type_info_t a, type_info_t b) {
-    /*if (a.base_type == TYPE_BITFIELD && b.base_type == TYPE_BITFIELD) {
-        if ((a.level == -1 || b.level == -1) || a.level == b.level) {
-            return compare_type_info_dim(a, b);
+static bool type_info_equal(type_info_t a, type_info_t b) {
+    if (a.base_type != b.base_type) return false;
+    if (MEMCMP(a.dim, b.dim, sizeof(a.dim)) == 0) return true; 
+    for (int i = 0; i < ARRAY_SIZE(a.dim); ++i) {
+        if (a.dim[i] == b.dim[i]) continue;
+        if (i > 0) {
+            if (a.dim[i] == 0) return b.dim[i] == 0 || b.dim[i] == 1;
+            if (b.dim[i] == 0) return a.dim[i] == 0 || a.dim[i] == 1;
         }
-        return false;
-    }*/
-    return MEMCMP(&a, &b, sizeof(type_info_t)) == 0;
+    }
+    return false;
 }
 
-static inline bool is_undefined_type(type_info_t ti) {
+static bool is_undefined_type(type_info_t ti) {
     return MEMCMP(&ti, &(type_info_t){0}, sizeof(type_info_t)) == 0;
 }
 
-static inline bool is_array(type_info_t ti) {
+static bool is_array(type_info_t ti) {
     return ti.dim[0] > 1;
 }
 
-static inline bool is_scalar(type_info_t ti) {
+static bool is_scalar(type_info_t ti) {
     return ti.dim[0] == 1 && ti.dim[1] == 0 && ti.len_dim == 0;
 }
 
-static inline bool is_variable_length(type_info_t ti) {
+static bool is_variable_length(type_info_t ti) {
     return ti.dim[ti.len_dim] == -1;
 }
 
-static inline int64_t type_info_array_len(type_info_t ti) {
+static int64_t type_info_array_len(type_info_t ti) {
     ASSERT(ti.len_dim < MAX_SUPPORTED_TYPE_DIMS);
     return ti.dim[ti.len_dim];
 }
 
-static inline int64_t element_count(data_t arg) {
+static int64_t element_count(data_t arg) {
     ASSERT(arg.type.dim[arg.type.len_dim] >= 0);
     return arg.type.dim[arg.type.len_dim];
 }
 
 // If the type is a scalar, then it is its own element type.
 // If the type is an array, then its element type is the type of one element within the array
-static inline type_info_t type_info_element_type(type_info_t ti) {
+static type_info_t type_info_element_type(type_info_t ti) {
     if (is_scalar(ti)) return ti;
     type_info_t elem_ti = ti;
     elem_ti.dim[elem_ti.len_dim] = 1;
@@ -597,7 +603,7 @@ static inline type_info_t type_info_element_type(type_info_t ti) {
 }
 
 // Size of the base type structure
-static inline uint64_t base_type_element_byte_size(base_type_t type) {
+static uint64_t base_type_element_byte_size(base_type_t type) {
     switch (type) {
     case TYPE_FLOAT:    return sizeof(float);
     case TYPE_INT:      return sizeof(int);
@@ -611,7 +617,7 @@ static inline uint64_t base_type_element_byte_size(base_type_t type) {
     }
 }
 
-static inline bool is_type_dim_compatible(type_info_t from, type_info_t to) {
+static bool is_type_dim_compatible(type_info_t from, type_info_t to) {
 
     // Some examples of matching, ^ shows len_dim
     // float[4][0][0][0] should match     float[-1][0][0][0]
@@ -623,24 +629,30 @@ static inline bool is_type_dim_compatible(type_info_t from, type_info_t to) {
     // 
     // This case should be nice to have, but is perhaps more confusing and too loose to support
     // float[4][4][1][0] should     match float[4][-1][0][0]
-    //             ^                                ^
+    //             ^                        
+    // 
+    // float[3][1] should match float[3][0]
 
 
     // Is this always the case??? (Not if we want to support the last special case
-    if (from.len_dim != to.len_dim) return false;
+    //if (from.len_dim != to.len_dim) return false;
 
     for (int i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
         if (from.dim[i] == to.dim[i] && from.dim[i] > 0) continue;
         else if (from.dim[i] == -1 || to.dim[i] == -1) return true; // We consider a zero length array to be a valid type as well
+        if (i > 1) {
+            if (from.dim[i] == 0 && to.dim[i] == 1) return true;
+            if (from.dim[i] == 1 && to.dim[i] == 0) return true;
+        }
     }
     return false;
 }
 
-static inline bool is_type_equivalent(type_info_t a, type_info_t b) {
+static bool is_type_equivalent(type_info_t a, type_info_t b) {
     return MEMCMP(&a, &b, sizeof(type_info_t)) == 0;
 }
 
-static inline bool is_type_position_compatible(type_info_t type) {
+static bool is_type_position_compatible(type_info_t type) {
     switch(type.base_type) {
         case TYPE_INT: return true;
         case TYPE_IRANGE: return true;
@@ -650,7 +662,7 @@ static inline bool is_type_position_compatible(type_info_t type) {
     }
 }
 
-static inline bool is_type_directly_compatible(type_info_t from, type_info_t to) {
+static bool is_type_directly_compatible(type_info_t from, type_info_t to) {
     if (to.base_type == TYPE_POSITION && is_type_position_compatible(from)) {
         to.base_type = from.base_type;
         if (from.base_type == TYPE_FLOAT) {
@@ -672,7 +684,7 @@ static inline bool is_type_directly_compatible(type_info_t from, type_info_t to)
     return false;
 }
 
-static inline bool compare_type_info_array(const type_info_t a[], const type_info_t b[], int64_t num_arg_types) {
+static bool compare_type_info_array(const type_info_t a[], const type_info_t b[], int64_t num_arg_types) {
     for (int64_t i = 0; i < num_arg_types; ++i) {
         if (!is_type_directly_compatible(a[i], b[i])) {
             return false;
@@ -684,7 +696,7 @@ static inline bool compare_type_info_array(const type_info_t a[], const type_inf
 // Returns the count of elements for this type, i.e an array of [4][4][1] would return 16
 // NOTE: It does not include the last dimension which encodes the length of the array
 // 
-static inline int64_t type_info_element_stride_count(type_info_t ti) {
+static int64_t type_info_element_stride_count(type_info_t ti) {
     if (ti.len_dim == 0) return 1;
     int64_t stride = ti.dim[0];
     for (int32_t i = 1; i < ti.len_dim; ++i) {
@@ -693,23 +705,23 @@ static inline int64_t type_info_element_stride_count(type_info_t ti) {
     return stride;
 }
 
-static inline int64_t type_info_byte_stride(type_info_t ti) {
+static int64_t type_info_element_byte_stride(type_info_t ti) {
     return type_info_element_stride_count(ti) * base_type_element_byte_size(ti.base_type);
 }
 
-static inline int64_t type_info_total_byte_size(type_info_t ti) {
-    return type_info_byte_stride(ti) * type_info_array_len(ti);
+static int64_t type_info_total_byte_size(type_info_t ti) {
+    return type_info_element_byte_stride(ti) * type_info_array_len(ti);
 }
 
-static inline int64_t type_info_total_element_count(type_info_t ti) {
+static int64_t type_info_total_element_count(type_info_t ti) {
     return type_info_element_stride_count(ti) * type_info_array_len(ti);
 }
 
-static inline int64_t bitfield_byte_size(int64_t num_bits) {
+static int64_t bitfield_byte_size(int64_t num_bits) {
     return DIV_UP(num_bits, 64) * sizeof(int64_t);
 }
 
-static inline bool timestamps_approx_equal(double t0, double t1) {
+static bool timestamps_approx_equal(double t0, double t1) {
     return (t0 - t1) < TIMESTAMP_ERROR_MARGIN;
 }
 
@@ -723,7 +735,7 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
     ASSERT(array_len > -1);
 
     // Do the base type allocation (array)
-    const int64_t bytes = type_info_byte_stride(type) * array_len;
+    const int64_t bytes = type_info_element_byte_stride(type) * array_len;
 
     if (bytes > 0) {
         data->ptr = md_alloc(alloc, bytes);
@@ -797,24 +809,24 @@ static void copy_data(data_t* dst, const data_t* src) {
 
 
 
-static inline bool is_operator(ast_type_t type) {
+static bool is_operator(ast_type_t type) {
     return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV || type == AST_UNARY_NEG ||
             type == AST_AND || type == AST_OR || type == AST_XOR || type == AST_NOT ||
             type == AST_EQ || type == AST_NE || type == AST_LE || type == AST_GE || type == AST_LT || type == AST_GT);
 }
 
-static inline bool is_bitwise_operator(ast_type_t type) {
+static bool is_bitwise_operator(ast_type_t type) {
     return (type == AST_AND || type == AST_OR || type == AST_XOR || type == AST_NOT);
 }
 
-static inline bool is_number(token_type_t type) {
+static bool is_number(token_type_t type) {
     return type == TOKEN_INT || type == TOKEN_FLOAT;
 }
 
 // Returns if a token should be considered an operand
 // Mainly used to disambiguate unary operator from binary operator
 // Then we need to look at the previous token
-static inline bool is_operand(token_type_t type) {
+static bool is_operand(token_type_t type) {
     switch (type) {
     case ')':
     case ']':
@@ -1559,7 +1571,7 @@ static int print_data_value(char* buf, int buf_size, data_t data) {
                 arr_len = data.type.dim[data.type.len_dim];
             }
             type_info_t type = type_info_element_type(data.type);
-            int64_t stride = type_info_byte_stride(data.type);
+            int64_t stride = type_info_element_byte_stride(data.type);
 
             PRINT("{");
             for (int64_t i = 0; i < arr_len; ++i) {
@@ -1650,7 +1662,7 @@ static void print_data_value(FILE* file, data_t data) {
             len = data.type.dim[data.type.len_dim];
         }
         type_info_t type = type_info_element_type(data.type);
-        int64_t stride = type_info_byte_stride(data.type);
+        int64_t stride = type_info_element_byte_stride(data.type);
 
         fprintf(file, "[");
         for (int64_t i = 0; i < len; ++i) {
@@ -1998,20 +2010,6 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
                 }
             }
         done:;
-        }
-        else if (next.type == '=') {
-            // Assignment, therefore a new identifier
-            if (find_constant(ident)) {
-                LOG_ERROR(ctx->ir, token, "The identifier is occupied by a constant and cannot be assigned.");
-            }
-            else if (get_identifier(ctx->ir, ident)) {
-                LOG_ERROR(ctx->ir, token, "The identifier is already taken. Variables cannot be reassigned.");
-            }
-            else {
-                node = create_node(ctx->ir, AST_IDENTIFIER, token);
-                create_identifier(ctx->ir, ident);
-                node->ident = str_copy(ident, ctx->ir->arena);
-            }
         } else {
             // Identifier reference, resolve this later in the static check
             node = create_node(ctx->ir, AST_IDENTIFIER, token);
@@ -2066,9 +2064,18 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
     ast_node_t* rhs = parse_expression(ctx);
     
     if (!lhs || lhs->type != AST_IDENTIFIER) {
-        LOG_ERROR(ctx->ir, token,
-                     "Left hand side of '%s' is not a valid identifier.", get_token_type_str(token.type));
-        return NULL;
+        if (lhs->type == AST_ARRAY) {
+            for (int64_t i = 0; i < md_array_size(lhs->children); ++i) {
+				if (lhs->children[i]->type != AST_IDENTIFIER) {
+					LOG_ERROR(ctx->ir, lhs->children[i]->token, "'%s' is not a valid identifier.", lhs->children[i]->token.str.ptr);
+					return NULL;
+				}
+			}
+        } else {
+            LOG_ERROR(ctx->ir, token,
+                            "Left hand side of '%s' is not a valid identifier.", get_token_type_str(token.type));
+            return NULL;
+        }
     }
     if (!rhs) {
         LOG_ERROR(ctx->ir, token,
@@ -2702,6 +2709,9 @@ static bool evaluate_identifier_reference(data_t* dst, const ast_node_t* node, e
     ASSERT(md_array_size(node->children) == 1 && node->children[0]);
     (void)ctx;
     
+    // @TODO(Robin): Check if we are properly handling the case where we have already evaluated the identifier
+    // And in such case, that should be copied as well.
+    
     // Only copy data if the node is constant
     if (dst && node->flags & FLAG_CONSTANT) {
         ASSERT(dst->ptr && node->data.ptr && dst->size >= node->data.size);
@@ -2721,40 +2731,76 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
     ast_node_t* lhs = node->children[0];
     ast_node_t* rhs = node->children[1];
 
-    ASSERT(lhs && lhs->type == AST_IDENTIFIER && lhs->ident.ptr);
+    ASSERT(lhs && (lhs->type == AST_IDENTIFIER || lhs->type == AST_ARRAY));
     ASSERT(rhs);
 
-    // We know from the static check that the lhs (child[0]) is an identifier and the rhs is a valid expression with a known data size
+    // We know from the static check that the lhs (child[0]) is one or more identifiers and the rhs is a valid expression with a known data size
     // the data size could be zero if it is an array of length 0, in that case we don't need to allocate anything.
     // This should also be the conceptual entry point for all evaluations in this declarative language
-
-    if (!dst && ctx->vis) {
-        identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
-        ASSERT(ident);
-        return evaluate_node(NULL, ident->node, ctx);
-    }
-
-    identifier_t* ident = find_static_identifier(lhs->ident, ctx);
-    if (ident) {
-        ASSERT(ident->node->flags & FLAG_CONSTANT);
-        if (dst) {
-            copy_data(dst, ident->data);
-        }
-        if (ctx->vis) {
+    if (lhs->type == AST_IDENTIFIER) {
+        if (!dst && ctx->vis) {
             return evaluate_node(NULL, rhs, ctx);
         }
-        return true;
-    }
 
-    ident = find_dynamic_identifier(lhs->ident, ctx);
-    if (!ident && ctx->alloc) {
-        identifier_t id = {
-            .name = lhs->ident,
-            .node = rhs,
-            .data = dst,
-        };
-        ident = md_array_push(ctx->identifiers, id, ctx->alloc);
-        return evaluate_node(dst, rhs, ctx);
+        identifier_t* ident = find_static_identifier(lhs->ident, ctx);
+        if (ident) {
+            ASSERT(ident->node->flags & FLAG_CONSTANT);
+            if (dst) {
+                copy_data(dst, ident->data);
+            }
+            if (ctx->vis) {
+                return evaluate_node(NULL, rhs, ctx);
+            }
+            return true;
+        }
+
+        ident = find_dynamic_identifier(lhs->ident, ctx);
+        if (!ident && ctx->alloc) {
+            identifier_t id = {
+                .name = lhs->ident,
+                .node = rhs,
+                .data = dst,
+            };
+            ident = md_array_push(ctx->identifiers, id, ctx->alloc);
+            return evaluate_node(dst, rhs, ctx);
+        }
+    } else if (lhs->type == AST_ARRAY) {
+        int count = (int)md_array_size(lhs->children);
+        if (rhs->flags & FLAG_CONSTANT) {
+            if (dst) {
+                copy_data(dst, &rhs->data);
+            }
+            if (ctx->vis) {
+                return evaluate_node(NULL, rhs, ctx);
+            }
+            return true;
+        }
+
+        if (!evaluate_node(dst, rhs, ctx)) {
+            return false;
+        }
+
+        for (int i = 0; i < count; ++i) {
+            ast_node_t* child = lhs->children[i];
+            int stride = (int)type_info_element_byte_stride(child->data.type);
+            ASSERT(child->type == AST_IDENTIFIER);
+            identifier_t* ident = find_dynamic_identifier(child->ident, ctx);
+
+            if (!ident && ctx->alloc) {
+                identifier_t id = {
+                    .name = child->ident,
+                    .node = rhs,
+                    .data = md_alloc(ctx->alloc, sizeof(data_t))
+                };
+                if (dst && dst->ptr) {
+                    *id.data = child->data;
+                    id.data->ptr = dst + stride * i;
+                    id.data->size = stride;
+                }
+                ident = md_array_push(ctx->identifiers, id, ctx->alloc);
+            }
+        }
+        return true;
     }
 
     return false;
@@ -2875,7 +2921,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     if (dst) {
         ASSERT(type_info_equal(dst->type, node->data.type));
         ASSERT(dst->ptr);
-        const int64_t elem_size = type_info_byte_stride(arr_data.type);
+        const int64_t elem_size = type_info_element_byte_stride(arr_data.type);
         int64_t write_offset = 0;
         for (int64_t i = 0; i < md_array_size(idx_ranges); ++i) {
             irange_t range = idx_ranges[i];
@@ -2909,7 +2955,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     if (dst) {
         ASSERT(type_info_equal(dst->type, node->data.type));
         ASSERT(dst->ptr);
-        const int64_t elem_size = type_info_byte_stride(arr_data.type);
+        const int64_t elem_size = type_info_element_byte_stride(arr_data.type);
         const data_t src = {dst->type, (char*)arr_data.ptr + elem_size * offset, elem_size * length};
         copy_data(dst, &src);
     }
@@ -2968,7 +3014,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
         sub_ctx.subscript_ranges = 0;
 
         if (dst) {
-            const uint64_t elem_size = type_info_byte_stride(dst->type);
+            const uint64_t elem_size = type_info_element_byte_stride(dst->type);
             data.type = lhs_types[i];
             data.ptr = (char*)dst->ptr + elem_size * dst_idx;
             data.size = type_info_total_byte_size(lhs_types[i]);;
@@ -4079,10 +4125,17 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
             }
             if (range.beg <= range.end && 1 <= range.beg && range.end <= element_count(lhs->data)) {
                 ASSERT(lhs->data.type.dim[0] > 0);
+                type_info_t type = lhs->data.type;
+                type.dim[type.len_dim] = range.end - range.beg + 1;
+
+                if (type.dim[type.len_dim] == 1 && type.len_dim > 0) {
+                    type.dim[type.len_dim] = 0;
+                    type.len_dim -= 1;
+                }
+                
                 // SUCCESS!
                 node->flags = lhs->flags;
-                node->data.type = lhs->data.type;
-                node->data.type.dim[node->data.type.len_dim] = range.end - range.beg + 1;
+                node->data.type = type;
                 node->data.unit = lhs->data.unit;
                 return true;
             } else {
@@ -4131,38 +4184,104 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     ast_node_t* lhs = node->children[0];
     ast_node_t* rhs = node->children[1];
 
-    ASSERT(lhs && lhs->ident.ptr);
+    ASSERT(lhs);
     ASSERT(rhs);
 
-    if (lhs->type != AST_IDENTIFIER) {
+    int num_idents = 1;
+    ast_node_t** idents = &lhs;
+
+    if (lhs->type == AST_ARRAY) {
+        for (int64_t i = 0; i < md_array_size(lhs->children); ++i) {
+			if (lhs->children[i]->type != AST_IDENTIFIER) {
+				LOG_ERROR(ctx->ir, node->token, "An element on the left hand side of assignment is not an identifier");
+				return false;
+			}
+		}
+        num_idents = (int)md_array_size(lhs->children);
+        idents = lhs->children;
+    } else if (lhs->type != AST_IDENTIFIER) {
         LOG_ERROR(ctx->ir, node->token, "Left hand side of assignment is not an identifier");
-        return false;
+		return false;
+    }
+
+    for (int i = 0; i < num_idents; ++i) {
+        str_t ident = idents[i]->ident;
+        // Assignment, therefore a new identifier
+        if (find_constant(ident)) {
+            LOG_ERROR(ctx->ir, idents[i]->token, "The identifier is occupied by a constant and cannot be assigned.");
+        }
+        else if (get_identifier(ctx->ir, ident)) {
+            LOG_ERROR(ctx->ir, idents[i]->token, "The identifier is already taken. Variables cannot be reassigned.");
+        }
     }
 
     if (static_check_node(rhs, ctx)) {
-        ASSERT(lhs->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
         ASSERT(rhs->data.type.base_type != TYPE_UNDEFINED);  // Right hand side type must be known
-
-        identifier_t* ident = get_identifier(ctx->ir, lhs->ident);
-        ASSERT(ident);
-
-        if (!(rhs->flags & FLAG_DYNAMIC) && !rhs->data.ptr) {
-            // If it is not a dynamic node, we evaluate it directly and store the data.
-            allocate_data(&rhs->data, rhs->data.type, ctx->alloc);
-            evaluate_node(&rhs->data, rhs, ctx);
-            rhs->flags |= FLAG_CONSTANT;
-        }
-
         node->data   = rhs->data;
         node->flags  = rhs->flags;
 
+        if (num_idents > 1) {
+            int rhs_len = 0;
+            if (rhs->type == AST_ARRAY) {
+                rhs_len = (int)md_array_size(rhs->children);
+            } else {
+                rhs_len = (int)type_info_array_len(rhs->data.type);
+            }
+            if (rhs_len == -1) {
+                LOG_ERROR(ctx->ir, node->token, "Assignment mismatch between left and right hand side: The right hand side has a variable length");
+                return false;
+            }
+            // This is valid if the array length of rhs is equal to the number of identifiers on the left hand side
+            if (rhs_len != num_idents) {
+                LOG_ERROR(ctx->ir, node->token, "Assignment mismatch between left and right hand side: The number of identifiers on the left hand side must match the length of the right hand side");
+                return false;
+            }
+
+            for (int i = 0; i < num_idents; ++i) {
+                ASSERT(idents[i]->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
+                identifier_t* ident = create_identifier(ctx->ir, idents[i]->ident);
+
+                ident->data = 0;
+                ident->node = rhs;
+
+                if (rhs->type == AST_ARRAY) {
+                    // Match identifier with the corresponding element in the array
+                    ident->data = &rhs->children[i]->data;
+                    ident->node = rhs->children[i];
+                }
+                else {
+                    idents[i]->data.type = type_info_element_type(rhs->data.type);
+                    if (rhs->flags & FLAG_CONSTANT) {
+                        const int stride = (int)type_info_element_byte_stride(rhs->data.type);
+                        ident->data = md_alloc(ctx->ir->arena, sizeof(data_t));
+                        *ident->data = rhs->data;
+                        ident->data->type = type_info_element_type(rhs->data.type);
+                        ident->data->ptr = (char*)rhs->data.ptr + i * stride;
+                        ident->data->size = stride;
+				    } else {
+                        ident->data = 0;
+                    }
+                }
+                if (!static_check_node(idents[i], ctx)) {
+                    return false;
+                }
+            }
+        } else {
+            ASSERT(lhs->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
+
+            identifier_t* ident = create_identifier(ctx->ir, lhs->ident);
+            ASSERT(ident);
+
+            ident->data  = &rhs->data;
+            ident->node  = rhs;
+
+            if (!static_check_node(lhs, ctx)) {
+                return false;
+            }
+        }
         lhs->data    = rhs->data;
         lhs->flags   = rhs->flags;
-
-        ident->data  = &rhs->data;
-        ident->node  = rhs;
-
-        return static_check_node(lhs, ctx);
+        return true;
     }
 
     return false;
@@ -4246,7 +4365,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     // if LHS is a bitfield of length N, the resulting bitfield length is (N*M), N may vary for each context.
 
                     const bool contexts_equivalent = are_bitfields_equivalent(contexts, num_contexts, ctx->mol); 
-                        
+
                     node->lhs_context_types = 0;
                     int64_t arr_len = 0;
                     for (int64_t i = 0; i < num_contexts; ++i) {
@@ -4258,26 +4377,34 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                             return false;
                         }
 
-                        type_info_t type = lhs->data.type;
+                        type_info_t local_type = lhs->data.type;
 
                         if (lhs->flags & FLAG_DYNAMIC_LENGTH) {
-                            if (!finalize_type(&type, lhs, &local_ctx)) {
+                            if (!finalize_type(&local_type, lhs, &local_ctx)) {
                                 LOG_ERROR(ctx->ir, lhs->token, "Failed to deduce length of type which is required for determining type and size of context");
                                 return false;
                             }
                         }
 
-                        int64_t len = type_info_array_len(type);
+                        /*
+                        // We need to augment the type with an extra dimension to emulate an array of a higher dimension in order for the array length to be correct
+                        if (!is_scalar(local_type) && local_type.base_type != TYPE_BITFIELD) {
+                            local_type.len_dim += 1;
+                            local_type.dim[local_type.len_dim] = 1;
+                        }
+                        */
+
+                        int64_t len = type_info_array_len(local_type);
                         // Some arrays will be zero and that is accepted
                         // We still have to keep it even though it does not contribute
                         // To keep arrays in sync.
 
-                        md_array_push(node->lhs_context_types, type, ctx->ir->arena);
+                        md_array_push(node->lhs_context_types, local_type, ctx->ir->arena);
                         arr_len += len;
                     }
 
                     node->flags |= lhs->flags & FLAG_AST_PROPAGATION_MASK;
-                    node->data.type = lhs->data.type;
+                    node->data.type = node->lhs_context_types[0];
                     node->data.type.dim[node->data.type.len_dim] = (int32_t)arr_len;
                     node->data.unit = lhs->data.unit;
                     node->data.value_range = lhs->data.value_range;
@@ -4369,6 +4496,7 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 
     if (result && !(node->flags & FLAG_DYNAMIC) && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
         static_eval_node(node, ctx);
+        node->flags |= FLAG_CONSTANT;
     }
 
     return result;
@@ -4476,17 +4604,23 @@ static bool parse_script(md_script_ir_t* ir) {
             const char* end = tok.str.ptr + tok.str.len;
             str_t expr_str = {beg, (uint64_t)(end - beg)};
 
-            identifier_t* ident = NULL;
+            /*
             if (pruned_node->type == AST_ASSIGNMENT) {
                 ASSERT(md_array_size(pruned_node->children) == 2);
-                ASSERT(pruned_node->children[0]->type == AST_IDENTIFIER);
-                ident = get_identifier(ir, pruned_node->children[0]->ident);
-                ASSERT(ident);
-                    
+                if (pruned_node->children[0]->type == AST_IDENTIFIER) {
+                    identifier_t* ident = get_identifier(ir, pruned_node->children[0]->ident);
+                    ASSERT(ident);
+
+                } else if (pruned_node->children[0]->type == AST_ARRAY) {
+
+                } else {
+                    ASSERT(false);
+                }
             }
+            */
             expression_t* expr = md_alloc(ir->arena, sizeof(expression_t));
             expr->node = pruned_node;
-            expr->ident = ident;
+            //expr->ident = ident;
             expr->str = expr_str;
             md_array_push(ir->expressions, expr, ir->arena);
         } else {
@@ -4526,6 +4660,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
             ir->flags |= (ir->expressions[i]->node->flags & FLAG_IR_PROPAGATION_MASK);
         } else {
+            MD_LOG_DEBUG("Static type checking failed for expression: '%.*s'", (int)ir->expressions[i]->str.len, ir->expressions[i]->str.ptr);
             result = false;
         }
     }
@@ -4562,7 +4697,7 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
         expression_t* expr = ir->type_checked_expressions[i];
         ASSERT(expr);
         ASSERT(expr->node);
-        if (expr->node->flags & FLAG_DYNAMIC && expr->ident) {
+        if (expr->node->flags & FLAG_DYNAMIC && expr->node->type == AST_ASSIGNMENT) {
             // If it does not have an identifier, it cannot be referenced and therefore we don't need to evaluate it dynamcally
             md_array_push(ir->eval_targets, ir->type_checked_expressions[i], ir->arena);
         }
@@ -4571,7 +4706,7 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
 }
 
 static inline bool is_temporal_type(type_info_t ti) {
-    return (ti.base_type == TYPE_FLOAT && ti.dim[0] > 0 && ti.dim[1] == 0);
+    return (ti.base_type == TYPE_FLOAT && ti.dim[0] > 0 && (ti.dim[1] == 0 || ti.dim[1] == 1));
 }
 
 static inline bool is_distribution_type(type_info_t ti) {
@@ -4584,22 +4719,6 @@ static inline bool is_volume_type(type_info_t ti) {
 
 static inline bool is_property_type(type_info_t ti) {
     return is_temporal_type(ti) || is_distribution_type(ti) || is_volume_type(ti);
-}
-
-static md_array(expression_t*) extract_property_expressions(md_script_ir_t* ir, md_allocator_i* alloc) {
-    ASSERT(ir);
-    md_array(expression_t*) prop_expressions = 0;
-
-    for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
-        expression_t* expr = ir->eval_targets[i];
-        ASSERT(expr);
-        ASSERT(expr->node);
-        if (expr->ident && is_property_type(expr->node->data.type)) {
-            md_array_push(prop_expressions, expr, alloc);
-        }
-    }
-
-    return prop_expressions;
 }
 
 static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
@@ -4952,7 +5071,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             type_info_t type = expr[i]->node->data.type;
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, expr[i]->node, &ctx)) {
-                    MD_LOG_ERROR("Evaluation error when evaluating identifier '%.*s', failed to finalize its type", expr[i]->ident->name.len, expr[i]->ident->name.ptr);
+                    str_t str = expr[i]->str;
+                    MD_LOG_ERROR("Evaluation error when evaluating the following expression '%.*s', failed to finalize its type", (int)str.len, str.ptr);
                     result = false;
                     goto done;
                 }
@@ -4965,7 +5085,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 data[i].value_range.end = +FLT_MAX;
             }
             if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
-                MD_LOG_ERROR("Evaluation error when evaluating identifier '%.*s' at frame %lli", expr[i]->ident->name.len, expr[i]->ident->name.ptr, f_idx);
+                str_t str = expr[i]->str;
+                MD_LOG_ERROR("Evaluation error when evaluating the following expression '%.*s' at frame %i", (int)str.len, str.ptr, (int)f_idx);
                 result = false;
                 goto done;
             }
@@ -4973,12 +5094,23 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
 
         for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
             md_script_property_t* prop = &props[p_idx];
-            const uint32_t d_idx = eval->prop_expr_idx[p_idx];
-            const int32_t size = (int32_t)type_info_array_len(data[d_idx].type);
-            float* values = (float*)data[d_idx].ptr;
+
+            // Find data matching property identifier
+            const identifier_t* ident = find_dynamic_identifier(prop->ident, &ctx);
+            if (!ident) {
+                MD_LOG_ERROR("Not good!");
+                result = false;
+                goto done;
+            }
+
+            const frange_t value_range = ident->data->value_range;
+            const float* values = (const float*)ident->data->ptr;
 
             if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
+                ASSERT(ident->data);
                 ASSERT(prop->data.values);
+
+                const int32_t size = ident->data->type.dim[0];
                 MEMCPY(prop->data.values + f_idx * size, values, size * sizeof(float));
 
                 // Determine min max values
@@ -4998,8 +5130,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 }
 
                 // Update range if not explicitly set
-                prop->data.min_range[0] = (data[d_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[d_idx].value_range.beg;
-                prop->data.max_range[0] = (data[d_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[d_idx].value_range.end;
+                prop->data.min_range[0] = (value_range.beg == -FLT_MAX) ? prop->data.min_value : value_range.beg;
+                prop->data.max_range[0] = (value_range.end == +FLT_MAX) ? prop->data.max_value : value_range.end;
             }
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
                 // Accumulate values
@@ -5031,8 +5163,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                     prop->data.max_value = MAX(prop->data.max_value, max);
 
                     // Update range if not explicitly set
-                    prop->data.min_range[0] = (data[d_idx].value_range.beg == -FLT_MAX) ? prop->data.min_value : data[d_idx].value_range.beg;
-                    prop->data.max_range[0] = (data[d_idx].value_range.end == +FLT_MAX) ? prop->data.max_value : data[d_idx].value_range.end;
+                    prop->data.min_range[0] = (value_range.beg == -FLT_MAX) ? prop->data.min_value : value_range.beg;
+                    prop->data.max_range[0] = (value_range.end == +FLT_MAX) ? prop->data.max_value : value_range.end;
                 }
                 md_mutex_unlock(&eval->prop_dist_mutex[p_idx]);
             }
@@ -5471,19 +5603,34 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
     md_bitfield_init(&eval->completed_frames, eval->arena);
     md_bitfield_reserve_range(&eval->completed_frames, 0, num_frames);
 
-    //md_array(expression_t*) prop_expr = extract_property_expressions(ir, md_temp_allocator);
-
     int64_t num_prop_expr = 0;
     for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
         expression_t* expr = ir->eval_targets[i];
         ASSERT(expr);
         ASSERT(expr->node);
-        if (expr->ident && is_property_type(expr->node->data.type)) {
-            md_script_property_t prop = {0};
-            init_property(&prop, num_frames, expr->ident->name, expr->node, eval->arena);
-            md_array_push(eval->properties, prop, eval->arena);
-            md_array_push(eval->prop_expr_idx, (uint32_t)i, eval->arena);
-            num_prop_expr += 1;
+        if (expr->node->type == AST_ASSIGNMENT && is_property_type(expr->node->data.type)) {
+            if (expr->node->children[0]->type == AST_IDENTIFIER) {
+                ast_node_t* lhs = expr->node->children[0];
+                md_script_property_t prop = {0};
+                init_property(&prop, num_frames, lhs->ident, expr->node, eval->arena);
+                md_array_push(eval->properties, prop, eval->arena);
+                md_array_push(eval->prop_expr_idx, (uint32_t)i, eval->arena);
+                num_prop_expr += 1;
+            } else if (expr->node->children[0]->type == AST_ARRAY) {
+            	ast_node_t* lhs = expr->node->children[0];
+				for (int64_t j = 0; j < md_array_size(lhs->children); ++j) {
+					ast_node_t* child = lhs->children[j];
+					ASSERT(child->type == AST_IDENTIFIER);
+					md_script_property_t prop = {0};
+					init_property(&prop, num_frames, child->ident, expr->node, eval->arena);
+					md_array_push(eval->properties, prop, eval->arena);
+					md_array_push(eval->prop_expr_idx, (uint32_t)i, eval->arena);
+					num_prop_expr += 1;
+				}
+			} else {
+				ASSERT(false);
+            }
+
         }
     }
     
@@ -5608,9 +5755,7 @@ void md_script_eval_interrupt(md_script_eval_t* eval) {
 static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allocator_i* alloc) {
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
-    // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
-    // Which means that the actual string data is contained within the ir->arena => temp_alloc
-    md_script_ir_t* ir = create_ir(alloc);
+    md_script_ir_t* ir = create_ir(&temp_alloc);
     ir->str = str_copy(expr, ir->arena);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
@@ -5622,12 +5767,21 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
             .ir = ir,
             .mol = mol,
             .temp_arena = &vm_arena,
-            .temp_alloc = &temp_alloc,       
+            .temp_alloc = &temp_alloc,
         };
 
         if (static_check_node(node, &ctx)) {
             allocate_data(dst, node->data.type, alloc);
             if (evaluate_node(dst, node, &ctx)) {
+                if (dst->type.base_type == TYPE_STRING) {
+                    // @HACK: We reallocate strings here here: If the data type is a str_t, then it gets a shallow copy
+                    // Which means that the actual string data is contained within the ir->arena => temp_alloc
+                    const uint64_t num_elem = element_count(*dst);
+                    str_t* dst_str = dst->ptr;
+                    for (uint64_t i = 0; i < num_elem; ++i) {
+                        dst_str[i] = str_copy(dst_str[i], alloc);
+                    }
+                }
                 result = true;
             }
         }
