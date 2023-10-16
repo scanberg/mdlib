@@ -4995,7 +4995,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     // coordinate data for reading trajectory frames into
-    const int64_t stride = ALIGN_TO(mol->atom.count, md_simd_f32_width);    // Round up allocation size to simd width to allow for vectorized operations
+    const int64_t stride = ALIGN_TO(mol->atom.count, md_simd_width_f32);    // Round up allocation size to simd width to allow for vectorized operations
     const int64_t coord_bytes = stride * 3 * sizeof(float);
     float* init_coords = md_vm_arena_push(&vm_arena, coord_bytes);
     float* curr_coords = md_vm_arena_push(&vm_arena, coord_bytes);
@@ -5148,8 +5148,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                     const md_simd_f32_t N   = md_simd_set1_f32((float)(count));
                     const md_simd_f32_t scl = md_simd_set1_f32(1.0f / (float)(count + 1));
 
-                    const int64_t length = ALIGN_TO(prop->data.dim[0], md_simd_f32_width);
-                    for (int64_t i = 0; i < length; i += md_simd_f32_width) {
+                    const int64_t length = ALIGN_TO(prop->data.dim[0], md_simd_width_f32);
+                    for (int64_t i = 0; i < length; i += md_simd_width_f32) {
                         md_simd_f32_t old_val = md_simd_mul(md_simd_load_f32(prop->data.values + i), N);
                         md_simd_f32_t new_val = md_simd_load_f32(values + i);
                         md_simd_store(prop->data.values + i, md_simd_mul(md_simd_add(new_val, old_val), scl));
@@ -5171,7 +5171,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
                 // Accumulate values
                 ASSERT(prop->data.values);
-                ASSERT(prop->data.num_values % md_simd_f32_width == 0); // This should always be the case if we nice powers of 2 for our volumes
+                ASSERT(prop->data.num_values % md_simd_width_f32 == 0); // This should always be the case if we nice powers of 2 for our volumes
                 
                 // ATOMIC WRITE
                 md_mutex_lock(&eval->prop_dist_mutex[p_idx]);
@@ -5181,7 +5181,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                     const md_simd_f32_t N = md_simd_set1_f32((float)(count));
                     const md_simd_f32_t scl = md_simd_set1_f32(1.0f / (float)(count + 1));
 
-                    for (int64_t i = 0; i < prop->data.num_values; i += md_simd_f32_width) {
+                    for (int64_t i = 0; i < prop->data.num_values; i += md_simd_width_f32) {
                         md_simd_f32_t old_val = md_simd_mul(md_simd_load_f32(prop->data.values + i), N);
                         md_simd_f32_t new_val = md_simd_load_f32(values + i);
                         md_simd_store(prop->data.values + i, md_simd_mul(md_simd_add(new_val, old_val), scl));

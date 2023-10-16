@@ -722,12 +722,12 @@ void sincos256_ps(v8sf x, v8sf *s, v8sf *c) {
 
 typedef union {
 	md_simd_f32_t vec;
-	float val[md_simd_f32_width];
+	float val[md_simd_width_f32];
 } vec_t;
 
 static inline bool validate_eqf(md_simd_f32_t x, float ref[]) {
 	vec_t v  = { .vec = x };
-	for (int i = 0; i < md_simd_f32_width; ++i) {
+	for (int i = 0; i < md_simd_width_f32; ++i) {
 		if (v.val[i] != ref[i]) return false;
 	}
 	return true;
@@ -735,7 +735,7 @@ static inline bool validate_eqf(md_simd_f32_t x, float ref[]) {
 
 static inline bool validate_close1f(md_simd_f32_t x, float ref, float eps) {
 	vec_t v  = { .vec = x };
-	for (int i = 0; i < md_simd_f32_width; ++i) {
+	for (int i = 0; i < md_simd_width_f32; ++i) {
 		if (fabsf(v.val[i] - ref) > eps) return false;
 	}
 	return true;
@@ -743,7 +743,7 @@ static inline bool validate_close1f(md_simd_f32_t x, float ref, float eps) {
 
 static inline bool validate_closef(md_simd_f32_t x, float ref[], float eps) {
 	vec_t v  = { .vec = x };
-	for (int i = 0; i < md_simd_f32_width; ++i) {
+	for (int i = 0; i < md_simd_width_f32; ++i) {
 		if (fabsf(v.val[i] - ref[i]) > eps) return false;
 	}
 	return true;
@@ -760,14 +760,14 @@ UTEST(simd, sin_cos) {
 #endif
 
 UTEST(simd, hsum) {
-#if md_simd_f32_width >= 4
+#if md_simd_width_f32 >= 4
     {
     md_f32x4_t x = md_simd_set_f32x4(1.0f, 2.0f, 3.0f, 4.0f);
     float sum = md_simd_hsum(x);
     EXPECT_NEAR(sum, 10.0f, 0.0001f);
     }
 #endif
-#if md_simd_f32_width >= 8
+#if md_simd_width_f32 >= 8
     {
     md_f32x8_t x = md_simd_set_f32x8(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
     float sum = md_simd_hsum(x);
@@ -777,14 +777,14 @@ UTEST(simd, hsum) {
 }
 
 UTEST(simd, hmax) {
-#if md_simd_f32_width >= 4
+#if md_simd_width_f32 >= 4
     {
     md_f32x4_t x = md_simd_set_f32x4(1.0f, 2.0f, 3.0f, 4.0f);
     float max = md_simd_hmax(x);
     EXPECT_NEAR(max, 4.0f, 0.0001f);
     }
 #endif
-#if md_simd_f32_width >= 8
+#if md_simd_width_f32 >= 8
     {
     md_f32x8_t x = md_simd_set_f32x8(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
     float max = md_simd_hmax(x);
@@ -794,14 +794,14 @@ UTEST(simd, hmax) {
 }
 
 UTEST(simd, hmin) {
-#if md_simd_f32_width >= 4
+#if md_simd_width_f32 >= 4
     {
     md_f32x4_t x = md_simd_set_f32x4(1.0f, 2.0f, -3.0f, 4.0f);
     float min = md_simd_hmin(x);
     EXPECT_NEAR(min, -3.0f, 0.0001f);
     }
 #endif
-#if md_simd_f32_width >= 8
+#if md_simd_width_f32 >= 8
     {
     md_f32x8_t x = md_simd_set_f32x8(1.0f, 2.0f, 3.0f, -4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
     float min = md_simd_hmin(x);

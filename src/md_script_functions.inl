@@ -188,11 +188,11 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
         int64_t count = type_info_element_stride_count(arg[0].type); \
         ASSERT(count == type_info_element_stride_count(arg[1].type)); \
-        ASSERT(count % md_simd_f32_width == 0); \
+        ASSERT(count % md_simd_width_f32 == 0); \
         const float* src_a = as_float_arr(arg[0]); \
         const float* src_b = as_float_arr(arg[1]); \
         float* dst_arr = as_float_arr(*dst); \
-        for (int64_t i = 0; i < count; i += md_simd_f32_width) { \
+        for (int64_t i = 0; i < count; i += md_simd_width_f32) { \
             md_simd_f32_t a = md_simd_load_f32(src_a + i); \
             md_simd_f32_t b = md_simd_load_f32(src_b + i); \
             md_simd_store_f32(dst_arr + i, op(a, b)); \
@@ -208,11 +208,11 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(is_type_equivalent(arg[1].type, (type_info_t)TI_FLOAT)); \
         int64_t count = type_info_element_stride_count(arg[0].type); \
-        ASSERT(count % md_simd_f32_width == 0); \
+        ASSERT(count % md_simd_width_f32 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
         md_simd_f32_t s = md_simd_set1_f32(as_float(arg[1])); \
-        for (int64_t i = 0; i < count; i += md_simd_f32_width) { \
+        for (int64_t i = 0; i < count; i += md_simd_width_f32) { \
             md_simd_store_f32(dst_arr + i, op(md_simd_load_f32(src_arr + i), s)); \
         } \
         return 0; \
@@ -225,10 +225,10 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         int64_t count = type_info_element_stride_count(arg[0].type); \
-        ASSERT(count % md_simd_f32_width == 0); \
+        ASSERT(count % md_simd_width_f32 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
-        for (int64_t i = 0; i < count; i += md_simd_f32_width) { \
+        for (int64_t i = 0; i < count; i += md_simd_width_f32) { \
             md_simd_store_f32(dst_arr + i, op(md_simd_load_f32(src_arr + i))); \
         } \
         return 0; \
@@ -402,11 +402,11 @@ static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     ASSERT(dst);
     int64_t total_count = type_info_element_stride_count(arg[0].type);
-    ASSERT(total_count % md_simd_f32_width == 0);
+    ASSERT(total_count % md_simd_width_f32 == 0);
     const float* src_arr = as_float_arr(arg[0]);
     float* dst_arr = as_float_arr(*dst);
 
-    for (int64_t i = 0; i < total_count; i += md_simd_f32_width) {
+    for (int64_t i = 0; i < total_count; i += md_simd_width_f32) {
         md_simd_f32_t val = md_simd_load_f32(src_arr + i);
         md_simd_store_f32(dst_arr + i, md_simd_sub(md_simd_zero_f32(), val));
     }
@@ -3485,7 +3485,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t count = md_bitfield_popcount(&bf);
 
             if (count > 0) {
-                const int64_t stride = ALIGN_TO(count, md_simd_f32_width);
+                const int64_t stride = ALIGN_TO(count, md_simd_width_f32);
                 const int64_t coord_bytes = stride * 7 * sizeof(float);
                 float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
                 const md_vec3_soa_t coord[2] = {

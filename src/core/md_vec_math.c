@@ -232,13 +232,13 @@ mat4_t mat4_inverse(mat4_t M) {
 void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, int64_t count, vec3_t translation) {
     int64_t i = 0;
 
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
     if (simd_count > 0) {
         md_simd_f32_t t_x = md_simd_set1_f32(translation.x);
         md_simd_f32_t t_y = md_simd_set1_f32(translation.y);
         md_simd_f32_t t_z = md_simd_set1_f32(translation.z);
 
-        for (; i < simd_count; i += md_simd_f32_width) {
+        for (; i < simd_count; i += md_simd_width_f32) {
             md_simd_f32_t x = md_simd_load_f32(in_out_x + i);
             md_simd_f32_t y = md_simd_load_f32(in_out_y + i);
             md_simd_f32_t z = md_simd_load_f32(in_out_z + i);
@@ -263,13 +263,13 @@ void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
 void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation) {
     int64_t i = 0;
 
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
     if (simd_count > 0) {
         md_simd_f32_t t_x = md_simd_set1_f32(translation.x);
         md_simd_f32_t t_y = md_simd_set1_f32(translation.y);
         md_simd_f32_t t_z = md_simd_set1_f32(translation.z);
 
-        for (; i < simd_count; i += md_simd_f32_width) {
+        for (; i < simd_count; i += md_simd_width_f32) {
             md_simd_f32_t p_x = md_simd_load_f32(in_x + i);
             md_simd_f32_t p_y = md_simd_load_f32(in_y + i);
             md_simd_f32_t p_z = md_simd_load_f32(in_z + i);
@@ -311,8 +311,8 @@ void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
     const md_simd_f32_t w = md_simd_set1_f32(w_comp);
 
     int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
-    for (; i < simd_count; i += md_simd_f32_width) {
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
+    for (; i < simd_count; i += md_simd_width_f32) {
         const md_simd_f32_t x = md_simd_load_f32(in_out_x + i);
         const md_simd_f32_t y = md_simd_load_f32(in_out_y + i);
         const md_simd_f32_t z = md_simd_load_f32(in_out_z + i);
@@ -372,8 +372,8 @@ void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float*
     const md_simd_f32_t w = md_simd_set1_f32(w_comp);
 
     int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_f32_width);
-    for (; i < simd_count; i += md_simd_f32_width) {
+    const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
+    for (; i < simd_count; i += md_simd_width_f32) {
         md_simd_f32_t x = md_simd_load_f32(in_x + i);
         md_simd_f32_t y = md_simd_load_f32(in_y + i);
         md_simd_f32_t z = md_simd_load_f32(in_z + i);

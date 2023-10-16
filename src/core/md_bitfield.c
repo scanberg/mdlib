@@ -100,7 +100,7 @@ static inline block_t block_not(block_t blk) {
 block_t block_mask_lo(uint32_t idx) {
     block_t res;
 
-#if md_simd_i64_width == 4
+#if md_simd_width_i64 == 4
     md_i64x4_t eq_idx = md_simd_set1_i64x4(idx / 64);
     md_i64x4_t eq_bit = md_simd_set1_i64x4((1ULL << (idx & 63)) - 1);
 
@@ -121,7 +121,7 @@ block_t block_mask_lo(uint32_t idx) {
 block_t block_mask_hi(uint32_t idx) {
     block_t res;
 
-#if md_simd_i64_width == 4
+#if md_simd_width_i64 == 4
     md_i64x4_t eq_idx = md_simd_set1_i64x4(idx / 32);
     md_i64x4_t eq_bit = md_simd_set1_i64x4(~((1UL << (idx & 31)) - 1));
 
