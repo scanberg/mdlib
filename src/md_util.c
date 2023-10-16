@@ -1796,8 +1796,8 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
         const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
         if (in_idx) {
             for (int64_t i = 0; i < simd_count; ++i) {
-                md_simd_f32_t v_x = md_simd_gather_f32x8(in_x, in_idx);
-                md_simd_f32_t v_w = in_w ? md_simd_gather_f32x8(in_w, in_idx) : md_simd_set1_f32(1.0f);
+                md_simd_f32_t v_x = md_simd_gather_f32(in_x, in_idx);
+                md_simd_f32_t v_w = in_w ? md_simd_gather_f32(in_w, in_idx) : md_simd_set1_f32(1.0f);
                 v_acc_x = md_simd_add(v_acc_x, md_simd_mul(v_x, v_w));
                 v_acc_w = md_simd_add(v_acc_w, v_w);
             }

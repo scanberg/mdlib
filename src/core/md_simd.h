@@ -663,9 +663,6 @@ MD_SIMD_INLINE md_i64x4_t md_simd_blend_i64x4(md_i64x4_t a, md_i64x4_t b, md_i64
 #define md_simd_xor_f32x8 _mm256_xor_ps
 #define md_simd_xor_f64x4 _mm256_xor_pd
 
-// This is probably not portable beyond MSVC and clang + gcc, but we don't care since
-// those are the only compilers we aim to support.
-
 MD_SIMD_INLINE md_f32x4_t md_simd_gather_f32x4(const float* base, const int* indices) {
 #if __AVX2__
     __m128i i32x4 = _mm_lddqu_si128((const __m128i*)indices);
