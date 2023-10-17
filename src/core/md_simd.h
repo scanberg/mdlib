@@ -600,7 +600,7 @@ MD_SIMD_INLINE md_i32x4_t md_simd_blend_i32x4(md_i32x4_t a, md_i32x4_t b, md_i32
 }
 
 MD_SIMD_INLINE md_i32x8_t md_simd_blend_i32x8(md_i32x8_t a, md_i32x8_t b, md_i32x8_t mask) {
-#if __AVX2__
+#ifdef __AVX2__
     md_i32x8_t val = {_mm256_blendv_epi8(a.m256i, b.m256i, mask.m256i)};
 #else
     md_i32x8_t val = {_mm256_castps_si256(_mm256_blendv_ps(_mm256_castsi256_ps(a.m256i), _mm256_castsi256_ps(b.m256i), _mm256_castsi256_ps(mask.m256i)))};
@@ -614,7 +614,7 @@ MD_SIMD_INLINE md_i64x2_t md_simd_blend_i64x2(md_i64x2_t a, md_i64x2_t b, md_i64
 }
 
 MD_SIMD_INLINE md_i64x4_t md_simd_blend_i64x4(md_i64x4_t a, md_i64x4_t b, md_i64x4_t mask) {
-#if __AVX2__
+#ifdef __AVX2__
     md_i64x4_t val = {_mm256_blendv_epi8(a.m256i, b.m256i, mask.m256i)};
 #else
     md_i64x4_t val = {_mm256_castpd_si256(_mm256_blendv_pd(_mm256_castsi256_pd(a.m256i), _mm256_castsi256_pd(b.m256i), _mm256_castsi256_pd(mask.m256i)))};
@@ -664,7 +664,7 @@ MD_SIMD_INLINE md_i64x4_t md_simd_blend_i64x4(md_i64x4_t a, md_i64x4_t b, md_i64
 #define md_simd_xor_f64x4 _mm256_xor_pd
 
 MD_SIMD_INLINE md_f32x4_t md_simd_gather_f32x4(const float* base, const int* indices) {
-#if __AVX2__
+#ifdef __AVX2__
     __m128i i32x4 = _mm_lddqu_si128((const __m128i*)indices);
     return _mm_i32gather_ps(base, i32x4, 4);
 #else
@@ -689,7 +689,7 @@ MD_SIMD_INLINE md_f32x4_t md_simd_gather_f32x4(const float* base, const int* ind
 }
 
 MD_SIMD_INLINE md_f64x2_t md_simd_gather_f64x2(const double* base, const int* indices) {
-#if __AVX2__
+#ifdef __AVX2__
     __m128i i32x4 = _mm_lddqu_si128((const __m128i*)indices);
     return _mm_i32gather_pd(base, i32x4, 8);
 #else
@@ -710,7 +710,7 @@ MD_SIMD_INLINE md_f64x2_t md_simd_gather_f64x2(const double* base, const int* in
 }
 
 MD_SIMD_INLINE md_f32x8_t md_simd_gather_f32x8(const float* base, const int* indices) {
-#if __AVX2__
+#ifdef __AVX2__
     __m256i i32x8 = _mm256_lddqu_si256((const __m256i*)indices);
     return _mm256_i32gather_ps(base, i32x8, 4);
 #else
@@ -743,7 +743,7 @@ MD_SIMD_INLINE md_f32x8_t md_simd_gather_f32x8(const float* base, const int* ind
 }
 
 MD_SIMD_INLINE md_f64x4_t md_simd_gather_f64x4(const double* base, const int* indices) {
-#if __AVX2__
+#ifdef __AVX2__
     __m128i i32x4 = _mm_lddqu_si128((const __m128i*)indices);
     return _mm256_i32gather_pd(base, i32x4, 8);
 #else

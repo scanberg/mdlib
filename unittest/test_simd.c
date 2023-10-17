@@ -1,6 +1,9 @@
 #include "utest.h"
 
+#ifdef __AVX__
+// Reference implementation
 #include "avx_mathfun.h"
+#endif
 
 #include <core/md_common.h>
 #include <core/md_simd.h>
