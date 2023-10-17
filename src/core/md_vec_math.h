@@ -144,20 +144,20 @@ MD_VEC_INLINE double fract(double x) { return x - floor(x); }
 MD_VEC_INLINE int   signf(float x) { return (int)((x > 0.0f) - (x < 0.0f)); }
 MD_VEC_INLINE int   sign(double x) { return (int)((x > 0.0) - (x < 0.0)); }
 
-MD_VEC_INLINE float deperiodizef(float val, float ref, float period) {
-    if (period == 0.0f) return val;
-    float d = (val - ref) / period;
-    d = fractf(d);
-    d = d - signf(d) * (float)(fabsf(d) > 0.5f);
-    return d * period + ref;
+MD_VEC_INLINE float deperiodizef(float x, float r, float period) {
+    if (period == 0.0f) return x;
+    const float dx  = (x - r) / period;
+    const float dxp = dx - roundf(dx);
+    const float x_prim = r + dxp * period;
+    return x_prim;
 }
 
-MD_VEC_INLINE double deperiodize(double val, double ref, double period) {
-    if (period == 0.0) return val;
-    double d = (val - ref) / period;
-    d = fract(d);
-    d = d - sign(d) * (double)(fabs(d) > 0.5);
-    return d * period + ref;
+MD_VEC_INLINE double deperiodize(double x, double r, double period) {
+    if (period == 0.0) return x;
+    const double dx  = (x - r) / period;
+    const double dxp = dx - round(dx);
+    const double x_prim = r + dxp * period;
+    return x_prim;
 }
 
 MD_VEC_INLINE float lerpf(float a, float b, float t) {
@@ -903,6 +903,45 @@ MD_VEC_INLINE uint32_t u32_from_vec4(vec4_t v) {
     out |= ((uint32_t)(CLAMP(v.z, 0.0f, 1.0f) * 255.0f + 0.5f)) << 16;
     out |= ((uint32_t)(CLAMP(v.w, 0.0f, 1.0f) * 255.0f + 0.5f)) << 24;
     return out;
+}
+
+MD_VEC_INLINE vec4_t vec4_splat_x(vec4_t v) {
+    vec4_t result;
+    result.f32x4 = md_simd_splat_f32x4(v.f32x4, 0);
+    return result;
+}
+
+MD_VEC_INLINE vec4_t vec4_splat_y(vec4_t v) {
+    vec4_t result;
+    result.f32x4 = md_simd_splat_f32x4(v.f32x4, 1);
+    return result;
+}
+
+MD_VEC_INLINE vec4_t vec4_splat_z(vec4_t v) {
+    vec4_t result;
+    result.f32x4 = md_simd_splat_f32x4(v.f32x4, 2);
+    return result;
+}
+
+MD_VEC_INLINE vec4_t vec4_splat_w(vec4_t v) {
+    vec4_t result;
+    result.f32x4 = md_simd_splat_f32x4(v.f32x4, 3);
+    return result;
+}
+
+MD_VEC_INLINE void vec4_sincos(vec4_t x, vec4_t* s, vec4_t* c) {
+#if MD_VEC_MATH_USE_SIMD
+    md_simd_sincos_f32x4(x.f32x4, &s->f32x4, &c->f32x4);
+#else
+    s->x = sinf(x.x);
+	s->y = sinf(x.y);
+	s->z = sinf(x.z);
+	s->w = sinf(x.w);
+	c->x = cosf(x.x);
+	c->y = cosf(x.y);
+	c->z = cosf(x.z);
+	c->w = cosf(x.w);
+#endif
 }
 
 // quat

@@ -887,6 +887,14 @@ MD_SIMD_INLINE md_f64x4_t md_simd_cmp_ne_f64x4(md_f64x4_t a, md_f64x4_t b) { ret
 // for mul, there are operations defined for int as well, but the semantics differ: it multiplies the lanes as expected
 // but the results are stored in two lanes rather than storing the truncated value in each lane.
 
+// This naming convention clashes a bit with the intel intrinsics,
+// The operation broadcasts a single component into all components of the vector.
+// Maybe swizzle is a better name?
+#define md_simd_splat_f32x4(v, i) _mm_shuffle_ps(v,v, _MM_SHUFFLE(i, i, i, i))
+
+#define md_simd_swizzle_f32x4(v, x, y, z, w) _mm_shuffle_ps(v,v, _MM_SHUFFLE(w,z,y,x))
+//MD_SIMD_INLINE md_f32x4_t md_simd_swizzle_f32x4(md_f32x4_t v, int x, int y, int z, int w) { return _mm_shuffle_ps(v,v, _MM_SHUFFLE(w,z,y,x)); }
+
 #define md_simd_mul_f32x4 _mm_mul_ps
 #define md_simd_mul_f32x8 _mm256_mul_ps
 #define md_simd_mul_f64x2 _mm_mul_pd
@@ -938,6 +946,8 @@ MD_SIMD_INLINE md_f64x4_t md_simd_sign_f64x4(md_f64x4_t a) { return _mm256_xor_p
 #define md_simd_blend_f64x2 _mm_blendv_pd
 #define md_simd_blend_f32x8 _mm256_blendv_ps
 #define md_simd_blend_f64x4 _mm256_blendv_pd
+
+#define MD_SIMD_BLEND_MASK(x,y,z,w) (((x) << 3) | ((y) << 2) | ((z) << 1) | (w))
 
 #define md_simd_blend_mask_f32x4 _mm_blend_ps
 #define md_simd_blend_mask_f64x2 _mm_blend_pd
@@ -1187,6 +1197,190 @@ MD_SIMD_INLINE md_f64x2_t md_simd_lerp_f64x2(md_f64x2_t a, md_f64x2_t b, float t
 
 MD_SIMD_INLINE md_f64x4_t md_simd_lerp_f64x4(md_f64x4_t a, md_f64x4_t b, float t) {
     return md_simd_add_f64x4(md_simd_mul_f64x4(a, md_simd_set1_f64x4(1.0f - t)), md_simd_mul_f64x4(b, md_simd_set1_f64x4(t)));
+}
+
+MD_SIMD_INLINE void md_simd_sincos_f32x4(md_f32x4_t x, md_f32x4_t* s, md_f32x4_t* c) {
+    md_f32x4_t xmm1, xmm2, xmm3, sign_bit_sin, y;
+    md_i32x4_t imm0, imm2, imm4;
+
+    // sign bit
+    sign_bit_sin = md_simd_and_f32x4(x, md_simd_cast_i32x4(md_simd_set1_i32x4(0x80000000)));
+
+    // abs
+    x = md_simd_abs_f32x4(x);
+
+    /* scale by 4/Pi */
+    y = md_simd_mul_f32x4(x, md_simd_set1_f32x4(1.27323954473516));
+
+    /* store integer part of y */
+    imm2 = md_simd_convert_f32x4(y);
+
+    /* j=(j+1) & (~1) (see the cephes sources) */
+    imm2 = md_simd_add_i32x4(imm2, md_simd_set1_i32x4(1));
+    imm2 = md_simd_and_i32x4(imm2, md_simd_set1_i32x4(~1));
+
+    y = md_simd_convert_i32x4(imm2);
+    imm4 = imm2;
+
+    /* get the swap sign flag for the sine */
+    imm0 = md_simd_and_i32x4(imm2, md_simd_set1_i32x4(4));
+    imm0 = md_simd_shift_left_i32x4(imm0, 29);
+
+    /* get polynom selection mask for the sine */
+    imm2 = md_simd_and_i32x4(imm2, md_simd_set1_i32x4(2));
+    imm2 = md_simd_cmp_eq_i32x4(imm2, md_simd_zero_i32x4());
+
+    md_f32x4_t swap_sign_bit_sin = md_simd_cast_i32x4(imm0);
+    md_f32x4_t poly_mask         = md_simd_cast_i32x4(imm2);
+
+    /* The magic pass: "Extended precision modular arithmetic" 
+    x = ((x - y * DP1) - y * DP2) - y * DP3; */
+    xmm1 = md_simd_set1_f32x4(-0.78515625);
+    xmm2 = md_simd_set1_f32x4(-2.4187564849853515625e-4);
+    xmm3 = md_simd_set1_f32x4(-3.77489497744594108e-8);
+    xmm1 = md_simd_mul_f32x4(y, xmm1);
+    xmm2 = md_simd_mul_f32x4(y, xmm2);
+    xmm3 = md_simd_mul_f32x4(y, xmm3);
+    x    = md_simd_add_f32x4(x, xmm1);
+    x    = md_simd_add_f32x4(x, xmm2);
+    x    = md_simd_add_f32x4(x, xmm3);
+
+    imm4 = md_simd_sub_i32x4(imm4, md_simd_set1_i32x4(2));
+    imm4 = md_simd_and_not_i32x4(md_simd_set1_i32x4(4), imm4);
+    imm4 = md_simd_shift_left_i32x4(imm4, 29);
+
+    md_f32x4_t sign_bit_cos = md_simd_cast_i32x4(imm4);
+    sign_bit_sin = md_simd_xor_f32x4(sign_bit_sin, swap_sign_bit_sin);
+
+    /* Evaluate the first polynom  (0 <= x <= Pi/4) */
+    md_f32x4_t z = md_simd_mul_f32x4(x,x);
+    y = md_simd_set1_f32x4(2.443315711809948E-005);
+
+    y = md_simd_mul_f32x4(y, z);
+    y = md_simd_add_f32x4(y, md_simd_set1_f32x4(-1.388731625493765E-003));
+    y = md_simd_mul_f32x4(y, z);
+    y = md_simd_add_f32x4(y, md_simd_set1_f32x4(4.166664568298827E-002));
+    y = md_simd_mul_f32x4(y, z);
+    y = md_simd_mul_f32x4(y, z);
+    md_f32x4_t tmp = md_simd_mul_f32x4(z, md_simd_set1_f32x4(0.5));
+    y = md_simd_sub_f32x4(y, tmp);
+    y = md_simd_add_f32x4(y, md_simd_set1_f32x4(1.0));
+
+    /* Evaluate the second polynom  (Pi/4 <= x <= 0) */
+    md_f32x4_t y2 = md_simd_set1_f32x4(-1.9515295891E-4);
+    y2 = md_simd_mul_f32x4(y2, z);
+    y2 = md_simd_add_f32x4(y2, md_simd_set1_f32x4(8.3321608736E-3));
+    y2 = md_simd_mul_f32x4(y2, z);
+    y2 = md_simd_add_f32x4(y2, md_simd_set1_f32x4(-1.6666654611E-1));
+    y2 = md_simd_mul_f32x4(y2, z);
+    y2 = md_simd_mul_f32x4(y2, x);
+    y2 = md_simd_add_f32x4(y2, x);
+
+    /* select the correct result from the two polynoms */  
+    xmm3 = poly_mask;
+    md_f32x4_t ysin2 = md_simd_and_f32x4(xmm3, y2);
+    md_f32x4_t ysin1 = md_simd_and_not_f32x4(y, xmm3);
+    y2 = md_simd_sub_f32x4(y2,ysin2);
+    y = md_simd_sub_f32x4(y, ysin1);
+
+    xmm1 = md_simd_add_f32x4(ysin1,ysin2);
+    xmm2 = md_simd_add_f32x4(y,y2);
+
+    /* update the sign */
+    *s = md_simd_xor_f32x4(xmm1, sign_bit_sin);
+    *c = md_simd_xor_f32x4(xmm2, sign_bit_cos);
+}
+
+MD_SIMD_INLINE void md_simd_sincos_f32x8(md_f32x8_t x, md_f32x8_t* s, md_f32x8_t* c) {
+    md_f32x8_t xmm1, xmm2, xmm3, sign_bit_sin, y;
+    md_i32x8_t imm0, imm2, imm4;
+
+    // sign bit
+    sign_bit_sin = md_simd_and_f32x8(x, md_simd_cast_i32x8(md_simd_set1_i32x8(0x80000000)));
+
+    // abs
+    x = md_simd_abs_f32x8(x);
+
+    /* scale by 4/Pi */
+    y = md_simd_mul_f32x8(x, md_simd_set1_f32x8(1.27323954473516));
+
+    /* store integer part of y */
+    imm2 = md_simd_convert_f32x8(y);
+
+    /* j=(j+1) & (~1) (see the cephes sources) */
+    imm2 = md_simd_add_i32x8(imm2, md_simd_set1_i32x8(1));
+    imm2 = md_simd_and_i32x8(imm2, md_simd_set1_i32x8(~1));
+
+    y = md_simd_convert_i32x8(imm2);
+    imm4 = imm2;
+
+    /* get the swap sign flag for the sine */
+    imm0 = md_simd_and_i32x8(imm2, md_simd_set1_i32x8(4));
+    imm0 = md_simd_shift_left_i32x8(imm0, 29);
+
+    /* get polynom selection mask for the sine */
+    imm2 = md_simd_and_i32x8(imm2, md_simd_set1_i32x8(2));
+    imm2 = md_simd_cmp_eq_i32x8(imm2, md_simd_zero_i32x8());
+
+    md_f32x8_t swap_sign_bit_sin = md_simd_cast_i32x8(imm0);
+    md_f32x8_t poly_mask         = md_simd_cast_i32x8(imm2);
+
+    /* The magic pass: "Extended precision modular arithmetic" 
+    x = ((x - y * DP1) - y * DP2) - y * DP3; */
+    xmm1 = md_simd_set1_f32x8(-0.78515625);
+    xmm2 = md_simd_set1_f32x8(-2.4187564849853515625e-4);
+    xmm3 = md_simd_set1_f32x8(-3.77489497744594108e-8);
+    xmm1 = md_simd_mul_f32x8(y, xmm1);
+    xmm2 = md_simd_mul_f32x8(y, xmm2);
+    xmm3 = md_simd_mul_f32x8(y, xmm3);
+    x    = md_simd_add_f32x8(x, xmm1);
+    x    = md_simd_add_f32x8(x, xmm2);
+    x    = md_simd_add_f32x8(x, xmm3);
+
+    imm4 = md_simd_sub_i32x8(imm4, md_simd_set1_i32x8(2));
+    imm4 = md_simd_and_not_i32x8(md_simd_set1_i32x8(4), imm4);
+    imm4 = md_simd_shift_left_i32x8(imm4, 29);
+
+    md_f32x8_t sign_bit_cos = md_simd_cast_i32x8(imm4);
+    sign_bit_sin = md_simd_xor_f32x8(sign_bit_sin, swap_sign_bit_sin);
+
+    /* Evaluate the first polynom  (0 <= x <= Pi/4) */
+    md_f32x8_t z = md_simd_mul_f32x8(x,x);
+    y = md_simd_set1_f32x8(2.443315711809948E-005);
+
+    y = md_simd_mul_f32x8(y, z);
+    y = md_simd_add_f32x8(y, md_simd_set1_f32x8(-1.388731625493765E-003));
+    y = md_simd_mul_f32x8(y, z);
+    y = md_simd_add_f32x8(y, md_simd_set1_f32x8(4.166664568298827E-002));
+    y = md_simd_mul_f32x8(y, z);
+    y = md_simd_mul_f32x8(y, z);
+    md_f32x8_t tmp = md_simd_mul_f32x8(z, md_simd_set1_f32x8(0.5));
+    y = md_simd_sub_f32x8(y, tmp);
+    y = md_simd_add_f32x8(y, md_simd_set1_f32x8(1.0));
+
+    /* Evaluate the second polynom  (Pi/4 <= x <= 0) */
+    md_f32x8_t y2 = md_simd_set1_f32x8(-1.9515295891E-4);
+    y2 = md_simd_mul_f32x8(y2, z);
+    y2 = md_simd_add_f32x8(y2, md_simd_set1_f32x8(8.3321608736E-3));
+    y2 = md_simd_mul_f32x8(y2, z);
+    y2 = md_simd_add_f32x8(y2, md_simd_set1_f32x8(-1.6666654611E-1));
+    y2 = md_simd_mul_f32x8(y2, z);
+    y2 = md_simd_mul_f32x8(y2, x);
+    y2 = md_simd_add_f32x8(y2, x);
+
+    /* select the correct result from the two polynoms */  
+    xmm3 = poly_mask;
+    md_f32x8_t ysin2 = md_simd_and_f32x8(xmm3, y2);
+    md_f32x8_t ysin1 = md_simd_and_not_f32x8(y, xmm3);
+    y2 = md_simd_sub_f32x8(y2,ysin2);
+    y = md_simd_sub_f32x8(y, ysin1);
+
+    xmm1 = md_simd_add_f32x8(ysin1,ysin2);
+    xmm2 = md_simd_add_f32x8(y,y2);
+
+    /* update the sign */
+    *s = md_simd_xor_f32x8(xmm1, sign_bit_sin);
+    *c = md_simd_xor_f32x8(xmm2, sign_bit_cos);
 }
 
 #ifdef __cplusplus
@@ -1715,6 +1909,10 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
 #define md_simd_unpack_xyz(x, y, z, stream, stride) _Generic(x,  \
             md_f32x4_t* : md_simd_unpack_xyz_f32x4, \
             md_f32x8_t* : md_simd_unpack_xyz_f32x8)(x, y, z, stream, stride)
+
+#define md_simd_sincos(x, s, c) _Generic(x,  \
+            md_f32x4_t : md_simd_sincos_f32x4, \
+            md_f32x8_t : md_simd_sincos_f32x8)(x, s, c)
 
 #define md_simd_shift_left(x, i) _Generic((x),      \
             md_i32x4_t : md_simd_shift_left_i32x4,  \

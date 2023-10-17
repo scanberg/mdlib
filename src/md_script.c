@@ -421,8 +421,9 @@ struct ast_node_t {
     md_array(int)       table_field_indices;  // Indices into the table fields which are used for this node
 
     // CONTEXT
-    type_info_t* lhs_context_types; // For static type checking
-    const md_bitfield_t* context;  // Since contexts have to be statically known at compile time, we store a reference to it.
+    int64_t             num_contexts;   // Number of arguments for procedure calls
+    type_info_t*        lhs_context_types; // For static type checking
+    const md_bitfield_t* contexts;  // Since contexts have to be statically known at compile time, we store a reference to it.
 };
 
 typedef struct tokenizer_t {
@@ -3354,7 +3355,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
     // @TODO: Test if all contexts are equivalent
     // In such case, we can make an exception from the DYNAMIC_LENGTH flag
-    if (node->context && !(node->flags & FLAG_CONTEXTS_EQUIVALENT) && (node->proc->flags & FLAG_QUERYABLE_LENGTH)) {
+    if (node->num_contexts > 0 && !(node->flags & FLAG_CONTEXTS_EQUIVALENT) && (node->proc->flags & FLAG_QUERYABLE_LENGTH)) {
         node->flags |= FLAG_DYNAMIC_LENGTH;
         return true;
     }
@@ -4287,11 +4288,12 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     return false;
 }
 
-static void propagate_context(ast_node_t* node, const md_bitfield_t* context) {
+static void propagate_contexts(ast_node_t* node, const md_bitfield_t* contexts, int64_t num_contexts) {
     ASSERT(node);
-    node->context = context;
+    node->num_contexts = num_contexts;
+    node->contexts = contexts;
     for (int64_t i = 0; i < md_array_size(node->children); ++i) {
-        propagate_context(node->children[i], context);
+        propagate_contexts(node->children[i], contexts, num_contexts);
     }
 }
 
@@ -4347,18 +4349,28 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
             const int64_t num_contexts = type_info_array_len(rhs->data.type);
             if (num_contexts > 0) {
                 // Store this persistently and set this as a context for all child nodes
-                // Store as md_array so we can query its length later
                 md_bitfield_t* contexts = 0;
-                md_array_resize(contexts, num_contexts, ctx->ir->arena);
-                for (int64_t i = 0; i < num_contexts; ++i) {
-                    md_bitfield_init(&contexts[i], ctx->ir->arena);
-                }
-                rhs->data.ptr = contexts;
-                rhs->data.size = num_contexts * sizeof(md_bitfield_t);
 
-                ASSERT(md_array_size(contexts) == num_contexts);
+                if (rhs->flags & FLAG_CONSTANT) {
+                    ASSERT(rhs->data.ptr);
+                    ASSERT(rhs->data.size == num_contexts * sizeof(md_bitfield_t));
+                    contexts = (md_bitfield_t*)rhs->data.ptr;
+                } else {
+                    md_array_resize(contexts, num_contexts, ctx->ir->arena);
+                    for (int64_t i = 0; i < num_contexts; ++i) {
+                        md_bitfield_init(&contexts[i], ctx->ir->arena);
+                    }
+                    result = evaluate_node(&rhs->data, rhs, ctx);
+                    if (result) {
+                        rhs->data.ptr = contexts;
+                        rhs->data.size = num_contexts * sizeof(md_bitfield_t);
+                        ASSERT(md_array_size(contexts) == num_contexts);
+                        result = true;
+                    }
+                }
+
                 //allocate_data(&rhs->data, ctx->ir->arena);
-                if (evaluate_node(&rhs->data, rhs, ctx)) {
+                if (result) {
 
                     // We differentiate here if the LHS is a bitfield or not
                     // if LHS is a bitfield of length 1, the resulting bitfield length is the same as RHS (M)
@@ -4409,7 +4421,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     node->data.unit = lhs->data.unit;
                     node->data.value_range = lhs->data.value_range;
 
-                    propagate_context(lhs, contexts);
+                    propagate_contexts(lhs, contexts, num_contexts);
                     if (contexts_equivalent) {
                         lhs->flags |= FLAG_CONTEXTS_EQUIVALENT;
                     }
@@ -4423,7 +4435,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                 LOG_ERROR(ctx->ir, node->token, "The context is empty.");
             }
         } else {
-            LOG_ERROR(ctx->ir, node->token, "Right hand side of 'in' cannot be evaluated at compile time.");
+            LOG_ERROR(ctx->ir, node->token, "Right hand side of 'in' must be known at compile time.");
         }
     } else {
         char buf[128] = {0};
@@ -6089,9 +6101,10 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
 static void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(ctx->vis);
-    if (node->type != AST_CONTEXT && node->context) {
-        for (int64_t i = 0; i < md_array_size(node->context); ++i) {
-            ctx->mol_ctx = &node->context[i];
+    if (node->type != AST_CONTEXT && node->num_contexts) {
+        ASSERT(node->contexts);
+        for (int64_t i = 0; i < node->num_contexts; ++i) {
+            ctx->mol_ctx = &node->contexts[i];
             do_vis_eval(node, ctx);
         }
     }

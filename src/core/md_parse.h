@@ -457,12 +457,15 @@ struct float_token_t {
     uint8_t _unused;
 };
 
+// Specialized version where the the integer and fractional part each
+// are expected to fit into 8 characters.
 static inline double parse_float_wide(const char* ptr, int64_t len) {
     int neg = (*ptr == '-');
     if (*ptr == '-') {
         ++ptr;
         --len;
     }
+    // Find decimal point by 128-bit intrinsics
     int dec = find_first_char(_mm_loadu_si128((const __m128i*)ptr), '.');
     dec = MIN(dec, (int)len);
     int frac_len = (int)len - (dec + 1);
@@ -497,7 +500,6 @@ static inline bool extract_token(str_t* tok, str_t* str) {
 
     return true;
 }
-
 
 // Extract multiple tokens with whitespace as delimiter
 static inline int64_t extract_tokens(str_t token_arr[], int64_t token_cap, str_t* str) {
