@@ -13,6 +13,7 @@ struct md_allocator_i;
 struct md_molecule_t;
 struct md_molecule_loader_i;
 
+//Contains potential data format identifiers
 typedef enum lammps_atom_data_format {
 	ATOM_IDX,
 	MOL_IDX,
@@ -26,17 +27,21 @@ typedef enum lammps_atom_data_format {
 	NZ
 } lammps_atom_data_format;
 
+//Contains ptr to array with a data_format definition
 typedef struct data_format_t {
 	const lammps_atom_data_format* ptr;
 	int64_t len;
 } data_format_t;
 
+//Keyword for style that the data can have
 typedef enum atom_style {
 	full
 }atom_style;
 
+//Used to create the data_format with just a style keyword
 data_format_t* get_data_format(atom_style style);
 
+//Contains data about a single atom
 typedef struct md_lammps_atom_t {
 	int32_t atom_idx;
 	int32_t mol_idx;
