@@ -26,13 +26,27 @@
     } \
     md_array_free(arr, alloc); \
     \
-    uint32_t size[] = {16, 7238, 1, 2, 7, 3, 2, 4, 11, 12, 13, 14, 15, 17}; \
+    uint32_t size[] = {16, KILOBYTES(1), 1, 2, 7, 3, 2, 4, 11, 12, 13, 14, KILOBYTES(2), 17, 1, 2, 256, 1, 16, 7, 2, KILOBYTES(3), 23, 24, 25, 26, 27, 1, 29, 30, 4, 8}; \
     for (int64_t i = 0; i < ARRAY_SIZE(size); ++i) { \
         uint64_t expected_alignment = size[i] > 2 ? 16 : size[i]; \
         mem = md_alloc(alloc, size[i]); \
         EXPECT_EQ((uint64_t)mem % expected_alignment, 0ULL); \
         md_free(alloc, mem, size[i]); \
     }
+
+struct allocator {
+    void*  buf;
+    size_t cap;
+};
+
+UTEST_F_SETUP(allocator) {
+    utest_fixture->buf = md_alloc(md_heap_allocator, KILOBYTES(32));
+	utest_fixture->cap = KILOBYTES(32);
+}
+
+UTEST_F_TEARDOWN(allocator) {
+	md_free(md_heap_allocator, utest_fixture->buf, utest_fixture->cap);
+}
 
 // COMMON TESTS
 UTEST(allocator, default) {
@@ -51,24 +65,20 @@ UTEST(allocator, arena) {
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST(allocator, linear_generic) {
-    void* buf = md_alloc(md_heap_allocator, MEGABYTES(32));
+UTEST_F(allocator, linear_generic) {
     md_linear_allocator_t linear;
-    md_linear_allocator_init(&linear, buf, MEGABYTES(32));
+    md_linear_allocator_init(&linear, utest_fixture->buf, utest_fixture->cap);
     md_allocator_i linear_alloc = md_linear_allocator_create_interface(&linear);
     md_allocator_i* alloc = &linear_alloc;
     COMMON_ALLOCATOR_TEST_BODY
-    md_free(md_heap_allocator, buf, MEGABYTES(32));
 }
 
-UTEST(allocator, ring_generic) {
-    void* buf = md_alloc(md_heap_allocator, MEGABYTES(1));
+UTEST_F(allocator, ring_generic) {
     md_ring_allocator_t ring;
-    md_ring_allocator_init(&ring, buf, MEGABYTES(1));
+    md_ring_allocator_init(&ring, utest_fixture->buf, utest_fixture->cap);
     md_allocator_i ring_alloc = md_ring_allocator_create_interface(&ring);
     md_allocator_i* alloc = &ring_alloc;
     COMMON_ALLOCATOR_TEST_BODY
-    md_free(md_heap_allocator, buf, MEGABYTES(1));
 }
 
 
@@ -163,21 +173,10 @@ UTEST(allocator, vm_arena) {
 UTEST(allocator, vm_arena_generic) {
     md_vm_arena_t arena;
     md_vm_arena_init(&arena, GIGABYTES(4));
-    md_allocator_i alloc = md_vm_arena_create_interface(&arena);
+    md_allocator_i vm_alloc = md_vm_arena_create_interface(&arena);
+    md_allocator_i* alloc = &vm_alloc;
 
-    for (uint32_t i = 0; i < 1000; ++i) {
-        size_t size = rand() % 63 + 1;
-        void* mem = md_alloc(&alloc, size);
-        memset(mem, 0, size);   // Important to touch memory in order to validate that it is writable
-    }
-
-    md_vm_arena_reset(&arena);
-
-    for (uint32_t i = 0; i < 1000; ++i) {
-        size_t size = rand() % 127 + 1;
-        void* mem = md_alloc(&alloc, size);
-        memset(mem, 0, size); // Important to touch memory in order to validate that it is writable
-    }
+    COMMON_ALLOCATOR_TEST_BODY
 
     md_vm_arena_free(&arena);
 }
@@ -197,10 +196,9 @@ UTEST(allocator, vm) {
     md_vm_allocator_free(&vm);
 }
 
-UTEST(allocator, linear) {
-    void* buf = md_alloc(md_heap_allocator, MEGABYTES(64));
+UTEST_F(allocator, linear) {
     md_linear_allocator_t linear;
-    md_linear_allocator_init(&linear, buf, MEGABYTES(64));
+    md_linear_allocator_init(&linear, utest_fixture->buf, utest_fixture->cap);
 
     for (uint32_t i = 0; i < 1000; ++i) {
         md_linear_allocator_push(&linear, sizeof(uint64_t));
@@ -213,14 +211,11 @@ UTEST(allocator, linear) {
     for (uint32_t i = 0; i < 1000; ++i) {
         md_linear_allocator_push_aligned(&linear, sizeof(uint64_t), 32);
     }
-
-    md_free(md_heap_allocator, buf, MEGABYTES(64));
 }
 
-UTEST(allocator, ring) {
-    void* buf = md_alloc(md_heap_allocator, KILOBYTES(32));
+UTEST_F(allocator, ring) {
     md_ring_allocator_t ring;
-    md_ring_allocator_init(&ring, buf, KILOBYTES(32));
+    md_ring_allocator_init(&ring, utest_fixture->buf, utest_fixture->cap);
 
     for (uint32_t i = 0; i < 1000; ++i) {
         md_ring_allocator_push(&ring, sizeof(uint64_t));
@@ -233,6 +228,4 @@ UTEST(allocator, ring) {
     for (uint32_t i = 0; i < 1000; ++i) {
         md_ring_allocator_push_aligned(&ring, sizeof(uint64_t), 32);
     }
-
-    md_free(md_heap_allocator, buf, KILOBYTES(32));
 }
