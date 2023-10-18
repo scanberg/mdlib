@@ -50,6 +50,9 @@ typedef struct md_lammps_atom_t {
 	float x;
 	float y;
 	float z;
+	int32_t nx;
+	int32_t ny;
+	int32_t nz;
 } md_lammps_atom_t;
 
 typedef struct md_lammps_atom_mass_t {

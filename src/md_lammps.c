@@ -118,13 +118,13 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				atom->z = (float)parse_float_wide(tokens[d].ptr, tokens[d].len);
 				break;
 			case NX:
-				atom->atom_type = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->nx = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
 				break;
 			case NY:
-				atom->atom_type = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->ny = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
 				break;
 			case NZ:
-				atom->atom_type = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->nz = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
 				break;
 			}
 		}
