@@ -31,6 +31,12 @@ typedef struct data_format_t {
 	int64_t len;
 } data_format_t;
 
+typedef enum atom_style {
+	full
+}atom_style;
+
+data_format_t* get_data_format(atom_style style);
+
 typedef struct md_lammps_atom_t {
 	int32_t atom_idx;
 	int32_t mol_idx;
@@ -62,10 +68,12 @@ bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, struct md_alloc
 bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, struct md_allocator_i* alloc, data_format_t* data_format);
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
+/*
 // Molecule
 bool md_lammps_molecule_init(struct md_molecule_t* mol, const md_lammps_data_t* lammps_data, struct md_allocator_i* alloc);
 
 struct md_molecule_loader_i* md_lammps_molecule_api();
+*/
 
 #ifdef __cplusplus
 }

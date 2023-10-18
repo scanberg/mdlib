@@ -12,6 +12,21 @@
 
 #include <string.h>
 
+data_format_t* get_data_format(atom_style style) {
+	data_format_t* df;
+	switch (style)
+	{
+	default:
+		MD_LOG_ERROR("Invalid atom_style");
+		break;
+	case full:
+		data_format_t arr[10] = { ATOM_IDX, MOL_IDX, ATOM_TYPE, PARTIAL_CHARGE, ATOM_X, ATOM_Y, ATOM_Z, NX, NY, NZ };
+		df->len = 10;
+		df->ptr = arr;
+		return df;
+	}
+}
+
 static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc, data_format_t* data_format) {
 	ASSERT(data);
 	ASSERT(reader);
