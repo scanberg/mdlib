@@ -88,28 +88,28 @@ UTEST(util, com) {
         the indices or subsequent points are not too far apart, which is almost always the case in real world datasets.
     */
     {
-        const vec3_t pos[] = {
-            {1,0,0},
-            {2,0,0},
-            {3,0,0},
-            {4,0,0},
+        const vec4_t xyzw[] = {
+            {1,0,0,1},
+            {2,0,0,1},
+            {3,0,0,1},
+            {4,0,0,1},
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_vec3_ortho(pos, 0, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_vec4_ortho(xyzw, 0, ARRAY_SIZE(xyzw), pbc_ext);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
     }
     
     {
-        const vec3_t pos[] = {
-            {0,0,0},
-            {5,0,0},
+        const vec4_t xyzw[] = {
+            {0,0,0,1},
+            {5,0,0,1},
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_vec3_ortho(pos, 0, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_vec4_ortho(xyzw, 0, ARRAY_SIZE(xyzw), pbc_ext);
 		com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -117,9 +117,9 @@ UTEST(util, com) {
     }
 
     {
-        const vec3_t pos[] = {
-            {0,0,0},
-            {4,0,0},
+        const vec4_t xyzw[] = {
+            {0,0,0,1},
+            {4,0,0,1},
         };
         const vec3_t pbc_ext = { 5,0,0 };
 
@@ -129,7 +129,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        vec3_t com = md_util_compute_com_vec3_ortho(pos, 0, 0, ARRAY_SIZE(pos), pbc_ext);
+        vec3_t com = md_util_compute_com_vec4_ortho(xyzw, 0, ARRAY_SIZE(xyzw), pbc_ext);
         com = vec3_deperiodize(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -139,30 +139,30 @@ UTEST(util, com) {
     {
         const vec3_t pbc_ext = { 5,0,0 };
 
-        const vec3_t pos0[] = {
-            {4,0,0},
-            {5,0,0},
-            {6,0,0},
-            {7,0,0},
+        const vec4_t pos0[] = {
+            {4,0,0, 1},
+            {5,0,0, 1},
+            {6,0,0, 1},
+            {7,0,0, 1},
         };
 
-        const vec3_t pos1[] = {
-            {4,0,0},
-            {0,0,0},
-            {1,0,0},
-            {2,0,0},
+        const vec4_t pos1[] = {
+            {4,0,0, 1},
+            {0,0,0, 1},
+            {1,0,0, 1},
+            {2,0,0, 1},
         };
 
-        const vec3_t pos2[] = {
-            {-1,0,0},
-            {0,0,0},
-            {1,0,0},
-            {2,0,0},
+        const vec4_t pos2[] = {
+            {-1,0, 0, 1},
+            {0 ,0, 0, 1},
+            {1 ,0, 0, 1},
+            {2 ,0, 0, 1},
         };
 
-        vec3_t com0 = md_util_compute_com_vec3_ortho(pos0, 0, 0, ARRAY_SIZE(pos0), pbc_ext);
-        vec3_t com1 = md_util_compute_com_vec3_ortho(pos1, 0, 0, ARRAY_SIZE(pos1), pbc_ext);
-        vec3_t com2 = md_util_compute_com_vec3_ortho(pos2, 0, 0, ARRAY_SIZE(pos2), pbc_ext);
+        vec3_t com0 = md_util_compute_com_vec4_ortho(pos0, 0, ARRAY_SIZE(pos0), pbc_ext);
+        vec3_t com1 = md_util_compute_com_vec4_ortho(pos1, 0, ARRAY_SIZE(pos1), pbc_ext);
+        vec3_t com2 = md_util_compute_com_vec4_ortho(pos2, 0, ARRAY_SIZE(pos2), pbc_ext);
 
         com0 = vec3_deperiodize(com0, (vec3_t){ 0,0,0 }, pbc_ext);
         com1 = vec3_deperiodize(com1, (vec3_t){ 0,0,0 }, pbc_ext);

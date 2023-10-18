@@ -158,7 +158,7 @@ void md_util_compute_aabb_indexed_soa(vec3_t* aabb_min, vec3_t* aabb_max, const 
 // indices:     Array of indices (optional): indices into the arrays (x,y,z,w)
 // count:       Length of all arrays
 vec3_t md_util_compute_com(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t count);
-vec3_t md_util_compute_com_vec3(const vec3_t* xyz, const float* w, const int32_t* indices, int64_t count);
+vec3_t md_util_compute_com_vec4(const vec4_t* xyzw, const int32_t* indices, int64_t count);
 
 // Computes the center of mass for a set of points with a given weight given in orthogonal periodic boundary conditions
 // The indices used to access the arrays are given in the indices array
@@ -168,7 +168,7 @@ vec3_t md_util_compute_com_vec3(const vec3_t* xyz, const float* w, const int32_t
 // count:       Number of elements to process, either the length of the indices array or the length of the x,y,z,w arrays
 // box:         Extent of periodic boundary box (optional per component): Set to zero if pbc does not apply in that dimension
 vec3_t md_util_compute_com_ortho(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t count, vec3_t box);
-vec3_t md_util_compute_com_vec3_ortho(const vec3_t* xyz, const float* w, const int32_t* indices, int64_t count, vec3_t box);
+vec3_t md_util_compute_com_vec4_ortho(const vec4_t* xyzw, const int32_t* indices, int64_t count, vec3_t box);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.

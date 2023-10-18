@@ -85,6 +85,32 @@ md_molecule_t test_mol = {
 }
 };
 
+struct script {
+    md_vm_arena_t arena;
+    md_allocator_i alloc;
+    md_molecule_t amy;
+    md_molecule_t ala;
+    md_trajectory_i* ala_traj;
+};
+
+UTEST_F_SETUP(script) {
+    md_vm_arena_init(&utest_fixture->arena, GIGABYTES(4));
+
+    utest_fixture->alloc = md_vm_arena_create_interface(&utest_fixture->arena);
+
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&utest_fixture->amy, STR(MD_UNITTEST_DATA_DIR "/centered.gro"),   &utest_fixture->alloc));
+    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&utest_fixture->ala, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), &utest_fixture->alloc));
+
+    md_util_postprocess_molecule(&utest_fixture->amy, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_util_postprocess_molecule(&utest_fixture->ala, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
+
+    utest_fixture->ala_traj = md_pdb_trajectory_create(STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), &utest_fixture->alloc);
+}
+
+UTEST_F_TEARDOWN(script) {
+    md_vm_arena_free(&utest_fixture->arena);
+}
+
 static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule_t* mol) {
     ASSERT(bitfield);
     ASSERT(mol);
@@ -288,150 +314,119 @@ UTEST(script, selection) {
     //TEST_SELECTION("atom(1:2) or element('O') in residue(:)", "1001000010001000");
 }
 
-UTEST(script, compile_script) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(128));
-    const str_t gro_file = STR(MD_UNITTEST_DATA_DIR "/centered.gro");
-
-    md_gro_data_t gro_data = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, gro_file, alloc));
-
-    md_molecule_t mol = {0};
-    ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
-
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
-
+UTEST_F(script, compile_script) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
     str_t script_src = load_textfile(STR(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
+
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    md_script_ir_compile_from_source(ir, script_src, &mol, NULL, NULL);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, script_src, &utest_fixture->amy, NULL, NULL));
     EXPECT_TRUE(md_script_ir_valid(ir));
 
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST(script, semantic) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(128));
-
-    md_molecule_t mol = { 0 };
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
+UTEST_F(script, semantic) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->amy;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    {
-        md_script_ir_compile_from_source(ir, STR("p1 = resname('ALA') resname('GLY');"), &mol, NULL, NULL);
-        EXPECT_FALSE(md_script_ir_valid(ir));
-    }
+
+    EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR("p1 = resname('ALA') resname('GLY');"), mol, NULL, NULL));
+    
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR(
+        "ads = residue({10629,10633,10635,10637,10653,10659,10661,10665,10678:10679,10684,10686});"
+        "ads_end = residue({10628:10629,10633,10635:10638,10643,10647,10650,10653:10654,10656,10659,10661,10663:10665,10669:10671,10678:10679,10682,10684,10686});"
+        "not_ads = residue(not ads_end and not protein);"
+        "super_ads = {residue(10633),residue(10637),residue(10665),residue(10678),residue(10679)};"
+        "dih1_pft = dihedral(22, 20, 1, 2) in resname('PFT');"
+        "dih2_pft = dihedral(2, 3, 6, 10) in resname('PFT');"
+        "dih3_pft = dihedral(29, 27, 9, 10) in resname('PFT');"
+        "dih4_pft = dihedral(35, 33, 31 , 29) in resname('PFT');"
+        "dih_center_pft={dih2_pft,dih3_pft};"
+        "dih1_not_ads = dihedral(22, 20, 1, 2) in not_ads;"
+        "dih2_not_ads = dihedral(2, 3, 6, 10) in not_ads;"
+        "dih3_not_ads = dihedral(29, 27, 9, 10) in not_ads;"
+        "dih4_not_ads = dihedral(35, 33, 31 , 29) in not_ads;"
+        "dih_center_not_ads = {dih2_not_ads,dih3_not_ads};"
+    ), mol, NULL, NULL));
 
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST(script, selection_big) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(128));
+UTEST_F(script, selection_big) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->amy;
 
-    const str_t gro_file = STR(MD_UNITTEST_DATA_DIR "/centered.gro");
-
-    md_gro_data_t gro_data = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, gro_file, alloc));
-
-    md_molecule_t mol = {0};
-    ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
-
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
-
-    md_bitfield_t bf = {0};
-    md_bitfield_init(&bf, alloc);
-
-    bool result = eval_selection(&bf, STR("atom(1:20) and element('O') in chain(:)"), &mol);
-    EXPECT_TRUE(result);
+    md_bitfield_t bf = md_bitfield_create(alloc);
+    EXPECT_TRUE(eval_selection(&bf, STR("atom(1:20) and element('O') in chain(:)"), mol));
 
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST(script, dynamic_length) {
-    md_allocator_i* alloc = md_heap_allocator;
-    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-
-    md_pdb_data_t pdb_data = {0};
-    ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
-
-    md_molecule_t mol = {0};
-    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
-
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
-
-    md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
-    ASSERT_TRUE(traj);
+UTEST_F(script, dynamic_length) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->ala;
+    md_trajectory_i* traj = utest_fixture->ala_traj;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
         str_t src = STR("sel1 = residue(within_z(1:50));");
-        md_script_ir_compile_from_source(ir, src, &mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
-    md_script_ir_free(ir);
-    md_pdb_trajectory_free(traj);
-    md_molecule_free(&mol, alloc);
-    md_pdb_data_free(&pdb_data, alloc);
+    md_arena_allocator_destroy(alloc);
 }
 
-UTEST(script, property_compute) {
-    md_allocator_i* alloc = md_heap_allocator;
-    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-
-    md_pdb_data_t pdb_data = {0};
-    ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
-
-    md_molecule_t mol = {0};
-    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
-
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
-
-    md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
-    ASSERT_TRUE(traj);
+UTEST_F(script, property_compute) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->ala;
+    md_trajectory_i* traj = utest_fixture->ala_traj;
     uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
         md_script_ir_clear(ir);
         str_t src = STR("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
-        md_script_ir_compile_from_source(ir, src, &mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
     }
 
     {
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR("d1 = 1:5 in residue(1:3);"), &mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR("d1 = 1:5 in residue(1:3);"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
     {
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR("prop1 = rdf(element('C'), element('O'), 20.0);"), &mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR("prop1 = rdf(element('C'), element('O'), 20.0);"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
     }
 
     {
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), &mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
     }
@@ -444,7 +439,7 @@ UTEST(script, property_compute) {
         );
 
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, src, &mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
@@ -452,17 +447,14 @@ UTEST(script, property_compute) {
         str_t src = STR("s1 = count(within(10, residue(:)));");
 
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, src, &mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, &mol, traj, 0, num_frames));
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
         md_script_eval_free(eval);
     }
 
-    md_script_ir_free(ir);
-    md_pdb_trajectory_free(traj);
-    md_molecule_free(&mol, alloc);
-    md_pdb_data_free(&pdb_data, alloc);
+    md_arena_allocator_destroy(alloc);
 }
 
 #define NUM_THREADS 8
@@ -499,19 +491,12 @@ void func(void* user_data) {
     }
 }
 
-UTEST(script, parallel_evaluation) {
-    md_allocator_i* alloc = md_heap_allocator;
-    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+UTEST_F(script, parallel_evaluation) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->ala;
+    md_trajectory_i* traj = utest_fixture->ala_traj;
+
     const str_t script = STR("p1 = distance(1,10);");
-
-    md_pdb_data_t pdb_data = {0};
-    ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
-
-    md_molecule_t mol = {0};
-    ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
-
-    md_trajectory_i* traj = md_pdb_trajectory_create(pdb_file, alloc);
-    ASSERT_TRUE(traj);
 
     md_script_eval_t* eval[NUM_THREADS] = {0};
     md_thread_t* threads[NUM_THREADS] = {0};
@@ -520,11 +505,11 @@ UTEST(script, parallel_evaluation) {
     int64_t num_frames = md_trajectory_num_frames(traj);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
-    md_script_ir_compile_from_source(ir, script, &mol, traj, NULL);
+    md_script_ir_compile_from_source(ir, script, mol, traj, NULL);
     EXPECT_TRUE(md_script_ir_valid(ir));
 
     md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, STR(""), alloc);
-    ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, &mol, traj, 0, (uint32_t)num_frames));
+    ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, mol, traj, 0, (uint32_t)num_frames));
 
     ASSERT_EQ(1, md_script_eval_num_properties(ref_eval));
     ASSERT_EQ(num_frames, md_script_eval_properties(ref_eval)[0].data.num_values);
@@ -546,7 +531,7 @@ UTEST(script, parallel_evaluation) {
         for (int i = 0; i < NUM_THREADS; ++i) {
             thread_data[i] = (thread_data_t) {
                 .ir = ir,
-                .mol = &mol,
+                .mol = mol,
                 .traj = traj,
                 .ref_eval = ref_eval,
                 .eval = eval[i],
@@ -567,47 +552,36 @@ UTEST(script, parallel_evaluation) {
         md_script_eval_free(eval[i]);
     }
 
-    md_script_ir_free(ir);
-    md_script_eval_free(ref_eval);
-
-    md_pdb_trajectory_free(traj);
-    md_molecule_free(&mol, alloc);
-    md_pdb_data_free(&pdb_data, alloc);
+    md_arena_allocator_destroy(alloc);
 }
 
-UTEST(script, parse_unary_binary) {
-    md_allocator_i* alloc = md_heap_allocator;
-    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-
-    md_molecule_loader_i* pdb = md_pdb_molecule_api();
-    md_molecule_t mol;
-    ASSERT_TRUE(pdb->init_from_file(&mol, pdb_file, alloc));
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+UTEST_F(script, parse_unary_binary) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5-4;"), &mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5-4;"), mol, NULL, NULL));
         
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = -4;"),  &mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = -4;"), mol, NULL, NULL));
         
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = (-4);"),  &mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = (-4);"), mol, NULL, NULL));
         
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5 * (-4);"),  &mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5 * (-4);"), mol, NULL, NULL));
 
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5 * -4;"),  &mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = 5 * -4;"), mol, NULL, NULL));
         
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = sqrt(2) * -4;"),  &mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = sqrt(2) * -4;"), mol, NULL, NULL));
 
         md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = (5) - 4;"), &mol, NULL, NULL));
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR("x = (5) - 4;"), mol, NULL, NULL));
     }
 
-    md_script_ir_free(ir);
-    md_molecule_free(&mol, alloc);
+    md_arena_allocator_destroy(alloc);
 }
