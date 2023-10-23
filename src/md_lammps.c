@@ -62,7 +62,11 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	int32_t atoms_line_counter = 0;
 	do {
 		md_buffered_reader_extract_line(&line, reader);
-	} while (!str_equal_cstr_n(line, "Atoms", 5) && atoms_line_counter++ < 1000);
+		if (atoms_line_counter++ >= 1000) {
+			MD_LOG_ERROR("Could not find atoms line after 1000 lines");
+			return false;
+		}
+	} while (!str_equal_cstr_n(line, "Atoms", 5));
 
 	//Skip empty line
 	md_buffered_reader_skip_line(reader);
