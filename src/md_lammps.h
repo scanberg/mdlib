@@ -27,6 +27,10 @@ typedef enum lammps_atom_data_format {
 	NZ
 } lammps_atom_data_format;
 
+static const lammps_atom_data_format DATA_FORMAT_FULL[] = {
+	ATOM_IDX, MOL_IDX, ATOM_TYPE, PARTIAL_CHARGE, ATOM_X, ATOM_Y, ATOM_Z, NX, NY, NZ
+};
+
 //Contains ptr to array with a data_format definition
 typedef struct data_format_t {
 	const lammps_atom_data_format* ptr;
@@ -39,7 +43,7 @@ typedef enum atom_style {
 }atom_style;
 
 //Used to create the data_format with just a style keyword
-data_format_t* get_data_format(atom_style style);
+bool get_data_format(data_format_t* format, atom_style style);
 
 //Contains data about a single atom
 typedef struct md_lammps_atom_t {

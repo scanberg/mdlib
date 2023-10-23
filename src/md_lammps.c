@@ -12,18 +12,16 @@
 
 #include <string.h>
 
-data_format_t* get_data_format(atom_style style) {
-	data_format_t* df;
+bool get_data_format(data_format_t* format, atom_style style) {
 	switch (style)
 	{
 	default:
 		MD_LOG_ERROR("Invalid atom_style");
-		break;
+		return false;
 	case full:
-		data_format_t arr[10] = { ATOM_IDX, MOL_IDX, ATOM_TYPE, PARTIAL_CHARGE, ATOM_X, ATOM_Y, ATOM_Z, NX, NY, NZ };
-		df->len = 10;
-		df->ptr = arr;
-		return df;
+		format->ptr = DATA_FORMAT_FULL;
+		format->len = ARRAY_SIZE(DATA_FORMAT_FULL);
+		return true;
 	}
 }
 
@@ -63,7 +61,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	//Jump ahead to the Atoms definition
 	do {
 		md_buffered_reader_extract_line(&line, reader);
-	} while (!str_equal_cstr_n(line, "ATOMS", 5));
+	} while (!str_equal_cstr_n(line, "Atoms", 5));
 
 	//Skip empty line
 	md_buffered_reader_skip_line(reader);
