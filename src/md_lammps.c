@@ -59,9 +59,10 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	md_array_resize(data->atom_data, data->num_atoms, alloc);
 
 	//Jump ahead to the Atoms definition
+	int32_t atoms_line_counter = 0;
 	do {
 		md_buffered_reader_extract_line(&line, reader);
-	} while (!str_equal_cstr_n(line, "Atoms", 5));
+	} while (!str_equal_cstr_n(line, "Atoms", 5) && atoms_line_counter++ < 1000);
 
 	//Skip empty line
 	md_buffered_reader_skip_line(reader);
