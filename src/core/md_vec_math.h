@@ -1493,7 +1493,7 @@ MD_VEC_INLINE mat4_t mat4_transpose(mat4_t M) {
 
 #if MD_VEC_MATH_USE_SIMD
     T = M;
-    _MM_TRANSPOSE4_PS(T.col[0].m128, T.col[1].m128, T.col[2].m128, T.col[3].m128);
+    SIMDE_MM_TRANSPOSE4_PS(T.col[0].m128, T.col[1].m128, T.col[2].m128, T.col[3].m128);
 #else
     T.elem[0][0] = M.elem[0][0];
     T.elem[0][1] = M.elem[1][0];

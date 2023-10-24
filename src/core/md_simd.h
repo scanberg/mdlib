@@ -104,38 +104,38 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #define md_mm_cmpeq_ps simde_mm_cmpeq_ps
 #define md_mm_cmpeq_pd simde_mm_cmpeq_pd
-#define md_mm256_cmpeq_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_EQ_OQ)
-#define md_mm256_cmpeq_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_EQ_OQ)
+#define md_mm256_cmpeq_ps(a,b) simde_mm256_cmp_ps(a,b, SIMDE_CMP_EQ_OQ)
+#define md_mm256_cmpeq_pd(a,b) simde_mm256_cmp_pd(a,b, SIMDE_CMP_EQ_OQ)
 
 #define md_mm_cmpneq_ps simde_mm_cmpneq_ps
 #define md_mm_cmpneq_pd simde_mm_cmpneq_pd
-#define md_mm256_cmpneq_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_NEQ_OQ)
-#define md_mm256_cmpneq_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_NEQ_OQ)
+#define md_mm256_cmpneq_ps(a,b) simde_mm256_cmp_ps(a,b, SIMDE_CMP_NEQ_OQ)
+#define md_mm256_cmpneq_pd(a,b) simde_mm256_cmp_pd(a,b, SIMDE_CMP_NEQ_OQ)
 
 #define md_mm_cmplt_ps simde_mm_cmplt_ps
 #define md_mm_cmplt_pd simde_mm_cmplt_pd
-#define md_mm256_cmplt_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_LT_OQ)
-#define md_mm256_cmplt_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_LT_OQ)
+#define md_mm256_cmplt_ps(a,b) simde_mm256_cmp_ps(a,b, SIMDE_CMP_LT_OQ)
+#define md_mm256_cmplt_pd(a,b) simde_mm256_cmp_pd(a,b, SIMDE_CMP_LT_OQ)
 
 #define md_mm_cmple_ps simde_mm_cmple_ps
 #define md_mm_cmple_pd simde_mm_cmple_pd
-#define md_mm256_cmple_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_LE_OQ)
-#define md_mm256_cmple_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_LE_OQ)
+#define md_mm256_cmple_ps(a,b) simde_mm256_cmp_ps(a,b, SIMDE_CMP_LE_OQ)
+#define md_mm256_cmple_pd(a,b) simde_mm256_cmp_pd(a,b, SIMDE_CMP_LE_OQ)
 
 #define md_mm_cmpgt_ps simde_mm_cmpgt_ps
 #define md_mm_cmpgt_pd simde_mm_cmpgt_pd
-#define md_mm256_cmpgt_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_GT_OQ)
-#define md_mm256_cmpgt_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_GT_OQ)
+#define md_mm256_cmpgt_ps(a,b) simde_mm256_cmp_ps(a,b, SIMDE_CMP_GT_OQ)
+#define md_mm256_cmpgt_pd(a,b) simde_mm256_cmp_pd(a,b, SIMDE_CMP_GT_OQ)
 
 #define md_mm_cmpge_ps simde_mm_cmpge_ps
 #define md_mm_cmpge_pd simde_mm_cmpge_pd
-#define md_mm256_cmpge_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_GE_OQ)
-#define md_mm256_cmpge_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_GE_OQ)
+#define md_mm256_cmpge_ps(a,b) simde_mm256_cmp_ps(a,b, SIMDE_CMP_GE_OQ)
+#define md_mm256_cmpge_pd(a,b) simde_mm256_cmp_pd(a,b, SIMDE_CMP_GE_OQ)
 
-#define md_mm_round_ps(x) simde_mm_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
-#define md_mm_round_pd(x) simde_mm_round_pd(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
-#define md_mm256_round_ps(x) simde_mm256_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
-#define md_mm256_round_pd(x) simde_mm256_round_pd(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
+#define md_mm_round_ps(x) simde_mm_round_ps(x, SIMDE_MM_FROUND_TO_NEAREST_INT | SIMDE_MM_FROUND_NO_EXC)
+#define md_mm_round_pd(x) simde_mm_round_pd(x, SIMDE_MM_FROUND_TO_NEAREST_INT | SIMDE_MM_FROUND_NO_EXC)
+#define md_mm256_round_ps(x) simde_mm256_round_ps(x, SIMDE_MM_FROUND_TO_NEAREST_INT | SIMDE_MM_FROUND_NO_EXC)
+#define md_mm256_round_pd(x) simde_mm256_round_pd(x, SIMDE_MM_FROUND_TO_NEAREST_INT | SIMDE_MM_FROUND_NO_EXC)
 
 #define md_mm_floor_ps simde_mm_floor_ps
 #define md_mm_floor_pd simde_mm_floor_pd
@@ -369,9 +369,9 @@ MD_SIMD_INLINE void md_mm_unpack_xyz_ps(md_128* out_x, md_128* out_y, md_128* ou
     t2 = simde_mm_unpacklo_ps(r2,r3); // xxyy xxyy
     t3 = simde_mm_unpackhi_ps(r2,r3); // zzww zzww
 
-    *out_x = simde_mm_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
-    *out_y = simde_mm_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
-    *out_z = simde_mm_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
+    *out_x = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
+    *out_y = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
+    *out_z = simde_mm_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
 }
 
 MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256* out_z, const float* in_xyz, size_t stride_in_bytes) {
@@ -390,9 +390,9 @@ MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256*
     t2 = simde_mm256_unpacklo_ps(r2,r3); // xxyy xxyy
     t3 = simde_mm256_unpackhi_ps(r2,r3); // zzww zzww
 
-    *out_x = simde_mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
-    *out_y = simde_mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
-    *out_z = simde_mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
+    *out_x = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
+    *out_y = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
+    *out_z = simde_mm256_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
 }
 
 #undef MD_LOAD_STRIDED_128
@@ -405,13 +405,13 @@ MD_SIMD_INLINE md_256d md_mm256_abs_pd(md_256d a) { return simde_mm256_and_pd(a,
 // This naming convention clashes a bit with the intel intrinsics,
 // The operation broadcasts a single component into all components of the vector.
 // Maybe swizzle is a better name?
-#define md_mm_splat_ps(v, i) simde_mm_shuffle_ps(v,v, _MM_SHUFFLE(i, i, i, i))
-#define md_mm_splat_pd(v, i) simde_mm_shuffle_pd(v,v, _MM_SHUFFLE2(i, i))
+#define md_mm_splat_ps(v, i) simde_mm_shuffle_ps(v,v, SIMDE_MM_SHUFFLE(i, i, i, i))
+#define md_mm_splat_pd(v, i) simde_mm_shuffle_pd(v,v, SIMDE_MM_SHUFFLE2(i, i))
 
-MD_SIMD_INLINE md_128  md_mm_fract_ps(md_128 a)  { return simde_mm_sub_ps(a, simde_mm_round_ps(a, _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
-MD_SIMD_INLINE md_128d md_mm_fract_pd(md_128d a) { return simde_mm_sub_pd(a, simde_mm_round_pd(a, _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
-MD_SIMD_INLINE md_256  md_mm256_fract_ps(md_256 a)  { return simde_mm256_sub_ps(a, simde_mm256_round_ps(a,  _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
-MD_SIMD_INLINE md_256d md_mm256_fract_pd(md_256d a) { return simde_mm256_sub_pd(a, simde_mm256_round_pd(a,  _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
+MD_SIMD_INLINE md_128  md_mm_fract_ps(md_128 a)  { return simde_mm_sub_ps(a, simde_mm_round_ps(a, SIMDE_MM_FROUND_NO_EXC | SIMDE_MM_FROUND_FLOOR)); }
+MD_SIMD_INLINE md_128d md_mm_fract_pd(md_128d a) { return simde_mm_sub_pd(a, simde_mm_round_pd(a, SIMDE_MM_FROUND_NO_EXC | SIMDE_MM_FROUND_FLOOR)); }
+MD_SIMD_INLINE md_256  md_mm256_fract_ps(md_256 a)  { return simde_mm256_sub_ps(a, simde_mm256_round_ps(a,  SIMDE_MM_FROUND_NO_EXC | SIMDE_MM_FROUND_FLOOR)); }
+MD_SIMD_INLINE md_256d md_mm256_fract_pd(md_256d a) { return simde_mm256_sub_pd(a, simde_mm256_round_pd(a,  SIMDE_MM_FROUND_NO_EXC | SIMDE_MM_FROUND_FLOOR)); }
 
 MD_SIMD_INLINE md_128  md_mm_sign_ps(md_128 a)  { return simde_mm_xor_ps(   simde_mm_and_ps(a,  simde_mm_set1_ps(-0.0)),    simde_mm_set1_ps(1.0));    }
 MD_SIMD_INLINE md_128d md_mm_sign_pd(md_128d a) { return simde_mm_xor_pd(   simde_mm_and_pd(a,  simde_mm_set1_pd(-0.0)),    simde_mm_set1_pd(1.0));     }
@@ -419,26 +419,26 @@ MD_SIMD_INLINE md_256  md_mm256_sign_ps(md_256 a)  { return simde_mm256_xor_ps(s
 MD_SIMD_INLINE md_256d md_mm256_sign_pd(md_256d a) { return simde_mm256_xor_pd(simde_mm256_and_pd(a, simde_mm256_set1_pd(-0.0)), simde_mm256_set1_pd(1.0));  }
 
 MD_SIMD_INLINE float md_mm_reduce_min_ps(md_128 x) {
-    md_128 a = simde_mm_min_ps(x, simde_mm_shuffle_ps(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
-    md_128 b = simde_mm_min_ps(a, simde_mm_shuffle_ps(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
+    md_128 a = simde_mm_min_ps(x, simde_mm_shuffle_ps(x, x, SIMDE_MM_SHUFFLE(0, 0, 3, 2)));
+    md_128 b = simde_mm_min_ps(a, simde_mm_shuffle_ps(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1)));
     return simde_mm_cvtss_f32(simde_mm_min_ps(a,b));
 }
 
 MD_SIMD_INLINE float md_mm_reduce_max_ps(md_128 x) {
-    md_128 a = simde_mm_max_ps(x, simde_mm_shuffle_ps(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
-    md_128 b = simde_mm_max_ps(a, simde_mm_shuffle_ps(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
+    md_128 a = simde_mm_max_ps(x, simde_mm_shuffle_ps(x, x, SIMDE_MM_SHUFFLE(0, 0, 3, 2)));
+    md_128 b = simde_mm_max_ps(a, simde_mm_shuffle_ps(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1)));
     return simde_mm_cvtss_f32(simde_mm_max_ps(a,b));
 }
 
 MD_SIMD_INLINE double md_mm256_reduce_min_pd(md_256d x) {
-    md_256d a = simde_mm256_min_pd(x, simde_mm256_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
-    md_256d b = simde_mm256_min_pd(a, simde_mm256_shuffle_pd(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
+    md_256d a = simde_mm256_min_pd(x, simde_mm256_shuffle_pd(x, x, SIMDE_MM_SHUFFLE(0, 0, 3, 2)));
+    md_256d b = simde_mm256_min_pd(a, simde_mm256_shuffle_pd(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1)));
     return simde_mm256_cvtsd_f64(simde_mm256_min_pd(a,b));
 }
 
 MD_SIMD_INLINE double md_mm256_reduce_max_pd(md_256d x) {
-    md_256d a = simde_mm256_max_pd(x, simde_mm256_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
-    md_256d b = simde_mm256_max_pd(a, simde_mm256_shuffle_pd(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
+    md_256d a = simde_mm256_max_pd(x, simde_mm256_shuffle_pd(x, x, SIMDE_MM_SHUFFLE(0, 0, 3, 2)));
+    md_256d b = simde_mm256_max_pd(a, simde_mm256_shuffle_pd(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1)));
     return simde_mm256_cvtsd_f64(simde_mm256_max_pd(a,b));
 }
 
@@ -454,16 +454,16 @@ MD_SIMD_INLINE double md_mm256_reduce_add_pd(md_256d x) {
 // https://stackoverflow.com/questions/6996764/fastest-way-to-do-horizontal-sse-vector-sum-or-other-reduction
 MD_SIMD_INLINE float md_mm_reduce_add_ps(md_128 x) {
     //__m128 shuf = simde_mm_movehdup_ps(x);        // broadcast elements 3,1 to 2,0 (this instruction is SSE3 and we avoid it by using shuffle instead)
-    md_128 shuf = md_mm_shuffle_ps(x, x, _MM_SHUFFLE(3, 3, 1, 1));
+    md_128 shuf = md_mm_shuffle_ps(x, x, SIMDE_MM_SHUFFLE(3, 3, 1, 1));
     md_128 sums = md_mm_add_ps(x, shuf);
     shuf        = md_mm_movehl_ps(shuf, sums); // high half -> low half
     sums        = md_mm_add_ps(sums, shuf);
     return        md_mm_cvtss_f32(sums);
 }
 
-MD_SIMD_INLINE double md_mm_reduce_add_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_add_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
-MD_SIMD_INLINE double md_mm_reduce_min_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_min_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
-MD_SIMD_INLINE double md_mm_reduce_max_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_max_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_add_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_add_pd(x, md_mm_shuffle_pd(x, x, SIMDE_MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_min_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_min_pd(x, md_mm_shuffle_pd(x, x, SIMDE_MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_max_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_max_pd(x, md_mm_shuffle_pd(x, x, SIMDE_MM_SHUFFLE(0, 0, 0, 1)))); }
 
 MD_SIMD_INLINE float md_mm256_reduce_add_ps(md_256 x) { return md_mm_reduce_add_ps(md_mm_add_ps(simde_mm256_castps256_ps128(x), simde_mm256_extractf128_ps(x, 0x1))); }
 MD_SIMD_INLINE float md_mm256_reduce_min_ps(md_256 x) { return md_mm_reduce_min_ps(md_mm_min_ps(simde_mm256_castps256_ps128(x), simde_mm256_extractf128_ps(x, 0x1))); }
