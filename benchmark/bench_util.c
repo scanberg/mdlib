@@ -62,14 +62,14 @@ static double ref_com_trig(const float* in_x, const float* in_w, int64_t count, 
     const double r2 = x*x + y*y;
 
     double theta_prim = PI;
-    if (r2 > 1.0e-15) {
+    if (r2 > 1.0e-8) {
         theta_prim += atan2(-y, -x);
     }
 
     return (theta_prim / TWO_PI) * x_max;
 }
 #if defined(_MSC_VER)
-#pragma float_control(precise, on, pop)
+#pragma float_control(pop)
 #endif
 
 UBENCH_EX(util, com_speed_of_light) {

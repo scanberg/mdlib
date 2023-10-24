@@ -89,7 +89,9 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-gnu-zero-variadic-macro-arguments"
     "-Wno-nested-anon-types")
 
-    if (MD_ENABLE_AVX2)
+    if (MD_ENABLE_AVX512F)
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f")
+    elseif (MD_ENABLE_AVX2)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
@@ -122,7 +124,9 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
       "-Wno-unused-parameter"
       "-Wno-format-truncation")
 
-    if (MD_ENABLE_AVX2)
+    if (MD_ENABLE_AVX512F)
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f")
+    elseif (MD_ENABLE_AVX2)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
@@ -156,7 +160,9 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       "/Oi"
       "/fp:except-")
 
-    if (MD_ENABLE_AVX2)
+    if (MD_ENABLE_AVX512F)
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX512" "/fp:fast")
+    elseif (MD_ENABLE_AVX2)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX2" "/fp:fast")
     elseif (MD_ENABLE_AVX)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX" "/fp:fast")
