@@ -16,6 +16,7 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #define SIMDE_ENABLE_NATIVE_ALIASES
 #include <simde/x86/avx2.h>
+#include <simde/x86/fma.h>
 
 #include <core/md_common.h>
 
@@ -158,10 +159,10 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_div_ps simde_mm256_div_ps
 #define md_mm256_div_pd simde_mm256_div_pd
 
-#define md_mm_fmadd_ps _mm_fmadd_ps
-#define md_mm_fmadd_pd _mm_fmadd_pd
-#define md_mm256_fmadd_ps _mm256_fmadd_ps
-#define md_mm256_fmadd_pd _mm256_fmadd_pd
+#define md_mm_fmadd_ps simde_mm_fmadd_ps
+#define md_mm_fmadd_pd simde_mm_fmadd_pd
+#define md_mm256_fmadd_ps simde_mm256_fmadd_ps
+#define md_mm256_fmadd_pd simde_mm256_fmadd_pd
 
 #define md_mm_blendv_ps simde_mm_blendv_ps
 #define md_mm_blendv_pd simde_mm_blendv_pd
@@ -206,30 +207,36 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_loadu_epi32 simde_mm256_loadu_epi32
 #define md_mm256_loadu_epi64 simde_mm256_loadu_epi64
 
-#define md_mm_load_epi32 simde_mm_load_epi32
-#define md_mm_load_epi64 simde_mm_load_epi64
-#define md_mm256_load_epi32 simde_mm256_load_epi32
-#define md_mm256_load_epi64 simde_mm256_load_epi64
+#define md_mm_load_si128 simde_mm_load_si128
+#define md_mm_load_epi32 simde_mm_load_si128
+#define md_mm_load_epi64 simde_mm_load_si128
+#define md_mm256_load_si256 simde_mm256_load_si256
+#define md_mm256_load_epi32 simde_mm256_load_si256
+#define md_mm256_load_epi64 simde_mm256_load_si256
 
-#define md_mm_storeu_epi32 simde_mm_storeu_epi32
-#define md_mm_storeu_epi64 simde_mm_storeu_epi64
-#define md_mm256_storeu_epi32 simde_mm256_storeu_epi32
-#define md_mm256_storeu_epi64 simde_mm256_storeu_epi64
+#define md_mm_storeu_si128 simde_mm_storeu_si128
+#define md_mm_storeu_epi32 simde_mm_storeu_si128
+#define md_mm_storeu_epi64 simde_mm_storeu_si128
+#define md_mm256_storeu_si256 simde_mm256_storeu_si256
+#define md_mm256_storeu_epi32 simde_mm256_storeu_si256
+#define md_mm256_storeu_epi64 simde_mm256_storeu_si256
 
-#define md_mm_store_epi32 simde_mm_store_epi32
-#define md_mm_store_epi64 simde_mm_store_epi64
-#define md_mm256_store_epi32 simde_mm256_store_epi32
-#define md_mm256_store_epi64 simde_mm256_store_epi64
+#define md_mm_store_si128 simde_mm_store_si128
+#define md_mm_store_epi32 simde_mm_store_si128
+#define md_mm_store_epi64 simde_mm_store_si128
+#define md_mm256_store_si256 simde_mm256_store_si256
+#define md_mm256_store_epi32 simde_mm256_store_si256
+#define md_mm256_store_epi64 simde_mm256_store_si256
 
 #define md_mm_set1_epi32 simde_mm_set1_epi32
 #define md_mm_set1_epi64 simde_mm_set1_epi64
 #define md_mm256_set1_epi32 simde_mm256_set1_epi32
-#define md_mm256_set1_epi64 simde_mm256_set1_epi64
+#define md_mm256_set1_epi64 simde_mm256_set1_epi64x
 
 #define md_mm_set_epi32 simde_mm_set_epi32
 #define md_mm_set_epi64 simde_mm_set_epi64
 #define md_mm256_set_epi32 simde_mm256_set_epi32
-#define md_mm256_set_epi64 simde_mm256_set_epi64
+#define md_mm256_set_epi64 simde_mm256_set_epi64x
 
 #define md_mm_setzero_si128 simde_mm_setzero_si128
 #define md_mm256_setzero_si256 simde_mm256_setzero_si256
@@ -579,6 +586,7 @@ MD_SIMD_INLINE __m256d md_mm256_lerp_pd(__m256d a, __m256d b, float t) {
 }
 
 #if 0
+// These are versions from ispc, but they are not as accurate, nor as fast as the cephes versions below
 MD_SIMD_INLINE void md_mm_sincos_ps(__m128 in_x, __m128* out_sin, __m128* out_cos) {
     const __m128 two_over_pi = md_mm_set1_ps(0.6366197466850280761718);
     const __m128 scaled = md_mm_mul_ps(in_x, two_over_pi);
@@ -741,12 +749,11 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(__m256 in_x, __m256* out_sin, __m256* out
 }
 #endif
 
-// We want to enable precise floating point operations for this function
-// fp:fast is used, the precision drops by one digit
+// These are based on the SSEmathfun implementations by Julien Pommier.
+// http://gruntthepeon.free.fr/ssemath/
+// Who's implementations which are based on the cephes library
+// http://www.netlib.org/cephes/
 
-#if defined(_MSC_VER)
-#pragma float_control(precise, on, push)
-#endif
 static void md_mm_sincos_ps(__m128 xx, __m128* s, __m128* c) {
     __m128  xmm1, xmm2, sign_bit_sin, x, y, y2;
     __m128i imm0, imm2, imm3;
@@ -756,10 +763,6 @@ static void md_mm_sincos_ps(__m128 xx, __m128* s, __m128* c) {
 
     // abs
     x = md_mm_abs_ps(xx);
-
-    if (_mm_cvtss_f32(xx) == 2.0f) {
-        while(0) {};
-    }
 
     /* scale by 4/Pi */
     y = md_mm_mul_ps(x, md_mm_set1_ps(1.27323954473516f));
@@ -917,6 +920,7 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(__m256 x, __m256* s, __m256* c) {
     *c = md_mm256_xor_ps(xmm2, sign_bit_cos);
 }
 
+#if defined(__AVX512F__)
 MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
     __m512  xmm1, xmm2, sign_bit_sin, y, y2;
     __m512i imm0, imm2, imm3;
@@ -999,102 +1003,6 @@ MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
     /* update the sign */
     *s = _mm512_xor_ps(xmm1, sign_bit_sin);
     *c = _mm512_xor_ps(xmm2, sign_bit_cos);
-}
-#if defined(_MSC_VER)
-//#pragma float_control(pop)
-#endif
-
-#if 0
-MD_SIMD_INLINE void md_simd_sincos_ps(__m256 x, __m256* s, __m256* c) {
-    __m256 xmm1, xmm2, xmm3, sign_bit_sin, y;
-    __m256i imm0, imm2, imm4;
-
-    // sign bit
-    sign_bit_sin = md_simd_and_ps(x, md_simd_cast_i32x8(md_simd_set1_i32x8(0x80000000)));
-
-    // abs
-    x = md_simd_abs_ps(x);
-
-    /* scale by 4/Pi */
-    y = md_simd_mul_ps(x, md_simd_set1_ps(1.27323954473516));
-
-    /* store integer part of y */
-    imm2 = md_simd_convert_ps(y);
-
-    /* j=(j+1) & (~1) (see the cephes sources) */
-    imm2 = md_simd_add_i32x8(imm2, md_simd_set1_i32x8(1));
-    imm2 = md_simd_and_i32x8(imm2, md_simd_set1_i32x8(~1));
-
-    y = md_simd_convert_i32x8(imm2);
-    imm4 = imm2;
-
-    /* get the swap sign flag for the sine */
-    imm0 = md_simd_and_i32x8(imm2, md_simd_set1_i32x8(4));
-    imm0 = md_simd_shift_left_i32x8(imm0, 29);
-
-    /* get polynom selection mask for the sine */
-    imm2 = md_simd_and_i32x8(imm2, md_simd_set1_i32x8(2));
-    imm2 = md_simd_cmp_eq_i32x8(imm2, md_simd_zero_i32x8());
-
-    __m256 swap_sign_bit_sin = md_simd_cast_i32x8(imm0);
-    __m256 poly_mask         = md_simd_cast_i32x8(imm2);
-
-    /* The magic pass: "Extended precision modular arithmetic" 
-    x = ((x - y * DP1) - y * DP2) - y * DP3; */
-    xmm1 = md_simd_set1_ps(-0.78515625);
-    xmm2 = md_simd_set1_ps(-2.4187564849853515625e-4);
-    xmm3 = md_simd_set1_ps(-3.77489497744594108e-8);
-    xmm1 = md_simd_mul_ps(y, xmm1);
-    xmm2 = md_simd_mul_ps(y, xmm2);
-    xmm3 = md_simd_mul_ps(y, xmm3);
-    x    = md_simd_add_ps(x, xmm1);
-    x    = md_simd_add_ps(x, xmm2);
-    x    = md_simd_add_ps(x, xmm3);
-
-    imm4 = md_simd_sub_i32x8(imm4, md_simd_set1_i32x8(2));
-    imm4 = md_simd_and_not_i32x8(md_simd_set1_i32x8(4), imm4);
-    imm4 = md_simd_shift_left_i32x8(imm4, 29);
-
-    __m256 sign_bit_cos = md_simd_cast_i32x8(imm4);
-    sign_bit_sin = md_simd_xor_ps(sign_bit_sin, swap_sign_bit_sin);
-
-    /* Evaluate the first polynom  (0 <= x <= Pi/4) */
-    __m256 z = md_simd_mul_ps(x,x);
-    y = md_simd_set1_ps(2.443315711809948E-005);
-
-    y = md_simd_mul_ps(y, z);
-    y = md_simd_add_ps(y, md_simd_set1_ps(-1.388731625493765E-003));
-    y = md_simd_mul_ps(y, z);
-    y = md_simd_add_ps(y, md_simd_set1_ps(4.166664568298827E-002));
-    y = md_simd_mul_ps(y, z);
-    y = md_simd_mul_ps(y, z);
-    __m256 tmp = md_simd_mul_ps(z, md_simd_set1_ps(0.5));
-    y = md_simd_sub_ps(y, tmp);
-    y = md_simd_add_ps(y, md_simd_set1_ps(1.0));
-
-    /* Evaluate the second polynom  (Pi/4 <= x <= 0) */
-    __m256 y2 = md_simd_set1_ps(-1.9515295891E-4);
-    y2 = md_simd_mul_ps(y2, z);
-    y2 = md_simd_add_ps(y2, md_simd_set1_ps(8.3321608736E-3));
-    y2 = md_simd_mul_ps(y2, z);
-    y2 = md_simd_add_ps(y2, md_simd_set1_ps(-1.6666654611E-1));
-    y2 = md_simd_mul_ps(y2, z);
-    y2 = md_simd_mul_ps(y2, x);
-    y2 = md_simd_add_ps(y2, x);
-
-    /* select the correct result from the two polynoms */  
-    xmm3 = poly_mask;
-    __m256 ysin2 = md_simd_and_ps(xmm3, y2);
-    __m256 ysin1 = md_simd_and_not_ps(y, xmm3);
-    y2 = md_simd_sub_ps(y2,ysin2);
-    y = md_simd_sub_ps(y, ysin1);
-
-    xmm1 = md_simd_add_ps(ysin1,ysin2);
-    xmm2 = md_simd_add_ps(y,y2);
-
-    /* update the sign */
-    *s = md_simd_xor_ps(xmm1, sign_bit_sin);
-    *c = md_simd_xor_ps(xmm2, sign_bit_cos);
 }
 #endif
 
