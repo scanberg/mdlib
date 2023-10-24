@@ -342,7 +342,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_cvtepi32_ps simde_mm256_cvtepi32_ps
 
 #define md_mm_cvtps_epi32 simde_mm_cvtps_epi32
+#define md_mm_cvttps_epi32 simde_mm_cvttps_epi32
 #define md_mm256_cvtps_epi32 simde_mm256_cvtps_epi32
+#define md_mm256_cvttps_epi32 simde_mm256_cvttps_epi32
 
 #define md_mm_cvtss_f32 simde_mm_cvtss_f32
 #define md_mm_cvtsd_f64 simde_mm_cvtsd_f64
@@ -378,10 +380,10 @@ MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256*
 
     // @TODO: Try and implement this using 256-bit loads and then shuffle all the way.
     // It's a tradeoff between the number of loads issued and the port pressure on the generally few ports that are used for shuffle instructions.
-    r0 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 4, stride_in_bytes), 1);
-    r1 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 5, stride_in_bytes), 1);
-    r2 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
-    r3 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
+    r0 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 4, stride_in_bytes), 1);
+    r1 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 5, stride_in_bytes), 1);
+    r2 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
+    r3 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
 
     t0 = simde_mm256_unpacklo_ps(r0,r1); // xxyy xxyy
     t1 = simde_mm256_unpackhi_ps(r0,r1); // zzww zzww
@@ -459,17 +461,19 @@ MD_SIMD_INLINE float md_mm_reduce_add_ps(md_128 x) {
     return        md_mm_cvtss_f32(sums);
 }
 
-MD_SIMD_INLINE double md_mm_reduce_add_pd(md_128d x) { return _mm_cvtsd_f64(_mm_add_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
-MD_SIMD_INLINE double md_mm_reduce_min_pd(md_128d x) { return _mm_cvtsd_f64(_mm_min_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
-MD_SIMD_INLINE double md_mm_reduce_max_pd(md_128d x) { return _mm_cvtsd_f64(_mm_max_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_add_pd(md_128d x) { return simde_mm_cvtsd_f64(_mm_add_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_min_pd(md_128d x) { return simde_mm_cvtsd_f64(_mm_min_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_max_pd(md_128d x) { return simde_mm_cvtsd_f64(_mm_max_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
 
 MD_SIMD_INLINE float md_mm256_reduce_add_ps(md_256 x) { return md_mm_reduce_add_ps(md_mm_add_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
 MD_SIMD_INLINE float md_mm256_reduce_min_ps(md_256 x) { return md_mm_reduce_min_ps(md_mm_min_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
 MD_SIMD_INLINE float md_mm256_reduce_max_ps(md_256 x) { return md_mm_reduce_max_ps(md_mm_max_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
 
+#if defined(__AVX512F__)
 #define md_mm512_reduce_add_ps _mm512_reduce_add_ps
 #define md_mm512_reduce_min_ps _mm512_reduce_min_ps
 #define md_mm512_reduce_max_ps _mm512_reduce_max_ps
+#endif
 
 MD_SIMD_INLINE md_128 md_mm_deperiodize_ps(md_128 x, md_128 r, md_128 p) {
     md_128 d  = md_mm_sub_ps(x, r);
@@ -783,7 +787,7 @@ static void md_mm_sincos_ps(md_128 xx, md_128* s, md_128* c) {
     y = md_mm_mul_ps(x, md_mm_set1_ps(1.27323954473516f));
 
     /* store integer part of y */
-    imm2 = _mm_cvttps_epi32(y);
+    imm2 = md_mm_cvttps_epi32(y);
 
     /* j=(j+1) & (~1) (see the cephes sources) */
     imm2 = md_mm_add_epi32(imm2, md_mm_set1_epi32(1));
@@ -867,7 +871,7 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 x, md_256* s, md_256* c) {
     y = md_mm256_mul_ps(x, md_mm256_set1_ps(1.27323954473516f));
 
     /* store integer part of y */
-    imm2 = _mm256_cvttps_epi32(y);
+    imm2 = md_mm256_cvttps_epi32(y);
 
     /* j=(j+1) & (~1) (see the cephes sources) */
     imm2 = md_mm256_add_epi32(imm2, md_mm256_set1_epi32(1));
