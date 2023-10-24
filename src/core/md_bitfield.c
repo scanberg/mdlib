@@ -23,7 +23,7 @@ typedef union block_t {
     uint16_t u16[32];
     uint8_t   u8[64];
     
-    __m256i v[2];
+    md_256i     v[2];
 } block_t;
 
 #define BITS_PER_BLOCK (sizeof(block_t) * 8)
