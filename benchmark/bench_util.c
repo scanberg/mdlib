@@ -77,21 +77,21 @@ UBENCH_EX(util, com_speed_of_light) {
 
     SETUP_XYZW
 
-    __m256 vx = _mm256_setzero_ps();
-    __m256 vy = _mm256_setzero_ps();
-    __m256 vz = _mm256_setzero_ps();
-    __m256 vw = _mm256_setzero_ps();
+    md_256 vx = md_mm256_setzero_ps();
+    md_256 vy = md_mm256_setzero_ps();
+    md_256 vz = md_mm256_setzero_ps();
+    md_256 vw = md_mm256_setzero_ps();
 
     UBENCH_DO_BENCHMARK() {
         for (int64_t i = 0; i < size; i += 8) {
-            vx = _mm256_add_ps(vx, _mm256_load_ps(x + i));
-            vy = _mm256_add_ps(vy, _mm256_load_ps(y + i));
-            vz = _mm256_add_ps(vz, _mm256_load_ps(z + i));
-            vw = _mm256_add_ps(vw, _mm256_load_ps(w + i));
+            vx = md_mm256_add_ps(vx, md_mm256_load_ps(x + i));
+            vy = md_mm256_add_ps(vy, md_mm256_load_ps(y + i));
+            vz = md_mm256_add_ps(vz, md_mm256_load_ps(z + i));
+            vw = md_mm256_add_ps(vw, md_mm256_load_ps(w + i));
         }
     }
 
-    printf("com: %.3f %.3f %.3f %.3f\n", _mm256_cvtss_f32(vx), _mm256_cvtss_f32(vy), _mm256_cvtss_f32(vz), _mm256_cvtss_f32(vw));
+    printf("com: %.3f %.3f %.3f %.3f\n", md_mm256_cvtss_f32(vx), md_mm256_cvtss_f32(vy), md_mm256_cvtss_f32(vz), md_mm256_cvtss_f32(vw));
 
     md_arena_allocator_destroy(alloc);
 }
