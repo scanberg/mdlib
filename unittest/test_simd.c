@@ -221,7 +221,7 @@ UTEST(simd, hsum) {
         EXPECT_NEAR(sum, 10.0f, 0.0001f);
     }
     {
-        md_256 x = _mm256_set_ps(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
+        md_256 x = md_mm256_set_ps(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
         float sum = md_mm256_reduce_add_ps(x);
         EXPECT_NEAR(sum, 36.0f, 0.0001f);
     }
