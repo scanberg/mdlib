@@ -10,8 +10,12 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #pragma once
 
-#ifdef __FMA__
+#if defined(__FMA__)
 #define SIMDE_X86_FMA_NATIVE
+#endif
+
+#if defined(__AVX512F__)
+#include <immintrin.h>
 #endif
 
 #include <simde/x86/avx2.h>
