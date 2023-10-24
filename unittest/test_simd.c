@@ -12,12 +12,12 @@
 #include <stdbool.h>
 
 typedef union {
-    __m128 vec;
+    md_128 vec;
 	float val[4];
 } v4_t;
 
 typedef union {
-    __m256 vec;
+    md_256 vec;
     float val[8];
 } v8_t;
 
@@ -211,66 +211,46 @@ UTEST(simd, sin_cos) {
             const double diff_ref         = fabs((double)sin - reference_sin[i]);
             printf("sse     ulp diff libc, f32 diff libc, ulp diff ref, f32 diff ref: %10d %10.10f %10d %10.10f\n", ulp_diff_libc, diff_libc, ulp_diff_ref, diff_ref);
         }
-#if 0
-        {
-            v4_t sin, cos;
-            md_mm_sincos_ispc_ps(_mm_set1_ps(x), &sin.vec, &cos.vec);
-            double max_delta = MAX(fabs((double)ref_sin - (double)sin.val[0]), fabs((double)ref_cos - (double)cos.val[0]));
-            EXPECT_LT(max_delta, 0.00001);
-            printf("ispc   delta: %.9f\n", max_delta);
-        }
-#endif
     }
 }
 
 UTEST(simd, hsum) {
-#if md_simd_width_f32 >= 4
     {
-        __m128 x = _mm_set_ps(1.0f, 2.0f, 3.0f, 4.0f);
-        float sum = md_mm_hsum_ps(x);
+        md_128 x = md_mm_set_ps(1.0f, 2.0f, 3.0f, 4.0f);
+        float sum = md_mm_reduce_add_ps(x);
         EXPECT_NEAR(sum, 10.0f, 0.0001f);
     }
-#endif
-#if md_simd_width_f32 >= 8
     {
-        __m256 x = _mm256_set_ps(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
-        float sum = md_mm256_hsum_ps(x);
+        md_256 x = _mm256_set_ps(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
+        float sum = md_mm256_reduce_add_ps(x);
         EXPECT_NEAR(sum, 36.0f, 0.0001f);
     }
-#endif
 }
 
 UTEST(simd, hmax) {
-#if md_simd_width_f32 >= 4
     {
-        __m128 x = _mm_set_ps(1.0f, 2.0f, 3.0f, 4.0f);
-        float max = md_mm_hmax_ps(x);
+        md_128 x = md_mm_set_ps(1.0f, 2.0f, 3.0f, 4.0f);
+        float max = md_mm_reduce_max_ps(x);
         EXPECT_NEAR(max, 4.0f, 0.0001f);
     }
-#endif
-#if md_simd_width_f32 >= 8
     {
-        __m256 x = _mm256_set_ps(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
-        float max = md_mm256_hmax_ps(x);
+        md_256 x = md_mm256_set_ps(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
+        float max = md_mm256_reduce_max_ps(x);
         EXPECT_NEAR(max, 8.0f, 0.0001f);
     }
-#endif
 }
 
 UTEST(simd, hmin) {
-#if md_simd_width_f32 >= 4
     {
-        __m128 x = _mm_set_ps(1.0f, 2.0f, -3.0f, 4.0f);
-        float min = md_mm_hmin_ps(x);
+        md_128 x = md_mm_set_ps(1.0f, 2.0f, -3.0f, 4.0f);
+        float min = md_mm_reduce_min_ps(x);
         EXPECT_NEAR(min, -3.0f, 0.0001f);
     }
-#endif
-#if md_simd_width_f32 >= 8
+
     {
-        __m256 x = _mm256_set_ps(1.0f, 2.0f, 3.0f, -4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
-        float min = md_mm256_hmin_ps(x);
+        md_256 x = md_mm256_set_ps(1.0f, 2.0f, 3.0f, -4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
+        float min = md_mm256_reduce_min_ps(x);
         EXPECT_NEAR(min, -4.0f, 0.0001f);
     }
-#endif
 }
 
