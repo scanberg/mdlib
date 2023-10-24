@@ -68,7 +68,7 @@ typedef struct vec4_t {
         };
         float elem[4];
 #if MD_VEC_MATH_USE_SIMD
-        md_f32x4_t f32x4;
+        __m128 m128;
 #endif
     };
 #ifdef __cplusplus
@@ -84,7 +84,7 @@ typedef struct quat_t {
         };
         float elem[4];
 #if MD_VEC_MATH_USE_SIMD
-        md_f32x4_t f32x4;
+        __m128 m128;
 #endif
     };
 #ifdef __cplusplus
@@ -446,7 +446,7 @@ MD_VEC_INLINE vec3_t vec3_max(vec3_t a, vec3_t b) {
 MD_VEC_INLINE vec4_t vec4_zero() {
 #if MD_VEC_MATH_USE_SIMD
     vec4_t res;
-    res.f32x4 = md_simd_zero_f32x4();
+    res.m128 = md_mm_setzero_ps();
     return res;
 #else
     vec4_t res = {0};
@@ -457,7 +457,7 @@ MD_VEC_INLINE vec4_t vec4_zero() {
 MD_VEC_INLINE vec4_t vec4_set(float x, float y, float z, float w) {
     vec4_t res;
 #if MD_VEC_MATH_USE_SIMD
-    res.f32x4 = md_simd_set_f32x4(x, y, z, w);
+    res.m128 = md_mm_set_ps(w, z, y, x);
 #else
     res.x = x;
     res.y = y;
@@ -470,7 +470,7 @@ MD_VEC_INLINE vec4_t vec4_set(float x, float y, float z, float w) {
 MD_VEC_INLINE vec4_t vec4_set1(float v) {
     vec4_t res;
 #if MD_VEC_MATH_USE_SIMD
-    res.f32x4 = md_simd_set1_f32x4(v);
+    res.m128 = md_mm_set1_ps(v);
 #else
     res.x = v;
     res.y = v;
@@ -487,7 +487,7 @@ MD_VEC_INLINE vec4_t vec4_from_float(float v) {
 MD_VEC_INLINE vec4_t vec4_from_vec3(vec3_t v, float w) {
     vec4_t res;
 #if MD_VEC_MATH_USE_SIMD
-    res.f32x4 = md_simd_set_f32x4(v.x, v.y, v.z, w);
+    res.m128 = md_mm_set_ps(w, v.z, v.y, v.x);
 #else
     res = {v.x, v.y, v.z, w};
 #endif
@@ -497,7 +497,7 @@ MD_VEC_INLINE vec4_t vec4_from_vec3(vec3_t v, float w) {
 MD_VEC_INLINE vec4_t vec4_mul(vec4_t a, vec4_t b) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
-    c.f32x4 = md_simd_mul_f32x4(a.f32x4, b.f32x4);
+    c.m128 = md_mm_mul_ps(a.m128, b.m128);
 #else
     c.x = a.x * b.x;
     c.y = a.y * b.y;
@@ -510,7 +510,7 @@ MD_VEC_INLINE vec4_t vec4_mul(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_mul_f(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
-    c.f32x4 = md_simd_mul_f32x4(a.f32x4, md_simd_set1_f32x4(s));
+    c.m128 = md_mm_mul_ps(a.m128, md_mm_set1_ps(s));
 #else
     c.x = a.x * s;
     c.y = a.y * s;
@@ -523,7 +523,7 @@ MD_VEC_INLINE vec4_t vec4_mul_f(vec4_t a, float s) {
 MD_VEC_INLINE vec4_t vec4_div(vec4_t a, vec4_t b) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
-    c.f32x4 = md_simd_div_f32x4(a.f32x4, b.f32x4);
+    c.m128 = md_mm_div_ps(a.m128, b.m128);
 #else
     c.x = a.x / b.x;
     c.y = a.y / b.y;
@@ -536,7 +536,7 @@ MD_VEC_INLINE vec4_t vec4_div(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_div_f(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
-    c.f32x4 = md_simd_div_f32x4(a.f32x4, md_simd_set1_f32x4(s));
+    c.m128 = md_mm_div_ps(a.m128, md_mm_set1_ps(s));
 #else
     c.x = a.x / s;
     c.y = a.y / s;
@@ -549,7 +549,7 @@ MD_VEC_INLINE vec4_t vec4_div_f(vec4_t a, float s) {
 MD_VEC_INLINE vec4_t vec4_add(vec4_t a, vec4_t b) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
-    c.f32x4 = md_simd_add_f32x4(a.f32x4, b.f32x4);
+    c.m128 = md_mm_add_ps(a.m128, b.m128);
 #else
     c.x = a.x + b.x;
     c.y = a.y + b.y;
@@ -562,7 +562,7 @@ MD_VEC_INLINE vec4_t vec4_add(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_add_f(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
-    c.f32x4 = md_simd_add_f32x4(a.f32x4, md_simd_set1_f32x4(s));
+    c.m128 = md_mm_add_ps(a.m128, md_mm_set1_ps(s));
 #else
     c.x = a.x + s;
     c.y = a.y + s;
@@ -575,7 +575,7 @@ MD_VEC_INLINE vec4_t vec4_add_f(vec4_t a, float s) {
 MD_VEC_INLINE vec4_t vec4_sub(vec4_t a, vec4_t b) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
-    c.f32x4 = md_simd_sub_f32x4(a.f32x4, b.f32x4);
+    c.m128 = md_mm_sub_ps(a.m128, b.m128);
 #else
     c.x = a.x - b.x;
     c.y = a.y - b.y;
@@ -588,7 +588,7 @@ MD_VEC_INLINE vec4_t vec4_sub(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_sub_f(vec4_t a, float s) {
     vec4_t c;
 #if MD_VEC_MATH_USE_SIMD
-    c.f32x4 = md_simd_sub_f32x4(a.f32x4, md_simd_set1_f32x4(s));
+    c.m128 = md_mm_sub_ps(a.m128, md_mm_set1_ps(s));
 #else
     c.x = a.x - s;
     c.y = a.y - s;
@@ -601,7 +601,7 @@ MD_VEC_INLINE vec4_t vec4_sub_f(vec4_t a, float s) {
 MD_VEC_INLINE vec4_t vec4_fmadd(vec4_t a, vec4_t b, vec4_t c) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_fmadd_f32x4(a.f32x4, b.f32x4, c.f32x4);
+    r.m128 = md_mm_fmadd_ps(a.m128, b.m128, c.m128);
 #else
     r.x = a.x - s;
     r.y = a.y - s;
@@ -614,7 +614,7 @@ MD_VEC_INLINE vec4_t vec4_fmadd(vec4_t a, vec4_t b, vec4_t c) {
 MD_VEC_INLINE float vec4_dot(vec4_t a, vec4_t b) {
     vec4_t res = vec4_mul(a, b);
 #if MD_VEC_MATH_USE_SIMD
-    return md_simd_hsum_f32x4(res.f32x4);
+    return md_mm_reduce_add_ps(res.m128);
 #else
     return (res.x + res.y) + (res.z + res.w);
 #endif
@@ -646,9 +646,9 @@ MD_VEC_INLINE vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
 MD_VEC_INLINE vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p3, float t, float s) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    const vec4_t vt = {t,t,t,t};
-    const vec4_t vs = {s,s,s,s};
-    r.f32x4 = md_simd_cubic_spline_f32x4(p0.f32x4, p1.f32x4, p2.f32x4, p3.f32x4, vt.f32x4, vs.f32x4);
+    const vec4_t vt = vec4_set1(t);
+    const vec4_t vs = vec4_set1(s);
+    r.m128 = md_mm_cubic_spline_ps(p0.m128, p1.m128, p2.m128, p3.m128, vt.m128, vs.m128);
 #else
     r.x = cubic_splinef(p0.x, p1.x, p2.x, p3.x, t, s);
     r.y = cubic_splinef(p0.y, p1.y, p2.y, p3.y, t, s);
@@ -661,7 +661,7 @@ MD_VEC_INLINE vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p
 MD_VEC_INLINE vec4_t vec4_min(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_min_f32x4(a.f32x4, b.f32x4);
+    r.m128 = _mm_min_ps(a.m128, b.m128);
 #else
     r.x = MIN(a.x, b.x);
     r.y = MIN(a.y, b.y);
@@ -674,7 +674,7 @@ MD_VEC_INLINE vec4_t vec4_min(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_max(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_max_f32x4(a.f32x4, b.f32x4);
+    r.m128 = _mm_max_ps(a.m128, b.m128);
 #else
     r.x = MAX(a.x, b.x);
     r.y = MAX(a.y, b.y);
@@ -687,7 +687,7 @@ MD_VEC_INLINE vec4_t vec4_max(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_abs(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_abs_f32x4(v.f32x4);
+    r.m128 = md_mm_abs_ps(v.m128);
 #else
     r.x = ABS(v.x);
     r.y = ABS(v.y);
@@ -700,7 +700,7 @@ MD_VEC_INLINE vec4_t vec4_abs(vec4_t v) {
 MD_VEC_INLINE vec4_t vec4_fract(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_fract_f32x4(v.f32x4);
+    r.m128 = md_mm_fract_ps(v.m128);
 #else
     r.x = fractf(v.x);
     r.y = fractf(v.y);
@@ -713,7 +713,7 @@ MD_VEC_INLINE vec4_t vec4_fract(vec4_t v) {
 MD_VEC_INLINE vec4_t vec4_sign(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_sign_f32x4(v.f32x4);
+    r.m128 = md_mm_sign_ps(v.m128);
 #else
     r.x = signf(v.x);
     r.y = signf(v.y);
@@ -726,7 +726,7 @@ MD_VEC_INLINE vec4_t vec4_sign(vec4_t v) {
 MD_VEC_INLINE vec4_t vec4_round(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_round_f32x4(v.f32x4);
+    r.m128 = md_mm_round_ps(v.m128);
 #else
     r.x = roundf(v.x);
     r.y = roundf(v.y);
@@ -739,7 +739,7 @@ MD_VEC_INLINE vec4_t vec4_round(vec4_t v) {
 MD_VEC_INLINE vec4_t vec4_floor(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_floor_f32x4(v.f32x4);
+    r.m128 = md_mm_floor_ps(v.m128);
 #else
     r.x = roundf(v.x);
     r.y = roundf(v.y);
@@ -752,7 +752,7 @@ MD_VEC_INLINE vec4_t vec4_floor(vec4_t v) {
 MD_VEC_INLINE vec4_t vec4_ceil(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_ceil_f32x4(v.f32x4);
+    r.m128 = md_mm_ceil_ps(v.m128);
 #else
     r.x = roundf(v.x);
     r.y = roundf(v.y);
@@ -765,7 +765,7 @@ MD_VEC_INLINE vec4_t vec4_ceil(vec4_t v) {
 MD_VEC_INLINE vec4_t vec4_cmp_eq(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_cmp_eq_f32x4(a.f32x4, b.f32x4);
+    r.m128 = md_mm_cmpeq_ps(a.m128, b.m128);
 #else
     r.x = (a.x == b.x) ? 1.0f : 0.0f;
     r.y = (a.y == b.y) ? 1.0f : 0.0f;
@@ -778,7 +778,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_eq(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_cmp_lt(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_cmp_lt_f32x4(a.f32x4, b.f32x4);
+    r.m128 = md_mm_cmplt_ps(a.m128, b.m128);
 #else
     r.x = (a.x < b.x) ? 1.0f : 0.0f;
     r.y = (a.y < b.y) ? 1.0f : 0.0f;
@@ -791,7 +791,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_lt(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_cmp_le(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_cmp_le_f32x4(a.f32x4, b.f32x4);
+    r.m128 = md_mm_cmple_ps(a.m128, b.m128);
 #else
     r.x = (a.x <= b.x) ? 1.0f : 0.0f;
     r.y = (a.y <= b.y) ? 1.0f : 0.0f;
@@ -804,7 +804,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_le(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_cmp_gt(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_cmp_lt_f32x4(a.f32x4, b.f32x4);
+    r.m128 = md_mm_cmpgt_ps(a.m128, b.m128);
 #else
     r.x = (a.x > b.x) ? 1.0f : 0.0f;
     r.y = (a.y > b.y) ? 1.0f : 0.0f;
@@ -817,7 +817,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_gt(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_cmp_ge(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_cmp_ge_f32x4(a.f32x4, b.f32x4);
+    r.m128 = md_mm_cmpge_ps(a.m128, b.m128);
 #else
     r.x = (a.x >= b.x) ? 1.0f : 0.0f;
     r.y = (a.y >= b.y) ? 1.0f : 0.0f;
@@ -830,7 +830,7 @@ MD_VEC_INLINE vec4_t vec4_cmp_ge(vec4_t a, vec4_t b) {
 MD_VEC_INLINE bool vec4_equal(vec4_t a, vec4_t b) {
     bool r;
 #if MD_VEC_MATH_USE_SIMD
-    r = md_simd_movemask_f32x4(md_simd_cmp_eq_f32x4(a.f32x4, b.f32x4)) == 0xF;
+    r = md_mm_movemask_ps(md_mm_cmpeq_ps(a.m128, b.m128)) == 0xF;
 #else
     r = a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w;
 #endif
@@ -840,7 +840,7 @@ MD_VEC_INLINE bool vec4_equal(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = md_simd_blend_f32x4(a.f32x4, b.f32x4, mask.f32x4);
+    r.m128 = md_mm_blendv_ps(a.m128, b.m128, mask.m128);
 #else
     r.x = (mask.x != 0.0f) ? a.x : b.x;
     r.y = (mask.y != 0.0f) ? a.y : b.y;
@@ -853,9 +853,9 @@ MD_VEC_INLINE vec4_t vec4_blend(vec4_t a, vec4_t b, vec4_t mask) {
 #if MD_VEC_MATH_USE_SIMD
 // We cannot invoke the SIMD version of this function directly, because the mask is not a constant expression when passed as a function argument.
 #   ifdef _cplusplus
-#       define vec4_blend_mask(a, b, mask) (vec4_t {.f32x4 = md_simd_blend_mask_f32x4((a).f32x4, (b).f32x4, mask)})
+#       define vec4_blend_mask(a, b, mask) (vec4_t {.m128 = md_mm_blend_ps((a).m128, (b).m128, mask)})
 #   else
-#       define vec4_blend_mask(a, b, mask) ((vec4_t) {.f32x4 = md_simd_blend_mask_f32x4((a).f32x4, (b).f32x4, mask)})
+#       define vec4_blend_mask(a, b, mask) ((vec4_t) {.m128 = md_mm_blend_ps((a).m128, (b).m128, mask)})
 #   endif
 #else
 MD_VEC_INLINE vec4_t vec4_blend_mask(vec4_t a, vec4_t b, const int mask) {
@@ -907,31 +907,31 @@ MD_VEC_INLINE uint32_t u32_from_vec4(vec4_t v) {
 
 MD_VEC_INLINE vec4_t vec4_splat_x(vec4_t v) {
     vec4_t result;
-    result.f32x4 = md_simd_splat_f32x4(v.f32x4, 0);
+    result.m128 = md_mm_splat_ps(v.m128, 0);
     return result;
 }
 
 MD_VEC_INLINE vec4_t vec4_splat_y(vec4_t v) {
     vec4_t result;
-    result.f32x4 = md_simd_splat_f32x4(v.f32x4, 1);
+    result.m128 = md_mm_splat_ps(v.m128, 1);
     return result;
 }
 
 MD_VEC_INLINE vec4_t vec4_splat_z(vec4_t v) {
     vec4_t result;
-    result.f32x4 = md_simd_splat_f32x4(v.f32x4, 2);
+    result.m128 = md_mm_splat_ps(v.m128, 2);
     return result;
 }
 
 MD_VEC_INLINE vec4_t vec4_splat_w(vec4_t v) {
     vec4_t result;
-    result.f32x4 = md_simd_splat_f32x4(v.f32x4, 3);
+    result.m128 = md_mm_splat_ps(v.m128, 3);
     return result;
 }
 
 MD_VEC_INLINE void vec4_sincos(vec4_t x, vec4_t* s, vec4_t* c) {
 #if MD_VEC_MATH_USE_SIMD
-    md_simd_sincos_f32x4(x.f32x4, &s->f32x4, &c->f32x4);
+    md_mm_sincos_ps(x.m128, &s->m128, &c->m128);
 #else
     s->x = sinf(x.x);
 	s->y = sinf(x.y);
@@ -1078,10 +1078,10 @@ static inline quat_t quat_from_mat4(mat4_t M) {
 #if MD_VEC_MATH_USE_SIMD
 MD_VEC_INLINE __m128 linear_combine_sse(__m128 a, mat4_t B) {
     __m128 res;
-    res = _mm_mul_ps(_mm_shuffle_ps(a, a, 0x00), B.col[0].f32x4);
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0x55), B.col[1].f32x4));
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xaa), B.col[2].f32x4));
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xff), B.col[3].f32x4));
+    res = _mm_mul_ps(_mm_shuffle_ps(a, a, 0x00), B.col[0].m128);
+    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0x55), B.col[1].m128));
+    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xaa), B.col[2].m128));
+    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xff), B.col[3].m128));
     return res;
 }
 #endif
@@ -1404,10 +1404,10 @@ MD_VEC_INLINE mat4_t mat4_sub(mat4_t A, mat4_t B) {
 MD_VEC_INLINE mat4_t mat4_mul(mat4_t A, mat4_t B) {
     mat4_t C;
 #if MD_VEC_MATH_USE_SIMD
-    C.col[0].f32x4 = linear_combine_sse(B.col[0].f32x4, A);
-    C.col[1].f32x4 = linear_combine_sse(B.col[1].f32x4, A);
-    C.col[2].f32x4 = linear_combine_sse(B.col[2].f32x4, A);
-    C.col[3].f32x4 = linear_combine_sse(B.col[3].f32x4, A);
+    C.col[0].m128 = linear_combine_sse(B.col[0].m128, A);
+    C.col[1].m128 = linear_combine_sse(B.col[1].m128, A);
+    C.col[2].m128 = linear_combine_sse(B.col[2].m128, A);
+    C.col[3].m128 = linear_combine_sse(B.col[3].m128, A);
 #else
 #define MULT(col, row) \
     A.elem[0][row] * B.elem[col][0] + A.elem[1][row] * B.elem[col][1] + A.elem[2][row] * B.elem[col][2] + A.elem[3][row] * B.elem[col][3]
@@ -1438,7 +1438,7 @@ MD_VEC_INLINE mat4_t mat4_mul(mat4_t A, mat4_t B) {
 MD_VEC_INLINE vec4_t mat4_mul_vec4(mat4_t M, vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.f32x4 = linear_combine_sse(v.f32x4, M);
+    r.m128 = linear_combine_sse(v.m128, M);
 #else
     r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z + M.elem[3][0] * v.w;
     r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z + M.elem[3][1] * v.w;
@@ -1493,7 +1493,7 @@ MD_VEC_INLINE mat4_t mat4_transpose(mat4_t M) {
 
 #if MD_VEC_MATH_USE_SIMD
     T = M;
-    _MM_TRANSPOSE4_PS(T.col[0].f32x4, T.col[1].f32x4, T.col[2].f32x4, T.col[3].f32x4);
+    _MM_TRANSPOSE4_PS(T.col[0].m128, T.col[1].m128, T.col[2].m128, T.col[3].m128);
 #else
     T.elem[0][0] = M.elem[0][0];
     T.elem[0][1] = M.elem[1][0];

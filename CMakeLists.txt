@@ -203,14 +203,15 @@ target_include_directories(mdlib
   PUBLIC
   src/
   ext/gl3w/
+  ext/simde/
 
   PRIVATE
+  gen/
   ext/fastlz/
   ext/dcd/
   ext/xtc/
   ext/svd3/
   ext/stb/
-  gen/
 )
 
 set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})

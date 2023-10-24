@@ -144,13 +144,10 @@ bool md_util_unwrap_ortho(float* x, float* y, float* z, md_index_data_t structur
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
 bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell_t* cell, const struct md_molecule_t* mol);
 
-// Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional)
-void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const vec3_t* xyz, const float* r, int64_t count);
-void md_util_compute_aabb_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, int64_t count);
-
-// Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional), indices are used to select a subset of points
-void md_util_compute_aabb_indexed(vec3_t* aabb_min, vec3_t* aabb_max, const vec3_t* xyz, const float* r, const int32_t* indices, int64_t index_count);
-void md_util_compute_aabb_indexed_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, int64_t index_count);
+// Computes the minimum axis aligned bounding box for a set of points with a given radius
+// Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
+void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, int64_t count);
+void md_util_compute_aabb_vec4(vec3_t* aabb_min, vec3_t* aabb_max, const vec4_t* xyzr, const int32_t* indices, int64_t count);
 
 // Computes the center of mass for a set of points with a given weight
 // x,y,z / xyz: Arrays containing coordinates

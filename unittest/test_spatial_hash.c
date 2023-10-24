@@ -1,11 +1,10 @@
 #include "utest.h"
 
-#include "core/md_allocator.h"
-#include "core/md_arena_allocator.h"
-#include "core/md_bitfield.h"
-#include "core/md_spatial_hash.h"
-#include "core/md_str.h"
-#include "core/md_os.h"
+#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
+#include <core/md_spatial_hash.h>
+#include <core/md_str.h>
+#include <core/md_intrinsics.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_molecule.h>

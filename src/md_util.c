@@ -1,16 +1,15 @@
 #include <md_util.h>
 
-#include <md_trajectory.h>
 #include <md_molecule.h>
 
 #include <core/md_compiler.h>
 #include <core/md_common.h>
 #include <core/md_allocator.h>
-#include <core/md_ring_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
+#include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_spatial_hash.h>
 #include <core/md_bitfield.h>
@@ -174,11 +173,19 @@ static inline str_t trim_label(str_t lbl) {
     return (str_t) { .ptr = beg, .len = end-beg };
 }
 
-static inline md_simd_f32_t simd_deperiodize(md_simd_f32_t x, md_simd_f32_t r, md_simd_f32_t period) {
-    md_simd_f32_t d = md_simd_sub(x, r);
-    md_simd_f32_t dx = md_simd_div(d, period);
-    dx = md_simd_sub(dx, md_simd_round(dx));
-    return md_simd_add(r, md_simd_mul(dx, period));
+static inline __m256 simd_deperiodize(__m256 x, __m256 r, __m256 period, __m256 inv_period) {
+    __m256 d = md_mm256_sub_ps(x, r);
+    __m256 dx = md_mm256_mul_ps(d, inv_period);
+    dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
+    return md_mm256_add_ps(r, md_mm256_mul_ps(dx, period));
+}
+
+static inline int simd_xyz_mask(float ext[3]) {
+	int mask = 0;
+	if (ext[0] > 0.0f) mask |= 1;
+	if (ext[1] > 0.0f) mask |= 2;
+	if (ext[2] > 0.0f) mask |= 4;
+	return mask;
 }
 
 bool md_util_resname_rna(str_t str) {
@@ -1568,173 +1575,182 @@ void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t
     md_vm_arena_free(&arena);
 }
 
-static void compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, int64_t count, uint64_t xyz_stride) {
-    md_simd_f32_t vx_min = md_simd_set1_f32(+FLT_MAX);
-    md_simd_f32_t vy_min = md_simd_set1_f32(+FLT_MAX);
-    md_simd_f32_t vz_min = md_simd_set1_f32(+FLT_MAX);
-
-    md_simd_f32_t vx_max = md_simd_set1_f32(-FLT_MAX);
-    md_simd_f32_t vy_max = md_simd_set1_f32(-FLT_MAX);
-    md_simd_f32_t vz_max = md_simd_set1_f32(-FLT_MAX);
-
-    int64_t i = 0;
-    const int64_t simd_count = (count / md_simd_width_f32) * md_simd_width_f32;
-
-    if (in_r) {
-        for (; i < simd_count; i += md_simd_width_f32) {
-            md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * xyz_stride));
-            md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * xyz_stride));
-            md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * xyz_stride));
-            md_simd_f32_t r = md_simd_load_f32(in_r + i);            
-
-            vx_min = md_simd_min(vx_min, md_simd_sub(x, r));
-            vy_min = md_simd_min(vy_min, md_simd_sub(y, r));
-            vz_min = md_simd_min(vz_min, md_simd_sub(z, r));
-
-            vx_max = md_simd_max(vx_max, md_simd_add(x, r));
-            vy_max = md_simd_max(vy_max, md_simd_add(y, r));
-            vz_max = md_simd_max(vz_max, md_simd_add(z, r));
+// Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional), indices are used to select a subset of points
+void md_util_compute_aabb_vec4(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const vec4_t* in_xyzr, const int32_t* in_idx, int64_t count) {
+    vec4_t aabb_min = vec4_set1( FLT_MAX);
+    vec4_t aabb_max = vec4_set1(-FLT_MAX);
+    if (in_idx) {
+        for (int64_t i = 0; i < count; ++i) {
+            int32_t idx = in_idx[i];
+            vec4_t xyzr = in_xyzr[idx];
+            vec4_t r = vec4_splat_w(xyzr);
+            aabb_min = vec4_min(aabb_min, vec4_sub(xyzr, r));
+            aabb_max = vec4_max(aabb_max, vec4_add(xyzr, r));
         }
     } else {
-        for (; i < simd_count; i += md_simd_width_f32) {
-            md_simd_f32_t x = md_simd_load_f32((const float*)((const char*)in_x + i * xyz_stride));
-            md_simd_f32_t y = md_simd_load_f32((const float*)((const char*)in_y + i * xyz_stride));
-            md_simd_f32_t z = md_simd_load_f32((const float*)((const char*)in_z + i * xyz_stride));
-
-            vx_min = md_simd_min(vx_min, x);
-            vy_min = md_simd_min(vy_min, y);
-            vz_min = md_simd_min(vz_min, z);
-
-            vx_max = md_simd_max(vx_max, x);
-            vy_max = md_simd_max(vy_max, y);
-            vz_max = md_simd_max(vz_max, z);
+        for (int64_t i = 0; i < count; ++i) {
+            vec4_t xyzr = in_xyzr[i];
+            vec4_t r = vec4_splat_w(xyzr);
+            aabb_min = vec4_min(aabb_min, vec4_sub(xyzr, r));
+            aabb_max = vec4_max(aabb_max, vec4_add(xyzr, r));
         }
     }
+    *out_aabb_min = vec3_from_vec4(aabb_min);
+    *out_aabb_max = vec3_from_vec4(aabb_max);
+}
 
-    vec4_t aabb_min = {
-        md_simd_hmin(vx_min),
-        md_simd_hmin(vy_min),
-        md_simd_hmin(vz_min),
-        0
-    };
+void md_util_compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, int64_t count) {
+    __m256 vx_min = _mm256_set1_ps(+FLT_MAX);
+    __m256 vy_min = _mm256_set1_ps(+FLT_MAX);
+    __m256 vz_min = _mm256_set1_ps(+FLT_MAX);
 
-    vec4_t aabb_max = {
-        md_simd_hmax(vx_max),
-        md_simd_hmax(vy_max),
-        md_simd_hmax(vz_max),
-        0
-    };
+    __m256 vx_max = _mm256_set1_ps(-FLT_MAX);
+    __m256 vy_max = _mm256_set1_ps(-FLT_MAX);
+    __m256 vz_max = _mm256_set1_ps(-FLT_MAX);
 
-    // Handle remainder
-    if (in_r) {
-        for (; i < count; ++i) {
-            for (; i < count; ++i) {
-                vec4_t c = {
-                    *(const float*)((const char*)in_x + i * xyz_stride),
-                    *(const float*)((const char*)in_y + i * xyz_stride),
-                    *(const float*)((const char*)in_z + i * xyz_stride),
-                    0
-                };
-                vec4_t r = vec4_set1(in_r[i]);
-                
-                aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
-                aabb_max = vec4_max(aabb_max, vec4_add(c, r));
+    int64_t i = 0;
+    const int64_t  simd_elem = 8;
+    const int64_t simd_count = ROUND_DOWN(count, simd_elem);
+
+    if (in_idx) {
+        if (in_r) {
+            for (; i < simd_count; i += simd_elem) {
+                __m256i idx = _mm256_loadu_si256((const __m256i*)(in_idx + i));
+
+                __m256 x = _mm256_i32gather_ps(in_x, idx, 4);
+                __m256 y = _mm256_i32gather_ps(in_y, idx, 4);
+                __m256 z = _mm256_i32gather_ps(in_z, idx, 4);
+                __m256 r = _mm256_i32gather_ps(in_r, idx, 4);
+
+                vx_min = _mm256_min_ps(vx_min, _mm256_sub_ps(x, r));
+                vy_min = _mm256_min_ps(vy_min, _mm256_sub_ps(y, r));
+                vz_min = _mm256_min_ps(vz_min, _mm256_sub_ps(z, r));
+
+                vx_max = _mm256_max_ps(vx_max, _mm256_add_ps(x, r));
+                vy_max = _mm256_max_ps(vy_max, _mm256_add_ps(y, r));
+                vz_max = _mm256_max_ps(vz_max, _mm256_add_ps(z, r));
+            }
+        } else {
+            for (; i < simd_count; i += simd_elem) {
+                __m256i idx = _mm256_loadu_si256((const __m256i*)(in_idx + i));
+
+                __m256 x = _mm256_i32gather_ps(in_x, idx, 4);
+                __m256 y = _mm256_i32gather_ps(in_y, idx, 4);
+                __m256 z = _mm256_i32gather_ps(in_z, idx, 4);
+
+                vx_min = _mm256_min_ps(vx_min, x);
+                vy_min = _mm256_min_ps(vy_min, y);
+                vz_min = _mm256_min_ps(vz_min, z);
+
+                vx_max = _mm256_max_ps(vx_max, x);
+                vy_max = _mm256_max_ps(vy_max, y);
+                vz_max = _mm256_max_ps(vz_max, z);
             }
         }
     } else {
-        for (; i < count; ++i) {
-            vec4_t c = {
-                *(const float*)((const char*)in_x + i * xyz_stride),
-                *(const float*)((const char*)in_y + i * xyz_stride),
-                *(const float*)((const char*)in_z + i * xyz_stride),
-                0
-            };
-            
-            aabb_min = vec4_min(aabb_min, c);
-            aabb_max = vec4_max(aabb_max, c);
+        if (in_r) {
+            for (; i < simd_count; i += simd_elem) {
+                __m256 x = _mm256_loadu_ps(in_x + i);
+                __m256 y = _mm256_loadu_ps(in_y + i);
+                __m256 z = _mm256_loadu_ps(in_z + i);
+                __m256 r = _mm256_loadu_ps(in_r + i);
+
+                vx_min = _mm256_min_ps(vx_min, _mm256_sub_ps(x, r));
+                vy_min = _mm256_min_ps(vy_min, _mm256_sub_ps(y, r));
+                vz_min = _mm256_min_ps(vz_min, _mm256_sub_ps(z, r));
+
+                vx_max = _mm256_max_ps(vx_max, _mm256_add_ps(x, r));
+                vy_max = _mm256_max_ps(vy_max, _mm256_add_ps(y, r));
+                vz_max = _mm256_max_ps(vz_max, _mm256_add_ps(z, r));
+            }
+        } else {
+            for (; i < simd_count; i += simd_elem) {
+                __m256 x = _mm256_loadu_ps(in_x + i);
+                __m256 y = _mm256_loadu_ps(in_y + i);
+                __m256 z = _mm256_loadu_ps(in_z + i);
+
+                vx_min = _mm256_min_ps(vx_min, x);
+                vy_min = _mm256_min_ps(vy_min, y);
+                vz_min = _mm256_min_ps(vz_min, z);
+
+                vx_max = _mm256_max_ps(vx_max, x);
+                vy_max = _mm256_max_ps(vy_max, y);
+                vz_max = _mm256_max_ps(vz_max, z);
+            }
         }
     }
 
-    *out_aabb_min = vec3_from_vec4(aabb_min);
-    *out_aabb_max = vec3_from_vec4(aabb_max);
-}
+    vec4_t aabb_min = (vec4_t) { md_mm256_reduce_min_ps(vx_min), md_mm256_reduce_min_ps(vy_min), md_mm256_reduce_min_ps(vz_min) };
+    vec4_t aabb_max = (vec4_t) { md_mm256_reduce_max_ps(vx_max), md_mm256_reduce_max_ps(vy_max), md_mm256_reduce_max_ps(vz_max) };
 
-static void compute_aabb_indexed(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int* indices, int64_t count, uint64_t xyz_stride) {   
-    if (count == 0) return;
-    
-    vec4_t aabb_min = vec4_set1( FLT_MAX);
-    vec4_t aabb_max = vec4_set1(-FLT_MAX);
-
-    // @PERF(Robin), we are only using 4 lanes here since we are using idirect loads from supplied indices.
-    // This could boil down to a gather instruction. However, the gather instruction
-    // does not allow arbitrary strides, but perhaps there could be a work around where the indices are scaled directly
-    // HOWEVER this only applies for AVX2 and above, so its not a big deal for now.
-
-    if (in_r) {
-        for (int64_t i = 0; i < count; ++i) {
-            int idx = indices[i];
-            vec4_t c = {
-                *(const float*)((const char*)in_x + idx * xyz_stride),
-                *(const float*)((const char*)in_y + idx * xyz_stride),
-                *(const float*)((const char*)in_z + idx * xyz_stride),
-                0
-            };
-            vec4_t r = vec4_set1(in_r[idx]);
-
-            aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
-            aabb_max = vec4_max(aabb_max, vec4_add(c, r));
+    // Handle remainder
+    if (in_idx) {
+        if (in_r) {
+            for (; i < count; ++i) {
+                int32_t idx = in_idx[i];
+                const vec4_t c = { in_x[idx], in_y[idx], in_z[idx] };
+                const vec4_t r = vec4_set1(in_r[idx]);
+                aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
+                aabb_max = vec4_max(aabb_max, vec4_add(c, r));
+            }
+        } else {
+            for (; i < count; ++i) {
+                int32_t idx = in_idx[i];
+                const vec4_t c = { in_x[idx], in_y[idx], in_z[idx] };
+                aabb_min = vec4_min(aabb_min, c);
+                aabb_max = vec4_max(aabb_max, c);
+            }
         }
     } else {
-        for (int64_t i = 0; i < count; ++i) {
-            int idx = indices[i];
-            vec4_t c = {
-                *(const float*)((const char*)in_x + idx * xyz_stride),
-                *(const float*)((const char*)in_y + idx * xyz_stride),
-                *(const float*)((const char*)in_z + idx * xyz_stride),
-                0
-            };
-
-            aabb_min = vec4_min(aabb_min, c);
-            aabb_max = vec4_max(aabb_max, c);
+        if (in_r) {
+            for (; i < count; ++i) {
+                const vec4_t c = { in_x[i], in_y[i], in_z[i] };
+                const vec4_t r = vec4_set1(in_r[i]);
+                aabb_min = vec4_min(aabb_min, vec4_sub(c, r));
+                aabb_max = vec4_max(aabb_max, vec4_add(c, r));
+            }
+        } else {
+            for (; i < count; ++i) {
+                const vec4_t c = { in_x[i], in_y[i], in_z[i] };
+                aabb_min = vec4_min(aabb_min, c);
+                aabb_max = vec4_max(aabb_max, c);
+            }
         }
     }
 
     *out_aabb_min = vec3_from_vec4(aabb_min);
     *out_aabb_max = vec3_from_vec4(aabb_max);
-}
-
-void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const vec3_t* xyz, const float* r, int64_t count) {
-    compute_aabb(aabb_min, aabb_max, &xyz->x, &xyz->y, &xyz->z, r, count, sizeof(vec3_t));
-}
-void md_util_compute_aabb_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, int64_t count) {
-    compute_aabb(aabb_min, aabb_max, x, y, z, r, count, sizeof(float));
-}
-
-// Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional), indices are used to select a subset of points
-void md_util_compute_aabb_indexed(vec3_t* aabb_min, vec3_t* aabb_max, const vec3_t* xyz, const float* r, const int32_t* indices, int64_t index_count) {
-    compute_aabb_indexed(aabb_min, aabb_max, &xyz->x, &xyz->y, &xyz->z, r, indices, index_count, sizeof(vec3_t));
-}
-
-void md_util_compute_aabb_indexed_soa(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, int64_t index_count) {
-    compute_aabb_indexed(aabb_min, aabb_max, x, y, z, r, indices, index_count, sizeof(float));
 }
 
 static vec3_t compute_com_periodic_trig_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, int64_t count, vec3_t ext_max) {
-    const vec4_t scl = vec4_div(vec4_set1(TWO_PI), vec4_from_vec3(ext_max, 1.0f));
+    const vec4_t scl = vec4_div(vec4_set1(TWO_PI), vec4_from_vec3(ext_max, TWO_PI));
     vec4_t acc_c = {0};
     vec4_t acc_s = {0};
     vec4_t acc_xyzw = {0};
 
-    for (int64_t i = 0; i < count; ++i) {
-        int64_t idx  = in_idx ? in_idx[i] : i;
-        vec4_t xyzw  = in_xyzw[idx];
-        vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
-        vec4_t theta = vec4_mul(xyzw, scl);
-        vec4_t s,c;
-        vec4_sincos(theta, &s, &c);
-        acc_s = vec4_add(acc_s, vec4_mul(s, www1));
-        acc_c = vec4_add(acc_c, vec4_mul(c, www1));
-        acc_xyzw = vec4_add(acc_xyzw, vec4_mul(xyzw, www1));
+    if (in_idx) {
+        for (int64_t i = 0; i < count; ++i) {
+            int64_t idx  = in_idx[i];
+            vec4_t xyzw  = in_xyzw[idx];
+            vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
+            vec4_t theta = vec4_mul(xyzw, scl);
+            vec4_t s,c;
+            vec4_sincos(theta, &s, &c);
+            acc_s = vec4_add(acc_s, vec4_mul(s, www1));
+            acc_c = vec4_add(acc_c, vec4_mul(c, www1));
+            acc_xyzw = vec4_add(acc_xyzw, vec4_mul(xyzw, www1));
+        }
+    } else {
+        for (int64_t i = 0; i < count; ++i) {
+            vec4_t xyzw  = in_xyzw[i];
+            vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
+            vec4_t theta = vec4_mul(xyzw, scl);
+            vec4_t s,c;
+            vec4_sincos(theta, &s, &c);
+            acc_s = vec4_add(acc_s, vec4_mul(s, www1));
+            acc_c = vec4_add(acc_c, vec4_mul(c, www1));
+            acc_xyzw = vec4_add(acc_xyzw, vec4_mul(xyzw, www1));
+        }
     }
 
     vec3_t com;
@@ -1777,6 +1793,545 @@ static vec3_t compute_com_periodic_reg_vec4(const vec4_t* in_xyzw, const int32_t
     return com;
 }
 
+#define TRIG_ATAN2_R2_THRESHOLD 1.0e-8
+
+static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, int64_t count, vec3_t xyz_max) {
+    double acc_cx = 0;
+    double acc_sx = 0;
+    double acc_cy = 0;
+    double acc_sy = 0;
+    double acc_cz = 0;
+    double acc_sz = 0;
+    double acc_w = 0;
+
+    int64_t i = 0;
+
+#if defined(__AVX512F__)
+    const __m512 v_scl_x = _mm512_set1_ps((float)(TWO_PI / xyz_max.x));
+    const __m512 v_scl_y = _mm512_set1_ps((float)(TWO_PI / xyz_max.y));
+    const __m512 v_scl_z = _mm512_set1_ps((float)(TWO_PI / xyz_max.z));
+    __m512 v_acc_cx = _mm512_setzero_ps();
+    __m512 v_acc_sx = _mm512_setzero_ps();
+    __m512 v_acc_cy = _mm512_setzero_ps();
+    __m512 v_acc_sy = _mm512_setzero_ps();
+    __m512 v_acc_cz = _mm512_setzero_ps();
+    __m512 v_acc_sz = _mm512_setzero_ps();
+    __m512 v_acc_w = _mm512_setzero_ps();
+
+    const int64_t simd_count = ROUND_DOWN(count, 16);
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 16) {
+                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512 v_x = _mm512_i32gather_ps(idx, in_x, 4);
+                __m512 v_y = _mm512_i32gather_ps(idx, in_y, 4);
+                __m512 v_z = _mm512_i32gather_ps(idx, in_z, 4);
+                __m512 v_w = _mm512_i32gather_ps(idx, in_w, 4);
+
+                __m512 v_theta_x = _mm512_mul_ps(v_x, v_scl_x);
+                __m512 v_theta_y = _mm512_mul_ps(v_y, v_scl_y);
+                __m512 v_theta_z = _mm512_mul_ps(v_z, v_scl_z);
+
+                __m512 v_cx, v_sx;
+                __m512 v_cy, v_sy;
+                __m512 v_cz, v_sz;
+                md_mm512_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm512_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm512_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = _mm512_add_ps(v_acc_sx, _mm512_mul_ps(v_sx, v_w));
+                v_acc_cx = _mm512_add_ps(v_acc_cx, _mm512_mul_ps(v_cx, v_w));
+
+                v_acc_sy = _mm512_add_ps(v_acc_sy, _mm512_mul_ps(v_sy, v_w));
+                v_acc_cy = _mm512_add_ps(v_acc_cy, _mm512_mul_ps(v_cy, v_w));
+
+                v_acc_sz = _mm512_add_ps(v_acc_sz, _mm512_mul_ps(v_sz, v_w));
+                v_acc_cz = _mm512_add_ps(v_acc_cz, _mm512_mul_ps(v_cz, v_w));
+
+                v_acc_w = _mm512_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 16) {
+                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512 v_x = _mm512_i32gather_ps(idx, in_x, 4);
+                __m512 v_y = _mm512_i32gather_ps(idx, in_y, 4);
+                __m512 v_z = _mm512_i32gather_ps(idx, in_z, 4);
+
+                __m512 v_theta_x = _mm512_mul_ps(v_x, v_scl_x);
+                __m512 v_theta_y = _mm512_mul_ps(v_y, v_scl_y);
+                __m512 v_theta_z = _mm512_mul_ps(v_z, v_scl_z);
+
+                __m512 v_cx, v_sx;
+                __m512 v_cy, v_sy;
+                __m512 v_cz, v_sz;
+                md_mm512_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm512_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm512_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = _mm512_add_ps(v_acc_sx, v_sx);
+                v_acc_cx = _mm512_add_ps(v_acc_cx, v_cx);
+
+                v_acc_sy = _mm512_add_ps(v_acc_sy, v_sy);
+                v_acc_cy = _mm512_add_ps(v_acc_cy, v_cy);
+
+                v_acc_sz = _mm512_add_ps(v_acc_sz, v_sz);
+                v_acc_cz = _mm512_add_ps(v_acc_cz, v_cz);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 16) {
+                __m512 v_x = _mm512_loadu_ps(in_x + i);
+                __m512 v_y = _mm512_loadu_ps(in_y + i);
+                __m512 v_z = _mm512_loadu_ps(in_z + i);
+                __m512 v_w = _mm512_loadu_ps(in_w + i);
+
+                __m512 v_theta_x = _mm512_mul_ps(v_x, v_scl_x);
+                __m512 v_theta_y = _mm512_mul_ps(v_y, v_scl_y);
+                __m512 v_theta_z = _mm512_mul_ps(v_z, v_scl_z);
+
+                __m512 v_cx, v_sx;
+                __m512 v_cy, v_sy;
+                __m512 v_cz, v_sz;
+                md_mm512_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm512_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm512_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = _mm512_add_ps(v_acc_sx, _mm512_mul_ps(v_sx, v_w));
+                v_acc_cx = _mm512_add_ps(v_acc_cx, _mm512_mul_ps(v_cx, v_w));
+
+                v_acc_sy = _mm512_add_ps(v_acc_sy, _mm512_mul_ps(v_sy, v_w));
+                v_acc_cy = _mm512_add_ps(v_acc_cy, _mm512_mul_ps(v_cy, v_w));
+
+                v_acc_sz = _mm512_add_ps(v_acc_sz, _mm512_mul_ps(v_sz, v_w));
+                v_acc_cz = _mm512_add_ps(v_acc_cz, _mm512_mul_ps(v_cz, v_w));
+
+                v_acc_w = _mm512_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 16) {
+                __m512 v_x = _mm512_loadu_ps(in_x + i);
+                __m512 v_y = _mm512_loadu_ps(in_y + i);
+                __m512 v_z = _mm512_loadu_ps(in_z + i);
+
+                __m512 v_theta_x = _mm512_mul_ps(v_x, v_scl_x);
+                __m512 v_theta_y = _mm512_mul_ps(v_y, v_scl_y);
+                __m512 v_theta_z = _mm512_mul_ps(v_z, v_scl_z);
+
+                __m512 v_cx, v_sx;
+                __m512 v_cy, v_sy;
+                __m512 v_cz, v_sz;
+                md_mm512_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm512_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm512_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = _mm512_add_ps(v_acc_sx, v_sx);
+                v_acc_cx = _mm512_add_ps(v_acc_cx, v_cx);
+
+                v_acc_sy = _mm512_add_ps(v_acc_sy, v_sy);
+                v_acc_cy = _mm512_add_ps(v_acc_cy, v_cy);
+
+                v_acc_sz = _mm512_add_ps(v_acc_sz, v_sz);
+                v_acc_cz = _mm512_add_ps(v_acc_cz, v_cz);
+            }
+        }
+    }
+
+    acc_sx = _mm512_reduce_add_ps(v_acc_sx);
+    acc_cx = _mm512_reduce_add_ps(v_acc_cx);
+
+    acc_sy = _mm512_reduce_add_ps(v_acc_sy);
+    acc_cy = _mm512_reduce_add_ps(v_acc_cy);
+
+    acc_sz = _mm512_reduce_add_ps(v_acc_sz);
+    acc_cz = _mm512_reduce_add_ps(v_acc_cz);
+
+    acc_w  = _mm512_reduce_add_ps(v_acc_w);
+#elif defined(__AVX2__)
+    const __m256 v_scl_x = md_mm256_set1_ps((float)(TWO_PI / xyz_max.x));
+    const __m256 v_scl_y = md_mm256_set1_ps((float)(TWO_PI / xyz_max.y));
+    const __m256 v_scl_z = md_mm256_set1_ps((float)(TWO_PI / xyz_max.z));
+    __m256 v_acc_cx = md_mm256_setzero_ps();
+    __m256 v_acc_sx = md_mm256_setzero_ps();
+    __m256 v_acc_cy = md_mm256_setzero_ps();
+    __m256 v_acc_sy = md_mm256_setzero_ps();
+    __m256 v_acc_cz = md_mm256_setzero_ps();
+    __m256 v_acc_sz = md_mm256_setzero_ps();
+    __m256 v_acc_w = md_mm256_setzero_ps();
+
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 8) {
+                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
+                __m256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                __m256 v_y = md_mm256_i32gather_ps(in_y, idx, 4);
+                __m256 v_z = md_mm256_i32gather_ps(in_z, idx, 4);
+                __m256 v_w = md_mm256_i32gather_ps(in_w, idx, 4);
+
+                __m256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
+                __m256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
+                __m256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
+
+                __m256 v_cx, v_sx;
+                __m256 v_cy, v_sy;
+                __m256 v_cz, v_sz;
+                md_mm256_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm256_sincos_ps(v_theta_y, &v_sy, &v_cy);
+				md_mm256_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = md_mm256_add_ps(v_acc_sx, md_mm256_mul_ps(v_sx, v_w));
+                v_acc_cx = md_mm256_add_ps(v_acc_cx, md_mm256_mul_ps(v_cx, v_w));
+
+                v_acc_sy = md_mm256_add_ps(v_acc_sy, md_mm256_mul_ps(v_sy, v_w));
+				v_acc_cy = md_mm256_add_ps(v_acc_cy, md_mm256_mul_ps(v_cy, v_w));
+
+                v_acc_sz = md_mm256_add_ps(v_acc_sz, md_mm256_mul_ps(v_sz, v_w));
+				v_acc_cz = md_mm256_add_ps(v_acc_cz, md_mm256_mul_ps(v_cz, v_w));
+
+                v_acc_w = md_mm256_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 8) {
+                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
+                __m256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                __m256 v_y = md_mm256_i32gather_ps(in_y, idx, 4);
+                __m256 v_z = md_mm256_i32gather_ps(in_z, idx, 4);
+
+                __m256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
+                __m256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
+                __m256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
+
+                __m256 v_cx, v_sx;
+                __m256 v_cy, v_sy;
+                __m256 v_cz, v_sz;
+                md_mm256_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm256_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm256_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = md_mm256_add_ps(v_acc_sx, v_sx);
+                v_acc_cx = md_mm256_add_ps(v_acc_cx, v_cx);
+
+                v_acc_sy = md_mm256_add_ps(v_acc_sy, v_sy);
+                v_acc_cy = md_mm256_add_ps(v_acc_cy, v_cy);
+
+                v_acc_sz = md_mm256_add_ps(v_acc_sz, v_sz);
+                v_acc_cz = md_mm256_add_ps(v_acc_cz, v_cz);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 8) {
+                __m256 v_x = md_mm256_loadu_ps(in_x + i);
+                __m256 v_y = md_mm256_loadu_ps(in_y + i);
+                __m256 v_z = md_mm256_loadu_ps(in_z + i);
+                __m256 v_w = md_mm256_loadu_ps(in_w + i);
+
+                __m256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
+                __m256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
+                __m256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
+
+                __m256 v_cx, v_sx;
+                __m256 v_cy, v_sy;
+                __m256 v_cz, v_sz;
+                md_mm256_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm256_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm256_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = md_mm256_add_ps(v_acc_sx, md_mm256_mul_ps(v_sx, v_w));
+                v_acc_cx = md_mm256_add_ps(v_acc_cx, md_mm256_mul_ps(v_cx, v_w));
+
+                v_acc_sy = md_mm256_add_ps(v_acc_sy, md_mm256_mul_ps(v_sy, v_w));
+                v_acc_cy = md_mm256_add_ps(v_acc_cy, md_mm256_mul_ps(v_cy, v_w));
+
+                v_acc_sz = md_mm256_add_ps(v_acc_sz, md_mm256_mul_ps(v_sz, v_w));
+                v_acc_cz = md_mm256_add_ps(v_acc_cz, md_mm256_mul_ps(v_cz, v_w));
+
+                v_acc_w = md_mm256_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 8) {
+                __m256 v_x = md_mm256_loadu_ps(in_x + i);
+                __m256 v_y = md_mm256_loadu_ps(in_y + i);
+                __m256 v_z = md_mm256_loadu_ps(in_z + i);
+
+                __m256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
+                __m256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
+                __m256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
+
+                __m256 v_cx, v_sx;
+                __m256 v_cy, v_sy;
+                __m256 v_cz, v_sz;
+                md_mm256_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm256_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm256_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = md_mm256_add_ps(v_acc_sx, v_sx);
+                v_acc_cx = md_mm256_add_ps(v_acc_cx, v_cx);
+
+                v_acc_sy = md_mm256_add_ps(v_acc_sy, v_sy);
+                v_acc_cy = md_mm256_add_ps(v_acc_cy, v_cy);
+
+                v_acc_sz = md_mm256_add_ps(v_acc_sz, v_sz);
+                v_acc_cz = md_mm256_add_ps(v_acc_cz, v_cz);
+            }
+        }
+    }
+
+    acc_sx = md_mm256_reduce_add_ps(v_acc_sx);
+    acc_cx = md_mm256_reduce_add_ps(v_acc_cx);
+
+    acc_sy = md_mm256_reduce_add_ps(v_acc_sy);
+    acc_cy = md_mm256_reduce_add_ps(v_acc_cy);
+
+    acc_sz = md_mm256_reduce_add_ps(v_acc_sz);
+    acc_cz = md_mm256_reduce_add_ps(v_acc_cz);
+
+    acc_w  = md_mm256_reduce_add_ps(v_acc_w);
+
+#elif defined(__SSE2__)
+    const __m128 v_scl_x = md_mm_set1_ps((float)(TWO_PI / xyz_max.x));
+    const __m128 v_scl_y = md_mm_set1_ps((float)(TWO_PI / xyz_max.y));
+    const __m128 v_scl_z = md_mm_set1_ps((float)(TWO_PI / xyz_max.z));
+    __m128 v_acc_cx = md_mm_setzero_ps();
+    __m128 v_acc_sx = md_mm_setzero_ps();
+    __m128 v_acc_cy = md_mm_setzero_ps();
+    __m128 v_acc_sy = md_mm_setzero_ps();
+    __m128 v_acc_cz = md_mm_setzero_ps();
+    __m128 v_acc_sz = md_mm_setzero_ps();
+    __m128 v_acc_w = md_mm_setzero_ps();
+
+    const int64_t simd_count = ROUND_DOWN(count, 4);
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 4) {
+                __m128i idx = md_mm_loadu_epi32(in_idx + i);
+                __m128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
+                __m128 v_y = md_mm_i32gather_ps(in_y, idx, 4);
+                __m128 v_z = md_mm_i32gather_ps(in_z, idx, 4);
+                __m128 v_w = md_mm_i32gather_ps(in_w, idx, 4);
+
+                __m128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
+                __m128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
+                __m128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
+
+                __m128 v_cx, v_sx;
+                __m128 v_cy, v_sy;
+                __m128 v_cz, v_sz;
+                md_mm_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = md_mm_add_ps(v_acc_sx, md_mm_mul_ps(v_sx, v_w));
+                v_acc_cx = md_mm_add_ps(v_acc_cx, md_mm_mul_ps(v_cx, v_w));
+
+                v_acc_sy = md_mm_add_ps(v_acc_sy, md_mm_mul_ps(v_sy, v_w));
+                v_acc_cy = md_mm_add_ps(v_acc_cy, md_mm_mul_ps(v_cy, v_w));
+
+                v_acc_sz = md_mm_add_ps(v_acc_sz, md_mm_mul_ps(v_sz, v_w));
+                v_acc_cz = md_mm_add_ps(v_acc_cz, md_mm_mul_ps(v_cz, v_w));
+
+                v_acc_w = md_mm_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 4) {
+                __m128i idx = md_mm_loadu_epi32(in_idx + i);
+                __m128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
+                __m128 v_y = md_mm_i32gather_ps(in_y, idx, 4);
+                __m128 v_z = md_mm_i32gather_ps(in_z, idx, 4);
+
+                __m128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
+                __m128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
+                __m128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
+
+                __m128 v_cx, v_sx;
+                __m128 v_cy, v_sy;
+                __m128 v_cz, v_sz;
+                md_mm_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = md_mm_add_ps(v_acc_sx, v_sx);
+                v_acc_cx = md_mm_add_ps(v_acc_cx, v_cx);
+
+                v_acc_sy = md_mm_add_ps(v_acc_sy, v_sy);
+                v_acc_cy = md_mm_add_ps(v_acc_cy, v_cy);
+
+                v_acc_sz = md_mm_add_ps(v_acc_sz, v_sz);
+                v_acc_cz = md_mm_add_ps(v_acc_cz, v_cz);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 4) {
+                __m128 v_x = md_mm_loadu_ps(in_x + i);
+                __m128 v_y = md_mm_loadu_ps(in_y + i);
+                __m128 v_z = md_mm_loadu_ps(in_z + i);
+                __m128 v_w = md_mm_loadu_ps(in_w + i);
+
+                __m128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
+                __m128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
+                __m128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
+
+                __m128 v_cx, v_sx;
+                __m128 v_cy, v_sy;
+                __m128 v_cz, v_sz;
+                md_mm_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = md_mm_add_ps(v_acc_sx, md_mm_mul_ps(v_sx, v_w));
+                v_acc_cx = md_mm_add_ps(v_acc_cx, md_mm_mul_ps(v_cx, v_w));
+
+                v_acc_sy = md_mm_add_ps(v_acc_sy, md_mm_mul_ps(v_sy, v_w));
+                v_acc_cy = md_mm_add_ps(v_acc_cy, md_mm_mul_ps(v_cy, v_w));
+
+                v_acc_sz = md_mm_add_ps(v_acc_sz, md_mm_mul_ps(v_sz, v_w));
+                v_acc_cz = md_mm_add_ps(v_acc_cz, md_mm_mul_ps(v_cz, v_w));
+
+                v_acc_w = md_mm_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 4) {
+                __m128 v_x = md_mm_loadu_ps(in_x + i);
+                __m128 v_y = md_mm_loadu_ps(in_y + i);
+                __m128 v_z = md_mm_loadu_ps(in_z + i);
+
+                __m128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
+                __m128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
+                __m128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
+
+                __m128 v_cx, v_sx;
+                __m128 v_cy, v_sy;
+                __m128 v_cz, v_sz;
+                md_mm_sincos_ps(v_theta_x, &v_sx, &v_cx);
+                md_mm_sincos_ps(v_theta_y, &v_sy, &v_cy);
+                md_mm_sincos_ps(v_theta_z, &v_sz, &v_cz);
+
+                v_acc_sx = md_mm_add_ps(v_acc_sx, v_sx);
+                v_acc_cx = md_mm_add_ps(v_acc_cx, v_cx);
+
+                v_acc_sy = md_mm_add_ps(v_acc_sy, v_sy);
+                v_acc_cy = md_mm_add_ps(v_acc_cy, v_cy);
+
+                v_acc_sz = md_mm_add_ps(v_acc_sz, v_sz);
+                v_acc_cz = md_mm_add_ps(v_acc_cz, v_cz);
+            }
+        }
+    }
+
+    acc_sx = md_mm_reduce_add_ps(v_acc_sx);
+    acc_cx = md_mm_reduce_add_ps(v_acc_cx);
+
+    acc_sy = md_mm_reduce_add_ps(v_acc_sy);
+    acc_cy = md_mm_reduce_add_ps(v_acc_cy);
+
+    acc_sz = md_mm_reduce_add_ps(v_acc_sz);
+    acc_cz = md_mm_reduce_add_ps(v_acc_cz);
+
+    acc_w  = md_mm_reduce_add_ps(v_acc_w);
+#endif
+
+    const double scl_x = TWO_PI / xyz_max.x;
+    const double scl_y = TWO_PI / xyz_max.y;
+    const double scl_z = TWO_PI / xyz_max.z;
+
+    if (in_idx) {
+        if (in_w) {
+            for (; i < count; ++i) {
+                int64_t idx = in_idx[i];
+                double theta_x = in_x[idx] * scl_x;
+                double theta_y = in_y[idx] * scl_y;
+                double theta_z = in_z[idx] * scl_z;
+                double w = in_w[idx];
+                acc_cx += w * cos(theta_x);
+                acc_sx += w * sin(theta_x);
+                acc_cy += w * cos(theta_y);
+				acc_sy += w * sin(theta_y);
+                acc_cz += w * cos(theta_z);
+				acc_sz += w * sin(theta_z);
+                acc_w += w;
+            }
+        } else {
+            for (; i < count; ++i) {
+                int64_t idx = in_idx[i];
+                double theta_x = in_x[idx] * scl_x;
+                double theta_y = in_y[idx] * scl_y;
+                double theta_z = in_z[idx] * scl_z;
+                acc_cx += cos(theta_x);
+                acc_sx += sin(theta_x);
+                acc_cy += cos(theta_y);
+                acc_sy += sin(theta_y);
+                acc_cz += cos(theta_z);
+                acc_sz += sin(theta_z);
+            }
+            acc_w += (double)count;
+        }
+    } else {
+        if (in_w) {
+            for (; i < count; ++i) {
+                double theta_x = in_x[i] * scl_x;
+                double theta_y = in_y[i] * scl_y;
+                double theta_z = in_z[i] * scl_z;
+                double w = in_w[i];
+                acc_cx += w * cos(theta_x);
+                acc_sx += w * sin(theta_x);
+                acc_cy += w * cos(theta_y);
+                acc_sy += w * sin(theta_y);
+                acc_cz += w * cos(theta_z);
+                acc_sz += w * sin(theta_z);
+                acc_w  += w;
+            }
+        } else {
+            for (; i < count; ++i) {
+                double theta_x = in_x[i] * scl_x;
+                double theta_y = in_y[i] * scl_y;
+                double theta_z = in_z[i] * scl_z;
+                acc_cx += cos(theta_x);
+                acc_sx += sin(theta_x);
+                acc_cy += cos(theta_y);
+                acc_sy += sin(theta_y);
+                acc_cz += cos(theta_z);
+                acc_sz += sin(theta_z);
+            }
+            acc_w += (double)count;
+        }
+    }
+
+    double theta_prim_x = PI;
+    double theta_prim_y = PI;
+    double theta_prim_z = PI;
+    {
+        const double y = acc_sx / acc_w;
+        const double x = acc_cx / acc_w;
+        const double r2 = x*x + y*y;
+        if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
+            theta_prim_x += atan2(-y, -x);
+        }
+    }
+    {
+        const double y = acc_sy / acc_w;
+        const double x = acc_cy / acc_w;
+        const double r2 = x*x + y*y;
+        if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
+            theta_prim_y += atan2(-y, -x);
+        }
+    }
+    {
+		const double y = acc_sz / acc_w;
+		const double x = acc_cz / acc_w;
+		const double r2 = x*x + y*y;
+		if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
+			theta_prim_z += atan2(-y, -x);
+		}
+	}
+
+    return vec3_set(
+        (float)((theta_prim_x / TWO_PI) * xyz_max.x),
+        (float)((theta_prim_y / TWO_PI) * xyz_max.y),
+        (float)((theta_prim_z / TWO_PI) * xyz_max.z));
+}
+
 static float compute_com_periodic_trig(const float* in_x, const float* in_w, const int32_t* in_idx, int64_t count, float x_max) {
     double acc_c = 0;
     double acc_s = 0;
@@ -1785,83 +2340,462 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     const double scl = TWO_PI / x_max;
     int64_t i = 0;
 
-#if 0
-    const float fscl = (float)(TWO_PI / x_max);
-    md_simd_f32_t v_acc_c = md_simd_zero_f32();
-    md_simd_f32_t v_acc_s = md_simd_zero_f32();
-    md_simd_f32_t v_acc_w = md_simd_zero_f32();
+#if defined(__AVX512F__)
+    const __m512 v_scl = md_mm512_set1_ps((float)(TWO_PI / x_max));
+    __m512 v_acc_c = md_mm512_setzero_ps();
+    __m512 v_acc_s = md_mm512_setzero_ps();
+    __m512 v_acc_w = md_mm512_setzero_ps();
 
-    const int64_t simd_count = ALIGN_TO(count, md_simd_width_f32) - md_simd_width_f32;
+    const int64_t simd_count = ROUND_DOWN(count, 16);
     if (in_idx) {
-        for (; i < simd_count; i += md_simd_width_f32) {
-            md_simd_f32_t v_x = md_simd_gather_f32(in_x, in_idx + i);
-            md_simd_f32_t v_w = in_w ? md_simd_gather_f32(in_w, in_idx + i) : md_simd_set1_f32(1.0f);
-            md_simd_f32_t v_theta = md_simd_mul(v_x, md_simd_set1_f32(fscl));
-            md_simd_f32_t v_c, v_s;
-            md_simd_sincos(v_theta, &v_s, &v_c);
-            v_acc_s = md_simd_add(v_acc_s, md_simd_mul(v_s, v_w));
-            v_acc_c = md_simd_add(v_acc_c, md_simd_mul(v_c, v_w));
-            v_acc_w = md_simd_add(v_acc_w, v_w);
+        if (in_w) {
+            for (; i < simd_count; i += 16) {
+                __m512i idx = md_mm512_loadu_epi32(in_idx + i);
+                __m512 v_x = md_mm512_i32gather_ps(idx, in_x, 4);
+                __m512 v_w = md_mm512_i32gather_ps(idx, in_w, 4);
+                __m512 v_theta = md_mm512_mul_ps(v_x, v_scl);
+                __m512 v_c, v_s;
+                md_mm512_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm512_add_ps(v_acc_s, md_mm512_mul_ps(v_s, v_w));
+                v_acc_c = md_mm512_add_ps(v_acc_c, md_mm512_mul_ps(v_c, v_w));
+                v_acc_w = md_mm512_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 16) {
+                __m512i idx = md_mm512_loadu_epi32(in_idx + i);
+                __m512 v_x = md_mm512_i32gather_ps(idx, in_x, 4);
+                __m512 v_theta = md_mm512_mul_ps(v_x, v_scl);
+                __m512 v_c, v_s;
+                md_mm512_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm512_add_ps(v_acc_s, v_s);
+                v_acc_c = md_mm512_add_ps(v_acc_c, v_c);
+            }
         }
     } else {
-        for (; i < simd_count; i += md_simd_width_f32) {
-            md_simd_f32_t v_x = md_simd_load_f32(in_x + i);
-            md_simd_f32_t v_w = in_w ? md_simd_load_f32(in_w + i) : md_simd_set1_f32(1.0f);
-            md_simd_f32_t v_theta = md_simd_mul(v_x, md_simd_set1_f32(fscl));
-            md_simd_f32_t v_c, v_s;
-            md_simd_sincos(v_theta, &v_s, &v_c);
-            v_acc_s = md_simd_add(v_acc_s, md_simd_mul(v_s, v_w));
-            v_acc_c = md_simd_add(v_acc_c, md_simd_mul(v_c, v_w));
-            v_acc_w = md_simd_add(v_acc_w, v_w);
+        if (in_w) {
+            for (; i < simd_count; i += 16) {
+                __m512 v_x = md_mm512_loadu_ps(in_x + i);
+                __m512 v_w = md_mm512_loadu_ps(in_w + i);
+                __m512 v_theta = md_mm512_mul_ps(v_x, v_scl);
+                __m512 v_c, v_s;
+                md_mm512_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm512_add_ps(v_acc_s, md_mm512_mul_ps(v_s, v_w));
+                v_acc_c = md_mm512_add_ps(v_acc_c, md_mm512_mul_ps(v_c, v_w));
+                v_acc_w = md_mm512_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 16) {
+                __m512 v_x = md_mm512_loadu_ps(in_x + i);
+                __m512 v_theta = md_mm512_mul_ps(v_x, v_scl);
+                __m512 v_c, v_s;
+                md_mm512_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm512_add_ps(v_acc_s, v_s);
+                v_acc_c = md_mm512_add_ps(v_acc_c, v_c);
+            }
         }
     }
-    acc_s = md_simd_hsum(v_acc_s);
-    acc_c = md_simd_hsum(v_acc_c);
-    acc_w = md_simd_hsum(v_acc_w);
-#endif
 
-    for (; i < count; ++i) {
-        int64_t idx = in_idx ? in_idx[i] : i;
-        double theta = in_x[idx] * scl;
-        double w = in_w ? in_w[idx] : 1.0;
-        acc_c += w * cos(theta);
-        acc_s += w * sin(theta);
-        acc_w += w;
+    acc_s = md_mm512_reduce_add_ps(v_acc_s);
+    acc_c = md_mm512_reduce_add_ps(v_acc_c);
+    acc_w = md_mm512_reduce_add_ps(v_acc_w);
+#elif defined(__AVX2__)
+    const __m256 v_scl = md_mm256_set1_ps((float)(TWO_PI / x_max));
+    __m256 v_acc_c = md_mm256_setzero_ps();
+    __m256 v_acc_s = md_mm256_setzero_ps();
+    __m256 v_acc_w = md_mm256_setzero_ps();
+
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 8) {
+                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
+                __m256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                __m256 v_w = md_mm256_i32gather_ps(in_w, idx, 4);
+                __m256 v_theta = md_mm256_mul_ps(v_x, v_scl);
+                __m256 v_c, v_s;
+                md_mm256_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm256_add_ps(v_acc_s, md_mm256_mul_ps(v_s, v_w));
+                v_acc_c = md_mm256_add_ps(v_acc_c, md_mm256_mul_ps(v_c, v_w));
+                v_acc_w = md_mm256_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 8) {
+                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
+                __m256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                __m256 v_theta = md_mm256_mul_ps(v_x, v_scl);
+                __m256 v_c, v_s;
+                md_mm256_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm256_add_ps(v_acc_s, v_s);
+                v_acc_c = md_mm256_add_ps(v_acc_c, v_c);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 8) {
+                __m256 v_x = md_mm256_loadu_ps(in_x + i);
+                __m256 v_w = md_mm256_loadu_ps(in_w + i);
+                __m256 v_theta = md_mm256_mul_ps(v_x, v_scl);
+                __m256 v_c, v_s;
+                md_mm256_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm256_add_ps(v_acc_s, md_mm256_mul_ps(v_s, v_w));
+                v_acc_c = md_mm256_add_ps(v_acc_c, md_mm256_mul_ps(v_c, v_w));
+                v_acc_w = md_mm256_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 8) {
+                __m256 v_x = md_mm256_loadu_ps(in_x + i);
+                __m256 v_theta = md_mm256_mul_ps(v_x, v_scl);
+                __m256 v_c, v_s;
+                md_mm256_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm256_add_ps(v_acc_s, v_s);
+                v_acc_c = md_mm256_add_ps(v_acc_c, v_c);
+            }
+        }
     }
 
-    acc_w = (acc_w == 0) ? count : acc_w;
+    acc_s = md_mm256_reduce_add_ps(v_acc_s);
+    acc_c = md_mm256_reduce_add_ps(v_acc_c);
+    acc_w = md_mm256_reduce_add_ps(v_acc_w);
+#elif defined(__SSE2__)
+    const __m128 v_scl = md_mm_set1_ps((float)(TWO_PI / x_max));
+    __m128 v_acc_c = md_mm_setzero_ps();
+    __m128 v_acc_s = md_mm_setzero_ps();
+    __m128 v_acc_w = md_mm_setzero_ps();
+
+    const int64_t simd_count = ROUND_DOWN(count, 4);
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 4) {
+                __m128i idx = md_mm_loadu_epi32(in_idx + i);
+                __m128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
+                __m128 v_w = md_mm_i32gather_ps(in_w, idx, 4);
+                __m128 v_theta = md_mm_mul_ps(v_x, v_scl);
+                __m128 v_c, v_s;
+                md_mm_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm_add_ps(v_acc_s, md_mm_mul_ps(v_s, v_w));
+                v_acc_c = md_mm_add_ps(v_acc_c, md_mm_mul_ps(v_c, v_w));
+                v_acc_w = md_mm_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 4) {
+                __m128i idx = md_mm_loadu_epi32(in_idx + i);
+                __m128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
+                __m128 v_theta = md_mm_mul_ps(v_x, v_scl);
+                __m128 v_c, v_s;
+                md_mm_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm_add_ps(v_acc_s, v_s);
+                v_acc_c = md_mm_add_ps(v_acc_c, v_c);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 4) {
+                __m128 v_x = md_mm_loadu_ps(in_x + i);
+                __m128 v_w = md_mm_loadu_ps(in_w + i);
+                __m128 v_theta = md_mm_mul_ps(v_x, v_scl);
+                __m128 v_c, v_s;
+                md_mm_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm_add_ps(v_acc_s, md_mm_mul_ps(v_s, v_w));
+                v_acc_c = md_mm_add_ps(v_acc_c, md_mm_mul_ps(v_c, v_w));
+                v_acc_w = md_mm_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 4) {
+                __m128 v_x = md_mm_loadu_ps(in_x + i);
+                __m128 v_theta = md_mm_mul_ps(v_x, v_scl);
+                __m128 v_c, v_s;
+                md_mm_sincos_ps(v_theta, &v_s, &v_c);
+                v_acc_s = md_mm_add_ps(v_acc_s, v_s);
+                v_acc_c = md_mm_add_ps(v_acc_c, v_c);
+            }
+        }
+    }
+
+    acc_s = md_mm_reduce_add_ps(v_acc_s);
+    acc_c = md_mm_reduce_add_ps(v_acc_c);
+    acc_w = md_mm_reduce_add_ps(v_acc_w);
+#endif
+
+    if (in_idx) {
+        if (in_w) {
+            for (; i < count; ++i) {
+                int64_t idx = in_idx[i];
+                double theta = in_x[idx] * scl;
+                double w = in_w[idx];
+                acc_c += w * cos(theta);
+                acc_s += w * sin(theta);
+                acc_w += w;
+            }
+        } else {
+            for (; i < count; ++i) {
+                int64_t idx = in_idx[i];
+                double theta = in_x[idx] * scl;
+                acc_c += cos(theta);
+                acc_s += sin(theta);
+            }
+            acc_w += (double)count;
+        }
+    } else {
+        if (in_w) {
+            for (; i < count; ++i) {
+                double theta = in_x[i] * scl;
+                double w = in_w[i];
+                acc_c += w * cos(theta);
+                acc_s += w * sin(theta);
+                acc_w += w;
+            }
+		} else {
+            for (; i < count; ++i) {
+                double theta = in_x[i] * scl;
+                acc_c += cos(theta);
+                acc_s += sin(theta);
+            }
+            acc_w += (double)count;
+		}
+    }
+
     const double y = acc_s / acc_w;
     const double x = acc_c / acc_w;
     const double r2 = x*x + y*y;
 
     double theta_prim = PI;
-    if (r2 > 1.0e-15) {
+    if (r2 > TRIG_ATAN2_R2_THRESHOLD) {
         theta_prim += atan2(-y, -x);
     }
 
     return (float)((theta_prim / TWO_PI) * x_max);
 }
 
-// Regular version, deperiodization is done with respect to the previous element
 static float compute_com_periodic_reg(const float* in_x, const float* in_w, const int32_t* in_idx, int64_t count, float x_max) {
     if (count <= 0) {
         return 0;
     }
 
-    int32_t idx0 = in_idx ? in_idx[0] : 0;
-    double acc_x = in_x[idx0];
-    double acc_w = in_w ? in_w[idx0] : 1.0;
-    double prev_x = in_x[idx0];
-    double d_x_max = x_max;
+    double acc_x = 0;
+    double acc_w = 0;
 
-    for (int64_t i = 1; i < count; ++i) {
+    int64_t i = 0;
+#if defined(__AVX512F__)
+    const int64_t simd_count = ROUND_DOWN(count, 16);
+    if (simd_count > 0) {
+        const __m512 v_ext = md_mm512_set1_ps(x_max);
+        __m512 v_acc_x = md_mm512_setzero_ps();
+        __m512 v_acc_w = md_mm512_setzero_ps();
+        i += 8;
+        if (in_idx) {
+            __m512i idx = md_mm512_loadu_epi32(in_idx);
+            if (in_w) {
+                v_acc_x = md_mm512_i32gather_ps(in_x, idx, 4);
+                v_acc_w = md_mm512_i32gather_ps(in_w, idx, 4);
+                for (; i < simd_count; i += 16) {
+                    idx = md_mm512_loadu_epi32(in_idx + i);
+                    __m512 r = md_mm512_div_ps(v_acc_x, v_acc_w);
+                    __m512 x = md_mm512_i32gather_ps(in_x, idx, 4);
+                    __m512 w = md_mm512_i32gather_ps(in_w, idx, 4);
+                    x = md_mm512_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm512_add_ps(v_acc_x, md_mm512_mul_ps(x, w));
+                    v_acc_w = md_mm512_add_ps(v_acc_w, w);
+                }
+            } else {
+                v_acc_x = md_mm512_i32gather_ps(in_x, idx, 4);
+                v_acc_w = md_mm512_set1_ps(16);
+                for (; i < simd_count; i += 16) {
+                    idx = md_mm512_loadu_epi32(in_idx + i);
+                    __m512 r = md_mm512_div_ps(v_acc_x, v_acc_w);
+                    __m512 x = md_mm512_i32gather_ps(in_x, idx, 4);
+                    x = md_mm512_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm512_add_ps(v_acc_x, x);
+                    v_acc_w = md_mm512_add_ps(v_acc_w, md_mm512_set1_ps(8));
+                }
+            }
+        } else {
+            if (in_w) {
+                v_acc_x = md_mm512_loadu_ps(in_x);
+                v_acc_w = md_mm512_loadu_ps(in_w);
+                for (; i < simd_count; i += 16) {
+                    __m512 r = md_mm512_div_ps(v_acc_x, v_acc_w);
+                    __m512 x = md_mm512_loadu_ps(in_x + i);
+                    __m512 w = md_mm512_loadu_ps(in_w + i);
+                    x = md_mm512_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm512_add_ps(v_acc_x, md_mm512_mul_ps(x, w));
+                    v_acc_w = md_mm512_add_ps(v_acc_w, w);
+                }
+            } else {
+                v_acc_x = md_mm512_loadu_ps(in_x);
+                v_acc_w = md_mm512_set1_ps(16);
+                for (; i < simd_count; i += 16) {
+                    __m512 r = md_mm512_div_ps(v_acc_x, v_acc_w);
+                    __m512 x = md_mm512_loadu_ps(in_x + i);
+                    x = md_mm512_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm512_add_ps(v_acc_x, x);
+                    v_acc_w = md_mm512_add_ps(v_acc_w, md_mm512_set1_ps(16));
+                }
+            }
+        }
+        acc_x = md_mm512_reduce_add_ps(v_acc_x);
+        acc_w = md_mm512_reduce_add_ps(v_acc_w);
+    }
+#elif defined(__AVX2__)
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+    if (simd_count > 0) {
+       const __m256 v_ext = md_mm256_set1_ps(x_max);
+        __m256 v_acc_x = md_mm256_setzero_ps();
+        __m256 v_acc_w = md_mm256_setzero_ps();
+        i += 8;
+        if (in_idx) {
+            __m256i idx = md_mm256_loadu_epi32(in_idx);
+            if (in_w) {
+                v_acc_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                v_acc_w = md_mm256_i32gather_ps(in_w, idx, 4);
+                for (; i < simd_count; i += 8) {
+                    idx = md_mm256_loadu_epi32(in_idx + i);
+                    __m256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+                    __m256 x = md_mm256_i32gather_ps(in_x, idx, 4);
+                    __m256 w = md_mm256_i32gather_ps(in_w, idx, 4);
+                    x = md_mm256_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(x, w));
+                    v_acc_w = md_mm256_add_ps(v_acc_w, w);
+                }
+            } else {
+                v_acc_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                v_acc_w = md_mm256_set1_ps(8);
+                for (; i < simd_count; i += 8) {
+                    idx = md_mm256_loadu_epi32(in_idx + i);
+                    __m256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+                    __m256 x = md_mm256_i32gather_ps(in_x, idx, 4);
+                    x = md_mm256_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm256_add_ps(v_acc_x, x);
+                    v_acc_w = md_mm256_add_ps(v_acc_w, md_mm256_set1_ps(8));
+                }
+            }
+        } else {
+            if (in_w) {
+                v_acc_x = md_mm256_loadu_ps(in_x);
+                v_acc_w = md_mm256_loadu_ps(in_w);
+                for (; i < simd_count; i += 8) {
+                    __m256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+                    __m256 x = md_mm256_loadu_ps(in_x + i);
+                    __m256 w = md_mm256_loadu_ps(in_w + i);
+                    x = md_mm256_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(x, w));
+                    v_acc_w = md_mm256_add_ps(v_acc_w, w);
+                }
+            } else {
+                v_acc_x = md_mm256_loadu_ps(in_x);
+                v_acc_w = md_mm256_set1_ps(8);
+                for (; i < simd_count; i += 8) {
+                    __m256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+                    __m256 x = md_mm256_loadu_ps(in_x + i);
+                    x = md_mm256_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm256_add_ps(v_acc_x, x);
+                    v_acc_w = md_mm256_add_ps(v_acc_w, md_mm256_set1_ps(8));
+                }
+            }
+		}
+        acc_x = md_mm256_reduce_add_ps(v_acc_x);
+        acc_w = md_mm256_reduce_add_ps(v_acc_w);
+    }
+#elif defined(__SSE2__)
+    const int64_t simd_count = ROUND_DOWN(count, 4);
+    if (simd_count > 0) {
+        const __m128 v_ext = md_mm_set1_ps(x_max);
+        __m128 v_acc_x = md_mm_setzero_ps();
+        __m128 v_acc_w = md_mm_setzero_ps();
+        i += 8;
+        if (in_idx) {
+            __m128i idx = md_mm_loadu_epi32(in_idx);
+            if (in_w) {
+                v_acc_x = md_mm_i32gather_ps(in_x, idx, 4);
+                v_acc_w = md_mm_i32gather_ps(in_w, idx, 4);
+                for (; i < simd_count; i += 4) {
+                    idx = md_mm_loadu_epi32(in_idx + i);
+                    __m128 r = md_mm_div_ps(v_acc_x, v_acc_w);
+                    __m128 x = md_mm_i32gather_ps(in_x, idx, 4);
+                    __m128 w = md_mm_i32gather_ps(in_w, idx, 4);
+                    x = md_mm_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(x, w));
+                    v_acc_w = md_mm_add_ps(v_acc_w, w);
+                }
+            } else {
+                v_acc_x = md_mm_i32gather_ps(in_x, idx, 4);
+                v_acc_w = md_mm_set1_ps(4);
+                for (; i < simd_count; i += 4) {
+                    idx = md_mm_loadu_epi32(in_idx + i);
+                    __m128 r = md_mm_div_ps(v_acc_x, v_acc_w);
+                    __m128 x = md_mm_i32gather_ps(in_x, idx, 4);
+                    x = md_mm_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm_add_ps(v_acc_x, x);
+                    v_acc_w = md_mm_add_ps(v_acc_w, md_mm_set1_ps(4));
+                }
+            }
+        } else {
+            if (in_w) {
+                v_acc_x = md_mm_loadu_ps(in_x);
+                v_acc_w = md_mm_loadu_ps(in_w);
+                for (; i < simd_count; i += 4) {
+                    __m128 r = md_mm_div_ps(v_acc_x, v_acc_w);
+                    __m128 x = md_mm_loadu_ps(in_x + i);
+                    __m128 w = md_mm_loadu_ps(in_w + i);
+                    x = md_mm_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(x, w));
+                    v_acc_w = md_mm_add_ps(v_acc_w, w);
+                }
+            } else {
+                v_acc_x = md_mm_loadu_ps(in_x);
+                v_acc_w = md_mm_set1_ps(4);
+                for (; i < simd_count; i += 4) {
+                    __m128 r = md_mm_div_ps(v_acc_x, v_acc_w);
+                    __m128 x = md_mm_loadu_ps(in_x + i);
+                    x = md_mm_deperiodize_ps(x, r, v_ext);
+                    v_acc_x = md_mm_add_ps(v_acc_x, x);
+                    v_acc_w = md_mm_add_ps(v_acc_w, md_mm_set1_ps(4));
+                }
+            }
+        }
+        acc_x = md_mm_reduce_add_ps(v_acc_x);
+        acc_w = md_mm_reduce_add_ps(v_acc_w);
+    }
+#endif
+
+    if (i == 0) {
         int64_t idx = in_idx ? in_idx[i] : i;
-        double x = in_x[idx];
-        double dx = deperiodize(x, prev_x, d_x_max);
-        double w = in_w ? in_w[idx] : 1.0;
-        acc_x += dx * w;
-        acc_w += w;
-        prev_x = dx;
+        acc_x = in_x[idx];
+        acc_w = in_w ? in_w[idx] : 1.0;
+    }
+    const double d_x_max = x_max;
+
+    if (in_idx) {
+        if (in_w) {
+            int64_t idx = in_idx[i];
+            double r = acc_x / acc_w;
+            double x = in_x[idx];
+            double w = in_w[idx];
+            double dx = deperiodize(x, r, d_x_max);
+            acc_x += dx * w;
+            acc_w += w;
+        } else {
+            int64_t idx = in_idx[i];
+            double r = acc_x / acc_w;
+            double x = in_x[idx];
+            double dx = deperiodize(x, r, d_x_max);
+            acc_x += dx;
+            acc_w += 1.0;
+        }
+    } else {
+        if (in_w) {
+            double r = acc_x / acc_w;
+            double x = in_x[i];
+            double w = in_w[i];
+            double dx = deperiodize(x, r, d_x_max);
+            acc_x += dx * w;
+            acc_w += w;
+        } else {
+            double r = acc_x / acc_w;
+            double x = in_x[i];
+            double dx = deperiodize(x, r, d_x_max);
+            acc_x += dx;
+            acc_w += 1.0;
+        }
     }
 
     return (float)(acc_x / acc_w);
@@ -1870,43 +2804,160 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
 static float compute_com(const float* in_x, const float* in_w, const int32_t* in_idx, int64_t count) {
     ASSERT(in_x);
 
-    if (count == 0)
+    if (count <= 0)
         return 0.0f;
 
-    float acc_x = 0;
-    float acc_w = 0;
     int64_t i = 0;
+    double acc_x = 0;
+    double acc_w = 0;
 
-    md_simd_f32_t v_acc_x = md_simd_zero_f32();
-    md_simd_f32_t v_acc_w = md_simd_zero_f32();
-    const int64_t simd_count = ALIGN_TO(count, md_simd_width_f32) - md_simd_width_f32;
+#if defined(__AVX512F__)
+    __m512 v_acc_x = md_mm512_setzero_ps();
+    __m512 v_acc_w = md_mm512_setzero_ps();
+    const int64_t simd_count = ROUND_DOWN(count, 16);
     if (in_idx) {
-        for (; i < simd_count; i += md_simd_width_f32) {
-            md_simd_f32_t v_x = md_simd_gather_f32(in_x, in_idx + i);
-            md_simd_f32_t v_w = in_w ? md_simd_gather_f32(in_w, in_idx) : md_simd_set1_f32(1.0f);
-            v_acc_x = md_simd_add(v_acc_x, md_simd_mul(v_x, v_w));
-            v_acc_w = md_simd_add(v_acc_w, v_w);
+        if (in_w) {
+            for (; i < simd_count; i += 16) {
+                __m512i idx = md_mm512_loadu_epi32(in_idx + i);
+                __m512 v_x  = md_mm512_i32gather_ps(idx, in_x, 4);
+                __m512 v_w  = md_mm512_i32gather_ps(idx, in_w, 4);
+                v_acc_x = md_mm512_add_ps(v_acc_x, md_mm512_mul_ps(v_x, v_w));
+                v_acc_w = md_mm512_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 16) {
+                __m512i idx = md_mm512_loadu_epi32(in_idx + i);
+                __m512 v_x  = md_mm512_i32gather_ps(idx, in_x, 4);
+                v_acc_x = md_mm512_add_ps(v_acc_x, v_x);
+            }
         }
     } else {
-        for (; i < simd_count; i += md_simd_width_f32) {
-            md_simd_f32_t v_x = md_simd_load_f32(in_x + i);
-            md_simd_f32_t v_w = in_w ? md_simd_load_f32(in_w) : md_simd_set1_f32(1.0f);
-            v_acc_x = md_simd_add(v_acc_x, md_simd_mul(v_x, v_w));
-            v_acc_w = md_simd_add(v_acc_w, v_w);
+        if (in_w) {
+            for (; i < simd_count; i += 16) {
+                __m512 v_x = md_mm512_loadu_ps(in_x + i);
+                __m512 v_w = md_mm512_loadu_ps(in_w + i);
+                v_acc_x = md_mm512_add_ps(v_acc_x, md_mm512_mul_ps(v_x, v_w));
+                v_acc_w = md_mm512_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 16) {
+                __m512 v_x = md_mm512_loadu_ps(in_x + i);
+                v_acc_x = md_mm512_add_ps(v_acc_x, v_x);
+            }
         }
     }
-    acc_x = md_simd_hsum(v_acc_x);
-    acc_w = md_simd_hsum(v_acc_w);
 
-    for (; i < count; ++i) {
-        int64_t idx = in_idx ? in_idx[i] : i;
-        float x = in_x[idx];
-        float w = in_w ? in_w[idx] : 1.0f;
-        acc_x += x * w;
-        acc_w += w;
+    acc_x = md_mm512_reduce_add_ps(v_acc_x);
+    acc_w = md_mm512_reduce_add_ps(v_acc_w);
+#elif defined(__AVX2__)
+    __m256 v_acc_x = md_mm256_setzero_ps();
+    __m256 v_acc_w = md_mm256_setzero_ps();
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 8) {
+                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
+                __m256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
+                __m256 v_w  = md_mm256_i32gather_ps(in_w, idx, 4);
+                v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(v_x, v_w));
+                v_acc_w = md_mm256_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 8) {
+                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
+                __m256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
+                v_acc_x = md_mm256_add_ps(v_acc_x, v_x);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 8) {
+                __m256 v_x = md_mm256_loadu_ps(in_x + i);
+                __m256 v_w = md_mm256_loadu_ps(in_w + i);
+                v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(v_x, v_w));
+                v_acc_w = md_mm256_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 8) {
+                __m256 v_x = md_mm256_loadu_ps(in_x + i);
+                v_acc_x = md_mm256_add_ps(v_acc_x, v_x);
+            }
+        }
     }
 
-    float com = acc_x / acc_w;
+    acc_x = md_mm256_reduce_add_ps(v_acc_x);
+    acc_w = md_mm256_reduce_add_ps(v_acc_w);
+#elif defined(__SSE2__)
+    __m128 v_acc_x = md_mm_setzero_ps();
+    __m128 v_acc_w = md_mm_setzero_ps();
+    const int64_t simd_count = ROUND_DOWN(count, 4);
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 4) {
+                __m128i idx = md_mm_loadu_epi32(in_idx + i);
+                __m128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
+                __m128 v_w  = md_mm_i32gather_ps(in_w, idx, 4);
+                v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(v_x, v_w));
+                v_acc_w = md_mm_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 4) {
+                __m128i idx = md_mm_loadu_epi32(in_idx + i);
+                __m128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
+                v_acc_x = md_mm_add_ps(v_acc_x, v_x);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 4) {
+                __m128 v_x = md_mm_loadu_ps(in_x + i);
+                __m128 v_w = md_mm_loadu_ps(in_w + i);
+                v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(v_x, v_w));
+                v_acc_w = md_mm_add_ps(v_acc_w, v_w);
+            }
+        } else {
+            for (; i < simd_count; i += 4) {
+                __m128 v_x = md_mm_loadu_ps(in_x + i);
+                v_acc_x = md_mm_add_ps(v_acc_x, v_x);
+            }
+        }
+    }
+
+    acc_x = md_mm_reduce_add_ps(v_acc_x);
+    acc_w = md_mm_reduce_add_ps(v_acc_w);
+#endif
+
+    if (in_idx) {
+        if (in_w) {
+            for (; i < count; ++i) {
+                int64_t idx = in_idx[i];
+                float w = in_w[idx];
+                acc_x += in_x[idx] * w;
+                acc_w += w;
+            }
+        } else {
+            for (; i < count; ++i) {
+                int64_t idx = in_idx[i];
+                acc_x += in_x[idx];
+            }
+            acc_w += count;
+        }
+    } else {
+        if (in_w) {
+            for (; i < count; ++i) {
+                float w = in_w[i];
+                acc_x += in_x[i] * w;
+                acc_w += w;
+            }
+        } else {
+            for (; i < count; ++i) {
+                acc_x += in_x[i];
+            }
+            acc_w += count;
+        }
+    }
+
+    float com = (float)(acc_x / acc_w);
     return com;
 }
 
@@ -1930,7 +2981,7 @@ vec3_t md_util_compute_com_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, in
     return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
 }
 
-vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count) {
+vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, int64_t count) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -1939,25 +2990,246 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
         return (vec3_t) {0,0,0};
     }
 
-    // Use vec4 here so we can utilize SSE vectorization if applicable
-    // @TODO: Vectorize with full register width
-    vec4_t sum_xyzw = {0,0,0,0};
-    if (in_w) {
-        for (int64_t i = 0; i < count; ++i) {
-            int64_t idx = indices ? indices[i] : i;
-            const vec4_t xyz1 = vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f);
-            sum_xyzw = vec4_add(sum_xyzw, vec4_mul_f(xyz1, in_w[idx]));
+    double acc_x = 0;
+    double acc_y = 0;
+    double acc_z = 0;
+    double acc_w = 0;
+
+    int64_t i = 0;
+#if defined(__AVX512F__)
+    __m512 vx = _mm512_setzero_ps();
+    __m512 vy = _mm512_setzero_ps();
+    __m512 vz = _mm512_setzero_ps();
+    __m512 vw = _mm512_setzero_ps();
+
+    const int64_t simd_count = ROUND_DOWN(count, 16);
+
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 16) {
+                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512 x    = _mm512_i32gather_ps(idx, in_x, 4);
+                __m512 y    = _mm512_i32gather_ps(idx, in_y, 4);
+                __m512 z    = _mm512_i32gather_ps(idx, in_z, 4);
+                __m512 w    = _mm512_i32gather_ps(idx, in_w, 4);
+
+                vx = _mm512_add_ps(vx, _mm512_mul_ps(x, w));
+                vy = _mm512_add_ps(vy, _mm512_mul_ps(y, w));
+                vz = _mm512_add_ps(vz, _mm512_mul_ps(z, w));
+                vw = _mm512_add_ps(vw, w);
+            }
+        } else {
+            for (; i < simd_count; i += 16) {
+                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512 x    = _mm512_i32gather_ps(idx, in_x, 4);
+                __m512 y    = _mm512_i32gather_ps(idx, in_y, 4);
+                __m512 z    = _mm512_i32gather_ps(idx, in_z, 4);
+
+                vx = _mm512_add_ps(vx, x);
+                vy = _mm512_add_ps(vy, y);
+                vz = _mm512_add_ps(vz, z);
+            }
         }
     } else {
-        for (int64_t i = 0; i < count; ++i) {
-            int64_t idx = indices ? indices[i] : i;
-            const vec4_t xyz0 = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0);
-            sum_xyzw = vec4_add(sum_xyzw, xyz0);
+        if (in_w) {
+            for (; i < simd_count; i += 16) {
+                __m512 x = _mm512_loadu_ps(in_x + i);
+                __m512 y = _mm512_loadu_ps(in_y + i);
+                __m512 z = _mm512_loadu_ps(in_z + i);
+                __m512 w = _mm512_loadu_ps(in_w + i);
+
+                vx = _mm512_add_ps(vx, _mm512_mul_ps(x, w));
+                vy = _mm512_add_ps(vy, _mm512_mul_ps(y, w));
+                vz = _mm512_add_ps(vz, _mm512_mul_ps(z, w));
+                vw = _mm512_add_ps(vw, w);
+            }
+        } else {
+            for (; i < simd_count; i += 16) {
+                __m512 x = _mm512_loadu_ps(in_x + i);
+                __m512 y = _mm512_loadu_ps(in_y + i);
+                __m512 z = _mm512_loadu_ps(in_z + i);
+
+                vx = _mm512_add_ps(vx, x);
+                vy = _mm512_add_ps(vy, y);
+                vz = _mm512_add_ps(vz, z);
+            }
         }
-        sum_xyzw.w = (float)count;
     }
 
-    return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
+    acc_x = md_mm512_reduce_add_ps(vx);
+    acc_y = md_mm512_reduce_add_ps(vy);
+    acc_z = md_mm512_reduce_add_ps(vz);
+    acc_w = md_mm512_reduce_add_ps(vw);
+#elif defined (__AVX__)
+    __m256 vx = _mm256_setzero_ps();
+    __m256 vy = _mm256_setzero_ps();
+    __m256 vz = _mm256_setzero_ps();
+    __m256 vw = _mm256_setzero_ps();
+
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 8) {
+                __m256i idx = _mm256_loadu_epi32(in_idx + i);
+                __m256 x    = _mm256_i32gather_ps(in_x, idx, 4);
+                __m256 y    = _mm256_i32gather_ps(in_y, idx, 4);
+                __m256 z    = _mm256_i32gather_ps(in_z, idx, 4);
+                __m256 w    = _mm256_i32gather_ps(in_w, idx, 4);
+
+                vx = _mm256_add_ps(vx, _mm256_mul_ps(x, w));
+                vy = _mm256_add_ps(vy, _mm256_mul_ps(y, w));
+                vz = _mm256_add_ps(vz, _mm256_mul_ps(z, w));
+                vw = _mm256_add_ps(vw, w);
+            }
+        } else {
+            for (; i < simd_count; i += 8) {
+                __m256i idx = _mm256_loadu_epi32(in_idx + i);
+                __m256 x    = _mm256_i32gather_ps(in_x, idx, 4);
+                __m256 y    = _mm256_i32gather_ps(in_y, idx, 4);
+                __m256 z    = _mm256_i32gather_ps(in_z, idx, 4);
+
+                vx = _mm256_add_ps(vx, x);
+                vy = _mm256_add_ps(vy, y);
+                vz = _mm256_add_ps(vz, z);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 8) {
+                __m256 x = _mm256_loadu_ps(in_x + i);
+                __m256 y = _mm256_loadu_ps(in_y + i);
+                __m256 z = _mm256_loadu_ps(in_z + i);
+                __m256 w = _mm256_loadu_ps(in_w + i);
+
+                vx = _mm256_add_ps(vx, _mm256_mul_ps(x, w));
+                vy = _mm256_add_ps(vy, _mm256_mul_ps(y, w));
+                vz = _mm256_add_ps(vz, _mm256_mul_ps(z, w));
+                vw = _mm256_add_ps(vw, w);
+            }
+        } else {
+            for (; i < simd_count; i += 8) {
+                __m256 x = _mm256_loadu_ps(in_x + i);
+                __m256 y = _mm256_loadu_ps(in_y + i);
+                __m256 z = _mm256_loadu_ps(in_z + i);
+
+                vx = _mm256_add_ps(vx, x);
+                vy = _mm256_add_ps(vy, y);
+                vz = _mm256_add_ps(vz, z);
+            }
+        }
+    }
+
+    acc_x = md_mm256_reduce_add_ps(vx);
+    acc_y = md_mm256_reduce_add_ps(vy);
+    acc_z = md_mm256_reduce_add_ps(vz);
+    acc_w = md_mm256_reduce_add_ps(vw);
+
+#elif defined(__SSE2__)
+    __m128 vx = _mm_setzero_ps();
+    __m128 vy = _mm_setzero_ps();
+    __m128 vz = _mm_setzero_ps();
+    __m128 vw = _mm_setzero_ps();
+
+    const int64_t simd_count = ROUND_DOWN(count, 4);
+
+    if (in_idx) {
+        if (in_w) {
+            for (; i < simd_count; i += 4) {
+                __m128i idx = _mm_loadu_epi32(in_idx + i);
+                __m128 x    = _mm_i32gather_ps(in_x, idx, 4);
+                __m128 y    = _mm_i32gather_ps(in_y, idx, 4);
+                __m128 z    = _mm_i32gather_ps(in_z, idx, 4);
+                __m128 w    = _mm_i32gather_ps(in_w, idx, 4);
+
+                vx = _mm_add_ps(vx, _mm_mul_ps(x, w));
+                vy = _mm_add_ps(vy, _mm_mul_ps(y, w));
+                vz = _mm_add_ps(vz, _mm_mul_ps(z, w));
+                vw = _mm_add_ps(vw, w);
+            }
+        } else {
+            for (; i < simd_count; i += 4) {
+                __m128i idx = _mm_loadu_epi32(in_idx + i);
+                __m128 x    = _mm_i32gather_ps(in_x, idx, 4);
+                __m128 y    = _mm_i32gather_ps(in_y, idx, 4);
+                __m128 z    = _mm_i32gather_ps(in_z, idx, 4);
+
+                vx = _mm_add_ps(vx, x);
+                vy = _mm_add_ps(vy, y);
+                vz = _mm_add_ps(vz, z);
+            }
+        }
+    } else {
+        if (in_w) {
+            for (; i < simd_count; i += 4) {
+                __m128 x = _mm_loadu_ps(in_x + i);
+                __m128 y = _mm_loadu_ps(in_y + i);
+                __m128 z = _mm_loadu_ps(in_z + i);
+                __m128 w = _mm_loadu_ps(in_w + i);
+
+                vx = _mm_add_ps(vx, _mm_mul_ps(x, w));
+                vy = _mm_add_ps(vy, _mm_mul_ps(y, w));
+                vz = _mm_add_ps(vz, _mm_mul_ps(z, w));
+                vw = _mm_add_ps(vw, w);
+            }
+        } else {
+            for (; i < simd_count; i += 4) {
+                __m128 x = _mm_loadu_ps(in_x + i);
+                __m128 y = _mm_loadu_ps(in_y + i);
+                __m128 z = _mm_loadu_ps(in_z + i);
+
+                vx = _mm_add_ps(vx, x);
+                vy = _mm_add_ps(vy, y);
+                vz = _mm_add_ps(vz, z);
+            }
+        }
+    }
+
+    acc_x = md_mm_reduce_add_ps(vx);
+    acc_y = md_mm_reduce_add_ps(vy);
+    acc_z = md_mm_reduce_add_ps(vz);
+    acc_w = md_mm_reduce_add_ps(vw);
+#endif
+
+    if (in_idx) {
+        if (in_w) {
+            for (; i < count; ++i) {
+                int64_t idx = in_idx[i];
+                float w = in_w[idx];
+                acc_x += in_x[idx] * w;
+                acc_y += in_y[idx] * w;
+                acc_z += in_z[idx] * w;
+				acc_w += w;
+            }
+        } else {
+            for (; i < count; ++i) {
+                int64_t idx = in_idx[i];
+                acc_x += in_x[idx];
+                acc_y += in_y[idx];
+                acc_z += in_z[idx];
+            }
+            acc_w = (double)count;
+        }
+    } else {
+        if (in_w) {
+            for (; i < count; ++i) {
+                float w = in_w[i];
+                acc_x += in_x[i] * w;
+                acc_y += in_y[i] * w;
+                acc_z += in_z[i] * w;
+                acc_w += w;
+            }
+        } else {
+            for (; i < count; ++i) {
+                acc_x += in_x[i];
+                acc_y += in_y[i];
+                acc_z += in_z[i];
+            }
+        }
+    }
+    if (!in_w) acc_w = (double)count;
+    double scl = 1.0 / acc_w;
+    return (vec3_t) {(float)(acc_x * scl), (float)(acc_y * scl), (float)(acc_z * scl)};
 }
 
 #ifndef MD_UTIL_COMPUTE_COM_USE_TRIG
@@ -1980,129 +3252,36 @@ vec3_t md_util_compute_com_vec4_ortho(const vec4_t* in_xyzw, const int32_t* indi
 #endif
 }
 
-vec3_t md_util_compute_com_ortho(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t pbc_ext) {
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
-    ASSERT(count >= 0);
-    ASSERT(pbc_ext.x >= 0);
-    ASSERT(pbc_ext.y >= 0);
-    ASSERT(pbc_ext.z >= 0);
-
-    if (count == 0) {
-        return (vec3_t) {0,0,0};
-    }
-
-#if MD_UTIL_COMPUTE_COM_USE_TRIG
-    // We need to pick the version based on each component of pdc_ext, since one or more may be zero
-    float x = pbc_ext.x > 0 ? compute_com_periodic_trig(in_x, in_w, indices, count, pbc_ext.x) : compute_com(in_x, in_w, indices, count);
-    float y = pbc_ext.y > 0 ? compute_com_periodic_trig(in_y, in_w, indices, count, pbc_ext.y) : compute_com(in_y, in_w, indices, count);
-    float z = pbc_ext.z > 0 ? compute_com_periodic_trig(in_z, in_w, indices, count, pbc_ext.z) : compute_com(in_z, in_w, indices, count);
-#else
-    // We need to pick the version based on each component of pdc_ext, since one or more may be zero
-    float x = pbc_ext.x > 0 ? compute_com_periodic_reg(in_x, in_w, indices, count, pbc_ext.x) : compute_com(in_x, in_w, indices, count);
-    float y = pbc_ext.y > 0 ? compute_com_periodic_reg(in_y, in_w, indices, count, pbc_ext.y) : compute_com(in_y, in_w, indices, count);
-    float z = pbc_ext.z > 0 ? compute_com_periodic_reg(in_z, in_w, indices, count, pbc_ext.z) : compute_com(in_z, in_w, indices, count);
-#endif
-
-    return (vec3_t) {x, y, z};
-}
-
-/*
-vec3_t md_util_compute_com_ortho(const float *in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, int64_t count, vec3_t box) {
+vec3_t md_util_compute_com_ortho(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, int64_t count, vec3_t pbc_ext) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
 
     if (count <= 0) {
-        return (vec3_t){0, 0, 0};
-    }
-    const int idx0 = indices ? indices[0] : 0;
-
-    if (count == 0) {
-        return (vec3_t){in_x[idx0], in_y[idx0], in_z[idx0]};
-    }
-    
-    const vec4_t ext = vec4_from_vec3(box, 0);
-
-    vec4_t ref = vec4_set(in_x[idx0], in_y[idx0], in_z[idx0], 1.0f);
-    vec4_t acc = ref;
-
-    if (in_w) {
-        acc = vec4_mul_f(acc, in_w[idx0]);
-        for (int64_t i = 1; i < count; ++i) {
-            const int idx = indices ? indices[i] : i;
-            const vec4_t xyzw = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), ref, ext);
-            acc = vec4_add(acc, vec4_mul_f(xyzw, in_w[idx]));
-            ref = xyzw;
-        }
-    } else {
-        for (int64_t i = 1; i < count; ++i) {
-            const int idx = indices ? indices[i] : i;
-            const vec4_t xyzw = vec4_deperiodize(vec4_set(in_x[idx], in_y[idx], in_z[idx], 1.0f), ref, ext);
-            acc = vec4_add(acc, xyzw);
-            ref = xyzw;
-        }
+        return (vec3_t) {0,0,0};
     }
 
-    return vec3_from_vec4(vec4_div_f(acc, acc.w));
+#if MD_UTIL_COMPUTE_COM_USE_TRIG
+    int mask = (pbc_ext.x > 0 ? 1 : 0) | (pbc_ext.y > 0 ? 2 : 0) | (pbc_ext.z > 0 ? 4 : 0);
+    if (mask == 7) {
+		return compute_com_periodic_trig_xyz(in_x, in_y, in_z, in_w, in_idx, count, pbc_ext);
+	} else if (mask == 0) {
+        return md_util_compute_com(in_x, in_y, in_z, in_w, in_idx, count);
+    }
+
+    // We need to pick the version based on each component of pdc_ext, since one or more may be zero
+    float x = (mask & 1) ? compute_com_periodic_trig(in_x, in_w, in_idx, count, pbc_ext.x) : compute_com(in_x, in_w, in_idx, count);
+    float y = (mask & 2) ? compute_com_periodic_trig(in_y, in_w, in_idx, count, pbc_ext.y) : compute_com(in_y, in_w, in_idx, count);
+    float z = (mask & 3) ? compute_com_periodic_trig(in_z, in_w, in_idx, count, pbc_ext.z) : compute_com(in_z, in_w, in_idx, count);
+#else
+    // We need to pick the version based on each component of pdc_ext, since one or more may be zero
+    float x = (mask & 1) ? compute_com_periodic_reg(in_x, in_w, in_idx, count, pbc_ext.x) : compute_com(in_x, in_w, in_idx, count);
+    float y = (mask & 2) ? compute_com_periodic_reg(in_y, in_w, in_idx, count, pbc_ext.y) : compute_com(in_y, in_w, in_idx, count);
+    float z = (mask & 3) ? compute_com_periodic_reg(in_z, in_w, in_idx, count, pbc_ext.z) : compute_com(in_z, in_w, in_idx, count);
+#endif
+
+    return (vec3_t) {x, y, z};
 }
-
-vec3_t md_util_compute_com_vec3_ortho(const vec3_t* in_xyz, const float* in_w, int64_t count, vec3_t pbc_ext) {
-    ASSERT(in_xyz);
-
-    float w = in_w ? in_w[0] : 1.0f;
-    float sum_x = in_xyz[0].x * w;
-    float sum_y = in_xyz[0].y * w;
-    float sum_z = in_xyz[0].z * w;
-    float sum_w = w;
-
-    for (int64_t i = 1; i < count; ++i) {
-        float x = pbc_ext.x > 0 ? deperiodizef(in_xyz[i].x, sum_x / sum_w, pbc_ext.x) : in_xyz[i].x;
-        float y = pbc_ext.y > 0 ? deperiodizef(in_xyz[i].y, sum_y / sum_w, pbc_ext.y) : in_xyz[i].y;
-        float z = pbc_ext.z > 0 ? deperiodizef(in_xyz[i].z, sum_z / sum_w, pbc_ext.z) : in_xyz[i].z;
-
-        w = in_w ? in_w[i] : 1.0f;
-        sum_x += x * w;
-        sum_y += y * w;
-        sum_z += z * w;
-        sum_w += w;
-    }
-
-    // Ensure the resulting com is within the period of the box
-    float com_x = sum_x / sum_w;
-    float com_y = sum_y / sum_w;
-    float com_z = sum_z / sum_w;
-
-    return (vec3_t){com_x, com_y, com_z};
-}
-
-vec3_t md_util_compute_com_ortho_soa(const float* in_x, const float* in_y, const float* in_z, const float* in_w, int64_t count, vec3_t pbc_ext) {
-    float w = in_w ? in_w[0] : 1.0f;
-    float sum_x = in_x[0] * w;
-    float sum_y = in_y[0] * w;
-    float sum_z = in_z[0] * w;
-    float sum_w = w;
-
-    for (int64_t i = 1; i < count; ++i) {
-        float x = pbc_ext.x > 0 ? deperiodizef(in_x[i], sum_x / sum_w, pbc_ext.x) : in_x[i];
-        float y = pbc_ext.y > 0 ? deperiodizef(in_y[i], sum_y / sum_w, pbc_ext.y) : in_y[i];
-        float z = pbc_ext.z > 0 ? deperiodizef(in_z[i], sum_z / sum_w, pbc_ext.z) : in_z[i];
-
-        w = in_w ? in_w[i] : 1.0f;
-        sum_x += x * w;
-        sum_y += y * w;
-        sum_z += z * w;
-        sum_w += w;
-    }
-
-    float com_x = sum_x / sum_w;
-    float com_y = sum_y / sum_w;
-    float com_z = sum_z / sum_w;
-
-    return (vec3_t){com_x, com_y, com_z};
-}
-*/
 
 #if MD_COMPILER_MSVC
 #   pragma warning( push )
@@ -2666,34 +3845,61 @@ vec3_t md_util_shape_weights(const mat3_t* covariance_matrix) {
 bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], int64_t count, vec3_t pbc_ext, float t) {
     t = CLAMP(t, 0.0f, 1.0f);
 
+    vec3_t ext = pbc_ext;
+    vec3_t inv_ext = vec3_div(vec3_set1(1.0f), pbc_ext);
+
+    int pbc_mask = simd_xyz_mask(pbc_ext.elem);
+
     int64_t i = 0;
-    const int64_t simd_count = (count / md_simd_width_f32) * md_simd_width_f32;
-    for (; i < simd_count; i += md_simd_width_f32) {
-        md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
-        md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
-        md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+    for (; i < simd_count; i += 8) {
+        __m256 x0 = md_mm256_loadu_ps(src_coord[0].x + i);
+        __m256 y0 = md_mm256_loadu_ps(src_coord[0].y + i);
+        __m256 z0 = md_mm256_loadu_ps(src_coord[0].z + i);
 
-        md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
-        md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
-        md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
+        __m256 x1 = md_mm256_loadu_ps(src_coord[1].x + i);
+        __m256 y1 = md_mm256_loadu_ps(src_coord[1].y + i);
+        __m256 z1 = md_mm256_loadu_ps(src_coord[1].z + i);
 
-        if (pbc_ext.x > 0.0f) {
-            x1 = simd_deperiodize(x1, x0, md_simd_set1_f32(pbc_ext.x));
+        switch (pbc_mask)
+        {
+        case 1:
+            x1 = simd_deperiodize(x1, x0, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            break;
+        case 2:
+            y1 = simd_deperiodize(y1, y0, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            break;
+        case 3:
+            x1 = simd_deperiodize(x1, x0, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            y1 = simd_deperiodize(y1, y0, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            break;
+        case 4:
+            z1 = simd_deperiodize(z1, z0, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            break;
+        case 5:
+            x1 = simd_deperiodize(x1, x0, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            z1 = simd_deperiodize(z1, z0, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            break;
+        case 6:
+            y1 = simd_deperiodize(y1, y0, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            z1 = simd_deperiodize(z1, z0, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            break;
+        case 7:
+            x1 = simd_deperiodize(x1, x0, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            y1 = simd_deperiodize(y1, y0, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            z1 = simd_deperiodize(z1, z0, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            break;
+        default:
+            break;
         }
-        if (pbc_ext.y > 0.0f) {
-            y1 = simd_deperiodize(y1, y0, md_simd_set1_f32(pbc_ext.y));
-        }
-        if (pbc_ext.z > 0.0f) {
-            z1 = simd_deperiodize(z1, z0, md_simd_set1_f32(pbc_ext.z));
-        }
 
-        md_simd_f32_t x = md_simd_lerp(x0, x1, t);
-        md_simd_f32_t y = md_simd_lerp(y0, y1, t);
-        md_simd_f32_t z = md_simd_lerp(z0, z1, t);
+        __m256 x = md_mm256_lerp_ps(x0, x1, t);
+        __m256 y = md_mm256_lerp_ps(y0, y1, t);
+        __m256 z = md_mm256_lerp_ps(z0, z1, t);
 
-        md_simd_store(dst_coord.x + i, x);
-        md_simd_store(dst_coord.y + i, y);
-        md_simd_store(dst_coord.z + i, z);
+        md_mm256_storeu_ps(dst_coord.x + i, x);
+        md_mm256_storeu_ps(dst_coord.y + i, y);
+        md_mm256_storeu_ps(dst_coord.z + i, z);
     }
 
     // Do the rest
@@ -2719,53 +3925,92 @@ bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_s
     t = CLAMP(t, 0.0f, 1.0f);
     s = CLAMP(s, 0.0f, 1.0f);
 
+    vec3_t ext = pbc_ext;
+    vec3_t inv_ext = vec3_div(vec3_set1(1.0f), pbc_ext);
+
+    int pbc_mask = simd_xyz_mask(pbc_ext.elem);
+
     int64_t i = 0;
-    const int64_t simd_count = (count / md_simd_width_f32) * md_simd_width_f32;
-    for (; i < simd_count; i += md_simd_width_f32) {
-        md_simd_f32_t x0 = md_simd_load_f32(src_coord[0].x + i);
-        md_simd_f32_t y0 = md_simd_load_f32(src_coord[0].y + i);
-        md_simd_f32_t z0 = md_simd_load_f32(src_coord[0].z + i);
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+    for (; i < simd_count; i += 8) {
+        __m256 x0 = md_mm256_loadu_ps(src_coord[0].x + i);
+        __m256 y0 = md_mm256_loadu_ps(src_coord[0].y + i);
+        __m256 z0 = md_mm256_loadu_ps(src_coord[0].z + i);
 
-        md_simd_f32_t x1 = md_simd_load_f32(src_coord[1].x + i);
-        md_simd_f32_t y1 = md_simd_load_f32(src_coord[1].y + i);
-        md_simd_f32_t z1 = md_simd_load_f32(src_coord[1].z + i);
+        __m256 x1 = md_mm256_loadu_ps(src_coord[1].x + i);
+        __m256 y1 = md_mm256_loadu_ps(src_coord[1].y + i);
+        __m256 z1 = md_mm256_loadu_ps(src_coord[1].z + i);
 
-        md_simd_f32_t x2 = md_simd_load_f32(src_coord[2].x + i);
-        md_simd_f32_t y2 = md_simd_load_f32(src_coord[2].y + i);
-        md_simd_f32_t z2 = md_simd_load_f32(src_coord[2].z + i);
+        __m256 x2 = md_mm256_loadu_ps(src_coord[2].x + i);
+        __m256 y2 = md_mm256_loadu_ps(src_coord[2].y + i);
+        __m256 z2 = md_mm256_loadu_ps(src_coord[2].z + i);
 
-        md_simd_f32_t x3 = md_simd_load_f32(src_coord[3].x + i);
-        md_simd_f32_t y3 = md_simd_load_f32(src_coord[3].y + i);
-        md_simd_f32_t z3 = md_simd_load_f32(src_coord[3].z + i);
+        __m256 x3 = md_mm256_loadu_ps(src_coord[3].x + i);
+        __m256 y3 = md_mm256_loadu_ps(src_coord[3].y + i);
+        __m256 z3 = md_mm256_loadu_ps(src_coord[3].z + i);
 
-        if (pbc_ext.x > 0.0f) {
-            const md_simd_f32_t box_ext_x = md_simd_set1_f32(pbc_ext.x);
-            x0 = simd_deperiodize(x0, x1, box_ext_x);
-            x2 = simd_deperiodize(x2, x1, box_ext_x);
-            x3 = simd_deperiodize(x3, x2, box_ext_x);
+        switch (pbc_mask) {
+        case 1:
+            x0 = simd_deperiodize(x0, x1, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            x2 = simd_deperiodize(x2, x1, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            x3 = simd_deperiodize(x3, x2, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            break;
+        case 2:
+            y0 = simd_deperiodize(y0, y1, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            y2 = simd_deperiodize(y2, y1, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            y3 = simd_deperiodize(y3, y2, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            break;
+        case 3:
+            x0 = simd_deperiodize(x0, x1, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            x2 = simd_deperiodize(x2, x1, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            x3 = simd_deperiodize(x3, x2, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            y0 = simd_deperiodize(y0, y1, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            y2 = simd_deperiodize(y2, y1, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            y3 = simd_deperiodize(y3, y2, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            break;
+        case 4:
+            z0 = simd_deperiodize(z0, z1, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            z2 = simd_deperiodize(z2, z1, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            z3 = simd_deperiodize(z3, z2, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            break;
+        case 5:
+            x0 = simd_deperiodize(x0, x1, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            x2 = simd_deperiodize(x2, x1, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            x3 = simd_deperiodize(x3, x2, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            z0 = simd_deperiodize(z0, z1, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            z2 = simd_deperiodize(z2, z1, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            z3 = simd_deperiodize(z3, z2, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            break;
+        case 6:
+            y0 = simd_deperiodize(y0, y1, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            y2 = simd_deperiodize(y2, y1, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            y3 = simd_deperiodize(y3, y2, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            z0 = simd_deperiodize(z0, z1, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            z2 = simd_deperiodize(z2, z1, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            z3 = simd_deperiodize(z3, z2, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            break;
+        case 7:
+            x0 = simd_deperiodize(x0, x1, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            x2 = simd_deperiodize(x2, x1, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            x3 = simd_deperiodize(x3, x2, md_mm256_set1_ps(ext.x), md_mm256_set1_ps(inv_ext.x));
+            y0 = simd_deperiodize(y0, y1, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            y2 = simd_deperiodize(y2, y1, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            y3 = simd_deperiodize(y3, y2, md_mm256_set1_ps(ext.y), md_mm256_set1_ps(inv_ext.y));
+            z0 = simd_deperiodize(z0, z1, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            z2 = simd_deperiodize(z2, z1, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            z3 = simd_deperiodize(z3, z2, md_mm256_set1_ps(ext.z), md_mm256_set1_ps(inv_ext.z));
+            break;
+        default:
+            break;
         }
 
-        if (pbc_ext.y > 0.0f) {
-            const md_simd_f32_t box_ext_y = md_simd_set1_f32(pbc_ext.y);
-            y0 = simd_deperiodize(y0, y1, box_ext_y);
-            y2 = simd_deperiodize(y2, y1, box_ext_y);
-            y3 = simd_deperiodize(y3, y2, box_ext_y);
-        }
+        const __m256 x = md_mm256_cubic_spline_ps(x0, x1, x2, x3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
+        const __m256 y = md_mm256_cubic_spline_ps(y0, y1, y2, y3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
+        const __m256 z = md_mm256_cubic_spline_ps(z0, z1, z2, z3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
 
-        if (pbc_ext.z > 0.0f) {
-            const md_simd_f32_t box_ext_z = md_simd_set1_f32(pbc_ext.z);
-            z0 = simd_deperiodize(z0, z1, box_ext_z);
-            z2 = simd_deperiodize(z2, z1, box_ext_z);
-            z3 = simd_deperiodize(z3, z2, box_ext_z);
-        }
-
-        const md_simd_f32_t x = md_simd_cubic_spline(x0, x1, x2, x3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-        const md_simd_f32_t y = md_simd_cubic_spline(y0, y1, y2, y3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-        const md_simd_f32_t z = md_simd_cubic_spline(z0, z1, z2, z3, md_simd_set1_f32(t), md_simd_set1_f32(s));
-
-        md_simd_store(dst_coord.x + i, x);
-        md_simd_store(dst_coord.y + i, y);
-        md_simd_store(dst_coord.z + i, z);
+        md_mm256_storeu_ps(dst_coord.x + i, x);
+        md_mm256_storeu_ps(dst_coord.y + i, y);
+        md_mm256_storeu_ps(dst_coord.z + i, z);
     }
 
     // Do the rest

@@ -23,20 +23,24 @@ typedef union block_t {
     uint16_t u16[32];
     uint8_t   u8[64];
     
-    md_simd_i64_t v[64 / sizeof(md_simd_i64_t)];
+    __m256i v[2];
 } block_t;
 
 #define BITS_PER_BLOCK (sizeof(block_t) * 8)
 
+// This is the number of bits we shift the bit index to get the block index (should equal log2(BITS_PER_BLOCK))
+#define BASE_SHIFT 6
+#define BASE_MASK  ~0x7LLU
+
 static inline const uint64_t* u64_base(const md_bitfield_t* bf) {
     ASSERT(bf);
-    const uint64_t offset = ((uint64_t)bf->beg_bit >> 9) << 3;
+    const uint64_t offset = ((uint64_t)bf->beg_bit >> BASE_SHIFT) & BASE_MASK;
     return (const uint64_t*)bf->bits - offset;
 }
 
 static inline uint64_t* u64_base_mut(md_bitfield_t* bf) {
     ASSERT(bf);
-    const uint64_t offset = ((uint64_t)bf->beg_bit >> 9) << 3;
+    const uint64_t offset = ((uint64_t)bf->beg_bit >> BASE_SHIFT) & BASE_MASK;
     return (uint64_t*)bf->bits - offset;
 }
 
@@ -58,7 +62,7 @@ static inline uint64_t num_blocks(uint64_t beg_bit, uint64_t end_bit) {
 static inline block_t block_and(block_t a, block_t b) {
     block_t res;
     for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
-        res.v[i] = md_simd_and(a.v[i], b.v[i]);
+        res.v[i] = md_mm256_and_si256(a.v[i], b.v[i]);
     }
     return res;
 }
@@ -67,7 +71,7 @@ static inline block_t block_andnot(block_t a, block_t b) {
     block_t res;
     // The arguments are flipped here because it is the first operand in the intrinsic that is bitwise NOT
     for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
-        res.v[i] = md_simd_and_not(a.v[i], b.v[i]);
+        res.v[i] = md_mm256_andnot_si256(b.v[i], a.v[i]);
     }
     return res;
 }
@@ -75,7 +79,7 @@ static inline block_t block_andnot(block_t a, block_t b) {
 static inline block_t block_or(block_t a, block_t b) {
     block_t res;
     for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
-        res.v[i] = md_simd_or(a.v[i], b.v[i]);
+        res.v[i] = md_mm256_or_si256(a.v[i], b.v[i]);
     }
     return res;
 }
@@ -83,7 +87,7 @@ static inline block_t block_or(block_t a, block_t b) {
 static inline block_t block_xor(block_t a, block_t b) {
     block_t res;
     for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
-        res.v[i] = md_simd_xor(a.v[i], b.v[i]);
+        res.v[i] = md_mm256_xor_si256(a.v[i], b.v[i]);
     }
     return res;
 }
@@ -91,7 +95,8 @@ static inline block_t block_xor(block_t a, block_t b) {
 static inline block_t block_not(block_t blk) {
     block_t res;
     for (int i = 0; i < (int)ARRAY_SIZE(blk.v); ++i) {
-        res.v[i] = md_simd_not(blk.v[i]);
+        
+        res.v[i] = md_mm256_not_si256(blk.v[i]);
     }
     return res;
 }
@@ -101,14 +106,15 @@ block_t block_mask_lo(uint32_t idx) {
     block_t res;
 
 #if md_simd_width_i64 == 4
-    md_i64x4_t eq_idx = md_simd_set1_i64x4(idx / 64);
-    md_i64x4_t eq_bit = md_simd_set1_i64x4((1ULL << (idx & 63)) - 1);
+    __m256i eq_idx = md_mm256_set1_epi64x(idx / 64);
+    __m256i eq_bit = md_mm256_set1_epi64x((1ULL << (idx & 63)) - 1);
 
-    md_i64x4_t lo_idx = md_simd_set_i64x4(0, 1,  2,  3);
-    md_i64x4_t hi_idx = md_simd_set_i64x4(4, 5,  6,  7);
+    __m256i lo_idx = md_mm256_set_epi64x(3, 2, 1, 0);
+    __m256i hi_idx = md_mm256_set_epi64x(7, 6, 5, 4);
 
-    res.v[0] = md_simd_blend_i64x4(md_simd_cmp_gt_i64x4(eq_idx, lo_idx), eq_bit, md_simd_cmp_eq_i64x4(lo_idx, eq_idx));
-    res.v[1] = md_simd_blend_i64x4(md_simd_cmp_gt_i64x4(eq_idx, hi_idx), eq_bit, md_simd_cmp_eq_i64x4(hi_idx, eq_idx));
+
+    res.v[0] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(eq_idx, lo_idx), eq_bit, md_mm256_cmpeq_epi64(lo_idx, eq_idx));
+    res.v[1] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(eq_idx, hi_idx), eq_bit, md_mm256_cmpeq_epi64(hi_idx, eq_idx));
 #else
     MEMSET(&res, 0, sizeof(block_t));
     for (uint64_t i = 0; i < idx / 64; ++i) res.u64[i] = ~0ULL;
@@ -122,14 +128,14 @@ block_t block_mask_hi(uint32_t idx) {
     block_t res;
 
 #if md_simd_width_i64 == 4
-    md_i64x4_t eq_idx = md_simd_set1_i64x4(idx / 32);
-    md_i64x4_t eq_bit = md_simd_set1_i64x4(~((1UL << (idx & 31)) - 1));
+    __m256i eq_idx = md_mm256_set1_epi64x(idx / 32);
+    __m256i eq_bit = md_mm256_set1_epi64x(~((1UL << (idx & 31)) - 1));
 
-    md_i64x4_t lo_idx = md_simd_set_i64x4(0, 1, 2, 3);
-    md_i64x4_t hi_idx = md_simd_set_i64x4(4, 5, 6, 7);
+    __m256i lo_idx = md_mm256_set_epi64x(3, 2, 1, 0);
+    __m256i hi_idx = md_mm256_set_epi64x(7, 6, 5, 4);
 
-    res.v[0] = md_simd_blend_i64x4(md_simd_cmp_gt_i64x4(lo_idx, eq_idx), eq_bit, md_simd_cmp_eq_i64x4(lo_idx, eq_idx));
-    res.v[1] = md_simd_blend_i64x4(md_simd_cmp_gt_i64x4(hi_idx, eq_idx), eq_bit, md_simd_cmp_eq_i64x4(hi_idx, eq_idx));
+    res.v[0] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(lo_idx, eq_idx), eq_bit, md_mm256_cmpeq_epi64(lo_idx, eq_idx));
+    res.v[1] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(hi_idx, eq_idx), eq_bit, md_mm256_cmpeq_epi64(hi_idx, eq_idx));
 #else
     MEMSET(&res, 0, sizeof(block_t));
     res.u64[idx / 64] = ~(((uint64_t)1 << (idx & 63)) - 1);
@@ -142,26 +148,21 @@ block_t block_mask_hi(uint32_t idx) {
 // There is very little benefit to move beyond the popcnt intrinsic
 // Only AVX512 have a popcnt intrinsic for vector registers.
 static inline uint64_t block_count_bits(block_t blk) {
-    uint64_t count =
-        popcnt64(blk.u64[0]) +
-        popcnt64(blk.u64[1]) +
-        popcnt64(blk.u64[2]) +
-        popcnt64(blk.u64[3]) +
-        popcnt64(blk.u64[4]) +
-        popcnt64(blk.u64[5]) +
-        popcnt64(blk.u64[6]) +
-        popcnt64(blk.u64[7]);
+    uint64_t count = 0;
+    for (size_t i = 0; i < ARRAY_SIZE(blk.u64); ++i) {
+        count += popcnt64(blk.u64[i]);
+    }
     return count;
 }
 
 static inline void block_set_bit(block_t* blk, uint64_t bit_idx) {
     ASSERT(bit_idx < BITS_PER_BLOCK);
-    blk->u64[bit_idx / 64] |= (1ULL << (bit_idx & 63));
+    blk->u64[bit_idx >> 6] |= (1ULL << (bit_idx & 63));
 }
 
 static inline bool block_test_bit(block_t blk, uint64_t bit_idx) {
     ASSERT(bit_idx < BITS_PER_BLOCK);
-    return blk.u64[bit_idx / 64] & (1ULL << (bit_idx & 63));
+    return blk.u64[bit_idx >> 6] & (1ULL << (bit_idx & 63));
 }
 
 

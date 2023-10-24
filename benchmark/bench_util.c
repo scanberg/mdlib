@@ -5,18 +5,122 @@
 #include <md_gro.h>
 #include <md_util.h>
 
-UBENCH_EX(util, com_soa) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
-    str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
+#include <stdlib.h>
 
-    md_molecule_t mol = {0};
-    md_gro_molecule_api()->init_from_file(&mol, path, alloc);
+static const vec3_t pbc_ext = {100, 100, 100};
+static const int size = 1024 * 1024;
+
+#define SETUP_XYZW \
+	float* x = md_alloc(alloc, size * sizeof(float)); \
+	float* y = md_alloc(alloc, size * sizeof(float)); \
+	float* z = md_alloc(alloc, size * sizeof(float)); \
+	float* w = md_alloc(alloc, size * sizeof(float)); \
+	srand(0); \
+	for (int i = 0; i < size; ++i) { \
+		x[i] = (float)rand() / RAND_MAX * pbc_ext.x; \
+		y[i] = (float)rand() / RAND_MAX * pbc_ext.y; \
+		z[i] = (float)rand() / RAND_MAX * pbc_ext.z; \
+		w[i] = (float)rand() / RAND_MAX * 1.0f + 1.0f; \
+	}
+
+#define SETUP_XYZW_VEC4 \
+	vec4_t* xyzw = md_alloc(alloc, size * sizeof(vec4_t)); \
+	srand(0); \
+	for (int i = 0; i < size; ++i) { \
+		xyzw[i] = vec4_set( \
+			(float)rand() / RAND_MAX * pbc_ext.x, \
+			(float)rand() / RAND_MAX * pbc_ext.y, \
+			(float)rand() / RAND_MAX * pbc_ext.z, \
+			(float)rand() / RAND_MAX * 1.0f + 1.0f); \
+	}
+
+#define SETUP_INDICES \
+	int* indices = md_alloc(alloc, size * sizeof(int)); \
+	for (int i = 0; i < size; ++i) { \
+		indices[i] = i; \
+	}
+
+#if defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#endif
+static double ref_com_trig(const float* in_x, const float* in_w, int64_t count, float x_max) {
+    const double scl = TWO_PI / x_max;
+
+    double acc_c = 0.0;
+    double acc_s = 0.0;
+    double acc_w = 0.0;
+    for (int64_t i = 0; i < count; ++i) {
+        double theta = in_x[i] * scl;
+        double w = in_w[i];
+        acc_c += w * cos(theta);
+        acc_s += w * sin(theta);
+        acc_w += w;
+    }
+
+    const double y = acc_s / acc_w;
+    const double x = acc_c / acc_w;
+    const double r2 = x*x + y*y;
+
+    double theta_prim = PI;
+    if (r2 > 1.0e-15) {
+        theta_prim += atan2(-y, -x);
+    }
+
+    return (theta_prim / TWO_PI) * x_max;
+}
+#if defined(_MSC_VER)
+#pragma float_control(precise, on, pop)
+#endif
+
+UBENCH_EX(util, com_speed_of_light) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
+
+    SETUP_XYZW
+
+    __m256 vx = _mm256_setzero_ps();
+    __m256 vy = _mm256_setzero_ps();
+    __m256 vz = _mm256_setzero_ps();
+    __m256 vw = _mm256_setzero_ps();
+
+    UBENCH_DO_BENCHMARK() {
+        for (int64_t i = 0; i < size; i += 8) {
+            vx = _mm256_add_ps(vx, _mm256_load_ps(x + i));
+            vy = _mm256_add_ps(vy, _mm256_load_ps(y + i));
+            vz = _mm256_add_ps(vz, _mm256_load_ps(z + i));
+            vw = _mm256_add_ps(vw, _mm256_load_ps(w + i));
+        }
+    }
+
+    printf("com: %.3f %.3f %.3f %.3f\n", _mm256_cvtss_f32(vx), _mm256_cvtss_f32(vy), _mm256_cvtss_f32(vz), _mm256_cvtss_f32(vw));
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UBENCH_EX(util, com_ref) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
+
+    SETUP_XYZW
 
     vec3_t com = {0};
-    vec3_t box = mat3_mul_vec3(mol.unit_cell.basis, vec3_set(1.0f, 1.0f, 1.0f));
-    
     UBENCH_DO_BENCHMARK() {
-        com = md_util_compute_com_ortho(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, 0, mol.atom.count, box);
+        com.x = (float)ref_com_trig(x, w, size, pbc_ext.x);
+        com.y = (float)ref_com_trig(y, w, size, pbc_ext.y);
+        com.z = (float)ref_com_trig(z, w, size, pbc_ext.z);
+    }
+
+    printf("com: %.3f %.3f %.3f\n", com.x, com.y, com.z);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UBENCH_EX(util, com_soa) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
+
+    SETUP_XYZW
+
+    vec3_t com = {0};
+    UBENCH_DO_BENCHMARK() {
+        com = md_util_compute_com_ortho(x, y, z, w, 0, size, pbc_ext);
     }
 
     printf("com: %.3f %.3f %.3f\n", com.x, com.y, com.z);
@@ -26,35 +130,13 @@ UBENCH_EX(util, com_soa) {
 
 UBENCH_EX(util, com_soa_indices) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
-    str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
-
-    md_molecule_t mol = {0};
-    md_gro_molecule_api()->init_from_file(&mol, path, alloc);
-
-    int* indices = md_alloc(alloc, sizeof(int) * mol.atom.count);
-
-    // Scramble indices to some extent
-    int i = 0;
-    int count = (int)ALIGN_TO(mol.atom.count, md_simd_width_f32) - md_simd_width_f32;
-    for (; i < (int)count; i += 8) {
-        indices[i + 0] = i + 4;
-        indices[i + 1] = i + 0;
-        indices[i + 2] = i + 7;
-        indices[i + 3] = i + 5;
-        indices[i + 4] = i + 6;
-        indices[i + 5] = i + 2;
-        indices[i + 6] = i + 3;
-        indices[i + 7] = i + 1;
-    }
-    for (; i < mol.atom.count; ++i) {
-        indices[i] = (int)i;
-    }
+    
+    SETUP_XYZW
+    SETUP_INDICES
 
     vec3_t com = {0};
-    vec3_t box = mat3_mul_vec3(mol.unit_cell.basis, vec3_set(1.0f, 1.0f, 1.0f));
-
     UBENCH_DO_BENCHMARK() {
-        com = md_util_compute_com_ortho(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.mass, indices, mol.atom.count, box);        
+        com = md_util_compute_com_ortho(x, y, z, w, indices, size, pbc_ext);        
     }
 
     printf("com: %.3f %.3f %.3f\n", com.x, com.y, com.z);
@@ -64,21 +146,12 @@ UBENCH_EX(util, com_soa_indices) {
 
 UBENCH_EX(util, com_vec4) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
-    str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
-    md_molecule_t mol = {0};
-    md_gro_molecule_api()->init_from_file(&mol, path, alloc);
-
-    vec4_t* xyzw = md_alloc(alloc, sizeof(vec4_t) * mol.atom.count);
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
-        xyzw[i] = vec4_set(mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], mol.atom.mass ? mol.atom.mass[i] : 1.0f);
-    }
+    SETUP_XYZW_VEC4
 
     vec3_t com = {0};
-    vec3_t box = mat3_mul_vec3(mol.unit_cell.basis, vec3_set(1.0f, 1.0f, 1.0f));
-
     UBENCH_DO_BENCHMARK() {
-        com = md_util_compute_com_vec4_ortho(xyzw, 0, mol.atom.count, box);
+        com = md_util_compute_com_vec4_ortho(xyzw, 0, size, pbc_ext);
     }
 
     printf("com: %.3f %.3f %.3f\n", com.x, com.y, com.z);
@@ -88,40 +161,13 @@ UBENCH_EX(util, com_vec4) {
 
 UBENCH_EX(util, com_vec4_indices) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
-    str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
-    md_molecule_t mol = {0};
-    md_gro_molecule_api()->init_from_file(&mol, path, alloc);
-
-    int* indices = md_alloc(alloc, sizeof(int) * mol.atom.count);
-
-    // Scramble indices to some extent
-    int i = 0;
-    int count = (int)ALIGN_TO(mol.atom.count, md_simd_width_f32) - md_simd_width_f32;
-    for (; i < count; i += 8) {
-        indices[i + 0] = i + 4;
-        indices[i + 1] = i + 0;
-        indices[i + 2] = i + 7;
-        indices[i + 3] = i + 5;
-        indices[i + 4] = i + 6;
-        indices[i + 5] = i + 2;
-        indices[i + 6] = i + 3;
-        indices[i + 7] = i + 1;
-    }
-    for (; i < mol.atom.count; ++i) {
-        indices[i] = (int)i;
-    }
-
-    vec4_t* xyzw = md_alloc(alloc, sizeof(vec3_t) * mol.atom.count);
-    for (i = 0; i < mol.atom.count; ++i) {
-        xyzw[i] = vec4_set(mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], mol.atom.mass ? mol.atom.mass[i] : 1.0f);
-    }
+    SETUP_XYZW_VEC4
+    SETUP_INDICES
 
     vec3_t com = {0};
-    vec3_t box = mat3_mul_vec3(mol.unit_cell.basis, vec3_set(1.0f, 1.0f, 1.0f));
-
     UBENCH_DO_BENCHMARK() {
-        com = md_util_compute_com_vec4_ortho(xyzw, indices, mol.atom.count, box);
+        com = md_util_compute_com_vec4_ortho(xyzw, indices, size, pbc_ext);
     }
 
     printf("com: %.3f %.3f %.3f\n", com.x, com.y, com.z);

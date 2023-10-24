@@ -34,19 +34,8 @@
         md_free(alloc, mem, size[i]); \
     }
 
-struct allocator {
-    void*  buf;
-    size_t cap;
-};
-
-UTEST_F_SETUP(allocator) {
-    utest_fixture->buf = md_alloc(md_heap_allocator, KILOBYTES(32));
-	utest_fixture->cap = KILOBYTES(32);
-}
-
-UTEST_F_TEARDOWN(allocator) {
-	md_free(md_heap_allocator, utest_fixture->buf, utest_fixture->cap);
-}
+// Common buffer for allocators to use
+static char buf[KILOBYTES(16)];
 
 // COMMON TESTS
 UTEST(allocator, default) {
@@ -65,17 +54,17 @@ UTEST(allocator, arena) {
     md_arena_allocator_destroy(alloc);
 }
 
-UTEST_F(allocator, linear_generic) {
+UTEST(allocator, linear_generic) {
     md_linear_allocator_t linear;
-    md_linear_allocator_init(&linear, utest_fixture->buf, utest_fixture->cap);
+    md_linear_allocator_init(&linear, buf, sizeof(buf));
     md_allocator_i linear_alloc = md_linear_allocator_create_interface(&linear);
     md_allocator_i* alloc = &linear_alloc;
     COMMON_ALLOCATOR_TEST_BODY
 }
 
-UTEST_F(allocator, ring_generic) {
+UTEST(allocator, ring_generic) {
     md_ring_allocator_t ring;
-    md_ring_allocator_init(&ring, utest_fixture->buf, utest_fixture->cap);
+    md_ring_allocator_init(&ring, buf, sizeof(buf));
     md_allocator_i ring_alloc = md_ring_allocator_create_interface(&ring);
     md_allocator_i* alloc = &ring_alloc;
     COMMON_ALLOCATOR_TEST_BODY
@@ -196,9 +185,9 @@ UTEST(allocator, vm) {
     md_vm_allocator_free(&vm);
 }
 
-UTEST_F(allocator, linear) {
+UTEST(allocator, linear) {
     md_linear_allocator_t linear;
-    md_linear_allocator_init(&linear, utest_fixture->buf, utest_fixture->cap);
+    md_linear_allocator_init(&linear, buf, sizeof(buf));
 
     for (uint32_t i = 0; i < 1000; ++i) {
         md_linear_allocator_push(&linear, sizeof(uint64_t));
@@ -213,9 +202,9 @@ UTEST_F(allocator, linear) {
     }
 }
 
-UTEST_F(allocator, ring) {
+UTEST(allocator, ring) {
     md_ring_allocator_t ring;
-    md_ring_allocator_init(&ring, utest_fixture->buf, utest_fixture->cap);
+    md_ring_allocator_init(&ring, buf, sizeof(buf));
 
     for (uint32_t i = 0; i < 1000; ++i) {
         md_ring_allocator_push(&ring, sizeof(uint64_t));

@@ -3,7 +3,7 @@
 #include <svd3.h>
 #include <math.h>
 
-#define SWAP(x, y) {int t = x; x = y; y = t;}
+#define SWAP_INT(x, y) {int t = x; x = y; y = t;}
 
 mat3_svd_t mat3_svd(const mat3_t M) {
     mat3_t Mt = mat3_transpose(M);
@@ -29,9 +29,9 @@ mat3_eigen_t mat3_eigen(mat3_t M) {
 
     int l[3] = {0, 1, 2};
 
-    if (e_val[l[0]] < e_val[l[1]]) SWAP(l[0], l[1]);
-    if (e_val[l[1]] < e_val[l[2]]) SWAP(l[1], l[2]);
-    if (e_val[l[0]] < e_val[l[1]]) SWAP(l[0], l[1]);
+    if (e_val[l[0]] < e_val[l[1]]) SWAP_INT(l[0], l[1]);
+    if (e_val[l[1]] < e_val[l[2]]) SWAP_INT(l[1], l[2]);
+    if (e_val[l[0]] < e_val[l[1]]) SWAP_INT(l[0], l[1]);
 
     mat3_eigen_t res;
     res.values = (vec3_t){e_val[l[0]], e_val[l[1]], e_val[l[2]]},
@@ -232,24 +232,24 @@ mat4_t mat4_inverse(mat4_t M) {
 void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, int64_t count, vec3_t translation) {
     int64_t i = 0;
 
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
+    const int64_t simd_count = ROUND_DOWN(count, 8);
     if (simd_count > 0) {
-        md_simd_f32_t t_x = md_simd_set1_f32(translation.x);
-        md_simd_f32_t t_y = md_simd_set1_f32(translation.y);
-        md_simd_f32_t t_z = md_simd_set1_f32(translation.z);
+        __m256 t_x = md_mm256_set1_ps(translation.x);
+        __m256 t_y = md_mm256_set1_ps(translation.y);
+        __m256 t_z = md_mm256_set1_ps(translation.z);
 
-        for (; i < simd_count; i += md_simd_width_f32) {
-            md_simd_f32_t x = md_simd_load_f32(in_out_x + i);
-            md_simd_f32_t y = md_simd_load_f32(in_out_y + i);
-            md_simd_f32_t z = md_simd_load_f32(in_out_z + i);
+        for (; i < simd_count; i += 8) {
+            __m256 x = md_mm256_loadu_ps(in_out_x + i);
+            __m256 y = md_mm256_loadu_ps(in_out_y + i);
+            __m256 z = md_mm256_loadu_ps(in_out_z + i);
 
-            x = md_simd_add(x, t_x);
-            y = md_simd_add(y, t_y);
-            z = md_simd_add(z, t_z);
+            x = md_mm256_add_ps(x, t_x);
+            y = md_mm256_add_ps(y, t_y);
+            z = md_mm256_add_ps(z, t_z);
 
-            md_simd_store_f32(in_out_x + i, x);
-            md_simd_store_f32(in_out_y + i, y);
-            md_simd_store_f32(in_out_z + i, z);
+            md_mm256_storeu_ps(in_out_x + i, x);
+            md_mm256_storeu_ps(in_out_y + i, y);
+            md_mm256_storeu_ps(in_out_z + i, z);
         }
     }
 
@@ -263,24 +263,24 @@ void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
 void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation) {
     int64_t i = 0;
 
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
+    const int64_t simd_count = ROUND_DOWN(count, 8);
     if (simd_count > 0) {
-        md_simd_f32_t t_x = md_simd_set1_f32(translation.x);
-        md_simd_f32_t t_y = md_simd_set1_f32(translation.y);
-        md_simd_f32_t t_z = md_simd_set1_f32(translation.z);
+        __m256 t_x = md_mm256_set1_ps(translation.x);
+        __m256 t_y = md_mm256_set1_ps(translation.y);
+        __m256 t_z = md_mm256_set1_ps(translation.z);
 
-        for (; i < simd_count; i += md_simd_width_f32) {
-            md_simd_f32_t p_x = md_simd_load_f32(in_x + i);
-            md_simd_f32_t p_y = md_simd_load_f32(in_y + i);
-            md_simd_f32_t p_z = md_simd_load_f32(in_z + i);
+        for (; i < simd_count; i += 8) {
+            __m256 p_x = md_mm256_loadu_ps(in_x + i);
+            __m256 p_y = md_mm256_loadu_ps(in_y + i);
+            __m256 p_z = md_mm256_loadu_ps(in_z + i);
 
-            p_x = md_simd_add(p_x, t_x);
-            p_y = md_simd_add(p_y, t_y);
-            p_z = md_simd_add(p_z, t_z);
+            p_x = md_mm256_add_ps(p_x, t_x);
+            p_y = md_mm256_add_ps(p_y, t_y);
+            p_z = md_mm256_add_ps(p_z, t_z);
 
-            md_simd_store(out_x + i, p_x);
-            md_simd_store(out_y + i, p_y);
-            md_simd_store(out_z + i, p_z);
+            md_mm256_storeu_ps(out_x + i, p_x);
+            md_mm256_storeu_ps(out_y + i, p_y);
+            md_mm256_storeu_ps(out_z + i, p_z);
         }
     }
 
@@ -292,53 +292,53 @@ void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float*
 }
 
 void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, float w_comp, int64_t count, mat4_t M) {
-    const md_simd_f32_t m11 = md_simd_set1_f32(M.elem[0][0]);
-    const md_simd_f32_t m12 = md_simd_set1_f32(M.elem[0][1]);
-    const md_simd_f32_t m13 = md_simd_set1_f32(M.elem[0][2]);
+    const __m256 m11 = md_mm256_set1_ps(M.elem[0][0]);
+    const __m256 m12 = md_mm256_set1_ps(M.elem[0][1]);
+    const __m256 m13 = md_mm256_set1_ps(M.elem[0][2]);
 
-    const md_simd_f32_t m21 = md_simd_set1_f32(M.elem[1][0]);
-    const md_simd_f32_t m22 = md_simd_set1_f32(M.elem[1][1]);
-    const md_simd_f32_t m23 = md_simd_set1_f32(M.elem[1][2]);
+    const __m256 m21 = md_mm256_set1_ps(M.elem[1][0]);
+    const __m256 m22 = md_mm256_set1_ps(M.elem[1][1]);
+    const __m256 m23 = md_mm256_set1_ps(M.elem[1][2]);
 
-    const md_simd_f32_t m31 = md_simd_set1_f32(M.elem[2][0]);
-    const md_simd_f32_t m32 = md_simd_set1_f32(M.elem[2][1]);
-    const md_simd_f32_t m33 = md_simd_set1_f32(M.elem[2][2]);
+    const __m256 m31 = md_mm256_set1_ps(M.elem[2][0]);
+    const __m256 m32 = md_mm256_set1_ps(M.elem[2][1]);
+    const __m256 m33 = md_mm256_set1_ps(M.elem[2][2]);
 
-    const md_simd_f32_t m41 = md_simd_set1_f32(M.elem[3][0]);
-    const md_simd_f32_t m42 = md_simd_set1_f32(M.elem[3][1]);
-    const md_simd_f32_t m43 = md_simd_set1_f32(M.elem[3][2]);
+    const __m256 m41 = md_mm256_set1_ps(M.elem[3][0]);
+    const __m256 m42 = md_mm256_set1_ps(M.elem[3][1]);
+    const __m256 m43 = md_mm256_set1_ps(M.elem[3][2]);
 
-    const md_simd_f32_t w = md_simd_set1_f32(w_comp);
+    const __m256 w = md_mm256_set1_ps(w_comp);
 
     int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
-    for (; i < simd_count; i += md_simd_width_f32) {
-        const md_simd_f32_t x = md_simd_load_f32(in_out_x + i);
-        const md_simd_f32_t y = md_simd_load_f32(in_out_y + i);
-        const md_simd_f32_t z = md_simd_load_f32(in_out_z + i);
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+    for (; i < simd_count; i += 8) {
+        const __m256 x = md_mm256_loadu_ps(in_out_x + i);
+        const __m256 y = md_mm256_loadu_ps(in_out_y + i);
+        const __m256 z = md_mm256_loadu_ps(in_out_z + i);
 
-        const md_simd_f32_t m11x = md_simd_mul(m11, x);
-        const md_simd_f32_t m21y = md_simd_mul(m21, y);
-        const md_simd_f32_t m31z = md_simd_mul(m31, z);
-        const md_simd_f32_t m41w = md_simd_mul(m41, w);
+        const __m256 m11x = md_mm256_mul_ps(m11, x);
+        const __m256 m21y = md_mm256_mul_ps(m21, y);
+        const __m256 m31z = md_mm256_mul_ps(m31, z);
+        const __m256 m41w = md_mm256_mul_ps(m41, w);
 
-        const md_simd_f32_t m12x = md_simd_mul(m12, x);
-        const md_simd_f32_t m22y = md_simd_mul(m22, y);
-        const md_simd_f32_t m32z = md_simd_mul(m32, z);
-        const md_simd_f32_t m42w = md_simd_mul(m42, w);
+        const __m256 m12x = md_mm256_mul_ps(m12, x);
+        const __m256 m22y = md_mm256_mul_ps(m22, y);
+        const __m256 m32z = md_mm256_mul_ps(m32, z);
+        const __m256 m42w = md_mm256_mul_ps(m42, w);
 
-        const md_simd_f32_t m13x = md_simd_mul(m13, x);
-        const md_simd_f32_t m23y = md_simd_mul(m23, y);
-        const md_simd_f32_t m33z = md_simd_mul(m33, z);
-        const md_simd_f32_t m43w = md_simd_mul(m43, w);
+        const __m256 m13x = md_mm256_mul_ps(m13, x);
+        const __m256 m23y = md_mm256_mul_ps(m23, y);
+        const __m256 m33z = md_mm256_mul_ps(m33, z);
+        const __m256 m43w = md_mm256_mul_ps(m43, w);
 
-        const md_simd_f32_t res_x = md_simd_add(md_simd_add(m11x, m21y), md_simd_add(m31z, m41w));
-        const md_simd_f32_t res_y = md_simd_add(md_simd_add(m12x, m22y), md_simd_add(m32z, m42w));
-        const md_simd_f32_t res_z = md_simd_add(md_simd_add(m13x, m23y), md_simd_add(m33z, m43w));
+        const __m256 res_x = md_mm256_add_ps(md_mm256_add_ps(m11x, m21y), md_mm256_add_ps(m31z, m41w));
+        const __m256 res_y = md_mm256_add_ps(md_mm256_add_ps(m12x, m22y), md_mm256_add_ps(m32z, m42w));
+        const __m256 res_z = md_mm256_add_ps(md_mm256_add_ps(m13x, m23y), md_mm256_add_ps(m33z, m43w));
 
-        md_simd_store(in_out_x + i, res_x);
-        md_simd_store(in_out_y + i, res_y);
-        md_simd_store(in_out_z + i, res_z);
+        md_mm256_storeu_ps(in_out_x + i, res_x);
+        md_mm256_storeu_ps(in_out_y + i, res_y);
+        md_mm256_storeu_ps(in_out_z + i, res_z);
     }
 
     for (; i < count; i++) {
@@ -353,53 +353,53 @@ void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
 }
 
 void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t M) {
-    const md_simd_f32_t m11 = md_simd_set1_f32(M.elem[0][0]);
-    const md_simd_f32_t m12 = md_simd_set1_f32(M.elem[0][1]);
-    const md_simd_f32_t m13 = md_simd_set1_f32(M.elem[0][2]);
+    const __m256 m11 = md_mm256_set1_ps(M.elem[0][0]);
+    const __m256 m12 = md_mm256_set1_ps(M.elem[0][1]);
+    const __m256 m13 = md_mm256_set1_ps(M.elem[0][2]);
 
-    const md_simd_f32_t m21 = md_simd_set1_f32(M.elem[1][0]);
-    const md_simd_f32_t m22 = md_simd_set1_f32(M.elem[1][1]);
-    const md_simd_f32_t m23 = md_simd_set1_f32(M.elem[1][2]);
+    const __m256 m21 = md_mm256_set1_ps(M.elem[1][0]);
+    const __m256 m22 = md_mm256_set1_ps(M.elem[1][1]);
+    const __m256 m23 = md_mm256_set1_ps(M.elem[1][2]);
 
-    const md_simd_f32_t m31 = md_simd_set1_f32(M.elem[2][0]);
-    const md_simd_f32_t m32 = md_simd_set1_f32(M.elem[2][1]);
-    const md_simd_f32_t m33 = md_simd_set1_f32(M.elem[2][2]);
+    const __m256 m31 = md_mm256_set1_ps(M.elem[2][0]);
+    const __m256 m32 = md_mm256_set1_ps(M.elem[2][1]);
+    const __m256 m33 = md_mm256_set1_ps(M.elem[2][2]);
 
-    const md_simd_f32_t m41 = md_simd_set1_f32(M.elem[3][0]);
-    const md_simd_f32_t m42 = md_simd_set1_f32(M.elem[3][1]);
-    const md_simd_f32_t m43 = md_simd_set1_f32(M.elem[3][2]);
+    const __m256 m41 = md_mm256_set1_ps(M.elem[3][0]);
+    const __m256 m42 = md_mm256_set1_ps(M.elem[3][1]);
+    const __m256 m43 = md_mm256_set1_ps(M.elem[3][2]);
 
-    const md_simd_f32_t w = md_simd_set1_f32(w_comp);
+    const __m256 w = md_mm256_set1_ps(w_comp);
 
     int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, md_simd_width_f32);
-    for (; i < simd_count; i += md_simd_width_f32) {
-        md_simd_f32_t x = md_simd_load_f32(in_x + i);
-        md_simd_f32_t y = md_simd_load_f32(in_y + i);
-        md_simd_f32_t z = md_simd_load_f32(in_z + i);
+    const int64_t simd_count = ROUND_DOWN(count, 8);
+    for (; i < simd_count; i += 8) {
+        __m256 x = md_mm256_loadu_ps(in_x + i);
+        __m256 y = md_mm256_loadu_ps(in_y + i);
+        __m256 z = md_mm256_loadu_ps(in_z + i);
 
-        md_simd_f32_t m11x = md_simd_mul(m11, x);
-        md_simd_f32_t m21y = md_simd_mul(m21, y);
-        md_simd_f32_t m31z = md_simd_mul(m31, z);
-        md_simd_f32_t m41w = md_simd_mul(m41, w);
+        __m256 m11x = md_mm256_mul_ps(m11, x);
+        __m256 m21y = md_mm256_mul_ps(m21, y);
+        __m256 m31z = md_mm256_mul_ps(m31, z);
+        __m256 m41w = md_mm256_mul_ps(m41, w);
 
-        md_simd_f32_t m12x = md_simd_mul(m12, x);
-        md_simd_f32_t m22y = md_simd_mul(m22, y);
-        md_simd_f32_t m32z = md_simd_mul(m32, z);
-        md_simd_f32_t m42w = md_simd_mul(m42, w);
+        __m256 m12x = md_mm256_mul_ps(m12, x);
+        __m256 m22y = md_mm256_mul_ps(m22, y);
+        __m256 m32z = md_mm256_mul_ps(m32, z);
+        __m256 m42w = md_mm256_mul_ps(m42, w);
 
-        md_simd_f32_t m13x = md_simd_mul(m13, x);
-        md_simd_f32_t m23y = md_simd_mul(m23, y);
-        md_simd_f32_t m33z = md_simd_mul(m33, z);
-        md_simd_f32_t m43w = md_simd_mul(m43, w);
+        __m256 m13x = md_mm256_mul_ps(m13, x);
+        __m256 m23y = md_mm256_mul_ps(m23, y);
+        __m256 m33z = md_mm256_mul_ps(m33, z);
+        __m256 m43w = md_mm256_mul_ps(m43, w);
 
-        md_simd_f32_t res_x = md_simd_add(md_simd_add(m11x, m21y), md_simd_add(m31z, m41w));
-        md_simd_f32_t res_y = md_simd_add(md_simd_add(m12x, m22y), md_simd_add(m32z, m42w));
-        md_simd_f32_t res_z = md_simd_add(md_simd_add(m13x, m23y), md_simd_add(m33z, m43w));
+        __m256 res_x = md_mm256_add_ps(md_mm256_add_ps(m11x, m21y), md_mm256_add_ps(m31z, m41w));
+        __m256 res_y = md_mm256_add_ps(md_mm256_add_ps(m12x, m22y), md_mm256_add_ps(m32z, m42w));
+        __m256 res_z = md_mm256_add_ps(md_mm256_add_ps(m13x, m23y), md_mm256_add_ps(m33z, m43w));
 
-        md_simd_store_f32(out_x + i, res_x);
-        md_simd_store_f32(out_y + i, res_y);
-        md_simd_store_f32(out_z + i, res_z);
+        md_mm256_storeu_ps(out_x + i, res_x);
+        md_mm256_storeu_ps(out_y + i, res_y);
+        md_mm256_storeu_ps(out_z + i, res_z);
     }
 
     for (; i < count; i++) {

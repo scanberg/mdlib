@@ -186,16 +186,16 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
-        int64_t count = type_info_element_stride_count(arg[0].type); \
+        const int64_t count = type_info_element_stride_count(arg[0].type); \
         ASSERT(count == type_info_element_stride_count(arg[1].type)); \
-        ASSERT(count % md_simd_width_f32 == 0); \
+        ASSERT(count % 8 == 0); \
         const float* src_a = as_float_arr(arg[0]); \
         const float* src_b = as_float_arr(arg[1]); \
         float* dst_arr = as_float_arr(*dst); \
-        for (int64_t i = 0; i < count; i += md_simd_width_f32) { \
-            md_simd_f32_t a = md_simd_load_f32(src_a + i); \
-            md_simd_f32_t b = md_simd_load_f32(src_b + i); \
-            md_simd_store_f32(dst_arr + i, op(a, b)); \
+        for (int64_t i = 0; i < count; i += 8) { \
+            __m256 a = _mm256_loadu_ps(src_a + i); \
+            __m256 b = _mm256_loadu_ps(src_b + i); \
+            _mm256_storeu_ps(dst_arr + i, op(a, b)); \
         } \
         return 0; \
     }
@@ -207,13 +207,13 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(is_type_equivalent(arg[1].type, (type_info_t)TI_FLOAT)); \
-        int64_t count = type_info_element_stride_count(arg[0].type); \
-        ASSERT(count % md_simd_width_f32 == 0); \
+        const int64_t count = type_info_element_stride_count(arg[0].type); \
+        ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
-        md_simd_f32_t s = md_simd_set1_f32(as_float(arg[1])); \
-        for (int64_t i = 0; i < count; i += md_simd_width_f32) { \
-            md_simd_store_f32(dst_arr + i, op(md_simd_load_f32(src_arr + i), s)); \
+        __m256 s = _mm256_set1_ps(as_float(arg[1])); \
+        for (int64_t i = 0; i < count; i += 8) { \
+            _mm256_storeu_ps(dst_arr + i, op(_mm256_loadu_ps(src_arr + i), s)); \
         } \
         return 0; \
     }
@@ -224,12 +224,12 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst); \
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
-        int64_t count = type_info_element_stride_count(arg[0].type); \
-        ASSERT(count % md_simd_width_f32 == 0); \
+        const int64_t count = type_info_element_stride_count(arg[0].type); \
+        ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
-        for (int64_t i = 0; i < count; i += md_simd_width_f32) { \
-            md_simd_store_f32(dst_arr + i, op(md_simd_load_f32(src_arr + i))); \
+        for (int64_t i = 0; i < count; i += 8) { \
+            _mm256_storeu_ps(dst_arr + i, op(_mm256_loadu_ps(src_arr + i))); \
         } \
         return 0; \
     }
@@ -256,24 +256,24 @@ BAKE_OP_M_M(_op_sub_iarr_iarr, -, int)
 BAKE_OP_M_M(_op_mul_iarr_iarr, *, int)
 BAKE_OP_M_M(_op_div_iarr_iarr, /, int)
 
-BAKE_SIMDF_OP_M_M(_op_simd_add_farr_farr, md_simd_add)
-BAKE_SIMDF_OP_M_S(_op_simd_add_farr_f,    md_simd_add)
+BAKE_SIMDF_OP_M_M(_op_simd_add_farr_farr, _mm256_add_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_add_farr_f,    _mm256_add_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_sub_farr_farr, md_simd_sub)
-BAKE_SIMDF_OP_M_S(_op_simd_sub_farr_f,    md_simd_sub)
+BAKE_SIMDF_OP_M_M(_op_simd_sub_farr_farr, _mm256_sub_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_sub_farr_f,    _mm256_sub_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_mul_farr_farr, md_simd_mul)
-BAKE_SIMDF_OP_M_S(_op_simd_mul_farr_f,    md_simd_mul)
+BAKE_SIMDF_OP_M_M(_op_simd_mul_farr_farr, _mm256_mul_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_mul_farr_f,    _mm256_mul_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_div_farr_farr, md_simd_div)
-BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    md_simd_div)
+BAKE_SIMDF_OP_M_M(_op_simd_div_farr_farr, _mm256_div_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    _mm256_div_ps)
 
-BAKE_SIMDF_OP_M(_op_simd_abs_farr,        md_simd_abs)
+BAKE_SIMDF_OP_M(_op_simd_abs_farr,        md_mm256_abs_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_min_farr_farr, md_simd_min)
-BAKE_SIMDF_OP_M_S(_op_simd_min_farr_f,    md_simd_min)
-BAKE_SIMDF_OP_M_M(_op_simd_max_farr_farr, md_simd_max)
-BAKE_SIMDF_OP_M_S(_op_simd_max_farr_f,    md_simd_max)
+BAKE_SIMDF_OP_M_M(_op_simd_min_farr_farr, _mm256_min_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_min_farr_f,    _mm256_min_ps)
+BAKE_SIMDF_OP_M_M(_op_simd_max_farr_farr, _mm256_max_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_max_farr_f,    _mm256_max_ps)
 
 BAKE_OP_S_S(_op_add_f_f,        +, float)
 BAKE_OP_S_S(_op_sub_f_f,        -, float)
@@ -402,13 +402,13 @@ static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     ASSERT(dst);
     int64_t total_count = type_info_element_stride_count(arg[0].type);
-    ASSERT(total_count % md_simd_width_f32 == 0);
+    ASSERT(total_count % 8 == 0);
     const float* src_arr = as_float_arr(arg[0]);
     float* dst_arr = as_float_arr(*dst);
 
-    for (int64_t i = 0; i < total_count; i += md_simd_width_f32) {
-        md_simd_f32_t val = md_simd_load_f32(src_arr + i);
-        md_simd_store_f32(dst_arr + i, md_simd_sub(md_simd_zero_f32(), val));
+    for (int64_t i = 0; i < total_count; i += 8) {
+        __m256 val = md_mm256_loadu_ps(src_arr + i);
+        md_mm256_storeu_ps(dst_arr + i, md_mm256_sub_ps(md_mm256_setzero_ps(), val));
     }
     return 0;
 }
@@ -851,7 +851,7 @@ static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, flo
     return count;
 }
 
-static inline int64_t extract_xyzw_vec3(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
+static inline int64_t extract_xyzw_vec4(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
     ASSERT(dst_xyzw);
     ASSERT(src_x);
     ASSERT(src_y);
@@ -3485,7 +3485,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const int64_t count = md_bitfield_popcount(&bf);
 
             if (count > 0) {
-                const int64_t stride = ALIGN_TO(count, md_simd_width_f32);
+                const int64_t stride = ALIGN_TO(count, 8);
                 const int64_t coord_bytes = stride * 7 * sizeof(float);
                 float* coord_data = md_alloc(ctx->temp_alloc, coord_bytes);
                 const md_vec3_soa_t coord[2] = {
@@ -4370,9 +4370,9 @@ static inline void populate_volume(float* vol, const vec3_t* xyz, int64_t num_po
         const vec4_t coord = mat4_mul_vec4(M, vec4_from_vec3(xyz[i], 1.0f));
 
         // Dwelling into bitland here, is a bit unsure if we should expose these as vec4 operations
-        const md_f32x4_t a = md_simd_cmp_lt_f32x4(md_simd_zero_f32x4(), coord.f32x4);
-        const md_f32x4_t b = md_simd_cmp_lt_f32x4(coord.f32x4, md_simd_set_f32x4(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0));
-        const md_f32x4_t c = md_simd_and_f32x4(a, b);
+        const __m128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), coord.m128);
+        const __m128 b = md_mm_cmplt_ps(coord.m128, md_mm_set_ps(0, MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM));
+        const __m128 c = md_mm_and_ps(a, b);
 
         // Count the number of lanes which is not zero
         // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
@@ -4408,10 +4408,10 @@ bool sdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
         const int idx = ctz32(mask);
         const vec4_t coord = mat4_mul_vec4(data->M, vec4_from_vec3(elem_arr[idx].xyz, 1.0f));
 
-        // Dwelling into bitland here, is a bit unsure if we should expose these as vec4 operations
-        const md_f32x4_t a = md_simd_cmp_lt_f32x4(md_simd_zero_f32x4(), coord.f32x4);
-        const md_f32x4_t b = md_simd_cmp_lt_f32x4(coord.f32x4, md_simd_set_f32x4(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0));
-        const md_f32x4_t c = md_simd_and_f32x4(a, b);
+        // Dwelling into intrinsic land here, is a bit unsure if we should expose these as vec4 operations
+        const __m128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), coord.m128);
+        const __m128 b = md_mm_cmplt_ps(coord.m128, md_mm_set_ps(0, MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM));
+        const __m128 c = md_mm_and_ps(a, b);
 
         // Count the number of lanes which are not zero
         // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max

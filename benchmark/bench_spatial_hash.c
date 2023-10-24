@@ -2,6 +2,7 @@
 
 #include <md_gro.h>
 #include <md_molecule.h>
+#include <core/md_intrinsics.h>
 #include <core/md_spatial_hash.h>
 #include <core/md_arena_allocator.h>
 

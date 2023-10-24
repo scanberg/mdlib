@@ -1,1311 +1,1025 @@
-/**
- * This is an attempt of a generic SIMD interface.
- * It is not complete, but it is a start.
- * The idea is to support SSE2, AVX (AVX2) and NEON.
- * Using defined types (based on hardware) and generics on top of operations
- * 
- * TODO: Cleanup
-**/
+/*
 
-// If the instruction set supports AVX2 it should support FMA as well.
-// However, we cannot rely on that (in case of emulation or whatever may gimp your instruction set)
-// so we check for it in cmake and define if it is available
+SIMDE handles most of the portability issues for us.
+It automatically maps the intrinsics written in x86-64 to the corresponding ARM NEON intrinsics.
+It also emulates any lower instruction set, e.g. SSE2 when we are compiling for AVX2, by double-pumping the intrinsics.
+We have chosen a sufficiently high baseline, AVX2 so that we can use the same code for both x86-64 and ARM.
+In the future, when the support for AVX512 matures, or it is superseeded by something else, we may transition to that.
+
+*/
 
 #pragma once
 
-#include <core/md_common.h>
-#include <core/md_intrinsics.h>
-
-#if defined(__x86_64__)
-// x86 integer intrinsics does not have distinct types
-// so we define distinct types for each in order to enable C11 Generics
-typedef struct md_i32x4_t {
-    __m128i m128i;
-} md_i32x4_t;
-
-typedef struct md_i64x2_t {
-    __m128i m128i;
-} md_i64x2_t;
-
-typedef struct md_i32x8_t {
-    __m256i m256i;
-} md_i32x8_t;
-
-typedef struct md_i64x4_t {
-    __m256i m256i;
-} md_i64x4_t;
-
-#   define md_f32x4_t __m128
-#   define md_f64x2_t __m128d
-#   define md_f32x8_t __m256
-#   define md_f64x4_t __m256d
-#   if defined(__AVX__)
-#       define md_simd_f32_t    md_f32x8_t
-#       define md_simd_f64_t    md_f64x4_t
-#       define md_simd_i32_t    md_i32x8_t
-#       define md_simd_i64_t    md_i64x4_t
-#       define md_simd_width_f32 8
-#       define md_simd_width_i32 8
-#       define md_simd_width_f64 4
-#       define md_simd_width_i64 4
-#   else
-#       define md_simd_f32_t    md_f32x4_t
-#       define md_simd_f64_t    md_f64x2_t
-#       define md_simd_i32_t    md_i32x4_t
-#       define md_simd_i64_t    md_i64x2_t
-#       define md_simd_width_f32 4
-#       define md_simd_width_i32 4
-#       define md_simd_width_f64 2
-#       define md_simd_width_i64 2
-#   endif
-#elif defined(__ARM_NEON__)
-#   error "NEON not supported yet"
-#else
-#   error "Unsupported platform"
+#ifdef __FMA__
+#define SIMDE_X86_FMA_NATIVE
 #endif
+
+#define SIMDE_ENABLE_NATIVE_ALIASES
+#include <simde/x86/avx2.h>
+
+#include <core/md_common.h>
 
 #define MD_SIMD_INLINE static FORCE_INLINE
 
-#ifdef __x86_64__
-
-// Integers have to be explicitly handled since we use distinct types
-MD_SIMD_INLINE void md_simd_store_i32x4(int* x, md_i32x4_t val) { _mm_storeu_si128((__m128i*)x, val.m128i); }
-MD_SIMD_INLINE void md_simd_store_i64x2(int64_t* x, md_i64x2_t val) { _mm_storeu_si128((__m128i*)x, val.m128i); }
-MD_SIMD_INLINE void md_simd_store_i32x8(int* x, md_i32x8_t val) { _mm256_storeu_si256((__m256i*)x, val.m256i); }
-MD_SIMD_INLINE void md_simd_store_i64x4(int64_t* x, md_i64x4_t val) { _mm256_storeu_si256((__m256i*)x, val.m256i); }
-
-MD_SIMD_INLINE md_i32x4_t md_simd_load_i32x4(const int* x) {
-    md_i32x4_t val = { _mm_loadu_si128((const __m128i*)x) };
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_load_i64x2(const int64_t* x) {
-    md_i64x2_t val = {_mm_loadu_si128((const __m128i*)x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_load_i32x8(const int* x) {
-    md_i32x8_t val = {_mm256_loadu_si256((const __m256i*)x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_load_i64x4(const int64_t* x) {
-    md_i64x4_t val = {_mm256_loadu_si256((const __m256i*)x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_set1_i32x4(int x) {
-    md_i32x4_t val = {_mm_set1_epi32(x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_set1_i64x2(int64_t x) {
-    md_i64x2_t val = { _mm_set1_epi64x(x) };
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_set1_i32x8(int x) {
-    md_i32x8_t val = {_mm256_set1_epi32(x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_set1_i64x4(int64_t x) {
-    md_i64x4_t val = {_mm256_set1_epi64x(x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_set_i32x4(int x, int y, int z, int w) {
-    md_i32x4_t val = {_mm_set_epi32(w, z, y, x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_set_i64x2(int64_t x, int64_t y) {
-    md_i64x2_t val = {_mm_set_epi64x(y, x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_set_i32x8(int x, int y, int z, int w, int q, int r, int s, int t) {
-    md_i32x8_t val = {_mm256_set_epi32(t, s, r, q, w, z, y, x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_set_i64x4(int64_t x, int64_t y, int64_t z, int64_t w) {
-    md_i64x4_t val = {_mm256_set_epi64x(w, z, y, x)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_zero_i32x4() {
-    md_i32x4_t val = {_mm_setzero_si128()};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_zero_i64x2() {
-    md_i64x2_t val = {_mm_setzero_si128()};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_zero_i32x8() {
-    md_i32x8_t val = {_mm256_setzero_si256()};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_zero_i64x4() {
-    md_i64x4_t val = {_mm256_setzero_si256()};
-    return val;
-}
-
-#define MD_SIMD_EXTRACT_HI_SI128(X) _mm256_extractf128_si256(X, 1)
-#define MD_SIMD_EXTRACT_LO_SI128(X) _mm256_castsi256_si128(X)
-#define MD_SIMD_DOUBLE_PUMP1_SI128(X, OP) _mm256_set_m128i(OP(MD_SIMD_EXTRACT_HI_SI128(X)), OP(MD_SIMD_EXTRACT_LO_SI128(X)))
-#define MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(X, OP, ...) _mm256_set_m128i(OP(MD_SIMD_EXTRACT_HI_SI128(X),##__VA_ARGS__), OP(MD_SIMD_EXTRACT_LO_SI128(X),##__VA_ARGS__))
-#define MD_SIMD_DOUBLE_PUMP2_SI128(A, B, OP) _mm256_set_m128i(OP(MD_SIMD_EXTRACT_HI_SI128(A), MD_SIMD_EXTRACT_HI_SI128(B)), OP(MD_SIMD_EXTRACT_LO_SI128(A), MD_SIMD_EXTRACT_LO_SI128(B)))
-
-MD_SIMD_INLINE md_i32x4_t md_simd_and_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_and_si128(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_and_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_and_si256(a.m256i, b.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_and_si128)};
-#endif
-    return val;
-}
-    
-MD_SIMD_INLINE md_i64x2_t md_simd_and_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_and_si128(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_and_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_and_si256(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_and_si128)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_or_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_or_si128(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_or_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_or_si256(a.m256i, b.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_or_si128)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_or_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_or_si128(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_or_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_or_si256(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_or_si128)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_xor_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_xor_si128(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_xor_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_xor_si256(a.m256i, b.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_xor_si128)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_xor_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_xor_si128(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_xor_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_xor_si256(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_xor_si128)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_not_i32x4(md_i32x4_t a) {
-    return md_simd_xor_i32x4(a, md_simd_set1_i32x4(-1));
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_not_i32x8(md_i32x8_t a) {
-	return md_simd_xor_i32x8(a, md_simd_set1_i32x8(-1));
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_not_i64x2(md_i64x2_t a) {
-    return md_simd_xor_i64x2(a, md_simd_set1_i64x2(-1));
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_not_i64x4(md_i64x4_t a) {
-    return md_simd_xor_i64x4(a, md_simd_set1_i64x4(-1));
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_and_not_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_andnot_si128(b.m128i, a.m128i)};
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_and_not_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_andnot_si256(b.m256i, a.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(b.m256i, a.m256i, _mm_andnot_si128)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_and_not_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_andnot_si128(b.m128i, a.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_and_not_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_andnot_si256(b.m256i, a.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(b.m256i, a.m256i, _mm_andnot_si128)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_add_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_add_epi32(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_add_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_add_epi32(a.m256i, b.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_add_epi32)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_add_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_add_epi64(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_add_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_add_epi64(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_add_epi64)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_sub_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_sub_epi32(a.m128i, b.m128i)};
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_sub_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_sub_epi32(a.m256i, b.m256i)};
-#else
-        md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_sub_epi32)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_sub_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_sub_epi64(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_sub_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_sub_epi64(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_sub_epi64)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_abs_i32x4(md_i32x4_t a) {
-    md_i32x4_t val = {_mm_abs_epi32(a.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_abs_i32x8(md_i32x8_t a) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_abs_epi32(a.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP1_SI128(a.m256i, _mm_abs_epi32)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_abs_i64x2(md_i64x2_t a) {
-    md_i64x2_t val = {_mm_abs_epi64(a.m128i)};
-	return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_abs_i64x4(md_i64x4_t a) {
-    md_i64x4_t val = {_mm256_abs_epi64(a.m256i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_min_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_min_epi32(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_min_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_min_epi32(a.m256i, b.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_min_epi32)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_min_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_min_epi64(a.m128i, b.m128i)};
-	return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_min_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_min_epi64(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_min_epi64)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_max_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_max_epi32(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_max_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_max_epi32(a.m256i, b.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_max_epi32)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_max_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_max_epi64(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_max_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_max_epi64(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_max_epi64)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_cmp_gt_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_cmpgt_epi32(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_cmp_gt_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_cmpgt_epi32(a.m256i, b.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_cmpgt_epi32)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_cmp_gt_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_cmpgt_epi64(a.m128i, b.m128i)};
-	return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_cmp_gt_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_cmpgt_epi64(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_cmpgt_epi64)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_cmp_eq_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_cmpeq_epi32(a.m128i, b.m128i)};
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_cmp_eq_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_cmpeq_epi32(a.m256i, b.m256i)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_cmpeq_epi32)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_cmp_eq_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = {_mm_cmpeq_epi64(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_cmp_eq_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_cmpeq_epi64(a.m256i, b.m256i)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_cmpeq_epi64)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_cmp_neq_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = md_simd_not_i32x4(md_simd_cmp_eq_i32x4(a, b));
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_cmp_neq_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = md_simd_not_i32x8(md_simd_cmp_eq_i32x8(a, b));
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_cmpeq_epi32)};
-    val = md_simd_not_i32x8(val);
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_cmp_neq_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = md_simd_not_i64x2(md_simd_cmp_eq_i64x2(a, b));
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_cmp_neq_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = md_simd_not_i64x4(md_simd_cmp_eq_i64x4(a, b));
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_cmpeq_epi64)};
-    val = md_simd_not_i64x4(val);
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_cmp_lt_i32x4(md_i32x4_t a, md_i32x4_t b) {
-    md_i32x4_t val = {_mm_cmplt_epi32(a.m128i, b.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_cmp_lt_i32x8(md_i32x8_t a, md_i32x8_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = md_simd_cmp_gt_i32x8(b, a);
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(a.m256i, b.m256i, _mm_cmplt_epi32)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_cmp_lt_i64x2(md_i64x2_t a, md_i64x2_t b) {
-    md_i64x2_t val = md_simd_not_i64x2(md_simd_cmp_gt_i64x2(a, b));
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_cmp_lt_i64x4(md_i64x4_t a, md_i64x4_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = md_simd_cmp_gt_i64x4(b, a);
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP2_SI128(b.m256i, a.m256i, _mm_cmpgt_epi64)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_shift_left_i32x4(md_i32x4_t a, int32_t b) {
-    md_i32x4_t val = {_mm_slli_epi32(a.m128i, b)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_shift_left_i32x8(md_i32x8_t a, int32_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_slli_epi32(a.m256i, b)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(a.m256i, _mm_slli_epi32, b)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_shift_left_i64x2(md_i64x2_t a, int32_t b) {
-    md_i64x2_t val = {_mm_slli_epi64(a.m128i, b)};
-	return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_shift_left_i64x4(md_i64x4_t a, int32_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_slli_epi64(a.m256i, b)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(a.m256i, _mm_slli_epi64, b)};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_shift_right_i32x4(md_i32x4_t a, int32_t b) {
-    md_i32x4_t val = {_mm_srli_epi32(a.m128i, b)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_shift_right_i32x8(md_i32x8_t a, int32_t b) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_srli_epi32(a.m256i, b)};
-#else
-    md_i32x8_t val = {MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(a.m256i, _mm_srli_epi32, b)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_shift_right_i64x2(md_i64x2_t a, int32_t b) {
-    md_i64x2_t val = {_mm_srli_epi64(a.m128i, b)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_shift_right_i64x4(md_i64x4_t a, int32_t b) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_srli_epi64(a.m256i, b)};
-#else
-    md_i64x4_t val = {MD_SIMD_DOUBLE_PUMP1_ARGS_SI128(a.m256i, _mm_srli_epi64, b)};
-#endif
-	return val;
-}
-
-MD_SIMD_INLINE md_i32x4_t md_simd_blend_i32x4(md_i32x4_t a, md_i32x4_t b, md_i32x4_t mask) {
-    md_i32x4_t val = {_mm_blendv_epi8(a.m128i, b.m128i, mask.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i32x8_t md_simd_blend_i32x8(md_i32x8_t a, md_i32x8_t b, md_i32x8_t mask) {
-#ifdef __AVX2__
-    md_i32x8_t val = {_mm256_blendv_epi8(a.m256i, b.m256i, mask.m256i)};
-#else
-    md_i32x8_t val = {_mm256_castps_si256(_mm256_blendv_ps(_mm256_castsi256_ps(a.m256i), _mm256_castsi256_ps(b.m256i), _mm256_castsi256_ps(mask.m256i)))};
-#endif
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x2_t md_simd_blend_i64x2(md_i64x2_t a, md_i64x2_t b, md_i64x2_t mask) {
-    md_i64x2_t val = {_mm_blendv_epi8(a.m128i, b.m128i, mask.m128i)};
-    return val;
-}
-
-MD_SIMD_INLINE md_i64x4_t md_simd_blend_i64x4(md_i64x4_t a, md_i64x4_t b, md_i64x4_t mask) {
-#ifdef __AVX2__
-    md_i64x4_t val = {_mm256_blendv_epi8(a.m256i, b.m256i, mask.m256i)};
-#else
-    md_i64x4_t val = {_mm256_castpd_si256(_mm256_blendv_pd(_mm256_castsi256_pd(a.m256i), _mm256_castsi256_pd(b.m256i), _mm256_castsi256_pd(mask.m256i)))};
-#endif
-    return val;
-}
-
-#define md_simd_load_f64x2 _mm_loadu_pd
-#define md_simd_load_f64x4 _mm256_loadu_pd
-#define md_simd_load_f32x4 _mm_loadu_ps
-#define md_simd_load_f32x8 _mm256_loadu_ps
-
-#define md_simd_store_f32x4 _mm_storeu_ps
-#define md_simd_store_f64x2 _mm_storeu_pd
-#define md_simd_store_f32x8 _mm256_storeu_ps
-#define md_simd_store_f64x4 _mm256_storeu_pd
-
-#define md_simd_set1_f32x4 _mm_set1_ps
-#define md_simd_set1_f64x2 _mm_set1_pd
-#define md_simd_set1_f32x8 _mm256_set1_ps
-#define md_simd_set1_f64x4 _mm256_set1_pd
-
-// @NOTE: Arguments are reversed compared to default intel intrinsics
-#define md_simd_set_f32x4(X,Y,Z,W)          _mm_set_ps(W,Z,Y,X)
-#define md_simd_set_f64x2(X,Y)              _mm_set_pd(Y,X)
-#define md_simd_set_f32x8(X,Y,Z,W,Q,R,S,T)  _mm256_set_ps(T,S,R,Q,W,Z,Y,X)
-#define md_simd_set_f64x4(X,Y,Z,W)          _mm256_set_pd(W,Z,Y,X)
-
-#define md_simd_zero_f32x4 _mm_setzero_ps
-#define md_simd_zero_f64x2 _mm_setzero_pd
-#define md_simd_zero_f32x8 _mm256_setzero_ps
-#define md_simd_zero_f64x4 _mm256_setzero_pd
-
-#define md_simd_and_f32x4 _mm_and_ps
-#define md_simd_and_f64x2 _mm_and_pd
-#define md_simd_and_f32x8 _mm256_and_ps
-#define md_simd_and_f64x4 _mm256_and_pd
-
-#define md_simd_or_f32x4 _mm_or_ps
-#define md_simd_or_f64x2 _mm_or_pd
-#define md_simd_or_f32x8 _mm256_or_ps
-#define md_simd_or_f64x4 _mm256_or_pd
-
-#define md_simd_xor_f32x4 _mm_xor_ps
-#define md_simd_xor_f64x2 _mm_xor_pd
-#define md_simd_xor_f32x8 _mm256_xor_ps
-#define md_simd_xor_f64x4 _mm256_xor_pd
-
-MD_SIMD_INLINE md_f32x4_t md_simd_gather_f32x4(const float* base, const int* indices) {
-#ifdef __AVX2__
-    __m128i i32x4 = _mm_lddqu_si128((const __m128i*)indices);
-    return _mm_i32gather_ps(base, i32x4, 4);
-#else
-#   if MD_COMPILER_MSVC
-    return _mm_set_ps(
-        base[indices[0]],
-        base[indices[1]],
-        base[indices[2]],
-        base[indices[3]]
-    );
-#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
-    return _mm_set_ps(
-        base[indices[0]],
-        base[indices[1]],
-        base[indices[2]],
-        base[indices[3]]
-    );
-#   else
-#       error "Unsupported compiler :<"
-#   endif
-#endif
-}
-
-MD_SIMD_INLINE md_f64x2_t md_simd_gather_f64x2(const double* base, const int* indices) {
-#ifdef __AVX2__
-    __m128i i32x4 = _mm_lddqu_si128((const __m128i*)indices);
-    return _mm_i32gather_pd(base, i32x4, 8);
-#else
-#   if MD_COMPILER_MSVC
-    return _mm_set_pd(
-        base[indices[0]],
-        base[indices[1]]
-    );
-#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
-    return _mm_set_pd(
-        base[indices[0]],
-        base[indices[1]]
-    );
-#   else
-#       error "Unsupported compiler :<"
-#   endif
-#endif
-}
-
-MD_SIMD_INLINE md_f32x8_t md_simd_gather_f32x8(const float* base, const int* indices) {
-#ifdef __AVX2__
-    __m256i i32x8 = _mm256_lddqu_si256((const __m256i*)indices);
-    return _mm256_i32gather_ps(base, i32x8, 4);
-#else
-#   if MD_COMPILER_MSVC
-    return _mm256_set_ps(
-        base[indices[0]],
-        base[indices[1]],
-        base[indices[2]],
-        base[indices[3]],
-        base[indices[4]],
-        base[indices[5]],
-        base[indices[6]],
-        base[indices[7]]
-    );
-#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
-    return _mm256_set_ps(
-        base[indices[0]],
-        base[indices[1]],
-        base[indices[2]],
-        base[indices[3]],
-        base[indices[4]],
-        base[indices[5]],
-        base[indices[6]],
-        base[indices[7]]
-    );
-#   else
-#       error "Unsupported compiler :<"
-#   endif
-#endif
-}
-
-MD_SIMD_INLINE md_f64x4_t md_simd_gather_f64x4(const double* base, const int* indices) {
-#ifdef __AVX2__
-    __m128i i32x4 = _mm_lddqu_si128((const __m128i*)indices);
-    return _mm256_i32gather_pd(base, i32x4, 8);
-#else
-#   if MD_COMPILER_MSVC
-    return _mm256_set_pd(
-        base[indices[0]],
-        base[indices[1]],
-        base[indices[2]],
-        base[indices[3]]
-    );
-#   elif MD_COMPILER_GCC || MD_COMPILER_CLANG
-    return _mm256_set_pd(
-        base[indices[0]],
-        base[indices[1]],
-        base[indices[2]],
-        base[indices[3]]
-    );
-#   else
-#       error "Unsupported compiler :<"
-#   endif
-#endif
-}
-
-#if md_simd_width_f32 == 4
-#define md_simd_gather_f32 md_simd_gather_f32x4
-#elif md_simd_width_f32 == 8
-#define md_simd_gather_f32 md_simd_gather_f32x8
-#endif
-
-#if md_simd_width_f64 == 2
-#define md_simd_gather_f64 md_simd_gather_f64x2
-#elif md_simd_width_f64 == 4
-#define md_simd_gather_f64 md_simd_gather_f64x4
-#endif
-
-#define LOAD_STRIDED_128(ptr, offset, stride) _mm_load_ps((const float*)((const char*)ptr + offset * stride_in_bytes))
-
-MD_SIMD_INLINE void md_simd_unpack_xyz_f32x4(md_f32x4_t* out_x, md_f32x4_t* out_y, md_f32x4_t* out_z, const float* in_xyz, size_t stride_in_bytes) {
+// BASE FLOAT OPERATIONS
+
+#define md_mm_loadu_ps simde_mm_loadu_ps
+#define md_mm_loadu_pd simde_mm_loadu_pd
+#define md_mm256_loadu_ps simde_mm256_loadu_ps
+#define md_mm256_loadu_pd simde_mm256_loadu_pd
+
+#define md_mm_load_ps simde_mm_load_ps
+#define md_mm_load_pd simde_mm_load_pd
+#define md_mm256_load_ps simde_mm256_load_ps
+#define md_mm256_load_pd simde_mm256_load_pd
+
+#define md_mm_i32gather_ps simde_mm_i32gather_ps
+#define md_mm_i32gather_pd simde_mm_i32gather_pd
+#define md_mm256_i32gather_ps simde_mm256_i32gather_ps
+#define md_mm256_i32gather_pd simde_mm256_i32gather_pd
+
+#define md_mm_storeu_ps simde_mm_storeu_ps
+#define md_mm_storeu_pd simde_mm_storeu_pd
+#define md_mm256_storeu_ps simde_mm256_storeu_ps
+#define md_mm256_storeu_pd simde_mm256_storeu_pd
+
+#define md_mm_store_ps simde_mm_store_ps
+#define md_mm_store_pd simde_mm_store_pd
+#define md_mm256_store_ps simde_mm256_store_ps
+#define md_mm256_store_pd simde_mm256_store_pd
+
+#define md_mm_set1_ps simde_mm_set1_ps
+#define md_mm_set1_pd simde_mm_set1_pd
+#define md_mm256_set1_ps simde_mm256_set1_ps
+#define md_mm256_set1_pd simde_mm256_set1_pd
+
+#define md_mm_set_ps simde_mm_set_ps
+#define md_mm_set_pd simde_mm_set_pd
+#define md_mm256_set_ps simde_mm256_set_ps
+#define md_mm256_set_pd simde_mm256_set_pd
+
+#define md_mm_setzero_ps simde_mm_setzero_ps
+#define md_mm_setzero_pd simde_mm_setzero_pd
+#define md_mm256_setzero_ps simde_mm256_setzero_ps
+#define md_mm256_setzero_pd simde_mm256_setzero_pd
+
+#define md_mm_and_ps simde_mm_and_ps
+#define md_mm_and_pd simde_mm_and_pd
+#define md_mm256_and_ps simde_mm256_and_ps
+#define md_mm256_and_pd simde_mm256_and_pd
+
+#define md_mm_or_ps simde_mm_or_ps
+#define md_mm_or_pd simde_mm_or_pd
+#define md_mm256_or_ps simde_mm256_or_ps
+#define md_mm256_or_pd simde_mm256_or_pd
+
+#define md_mm_xor_ps simde_mm_xor_ps
+#define md_mm_xor_pd simde_mm_xor_pd
+#define md_mm256_xor_ps simde_mm256_xor_ps
+#define md_mm256_xor_pd simde_mm256_xor_pd
+
+#define md_mm_andnot_ps simde_mm_andnot_ps
+#define md_mm_andnot_pd simde_mm_andnot_pd
+#define md_mm256_andnot_ps simde_mm256_andnot_ps
+#define md_mm256_andnot_pd simde_mm256_andnot_pd
+
+#define md_mm_cmp_ps simde_mm_cmp_ps
+#define md_mm_cmp_pd simde_mm_cmp_pd
+#define md_mm256_cmp_ps simde_mm_cmp_ps
+#define md_mm256_cmp_pd simde_mm_cmp_pd
+
+#define md_mm_cmpeq_ps simde_mm_cmpeq_ps
+#define md_mm_cmpeq_pd simde_mm_cmpeq_pd
+#define md_mm256_cmpeq_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_EQ_OQ)
+#define md_mm256_cmpeq_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_EQ_OQ)
+
+#define md_mm_cmpneq_ps simde_mm_cmpneq_ps
+#define md_mm_cmpneq_pd simde_mm_cmpneq_pd
+#define md_mm256_cmpneq_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_NEQ_OQ)
+#define md_mm256_cmpneq_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_NEQ_OQ)
+
+#define md_mm_cmplt_ps simde_mm_cmplt_ps
+#define md_mm_cmplt_pd simde_mm_cmplt_pd
+#define md_mm256_cmplt_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_LT_OQ)
+#define md_mm256_cmplt_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_LT_OQ)
+
+#define md_mm_cmple_ps simde_mm_cmple_ps
+#define md_mm_cmple_pd simde_mm_cmple_pd
+#define md_mm256_cmple_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_LE_OQ)
+#define md_mm256_cmple_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_LE_OQ)
+
+#define md_mm_cmpgt_ps simde_mm_cmpgt_ps
+#define md_mm_cmpgt_pd simde_mm_cmpgt_pd
+#define md_mm256_cmpgt_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_GT_OQ)
+#define md_mm256_cmpgt_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_GT_OQ)
+
+#define md_mm_cmpge_ps simde_mm_cmpge_ps
+#define md_mm_cmpge_pd simde_mm_cmpge_pd
+#define md_mm256_cmpge_ps(a,b) simde_mm256_cmp_ps(a,b, _CMP_GE_OQ)
+#define md_mm256_cmpge_pd(a,b) simde_mm256_cmp_pd(a,b, _CMP_GE_OQ)
+
+#define md_mm_round_ps(x) simde_mm_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
+#define md_mm_round_pd(x) simde_mm_round_pd(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
+#define md_mm256_round_ps(x) simde_mm256_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
+#define md_mm256_round_pd(x) simde_mm256_round_pd(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
+
+#define md_mm_floor_ps simde_mm_floor_ps
+#define md_mm_floor_pd simde_mm_floor_pd
+#define md_mm256_floor_ps simde_mm256_floor_ps
+#define md_mm256_floor_pd simde_mm256_floor_pd
+
+#define md_mm_ceil_ps simde_mm_ceil_ps
+#define md_mm_ceil_pd simde_mm_ceil_pd
+#define md_mm256_ceil_ps simde_mm256_ceil_ps
+#define md_mm256_ceil_pd simde_mm256_ceil_pd
+
+#define md_mm_add_ps simde_mm_add_ps
+#define md_mm_add_pd simde_mm_add_pd
+#define md_mm256_add_ps simde_mm256_add_ps
+#define md_mm256_add_pd simde_mm256_add_pd
+
+#define md_mm_add_ss simde_mm_add_ss
+#define md_mm_add_sd simde_mm_add_sd
+#define md_mm256_add_ss simde_mm256_add_ss
+#define md_mm256_add_sd simde_mm256_add_sd
+
+#define md_mm_sub_ps simde_mm_sub_ps
+#define md_mm_sub_pd simde_mm_sub_pd
+#define md_mm256_sub_ps simde_mm256_sub_ps
+#define md_mm256_sub_pd simde_mm256_sub_pd
+
+#define md_mm_mul_ps simde_mm_mul_ps
+#define md_mm_mul_pd simde_mm_mul_pd
+#define md_mm256_mul_ps simde_mm256_mul_ps
+#define md_mm256_mul_pd simde_mm256_mul_pd
+
+#define md_mm_div_ps simde_mm_div_ps
+#define md_mm_div_pd simde_mm_div_pd
+#define md_mm256_div_ps simde_mm256_div_ps
+#define md_mm256_div_pd simde_mm256_div_pd
+
+#define md_mm_fmadd_ps _mm_fmadd_ps
+#define md_mm_fmadd_pd _mm_fmadd_pd
+#define md_mm256_fmadd_ps _mm256_fmadd_ps
+#define md_mm256_fmadd_pd _mm256_fmadd_pd
+
+#define md_mm_blendv_ps simde_mm_blendv_ps
+#define md_mm_blendv_pd simde_mm_blendv_pd
+#define md_mm256_blendv_ps simde_mm256_blendv_ps
+#define md_mm256_blendv_pd simde_mm256_blendv_pd
+
+#define MD_SIMD_BLEND_MASK(x,y,z,w) (((x) << 3) | ((y) << 2) | ((z) << 1) | (w))
+
+#define md_mm_blend_ps simde_mm_blend_ps
+#define md_mm_blend_pd simde_mm_blend_pd
+#define md_mm256_blend_ps simde_mm256_blend_ps
+#define md_mm256_blend_pd simde_mm256_blend_pd
+
+#define md_mm_sqrt_ps simde_mm_sqrt_ps
+#define md_mm_sqrt_pd simde_mm_sqrt_pd
+#define md_mm256_sqrt_ps simde_mm256_sqrt_ps
+#define md_mm256_sqrt_pd simde_mm256_sqrt_pd
+
+#define md_mm_min_ps simde_mm_min_ps   
+#define md_mm_min_pd simde_mm_min_pd   
+#define md_mm256_min_ps simde_mm256_min_ps
+#define md_mm256_min_pd simde_mm256_min_pd
+
+#define md_mm_max_ps simde_mm_max_ps   
+#define md_mm_max_pd simde_mm_max_pd   
+#define md_mm256_max_ps simde_mm256_max_ps
+#define md_mm256_max_pd simde_mm256_max_pd
+
+#define md_mm_shuffle_ps simde_mm_shuffle_ps
+#define md_mm_shuffle_pd simde_mm_shuffle_pd
+#define md_mm256_shuffle_ps simde_mm256_shuffle_ps
+#define md_mm256_shuffle_pd simde_mm256_shuffle_pd
+
+#define md_mm_movehl_ps simde_mm_movehl_ps
+#define md_mm_movemask_ps simde_mm_movemask_ps
+#define md_mm256_movemask_ps simde_mm256_movemask_ps
+
+// BASE INT OPERATIONS
+
+#define md_mm_loadu_epi32 simde_mm_loadu_epi32
+#define md_mm_loadu_epi64 simde_mm_loadu_epi64
+#define md_mm256_loadu_epi32 simde_mm256_loadu_epi32
+#define md_mm256_loadu_epi64 simde_mm256_loadu_epi64
+
+#define md_mm_load_epi32 simde_mm_load_epi32
+#define md_mm_load_epi64 simde_mm_load_epi64
+#define md_mm256_load_epi32 simde_mm256_load_epi32
+#define md_mm256_load_epi64 simde_mm256_load_epi64
+
+#define md_mm_storeu_epi32 simde_mm_storeu_epi32
+#define md_mm_storeu_epi64 simde_mm_storeu_epi64
+#define md_mm256_storeu_epi32 simde_mm256_storeu_epi32
+#define md_mm256_storeu_epi64 simde_mm256_storeu_epi64
+
+#define md_mm_store_epi32 simde_mm_store_epi32
+#define md_mm_store_epi64 simde_mm_store_epi64
+#define md_mm256_store_epi32 simde_mm256_store_epi32
+#define md_mm256_store_epi64 simde_mm256_store_epi64
+
+#define md_mm_set1_epi32 simde_mm_set1_epi32
+#define md_mm_set1_epi64 simde_mm_set1_epi64
+#define md_mm256_set1_epi32 simde_mm256_set1_epi32
+#define md_mm256_set1_epi64 simde_mm256_set1_epi64
+
+#define md_mm_set_epi32 simde_mm_set_epi32
+#define md_mm_set_epi64 simde_mm_set_epi64
+#define md_mm256_set_epi32 simde_mm256_set_epi32
+#define md_mm256_set_epi64 simde_mm256_set_epi64
+
+#define md_mm_setzero_si128 simde_mm_setzero_si128
+#define md_mm256_setzero_si256 simde_mm256_setzero_si256
+
+#define md_mm_and_si128 simde_mm_and_si128
+#define md_mm_and_epi32 simde_mm_and_si128
+#define md_mm_and_epi64 simde_mm_and_si128
+#define md_mm256_and_si256 simde_mm256_and_si256
+#define md_mm256_and_epi32 simde_mm256_and_si256
+#define md_mm256_and_epi64 simde_mm256_and_si256
+
+#define md_mm_or_si128 simde_mm_or_si128
+#define md_mm256_or_si256 simde_mm256_or_si256
+
+#define md_mm_xor_si128 simde_mm_xor_si128
+#define md_mm256_xor_si256 simde_mm256_xor_si256
+
+#define md_mm_andnot_si128 simde_mm_andnot_si128
+#define md_mm_andnot_epi32 simde_mm_andnot_si128
+#define md_mm_andnot_epi64 simde_mm_andnot_si128
+#define md_mm256_andnot_si256 simde_mm256_andnot_si256
+#define md_mm256_andnot_epi32 simde_mm256_andnot_si256
+#define md_mm256_andnot_epi64 simde_mm256_andnot_si256
+
+#define md_mm_not_si128(a) md_mm_xor_si128(md_mm_set1_epi32(0xFFFFFFFF), a)
+#define md_mm256_not_si256(a) md_mm256_xor_si256(md_mm256_set1_epi32(0xFFFFFFFF), a)
+
+#define md_mm_add_epi32 simde_mm_add_epi32
+#define md_mm_add_epi64 simde_mm_add_epi64
+#define md_mm256_add_epi32 simde_mm256_add_epi32
+#define md_mm256_add_epi64 simde_mm256_add_epi64
+
+#define md_mm_sub_epi32 simde_mm_sub_epi32
+#define md_mm_sub_epi64 simde_mm_sub_epi64
+#define md_mm256_sub_epi32 simde_mm256_sub_epi32
+#define md_mm256_sub_epi64 simde_mm256_sub_epi64
+
+#define md_mm_slli_epi32 simde_mm_slli_epi32
+#define md_mm_slli_epi64 simde_mm_slli_epi64
+#define md_mm256_slli_epi32 simde_mm256_slli_epi32
+#define md_mm256_slli_epi64 simde_mm256_slli_epi64
+
+#define md_mm_srli_epi32 simde_mm_srli_epi32
+#define md_mm_srli_epi64 simde_mm_srli_epi64
+#define md_mm256_srli_epi32 simde_mm256_srli_epi32
+#define md_mm256_srli_epi64 simde_mm256_srli_epi64
+
+#define md_mm_cmpeq_epi32 simde_mm_cmpeq_epi32
+#define md_mm_cmpeq_epi64 simde_mm_cmpeq_epi64
+#define md_mm256_cmpeq_epi32 simde_mm256_cmpeq_epi32
+#define md_mm256_cmpeq_epi64 simde_mm256_cmpeq_epi64
+
+#define md_mm_cmpneq_epi32(a,b) md_mm_not_si128(md_mm_cmpeq_epi32(a,b))
+#define md_mm_cmpneq_epi64(a,b) md_mm_not_si128(md_mm_cmpeq_epi64(a,b))
+#define md_mm256_cmpneq_epi32(a,b) md_mm256_not_si256(md_mm256_cmpeq_epi32(a,b))
+#define md_mm256_cmpneq_epi64(a,b) md_mm256_not_si256(md_mm256_cmpeq_epi64(a,b))
+
+#define md_mm_cmpgt_epi32 simde_mm_cmpgt_epi32
+#define md_mm_cmpgt_epi64 simde_mm_cmpgt_epi64
+#define md_mm256_cmpgt_epi32 simde_mm256_cmpgt_epi32
+#define md_mm256_cmpgt_epi64 simde_mm256_cmpgt_epi64
+
+#define md_mm_cmplt_epi32 simde_mm_cmplt_epi32
+
+// CASTS AND CONVERSIONS
+
+#define md_mm_castps_si128 simde_mm_castps_si128
+#define md_mm_castpd_si128 simde_mm_castpd_si128
+#define md_mm256_castps_si256 simde_mm256_castps_si256
+#define md_mm256_castpd_si256 simde_mm256_castpd_si256
+
+#define md_mm_castsi128_ps simde_mm_castsi128_ps
+#define md_mm_castsi128_pd simde_mm_castsi128_pd
+#define md_mm256_castsi256_ps simde_mm256_castsi256_ps
+#define md_mm256_castsi256_pd simde_mm256_castsi256_pd
+
+#define md_mm_castps_pd simde_mm_castps_pd
+#define md_mm_castpd_ps simde_mm_castpd_ps
+#define md_mm256_castps_pd simde_mm256_castps_pd
+#define md_mm256_castpd_ps simde_mm256_castpd_ps
+
+#define md_mm_castsi128_pd simde_mm_castsi128_pd
+#define md_mm_castpd_si128 simde_mm_castpd_si128
+#define md_mm256_castsi256_pd simde_mm256_castsi256_pd
+#define md_mm256_castpd_si256 simde_mm256_castpd_si256
+
+#define md_mm_cvtepi32_ps simde_mm_cvtepi32_ps
+#define md_mm256_cvtepi32_ps simde_mm256_cvtepi32_ps
+
+#define md_mm_cvtps_epi32 simde_mm_cvtps_epi32
+#define md_mm256_cvtps_epi32 simde_mm256_cvtps_epi32
+
+#define md_mm_cvtss_f32 simde_mm_cvtss_f32
+#define md_mm_cvtsd_f64 simde_mm_cvtsd_f64
+#define md_mm256_cvtss_f32 simde_mm256_cvtss_f32
+#define md_mm256_cvtsd_f64 simde_mm256_cvtsd_f64
+
+// HIGH LEVEL OPERATIONS
+
+#define MD_LOAD_STRIDED_128(ptr, offset, stride) simde_mm_loadu_ps((const float*)((const char*)ptr + offset * stride_in_bytes))
+
+MD_SIMD_INLINE void md_mm_unpack_xyz_ps(__m128* out_x, __m128* out_y, __m128* out_z, const float* in_xyz, size_t stride_in_bytes) {
     __m128  r0, r1, r2, r3;
     __m128  t0, t1, t2, t3;
 
-    r0 = LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes);
-    r1 = LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes);
-    r2 = LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes);
-    r3 = LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes);
+    r0 = MD_LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes);
+    r1 = MD_LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes);
+    r2 = MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes);
+    r3 = MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes);
 
-    t0 = _mm_unpacklo_ps(r0,r1); // xxyy xxyy
-    t1 = _mm_unpackhi_ps(r0,r1); // zzww zzww
-    t2 = _mm_unpacklo_ps(r2,r3); // xxyy xxyy
-    t3 = _mm_unpackhi_ps(r2,r3); // zzww zzww
+    t0 = simde_mm_unpacklo_ps(r0,r1); // xxyy xxyy
+    t1 = simde_mm_unpackhi_ps(r0,r1); // zzww zzww
+    t2 = simde_mm_unpacklo_ps(r2,r3); // xxyy xxyy
+    t3 = simde_mm_unpackhi_ps(r2,r3); // zzww zzww
 
-    *out_x = _mm_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
-    *out_y = _mm_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
-    *out_z = _mm_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
+    *out_x = simde_mm_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
+    *out_y = simde_mm_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
+    *out_z = simde_mm_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
 }
 
-MD_SIMD_INLINE void md_simd_unpack_xyz_f32x8(md_f32x8_t* out_x, md_f32x8_t* out_y, md_f32x8_t* out_z, const float* in_xyz, size_t stride_in_bytes) {
+MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(__m256* out_x, __m256* out_y, __m256* out_z, const float* in_xyz, size_t stride_in_bytes) {
     __m256 r0, r1, r2, r3;
     __m256 t0, t1, t2, t3;
 
     // @TODO: Try and implement this using 256-bit loads and then shuffle all the way.
     // It's a tradeoff between the number of loads issued and the port pressure on the generally few ports that are used for shuffle instructions.
-    r0 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 4, stride_in_bytes), 1);
-    r1 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 5, stride_in_bytes), 1);
-    r2 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
-    r3 = _mm256_insertf128_ps(_mm256_castps128_ps256(LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
+    r0 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 4, stride_in_bytes), 1);
+    r1 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 5, stride_in_bytes), 1);
+    r2 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
+    r3 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
 
-    t0 = _mm256_unpacklo_ps(r0,r1); // xxyy xxyy
-    t1 = _mm256_unpackhi_ps(r0,r1); // zzww zzww
-    t2 = _mm256_unpacklo_ps(r2,r3); // xxyy xxyy
-    t3 = _mm256_unpackhi_ps(r2,r3); // zzww zzww
+    t0 = simde_mm256_unpacklo_ps(r0,r1); // xxyy xxyy
+    t1 = simde_mm256_unpackhi_ps(r0,r1); // zzww zzww
+    t2 = simde_mm256_unpacklo_ps(r2,r3); // xxyy xxyy
+    t3 = simde_mm256_unpackhi_ps(r2,r3); // zzww zzww
 
-    *out_x = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
-    *out_y = _mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
-    *out_z = _mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
+    *out_x = simde_mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
+    *out_y = simde_mm256_shuffle_ps(t0, t2, _MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
+    *out_z = simde_mm256_shuffle_ps(t1, t3, _MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
 }
 
-#undef LOAD_STRIDED_128
+#undef MD_LOAD_STRIDED_128
 
-MD_SIMD_INLINE md_f32x4_t md_simd_and_not_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_andnot_ps(b, a); }
-MD_SIMD_INLINE md_f32x8_t md_simd_and_not_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_andnot_ps(b, a); }
-MD_SIMD_INLINE md_f64x2_t md_simd_and_not_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_andnot_pd(b, a); }
-MD_SIMD_INLINE md_f64x4_t md_simd_and_not_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_andnot_pd(b, a); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_abs_f32x4(md_f32x4_t a) { return _mm_and_ps(a, _mm_castsi128_ps(_mm_set1_epi32(0x7FFFFFFF))); }
-MD_SIMD_INLINE md_f32x8_t md_simd_abs_f32x8(md_f32x8_t a) { return _mm256_and_ps(a, _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF))); }
-MD_SIMD_INLINE md_f64x2_t md_simd_abs_f64x2(md_f64x2_t a) { return _mm_and_pd(a, _mm_castsi128_pd(_mm_set1_epi64x(0x7FFFFFFFFFFFFFFF))); }
-MD_SIMD_INLINE md_f64x4_t md_simd_abs_f64x4(md_f64x4_t a) { return _mm256_and_pd(a, _mm256_castsi256_pd(_mm256_set1_epi64x(0x7FFFFFFFFFFFFFFF))); }
-
-#define md_simd_add_f32x4 _mm_add_ps
-#define md_simd_add_f64x2 _mm_add_pd
-#define md_simd_add_f32x8 _mm256_add_ps
-#define md_simd_add_f64x4 _mm256_add_pd
-
-#define md_simd_sub_f32x4 _mm_sub_ps
-#define md_simd_sub_f64x2 _mm_sub_pd
-#define md_simd_sub_f32x8 _mm256_sub_ps
-#define md_simd_sub_f64x4 _mm256_sub_pd
-
-#define md_simd_min_f64x2 _mm_min_pd   
-#define md_simd_min_f64x4 _mm256_min_pd
-#define md_simd_min_f32x4 _mm_min_ps   
-#define md_simd_min_f32x8 _mm256_min_ps
-
-#define md_simd_max_f64x2 _mm_max_pd   
-#define md_simd_max_f64x4 _mm256_max_pd
-#define md_simd_max_f32x4 _mm_max_ps   
-#define md_simd_max_f32x8 _mm256_max_ps
-
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_gt_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmpgt_ps  (a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_cmp_gt_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_GT_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_gt_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmpgt_pd  (a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_cmp_gt_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_GT_OQ); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_ge_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmpge_ps  (a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_cmp_ge_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_GE_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_ge_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmpge_pd  (a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_cmp_ge_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_GE_OQ); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_lt_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmplt_ps  (a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_cmp_lt_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_LT_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_lt_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmplt_pd  (a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_cmp_lt_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_LT_OQ); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_le_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmple_ps  (a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_cmp_le_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_LE_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_le_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmple_pd  (a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_cmp_le_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_LE_OQ); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_eq_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmpeq_ps  (a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_cmp_eq_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_EQ_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_eq_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmpeq_pd  (a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_cmp_eq_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_EQ_OQ); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_cmp_ne_f32x4(md_f32x4_t a, md_f32x4_t b) { return _mm_cmpneq_ps (a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_cmp_ne_f32x8(md_f32x8_t a, md_f32x8_t b) { return _mm256_cmp_ps (a, b, _CMP_NEQ_OQ); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cmp_ne_f64x2(md_f64x2_t a, md_f64x2_t b) { return _mm_cmpneq_pd (a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_cmp_ne_f64x4(md_f64x4_t a, md_f64x4_t b) { return _mm256_cmp_pd (a, b, _CMP_NEQ_OQ); }
-
-// FLOAT SPECIFIC
-// for mul, there are operations defined for int as well, but the semantics differ: it multiplies the lanes as expected
-// but the results are stored in two lanes rather than storing the truncated value in each lane.
+MD_SIMD_INLINE __m128  md_mm_abs_ps(__m128 a)     { return simde_mm_and_ps(a, simde_mm_castsi128_ps( simde_mm_set1_epi32(0x7FFFFFFF))); }
+MD_SIMD_INLINE __m128d md_mm_abs_pd(__m128d a)    { return simde_mm_and_pd(a, simde_mm_castsi128_pd( simde_mm_set1_epi64x(0x7FFFFFFFFFFFFFFF))); }
+MD_SIMD_INLINE __m256  md_mm256_abs_ps(__m256 a)  { return simde_mm256_and_ps(a, simde_mm256_castsi256_ps(simde_mm256_set1_epi32(0x7FFFFFFF))); }
+MD_SIMD_INLINE __m256d md_mm256_abs_pd(__m256d a) { return simde_mm256_and_pd(a, simde_mm256_castsi256_pd(simde_mm256_set1_epi64x(0x7FFFFFFFFFFFFFFF))); }
 
 // This naming convention clashes a bit with the intel intrinsics,
 // The operation broadcasts a single component into all components of the vector.
 // Maybe swizzle is a better name?
-#define md_simd_splat_f32x4(v, i) _mm_shuffle_ps(v,v, _MM_SHUFFLE(i, i, i, i))
+#define md_mm_splat_ps(v, i) simde_mm_shuffle_ps(v,v, _MM_SHUFFLE(i, i, i, i))
+#define md_mm_splat_pd(v, i) simde_mm_shuffle_pd(v,v, _MM_SHUFFLE2(i, i))
 
-#define md_simd_swizzle_f32x4(v, x, y, z, w) _mm_shuffle_ps(v,v, _MM_SHUFFLE(w,z,y,x))
-//MD_SIMD_INLINE md_f32x4_t md_simd_swizzle_f32x4(md_f32x4_t v, int x, int y, int z, int w) { return _mm_shuffle_ps(v,v, _MM_SHUFFLE(w,z,y,x)); }
+MD_SIMD_INLINE __m128  md_mm_fract_ps(__m128 a)  { return simde_mm_sub_ps(a, simde_mm_round_ps(a, _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
+MD_SIMD_INLINE __m128d md_mm_fract_pd(__m128d a) { return simde_mm_sub_pd(a, simde_mm_round_pd(a, _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
+MD_SIMD_INLINE __m256  md_mm256_fract_ps(__m256 a)  { return simde_mm256_sub_ps(a, simde_mm256_round_ps(a,  _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
+MD_SIMD_INLINE __m256d md_mm256_fract_pd(__m256d a) { return simde_mm256_sub_pd(a, simde_mm256_round_pd(a,  _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
 
-#define md_simd_mul_f32x4 _mm_mul_ps
-#define md_simd_mul_f32x8 _mm256_mul_ps
-#define md_simd_mul_f64x2 _mm_mul_pd
-#define md_simd_mul_f64x4 _mm256_mul_pd
+MD_SIMD_INLINE __m128  md_mm_sign_ps(__m128 a)  { return simde_mm_xor_ps(   simde_mm_and_ps(a,  simde_mm_set1_ps(-0.0)),    simde_mm_set1_ps(1.0));    }
+MD_SIMD_INLINE __m128d md_mm_sign_pd(__m128d a) { return simde_mm_xor_pd(   simde_mm_and_pd(a,  simde_mm_set1_pd(-0.0)),    simde_mm_set1_pd(1.0));     }
+MD_SIMD_INLINE __m256  md_mm256_sign_ps(__m256 a)  { return simde_mm256_xor_ps(_mm256_and_ps(a, simde_mm256_set1_ps(-0.0)), simde_mm256_set1_ps(1.0)); }
+MD_SIMD_INLINE __m256d md_mm256_sign_pd(__m256d a) { return simde_mm256_xor_pd(_mm256_and_pd(a, simde_mm256_set1_pd(-0.0)), simde_mm256_set1_pd(1.0));  }
 
-#define md_simd_div_f32x4 _mm_div_ps
-#define md_simd_div_f32x8 _mm256_div_ps
-#define md_simd_div_f64x2 _mm_div_pd
-#define md_simd_div_f64x4 _mm256_div_pd
-
-#ifdef __FMA__
-#define md_simd_fmadd_f32x4 _mm_fmadd_ps
-#define md_simd_fmadd_f32x8 _mm256_fmadd_ps
-#define md_simd_fmadd_f64x2 _mm_fmadd_pd
-#define md_simd_fmadd_f64x4 _mm256_fmadd_pd
-#else
-MD_SIMD_INLINE md_f32x4_t md_simd_fmadd_f32x4(md_f32x4_t a, md_f32x4_t b, md_f32x4_t c) { return _mm_add_ps(_mm_mul_ps(a,b), c); }
-MD_SIMD_INLINE md_f32x8_t md_simd_fmadd_f32x8(md_f32x8_t a, md_f32x8_t b, md_f32x8_t c) { return _mm256_add_ps(_mm256_mul_ps(a,b), c); }
-MD_SIMD_INLINE md_f64x2_t md_simd_fmadd_f64x2(md_f64x2_t a, md_f64x2_t b, md_f64x2_t c) { return _mm_add_pd(_mm_mul_pd(a,b), c); }
-MD_SIMD_INLINE md_f64x4_t md_simd_fmadd_f64x4(md_f64x4_t a, md_f64x4_t b, md_f64x4_t c) { return _mm256_add_pd(_mm256_mul_pd(a,b), c); }
-#endif
-
-MD_SIMD_INLINE md_f32x4_t md_simd_round_f32x4(md_f32x4_t a) { return _mm_round_ps     (a, _MM_FROUND_NO_EXC | _MM_FROUND_TO_NEAREST_INT); }
-MD_SIMD_INLINE md_f32x8_t md_simd_round_f32x8(md_f32x8_t a) { return _mm256_round_ps  (a, _MM_FROUND_NO_EXC | _MM_FROUND_TO_NEAREST_INT); }
-MD_SIMD_INLINE md_f64x2_t md_simd_round_f64x2(md_f64x2_t a) { return _mm_round_pd     (a, _MM_FROUND_NO_EXC | _MM_FROUND_TO_NEAREST_INT); }
-MD_SIMD_INLINE md_f64x4_t md_simd_round_f64x4(md_f64x4_t a) { return _mm256_round_pd  (a, _MM_FROUND_NO_EXC | _MM_FROUND_TO_NEAREST_INT); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_floor_f32x4(md_f32x4_t a) { return _mm_round_ps     (a, _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR); }
-MD_SIMD_INLINE md_f32x8_t md_simd_floor_f32x8(md_f32x8_t a) { return _mm256_round_ps  (a, _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR); }
-MD_SIMD_INLINE md_f64x2_t md_simd_floor_f64x2(md_f64x2_t a) { return _mm_round_pd     (a, _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR); }
-MD_SIMD_INLINE md_f64x4_t md_simd_floor_f64x4(md_f64x4_t a) { return _mm256_round_pd  (a, _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_ceil_f32x4(md_f32x4_t a) { return _mm_round_ps      (a, _MM_FROUND_NO_EXC | _MM_FROUND_CEIL); }
-MD_SIMD_INLINE md_f32x8_t md_simd_ceil_f32x8(md_f32x8_t a) { return _mm256_round_ps   (a, _MM_FROUND_NO_EXC | _MM_FROUND_CEIL); }
-MD_SIMD_INLINE md_f64x2_t md_simd_ceil_f64x2(md_f64x2_t a) { return _mm_round_pd      (a, _MM_FROUND_NO_EXC | _MM_FROUND_CEIL); }
-MD_SIMD_INLINE md_f64x4_t md_simd_ceil_f64x4(md_f64x4_t a) { return _mm256_round_pd   (a, _MM_FROUND_NO_EXC | _MM_FROUND_CEIL); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_fract_f32x4(md_f32x4_t a) { return _mm_sub_ps(a,    _mm_round_ps(a,     _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
-MD_SIMD_INLINE md_f32x8_t md_simd_fract_f32x8(md_f32x8_t a) { return _mm256_sub_ps(a, _mm256_round_ps(a,  _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
-MD_SIMD_INLINE md_f64x2_t md_simd_fract_f64x2(md_f64x2_t a) { return _mm_sub_pd(a,    _mm_round_pd(a,     _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
-MD_SIMD_INLINE md_f64x4_t md_simd_fract_f64x4(md_f64x4_t a) { return _mm256_sub_pd(a, _mm256_round_pd(a,  _MM_FROUND_NO_EXC | _MM_FROUND_FLOOR)); }
-
-MD_SIMD_INLINE md_f32x4_t md_simd_sign_f32x4(md_f32x4_t a) { return _mm_xor_ps(   _mm_and_ps(a,    _mm_set1_ps(-0.0f)),    _mm_set1_ps(1.0f));    }
-MD_SIMD_INLINE md_f32x8_t md_simd_sign_f32x8(md_f32x8_t a) { return _mm256_xor_ps(_mm256_and_ps(a, _mm256_set1_ps(-0.0f)), _mm256_set1_ps(1.0f)); }
-MD_SIMD_INLINE md_f64x2_t md_simd_sign_f64x2(md_f64x2_t a) { return _mm_xor_pd(   _mm_and_pd(a,    _mm_set1_pd(-0.0)),     _mm_set1_pd(1.0));     }
-MD_SIMD_INLINE md_f64x4_t md_simd_sign_f64x4(md_f64x4_t a) { return _mm256_xor_pd(_mm256_and_pd(a, _mm256_set1_pd(-0.0)),  _mm256_set1_pd(1.0));  }
-
-#define md_simd_blend_f32x4 _mm_blendv_ps
-#define md_simd_blend_f64x2 _mm_blendv_pd
-#define md_simd_blend_f32x8 _mm256_blendv_ps
-#define md_simd_blend_f64x4 _mm256_blendv_pd
-
-#define MD_SIMD_BLEND_MASK(x,y,z,w) (((x) << 3) | ((y) << 2) | ((z) << 1) | (w))
-
-#define md_simd_blend_mask_f32x4 _mm_blend_ps
-#define md_simd_blend_mask_f64x2 _mm_blend_pd
-#define md_simd_blend_mask_f32x8 _mm256_blend_ps
-#define md_simd_blend_mask_f64x4 _mm256_blend_pd
-
-#define md_simd_sqrt_f32x4 _mm_sqrt_ps
-#define md_simd_sqrt_f64x2 _mm_sqrt_pd
-#define md_simd_sqrt_f32x8 _mm256_sqrt_ps
-#define md_simd_sqrt_f64x4 _mm256_sqrt_pd
-
-MD_SIMD_INLINE float md_simd_hmin_f32x4(__m128 x) {
-    __m128 a = _mm_min_ps(x, _mm_shuffle_ps(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
-    __m128 b = _mm_min_ps(a, _mm_shuffle_ps(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
-    return _mm_cvtss_f32(_mm_min_ps(a,b));
+MD_SIMD_INLINE float md_mm_reduce_min_ps(__m128 x) {
+    __m128 a = simde_mm_min_ps(x, simde_mm_shuffle_ps(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
+    __m128 b = simde_mm_min_ps(a, simde_mm_shuffle_ps(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
+    return simde_mm_cvtss_f32(_mm_min_ps(a,b));
 }
 
-MD_SIMD_INLINE float md_simd_hmax_f32x4(__m128 x) {
-    __m128 a = _mm_max_ps(x, _mm_shuffle_ps(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
-    __m128 b = _mm_max_ps(a, _mm_shuffle_ps(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
-    return _mm_cvtss_f32(_mm_max_ps(a,b));
+MD_SIMD_INLINE float md_mm_reduce_max_ps(__m128 x) {
+    __m128 a = simde_mm_max_ps(x, simde_mm_shuffle_ps(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
+    __m128 b = simde_mm_max_ps(a, simde_mm_shuffle_ps(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
+    return simde_mm_cvtss_f32(_mm_max_ps(a,b));
 }
 
-MD_SIMD_INLINE double md_simd_hmin_f64x4(__m256d x) {
-    __m256d a = _mm256_min_pd(x, _mm256_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
-    __m256d b = _mm256_min_pd(a, _mm256_shuffle_pd(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
-    return _mm256_cvtsd_f64(_mm256_min_pd(a,b));
+MD_SIMD_INLINE double md_mm256_reduce_min_pd(__m256d x) {
+    __m256d a = simde_mm256_min_pd(x, simde_mm256_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
+    __m256d b = simde_mm256_min_pd(a, simde_mm256_shuffle_pd(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
+    return simde_mm256_cvtsd_f64(_mm256_min_pd(a,b));
 }
 
-MD_SIMD_INLINE double md_simd_hmax_f64x4(__m256d x) {
-    __m256d a = _mm256_max_pd(x, _mm256_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
-    __m256d b = _mm256_max_pd(a, _mm256_shuffle_pd(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
-    return _mm256_cvtsd_f64(_mm256_max_pd(a,b));
+MD_SIMD_INLINE double md_mm256_reduce_max_pd(__m256d x) {
+    __m256d a = simde_mm256_max_pd(x, simde_mm256_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
+    __m256d b = simde_mm256_max_pd(a, simde_mm256_shuffle_pd(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
+    return simde_mm256_cvtsd_f64(_mm256_max_pd(a,b));
 }
 
 // From here https://stackoverflow.com/questions/49941645/get-sum-of-values-stored-in-m256d-with-sse-avx
-MD_SIMD_INLINE double md_simd_hsum_f64x4(__m256d x) {
-    __m128d vlow   = _mm256_castpd256_pd128(x);   // low  128
-    __m128d vhigh  = _mm256_extractf128_pd(x, 1); // high 128
-    vlow           = _mm_add_pd(vlow, vhigh);     // reduce down to 128
-    __m128d high64 = _mm_unpackhi_pd(vlow, vlow);
-    return           _mm_cvtsd_f64(_mm_add_sd(vlow, high64));  // reduce to scalar
+MD_SIMD_INLINE double md_mm256_reduce_add_pd(__m256d x) {
+    __m128d vlow   = simde_mm256_castpd256_pd128(x);   // low  128
+    __m128d vhigh  = simde_mm256_extractf128_pd(x, 1); // high 128
+    vlow           = simde_mm_add_pd(vlow, vhigh);     // reduce down to 128
+    __m128d high64 = simde_mm_unpackhi_pd(vlow, vlow);
+    return           simde_mm_cvtsd_f64(_mm_add_sd(vlow, high64));  // reduce to scalar
 }
 
 // https://stackoverflow.com/questions/6996764/fastest-way-to-do-horizontal-sse-vector-sum-or-other-reduction
-MD_SIMD_INLINE float md_simd_hsum_f32x4(__m128 x) {
-    //__m128 shuf = _mm_movehdup_ps(x);        // broadcast elements 3,1 to 2,0 (this instruction is SSE3 and we avoid it by using shuffle instead)
-    __m128 shuf = _mm_shuffle_ps(x, x, _MM_SHUFFLE(3, 3, 1, 1));
-    __m128 sums = _mm_add_ps(x, shuf);
-    shuf        = _mm_movehl_ps(shuf, sums); // high half -> low half
-    sums        = _mm_add_ss(sums, shuf);
-    return        _mm_cvtss_f32(sums);
+MD_SIMD_INLINE float md_mm_reduce_add_ps(__m128 x) {
+    //__m128 shuf = simde_mm_movehdup_ps(x);        // broadcast elements 3,1 to 2,0 (this instruction is SSE3 and we avoid it by using shuffle instead)
+    __m128 shuf = md_mm_shuffle_ps(x, x, _MM_SHUFFLE(3, 3, 1, 1));
+    __m128 sums = md_mm_add_ps(x, shuf);
+    shuf        = md_mm_movehl_ps(shuf, sums); // high half -> low half
+    sums        = md_mm_add_ps(sums, shuf);
+    return        md_mm_cvtss_f32(sums);
 }
 
-MD_SIMD_INLINE double md_simd_hsum_f64x2(md_f64x2_t x) { return _mm_cvtsd_f64(_mm_add_pd(x, _mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
-MD_SIMD_INLINE double md_simd_hmin_f64x2(md_f64x2_t x) { return _mm_cvtsd_f64(_mm_min_pd(x, _mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
-MD_SIMD_INLINE double md_simd_hmax_f64x2(md_f64x2_t x) { return _mm_cvtsd_f64(_mm_max_pd(x, _mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_add_pd(__m128d x) { return _mm_cvtsd_f64(_mm_add_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_min_pd(__m128d x) { return _mm_cvtsd_f64(_mm_min_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_max_pd(__m128d x) { return _mm_cvtsd_f64(_mm_max_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
 
-MD_SIMD_INLINE float md_simd_hsum_f32x8(md_f32x8_t x) { return md_simd_hsum_f32x4(_mm_add_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
-MD_SIMD_INLINE float md_simd_hmin_f32x8(md_f32x8_t x) { return md_simd_hmin_f32x4(_mm_min_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
-MD_SIMD_INLINE float md_simd_hmax_f32x8(md_f32x8_t x) { return md_simd_hmax_f32x4(_mm_max_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
+MD_SIMD_INLINE float md_mm256_reduce_add_ps(__m256 x) { return md_mm_reduce_add_ps(md_mm_add_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
+MD_SIMD_INLINE float md_mm256_reduce_min_ps(__m256 x) { return md_mm_reduce_min_ps(md_mm_min_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
+MD_SIMD_INLINE float md_mm256_reduce_max_ps(__m256 x) { return md_mm_reduce_max_ps(md_mm_max_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
 
-#define md_simd_movemask_f32x4 _mm_movemask_ps
-#define md_simd_movemask_f32x8 _mm256_movemask_ps
-#define md_simd_movemask_f64x2 _mm_movemask_pd
-#define md_simd_movemask_f64x4 _mm256_movemask_pd
+#define md_mm512_reduce_add_ps _mm512_reduce_add_ps
+#define md_mm512_reduce_min_ps _mm512_reduce_min_ps
+#define md_mm512_reduce_max_ps _mm512_reduce_max_ps
 
-// CAST AND CONVERSIONS BETWEEN CORRESPONDING TYPES OF FLOAT AND INT
-// NAMING CONVENTION GIVES THE SOURCE OPERAND TYPE
-
-MD_SIMD_INLINE md_i32x4_t md_simd_cast_f32x4(md_f32x4_t a) {
-    md_i32x4_t val = {_mm_castps_si128(a)};
-    return val;
+MD_SIMD_INLINE __m128 md_mm_deperiodize_ps(__m128 x, __m128 r, __m128 p) {
+    __m128 d  = md_mm_sub_ps(x, r);
+    __m128 dx = md_mm_div_ps(d, p);
+    dx = md_mm_sub_ps(dx, md_mm_round_ps(dx));
+    __m128 x_prim = md_mm_add_ps(r, md_mm_mul_ps(dx, p));
+    return md_mm_blendv_ps(x_prim, x, md_mm_cmpeq_ps(p, md_mm_setzero_ps()));
 }
 
-MD_SIMD_INLINE md_i32x8_t md_simd_cast_f32x8(md_f32x8_t a) {
-    md_i32x8_t val = {_mm256_castps_si256(a)};
-    return val;
+MD_SIMD_INLINE __m256 md_mm256_deperiodize_ps(__m256 x, __m256 r, __m256 p) {
+    __m256 d  = md_mm256_sub_ps(x, r);
+    __m256 dx = md_mm256_div_ps(d, p);
+    dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
+    __m256 x_prim = md_mm256_add_ps(r, md_mm256_mul_ps(dx, p));
+    return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(p, md_mm256_setzero_ps()));
 }
 
-MD_SIMD_INLINE md_i64x2_t md_simd_cast_f64x2(md_f64x2_t a) {
-    md_i64x2_t val = {_mm_castpd_si128(a)};
-    return val;
+MD_SIMD_INLINE __m128d md_mm_deperiodize_pd(__m128d x, __m128d r, __m128d p) {
+    __m128d d  = md_mm_sub_pd(x, r);
+    __m128d dx = md_mm_div_pd(d, p);
+    dx = md_mm_sub_pd(dx, md_mm_round_pd(dx));
+    __m128d x_prim = md_mm_add_pd(r, md_mm_mul_pd(dx, p));
+    return md_mm_blendv_pd(x_prim, x, md_mm_cmpeq_pd(p, md_mm_setzero_pd()));
 }
 
-MD_SIMD_INLINE md_i64x4_t md_simd_cast_f64x4(md_f64x4_t a) {
-    md_i64x4_t val = {_mm256_castpd_si256(a)};
-    return val;
+MD_SIMD_INLINE __m256d md_mm256_deperiodize_pd(__m256d x, __m256d r, __m256d p) {
+    __m256d d  = md_mm256_sub_pd(x, r);
+    __m256d dx = md_mm256_div_pd(d, p);
+    dx = md_mm256_sub_pd(dx, md_mm256_round_pd(dx));
+    __m256d x_prim = md_mm256_add_pd(r, md_mm256_mul_pd(dx, p));
+    return md_mm256_blendv_pd(x_prim, x, md_mm256_cmpeq_pd(p, md_mm256_setzero_pd()));
 }
 
-MD_SIMD_INLINE md_i32x4_t md_simd_convert_f32x4(md_f32x4_t a) {
-    md_i32x4_t val = {_mm_cvtps_epi32(a)};
-    return val;
+MD_SIMD_INLINE __m128 md_mm_minimage_ps(__m128 dx, __m128 p, __m128 rp) {
+    return md_mm_sub_ps(dx, md_mm_mul_ps(p, md_mm_round_ps(md_mm_mul_ps(dx, rp))));
 }
 
-MD_SIMD_INLINE md_i32x8_t md_simd_convert_f32x8(md_f32x8_t a) {
-    md_i32x8_t val = {_mm256_cvtps_epi32(a)};
-    return val;
+MD_SIMD_INLINE __m128d md_mm_minimage_pd(__m128d dx, __m128d p, __m128d rp) {
+    return md_mm_sub_pd(dx, md_mm_mul_pd(p, md_mm_round_pd(md_mm_mul_pd(dx, rp))));
 }
 
-MD_SIMD_INLINE md_i64x2_t md_simd_convert_f64x2(md_f64x2_t a) {
-    md_i64x2_t val = {_mm_cvtpd_epi64(a)};
-    return val;
+MD_SIMD_INLINE __m256 md_mm256_minimage_ps(__m256 dx, __m256 p, __m256 rp) {
+    return md_mm256_sub_ps(dx, md_mm256_mul_ps(p, md_mm256_round_ps(md_mm256_mul_ps(dx, rp))));
 }
 
-MD_SIMD_INLINE md_i64x4_t md_simd_convert_f64x4(md_f64x4_t a) {
-    md_i64x4_t val = {_mm256_cvtpd_epi64(a)};
-    return val;
+MD_SIMD_INLINE __m256d md_mm256_minimage_pd(__m256d dx, __m256d p, __m256d rp) {
+    return md_mm256_sub_pd(dx, md_mm256_mul_pd(p, md_mm256_round_pd(md_mm256_mul_pd(dx, rp))));
 }
 
-#define md_simd_cast_i32x4(X) _mm_castsi128_ps(X.m128i)
-#define md_simd_cast_i32x8(X) _mm256_castsi256_ps(X.m256i)
-#define md_simd_cast_i64x2(X) _mm_castsi128_pd(X.m128i)
-#define md_simd_cast_i64x4(X) _mm256_castsi256_pd(X.m256i)
+MD_SIMD_INLINE __m128 md_mm_cubic_spline_ps(__m128 p0, __m128 p1, __m128 p2, __m128 p3, __m128 t, __m128 s) {
+    const __m128 t1 = t;
+    const __m128 t2 = md_mm_mul_ps(t, t);
+    const __m128 t3 = md_mm_mul_ps(t2, t);
+    const __m128 v0 = md_mm_mul_ps(md_mm_sub_ps(p2, p0), s);
+    const __m128 v1 = md_mm_mul_ps(md_mm_sub_ps(p3, p1), s);
+    const __m128 x0 = md_mm_add_ps(md_mm_mul_ps(md_mm_set1_ps(2), md_mm_sub_ps(p1, p2)), md_mm_add_ps(v0, v1));
+    const __m128 x1 = md_mm_sub_ps(md_mm_mul_ps(md_mm_set1_ps(3), md_mm_sub_ps(p2, p1)), md_mm_add_ps(md_mm_mul_ps(md_mm_set1_ps(2), v0), v1));
+    const __m128 r0 = md_mm_add_ps(md_mm_mul_ps(x0, t3), md_mm_mul_ps(x1, t2));
+    const __m128 r1 = md_mm_add_ps(md_mm_mul_ps(v0, t1), p1);
+    return md_mm_add_ps(r0, r1);
+}
 
-#define md_simd_convert_i32x4(X) _mm_cvtepi32_ps(X.m128i)
-#define md_simd_convert_i32x8(X) _mm256_cvtepi32_ps(X.m256i)
-#define md_simd_convert_i64x2(X) _mm_cvtepi64_pd(X.m128i)
-#define md_simd_convert_i64x4(X) _mm256_cvtepi64_pd(X.m256i)
+MD_SIMD_INLINE __m256 md_mm256_cubic_spline_ps(__m256 p0, __m256 p1, __m256 p2, __m256 p3, __m256 t, __m256 s) {
+    const __m256 t2 = md_mm256_mul_ps(t, t);
+    const __m256 t3 = md_mm256_mul_ps(t2, t);
+    const __m256 v0 = md_mm256_mul_ps(md_mm256_sub_ps(p2, p0), s);
+    const __m256 v1 = md_mm256_mul_ps(md_mm256_sub_ps(p3, p1), s);
+    const __m256 x0 = md_mm256_add_ps(md_mm256_mul_ps(md_mm256_set1_ps(2), md_mm256_sub_ps(p1, p2)), md_mm256_add_ps(v0, v1));
+    const __m256 x1 = md_mm256_sub_ps(md_mm256_mul_ps(md_mm256_set1_ps(3), md_mm256_sub_ps(p2, p1)), md_mm256_add_ps(md_mm256_mul_ps(md_mm256_set1_ps(2), v0), v1));
+    const __m256 r0 = md_mm256_add_ps(md_mm256_mul_ps(x0, t3), md_mm256_mul_ps(x1, t2));
+    const __m256 r1 = md_mm256_add_ps(md_mm256_mul_ps(v0, t), p1);
+    return md_mm256_add_ps(r0, r1);
+}
 
+MD_SIMD_INLINE __m128d md_mm_cubic_spline_pd(__m128d p0, __m128d p1, __m128d p2, __m128d p3, __m128d t, __m128d s) {
+    const __m128d t2 = md_mm_mul_pd(t, t);
+    const __m128d t3 = md_mm_mul_pd(t2, t);
+    const __m128d v0 = md_mm_mul_pd(md_mm_sub_pd(p2, p0), s);
+    const __m128d v1 = md_mm_mul_pd(md_mm_sub_pd(p3, p1), s);
+    const __m128d x0 = md_mm_add_pd(md_mm_mul_pd(md_mm_set1_pd(2), md_mm_sub_pd(p1, p2)), md_mm_add_pd(v0, v1));
+    const __m128d x1 = md_mm_sub_pd(md_mm_mul_pd(md_mm_set1_pd(3), md_mm_sub_pd(p2, p1)), md_mm_add_pd(md_mm_mul_pd(md_mm_set1_pd(2), v0), v1));
+    const __m128d r0 = md_mm_add_pd(md_mm_mul_pd(x0, t3), md_mm_mul_pd(x1, t2));
+    const __m128d r1 = md_mm_add_pd(md_mm_mul_pd(v0, t), p1);
+    return md_mm_add_pd(r0, r1);
+}
+
+MD_SIMD_INLINE __m256d md_mm256_cubic_spline_pd(__m256d p0, __m256d p1, __m256d p2, __m256d p3, __m256d t, __m256d s) {
+    const __m256d t2 = md_mm256_mul_pd(t, t);
+    const __m256d t3 = md_mm256_mul_pd(t2, t);
+    const __m256d v0 = md_mm256_mul_pd(md_mm256_sub_pd(p2, p0), s);
+    const __m256d v1 = md_mm256_mul_pd(md_mm256_sub_pd(p3, p1), s);
+    const __m256d x0 = md_mm256_add_pd(md_mm256_mul_pd(md_mm256_set1_pd(2), md_mm256_sub_pd(p1, p2)), md_mm256_add_pd(v0, v1));
+    const __m256d x1 = md_mm256_sub_pd(md_mm256_mul_pd(md_mm256_set1_pd(3), md_mm256_sub_pd(p2, p1)), md_mm256_add_pd(md_mm256_mul_pd(md_mm256_set1_pd(2), v0), v1));
+    const __m256d r0 = md_mm256_add_pd(md_mm256_mul_pd(x0, t3), md_mm256_mul_pd(x1, t2));
+    const __m256d r1 = md_mm256_add_pd(md_mm256_mul_pd(v0, t), p1);
+    return md_mm256_add_pd(r0, r1);
+}
+
+MD_SIMD_INLINE __m128 md_mm_step_ps(__m128 edge, __m128 x) {
+    return md_mm_and_ps(md_mm_cmpge_ps(x, edge), md_mm_set1_ps(1.f));
+}
+
+MD_SIMD_INLINE __m128d md_mm_step_pd(__m128d edge, __m128d x) {
+    return md_mm_and_pd(md_mm_cmpge_pd(x, edge), md_mm_set1_pd(1.f));
+}
+
+MD_SIMD_INLINE __m256 md_mm256_step_ps(__m256 edge, __m256 x) {
+    return md_mm256_and_ps(md_mm256_cmpge_ps(x, edge), md_mm256_set1_ps(1.f));
+}
+
+MD_SIMD_INLINE __m256d md_mm256_step_pd(__m256d edge, __m256d x) {
+    return md_mm256_and_pd(md_mm256_cmpge_pd(x, edge), md_mm256_set1_pd(1.f));
+}
+
+MD_SIMD_INLINE __m128 md_mm_lerp_ps(__m128 a, __m128 b, float t) {
+    return md_mm_add_ps(md_mm_mul_ps(a, md_mm_set1_ps(1.0f - t)), md_mm_mul_ps(b, md_mm_set1_ps(t)));
+}
+
+MD_SIMD_INLINE __m256 md_mm256_lerp_ps(__m256 a, __m256 b, float t) {
+    return md_mm256_add_ps(md_mm256_mul_ps(a, md_mm256_set1_ps(1.0f - t)), md_mm256_mul_ps(b, md_mm256_set1_ps(t)));
+}
+
+MD_SIMD_INLINE __m128d md_mm_lerp_pd(__m128d a, __m128d b, float t) {
+    return md_mm_add_pd(md_mm_mul_pd(a, md_mm_set1_pd(1.0f - t)), md_mm_mul_pd(b, md_mm_set1_pd(t)));
+}
+
+MD_SIMD_INLINE __m256d md_mm256_lerp_pd(__m256d a, __m256d b, float t) {
+    return md_mm256_add_pd(md_mm256_mul_pd(a, md_mm256_set1_pd(1.0f - t)), md_mm256_mul_pd(b, md_mm256_set1_pd(t)));
+}
+
+#if 0
+MD_SIMD_INLINE void md_mm_sincos_ps(__m128 in_x, __m128* out_sin, __m128* out_cos) {
+    const __m128 two_over_pi = md_mm_set1_ps(0.6366197466850280761718);
+    const __m128 scaled = md_mm_mul_ps(in_x, two_over_pi);
+    const __m128 k_real = md_mm_floor_ps(scaled);
+    const __m128i k = md_mm_cvtps_epi32(k_real);
+
+    const __m128i k_mod4 = md_mm_and_si128(k, md_mm_set1_epi32(3));
+
+    // These can probably be simplified
+    const __m128 cos_usecos = simde_mm_castsi128_ps(
+        md_mm_or_si128(
+            md_mm_cmpeq_epi32(k_mod4, md_mm_setzero_si128()),
+            md_mm_cmpeq_epi32(k_mod4, md_mm_set1_epi32(2))
+        ));
+
+    const __m128 sin_usecos = md_mm_castsi128_ps(
+        md_mm_or_si128(
+            md_mm_cmpeq_epi32(k_mod4, md_mm_set1_epi32(1)),
+            md_mm_cmpeq_epi32(k_mod4, md_mm_set1_epi32(3))
+        ));
+
+    const __m128 sin_sign_bit = md_mm_castsi128_ps(
+        md_mm_slli_epi32(
+            md_mm_cmpgt_epi32(k_mod4, md_mm_set1_epi32(1)),
+            31)
+        );
+
+    const __m128 cos_sign_bit = simde_mm_castsi128_ps(
+        md_mm_slli_epi32(
+            md_mm_or_si128(
+                md_mm_cmpeq_epi32(k_mod4, simde_mm_set1_epi32(1)),
+                md_mm_cmpeq_epi32(k_mod4, simde_mm_set1_epi32(2))
+            ),
+            31)
+        );
+
+    const __m128 one     = md_mm_set1_ps(1.0f);
+    const __m128 sin_c2  = md_mm_set1_ps(-0.16666667163372039794921875);
+    const __m128 sin_c4  = md_mm_set1_ps(8.333347737789154052734375e-3);
+    const __m128 sin_c6  = md_mm_set1_ps(-1.9842604524455964565277099609375e-4);
+    const __m128 sin_c8  = md_mm_set1_ps(2.760012648650445044040679931640625e-6);
+    const __m128 sin_c10 = md_mm_set1_ps(-2.50293279435709337121807038784027099609375e-8);
+
+    const __m128 cos_c2  = md_mm_set1_ps(-0.5);
+    const __m128 cos_c4  = md_mm_set1_ps(4.166664183139801025390625e-2);
+    const __m128 cos_c6  = md_mm_set1_ps(-1.388833043165504932403564453125e-3);
+    const __m128 cos_c8  = md_mm_set1_ps(2.47562347794882953166961669921875e-5);
+    const __m128 cos_c10 = md_mm_set1_ps(-2.59630184018533327616751194000244140625e-7);
+
+    __m128 x = in_x;
+
+    // FMA-enhanced Cody-Waite style reduction
+    x = md_mm_fmadd_ps(k_real, md_mm_set1_ps(-0x1.921fb0p+00f), x);
+    x = md_mm_fmadd_ps(k_real, md_mm_set1_ps(-0x1.5110b4p-22f), x);
+    x = md_mm_fmadd_ps(k_real, md_mm_set1_ps(-0x1.846988p-48f), x);
+
+    const __m128 x2 = md_mm_mul_ps(x, x);
+
+    __m128 sin_res, cos_res;
+    sin_res = md_mm_fmadd_ps(x2, sin_c10, sin_c8);
+    cos_res = md_mm_fmadd_ps(x2, cos_c10, cos_c8);
+
+    sin_res = md_mm_fmadd_ps(x2, sin_res, sin_c6);
+    cos_res = md_mm_fmadd_ps(x2, cos_res, cos_c6);
+
+    sin_res = md_mm_fmadd_ps(x2, sin_res, sin_c4);
+    cos_res = md_mm_fmadd_ps(x2, cos_res, cos_c4);
+
+    sin_res = md_mm_fmadd_ps(x2, sin_res, sin_c2);
+    cos_res = md_mm_fmadd_ps(x2, cos_res, cos_c2);
+
+    sin_res = md_mm_fmadd_ps(x2, sin_res, one);
+    cos_res = md_mm_fmadd_ps(x2, cos_res, one);
+
+    sin_res = md_mm_mul_ps(x, sin_res);
+
+    *out_sin = md_mm_xor_ps(_mm_blendv_ps(sin_res, cos_res, sin_usecos), sin_sign_bit);
+    *out_cos = md_mm_xor_ps(_mm_blendv_ps(sin_res, cos_res, cos_usecos), cos_sign_bit);
+}
+
+// We cannot reserve the name md_mm256_sincos_ps because it is already defined in immintrin.h
+MD_SIMD_INLINE void md_mm256_sincos_ps(__m256 in_x, __m256* out_sin, __m256* out_cos) {
+    const __m256 two_over_pi = md_mm256_set1_ps(0.6366197466850280761718);
+    const __m256 scaled = md_mm256_mul_ps(in_x, two_over_pi);
+    const __m256 k_real = md_mm256_floor_ps(scaled);
+    const __m256i k = md_mm256_cvtps_epi32(k_real);
+
+    const __m256i k_mod4 = md_mm256_and_si256(k, md_mm256_set1_epi32(3));
+
+    // These can probably be simplified
+    const __m256 cos_usecos = md_mm256_castsi256_ps(
+        md_mm256_or_si256(
+            md_mm256_cmpeq_epi32(k_mod4, md_mm256_setzero_si256()),
+            md_mm256_cmpeq_epi32(k_mod4, md_mm256_set1_epi32(2))
+        ));
+
+    const __m256 sin_usecos = md_mm256_castsi256_ps(
+        md_mm256_or_si256(
+            md_mm256_cmpeq_epi32(k_mod4, md_mm256_set1_epi32(1)),
+            md_mm256_cmpeq_epi32(k_mod4, md_mm256_set1_epi32(3))
+        ));
+
+    const __m256 sin_sign_bit = md_mm256_castsi256_ps(
+        md_mm256_slli_epi32(
+            md_mm256_cmpgt_epi32(k_mod4, md_mm256_set1_epi32(1)),
+            31)
+    );
+
+    const __m256 cos_sign_bit = md_mm256_castsi256_ps(
+        md_mm256_slli_epi32(
+            md_mm256_or_si256(
+                md_mm256_cmpeq_epi32(k_mod4, md_mm256_set1_epi32(1)),
+                md_mm256_cmpeq_epi32(k_mod4, md_mm256_set1_epi32(2))
+            ),
+            31)
+    );
+
+    const __m256 one     = md_mm256_set1_ps(1.0f);
+    const __m256 sin_c2  = md_mm256_set1_ps(-0.16666667163372039794921875);
+    const __m256 sin_c4  = md_mm256_set1_ps(8.333347737789154052734375e-3);
+    const __m256 sin_c6  = md_mm256_set1_ps(-1.9842604524455964565277099609375e-4);
+    const __m256 sin_c8  = md_mm256_set1_ps(2.760012648650445044040679931640625e-6);
+    const __m256 sin_c10 = md_mm256_set1_ps(-2.50293279435709337121807038784027099609375e-8);
+
+    const __m256 cos_c2  = md_mm256_set1_ps(-0.5);
+    const __m256 cos_c4  = md_mm256_set1_ps(4.166664183139801025390625e-2);
+    const __m256 cos_c6  = md_mm256_set1_ps(-1.388833043165504932403564453125e-3);
+    const __m256 cos_c8  = md_mm256_set1_ps(2.47562347794882953166961669921875e-5);
+    const __m256 cos_c10 = md_mm256_set1_ps(-2.59630184018533327616751194000244140625e-7);
+
+    __m256 x = in_x;
+
+    // FMA-enhanced Cody-Waite style reduction
+    x = md_mm256_fmadd_ps(k_real, md_mm256_set1_ps(-0x1.921fb0p+00f), x);
+    x = md_mm256_fmadd_ps(k_real, md_mm256_set1_ps(-0x1.5110b4p-22f), x);
+    x = md_mm256_fmadd_ps(k_real, md_mm256_set1_ps(-0x1.846988p-48f), x);
+
+    const __m256 x2 = md_mm256_mul_ps(x, x);
+
+    __m256 sin_res, cos_res;
+    sin_res = md_mm256_fmadd_ps(x2, sin_c10, sin_c8);
+    cos_res = md_mm256_fmadd_ps(x2, cos_c10, cos_c8);
+
+    sin_res = md_mm256_fmadd_ps(x2, sin_res, sin_c6);
+    cos_res = md_mm256_fmadd_ps(x2, cos_res, cos_c6);
+
+    sin_res = md_mm256_fmadd_ps(x2, sin_res, sin_c4);
+    cos_res = md_mm256_fmadd_ps(x2, cos_res, cos_c4);
+
+    sin_res = md_mm256_fmadd_ps(x2, sin_res, sin_c2);
+    cos_res = md_mm256_fmadd_ps(x2, cos_res, cos_c2);
+
+    sin_res = md_mm256_fmadd_ps(x2, sin_res, one);
+    cos_res = md_mm256_fmadd_ps(x2, cos_res, one);
+
+    sin_res = md_mm256_mul_ps(x, sin_res);
+
+    *out_sin = md_mm256_xor_ps(_mm256_blendv_ps(sin_res, cos_res, sin_usecos), sin_sign_bit);
+    *out_cos = md_mm256_xor_ps(_mm256_blendv_ps(sin_res, cos_res, cos_usecos), cos_sign_bit);
+}
 #endif
 
-MD_SIMD_INLINE md_f32x4_t md_simd_deperiodize_f32x4(md_f32x4_t x, md_f32x4_t r, md_f32x4_t p) {
-    md_f32x4_t d  = md_simd_sub_f32x4(x, r);
-    md_f32x4_t dx = md_simd_div_f32x4(d, p);
-    dx = md_simd_sub_f32x4(dx, md_simd_round_f32x4(dx));
-    md_f32x4_t x_prim = md_simd_add_f32x4(r, md_simd_mul_f32x4(dx, p));
-    return md_simd_blend_f32x4(x_prim, x, md_simd_cmp_eq_f32x4(p, md_simd_zero_f32x4()));
-}
+// We want to enable precise floating point operations for this function
+// fp:fast is used, the precision drops by one digit
 
-MD_SIMD_INLINE md_f32x8_t md_simd_deperiodize_f32x8(md_f32x8_t x, md_f32x8_t r, md_f32x8_t p) {
-    md_f32x8_t d  = md_simd_sub_f32x8(x, r);
-    md_f32x8_t dx = md_simd_div_f32x8(d, p);
-    dx = md_simd_sub_f32x8(dx, md_simd_round_f32x8(dx));
-    md_f32x8_t x_prim = md_simd_add_f32x8(r, md_simd_mul_f32x8(dx, p));
-    return md_simd_blend_f32x8(x_prim, x, md_simd_cmp_eq_f32x8(p, md_simd_zero_f32x8()));
-}
-
-MD_SIMD_INLINE md_f64x2_t md_simd_deperiodize_f64x2(md_f64x2_t x, md_f64x2_t r, md_f64x2_t p) {
-    md_f64x2_t d  = md_simd_sub_f64x2(x, r);
-    md_f64x2_t dx = md_simd_div_f64x2(d, p);
-    dx = md_simd_sub_f64x2(dx, md_simd_round_f64x2(dx));
-    md_f64x2_t x_prim = md_simd_add_f64x2(r, md_simd_mul_f64x2(dx, p));
-    return md_simd_blend_f64x2(x_prim, x, md_simd_cmp_eq_f64x2(p, md_simd_zero_f64x2()));
-}
-
-MD_SIMD_INLINE md_f64x4_t md_simd_deperiodize_f64x4(md_f64x4_t x, md_f64x4_t r, md_f64x4_t p) {
-    md_f64x4_t d  = md_simd_sub_f64x4(x, r);
-    md_f64x4_t dx = md_simd_div_f64x4(d, p);
-    dx = md_simd_sub_f64x4(dx, md_simd_round_f64x4(dx));
-    md_f64x4_t x_prim = md_simd_add_f64x4(r, md_simd_mul_f64x4(dx, p));
-    return md_simd_blend_f64x4(x_prim, x, md_simd_cmp_eq_f64x4(p, md_simd_zero_f64x4()));
-}
-
-MD_SIMD_INLINE md_f32x4_t md_simd_minimum_image_f32x4(md_f32x4_t dx, md_f32x4_t p, md_f32x4_t rp) {
-    return md_simd_sub_f32x4(dx, md_simd_mul_f32x4(p, md_simd_round_f32x4(md_simd_mul_f32x4(dx, rp))));
-}
-
-MD_SIMD_INLINE md_f32x8_t md_simd_minimum_image_f32x8(md_f32x8_t dx, md_f32x8_t p, md_f32x8_t rp) {
-    return md_simd_sub_f32x8(dx, md_simd_mul_f32x8(p, md_simd_round_f32x8(md_simd_mul_f32x8(dx, rp))));
-}
-
-MD_SIMD_INLINE md_f64x2_t md_simd_minimum_image_f64x2(md_f64x2_t dx, md_f64x2_t p, md_f64x2_t rp) {
-    return md_simd_sub_f64x2(dx, md_simd_mul_f64x2(p, md_simd_round_f64x2(md_simd_mul_f64x2(dx, rp))));
-}
-
-MD_SIMD_INLINE md_f64x4_t md_simd_minimum_image_f64x4(md_f64x4_t dx, md_f64x4_t p, md_f64x4_t rp) {
-    return md_simd_sub_f64x4(dx, md_simd_mul_f64x4(p, md_simd_round_f64x4(md_simd_mul_f64x4(dx, rp))));
-}
-
-MD_SIMD_INLINE md_f32x4_t md_simd_cubic_spline_f32x4(md_f32x4_t p0, md_f32x4_t p1, md_f32x4_t p2, md_f32x4_t p3, md_f32x4_t t, md_f32x4_t s) {
-    const md_f32x4_t t1 = t;
-    const md_f32x4_t t2 = md_simd_mul_f32x4(t, t);
-    const md_f32x4_t t3 = md_simd_mul_f32x4(t2, t);
-    const md_f32x4_t v0 = md_simd_mul_f32x4(md_simd_sub_f32x4(p2, p0), s);
-    const md_f32x4_t v1 = md_simd_mul_f32x4(md_simd_sub_f32x4(p3, p1), s);
-    const md_f32x4_t x0 = md_simd_add_f32x4(md_simd_mul_f32x4(md_simd_set1_f32x4(2), md_simd_sub_f32x4(p1, p2)), md_simd_add_f32x4(v0, v1));
-    const md_f32x4_t x1 = md_simd_sub_f32x4(md_simd_mul_f32x4(md_simd_set1_f32x4(3), md_simd_sub_f32x4(p2, p1)), md_simd_add_f32x4(md_simd_mul_f32x4(md_simd_set1_f32x4(2), v0), v1));
-    const md_f32x4_t r0 = md_simd_add_f32x4(md_simd_mul_f32x4(x0, t3), md_simd_mul_f32x4(x1, t2));
-    const md_f32x4_t r1 = md_simd_add_f32x4(md_simd_mul_f32x4(v0, t1), p1);
-    return md_simd_add_f32x4(r0, r1);
-}
-
-MD_SIMD_INLINE md_f32x8_t md_simd_cubic_spline_f32x8(md_f32x8_t p0, md_f32x8_t p1, md_f32x8_t p2, md_f32x8_t p3, md_f32x8_t t, md_f32x8_t s) {
-    const md_f32x8_t t2 = md_simd_mul_f32x8(t, t);
-    const md_f32x8_t t3 = md_simd_mul_f32x8(t2, t);
-    const md_f32x8_t v0 = md_simd_mul_f32x8(md_simd_sub_f32x8(p2, p0), s);
-    const md_f32x8_t v1 = md_simd_mul_f32x8(md_simd_sub_f32x8(p3, p1), s);
-    const md_f32x8_t x0 = md_simd_add_f32x8(md_simd_mul_f32x8(md_simd_set1_f32x8(2), md_simd_sub_f32x8(p1, p2)), md_simd_add_f32x8(v0, v1));
-    const md_f32x8_t x1 = md_simd_sub_f32x8(md_simd_mul_f32x8(md_simd_set1_f32x8(3), md_simd_sub_f32x8(p2, p1)), md_simd_add_f32x8(md_simd_mul_f32x8(md_simd_set1_f32x8(2), v0), v1));
-    const md_f32x8_t r0 = md_simd_add_f32x8(md_simd_mul_f32x8(x0, t3), md_simd_mul_f32x8(x1, t2));
-    const md_f32x8_t r1 = md_simd_add_f32x8(md_simd_mul_f32x8(v0, t), p1);
-    return md_simd_add_f32x8(r0, r1);
-}
-
-MD_SIMD_INLINE md_f64x2_t md_simd_cubic_spline_f64x2(md_f64x2_t p0, md_f64x2_t p1, md_f64x2_t p2, md_f64x2_t p3, md_f64x2_t t, md_f64x2_t s) {
-    const md_f64x2_t t2 = md_simd_mul_f64x2(t, t);
-    const md_f64x2_t t3 = md_simd_mul_f64x2(t2, t);
-    const md_f64x2_t v0 = md_simd_mul_f64x2(md_simd_sub_f64x2(p2, p0), s);
-    const md_f64x2_t v1 = md_simd_mul_f64x2(md_simd_sub_f64x2(p3, p1), s);
-    const md_f64x2_t x0 = md_simd_add_f64x2(md_simd_mul_f64x2(md_simd_set1_f64x2(2), md_simd_sub_f64x2(p1, p2)), md_simd_add_f64x2(v0, v1));
-    const md_f64x2_t x1 = md_simd_sub_f64x2(md_simd_mul_f64x2(md_simd_set1_f64x2(3), md_simd_sub_f64x2(p2, p1)), md_simd_add_f64x2(md_simd_mul_f64x2(md_simd_set1_f64x2(2), v0), v1));
-    const md_f64x2_t r0 = md_simd_add_f64x2(md_simd_mul_f64x2(x0, t3), md_simd_mul_f64x2(x1, t2));
-    const md_f64x2_t r1 = md_simd_add_f64x2(md_simd_mul_f64x2(v0, t), p1);
-    return md_simd_add_f64x2(r0, r1);
-}
-
-MD_SIMD_INLINE md_f64x4_t md_simd_cubic_spline_f64x4(md_f64x4_t p0, md_f64x4_t p1, md_f64x4_t p2, md_f64x4_t p3, md_f64x4_t t, md_f64x4_t s) {
-    const md_f64x4_t t2 = md_simd_mul_f64x4(t, t);
-    const md_f64x4_t t3 = md_simd_mul_f64x4(t2, t);
-    const md_f64x4_t v0 = md_simd_mul_f64x4(md_simd_sub_f64x4(p2, p0), s);
-    const md_f64x4_t v1 = md_simd_mul_f64x4(md_simd_sub_f64x4(p3, p1), s);
-    const md_f64x4_t x0 = md_simd_add_f64x4(md_simd_mul_f64x4(md_simd_set1_f64x4(2), md_simd_sub_f64x4(p1, p2)), md_simd_add_f64x4(v0, v1));
-    const md_f64x4_t x1 = md_simd_sub_f64x4(md_simd_mul_f64x4(md_simd_set1_f64x4(3), md_simd_sub_f64x4(p2, p1)), md_simd_add_f64x4(md_simd_mul_f64x4(md_simd_set1_f64x4(2), v0), v1));
-    const md_f64x4_t r0 = md_simd_add_f64x4(md_simd_mul_f64x4(x0, t3), md_simd_mul_f64x4(x1, t2));
-    const md_f64x4_t r1 = md_simd_add_f64x4(md_simd_mul_f64x4(v0, t), p1);
-    return md_simd_add_f64x4(r0, r1);
-}
-
-MD_SIMD_INLINE md_f32x4_t md_simd_step_f32x4(md_f32x4_t edge, md_f32x4_t x) {
-    return md_simd_and_f32x4(md_simd_cmp_ge_f32x4(x, edge), md_simd_set1_f32x4(1.f));
-}
-
-MD_SIMD_INLINE md_f32x8_t md_simd_step_f32x8(md_f32x8_t edge, md_f32x8_t x) {
-    return md_simd_and_f32x8(md_simd_cmp_ge_f32x8(x, edge), md_simd_set1_f32x8(1.f));
-}
-
-MD_SIMD_INLINE md_f64x2_t md_simd_step_f64x2(md_f64x2_t edge, md_f64x2_t x) {
-    return md_simd_and_f64x2(md_simd_cmp_ge_f64x2(x, edge), md_simd_set1_f64x2(1.f));
-}
-
-MD_SIMD_INLINE md_f64x4_t md_simd_step_f64x4(md_f64x4_t edge, md_f64x4_t x) {
-    return md_simd_and_f64x4(md_simd_cmp_ge_f64x4(x, edge), md_simd_set1_f64x4(1.f));
-}
-
-MD_SIMD_INLINE md_f32x4_t md_simd_lerp_f32x4(md_f32x4_t a, md_f32x4_t b, float t) {
-    return md_simd_add_f32x4(md_simd_mul_f32x4(a, md_simd_set1_f32x4(1.0f - t)), md_simd_mul_f32x4(b, md_simd_set1_f32x4(t)));
-}
-
-MD_SIMD_INLINE md_f32x8_t md_simd_lerp_f32x8(md_f32x8_t a, md_f32x8_t b, float t) {
-    return md_simd_add_f32x8(md_simd_mul_f32x8(a, md_simd_set1_f32x8(1.0f - t)), md_simd_mul_f32x8(b, md_simd_set1_f32x8(t)));
-}
-
-MD_SIMD_INLINE md_f64x2_t md_simd_lerp_f64x2(md_f64x2_t a, md_f64x2_t b, float t) {
-    return md_simd_add_f64x2(md_simd_mul_f64x2(a, md_simd_set1_f64x2(1.0f - t)), md_simd_mul_f64x2(b, md_simd_set1_f64x2(t)));
-}
-
-MD_SIMD_INLINE md_f64x4_t md_simd_lerp_f64x4(md_f64x4_t a, md_f64x4_t b, float t) {
-    return md_simd_add_f64x4(md_simd_mul_f64x4(a, md_simd_set1_f64x4(1.0f - t)), md_simd_mul_f64x4(b, md_simd_set1_f64x4(t)));
-}
-
-MD_SIMD_INLINE void md_simd_sincos_f32x4(md_f32x4_t x, md_f32x4_t* s, md_f32x4_t* c) {
-    md_f32x4_t xmm1, xmm2, xmm3, sign_bit_sin, y;
-    md_i32x4_t imm0, imm2, imm4;
-
+#if defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#endif
+static void md_mm_sincos_ps(__m128 xx, __m128* s, __m128* c) {
+    __m128  xmm1, xmm2, sign_bit_sin, x, y, y2;
+    __m128i imm0, imm2, imm3;
+    
     // sign bit
-    sign_bit_sin = md_simd_and_f32x4(x, md_simd_cast_i32x4(md_simd_set1_i32x4(0x80000000)));
+    sign_bit_sin = md_mm_and_ps(xx, md_mm_castsi128_ps( md_mm_set1_epi32(0x80000000)));
 
     // abs
-    x = md_simd_abs_f32x4(x);
+    x = md_mm_abs_ps(xx);
+
+    if (_mm_cvtss_f32(xx) == 2.0f) {
+        while(0) {};
+    }
 
     /* scale by 4/Pi */
-    y = md_simd_mul_f32x4(x, md_simd_set1_f32x4(1.27323954473516));
+    y = md_mm_mul_ps(x, md_mm_set1_ps(1.27323954473516f));
 
     /* store integer part of y */
-    imm2 = md_simd_convert_f32x4(y);
+    imm2 = _mm_cvttps_epi32(y);
 
     /* j=(j+1) & (~1) (see the cephes sources) */
-    imm2 = md_simd_add_i32x4(imm2, md_simd_set1_i32x4(1));
-    imm2 = md_simd_and_i32x4(imm2, md_simd_set1_i32x4(~1));
+    imm2 = md_mm_add_epi32(imm2, md_mm_set1_epi32(1));
+    imm2 = md_mm_and_epi32(imm2, md_mm_set1_epi32(~1));
 
-    y = md_simd_convert_i32x4(imm2);
-    imm4 = imm2;
+    y = md_mm_cvtepi32_ps(imm2);
+    imm3 = imm2;
 
     /* get the swap sign flag for the sine */
-    imm0 = md_simd_and_i32x4(imm2, md_simd_set1_i32x4(4));
-    imm0 = md_simd_shift_left_i32x4(imm0, 29);
+    imm0 = md_mm_and_epi32(imm2, md_mm_set1_epi32(4));
+    imm0 = md_mm_slli_epi32(imm0, 29);
 
     /* get polynom selection mask for the sine */
-    imm2 = md_simd_and_i32x4(imm2, md_simd_set1_i32x4(2));
-    imm2 = md_simd_cmp_eq_i32x4(imm2, md_simd_zero_i32x4());
+    imm2 = md_mm_and_epi32(imm2, md_mm_set1_epi32(2));
+    imm2 = md_mm_cmpeq_epi32(imm2, md_mm_setzero_si128());
 
-    md_f32x4_t swap_sign_bit_sin = md_simd_cast_i32x4(imm0);
-    md_f32x4_t poly_mask         = md_simd_cast_i32x4(imm2);
+    const __m128 swap_sign_bit_sin = md_mm_castsi128_ps(imm0);
+    const __m128 poly_mask         = md_mm_castsi128_ps(imm2);
+
+    imm3 = md_mm_sub_epi32(imm3, md_mm_set1_epi32(2));
+    imm3 = md_mm_andnot_epi32(imm3, md_mm_set1_epi32(4));
+    imm3 = md_mm_slli_epi32(imm3, 29);
+
+    const __m128 sign_bit_cos = md_mm_castsi128_ps(imm3);
+    sign_bit_sin = md_mm_xor_ps(sign_bit_sin, swap_sign_bit_sin);
 
     /* The magic pass: "Extended precision modular arithmetic" 
     x = ((x - y * DP1) - y * DP2) - y * DP3; */
-    xmm1 = md_simd_set1_f32x4(-0.78515625);
-    xmm2 = md_simd_set1_f32x4(-2.4187564849853515625e-4);
-    xmm3 = md_simd_set1_f32x4(-3.77489497744594108e-8);
-    xmm1 = md_simd_mul_f32x4(y, xmm1);
-    xmm2 = md_simd_mul_f32x4(y, xmm2);
-    xmm3 = md_simd_mul_f32x4(y, xmm3);
-    x    = md_simd_add_f32x4(x, xmm1);
-    x    = md_simd_add_f32x4(x, xmm2);
-    x    = md_simd_add_f32x4(x, xmm3);
+    x = md_mm_fmadd_ps(y, md_mm_set1_ps(-0.78515625f), x);
+    x = md_mm_fmadd_ps(y, md_mm_set1_ps(-2.4187564849853515625e-4f), x);
+    x = md_mm_fmadd_ps(y, md_mm_set1_ps(-3.77489497744594108e-8f), x);
 
-    imm4 = md_simd_sub_i32x4(imm4, md_simd_set1_i32x4(2));
-    imm4 = md_simd_and_not_i32x4(md_simd_set1_i32x4(4), imm4);
-    imm4 = md_simd_shift_left_i32x4(imm4, 29);
-
-    md_f32x4_t sign_bit_cos = md_simd_cast_i32x4(imm4);
-    sign_bit_sin = md_simd_xor_f32x4(sign_bit_sin, swap_sign_bit_sin);
+    const __m128 x2 = md_mm_mul_ps(x,x);
+    const __m128 x3 = md_mm_mul_ps(x2,x);
+    const __m128 x4 = md_mm_mul_ps(x2,x2);
 
     /* Evaluate the first polynom  (0 <= x <= Pi/4) */
-    md_f32x4_t z = md_simd_mul_f32x4(x,x);
-    y = md_simd_set1_f32x4(2.443315711809948E-005);
+    const __m128 c0 = md_mm_set1_ps(2.443315711809948E-005f);
+    const __m128 c1 = md_mm_set1_ps(-1.388731625493765E-003f);
+    const __m128 c2 = md_mm_set1_ps(4.166664568298827E-002f);
 
-    y = md_simd_mul_f32x4(y, z);
-    y = md_simd_add_f32x4(y, md_simd_set1_f32x4(-1.388731625493765E-003));
-    y = md_simd_mul_f32x4(y, z);
-    y = md_simd_add_f32x4(y, md_simd_set1_f32x4(4.166664568298827E-002));
-    y = md_simd_mul_f32x4(y, z);
-    y = md_simd_mul_f32x4(y, z);
-    md_f32x4_t tmp = md_simd_mul_f32x4(z, md_simd_set1_f32x4(0.5));
-    y = md_simd_sub_f32x4(y, tmp);
-    y = md_simd_add_f32x4(y, md_simd_set1_f32x4(1.0));
+    y = md_mm_fmadd_ps(x2, md_mm_fmadd_ps(x2, c0, c1), c2);
+    //y = md_mm_mul_ps(y, x4);
+    //y = md_mm_sub_ps(y, md_mm_mul_ps(x2, md_mm_set1_ps(0.5)));
+    y = md_mm_fmadd_ps(x2, md_mm_set1_ps(-0.5), md_mm_mul_ps(y, x4));
+    y = md_mm_add_ps(y, md_mm_set1_ps(1.0));
 
     /* Evaluate the second polynom  (Pi/4 <= x <= 0) */
-    md_f32x4_t y2 = md_simd_set1_f32x4(-1.9515295891E-4);
-    y2 = md_simd_mul_f32x4(y2, z);
-    y2 = md_simd_add_f32x4(y2, md_simd_set1_f32x4(8.3321608736E-3));
-    y2 = md_simd_mul_f32x4(y2, z);
-    y2 = md_simd_add_f32x4(y2, md_simd_set1_f32x4(-1.6666654611E-1));
-    y2 = md_simd_mul_f32x4(y2, z);
-    y2 = md_simd_mul_f32x4(y2, x);
-    y2 = md_simd_add_f32x4(y2, x);
+    const __m128 s0 = md_mm_set1_ps(-1.9515295891E-4f);
+    const __m128 s1 = md_mm_set1_ps(8.3321608736E-3f);
+    const __m128 s2 = md_mm_set1_ps(-1.6666654611E-1f);
+    y2 = md_mm_fmadd_ps(x2, md_mm_fmadd_ps(x2, s0, s1), s2);
+    y2 = md_mm_fmadd_ps(y2, x3, x);
 
     /* select the correct result from the two polynoms */  
-    xmm3 = poly_mask;
-    md_f32x4_t ysin2 = md_simd_and_f32x4(xmm3, y2);
-    md_f32x4_t ysin1 = md_simd_and_not_f32x4(y, xmm3);
-    y2 = md_simd_sub_f32x4(y2,ysin2);
-    y = md_simd_sub_f32x4(y, ysin1);
+    __m128 ysin2 = md_mm_and_ps(poly_mask, y2);
+    __m128 ysin1 = md_mm_andnot_ps(poly_mask, y);
 
-    xmm1 = md_simd_add_f32x4(ysin1,ysin2);
-    xmm2 = md_simd_add_f32x4(y,y2);
+    y2 = md_mm_sub_ps(y2,ysin2);
+    y  = md_mm_sub_ps(y, ysin1);
+
+    xmm1 = md_mm_add_ps(ysin1,ysin2);
+    xmm2 = md_mm_add_ps(y,y2);
 
     /* update the sign */
-    *s = md_simd_xor_f32x4(xmm1, sign_bit_sin);
-    *c = md_simd_xor_f32x4(xmm2, sign_bit_cos);
+    *s = md_mm_xor_ps(xmm1, sign_bit_sin);
+    *c = md_mm_xor_ps(xmm2, sign_bit_cos);
 }
 
-MD_SIMD_INLINE void md_simd_sincos_f32x8(md_f32x8_t x, md_f32x8_t* s, md_f32x8_t* c) {
-    md_f32x8_t xmm1, xmm2, xmm3, sign_bit_sin, y;
-    md_i32x8_t imm0, imm2, imm4;
+MD_SIMD_INLINE void md_mm256_sincos_ps(__m256 x, __m256* s, __m256* c) {
+    __m256  xmm1, xmm2, sign_bit_sin, y, y2;
+    __m256i imm0, imm2, imm3;
 
     // sign bit
-    sign_bit_sin = md_simd_and_f32x8(x, md_simd_cast_i32x8(md_simd_set1_i32x8(0x80000000)));
+    sign_bit_sin = md_mm256_and_ps(x, md_mm256_castsi256_ps( md_mm256_set1_epi32(0x80000000)));
 
     // abs
-    x = md_simd_abs_f32x8(x);
+    x = md_mm256_abs_ps(x);
 
     /* scale by 4/Pi */
-    y = md_simd_mul_f32x8(x, md_simd_set1_f32x8(1.27323954473516));
+    y = md_mm256_mul_ps(x, md_mm256_set1_ps(1.27323954473516f));
 
     /* store integer part of y */
-    imm2 = md_simd_convert_f32x8(y);
+    imm2 = _mm256_cvttps_epi32(y);
+
+    /* j=(j+1) & (~1) (see the cephes sources) */
+    imm2 = md_mm256_add_epi32(imm2, md_mm256_set1_epi32(1));
+    imm2 = md_mm256_and_epi32(imm2, md_mm256_set1_epi32(~1));
+
+    y = md_mm256_cvtepi32_ps(imm2);
+    imm3 = imm2;
+
+    /* get the swap sign flag for the sine */
+    imm0 = md_mm256_and_epi32(imm2, md_mm256_set1_epi32(4));
+    imm0 = md_mm256_slli_epi32(imm0, 29);
+
+    /* get polynom selection mask for the sine */
+    imm2 = md_mm256_and_epi32(imm2, md_mm256_set1_epi32(2));
+    imm2 = md_mm256_cmpeq_epi32(imm2, md_mm256_setzero_si256());
+
+    const __m256 swap_sign_bit_sin = md_mm256_castsi256_ps(imm0);
+    const __m256 poly_mask         = md_mm256_castsi256_ps(imm2);
+
+    imm3 = md_mm256_sub_epi32(imm3, md_mm256_set1_epi32(2));
+    imm3 = md_mm256_andnot_epi32(imm3, md_mm256_set1_epi32(4));
+    imm3 = md_mm256_slli_epi32(imm3, 29);
+
+    const __m256 sign_bit_cos = md_mm256_castsi256_ps(imm3);
+    sign_bit_sin = md_mm256_xor_ps(sign_bit_sin, swap_sign_bit_sin);
+
+    /* The magic pass: "Extended precision modular arithmetic" 
+    x = ((x - y * DP1) - y * DP2) - y * DP3; */
+    x = md_mm256_fmadd_ps(y, md_mm256_set1_ps(-0.78515625f), x);
+    x = md_mm256_fmadd_ps(y, md_mm256_set1_ps(-2.4187564849853515625E-4f), x);
+    x = md_mm256_fmadd_ps(y, md_mm256_set1_ps(-3.77489470793079817668E-8f), x);
+
+    const __m256 x2 = md_mm256_mul_ps(x,x);
+    const __m256 x3 = md_mm256_mul_ps(x2,x);
+    const __m256 x4 = md_mm256_mul_ps(x2,x2);
+
+    /* Evaluate the first polynom  (0 <= x <= Pi/4) */
+    const __m256 c0 = md_mm256_set1_ps(2.443315711809948E-5f);
+    const __m256 c1 = md_mm256_set1_ps(-1.388731625493765E-3f);
+    const __m256 c2 = md_mm256_set1_ps(4.166664568298827E-2f);
+
+    y = md_mm256_fmadd_ps(x2, md_mm256_fmadd_ps(x2, c0, c1), c2);
+    y = md_mm256_fmadd_ps(x2, md_mm256_set1_ps(-0.5), md_mm256_mul_ps(y, x4));
+    y = md_mm256_add_ps(y, md_mm256_set1_ps(1.0));
+
+    /* Evaluate the second polynom  (Pi/4 <= x <= 0) */
+    const __m256 s0 = md_mm256_set1_ps(-1.9515295891E-4f);
+    const __m256 s1 = md_mm256_set1_ps(8.3321608736E-3f);
+    const __m256 s2 = md_mm256_set1_ps(-1.6666654611E-1f);
+    y2 = md_mm256_fmadd_ps(x2, md_mm256_fmadd_ps(x2, s0, s1), s2);
+    y2 = md_mm256_fmadd_ps(y2, x3, x);
+
+    /* select the correct result from the two polynoms */  
+    __m256 ysin2 = md_mm256_and_ps(poly_mask, y2);
+    __m256 ysin1 = md_mm256_andnot_ps(poly_mask, y);
+
+    y2 = md_mm256_sub_ps(y2,ysin2);
+    y  = md_mm256_sub_ps(y, ysin1);
+
+    xmm1 = md_mm256_add_ps(ysin1,ysin2);
+    xmm2 = md_mm256_add_ps(y,y2);
+
+    /* update the sign */
+    *s = md_mm256_xor_ps(xmm1, sign_bit_sin);
+    *c = md_mm256_xor_ps(xmm2, sign_bit_cos);
+}
+
+MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
+    __m512  xmm1, xmm2, sign_bit_sin, y, y2;
+    __m512i imm0, imm2, imm3;
+
+    // sign bit
+    sign_bit_sin = _mm512_and_ps(x, _mm512_castsi512_ps( _mm512_set1_epi32(0x80000000)));
+
+    // abs
+    x = _mm512_abs_ps(x);
+
+    /* scale by 4/Pi */
+    y = _mm512_mul_ps(x, _mm512_set1_ps(1.27323954473516f));
+
+    /* store integer part of y */
+    imm2 = _mm512_cvttps_epi32(y);
+
+    /* j=(j+1) & (~1) (see the cephes sources) */
+    imm2 = _mm512_add_epi32(imm2, _mm512_set1_epi32(1));
+    imm2 = _mm512_and_epi32(imm2, _mm512_set1_epi32(~1));
+
+    y = _mm512_cvtepi32_ps(imm2);
+    imm3 = imm2;
+
+    /* get the swap sign flag for the sine */
+    imm0 = _mm512_and_epi32(imm2, _mm512_set1_epi32(4));
+    imm0 = _mm512_slli_epi32(imm0, 29);
+
+    /* get polynom selection mask for the sine */
+    imm2 = _mm512_and_epi32(imm2, _mm512_set1_epi32(2));
+    
+    const __mmask16 mask = _mm512_cmpeq_epi32_mask(imm2, _mm512_setzero_si512());
+    imm2 = _mm512_maskz_mov_epi32(mask, _mm512_set1_epi32(0xffffffff));
+
+    const __m512 swap_sign_bit_sin = _mm512_castsi512_ps(imm0);
+    const __m512 poly_mask         = _mm512_castsi512_ps(imm2);
+
+    imm3 = _mm512_sub_epi32(imm3, _mm512_set1_epi32(2));
+    imm3 = _mm512_andnot_epi32(imm3, _mm512_set1_epi32(4));
+    imm3 = _mm512_slli_epi32(imm3, 29);
+
+    const __m512 sign_bit_cos = _mm512_castsi512_ps(imm3);
+    sign_bit_sin = _mm512_xor_ps(sign_bit_sin, swap_sign_bit_sin);
+
+    /* The magic pass: "Extended precision modular arithmetic" 
+    x = ((x - y * DP1) - y * DP2) - y * DP3; */
+    x = _mm512_fmadd_ps(y, _mm512_set1_ps(-0.78515625f), x);
+    x = _mm512_fmadd_ps(y, _mm512_set1_ps(-2.4187564849853515625E-4f), x);
+    x = _mm512_fmadd_ps(y, _mm512_set1_ps(-3.77489470793079817668E-8f), x);
+
+    const __m512 x2 = _mm512_mul_ps(x,x);
+    const __m512 x3 = _mm512_mul_ps(x2,x);
+    const __m512 x4 = _mm512_mul_ps(x2,x2);
+
+    /* Evaluate the first polynom  (0 <= x <= Pi/4) */
+    const __m512 c0 = _mm512_set1_ps(2.443315711809948E-5f);
+    const __m512 c1 = _mm512_set1_ps(-1.388731625493765E-3f);
+    const __m512 c2 = _mm512_set1_ps(4.166664568298827E-2f);
+
+    y = _mm512_fmadd_ps(x2, _mm512_fmadd_ps(x2, c0, c1), c2);
+    y = _mm512_fmadd_ps(x2, _mm512_set1_ps(-0.5), _mm512_mul_ps(y, x4));
+    y = _mm512_add_ps(y, _mm512_set1_ps(1.0));
+
+    /* Evaluate the second polynom  (Pi/4 <= x <= 0) */
+    const __m512 s0 = _mm512_set1_ps(-1.9515295891E-4f);
+    const __m512 s1 = _mm512_set1_ps(8.3321608736E-3f);
+    const __m512 s2 = _mm512_set1_ps(-1.6666654611E-1f);
+    y2 = _mm512_fmadd_ps(x2, _mm512_fmadd_ps(x2, s0, s1), s2);
+    y2 = _mm512_fmadd_ps(y2, x3, x);
+
+    /* select the correct result from the two polynoms */  
+    __m512 ysin2 = _mm512_and_ps(poly_mask, y2);
+    __m512 ysin1 = _mm512_andnot_ps(poly_mask, y);
+
+    y2 = _mm512_sub_ps(y2,ysin2);
+    y  = _mm512_sub_ps(y, ysin1);
+
+    xmm1 = _mm512_add_ps(ysin1,ysin2);
+    xmm2 = _mm512_add_ps(y,y2);
+
+    /* update the sign */
+    *s = _mm512_xor_ps(xmm1, sign_bit_sin);
+    *c = _mm512_xor_ps(xmm2, sign_bit_cos);
+}
+#if defined(_MSC_VER)
+//#pragma float_control(pop)
+#endif
+
+#if 0
+MD_SIMD_INLINE void md_simd_sincos_ps(__m256 x, __m256* s, __m256* c) {
+    __m256 xmm1, xmm2, xmm3, sign_bit_sin, y;
+    __m256i imm0, imm2, imm4;
+
+    // sign bit
+    sign_bit_sin = md_simd_and_ps(x, md_simd_cast_i32x8(md_simd_set1_i32x8(0x80000000)));
+
+    // abs
+    x = md_simd_abs_ps(x);
+
+    /* scale by 4/Pi */
+    y = md_simd_mul_ps(x, md_simd_set1_ps(1.27323954473516));
+
+    /* store integer part of y */
+    imm2 = md_simd_convert_ps(y);
 
     /* j=(j+1) & (~1) (see the cephes sources) */
     imm2 = md_simd_add_i32x8(imm2, md_simd_set1_i32x8(1));
@@ -1322,108 +1036,110 @@ MD_SIMD_INLINE void md_simd_sincos_f32x8(md_f32x8_t x, md_f32x8_t* s, md_f32x8_t
     imm2 = md_simd_and_i32x8(imm2, md_simd_set1_i32x8(2));
     imm2 = md_simd_cmp_eq_i32x8(imm2, md_simd_zero_i32x8());
 
-    md_f32x8_t swap_sign_bit_sin = md_simd_cast_i32x8(imm0);
-    md_f32x8_t poly_mask         = md_simd_cast_i32x8(imm2);
+    __m256 swap_sign_bit_sin = md_simd_cast_i32x8(imm0);
+    __m256 poly_mask         = md_simd_cast_i32x8(imm2);
 
     /* The magic pass: "Extended precision modular arithmetic" 
     x = ((x - y * DP1) - y * DP2) - y * DP3; */
-    xmm1 = md_simd_set1_f32x8(-0.78515625);
-    xmm2 = md_simd_set1_f32x8(-2.4187564849853515625e-4);
-    xmm3 = md_simd_set1_f32x8(-3.77489497744594108e-8);
-    xmm1 = md_simd_mul_f32x8(y, xmm1);
-    xmm2 = md_simd_mul_f32x8(y, xmm2);
-    xmm3 = md_simd_mul_f32x8(y, xmm3);
-    x    = md_simd_add_f32x8(x, xmm1);
-    x    = md_simd_add_f32x8(x, xmm2);
-    x    = md_simd_add_f32x8(x, xmm3);
+    xmm1 = md_simd_set1_ps(-0.78515625);
+    xmm2 = md_simd_set1_ps(-2.4187564849853515625e-4);
+    xmm3 = md_simd_set1_ps(-3.77489497744594108e-8);
+    xmm1 = md_simd_mul_ps(y, xmm1);
+    xmm2 = md_simd_mul_ps(y, xmm2);
+    xmm3 = md_simd_mul_ps(y, xmm3);
+    x    = md_simd_add_ps(x, xmm1);
+    x    = md_simd_add_ps(x, xmm2);
+    x    = md_simd_add_ps(x, xmm3);
 
     imm4 = md_simd_sub_i32x8(imm4, md_simd_set1_i32x8(2));
     imm4 = md_simd_and_not_i32x8(md_simd_set1_i32x8(4), imm4);
     imm4 = md_simd_shift_left_i32x8(imm4, 29);
 
-    md_f32x8_t sign_bit_cos = md_simd_cast_i32x8(imm4);
-    sign_bit_sin = md_simd_xor_f32x8(sign_bit_sin, swap_sign_bit_sin);
+    __m256 sign_bit_cos = md_simd_cast_i32x8(imm4);
+    sign_bit_sin = md_simd_xor_ps(sign_bit_sin, swap_sign_bit_sin);
 
     /* Evaluate the first polynom  (0 <= x <= Pi/4) */
-    md_f32x8_t z = md_simd_mul_f32x8(x,x);
-    y = md_simd_set1_f32x8(2.443315711809948E-005);
+    __m256 z = md_simd_mul_ps(x,x);
+    y = md_simd_set1_ps(2.443315711809948E-005);
 
-    y = md_simd_mul_f32x8(y, z);
-    y = md_simd_add_f32x8(y, md_simd_set1_f32x8(-1.388731625493765E-003));
-    y = md_simd_mul_f32x8(y, z);
-    y = md_simd_add_f32x8(y, md_simd_set1_f32x8(4.166664568298827E-002));
-    y = md_simd_mul_f32x8(y, z);
-    y = md_simd_mul_f32x8(y, z);
-    md_f32x8_t tmp = md_simd_mul_f32x8(z, md_simd_set1_f32x8(0.5));
-    y = md_simd_sub_f32x8(y, tmp);
-    y = md_simd_add_f32x8(y, md_simd_set1_f32x8(1.0));
+    y = md_simd_mul_ps(y, z);
+    y = md_simd_add_ps(y, md_simd_set1_ps(-1.388731625493765E-003));
+    y = md_simd_mul_ps(y, z);
+    y = md_simd_add_ps(y, md_simd_set1_ps(4.166664568298827E-002));
+    y = md_simd_mul_ps(y, z);
+    y = md_simd_mul_ps(y, z);
+    __m256 tmp = md_simd_mul_ps(z, md_simd_set1_ps(0.5));
+    y = md_simd_sub_ps(y, tmp);
+    y = md_simd_add_ps(y, md_simd_set1_ps(1.0));
 
     /* Evaluate the second polynom  (Pi/4 <= x <= 0) */
-    md_f32x8_t y2 = md_simd_set1_f32x8(-1.9515295891E-4);
-    y2 = md_simd_mul_f32x8(y2, z);
-    y2 = md_simd_add_f32x8(y2, md_simd_set1_f32x8(8.3321608736E-3));
-    y2 = md_simd_mul_f32x8(y2, z);
-    y2 = md_simd_add_f32x8(y2, md_simd_set1_f32x8(-1.6666654611E-1));
-    y2 = md_simd_mul_f32x8(y2, z);
-    y2 = md_simd_mul_f32x8(y2, x);
-    y2 = md_simd_add_f32x8(y2, x);
+    __m256 y2 = md_simd_set1_ps(-1.9515295891E-4);
+    y2 = md_simd_mul_ps(y2, z);
+    y2 = md_simd_add_ps(y2, md_simd_set1_ps(8.3321608736E-3));
+    y2 = md_simd_mul_ps(y2, z);
+    y2 = md_simd_add_ps(y2, md_simd_set1_ps(-1.6666654611E-1));
+    y2 = md_simd_mul_ps(y2, z);
+    y2 = md_simd_mul_ps(y2, x);
+    y2 = md_simd_add_ps(y2, x);
 
     /* select the correct result from the two polynoms */  
     xmm3 = poly_mask;
-    md_f32x8_t ysin2 = md_simd_and_f32x8(xmm3, y2);
-    md_f32x8_t ysin1 = md_simd_and_not_f32x8(y, xmm3);
-    y2 = md_simd_sub_f32x8(y2,ysin2);
-    y = md_simd_sub_f32x8(y, ysin1);
+    __m256 ysin2 = md_simd_and_ps(xmm3, y2);
+    __m256 ysin1 = md_simd_and_not_ps(y, xmm3);
+    y2 = md_simd_sub_ps(y2,ysin2);
+    y = md_simd_sub_ps(y, ysin1);
 
-    xmm1 = md_simd_add_f32x8(ysin1,ysin2);
-    xmm2 = md_simd_add_f32x8(y,y2);
+    xmm1 = md_simd_add_ps(ysin1,ysin2);
+    xmm2 = md_simd_add_ps(y,y2);
 
     /* update the sign */
-    *s = md_simd_xor_f32x8(xmm1, sign_bit_sin);
-    *c = md_simd_xor_f32x8(xmm2, sign_bit_cos);
+    *s = md_simd_xor_ps(xmm1, sign_bit_sin);
+    *c = md_simd_xor_ps(xmm2, sign_bit_cos);
 }
+#endif
 
+#if 0
 #ifdef __cplusplus
 // C++ function overload
-MD_SIMD_INLINE md_f32x4_t md_simd_add(md_f32x4_t a, md_f32x4_t b) { return md_simd_add_f32x4(a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_add(md_f32x8_t a, md_f32x8_t b) { return md_simd_add_f32x8(a, b); }
-MD_SIMD_INLINE md_f64x2_t md_simd_add(md_f64x2_t a, md_f64x2_t b) { return md_simd_add_f64x2(a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_add(md_f64x4_t a, md_f64x4_t b) { return md_simd_add_f64x4(a, b); }
+MD_SIMD_INLINE __m128 md_mm_add(__m128 a, __m128 b) { return md_simd_add_ps(a, b); }
+MD_SIMD_INLINE __m256 md_mm256_add(__m256 a, __m256 b) { return md_simd_add_ps(a, b); }
+MD_SIMD_INLINE __m128d md_simd_add(__m128d a, __m128d b) { return md_simd_add_pd(a, b); }
+MD_SIMD_INLINE __m256d md_simd_add(__m256d a, __m256d b) { return md_simd_add_pd(a, b); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_sub(md_f32x4_t a, md_f32x4_t b) { return md_simd_sub_f32x4(a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_sub(md_f32x8_t a, md_f32x8_t b) { return md_simd_sub_f32x8(a, b); }
-MD_SIMD_INLINE md_f64x2_t md_simd_sub(md_f64x2_t a, md_f64x2_t b) { return md_simd_sub_f64x2(a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_sub(md_f64x4_t a, md_f64x4_t b) { return md_simd_sub_f64x4(a, b); }
+MD_SIMD_INLINE __m128 md_mm_sub(__m128 a, __m128 b) { return md_simd_sub_ps(a, b); }
+MD_SIMD_INLINE __m256 md_mm256_sub(__m256 a, __m256 b) { return md_simd_sub_ps(a, b); }
+MD_SIMD_INLINE __m128d md_simd_sub(__m128d a, __m128d b) { return md_simd_sub_pd(a, b); }
+MD_SIMD_INLINE __m256d md_simd_sub(__m256d a, __m256d b) { return md_simd_sub_pd(a, b); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_mul(md_f32x4_t a, md_f32x4_t b) { return md_simd_mul_f32x4(a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_mul(md_f32x8_t a, md_f32x8_t b) { return md_simd_mul_f32x8(a, b); }
-MD_SIMD_INLINE md_f64x2_t md_simd_mul(md_f64x2_t a, md_f64x2_t b) { return md_simd_mul_f64x2(a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_mul(md_f64x4_t a, md_f64x4_t b) { return md_simd_mul_f64x4(a, b); }
+MD_SIMD_INLINE __m128 md_mm_mul(__m128 a, __m128 b) { return md_simd_mul_ps(a, b); }
+MD_SIMD_INLINE __m256 md_mm256_mul(__m256 a, __m256 b) { return md_simd_mul_ps(a, b); }
+MD_SIMD_INLINE __m128d md_simd_mul(__m128d a, __m128d b) { return md_simd_mul_pd(a, b); }
+MD_SIMD_INLINE __m256d md_simd_mul(__m256d a, __m256d b) { return md_simd_mul_pd(a, b); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_div(md_f32x4_t a, md_f32x4_t b) { return md_simd_div_f32x4(a, b); }
-MD_SIMD_INLINE md_f32x8_t md_simd_div(md_f32x8_t a, md_f32x8_t b) { return md_simd_div_f32x8(a, b); }
-MD_SIMD_INLINE md_f64x2_t md_simd_div(md_f64x2_t a, md_f64x2_t b) { return md_simd_div_f64x2(a, b); }
-MD_SIMD_INLINE md_f64x4_t md_simd_div(md_f64x4_t a, md_f64x4_t b) { return md_simd_div_f64x4(a, b); }
+MD_SIMD_INLINE __m128 md_mm_div(__m128 a, __m128 b) { return md_simd_div_ps(a, b); }
+MD_SIMD_INLINE __m256 md_mm256_div(__m256 a, __m256 b) { return md_simd_div_ps(a, b); }
+MD_SIMD_INLINE __m128d md_simd_div(__m128d a, __m128d b) { return md_simd_div_pd(a, b); }
+MD_SIMD_INLINE __m256d md_simd_div(__m256d a, __m256d b) { return md_simd_div_pd(a, b); }
 
-MD_SIMD_INLINE md_i32x4_t md_simd_cast(md_f32x4_t v) { return md_simd_cast_f32x4(v); }
-MD_SIMD_INLINE md_i32x8_t md_simd_cast(md_f32x8_t v) { return md_simd_cast_f32x8(v); }
-MD_SIMD_INLINE md_i64x2_t md_simd_cast(md_f64x2_t v) { return md_simd_cast_f64x2(v); }
-MD_SIMD_INLINE md_i64x4_t md_simd_cast(md_f64x4_t v) { return md_simd_cast_f64x4(v); }
+MD_SIMD_INLINE __m128i md_simd_cast(__m128 v) { return md_simd_cast_ps(v); }
+MD_SIMD_INLINE __m256i md_simd_cast(__m256 v) { return md_simd_cast_ps(v); }
+MD_SIMD_INLINE __m128i md_simd_cast(__m128d v) { return md_simd_cast_pd(v); }
+MD_SIMD_INLINE __m256i md_simd_cast(__m256d v) { return md_simd_cast_pd(v); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_cast(md_i32x4_t v) { return md_simd_cast_i32x4(v); }
-MD_SIMD_INLINE md_f32x8_t md_simd_cast(md_i32x8_t v) { return md_simd_cast_i32x8(v); }
-MD_SIMD_INLINE md_f64x2_t md_simd_cast(md_i64x2_t v) { return md_simd_cast_i64x2(v); }
-MD_SIMD_INLINE md_f64x4_t md_simd_cast(md_i64x4_t v) { return md_simd_cast_i64x4(v); }
+MD_SIMD_INLINE __m128 md_mm_cast(__m128i v) { return md_simd_cast_i32x4(v); }
+MD_SIMD_INLINE __m256 md_mm256_cast(__m256i v) { return md_simd_cast_i32x8(v); }
+MD_SIMD_INLINE __m128d md_simd_cast(__m128i v) { return md_simd_cast_i64x2(v); }
+MD_SIMD_INLINE __m256d md_simd_cast(__m256i v) { return md_simd_cast_i64x4(v); }
 
-MD_SIMD_INLINE md_i32x4_t md_simd_convert(md_f32x4_t v) { return md_simd_convert_f32x4(v); }
-MD_SIMD_INLINE md_i32x8_t md_simd_convert(md_f32x8_t v) { return md_simd_convert_f32x8(v); }
-MD_SIMD_INLINE md_i64x2_t md_simd_convert(md_f64x2_t v) { return md_simd_convert_f64x2(v); }
-MD_SIMD_INLINE md_i64x4_t md_simd_convert(md_f64x4_t v) { return md_simd_convert_f64x4(v); }
+MD_SIMD_INLINE __m128i md_simd_convert(__m128 v) { return md_simd_convert_ps(v); }
+MD_SIMD_INLINE __m256i md_simd_convert(__m256 v) { return md_simd_convert_ps(v); }
+MD_SIMD_INLINE __m128i md_simd_convert(__m128d v) { return md_simd_convert_pd(v); }
+MD_SIMD_INLINE __m256i md_simd_convert(__m256d v) { return md_simd_convert_pd(v); }
 
-MD_SIMD_INLINE md_f32x4_t md_simd_convert(md_i32x4_t v) { return md_simd_convert_i32x4(v); }
-MD_SIMD_INLINE md_f32x8_t md_simd_convert(md_i32x8_t v) { return md_simd_convert_i32x8(v); }
-MD_SIMD_INLINE md_f64x2_t md_simd_convert(md_i64x2_t v) { return md_simd_convert_i64x2(v); }
-MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert_i64x4(v); }
+MD_SIMD_INLINE __m128 md_mm_convert(__m128i v) { return md_simd_convert_i32x4(v); }
+MD_SIMD_INLINE __m256 md_mm256_convert(__m256i v) { return md_simd_convert_i32x8(v); }
+MD_SIMD_INLINE __m128d md_simd_convert(__m128i v) { return md_simd_convert_i64x2(v); }
+MD_SIMD_INLINE __m256d md_simd_convert(__m256i v) { return md_simd_convert_i64x4(v); }
 
 // @TODO: Complete this
 
@@ -1431,534 +1147,534 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
 // C11 generics
 
 #define md_simd_store(a, b) _Generic((b),   \
-            md_i32x4_t : md_simd_store_i32x4, \
-            md_i32x8_t : md_simd_store_i32x8, \
-            md_i64x2_t : md_simd_store_i64x2, \
-            md_i64x4_t : md_simd_store_i64x4, \
-            const md_i32x4_t : md_simd_store_i32x4, \
-            const md_i32x8_t : md_simd_store_i32x8, \
-            const md_i64x2_t : md_simd_store_i64x2, \
-            const md_i64x4_t : md_simd_store_i64x4, \
-            md_f32x4_t : md_simd_store_f32x4, \
-            md_f32x8_t : md_simd_store_f32x8, \
-            md_f64x2_t : md_simd_store_f64x2, \
-            md_f64x4_t : md_simd_store_f64x4, \
-            const md_f32x4_t : md_simd_store_f32x4, \
-            const md_f32x8_t : md_simd_store_f32x8, \
-            const md_f64x2_t : md_simd_store_f64x2, \
-            const md_f64x4_t : md_simd_store_f64x4)(a,b)
+            __m128i : md_simd_store_i32x4, \
+            __m256i : md_simd_store_i32x8, \
+            __m128i : md_simd_store_i64x2, \
+            __m256i : md_simd_store_i64x4, \
+            const __m128i : md_simd_store_i32x4, \
+            const __m256i : md_simd_store_i32x8, \
+            const __m128i : md_simd_store_i64x2, \
+            const __m256i : md_simd_store_i64x4, \
+            __m128 : md_simd_store_ps, \
+            __m256 : md_simd_store_ps, \
+            __m128d : md_simd_store_pd, \
+            __m256d : md_simd_store_pd, \
+            const __m128 : md_simd_store_ps, \
+            const __m256 : md_simd_store_ps, \
+            const __m128d : md_simd_store_pd, \
+            const __m256d : md_simd_store_pd)(a,b)
 
 #define md_simd_and(a, b) _Generic((a),     \
-            md_i32x4_t : md_simd_and_i32x4, \
-            md_i32x8_t : md_simd_and_i32x8, \
-            md_i64x2_t : md_simd_and_i64x2, \
-            md_i64x4_t : md_simd_and_i64x4, \
-            const md_i32x4_t : md_simd_and_i32x4, \
-            const md_i32x8_t : md_simd_and_i32x8, \
-            const md_i64x2_t : md_simd_and_i64x2, \
-            const md_i64x4_t : md_simd_and_i64x4, \
-            md_f32x4_t : md_simd_and_f32x4, \
-            md_f32x8_t : md_simd_and_f32x8, \
-            md_f64x2_t : md_simd_and_f64x2, \
-            md_f64x4_t : md_simd_and_f64x4, \
-            const md_f32x4_t : md_simd_and_f32x4, \
-            const md_f32x8_t : md_simd_and_f32x8, \
-            const md_f64x2_t : md_simd_and_f64x2, \
-            const md_f64x4_t : md_simd_and_f64x4)(a,b)
+            __m128i : md_simd_and_i32x4, \
+            __m256i : md_simd_and_i32x8, \
+            __m128i : md_simd_and_i64x2, \
+            __m256i : md_simd_and_i64x4, \
+            const __m128i : md_simd_and_i32x4, \
+            const __m256i : md_simd_and_i32x8, \
+            const __m128i : md_simd_and_i64x2, \
+            const __m256i : md_simd_and_i64x4, \
+            __m128 : md_simd_and_ps, \
+            __m256 : md_simd_and_ps, \
+            __m128d : md_simd_and_pd, \
+            __m256d : md_simd_and_pd, \
+            const __m128 : md_simd_and_ps, \
+            const __m256 : md_simd_and_ps, \
+            const __m128d : md_simd_and_pd, \
+            const __m256d : md_simd_and_pd)(a,b)
 
 #define md_simd_or(a, b) _Generic((a),      \
-            md_i32x4_t : md_simd_or_i32x4,  \
-            md_i32x8_t : md_simd_or_i32x8,  \
-            md_i64x2_t : md_simd_or_i64x2,  \
-            md_i64x4_t : md_simd_or_i64x4,  \
-            const md_i32x4_t : md_simd_or_i32x4,  \
-            const md_i32x8_t : md_simd_or_i32x8,  \
-            const md_i64x2_t : md_simd_or_i64x2,  \
-            const md_i64x4_t : md_simd_or_i64x4,  \
-            md_f32x4_t : md_simd_or_f32x4,  \
-            md_f32x8_t : md_simd_or_f32x8,  \
-            md_f64x2_t : md_simd_or_f64x2,  \
-            md_f64x4_t : md_simd_or_f64x4,  \
-            const md_f32x4_t : md_simd_or_f32x4,  \
-            const md_f32x8_t : md_simd_or_f32x8,  \
-            const md_f64x2_t : md_simd_or_f64x2,  \
-            const md_f64x4_t : md_simd_or_f64x4)(a,b)
+            __m128i : md_simd_or_i32x4,  \
+            __m256i : md_simd_or_i32x8,  \
+            __m128i : md_simd_or_i64x2,  \
+            __m256i : md_simd_or_i64x4,  \
+            const __m128i : md_simd_or_i32x4,  \
+            const __m256i : md_simd_or_i32x8,  \
+            const __m128i : md_simd_or_i64x2,  \
+            const __m256i : md_simd_or_i64x4,  \
+            __m128 : md_simd_or_ps,  \
+            __m256 : md_simd_or_ps,  \
+            __m128d : md_simd_or_pd,  \
+            __m256d : md_simd_or_pd,  \
+            const __m128 : md_simd_or_ps,  \
+            const __m256 : md_simd_or_ps,  \
+            const __m128d : md_simd_or_pd,  \
+            const __m256d : md_simd_or_pd)(a,b)
 
 #define md_simd_xor(a, b) _Generic((a),     \
-            md_i32x4_t : md_simd_xor_i32x4, \
-            md_i32x8_t : md_simd_xor_i32x8, \
-            md_i64x2_t : md_simd_xor_i64x2, \
-            md_i64x4_t : md_simd_xor_i64x4, \
-            const md_i32x4_t : md_simd_xor_i32x4, \
-            const md_i32x8_t : md_simd_xor_i32x8, \
-            const md_i64x2_t : md_simd_xor_i64x2, \
-            const md_i64x4_t : md_simd_xor_i64x4, \
-            md_f32x4_t : md_simd_xor_f32x4, \
-            md_f32x8_t : md_simd_xor_f32x8, \
-            md_f64x2_t : md_simd_xor_f64x2, \
-            md_f64x4_t : md_simd_xor_f64x4, \
-            const md_f32x4_t : md_simd_xor_f32x4, \
-            const md_f32x8_t : md_simd_xor_f32x8, \
-            const md_f64x2_t : md_simd_xor_f64x2, \
-            const md_f64x4_t : md_simd_xor_f64x4)(a,b)
+            __m128i : md_simd_xor_i32x4, \
+            __m256i : md_simd_xor_i32x8, \
+            __m128i : md_simd_xor_i64x2, \
+            __m256i : md_simd_xor_i64x4, \
+            const __m128i : md_simd_xor_i32x4, \
+            const __m256i : md_simd_xor_i32x8, \
+            const __m128i : md_simd_xor_i64x2, \
+            const __m256i : md_simd_xor_i64x4, \
+            __m128 : md_simd_xor_ps, \
+            __m256 : md_simd_xor_ps, \
+            __m128d : md_simd_xor_pd, \
+            __m256d : md_simd_xor_pd, \
+            const __m128 : md_simd_xor_ps, \
+            const __m256 : md_simd_xor_ps, \
+            const __m128d : md_simd_xor_pd, \
+            const __m256d : md_simd_xor_pd)(a,b)
 
 #define md_simd_and_not(a, b) _Generic((a),     \
-            md_i32x4_t : md_simd_and_not_i32x4, \
-            md_i32x8_t : md_simd_and_not_i32x8, \
-            md_i64x2_t : md_simd_and_not_i64x2, \
-            md_i64x4_t : md_simd_and_not_i64x4, \
-            const md_i32x4_t : md_simd_and_not_i32x4, \
-            const md_i32x8_t : md_simd_and_not_i32x8, \
-            const md_i64x2_t : md_simd_and_not_i64x2, \
-            const md_i64x4_t : md_simd_and_not_i64x4, \
-            md_f32x4_t : md_simd_and_not_f32x4, \
-            md_f32x8_t : md_simd_and_not_f32x8, \
-            md_f64x2_t : md_simd_and_not_f64x2, \
-            md_f64x4_t : md_simd_and_not_f64x4, \
-            const md_f32x4_t : md_simd_and_not_f32x4, \
-            const md_f32x8_t : md_simd_and_not_f32x8, \
-            const md_f64x2_t : md_simd_and_not_f64x2, \
-            const md_f64x4_t : md_simd_and_not_f64x4)(a,b)
+            __m128i : md_simd_and_not_i32x4, \
+            __m256i : md_simd_and_not_i32x8, \
+            __m128i : md_simd_and_not_i64x2, \
+            __m256i : md_simd_and_not_i64x4, \
+            const __m128i : md_simd_and_not_i32x4, \
+            const __m256i : md_simd_and_not_i32x8, \
+            const __m128i : md_simd_and_not_i64x2, \
+            const __m256i : md_simd_and_not_i64x4, \
+            __m128 : md_simd_and_not_ps, \
+            __m256 : md_simd_and_not_ps, \
+            __m128d : md_simd_and_not_pd, \
+            __m256d : md_simd_and_not_pd, \
+            const __m128 : md_simd_and_not_ps, \
+            const __m256 : md_simd_and_not_ps, \
+            const __m128d : md_simd_and_not_pd, \
+            const __m256d : md_simd_and_not_pd)(a,b)
 
 #define md_simd_not(x) _Generic((x),        \
-            md_i32x4_t : md_simd_not_i32x4, \
-            md_i32x8_t : md_simd_not_i32x8, \
-            md_i64x2_t : md_simd_not_i64x2, \
-            md_i64x4_t : md_simd_not_i64x4, \
-            const md_i32x4_t : md_simd_not_i32x4, \
-            const md_i32x8_t : md_simd_not_i32x8, \
-            const md_i64x2_t : md_simd_not_i64x2, \
-            const md_i64x4_t : md_simd_not_i64x4)(x)
+            __m128i : md_simd_not_i32x4, \
+            __m256i : md_simd_not_i32x8, \
+            __m128i : md_simd_not_i64x2, \
+            __m256i : md_simd_not_i64x4, \
+            const __m128i : md_simd_not_i32x4, \
+            const __m256i : md_simd_not_i32x8, \
+            const __m128i : md_simd_not_i64x2, \
+            const __m256i : md_simd_not_i64x4)(x)
 
 #define md_simd_add(a, b) _Generic((a),     \
-            md_f32x4_t : md_simd_add_f32x4, \
-            md_f32x8_t : md_simd_add_f32x8, \
-            md_f64x2_t : md_simd_add_f64x2, \
-            md_f64x4_t : md_simd_add_f64x4, \
-            const md_f32x4_t : md_simd_add_f32x4, \
-            const md_f32x8_t : md_simd_add_f32x8, \
-            const md_f64x2_t : md_simd_add_f64x2, \
-            const md_f64x4_t : md_simd_add_f64x4, \
-            md_i32x4_t : md_simd_add_i32x4, \
-            md_i32x8_t : md_simd_add_i32x8, \
-            md_i64x2_t : md_simd_add_i64x2, \
-            md_i64x4_t : md_simd_add_i64x4, \
-            const md_i32x4_t : md_simd_add_i32x4, \
-            const md_i32x8_t : md_simd_add_i32x8, \
-            const md_i64x2_t : md_simd_add_i64x2, \
-            const md_i64x4_t : md_simd_add_i64x4)(a, b)
+            __m128 : md_simd_add_ps, \
+            __m256 : md_simd_add_ps, \
+            __m128d : md_simd_add_pd, \
+            __m256d : md_simd_add_pd, \
+            const __m128 : md_simd_add_ps, \
+            const __m256 : md_simd_add_ps, \
+            const __m128d : md_simd_add_pd, \
+            const __m256d : md_simd_add_pd, \
+            __m128i : md_simd_add_i32x4, \
+            __m256i : md_simd_add_i32x8, \
+            __m128i : md_simd_add_i64x2, \
+            __m256i : md_simd_add_i64x4, \
+            const __m128i : md_simd_add_i32x4, \
+            const __m256i : md_simd_add_i32x8, \
+            const __m128i : md_simd_add_i64x2, \
+            const __m256i : md_simd_add_i64x4)(a, b)
             
 #define md_simd_sub(a, b) _Generic((a),     \
-            md_f32x4_t : md_simd_sub_f32x4, \
-            md_f32x8_t : md_simd_sub_f32x8, \
-            md_f64x2_t : md_simd_sub_f64x2, \
-            md_f64x4_t : md_simd_sub_f64x4, \
-            const md_f32x4_t : md_simd_sub_f32x4, \
-            const md_f32x8_t : md_simd_sub_f32x8, \
-            const md_f64x2_t : md_simd_sub_f64x2, \
-            const md_f64x4_t : md_simd_sub_f64x4, \
-            md_i32x4_t : md_simd_sub_i32x4, \
-            md_i32x8_t : md_simd_sub_i32x8, \
-            md_i64x2_t : md_simd_sub_i64x2, \
-            md_i64x4_t : md_simd_sub_i64x4, \
-            const md_i32x4_t : md_simd_sub_i32x4, \
-            const md_i32x8_t : md_simd_sub_i32x8, \
-            const md_i64x2_t : md_simd_sub_i64x2, \
-            const md_i64x4_t : md_simd_sub_i64x4)(a, b)
+            __m128 : md_simd_sub_ps, \
+            __m256 : md_simd_sub_ps, \
+            __m128d : md_simd_sub_pd, \
+            __m256d : md_simd_sub_pd, \
+            const __m128 : md_simd_sub_ps, \
+            const __m256 : md_simd_sub_ps, \
+            const __m128d : md_simd_sub_pd, \
+            const __m256d : md_simd_sub_pd, \
+            __m128i : md_simd_sub_i32x4, \
+            __m256i : md_simd_sub_i32x8, \
+            __m128i : md_simd_sub_i64x2, \
+            __m256i : md_simd_sub_i64x4, \
+            const __m128i : md_simd_sub_i32x4, \
+            const __m256i : md_simd_sub_i32x8, \
+            const __m128i : md_simd_sub_i64x2, \
+            const __m256i : md_simd_sub_i64x4)(a, b)
 
 #define md_simd_mul(a, b) _Generic((a),     \
-            md_f32x4_t : md_simd_mul_f32x4, \
-            md_f32x8_t : md_simd_mul_f32x8, \
-            md_f64x2_t : md_simd_mul_f64x2, \
-            md_f64x4_t : md_simd_mul_f64x4, \
-            const md_f32x4_t : md_simd_mul_f32x4, \
-            const md_f32x8_t : md_simd_mul_f32x8, \
-            const md_f64x2_t : md_simd_mul_f64x2, \
-            const md_f64x4_t : md_simd_mul_f64x4)(a, b)
+            __m128 : md_simd_mul_ps, \
+            __m256 : md_simd_mul_ps, \
+            __m128d : md_simd_mul_pd, \
+            __m256d : md_simd_mul_pd, \
+            const __m128 : md_simd_mul_ps, \
+            const __m256 : md_simd_mul_ps, \
+            const __m128d : md_simd_mul_pd, \
+            const __m256d : md_simd_mul_pd)(a, b)
 
 #define md_simd_div(a, b) _Generic((a),     \
-            md_f32x4_t : md_simd_div_f32x4, \
-            md_f32x8_t : md_simd_div_f32x8, \
-            md_f64x2_t : md_simd_div_f64x2, \
-            md_f64x4_t : md_simd_div_f64x4, \
-            const md_f32x4_t : md_simd_div_f32x4, \
-            const md_f32x8_t : md_simd_div_f32x8, \
-            const md_f64x2_t : md_simd_div_f64x2, \
-            const md_f64x4_t : md_simd_div_f64x4)(a, b)
+            __m128 : md_simd_div_ps, \
+            __m256 : md_simd_div_ps, \
+            __m128d : md_simd_div_pd, \
+            __m256d : md_simd_div_pd, \
+            const __m128 : md_simd_div_ps, \
+            const __m256 : md_simd_div_ps, \
+            const __m128d : md_simd_div_pd, \
+            const __m256d : md_simd_div_pd)(a, b)
 
 #define md_simd_fmadd(a, b, c) _Generic((a),       \
-            md_f32x4_t : md_simd_fmadd_f32x4,   \
-            md_f32x8_t : md_simd_fmadd_f32x8,   \
-            md_f64x2_t : md_simd_fmadd_f64x2,   \
-            md_f64x4_t : md_simd_fmadd_f64x4,   \
-            const md_f32x4_t : md_simd_fmadd_f32x4,   \
-            const md_f32x8_t : md_simd_fmadd_f32x8,   \
-            const md_f64x2_t : md_simd_fmadd_f64x2,   \
-            const md_f64x4_t : md_simd_fmadd_f64x4)(a, b, c)
+            __m128 : md_simd_fmadd_ps,   \
+            __m256 : md_simd_fmadd_ps,   \
+            __m128d : md_simd_fmadd_pd,   \
+            __m256d : md_simd_fmadd_pd,   \
+            const __m128 : md_simd_fmadd_ps,   \
+            const __m256 : md_simd_fmadd_ps,   \
+            const __m128d : md_simd_fmadd_pd,   \
+            const __m256d : md_simd_fmadd_pd)(a, b, c)
 
 #define md_simd_abs(x) _Generic((x),        \
-            md_f32x4_t : md_simd_abs_f32x4, \
-            md_f32x8_t : md_simd_abs_f32x8, \
-            md_f64x2_t : md_simd_abs_f64x2, \
-            md_f64x4_t : md_simd_abs_f64x4, \
-            const md_f32x4_t : md_simd_abs_f32x4, \
-            const md_f32x8_t : md_simd_abs_f32x8, \
-            const md_f64x2_t : md_simd_abs_f64x2, \
-            const md_f64x4_t : md_simd_abs_f64x4, \
-            md_i32x4_t : md_simd_abs_i32x4, \
-            md_i32x8_t : md_simd_abs_i32x8, \
-            md_i64x2_t : md_simd_abs_i64x2, \
-            md_i64x4_t : md_simd_abs_i64x4, \
-            const md_i32x4_t : md_simd_abs_i32x4, \
-            const md_i32x8_t : md_simd_abs_i32x8, \
-            const md_i64x2_t : md_simd_abs_i64x2, \
-            const md_i64x4_t : md_simd_abs_i64x4)(x)
+            __m128 : md_simd_abs_ps, \
+            __m256 : md_simd_abs_ps, \
+            __m128d : md_simd_abs_pd, \
+            __m256d : md_simd_abs_pd, \
+            const __m128 : md_simd_abs_ps, \
+            const __m256 : md_simd_abs_ps, \
+            const __m128d : md_simd_abs_pd, \
+            const __m256d : md_simd_abs_pd, \
+            __m128i : md_simd_abs_i32x4, \
+            __m256i : md_simd_abs_i32x8, \
+            __m128i : md_simd_abs_i64x2, \
+            __m256i : md_simd_abs_i64x4, \
+            const __m128i : md_simd_abs_i32x4, \
+            const __m256i : md_simd_abs_i32x8, \
+            const __m128i : md_simd_abs_i64x2, \
+            const __m256i : md_simd_abs_i64x4)(x)
 
 #define md_simd_min(a,b) _Generic((a),      \
-            md_f32x4_t : md_simd_min_f32x4, \
-            md_f32x8_t : md_simd_min_f32x8, \
-            md_f64x2_t : md_simd_min_f64x2, \
-            md_f64x4_t : md_simd_min_f64x4, \
-            const md_f32x4_t : md_simd_min_f32x4, \
-            const md_f32x8_t : md_simd_min_f32x8, \
-            const md_f64x2_t : md_simd_min_f64x2, \
-            const md_f64x4_t : md_simd_min_f64x4, \
-            md_i32x4_t : md_simd_min_i32x4, \
-            md_i32x8_t : md_simd_min_i32x8, \
-            md_i64x2_t : md_simd_min_i64x2, \
-            md_i64x4_t : md_simd_min_i64x4, \
-            const md_i32x4_t : md_simd_min_i32x4, \
-            const md_i32x8_t : md_simd_min_i32x8, \
-            const md_i64x2_t : md_simd_min_i64x2, \
-            const md_i64x4_t : md_simd_min_i64x4)(a,b)
+            __m128 : md_simd_min_ps, \
+            __m256 : md_simd_min_ps, \
+            __m128d : md_simd_min_pd, \
+            __m256d : md_simd_min_pd, \
+            const __m128 : md_simd_min_ps, \
+            const __m256 : md_simd_min_ps, \
+            const __m128d : md_simd_min_pd, \
+            const __m256d : md_simd_min_pd, \
+            __m128i : md_simd_min_i32x4, \
+            __m256i : md_simd_min_i32x8, \
+            __m128i : md_simd_min_i64x2, \
+            __m256i : md_simd_min_i64x4, \
+            const __m128i : md_simd_min_i32x4, \
+            const __m256i : md_simd_min_i32x8, \
+            const __m128i : md_simd_min_i64x2, \
+            const __m256i : md_simd_min_i64x4)(a,b)
 
 #define md_simd_max(a,b) _Generic((a),      \
-            md_f32x4_t : md_simd_max_f32x4, \
-            md_f32x8_t : md_simd_max_f32x8, \
-            md_f64x2_t : md_simd_max_f64x2, \
-            md_f64x4_t : md_simd_max_f64x4, \
-            const md_f32x4_t : md_simd_max_f32x4, \
-            const md_f32x8_t : md_simd_max_f32x8, \
-            const md_f64x2_t : md_simd_max_f64x2, \
-            const md_f64x4_t : md_simd_max_f64x4, \
-            md_i32x4_t : md_simd_max_i32x4, \
-            md_i32x8_t : md_simd_max_i32x8, \
-            md_i64x2_t : md_simd_max_i64x2, \
-            md_i64x4_t : md_simd_max_i64x4, \
-            const md_i32x4_t : md_simd_max_i32x4, \
-            const md_i32x8_t : md_simd_max_i32x8, \
-            const md_i64x2_t : md_simd_max_i64x2, \
-            const md_i64x4_t : md_simd_max_i64x4)(a,b)
+            __m128 : md_simd_max_ps, \
+            __m256 : md_simd_max_ps, \
+            __m128d : md_simd_max_pd, \
+            __m256d : md_simd_max_pd, \
+            const __m128 : md_simd_max_ps, \
+            const __m256 : md_simd_max_ps, \
+            const __m128d : md_simd_max_pd, \
+            const __m256d : md_simd_max_pd, \
+            __m128i : md_simd_max_i32x4, \
+            __m256i : md_simd_max_i32x8, \
+            __m128i : md_simd_max_i64x2, \
+            __m256i : md_simd_max_i64x4, \
+            const __m128i : md_simd_max_i32x4, \
+            const __m256i : md_simd_max_i32x8, \
+            const __m128i : md_simd_max_i64x2, \
+            const __m256i : md_simd_max_i64x4)(a,b)
 
 #define md_simd_cmp_gt(a,b) _Generic((a),       \
-            md_f32x4_t : md_simd_cmp_gt_f32x4,  \
-            md_f32x8_t : md_simd_cmp_gt_f32x8,  \
-            md_f64x2_t : md_simd_cmp_gt_f64x2,  \
-            md_f64x4_t : md_simd_cmp_gt_f64x4,  \
-            const md_f32x4_t : md_simd_cmp_gt_f32x4,  \
-            const md_f32x8_t : md_simd_cmp_gt_f32x8,  \
-            const md_f64x2_t : md_simd_cmp_gt_f64x2,  \
-            const md_f64x4_t : md_simd_cmp_gt_f64x4,  \
-            md_i32x4_t : md_simd_cmp_gt_i32x4,  \
-            md_i32x8_t : md_simd_cmp_gt_i32x8,  \
-            md_i64x2_t : md_simd_cmp_gt_i64x2,  \
-            md_i64x4_t : md_simd_cmp_gt_i64x4,  \
-            const md_i32x4_t : md_simd_cmp_gt_i32x4,  \
-            const md_i32x8_t : md_simd_cmp_gt_i32x8,  \
-            const md_i64x2_t : md_simd_cmp_gt_i64x2,  \
-            const md_i64x4_t : md_simd_cmp_gt_i64x4)(a,b)
+            __m128 : md_simd_cmp_gt_ps,  \
+            __m256 : md_simd_cmp_gt_ps,  \
+            __m128d : md_simd_cmp_gt_pd,  \
+            __m256d : md_simd_cmp_gt_pd,  \
+            const __m128 : md_simd_cmp_gt_ps,  \
+            const __m256 : md_simd_cmp_gt_ps,  \
+            const __m128d : md_simd_cmp_gt_pd,  \
+            const __m256d : md_simd_cmp_gt_pd,  \
+            __m128i : md_simd_cmp_gt_i32x4,  \
+            __m256i : md_simd_cmp_gt_i32x8,  \
+            __m128i : md_simd_cmp_gt_i64x2,  \
+            __m256i : md_simd_cmp_gt_i64x4,  \
+            const __m128i : md_simd_cmp_gt_i32x4,  \
+            const __m256i : md_simd_cmp_gt_i32x8,  \
+            const __m128i : md_simd_cmp_gt_i64x2,  \
+            const __m256i : md_simd_cmp_gt_i64x4)(a,b)
 
 #define md_simd_cmp_lt(a,b) _Generic((a),         \
-            md_f32x4_t : md_simd_cmp_lt_f32x4,  \
-            md_f32x8_t : md_simd_cmp_lt_f32x8,  \
-            md_f64x2_t : md_simd_cmp_lt_f64x2,  \
-            md_f64x4_t : md_simd_cmp_lt_f64x4,  \
-            const md_f32x4_t : md_simd_cmp_lt_f32x4,  \
-            const md_f32x8_t : md_simd_cmp_lt_f32x8,  \
-            const md_f64x2_t : md_simd_cmp_lt_f64x2,  \
-            const md_f64x4_t : md_simd_cmp_lt_f64x4,  \
-            md_i32x4_t : md_simd_cmp_lt_i32x4,  \
-            md_i32x8_t : md_simd_cmp_lt_i32x8,  \
-            md_i64x2_t : md_simd_cmp_lt_i64x2,  \
-            md_i64x4_t : md_simd_cmp_lt_i64x4,  \
-            const md_i32x4_t : md_simd_cmp_lt_i32x4,  \
-            const md_i32x8_t : md_simd_cmp_lt_i32x8,  \
-            const md_i64x2_t : md_simd_cmp_lt_i64x2,  \
-            const md_i64x4_t : md_simd_cmp_lt_i64x4)(a,b)
+            __m128 : md_simd_cmp_lt_ps,  \
+            __m256 : md_simd_cmp_lt_ps,  \
+            __m128d : md_simd_cmp_lt_pd,  \
+            __m256d : md_simd_cmp_lt_pd,  \
+            const __m128 : md_simd_cmp_lt_ps,  \
+            const __m256 : md_simd_cmp_lt_ps,  \
+            const __m128d : md_simd_cmp_lt_pd,  \
+            const __m256d : md_simd_cmp_lt_pd,  \
+            __m128i : md_simd_cmp_lt_i32x4,  \
+            __m256i : md_simd_cmp_lt_i32x8,  \
+            __m128i : md_simd_cmp_lt_i64x2,  \
+            __m256i : md_simd_cmp_lt_i64x4,  \
+            const __m128i : md_simd_cmp_lt_i32x4,  \
+            const __m256i : md_simd_cmp_lt_i32x8,  \
+            const __m128i : md_simd_cmp_lt_i64x2,  \
+            const __m256i : md_simd_cmp_lt_i64x4)(a,b)
 
 #define md_simd_cmp_eq(a,b) _Generic((a),       \
-            md_f32x4_t : md_simd_cmp_eq_f32x4,  \
-            md_f32x8_t : md_simd_cmp_eq_f32x8,  \
-            md_f64x2_t : md_simd_cmp_eq_f64x2,  \
-            md_f64x4_t : md_simd_cmp_eq_f64x4,  \
-            const md_f32x4_t : md_simd_cmp_eq_f32x4,  \
-            const md_f32x8_t : md_simd_cmp_eq_f32x8,  \
-            const md_f64x2_t : md_simd_cmp_eq_f64x2,  \
-            const md_f64x4_t : md_simd_cmp_eq_f64x4,  \
-            md_i32x4_t : md_simd_cmp_eq_i32x4,  \
-            md_i32x8_t : md_simd_cmp_eq_i32x8,  \
-            md_i64x2_t : md_simd_cmp_eq_i64x2,  \
-            md_i64x4_t : md_simd_cmp_eq_i64x4,  \
-            const md_i32x4_t : md_simd_cmp_eq_i32x4,  \
-            const md_i32x8_t : md_simd_cmp_eq_i32x8,  \
-            const md_i64x2_t : md_simd_cmp_eq_i64x2,  \
-            const md_i64x4_t : md_simd_cmp_eq_i64x4)(a,b)
+            __m128 : md_simd_cmp_eq_ps,  \
+            __m256 : md_simd_cmp_eq_ps,  \
+            __m128d : md_simd_cmp_eq_pd,  \
+            __m256d : md_simd_cmp_eq_pd,  \
+            const __m128 : md_simd_cmp_eq_ps,  \
+            const __m256 : md_simd_cmp_eq_ps,  \
+            const __m128d : md_simd_cmp_eq_pd,  \
+            const __m256d : md_simd_cmp_eq_pd,  \
+            __m128i : md_simd_cmp_eq_i32x4,  \
+            __m256i : md_simd_cmp_eq_i32x8,  \
+            __m128i : md_simd_cmp_eq_i64x2,  \
+            __m256i : md_simd_cmp_eq_i64x4,  \
+            const __m128i : md_simd_cmp_eq_i32x4,  \
+            const __m256i : md_simd_cmp_eq_i32x8,  \
+            const __m128i : md_simd_cmp_eq_i64x2,  \
+            const __m256i : md_simd_cmp_eq_i64x4)(a,b)
 
 #define md_simd_cmp_ne(a,b) _Generic((a),       \
-            md_f32x4_t : md_simd_cmp_ne_f32x4,  \
-            md_f32x8_t : md_simd_cmp_ne_f32x8,  \
-            md_f64x2_t : md_simd_cmp_ne_f64x2,  \
-            md_f64x4_t : md_simd_cmp_ne_f64x4,  \
-            const md_f32x4_t : md_simd_cmp_ne_f32x4,  \
-            const md_f32x8_t : md_simd_cmp_ne_f32x8,  \
-            const md_f64x2_t : md_simd_cmp_ne_f64x2,  \
-            const md_f64x4_t : md_simd_cmp_ne_f64x4,  \
-            md_i32x4_t : md_simd_cmp_ne_i32x4,  \
-            md_i32x8_t : md_simd_cmp_ne_i32x8,  \
-            md_i64x2_t : md_simd_cmp_ne_i64x2,  \
-            md_i64x4_t : md_simd_cmp_ne_i64x4,  \
-            const md_i32x4_t : md_simd_cmp_ne_i32x4,  \
-            const md_i32x8_t : md_simd_cmp_ne_i32x8,  \
-            const md_i64x2_t : md_simd_cmp_ne_i64x2,  \
-            const md_i64x4_t : md_simd_cmp_ne_i64x4)(a,b)
+            __m128 : md_simd_cmp_ne_ps,  \
+            __m256 : md_simd_cmp_ne_ps,  \
+            __m128d : md_simd_cmp_ne_pd,  \
+            __m256d : md_simd_cmp_ne_pd,  \
+            const __m128 : md_simd_cmp_ne_ps,  \
+            const __m256 : md_simd_cmp_ne_ps,  \
+            const __m128d : md_simd_cmp_ne_pd,  \
+            const __m256d : md_simd_cmp_ne_pd,  \
+            __m128i : md_simd_cmp_ne_i32x4,  \
+            __m256i : md_simd_cmp_ne_i32x8,  \
+            __m128i : md_simd_cmp_ne_i64x2,  \
+            __m256i : md_simd_cmp_ne_i64x4,  \
+            const __m128i : md_simd_cmp_ne_i32x4,  \
+            const __m256i : md_simd_cmp_ne_i32x8,  \
+            const __m128i : md_simd_cmp_ne_i64x2,  \
+            const __m256i : md_simd_cmp_ne_i64x4)(a,b)
 
 #define md_simd_cmp_le(a,b) _Generic((a),       \
-            md_f32x4_t : md_simd_cmp_le_f32x4,  \
-            md_f32x8_t : md_simd_cmp_le_f32x8,  \
-            md_f64x2_t : md_simd_cmp_le_f64x2,  \
-            md_f64x4_t : md_simd_cmp_le_f64x4,  \
-            const md_f32x4_t : md_simd_cmp_le_f32x4,  \
-            const md_f32x8_t : md_simd_cmp_le_f32x8,  \
-            const md_f64x2_t : md_simd_cmp_le_f64x2,  \
-            const md_f64x4_t : md_simd_cmp_le_f64x4)(a,b)
+            __m128 : md_simd_cmp_le_ps,  \
+            __m256 : md_simd_cmp_le_ps,  \
+            __m128d : md_simd_cmp_le_pd,  \
+            __m256d : md_simd_cmp_le_pd,  \
+            const __m128 : md_simd_cmp_le_ps,  \
+            const __m256 : md_simd_cmp_le_ps,  \
+            const __m128d : md_simd_cmp_le_pd,  \
+            const __m256d : md_simd_cmp_le_pd)(a,b)
 
 #define md_simd_cmp_le(a,b) _Generic((a),       \
-            md_f32x4_t : md_simd_cmp_le_f32x4,  \
-            md_f32x8_t : md_simd_cmp_le_f32x8,  \
-            md_f64x2_t : md_simd_cmp_le_f64x2,  \
-            md_f64x4_t : md_simd_cmp_le_f64x4,  \
-            const md_f32x4_t : md_simd_cmp_le_f32x4,  \
-            const md_f32x8_t : md_simd_cmp_le_f32x8,  \
-            const md_f64x2_t : md_simd_cmp_le_f64x2,  \
-            const md_f64x4_t : md_simd_cmp_le_f64x4)(a,b)
+            __m128 : md_simd_cmp_le_ps,  \
+            __m256 : md_simd_cmp_le_ps,  \
+            __m128d : md_simd_cmp_le_pd,  \
+            __m256d : md_simd_cmp_le_pd,  \
+            const __m128 : md_simd_cmp_le_ps,  \
+            const __m256 : md_simd_cmp_le_ps,  \
+            const __m128d : md_simd_cmp_le_pd,  \
+            const __m256d : md_simd_cmp_le_pd)(a,b)
 
 #define md_simd_round(x) _Generic((x),          \
-            md_f32x4_t : md_simd_round_f32x4,   \
-            md_f32x8_t : md_simd_round_f32x8,   \
-            md_f64x2_t : md_simd_round_f64x2,   \
-            md_f64x4_t : md_simd_round_f64x4,   \
-            const md_f32x4_t : md_simd_round_f32x4,   \
-            const md_f32x8_t : md_simd_round_f32x8,   \
-            const md_f64x2_t : md_simd_round_f64x2,   \
-            const md_f64x4_t : md_simd_round_f64x4)(x)
+            __m128 : md_simd_round_ps,   \
+            __m256 : md_simd_round_ps,   \
+            __m128d : md_simd_round_pd,   \
+            __m256d : md_simd_round_pd,   \
+            const __m128 : md_simd_round_ps,   \
+            const __m256 : md_simd_round_ps,   \
+            const __m128d : md_simd_round_pd,   \
+            const __m256d : md_simd_round_pd)(x)
 
 #define md_simd_floor(x) _Generic((x),          \
-            md_f32x4_t : md_simd_floor_f32x4,   \
-            md_f32x8_t : md_simd_floor_f32x8,   \
-            md_f64x2_t : md_simd_floor_f64x2,   \
-            md_f64x4_t : md_simd_floor_f64x4,   \
-            const md_f32x4_t : md_simd_floor_f32x4,   \
-            const md_f32x8_t : md_simd_floor_f32x8,   \
-            const md_f64x2_t : md_simd_floor_f64x2,   \
-            const md_f64x4_t : md_simd_floor_f64x4)(x)
+            __m128 : md_simd_floor_ps,   \
+            __m256 : md_simd_floor_ps,   \
+            __m128d : md_simd_floor_pd,   \
+            __m256d : md_simd_floor_pd,   \
+            const __m128 : md_simd_floor_ps,   \
+            const __m256 : md_simd_floor_ps,   \
+            const __m128d : md_simd_floor_pd,   \
+            const __m256d : md_simd_floor_pd)(x)
 
 #define md_simd_ceil(x) _Generic((x),           \
-            md_f32x4_t : md_simd_ceil_f32x4,    \
-            md_f32x8_t : md_simd_ceil_f32x8,    \
-            md_f64x2_t : md_simd_ceil_f64x2,    \
-            md_f64x4_t : md_simd_ceil_f64x4,    \
-            const md_f32x4_t : md_simd_ceil_f32x4,    \
-            const md_f32x8_t : md_simd_ceil_f32x8,    \
-            const md_f64x2_t : md_simd_ceil_f64x2,    \
-            const md_f64x4_t : md_simd_ceil_f64x4)(x)
+            __m128 : md_simd_ceil_ps,    \
+            __m256 : md_simd_ceil_ps,    \
+            __m128d : md_simd_ceil_pd,    \
+            __m256d : md_simd_ceil_pd,    \
+            const __m128 : md_simd_ceil_ps,    \
+            const __m256 : md_simd_ceil_ps,    \
+            const __m128d : md_simd_ceil_pd,    \
+            const __m256d : md_simd_ceil_pd)(x)
 
 #define md_simd_fract(x) _Generic((x),          \
-            md_f32x4_t : md_simd_fract_f32x4,   \
-            md_f32x8_t : md_simd_fract_f32x8,   \
-            md_f64x2_t : md_simd_fract_f64x2,   \
-            md_f64x4_t : md_simd_fract_f64x4,   \
-            const md_f32x4_t : md_simd_fract_f32x4,   \
-            const md_f32x8_t : md_simd_fract_f32x8,   \
-            const md_f64x2_t : md_simd_fract_f64x2,   \
-            const md_f64x4_t : md_simd_fract_f64x4)(x)
+            __m128 : md_simd_fract_ps,   \
+            __m256 : md_simd_fract_ps,   \
+            __m128d : md_simd_fract_pd,   \
+            __m256d : md_simd_fract_pd,   \
+            const __m128 : md_simd_fract_ps,   \
+            const __m256 : md_simd_fract_ps,   \
+            const __m128d : md_simd_fract_pd,   \
+            const __m256d : md_simd_fract_pd)(x)
 
 #define md_simd_sign(x) _Generic((x),           \
-            md_f32x4_t : md_simd_sign_f32x4,    \
-            md_f32x8_t : md_simd_sign_f32x8,    \
-            md_f64x2_t : md_simd_sign_f64x2,    \
-            md_f64x4_t : md_simd_sign_f64x4)(x)
+            __m128 : md_simd_sign_ps,    \
+            __m256 : md_simd_sign_ps,    \
+            __m128d : md_simd_sign_pd,    \
+            __m256d : md_simd_sign_pd)(x)
 
 #define md_simd_sqrt(x) _Generic((x),           \
-            md_f32x4_t : md_simd_sqrt_f32x4,    \
-            md_f32x8_t : md_simd_sqrt_f32x8,    \
-            md_f64x2_t : md_simd_sqrt_f64x2,    \
-            md_f64x4_t : md_simd_sqrt_f64x4,    \
-            const md_f32x4_t : md_simd_sqrt_f32x4,    \
-            const md_f32x8_t : md_simd_sqrt_f32x8,    \
-            const md_f64x2_t : md_simd_sqrt_f64x2,    \
-            const md_f64x4_t : md_simd_sqrt_f64x4)(x)
+            __m128 : md_simd_sqrt_ps,    \
+            __m256 : md_simd_sqrt_ps,    \
+            __m128d : md_simd_sqrt_pd,    \
+            __m256d : md_simd_sqrt_pd,    \
+            const __m128 : md_simd_sqrt_ps,    \
+            const __m256 : md_simd_sqrt_ps,    \
+            const __m128d : md_simd_sqrt_pd,    \
+            const __m256d : md_simd_sqrt_pd)(x)
 
 #define md_simd_blend(a,b,mask) _Generic((a),   \
-            md_f32x4_t : md_simd_blend_f32x4,   \
-            md_f32x8_t : md_simd_blend_f32x8,   \
-            md_f64x2_t : md_simd_blend_f64x2,   \
-            md_f64x4_t : md_simd_blend_f64x4,   \
-            const md_f32x4_t : md_simd_blend_f32x4,   \
-            const md_f32x8_t : md_simd_blend_f32x8,   \
-            const md_f64x2_t : md_simd_blend_f64x2,   \
-            const md_f64x4_t : md_simd_blend_f64x4,   \
-            md_i32x4_t : md_simd_blend_i32x4,   \
-            md_i32x8_t : md_simd_blend_i32x8,   \
-            md_i64x2_t : md_simd_blend_i64x2,   \
-            md_i64x4_t : md_simd_blend_i64x4,   \
-            const md_i32x4_t : md_simd_blend_i32x4,   \
-            const md_i32x8_t : md_simd_blend_i32x8,   \
-            const md_i64x2_t : md_simd_blend_i64x2,   \
-            const md_i64x4_t : md_simd_blend_i64x4)(a,b,mask)
+            __m128 : md_simd_blend_ps,   \
+            __m256 : md_simd_blend_ps,   \
+            __m128d : md_simd_blend_pd,   \
+            __m256d : md_simd_blend_pd,   \
+            const __m128 : md_simd_blend_ps,   \
+            const __m256 : md_simd_blend_ps,   \
+            const __m128d : md_simd_blend_pd,   \
+            const __m256d : md_simd_blend_pd,   \
+            __m128i : md_simd_blend_i32x4,   \
+            __m256i : md_simd_blend_i32x8,   \
+            __m128i : md_simd_blend_i64x2,   \
+            __m256i : md_simd_blend_i64x4,   \
+            const __m128i : md_simd_blend_i32x4,   \
+            const __m256i : md_simd_blend_i32x8,   \
+            const __m128i : md_simd_blend_i64x2,   \
+            const __m256i : md_simd_blend_i64x4)(a,b,mask)
 
 #define md_simd_movemask(a) _Generic((a),       \
-            md_f32x4_t : md_simd_movemask_f32x4,\
-            md_f32x8_t : md_simd_movemask_f32x8,\
-            md_f64x2_t : md_simd_movemask_f64x2,\
-            md_f64x4_t : md_simd_movemask_f64x4,\
-            const md_f32x4_t : md_simd_movemask_f32x4,\
-            const md_f32x8_t : md_simd_movemask_f32x8,\
-            const md_f64x2_t : md_simd_movemask_f64x2,\
-            const md_f64x4_t : md_simd_movemask_f64x4)(a)
+            __m128 : md_simd_movemask_ps,\
+            __m256 : md_simd_movemask_ps,\
+            __m128d : md_simd_movemask_pd,\
+            __m256d : md_simd_movemask_pd,\
+            const __m128 : md_simd_movemask_ps,\
+            const __m256 : md_simd_movemask_ps,\
+            const __m128d : md_simd_movemask_pd,\
+            const __m256d : md_simd_movemask_pd)(a)
 
 #define md_simd_hmin(x) _Generic((x),           \
-            md_f32x4_t : md_simd_hmin_f32x4,    \
-            md_f32x8_t : md_simd_hmin_f32x8,    \
-            md_f64x2_t : md_simd_hmin_f64x2,    \
-            md_f64x4_t : md_simd_hmin_f64x4,    \
-            const md_f32x4_t : md_simd_hmin_f32x4,    \
-            const md_f32x8_t : md_simd_hmin_f32x8,    \
-            const md_f64x2_t : md_simd_hmin_f64x2,    \
-            const md_f64x4_t : md_simd_hmin_f64x4)(x)
+            __m128 : md_simd_reduce_min_ps,    \
+            __m256 : md_simd_reduce_min_ps,    \
+            __m128d : md_simd_reduce_min_pd,    \
+            __m256d : md_simd_reduce_min_pd,    \
+            const __m128 : md_simd_reduce_min_ps,    \
+            const __m256 : md_simd_reduce_min_ps,    \
+            const __m128d : md_simd_reduce_min_pd,    \
+            const __m256d : md_simd_reduce_min_pd)(x)
 
 #define md_simd_hmax(x) _Generic((x),           \
-            md_f32x4_t : md_simd_hmax_f32x4,    \
-            md_f32x8_t : md_simd_hmax_f32x8,    \
-            md_f64x2_t : md_simd_hmax_f64x2,    \
-            md_f64x4_t : md_simd_hmax_f64x4,    \
-            const md_f32x4_t : md_simd_hmax_f32x4,    \
-            const md_f32x8_t : md_simd_hmax_f32x8,    \
-            const md_f64x2_t : md_simd_hmax_f64x2,    \
-            const md_f64x4_t : md_simd_hmax_f64x4)(x)
+            __m128 : md_simd_reduce_max_ps,    \
+            __m256 : md_simd_reduce_max_ps,    \
+            __m128d : md_simd_reduce_max_pd,    \
+            __m256d : md_simd_reduce_max_pd,    \
+            const __m128 : md_simd_reduce_max_ps,    \
+            const __m256 : md_simd_reduce_max_ps,    \
+            const __m128d : md_simd_reduce_max_pd,    \
+            const __m256d : md_simd_reduce_max_pd)(x)
 
 #define md_simd_hsum(x) _Generic((x),           \
-            md_f32x4_t : md_simd_hsum_f32x4,    \
-            md_f32x8_t : md_simd_hsum_f32x8,    \
-            md_f64x2_t : md_simd_hsum_f64x2,    \
-            md_f64x4_t : md_simd_hsum_f64x4,    \
-            const md_f32x4_t : md_simd_hsum_f32x4,    \
-            const md_f32x8_t : md_simd_hsum_f32x8,    \
-            const md_f64x2_t : md_simd_hsum_f64x2,    \
-            const md_f64x4_t : md_simd_hsum_f64x4)(x)
+            __m128 : md_simd_reduce_add_ps,    \
+            __m256 : md_simd_reduce_add_ps,    \
+            __m128d : md_simd_reduce_add_pd,    \
+            __m256d : md_simd_reduce_add_pd,    \
+            const __m128 : md_simd_reduce_add_ps,    \
+            const __m256 : md_simd_reduce_add_ps,    \
+            const __m128d : md_simd_reduce_add_pd,    \
+            const __m256d : md_simd_reduce_add_pd)(x)
 
 #define md_simd_deperiodize(x, r, p) _Generic((x),  \
-            md_f32x4_t : md_simd_deperiodize_f32x4, \
-            md_f32x8_t : md_simd_deperiodize_f32x8, \
-            md_f64x2_t : md_simd_deperiodize_f64x2, \
-            md_f64x4_t : md_simd_deperiodize_f64x4, \
-            const md_f32x4_t : md_simd_deperiodize_f32x4, \
-            const md_f32x8_t : md_simd_deperiodize_f32x8, \
-            const md_f64x2_t : md_simd_deperiodize_f64x2, \
-            const md_f64x4_t : md_simd_deperiodize_f64x4)(x, r, p)
+            __m128 : md_simd_deperiodize_ps, \
+            __m256 : md_simd_deperiodize_ps, \
+            __m128d : md_simd_deperiodize_pd, \
+            __m256d : md_simd_deperiodize_pd, \
+            const __m128 : md_simd_deperiodize_ps, \
+            const __m256 : md_simd_deperiodize_ps, \
+            const __m128d : md_simd_deperiodize_pd, \
+            const __m256d : md_simd_deperiodize_pd)(x, r, p)
 
 #define md_simd_minimum_image(dx, p, rp) _Generic((dx),  \
-            md_f32x4_t : md_simd_minimum_image_f32x4, \
-            md_f32x8_t : md_simd_minimum_image_f32x8, \
-            md_f64x2_t : md_simd_minimum_image_f64x2, \
-            md_f64x4_t : md_simd_minimum_image_f64x4, \
-            const md_f32x4_t : md_simd_minimum_image_f32x4, \
-            const md_f32x8_t : md_simd_minimum_image_f32x8, \
-            const md_f64x2_t : md_simd_minimum_image_f64x2, \
-            const md_f64x4_t : md_simd_minimum_image_f64x4)(dx, p, rp)
+            __m128 : md_simd_minimum_image_ps, \
+            __m256 : md_simd_minimum_image_ps, \
+            __m128d : md_simd_minimum_image_pd, \
+            __m256d : md_simd_minimum_image_pd, \
+            const __m128 : md_simd_minimum_image_ps, \
+            const __m256 : md_simd_minimum_image_ps, \
+            const __m128d : md_simd_minimum_image_pd, \
+            const __m256d : md_simd_minimum_image_pd)(dx, p, rp)
 
 #define md_simd_step(edge, x) _Generic((x),  \
-            md_f32x4_t : md_simd_step_f32x4, \
-            md_f32x8_t : md_simd_step_f32x8, \
-            md_f64x2_t : md_simd_step_f64x2, \
-            md_f64x4_t : md_simd_step_f64x4, \
-            const md_f32x4_t : md_simd_step_f32x4, \
-            const md_f32x8_t : md_simd_step_f32x8, \
-            const md_f64x2_t : md_simd_step_f64x2, \
-            const md_f64x4_t : md_simd_step_f64x4)(edge, x)
+            __m128 : md_simd_step_ps, \
+            __m256 : md_simd_step_ps, \
+            __m128d : md_simd_step_pd, \
+            __m256d : md_simd_step_pd, \
+            const __m128 : md_simd_step_ps, \
+            const __m256 : md_simd_step_ps, \
+            const __m128d : md_simd_step_pd, \
+            const __m256d : md_simd_step_pd)(edge, x)
 
 #define md_simd_lerp(a, b, t) _Generic((a),  \
-            md_f32x4_t : md_simd_lerp_f32x4, \
-            md_f32x8_t : md_simd_lerp_f32x8, \
-            md_f64x2_t : md_simd_lerp_f64x2, \
-            md_f64x4_t : md_simd_lerp_f64x4, \
-            const md_f32x4_t : md_simd_lerp_f32x4, \
-            const md_f32x8_t : md_simd_lerp_f32x8, \
-            const md_f64x2_t : md_simd_lerp_f64x2, \
-            const md_f64x4_t : md_simd_lerp_f64x4)(a, b, t)
+            __m128 : md_simd_lerp_ps, \
+            __m256 : md_simd_lerp_ps, \
+            __m128d : md_simd_lerp_pd, \
+            __m256d : md_simd_lerp_pd, \
+            const __m128 : md_simd_lerp_ps, \
+            const __m256 : md_simd_lerp_ps, \
+            const __m128d : md_simd_lerp_pd, \
+            const __m256d : md_simd_lerp_pd)(a, b, t)
 
 #define md_simd_cubic_spline(p0, p1, p2, p3, t, s) _Generic((p0),  \
-            md_f32x4_t : md_simd_cubic_spline_f32x4, \
-            md_f32x8_t : md_simd_cubic_spline_f32x8, \
-            md_f64x2_t : md_simd_cubic_spline_f64x2, \
-            md_f64x4_t : md_simd_cubic_spline_f64x4, \
-            const md_f32x4_t : md_simd_cubic_spline_f32x4, \
-            const md_f32x8_t : md_simd_cubic_spline_f32x8, \
-            const md_f64x2_t : md_simd_cubic_spline_f64x2, \
-            const md_f64x4_t : md_simd_cubic_spline_f64x4)(p0, p1, p2, p3, t, s)
+            __m128 : md_simd_cubic_spline_ps, \
+            __m256 : md_simd_cubic_spline_ps, \
+            __m128d : md_simd_cubic_spline_pd, \
+            __m256d : md_simd_cubic_spline_pd, \
+            const __m128 : md_simd_cubic_spline_ps, \
+            const __m256 : md_simd_cubic_spline_ps, \
+            const __m128d : md_simd_cubic_spline_pd, \
+            const __m256d : md_simd_cubic_spline_pd)(p0, p1, p2, p3, t, s)
 
 #define md_simd_unpack_xyz(x, y, z, stream, stride) _Generic(x,  \
-            md_f32x4_t* : md_simd_unpack_xyz_f32x4, \
-            md_f32x8_t* : md_simd_unpack_xyz_f32x8)(x, y, z, stream, stride)
+            __m128* : md_mm_unpack_xyz_ps, \
+            __m256* : md_mm256_unpack_xyz_ps)(x, y, z, stream, stride)
 
 #define md_simd_sincos(x, s, c) _Generic(x,  \
-            md_f32x4_t : md_simd_sincos_f32x4, \
-            md_f32x8_t : md_simd_sincos_f32x8)(x, s, c)
+            __m128 : md_simd_sincos_ps, \
+            __m256 : md_simd_sincos_ps)(x, s, c)
 
 #define md_simd_shift_left(x, i) _Generic((x),      \
-            md_i32x4_t : md_simd_shift_left_i32x4,  \
-            md_i32x8_t : md_simd_shift_left_i32x8,  \
-            md_i64x2_t : md_simd_shift_left_i64x2,  \
-            md_i64x4_t : md_simd_shift_left_i64x4,  \
-            const md_i32x4_t : md_simd_shift_left_i32x4,  \
-            const md_i32x8_t : md_simd_shift_left_i32x8,  \
-            const md_i64x2_t : md_simd_shift_left_i64x2,  \
-            const md_i64x4_t : md_simd_shift_left_i64x4)(x, i)
+            __m128i : md_simd_shift_left_i32x4,  \
+            __m256i : md_simd_shift_left_i32x8,  \
+            __m128i : md_simd_shift_left_i64x2,  \
+            __m256i : md_simd_shift_left_i64x4,  \
+            const __m128i : md_simd_shift_left_i32x4,  \
+            const __m256i : md_simd_shift_left_i32x8,  \
+            const __m128i : md_simd_shift_left_i64x2,  \
+            const __m256i : md_simd_shift_left_i64x4)(x, i)
 
 #define md_simd_shift_right(x, i) _Generic((x),     \
-            md_i32x4_t : md_simd_shift_right_i32x4, \
-            md_i32x8_t : md_simd_shift_right_i32x8, \
-            md_i64x2_t : md_simd_shift_right_i64x2, \
-            md_i64x4_t : md_simd_shift_right_i64x4, \
-            const md_i32x4_t : md_simd_shift_right_i32x4, \
-            const md_i32x8_t : md_simd_shift_right_i32x8, \
-            const md_i64x2_t : md_simd_shift_right_i64x2, \
-            const md_i64x4_t : md_simd_shift_right_i64x4)(x, i)
+            __m128i : md_simd_shift_right_i32x4, \
+            __m256i : md_simd_shift_right_i32x8, \
+            __m128i : md_simd_shift_right_i64x2, \
+            __m256i : md_simd_shift_right_i64x4, \
+            const __m128i : md_simd_shift_right_i32x4, \
+            const __m256i : md_simd_shift_right_i32x8, \
+            const __m128i : md_simd_shift_right_i64x2, \
+            const __m256i : md_simd_shift_right_i64x4)(x, i)
 
 #endif
 
 #if md_simd_width_f32 == 8
 
 // Float
-#define md_simd_load_f32    md_simd_load_f32x8
-#define md_simd_load_f64    md_simd_load_f64x4
+#define md_mm256_loadu_ps    md_simd_load_ps
+#define md_simd_load_f64    md_simd_load_pd
 
-#define md_simd_store_f32   md_simd_store_f32x8
-#define md_simd_store_f64   md_simd_store_f64x4
+#define md_simd_store_f32   md_simd_store_ps
+#define md_simd_store_f64   md_simd_store_pd
 
-#define md_simd_set1_f32    md_simd_set1_f32x8
-#define md_simd_set1_f64    md_simd_set1_f64x4
+#define md_simd_set1_f32    md_simd_set1_ps
+#define md_simd_set1_f64    md_simd_set1_pd
 
-#define md_simd_set_f32     md_simd_set_f32x8
-#define md_simd_set_f64     md_simd_set_f64x4
+#define md_simd_set_f32     md_simd_set_ps
+#define md_simd_set_f64     md_simd_set_pd
 
-#define md_simd_zero_f32    md_simd_zero_f32x8
-#define md_simd_zero_f64    md_simd_zero_f64x4
+#define md_simd_zero_f32    md_simd_zero_ps
+#define md_simd_zero_f64    md_simd_zero_pd
 
-#define md_simd_convert_f32 md_simd_convert_f32x8
-#define md_simd_convert_f64 md_simd_convert_f64x4
+#define md_simd_convert_f32 md_simd_convert_ps
+#define md_simd_convert_f64 md_simd_convert_pd
 
-#define md_simd_cast_f32 md_simd_cast_f32x8
-#define md_simd_cast_f64 md_simd_cast_f64x4
+#define md_simd_cast_f32 md_simd_cast_ps
+#define md_simd_cast_f64 md_simd_cast_pd
 
 // Int
 #define md_simd_load_i32    md_simd_load_i32x8
@@ -1984,26 +1700,26 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
 
 #elif md_simd_width_f32 == 4
 // Float
-#define md_simd_load_f32    md_simd_load_f32x4
-#define md_simd_load_f64    md_simd_load_f64x2
+#define md_mm256_loadu_ps    md_simd_load_ps
+#define md_simd_load_f64    md_simd_load_pd
 
-#define md_simd_store_f32   md_simd_store_f32x4
-#define md_simd_store_f64   md_simd_store_f64x2
+#define md_simd_store_f32   md_simd_store_ps
+#define md_simd_store_f64   md_simd_store_pd
 
-#define md_simd_set1_f32    md_simd_set1_f32x4
-#define md_simd_set1_f64    md_simd_set1_f64x2
+#define md_simd_set1_f32    md_simd_set1_ps
+#define md_simd_set1_f64    md_simd_set1_pd
 
-#define md_simd_set_f32     md_simd_set_f32x4
-#define md_simd_set_f64     md_simd_set_f64x2
+#define md_simd_set_f32     md_simd_set_ps
+#define md_simd_set_f64     md_simd_set_pd
 
-#define md_simd_zero_f32    md_simd_zero_f32x4
-#define md_simd_zero_f64    md_simd_zero_f64x2
+#define md_simd_zero_f32    md_simd_zero_ps
+#define md_simd_zero_f64    md_simd_zero_pd
 
-#define md_simd_convert_f32 md_simd_convert_f32x4
-#define md_simd_convert_f64 md_simd_convert_f64x2
+#define md_simd_convert_f32 md_simd_convert_ps
+#define md_simd_convert_f64 md_simd_convert_pd
 
-#define md_simd_cast_f32 md_simd_cast_f32x4
-#define md_simd_cast_f64 md_simd_cast_f64x2
+#define md_simd_cast_f32 md_simd_cast_ps
+#define md_simd_cast_f64 md_simd_cast_pd
 
 // Int
 #define md_simd_load_i32    md_simd_load_i32x4
@@ -2029,3 +1745,4 @@ MD_SIMD_INLINE md_f64x4_t md_simd_convert(md_i64x4_t v) { return md_simd_convert
 
 #endif
 
+#endif
