@@ -14,7 +14,6 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define SIMDE_X86_FMA_NATIVE
 #endif
 
-#define SIMDE_ENABLE_NATIVE_ALIASES
 #include <simde/x86/avx2.h>
 #include <simde/x86/fma.h>
 
