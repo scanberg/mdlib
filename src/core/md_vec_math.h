@@ -68,7 +68,7 @@ typedef struct vec4_t {
         };
         float elem[4];
 #if MD_VEC_MATH_USE_SIMD
-        __m128 m128;
+        md_128 m128;
 #endif
     };
 #ifdef __cplusplus
@@ -84,7 +84,7 @@ typedef struct quat_t {
         };
         float elem[4];
 #if MD_VEC_MATH_USE_SIMD
-        __m128 m128;
+        md_128 m128;
 #endif
     };
 #ifdef __cplusplus
@@ -1076,12 +1076,12 @@ static inline quat_t quat_from_mat4(mat4_t M) {
 }
 
 #if MD_VEC_MATH_USE_SIMD
-MD_VEC_INLINE __m128 linear_combine_sse(__m128 a, mat4_t B) {
-    __m128 res;
-    res = _mm_mul_ps(_mm_shuffle_ps(a, a, 0x00), B.col[0].m128);
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0x55), B.col[1].m128));
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xaa), B.col[2].m128));
-    res = _mm_add_ps(res, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xff), B.col[3].m128));
+MD_VEC_INLINE md_128 linear_combine_sse(md_128 a, mat4_t B) {
+    md_128 res;
+    res = md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x00), B.col[0].m128);
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x55), B.col[1].m128));
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xaa), B.col[2].m128));
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xff), B.col[3].m128));
     return res;
 }
 #endif

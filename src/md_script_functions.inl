@@ -193,8 +193,8 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         const float* src_b = as_float_arr(arg[1]); \
         float* dst_arr = as_float_arr(*dst); \
         for (int64_t i = 0; i < count; i += 8) { \
-            __m256 a = _mm256_loadu_ps(src_a + i); \
-            __m256 b = _mm256_loadu_ps(src_b + i); \
+            md_256 a = _mm256_loadu_ps(src_a + i); \
+            md_256 b = _mm256_loadu_ps(src_b + i); \
             _mm256_storeu_ps(dst_arr + i, op(a, b)); \
         } \
         return 0; \
@@ -211,7 +211,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
-        __m256 s = _mm256_set1_ps(as_float(arg[1])); \
+        md_256 s = _mm256_set1_ps(as_float(arg[1])); \
         for (int64_t i = 0; i < count; i += 8) { \
             _mm256_storeu_ps(dst_arr + i, op(_mm256_loadu_ps(src_arr + i), s)); \
         } \
@@ -407,7 +407,7 @@ static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     float* dst_arr = as_float_arr(*dst);
 
     for (int64_t i = 0; i < total_count; i += 8) {
-        __m256 val = md_mm256_loadu_ps(src_arr + i);
+        md_256 val = md_mm256_loadu_ps(src_arr + i);
         md_mm256_storeu_ps(dst_arr + i, md_mm256_sub_ps(md_mm256_setzero_ps(), val));
     }
     return 0;
@@ -4370,9 +4370,9 @@ static inline void populate_volume(float* vol, const vec3_t* xyz, int64_t num_po
         const vec4_t coord = mat4_mul_vec4(M, vec4_from_vec3(xyz[i], 1.0f));
 
         // Dwelling into bitland here, is a bit unsure if we should expose these as vec4 operations
-        const __m128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), coord.m128);
-        const __m128 b = md_mm_cmplt_ps(coord.m128, md_mm_set_ps(0, MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM));
-        const __m128 c = md_mm_and_ps(a, b);
+        const md_128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), coord.m128);
+        const md_128 b = md_mm_cmplt_ps(coord.m128, md_mm_set_ps(0, MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM));
+        const md_128 c = md_mm_and_ps(a, b);
 
         // Count the number of lanes which is not zero
         // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
@@ -4409,9 +4409,9 @@ bool sdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
         const vec4_t coord = mat4_mul_vec4(data->M, vec4_from_vec3(elem_arr[idx].xyz, 1.0f));
 
         // Dwelling into intrinsic land here, is a bit unsure if we should expose these as vec4 operations
-        const __m128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), coord.m128);
-        const __m128 b = md_mm_cmplt_ps(coord.m128, md_mm_set_ps(0, MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM));
-        const __m128 c = md_mm_and_ps(a, b);
+        const md_128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), coord.m128);
+        const md_128 b = md_mm_cmplt_ps(coord.m128, md_mm_set_ps(0, MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM));
+        const md_128 c = md_mm_and_ps(a, b);
 
         // Count the number of lanes which are not zero
         // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max

@@ -4933,14 +4933,14 @@ void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_me
 
     /*
     if (count > md_simd_width) {
-        __m256 vmin = md_mm256_set1_ps(FLT_MAX);
-        __m256 vmax = md_mm256_set1_ps(-FLT_MAX);
-        __m256 v1 = md_simd_zero_f32();
-        __m256 v2 = md_simd_zero_f32();
+        md_256 vmin = md_mm256_set1_ps(FLT_MAX);
+        md_256 vmax = md_mm256_set1_ps(-FLT_MAX);
+        md_256 v1 = md_simd_zero_f32();
+        md_256 v2 = md_simd_zero_f32();
 
         const int simd_count = (count / md_simd_width) * md_simd_width;
         for (; i < simd_count; i += md_simd_width) {
-            __m256 val = md_mm256_loadu_ps(data + i);
+            md_256 val = md_mm256_loadu_ps(data + i);
             vmin = md_simd_min_f32(vmin, val);
             vmax = md_simd_min_f32(vmax, val);
             v1 = md_mm256_add_ps_f32(v1, val);
@@ -5157,13 +5157,13 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 {
                     // Cumulative moving average
                     const uint32_t count = eval->prop_dist_count[p_idx]++;
-                    const __m256 N   = md_mm256_set1_ps((float)(count));
-                    const __m256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
+                    const md_256 N   = md_mm256_set1_ps((float)(count));
+                    const md_256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
 
                     const int64_t length = ALIGN_TO(prop->data.dim[0], 8);
                     for (int64_t i = 0; i < length; i += 8) {
-                        __m256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(prop->data.values + i), N);
-                        __m256 new_val = md_mm256_loadu_ps(values + i);
+                        md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(prop->data.values + i), N);
+                        md_256 new_val = md_mm256_loadu_ps(values + i);
                         md_mm256_storeu_ps(prop->data.values + i, md_mm256_mul_ps(md_mm256_add_ps(new_val, old_val), scl));
                     }
 
@@ -5190,12 +5190,12 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 {
                     // Cumulative moving average
                     const uint32_t count = eval->prop_dist_count[p_idx]++;
-                    const __m256 N = md_mm256_set1_ps((float)(count));
-                    const __m256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
+                    const md_256 N = md_mm256_set1_ps((float)(count));
+                    const md_256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
 
                     for (int64_t i = 0; i < prop->data.num_values; i += 8) {
-                        __m256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(prop->data.values + i), N);
-                        __m256 new_val = md_mm256_loadu_ps(values + i);
+                        md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(prop->data.values + i), N);
+                        md_256 new_val = md_mm256_loadu_ps(values + i);
                         md_mm256_storeu_ps(prop->data.values + i, md_mm256_mul_ps(md_mm256_add_ps(new_val, old_val), scl));
                     }
                 }

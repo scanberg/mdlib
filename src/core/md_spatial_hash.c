@@ -889,13 +889,13 @@ static inline void query_pos_rad_batch(const md_spatial_hash_t* hash, vec3_t pos
                 const elem_t* elem = elems + cell_offset;
 
                 while (len > 0) {
-                    __m256 vx,vy,vz;
+                    md_256 vx,vy,vz;
                     md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
-                    __m256 dx = md_mm256_sub_ps(vx, md_mm256_set1_ps(pos.x));
-                    __m256 dy = md_mm256_sub_ps(vy, md_mm256_set1_ps(pos.y));
-                    __m256 dz = md_mm256_sub_ps(vz, md_mm256_set1_ps(pos.z));
-                    __m256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
-                    __m256 vmask = md_mm256_cmplt_ps(d2, md_mm256_set1_ps(rad2));
+                    md_256 dx = md_mm256_sub_ps(vx, md_mm256_set1_ps(pos.x));
+                    md_256 dy = md_mm256_sub_ps(vy, md_mm256_set1_ps(pos.y));
+                    md_256 dz = md_mm256_sub_ps(vz, md_mm256_set1_ps(pos.z));
+                    md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
+                    md_256 vmask = md_mm256_cmplt_ps(d2, md_mm256_set1_ps(rad2));
 
                     const int step = MIN(len, 8);
                     const int lane_mask = (1 << step) - 1;
@@ -1145,17 +1145,17 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
     const int32_t cd_0  = cell_dim[0];
     const int32_t cd_01 = cell_dim[0] * cell_dim[1];
 
-    const __m256 rx = md_mm256_set1_ps(pos.x);
-    const __m256 ry = md_mm256_set1_ps(pos.y);
-    const __m256 rz = md_mm256_set1_ps(pos.z);
+    const md_256 rx = md_mm256_set1_ps(pos.x);
+    const md_256 ry = md_mm256_set1_ps(pos.y);
+    const md_256 rz = md_mm256_set1_ps(pos.z);
 
-    const __m256 px = md_mm256_set1_ps(pbc_ext.x);
-    const __m256 py = md_mm256_set1_ps(pbc_ext.y);
-    const __m256 pz = md_mm256_set1_ps(pbc_ext.z);
+    const md_256 px = md_mm256_set1_ps(pbc_ext.x);
+    const md_256 py = md_mm256_set1_ps(pbc_ext.y);
+    const md_256 pz = md_mm256_set1_ps(pbc_ext.z);
 
-    const __m256 rpx = pbc_ext.x ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), px) : md_mm256_setzero_ps();
-    const __m256 rpy = pbc_ext.y ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), py) : md_mm256_setzero_ps();
-    const __m256 rpz = pbc_ext.z ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), pz) : md_mm256_setzero_ps();
+    const md_256 rpx = pbc_ext.x ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), px) : md_mm256_setzero_ps();
+    const md_256 rpy = pbc_ext.y ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), py) : md_mm256_setzero_ps();
+    const md_256 rpz = pbc_ext.z ? md_mm256_div_ps(md_mm256_set1_ps(1.0f), pz) : md_mm256_setzero_ps();
 
     for (int32_t cz = cell_beg[2]; cz < cell_end[2]; inc_cell2(&cz, cell_max[2], cell_jmp[2])) {
         const int32_t ciz = (cz % cell_pbc[2]) - cell_min[2];
@@ -1183,14 +1183,14 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
                 const elem_t* elem = elems + cell_offset;
 
                 while (len > 0) {
-                    __m256 vx,vy,vz;
+                    md_256 vx,vy,vz;
                     md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
 
-                    __m256 dx = md_mm256_minimage_ps(md_mm256_sub_ps(vx, rx), px, rpx);
-                    __m256 dy = md_mm256_minimage_ps(md_mm256_sub_ps(vy, ry), py, rpy);
-                    __m256 dz = md_mm256_minimage_ps(md_mm256_sub_ps(vz, rz), pz, rpz);
-                    __m256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
-                    __m256 vmask = md_mm256_cmplt_ps(d2, md_mm256_set1_ps(rad2));
+                    md_256 dx = md_mm256_minimage_ps(md_mm256_sub_ps(vx, rx), px, rpx);
+                    md_256 dy = md_mm256_minimage_ps(md_mm256_sub_ps(vy, ry), py, rpy);
+                    md_256 dz = md_mm256_minimage_ps(md_mm256_sub_ps(vz, rz), pz, rpz);
+                    md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
+                    md_256 vmask = md_mm256_cmplt_ps(d2, md_mm256_set1_ps(rad2));
 
                     const int32_t step = mini(len, 8);
                     const int32_t lane_mask = (1 << step) - 1;

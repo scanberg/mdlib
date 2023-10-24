@@ -173,9 +173,9 @@ static inline str_t trim_label(str_t lbl) {
     return (str_t) { .ptr = beg, .len = end-beg };
 }
 
-static inline __m256 simd_deperiodize(__m256 x, __m256 r, __m256 period, __m256 inv_period) {
-    __m256 d = md_mm256_sub_ps(x, r);
-    __m256 dx = md_mm256_mul_ps(d, inv_period);
+static inline md_256 simd_deperiodize(md_256 x, md_256 r, md_256 period, md_256 inv_period) {
+    md_256 d = md_mm256_sub_ps(x, r);
+    md_256 dx = md_mm256_mul_ps(d, inv_period);
     dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
     return md_mm256_add_ps(r, md_mm256_mul_ps(dx, period));
 }
@@ -1600,13 +1600,13 @@ void md_util_compute_aabb_vec4(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const
 }
 
 void md_util_compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, int64_t count) {
-    __m256 vx_min = _mm256_set1_ps(+FLT_MAX);
-    __m256 vy_min = _mm256_set1_ps(+FLT_MAX);
-    __m256 vz_min = _mm256_set1_ps(+FLT_MAX);
+    md_256 vx_min = _mm256_set1_ps(+FLT_MAX);
+    md_256 vy_min = _mm256_set1_ps(+FLT_MAX);
+    md_256 vz_min = _mm256_set1_ps(+FLT_MAX);
 
-    __m256 vx_max = _mm256_set1_ps(-FLT_MAX);
-    __m256 vy_max = _mm256_set1_ps(-FLT_MAX);
-    __m256 vz_max = _mm256_set1_ps(-FLT_MAX);
+    md_256 vx_max = _mm256_set1_ps(-FLT_MAX);
+    md_256 vy_max = _mm256_set1_ps(-FLT_MAX);
+    md_256 vz_max = _mm256_set1_ps(-FLT_MAX);
 
     int64_t i = 0;
     const int64_t  simd_elem = 8;
@@ -1615,12 +1615,12 @@ void md_util_compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const floa
     if (in_idx) {
         if (in_r) {
             for (; i < simd_count; i += simd_elem) {
-                __m256i idx = _mm256_loadu_si256((const __m256i*)(in_idx + i));
+                md_256i idx = _mm256_loadu_si256((const md_256i*)(in_idx + i));
 
-                __m256 x = _mm256_i32gather_ps(in_x, idx, 4);
-                __m256 y = _mm256_i32gather_ps(in_y, idx, 4);
-                __m256 z = _mm256_i32gather_ps(in_z, idx, 4);
-                __m256 r = _mm256_i32gather_ps(in_r, idx, 4);
+                md_256 x = _mm256_i32gather_ps(in_x, idx, 4);
+                md_256 y = _mm256_i32gather_ps(in_y, idx, 4);
+                md_256 z = _mm256_i32gather_ps(in_z, idx, 4);
+                md_256 r = _mm256_i32gather_ps(in_r, idx, 4);
 
                 vx_min = _mm256_min_ps(vx_min, _mm256_sub_ps(x, r));
                 vy_min = _mm256_min_ps(vy_min, _mm256_sub_ps(y, r));
@@ -1632,11 +1632,11 @@ void md_util_compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const floa
             }
         } else {
             for (; i < simd_count; i += simd_elem) {
-                __m256i idx = _mm256_loadu_si256((const __m256i*)(in_idx + i));
+                md_256i idx = _mm256_loadu_si256((const md_256i*)(in_idx + i));
 
-                __m256 x = _mm256_i32gather_ps(in_x, idx, 4);
-                __m256 y = _mm256_i32gather_ps(in_y, idx, 4);
-                __m256 z = _mm256_i32gather_ps(in_z, idx, 4);
+                md_256 x = _mm256_i32gather_ps(in_x, idx, 4);
+                md_256 y = _mm256_i32gather_ps(in_y, idx, 4);
+                md_256 z = _mm256_i32gather_ps(in_z, idx, 4);
 
                 vx_min = _mm256_min_ps(vx_min, x);
                 vy_min = _mm256_min_ps(vy_min, y);
@@ -1650,10 +1650,10 @@ void md_util_compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const floa
     } else {
         if (in_r) {
             for (; i < simd_count; i += simd_elem) {
-                __m256 x = _mm256_loadu_ps(in_x + i);
-                __m256 y = _mm256_loadu_ps(in_y + i);
-                __m256 z = _mm256_loadu_ps(in_z + i);
-                __m256 r = _mm256_loadu_ps(in_r + i);
+                md_256 x = _mm256_loadu_ps(in_x + i);
+                md_256 y = _mm256_loadu_ps(in_y + i);
+                md_256 z = _mm256_loadu_ps(in_z + i);
+                md_256 r = _mm256_loadu_ps(in_r + i);
 
                 vx_min = _mm256_min_ps(vx_min, _mm256_sub_ps(x, r));
                 vy_min = _mm256_min_ps(vy_min, _mm256_sub_ps(y, r));
@@ -1665,9 +1665,9 @@ void md_util_compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const floa
             }
         } else {
             for (; i < simd_count; i += simd_elem) {
-                __m256 x = _mm256_loadu_ps(in_x + i);
-                __m256 y = _mm256_loadu_ps(in_y + i);
-                __m256 z = _mm256_loadu_ps(in_z + i);
+                md_256 x = _mm256_loadu_ps(in_x + i);
+                md_256 y = _mm256_loadu_ps(in_y + i);
+                md_256 z = _mm256_loadu_ps(in_z + i);
 
                 vx_min = _mm256_min_ps(vx_min, x);
                 vy_min = _mm256_min_ps(vy_min, y);
@@ -1948,34 +1948,34 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
 
     acc_w  = _mm512_reduce_add_ps(v_acc_w);
 #elif defined(__AVX2__)
-    const __m256 v_scl_x = md_mm256_set1_ps((float)(TWO_PI / xyz_max.x));
-    const __m256 v_scl_y = md_mm256_set1_ps((float)(TWO_PI / xyz_max.y));
-    const __m256 v_scl_z = md_mm256_set1_ps((float)(TWO_PI / xyz_max.z));
-    __m256 v_acc_cx = md_mm256_setzero_ps();
-    __m256 v_acc_sx = md_mm256_setzero_ps();
-    __m256 v_acc_cy = md_mm256_setzero_ps();
-    __m256 v_acc_sy = md_mm256_setzero_ps();
-    __m256 v_acc_cz = md_mm256_setzero_ps();
-    __m256 v_acc_sz = md_mm256_setzero_ps();
-    __m256 v_acc_w = md_mm256_setzero_ps();
+    const md_256 v_scl_x = md_mm256_set1_ps((float)(TWO_PI / xyz_max.x));
+    const md_256 v_scl_y = md_mm256_set1_ps((float)(TWO_PI / xyz_max.y));
+    const md_256 v_scl_z = md_mm256_set1_ps((float)(TWO_PI / xyz_max.z));
+    md_256 v_acc_cx = md_mm256_setzero_ps();
+    md_256 v_acc_sx = md_mm256_setzero_ps();
+    md_256 v_acc_cy = md_mm256_setzero_ps();
+    md_256 v_acc_sy = md_mm256_setzero_ps();
+    md_256 v_acc_cz = md_mm256_setzero_ps();
+    md_256 v_acc_sz = md_mm256_setzero_ps();
+    md_256 v_acc_w = md_mm256_setzero_ps();
 
     const int64_t simd_count = ROUND_DOWN(count, 8);
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
-                __m256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
-                __m256 v_y = md_mm256_i32gather_ps(in_y, idx, 4);
-                __m256 v_z = md_mm256_i32gather_ps(in_z, idx, 4);
-                __m256 v_w = md_mm256_i32gather_ps(in_w, idx, 4);
+                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                md_256 v_y = md_mm256_i32gather_ps(in_y, idx, 4);
+                md_256 v_z = md_mm256_i32gather_ps(in_z, idx, 4);
+                md_256 v_w = md_mm256_i32gather_ps(in_w, idx, 4);
 
-                __m256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
-                __m256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
-                __m256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
+                md_256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
+                md_256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
+                md_256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
 
-                __m256 v_cx, v_sx;
-                __m256 v_cy, v_sy;
-                __m256 v_cz, v_sz;
+                md_256 v_cx, v_sx;
+                md_256 v_cy, v_sy;
+                md_256 v_cz, v_sz;
                 md_mm256_sincos_ps(v_theta_x, &v_sx, &v_cx);
                 md_mm256_sincos_ps(v_theta_y, &v_sy, &v_cy);
 				md_mm256_sincos_ps(v_theta_z, &v_sz, &v_cz);
@@ -1993,18 +1993,18 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
             }
         } else {
             for (; i < simd_count; i += 8) {
-                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
-                __m256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
-                __m256 v_y = md_mm256_i32gather_ps(in_y, idx, 4);
-                __m256 v_z = md_mm256_i32gather_ps(in_z, idx, 4);
+                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                md_256 v_y = md_mm256_i32gather_ps(in_y, idx, 4);
+                md_256 v_z = md_mm256_i32gather_ps(in_z, idx, 4);
 
-                __m256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
-                __m256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
-                __m256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
+                md_256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
+                md_256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
+                md_256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
 
-                __m256 v_cx, v_sx;
-                __m256 v_cy, v_sy;
-                __m256 v_cz, v_sz;
+                md_256 v_cx, v_sx;
+                md_256 v_cy, v_sy;
+                md_256 v_cz, v_sz;
                 md_mm256_sincos_ps(v_theta_x, &v_sx, &v_cx);
                 md_mm256_sincos_ps(v_theta_y, &v_sy, &v_cy);
                 md_mm256_sincos_ps(v_theta_z, &v_sz, &v_cz);
@@ -2022,18 +2022,18 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
     } else {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                __m256 v_x = md_mm256_loadu_ps(in_x + i);
-                __m256 v_y = md_mm256_loadu_ps(in_y + i);
-                __m256 v_z = md_mm256_loadu_ps(in_z + i);
-                __m256 v_w = md_mm256_loadu_ps(in_w + i);
+                md_256 v_x = md_mm256_loadu_ps(in_x + i);
+                md_256 v_y = md_mm256_loadu_ps(in_y + i);
+                md_256 v_z = md_mm256_loadu_ps(in_z + i);
+                md_256 v_w = md_mm256_loadu_ps(in_w + i);
 
-                __m256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
-                __m256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
-                __m256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
+                md_256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
+                md_256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
+                md_256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
 
-                __m256 v_cx, v_sx;
-                __m256 v_cy, v_sy;
-                __m256 v_cz, v_sz;
+                md_256 v_cx, v_sx;
+                md_256 v_cy, v_sy;
+                md_256 v_cz, v_sz;
                 md_mm256_sincos_ps(v_theta_x, &v_sx, &v_cx);
                 md_mm256_sincos_ps(v_theta_y, &v_sy, &v_cy);
                 md_mm256_sincos_ps(v_theta_z, &v_sz, &v_cz);
@@ -2051,17 +2051,17 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
             }
         } else {
             for (; i < simd_count; i += 8) {
-                __m256 v_x = md_mm256_loadu_ps(in_x + i);
-                __m256 v_y = md_mm256_loadu_ps(in_y + i);
-                __m256 v_z = md_mm256_loadu_ps(in_z + i);
+                md_256 v_x = md_mm256_loadu_ps(in_x + i);
+                md_256 v_y = md_mm256_loadu_ps(in_y + i);
+                md_256 v_z = md_mm256_loadu_ps(in_z + i);
 
-                __m256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
-                __m256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
-                __m256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
+                md_256 v_theta_x = md_mm256_mul_ps(v_x, v_scl_x);
+                md_256 v_theta_y = md_mm256_mul_ps(v_y, v_scl_y);
+                md_256 v_theta_z = md_mm256_mul_ps(v_z, v_scl_z);
 
-                __m256 v_cx, v_sx;
-                __m256 v_cy, v_sy;
-                __m256 v_cz, v_sz;
+                md_256 v_cx, v_sx;
+                md_256 v_cy, v_sy;
+                md_256 v_cz, v_sz;
                 md_mm256_sincos_ps(v_theta_x, &v_sx, &v_cx);
                 md_mm256_sincos_ps(v_theta_y, &v_sy, &v_cy);
                 md_mm256_sincos_ps(v_theta_z, &v_sz, &v_cz);
@@ -2090,34 +2090,34 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
     acc_w  = md_mm256_reduce_add_ps(v_acc_w);
 
 #elif defined(__SSE2__)
-    const __m128 v_scl_x = md_mm_set1_ps((float)(TWO_PI / xyz_max.x));
-    const __m128 v_scl_y = md_mm_set1_ps((float)(TWO_PI / xyz_max.y));
-    const __m128 v_scl_z = md_mm_set1_ps((float)(TWO_PI / xyz_max.z));
-    __m128 v_acc_cx = md_mm_setzero_ps();
-    __m128 v_acc_sx = md_mm_setzero_ps();
-    __m128 v_acc_cy = md_mm_setzero_ps();
-    __m128 v_acc_sy = md_mm_setzero_ps();
-    __m128 v_acc_cz = md_mm_setzero_ps();
-    __m128 v_acc_sz = md_mm_setzero_ps();
-    __m128 v_acc_w = md_mm_setzero_ps();
+    const md_128 v_scl_x = md_mm_set1_ps((float)(TWO_PI / xyz_max.x));
+    const md_128 v_scl_y = md_mm_set1_ps((float)(TWO_PI / xyz_max.y));
+    const md_128 v_scl_z = md_mm_set1_ps((float)(TWO_PI / xyz_max.z));
+    md_128 v_acc_cx = md_mm_setzero_ps();
+    md_128 v_acc_sx = md_mm_setzero_ps();
+    md_128 v_acc_cy = md_mm_setzero_ps();
+    md_128 v_acc_sy = md_mm_setzero_ps();
+    md_128 v_acc_cz = md_mm_setzero_ps();
+    md_128 v_acc_sz = md_mm_setzero_ps();
+    md_128 v_acc_w = md_mm_setzero_ps();
 
     const int64_t simd_count = ROUND_DOWN(count, 4);
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                __m128i idx = md_mm_loadu_epi32(in_idx + i);
-                __m128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
-                __m128 v_y = md_mm_i32gather_ps(in_y, idx, 4);
-                __m128 v_z = md_mm_i32gather_ps(in_z, idx, 4);
-                __m128 v_w = md_mm_i32gather_ps(in_w, idx, 4);
+                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
+                md_128 v_y = md_mm_i32gather_ps(in_y, idx, 4);
+                md_128 v_z = md_mm_i32gather_ps(in_z, idx, 4);
+                md_128 v_w = md_mm_i32gather_ps(in_w, idx, 4);
 
-                __m128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
-                __m128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
-                __m128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
+                md_128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
+                md_128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
+                md_128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
 
-                __m128 v_cx, v_sx;
-                __m128 v_cy, v_sy;
-                __m128 v_cz, v_sz;
+                md_128 v_cx, v_sx;
+                md_128 v_cy, v_sy;
+                md_128 v_cz, v_sz;
                 md_mm_sincos_ps(v_theta_x, &v_sx, &v_cx);
                 md_mm_sincos_ps(v_theta_y, &v_sy, &v_cy);
                 md_mm_sincos_ps(v_theta_z, &v_sz, &v_cz);
@@ -2135,18 +2135,18 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
             }
         } else {
             for (; i < simd_count; i += 4) {
-                __m128i idx = md_mm_loadu_epi32(in_idx + i);
-                __m128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
-                __m128 v_y = md_mm_i32gather_ps(in_y, idx, 4);
-                __m128 v_z = md_mm_i32gather_ps(in_z, idx, 4);
+                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
+                md_128 v_y = md_mm_i32gather_ps(in_y, idx, 4);
+                md_128 v_z = md_mm_i32gather_ps(in_z, idx, 4);
 
-                __m128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
-                __m128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
-                __m128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
+                md_128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
+                md_128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
+                md_128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
 
-                __m128 v_cx, v_sx;
-                __m128 v_cy, v_sy;
-                __m128 v_cz, v_sz;
+                md_128 v_cx, v_sx;
+                md_128 v_cy, v_sy;
+                md_128 v_cz, v_sz;
                 md_mm_sincos_ps(v_theta_x, &v_sx, &v_cx);
                 md_mm_sincos_ps(v_theta_y, &v_sy, &v_cy);
                 md_mm_sincos_ps(v_theta_z, &v_sz, &v_cz);
@@ -2164,18 +2164,18 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
     } else {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                __m128 v_x = md_mm_loadu_ps(in_x + i);
-                __m128 v_y = md_mm_loadu_ps(in_y + i);
-                __m128 v_z = md_mm_loadu_ps(in_z + i);
-                __m128 v_w = md_mm_loadu_ps(in_w + i);
+                md_128 v_x = md_mm_loadu_ps(in_x + i);
+                md_128 v_y = md_mm_loadu_ps(in_y + i);
+                md_128 v_z = md_mm_loadu_ps(in_z + i);
+                md_128 v_w = md_mm_loadu_ps(in_w + i);
 
-                __m128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
-                __m128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
-                __m128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
+                md_128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
+                md_128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
+                md_128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
 
-                __m128 v_cx, v_sx;
-                __m128 v_cy, v_sy;
-                __m128 v_cz, v_sz;
+                md_128 v_cx, v_sx;
+                md_128 v_cy, v_sy;
+                md_128 v_cz, v_sz;
                 md_mm_sincos_ps(v_theta_x, &v_sx, &v_cx);
                 md_mm_sincos_ps(v_theta_y, &v_sy, &v_cy);
                 md_mm_sincos_ps(v_theta_z, &v_sz, &v_cz);
@@ -2193,17 +2193,17 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
             }
         } else {
             for (; i < simd_count; i += 4) {
-                __m128 v_x = md_mm_loadu_ps(in_x + i);
-                __m128 v_y = md_mm_loadu_ps(in_y + i);
-                __m128 v_z = md_mm_loadu_ps(in_z + i);
+                md_128 v_x = md_mm_loadu_ps(in_x + i);
+                md_128 v_y = md_mm_loadu_ps(in_y + i);
+                md_128 v_z = md_mm_loadu_ps(in_z + i);
 
-                __m128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
-                __m128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
-                __m128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
+                md_128 v_theta_x = md_mm_mul_ps(v_x, v_scl_x);
+                md_128 v_theta_y = md_mm_mul_ps(v_y, v_scl_y);
+                md_128 v_theta_z = md_mm_mul_ps(v_z, v_scl_z);
 
-                __m128 v_cx, v_sx;
-                __m128 v_cy, v_sy;
-                __m128 v_cz, v_sz;
+                md_128 v_cx, v_sx;
+                md_128 v_cy, v_sy;
+                md_128 v_cz, v_sz;
                 md_mm_sincos_ps(v_theta_x, &v_sx, &v_cx);
                 md_mm_sincos_ps(v_theta_y, &v_sy, &v_cy);
                 md_mm_sincos_ps(v_theta_z, &v_sz, &v_cz);
@@ -2399,20 +2399,20 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     acc_c = md_mm512_reduce_add_ps(v_acc_c);
     acc_w = md_mm512_reduce_add_ps(v_acc_w);
 #elif defined(__AVX2__)
-    const __m256 v_scl = md_mm256_set1_ps((float)(TWO_PI / x_max));
-    __m256 v_acc_c = md_mm256_setzero_ps();
-    __m256 v_acc_s = md_mm256_setzero_ps();
-    __m256 v_acc_w = md_mm256_setzero_ps();
+    const md_256 v_scl = md_mm256_set1_ps((float)(TWO_PI / x_max));
+    md_256 v_acc_c = md_mm256_setzero_ps();
+    md_256 v_acc_s = md_mm256_setzero_ps();
+    md_256 v_acc_w = md_mm256_setzero_ps();
 
     const int64_t simd_count = ROUND_DOWN(count, 8);
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
-                __m256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
-                __m256 v_w = md_mm256_i32gather_ps(in_w, idx, 4);
-                __m256 v_theta = md_mm256_mul_ps(v_x, v_scl);
-                __m256 v_c, v_s;
+                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                md_256 v_w = md_mm256_i32gather_ps(in_w, idx, 4);
+                md_256 v_theta = md_mm256_mul_ps(v_x, v_scl);
+                md_256 v_c, v_s;
                 md_mm256_sincos_ps(v_theta, &v_s, &v_c);
                 v_acc_s = md_mm256_add_ps(v_acc_s, md_mm256_mul_ps(v_s, v_w));
                 v_acc_c = md_mm256_add_ps(v_acc_c, md_mm256_mul_ps(v_c, v_w));
@@ -2420,10 +2420,10 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
             }
         } else {
             for (; i < simd_count; i += 8) {
-                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
-                __m256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
-                __m256 v_theta = md_mm256_mul_ps(v_x, v_scl);
-                __m256 v_c, v_s;
+                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
+                md_256 v_theta = md_mm256_mul_ps(v_x, v_scl);
+                md_256 v_c, v_s;
                 md_mm256_sincos_ps(v_theta, &v_s, &v_c);
                 v_acc_s = md_mm256_add_ps(v_acc_s, v_s);
                 v_acc_c = md_mm256_add_ps(v_acc_c, v_c);
@@ -2432,10 +2432,10 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     } else {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                __m256 v_x = md_mm256_loadu_ps(in_x + i);
-                __m256 v_w = md_mm256_loadu_ps(in_w + i);
-                __m256 v_theta = md_mm256_mul_ps(v_x, v_scl);
-                __m256 v_c, v_s;
+                md_256 v_x = md_mm256_loadu_ps(in_x + i);
+                md_256 v_w = md_mm256_loadu_ps(in_w + i);
+                md_256 v_theta = md_mm256_mul_ps(v_x, v_scl);
+                md_256 v_c, v_s;
                 md_mm256_sincos_ps(v_theta, &v_s, &v_c);
                 v_acc_s = md_mm256_add_ps(v_acc_s, md_mm256_mul_ps(v_s, v_w));
                 v_acc_c = md_mm256_add_ps(v_acc_c, md_mm256_mul_ps(v_c, v_w));
@@ -2443,9 +2443,9 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
             }
         } else {
             for (; i < simd_count; i += 8) {
-                __m256 v_x = md_mm256_loadu_ps(in_x + i);
-                __m256 v_theta = md_mm256_mul_ps(v_x, v_scl);
-                __m256 v_c, v_s;
+                md_256 v_x = md_mm256_loadu_ps(in_x + i);
+                md_256 v_theta = md_mm256_mul_ps(v_x, v_scl);
+                md_256 v_c, v_s;
                 md_mm256_sincos_ps(v_theta, &v_s, &v_c);
                 v_acc_s = md_mm256_add_ps(v_acc_s, v_s);
                 v_acc_c = md_mm256_add_ps(v_acc_c, v_c);
@@ -2457,20 +2457,20 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     acc_c = md_mm256_reduce_add_ps(v_acc_c);
     acc_w = md_mm256_reduce_add_ps(v_acc_w);
 #elif defined(__SSE2__)
-    const __m128 v_scl = md_mm_set1_ps((float)(TWO_PI / x_max));
-    __m128 v_acc_c = md_mm_setzero_ps();
-    __m128 v_acc_s = md_mm_setzero_ps();
-    __m128 v_acc_w = md_mm_setzero_ps();
+    const md_128 v_scl = md_mm_set1_ps((float)(TWO_PI / x_max));
+    md_128 v_acc_c = md_mm_setzero_ps();
+    md_128 v_acc_s = md_mm_setzero_ps();
+    md_128 v_acc_w = md_mm_setzero_ps();
 
     const int64_t simd_count = ROUND_DOWN(count, 4);
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                __m128i idx = md_mm_loadu_epi32(in_idx + i);
-                __m128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
-                __m128 v_w = md_mm_i32gather_ps(in_w, idx, 4);
-                __m128 v_theta = md_mm_mul_ps(v_x, v_scl);
-                __m128 v_c, v_s;
+                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
+                md_128 v_w = md_mm_i32gather_ps(in_w, idx, 4);
+                md_128 v_theta = md_mm_mul_ps(v_x, v_scl);
+                md_128 v_c, v_s;
                 md_mm_sincos_ps(v_theta, &v_s, &v_c);
                 v_acc_s = md_mm_add_ps(v_acc_s, md_mm_mul_ps(v_s, v_w));
                 v_acc_c = md_mm_add_ps(v_acc_c, md_mm_mul_ps(v_c, v_w));
@@ -2478,10 +2478,10 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
             }
         } else {
             for (; i < simd_count; i += 4) {
-                __m128i idx = md_mm_loadu_epi32(in_idx + i);
-                __m128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
-                __m128 v_theta = md_mm_mul_ps(v_x, v_scl);
-                __m128 v_c, v_s;
+                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
+                md_128 v_theta = md_mm_mul_ps(v_x, v_scl);
+                md_128 v_c, v_s;
                 md_mm_sincos_ps(v_theta, &v_s, &v_c);
                 v_acc_s = md_mm_add_ps(v_acc_s, v_s);
                 v_acc_c = md_mm_add_ps(v_acc_c, v_c);
@@ -2490,10 +2490,10 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     } else {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                __m128 v_x = md_mm_loadu_ps(in_x + i);
-                __m128 v_w = md_mm_loadu_ps(in_w + i);
-                __m128 v_theta = md_mm_mul_ps(v_x, v_scl);
-                __m128 v_c, v_s;
+                md_128 v_x = md_mm_loadu_ps(in_x + i);
+                md_128 v_w = md_mm_loadu_ps(in_w + i);
+                md_128 v_theta = md_mm_mul_ps(v_x, v_scl);
+                md_128 v_c, v_s;
                 md_mm_sincos_ps(v_theta, &v_s, &v_c);
                 v_acc_s = md_mm_add_ps(v_acc_s, md_mm_mul_ps(v_s, v_w));
                 v_acc_c = md_mm_add_ps(v_acc_c, md_mm_mul_ps(v_c, v_w));
@@ -2501,9 +2501,9 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
             }
         } else {
             for (; i < simd_count; i += 4) {
-                __m128 v_x = md_mm_loadu_ps(in_x + i);
-                __m128 v_theta = md_mm_mul_ps(v_x, v_scl);
-                __m128 v_c, v_s;
+                md_128 v_x = md_mm_loadu_ps(in_x + i);
+                md_128 v_theta = md_mm_mul_ps(v_x, v_scl);
+                md_128 v_c, v_s;
                 md_mm_sincos_ps(v_theta, &v_s, &v_c);
                 v_acc_s = md_mm_add_ps(v_acc_s, v_s);
                 v_acc_c = md_mm_add_ps(v_acc_c, v_c);
@@ -2638,20 +2638,20 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
 #elif defined(__AVX2__)
     const int64_t simd_count = ROUND_DOWN(count, 8);
     if (simd_count > 0) {
-       const __m256 v_ext = md_mm256_set1_ps(x_max);
-        __m256 v_acc_x = md_mm256_setzero_ps();
-        __m256 v_acc_w = md_mm256_setzero_ps();
+       const md_256 v_ext = md_mm256_set1_ps(x_max);
+        md_256 v_acc_x = md_mm256_setzero_ps();
+        md_256 v_acc_w = md_mm256_setzero_ps();
         i += 8;
         if (in_idx) {
-            __m256i idx = md_mm256_loadu_epi32(in_idx);
+            md_256i idx = md_mm256_loadu_epi32(in_idx);
             if (in_w) {
                 v_acc_x = md_mm256_i32gather_ps(in_x, idx, 4);
                 v_acc_w = md_mm256_i32gather_ps(in_w, idx, 4);
                 for (; i < simd_count; i += 8) {
                     idx = md_mm256_loadu_epi32(in_idx + i);
-                    __m256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
-                    __m256 x = md_mm256_i32gather_ps(in_x, idx, 4);
-                    __m256 w = md_mm256_i32gather_ps(in_w, idx, 4);
+                    md_256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+                    md_256 x = md_mm256_i32gather_ps(in_x, idx, 4);
+                    md_256 w = md_mm256_i32gather_ps(in_w, idx, 4);
                     x = md_mm256_deperiodize_ps(x, r, v_ext);
                     v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(x, w));
                     v_acc_w = md_mm256_add_ps(v_acc_w, w);
@@ -2661,8 +2661,8 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_w = md_mm256_set1_ps(8);
                 for (; i < simd_count; i += 8) {
                     idx = md_mm256_loadu_epi32(in_idx + i);
-                    __m256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
-                    __m256 x = md_mm256_i32gather_ps(in_x, idx, 4);
+                    md_256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+                    md_256 x = md_mm256_i32gather_ps(in_x, idx, 4);
                     x = md_mm256_deperiodize_ps(x, r, v_ext);
                     v_acc_x = md_mm256_add_ps(v_acc_x, x);
                     v_acc_w = md_mm256_add_ps(v_acc_w, md_mm256_set1_ps(8));
@@ -2673,9 +2673,9 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_x = md_mm256_loadu_ps(in_x);
                 v_acc_w = md_mm256_loadu_ps(in_w);
                 for (; i < simd_count; i += 8) {
-                    __m256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
-                    __m256 x = md_mm256_loadu_ps(in_x + i);
-                    __m256 w = md_mm256_loadu_ps(in_w + i);
+                    md_256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+                    md_256 x = md_mm256_loadu_ps(in_x + i);
+                    md_256 w = md_mm256_loadu_ps(in_w + i);
                     x = md_mm256_deperiodize_ps(x, r, v_ext);
                     v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(x, w));
                     v_acc_w = md_mm256_add_ps(v_acc_w, w);
@@ -2684,8 +2684,8 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_x = md_mm256_loadu_ps(in_x);
                 v_acc_w = md_mm256_set1_ps(8);
                 for (; i < simd_count; i += 8) {
-                    __m256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
-                    __m256 x = md_mm256_loadu_ps(in_x + i);
+                    md_256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+                    md_256 x = md_mm256_loadu_ps(in_x + i);
                     x = md_mm256_deperiodize_ps(x, r, v_ext);
                     v_acc_x = md_mm256_add_ps(v_acc_x, x);
                     v_acc_w = md_mm256_add_ps(v_acc_w, md_mm256_set1_ps(8));
@@ -2698,20 +2698,20 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
 #elif defined(__SSE2__)
     const int64_t simd_count = ROUND_DOWN(count, 4);
     if (simd_count > 0) {
-        const __m128 v_ext = md_mm_set1_ps(x_max);
-        __m128 v_acc_x = md_mm_setzero_ps();
-        __m128 v_acc_w = md_mm_setzero_ps();
+        const md_128 v_ext = md_mm_set1_ps(x_max);
+        md_128 v_acc_x = md_mm_setzero_ps();
+        md_128 v_acc_w = md_mm_setzero_ps();
         i += 8;
         if (in_idx) {
-            __m128i idx = md_mm_loadu_epi32(in_idx);
+            md_128i idx = md_mm_loadu_epi32(in_idx);
             if (in_w) {
                 v_acc_x = md_mm_i32gather_ps(in_x, idx, 4);
                 v_acc_w = md_mm_i32gather_ps(in_w, idx, 4);
                 for (; i < simd_count; i += 4) {
                     idx = md_mm_loadu_epi32(in_idx + i);
-                    __m128 r = md_mm_div_ps(v_acc_x, v_acc_w);
-                    __m128 x = md_mm_i32gather_ps(in_x, idx, 4);
-                    __m128 w = md_mm_i32gather_ps(in_w, idx, 4);
+                    md_128 r = md_mm_div_ps(v_acc_x, v_acc_w);
+                    md_128 x = md_mm_i32gather_ps(in_x, idx, 4);
+                    md_128 w = md_mm_i32gather_ps(in_w, idx, 4);
                     x = md_mm_deperiodize_ps(x, r, v_ext);
                     v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(x, w));
                     v_acc_w = md_mm_add_ps(v_acc_w, w);
@@ -2721,8 +2721,8 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_w = md_mm_set1_ps(4);
                 for (; i < simd_count; i += 4) {
                     idx = md_mm_loadu_epi32(in_idx + i);
-                    __m128 r = md_mm_div_ps(v_acc_x, v_acc_w);
-                    __m128 x = md_mm_i32gather_ps(in_x, idx, 4);
+                    md_128 r = md_mm_div_ps(v_acc_x, v_acc_w);
+                    md_128 x = md_mm_i32gather_ps(in_x, idx, 4);
                     x = md_mm_deperiodize_ps(x, r, v_ext);
                     v_acc_x = md_mm_add_ps(v_acc_x, x);
                     v_acc_w = md_mm_add_ps(v_acc_w, md_mm_set1_ps(4));
@@ -2733,9 +2733,9 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_x = md_mm_loadu_ps(in_x);
                 v_acc_w = md_mm_loadu_ps(in_w);
                 for (; i < simd_count; i += 4) {
-                    __m128 r = md_mm_div_ps(v_acc_x, v_acc_w);
-                    __m128 x = md_mm_loadu_ps(in_x + i);
-                    __m128 w = md_mm_loadu_ps(in_w + i);
+                    md_128 r = md_mm_div_ps(v_acc_x, v_acc_w);
+                    md_128 x = md_mm_loadu_ps(in_x + i);
+                    md_128 w = md_mm_loadu_ps(in_w + i);
                     x = md_mm_deperiodize_ps(x, r, v_ext);
                     v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(x, w));
                     v_acc_w = md_mm_add_ps(v_acc_w, w);
@@ -2744,8 +2744,8 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_x = md_mm_loadu_ps(in_x);
                 v_acc_w = md_mm_set1_ps(4);
                 for (; i < simd_count; i += 4) {
-                    __m128 r = md_mm_div_ps(v_acc_x, v_acc_w);
-                    __m128 x = md_mm_loadu_ps(in_x + i);
+                    md_128 r = md_mm_div_ps(v_acc_x, v_acc_w);
+                    md_128 x = md_mm_loadu_ps(in_x + i);
                     x = md_mm_deperiodize_ps(x, r, v_ext);
                     v_acc_x = md_mm_add_ps(v_acc_x, x);
                     v_acc_w = md_mm_add_ps(v_acc_w, md_mm_set1_ps(4));
@@ -2850,36 +2850,36 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
     acc_x = md_mm512_reduce_add_ps(v_acc_x);
     acc_w = md_mm512_reduce_add_ps(v_acc_w);
 #elif defined(__AVX2__)
-    __m256 v_acc_x = md_mm256_setzero_ps();
-    __m256 v_acc_w = md_mm256_setzero_ps();
+    md_256 v_acc_x = md_mm256_setzero_ps();
+    md_256 v_acc_w = md_mm256_setzero_ps();
     const int64_t simd_count = ROUND_DOWN(count, 8);
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
-                __m256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
-                __m256 v_w  = md_mm256_i32gather_ps(in_w, idx, 4);
+                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
+                md_256 v_w  = md_mm256_i32gather_ps(in_w, idx, 4);
                 v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(v_x, v_w));
                 v_acc_w = md_mm256_add_ps(v_acc_w, v_w);
             }
         } else {
             for (; i < simd_count; i += 8) {
-                __m256i idx = md_mm256_loadu_epi32(in_idx + i);
-                __m256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
+                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
                 v_acc_x = md_mm256_add_ps(v_acc_x, v_x);
             }
         }
     } else {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                __m256 v_x = md_mm256_loadu_ps(in_x + i);
-                __m256 v_w = md_mm256_loadu_ps(in_w + i);
+                md_256 v_x = md_mm256_loadu_ps(in_x + i);
+                md_256 v_w = md_mm256_loadu_ps(in_w + i);
                 v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(v_x, v_w));
                 v_acc_w = md_mm256_add_ps(v_acc_w, v_w);
             }
         } else {
             for (; i < simd_count; i += 8) {
-                __m256 v_x = md_mm256_loadu_ps(in_x + i);
+                md_256 v_x = md_mm256_loadu_ps(in_x + i);
                 v_acc_x = md_mm256_add_ps(v_acc_x, v_x);
             }
         }
@@ -2888,36 +2888,36 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
     acc_x = md_mm256_reduce_add_ps(v_acc_x);
     acc_w = md_mm256_reduce_add_ps(v_acc_w);
 #elif defined(__SSE2__)
-    __m128 v_acc_x = md_mm_setzero_ps();
-    __m128 v_acc_w = md_mm_setzero_ps();
+    md_128 v_acc_x = md_mm_setzero_ps();
+    md_128 v_acc_w = md_mm_setzero_ps();
     const int64_t simd_count = ROUND_DOWN(count, 4);
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                __m128i idx = md_mm_loadu_epi32(in_idx + i);
-                __m128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
-                __m128 v_w  = md_mm_i32gather_ps(in_w, idx, 4);
+                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
+                md_128 v_w  = md_mm_i32gather_ps(in_w, idx, 4);
                 v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(v_x, v_w));
                 v_acc_w = md_mm_add_ps(v_acc_w, v_w);
             }
         } else {
             for (; i < simd_count; i += 4) {
-                __m128i idx = md_mm_loadu_epi32(in_idx + i);
-                __m128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
+                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
                 v_acc_x = md_mm_add_ps(v_acc_x, v_x);
             }
         }
     } else {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                __m128 v_x = md_mm_loadu_ps(in_x + i);
-                __m128 v_w = md_mm_loadu_ps(in_w + i);
+                md_128 v_x = md_mm_loadu_ps(in_x + i);
+                md_128 v_w = md_mm_loadu_ps(in_w + i);
                 v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(v_x, v_w));
                 v_acc_w = md_mm_add_ps(v_acc_w, v_w);
             }
         } else {
             for (; i < simd_count; i += 4) {
-                __m128 v_x = md_mm_loadu_ps(in_x + i);
+                md_128 v_x = md_mm_loadu_ps(in_x + i);
                 v_acc_x = md_mm_add_ps(v_acc_x, v_x);
             }
         }
@@ -3061,21 +3061,21 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
     acc_z = md_mm512_reduce_add_ps(vz);
     acc_w = md_mm512_reduce_add_ps(vw);
 #elif defined (__AVX__)
-    __m256 vx = _mm256_setzero_ps();
-    __m256 vy = _mm256_setzero_ps();
-    __m256 vz = _mm256_setzero_ps();
-    __m256 vw = _mm256_setzero_ps();
+    md_256 vx = _mm256_setzero_ps();
+    md_256 vy = _mm256_setzero_ps();
+    md_256 vz = _mm256_setzero_ps();
+    md_256 vw = _mm256_setzero_ps();
 
     const int64_t simd_count = ROUND_DOWN(count, 8);
 
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                __m256i idx = _mm256_loadu_epi32(in_idx + i);
-                __m256 x    = _mm256_i32gather_ps(in_x, idx, 4);
-                __m256 y    = _mm256_i32gather_ps(in_y, idx, 4);
-                __m256 z    = _mm256_i32gather_ps(in_z, idx, 4);
-                __m256 w    = _mm256_i32gather_ps(in_w, idx, 4);
+                md_256i idx = _mm256_loadu_epi32(in_idx + i);
+                md_256 x    = _mm256_i32gather_ps(in_x, idx, 4);
+                md_256 y    = _mm256_i32gather_ps(in_y, idx, 4);
+                md_256 z    = _mm256_i32gather_ps(in_z, idx, 4);
+                md_256 w    = _mm256_i32gather_ps(in_w, idx, 4);
 
                 vx = _mm256_add_ps(vx, _mm256_mul_ps(x, w));
                 vy = _mm256_add_ps(vy, _mm256_mul_ps(y, w));
@@ -3084,10 +3084,10 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
             }
         } else {
             for (; i < simd_count; i += 8) {
-                __m256i idx = _mm256_loadu_epi32(in_idx + i);
-                __m256 x    = _mm256_i32gather_ps(in_x, idx, 4);
-                __m256 y    = _mm256_i32gather_ps(in_y, idx, 4);
-                __m256 z    = _mm256_i32gather_ps(in_z, idx, 4);
+                md_256i idx = _mm256_loadu_epi32(in_idx + i);
+                md_256 x    = _mm256_i32gather_ps(in_x, idx, 4);
+                md_256 y    = _mm256_i32gather_ps(in_y, idx, 4);
+                md_256 z    = _mm256_i32gather_ps(in_z, idx, 4);
 
                 vx = _mm256_add_ps(vx, x);
                 vy = _mm256_add_ps(vy, y);
@@ -3097,10 +3097,10 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
     } else {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                __m256 x = _mm256_loadu_ps(in_x + i);
-                __m256 y = _mm256_loadu_ps(in_y + i);
-                __m256 z = _mm256_loadu_ps(in_z + i);
-                __m256 w = _mm256_loadu_ps(in_w + i);
+                md_256 x = _mm256_loadu_ps(in_x + i);
+                md_256 y = _mm256_loadu_ps(in_y + i);
+                md_256 z = _mm256_loadu_ps(in_z + i);
+                md_256 w = _mm256_loadu_ps(in_w + i);
 
                 vx = _mm256_add_ps(vx, _mm256_mul_ps(x, w));
                 vy = _mm256_add_ps(vy, _mm256_mul_ps(y, w));
@@ -3109,9 +3109,9 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
             }
         } else {
             for (; i < simd_count; i += 8) {
-                __m256 x = _mm256_loadu_ps(in_x + i);
-                __m256 y = _mm256_loadu_ps(in_y + i);
-                __m256 z = _mm256_loadu_ps(in_z + i);
+                md_256 x = _mm256_loadu_ps(in_x + i);
+                md_256 y = _mm256_loadu_ps(in_y + i);
+                md_256 z = _mm256_loadu_ps(in_z + i);
 
                 vx = _mm256_add_ps(vx, x);
                 vy = _mm256_add_ps(vy, y);
@@ -3126,21 +3126,21 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
     acc_w = md_mm256_reduce_add_ps(vw);
 
 #elif defined(__SSE2__)
-    __m128 vx = _mm_setzero_ps();
-    __m128 vy = _mm_setzero_ps();
-    __m128 vz = _mm_setzero_ps();
-    __m128 vw = _mm_setzero_ps();
+    md_128 vx = _mm_setzero_ps();
+    md_128 vy = _mm_setzero_ps();
+    md_128 vz = _mm_setzero_ps();
+    md_128 vw = _mm_setzero_ps();
 
     const int64_t simd_count = ROUND_DOWN(count, 4);
 
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                __m128i idx = _mm_loadu_epi32(in_idx + i);
-                __m128 x    = _mm_i32gather_ps(in_x, idx, 4);
-                __m128 y    = _mm_i32gather_ps(in_y, idx, 4);
-                __m128 z    = _mm_i32gather_ps(in_z, idx, 4);
-                __m128 w    = _mm_i32gather_ps(in_w, idx, 4);
+                md_128i idx = _mm_loadu_epi32(in_idx + i);
+                md_128 x    = _mm_i32gather_ps(in_x, idx, 4);
+                md_128 y    = _mm_i32gather_ps(in_y, idx, 4);
+                md_128 z    = _mm_i32gather_ps(in_z, idx, 4);
+                md_128 w    = _mm_i32gather_ps(in_w, idx, 4);
 
                 vx = _mm_add_ps(vx, _mm_mul_ps(x, w));
                 vy = _mm_add_ps(vy, _mm_mul_ps(y, w));
@@ -3149,10 +3149,10 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
             }
         } else {
             for (; i < simd_count; i += 4) {
-                __m128i idx = _mm_loadu_epi32(in_idx + i);
-                __m128 x    = _mm_i32gather_ps(in_x, idx, 4);
-                __m128 y    = _mm_i32gather_ps(in_y, idx, 4);
-                __m128 z    = _mm_i32gather_ps(in_z, idx, 4);
+                md_128i idx = _mm_loadu_epi32(in_idx + i);
+                md_128 x    = _mm_i32gather_ps(in_x, idx, 4);
+                md_128 y    = _mm_i32gather_ps(in_y, idx, 4);
+                md_128 z    = _mm_i32gather_ps(in_z, idx, 4);
 
                 vx = _mm_add_ps(vx, x);
                 vy = _mm_add_ps(vy, y);
@@ -3162,10 +3162,10 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
     } else {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                __m128 x = _mm_loadu_ps(in_x + i);
-                __m128 y = _mm_loadu_ps(in_y + i);
-                __m128 z = _mm_loadu_ps(in_z + i);
-                __m128 w = _mm_loadu_ps(in_w + i);
+                md_128 x = _mm_loadu_ps(in_x + i);
+                md_128 y = _mm_loadu_ps(in_y + i);
+                md_128 z = _mm_loadu_ps(in_z + i);
+                md_128 w = _mm_loadu_ps(in_w + i);
 
                 vx = _mm_add_ps(vx, _mm_mul_ps(x, w));
                 vy = _mm_add_ps(vy, _mm_mul_ps(y, w));
@@ -3174,9 +3174,9 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
             }
         } else {
             for (; i < simd_count; i += 4) {
-                __m128 x = _mm_loadu_ps(in_x + i);
-                __m128 y = _mm_loadu_ps(in_y + i);
-                __m128 z = _mm_loadu_ps(in_z + i);
+                md_128 x = _mm_loadu_ps(in_x + i);
+                md_128 y = _mm_loadu_ps(in_y + i);
+                md_128 z = _mm_loadu_ps(in_z + i);
 
                 vx = _mm_add_ps(vx, x);
                 vy = _mm_add_ps(vy, y);
@@ -3853,13 +3853,13 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
     int64_t i = 0;
     const int64_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
-        __m256 x0 = md_mm256_loadu_ps(src_coord[0].x + i);
-        __m256 y0 = md_mm256_loadu_ps(src_coord[0].y + i);
-        __m256 z0 = md_mm256_loadu_ps(src_coord[0].z + i);
+        md_256 x0 = md_mm256_loadu_ps(src_coord[0].x + i);
+        md_256 y0 = md_mm256_loadu_ps(src_coord[0].y + i);
+        md_256 z0 = md_mm256_loadu_ps(src_coord[0].z + i);
 
-        __m256 x1 = md_mm256_loadu_ps(src_coord[1].x + i);
-        __m256 y1 = md_mm256_loadu_ps(src_coord[1].y + i);
-        __m256 z1 = md_mm256_loadu_ps(src_coord[1].z + i);
+        md_256 x1 = md_mm256_loadu_ps(src_coord[1].x + i);
+        md_256 y1 = md_mm256_loadu_ps(src_coord[1].y + i);
+        md_256 z1 = md_mm256_loadu_ps(src_coord[1].z + i);
 
         switch (pbc_mask)
         {
@@ -3893,9 +3893,9 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
             break;
         }
 
-        __m256 x = md_mm256_lerp_ps(x0, x1, t);
-        __m256 y = md_mm256_lerp_ps(y0, y1, t);
-        __m256 z = md_mm256_lerp_ps(z0, z1, t);
+        md_256 x = md_mm256_lerp_ps(x0, x1, t);
+        md_256 y = md_mm256_lerp_ps(y0, y1, t);
+        md_256 z = md_mm256_lerp_ps(z0, z1, t);
 
         md_mm256_storeu_ps(dst_coord.x + i, x);
         md_mm256_storeu_ps(dst_coord.y + i, y);
@@ -3933,21 +3933,21 @@ bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_s
     int64_t i = 0;
     const int64_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
-        __m256 x0 = md_mm256_loadu_ps(src_coord[0].x + i);
-        __m256 y0 = md_mm256_loadu_ps(src_coord[0].y + i);
-        __m256 z0 = md_mm256_loadu_ps(src_coord[0].z + i);
+        md_256 x0 = md_mm256_loadu_ps(src_coord[0].x + i);
+        md_256 y0 = md_mm256_loadu_ps(src_coord[0].y + i);
+        md_256 z0 = md_mm256_loadu_ps(src_coord[0].z + i);
 
-        __m256 x1 = md_mm256_loadu_ps(src_coord[1].x + i);
-        __m256 y1 = md_mm256_loadu_ps(src_coord[1].y + i);
-        __m256 z1 = md_mm256_loadu_ps(src_coord[1].z + i);
+        md_256 x1 = md_mm256_loadu_ps(src_coord[1].x + i);
+        md_256 y1 = md_mm256_loadu_ps(src_coord[1].y + i);
+        md_256 z1 = md_mm256_loadu_ps(src_coord[1].z + i);
 
-        __m256 x2 = md_mm256_loadu_ps(src_coord[2].x + i);
-        __m256 y2 = md_mm256_loadu_ps(src_coord[2].y + i);
-        __m256 z2 = md_mm256_loadu_ps(src_coord[2].z + i);
+        md_256 x2 = md_mm256_loadu_ps(src_coord[2].x + i);
+        md_256 y2 = md_mm256_loadu_ps(src_coord[2].y + i);
+        md_256 z2 = md_mm256_loadu_ps(src_coord[2].z + i);
 
-        __m256 x3 = md_mm256_loadu_ps(src_coord[3].x + i);
-        __m256 y3 = md_mm256_loadu_ps(src_coord[3].y + i);
-        __m256 z3 = md_mm256_loadu_ps(src_coord[3].z + i);
+        md_256 x3 = md_mm256_loadu_ps(src_coord[3].x + i);
+        md_256 y3 = md_mm256_loadu_ps(src_coord[3].y + i);
+        md_256 z3 = md_mm256_loadu_ps(src_coord[3].z + i);
 
         switch (pbc_mask) {
         case 1:
@@ -4004,9 +4004,9 @@ bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_s
             break;
         }
 
-        const __m256 x = md_mm256_cubic_spline_ps(x0, x1, x2, x3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
-        const __m256 y = md_mm256_cubic_spline_ps(y0, y1, y2, y3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
-        const __m256 z = md_mm256_cubic_spline_ps(z0, z1, z2, z3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
+        const md_256 x = md_mm256_cubic_spline_ps(x0, x1, x2, x3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
+        const md_256 y = md_mm256_cubic_spline_ps(y0, y1, y2, y3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
+        const md_256 z = md_mm256_cubic_spline_ps(z0, z1, z2, z3, md_mm256_set1_ps(t), md_mm256_set1_ps(s));
 
         md_mm256_storeu_ps(dst_coord.x + i, x);
         md_mm256_storeu_ps(dst_coord.y + i, y);
