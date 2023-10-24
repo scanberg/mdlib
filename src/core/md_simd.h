@@ -342,7 +342,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_cvtepi32_ps simde_mm256_cvtepi32_ps
 
 #define md_mm_cvtps_epi32 simde_mm_cvtps_epi32
+#define md_mm_cvttps_epi32 simde_mm_cvttps_epi32
 #define md_mm256_cvtps_epi32 simde_mm256_cvtps_epi32
+#define md_mm256_cvttps_epi32 simde_mm256_cvttps_epi32
 
 #define md_mm_cvtss_f32 simde_mm_cvtss_f32
 #define md_mm_cvtsd_f64 simde_mm_cvtsd_f64
@@ -378,10 +380,10 @@ MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256*
 
     // @TODO: Try and implement this using 256-bit loads and then shuffle all the way.
     // It's a tradeoff between the number of loads issued and the port pressure on the generally few ports that are used for shuffle instructions.
-    r0 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 4, stride_in_bytes), 1);
-    r1 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 5, stride_in_bytes), 1);
-    r2 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
-    r3 = simde_mm256_insertf128_ps(_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
+    r0 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 0, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 4, stride_in_bytes), 1);
+    r1 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 1, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 5, stride_in_bytes), 1);
+    r2 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
+    r3 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
 
     t0 = simde_mm256_unpacklo_ps(r0,r1); // xxyy xxyy
     t1 = simde_mm256_unpackhi_ps(r0,r1); // zzww zzww
@@ -413,31 +415,31 @@ MD_SIMD_INLINE md_256d md_mm256_fract_pd(md_256d a) { return simde_mm256_sub_pd(
 
 MD_SIMD_INLINE md_128  md_mm_sign_ps(md_128 a)  { return simde_mm_xor_ps(   simde_mm_and_ps(a,  simde_mm_set1_ps(-0.0)),    simde_mm_set1_ps(1.0));    }
 MD_SIMD_INLINE md_128d md_mm_sign_pd(md_128d a) { return simde_mm_xor_pd(   simde_mm_and_pd(a,  simde_mm_set1_pd(-0.0)),    simde_mm_set1_pd(1.0));     }
-MD_SIMD_INLINE md_256  md_mm256_sign_ps(md_256 a)  { return simde_mm256_xor_ps(_mm256_and_ps(a, simde_mm256_set1_ps(-0.0)), simde_mm256_set1_ps(1.0)); }
-MD_SIMD_INLINE md_256d md_mm256_sign_pd(md_256d a) { return simde_mm256_xor_pd(_mm256_and_pd(a, simde_mm256_set1_pd(-0.0)), simde_mm256_set1_pd(1.0));  }
+MD_SIMD_INLINE md_256  md_mm256_sign_ps(md_256 a)  { return simde_mm256_xor_ps(simde_mm256_and_ps(a, simde_mm256_set1_ps(-0.0)), simde_mm256_set1_ps(1.0)); }
+MD_SIMD_INLINE md_256d md_mm256_sign_pd(md_256d a) { return simde_mm256_xor_pd(simde_mm256_and_pd(a, simde_mm256_set1_pd(-0.0)), simde_mm256_set1_pd(1.0));  }
 
 MD_SIMD_INLINE float md_mm_reduce_min_ps(md_128 x) {
     md_128 a = simde_mm_min_ps(x, simde_mm_shuffle_ps(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
     md_128 b = simde_mm_min_ps(a, simde_mm_shuffle_ps(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
-    return simde_mm_cvtss_f32(_mm_min_ps(a,b));
+    return simde_mm_cvtss_f32(simde_mm_min_ps(a,b));
 }
 
 MD_SIMD_INLINE float md_mm_reduce_max_ps(md_128 x) {
     md_128 a = simde_mm_max_ps(x, simde_mm_shuffle_ps(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
     md_128 b = simde_mm_max_ps(a, simde_mm_shuffle_ps(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
-    return simde_mm_cvtss_f32(_mm_max_ps(a,b));
+    return simde_mm_cvtss_f32(simde_mm_max_ps(a,b));
 }
 
 MD_SIMD_INLINE double md_mm256_reduce_min_pd(md_256d x) {
     md_256d a = simde_mm256_min_pd(x, simde_mm256_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
     md_256d b = simde_mm256_min_pd(a, simde_mm256_shuffle_pd(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
-    return simde_mm256_cvtsd_f64(_mm256_min_pd(a,b));
+    return simde_mm256_cvtsd_f64(simde_mm256_min_pd(a,b));
 }
 
 MD_SIMD_INLINE double md_mm256_reduce_max_pd(md_256d x) {
     md_256d a = simde_mm256_max_pd(x, simde_mm256_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 3, 2)));
     md_256d b = simde_mm256_max_pd(a, simde_mm256_shuffle_pd(a, a, _MM_SHUFFLE(0, 0, 0, 1)));
-    return simde_mm256_cvtsd_f64(_mm256_max_pd(a,b));
+    return simde_mm256_cvtsd_f64(simde_mm256_max_pd(a,b));
 }
 
 // From here https://stackoverflow.com/questions/49941645/get-sum-of-values-stored-in-m256d-with-sse-avx
@@ -446,7 +448,7 @@ MD_SIMD_INLINE double md_mm256_reduce_add_pd(md_256d x) {
     md_128d vhigh  = simde_mm256_extractf128_pd(x, 1); // high 128
     vlow           = simde_mm_add_pd(vlow, vhigh);     // reduce down to 128
     md_128d high64 = simde_mm_unpackhi_pd(vlow, vlow);
-    return           simde_mm_cvtsd_f64(_mm_add_sd(vlow, high64));  // reduce to scalar
+    return           simde_mm_cvtsd_f64(simde_mm_add_sd(vlow, high64));  // reduce to scalar
 }
 
 // https://stackoverflow.com/questions/6996764/fastest-way-to-do-horizontal-sse-vector-sum-or-other-reduction
@@ -459,17 +461,19 @@ MD_SIMD_INLINE float md_mm_reduce_add_ps(md_128 x) {
     return        md_mm_cvtss_f32(sums);
 }
 
-MD_SIMD_INLINE double md_mm_reduce_add_pd(md_128d x) { return _mm_cvtsd_f64(_mm_add_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
-MD_SIMD_INLINE double md_mm_reduce_min_pd(md_128d x) { return _mm_cvtsd_f64(_mm_min_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
-MD_SIMD_INLINE double md_mm_reduce_max_pd(md_128d x) { return _mm_cvtsd_f64(_mm_max_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_add_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_add_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_min_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_min_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
+MD_SIMD_INLINE double md_mm_reduce_max_pd(md_128d x) { return simde_mm_cvtsd_f64(simde_mm_max_pd(x, md_mm_shuffle_pd(x, x, _MM_SHUFFLE(0, 0, 0, 1)))); }
 
-MD_SIMD_INLINE float md_mm256_reduce_add_ps(md_256 x) { return md_mm_reduce_add_ps(md_mm_add_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
-MD_SIMD_INLINE float md_mm256_reduce_min_ps(md_256 x) { return md_mm_reduce_min_ps(md_mm_min_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
-MD_SIMD_INLINE float md_mm256_reduce_max_ps(md_256 x) { return md_mm_reduce_max_ps(md_mm_max_ps(_mm256_castps256_ps128(x), _mm256_extractf128_ps(x, 0x1))); }
+MD_SIMD_INLINE float md_mm256_reduce_add_ps(md_256 x) { return md_mm_reduce_add_ps(md_mm_add_ps(simde_mm256_castps256_ps128(x), simde_mm256_extractf128_ps(x, 0x1))); }
+MD_SIMD_INLINE float md_mm256_reduce_min_ps(md_256 x) { return md_mm_reduce_min_ps(md_mm_min_ps(simde_mm256_castps256_ps128(x), simde_mm256_extractf128_ps(x, 0x1))); }
+MD_SIMD_INLINE float md_mm256_reduce_max_ps(md_256 x) { return md_mm_reduce_max_ps(md_mm_max_ps(simde_mm256_castps256_ps128(x), simde_mm256_extractf128_ps(x, 0x1))); }
 
+#if defined(__AVX512F__)
 #define md_mm512_reduce_add_ps _mm512_reduce_add_ps
 #define md_mm512_reduce_min_ps _mm512_reduce_min_ps
 #define md_mm512_reduce_max_ps _mm512_reduce_max_ps
+#endif
 
 MD_SIMD_INLINE md_128 md_mm_deperiodize_ps(md_128 x, md_128 r, md_128 p) {
     md_128 d  = md_mm_sub_ps(x, r);
@@ -783,7 +787,7 @@ static void md_mm_sincos_ps(md_128 xx, md_128* s, md_128* c) {
     y = md_mm_mul_ps(x, md_mm_set1_ps(1.27323954473516f));
 
     /* store integer part of y */
-    imm2 = _mm_cvttps_epi32(y);
+    imm2 = md_mm_cvttps_epi32(y);
 
     /* j=(j+1) & (~1) (see the cephes sources) */
     imm2 = md_mm_add_epi32(imm2, md_mm_set1_epi32(1));
@@ -867,7 +871,7 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 x, md_256* s, md_256* c) {
     y = md_mm256_mul_ps(x, md_mm256_set1_ps(1.27323954473516f));
 
     /* store integer part of y */
-    imm2 = _mm256_cvttps_epi32(y);
+    imm2 = md_mm256_cvttps_epi32(y);
 
     /* j=(j+1) & (~1) (see the cephes sources) */
     imm2 = md_mm256_add_epi32(imm2, md_mm256_set1_epi32(1));
