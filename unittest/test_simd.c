@@ -109,18 +109,18 @@ float cephes_sinf( float xx )
 // https://marc-b-reynolds.github.io/math/2019/04/24/ULPDiff.html
 
 // get the bit pattern of 'x'
-inline uint32_t f32_to_bits(float x)
+static uint32_t f32_to_bits(float x)
 {
     uint32_t u; memcpy(&u, &x, 4); return u;
 }
 
 // okay...the name's goofy, but you get what I mean
-inline uint32_t u32_abs(uint32_t x)
+static uint32_t u32_abs(uint32_t x)
 {
     return (int32_t)x >= 0 ? x : -x;
 }
 
-uint32_t f32_ulp_dist(float a, float b)
+static uint32_t f32_ulp_dist(float a, float b)
 {
     uint32_t ua = f32_to_bits(a);
     uint32_t ub = f32_to_bits(b);
