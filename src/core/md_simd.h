@@ -29,9 +29,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_256i simde__m256i
 
 #if defined(__AVX512F__)
-#define md_512  simde__m512
-#define md_512d simde__m512d
-#define md_512i simde__m512i
+#define md_512  __m512
+#define md_512d __m512d
+#define md_512i __m512i
 // @TODO: Add mask types
 #endif
 
@@ -483,20 +483,20 @@ MD_SIMD_INLINE md_128 md_mm_deperiodize_ps(md_128 x, md_128 r, md_128 p) {
     return md_mm_blendv_ps(x_prim, x, md_mm_cmpeq_ps(p, md_mm_setzero_ps()));
 }
 
-MD_SIMD_INLINE md_256 md_mm256_deperiodize_ps(md_256 x, md_256 r, md_256 p) {
-    md_256 d  = md_mm256_sub_ps(x, r);
-    md_256 dx = md_mm256_div_ps(d, p);
-    dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
-    md_256 x_prim = md_mm256_add_ps(r, md_mm256_mul_ps(dx, p));
-    return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(p, md_mm256_setzero_ps()));
-}
-
 MD_SIMD_INLINE md_128d md_mm_deperiodize_pd(md_128d x, md_128d r, md_128d p) {
     md_128d d  = md_mm_sub_pd(x, r);
     md_128d dx = md_mm_div_pd(d, p);
     dx = md_mm_sub_pd(dx, md_mm_round_pd(dx));
     md_128d x_prim = md_mm_add_pd(r, md_mm_mul_pd(dx, p));
     return md_mm_blendv_pd(x_prim, x, md_mm_cmpeq_pd(p, md_mm_setzero_pd()));
+}
+
+MD_SIMD_INLINE md_256 md_mm256_deperiodize_ps(md_256 x, md_256 r, md_256 p) {
+    md_256 d  = md_mm256_sub_ps(x, r);
+    md_256 dx = md_mm256_div_ps(d, p);
+    dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
+    md_256 x_prim = md_mm256_add_ps(r, md_mm256_mul_ps(dx, p));
+    return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(p, md_mm256_setzero_ps()));
 }
 
 MD_SIMD_INLINE md_256d md_mm256_deperiodize_pd(md_256d x, md_256d r, md_256d p) {
@@ -506,6 +506,27 @@ MD_SIMD_INLINE md_256d md_mm256_deperiodize_pd(md_256d x, md_256d r, md_256d p) 
     md_256d x_prim = md_mm256_add_pd(r, md_mm256_mul_pd(dx, p));
     return md_mm256_blendv_pd(x_prim, x, md_mm256_cmpeq_pd(p, md_mm256_setzero_pd()));
 }
+
+#if defined(__AVX512F__)
+MD_SIMD_INLINE md_512 md_mm512_deperiodize_ps(md_512 x, md_512 r, md_512 p) {
+    md_512 d  = _mm512_sub_ps(x, r);
+    md_512 dx = _mm512_div_ps(d, p);
+    dx = _mm512_sub_ps(dx, _mm512_roundscale_ps(dx, _MM_FROUND_TO_NEAREST_INT));
+    md_512 x_prim = _mm512_add_ps(r, _mm512_mul_ps(dx, p));
+    __mmask16 mask = _mm512_cmpeq_ps_mask(p, _mm512_setzero_ps());
+    return _mm512_mask_blend_ps(mask, x_prim, x);
+}
+
+MD_SIMD_INLINE md_512d md_mm512_deperiodize_pd(md_512d x, md_512d r, md_512d p) {
+    md_512d d  = _mm512_sub_pd(x, r);
+    md_512d dx = _mm512_div_pd(d, p);
+    dx = _mm512_sub_pd(dx, _mm512_roundscale_pd(dx, _MM_FROUND_TO_NEAREST_INT ));
+    md_512d x_prim = _mm512_add_pd(r, _mm512_mul_pd(dx, p));
+    __mmask8 mask = _mm512_cmpeq_pd_mask(p, _mm512_setzero_pd());
+    return _mm512_mask_blend_pd(mask , x_prim, x);
+}
+
+#endif
 
 MD_SIMD_INLINE md_128 md_mm_minimage_ps(md_128 dx, md_128 p, md_128 rp) {
     return md_mm_sub_ps(dx, md_mm_mul_ps(p, md_mm_round_ps(md_mm_mul_ps(dx, rp))));

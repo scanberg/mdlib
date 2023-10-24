@@ -2341,63 +2341,63 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     int64_t i = 0;
 
 #if defined(__AVX512F__)
-    const __m512 v_scl = md_mm512_set1_ps((float)(TWO_PI / x_max));
-    __m512 v_acc_c = md_mm512_setzero_ps();
-    __m512 v_acc_s = md_mm512_setzero_ps();
-    __m512 v_acc_w = md_mm512_setzero_ps();
+    const __m512 v_scl = _mm512_set1_ps((float)(TWO_PI / x_max));
+    __m512 v_acc_c = _mm512_setzero_ps();
+    __m512 v_acc_s = _mm512_setzero_ps();
+    __m512 v_acc_w = _mm512_setzero_ps();
 
     const int64_t simd_count = ROUND_DOWN(count, 16);
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512i idx = md_mm512_loadu_epi32(in_idx + i);
-                __m512 v_x = md_mm512_i32gather_ps(idx, in_x, 4);
-                __m512 v_w = md_mm512_i32gather_ps(idx, in_w, 4);
-                __m512 v_theta = md_mm512_mul_ps(v_x, v_scl);
+                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512 v_x = _mm512_i32gather_ps(idx, in_x, 4);
+                __m512 v_w = _mm512_i32gather_ps(idx, in_w, 4);
+                __m512 v_theta = _mm512_mul_ps(v_x, v_scl);
                 __m512 v_c, v_s;
                 md_mm512_sincos_ps(v_theta, &v_s, &v_c);
-                v_acc_s = md_mm512_add_ps(v_acc_s, md_mm512_mul_ps(v_s, v_w));
-                v_acc_c = md_mm512_add_ps(v_acc_c, md_mm512_mul_ps(v_c, v_w));
-                v_acc_w = md_mm512_add_ps(v_acc_w, v_w);
+                v_acc_s = _mm512_add_ps(v_acc_s, _mm512_mul_ps(v_s, v_w));
+                v_acc_c = _mm512_add_ps(v_acc_c, _mm512_mul_ps(v_c, v_w));
+                v_acc_w = _mm512_add_ps(v_acc_w, v_w);
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512i idx = md_mm512_loadu_epi32(in_idx + i);
-                __m512 v_x = md_mm512_i32gather_ps(idx, in_x, 4);
-                __m512 v_theta = md_mm512_mul_ps(v_x, v_scl);
+                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512 v_x = _mm512_i32gather_ps(idx, in_x, 4);
+                __m512 v_theta = _mm512_mul_ps(v_x, v_scl);
                 __m512 v_c, v_s;
                 md_mm512_sincos_ps(v_theta, &v_s, &v_c);
-                v_acc_s = md_mm512_add_ps(v_acc_s, v_s);
-                v_acc_c = md_mm512_add_ps(v_acc_c, v_c);
+                v_acc_s = _mm512_add_ps(v_acc_s, v_s);
+                v_acc_c = _mm512_add_ps(v_acc_c, v_c);
             }
         }
     } else {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512 v_x = md_mm512_loadu_ps(in_x + i);
-                __m512 v_w = md_mm512_loadu_ps(in_w + i);
-                __m512 v_theta = md_mm512_mul_ps(v_x, v_scl);
+                __m512 v_x = _mm512_loadu_ps(in_x + i);
+                __m512 v_w = _mm512_loadu_ps(in_w + i);
+                __m512 v_theta = _mm512_mul_ps(v_x, v_scl);
                 __m512 v_c, v_s;
                 md_mm512_sincos_ps(v_theta, &v_s, &v_c);
-                v_acc_s = md_mm512_add_ps(v_acc_s, md_mm512_mul_ps(v_s, v_w));
-                v_acc_c = md_mm512_add_ps(v_acc_c, md_mm512_mul_ps(v_c, v_w));
-                v_acc_w = md_mm512_add_ps(v_acc_w, v_w);
+                v_acc_s = _mm512_add_ps(v_acc_s, _mm512_mul_ps(v_s, v_w));
+                v_acc_c = _mm512_add_ps(v_acc_c, _mm512_mul_ps(v_c, v_w));
+                v_acc_w = _mm512_add_ps(v_acc_w, v_w);
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512 v_x = md_mm512_loadu_ps(in_x + i);
-                __m512 v_theta = md_mm512_mul_ps(v_x, v_scl);
+                __m512 v_x = _mm512_loadu_ps(in_x + i);
+                __m512 v_theta = _mm512_mul_ps(v_x, v_scl);
                 __m512 v_c, v_s;
                 md_mm512_sincos_ps(v_theta, &v_s, &v_c);
-                v_acc_s = md_mm512_add_ps(v_acc_s, v_s);
-                v_acc_c = md_mm512_add_ps(v_acc_c, v_c);
+                v_acc_s = _mm512_add_ps(v_acc_s, v_s);
+                v_acc_c = _mm512_add_ps(v_acc_c, v_c);
             }
         }
     }
 
-    acc_s = md_mm512_reduce_add_ps(v_acc_s);
-    acc_c = md_mm512_reduce_add_ps(v_acc_c);
-    acc_w = md_mm512_reduce_add_ps(v_acc_w);
+    acc_s = _mm512_reduce_add_ps(v_acc_s);
+    acc_c = _mm512_reduce_add_ps(v_acc_c);
+    acc_w = _mm512_reduce_add_ps(v_acc_w);
 #elif defined(__AVX2__)
     const md_256 v_scl = md_mm256_set1_ps((float)(TWO_PI / x_max));
     md_256 v_acc_c = md_mm256_setzero_ps();
@@ -2578,62 +2578,62 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
 #if defined(__AVX512F__)
     const int64_t simd_count = ROUND_DOWN(count, 16);
     if (simd_count > 0) {
-        const __m512 v_ext = md_mm512_set1_ps(x_max);
-        __m512 v_acc_x = md_mm512_setzero_ps();
-        __m512 v_acc_w = md_mm512_setzero_ps();
+        const __m512 v_ext = _mm512_set1_ps(x_max);
+        __m512 v_acc_x = _mm512_setzero_ps();
+        __m512 v_acc_w = _mm512_setzero_ps();
         i += 8;
         if (in_idx) {
-            __m512i idx = md_mm512_loadu_epi32(in_idx);
+            __m512i idx = _mm512_loadu_epi32(in_idx);
             if (in_w) {
-                v_acc_x = md_mm512_i32gather_ps(in_x, idx, 4);
-                v_acc_w = md_mm512_i32gather_ps(in_w, idx, 4);
+                v_acc_x = _mm512_i32gather_ps(idx, in_x, 4);
+                v_acc_w = _mm512_i32gather_ps(idx, in_w, 4);
                 for (; i < simd_count; i += 16) {
-                    idx = md_mm512_loadu_epi32(in_idx + i);
-                    __m512 r = md_mm512_div_ps(v_acc_x, v_acc_w);
-                    __m512 x = md_mm512_i32gather_ps(in_x, idx, 4);
-                    __m512 w = md_mm512_i32gather_ps(in_w, idx, 4);
+                    idx = _mm512_loadu_epi32(in_idx + i);
+                    __m512 r = _mm512_div_ps(v_acc_x, v_acc_w);
+                    __m512 x = _mm512_i32gather_ps(idx, in_x, 4);
+                    __m512 w = _mm512_i32gather_ps(idx, in_w, 4);
                     x = md_mm512_deperiodize_ps(x, r, v_ext);
-                    v_acc_x = md_mm512_add_ps(v_acc_x, md_mm512_mul_ps(x, w));
-                    v_acc_w = md_mm512_add_ps(v_acc_w, w);
+                    v_acc_x = _mm512_add_ps(v_acc_x, _mm512_mul_ps(x, w));
+                    v_acc_w = _mm512_add_ps(v_acc_w, w);
                 }
             } else {
-                v_acc_x = md_mm512_i32gather_ps(in_x, idx, 4);
-                v_acc_w = md_mm512_set1_ps(16);
+                v_acc_x = _mm512_i32gather_ps(idx, in_x, 4);
+                v_acc_w = _mm512_set1_ps(16);
                 for (; i < simd_count; i += 16) {
-                    idx = md_mm512_loadu_epi32(in_idx + i);
-                    __m512 r = md_mm512_div_ps(v_acc_x, v_acc_w);
-                    __m512 x = md_mm512_i32gather_ps(in_x, idx, 4);
+                    idx = _mm512_loadu_epi32(in_idx + i);
+                    __m512 r = _mm512_div_ps(v_acc_x, v_acc_w);
+                    __m512 x = _mm512_i32gather_ps(idx, in_x, 4);
                     x = md_mm512_deperiodize_ps(x, r, v_ext);
-                    v_acc_x = md_mm512_add_ps(v_acc_x, x);
-                    v_acc_w = md_mm512_add_ps(v_acc_w, md_mm512_set1_ps(8));
+                    v_acc_x = _mm512_add_ps(v_acc_x, x);
+                    v_acc_w = _mm512_add_ps(v_acc_w, _mm512_set1_ps(8));
                 }
             }
         } else {
             if (in_w) {
-                v_acc_x = md_mm512_loadu_ps(in_x);
-                v_acc_w = md_mm512_loadu_ps(in_w);
+                v_acc_x = _mm512_loadu_ps(in_x);
+                v_acc_w = _mm512_loadu_ps(in_w);
                 for (; i < simd_count; i += 16) {
-                    __m512 r = md_mm512_div_ps(v_acc_x, v_acc_w);
-                    __m512 x = md_mm512_loadu_ps(in_x + i);
-                    __m512 w = md_mm512_loadu_ps(in_w + i);
+                    __m512 r = _mm512_div_ps(v_acc_x, v_acc_w);
+                    __m512 x = _mm512_loadu_ps(in_x + i);
+                    __m512 w = _mm512_loadu_ps(in_w + i);
                     x = md_mm512_deperiodize_ps(x, r, v_ext);
-                    v_acc_x = md_mm512_add_ps(v_acc_x, md_mm512_mul_ps(x, w));
-                    v_acc_w = md_mm512_add_ps(v_acc_w, w);
+                    v_acc_x = _mm512_add_ps(v_acc_x, _mm512_mul_ps(x, w));
+                    v_acc_w = _mm512_add_ps(v_acc_w, w);
                 }
             } else {
-                v_acc_x = md_mm512_loadu_ps(in_x);
-                v_acc_w = md_mm512_set1_ps(16);
+                v_acc_x = _mm512_loadu_ps(in_x);
+                v_acc_w = _mm512_set1_ps(16);
                 for (; i < simd_count; i += 16) {
-                    __m512 r = md_mm512_div_ps(v_acc_x, v_acc_w);
-                    __m512 x = md_mm512_loadu_ps(in_x + i);
+                    __m512 r = _mm512_div_ps(v_acc_x, v_acc_w);
+                    __m512 x = _mm512_loadu_ps(in_x + i);
                     x = md_mm512_deperiodize_ps(x, r, v_ext);
-                    v_acc_x = md_mm512_add_ps(v_acc_x, x);
-                    v_acc_w = md_mm512_add_ps(v_acc_w, md_mm512_set1_ps(16));
+                    v_acc_x = _mm512_add_ps(v_acc_x, x);
+                    v_acc_w = _mm512_add_ps(v_acc_w, _mm512_set1_ps(16));
                 }
             }
         }
-        acc_x = md_mm512_reduce_add_ps(v_acc_x);
-        acc_w = md_mm512_reduce_add_ps(v_acc_w);
+        acc_x = _mm512_reduce_add_ps(v_acc_x);
+        acc_w = _mm512_reduce_add_ps(v_acc_w);
     }
 #elif defined(__AVX2__)
     const int64_t simd_count = ROUND_DOWN(count, 8);
@@ -2812,43 +2812,43 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
     double acc_w = 0;
 
 #if defined(__AVX512F__)
-    __m512 v_acc_x = md_mm512_setzero_ps();
-    __m512 v_acc_w = md_mm512_setzero_ps();
+    __m512 v_acc_x = _mm512_setzero_ps();
+    __m512 v_acc_w = _mm512_setzero_ps();
     const int64_t simd_count = ROUND_DOWN(count, 16);
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512i idx = md_mm512_loadu_epi32(in_idx + i);
-                __m512 v_x  = md_mm512_i32gather_ps(idx, in_x, 4);
-                __m512 v_w  = md_mm512_i32gather_ps(idx, in_w, 4);
-                v_acc_x = md_mm512_add_ps(v_acc_x, md_mm512_mul_ps(v_x, v_w));
-                v_acc_w = md_mm512_add_ps(v_acc_w, v_w);
+                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
+                __m512 v_w  = _mm512_i32gather_ps(idx, in_w, 4);
+                v_acc_x = _mm512_add_ps(v_acc_x, _mm512_mul_ps(v_x, v_w));
+                v_acc_w = _mm512_add_ps(v_acc_w, v_w);
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512i idx = md_mm512_loadu_epi32(in_idx + i);
-                __m512 v_x  = md_mm512_i32gather_ps(idx, in_x, 4);
-                v_acc_x = md_mm512_add_ps(v_acc_x, v_x);
+                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
+                v_acc_x = _mm512_add_ps(v_acc_x, v_x);
             }
         }
     } else {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512 v_x = md_mm512_loadu_ps(in_x + i);
-                __m512 v_w = md_mm512_loadu_ps(in_w + i);
-                v_acc_x = md_mm512_add_ps(v_acc_x, md_mm512_mul_ps(v_x, v_w));
-                v_acc_w = md_mm512_add_ps(v_acc_w, v_w);
+                __m512 v_x = _mm512_loadu_ps(in_x + i);
+                __m512 v_w = _mm512_loadu_ps(in_w + i);
+                v_acc_x = _mm512_add_ps(v_acc_x, _mm512_mul_ps(v_x, v_w));
+                v_acc_w = _mm512_add_ps(v_acc_w, v_w);
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512 v_x = md_mm512_loadu_ps(in_x + i);
-                v_acc_x = md_mm512_add_ps(v_acc_x, v_x);
+                __m512 v_x = _mm512_loadu_ps(in_x + i);
+                v_acc_x = _mm512_add_ps(v_acc_x, v_x);
             }
         }
     }
 
-    acc_x = md_mm512_reduce_add_ps(v_acc_x);
-    acc_w = md_mm512_reduce_add_ps(v_acc_w);
+    acc_x = _mm512_reduce_add_ps(v_acc_x);
+    acc_w = _mm512_reduce_add_ps(v_acc_w);
 #elif defined(__AVX2__)
     md_256 v_acc_x = md_mm256_setzero_ps();
     md_256 v_acc_w = md_mm256_setzero_ps();
@@ -3056,10 +3056,10 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
         }
     }
 
-    acc_x = md_mm512_reduce_add_ps(vx);
-    acc_y = md_mm512_reduce_add_ps(vy);
-    acc_z = md_mm512_reduce_add_ps(vz);
-    acc_w = md_mm512_reduce_add_ps(vw);
+    acc_x = _mm512_reduce_add_ps(vx);
+    acc_y = _mm512_reduce_add_ps(vy);
+    acc_z = _mm512_reduce_add_ps(vz);
+    acc_w = _mm512_reduce_add_ps(vw);
 #elif defined (__AVX__)
     md_256 vx = md_mm256_setzero_ps();
     md_256 vy = md_mm256_setzero_ps();
