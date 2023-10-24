@@ -193,9 +193,9 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         const float* src_b = as_float_arr(arg[1]); \
         float* dst_arr = as_float_arr(*dst); \
         for (int64_t i = 0; i < count; i += 8) { \
-            md_256 a = _mm256_loadu_ps(src_a + i); \
-            md_256 b = _mm256_loadu_ps(src_b + i); \
-            _mm256_storeu_ps(dst_arr + i, op(a, b)); \
+            md_256 a = md_mm256_loadu_ps(src_a + i); \
+            md_256 b = md_mm256_loadu_ps(src_b + i); \
+            md_mm256_storeu_ps(dst_arr + i, op(a, b)); \
         } \
         return 0; \
     }
@@ -211,9 +211,9 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
-        md_256 s = _mm256_set1_ps(as_float(arg[1])); \
+        md_256 s = md_mm256_set1_ps(as_float(arg[1])); \
         for (int64_t i = 0; i < count; i += 8) { \
-            _mm256_storeu_ps(dst_arr + i, op(_mm256_loadu_ps(src_arr + i), s)); \
+            md_mm256_storeu_ps(dst_arr + i, op(md_mm256_loadu_ps(src_arr + i), s)); \
         } \
         return 0; \
     }
@@ -229,7 +229,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
         for (int64_t i = 0; i < count; i += 8) { \
-            _mm256_storeu_ps(dst_arr + i, op(_mm256_loadu_ps(src_arr + i))); \
+            md_mm256_storeu_ps(dst_arr + i, op(md_mm256_loadu_ps(src_arr + i))); \
         } \
         return 0; \
     }
@@ -256,24 +256,24 @@ BAKE_OP_M_M(_op_sub_iarr_iarr, -, int)
 BAKE_OP_M_M(_op_mul_iarr_iarr, *, int)
 BAKE_OP_M_M(_op_div_iarr_iarr, /, int)
 
-BAKE_SIMDF_OP_M_M(_op_simd_add_farr_farr, _mm256_add_ps)
-BAKE_SIMDF_OP_M_S(_op_simd_add_farr_f,    _mm256_add_ps)
+BAKE_SIMDF_OP_M_M(_op_simd_add_farr_farr, md_mm256_add_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_add_farr_f,    md_mm256_add_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_sub_farr_farr, _mm256_sub_ps)
-BAKE_SIMDF_OP_M_S(_op_simd_sub_farr_f,    _mm256_sub_ps)
+BAKE_SIMDF_OP_M_M(_op_simd_sub_farr_farr, md_mm256_sub_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_sub_farr_f,    md_mm256_sub_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_mul_farr_farr, _mm256_mul_ps)
-BAKE_SIMDF_OP_M_S(_op_simd_mul_farr_f,    _mm256_mul_ps)
+BAKE_SIMDF_OP_M_M(_op_simd_mul_farr_farr, md_mm256_mul_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_mul_farr_f,    md_mm256_mul_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_div_farr_farr, _mm256_div_ps)
-BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    _mm256_div_ps)
+BAKE_SIMDF_OP_M_M(_op_simd_div_farr_farr, md_mm256_div_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_div_farr_f,    md_mm256_div_ps)
 
 BAKE_SIMDF_OP_M(_op_simd_abs_farr,        md_mm256_abs_ps)
 
-BAKE_SIMDF_OP_M_M(_op_simd_min_farr_farr, _mm256_min_ps)
-BAKE_SIMDF_OP_M_S(_op_simd_min_farr_f,    _mm256_min_ps)
-BAKE_SIMDF_OP_M_M(_op_simd_max_farr_farr, _mm256_max_ps)
-BAKE_SIMDF_OP_M_S(_op_simd_max_farr_f,    _mm256_max_ps)
+BAKE_SIMDF_OP_M_M(_op_simd_min_farr_farr, md_mm256_min_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_min_farr_f,    md_mm256_min_ps)
+BAKE_SIMDF_OP_M_M(_op_simd_max_farr_farr, md_mm256_max_ps)
+BAKE_SIMDF_OP_M_S(_op_simd_max_farr_f,    md_mm256_max_ps)
 
 BAKE_OP_S_S(_op_add_f_f,        +, float)
 BAKE_OP_S_S(_op_sub_f_f,        -, float)
