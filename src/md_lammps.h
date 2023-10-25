@@ -70,12 +70,20 @@ typedef struct md_lammps_atom_mass_t {
 
 typedef struct md_lammps_data_t {
 	char title[256];
-	float cell_ext[3];
+
+	//float cell_ext[3];
+
+	int64_t num_atoms;
+	int32_t num_atom_types;
+	int64_t num_bonds;
+	int32_t num_bond_types;
+	int64_t num_angles;
+	int32_t num_angle_types;
+	int64_t num_dihedrals;
+	int32_t num_dihedral_types;
 
 	md_lammps_atom_mass_t* atom_type_mass;
 
-	// Field data
-	int64_t num_atoms;
 	md_lammps_atom_t* atom_data;
 } md_lammps_data_t;
 

@@ -49,7 +49,6 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 		MD_LOG_ERROR("Failed to parse LAMMPS num atoms");
 		return false;
 	}
-
 	data->num_atoms = parse_int(str_trim(line));
 	if (!data->num_atoms) {
 		MD_LOG_ERROR("Failed to parse LAMMPS num atoms");
@@ -57,6 +56,114 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	}
 
 	md_array_resize(data->atom_data, data->num_atoms, alloc);
+
+	//Read num atom types
+	if (!md_buffered_reader_extract_line(&line, reader)) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num atom types");
+		return false;
+	}
+	data->num_atom_types = parse_int(str_trim(line));
+	if (!data->num_atom_types) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num atom types");
+		return false;
+	}
+
+	//Read num bonds
+	if (!md_buffered_reader_extract_line(&line, reader)) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num bonds");
+		return false;
+	}
+	data->num_bonds = parse_int(str_trim(line));
+	if (!data->num_bonds) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num bonds");
+		return false;
+	}
+
+	//Read num bond types
+	if (!md_buffered_reader_extract_line(&line, reader)) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num bond types");
+		return false;
+	}
+	data->num_bond_types = parse_int(str_trim(line));
+	if (!data->num_bond_types) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num bond types");
+		return false;
+	}
+
+	//Read num angles
+	if (!md_buffered_reader_extract_line(&line, reader)) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num angles");
+		return false;
+	}
+	data->num_angles = parse_int(str_trim(line));
+	if (!data->num_angles) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num angles");
+		return false;
+	}
+
+	//Read num angle types
+	if (!md_buffered_reader_extract_line(&line, reader)) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num angle types");
+		return false;
+	}
+	data->num_angle_types = parse_int(str_trim(line));
+	if (!data->num_angle_types) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num angle types");
+		return false;
+	}
+
+	//Read num dihedrals
+	if (!md_buffered_reader_extract_line(&line, reader)) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num dihedrals");
+		return false;
+	}
+	data->num_dihedrals = parse_int(str_trim(line));
+	if (!data->num_dihedrals) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num dihedrals");
+		return false;
+	}
+
+	//Read num dihedral types
+	if (!md_buffered_reader_extract_line(&line, reader)) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num dihedral types");
+		return false;
+	}
+	data->num_dihedral_types = parse_int(str_trim(line));
+	if (!data->num_dihedral_types) {
+		MD_LOG_ERROR("Failed to parse LAMMPS num dihedral types");
+		return false;
+	}
+
+	//Jump ahead to the Masses definition
+	int32_t masses_line_counter = 0;
+	do {
+		md_buffered_reader_extract_line(&line, reader);
+		if (masses_line_counter++ >= 1000) {
+			MD_LOG_ERROR("Could not find masses line after 1000 lines");
+			return false;
+		}
+	} while (!str_equal_cstr_n(line, "Masses", 6));
+
+	//Skip empty line
+	md_buffered_reader_skip_line(reader);
+
+	//Start reading the Masses data
+
+	for (int32_t i = 0; i < data->num_atom_types; i++) {
+		if (!md_buffered_reader_extract_line(&line, reader)) {
+			MD_LOG_ERROR("Failed to extract mass line");
+			return false;
+		}
+		if (extract_tokens(tokens, 2, &line) != 2) {
+			MD_LOG_ERROR("Wrong amount of mass tokens");
+			return false;
+		}
+
+		md_lammps_atom_mass_t* mass = &data->atom_type_mass;
+
+		mass->atom_idx = (int32_t)parse_int(tokens[0]);
+		mass->mass = (int32_t)parse_float(tokens[1]);
+	}
 
 	//Jump ahead to the Atoms definition
 	int32_t atoms_line_counter = 0;
