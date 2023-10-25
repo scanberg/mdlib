@@ -24,7 +24,9 @@ typedef enum lammps_atom_data_format {
 	ATOM_Z,
 	NX,
 	NY,
-	NZ
+	NZ,
+	res_name,
+	res_id
 } lammps_atom_data_format;
 
 static const lammps_atom_data_format DATA_FORMAT_FULL[] = {
@@ -57,6 +59,8 @@ typedef struct md_lammps_atom_t {
 	int32_t nx;
 	int32_t ny;
 	int32_t nz;
+	char res_name[8];
+	int32_t res_id;
 } md_lammps_atom_t;
 
 typedef struct md_lammps_atom_mass_t {

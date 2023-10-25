@@ -100,35 +100,37 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				MD_LOG_ERROR("Failed to read atom data format");
 				return false;
 			case ATOM_IDX:
-				atom->atom_idx = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->atom_idx = (int32_t)parse_int(tokens[d]);
 				break;
 			case MOL_IDX:
-				atom->mol_idx = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->mol_idx = (int32_t)parse_int(tokens[d]);
 				break;
 			case ATOM_TYPE:
-				atom->atom_type = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->atom_type = (int32_t)parse_int(tokens[d]);
 				break;
 			case PARTIAL_CHARGE:
-				atom->partial_charge = (float)parse_float_wide(tokens[d].ptr, tokens[d].len);
+				atom->partial_charge = (float)parse_float(tokens[d]);
 				break;
 			case ATOM_X:
-				atom->x = (float)parse_float_wide(tokens[d].ptr, tokens[d].len);
+				atom->x = (float)parse_float(tokens[d]);
 				break;
 			case ATOM_Y:
-				atom->y = (float)parse_float_wide(tokens[d].ptr, tokens[d].len);
+				atom->y = (float)parse_float(tokens[d]);
 				break;
 			case ATOM_Z:
-				atom->z = (float)parse_float_wide(tokens[d].ptr, tokens[d].len);
+				atom->z = (float)parse_float(tokens[d]);
 				break;
 			case NX:
-				atom->nx = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->nx = (int32_t)parse_int(tokens[d]);
 				break;
 			case NY:
-				atom->ny = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->ny = (int32_t)parse_int(tokens[d]);
 				break;
 			case NZ:
-				atom->nz = (int32_t)parse_int_wide(tokens[d].ptr, tokens[d].len);
+				atom->nz = (int32_t)parse_int(tokens[d]);
 				break;
+			case res_name:
+				str_copy_to_char_buf(atom->res_name, sizeof(atom->res_name), tokens[d]);
 			}
 		}
 
