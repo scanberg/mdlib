@@ -68,6 +68,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 		return false;
 	}
 
+	md_array_resize(data->atom_type_mass, data->num_atom_types, alloc);
+
 	//Read num bonds
 	if (!md_buffered_reader_extract_line(&line, reader)) {
 		MD_LOG_ERROR("Failed to parse LAMMPS num bonds");
@@ -159,10 +161,16 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			return false;
 		}
 
-		md_lammps_atom_mass_t* mass = &data->atom_type_mass;
+		md_lammps_atom_mass_t* mass = &data->atom_type_mass[i];
 
 		mass->atom_idx = (int32_t)parse_int(tokens[0]);
-		mass->mass = (int32_t)parse_float(tokens[1]);
+		/*
+		if (!data->atom_type_mass->atom_idx) {
+			MD_LOG_ERROR("Atom mass index was not written to data");
+			return false;
+		}
+		*/
+		mass->mass = (float)parse_float(tokens[1]);
 	}
 
 	//Jump ahead to the Atoms definition

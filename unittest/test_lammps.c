@@ -20,6 +20,8 @@ UTEST(lammps, parse_small) {
     bool result = md_lammps_data_parse_file(&lammps_data, path, alloc, formatPtr);
     EXPECT_TRUE(result);
     EXPECT_EQ(lammps_data.num_atoms, 7800);
+    EXPECT_EQ(lammps_data.num_atom_types, 4);
+    EXPECT_EQ(lammps_data.atom_type_mass[0].mass, 1.008f);
 
     /*
 
