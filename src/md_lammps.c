@@ -81,6 +81,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 		return false;
 	}
 
+	md_array_resize(data->bonds, data->num_bonds, alloc);
+
 	//Read num bond types
 	if (!md_buffered_reader_extract_line(&line, reader)) {
 		MD_LOG_ERROR("Failed to parse LAMMPS num bond types");
@@ -137,11 +139,10 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	}
 
 	//Jump ahead to the Masses definition
-	int32_t masses_line_counter = 0;
 	do {
-		md_buffered_reader_extract_line(&line, reader);
-		if (masses_line_counter++ >= 1000) {
-			MD_LOG_ERROR("Could not find masses line after 1000 lines");
+		
+		if (!md_buffered_reader_extract_line(&line, reader)) {
+			MD_LOG_ERROR("Could not find Masses line");
 			return false;
 		}
 	} while (!str_equal_cstr_n(line, "Masses", 6));
@@ -174,11 +175,10 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	}
 
 	//Jump ahead to the Atoms definition
-	int32_t atoms_line_counter = 0;
 	do {
-		md_buffered_reader_extract_line(&line, reader);
-		if (atoms_line_counter++ >= 1000) {
-			MD_LOG_ERROR("Could not find atoms line after 1000 lines");
+		
+		if (!md_buffered_reader_extract_line(&line, reader)) {
+			MD_LOG_ERROR("Could not find Atoms line");
 			return false;
 		}
 	} while (!str_equal_cstr_n(line, "Atoms", 5));
@@ -252,6 +252,37 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 		//str_copy_to_char_buf(atom->atom_type, sizeof(atom->atom_type), str_trim(str_substr(line, 5, 5)));
 		//str_copy_to_char_buf(atom->atom_name, sizeof(atom->atom_name), str_trim(str_substr(line, 10, 5)));
 	}
+
+	//Jump ahead to the Bonds definition
+	do {
+		
+		if (!md_buffered_reader_extract_line(&line, reader)) {
+			MD_LOG_ERROR("Could not find Bonds line");
+			return false;
+		}
+	} while (!str_equal_cstr_n(line, "Bonds", 5));
+	//Skip empty line
+	md_buffered_reader_skip_line(reader);
+
+	//Start reading the bonds
+	for (int32_t i = 0; i < data->num_bonds; i++) {
+		if (!md_buffered_reader_extract_line(&line, reader)) {
+			MD_LOG_ERROR("Failed to extract bond line");
+			return false;
+		}
+		if (extract_tokens(tokens, 4, &line) != 4) {
+			MD_LOG_ERROR("Wrong amount of bond tokens");
+			return false;
+		}
+
+		md_lammps_atom_bond_t* bond = &data->bonds[i];
+
+		bond->bond_idx = (int64_t)parse_int(tokens[0]);
+		bond->bond_type = (int32_t)parse_int(tokens[1]);
+		bond->first_atom_idx = (int64_t)parse_int(tokens[2]);
+		bond->second_atom_idx = (int64_t)parse_int(tokens[3]);
+	}
+
 	/*
 
 	if (!md_buffered_reader_extract_line(&line, reader)) {

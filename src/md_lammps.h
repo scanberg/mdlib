@@ -68,6 +68,13 @@ typedef struct md_lammps_atom_mass_t {
 	float mass;
 } md_lammps_atom_mass_t;
 
+typedef struct md_lammps_atom_bond_t {
+	int64_t bond_idx;
+	int32_t bond_type;
+	int64_t first_atom_idx;
+	int64_t second_atom_idx;
+} md_lammps_atom_bond_t;
+
 typedef struct md_lammps_data_t {
 	char title[256];
 
@@ -83,6 +90,7 @@ typedef struct md_lammps_data_t {
 	int32_t num_dihedral_types;
 
 	md_lammps_atom_mass_t* atom_type_mass;
+	md_lammps_atom_bond_t* bonds;
 
 	md_lammps_atom_t* atom_data;
 } md_lammps_data_t;

@@ -22,6 +22,7 @@ UTEST(lammps, parse_small) {
     EXPECT_EQ(lammps_data.num_atoms, 7800);
     EXPECT_EQ(lammps_data.num_atom_types, 4);
     EXPECT_EQ(lammps_data.atom_type_mass[0].mass, 1.008f);
+    EXPECT_EQ(lammps_data.bonds[0].second_atom_idx, 2);
 
     /*
 
