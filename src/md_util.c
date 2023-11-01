@@ -2141,6 +2141,23 @@ mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alph
     return M;
 }
 
+//Triclinic
+mat3_t md_util_compute_triclinic_unit_cell_basis(double x, double y, double z, double xy, double xz, double yz) {
+    mat3_t M = {
+        .col = {
+            {x, 0, 0},
+            {xy, y, 0},
+            {xz, yz, z},
+        },
+    };
+    return M;
+}
+
+md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, double xy, double xz, double yz) {
+    mat3_t matrix = md_util_compute_triclinic_unit_cell_basis(x, y, z, xy, xz, yz);
+    return md_util_unit_cell_from_matrix(matrix);
+}
+
 md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z) {
     if (x == 0.0 && y == 0.0 && z == 0.0) {
         return (md_unit_cell_t) {0};

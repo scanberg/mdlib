@@ -83,6 +83,9 @@ typedef struct md_lammps_data_t {
 	char title[256];
 
 	float cell_ext[3];
+	float xy;
+	float xz;
+	float yz;
 
 	int64_t num_atoms;
 	int32_t num_atom_types;
