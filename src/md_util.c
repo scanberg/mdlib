@@ -362,14 +362,17 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], int64
     }
 
     if (!mass) {
-        MD_LOG_ERROR("element is null");
+        MD_LOG_ERROR("mass is null");
         return false;
     }
+
+    int64_t failed_matches = 0;
 
     const float eps = 1.0e-2f;
     for (int64_t i = 0; i < count; ++i) {
         md_element_t elem = 0;
         const float m = mass[i];
+        //Loop through the mass options, break when match is found
         for (uint8_t j = 1; j < (uint8_t)ARRAY_SIZE(element_atomic_mass); ++j) {
             if (fabs(m - element_atomic_mass[j]) < eps) {
                 elem = j;
@@ -378,9 +381,20 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], int64
         }
 
         element[i] = elem;
+        if (elem == 0) {
+            //Found no matching element for mass
+            failed_matches++;
+        }
     }
-
-    return false;
+    //Returns true if all masses found a matching element
+    //Elements with a value of 0 indicates no match
+    if (failed_matches == 0) {
+        return true;
+    }
+    else {
+        MD_LOG_ERROR("%i masses had no matching element", (int)failed_matches);
+        return false;
+    }
 }
 
 str_t md_util_element_symbol(md_element_t element) {

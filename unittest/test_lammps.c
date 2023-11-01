@@ -24,26 +24,29 @@ UTEST(lammps, parse_small) {
     EXPECT_EQ(lammps_data.atom_type_mass[0].mass, 1.008f);
     EXPECT_EQ(lammps_data.bonds[0].second_atom_idx, 2);
 
-    /*
+    
 
     md_molecule_t mol = {0};
 
-    md_gro_molecule_init(&mol, &gro_data, alloc);
+    md_lammps_molecule_init(&mol, &lammps_data, alloc);
     for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
+        EXPECT_EQ(mol.atom.x[i], lammps_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(mol.atom.y[i], lammps_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(mol.atom.z[i], lammps_data.atom_data[i].z * 10.0f);
+        EXPECT_NE(mol.atom.mass[i], 0);
     }
     md_molecule_free(&mol, alloc);
 
-    EXPECT_TRUE(md_gro_molecule_api()->init_from_file(&mol, path, alloc));
+    /*
+    EXPECT_TRUE(lammps_init_from_file(&mol, path, alloc, formatPtr));
     for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], gro_data.atom_data[i].x * 10.0f);
-        EXPECT_EQ(mol.atom.y[i], gro_data.atom_data[i].y * 10.0f);
-        EXPECT_EQ(mol.atom.z[i], gro_data.atom_data[i].z * 10.0f);
+        EXPECT_EQ(mol.atom.x[i], lammps_data.atom_data[i].x * 10.0f);
+        EXPECT_EQ(mol.atom.y[i], lammps_data.atom_data[i].y * 10.0f);
+        EXPECT_EQ(mol.atom.z[i], lammps_data.atom_data[i].z * 10.0f);
     }
-
     */
+
+    
 
     md_lammps_data_free(&lammps_data, alloc);
 }

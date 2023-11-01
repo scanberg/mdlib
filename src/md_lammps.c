@@ -25,6 +25,20 @@ bool get_data_format(data_format_t* format, atom_style style) {
 	}
 }
 
+
+float get_mass(md_lammps_atom_mass_t* m, int32_t type, int32_t num_types)
+{
+	for (int32_t i = 0; i < num_types; i++) {
+		if (m[i].atom_type == type) {
+			return m[i].mass;
+		}
+	}
+	MD_LOG_ERROR("atom type could not be found");
+	return -1.0f;
+}
+
+
+
 static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* reader, struct md_allocator_i* alloc, data_format_t* data_format) {
 	ASSERT(data);
 	ASSERT(reader);
@@ -155,6 +169,24 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 		}
 	}
 
+	//Skip empty line
+	md_buffered_reader_skip_line(reader);
+
+	//Parse cell extent
+	{
+		for (int32_t i = 0; i < 3; i++) {
+			if (!md_buffered_reader_extract_line(&line, reader)) {
+				MD_LOG_ERROR("Could not read cell extent line");
+				return false;
+			}
+			if (extract_tokens(tokens, 2, &line) != 2) {
+				MD_LOG_ERROR("Wrong amount of extent tokens tokens");
+				return false;
+			}
+			data->cell_ext[i] = (float)parse_float(tokens[1]) - (float)parse_float(tokens[0]);
+		}
+	}
+
 	//Mass parsing
 	{
 		//Jump ahead to the Masses definition
@@ -184,13 +216,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 
 			md_lammps_atom_mass_t* mass = &data->atom_type_mass[i];
 
-			mass->atom_idx = (int32_t)parse_int(tokens[0]);
-			/*
-			if (!data->atom_type_mass->atom_idx) {
-				MD_LOG_ERROR("Atom mass index was not written to data");
-				return false;
-			}
-			*/
+			mass->atom_type = (int32_t)parse_int(tokens[0]);
 			mass->mass = (float)parse_float(tokens[1]);
 		}
 	}
@@ -269,8 +295,6 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				case NZ:
 					atom->nz = (int32_t)parse_int(tokens[d]);
 					break;
-				case res_name:
-					str_copy_to_char_buf(atom->res_name, sizeof(atom->res_name), tokens[d]);
 				}
 			}
 
@@ -369,3 +393,95 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc) {
 	if (data->atom_data) md_array_free(data->atom_data, alloc);
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 }
+
+bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, md_allocator_i* alloc)
+{
+	ASSERT(mol);
+	ASSERT(data);
+	ASSERT(alloc);
+
+	MEMSET(mol, 0, sizeof(md_molecule_t));
+
+	const int64_t num_atoms = data->num_atoms;
+
+	md_array_ensure(mol->atom.x, num_atoms, alloc);
+	md_array_ensure(mol->atom.y, num_atoms, alloc);
+	md_array_ensure(mol->atom.z, num_atoms, alloc);
+	md_array_ensure(mol->atom.residue_idx, num_atoms, alloc);
+
+	int32_t cur_res_id = -1;
+	for (int64_t i = 0; i < num_atoms; ++i) {
+		const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
+		const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
+		const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
+
+		int32_t res_id = data->atom_data[i].mol_idx;
+		if (res_id != cur_res_id) {
+			cur_res_id = res_id;
+			md_residue_id_t id = res_id;
+			md_range_t atom_range = { (uint32_t)mol->atom.count, (uint32_t)mol->atom.count };
+
+			mol->residue.count += 1;
+			md_array_push(mol->residue.id, id, alloc);
+			md_array_push(mol->residue.atom_range, atom_range, alloc);
+		}
+
+		if (mol->residue.atom_range) md_array_last(mol->residue.atom_range)->end += 1;
+
+		mol->atom.count += 1;
+
+		//Set coordinates
+		md_array_push(mol->atom.x, x, alloc);
+		md_array_push(mol->atom.y, y, alloc);
+		md_array_push(mol->atom.z, z, alloc);
+
+		if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
+
+		//Set mass
+		const float mass = get_mass(data->atom_type_mass, data->atom_data[i].atom_type, data->num_atom_types);
+		md_array_push(mol->atom.mass, mass, alloc);
+	}
+
+	//Set elements
+	md_array_resize(mol->atom.element, num_atoms, alloc);
+	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, num_atoms)) MD_LOG_ERROR("One or more masses are missing matching element");
+
+	//Set cell_extent
+	mol->unit_cell = md_util_unit_cell_from_extent(data->cell_ext[0] * 10.0, data->cell_ext[1] * 10.0, data->cell_ext[2] * 10.0);
+
+	return true;
+}
+
+static bool lammps_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc, data_format_t* format) {
+	md_lammps_data_t data = { 0 };
+	bool success = false;
+	if (md_lammps_data_parse_str(&data, str, md_heap_allocator, format)) {
+		success = md_lammps_molecule_init(mol, &data, alloc);
+	}
+	md_lammps_data_free(&data, md_heap_allocator);
+
+	return success;
+}
+
+static bool lammps_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc, data_format_t* format) {
+	md_lammps_data_t data = { 0 };
+	bool success = false;
+	if (md_lammps_data_parse_file(&data, filename, md_heap_allocator, format)) {
+		success = md_lammps_molecule_init(mol, &data, alloc);
+	}
+	md_lammps_data_free(&data, md_heap_allocator);
+
+	return success;
+}
+
+/*
+static md_molecule_loader_i lammps_api = {
+	lammps_init_from_str,
+	lammps_init_from_file,
+};
+
+
+md_molecule_loader_i* md_lammps_molecule_api() {
+	return &lammps_api;
+}
+*/

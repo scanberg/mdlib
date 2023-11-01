@@ -47,6 +47,8 @@ typedef enum atom_style {
 //Used to create the data_format with just a style keyword
 bool get_data_format(data_format_t* format, atom_style style);
 
+//
+
 //Contains data about a single atom
 typedef struct md_lammps_atom_t {
 	int32_t atom_idx;
@@ -59,14 +61,16 @@ typedef struct md_lammps_atom_t {
 	int32_t nx;
 	int32_t ny;
 	int32_t nz;
-	char res_name[8];
-	int32_t res_id;
+	//char res_name[8];
+	//int32_t res_id; use mol_idx
 } md_lammps_atom_t;
 
 typedef struct md_lammps_atom_mass_t {
-	int32_t atom_idx;
+	int32_t atom_type;
 	float mass;
 } md_lammps_atom_mass_t;
+
+float get_mass(md_lammps_atom_mass_t* masses, int32_t type, int32_t num_types);
 
 typedef struct md_lammps_atom_bond_t {
 	int64_t bond_idx;
@@ -78,7 +82,7 @@ typedef struct md_lammps_atom_bond_t {
 typedef struct md_lammps_data_t {
 	char title[256];
 
-	//float cell_ext[3];
+	float cell_ext[3];
 
 	int64_t num_atoms;
 	int32_t num_atom_types;
@@ -100,12 +104,12 @@ bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, struct md_alloc
 bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, struct md_allocator_i* alloc, data_format_t* data_format);
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
-/*
+
 // Molecule
 bool md_lammps_molecule_init(struct md_molecule_t* mol, const md_lammps_data_t* lammps_data, struct md_allocator_i* alloc);
 
-struct md_molecule_loader_i* md_lammps_molecule_api();
-*/
+//struct md_molecule_loader_i* md_lammps_molecule_api();
+
 
 #ifdef __cplusplus
 }
