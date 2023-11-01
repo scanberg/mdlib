@@ -160,6 +160,14 @@ MD_VEC_INLINE double deperiodize(double x, double r, double period) {
     return x_prim;
 }
 
+MD_VEC_INLINE double deperiodize2(double x, double r, double period, double r_period) {
+    if (period == 0.0) return x;
+    const double dx  = (x - r) * r_period;
+    const double dxp = dx - round(dx);
+    const double x_prim = r + dxp * period;
+    return x_prim;
+}
+
 MD_VEC_INLINE float lerpf(float a, float b, float t) {
     //t = CLAMP(t, 0.0f, 1.0f);
     return a * (1.0f - t) + b * t;

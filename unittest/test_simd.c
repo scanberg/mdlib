@@ -132,6 +132,10 @@ static uint32_t f32_ulp_dist(float a, float b)
     return ua+ub+0x80000000;
 }
 
+#if defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#endif
+
 UTEST(simd, sin_cos) {
 
     const float values[] = {
@@ -203,7 +207,7 @@ UTEST(simd, sin_cos) {
 
         {
             v4_t vsin, vcos;
-            md_mm_sincos_ps(_mm_set1_ps(x), &vsin.vec, &vcos.vec);
+            md_mm_sincos_ps(md_mm_set1_ps(x), &vsin.vec, &vcos.vec);
             float sin = vsin.val[0];
             const uint32_t ulp_diff_libc  = f32_ulp_dist(ref_sin, sin);
             const double diff_libc        = fabs((double)ref_sin - (double)sin);
@@ -213,6 +217,10 @@ UTEST(simd, sin_cos) {
         }
     }
 }
+
+#if defined(_MSC_VER)
+#pragma float_control(pop)
+#endif
 
 UTEST(simd, hsum) {
     {

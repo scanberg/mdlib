@@ -74,6 +74,7 @@ static double com_trig_ref(const float* in_x, const float* in_w, int64_t count, 
 
 static double com_min_image_ref(const float* in_x, const float* in_w, int64_t count, float x_max) {
     const double ext = x_max;
+    const double r_ext = 1.0 / ext;
     double acc_x = in_x[0];
     double acc_w = in_w[0];
     
@@ -81,7 +82,7 @@ static double com_min_image_ref(const float* in_x, const float* in_w, int64_t co
         double r = acc_x / acc_w;
         double x = in_x[i];
         double w = in_w[i];
-        x = deperiodize(x, r, ext);
+        x = deperiodize2(x, r, ext, r_ext);
         acc_x += x * w;
         acc_w += w;
     }
@@ -96,13 +97,14 @@ static double com_min_image_ref(const float* in_x, const float* in_w, int64_t co
 
 static double com_min_image_sse(const float* in_x, const float* in_w, int64_t count, float x_max) {
     const md_128 v_ext = md_mm_set1_ps(x_max);
+    const md_128 v_r_ext = md_mm_set1_ps(1.0f / x_max);
     md_128 v_acc_x = md_mm_loadu_ps(in_x);
     md_128 v_acc_w = md_mm_loadu_ps(in_w);
     for (int64_t i = 4; i < count; i += 4) {
         md_128 r = md_mm_div_ps(v_acc_x, v_acc_w);
         md_128 x = md_mm_loadu_ps(in_x + i);
         md_128 w = md_mm_loadu_ps(in_w + i);
-        x = md_mm_deperiodize_ps(x, r, v_ext);
+        x = md_mm_deperiodize2_ps(x, r, v_ext, v_r_ext);
         v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(x, w));
         v_acc_w = md_mm_add_ps(v_acc_w, w);
     }
@@ -114,13 +116,14 @@ static double com_min_image_sse(const float* in_x, const float* in_w, int64_t co
 
 static double com_min_image_avx2(const float* in_x, const float* in_w, int64_t count, float x_max) {
     const md_256 v_ext = md_mm256_set1_ps(x_max);
+    const md_256 v_r_ext = md_mm256_set1_ps(1.0f / x_max);
     md_256 v_acc_x = md_mm256_loadu_ps(in_x);
     md_256 v_acc_w = md_mm256_loadu_ps(in_w);
     for (int64_t i = 8; i < count; i += 8) {
-        md_256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
         md_256 x = md_mm256_loadu_ps(in_x + i);
         md_256 w = md_mm256_loadu_ps(in_w + i);
-        x = md_mm256_deperiodize_ps(x, r, v_ext);
+        md_256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
+        x = md_mm256_deperiodize2_ps(x, r, v_ext, v_r_ext);
         v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(x, w));
         v_acc_w = md_mm256_add_ps(v_acc_w, w);
     }
@@ -133,13 +136,14 @@ static double com_min_image_avx2(const float* in_x, const float* in_w, int64_t c
 #if defined(__AVX512F__)
 static double com_min_image_avx512(const float* in_x, const float* in_w, int64_t count, float x_max) {
     const md_512 v_ext = _mm512_set1_ps(x_max);
+    const md_512 v_r_ext = md_mm512_set1_ps(1.0f / x_max);
     md_512 v_acc_x = _mm512_loadu_ps(in_x);
     md_512 v_acc_w = _mm512_loadu_ps(in_w);
     for (int64_t i = 16; i < count; i += 16) {
         md_512 r = _mm512_div_ps(v_acc_x, v_acc_w);
         md_512 x = _mm512_loadu_ps(in_x + i);
         md_512 w = _mm512_loadu_ps(in_w + i);
-        x = md_mm512_deperiodize_ps(x, r, v_ext);
+        x = md_mm512_deperiodize2_ps(x, r, v_ext, v_r_ext);
         v_acc_x = _mm512_add_ps(v_acc_x, _mm512_mul_ps(x, w));
         v_acc_w = _mm512_add_ps(v_acc_w, w);
     }

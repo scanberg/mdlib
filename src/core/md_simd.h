@@ -479,12 +479,26 @@ MD_SIMD_INLINE float md_mm256_reduce_max_ps(md_256 x) { return md_mm_reduce_max_
 #define md_mm512_reduce_max_ps _mm512_reduce_max_ps
 #endif
 
+// Deperiodize is the operation which calculates closest image of x in relation to r,
+// where r is the reference point and p is the period.
+// It comes in two flavors, one where only the period is given and one where the reciprocal period (rp) is also given.
+// The latter is more efficient if the reciprocal period is already computed.
+// The operation is used in the periodic boundary condition calculations.
+
 MD_SIMD_INLINE md_128 md_mm_deperiodize_ps(md_128 x, md_128 r, md_128 p) {
     md_128 d  = md_mm_sub_ps(x, r);
     md_128 dx = md_mm_div_ps(d, p);
     dx = md_mm_sub_ps(dx, md_mm_round_ps(dx));
     md_128 x_prim = md_mm_add_ps(r, md_mm_mul_ps(dx, p));
     return md_mm_blendv_ps(x_prim, x, md_mm_cmpeq_ps(p, md_mm_setzero_ps()));
+}
+
+MD_SIMD_INLINE md_128 md_mm_deperiodize2_ps(md_128 x, md_128 r, md_128 p, md_128 rp) {
+	md_128 d  = md_mm_sub_ps(x, r);
+	md_128 dx = md_mm_mul_ps(d, rp);
+	dx = md_mm_sub_ps(dx, md_mm_round_ps(dx));
+	md_128 x_prim = md_mm_add_ps(r, md_mm_mul_ps(dx, p));
+	return md_mm_blendv_ps(x_prim, x, md_mm_cmpeq_ps(p, md_mm_setzero_ps()));
 }
 
 MD_SIMD_INLINE md_128d md_mm_deperiodize_pd(md_128d x, md_128d r, md_128d p) {
@@ -495,6 +509,14 @@ MD_SIMD_INLINE md_128d md_mm_deperiodize_pd(md_128d x, md_128d r, md_128d p) {
     return md_mm_blendv_pd(x_prim, x, md_mm_cmpeq_pd(p, md_mm_setzero_pd()));
 }
 
+MD_SIMD_INLINE md_128d md_mm_deperiodize2_pd(md_128d x, md_128d r, md_128d p, md_128d rp) {
+	md_128d d  = md_mm_sub_pd(x, r);
+	md_128d dx = md_mm_mul_pd(d, rp);
+	dx = md_mm_sub_pd(dx, md_mm_round_pd(dx));
+	md_128d x_prim = md_mm_add_pd(r, md_mm_mul_pd(dx, p));
+	return md_mm_blendv_pd(x_prim, x, md_mm_cmpeq_pd(p, md_mm_setzero_pd()));
+}
+
 MD_SIMD_INLINE md_256 md_mm256_deperiodize_ps(md_256 x, md_256 r, md_256 p) {
     md_256 d  = md_mm256_sub_ps(x, r);
     md_256 dx = md_mm256_div_ps(d, p);
@@ -503,12 +525,28 @@ MD_SIMD_INLINE md_256 md_mm256_deperiodize_ps(md_256 x, md_256 r, md_256 p) {
     return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(p, md_mm256_setzero_ps()));
 }
 
+MD_SIMD_INLINE md_256 md_mm256_deperiodize2_ps(md_256 x, md_256 r, md_256 p, md_256 rp) {
+	md_256 d  = md_mm256_sub_ps(x, r);
+	md_256 dx = md_mm256_mul_ps(d, rp);
+	dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
+	md_256 x_prim = md_mm256_add_ps(r, md_mm256_mul_ps(dx, p));
+	return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(p, md_mm256_setzero_ps()));
+}
+
 MD_SIMD_INLINE md_256d md_mm256_deperiodize_pd(md_256d x, md_256d r, md_256d p) {
     md_256d d  = md_mm256_sub_pd(x, r);
     md_256d dx = md_mm256_div_pd(d, p);
     dx = md_mm256_sub_pd(dx, md_mm256_round_pd(dx));
     md_256d x_prim = md_mm256_add_pd(r, md_mm256_mul_pd(dx, p));
     return md_mm256_blendv_pd(x_prim, x, md_mm256_cmpeq_pd(p, md_mm256_setzero_pd()));
+}
+
+MD_SIMD_INLINE md_256d md_mm256_deperiodize2_pd(md_256d x, md_256d r, md_256d p, md_256d rp) {
+	md_256d d  = md_mm256_sub_pd(x, r);
+	md_256d dx = md_mm256_mul_pd(d, rp);
+	dx = md_mm256_sub_pd(dx, md_mm256_round_pd(dx));
+	md_256d x_prim = md_mm256_add_pd(r, md_mm256_mul_pd(dx, p));
+	return md_mm256_blendv_pd(x_prim, x, md_mm256_cmpeq_pd(p, md_mm256_setzero_pd()));
 }
 
 #if defined(__AVX512F__)
@@ -521,6 +559,15 @@ MD_SIMD_INLINE md_512 md_mm512_deperiodize_ps(md_512 x, md_512 r, md_512 p) {
     return _mm512_mask_blend_ps(mask, x_prim, x);
 }
 
+MD_SIMD_INLINE md_512 md_mm512_deperiodize2_ps(md_512 x, md_512 r, md_512 p, md_512 rp) {
+	md_512 d  = _mm512_sub_ps(x, r);
+	md_512 dx = _mm512_mul_ps(d, rp);
+	dx = _mm512_sub_ps(dx, _mm512_roundscale_ps(dx, _MM_FROUND_TO_NEAREST_INT));
+	md_512 x_prim = _mm512_add_ps(r, _mm512_mul_ps(dx, p));
+	__mmask16 mask = _mm512_cmpeq_ps_mask(p, _mm512_setzero_ps());
+	return _mm512_mask_blend_ps(mask, x_prim, x);
+}
+
 MD_SIMD_INLINE md_512d md_mm512_deperiodize_pd(md_512d x, md_512d r, md_512d p) {
     md_512d d  = _mm512_sub_pd(x, r);
     md_512d dx = _mm512_div_pd(d, p);
@@ -528,6 +575,15 @@ MD_SIMD_INLINE md_512d md_mm512_deperiodize_pd(md_512d x, md_512d r, md_512d p) 
     md_512d x_prim = _mm512_add_pd(r, _mm512_mul_pd(dx, p));
     __mmask8 mask = _mm512_cmpeq_pd_mask(p, _mm512_setzero_pd());
     return _mm512_mask_blend_pd(mask , x_prim, x);
+}
+
+MD_SIMD_INLINE md_512d md_mm512_deperiodize2_pd(md_512d x, md_512d r, md_512d p, md_512d rp) {
+	md_512d d  = _mm512_sub_pd(x, r);
+	md_512d dx = _mm512_mul_pd(d, rp);
+	dx = _mm512_sub_pd(dx, _mm512_roundscale_pd(dx, _MM_FROUND_TO_NEAREST_INT));
+	md_512d x_prim = _mm512_add_pd(r, _mm512_mul_pd(dx, p));
+	__mmask8 mask = _mm512_cmpeq_pd_mask(p, _mm512_setzero_pd());
+	return _mm512_mask_blend_pd(mask, x_prim, x);
 }
 
 #endif
@@ -793,6 +849,10 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 in_x, md_256* out_sin, md_256* out
 }
 #endif
 
+#if defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#endif
+
 // These are based on the SSEmathfun implementations by Julien Pommier.
 // http://gruntthepeon.free.fr/ssemath/
 // Who's implementations which are based on the cephes library
@@ -1048,6 +1108,10 @@ MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
     *s = _mm512_xor_ps(xmm1, sign_bit_sin);
     *c = _mm512_xor_ps(xmm2, sign_bit_cos);
 }
+#endif
+
+#if defined(_MSC_VER)
+#pragma float_control(pop)
 #endif
 
 #if 0
