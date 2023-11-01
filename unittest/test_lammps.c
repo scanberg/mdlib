@@ -34,6 +34,7 @@ UTEST(lammps, parse_small) {
         EXPECT_EQ(mol.atom.y[i], lammps_data.atom_data[i].y * 10.0f);
         EXPECT_EQ(mol.atom.z[i], lammps_data.atom_data[i].z * 10.0f);
         EXPECT_NE(mol.atom.mass[i], 0);
+        EXPECT_NE(mol.atom.element[i], 0);
     }
     md_molecule_free(&mol, alloc);
 
