@@ -452,7 +452,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	return true;
 }
 
-static bool lammps_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc, data_format_t* format) {
+bool md_lammps_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc, data_format_t* format) {
 	md_lammps_data_t data = { 0 };
 	bool success = false;
 	if (md_lammps_data_parse_str(&data, str, md_heap_allocator, format)) {
@@ -463,7 +463,7 @@ static bool lammps_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* 
 	return success;
 }
 
-static bool lammps_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc, data_format_t* format) {
+bool md_lammps_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc, data_format_t* format) {
 	md_lammps_data_t data = { 0 };
 	bool success = false;
 	if (md_lammps_data_parse_file(&data, filename, md_heap_allocator, format)) {
