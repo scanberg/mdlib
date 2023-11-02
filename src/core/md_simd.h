@@ -858,7 +858,7 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 in_x, md_256* out_sin, md_256* out
 // Who's implementations which are based on the cephes library
 // http://www.netlib.org/cephes/
 
-static void md_mm_sincos_ps(md_128 xx, md_128* s, md_128* c) {
+static inline void md_mm_sincos_ps(md_128 xx, md_128* s, md_128* c) {
     md_128  xmm1, xmm2, sign_bit_sin, x, y, y2;
     md_128i imm0, imm2, imm3;
     
@@ -942,7 +942,7 @@ static void md_mm_sincos_ps(md_128 xx, md_128* s, md_128* c) {
     *c = md_mm_xor_ps(xmm2, sign_bit_cos);
 }
 
-MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 x, md_256* s, md_256* c) {
+static inline void md_mm256_sincos_ps(md_256 x, md_256* s, md_256* c) {
     md_256  xmm1, xmm2, sign_bit_sin, y, y2;
     md_256i imm0, imm2, imm3;
 
@@ -1025,7 +1025,7 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 x, md_256* s, md_256* c) {
 }
 
 #if defined(__AVX512F__)
-MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
+static inline void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
     __m512  xmm1, xmm2, sign_bit_sin, y, y2;
     __m512i imm0, imm2, imm3;
 
