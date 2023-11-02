@@ -1822,7 +1822,7 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512i idx = _mm512_loadu_si512(in_idx + i);
                 __m512 v_x = _mm512_i32gather_ps(idx, in_x, 4);
                 __m512 v_y = _mm512_i32gather_ps(idx, in_y, 4);
                 __m512 v_z = _mm512_i32gather_ps(idx, in_z, 4);
@@ -1852,7 +1852,7 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512i idx = _mm512_loadu_si512(in_idx + i);
                 __m512 v_x = _mm512_i32gather_ps(idx, in_x, 4);
                 __m512 v_y = _mm512_i32gather_ps(idx, in_y, 4);
                 __m512 v_z = _mm512_i32gather_ps(idx, in_z, 4);
@@ -1963,7 +1963,7 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256i idx = md_mm256_loadu_si256(in_idx + i);
                 md_256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
                 md_256 v_y = md_mm256_i32gather_ps(in_y, idx, 4);
                 md_256 v_z = md_mm256_i32gather_ps(in_z, idx, 4);
@@ -1993,7 +1993,7 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
             }
         } else {
             for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256i idx = md_mm256_loadu_si256(in_idx + i);
                 md_256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
                 md_256 v_y = md_mm256_i32gather_ps(in_y, idx, 4);
                 md_256 v_z = md_mm256_i32gather_ps(in_z, idx, 4);
@@ -2105,7 +2105,7 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128i idx = md_mm_loadu_si128(in_idx + i);
                 md_128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
                 md_128 v_y = md_mm_i32gather_ps(in_y, idx, 4);
                 md_128 v_z = md_mm_i32gather_ps(in_z, idx, 4);
@@ -2135,7 +2135,7 @@ static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y
             }
         } else {
             for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128i idx = md_mm_loadu_si128(in_idx + i);
                 md_128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
                 md_128 v_y = md_mm_i32gather_ps(in_y, idx, 4);
                 md_128 v_z = md_mm_i32gather_ps(in_z, idx, 4);
@@ -2350,7 +2350,7 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512i idx = _mm512_loadu_si512(in_idx + i);
                 __m512 v_x = _mm512_i32gather_ps(idx, in_x, 4);
                 __m512 v_w = _mm512_i32gather_ps(idx, in_w, 4);
                 __m512 v_theta = _mm512_mul_ps(v_x, v_scl);
@@ -2362,7 +2362,7 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512i idx = _mm512_loadu_si512(in_idx + i);
                 __m512 v_x = _mm512_i32gather_ps(idx, in_x, 4);
                 __m512 v_theta = _mm512_mul_ps(v_x, v_scl);
                 __m512 v_c, v_s;
@@ -2408,7 +2408,7 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256i idx = md_mm256_loadu_si256(in_idx + i);
                 md_256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
                 md_256 v_w = md_mm256_i32gather_ps(in_w, idx, 4);
                 md_256 v_theta = md_mm256_mul_ps(v_x, v_scl);
@@ -2420,7 +2420,7 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
             }
         } else {
             for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256i idx = md_mm256_loadu_si256(in_idx + i);
                 md_256 v_x = md_mm256_i32gather_ps(in_x, idx, 4);
                 md_256 v_theta = md_mm256_mul_ps(v_x, v_scl);
                 md_256 v_c, v_s;
@@ -2466,7 +2466,7 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128i idx = md_mm_loadu_si128(in_idx + i);
                 md_128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
                 md_128 v_w = md_mm_i32gather_ps(in_w, idx, 4);
                 md_128 v_theta = md_mm_mul_ps(v_x, v_scl);
@@ -2478,7 +2478,7 @@ static float compute_com_periodic_trig(const float* in_x, const float* in_w, con
             }
         } else {
             for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128i idx = md_mm_loadu_si128(in_idx + i);
                 md_128 v_x = md_mm_i32gather_ps(in_x, idx, 4);
                 md_128 v_theta = md_mm_mul_ps(v_x, v_scl);
                 md_128 v_c, v_s;
@@ -2583,12 +2583,12 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
         __m512 v_acc_w = _mm512_setzero_ps();
         i += 8;
         if (in_idx) {
-            __m512i idx = _mm512_loadu_epi32(in_idx);
+            __m512i idx = _mm512_loadu_si512(in_idx);
             if (in_w) {
                 v_acc_x = _mm512_i32gather_ps(idx, in_x, 4);
                 v_acc_w = _mm512_i32gather_ps(idx, in_w, 4);
                 for (; i < simd_count; i += 16) {
-                    idx = _mm512_loadu_epi32(in_idx + i);
+                    idx = _mm512_loadu_si512(in_idx + i);
                     __m512 r = _mm512_div_ps(v_acc_x, v_acc_w);
                     __m512 x = _mm512_i32gather_ps(idx, in_x, 4);
                     __m512 w = _mm512_i32gather_ps(idx, in_w, 4);
@@ -2600,7 +2600,7 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_x = _mm512_i32gather_ps(idx, in_x, 4);
                 v_acc_w = _mm512_set1_ps(16);
                 for (; i < simd_count; i += 16) {
-                    idx = _mm512_loadu_epi32(in_idx + i);
+                    idx = _mm512_loadu_si512(in_idx + i);
                     __m512 r = _mm512_div_ps(v_acc_x, v_acc_w);
                     __m512 x = _mm512_i32gather_ps(idx, in_x, 4);
                     x = md_mm512_deperiodize_ps(x, r, v_ext);
@@ -2643,12 +2643,12 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
         md_256 v_acc_w = md_mm256_setzero_ps();
         i += 8;
         if (in_idx) {
-            md_256i idx = md_mm256_loadu_epi32(in_idx);
+            md_256i idx = md_mm256_loadu_si256(in_idx);
             if (in_w) {
                 v_acc_x = md_mm256_i32gather_ps(in_x, idx, 4);
                 v_acc_w = md_mm256_i32gather_ps(in_w, idx, 4);
                 for (; i < simd_count; i += 8) {
-                    idx = md_mm256_loadu_epi32(in_idx + i);
+                    idx = md_mm256_loadu_si256(in_idx + i);
                     md_256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
                     md_256 x = md_mm256_i32gather_ps(in_x, idx, 4);
                     md_256 w = md_mm256_i32gather_ps(in_w, idx, 4);
@@ -2660,7 +2660,7 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_x = md_mm256_i32gather_ps(in_x, idx, 4);
                 v_acc_w = md_mm256_set1_ps(8);
                 for (; i < simd_count; i += 8) {
-                    idx = md_mm256_loadu_epi32(in_idx + i);
+                    idx = md_mm256_loadu_si256(in_idx + i);
                     md_256 r = md_mm256_div_ps(v_acc_x, v_acc_w);
                     md_256 x = md_mm256_i32gather_ps(in_x, idx, 4);
                     x = md_mm256_deperiodize_ps(x, r, v_ext);
@@ -2703,12 +2703,12 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
         md_128 v_acc_w = md_mm_setzero_ps();
         i += 8;
         if (in_idx) {
-            md_128i idx = md_mm_loadu_epi32(in_idx);
+            md_128i idx = md_mm_loadu_si128(in_idx);
             if (in_w) {
                 v_acc_x = md_mm_i32gather_ps(in_x, idx, 4);
                 v_acc_w = md_mm_i32gather_ps(in_w, idx, 4);
                 for (; i < simd_count; i += 4) {
-                    idx = md_mm_loadu_epi32(in_idx + i);
+                    idx = md_mm_loadu_si128(in_idx + i);
                     md_128 r = md_mm_div_ps(v_acc_x, v_acc_w);
                     md_128 x = md_mm_i32gather_ps(in_x, idx, 4);
                     md_128 w = md_mm_i32gather_ps(in_w, idx, 4);
@@ -2720,7 +2720,7 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
                 v_acc_x = md_mm_i32gather_ps(in_x, idx, 4);
                 v_acc_w = md_mm_set1_ps(4);
                 for (; i < simd_count; i += 4) {
-                    idx = md_mm_loadu_epi32(in_idx + i);
+                    idx = md_mm_loadu_si128(in_idx + i);
                     md_128 r = md_mm_div_ps(v_acc_x, v_acc_w);
                     md_128 x = md_mm_i32gather_ps(in_x, idx, 4);
                     x = md_mm_deperiodize_ps(x, r, v_ext);
@@ -2818,7 +2818,7 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512i idx = _mm512_loadu_si512(in_idx + i);
                 __m512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
                 __m512 v_w  = _mm512_i32gather_ps(idx, in_w, 4);
                 v_acc_x = _mm512_add_ps(v_acc_x, _mm512_mul_ps(v_x, v_w));
@@ -2826,7 +2826,7 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512i idx = _mm512_loadu_si512(in_idx + i);
                 __m512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
                 v_acc_x = _mm512_add_ps(v_acc_x, v_x);
             }
@@ -2856,7 +2856,7 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256i idx = md_mm256_loadu_si256(in_idx + i);
                 md_256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
                 md_256 v_w  = md_mm256_i32gather_ps(in_w, idx, 4);
                 v_acc_x = md_mm256_add_ps(v_acc_x, md_mm256_mul_ps(v_x, v_w));
@@ -2864,7 +2864,7 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
             }
         } else {
             for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256i idx = md_mm256_loadu_si256(in_idx + i);
                 md_256 v_x  = md_mm256_i32gather_ps(in_x, idx, 4);
                 v_acc_x = md_mm256_add_ps(v_acc_x, v_x);
             }
@@ -2894,7 +2894,7 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128i idx = md_mm_loadu_si128(in_idx + i);
                 md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
                 md_128 v_w  = md_mm_i32gather_ps(in_w, idx, 4);
                 v_acc_x = md_mm_add_ps(v_acc_x, md_mm_mul_ps(v_x, v_w));
@@ -2902,7 +2902,7 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
             }
         } else {
             for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128i idx = md_mm_loadu_si128(in_idx + i);
                 md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
                 v_acc_x = md_mm_add_ps(v_acc_x, v_x);
             }
@@ -3007,7 +3007,7 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512i idx = _mm512_loadu_si512(in_idx + i);
                 __m512 x    = _mm512_i32gather_ps(idx, in_x, 4);
                 __m512 y    = _mm512_i32gather_ps(idx, in_y, 4);
                 __m512 z    = _mm512_i32gather_ps(idx, in_z, 4);
@@ -3020,7 +3020,7 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
             }
         } else {
             for (; i < simd_count; i += 16) {
-                __m512i idx = _mm512_loadu_epi32(in_idx + i);
+                __m512i idx = _mm512_loadu_si512(in_idx + i);
                 __m512 x    = _mm512_i32gather_ps(idx, in_x, 4);
                 __m512 y    = _mm512_i32gather_ps(idx, in_y, 4);
                 __m512 z    = _mm512_i32gather_ps(idx, in_z, 4);
@@ -3071,7 +3071,7 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256i idx = md_mm256_loadu_si256(in_idx + i);
                 md_256 x    = md_mm256_i32gather_ps(in_x, idx, 4);
                 md_256 y    = md_mm256_i32gather_ps(in_y, idx, 4);
                 md_256 z    = md_mm256_i32gather_ps(in_z, idx, 4);
@@ -3084,7 +3084,7 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
             }
         } else {
             for (; i < simd_count; i += 8) {
-                md_256i idx = md_mm256_loadu_epi32(in_idx + i);
+                md_256i idx = md_mm256_loadu_si256(in_idx + i);
                 md_256 x    = md_mm256_i32gather_ps(in_x, idx, 4);
                 md_256 y    = md_mm256_i32gather_ps(in_y, idx, 4);
                 md_256 z    = md_mm256_i32gather_ps(in_z, idx, 4);
@@ -3136,7 +3136,7 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
     if (in_idx) {
         if (in_w) {
             for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128i idx = md_mm_loadu_si128(in_idx + i);
                 md_128 x    = md_mm_i32gather_ps(in_x, idx, 4);
                 md_128 y    = md_mm_i32gather_ps(in_y, idx, 4);
                 md_128 z    = md_mm_i32gather_ps(in_z, idx, 4);
@@ -3149,7 +3149,7 @@ vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in
             }
         } else {
             for (; i < simd_count; i += 4) {
-                md_128i idx = md_mm_loadu_epi32(in_idx + i);
+                md_128i idx = md_mm_loadu_si128(in_idx + i);
                 md_128 x    = md_mm_i32gather_ps(in_x, idx, 4);
                 md_128 y    = md_mm_i32gather_ps(in_y, idx, 4);
                 md_128 z    = md_mm_i32gather_ps(in_z, idx, 4);

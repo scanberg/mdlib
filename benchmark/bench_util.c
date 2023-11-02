@@ -136,7 +136,7 @@ static double com_min_image_avx2(const float* in_x, const float* in_w, int64_t c
 #if defined(__AVX512F__)
 static double com_min_image_avx512(const float* in_x, const float* in_w, int64_t count, float x_max) {
     const md_512 v_ext = _mm512_set1_ps(x_max);
-    const md_512 v_r_ext = md_mm512_set1_ps(1.0f / x_max);
+    const md_512 v_r_ext = _mm512_set1_ps(1.0f / x_max);
     md_512 v_acc_x = _mm512_loadu_ps(in_x);
     md_512 v_acc_w = _mm512_loadu_ps(in_w);
     for (int64_t i = 16; i < count; i += 16) {
