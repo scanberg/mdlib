@@ -10,7 +10,7 @@ jobs:
     ci:
         runs-on: ubuntu-22.04
         steps:
-        - uses: actions/checkout@v2
+        - uses: actions/checkout@v4
 
         - name: prepare
           run: |
@@ -38,7 +38,7 @@ jobs:
           working-directory: ${{github.workspace}}/build
           shell: bash
           # Execute the build.  You can specify a specific target with "--target <NAME>"
-          run: cmake --build . --config $BUILD_TYPE --verbose
+          run: cmake --build . --config $BUILD_TYPE
 
         - name: Test
           working-directory: ${{github.workspace}}/build
