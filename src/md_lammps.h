@@ -5,6 +5,8 @@
 
 #include <core/md_str.h>
 
+//All lammps units should have a 1:1 mapping to the md_molecule according to https://docs.lammps.org/2001/units.html
+
 #ifdef __cplusplus
 extern "C" {
 #endif

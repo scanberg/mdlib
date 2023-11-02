@@ -427,9 +427,9 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 
 	int32_t cur_res_id = -1;
 	for (int64_t i = 0; i < num_atoms; ++i) {
-		const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
-		const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
-		const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
+		const float x = data->atom_data[i].x;
+		const float y = data->atom_data[i].y;
+		const float z = data->atom_data[i].z;
 
 		int32_t res_id = data->atom_data[i].mol_idx;
 		if (res_id != cur_res_id) {
@@ -463,7 +463,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, num_atoms)) MD_LOG_ERROR("One or more masses are missing matching element");
 
 	//Create unit cell
-	mol->unit_cell = md_util_unit_cell_from_triclinic(data->cell_ext[0] * 10.0, data->cell_ext[1] * 10.0, data->cell_ext[2] * 10.0, data->xy * 10.0, data->xz * 10.0, data->yz * 10.0);
+	mol->unit_cell = md_util_unit_cell_from_triclinic(data->cell_ext[0], data->cell_ext[1], data->cell_ext[2], data->xy, data->xz, data->yz);
 	return true;
 }
 

@@ -31,9 +31,9 @@ UTEST(lammps, parse_small) {
 
     md_lammps_molecule_init(&mol, &lammps_data, alloc);
     for (int64_t i = 0; i < mol.atom.count; ++i) {
-        EXPECT_EQ(mol.atom.x[i], lammps_data.atom_data[i].x * 10.0f);
-        EXPECT_EQ(mol.atom.y[i], lammps_data.atom_data[i].y * 10.0f);
-        EXPECT_EQ(mol.atom.z[i], lammps_data.atom_data[i].z * 10.0f);
+        EXPECT_EQ(mol.atom.x[i], lammps_data.atom_data[i].x);
+        EXPECT_EQ(mol.atom.y[i], lammps_data.atom_data[i].y);
+        EXPECT_EQ(mol.atom.z[i], lammps_data.atom_data[i].z);
         EXPECT_NE(mol.atom.mass[i], 0);
         EXPECT_NE(mol.atom.element[i], 0);
     }
