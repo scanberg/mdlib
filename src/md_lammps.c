@@ -172,9 +172,10 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	//Skip empty line
 	md_buffered_reader_skip_line(reader);
 
-	//Parse cell extent
+	//Parse cell definition
 	{
 		//Cubic part
+		float cell_xyz[3] = { 0 };
 		for (int32_t i = 0; i < 3; i++) {
 			if (!md_buffered_reader_extract_line(&line, reader)) {
 				MD_LOG_ERROR("Could not read cell extent line");
@@ -184,21 +185,24 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				MD_LOG_ERROR("Wrong amount of extent tokens tokens");
 				return false;
 			}
-			data->cell_ext[i] = (float)parse_float(tokens[1]) - (float)parse_float(tokens[0]);
+			cell_xyz[i] = (float)parse_float(tokens[1]) - (float)parse_float(tokens[0]);
 		}
+		data->cell_def.x = cell_xyz[0];
+		data->cell_def.y = cell_xyz[1];
+		data->cell_def.z = cell_xyz[2];
 		
 		//Triclinic part
 		md_buffered_reader_extract_line(&line, reader);
 		if (extract_tokens(tokens, 3, &line) == 3){
-			data->xy = (float)parse_float(tokens[0]);
-			data->xz = (float)parse_float(tokens[1]);
-			data->yz = (float)parse_float(tokens[2]);
+			data->cell_def.xy = (float)parse_float(tokens[0]);
+			data->cell_def.xz = (float)parse_float(tokens[1]);
+			data->cell_def.yz = (float)parse_float(tokens[2]);
 		}
 		else {
 			//It was cubic
-			data->xy = 0;
-			data->xz = 0;
-			data->yz = 0;
+			data->cell_def.xy = 0;
+			data->cell_def.xz = 0;
+			data->cell_def.yz = 0;
 		}
 		
 	}
@@ -463,7 +467,8 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, num_atoms)) MD_LOG_ERROR("One or more masses are missing matching element");
 
 	//Create unit cell
-	mol->unit_cell = md_util_unit_cell_from_triclinic(data->cell_ext[0], data->cell_ext[1], data->cell_ext[2], data->xy, data->xz, data->yz);
+	mol->unit_cell = md_util_unit_cell_from_triclinic(data->cell_def.x, data->cell_def.y, data->cell_def.z, data->cell_def.xy, data->cell_def.xz, data->cell_def.yz);
+	
 	return true;
 }
 

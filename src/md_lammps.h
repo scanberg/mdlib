@@ -81,13 +81,15 @@ typedef struct md_lammps_atom_bond_t {
 	int64_t second_atom_idx;
 } md_lammps_atom_bond_t;
 
+typedef struct md_lammps_cell {
+	float x, y, z;
+	float xy, xz, yz;
+} md_lammps_cell;
+
 typedef struct md_lammps_data_t {
 	char title[256];
 
-	float cell_ext[3];
-	float xy;
-	float xz;
-	float yz;
+	md_lammps_cell cell_def;
 
 	int64_t num_atoms;
 	int32_t num_atom_types;
