@@ -91,7 +91,7 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-nested-anon-types")
 
     if (MD_ENABLE_AVX512)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f -mavx512dq")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f" "-mavx512dq")
     elseif (MD_ENABLE_AVX2)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
@@ -126,7 +126,7 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
       "-Wno-format-truncation")
 
     if (MD_ENABLE_AVX512)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f -mavx512dq")
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f" "-mavx512dq")
     elseif (MD_ENABLE_AVX2)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
