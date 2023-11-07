@@ -18,7 +18,7 @@ option(MD_BENCHMARK "Enable benchmarks" ON)
 option(MD_LINK_STDLIB_STATIC "Link against static stdlibs" ON)
 option(MD_ENABLE_AVX  "Enable AVX extensions" ${HAVE_AVX_EXTENSIONS})
 option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
-option(MD_ENABLE_AVX512F "Enable AVX512F extensions" ${HAVE_AVX512F_EXTENSIONS})
+option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
 set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
@@ -90,8 +90,8 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-gnu-zero-variadic-macro-arguments"
     "-Wno-nested-anon-types")
 
-    if (MD_ENABLE_AVX512F)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f")
+    if (MD_ENABLE_AVX512)
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f -mavx512dq")
     elseif (MD_ENABLE_AVX2)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
@@ -125,8 +125,8 @@ elseif (CMAKE_C_COMPILER_ID STREQUAL "GNU") # GCC
       "-Wno-unused-parameter"
       "-Wno-format-truncation")
 
-    if (MD_ENABLE_AVX512F)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f")
+    if (MD_ENABLE_AVX512)
+        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f -mavx512dq")
     elseif (MD_ENABLE_AVX2)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
@@ -161,7 +161,7 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       "/Oi"
       "/fp:except-")
 
-    if (MD_ENABLE_AVX512F)
+    if (MD_ENABLE_AVX512)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX512" "/fp:fast")
     elseif (MD_ENABLE_AVX2)
         set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "/arch:AVX2" "/fp:fast")
