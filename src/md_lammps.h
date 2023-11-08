@@ -63,8 +63,6 @@ typedef struct md_lammps_atom_t {
 	int32_t nx;
 	int32_t ny;
 	int32_t nz;
-	//char res_name[8];
-	//int32_t res_id; use mol_idx
 } md_lammps_atom_t;
 
 typedef struct md_lammps_atom_mass_t {

@@ -46,7 +46,6 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	str_t line;
 	str_t tokens[16];
 
-	//lammps_atom_data_structure test_data_structure[] = { ATOM_IDX, MOL_IDX, ATOM_TYPE, PARTIAL_CHARGE, ATOM_COORD, ATOM_COORD, ATOM_COORD };
 
 	//Read the title of the file
 	{
@@ -271,14 +270,6 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 
 			md_lammps_atom_t* atom = &data->atom_data[i];
 
-			/*
-			ATOM_IDX,
-			MOL_IDX,
-			ATOM_TYPE,
-			PARTIAL_CHARGE,
-			ATOM_COORD
-			*/
-
 			for (int64_t d = 0; d < data_format->len; d++) {
 				switch (data_format->ptr[d])
 				{
@@ -317,9 +308,6 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 					break;
 				}
 			}
-
-			//str_copy_to_char_buf(atom->atom_type, sizeof(atom->atom_type), str_trim(str_substr(line, 5, 5)));
-			//str_copy_to_char_buf(atom->atom_name, sizeof(atom->atom_name), str_trim(str_substr(line, 10, 5)));
 		}
 	}
 
@@ -357,26 +345,6 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			bond->second_atom_idx = (int64_t)parse_int(tokens[3]);
 		}
 	}
-
-	/*
-
-	if (!md_buffered_reader_extract_line(&line, reader)) {
-		MD_LOG_ERROR("Failed to extract unitcell line");
-		return false;
-	}
-
-	const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), line);
-
-	if (num_tokens != 3) {
-		MD_LOG_ERROR("Failed to parse cell extent, expected 3 tokens, got %i", (int)num_tokens);
-		return false;
-	}
-
-	data->cell_ext[0] = (float)parse_float(tokens[0]);
-	data->cell_ext[1] = (float)parse_float(tokens[1]);
-	data->cell_ext[2] = (float)parse_float(tokens[2]);
-
-	*/
 
 	return true;
 }
@@ -494,6 +462,8 @@ bool md_lammps_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i
 	return success;
 }
 
+
+//Cant use interface as the format parameter is needed as well
 /*
 static md_molecule_loader_i lammps_api = {
 	lammps_init_from_str,
