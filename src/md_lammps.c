@@ -26,7 +26,7 @@ bool get_data_format(data_format_t* format, atom_style style) {
 }
 
 
-float get_mass(md_lammps_atom_mass_t* m, int32_t type, int32_t num_types)
+static float get_mass(md_lammps_atom_mass_t* m, int32_t type, int32_t num_types)
 {
 	for (int32_t i = 0; i < num_types; i++) {
 		if (m[i].atom_type == type) {
@@ -34,7 +34,7 @@ float get_mass(md_lammps_atom_mass_t* m, int32_t type, int32_t num_types)
 		}
 	}
 	MD_LOG_ERROR("atom type could not be found");
-	return -1.0f;
+	return 0.0f;
 }
 
 

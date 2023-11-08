@@ -72,7 +72,7 @@ typedef struct md_lammps_atom_mass_t {
 	float mass;
 } md_lammps_atom_mass_t;
 
-float get_mass(md_lammps_atom_mass_t* masses, int32_t type, int32_t num_types);
+static float get_mass(md_lammps_atom_mass_t* masses, int32_t type, int32_t num_types);
 
 typedef struct md_lammps_atom_bond_t {
 	int64_t bond_idx;
