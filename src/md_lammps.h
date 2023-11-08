@@ -27,8 +27,8 @@ typedef enum lammps_atom_data_format {
 	NX,
 	NY,
 	NZ,
-	res_name,
-	res_id
+	RES_NAME,
+	RES_ID
 } lammps_atom_data_format;
 
 static const lammps_atom_data_format DATA_FORMAT_FULL[] = {
