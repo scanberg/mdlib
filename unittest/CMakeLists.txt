@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.15)
 
 project(md_unittest VERSION 0.1 LANGUAGES C)
 
-add_executable(md_unittest unittest.c "test_lammps.c")
+add_executable(md_unittest unittest.c)
 
 target_compile_definitions(md_unittest PRIVATE MD_UNITTEST_DATA_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/../test_data\" UTEST_USE_OLD_QPC ${MD_DEFINES})
 target_compile_options(md_unittest PRIVATE ${MD_FLAGS_EXT} ${MD_FLAGS_AVX} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
@@ -37,6 +37,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xyz.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xvg.c
     ${CMAKE_CURRENT_SOURCE_DIR}/rmsd.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_lammps.c
   )
 
 # adapted from https://github.com/Kitware/CMake/blob/master/Modules/GoogleTest.cmake

@@ -188,7 +188,7 @@ source_group("ext" FILES ${EXT_FILES})
 source_group("shaders" FILES ${SHADER_FILES})
 source_group("proj" FILES ${PROJ_FILES})
 
-add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES} ${PROJ_FILES} "src/md_lammps.h" "src/md_lammps.c")
+add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES} ${PROJ_FILES})
 
 if (MD_LINK_STDLIB_STATIC)
     set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
