@@ -19,4 +19,5 @@ target_sources(md_benchmark
     ${CMAKE_CURRENT_SOURCE_DIR}/bench_xyz.c
     ${CMAKE_CURRENT_SOURCE_DIR}/bench_str.c
     ${CMAKE_CURRENT_SOURCE_DIR}/bench_util.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/bench_lammps.c
   )

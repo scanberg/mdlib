@@ -36,3 +36,4 @@ build*/
 .vscode/
 unittest/data/
 gen/
+.vs

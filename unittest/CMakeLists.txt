@@ -37,6 +37,7 @@ target_sources(md_unittest
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xyz.c
     ${CMAKE_CURRENT_SOURCE_DIR}/test_xvg.c
     ${CMAKE_CURRENT_SOURCE_DIR}/rmsd.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_lammps.c
   )
 
 # adapted from https://github.com/Kitware/CMake/blob/master/Modules/GoogleTest.cmake

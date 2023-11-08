@@ -119,6 +119,9 @@ md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, doub
 // Construct cell from mat3 basis
 md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M);
 
+//Construct cell from triclinic basis
+md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, double xy, double xz, double yz);
+
 // Computes an array of distances between two sets of coordinates in a periodic domain (cell)
 // out_dist:  Output array of distances, must have length of (num_a * num_b)
 // coord_a:   Array of coordinates (a)
