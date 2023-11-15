@@ -54,6 +54,12 @@ static inline bool is_symbol(int c) {
     return (32 < c && c < 48) || (57 < c && c < 65) || (90 < c && c < 97) || (122 < c && c < 127);
 }
 
+static inline void str_swap(str_t a, str_t b) {
+    str_t tmp = a;
+	a = b;
+	b = tmp;
+}
+
 static inline bool str_empty(str_t str) {
     return str.ptr == 0 || str.len == 0;
 }
@@ -74,103 +80,23 @@ static inline const char* str_ptr(str_t str) {
     return str.ptr;
 }
 
-static inline str_t str_trim(str_t str) {
-    const char* beg = str.ptr;
-    const char* end = str.ptr + str.len;
-    while (beg < end && is_whitespace(*beg)) ++beg;
-    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
-    str.ptr = beg;
-    str.len = end - beg;
-    return str;
-}
+str_t str_trim(str_t str);
 
-static inline bool str_equal(const str_t str_a, const str_t str_b) {
-    if (!str_a.ptr || !str_b.ptr) return false;
-    if (str_a.len != str_b.len) return false;
-    for (int64_t i = 0; i < str_a.len; ++i) {
-        if (str_a.ptr[i] != str_b.ptr[i]) return false;
-    }
-    return true;
-}
+bool str_equal(str_t str_a, str_t str_b);
+bool str_equal_n(str_t str_a, str_t str_b, int64_t n);
+bool str_equal_ignore_case(const str_t str_a, const str_t str_b);
 
-static inline bool str_equal_n(const str_t str_a, const str_t str_b, int64_t n) {
-    if (!str_a.ptr || !str_b.ptr) return false;
-    if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
+// Lexicographical comparison
+int str_compare_lex(str_t str_a, str_t str_b);
 
-    // str_a & str_b have equal len.
-    n = n < str_a.len ? n : str_a.len;
-    for (int64_t i = 0; i < n; ++i) {
-        if (str_a.ptr[i] != str_b.ptr[i]) return false;
-    }
-    return true;
-}
+bool str_equal_cstr(str_t str, const char* cstr);
+bool str_equal_cstr_n(str_t str, const char* cstr, int64_t n);
+bool str_equal_cstr_ignore_case(str_t str, const char* cstr);
 
-static inline bool str_equal_ignore_case(const str_t str_a, const str_t str_b) {
-    if (!str_a.ptr || !str_b.ptr) return false;
-    if (str_a.len != str_b.len) return false;
-    for (int64_t i = 0; i < str_a.len; ++i) {
-        if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
-    }
-    return true;
-}
+int64_t str_count_equal_chars(str_t a, str_t b);
+int64_t str_count_occur_char(str_t str, char character);
 
-static inline bool str_equal_cstr(str_t str, const char* cstr) {
-    if (!str.ptr || !str.len || !cstr) return false;
-    for (int64_t i = 0; i < str.len; ++i) {
-        if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
-    }
-    return cstr[str.len] == '\0';
-}
-
-// Compare str and cstr only up to n characters
-static inline bool str_equal_cstr_n(str_t str, const char* cstr, int64_t n) {
-    if (n < 0) return false;
-    if (!str.ptr || !str.len || !cstr) return false;
-    n = n < str.len ? n : str.len;
-    for (int64_t i = 0; i < n; ++i) {
-        if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
-    }
-    return true;
-}
-
-static inline bool str_equal_cstr_ignore_case(str_t str, const char* cstr) {
-    if (!str.ptr || !str.len || !cstr) return false;
-    for (int64_t i = 0; i < str.len; ++i) {
-        if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
-    }
-    return cstr[str.len] == '\0';
-}
-
-static inline int64_t str_count_equal_chars(str_t a, str_t b) {
-    if (!a.ptr || a.len <= 0 || !b.ptr || b.len <= 0) return 0;
-    const int64_t len = MIN(a.len, b.len);
-    int64_t i = 0;
-    for (; i < len; ++i) {
-        if (a.ptr[i] != b.ptr[i]) break;
-    }
-    return i;
-}
-
-static inline int64_t str_count_occur_char(str_t str, char character) {
-    if (!str.ptr || str.len <= 0) return 0;
-    int64_t count = 0;
-    for (int64_t i = 0; i < str.len; ++i) {
-        if (str.ptr[i] == character) count += 1;
-    }
-    return count;
-}
-
-static inline str_t str_substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
-    if (offset < 0 || offset > str.len) {
-        str_t res = {0,0};
-        return res;
-    }
-    const int64_t max_len = str.len - offset;
-    length = length < 0 ? max_len : MIN(length, max_len);
-
-    str_t res = { str.ptr + offset, length};
-    return res;
-}
+str_t str_substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1));
 
 bool str_skip_line(str_t* in_out_str);
 bool str_peek_line(str_t* out_line, const str_t* in_str);
@@ -237,15 +163,7 @@ static inline void convert_to_upper(char* str, int64_t len) {
 
 // Copies the contents of a str_t into a char buffer and ensures zero termination
 // Returns the number of characters written (excluding the zero termination character)
-static inline int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str) {
-    ASSERT(buf);
-    if (cap == 0) return 0;
-    if (str_empty(str)) return 0;
-    const int64_t len = CLAMP(str.len, 0, cap - 1);
-    MEMCPY(buf, str.ptr, (uint64_t)len);
-    buf[len] = '\0';
-    return len;
-}
+int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str);
 
 // Returns the Levenshtein edit distance between two strings
 // https://en.wikipedia.org/wiki/Levenshtein_distance

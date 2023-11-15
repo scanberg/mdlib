@@ -16,6 +16,116 @@ str_t str_from_cstr(const char* cstr) {
     return str;
 }
 
+str_t str_trim(str_t str) {
+    const char* beg = str.ptr;
+    const char* end = str.ptr + str.len;
+    while (beg < end && is_whitespace(*beg)) ++beg;
+    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
+    str.ptr = beg;
+    str.len = end - beg;
+    return str;
+}
+
+bool str_equal(str_t str_a, str_t str_b) {
+    if (!str_a.ptr || !str_b.ptr) return false;
+    if (str_a.len != str_b.len) return false;
+    for (int64_t i = 0; i < str_a.len; ++i) {
+        if (str_a.ptr[i] != str_b.ptr[i]) return false;
+    }
+    return true;
+}
+
+bool str_equal_n(str_t str_a, str_t str_b, int64_t n) {
+    if (!str_a.ptr || !str_b.ptr) return false;
+    if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
+
+    // str_a & str_b have equal len.
+    n = n < str_a.len ? n : str_a.len;
+    for (int64_t i = 0; i < n; ++i) {
+        if (str_a.ptr[i] != str_b.ptr[i]) return false;
+    }
+    return true;
+}
+
+
+bool str_equal_ignore_case(const str_t str_a, const str_t str_b) {
+    if (!str_a.ptr || !str_b.ptr) return false;
+    if (str_a.len != str_b.len) return false;
+    for (int64_t i = 0; i < str_a.len; ++i) {
+        if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
+    }
+    return true;
+}
+
+bool str_equal_cstr(str_t str, const char* cstr) {
+    if (!str.ptr || !str.len || !cstr) return false;
+    for (int64_t i = 0; i < str.len; ++i) {
+        if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
+    }
+    return cstr[str.len] == '\0';
+}
+
+// Compare str and cstr only up to n characters
+bool str_equal_cstr_n(str_t str, const char* cstr, int64_t n) {
+    if (n < 0) return false;
+    if (!str.ptr || !str.len || !cstr) return false;
+    n = n < str.len ? n : str.len;
+    for (int64_t i = 0; i < n; ++i) {
+        if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
+    }
+    return true;
+}
+
+bool str_equal_cstr_ignore_case(str_t str, const char* cstr) {
+    if (!str.ptr || !str.len || !cstr) return false;
+    for (int64_t i = 0; i < str.len; ++i) {
+        if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
+    }
+    return cstr[str.len] == '\0';
+}
+
+int64_t str_count_equal_chars(str_t a, str_t b) {
+    if (!a.ptr || a.len <= 0 || !b.ptr || b.len <= 0) return 0;
+    const int64_t len = MIN(a.len, b.len);
+    int64_t i = 0;
+    for (; i < len; ++i) {
+        if (a.ptr[i] != b.ptr[i]) break;
+    }
+    return i;
+}
+
+int64_t str_count_occur_char(str_t str, char character) {
+    if (!str.ptr || str.len <= 0) return 0;
+    int64_t count = 0;
+    for (int64_t i = 0; i < str.len; ++i) {
+        if (str.ptr[i] == character) count += 1;
+    }
+    return count;
+}
+
+str_t str_substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
+    if (offset < 0 || offset > str.len) {
+        str_t res = {0,0};
+        return res;
+    }
+    const int64_t max_len = str.len - offset;
+    length = length < 0 ? max_len : MIN(length, max_len);
+
+    str_t res = { str.ptr + offset, length};
+    return res;
+}
+
+int str_compare_lex(str_t a, str_t b) {
+    int64_t len = a.len < b.len ? a.len : b.len;
+    for (int64_t i = 0; i < len; ++i) {
+        if (a.ptr[i] < b.ptr[i]) return -1;
+        if (a.ptr[i] > b.ptr[i]) return 1;
+    }
+    if (a.len < b.len) return -1;
+    if (a.len > b.len) return 1;
+    return 0;
+}
+
 bool str_skip_line(str_t* in_out_str) {
     ASSERT(in_out_str);
     const char* c = (const char*)memchr(in_out_str->ptr, '\n', in_out_str->len);
@@ -320,6 +430,16 @@ str_t extract_path_without_file(str_t path) {
         res.len = pos+1;    // include '/' or '\'
     }
     return res;
+}
+
+int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str) {
+    ASSERT(buf);
+    if (cap == 0) return 0;
+    if (str_empty(str)) return 0;
+    const int64_t len = CLAMP(str.len, 0, cap - 1);
+    MEMCPY(buf, str.ptr, (uint64_t)len);
+    buf[len] = '\0';
+    return len;
 }
 
 // Ported from Martin Ettl's version available on
