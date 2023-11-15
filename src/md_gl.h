@@ -7,7 +7,11 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <md_molecule.h>
+
+#include <md_types.h>
+
+// Forward declarations
+struct md_molecule_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,7 +33,7 @@ If no custom_shader_snippet is supplied to md_gl_context_init, then a default_sh
 
 layout(location = 0) out vec4 out_color;
 
-void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint atom_index) {
+void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color, uint element_index) {
    out_color  = color;
 }
 */
@@ -40,7 +44,7 @@ typedef struct md_gl_shaders_t {
     uint64_t _opaque[4];
 } md_gl_shaders_t;
 
-bool md_gl_shaders_init(md_gl_shaders_t* shaders, str_t custom_shader_snippet);
+bool md_gl_shaders_init(md_gl_shaders_t* shaders, const char* custom_shader_snippet_ptr, int64_t custom_shader_snippet_len);
 bool md_gl_shaders_free(md_gl_shaders_t* shaders);
 
 
@@ -66,18 +70,18 @@ typedef struct md_gl_molecule_t {
     char _mem[128];
 } md_gl_molecule_t;
 
-bool md_gl_molecule_init(md_gl_molecule_t* gl_mol, const md_molecule_t* mol);
+bool md_gl_molecule_init(md_gl_molecule_t* gl_mol, const struct md_molecule_t* mol);
 bool md_gl_molecule_free(md_gl_molecule_t* gl_mol);
 
 // ### Set molecule data fields ###
+bool md_gl_molecule_set_index_base   (md_gl_molecule_t* mol, uint32_t atom_index_base, uint32_t bond_index_base);
 bool md_gl_molecule_set_atom_position(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
 bool md_gl_molecule_set_atom_velocity(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* x, const float* y, const float* z, uint32_t byte_stride);
 bool md_gl_molecule_set_atom_radius  (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* radius, uint32_t byte_stride);
-bool md_gl_molecule_set_atom_flags   (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const md_flags_t* flags, uint32_t byte_stride);
+bool md_gl_molecule_set_atom_flags   (md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const uint8_t* flags, uint32_t byte_stride);
 
 // This is a simpler version which assumes packed xyz data (identical to the internal representation and therefore faster to copy)
-// Also does not currently update old position data, to save some time.
-bool md_gl_molecule_set_atom_position_xyz(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const vec3_t* xyz);
+bool md_gl_molecule_set_atom_position_xyz(md_gl_molecule_t* mol, uint32_t atom_offset, uint32_t atom_count, const float* xyz);
 
 // Call this function after setting new atomic positions to update velocities
 // It will compute a new velocity as the difference between new and old atomic positions
@@ -90,12 +94,13 @@ bool md_gl_molecule_compute_velocity(md_gl_molecule_t* mol, const float pbc_ext[
 // Clear the velocity to zero.
 bool md_gl_molecule_zero_velocity(md_gl_molecule_t* mol);
 
-bool md_gl_molecule_set_bonds(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_bond_t* bonds, uint32_t byte_stride);
+bool md_gl_molecule_set_bonds(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const struct md_bond_pair_t* bond_pairs, uint32_t byte_stride);
 bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
 /*
  *  REPRESENTATIONS
  *  Interface for creating visual representations for molecules
+ *  A representations is just a set of colors for each atom in the molecule
  */
 typedef struct md_gl_representation_t md_gl_representation_t;
 
@@ -103,43 +108,9 @@ struct md_gl_representation_t { // This is an opaque blob which matches the size
     char _mem[64];
 };
 
-typedef uint16_t md_gl_representation_type_t;
-enum {
-    MD_GL_REP_SPACE_FILL    = 0,
-    MD_GL_REP_LICORICE      = 1,
-    MD_GL_REP_RIBBONS       = 2,
-    MD_GL_REP_CARTOON       = 3,
-};
-
-typedef union md_gl_representation_args_t {
-    struct {
-        float radius_scale;
-    } space_fill;
-
-    struct {
-        float radius;
-    } licorice;
-
-    struct {
-        float width_scale;
-        float thickness_scale;
-    } ribbons;
-
-    struct {
-        float coil_scale;
-        float sheet_scale;
-        float helix_scale;
-    } cartoon;
-
-    struct {
-        float probe_radius;
-    } solvent_excluded_surface;
-} md_gl_representation_args_t;
-
 bool md_gl_representation_init(md_gl_representation_t* rep, const md_gl_molecule_t* mol);
 bool md_gl_representation_free(md_gl_representation_t* rep);
 
-bool md_gl_representation_set_type_and_args(md_gl_representation_t* rep, md_gl_representation_type_t type, md_gl_representation_args_t args);
 bool md_gl_representation_set_color(md_gl_representation_t* rep, uint32_t offset, uint32_t count, const uint32_t* color, uint32_t byte_stride);
 
 /*
@@ -148,13 +119,47 @@ bool md_gl_representation_set_color(md_gl_representation_t* rep, uint32_t offset
  *
  */
 
-typedef uint32_t md_gl_options_t;
-enum {
-    MD_GL_OPTION_NONE                      = 0,
-    MD_GL_OPTION_RESIDUE_OCCLUSION_CULLING = 1,
-};
+typedef enum {
+    MD_GL_REP_SPACE_FILL,
+    MD_GL_REP_LICORICE,
+    MD_GL_REP_BALL_AND_STICK,
+    MD_GL_REP_RIBBONS,
+    MD_GL_REP_CARTOON,
+} md_gl_representation_type_t;
 
 typedef struct md_gl_draw_op_t {
+    md_gl_representation_type_t type;
+
+    union {
+        struct {
+            float radius_scale;
+        } space_fill;
+
+        struct {
+            float radius;
+        } licorice;
+
+        struct {
+            float ball_scale;
+            float stick_radius;
+        } ball_and_stick;
+
+        struct {
+            float width_scale;
+            float thickness_scale;
+        } ribbons;
+
+        struct {
+            float coil_scale;
+            float sheet_scale;
+            float helix_scale;
+        } cartoon;
+
+        struct {
+            float probe_radius;
+        } solvent_excluded_surface;
+    } args;
+
     const md_gl_representation_t* rep;
     const float* model_matrix;              // Column major float[4][4]
 } md_gl_draw_op_t;
@@ -178,7 +183,6 @@ typedef struct md_gl_draw_args_t {
     } view_transform;
 
     uint32_t atom_mask;
-    md_gl_options_t options;
 } md_gl_draw_args_t;
 
 bool md_gl_draw(const md_gl_draw_args_t* args);

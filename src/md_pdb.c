@@ -464,6 +464,10 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     ASSERT(data);
     ASSERT(alloc);
 
+    bool result = false;
+
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+
     int64_t beg_atom_index = 0;
     int64_t end_atom_index = data->num_atom_coordinates;
 
@@ -478,25 +482,34 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     int64_t num_atoms = end_atom_index - beg_atom_index;
 
+    md_array(md_label_t) chain_ids = 0;
+    md_array(md_range_t) chain_ranges = 0;
+
     md_array_ensure(mol->atom.x, num_atoms, alloc);
     md_array_ensure(mol->atom.y, num_atoms, alloc);
     md_array_ensure(mol->atom.z, num_atoms, alloc);
     md_array_ensure(mol->atom.element, num_atoms, alloc);
-    md_array_ensure(mol->atom.name, num_atoms, alloc);
-    md_array_ensure(mol->atom.residue_idx, num_atoms, alloc);
+    md_array_ensure(mol->atom.type, num_atoms, alloc);
 
-    int32_t cur_res_id = -1;
-    char cur_chain_id = -1;
+    md_array_ensure(mol->atom.resid, num_atoms, alloc);
+    md_array_ensure(mol->atom.resname, num_atoms, alloc);
+
+    md_array_ensure(mol->atom.flags, num_atoms, alloc);
+
+    int32_t prev_res_id = -1;
+    char prev_chain_id = -1;
 
     for (int64_t i = beg_atom_index; i < end_atom_index; ++i) {
         float x = data->atom_coordinates[i].x;
         float y = data->atom_coordinates[i].y;
         float z = data->atom_coordinates[i].z;
-        str_t atom_name = (str_t){data->atom_coordinates[i].atom_name, strnlen(data->atom_coordinates[i].atom_name, ARRAY_SIZE(data->atom_coordinates[i].atom_name))};
-
+        str_t atom_type = (str_t){data->atom_coordinates[i].atom_name, strnlen(data->atom_coordinates[i].atom_name, ARRAY_SIZE(data->atom_coordinates[i].atom_name))};
         str_t res_name = (str_t){data->atom_coordinates[i].res_name, strnlen(data->atom_coordinates[i].res_name, ARRAY_SIZE(data->atom_coordinates[i].res_name))};
-
+        md_residue_id_t res_id = data->atom_coordinates[i].res_seq;
+        const char chain_id = data->atom_coordinates[i].chain_id;
+        md_flags_t flags = 0;
         md_element_t element = 0;
+
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, we directly try to use that to lookup the element
             str_t element_str = { data->atom_coordinates[i].element, strnlen(data->atom_coordinates[i].element, ARRAY_SIZE(data->atom_coordinates[i].element)) };
@@ -506,50 +519,52 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
             }
         }
 
-        const char chain_id = data->atom_coordinates[i].chain_id;
-		const bool term = (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR);
-        if (chain_id != ' ' && (term || chain_id != cur_chain_id)) {
-            cur_chain_id = chain_id;
-            
+        if (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) {
+            flags |= MD_FLAG_CHAIN_END;
+        }
+
+        if (chain_id != ' ') {
             str_t chain_str = { &data->atom_coordinates[i].chain_id, 1 };
-            md_range_t residue_range = {(uint32_t)mol->residue.count, (uint32_t)mol->residue.count};
-            md_range_t atom_range = {(uint32_t)mol->atom.count, (uint32_t)mol->atom.count};
-            
-            mol->chain.count += 1;
-            md_array_push(mol->chain.id, make_label(chain_str), alloc);
-            md_array_push(mol->chain.residue_range, residue_range, alloc);
-            md_array_push(mol->chain.atom_range, atom_range, alloc);
+            md_array_push(chain_ids, make_label(chain_str), temp_alloc);
+
+            if (chain_id != prev_chain_id) {
+                if (prev_chain_id != -1) {
+                    *md_array_last(mol->atom.flags) |= MD_FLAG_CHAIN_END;
+                }
+                flags |= MD_FLAG_CHAIN_BEG;
+                md_array_push(chain_ranges, ((md_range_t){(int)i, (int)i}), temp_alloc);
+                prev_chain_id = chain_id;
+            }
+
+            md_array_last(chain_ranges)->end += 1;
         }
 
-        int32_t res_id = data->atom_coordinates[i].res_seq;
-        if (res_id != cur_res_id) {
-            cur_res_id = res_id;
+        if (res_id != prev_res_id) {
+            if (prev_res_id != -1) {
+				*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
+			}
 
-            md_residue_id_t id = res_id;
-            md_range_t atom_range = {(uint32_t)mol->atom.count, (uint32_t)mol->atom.count};
-
-            mol->residue.count += 1;
-            md_array_push(mol->residue.name, make_label(res_name), alloc);
-            md_array_push(mol->residue.id, id, alloc);
-            md_array_push(mol->residue.atom_range, atom_range, alloc);
-
-            if (mol->chain.residue_range) md_array_last(mol->chain.residue_range)->end += 1;
+            flags |= MD_FLAG_RES_BEG;
+            prev_res_id = res_id;
         }
-
-        if (mol->residue.atom_range) md_array_last(mol->residue.atom_range)->end += 1;
-        if (mol->chain.atom_range) md_array_last(mol->chain.atom_range)->end += 1;
 
         mol->atom.count += 1;
         md_array_push(mol->atom.x, x, alloc);
         md_array_push(mol->atom.y, y, alloc);
         md_array_push(mol->atom.z, z, alloc);
         md_array_push(mol->atom.element, element, alloc);
-        md_array_push(mol->atom.name, make_label(atom_name), alloc);
-        md_array_push(mol->atom.flags, 0, alloc);
-        
-        if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
-        if (mol->chain.count)   md_array_push(mol->atom.chain_idx, (md_chain_idx_t)(mol->chain.count - 1), alloc);
+        md_array_push(mol->atom.type, make_label(atom_type), alloc);
+        md_array_push(mol->atom.flags, flags, alloc);
+        md_array_push(mol->atom.resname, make_label(res_name), alloc);
+        md_array_push(mol->atom.resid, res_id, alloc);
     }
+
+    if (md_array_size(chain_ids) == mol->atom.count) {
+        // Only add the chain ids if they are complete
+        md_array_push_array(mol->chain.id, chain_ids, md_array_size(chain_ids), alloc);
+    }
+
+    md_array_free(chain_ids, temp_alloc);
 
     if (data->num_cryst1 > 0) {
         // Use first crystal
@@ -584,26 +599,32 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                     break;
                 }
 
-                md_chain_idx_t chain_idx = find_chain_idx(chain_id, mol);
+                int chain_idx = -1;
+                for (int64_t i = 0; i < md_array_size(chain_ranges); ++i) {
+                    if (mol->chain.id[chain_ranges[i].beg].buf[0] == chain_id) {
+						chain_idx = (int)i;
+						break;
+					}
+                }
                 if (chain_idx != -1) {
                     if (instance_range.beg == 0 && instance_range.end == 0) {
-                        instance_range = mol->chain.atom_range[chain_idx];
+                        instance_range = chain_ranges[chain_idx];
                     } else {
                         // Append if possible
-                        if (instance_range.end == mol->chain.atom_range[chain_idx].beg) {
-                            instance_range.end = mol->chain.atom_range[chain_idx].end;
+                        if (instance_range.end == chain_ranges[chain_idx].beg) {
+                            instance_range.end = chain_ranges[chain_idx].end;
                         } else {
                             // Discontinous range, we need to commit and reset the range
                             md_array_push(mol->instance.atom_range, instance_range, alloc);
                             md_array_push(mol->instance.label, instance_label, alloc);
                             md_array_push(mol->instance.transform, data->transforms[tidx], alloc);
-                            instance_range = mol->chain.atom_range[chain_idx];
+                            instance_range = chain_ranges[chain_idx];
                         }
                     }
                 } else {
                     // Fatal error
                     MD_LOG_ERROR("Malformed PDB dataset, an assembly refers to a non existing chain id");
-                    return false;
+                    goto done;
                 }
             }
 
@@ -643,7 +664,10 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
     ASSERT(md_array_size(mol->instance.transform) == mol->instance.count);
 
-    return true;
+    result = true;
+done:
+    md_arena_allocator_destroy(temp_alloc);
+    return result;
 }
 
 static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {

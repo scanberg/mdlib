@@ -22,9 +22,10 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->atom.mass) md_array_free(mol->atom.mass, alloc);
     if (mol->atom.valence) md_array_free(mol->atom.valence, alloc);
     if (mol->atom.element) md_array_free(mol->atom.element, alloc);
+    if (mol->atom.resid) md_array_free(mol->atom.resid, alloc);
+    if (mol->atom.resname) md_array_free(mol->atom.resname, alloc);
+    if (mol->atom.chainid) md_array_free(mol->atom.chainid, alloc);
     if (mol->atom.flags) md_array_free(mol->atom.flags, alloc);
-    if (mol->atom.residue_idx) md_array_free(mol->atom.residue_idx, alloc);
-    if (mol->atom.chain_idx) md_array_free(mol->atom.chain_idx, alloc);
 
     // Residue
     if (mol->residue.name) md_array_free(mol->residue.name, alloc);
@@ -45,8 +46,14 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->backbone.residue_idx) md_array_free(mol->backbone.residue_idx, alloc);
 
     // Bonds
-    if (mol->bonds) md_array_free(mol->bonds, alloc);
-    //md_index_data_free(&mol->connectivity, alloc);
+    if (mol->bond.pairs) md_array_free(mol->bond.pairs, alloc);
+    if (mol->bond.order) md_array_free(mol->bond.order, alloc);
+    if (mol->bond.flags) md_array_free(mol->bond.flags, alloc);
+
+    if (mol->conn.index) md_array_free(mol->conn.index, alloc);
+    if (mol->conn.flags) md_array_free(mol->conn.flags, alloc);
+    if (mol->conn.order) md_array_free(mol->conn.order, alloc);
+
     md_index_data_free(&mol->structures, alloc);
     md_index_data_free(&mol->rings, alloc);
     
@@ -89,10 +96,11 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(atom, mass);
     ARRAY_PUSH(atom, valence);
     ARRAY_PUSH(atom, element);
-    ARRAY_PUSH(atom, name);
+    ARRAY_PUSH(atom, type);
     ARRAY_PUSH(atom, flags);
-    ARRAY_PUSH(atom, residue_idx);
-    ARRAY_PUSH(atom, chain_idx);
+    ARRAY_PUSH(atom, resid);
+    ARRAY_PUSH(atom, resname);
+    ARRAY_PUSH(atom, chainid);
 
     ARRAY_PUSH(backbone, atoms);
     ARRAY_PUSH(backbone, angle);
@@ -107,7 +115,7 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(chain, atom_range);
 
     md_array_push_array(dst->hydrogen_bonds, src->hydrogen_bonds, md_array_size(src->hydrogen_bonds), alloc);
-    md_array_push_array(dst->bonds, src->bonds, md_array_size(src->bonds), alloc);
+    md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
 
     ARRAY_PUSH(residue, name);
     ARRAY_PUSH(residue, id);

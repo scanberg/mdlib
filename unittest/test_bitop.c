@@ -91,8 +91,17 @@ UTEST(bitop, test) {
     EXPECT_TRUE(bit_cmp(bf[2], bf[3], 0, num_bits));
 
     // SCAN
-    EXPECT_EQ(bit_scan(bf[0], 0, num_bits), 3ULL);
-    EXPECT_EQ(bit_scan(bf[0], 3, num_bits-3), 26ULL);
+    EXPECT_EQ(bit_scan_forward(bf[0], 0, num_bits), 3ULL);
+    EXPECT_EQ(bit_scan_forward(bf[0], 3, num_bits-3), 26ULL);
 
-    EXPECT_EQ(bit_scan(bf[1], 0, num_bits), 12ULL);
+    EXPECT_EQ(bit_scan_forward(bf[1], 0, num_bits), 12ULL);
+
+    set_bits(bf[2], "00001000000000000000000000000000000000000000000000000000000000000000");
+    int idx;
+    idx = bit_scan_forward(bf[2], 0, num_bits);
+    idx = bit_scan_reverse(bf[2], 0, num_bits);
+    EXPECT_EQ(bit_scan_reverse(bf[2], 0, num_bits), 5ULL);
+
+    idx = bit_scan_reverse(bf[3], 0, num_bits);
+    EXPECT_EQ(bit_scan_reverse(bf[3], 0, num_bits), 58ULL);
 }

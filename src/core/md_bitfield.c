@@ -105,17 +105,15 @@ static inline block_t block_not(block_t blk) {
 block_t block_mask_lo(uint32_t idx) {
     block_t res;
 
-#if md_simd_width_i64 == 4
-    __m256i eq_idx = md_mm256_set1_epi64x(idx / 64);
-    __m256i eq_bit = md_mm256_set1_epi64x((1ULL << (idx & 63)) - 1);
+    __m256i eq_idx = md_mm256_set1_epi64(idx / 64);
+    __m256i eq_bit = md_mm256_set1_epi64((1ULL << (idx & 63)) - 1);
 
-    __m256i lo_idx = md_mm256_set_epi64x(3, 2, 1, 0);
-    __m256i hi_idx = md_mm256_set_epi64x(7, 6, 5, 4);
-
+    __m256i lo_idx = md_mm256_set_epi64(3, 2, 1, 0);
+    __m256i hi_idx = md_mm256_set_epi64(7, 6, 5, 4);
 
     res.v[0] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(eq_idx, lo_idx), eq_bit, md_mm256_cmpeq_epi64(lo_idx, eq_idx));
     res.v[1] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(eq_idx, hi_idx), eq_bit, md_mm256_cmpeq_epi64(hi_idx, eq_idx));
-#else
+#if 0
     MEMSET(&res, 0, sizeof(block_t));
     for (uint64_t i = 0; i < idx / 64; ++i) res.u64[i] = ~0ULL;
     res.u64[idx / 64] = ((uint64_t)1 << (idx & 63)) - 1;
@@ -127,16 +125,15 @@ block_t block_mask_lo(uint32_t idx) {
 block_t block_mask_hi(uint32_t idx) {
     block_t res;
 
-#if md_simd_width_i64 == 4
-    __m256i eq_idx = md_mm256_set1_epi64x(idx / 32);
-    __m256i eq_bit = md_mm256_set1_epi64x(~((1UL << (idx & 31)) - 1));
+    __m256i eq_idx = md_mm256_set1_epi64(idx / 32);
+    __m256i eq_bit = md_mm256_set1_epi64(~((1UL << (idx & 31)) - 1));
 
-    __m256i lo_idx = md_mm256_set_epi64x(3, 2, 1, 0);
-    __m256i hi_idx = md_mm256_set_epi64x(7, 6, 5, 4);
+    __m256i lo_idx = md_mm256_set_epi64(3, 2, 1, 0);
+    __m256i hi_idx = md_mm256_set_epi64(7, 6, 5, 4);
 
     res.v[0] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(lo_idx, eq_idx), eq_bit, md_mm256_cmpeq_epi64(lo_idx, eq_idx));
     res.v[1] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(hi_idx, eq_idx), eq_bit, md_mm256_cmpeq_epi64(hi_idx, eq_idx));
-#else
+#if 0
     MEMSET(&res, 0, sizeof(block_t));
     res.u64[idx / 64] = ~(((uint64_t)1 << (idx & 63)) - 1);
     for (uint64_t i = idx / 64 + 1; i < 8; ++i) res.u64[i] = ~0ULL;
@@ -346,6 +343,8 @@ uint64_t md_bitfield_beg_bit(const md_bitfield_t* bf) {
 uint64_t md_bitfield_end_bit(const md_bitfield_t* bf) {
     return bf->bits ? bf->end_bit : 0;
 }
+
+
 
 void md_bitfield_set_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     ASSERT(md_bitfield_validate(bf));
@@ -649,22 +648,32 @@ bool md_bitfield_test_bit(const md_bitfield_t* bf, uint64_t idx) {
 
     if (idx < bf->beg_bit || bf->end_bit <= idx) return false;
     return block_test_bit(get_block(bf, block_idx(idx)), idx - block_bit(idx));
-    //return bit_test((uint64_t*)bf->bits, idx - block_bit(bf->beg_bit));
+   
 }
 
-bool md_bitfield_test_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
+bool md_bitfield_test_all (const md_bitfield_t* bf) {
+    return md_bitfield_test_all_range(bf, bf->beg_bit, bf->end_bit);
+}
+
+bool md_bitfield_test_all_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     ASSERT(md_bitfield_validate(bf));
-    
+
     if (end < bf->beg_bit || bf->end_bit < beg) return false;
     beg = CLAMP(beg, bf->beg_bit, bf->end_bit);
     end = CLAMP(end, bf->beg_bit, bf->end_bit);
     if (end <= beg) return false;
-    for (uint64_t idx = beg; idx < end; ++idx) {
-        if (!block_test_bit(get_block(bf, block_idx(idx)), idx - block_bit(idx))) {
-            return false;
-        }
-    }
-    return true;
+    
+    uint64_t count = md_bitfield_popcount_range(bf, beg, end);
+    return count == (end - beg);
+}
+
+bool md_bitfield_test_any (const md_bitfield_t* bf) {
+	return md_bitfield_test_any_range(bf, bf->beg_bit, bf->end_bit);
+}
+
+bool md_bitfield_test_any_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
+    ASSERT(md_bitfield_validate(bf));
+    return md_bitfield_popcount_range(bf, beg, end) > 0;
 }
 
 // Test if bitfields are equivalent
@@ -681,7 +690,7 @@ uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     if (beg == end)
         return 0;
     
-    return bit_scan(u64_base(bf), beg, end);
+    return bit_scan_forward(u64_base(bf), beg, end);
 }
 
 md_bitfield_iter_t md_bitfield_iter_create(const md_bitfield_t* bf) {
@@ -710,13 +719,26 @@ bool md_bitfield_iter_next(md_bitfield_iter_t* it) {
 
     if (it->idx >= it->end_bit) return false;
     
-    const uint64_t res = bit_scan(u64_base(it->bf), it->idx, it->end_bit);
+    const uint64_t res = bit_scan_forward(u64_base(it->bf), it->idx, it->end_bit);
     if (res) {
         it->idx = res;
         return true;
     }
     
     it->idx = it->end_bit;
+    return false;
+}
+
+bool md_bitfield_get_range(uint64_t* first_idx, uint64_t* last_idx, const md_bitfield_t* bf) {
+    ASSERT(first_idx);
+    ASSERT(last_idx);
+    const uint64_t first = bit_scan_forward(u64_base(bf), bf->beg_bit, bf->end_bit);
+    if (first) {
+        const uint64_t last = bit_scan_reverse(u64_base(bf), bf->beg_bit, bf->end_bit);
+        *first_idx = first - 1;
+        *last_idx  = last - 1;
+        return true;
+    }
     return false;
 }
 

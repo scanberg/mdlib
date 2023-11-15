@@ -27,7 +27,7 @@ static float z[] = {2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2};
 static float r[] = {1,2,3,4,4,4,5,1,1,2,3,4,4,4,5,1};
 static float m[] = {1,2,2,2,2,4,4,4,1,2,2,2,2,4,4,4};
 static uint8_t e[] = {1,8,1,2,6,8,6,8,1,8,1,2,6,7,6,8};
-static md_label_t n[] = {
+static md_label_t t[] = {
     MAKE_LABEL("H"),
     MAKE_LABEL("O"),
     MAKE_LABEL("H"),
@@ -45,7 +45,24 @@ static md_label_t n[] = {
     MAKE_LABEL("CA"),
     MAKE_LABEL("O")
 };
-static md_residue_idx_t r_idx[] = {0,0,0,1,1,1,1,1,2,2,2,2,3,3,3,3};
+static md_label_t rname[] = {
+    MAKE_LABEL("SOL"),
+    MAKE_LABEL("SOL"),
+    MAKE_LABEL("SOL"),
+    MAKE_LABEL("LYS"),
+    MAKE_LABEL("LYS"),
+    MAKE_LABEL("LYS"),
+    MAKE_LABEL("LYS"),
+    MAKE_LABEL("LYS"),
+    MAKE_LABEL("PFT"),
+    MAKE_LABEL("PFT"),
+    MAKE_LABEL("PFT"),
+    MAKE_LABEL("PFT"),
+    MAKE_LABEL("PFT"),
+    MAKE_LABEL("PFT"),
+    MAKE_LABEL("PFT"),
+    MAKE_LABEL("PFT")
+};
 static md_chain_idx_t c_idx[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 #define RES_COUNT 4
@@ -67,9 +84,8 @@ md_molecule_t test_mol = {
         .radius = r,
         .mass = m,
         .element = e,
-        .name = n,
-        .residue_idx = r_idx,
-        .chain_idx = c_idx
+        .type = t,
+        .resname = rname,
 },
 .residue = {
         .count = RES_COUNT,

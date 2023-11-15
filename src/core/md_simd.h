@@ -280,6 +280,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_andnot_epi32 simde_mm256_andnot_si256
 #define md_mm256_andnot_epi64 simde_mm256_andnot_si256
 
+#define md_mm_blendv_epi8 simde_mm_blendv_epi8
+#define md_mm256_blendv_epi8 simde_mm256_blendv_epi8
+
 #define md_mm_not_si128(a) md_mm_xor_si128(md_mm_set1_epi32(0xFFFFFFFF), a)
 #define md_mm256_not_si256(a) md_mm256_xor_si256(md_mm256_set1_epi32(0xFFFFFFFF), a)
 

@@ -34,6 +34,20 @@ enum {
     MD_CELL_Z                       = 16,
 };
 
+// These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
+// Where ever they make sense, they can appear.
+enum {
+    MD_FLAG_RES_BEG 		    = 1,
+    MD_FLAG_RES_END 		    = 2,
+    MD_FLAG_CHAIN_BEG 		    = 4,
+    MD_FLAG_CHAIN_END 		    = 8,
+    MD_FLAG_HETATM              = 16,
+    MD_FLAG_AMINO_ACID		    = 32,
+    MD_FLAG_NUCLEIC_ACID	    = 64,
+    MD_FLAG_WATER			    = 128,
+    MD_FLAG_AROMATIC            = 256,
+};
+
 typedef int32_t     md_atom_idx_t;
 typedef int32_t     md_residue_idx_t;
 typedef int32_t     md_backbone_idx_t;
@@ -41,7 +55,7 @@ typedef int32_t     md_residue_id_t;
 typedef int32_t     md_chain_idx_t;
 typedef int32_t     md_bond_idx_t;
 typedef uint32_t    md_secondary_structure_t;
-typedef uint8_t     md_flags_t;
+typedef uint32_t    md_flags_t;
 typedef uint8_t     md_element_t;
 typedef uint8_t     md_ramachandran_type_t;
 typedef uint8_t     md_valence_t;
@@ -70,12 +84,18 @@ typedef struct md_unit_cell_t {
     uint32_t flags;
 } md_unit_cell_t;
 
+/*
 // Single bond between two entities represented by atom indices
 typedef struct md_bond_t {
     md_atom_idx_t idx[2];
     uint16_t order;
     uint16_t flags;
 } md_bond_t;
+*/
+
+typedef struct md_bond_pair_t {
+    md_atom_idx_t idx[2];
+} md_bond_pair_t;
 
 typedef struct md_backbone_atoms_t {
     md_atom_idx_t n;
@@ -93,7 +113,10 @@ typedef struct md_backbone_angles_t {
     float psi;
 } md_backbone_angles_t;
 
-// Miniature string buffer with length
+// Miniature string buffer with explicit length
+// It can store up to 6 characters + null terminator which makes it compatible as a C-string
+// This is to store the atom symbol and other short strings common in molecular data
+// The motiviation is that it saves an indirection
 typedef struct md_label_t {
     char    buf[7];
     uint8_t len;
@@ -113,11 +136,6 @@ typedef struct md_index_data_t {
     md_array(int32_t)    indices;
 } md_index_data_t;
 
-
-
-
-
-
 // OPERATIONS ON THE TYPES
 
 // macro concatenate trick to assert that the input is a valid compile time C-string
@@ -125,9 +143,20 @@ typedef struct md_index_data_t {
 
 #ifdef __cplusplus
 #define LBL_TO_STR(lbl) {lbl.buf, lbl.len}
+inline bool operator==(const md_label_t& a, const md_label_t& b) {
+    return MEMCMP(&a, &b, sizeof(md_label_t)) == 0;
+}
+inline bool operator!=(const md_label_t& a, const md_label_t& b) {
+    return MEMCMP(&a, &b, sizeof(md_label_t)) != 0;
+}
 #else
 #define LBL_TO_STR(lbl) (str_t){lbl.buf, lbl.len}
 #endif // __cplusplus
+
+static inline bool label_empty(md_label_t lbl) {
+    uint64_t ref = 0;
+    return MEMCMP(&lbl, &ref, sizeof(md_label_t)) == 0;
+}
 
 static inline md_label_t make_label(str_t str) {
     md_label_t lbl = {0};

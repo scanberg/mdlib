@@ -71,7 +71,13 @@ uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint6
 
 // Test if bits are set
 bool md_bitfield_test_bit   (const md_bitfield_t* bf, uint64_t idx);
-bool md_bitfield_test_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end);
+
+// Test if any bits are set
+bool md_bitfield_test_all   (const md_bitfield_t* bf);
+bool md_bitfield_test_all_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end);
+
+bool md_bitfield_test_any   (const md_bitfield_t* bf);
+bool md_bitfield_test_any_range (const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 /*
  Bit scan forward, finds the first bit set within a given range (beg, end)
@@ -101,6 +107,9 @@ bool md_bitfield_iter_next(md_bitfield_iter_t* iter);
 static inline uint64_t md_bitfield_iter_idx(const md_bitfield_iter_t* it) {
     return it->idx - 1;
 }
+
+// Get the minimal set range
+bool md_bitfield_get_range(uint64_t* first_idx, uint64_t* last_idx, const md_bitfield_t* bf);
 
 // Copy the contents of the bitfield into an external buffer
 //bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_bitfield_t* src);

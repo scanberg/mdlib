@@ -20,17 +20,27 @@ typedef struct md_atom_data_t {
     float* mass;
     md_valence_t* valence;
     md_element_t* element;
-    md_label_t* name;
-    md_flags_t* flags;                          // Auxillary bit buffer for flagging individual atoms
-    md_residue_idx_t* residue_idx;
+    md_label_t* type;
+
+    md_residue_id_t* resid;
+    md_label_t* resname;
+    md_label_t* chainid;
+
+    md_residue_idx_t* res_idx;
     md_chain_idx_t* chain_idx;
+
+    uint32_t* conn_off_len;    // Stores index into connectivity data with offset in low 24 bits and length in high 8 bits
+
+    md_flags_t* flags;
 } md_atom_data_t;
 
+// These are a bit superflous, but just replicate whatever is present in the atom data
 typedef struct md_residue_data_t {
     int64_t count;
     md_label_t* name;
     md_residue_id_t* id;
     md_range_t* atom_range;
+    md_flags_t* flags;
 } md_residue_data_t;
 
 typedef struct md_chain_data_t {
@@ -63,17 +73,12 @@ typedef struct md_instance_data_t {
     mat4_t* transform;
 } md_instance_data_t;
 
-/*
 typedef struct md_bond_data_t {
-    // Should have the same length
-    md_array(md_bond_t)     bonds;
-    md_array(md_order_t)    order;
-
-    md_array(md_range_t)    ranges; // should have length atom.count
-    md_array(md_bond_idx_t) atom_bonds;
-    md_array(md_atom_idx_t) atom_connections;
+    int64_t count;
+    md_bond_pair_t* pairs;
+    md_order_t*     order;
+    md_flags_t*     flags;
 } md_bond_data_t;
-*/
 
 typedef struct md_hbond_data_t {
     int8_t charge;
@@ -82,6 +87,20 @@ typedef struct md_hbond_data_t {
     int8_t ideal_geom;
 } md_hbond_data_t;
 
+typedef struct md_conn_data_t {
+    int64_t count;
+    md_atom_idx_t*  index;
+    uint8_t*        order;
+    md_flags_t*     flags;
+} md_conn_data_t;
+
+typedef struct md_conn_iter_t {
+	const md_conn_data_t* data;
+	int64_t i;
+    int64_t beg_idx;
+    int64_t end_idx;
+} md_conn_iter_t;
+
 typedef struct md_molecule_t {
     md_unit_cell_t          unit_cell;
     md_atom_data_t          atom;
@@ -89,12 +108,13 @@ typedef struct md_molecule_t {
     md_chain_data_t         chain;
     md_backbone_data_t      backbone;
     
-    md_array(md_bond_t)     bonds;              // Strong bonds which persist throughout the simulation
+    md_bond_data_t          bond;       // Bond centric data of (strong persistent bonds)
+    md_conn_data_t          conn;       // Atom centric representation of the bond data
     
     // @TODO: move this into some containing structure
-    md_array(md_hbond_data_t)  hbond_data;     
+    //md_array(md_hbond_data_t)  hbond_data;     
 
-    md_index_data_t         connectivity;       // Connectivity graph of the atoms within the molecule
+//    md_index_data_t         connectivity;       // Connectivity graph of the atoms within the molecule
     md_index_data_t         rings;              // Ring structures formed by persistent bonds
     md_index_data_t         structures;         // Isolated structures connected by persistent bonds
 
@@ -103,7 +123,7 @@ typedef struct md_molecule_t {
     // @NOTE(Robin): This should probably move elsewhere.
     // Hydrogen bonds are of interest to be evaluated and analyzed over the trajectory
     // So this should be computed over all frames in the preload
-    md_array(md_bond_t)     hydrogen_bonds;
+    md_array(md_bond_pair_t)     hydrogen_bonds;
 } md_molecule_t;
 
 /*
@@ -119,6 +139,46 @@ molecule data only the first part of the file is used.
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+static inline uint32_t md_conn_offset(uint32_t off_len) {
+    return off_len & 0x00FFFFFF;
+}
+
+static inline uint32_t md_conn_length(uint32_t off_len) {
+    return off_len >> 24;
+}
+
+static inline md_conn_iter_t md_conn_iter(const md_molecule_t* mol, md_atom_idx_t atom_idx) {
+    md_conn_iter_t it = {0};
+    if (mol->atom.conn_off_len) {
+        uint32_t off_len = mol->atom.conn_off_len[atom_idx];
+        it.data = &mol->conn;
+		it.beg_idx = off_len & 0x00FFFFFF;
+		it.end_idx = it.beg_idx + (off_len >> 24);
+        it.i = it.beg_idx;
+    }
+    return it;
+}
+
+static inline bool md_conn_iter_has_next(const md_conn_iter_t* it) {
+    return it->i < it->end_idx;
+}
+
+static inline void md_conn_iter_next(md_conn_iter_t* it) {
+    ++it->i;
+}
+
+static inline md_atom_idx_t md_conn_iter_index(const md_conn_iter_t* it) {
+	return it->data->index[it->i];
+}
+
+static inline md_order_t md_conn_iter_order(const md_conn_iter_t* it) {
+	return it->data->order[it->i];
+}
+
+static inline md_flags_t md_conn_iter_flags(const md_conn_iter_t* it) {
+	return it->data->flags[it->i];
+}
 
 typedef struct md_molecule_loader_i {
     bool (*init_from_str) (md_molecule_t* mol, str_t string,   struct md_allocator_i* alloc);

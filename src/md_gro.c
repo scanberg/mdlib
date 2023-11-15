@@ -19,6 +19,8 @@ typedef struct gro_molecule {
     struct md_allocator_i* allocator;
 } gro_molecule_t;
 
+// This is a specialized version of tokenization that only extracts float tokens.
+// It is designed to avoid the issue where floats are not separated by whitespace.
 static int64_t extract_float_tokens(str_t* tok_arr, int64_t tok_cap, str_t str) {
     int64_t n = 0;
     const char* c = str.ptr;
@@ -51,7 +53,7 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
     ASSERT(reader);
     ASSERT(alloc);
     str_t line;
-    str_t tokens[8];
+    str_t tokens[16];
 
     if (!md_buffered_reader_extract_line(&line, reader)) {
         MD_LOG_ERROR("Failed to parse gro title");
@@ -101,14 +103,23 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
 
     const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), line);
 
-    if (num_tokens != 3) {
-        MD_LOG_ERROR("Failed to parse cell extent, expected 3 tokens, got %i", (int)num_tokens);
+    if (num_tokens != 3 && num_tokens != 9) {
+        MD_LOG_ERROR("Failed to parse box, expected 3 or 9 tokens");
         return false;
     }
     
-    data->cell_ext[0] = (float)parse_float(tokens[0]);
-    data->cell_ext[1] = (float)parse_float(tokens[1]);
-    data->cell_ext[2] = (float)parse_float(tokens[2]);
+    data->box[0][0] = (float)parse_float(tokens[0]);
+    data->box[1][1] = (float)parse_float(tokens[1]);
+    data->box[2][2] = (float)parse_float(tokens[2]);
+
+    if (num_tokens > 3) {
+        data->box[0][1] = (float)parse_float(tokens[3]);
+        data->box[0][2] = (float)parse_float(tokens[4]);
+        data->box[1][0] = (float)parse_float(tokens[5]);
+        data->box[1][2] = (float)parse_float(tokens[6]);
+        data->box[2][0] = (float)parse_float(tokens[7]);
+        data->box[2][1] = (float)parse_float(tokens[8]);
+    }
     
     return true;
 }
@@ -154,44 +165,52 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
 
     const int64_t num_atoms = data->num_atoms;
 
-    md_array_ensure(mol->atom.x, num_atoms, alloc);
-    md_array_ensure(mol->atom.y, num_atoms, alloc);
-    md_array_ensure(mol->atom.z, num_atoms, alloc);
-    md_array_ensure(mol->atom.name, num_atoms, alloc);
-    md_array_ensure(mol->atom.residue_idx, num_atoms, alloc);
+    mol->atom.x = md_array_create(float, num_atoms, alloc);
+    mol->atom.y = md_array_create(float, num_atoms, alloc);
+    mol->atom.z = md_array_create(float, num_atoms, alloc);
+    mol->atom.type = md_array_create(md_label_t, num_atoms, alloc);
 
-    int32_t cur_res_id = -1;
+    mol->atom.resid = md_array_create(md_residue_id_t, num_atoms, alloc);
+    mol->atom.resname = md_array_create(md_label_t, num_atoms, alloc);
+    mol->atom.flags = md_array_create(md_flags_t, num_atoms, alloc);
+
+    int32_t prev_res_id = -1;
     for (int64_t i = 0; i < num_atoms; ++i) {
         const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
         const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
         const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
         str_t atom_name = (str_t){data->atom_data[i].atom_name, strnlen(data->atom_data[i].atom_name, sizeof(data->atom_data[i].atom_name))};
-        str_t res_name = (str_t){data->atom_data[i].res_name, strnlen(data->atom_data[i].res_name, sizeof(data->atom_data[i].res_name))};
+        str_t res_name  = (str_t){data->atom_data[i].res_name,  strnlen(data->atom_data[i].res_name, sizeof(data->atom_data[i].res_name))};
+        md_residue_id_t res_id = data->atom_data[i].res_id;
+        md_flags_t flags = 0;
 
-        int32_t res_id = data->atom_data[i].res_id;
-        if (res_id != cur_res_id) {
-            cur_res_id = res_id;
-            md_residue_id_t id = res_id;
-            md_range_t atom_range = {(uint32_t)mol->atom.count, (uint32_t)mol->atom.count};
+        if (prev_res_id != res_id) {
+			flags |= MD_FLAG_RES_BEG;
 
-            mol->residue.count += 1;
-            md_array_push(mol->residue.name, make_label(res_name), alloc);
-            md_array_push(mol->residue.id, id, alloc);
-            md_array_push(mol->residue.atom_range, atom_range, alloc);
+            if (prev_res_id != -1) {
+            	*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
+            }
+            prev_res_id = res_id;
         }
 
-        if (mol->residue.atom_range) md_array_last(mol->residue.atom_range)->end += 1;
-
         mol->atom.count += 1;
-        md_array_push(mol->atom.x, x, alloc);
-        md_array_push(mol->atom.y, y, alloc);
-        md_array_push(mol->atom.z, z, alloc);
-        md_array_push(mol->atom.name, make_label(atom_name), alloc);
-
-        if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
+        mol->atom.x[i] = x;
+        mol->atom.y[i] = y;
+        mol->atom.z[i] = z;
+        mol->atom.type[i] = make_label(atom_name);
+        mol->atom.resid[i] =  res_id;
+        mol->atom.resname[i] = make_label(res_name);
+        mol->atom.flags[i] = flags;
     }
 
-    mol->unit_cell = md_util_unit_cell_from_extent(data->cell_ext[0] * 10.0, data->cell_ext[1] * 10.0, data->cell_ext[2] * 10.0);
+    mat3_t box;
+    MEMCPY(&box, data->box, sizeof(mat3_t));
+    // convert from nm to Ångström
+    box.col[0] = vec3_mul_f(box.col[0], 10.0f);
+    box.col[1] = vec3_mul_f(box.col[1], 10.0f);
+    box.col[2] = vec3_mul_f(box.col[2], 10.0f);
+
+    mol->unit_cell = md_util_unit_cell_from_matrix(box);
 
     return true;
 }

@@ -190,7 +190,7 @@ static inline bool bit_cmp(const uint64_t* src_a, const uint64_t* src_b, uint64_
     return true;
 }
 
-static inline uint64_t bit_scan(const uint64_t* bits, uint64_t beg_bit, uint64_t end_bit) {
+static inline uint64_t bit_scan_forward(const uint64_t* bits, uint64_t beg_bit, uint64_t end_bit) {
     BITOP_PREAMBLE;
 
     uint64_t val;
@@ -209,6 +209,30 @@ static inline uint64_t bit_scan(const uint64_t* bits, uint64_t beg_bit, uint64_t
     val = bits[end_idx] & end_mask;
     if (val) return (end_idx << 6) + ctz64(val) + 1;
     
+    return 0;
+}
+
+static inline uint64_t bit_scan_reverse(const uint64_t* bits, uint64_t beg_bit, uint64_t end_bit) {
+    BITOP_PREAMBLE;
+
+    uint64_t val;
+    if (beg_idx == end_idx) {
+        val = bits[beg_idx] & (beg_mask & end_mask);
+        if (val) return ((beg_idx + 1) << 6) - clz64(val);
+        return 0;
+    }
+
+    val = bits[end_idx] & end_mask;
+    if (val) return ((end_idx + 1) << 6) - clz64(val);
+
+    for (uint64_t i = end_idx - 1; i > beg_idx; --i) {
+        val = bits[i];
+        if (val) return ((i + 1) << 6) - clz64(val);
+    }
+
+    val = bits[beg_idx] & beg_mask;
+    if (val) return ((beg_idx + 1) << 6) - clz64(val);
+
     return 0;
 }
 

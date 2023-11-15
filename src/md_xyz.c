@@ -544,7 +544,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         float x = data->coordinates[i].x;
         float y = data->coordinates[i].y;
         float z = data->coordinates[i].z;
-        str_t atom_name = {data->coordinates[i].element_symbol, sizeof(data->coordinates[i].element_symbol)};
+        str_t atom_type = {data->coordinates[i].element_symbol, sizeof(data->coordinates[i].element_symbol)};
         md_element_t element = (md_element_t)data->coordinates[i].atomic_number;
 
         mol->atom.count += 1;
@@ -552,7 +552,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         md_array_push(mol->atom.y, y, alloc);
         md_array_push(mol->atom.z, z, alloc);
         md_array_push(mol->atom.element, element, alloc);
-        md_array_push(mol->atom.name, make_label(atom_name), alloc);
+        md_array_push(mol->atom.type, make_label(atom_type), alloc);
         md_array_push(mol->atom.flags, 0, alloc);
     }
 
@@ -795,6 +795,13 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     md_trajectory_i* traj = mem;
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)(traj + 1);
 
+    const int64_t num_frames = md_array_size(offsets) - 1;
+
+    md_array(double) frame_times = md_array_create(double, num_frames, alloc);
+    for (int64_t i = 0; i < num_frames; ++i) {
+        frame_times[i] = (double)i;
+    }
+
     xyz->magic = MD_XYZ_TRAJ_MAGIC;
     xyz->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     xyz->filesize = filesize;
@@ -802,10 +809,11 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     xyz->allocator = alloc;
     xyz->mutex = md_mutex_create();
     xyz->header = (md_trajectory_header_t) {
-        .num_frames = md_array_size(offsets) - 1,
+        .num_frames = num_frames,
         .num_atoms = num_atoms,
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
+        .frame_times = frame_times,
     };
     xyz->flags = flags;
 

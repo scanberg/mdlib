@@ -65,14 +65,14 @@ mat3_t mat3_covariance_matrix( const float* in_x, const float* in_y, const float
     return A;
 }
 
-mat3_t mat3_covariance_matrix_vec3(const vec3_t* in_xyz, const float* in_w, const int32_t* indices, vec3_t com, int64_t count) {
+mat3_t mat3_covariance_matrix_vec4(const vec4_t* in_xyzw, const int32_t* indices, vec3_t com, int64_t count) {
     mat3_t A = {0};
     for (int64_t i = 0; i < count; i++) {
         const int64_t idx = indices ? indices[i] : i;
-        const float x = in_xyz[idx].x - com.x;
-        const float y = in_xyz[idx].y - com.y;
-        const float z = in_xyz[idx].z - com.z;
-        const float w = in_w ? in_w[idx] : 1.0f;
+        const float x = in_xyzw[idx].x - com.x;
+        const float y = in_xyzw[idx].y - com.y;
+        const float z = in_xyzw[idx].z - com.z;
+        const float w = in_xyzw[idx].w;
 
         A.elem[0][0] += w * x * x;
         A.elem[0][1] += w * x * y;
@@ -145,6 +145,39 @@ mat3_t mat3_cross_covariance_matrix(
     return A;
 }
 
+mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* in_xyzw0, const vec4_t* in_xyzw1, vec3_t com0, vec3_t com1, int64_t count) {
+    mat3_t A = {0};
+
+    for (int64_t i = 0; i < count; ++i) {
+        const float px = in_xyzw0[i].x - com0.x;
+        const float py = in_xyzw0[i].y - com0.y;
+        const float pz = in_xyzw0[i].z - com0.z;
+        const float pw = in_xyzw0[i].w;
+
+        const float qx = in_xyzw1[i].x - com1.x;
+        const float qy = in_xyzw1[i].y - com1.y;
+        const float qz = in_xyzw1[i].z - com1.z;
+        const float qw = in_xyzw1[i].w;
+
+        // The question here is how to combine the weights.
+        // For now we just take the average.
+        // This should be equivalent to the other case where the weights for both sets are equal.
+        const float w = (pw + qw) * 0.5f;
+
+        A.elem[0][0] += w * px * qx;
+        A.elem[0][1] += w * px * qy;
+        A.elem[0][2] += w * px * qz;
+        A.elem[1][0] += w * py * qx;
+        A.elem[1][1] += w * py * qy;
+        A.elem[1][2] += w * py * qz;
+        A.elem[2][0] += w * pz * qx;
+        A.elem[2][1] += w * pz * qy;
+        A.elem[2][2] += w * pz * qz;
+    }
+
+    return A;
+}
+
 mat3_t mat3_extract_rotation(mat3_t M) {
     mat3_svd_t svd = mat3_svd(M);
 
@@ -169,6 +202,15 @@ mat3_t mat3_optimal_rotation(
 
     const mat3_t cov_mat = mat3_cross_covariance_matrix(x0, y0, z0, x1, y1, z1, weight, com0, com1, count);
     return mat3_extract_rotation(cov_mat);
+}
+
+mat3_t mat3_optimal_rotation_vec4(const vec4_t* xyzw0, const vec4_t* xyzw1, vec3_t com0, vec3_t com1, int64_t count) {
+    if (count < 1) {
+		return mat3_ident();
+	}
+
+	const mat3_t cov_mat = mat3_cross_covariance_matrix_vec4(xyzw0, xyzw1, com0, com1, count);
+	return mat3_extract_rotation(cov_mat);
 }
 
 mat4_t mat4_inverse(mat4_t M) {

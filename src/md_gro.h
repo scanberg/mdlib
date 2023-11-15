@@ -24,7 +24,7 @@ typedef struct md_gro_atom_t {
 
 typedef struct md_gro_data_t {
     char title[256];
-    float cell_ext[3];
+    float box[3][3];
 
     // Field data
     int64_t num_atoms;

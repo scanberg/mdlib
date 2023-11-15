@@ -155,7 +155,6 @@ static double com_min_image_avx512(const float* in_x, const float* in_w, int64_t
 #endif
 
 static double com_trig_sse(const float* in_x, const float* in_w, int64_t count, float x_max) {
-    const double scl = TWO_PI / x_max;
     const md_128 v_scl = md_mm_set1_ps((float)(TWO_PI / x_max));
     md_128 v_acc_c = md_mm_setzero_ps();
     md_128 v_acc_s = md_mm_setzero_ps();
@@ -189,7 +188,6 @@ static double com_trig_sse(const float* in_x, const float* in_w, int64_t count, 
 }
 
 static double com_trig_avx2(const float* in_x, const float* in_w, int64_t count, float x_max) {
-    const double scl = TWO_PI / x_max;
     const md_256 v_scl = md_mm256_set1_ps((float)(TWO_PI / x_max));
     md_256 v_acc_c = md_mm256_setzero_ps();
     md_256 v_acc_s = md_mm256_setzero_ps();
@@ -258,7 +256,8 @@ static double com_trig_avx512(const float* in_x, const float* in_w, int64_t coun
 }
 #endif
 
-static double touch_mem(const float* in_x, const float* in_w, int64_t count, float x_max) {
+static double touch_mem(const float* in_x, const float* in_w, int64_t count, float x_len) {
+    (void)x_len;
 #if defined(__AVX512F__)
     md_512 v_acc_x = _mm512_setzero_ps();
     md_512 v_acc_w = _mm512_setzero_ps();

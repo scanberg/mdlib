@@ -11,9 +11,9 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
+    uint u_atom_base_index;
+    uint u_bond_base_index;
     uint _pad0;
-    uint _pad1;
-    uint _pad2;
     float u_radius;
 };
 
@@ -83,8 +83,8 @@ void main() {
     out_frag.color[0] = in_vert[0].color;
     out_frag.color[1] = in_vert[1].color;
 
-    out_frag.picking_idx[0] = in_vert[0].picking_idx;
-    out_frag.picking_idx[1] = in_vert[1].picking_idx;
+    out_frag.picking_idx[0] = u_bond_base_index + uint(gl_PrimitiveIDIn);//in_vert[0].picking_idx;
+    out_frag.picking_idx[1] = u_bond_base_index + uint(gl_PrimitiveIDIn);//in_vert[1].picking_idx;
 
     out_frag.capsule_center_radius = vec4(c, r);
     out_frag.capsule_axis_length = vec4(a, l);

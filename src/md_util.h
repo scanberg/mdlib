@@ -21,9 +21,10 @@ enum {
     MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT    = 0x0010,
     MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0020,
     MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0040,
+    MD_UTIL_POSTPROCESS_RESIDUE_BIT         = 0x0080,
 
     MD_UTIL_POSTPROCESS_ALL                 = 0xFFFF,
-    MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT,
+    MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT
 };
 
 typedef uint32_t md_util_postprocess_flags_t;
@@ -179,6 +180,8 @@ vec3_t md_util_compute_com_vec4_ortho(const vec4_t* xyzw, const int32_t* indices
 // count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
 double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
 
+double md_util_compute_rmsd_vec4(const vec4_t* xyzw[2], const vec3_t com[2], int64_t count);
+
 // Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
 vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
 
@@ -208,6 +211,31 @@ void md_util_spatial_sort_soa(uint32_t* source_indices, const float* x, const fl
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
 void md_util_spatial_sort(uint32_t* source_indices, const vec3_t* xyz, int64_t count);
+
+// Structure matching operations
+// In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.
+// This is due to the symmetry of extremities found in molecules.
+// To filter the result into 1 permutation per matched set of indices, the user can pass a parameter to filter permutations by RMSD
+// Which only selects the best matching permutation based on RMSD.
+
+typedef enum {
+    MD_UTIL_MATCH_LEVEL_ALL = 0,
+    MD_UTIL_MATCH_LEVEL_RESIDUE,
+    MD_UTIL_MATCH_LEVEL_CHAIN,
+} md_util_match_level_t;
+
+// Performs complete structure matching within the given topology (mol) using a supplied reference structure.
+md_index_data_t md_util_match_structure_by_type(const int* ref_indices, int64_t ref_size, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_structure_by_elem(const int* ref_indices, int64_t ref_size, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+
+// Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
+md_index_data_t md_util_match_structure_smiles(str_t smiles, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+
+// Computes the maximum common subgraph between two structures
+// The indices which maps from the source structure to the target structure is written to dst_idx_map
+// The returned value is the number of common atoms
+// It is assumed that the dst_idx_map has the same length as src_count
+int64_t md_util_structure_maximum_common_substructure(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

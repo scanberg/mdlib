@@ -11,9 +11,9 @@ layout (std140) uniform ubo {
     mat4 u_curr_view_to_prev_clip;
     vec4 u_jitter_uv;
     uint u_atom_mask;
+    uint u_atom_base_index;
+    uint u_bond_base_index;
     uint _pad0;
-    uint _pad1;
-    uint _pad2;
     float u_radius;
 };
 

@@ -1289,7 +1289,7 @@ mat3_t       mat3_extract_rotation(mat3_t M);
 // com:         center of mass
 // count:       number of coordinates or indices
 mat3_t mat3_covariance_matrix(const float* x, const float* y, const float* z, const float* w, const int32_t* indices, vec3_t com, int64_t count);
-mat3_t mat3_covariance_matrix_vec3(const vec3_t* xyz, const float* w, const int32_t* indices, vec3_t com, int64_t count);
+mat3_t mat3_covariance_matrix_vec4(const vec4_t* xyzw, const int32_t* indices, vec3_t com, int64_t count);
 
 // Computes the cross covariance matrix for two set of coordinates with given center of mass.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.
@@ -1301,6 +1301,14 @@ mat3_t mat3_cross_covariance_matrix(
     vec3_t com1,
     int64_t count);
 
+// Compute the cross covariance matrix for two set of coordinates with given center of mass.
+mat3_t mat3_cross_covariance_matrix_vec4(
+	const vec4_t* xyzw0,
+	const vec4_t* xyzw1,
+	vec3_t com0,
+	vec3_t com1,
+	int64_t count);
+
 // Computes the optimal rotation matrix that minimizes the RMSD between two sets of coordinates.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.
 mat3_t mat3_optimal_rotation(
@@ -1310,6 +1318,14 @@ mat3_t mat3_optimal_rotation(
     vec3_t com0,
     vec3_t com1,
     int64_t count);
+
+// Computes the optimal rotation matrix that minimizes the RMSD between two sets of coordinates.
+mat3_t mat3_optimal_rotation_vec4(
+	const vec4_t* xyzw0,
+	const vec4_t* xyzw1,
+	vec3_t com0,
+	vec3_t com1,
+	int64_t count);
 
 // MAT4
 MD_VEC_INLINE mat4_t mat4_ident() {
