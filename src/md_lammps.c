@@ -395,44 +395,43 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	md_array_ensure(mol->atom.x, num_atoms, alloc);
 	md_array_ensure(mol->atom.y, num_atoms, alloc);
 	md_array_ensure(mol->atom.z, num_atoms, alloc);
-	md_array_ensure(mol->atom.residue_idx, num_atoms, alloc);
+	md_array_ensure(mol->atom.flags, num_atoms, alloc);
+	md_array_ensure(mol->atom.resid, num_atoms, alloc);
+	md_array_ensure(mol->atom.mass, num_atoms, alloc);
 
-	int32_t cur_res_id = -1;
+	int32_t prev_res_id = -1;
 	for (int64_t i = 0; i < num_atoms; ++i) {
 		const float x = data->atom_data[i].x;
 		const float y = data->atom_data[i].y;
 		const float z = data->atom_data[i].z;
+		const md_residue_id_t res_id = data->atom_data[i].mol_idx;
+		const float mass = get_mass(data->atom_type_mass, data->atom_data[i].atom_type, data->num_atom_types);
+		int flags = 0;
 
-		int32_t res_id = data->atom_data[i].mol_idx;
-		if (res_id != cur_res_id) {
-			cur_res_id = res_id;
-			md_residue_id_t id = res_id;
-			md_range_t atom_range = { (uint32_t)mol->atom.count, (uint32_t)mol->atom.count };
+		if (prev_res_id != res_id) {
+			flags |= MD_FLAG_RES_BEG;
 
-			mol->residue.count += 1;
-			md_array_push(mol->residue.id, id, alloc);
-			md_array_push(mol->residue.atom_range, atom_range, alloc);
+			if (prev_res_id != -1) {
+				*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
+			}
+			prev_res_id = res_id;
 		}
 
-		if (mol->residue.atom_range) md_array_last(mol->residue.atom_range)->end += 1;
-
-		mol->atom.count += 1;
-
-		//Set coordinates
 		md_array_push(mol->atom.x, x, alloc);
 		md_array_push(mol->atom.y, y, alloc);
 		md_array_push(mol->atom.z, z, alloc);
-
-		if (mol->residue.count) md_array_push(mol->atom.residue_idx, (md_residue_idx_t)(mol->residue.count - 1), alloc);
-
-		//Set mass
-		const float mass = get_mass(data->atom_type_mass, data->atom_data[i].atom_type, data->num_atom_types);
+		md_array_push(mol->atom.flags, flags, alloc);
+		md_array_push(mol->atom.resid, res_id, alloc);
 		md_array_push(mol->atom.mass, mass, alloc);
 	}
 
+	mol->atom.count = num_atoms;
+
 	//Set elements
 	md_array_resize(mol->atom.element, num_atoms, alloc);
-	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, num_atoms)) MD_LOG_ERROR("One or more masses are missing matching element");
+	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, num_atoms)) {
+		MD_LOG_ERROR("One or more masses are missing matching element");
+	}
 
 	//Create unit cell
 	mol->unit_cell = md_util_unit_cell_from_triclinic(data->cell_def.x, data->cell_def.y, data->cell_def.z, data->cell_def.xy, data->cell_def.xz, data->cell_def.yz);
