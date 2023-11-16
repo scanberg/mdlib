@@ -13,7 +13,7 @@ UTEST(xyz, xyz_standard) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(result);
     EXPECT_EQ(10, data.num_models);
     EXPECT_EQ(2280 * 10, data.num_coordinates);
 
@@ -34,11 +34,27 @@ UTEST(xyz, xyz_standard) {
     md_xyz_data_free(&data, md_heap_allocator);
 }
 
+UTEST(xyz, c60) {
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/C60-Ih.xyz");
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(1, data.num_models);
+    EXPECT_EQ(60, data.num_coordinates);
+
+    EXPECT_EQ('C', data.coordinates->element_symbol[0]);
+    EXPECT_NEAR(2.16650f, data.coordinates[0].x, 1.0e-5f);
+    EXPECT_NEAR(0.59060f, data.coordinates[0].y, 1.0e-5f);
+    EXPECT_NEAR(2.58740f, data.coordinates[0].z, 1.0e-5f);
+
+    md_xyz_data_free(&data, md_heap_allocator);
+}
+
 UTEST(xyz, xyz_xmol) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(result);
     EXPECT_EQ(50, data.num_models);
     EXPECT_EQ(50 * 540, data.num_coordinates);
 
@@ -64,7 +80,7 @@ UTEST(xyz, xyz_tinker) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/full.xyz");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(result);
     EXPECT_EQ(1, data.num_models);
     EXPECT_EQ(404, data.num_coordinates);
 
@@ -95,7 +111,7 @@ UTEST(xyz, xyz_tinker_arc) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/full.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(result);
     EXPECT_EQ(10, data.num_models);
     EXPECT_EQ(10 * 404, data.num_coordinates);
 
@@ -126,7 +142,7 @@ UTEST(xyz, o2_arc) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/o2.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(result);
     EXPECT_EQ(2000, data.num_models);
     EXPECT_EQ(2000 * 2, data.num_coordinates);
 
@@ -154,7 +170,7 @@ UTEST(xyz, h2o_arc) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/h2o.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(result);
     EXPECT_EQ(2000, data.num_models);
     EXPECT_EQ(2000 * 3, data.num_coordinates);
 
@@ -175,7 +191,7 @@ UTEST(xyz, ch4_arc) {
     str_t path = STR(MD_UNITTEST_DATA_DIR "/ch4.arc");
     md_xyz_data_t data = {0};
     bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
-    EXPECT_TRUE(result);
+    ASSERT_TRUE(result);
     EXPECT_EQ(2000, data.num_models);
     EXPECT_EQ(2000 * 5, data.num_coordinates);
 

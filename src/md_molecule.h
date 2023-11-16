@@ -153,8 +153,8 @@ static inline md_conn_iter_t md_conn_iter(const md_molecule_t* mol, md_atom_idx_
     if (mol->atom.conn_off_len) {
         uint32_t off_len = mol->atom.conn_off_len[atom_idx];
         it.data = &mol->conn;
-		it.beg_idx = off_len & 0x00FFFFFF;
-		it.end_idx = it.beg_idx + (off_len >> 24);
+		it.beg_idx = md_conn_offset(off_len);
+		it.end_idx = it.beg_idx + md_conn_length(off_len);
         it.i = it.beg_idx;
     }
     return it;

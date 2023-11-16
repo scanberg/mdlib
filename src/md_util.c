@@ -1383,7 +1383,7 @@ static void sort_arr_masked(int* arr, int n, int mask) {
 
 #define MIN_RING_SIZE 3
 #define MAX_RING_SIZE 6
-#define MAX_DEPTH (MAX_RING_SIZE - 1)
+#define MAX_DEPTH (MAX_RING_SIZE/2 + 1)
 
 // Inspired by molstars implementation
 // https://github.com/molstar/molstar/blob/master/src/mol-model/structure/structure/unit/rings/compute.ts#L249
@@ -1403,16 +1403,16 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
     md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
         
     int* color = md_alloc(temp_alloc, mol->atom.count * sizeof(int));
-    MEMSET(color, 0, mol->atom.count * sizeof(int));
-
     int* depth = md_alloc(temp_alloc, mol->atom.count * sizeof(int));
-    MEMSET(depth, 0, mol->atom.count * sizeof(int));
-
-    int* mark = md_alloc(temp_alloc, mol->atom.count * sizeof(int));
-    MEMSET(mark, 0, mol->atom.count * sizeof(int));
-    
+    int* mark  = md_alloc(temp_alloc, mol->atom.count * sizeof(int));
     int* pred  = md_alloc(temp_alloc, mol->atom.count * sizeof(int));
-    MEMSET(pred, -1, mol->atom.count * sizeof(int));    // We can do memset as the representation of -1 in two's complement is 0xFFFFFFFF
+
+    MEMSET(color, 0, mol->atom.count * sizeof(int));
+#if DEBUG
+    MEMSET(depth, 0, mol->atom.count * sizeof(int));
+    MEMSET(mark,  0, mol->atom.count * sizeof(int));
+    MEMSET(pred, -1, mol->atom.count * sizeof(int));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
+#endif
 
     // The capacity is arbitrary here, but will be resized if needed.
     fifo_t queue = fifo_create(64, temp_alloc);
@@ -1427,21 +1427,29 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
     int current_color = 1;
     int current_mark  = 1;
 
+#ifdef DEBUG
+    uint64_t processed_ring_elements = 0;
+#endif
+
     for (int i = 0; i < mol->atom.count; ++i) {
-        // Skip any atom which has alread been touched by the previous search
-        if (mark[i] == current_mark) continue;
+        // Skip any atom that has already been colored in the previous search
+        if (color[i] == current_color) continue;
 
         current_mark++;
 
         // Set i as our root
         depth[i] = 1;
         pred[i]  = -1;
-        mark[i]  = current_mark;
+        mark[i] = current_mark;
 
         fifo_clear(&queue);
         fifo_push(&queue, i);
         while (!fifo_empty(&queue)) {
-            int idx = (int)fifo_pop(&queue);
+            int idx = fifo_pop(&queue);
+
+#ifdef DEBUG
+            processed_ring_elements += 1;
+#endif
 
             md_conn_iter_t it = md_conn_iter(mol, idx);
             while (md_conn_iter_has_next(&it)) {
@@ -1461,7 +1469,7 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                     // Only process one of the two branches/cases
                     if (r < l) {
                         int len = 0;
-                        int ring[16];
+                        int ring[MAX_DEPTH * 2];
 
                         int col = current_color++;
                         int cur;
@@ -1502,13 +1510,14 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                                 if (stbds_hmgeti(hm, key) == -1) {
                                     stbds_hmputs(hm, (T){key});
                                     md_index_data_push(&ring_data, ring, len, alloc);
+                                    goto next;
                                 }
                             }
                         }
                     }
                 } else {
                     // Avoid expanding too far from the root as we are only interested in rings up to a certain size
-                    // Otherwise, we will may have alot of potential large cycles such as in the case of C60
+                    // Otherwise, we will may have alot of potential large cycles such as in the case of C60 or graphene
                     int d = depth[idx] + 1;
                     if (d > MAX_DEPTH) continue;
 
@@ -1519,10 +1528,15 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                 }
             }
         }
+        next:;
     }
     stbds_hmfree(hm);
     
     md_arena_allocator_destroy(temp_alloc);
+
+#ifdef DEBUG
+    MD_LOG_DEBUG("Processed ring elements: %llu\n", processed_ring_elements);
+#endif
 
     return ring_data;
 }
@@ -1618,7 +1632,7 @@ md_index_data_t md_util_compute_structures(const md_molecule_t* mol, struct md_a
         fifo_clear(&queue);
         fifo_push(&queue, i);
         while (!fifo_empty(&queue)) {
-            int cur = (int)fifo_pop(&queue);
+            int cur = fifo_pop(&queue);
             if (test_bit(visited, cur)) continue;
             set_bit(visited, cur);
 
@@ -4339,9 +4353,14 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     if (flags & MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT) {
         if (mol->bond.pairs) {
             md_compute_connectivity(&mol->conn, &mol->atom, &mol->bond, alloc);
+        }
+    }
+
+    if (flags & MD_UTIL_POSTPROCESS_STRUCTURE_BIT) {
+        if (mol->conn.count) {
             mol->structures = md_util_compute_structures(mol, alloc);
             mol->rings      = md_util_compute_rings(mol, alloc);
-        }
+		}
     }
 
     if (flags & MD_UTIL_POSTPROCESS_CHAINS_BIT) {

@@ -133,37 +133,30 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
         // Tinker holds additional fields (atom index, atom type and connectivity) at least 6 fields
         str_t token[8];
         str_t line = lines[2];
-        const int64_t num_tokens = extract_tokens(token, ARRAY_SIZE(token), &line);
+        int64_t num_tokens = extract_tokens(token, ARRAY_SIZE(token), &line);
 
-        if (num_tokens >= 6){
-            if (is_unsigned_int(token[0]) &&
-                (is_string(token[1]) || is_unsigned_int(token[1])) &&
-                is_float(token[2]) && is_float(token[3]) && is_float(token[4]) &&
-                is_unsigned_int(token[5]))
-            {
-                *flags |= XYZ_TINKER;
-            } else {
-                MD_LOG_ERROR("Invalid format for XYZ: Unknown variation of Tinker format");
-                return false;
-            }
-        }
-        else if (num_tokens == 4) {
-            if (!(is_string(token[0]) || is_unsigned_int(token[0])) ||
-                !(is_float(token[1]) && is_float(token[2]) && is_float(token[3])))
-            {
-                MD_LOG_ERROR("Invalid format for XYZ: Unknown variation of format");
-                return false;
-            }
-        } else {
-            MD_LOG_ERROR("Invalid format for XYZ");
-            return false;
+        if (num_tokens >= 6 &&
+            is_unsigned_int(token[0]) &&
+            (is_string(token[1]) || is_unsigned_int(token[1])) &&
+            is_float(token[2]) && is_float(token[3]) && is_float(token[4]) &&
+            is_unsigned_int(token[5]))
+        {
+            *flags |= XYZ_TINKER;
+            return true;
+        } else if (num_tokens >= 4 &&
+            (is_string(token[0]) || is_unsigned_int(token[0])) &&
+            is_float(token[1]) && is_float(token[2]) && is_float(token[3]))
+        {
+            // Ordinary XYZ (with potential bond info)
+            return true;
         }
     }
 
-    return true;
+    MD_LOG_ERROR("Unrecognized XYZ format");
+    return false;
 }
 
-static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line) {
+static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_t flags) {
     ASSERT(coord);
 
     str_t original = line;
@@ -177,7 +170,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line) {
     }
 
     int tok_idx = 0;
-    if (num_tokens > 4) {
+    if ((flags & XYZ_TINKER) && num_tokens > 4) {
         coord->atom_index = (int)parse_int(tokens[tok_idx++]);
     }
 
@@ -451,7 +444,7 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
             str_t line;
             md_xyz_coordinate_t coord = {0};
             if (md_buffered_reader_extract_line(&line, reader) &&
-                extract_coord(&coord, line))
+                extract_coord(&coord, line, flags))
             {
                 md_array_push(data->coordinates, coord, alloc);
             } else {

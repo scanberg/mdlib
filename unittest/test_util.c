@@ -3,6 +3,7 @@
 
 #include <md_pdb.h>
 #include <md_gro.h>
+#include <md_xyz.h>
 #include <md_trajectory.h>
 #include <md_molecule.h>
 #include <md_util.h>
@@ -218,7 +219,7 @@ UTEST_F(util, structures) {
     EXPECT_EQ(num_structures, expected_count);
 }
 
-UTEST_F(util, rings) {
+UTEST_F(util, rings_common) {
     int64_t num_rings = 0;
 
     num_rings = md_index_data_count(utest_fixture->mol_nucleotides.rings);
@@ -234,22 +235,95 @@ UTEST_F(util, rings) {
     EXPECT_EQ(num_rings, 2076);
 }
 
-UTEST(util, c60) {
+UTEST(util, rings_c60) {
 	md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
 	md_molecule_t mol = {0};
 	md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/c60.pdb"), alloc);
-	md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_BOND_BIT | MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT);
+	md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
 	EXPECT_EQ(mol.atom.count, 60);
 	EXPECT_EQ(mol.bond.count, 90);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
-    EXPECT_EQ(num_rings, 30);
+    EXPECT_EQ(num_rings, 32);
 
     const int64_t num_structures = md_index_data_count(mol.structures);
     EXPECT_EQ(num_structures, 1);
 
 	md_arena_allocator_destroy(alloc);
+}
+
+UTEST(util, rings_14kr) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_molecule_t mol = {0};
+    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), alloc);
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
+    const int64_t num_rings = md_index_data_count(mol.rings);
+    EXPECT_EQ(num_rings, 207);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(util, rings_trytophan_pdb) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_molecule_t mol = {0};
+    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), alloc);
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
+    const int64_t num_rings = md_index_data_count(mol.rings);
+    EXPECT_EQ(num_rings, 2);
+
+    const int64_t num_structures = md_index_data_count(mol.structures);
+    EXPECT_EQ(num_structures, 1);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(util, rings_trytophan_xyz) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_molecule_t mol = {0};
+    md_xyz_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), alloc);
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
+    const int64_t num_rings = md_index_data_count(mol.rings);
+    EXPECT_EQ(num_rings, 2);
+
+    const int64_t num_structures = md_index_data_count(mol.structures);
+    EXPECT_EQ(num_structures, 1);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(util, rings_full) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_molecule_t mol = {0};
+    md_xyz_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/full.xyz"), alloc);
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
+    const int64_t num_rings = md_index_data_count(mol.rings);
+    EXPECT_EQ(num_rings, 195);
+
+    const int64_t num_structures = md_index_data_count(mol.structures);
+    EXPECT_EQ(num_structures, 1);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(util, rings_ciprofloxacin) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_molecule_t mol = {0};
+    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), alloc);
+    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+
+    const int64_t num_rings = md_index_data_count(mol.rings);
+    ASSERT_EQ(num_rings, 4);
+    EXPECT_EQ(md_index_range_size(mol.rings, 0), 3);
+    EXPECT_EQ(md_index_range_size(mol.rings, 1), 6);
+    EXPECT_EQ(md_index_range_size(mol.rings, 2), 6);
+    EXPECT_EQ(md_index_range_size(mol.rings, 3), 6);
+
+    md_arena_allocator_destroy(alloc);
 }
 
 UTEST_F(util, structure_matching_amyloid) {
