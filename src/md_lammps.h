@@ -104,6 +104,11 @@ typedef struct md_lammps_data_t {
 	md_lammps_atom_t* atom_data;
 } md_lammps_data_t;
 
+typedef struct md_lammps_trajectory_t {
+	int64_t* offsets;
+	int64_t num_frames;
+} md_lammps_trajectory_t;
+
 // Parse a text-blob as LAMMPS
 bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, struct md_allocator_i* alloc, data_format_t* data_format);
 bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, struct md_allocator_i* alloc, data_format_t* data_format);
@@ -114,6 +119,9 @@ void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 bool md_lammps_molecule_init(struct md_molecule_t* mol, const md_lammps_data_t* lammps_data, struct md_allocator_i* alloc);
 
 //struct md_molecule_loader_i* md_lammps_molecule_api();
+
+//Parse trajectory
+//bool md_lammps_parse_trajectory()
 
 
 #ifdef __cplusplus

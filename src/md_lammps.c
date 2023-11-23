@@ -461,6 +461,25 @@ bool md_lammps_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i
 	return success;
 }
 
+//Reads data that is useful later when we want to parse a frame from the trajectory
+static bool md_lammps_trajectory_parse(md_lammps_trajectory_t* traj, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
+	ASSERT(traj);
+	ASSERT(reader);
+	ASSERT(alloc);
+	str_t line;
+	str_t tokens[6];
+	int64_t row = 0;
+
+	while (md_buffered_reader_extract_line(&line, reader)) {
+		if (str_equal_cstr_n(line, "timestep", 8)) { //Check in file for the correct string
+			traj->num_frames++;
+			md_array_push(traj->offsets, row, alloc);
+		}
+		row++;
+	}
+
+	return false;
+}
 
 //Cant use interface as the format parameter is needed as well
 /*
