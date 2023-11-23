@@ -191,7 +191,7 @@ static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* al
     data->indices = 0;
 }
 
-static inline int64_t md_index_data_push (md_index_data_t* data, int32_t* index_data, int64_t index_count, md_allocator_i* alloc) {
+static inline int64_t md_index_data_push (md_index_data_t* data, const int32_t* index_data, int64_t index_count, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
     ASSERT(index_count >= 0);

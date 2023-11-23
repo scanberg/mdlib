@@ -44,6 +44,10 @@ typedef struct md_array_header_t {
     __pragma(warning(suppress:6011 6387 6269)) \
     (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = (item), (a) + md_array_header(a)->size - 1)
 
+#define md_array_push_no_grow(a, item) \
+    __pragma(warning(suppress:6011 6387 6269)) \
+    (a)[md_array_header(a)->size++] = (item)
+
 #define md_array_push_array(a, items, n, alloc) \
     __pragma(warning(suppress:6011 6387)) \
     ((n) ? ((md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)), 0) : 0)

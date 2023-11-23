@@ -80,7 +80,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-//md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
+md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
@@ -220,23 +220,30 @@ void md_util_spatial_sort(uint32_t* source_indices, const vec3_t* xyz, int64_t c
 // Which only selects the best matching permutation based on RMSD.
 
 typedef enum {
-    MD_UTIL_MATCH_LEVEL_ALL = 0,
-    MD_UTIL_MATCH_LEVEL_RESIDUE,
-    MD_UTIL_MATCH_LEVEL_CHAIN,
+    MD_UTIL_MATCH_LEVEL_STRUCTURE = 0,  // Match within complete structures
+    MD_UTIL_MATCH_LEVEL_RESIDUE,        // Match within residues
+    MD_UTIL_MATCH_LEVEL_CHAIN,          // Match within chains
 } md_util_match_level_t;
 
+typedef enum {
+    MD_UTIL_MATCH_MODE_UNIQUE = 0,      // Store only unique matches
+    MD_UTIL_MATCH_MODE_FIRST = 1,       // Store the first match
+    MD_UTIL_MATCH_MODE_ALL = 2,		    // Store all matches
+} md_util_match_mode_t;
+
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure.
-md_index_data_t md_util_match_structure_by_type(const int* ref_indices, int64_t ref_size, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
-md_index_data_t md_util_match_structure_by_elem(const int* ref_indices, int64_t ref_size, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_type(const int ref_indices[], int64_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_element(const int ref_indices[], int64_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
-md_index_data_t md_util_match_structure_smiles(str_t smiles, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Computes the maximum common subgraph between two structures
 // The indices which maps from the source structure to the target structure is written to dst_idx_map
 // The returned value is the number of common atoms
 // It is assumed that the dst_idx_map has the same length as src_count
-int64_t md_util_structure_maximum_common_substructure(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+int64_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+int64_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }
