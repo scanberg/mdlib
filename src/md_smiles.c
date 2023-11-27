@@ -56,12 +56,11 @@ static const symbol_t table[] = {
 static const symbol_t* shortcut_end = table + 16;
 static const symbol_t* single_char_end = table + 23;
 
-static bool is_digit(int c) { return '0' <= c && c <= '9'; }
-
-static bool is_alpha(int c) { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'); }
-
-static bool is_lower(int c) { return 'a' <= c && c <= 'z'; }
-static bool is_upper(int c) { return 'A' <= c && c <= 'Z'; }
+static inline bool is_digit(int c) { return '0' <= c && c <= '9'; }
+static inline bool is_alpha(int c) { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'); }
+static inline bool is_lower(int c) { return 'a' <= c && c <= 'z'; }
+static inline bool is_upper(int c) { return 'A' <= c && c <= 'Z'; }
+static inline bool is_whitespace(int c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
 
 static bool is_valid(state_t* s) {
     return s->c != s->end;
@@ -369,9 +368,21 @@ int64_t md_smiles_parse(md_smiles_node_t* out_nodes, int64_t in_cap, const char*
         return 0;
     }
 
+    const char* beg = in_str;
+    const char* end = in_str + in_len;
+
+    // Do some trimming
+    while (beg < end && is_whitespace(beg)) {
+        beg++;
+    }
+
+    while (beg < end && is_whitespace(end[-1]) || end[-1] == '\0') {
+		end--;
+	}
+
     state_t state = {
-        .c = in_str,
-        .end = in_str + in_len,
+        .c = beg,
+        .end = end,
         .nodes = out_nodes,
         .node_len = 0,
         .node_cap = in_cap

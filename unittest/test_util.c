@@ -419,8 +419,10 @@ UTEST_F(util, structure_matching_PFTAA) {
 UTEST_F(util, structure_matching_smiles) {
     md_allocator_i* alloc = utest_fixture->alloc;
     
-    const char ALANINE1[] = "N[C@@H]([CH3])C(=O)";
-    const char ALANINE2[] = "N[C@@H]([CH3])C(-O)(-O)";
+    const char ALANINE[] = "N[C@@H]([CH3])C(O)";
+    // There are natural variations in how the alanine molecule is structured depending on its environment.
+    //const char ALANINE1[] = "N[C@@H]([CH3])C(=O)"; 
+    //const char ALANINE2[] = "N[C@@H]([CH3])C(-O)(-O)";
 
     const char ARGININE[] = "N[C@@H](CCCNC(=N)N)C(=O)";
     const char ASPARAGINE[] = "C(C(C(=O)O)N)C(=O)N";
@@ -449,12 +451,9 @@ UTEST_F(util, structure_matching_smiles) {
 #if 1
         const md_molecule_t* mol = &utest_fixture->mol_ala;
         md_timestamp_t t0 = md_time_current();
-        md_index_data_t res1 = md_util_match_smiles((str_t){ALANINE1, sizeof(ALANINE1)}, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
-        md_index_data_t res2 = md_util_match_smiles((str_t){ALANINE2, sizeof(ALANINE2)}, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
+        md_index_data_t res = md_util_match_smiles((str_t){ALANINE, sizeof(ALANINE)}, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
         md_timestamp_t t1 = md_time_current();
-        const int64_t res_count1 = md_index_data_count(res1);
-        const int64_t res_count2 = md_index_data_count(res2);
-        const int64_t count = res_count1 + res_count2;
+        const int64_t count = md_index_data_count(res);
         printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
         printf("result count: %d\n", (int)count);
         EXPECT_EQ(count, 15);
@@ -463,20 +462,13 @@ UTEST_F(util, structure_matching_smiles) {
     {
 #if 1
         const md_molecule_t* mol = &utest_fixture->mol_centered;
-        md_index_data_t res1 = md_util_match_smiles((str_t){ALANINE1, sizeof(ALANINE1)}, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
-        md_index_data_t res2 = md_util_match_smiles((str_t){ALANINE2, sizeof(ALANINE2)}, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
-        const int64_t res_count1 = md_index_data_count(res1);
-        const int64_t res_count2 = md_index_data_count(res2);
-        const int64_t count = res_count1 + res_count2;
+        md_index_data_t res = md_util_match_smiles((str_t){ALANINE, sizeof(ALANINE)}, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
+        const int64_t count = md_index_data_count(res);
+        printf("result count: %d\n", (int)count);
         EXPECT_EQ(count, 1012);
         
-        for (int64_t i = 0; i < res_count1; ++i) {
-            int* it = md_index_range_beg(res1, i);
-            EXPECT_STREQ("ALA", mol->atom.resname[*it].buf);
-        }
-
-        for (int64_t i = 0; i < res_count2; ++i) {
-            int* it = md_index_range_beg(res2, i);
+        for (int64_t i = 0; i < count; ++i) {
+            int* it = md_index_range_beg(res, i);
             EXPECT_STREQ("ALA", mol->atom.resname[*it].buf);
         }
 #endif
