@@ -1663,7 +1663,7 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                     // Only process one of the two branches/cases
                     if (r < l) {
                         int len = 0;
-                        int ring[MAX_DEPTH * 2];
+                        int ring[16];
 
                         int col = current_color++;
                         int cur;
@@ -1809,9 +1809,7 @@ md_index_data_t md_util_compute_structures(const md_molecule_t* mol, struct md_a
     md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
 
     // Create a bitfield to keep track of which atoms have been visited
-    const uint64_t bytes = DIV_UP(mol->atom.count, 64) * sizeof(uint64_t);
-    uint64_t* visited = md_alloc(temp_alloc, bytes);
-    MEMSET(visited, 0, bytes);
+    uint64_t* visited = make_bitfield(mol->atom.count, temp_alloc);
 
     // The capacity is arbitrary here, and will be resized if needed.
     fifo_t queue = fifo_create(128, temp_alloc);
@@ -5612,6 +5610,7 @@ static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* h
 
     if (start_candidates == 0) goto done;
     
+#if 0
     // Corresponding index array which needle indices correspond to the indices within the haystack;
     md_array(int) corr_idx = md_array_create(int, needle->vertex_count, temp_alloc);
     md_array(uint64_t) h_occupied  = make_bitfield(haystack->vertex_count, temp_alloc);
@@ -5627,6 +5626,7 @@ static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* h
 		.alloc = alloc,
 		.temp_alloc = temp_alloc,
 	};
+#endif
 
     state_t state = {0};
     state_init(&state, needle, haystack, temp_alloc);
@@ -5882,7 +5882,6 @@ md_index_data_t match_structure(const int* ref_idx, int64_t ref_len, md_util_mat
                 type = (uint8_t)idx;
                 map_table[idx].value += 1;
             }
-            ASSERT(type >= 0);
             atom_type[i] = type;
         }
     }
@@ -6076,7 +6075,7 @@ graph_t smiles_to_graph(str_t smiles_str, md_allocator_i* alloc) {
                 }
             }
             else if (node->type == MD_SMILES_NODE_BRANCH_OPEN) {
-                if (stack_size < ARRAY_SIZE(stack)) {
+                if (stack_size < (int)ARRAY_SIZE(stack)) {
                     stack[stack_size++] = hub;
                 } else {
 					MD_LOG_ERROR("Branch stack overflow in SMILES string");

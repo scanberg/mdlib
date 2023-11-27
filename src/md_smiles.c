@@ -223,7 +223,7 @@ static bool parse_bond(state_t* s) {
     char c = peek_char(s);
 
     const char bond_symbol[] = "-=:#$/\\";
-    for (int i = 0; i < ARRAY_SIZE(bond_symbol); ++i) {
+    for (int i = 0; i < (int)ARRAY_SIZE(bond_symbol); ++i) {
         if (c == bond_symbol[i]) {
             consume_char(s);
             md_smiles_node_t node = { .type = MD_SMILES_NODE_BOND };
@@ -243,7 +243,8 @@ static bool parse_dot(state_t* s) {
 
     if (c == '.') {
         consume_char(s);
-        md_smiles_node_t node = { .type = MD_SMILES_NODE_BOND };
+        //md_smiles_node_t node = { .type = MD_SMILES_NODE_BOND };
+        // Dot is not supported yet, so now we just ignore it and set the state flag
         s->dot = true;
         return true;
     }
@@ -372,11 +373,11 @@ int64_t md_smiles_parse(md_smiles_node_t* out_nodes, int64_t in_cap, const char*
     const char* end = in_str + in_len;
 
     // Do some trimming
-    while (beg < end && is_whitespace(beg)) {
+    while (beg < end && is_whitespace(*beg)) {
         beg++;
     }
 
-    while (beg < end && is_whitespace(end[-1]) || end[-1] == '\0') {
+    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) {
 		end--;
 	}
 
