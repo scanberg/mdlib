@@ -1294,8 +1294,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             draw_licorice(shaders->licorice[program_permutation], rep, 0.2f * scale * draw_op->args.licorice.radius);
             break;
         case MD_GL_REP_BALL_AND_STICK:
-            draw_licorice(shaders->licorice[program_permutation],    rep, 0.1125f * scale * draw_op->args.ball_and_stick.stick_radius);
-            draw_space_fill(shaders->spacefill[program_permutation], rep, 0.125f  * scale * draw_op->args.ball_and_stick.ball_scale);
+            draw_licorice(shaders->licorice[program_permutation],    rep, 0.2f * scale * draw_op->args.ball_and_stick.stick_radius);
+            draw_space_fill(shaders->spacefill[program_permutation], rep, 0.2f  * scale * draw_op->args.ball_and_stick.ball_scale);
             break;
         case MD_GL_REP_RIBBONS:
             draw_ribbons(shaders->ribbons[program_permutation], rep, scale * draw_op->args.ribbons.width_scale, scale * draw_op->args.ribbons.thickness_scale);

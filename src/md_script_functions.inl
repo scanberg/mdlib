@@ -2744,9 +2744,11 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const md_bitfield_t* src_bf = as_bitfield(arg[0]);
 
     md_bitfield_t tmp_bf = {0};
-    md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-    for (int64_t i = 0; i < num_bf; ++i) {
-        md_bitfield_or_inplace(&tmp_bf, &src_bf[i]);
+    if (num_bf > 1) {
+        md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+        for (int64_t i = 0; i < num_bf; ++i) {
+            md_bitfield_or_inplace(&tmp_bf, &src_bf[i]);
+        }
         src_bf = &tmp_bf;
     }
 
@@ -2755,16 +2757,18 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             const int64_t capacity = type_info_array_len(dst->type);
+            const int64_t inc = capacity > 1 ? 1 : 0;
 
-            int64_t count = 0;
+            int64_t dst_idx = 0;
             for (int64_t i = 0; i < ctx->mol->residue.count; ++i) {
+                ASSERT(dst_idx <= capacity);
                 uint64_t popcount = md_bitfield_popcount_range(src_bf, ctx->mol->residue.atom_range[i].beg, ctx->mol->residue.atom_range[i].end);
                 if (popcount) {
-                    md_bitfield_set_range(&dst_bf[count++], ctx->mol->residue.atom_range[i].beg, ctx->mol->residue.atom_range[i].end);
+                    md_bitfield_set_range(&dst_bf[dst_idx], ctx->mol->residue.atom_range[i].beg, ctx->mol->residue.atom_range[i].end);
+                    dst_idx += inc;
                 }
             }
 
-            ASSERT(count == capacity);
             result = 0;
         } else {
             int count = 0;
@@ -2788,6 +2792,11 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
             result = count;
         }
     }
+
+    if (num_bf > 1) {
+        md_bitfield_free(&tmp_bf);
+    }
+
     return result;
 }
 
@@ -2798,9 +2807,11 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const md_bitfield_t* src_bf = as_bitfield(arg[0]);
     
     md_bitfield_t tmp_bf = {0};
-    md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-    for (int64_t i = 0; i < num_bf; ++i) {
-        md_bitfield_or_inplace(&tmp_bf, &src_bf[i]);
+    if (num_bf > 1) {
+        md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+        for (int64_t i = 0; i < num_bf; ++i) {
+            md_bitfield_or_inplace(&tmp_bf, &src_bf[i]);
+        }
         src_bf = &tmp_bf;
     }
 
@@ -2808,17 +2819,19 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (ctx->mol && ctx->mol->chain.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
-            const int64_t capacity = element_count(*dst);
+            const int64_t capacity = type_info_array_len(dst->type);
+            const int64_t inc = capacity > 1 ? 1 : 0;
 
-            int64_t count = 0;
+            int64_t dst_idx = 0;
             for (int64_t i = 0; i < ctx->mol->chain.count; ++i) {
+                ASSERT(dst_idx <= capacity);
                 uint64_t popcount = md_bitfield_popcount_range(src_bf, ctx->mol->chain.atom_range[i].beg, ctx->mol->chain.atom_range[i].end);
                 if (popcount) {
-                    md_bitfield_set_range(&dst_bf[count++], ctx->mol->chain.atom_range[i].beg, ctx->mol->chain.atom_range[i].end);
+                    md_bitfield_set_range(&dst_bf[dst_idx], ctx->mol->chain.atom_range[i].beg, ctx->mol->chain.atom_range[i].end);
+                    dst_idx += inc;
                 }
             }
 
-            ASSERT(count == capacity);
             result = 0;
         } else {
             int count = 0;
@@ -2842,6 +2855,11 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
             result = count;
         }
     }
+
+    if (num_bf > 1) {
+        md_bitfield_free(&tmp_bf);
+    }
+
     return result;
 }
 

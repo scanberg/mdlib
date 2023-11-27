@@ -1728,7 +1728,7 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
     
     md_arena_allocator_destroy(temp_alloc);
 
-#ifdef DEBUG
+#if 0
     MD_LOG_DEBUG("Processed ring elements: %llu\n", processed_ring_elements);
 #endif
 
@@ -4610,7 +4610,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
 }
 
 /*
-This is blatantly stolen and modified from Arseny Kapoulkines Mesh optimizer
+This is blatantly stolen and modified from 'Arseny Kapoulkines' goldnugget 'Mesh optimizer'
 https://github.com/zeux/meshoptimizer/
 
 MIT License
@@ -5683,6 +5683,9 @@ static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* h
 		}
 #endif
 
+        if (mode == MD_UTIL_MATCH_MODE_FIRST && md_index_data_count(result) > 0) {
+            goto done;
+        }
     }
     
 done:    
@@ -6025,8 +6028,7 @@ graph_t smiles_to_graph(str_t smiles_str, md_allocator_i* alloc) {
         for (int64_t i = 0; i < num_nodes; ++i) {
             const md_smiles_node_t* node = &nodes[i];
             if (node->type == MD_SMILES_NODE_ATOM) {
-                int len = node->atom.symbol[1] ? 2 : 1;
-                md_element_t elem = md_util_element_lookup((str_t){node->atom.symbol, len});
+                md_element_t elem = node->atom.element;
                 md_array_push(verts, (vertex_t){.type = elem}, temp_alloc);
                 int cur = (int)md_array_size(verts) - 1;
 
@@ -6045,7 +6047,7 @@ graph_t smiles_to_graph(str_t smiles_str, md_allocator_i* alloc) {
 				}
                 hub = cur;
 
-                for (int j = 0; j < node->atom.h_count; ++j) {
+                for (int j = 0; j < node->atom.hydrogen_count; ++j) {
                     md_array_push(verts, (vertex_t){.type = H}, temp_alloc);
 					const int h_idx = (int)md_array_size(verts) - 1;
                     const int edge_type = 1;
@@ -6089,8 +6091,8 @@ graph_t smiles_to_graph(str_t smiles_str, md_allocator_i* alloc) {
                     goto done;
                 }
             }
-            else if (node->type == MD_SMILES_NODE_RING_CLOSURE) {
-                int idx = (int)stbds_hmgeti(map, node->ring.index);
+            else if (node->type == MD_SMILES_NODE_BRIDGE) {
+                int idx = (int)stbds_hmgeti(map, node->bridge.index);
                 int ci = (int)md_array_size(verts) - 1;
                 if (idx != -1) {
 					int pi = map[idx].value;
@@ -6105,7 +6107,7 @@ graph_t smiles_to_graph(str_t smiles_str, md_allocator_i* alloc) {
 
                     stbds_hmdel(map, idx);
                 } else {
-					stbds_hmput(map, node->ring.index, ci);
+					stbds_hmput(map, node->bridge.index, ci);
 				}
             }
         }

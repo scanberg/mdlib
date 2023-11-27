@@ -472,12 +472,12 @@ UTEST_F(util, structure_matching_smiles) {
         
         for (int64_t i = 0; i < res_count1; ++i) {
             int* it = md_index_range_beg(res1, i);
-            printf("[%d] resname: %s\n", utest_fixture->mol_centered.atom.res_idx[*it], utest_fixture->mol_centered.atom.resname[*it].buf);
+            EXPECT_STREQ("ALA", mol->atom.resname[*it].buf);
         }
 
         for (int64_t i = 0; i < res_count2; ++i) {
             int* it = md_index_range_beg(res2, i);
-            printf("[%d] resname: %s\n", utest_fixture->mol_centered.atom.res_idx[*it], utest_fixture->mol_centered.atom.resname[*it].buf);
+            EXPECT_STREQ("ALA", mol->atom.resname[*it].buf);
         }
 #endif
     }
@@ -493,37 +493,37 @@ UTEST(util, parse_smiles) {
 
         ASSERT_EQ(len, 11);
         EXPECT_EQ(smiles[0].type, MD_SMILES_NODE_ATOM);
-        EXPECT_EQ(smiles[0].atom.symbol[0], 'C');
+        EXPECT_EQ(smiles[0].atom.element, 6);
         
-        EXPECT_EQ(smiles[1].type, MD_SMILES_NODE_RING_CLOSURE);
-        EXPECT_EQ(smiles[1].ring.index, 1);
+        EXPECT_EQ(smiles[1].type, MD_SMILES_NODE_BRIDGE);
+        EXPECT_EQ(smiles[1].bridge.index, 1);
         
         EXPECT_EQ(smiles[2].type, MD_SMILES_NODE_BOND);
         EXPECT_EQ(smiles[2].bond.symbol, '=');
 
         EXPECT_EQ(smiles[3].type, MD_SMILES_NODE_ATOM);
-		EXPECT_EQ(smiles[3].atom.symbol[0], 'C');
+		EXPECT_EQ(smiles[3].atom.element, 6);
         
         EXPECT_EQ(smiles[4].type, MD_SMILES_NODE_ATOM);
-		EXPECT_EQ(smiles[4].atom.symbol[0], 'C');
+		EXPECT_EQ(smiles[4].atom.element, 6);
         
         EXPECT_EQ(smiles[5].type, MD_SMILES_NODE_BOND);
 		EXPECT_EQ(smiles[5].bond.symbol, '=');
 
         EXPECT_EQ(smiles[6].type, MD_SMILES_NODE_ATOM);
-		EXPECT_EQ(smiles[6].atom.symbol[0], 'C');
+		EXPECT_EQ(smiles[6].atom.element, 6);
 
         EXPECT_EQ(smiles[7].type, MD_SMILES_NODE_ATOM);
-		EXPECT_EQ(smiles[7].atom.symbol[0], 'C');
+		EXPECT_EQ(smiles[7].atom.element, 6);
 
         EXPECT_EQ(smiles[8].type, MD_SMILES_NODE_BOND);
         EXPECT_EQ(smiles[8].bond.symbol, '=');
 
         EXPECT_EQ(smiles[9].type, MD_SMILES_NODE_ATOM);
-        EXPECT_EQ(smiles[9].atom.symbol[0], 'C');
+        EXPECT_EQ(smiles[9].atom.element, 6);
 
-		EXPECT_EQ(smiles[10].type, MD_SMILES_NODE_RING_CLOSURE);
-        EXPECT_EQ(smiles[10].ring.index, 1);
+		EXPECT_EQ(smiles[10].type, MD_SMILES_NODE_BRIDGE);
+        EXPECT_EQ(smiles[10].bridge.index, 1);
 
         md_array_free(smiles, alloc);
     }
@@ -535,9 +535,7 @@ UTEST(util, parse_smiles) {
         
         EXPECT_EQ(len, 16);
         EXPECT_EQ(smiles[0].type, MD_SMILES_NODE_ATOM);
-        EXPECT_EQ(smiles[0].atom.symbol[0], 'C');
-
-
+        EXPECT_EQ(smiles[0].atom.element, 6);
 
         md_array_free(smiles, alloc);
     }
