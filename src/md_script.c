@@ -4353,7 +4353,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
 
                 if (rhs->flags & FLAG_CONSTANT) {
                     ASSERT(rhs->data.ptr);
-                    ASSERT(rhs->data.size == num_contexts * sizeof(md_bitfield_t));
+                    ASSERT(rhs->data.size == num_contexts * (int64_t)sizeof(md_bitfield_t));
                     contexts = (md_bitfield_t*)rhs->data.ptr;
                 } else {
                     md_array_resize(contexts, num_contexts, ctx->ir->arena);
@@ -4363,7 +4363,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     result = evaluate_node(&rhs->data, rhs, ctx);
                     if (result) {
                         rhs->data.ptr = contexts;
-                        rhs->data.size = num_contexts * sizeof(md_bitfield_t);
+                        rhs->data.size = num_contexts * (int64_t)sizeof(md_bitfield_t);
                         ASSERT(md_array_size(contexts) == num_contexts);
                         result = true;
                     }

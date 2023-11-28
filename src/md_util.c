@@ -1602,11 +1602,9 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
     int* pred  = md_alloc(temp_alloc, mol->atom.count * sizeof(int));
 
     MEMSET(color, 0, mol->atom.count * sizeof(int));
-#if DEBUG
     MEMSET(depth, 0, mol->atom.count * sizeof(int));
     MEMSET(mark,  0, mol->atom.count * sizeof(int));
     MEMSET(pred, -1, mol->atom.count * sizeof(int));    // We can do memset as the representation of -1 under two's complement is 0xFFFFFFFF
-#endif
 
     // The capacity is arbitrary here, but will be resized if needed.
     fifo_t queue = fifo_create(64, temp_alloc);
@@ -1663,7 +1661,7 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                     // Only process one of the two branches/cases
                     if (r < l) {
                         int len = 0;
-                        int ring[16];
+                        int ring[MAX_DEPTH * 2];
 
                         int col = current_color++;
                         int cur;
@@ -1698,12 +1696,15 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                                 if (cur < 0) break;
                             }
 
+                            // Otherwise we made a big whoopsie
+                            ASSERT(len < ARRAY_SIZE(ring));
+
                             if (MIN_RING_SIZE <= len && len <= MAX_RING_SIZE) {
                                 sort_arr(ring, len);
                                 size_t key = stbds_hash_bytes(ring, len * sizeof(int), seed);
                                 if (stbds_hmgeti(hm, key) == -1) {
                                     stbds_hmputs(hm, (T){key});
-                                    md_index_data_push(&ring_data, ring, len, alloc);
+                                    md_index_data_push_arr(&ring_data, ring, len, alloc);
                                     goto next;
                                 }
                             }
@@ -1801,6 +1802,7 @@ static inline uint64_t popcount_bitfield(const md_array(uint64_t) bits) {
     return popcount_bits(bits, bits + md_array_size(bits));
 }
 
+// Identifies isolated 'structures' defined by covalent bonds. Any set of atoms connected by covalent bonds are considered a structure
 md_index_data_t md_util_compute_structures(const md_molecule_t* mol, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
@@ -1844,7 +1846,7 @@ md_index_data_t md_util_compute_structures(const md_molecule_t* mol, struct md_a
         sort_arr(indices, (int)md_array_size(indices));
         
         // Here we should have exhausted every atom that is connected to index i.
-        md_index_data_push(&structures, indices, md_array_size(indices), alloc);
+        md_index_data_push_arr(&structures, indices, md_array_size(indices), alloc);
         md_array_shrink(indices, 0);
     }
     
@@ -5382,7 +5384,7 @@ static void record_solution(subgraph_context_t* ctx) {
             MEMCPY(ptr, ctx->h_idx_map, sizeof(int) * ctx->n_graph->vertex_count);
         }
     } else {
-		int result_idx = (int)md_index_data_push(ctx->result, ctx->h_idx_map, ctx->n_graph->vertex_count, ctx->alloc);
+		int result_idx = (int)md_index_data_push_arr(ctx->result, ctx->h_idx_map, ctx->n_graph->vertex_count, ctx->alloc);
         result_entry_t e = {key, value, result_idx};
 		stbds_hmputs(ctx->result_map, e);
 	}
@@ -5523,7 +5525,7 @@ static bool store_unique_callback(const int map[], int64_t length, void* user) {
         }
     } else {
         // Store new entry if unique solution
-        int result_idx = (int)md_index_data_push(data->result, map, length, data->alloc);
+        int result_idx = (int)md_index_data_push_arr(data->result, map, length, data->alloc);
         result_entry_t e = {key, value, result_idx};
         stbds_hmputs(data->map, e);
     }
@@ -5539,7 +5541,7 @@ static bool store_unique_callback(const int map[], int64_t length, void* user) {
 static bool store_first_callback(const int map[], int64_t length, void* user) {
     store_data_t* data = (store_data_t*)user;
 
-    md_index_data_push(data->result, map, length, data->alloc);
+    md_index_data_push_arr(data->result, map, length, data->alloc);
 #if DEBUG
     const int depth = (int)length;
     printf("%*sSolution found!\n", depth, "");
@@ -5551,7 +5553,7 @@ static bool store_first_callback(const int map[], int64_t length, void* user) {
 static bool store_all_callback(const int map[], int64_t length, void* user) {
     store_data_t* data = (store_data_t*)user;
 
-    md_index_data_push(data->result, map, length, data->alloc);
+    md_index_data_push_arr(data->result, map, length, data->alloc);
 #if DEBUG
     const int depth = (int)length;
     printf("%*sSolution found!\n", depth, "");
@@ -5807,7 +5809,7 @@ md_index_data_t get_structures(const md_molecule_t* mol, md_util_match_level_t l
                     }
                     md_array_push(structure, i, alloc);
                 }
-                md_index_data_push(&result, structure, md_array_size(structure), alloc);
+                md_index_data_push_arr(&result, structure, md_array_size(structure), alloc);
             }
         } else {
             result = mol->structures;
@@ -5822,7 +5824,7 @@ md_index_data_t get_structures(const md_molecule_t* mol, md_util_match_level_t l
                 }
                 md_array_push(structure, i, alloc);
             }
-            md_index_data_push(&result, structure, md_array_size(structure), alloc);
+            md_index_data_push_arr(&result, structure, md_array_size(structure), alloc);
         }
         break;
     case MD_UTIL_MATCH_LEVEL_CHAIN:
@@ -5834,7 +5836,7 @@ md_index_data_t get_structures(const md_molecule_t* mol, md_util_match_level_t l
                 }
                 md_array_push(structure, i, alloc);
             }
-            md_index_data_push(&result, structure, md_array_size(structure), alloc);
+            md_index_data_push_arr(&result, structure, md_array_size(structure), alloc);
         }
         break;
     default:
@@ -5936,10 +5938,8 @@ md_index_data_t match_structure(const int* ref_idx, int64_t ref_len, md_util_mat
     }
 
     for (int64_t i = 0; i < num_structures; ++i) {
-
-        md_range_t s_range = structures.ranges[i];
-        const int* s_idx = structures.indices + s_range.beg;
-        const int64_t s_len = s_range.end - s_range.beg;
+        const int* s_idx = md_index_range_beg(structures, i);
+        const int64_t s_len = md_index_range_size(structures, i);
         if (s_len < ref_len) continue;
 
         md_util_match_mode_t s_mode = mode;
@@ -5965,19 +5965,16 @@ md_index_data_t match_structure(const int* ref_idx, int64_t ref_len, md_util_mat
         md_index_data_t mappings = find_isomorphisms(&ref_graph, &graph, s_mode, starting_type, temp_alloc);
 
         // Remap indices to global indices in result
-        const int64_t num_mappings = md_index_data_count(mappings);
-        for (int64_t j = 0; j < num_mappings; ++j) {
+        for (int64_t j = 0; j < md_index_data_count(mappings); ++j) {
             int* beg = md_index_range_beg(mappings, j);
             int* end = md_index_range_end(mappings, j);
-            int r_beg = (int)md_array_size(result.indices);
-            int r_end = r_beg + (int)(end - beg);
-            md_range_t range = {r_beg, r_end};
-            md_array_push(result.ranges, range, alloc);
+            const int64_t len = end - beg;
+            if (len <= 0) continue;
 
             for (int* it = beg; it != end; ++it) {
-                int idx = s_idx[*it];
-                md_array_push(result.indices, idx, alloc);
+                *it = s_idx[*it];
             }
+            md_index_data_push_arr(&result, beg, len, alloc);
         }
     next:;
     }
@@ -6187,9 +6184,8 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
     }
 
     for (int64_t i = 0; i < num_structures; ++i) {
-        md_range_t s_range = structures.ranges[i];
-        int32_t s_size = s_range.end - s_range.beg;
-        const int* s_indices = structures.indices + s_range.beg;
+        const int64_t s_size = md_index_range_size(structures, i);
+        const int* s_indices = md_index_range_beg(structures, i);
         if (s_size < ref_graph.vertex_count) continue;
 
         int s_type_count[256] = {0};
@@ -6205,21 +6201,19 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
         }
         
         graph_t s_graph = make_graph(mol, mol->atom.element, s_indices, s_size, temp_alloc);
-
         md_index_data_t mappings = find_isomorphisms(&ref_graph, &s_graph, mode, starting_type, temp_alloc);
+
         // Remap indices to global indices in result
         for (int64_t j = 0; j < md_index_data_count(mappings); ++j) {
             int* beg = md_index_range_beg(mappings, j);
             int* end = md_index_range_end(mappings, j);
-            int r_beg = (int)md_array_size(result.indices);
-            int r_end = r_beg + (int)(end - beg);
-            md_range_t range = {r_beg, r_end};
-            md_array_push(result.ranges, range, alloc);
+            const int64_t len = end - beg;
+            if (len <= 0) continue;
 
             for (int* it = beg; it != end; ++it) {
-                int idx = s_indices[*it];
-                md_array_push(result.indices, idx, alloc);
-            }
+				*it = s_indices[*it];
+			}
+            md_index_data_push_arr(&result, beg, len, alloc);
         }
 next:;
     }
