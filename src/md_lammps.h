@@ -2,8 +2,15 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-
+#include <core/md_os.h>
 #include <core/md_str.h>
+#include <md_util.h>
+#include <md_trajectory.h>
+
+#define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
+#define MD_LAMMPS_CACHE_MAGIC 0x89172baa
+#define MD_LAMMPS_CACHE_VERSION 15
+#define MD_LAMMPS_PARSE_BIOMT 1
 
 //All lammps units should have a 1:1 mapping to the md_molecule according to https://docs.lammps.org/2001/units.html
 
@@ -14,6 +21,8 @@ extern "C" {
 struct md_allocator_i;
 struct md_molecule_t;
 struct md_molecule_loader_i;
+struct md_trajectory_i;
+struct md_trajectory_loader_i;
 
 //Contains potential data format identifiers
 typedef enum lammps_atom_data_format {
@@ -105,8 +114,16 @@ typedef struct md_lammps_data_t {
 } md_lammps_data_t;
 
 typedef struct md_lammps_trajectory_t {
-	int64_t* offsets;
-	int64_t num_frames;
+	int64_t* frame_offsets;
+	//int64_t num_frames;
+
+	uint64_t magic;
+	md_file_o* file;
+	uint64_t filesize;
+	md_unit_cell_t unit_cell;
+	md_trajectory_header_t header;
+	md_allocator_i* allocator;
+	md_mutex_t mutex;
 } md_lammps_trajectory_t;
 
 // Parse a text-blob as LAMMPS
@@ -120,9 +137,12 @@ bool md_lammps_molecule_init(struct md_molecule_t* mol, const md_lammps_data_t* 
 
 //struct md_molecule_loader_i* md_lammps_molecule_api();
 
-//Parse trajectory
-//bool md_lammps_parse_trajectory()
+//Trajectory
+bool md_lammps_trajectory_parse_file(md_lammps_trajectory_t* traj, str_t filename, struct md_allocator_i* alloc);
+struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc);
+void md_lammps_trajectory_free(struct md_trajectory_i* traj);
 
+struct md_trajectory_loader_i* md_lammps_trajectory_loader();
 
 #ifdef __cplusplus
 }
