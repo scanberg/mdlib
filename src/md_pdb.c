@@ -520,7 +520,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         }
 
         if (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) {
-            flags |= MD_FLAG_CHAIN_END;
+            flags |= MD_ATOM_FLAG_CHAIN_END;
         }
 
         if (chain_id != ' ') {
@@ -529,9 +529,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
             if (chain_id != prev_chain_id) {
                 if (prev_chain_id != -1) {
-                    *md_array_last(mol->atom.flags) |= MD_FLAG_CHAIN_END;
+                    *md_array_last(mol->atom.flags) |= MD_ATOM_FLAG_CHAIN_END;
                 }
-                flags |= MD_FLAG_CHAIN_BEG;
+                flags |= MD_ATOM_FLAG_CHAIN_BEG;
                 md_array_push(chain_ranges, ((md_range_t){(int)i, (int)i}), temp_alloc);
                 prev_chain_id = chain_id;
             }
@@ -541,10 +541,10 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
         if (res_id != prev_res_id) {
             if (prev_res_id != -1) {
-				*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
+				*md_array_last(mol->atom.flags) |= MD_ATOM_FLAG_RES_END;
 			}
 
-            flags |= MD_FLAG_RES_BEG;
+            flags |= MD_ATOM_FLAG_RES_BEG;
             prev_res_id = res_id;
         }
 

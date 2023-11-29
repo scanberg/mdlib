@@ -185,10 +185,10 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         md_flags_t flags = 0;
 
         if (prev_res_id != res_id) {
-			flags |= MD_FLAG_RES_BEG;
+			flags |= MD_ATOM_FLAG_RES_BEG;
 
             if (prev_res_id != -1) {
-            	*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
+            	*md_array_last(mol->atom.flags) |= MD_ATOM_FLAG_RES_END;
             }
             prev_res_id = res_id;
         }
