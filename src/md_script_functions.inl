@@ -318,7 +318,7 @@ static int _or   (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _xor  (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 // Selectors
-// Atomic level selectors
+// Atom level selectors
 static int _all             (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _within_x        (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _within_y        (data_t*, data_t[], eval_context_t*); // -> bitfield
@@ -334,12 +334,13 @@ static int _element_irng    (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _atom_irng       (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _atom_int        (data_t*, data_t[], eval_context_t*); // -> bitfield
 
+static int _ion             (data_t*, data_t[], eval_context_t*); // -> bitfield
+
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 
 // Residue level selectors
 static int _water   (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _protein   (data_t*, data_t[], eval_context_t*); // -> bitfield[]
-static int _ion     (data_t*, data_t[], eval_context_t*);   // -> bitfield
 static int _resname (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
 static int _resid   (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
 static int _residue (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
@@ -577,6 +578,7 @@ static procedure_t procedures[] = {
 
     // Atom level
     {CSTR("all"),       TI_BITFIELD, 0, {0},                _all},
+    {CSTR("ion"),       TI_BITFIELD, 0, {0},                _ion},
     {CSTR("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
     {CSTR("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
     {CSTR("label"),     TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
@@ -590,7 +592,6 @@ static procedure_t procedures[] = {
     // Residue level
     {CSTR("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
     {CSTR("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
-    {CSTR("ion"),       TI_BITFIELD_ARR, 0, {0},                _ion,           FLAG_QUERYABLE_LENGTH},
     {CSTR("resname"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _resname,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {CSTR("residue"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _resname,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {CSTR("resid"),     TI_BITFIELD_ARR, 1, {TI_IRANGE_ARR},    _resid,         FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -2582,97 +2583,32 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static bool test_ion(const md_molecule_t* mol, int res_idx) {
-    if (mol->residue.atom_range) {
-        const md_range_t range = mol->residue.atom_range[res_idx];
-        const int len = range.end - range.beg;
-        if (len <= 4) {
-            md_element_t elem = mol->atom.element[range.beg];
-            for (int i = range.beg+1; i < range.end; ++i) {
-                if (mol->atom.element[i] != elem) {
-                    return false;
-                }
-            }
-            // All good, we have some form of structure with all the same elements
-            // TODO: Dear god use a table!
-            switch (elem) {
-                case 1:   // H+ / H-
-                case 3:   // Li+
-                case 9:   // F-
-                case 11:  // Na+
-                case 17:  // Cl-
-                case 19:  // K+
-                case 35:  // Br-
-                case 37:  // Rb+
-                case 47:  // Ag+
-                case 53:  // I-
-                case 55:  // Cs+
-                    return len == 1;
-                case 4:   // Be2+
-                case 8:   // O2-
-                case 12:  // Mg2+
-                case 20:  // Ca2+
-                case 16:  // S2-
-                case 30:  // Zn2+
-                case 34:  // Se2-
-                case 38:  // Sr2+
-                case 48:  // Cd2+
-                case 56:  // Ba2+
-                case 66:  // Hg2+
-                    return len == 2;
-                case 7:   // N3-
-                case 13:  // Al3+
-                case 15:  // P3-
-                    return len == 3;
-                case 29:  // Cu1+ / Cu2+
-                    return len == 1 || len == 2;
-                case 24:  // Cr2+ / Cr3+
-                case 25:  // Mn2+ / Mn3+
-                case 26:  // Fe2+ / Fe3+
-                case 27:  // Co2+ / Co3+
-                    return len == 2 || len == 3;
-                case 50:  // Sn2+ / Sn4+
-                case 68:  // Pb2+ / Pb4+
-                    return len == 2 || len == 4;
-                default: return false;
-            }
-        }
-    }
-    return false;
-}
-
 static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     (void)arg;
 
     int result = 0;
-    int32_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
 
     if (dst) {
-        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        
+        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
-        for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            if (test_ion(ctx->mol, (int)res_indices[i])) {
-                md_range_t range = ctx->mol->residue.atom_range[res_indices[i]];
-                md_bitfield_set_range(bf, range.beg, range.end);
-            }
-        }
-    }
-    else {
-        int count = 0;
-        for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            if (test_ion(ctx->mol, (int)res_indices[i])) {
-                count += 1;
-            }
-        }
-        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
-            count = MIN(1, count);
-        }
-        result = count;
-    }
 
-    md_array_free(res_indices, ctx->temp_alloc);
+        if (ctx->mol_ctx) {
+            md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
+            while (md_bitfield_iter_next(&it)) {
+				const int i = it.idx;
+				if (ctx->mol->atom.flags[i] & MD_ATOM_FLAG_ION) {
+					md_bitfield_set_bit(bf, i);
+				}
+			}
+        } else {
+            for (int64_t i = 0; i < ctx->mol->atom.count; ++i) {
+                if (ctx->mol->atom.flags[i] & MD_ATOM_FLAG_ION) {
+                    md_bitfield_set_bit(bf, i);
+                }
+            }
+        }
+    }
 
     return result;
 }
