@@ -1144,7 +1144,7 @@ void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom
     }
     else {
         // Spatial acceleration structure
-        int count_b = range_b.end - range_a.beg;
+        int count_b = range_b.end - range_b.beg;
         md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x + range_b.beg, atom->y + range_b.beg, atom->z + range_b.beg, NULL, count_b, cell, temp_alloc);
 
         const float cutoff = 3.0f;
@@ -1176,8 +1176,9 @@ void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom
     }
 }
 
-md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
     ASSERT(atom);
+    ASSERT(res);
     ASSERT(alloc);
 
     md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
@@ -1205,18 +1206,11 @@ md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom, const 
     }
     const int atom_count = (int)atom->count;
        
-    if (atom->resid) {
-        md_range_t range = {0, 0};
-        md_range_t prev_range = {0, 0};
-        for (int i = 0; i < atom->count; ++i) {
-            while (i < atom_count && atom->resid[i] == atom->resid[range.beg]) ++i;
-            range.end = i;
-
-			find_inter_bonds_in_ranges(&bond, atom, cell, prev_range, range, alloc, temp_alloc);
-            find_intra_bonds_in_range(&bond, atom, cell, range, alloc, temp_alloc);
-
-            prev_range = range;
-            range.beg  = range.end;
+    if (res->count > 0) {
+        find_intra_bonds_in_range(&bond, atom, cell, res->atom_range[0], alloc, temp_alloc);
+        for (int i = 1; i < res->count; ++i) {
+			find_inter_bonds_in_ranges(&bond, atom, cell, res->atom_range[i-1], res->atom_range[i], alloc, temp_alloc);
+            find_intra_bonds_in_range(&bond, atom, cell, res->atom_range[i], alloc, temp_alloc);
         }
     }
     else {
@@ -1295,8 +1289,8 @@ md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_molecule_t* mol, md_
 }
 */
 
-bool md_util_compute_residue_data(md_residue_data_t* res_data, md_atom_data_t* atom, md_allocator_i* alloc) {
-    ASSERT(res_data);
+bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, md_allocator_i* alloc) {
+    ASSERT(res);
     ASSERT(atom);
     ASSERT(alloc);
 
@@ -1305,33 +1299,36 @@ bool md_util_compute_residue_data(md_residue_data_t* res_data, md_atom_data_t* a
     for (int64_t i = 0; i < atom->count; ++i) {
         const md_residue_id_t resid = atom->resid[i];
         const md_flags_t flags = atom->flags[i];
-        const md_label_t resname = atom->resname[i];        
+        const md_label_t resname = atom->resname[i];
 
-        if (resid != prev_resid || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END) {
+        if (resid != 0 && (resid != prev_resid || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END)) {
             md_range_t range = {(int)i, (int)i};
-            md_array_push(res_data->id, resid, alloc);
-            md_array_push(res_data->name, resname, alloc);
-            md_array_push(res_data->atom_range, range, alloc);
-            md_array_push(res_data->flags, 0, alloc);
+            md_array_push(res->id, resid, alloc);
+            md_array_push(res->name, resname, alloc);
+            md_array_push(res->atom_range, range, alloc);
+            md_array_push(res->flags, 0, alloc);
             prev_resid = resid;
-            res_data->count += 1;
+            res->count += 1;
         }
 
-		md_array_last(res_data->atom_range)->end += 1;
+		if (resid) {
+            md_array_last(res->atom_range)->end += 1;
+        }
         prev_flags = flags;
     }
 
     atom->res_idx = md_array_create(md_residue_idx_t, atom->count, alloc);
+    MEMSET(atom->res_idx, -1, md_array_bytes(atom->res_idx));
 
-    for (int64_t i = 0; i < res_data->count; ++i) {
-        str_t resname = LBL_TO_STR(res_data->name[i]);
-        md_range_t range = res_data->atom_range[i];
+    for (int64_t i = 0; i < res->count; ++i) {
+        str_t resname = LBL_TO_STR(res->name[i]);
+        md_range_t range = res->atom_range[i];
         if (md_util_resname_amino_acid(resname) || amino_acid_heuristic(atom->type + range.beg, range.end - range.beg)) {
-			res_data->flags[i] |= MD_FLAG_AMINO_ACID;
+			res->flags[i] |= MD_FLAG_AMINO_ACID;
 		} else if (md_util_resname_nucleic_acid(resname)) {
-            res_data->flags[i] |= MD_FLAG_NUCLEIC_ACID;
+            res->flags[i] |= MD_FLAG_NUCLEIC_ACID;
         } else if (md_util_resname_water(resname)) {
-            res_data->flags[i] |= MD_FLAG_WATER;
+            res->flags[i] |= MD_FLAG_WATER;
         }
 
         for (int32_t j = range.beg; j < range.end; ++j) {
@@ -4533,7 +4530,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     }
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
-        mol->bond = md_util_compute_covalent_bonds(&mol->atom, &mol->unit_cell, alloc);
+        mol->bond = md_util_compute_covalent_bonds(&mol->atom, &mol->residue, &mol->unit_cell, alloc);
     }
 
     if (flags & MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT) {
