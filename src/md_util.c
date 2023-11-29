@@ -1449,6 +1449,7 @@ bool md_util_identify_ions(md_atom_data_t* atom) {
             }
 		}
     }
+    return true;
 }
 
 // @NOTE(Robin): This could certainly be improved to incorporate more characters
@@ -1491,8 +1492,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
             const str_t id = LBL_TO_STR(atom->chainid[i]);
 			const md_flags_t flags = atom->flags[i];
 			if (!str_empty(id) && (!str_equal(id, prev_id) || (flags & MD_ATOM_FLAG_CHAIN_BEG) || (prev_flags & MD_ATOM_FLAG_CHAIN_END))) {
-				const md_range_t atom_range = {i, i};
-				const md_range_t res_range = {atom->res_idx[i], atom->res_idx[i]};
+				const md_range_t atom_range = {(int)i, (int)i};
 				md_array_push(chain->id, make_label(id), alloc);
 				md_array_push(chain->atom_range, atom_range, alloc);
 				chain->count += 1;
