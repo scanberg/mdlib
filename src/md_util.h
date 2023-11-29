@@ -80,7 +80,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
+md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_residue_data_t* res_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
