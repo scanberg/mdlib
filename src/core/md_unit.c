@@ -75,6 +75,7 @@ typedef struct {
 #define UNIT_MILLISECOND    {.base = {.dim = {.time = 1,}},     .mult = 1e-3}
 #define UNIT_NANOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-9}
 #define UNIT_PIKOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-12}
+#define UNIT_FEMTOSECOND	{.base = {.dim = {.time = 1,}},     .mult = 1e-15}
 
 #define UNIT_DEGREE         {.base = {.dim = {.angle = 1,}},    .mult = RAD_TO_DEG(1),}
 
@@ -718,6 +719,10 @@ md_unit_t md_unit_nanosecond() {
 
 md_unit_t md_unit_pikosecond() {
     return (md_unit_t)UNIT_PIKOSECOND;
+}
+
+md_unit_t md_unit_femtosecond() {
+	return (md_unit_t)UNIT_FEMTOSECOND;
 }
 
 md_unit_t md_unit_ampere() {
