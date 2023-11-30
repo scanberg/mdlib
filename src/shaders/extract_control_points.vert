@@ -2,7 +2,7 @@
 #extension GL_ARB_shading_language_packing : enable
 
 uniform samplerBuffer u_buf_atom_pos;
-uniform samplerBuffer u_buf_atom_vel; 
+uniform samplerBuffer u_buf_atom_vel;
 uniform samplerBuffer u_buf_secondary_structure;
 
 layout (location = 0) in uint in_residue_idx;
@@ -10,6 +10,7 @@ layout (location = 1) in uint in_segment_idx;
 layout (location = 2) in uint in_atom_ca;
 layout (location = 3) in uint in_atom_c;
 layout (location = 4) in uint in_atom_o;
+layout (location = 5) in uint in_flags;
 
 out vec3  out_position;
 out uint  out_atom_idx;
@@ -36,10 +37,10 @@ void main() {
     vec3 c    = texelFetch(u_buf_atom_pos, 		int(in_atom_c)).xyz;
     vec3 o    = texelFetch(u_buf_atom_pos, 		int(in_atom_o)).xyz;
     vec4 ss   = texelFetch(u_buf_secondary_structure, int(in_residue_idx));
+    uint f    = in_flags;
 
     vec3 v = normalize(o - c);
     vec3 t = vec3(0);   // Placeholder, tangent is computed analytically in spline shader
-    uint f = 0U; // flags
 
     out_position = ca;
     out_atom_idx = in_atom_ca;

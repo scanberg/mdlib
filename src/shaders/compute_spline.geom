@@ -123,6 +123,7 @@ void main() {
     vec3 sv[4];
     vec3 ss[4];
     uint ai[2];
+    uint fl[2];
 
     cp[0] = in_vert[0].position;
     cp[1] = in_vert[1].position;
@@ -152,30 +153,15 @@ void main() {
     ai[0] = in_vert[1].atom_index;
     ai[1] = in_vert[2].atom_index;
 
-    uint beg_chain  = uint(in_vert[0].atom_index == in_vert[1].atom_index) << 0U;
-    uint end_chain  = uint(in_vert[2].atom_index == in_vert[3].atom_index) << 1U;
-    uint beg_struct = uint(
-            !all(equal(in_vert[0].secondary_structure, in_vert[1].secondary_structure)) &&
-            all(equal(in_vert[1].secondary_structure, in_vert[2].secondary_structure))
-        ) << 2U;
-    uint end_struct = uint(
-            all(equal(in_vert[0].secondary_structure, in_vert[1].secondary_structure)) &&
-            !all(equal(in_vert[1].secondary_structure, in_vert[2].secondary_structure))
-        ) << 3U;
-
-    uint flags = beg_struct | end_struct;
+    fl[0] = in_vert[1].flags;
+    fl[1] = in_vert[2].flags;
 
     for (int i = 0; i < NUM_SUBDIVISIONS; i++) {
         float t = float(i) / float(NUM_SUBDIVISIONS);
         vec3 s_vec = normalize(spline(sv[0], sv[1], sv[2], sv[3], t));
         vec3 s_tan = normalize(spline_tangent(cp[0], cp[1], cp[2], cp[3], t));
         vec3 s_sec = spline(ss[0], ss[1], ss[2], ss[3], t);
-        uint s_flags = flags;
-        if (i == 0) {
-            s_flags |= beg_chain;
-        } else if (i == NUM_SUBDIVISIONS - 1) {
-            s_flags |= end_chain;
-        }
+        uint s_flags = (i == 0) ? fl[0] : (i == NUM_SUBDIVISIONS - 1) ? fl[1] : 0U;
 
 #if ORTHONORMALIZE
         s_vec = normalize(s_vec - s_tan*dot(s_vec, s_tan));
