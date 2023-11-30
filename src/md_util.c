@@ -476,8 +476,7 @@ static bool amino_acid_heuristic(const md_label_t labels[], int size) {
     int count = 0;
     int bits  = 0;
     for (int i = 0; i < size; ++i) {
-        str_t lbl = { labels[i].buf, labels[i].len };
-        lbl = trim_label(lbl);
+        str_t lbl = LBL_TO_STR(labels[i]);
         if (lbl.len && lbl.ptr[0] != 'H') {
             if (str_equal_cstr(lbl, "N"))       bits |= BIT_N;
             else if (str_equal_cstr(lbl, "CA")) bits |= BIT_CA;
@@ -493,6 +492,43 @@ static bool amino_acid_heuristic(const md_label_t labels[], int size) {
 #undef BIT_O
 }
 
+static bool nucleotide_heuristic(const md_label_t labels[], int size) {
+	// This is the minimal set of types which needs to be present in the case of Glycine and excluding hydrogen
+#define BIT_P 1
+#define BIT_O1P 2
+#define BIT_O2P 4
+#define BIT_O3  8
+#define BIT_C3  16
+#define BIT_C4  32
+#define BIT_C5  64
+#define BIT_O5  128
+    int count = 0;
+    int bits  = 0;
+    for (int i = 0; i < size; ++i) {
+        str_t lbl = LBL_TO_STR(labels[i]);
+        if (lbl.len && lbl.ptr[0] != 'H') {
+            if (str_equal_cstr(lbl, "P"))        bits |= BIT_P;
+            else if (str_equal_cstr(lbl, "O1P")) bits |= BIT_O1P;
+            else if (str_equal_cstr(lbl, "O2P")) bits |= BIT_O2P;
+            else if (str_equal_cstr(lbl, "O3'")) bits |= BIT_O3;
+            else if (str_equal_cstr(lbl, "C3'")) bits |= BIT_C3;
+			else if (str_equal_cstr(lbl, "C4'")) bits |= BIT_C4;
+			else if (str_equal_cstr(lbl, "C5'")) bits |= BIT_C5;
+			else if (str_equal_cstr(lbl, "O5'")) bits |= BIT_O5;
+            count += 1;
+        }
+    }
+    return 8 <= count && count < 25 && bits == (BIT_P | BIT_O1P | BIT_O2P | BIT_O3 | BIT_C3 | BIT_C4 | BIT_C5 | BIT_O5);
+#undef BIT_P
+#undef BIT_O1P
+#undef BIT_O2P
+#undef BIT_O3
+#undef BIT_C3 
+#undef BIT_C4 
+#undef BIT_C5 
+#undef BIT_O5
+}
+
 #define MIN_RES_LEN 4
 #define MAX_RES_LEN 25
 
@@ -502,31 +538,6 @@ bool md_util_element_guess(md_element_t element[], int64_t capacity, const struc
     ASSERT(mol->atom.count >= 0);
 
     md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
-
-    // @TODO, PERF: Iterate over residues and check if the entire residue is an amino acid
-    md_array(uint8_t) res_flags = 0;
-    if (mol->residue.count > 0) {
-        res_flags = md_array_create(uint8_t, mol->residue.count, temp_alloc);
-        MEMSET(res_flags, 0, md_array_bytes(res_flags));
-    }
-
-    enum {
-        FLAG_AMINO_OR_NUCLEIC = 1,
-    };
-
-    for (int64_t i = 0; i < mol->residue.count; ++i) {
-        const md_range_t res_range = mol->residue.atom_range[i];
-        const int res_len = res_range.end - res_range.beg;
-
-        if (MIN_RES_LEN < res_len && res_len < MAX_RES_LEN && mol->residue.name) {
-            str_t resname = LBL_TO_STR(mol->residue.name[i]);
-            if (md_util_resname_amino_acid(resname) || md_util_resname_nucleic_acid(resname) ||
-                amino_acid_heuristic(mol->atom.type + res_range.beg, res_range.end - res_range.beg))
-            {
-                res_flags[i] |= FLAG_AMINO_OR_NUCLEIC;
-            }
-        }
-    }
 
     const int64_t count = MIN(capacity, mol->atom.count);
     for (int64_t i = 0; i < count; ++i) {
@@ -543,9 +554,9 @@ bool md_util_element_guess(md_element_t element[], int64_t capacity, const struc
             if ((elem = md_util_element_lookup(name)) != 0) goto done;
 
             // If amino acid, try to deduce the element from that
-            if (mol->atom.res_idx) {
-                const int64_t res_idx = mol->atom.res_idx[i];
-                if (res_flags[res_idx] & FLAG_AMINO_OR_NUCLEIC) {
+            if (mol->atom.flags) {
+                const md_flags_t flags = mol->atom.flags[i];
+                if (flags & MD_FLAG_AMINO_ACID || flags & MD_FLAG_NUCLEOTIDE) {
                     // EASY-PEASY, we just try to match against the first character
                     name.len = 1;
                     elem = md_util_element_lookup_ignore_case(name);
@@ -562,6 +573,7 @@ bool md_util_element_guess(md_element_t element[], int64_t capacity, const struc
             str_t digits = str_substr(original, num_alpha, -1);
             while (num_digits < digits.len && is_digit(digits.ptr[num_digits])) ++num_digits;
 
+            // This can be fishy...
             if (str_equal_cstr(name, "HOH")) {
                 elem = H;
                 goto done;

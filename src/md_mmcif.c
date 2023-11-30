@@ -188,20 +188,20 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
 
 	int64_t line_count = 0;
 	while (md_buffered_reader_peek_line(&line, reader)) {
-		if (!line.len) continue;
-		
-		line = str_trim(line);
+		if (line.len) {
+			line = str_trim(line);
 
-		if (str_equal_cstr_n(line, "_atom_site.", 11)) {
-			if (!mmcif_parse_atom_site(&mol->atom, reader, alloc)) {
-				MD_LOG_ERROR("Failed to parse _atom_site");
-				return false;
-			}
-			atom_site = true;
-		} else if (str_equal_cstr_n(line, "_cell.", 6)) {
-			if (!mmcif_parse_cell(&mol->unit_cell, reader)) {
-				MD_LOG_ERROR("Failed to parse _cell");
-				return false;
+			if (str_equal_cstr_n(line, "_atom_site.", 11)) {
+				if (!mmcif_parse_atom_site(&mol->atom, reader, alloc)) {
+					MD_LOG_ERROR("Failed to parse _atom_site");
+					return false;
+				}
+				atom_site = true;
+			} else if (str_equal_cstr_n(line, "_cell.", 6)) {
+				if (!mmcif_parse_cell(&mol->unit_cell, reader)) {
+					MD_LOG_ERROR("Failed to parse _cell");
+					return false;
+				}
 			}
 		}
 
