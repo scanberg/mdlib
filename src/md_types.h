@@ -43,12 +43,13 @@ enum {
     MD_FLAG_CHAIN_END 		    = 8,
     MD_FLAG_HETATM              = 16,
     MD_FLAG_AMINO_ACID		    = 32,
-    MD_FLAG_NUCLEIC_ACID	    = 64,
-    MD_FLAG_WATER			    = 128,
-    MD_FLAG_ION			        = 256,
+    MD_FLAG_NUCLEOBASE          = 64,
+    MD_FLAG_NUCLEOTIDE	        = 128,
+    MD_FLAG_WATER			    = 256,
+    MD_FLAG_ION			        = 512,
 
-    MD_FLAG_AROMATIC            = 512,
-    MD_FLAG_INTER_BOND          = 1024,
+    MD_FLAG_AROMATIC            = 1024,
+    MD_FLAG_INTER_BOND          = 2048,
 };
 
 typedef int32_t     md_atom_idx_t;

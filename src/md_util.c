@@ -453,14 +453,8 @@ md_element_t md_util_element_lookup_ignore_case(str_t str) {
     return 0;
 }
 
-static bool water_heuristic(const md_label_t labels[], const md_element_t elements[], int size) {
-    if (size == 1 && elements[0] == O) {
-        str_t str = LBL_TO_STR(labels[0]);
-        if (find_str_in_array(str, water, ARRAY_SIZE(water)) != -1) {
-            return true;
-        }
-    }
-    else if (size == 3) {
+static bool water_heuristic(const md_element_t elements[], int size) {
+    if (size == 3) {
         int h_count = 0;
         int o_count = 0;
         for (int i = 0; i < 3; ++i) {
@@ -1406,8 +1400,8 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
         if (md_util_resname_amino_acid(resname) || amino_acid_heuristic(atom->type + range.beg, range.end - range.beg)) {
 			res->flags[i] |= MD_FLAG_AMINO_ACID;
 		} else if (md_util_resname_nucleic_acid(resname)) {
-            res->flags[i] |= MD_FLAG_NUCLEIC_ACID;
-        } else if (md_util_resname_water(resname) || water_heuristic(atom->type + range.beg, atom->element + range.beg, range.end - range.beg)) {
+            res->flags[i] |= MD_FLAG_NUCLEOTIDE;
+        } else if (md_util_resname_water(resname) || (range.end == range.beg + 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg])))) {
             res->flags[i] |= MD_FLAG_WATER;
         }
 
