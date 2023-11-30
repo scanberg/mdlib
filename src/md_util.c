@@ -453,6 +453,25 @@ md_element_t md_util_element_lookup_ignore_case(str_t str) {
     return 0;
 }
 
+static bool water_heuristic(const md_label_t labels[], const md_element_t elements[], int size) {
+    if (size == 1 && elements[0] == O) {
+        str_t str = LBL_TO_STR(labels[0]);
+        if (find_str_in_array(str, water, ARRAY_SIZE(water)) != -1) {
+            return true;
+        }
+    }
+    else if (size == 3) {
+        int h_count = 0;
+        int o_count = 0;
+        for (int i = 0; i < 3; ++i) {
+            h_count += (elements[i] == H) ? 1 : 0;
+            o_count += (elements[i] == O) ? 1 : 0;
+        }
+        return o_count == 1 && h_count == 2;
+    }
+    return false;
+}
+
 static bool amino_acid_heuristic(const md_label_t labels[], int size) {
     // This is the minimal set of types which needs to be present in the case of Glycine and excluding hydrogen
 #define BIT_N  1
@@ -1197,7 +1216,7 @@ void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom
                 if (order) {
                     md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
                     md_array_push(bond->order, order, alloc);
-                    md_array_push(bond->flags, MD_BOND_FLAG_INTER_RESIDUE, alloc);
+                    md_array_push(bond->flags, MD_FLAG_INTER_BOND, alloc);
                     bond->count += 1;
                 }
             }
@@ -1227,7 +1246,7 @@ void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom
                 if (order) {
                     md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
                     md_array_push(bond->order, order, alloc);
-                    md_array_push(bond->flags, MD_BOND_FLAG_INTER_RESIDUE, alloc);
+                    md_array_push(bond->flags, MD_FLAG_INTER_BOND, alloc);
                     bond->count += 1;
                 }
             }
@@ -1362,7 +1381,7 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
         const md_flags_t flags = atom->flags[i];
         const md_label_t resname = atom->resname[i];
 
-        if (resid != 0 && (resid != prev_resid || flags & MD_ATOM_FLAG_RES_BEG || prev_flags & MD_ATOM_FLAG_RES_END)) {
+        if (resid != 0 && (resid != prev_resid || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END)) {
             md_range_t range = {(int)i, (int)i};
             md_array_push(res->id, resid, alloc);
             md_array_push(res->name, resname, alloc);
@@ -1385,15 +1404,16 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
         str_t resname = LBL_TO_STR(res->name[i]);
         md_range_t range = res->atom_range[i];
         if (md_util_resname_amino_acid(resname) || amino_acid_heuristic(atom->type + range.beg, range.end - range.beg)) {
-			res->flags[i] |= MD_ATOM_FLAG_AMINO_ACID;
+			res->flags[i] |= MD_FLAG_AMINO_ACID;
 		} else if (md_util_resname_nucleic_acid(resname)) {
-            res->flags[i] |= MD_ATOM_FLAG_NUCLEIC_ACID;
-        } else if (md_util_resname_water(resname)) {
-            res->flags[i] |= MD_ATOM_FLAG_WATER;
+            res->flags[i] |= MD_FLAG_NUCLEIC_ACID;
+        } else if (md_util_resname_water(resname) || water_heuristic(atom->type + range.beg, atom->element + range.beg, range.end - range.beg)) {
+            res->flags[i] |= MD_FLAG_WATER;
         }
 
         for (int32_t j = range.beg; j < range.end; ++j) {
             atom->res_idx[j] = (md_residue_idx_t)i;
+            atom->flags[j] |= res->flags[i];
         }
     }
 
@@ -1444,8 +1464,8 @@ static bool monatomic_ion_element(md_element_t elem) {
 bool md_util_identify_ions(md_atom_data_t* atom) {
     for (int64_t i = 0; i < atom->count; ++i) {
         if (atom->conn_offset[i] == atom->conn_offset[i+1]) {
-            if (monatomic_ion_element(atom->element[i])) {
-			    atom->flags[i] |= MD_ATOM_FLAG_ION;
+            if (monatomic_ion_element(atom->element[i]) && !(atom->flags[i] & MD_FLAG_WATER)) {
+			    atom->flags[i] |= MD_FLAG_ION;
             }
 		}
     }
@@ -1491,7 +1511,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
         for (int64_t i = 0; i < atom->count; ++i) {
             const str_t id = LBL_TO_STR(atom->chainid[i]);
 			const md_flags_t flags = atom->flags[i];
-			if (!str_empty(id) && (!str_equal(id, prev_id) || (flags & MD_ATOM_FLAG_CHAIN_BEG) || (prev_flags & MD_ATOM_FLAG_CHAIN_END))) {
+			if (!str_empty(id) && (!str_equal(id, prev_id) || (flags & MD_FLAG_CHAIN_BEG) || (prev_flags & MD_FLAG_CHAIN_END))) {
 				const md_range_t atom_range = {(int)i, (int)i};
 				md_array_push(chain->id, make_label(id), alloc);
 				md_array_push(chain->atom_range, atom_range, alloc);
@@ -1512,7 +1532,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
 
         md_array(uint64_t) res_bond_to_next = make_bitfield(res->count, md_temp_allocator);
         for (int64_t i = 0; i < bond->count; ++i) {
-            if (bond->flags[i] & MD_BOND_FLAG_INTER_RESIDUE) {
+            if (bond->flags[i] & MD_FLAG_INTER_BOND) {
 				const md_residue_idx_t res_a = atom->res_idx[bond->pairs[i].idx[0]];
 				const md_residue_idx_t res_b = atom->res_idx[bond->pairs[i].idx[1]];
                 set_bit(res_bond_to_next, MIN(res_a, res_b));

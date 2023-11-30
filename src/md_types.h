@@ -35,22 +35,20 @@ enum {
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
-// Where ever they make sense, they can appear.
+// Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards
 enum {
-    MD_ATOM_FLAG_RES_BEG 		    = 1,
-    MD_ATOM_FLAG_RES_END 		    = 2,
-    MD_ATOM_FLAG_CHAIN_BEG 		    = 4,
-    MD_ATOM_FLAG_CHAIN_END 		    = 8,
-    MD_ATOM_FLAG_HETATM             = 16,
-    MD_ATOM_FLAG_AMINO_ACID		    = 32,
-    MD_ATOM_FLAG_NUCLEIC_ACID	    = 64,
-    MD_ATOM_FLAG_WATER			    = 128,
-    MD_ATOM_FLAG_ION			    = 256,
-};
+    MD_FLAG_RES_BEG 		    = 1,
+    MD_FLAG_RES_END 		    = 2,
+    MD_FLAG_CHAIN_BEG 		    = 4,
+    MD_FLAG_CHAIN_END 		    = 8,
+    MD_FLAG_HETATM              = 16,
+    MD_FLAG_AMINO_ACID		    = 32,
+    MD_FLAG_NUCLEIC_ACID	    = 64,
+    MD_FLAG_WATER			    = 128,
+    MD_FLAG_ION			        = 256,
 
-enum {
-    MD_BOND_FLAG_AROMATIC           = 1,
-    MD_BOND_FLAG_INTER_RESIDUE      = 2,
+    MD_FLAG_AROMATIC            = 512,
+    MD_FLAG_INTER_BOND          = 1024,
 };
 
 typedef int32_t     md_atom_idx_t;

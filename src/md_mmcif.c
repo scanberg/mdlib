@@ -80,7 +80,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 
 			md_flags_t flags = 0;
 			if (tok[0].ptr[0] == 'H') {
-				flags |= MD_ATOM_FLAG_HETATM;
+				flags |= MD_FLAG_HETATM;
 			}
 			
 			if (table[1] != -1) { // type_symbol

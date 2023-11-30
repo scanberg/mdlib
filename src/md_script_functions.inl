@@ -2472,13 +2472,12 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     (void)arg;
 
-    if (!ctx->mol->residue.atom_range || !ctx->mol->atom.element) {
+    if (!ctx->mol->residue.atom_range || !ctx->mol->residue.flags) {
         return 0;
     }
 
     int result = 0;
     int32_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
-    const md_element_t* elem = ctx->mol->atom.element;
 
     if (dst) {
         ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -2488,34 +2487,20 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
         int64_t dst_idx = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            const md_range_t range = ctx->mol->residue.atom_range[res_indices[i]];
-            if (range.end - range.beg == 3) {
-                int32_t j = range.beg;
-                // Square each element index in the composition and sum up.
-                // Water should be: 1*1 + 1*1 + 8*8 = 66
-                int magic = elem[j] * elem[j] + elem[j+1] * elem[j+1] + elem[j+2] * elem[j+2];
-                if (magic == 66) {
-                    ASSERT(dst_idx < capacity);
-                    md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
-                    // Do not progress this if we are evaluating in a filter context (we want a single bitfield then)
-                    dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
-                }
+            const md_flags_t flags = ctx->mol->residue.flags[i];
+            const md_range_t range = ctx->mol->residue.atom_range[i];
+            if (flags & MD_FLAG_WATER) {
+                md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
+                // Do not progress this if we are evaluating in a filter context (we want a single bitfield then)
+                dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
             }
         }
     } else {
         // Length query
         int count = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            const md_range_t range = ctx->mol->residue.atom_range[res_indices[i]];
-            if (range.end - range.beg == 3) {
-                int32_t j = range.beg;
-                // Square each element index in the composition and sum up.
-                // Water should be: 1*1 + 1*1 + 8*8 = 66
-                int magic = elem[j] * elem[j] + elem[j+1] * elem[j+1] + elem[j+2] * elem[j+2];
-                if (magic == 66) {
-                    ++count;
-                }
-            }
+            const md_flags_t flags = ctx->mol->residue.flags[i];
+            count += (flags & MD_FLAG_WATER) ? 1 : 0;
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
             count = MIN(1, count);
@@ -2596,14 +2581,13 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->mol_ctx) {
             md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
             while (md_bitfield_iter_next(&it)) {
-				const int i = it.idx;
-				if (ctx->mol->atom.flags[i] & MD_ATOM_FLAG_ION) {
-					md_bitfield_set_bit(bf, i);
+				if (ctx->mol->atom.flags[it.idx] & MD_FLAG_ION) {
+					md_bitfield_set_bit(bf, it.idx);
 				}
 			}
         } else {
             for (int64_t i = 0; i < ctx->mol->atom.count; ++i) {
-                if (ctx->mol->atom.flags[i] & MD_ATOM_FLAG_ION) {
+                if (ctx->mol->atom.flags[i] & MD_FLAG_ION) {
                     md_bitfield_set_bit(bf, i);
                 }
             }
