@@ -537,8 +537,6 @@ bool md_util_element_guess(md_element_t element[], int64_t capacity, const struc
     ASSERT(mol);
     ASSERT(mol->atom.count >= 0);
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
-
     const int64_t count = MIN(capacity, mol->atom.count);
     for (int64_t i = 0; i < count; ++i) {
         if (element[i] != 0) continue;
@@ -1163,7 +1161,7 @@ void find_intra_bonds_in_range(md_bond_data_t* bond, const md_atom_data_t* atom,
                 const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
                 const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext);
                 const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
-                if (order) {
+                if (order > 0) {
                     md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
                     md_array_push(bond->order, order, alloc);
                     md_array_push(bond->flags, 0, alloc);
@@ -1174,25 +1172,26 @@ void find_intra_bonds_in_range(md_bond_data_t* bond, const md_atom_data_t* atom,
     }
     else {
 		// Spatial acceleration structure
-        md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x, atom->y, atom->z, NULL, atom->count, cell, temp_alloc);
+        const int32_t beg = range.beg;
+        const int32_t len = range.end - range.beg;
+        md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x + beg, atom->y + beg, atom->z + beg, NULL, len, cell, temp_alloc);
 
         const float cutoff = 3.0f;
         int indices[128];
 
-        for (int i = 0; i < (int)atom->count; ++i) {
-            const vec3_t pos = {atom->x[i], atom->y[i], atom->z[i]};
+        for (int i = range.beg; i < (int)range.end; ++i) {
+            const vec4_t pos_i = {atom->x[i], atom->y[i], atom->z[i], 0};
 
-            const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, pos, cutoff);
+            const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, vec3_from_vec4(pos_i), cutoff);
             for (int64_t iter = 0; iter < num_indices; ++iter) {
                 const int j = indices[iter];
                 // Only store monotonic bond connections
                 if (j < i) continue;
 
-                const vec4_t pos_a = vec4_from_vec3(pos, 0);
-                const vec4_t pos_b = {atom->x[j], atom->y[j], atom->z[j], 0};
-                const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext);
+                const vec4_t pos_j = {atom->x[j], atom->y[j], atom->z[j], 0};
+                const float d2 = vec4_periodic_distance_squared(pos_i, pos_j, pbc_ext);
                 const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
-                if (order) {
+                if (order > 0) {
                     md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
                     md_array_push(bond->order, order, alloc);
                     md_array_push(bond->flags, 0, alloc);
@@ -1219,7 +1218,7 @@ void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom
                 const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
                 const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext);
                 const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
-                if (order) {
+                if (order > 0) {
                     md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
                     md_array_push(bond->order, order, alloc);
                     md_array_push(bond->flags, MD_FLAG_INTER_BOND, alloc);
@@ -1249,7 +1248,7 @@ void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom
                 const vec4_t pos_b = {atom->x[j], atom->y[j], atom->z[j], 0};
                 const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext);
                 const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
-                if (order) {
+                if (order > 0) {
                     md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
                     md_array_push(bond->order, order, alloc);
                     md_array_push(bond->flags, MD_FLAG_INTER_BOND, alloc);
@@ -1381,13 +1380,15 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
     ASSERT(alloc);
 
     md_residue_id_t prev_resid = -1;
+    str_t prev_resstr = {0};
     md_flags_t prev_flags = 0;
     for (int64_t i = 0; i < atom->count; ++i) {
         const md_residue_id_t resid = atom->resid[i];
         const md_flags_t flags = atom->flags[i];
         const md_label_t resname = atom->resname[i];
+        const str_t resstr = LBL_TO_STR(atom->resname[i]);
 
-        if (resid != 0 && (resid != prev_resid || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END)) {
+        if ((resid != 0 && resid != prev_resid) || !str_equal(resstr, prev_resstr) || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END) {
             md_range_t range = {(int)i, (int)i};
             md_array_push(res->id, resid, alloc);
             md_array_push(res->name, resname, alloc);
@@ -1399,6 +1400,7 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
 		if (resid) {
             md_array_last(res->atom_range)->end += 1;
         }
+        prev_resstr = resstr;
         prev_resid = resid;
         prev_flags = flags;
     }
@@ -1411,7 +1413,7 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
         md_range_t range = res->atom_range[i];
         if (md_util_resname_amino_acid(resname) || amino_acid_heuristic(atom->type + range.beg, range.end - range.beg)) {
 			res->flags[i] |= MD_FLAG_AMINO_ACID;
-		} else if (md_util_resname_nucleic_acid(resname)) {
+		} else if (md_util_resname_nucleic_acid(resname) || nucleotide_heuristic(atom->type + range.beg, range.end - range.beg)) {
             res->flags[i] |= MD_FLAG_NUCLEOTIDE;
         } else if (md_util_resname_water(resname) || (range.end == range.beg + 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg])))) {
             res->flags[i] |= MD_FLAG_WATER;
