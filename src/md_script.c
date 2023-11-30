@@ -1056,7 +1056,9 @@ static identifier_t* get_identifier(md_script_ir_t* ir, str_t name) {
 }
 
 static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
-    ASSERT(get_identifier(ir, name) == NULL);
+    if (get_identifier(ir, name)) {
+        return NULL;
+    }
 
     identifier_t ident = {
         .name = str_copy(name, ir->arena),
@@ -4241,6 +4243,10 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
             for (int i = 0; i < num_idents; ++i) {
                 ASSERT(idents[i]->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
                 identifier_t* ident = create_identifier(ctx->ir, idents[i]->ident);
+                if (!ident) {
+                    LOG_ERROR(ctx->ir, node->token, "Failed to create identifier. Is the identifier already taken?");
+                    return false;
+                }
 
                 ident->data = 0;
                 ident->node = rhs;
@@ -4271,7 +4277,10 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
             ASSERT(lhs->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
 
             identifier_t* ident = create_identifier(ctx->ir, lhs->ident);
-            ASSERT(ident);
+            if (!ident) {
+                LOG_ERROR(ctx->ir, node->token, "Failed to create identifier. Is the identifier already taken?");
+                return false;
+            }
 
             ident->data  = &rhs->data;
             ident->node  = rhs;
@@ -5488,6 +5497,8 @@ bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_b
             md_bitfield_copy(&node->value._bitfield, bitfield_identifiers[i].bitfield);
 
             identifier_t* ident = create_identifier(ir, name);
+            ASSERT(ident);
+
             ident->data = &node->data;
             ident->node = node;
         }
