@@ -115,7 +115,7 @@ typedef struct md_lammps_data_t {
 
 typedef struct md_lammps_trajectory_t {
 	int64_t* frame_offsets;
-	//int64_t num_frames;
+	int64_t num_frame_offsets;
 
 	uint64_t magic;
 	md_file_o* file;

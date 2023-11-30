@@ -99,6 +99,7 @@ md_unit_t md_unit_kilogram();
 md_unit_t md_unit_second();
 md_unit_t md_unit_nanosecond();
 md_unit_t md_unit_pikosecond();
+md_unit_t md_unit_femtosecond();
 
 md_unit_t md_unit_ampere();
 md_unit_t md_unit_mole();
