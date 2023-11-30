@@ -1184,7 +1184,7 @@ void find_intra_bonds_in_range(md_bond_data_t* bond, const md_atom_data_t* atom,
 
             const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, vec3_from_vec4(pos_i), cutoff);
             for (int64_t iter = 0; iter < num_indices; ++iter) {
-                const int j = indices[iter];
+                const int j = beg + indices[iter];
                 // Only store monotonic bond connections
                 if (j < i) continue;
 
