@@ -341,6 +341,7 @@ static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield
 // Residue level selectors
 static int _water   (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _protein   (data_t*, data_t[], eval_context_t*); // -> bitfield[]
+static int _nucleic   (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 static int _resname (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
 static int _resid   (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
 static int _residue (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
@@ -591,6 +592,7 @@ static procedure_t procedures[] = {
 
     // Residue level
     {CSTR("protein"),   TI_BITFIELD_ARR, 0, {0},                _protein,       FLAG_QUERYABLE_LENGTH},
+    {CSTR("nucleic"),   TI_BITFIELD_ARR, 0, {0},                _nucleic,       FLAG_QUERYABLE_LENGTH},
     {CSTR("water"),     TI_BITFIELD_ARR, 0, {0},                _water,         FLAG_QUERYABLE_LENGTH},
     {CSTR("resname"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _resname,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
     {CSTR("residue"),   TI_BITFIELD_ARR, 1, {TI_STRING_ARR},    _resname,       FLAG_QUERYABLE_LENGTH | FLAG_STATIC_VALIDATION},
@@ -2519,10 +2521,53 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     int result = 0;
 
-    if (!ctx->mol->residue.count) {
-        LOG_ERROR(ctx->ir, ctx->op_token, "The molecule does not contain any residues");
-        return -1;
+    int32_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
+
+    if (dst) {
+        ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+        md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
+        const int64_t capacity = type_info_array_len(dst->type);
+        int64_t dst_idx = 0;
+
+        for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
+            int32_t res_idx = res_indices[i];
+            if (ctx->mol->residue.flags[res_idx] & MD_FLAG_AMINO_ACID) {
+                md_range_t range = ctx->mol->residue.atom_range[res_idx];
+                ASSERT(dst_idx < capacity);
+                md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
+                dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
+            }
+        }
     }
+    else {
+        if (!ctx->mol->residue.count) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any residues");
+            return -1;
+        }
+
+        int count = 0;
+        for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
+            int32_t res_idx = res_indices[i];
+            if (ctx->mol->residue.flags[res_idx] & MD_FLAG_AMINO_ACID) {
+                count += 1;
+            }
+        }
+        if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
+            count = MIN(1, count);
+        }
+        result = count;
+    }
+
+    md_array_free(res_indices, ctx->temp_alloc);
+
+    return result;
+}
+
+static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(ctx && ctx->mol);
+    (void)arg;
+
+    int result = 0;
 
     int32_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
 
@@ -2533,11 +2578,9 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         int64_t dst_idx = 0;
 
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            int64_t ri = res_indices[i];
-            str_t str = LBL_TO_STR(ctx->mol->residue.name[ri]);
-            if (md_util_resname_amino_acid(str)) {
-                md_range_t range = ctx->mol->residue.atom_range[ri];
-                
+            int32_t res_idx = res_indices[i];
+            if (ctx->mol->residue.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
+                md_range_t range = ctx->mol->residue.atom_range[res_idx];
                 ASSERT(dst_idx < capacity);
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
                 dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
@@ -2545,15 +2588,15 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (ctx->mol->residue.count == 0) {
-            
+        if (!ctx->mol->residue.count) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "The system does not contain any residues");
+            return -1;
         }
 
         int count = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            int64_t ri = res_indices[i];
-            str_t str = LBL_TO_STR(ctx->mol->residue.name[ri]);
-            if (md_util_resname_amino_acid(str)) {
+            int32_t res_idx = res_indices[i];
+            if (ctx->mol->residue.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
                 count += 1;
             }
         }
