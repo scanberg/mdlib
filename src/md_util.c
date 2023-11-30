@@ -1236,15 +1236,14 @@ void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom
         int indices[128];
 
         for (int i = range_a.beg; i < range_a.end; ++i) {
-            const vec3_t pos = {atom->x[i], atom->y[i], atom->z[i]};
+            const vec4_t pos_a = {atom->x[i], atom->y[i], atom->z[i], 0};
 
-            const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, pos, cutoff);
+            const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, vec3_from_vec4(pos_a), cutoff);
             for (int64_t iter = 0; iter < num_indices; ++iter) {
-                const int j = indices[iter];
+                const int j = range_b.beg + indices[iter];
                 // Only store monotonic bond connections
                 if (j < i) continue;
 
-                const vec4_t pos_a = vec4_from_vec3(pos, 0);
                 const vec4_t pos_b = {atom->x[j], atom->y[j], atom->z[j], 0};
                 const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext);
                 const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
@@ -1388,7 +1387,7 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
         const md_label_t resname = atom->resname[i];
         const str_t resstr = LBL_TO_STR(atom->resname[i]);
 
-        if ((resid != 0 && resid != prev_resid) || !str_equal(resstr, prev_resstr) || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END) {
+        if (resid != prev_resid || !str_equal(resstr, prev_resstr) || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END) {
             md_range_t range = {(int)i, (int)i};
             md_array_push(res->id, resid, alloc);
             md_array_push(res->name, resname, alloc);
@@ -1397,7 +1396,7 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
             res->count += 1;
         }
 
-		if (resid) {
+		if (res->atom_range) {
             md_array_last(res->atom_range)->end += 1;
         }
         prev_resstr = resstr;
