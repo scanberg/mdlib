@@ -680,6 +680,68 @@ uint32_t md_util_element_cpk_color(md_element_t element) {
     return element_cpk_colors[element];
 }
 
+// Blatantly stolen from MDAnalysis project
+// MDAnalysis --- https://www.mdanalysis.org
+// Copyright (c) 2006-2017 The MDAnalysis Development Team and contributors
+// https://github.com/MDAnalysis/mdanalysis/blob/develop/package/MDAnalysis/lib/include/calc_distances.h
+
+static void minimum_image_triclinic(float dx[3], const float box[3][3]) {
+    /*
+    * Minimum image convention for triclinic systems, modelled after domain.cpp
+    * in LAMMPS.
+    * Assumes that there is a maximum separation of 1 box length (enforced in
+    * dist functions by moving all particles to inside the box before
+    * calculating separations).
+    * Assumes box having zero values for box[1], box[2] and box[5]:
+    *   /  a_x   0    0   \                 /  0    1    2  \
+    *   |  b_x  b_y   0   |       indices:  |  3    4    5  |
+    *   \  c_x  c_y  c_z  /                 \  6    7    8  /
+    */
+    double dx_min[3] = {0.0, 0.0, 0.0};
+    double dsq_min = FLT_MAX;
+    double dsq;
+    double rx;
+    double ry[2];
+    double rz[3];
+    int ix, iy, iz;
+    for (ix = -1; ix < 2; ++ix) {
+        rx = dx[0] + box[0][0] * ix;
+        for (iy = -1; iy < 2; ++iy) {
+            ry[0] = rx + box[1][0] * iy;
+            ry[1] = dx[1] + box[1][1] * iy;
+            for (iz = -1; iz < 2; ++iz) {
+                rz[0] = ry[0] + box[2][0] * iz;
+                rz[1] = ry[1] + box[2][1] * iz;
+                rz[2] = dx[2] + box[2][2] * iz;
+                dsq = rz[0] * rz[0] + rz[1] * rz[1] + rz[2] * rz[2];
+                if (dsq < dsq_min) {
+                    dsq_min = dsq;
+                    dx_min[0] = rz[0];
+                    dx_min[1] = rz[1];
+                    dx_min[2] = rz[2];
+                }
+            }
+        }
+    }
+    dx[0] = (float)dx_min[0];
+    dx[1] = (float)dx_min[1];
+    dx[2] = (float)dx_min[2];
+}
+
+static void deperiodize_triclinic(float x[3], const float rx[3], const float box[3][3]) {
+    float dx[3];
+
+    dx[0] = x[0] - rx[0];
+    dx[1] = x[1] - rx[1];
+    dx[2] = x[2] - rx[2];
+
+    minimum_image_triclinic(dx, box);
+
+    x[0] = rx[0] + dx[0];
+    x[1] = rx[1] + dx[1];
+    x[2] = rx[2] + dx[2];
+}
+
 static inline bool cmp1(const char* str, const char* ref) {
     return str[0] == ref[0] && str[1] == '\0';
 }
@@ -1128,14 +1190,13 @@ static inline uint8_t covalent_bond_heuristic2(float d2, md_element_t a, md_elem
     return val;
 }
 
-static inline uint8_t covalent_bond_heuristic(float d2, md_element_t elem_a, md_element_t elem_b) {
+static inline bool covalent_bond_heuristic(float d2, md_element_t elem_a, md_element_t elem_b) {
     const float ra = element_covalent_radii[elem_a];
     const float rb = element_covalent_radii[elem_b];
     const float r_sum = ra + rb;
     const float r_min = r_sum - 0.5f;
     const float r_max = r_sum + 0.3f;
-
-    return (r_min * r_min) < d2 && d2 < (r_max * r_max) ? 1 : 0;
+    return (r_min * r_min) < d2 && d2 < (r_max * r_max);
 }
 
 int64_t md_util_compute_covalent_bounds_upper_bound(const md_element_t* element, int64_t count) {
@@ -1146,83 +1207,62 @@ int64_t md_util_compute_covalent_bounds_upper_bound(const md_element_t* element,
     return result;
 }
 
-void find_intra_bonds_in_range(md_bond_data_t* bond, const md_atom_data_t* atom, const md_unit_cell_t* cell, md_range_t range, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
-    ASSERT(bond);
-    ASSERT(atom);
-    ASSERT(cell);
-
-    const vec4_t pbc_ext = cell ? vec4_from_vec3(mat3_diag(cell->basis), 0) : vec4_zero();
-
-    if (range.end - range.beg < 100) {
-        // Brute force
-        for (int i = range.beg; i < range.end - 1; ++i) {
-            for (int j = i + 1; j < range.end; ++j) {
-                const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
-                const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
-                const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext);
-                const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
-                if (order > 0) {
-                    md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                    md_array_push(bond->order, order, alloc);
-                    md_array_push(bond->flags, 0, alloc);
-                    bond->count += 1;
-                }
-            }
-        }
-    }
-    else {
-		// Spatial acceleration structure
-        const int32_t beg = range.beg;
-        const int32_t len = range.end - range.beg;
-        md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x + beg, atom->y + beg, atom->z + beg, NULL, len, cell, temp_alloc);
-
-        const float cutoff = 3.0f;
-        int indices[128];
-
-        for (int i = range.beg; i < (int)range.end; ++i) {
-            const vec4_t pos_i = {atom->x[i], atom->y[i], atom->z[i], 0};
-
-            const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, vec3_from_vec4(pos_i), cutoff);
-            for (int64_t iter = 0; iter < num_indices; ++iter) {
-                const int j = beg + indices[iter];
-                // Only store monotonic bond connections
-                if (j < i) continue;
-
-                const vec4_t pos_j = {atom->x[j], atom->y[j], atom->z[j], 0};
-                const float d2 = vec4_periodic_distance_squared(pos_i, pos_j, pbc_ext);
-                const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
-                if (order > 0) {
-                    md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                    md_array_push(bond->order, order, alloc);
-                    md_array_push(bond->flags, 0, alloc);
-                    bond->count += 1;
-                }
-            }
-        }
+static float distance_squared(vec4_t pos_a, vec4_t pos_b, const md_unit_cell_t* cell) {
+    if (cell->flags & MD_CELL_ORTHOGONAL) {
+        const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+        return vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext);
+    } else if (cell->flags & MD_CELL_TRICLINIC) {
+        vec4_t dx = vec4_sub(pos_a, pos_b);
+        minimum_image_triclinic(dx.elem, cell->basis.elem);
+        return vec4_length_squared(dx);
+    } else {
+		return vec4_distance_squared(pos_a, pos_b);
 	}
 }
 
-void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom, const md_unit_cell_t* cell, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
+static void push_bond(md_bond_data_t* bond, int i, int j, md_order_t order, md_flags_t flags, md_allocator_i* alloc) {
+	md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
+	md_array_push(bond->order, order, alloc);
+	md_array_push(bond->flags, flags, alloc);
+	bond->count += 1;
+}
+
+static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom, const md_unit_cell_t* cell, md_range_t range_a, md_range_t range_b, md_flags_t bond_flags, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
     ASSERT(bond);
     ASSERT(atom);
     ASSERT(cell);
 
-    const vec4_t pbc_ext = cell ? vec4_from_vec3(mat3_diag(cell->basis), 0) : vec4_zero();
-
     const int N = (range_a.end - range_a.beg) * (range_b.end - range_b.beg);
-    if (N < 1000) {
+    // Swap ranges if required
+    if (range_b.beg < range_a.beg) {
+        md_range_t tmp = range_a;
+        range_a = range_b;
+        range_b = tmp;
+    }
+    if (N < 10000) {
         // Brute force
-        for (int i = range_a.beg; i < range_a.end; ++i) {
-            for (int j = range_b.beg; j < range_b.end; ++j) {
+        if (range_a.beg == range_b.beg && range_a.end == range_b.end) {
+            for (int i = range_a.beg; i < range_a.end - 1; ++i) {
                 const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
-                const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
-                const float d2 = vec4_periodic_distance_squared(a, b, pbc_ext);
-                const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
-                if (order > 0) {
-                    md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                    md_array_push(bond->order, order, alloc);
-                    md_array_push(bond->flags, MD_FLAG_INTER_BOND, alloc);
-                    bond->count += 1;
+                for (int j = i + 1; j < range_a.end; ++j) {
+                    const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
+                    const float d2 = distance_squared(a, b, cell);
+                    if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
+						push_bond(bond, i, j, 1, bond_flags, alloc);
+					}
+                }
+            }
+        } else {
+            for (int i = range_a.beg; i < range_a.end; ++i) {
+                const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
+                for (int j = range_b.beg; j < range_b.end; ++j) {
+                    // Only store monotonic bond connections
+                    if (j < i) continue;
+                    const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
+                    const float d2 = distance_squared(a, b, cell);
+                    if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
+                        push_bond(bond, i, j, 1, bond_flags, alloc);
+                    }
                 }
             }
         }
@@ -1236,22 +1276,17 @@ void find_inter_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom
         int indices[128];
 
         for (int i = range_a.beg; i < range_a.end; ++i) {
-            const vec4_t pos_a = {atom->x[i], atom->y[i], atom->z[i], 0};
-
-            const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, vec3_from_vec4(pos_a), cutoff);
+            const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
+            const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, vec3_from_vec4(a), cutoff);
             for (int64_t iter = 0; iter < num_indices; ++iter) {
                 const int j = range_b.beg + indices[iter];
                 // Only store monotonic bond connections
                 if (j < i) continue;
 
-                const vec4_t pos_b = {atom->x[j], atom->y[j], atom->z[j], 0};
-                const float d2 = vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext);
-                const uint8_t order = covalent_bond_heuristic(d2, atom->element[i], atom->element[j]);
-                if (order > 0) {
-                    md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                    md_array_push(bond->order, order, alloc);
-                    md_array_push(bond->flags, MD_FLAG_INTER_BOND, alloc);
-                    bond->count += 1;
+                const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
+                const float d2 = distance_squared(a, b, cell);
+                if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
+                    push_bond(bond, i, j, 1, bond_flags, alloc);
                 }
             }
         }
@@ -1284,21 +1319,18 @@ md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom, const 
         goto done;
     }
 
-    if (cell->flags & MD_CELL_TRICLINIC) {
-        MD_LOG_ERROR("Triclinic cells are not supported yet! Sorry!");
-        goto done;
-    }
     const int atom_count = (int)atom->count;
        
     if (res->count > 0) {
-        find_intra_bonds_in_range(&bond, atom, cell, res->atom_range[0], alloc, temp_alloc);
+        find_bonds_in_ranges(&bond, atom, cell, res->atom_range[0], res->atom_range[0], 0, alloc, temp_alloc);
         for (int i = 1; i < res->count; ++i) {
-			find_inter_bonds_in_ranges(&bond, atom, cell, res->atom_range[i-1], res->atom_range[i], alloc, temp_alloc);
-            find_intra_bonds_in_range(&bond, atom, cell, res->atom_range[i], alloc, temp_alloc);
+			find_bonds_in_ranges(&bond, atom, cell, res->atom_range[i-1], res->atom_range[i], MD_FLAG_INTER_BOND, alloc, temp_alloc);
+            find_bonds_in_ranges(&bond, atom, cell, res->atom_range[i],   res->atom_range[i], 0,                  alloc, temp_alloc);
         }
     }
     else {
-        find_intra_bonds_in_range(&bond, atom, cell, (md_range_t){0, atom_count}, alloc, temp_alloc);
+        md_range_t range = {0, atom_count};
+        find_bonds_in_ranges(&bond, atom, cell, range, range, 0, alloc, temp_alloc);
     }
 
     md_util_compute_covalent_bond_order(bond.order, bond.pairs, bond.count, atom->type, atom->resname);
@@ -1469,6 +1501,9 @@ static bool monatomic_ion_element(md_element_t elem) {
 }
 
 bool md_util_identify_ions(md_atom_data_t* atom) {
+    if (!atom->element || !atom->conn_offset) {
+        return false;
+    }
     for (int64_t i = 0; i < atom->count; ++i) {
         if (atom->conn_offset[i] == atom->conn_offset[i+1]) {
             if (monatomic_ion_element(atom->element[i]) && !(atom->flags[i] & MD_FLAG_WATER)) {
@@ -3907,51 +3942,6 @@ md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M) {
     }
 }
 
-// Blatantly stolen from MDAnalysis project
-// https://github.com/MDAnalysis/mdanalysis/blob/develop/package/MDAnalysis/lib/include/calc_distances.h
-static void minimum_image_triclinic(float dx[3], const float box[3][3]) {
-    /*
-    * Minimum image convention for triclinic systems, modelled after domain.cpp
-    * in LAMMPS.
-    * Assumes that there is a maximum separation of 1 box length (enforced in
-    * dist functions by moving all particles to inside the box before
-    * calculating separations).
-    * Assumes box having zero values for box[1], box[2] and box[5]:
-    *   /  a_x   0    0   \                 /  0    1    2  \
-    *   |  b_x  b_y   0   |       indices:  |  3    4    5  |
-    *   \  c_x  c_y  c_z  /                 \  6    7    8  /
-    */
-    double dx_min[3] = {0.0, 0.0, 0.0};
-    double dsq_min = FLT_MAX;
-    double dsq;
-    double rx;
-    double ry[2];
-    double rz[3];
-    int ix, iy, iz;
-    for (ix = -1; ix < 2; ++ix) {
-        rx = dx[0] + box[0][0] * ix;
-        for (iy = -1; iy < 2; ++iy) {
-            ry[0] = rx + box[1][0] * iy;
-            ry[1] = dx[1] + box[1][1] * iy;
-            for (iz = -1; iz < 2; ++iz) {
-                rz[0] = ry[0] + box[2][0] * iz;
-                rz[1] = ry[1] + box[2][1] * iz;
-                rz[2] = dx[2] + box[2][2] * iz;
-                dsq = rz[0] * rz[0] + rz[1] * rz[1] + rz[2] * rz[2];
-                if (dsq < dsq_min) {
-                    dsq_min = dsq;
-                    dx_min[0] = rz[0];
-                    dx_min[1] = rz[1];
-                    dx_min[2] = rz[2];
-                }
-            }
-        }
-    }
-    dx[0] = (float)dx_min[0];
-    dx[1] = (float)dx_min[1];
-    dx[2] = (float)dx_min[2];
-}
-
 void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell) {
     if (cell->flags == 0) {
         for (int64_t i = 0; i < num_a; ++i) {
@@ -4093,7 +4083,7 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 #   pragma warning( pop )
 #endif
 
-bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box_ext) {
+static bool md_util_pbc_ortho(float* x, float* y, float* z, const int32_t* indices, int64_t count, vec3_t box_ext) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
@@ -4116,18 +4106,89 @@ bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box_e
 
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
-    for (int64_t i = 0; i < count; ++i) {
-        vec4_t pos = {x[i], y[i], z[i], 0};
-        pos = vec4_deperiodize(pos, ref, ext);
-        x[i] = pos.x;
-        y[i] = pos.y;
-        z[i] = pos.z;
+
+    if (indices) {
+        for (int64_t i = 0; i < count; ++i) {
+            int32_t idx = indices[i];
+            vec4_t pos = {x[idx], y[idx], z[idx], 0};
+            pos = vec4_deperiodize(pos, ref, ext);
+            x[i] = pos.x;
+            y[i] = pos.y;
+            z[i] = pos.z;
+        }
+    } else {
+        for (int64_t i = 0; i < count; ++i) {
+            vec4_t pos = {x[i], y[i], z[i], 0};
+            pos = vec4_deperiodize(pos, ref, ext);
+            x[i] = pos.x;
+            y[i] = pos.y;
+            z[i] = pos.z;
+        }
     }
 
     return true;
 }
 
-bool md_util_unwrap_ortho(float* x, float* y, float* z, md_index_data_t structures, vec3_t box_ext) {
+static bool md_util_pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, int64_t count, const md_unit_cell_t* cell) {
+    if (!x || !y || !z) {
+        MD_LOG_ERROR("Missing required input: x,y or z");
+        return false;
+    }
+
+    if (count < 0) {
+        MD_LOG_ERROR("Invalid count");
+        return false;
+    }
+
+    if (!cell) {
+        MD_LOG_ERROR("Missing cell");
+        return false;
+    }
+
+    if (!(cell->flags & MD_CELL_TRICLINIC)) {
+		MD_LOG_ERROR("Cell is not triclinic");
+		return false;
+	}
+
+    if (indices) {
+        for (int64_t i = 0; i < count; ++i) {
+            int32_t idx = indices[i];
+            vec3_t coord = {x[idx], y[idx], z[idx]};
+            coord = mat3_mul_vec3(cell->inv_basis, coord);
+            coord = vec3_fract(coord);
+            coord = mat3_mul_vec3(cell->basis, coord);
+            if (cell->flags & MD_CELL_X) {
+                x[idx] = coord.x;
+            }
+            if (cell->flags & MD_CELL_Y) {
+                y[idx] = coord.y;
+            }
+            if (cell->flags & MD_CELL_Z) {
+                z[idx] = coord.z;
+            }
+        }
+    } else {
+        for (int64_t i = 0; i < count; ++i) {
+            vec3_t coord = {x[i], y[i], z[i]};
+            coord = mat3_mul_vec3(cell->inv_basis, coord);
+            coord = vec3_fract(coord);
+            coord = mat3_mul_vec3(cell->basis, coord);
+            if (cell->flags & MD_CELL_X) {
+                x[i] = coord.x;
+            }
+            if (cell->flags & MD_CELL_Y) {
+                y[i] = coord.y;
+            }
+            if (cell->flags & MD_CELL_Z) {
+                z[i] = coord.z;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* structures, vec3_t box_ext) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
@@ -4145,16 +4206,16 @@ bool md_util_unwrap_ortho(float* x, float* y, float* z, md_index_data_t structur
 
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
     
-    const int64_t num_structures = md_index_data_count(structures);
+    const int64_t num_structures = md_index_data_count(*structures);
     for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
-        const int* indices = md_index_range_beg(structures, s_idx);
-        const int count = (int)md_index_range_size(structures, s_idx);
+        const int* indices  = md_index_range_beg(*structures, s_idx);
+        const int64_t count = md_index_range_size(*structures, s_idx);
         
         // Indices are sorted with respect to covalent bond 'depth' from the first atom
         // This means we can use the inherent order of indices to iterate and unwrap.
         int idx = indices[0];
         vec4_t ref_pos = {x[idx], y[idx], z[idx], 0};
-        for (int i = 1; i < count; ++i) {
+        for (int64_t i = 1; i < count; ++i) {
             idx = indices[i];
             const vec4_t pos = vec4_deperiodize((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
             x[idx] = pos.x;
@@ -4166,16 +4227,53 @@ bool md_util_unwrap_ortho(float* x, float* y, float* z, md_index_data_t structur
     return true;
 }
 
-bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell_t* cell, const md_molecule_t* mol) {
+bool md_util_unwrap_triclinic(float* x, float* y, float* z, const md_index_data_t* structures, const md_unit_cell_t* cell) {
+    if (!x || !y || !z) {
+        MD_LOG_ERROR("Missing required input: x,y or z");
+        return false;
+    }
+
+    if (!cell) {
+        MD_LOG_ERROR("Missing cell");
+        return false;
+    }
+
+    if (!(cell->flags & MD_CELL_TRICLINIC)) {
+        MD_LOG_ERROR("Cell is not triclinic");
+        return false;
+    }
+
+    const int64_t num_structures = md_index_data_count(*structures);
+    for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
+        const int* indices  = md_index_range_beg(*structures, s_idx);
+        const int64_t count = md_index_range_size(*structures, s_idx);
+
+        // Indices are sorted with respect to covalent bond 'depth' from the first atom
+        // This means we can use the inherent order of indices to iterate and unwrap.
+        int idx = indices[0];
+        vec3_t ref = {x[idx], y[idx], z[idx]};
+        for (int64_t i = 1; i < count; ++i) {
+            idx = indices[i];
+            vec3_t pos = {x[idx], y[idx], z[idx]};
+            deperiodize_triclinic(pos.elem, ref.elem, cell->basis.elem);
+            x[idx] = pos.x;
+            y[idx] = pos.y;
+            z[idx] = pos.z;
+            ref = pos;
+        }
+    }
+    return true;
+}
+
+bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, int64_t count, const md_unit_cell_t* cell, const md_index_data_t* structures) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
     ASSERT(cell);
+    ASSERT(structures);
 
-    const float* w = mol->atom.mass;
-    const int64_t num_atoms = mol->atom.count;
-    const int64_t num_structures = md_index_data_count(mol->structures);
-    const md_index_data_t structures = mol->structures;
+    const int64_t num_atoms = count;
+    const int64_t num_structures = md_index_data_count(*structures);
 
     if (cell->flags & MD_CELL_TRICLINIC) {
         MD_LOG_ERROR("Triclinic cells are not supported!");
@@ -4183,18 +4281,26 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell
     }
 
     const vec3_t box = mat3_diag(cell->basis);
-    
-    md_util_pbc_ortho(x, y, z, num_atoms, box);
+
+    if (cell->flags & MD_CELL_ORTHOGONAL) {
+        md_util_pbc_ortho(x, y, z, NULL, num_atoms, box);
+    } else if (cell->flags & MD_CELL_TRICLINIC) {
+        md_util_pbc_triclinic(x, y, z, NULL, num_atoms, cell);
+    }
     if (num_structures > 0) {
-        md_util_unwrap_ortho(x, y, z, structures, box);
+        if (cell->flags & MD_CELL_ORTHOGONAL) {
+            md_util_unwrap_ortho(x, y, z, structures, box);
+        } else if (cell->flags & MD_CELL_TRICLINIC) {
+			md_util_unwrap_triclinic(x, y, z, structures, cell);
+		}
     
         // Place any defined covalent structure such that its center of mass is within the correct periodic image
         const vec4_t ext = vec4_from_vec3(box, 0);
         const vec4_t ref = vec4_mul_f(ext, 0.5f);
 
         for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
-            const int32_t* indices = md_index_range_beg(structures, s_idx);
-            const int64_t num_indices = md_index_range_size(structures, s_idx);
+            const int32_t* indices    = md_index_range_beg(*structures, s_idx);
+            const int64_t num_indices = md_index_range_size(*structures, s_idx);
 
             const vec4_t com = vec4_from_vec3(md_util_compute_com(x, y, z, w, indices, num_indices), 0);
             const vec4_t pbc_com = vec4_deperiodize(com, ref, ext);

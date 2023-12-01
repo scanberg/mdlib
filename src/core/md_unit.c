@@ -441,7 +441,7 @@ int internal_print_dims_SI(char* buf, int cap, md_unit_t unit) {
     return len;
 }
 
-int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
+int internal_print(char* buf, int cap, md_unit_t unit) {
     int len = 0;
 
     if (md_unit_empty(unit) || md_unit_unitless(unit)) {
@@ -592,7 +592,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
 }
 
 int md_unit_print(char* buf, int cap, md_unit_t unit) {
-    return internal_print(buf, cap, unit, 0);
+    return internal_print(buf, cap, unit);
 }
 
 str_t md_unit_to_string(md_unit_t unit, struct md_allocator_i* alloc) {
