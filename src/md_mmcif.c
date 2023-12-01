@@ -70,6 +70,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 		return false;
 	}
 
+	int32_t prev_entity_id = -1;
 	while (md_buffered_reader_peek_line(&line, reader)) {
 		if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
 			const int64_t num_tokens = extract_tokens(tok, ARRAY_SIZE(tok), &line);
@@ -79,9 +80,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 			}
 
 			md_flags_t flags = 0;
-			if (tok[0].ptr[0] == 'H') {
-				flags |= MD_FLAG_HETATM;
-			}
+			int32_t entity_id = -1;
 			
 			if (table[1] != -1) { // type_symbol
 				md_element_t element = md_util_element_lookup(tok[table[1]]);
@@ -99,6 +98,12 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 				md_label_t chain_id = make_label(tok[table[5]]);
 				md_array_push(atom->chainid, chain_id, alloc);
 			}
+			if (table[6] != -1) { // entity_id
+				str_t str = tok[table[6]];
+				if (str.len > 0 && str.ptr[0] != '.') {
+					entity_id = (int32_t)parse_int(str);
+				}
+			}
 			if (table[7] != -1) { // label_seq_id
 				md_residue_id_t seq_id = (int32_t)parse_int(tok[table[7]]);
 				md_array_push(atom->resid, seq_id, alloc);
@@ -115,6 +120,19 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 				float z = (float)parse_float(tok[table[11]]);
 				md_array_push(atom->z, z, alloc);
 			}
+
+			if (tok[0].ptr[0] == 'H') {
+				flags |= MD_FLAG_HETATM;
+			}
+			if (entity_id != prev_entity_id) {
+				flags |= MD_FLAG_CHAIN_BEG;
+				if (atom->flags) {
+					*md_array_last(atom->flags) |= MD_FLAG_CHAIN_END;
+				}
+				prev_entity_id = entity_id;
+			}
+
+			md_array_push(atom->flags, flags, alloc);
 
 			num_atoms += 1;
 			md_buffered_reader_skip_line(reader);
