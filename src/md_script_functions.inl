@@ -924,7 +924,6 @@ static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
 
 static md_array(int32_t) get_residue_indices_in_context(const md_molecule_t* mol, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
     ASSERT(mol);
-    ASSERT(mol->residue.atom_range);
     ASSERT(alloc);
 
     md_array(int32_t) arr = 0;
