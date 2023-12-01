@@ -40,3 +40,31 @@ UTEST(lammps, parse_small) {
 
     md_lammps_data_free(&lammps_data, alloc);
 }
+
+UTEST(lammps, read_frames) {
+    md_allocator_i* alloc = md_heap_allocator;
+    str_t path = STR(MD_UNITTEST_DATA_DIR"/triclinic_standardASCII.lammpstrj");
+    //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
+    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc);
+    ASSERT_TRUE(traj);
+
+    EXPECT_EQ(7722, md_trajectory_num_atoms(traj));
+    EXPECT_EQ(121, md_trajectory_num_frames(traj));
+
+    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
+    void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
+    float* x = (float*)mem_ptr;
+    float* y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
+    float* z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
+
+    md_trajectory_frame_header_t header;
+
+    for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_EQ(7722, header.num_atoms);
+    }
+
+    md_free(md_temp_allocator, mem_ptr, mem_size);
+    md_lammps_trajectory_free(traj);
+
+}
