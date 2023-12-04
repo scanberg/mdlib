@@ -8,7 +8,7 @@
 #include <md_trajectory.h>
 
 #define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
-#define MD_LAMMPS_CACHE_MAGIC 0x89172baa
+#define MD_LAMMPS_CACHE_MAGIC 0x89172bab
 #define MD_LAMMPS_CACHE_VERSION 15
 #define MD_LAMMPS_PARSE_BIOMT 1
 
@@ -138,7 +138,7 @@ bool md_lammps_molecule_init(struct md_molecule_t* mol, const md_lammps_data_t* 
 //struct md_molecule_loader_i* md_lammps_molecule_api();
 
 //Trajectory
-bool md_lammps_trajectory_parse_file(md_lammps_trajectory_t* traj, str_t filename, struct md_allocator_i* alloc);
+bool md_lammps_trajectory_parse_file(int64_t* num_atoms, md_unit_cell_t* unit_cell, int64_t* num_frame_offsets, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, str_t filename, struct md_allocator_i* alloc);
 struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc);
 void md_lammps_trajectory_free(struct md_trajectory_i* traj);
 
