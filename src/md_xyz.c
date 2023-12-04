@@ -26,6 +26,7 @@ extern "C" {
 enum {
     XYZ_TINKER          = 1,
     XYZ_ARC             = 2,
+    XYZ_EXTENDED		= 4,
 };
 
 // The opaque blob
@@ -103,7 +104,7 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
     }
 
     {
-        // Test if first line has an unsigned integer as first token (Should be universally applicable to all XYZ + ARC formats
+        // Test if first line has an unsigned integer as first token (Should be universally applicable to all XYZ formats
         str_t token;
         str_t line = lines[0];
         if (!extract_token(&token, &line) || !is_unsigned_int(token)) {
@@ -112,7 +113,10 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
         }
     }
 
-    {
+    // Test for extended XYZ format
+    if (str_find_str(lines[1], STR("Properties=")) != -1) {
+		*flags |= XYZ_EXTENDED;
+	} else {    
         // Test if we have an ARC trajectory
         // Second line should then contain exactly 6 floats
         str_t token[8];
@@ -156,6 +160,164 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
     return false;
 }
 
+static inline str_t extract_quoted_substr(str_t in_str) {
+	const char* beg = in_str.ptr;
+	const char* end = in_str.ptr + in_str.len;
+
+	str_t result = {0};
+
+	if (beg >= end) return result;
+
+	while (beg < end && *beg != '\"') {
+		++beg;
+	}
+
+	if (beg >= end) return result;
+
+	++beg;
+	const char* c = beg;
+	while (c < end && *c != '\"') {
+		++c;
+	}
+
+	if (c < end) {
+		result.ptr = beg;
+		result.len = (int64_t)(c - beg);
+	}
+
+	return result;
+}
+
+static inline str_t extract_balanced_substr(str_t in_str, char beg_char, char end_char) {
+	const char* beg = in_str.ptr;
+	const char* end = in_str.ptr + in_str.len;
+
+    ASSERT(beg_char != end_char);
+
+    str_t result = {0};
+
+	if (beg >= end) return result;
+
+	while (beg < end && *beg != beg_char) {
+		++beg;
+	}
+
+	if (beg >= end) return result;
+
+	++beg;
+	const char* c = beg;
+	int depth = 1;
+	while (c < end && depth > 0) {
+		if (*c == beg_char) {
+			++depth;
+		}
+        else if (*c == end_char) {
+			--depth;
+		}
+		++c;
+	}
+
+	if (depth == 0) {
+		result.ptr = beg;
+		result.len = (int64_t)(c - beg - 1);
+	}
+
+	return result;
+}
+
+// @NOTE(Robin):
+// Following the information available at https://github.com/libAtoms/extxyz
+// Which I assume is the correct specification for the file format?
+// It seems that Lattices can be encoded in a number of ways:
+// New style: string which is enclosed in quotes containing 9 whitespace separated floats
+// Old style: [] enclosed list of 3 vectors, each vector is a list of 3 floats: [[1,2,3],[4,5,6],[7,8,9]]
+// Old style: {} enclosed list 9 elements separated by whitespace: {1 2 3 4 5 6 7 8 9}
+
+static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
+    const str_t pattern = STR("Lattice=");
+    const int64_t pos = str_find_str(line, pattern);
+    if (pos == -1) {
+        // Lattice information not found, since Lattice is optional, this is not an error
+        return true;
+    }
+
+    line = str_substr(line, pos + pattern.len, -1);
+    if (line.len == 0) {
+	    MD_LOG_ERROR("Missing lattice information");
+		return false;
+	}
+
+    str_t tok[9];
+    int64_t num_tok = 0;
+
+    if (line.ptr[0] == '\"') {
+        line = extract_quoted_substr(line);
+        if (str_empty(line)) {
+            MD_LOG_ERROR("XYZ: Failed to extract quoted string");
+			return false;
+        }
+        num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+    } else if (line.ptr[0] == '{') {
+        line = extract_balanced_substr(line, '{', '}');
+        if (str_empty(line)) {
+            MD_LOG_ERROR("XYZ: Failed to extract curly-brace string");
+            return false;
+        }
+        num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+    } else if (line.ptr[0] == '[') {
+        // This is the cheeky one
+		line = extract_balanced_substr(line, '[', ']');
+		if (str_empty(line)) {
+			MD_LOG_ERROR("XYZ: Failed to extract bracketed string");
+            return false;
+        }
+        for (int i = 0; i < 3; ++i) {
+            str_t vec = extract_balanced_substr(line, '[', ']');
+            if (str_empty(vec)) {
+                MD_LOG_ERROR("XYZ: Failed to extract bracketed string");
+                return false;
+            }
+            line = str_substr(line, vec.len + 2, -1);
+            int64_t num_sub_toks = extract_tokens_delim(tok + i*3, ARRAY_SIZE(tok) - i*3, &vec, ',');
+            if (num_sub_toks != 3) {
+                MD_LOG_ERROR("XYZ: Failed to extract Lattice vector");
+				return false;
+			}
+            tok[i*3+0] = str_trim(tok[i*3+0]);
+            tok[i*3+1] = str_trim(tok[i*3+1]);
+            tok[i*3+2] = str_trim(tok[i*3+2]);
+            num_tok += num_sub_toks;
+        }
+    } else {
+		MD_LOG_ERROR("XYZ: Unrecognized Lattice encoding");
+		return false;
+	}
+
+    if (num_tok == 3) {
+        // Assume these encode the diagonal
+        for (int64_t i = 0; i < 3; ++i) {
+            if (is_float(tok[i])) {
+				cell[i][i] = (float)parse_float(tok[i]);
+			} else {
+				return false;
+			}
+		}
+    } else if (num_tok == 9) {
+        for (int64_t i = 0; i < num_tok; ++i) {
+            if (is_float(tok[i])) {
+                cell[i/3][i%3] = (float)parse_float(tok[i]);
+            } else {
+                return false;
+            }
+        }
+    } else {
+		MD_LOG_ERROR("XYZ: Invalid number of tokens in Lattice encoding");
+		return false;
+	}
+
+    return true;
+}
+
 static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_t flags) {
     ASSERT(coord);
 
@@ -185,7 +347,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     coord->y = (float)parse_float(tokens[tok_idx++]);
     coord->z = (float)parse_float(tokens[tok_idx++]);
     
-    if (tok_idx < num_tokens) {
+    if (!(flags & XYZ_EXTENDED) && tok_idx < num_tokens) {
         coord->atom_type = (int)parse_int(tokens[tok_idx++]);
 
         // Connectivity follows atom_type
@@ -260,14 +422,27 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
             MD_LOG_ERROR("Unexpected number of tokens (%i) when parsing XYZ Arc Cell data");
             return false;
         }
-        model->cell_extent[0] = (float)parse_float(tokens[0]);
-        model->cell_extent[1] = (float)parse_float(tokens[1]);
-        model->cell_extent[2] = (float)parse_float(tokens[2]);
 
-        model->cell_angle[0] = (float)parse_float(tokens[3]);
-        model->cell_angle[1] = (float)parse_float(tokens[4]);
-        model->cell_angle[2] = (float)parse_float(tokens[5]);
-    }
+        double extent[3];
+        double angle[3];
+
+        extent[0] = (float)parse_float(tokens[0]);
+        extent[1] = (float)parse_float(tokens[1]);
+        extent[2] = (float)parse_float(tokens[2]);
+
+        angle[0] = (float)parse_float(tokens[3]);
+        angle[1] = (float)parse_float(tokens[4]);
+        angle[2] = (float)parse_float(tokens[5]);
+
+        md_unit_cell_t cell = md_util_unit_cell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
+        MEMCPY(model->cell, cell.basis.elem, sizeof(model->cell));
+    } else if (flags & XYZ_EXTENDED) {
+		// Extract cell data from comment
+		if (!extract_extxyz_cell(model->cell, comment)) {
+			MD_LOG_ERROR("Failed to extract cell data from comment");
+			return false;
+		}
+	}
 
     *coord_count = count;
 
@@ -414,7 +589,8 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->num_atoms = i;
         header->index = step;
         header->timestamp = (double)(step); // This information is missing from xyz trajectories
-        header->unit_cell = md_util_unit_cell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
+        //header->unit_cell = md_util_unit_cell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
+        header->unit_cell = md_util_unit_cell_from_matrix(model.cell);
     }
 
     return true;
@@ -548,6 +724,8 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         md_array_push(mol->atom.type, make_label(atom_type), alloc);
         md_array_push(mol->atom.flags, 0, alloc);
     }
+
+    mol->unit_cell = md_util_unit_cell_from_matrix(data->models[0].cell);
 
     return true;
 }

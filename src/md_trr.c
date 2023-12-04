@@ -522,12 +522,17 @@ static bool trr_decode_frame_data(struct md_trajectory_o* inst, const void* fram
 
     // Get header
     trr_header_t sh;
-    mat3_t box = {0};
+    float box[3][3];
     md_vec3_soa_t coords = { x, y, z };
-    result = trr_read_frame_header(file, &sh) && trr_read_frame_data(file, &sh, box.elem, &coords, 0, 0);
+    result = trr_read_frame_header(file, &sh) && trr_read_frame_data(file, &sh, box, &coords, 0, 0);
     if (result && header) {
         // @TODO: This scaling should be moved out of the core parts and into the loader which ties it with viamd.
-        box = mat3_mul_f(box, 10.0f); // nm -> Ångström
+        // nm -> Ångström
+        for (int i = 0; i < 3; ++i) {
+            box[i][0] *= 10.0f;
+            box[i][1] *= 10.0f;
+            box[i][2] *= 10.0f;
+        }
         header->num_atoms = sh.natoms;
         header->index = sh.step;
         header->timestamp = sh.t;

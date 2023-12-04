@@ -15,6 +15,7 @@ layout (std140) uniform ubo {
     uint u_bond_base_index;
     uint _pad0;
     float u_radius;
+    float u_max_d2;
 };
 
 layout (lines) in;
@@ -72,12 +73,19 @@ void main() {
         return;
     }
 
-    // Compute orientation vectors for the two connecting faces:
     vec3 p0 = gl_in[0].gl_Position.xyz;
     vec3 p1 = gl_in[1].gl_Position.xyz;
+
+    vec3 d = p1 - p0;
+    float d2 = dot(d, d);
+    if (d2 <= 0 || u_max_d2 <= d2) {
+        return;
+    }
+
+    // Compute orientation vectors for the two connecting faces:
     float r = u_radius;
-    float l = distance(p0, p1);
-    vec3 a = (p1 - p0) / l;
+    float l = sqrt(d2);
+    vec3 a = d / l;
     vec3 c = (p0 + p1) * 0.5;
 
     out_frag.color[0] = in_vert[0].color;

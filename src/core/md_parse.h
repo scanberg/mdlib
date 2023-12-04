@@ -536,7 +536,7 @@ static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
 }
 
 // Extracts token with specific delimiter
-static inline bool extract_tokens_delim(str_t tok_arr[], int64_t tok_cap, str_t* str, char delim) {
+static inline int64_t extract_tokens_delim(str_t tok_arr[], int64_t tok_cap, str_t* str, char delim) {
     ASSERT(tok_arr);
     ASSERT(tok_cap >= 0);
     ASSERT(str);

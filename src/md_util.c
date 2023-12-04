@@ -3869,7 +3869,7 @@ mat3_t md_util_compute_triclinic_unit_cell_basis(double x, double y, double z, d
 
 md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, double xy, double xz, double yz) {
     mat3_t matrix = md_util_compute_triclinic_unit_cell_basis(x, y, z, xy, xz, yz);
-    return md_util_unit_cell_from_matrix(matrix);
+    return md_util_unit_cell_from_matrix(matrix.elem);
 }
 
 md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z) {
@@ -3939,11 +3939,11 @@ md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, doub
     return cell;
 }
 
-md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M) {
-    if (M.elem[0][1] == 0 && M.elem[0][2] == 0 && M.elem[1][0] == 0 && M.elem[1][2] == 0 && M.elem[2][0] == 0 && M.elem[2][1] == 0) {
-        return md_util_unit_cell_from_extent(M.elem[0][0], M.elem[1][1], M.elem[2][2]);
+md_unit_cell_t md_util_unit_cell_from_matrix(float M[3][3]) {
+    if (M[0][1] == 0 && M[0][2] == 0 && M[1][0] == 0 && M[1][2] == 0 && M[2][0] == 0 && M[2][1] == 0) {
+        return md_util_unit_cell_from_extent(M[0][0], M[1][1], M[2][2]);
     } else {
-        const float* N = &M.elem[0][0];
+        const float* N = &M[0][0];
         
         // Inverse of M
         const double I[9] = {
@@ -3952,12 +3952,16 @@ md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M) {
             ((double)N[3]*(double)N[7]/((double)N[0]*(double)N[4]) - (double)N[6]/(double)N[0])/(double)N[8], -(double)N[7]/((double)N[4]*(double)N[8]), 1.0/(double)N[8],
         };
         
-        const float a = vec3_length_squared(M.col[0]);
-        const float b = vec3_length_squared(M.col[1]);
-        const float c = vec3_length_squared(M.col[2]);
+
+        const float a = M[0][0]*M[0][0] + M[0][1]*M[0][1] + M[0][2]*M[0][2];
+        const float b = M[1][0]*M[1][0] + M[1][1]*M[1][1] + M[1][2]*M[1][2];
+        const float c = M[2][0]*M[2][0] + M[2][1]*M[2][1] + M[2][2]*M[2][2];
         
+        
+        mat3_t basis;
+        MEMCPY(basis.elem, M, sizeof(basis));
         md_unit_cell_t cell = {
-            .basis = M,
+            .basis = basis,
             .inv_basis = {
                 I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
             },
@@ -4704,6 +4708,60 @@ static inline void commit_backbone(md_backbone_atoms_t* backbone, md_range_t res
         md_array_push(mol->backbone.residue_idx, i, alloc);
     }
 }
+
+#if 0
+static void md_util_compute_backbone_data(md_backbone_data_t* backbone, const md_molecule_t* mol, md_allocator_i* alloc) {
+    if (mol->chain.count) {
+        // Compute backbone data
+        // 
+        // @NOTE: We should only attempt to compute backbone data for valid residues (e.g. amino acids / dna)
+        // Backbones are not directly tied to chains and therefore we cannot use chains as a 1:1 mapping for the backbones.
+        // We look within the chains and see if we can find consecutive ranges which form backbones.
+
+        static const int64_t MIN_BACKBONE_LENGTH = 3;
+        md_backbone_atoms_t* bb_atoms = 0;
+        md_allocator_i* temp_alloc = md_temp_allocator;
+
+        for (int64_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
+            for (int64_t res_idx = mol->chain.residue_range[chain_idx].beg; res_idx < mol->chain.residue_range[chain_idx].end; ++res_idx) {
+                md_backbone_atoms_t atoms;
+                if (md_util_backbone_atoms_extract_from_residue_idx(&atoms, (int32_t)res_idx, mol)) {
+                    md_array_push(bb_atoms, atoms, temp_alloc);
+                } else {
+                    if (md_array_size(backbone) >= MIN_BACKBONE_LENGTH) {
+                        // Commit the backbone
+                        md_range_t res_range = {(int32_t)(res_idx - md_array_size(bb_atoms)), (int32_t)res_idx};
+                        commit_backbone(backbone, bb_atoms, md_array_size(bb_atoms), res_range, alloc);
+                    }
+                    md_array_shrink(bb_atoms, 0);
+                }
+            }
+            // Possibly commit remainder of the chain
+            if (md_array_size(bb_atoms) >= MIN_BACKBONE_LENGTH) {
+                int64_t res_idx = mol->chain.residue_range[chain_idx].end;
+                md_range_t res_range = {(int32_t)(res_idx - md_array_size(bb_atoms)), (int32_t)res_idx};
+                commit_backbone(backbone, bb_atoms, md_array_size(bb_atoms), res_range, alloc);
+            }
+            md_array_shrink(bb_atoms, 0);
+        }
+
+        md_array_free(bb_atoms, temp_alloc);
+
+        backbone->range_count = md_array_size(backbone->range);
+        backbone->count = md_array_size(backbone->atoms);
+
+        md_array_resize(backbone->angle, backbone->count, alloc);
+        md_array_resize(backbone->secondary_structure, backbone->count, alloc);
+        md_array_resize(backbone->ramachandran_type, backbone->count, alloc);
+
+        if (mol->backbone.count > 0) {
+            md_util_backbone_angles_compute(backbone->angle, backbone->count, mol);
+            md_util_backbone_secondary_structure_compute(backbone->secondary_structure, backbone->count, mol);
+            md_util_backbone_ramachandran_classify(backbone->ramachandran_type, backbone->count, mol);
+        }
+    }
+}
+#endif
 
 // Try to fill in missing fields for molecule struct
 // (resid)                  -> Residues

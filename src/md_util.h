@@ -119,8 +119,8 @@ md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z);
 // Construct possibly a triclinic cell from extents a,b,c and axis angles alpha, beta, gamma (in degrees)
 md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma);
 
-// Construct cell from mat3 basis
-md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M);
+// Construct cell from 3x3 matrix
+md_unit_cell_t md_util_unit_cell_from_matrix(float M[3][3]);
 
 //Construct cell from triclinic basis
 md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, double xy, double xz, double yz);

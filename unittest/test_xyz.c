@@ -208,6 +208,127 @@ UTEST(xyz, ch4_arc) {
     md_xyz_data_free(&data, md_heap_allocator);
 }
 
+UTEST(xyz, extended_xyz) {
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/extended.xyz");
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(1,   data.num_models);
+    EXPECT_EQ(456, data.num_coordinates);
+
+    if (data.num_coordinates > 0) {
+        EXPECT_STREQ("Zr", data.coordinates[0].element_symbol);
+        EXPECT_NEAR(18.53562587f, data.coordinates[0].x, 1.0e-5f);
+        EXPECT_NEAR(10.57149039f, data.coordinates[0].y, 1.0e-5f);
+        EXPECT_NEAR(10.42623774f, data.coordinates[0].z, 1.0e-5f);
+    }
+
+    // Lattice="
+    // 20.94815017098275 -3.412045517350664e-05 -2.2269710615728675e-05
+    // -3.431827648979917e-05 20.947967304256764 -1.0983820669246559e-05
+    // -2.245407280127725e-05 -1.1267829933312672e-05 20.94797217314631" 
+    if (data.num_models > 0) {
+        EXPECT_NEAR(data.models[0].cell[0][0], 20.94815017098275,       1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][1], -3.412045517350664e-05,  1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][2], -2.2269710615728675e-05, 1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[1][0], -3.431827648979917e-05,  1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][1], 20.947967304256764,      1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][2], -1.0983820669246559e-05, 1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[2][0], -2.245407280127725e-05,  1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][1], -1.1267829933312672e-05, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][2], 20.94797217314631,       1.0e-5f);
+    }
+
+    md_xyz_data_free(&data, md_heap_allocator);
+}
+
+UTEST(xyz, extended_xyz_lattice_braced) {
+    str_t input = STR(
+        "4\n"
+        "Lattice={1 2 3 4 5 6 7 8 9} "
+        "Properties=species:S:1:pos:R:3:forces:R:3:energies:R:1\n"
+        "Zr      18.53562587      10.57149039      10.42623774       0.00024027       0.00000174       0.00000768      -2.78259732\n"
+        "Zr      18.53563066       0.09750089      20.90023074       0.00021729      -0.00005997      -0.00005202      -2.78258954\n"
+        "Zr       8.06153933      10.57150349      20.90023721       0.00023774       0.00003751      -0.00003056      -2.78259378\n"
+        "Zr       8.06156708       0.09752582      10.42625768       0.00025192      -0.00002267      -0.00007721      -2.78258456\n"
+	);
+
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_str(&data, input, md_heap_allocator);
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(1, data.num_models);
+    EXPECT_EQ(4, data.num_coordinates);
+
+    if (data.num_coordinates > 0) {
+        EXPECT_STREQ("Zr", data.coordinates[0].element_symbol);
+        EXPECT_NEAR(18.53562587f, data.coordinates[0].x, 1.0e-5f);
+        EXPECT_NEAR(10.57149039f, data.coordinates[0].y, 1.0e-5f);
+        EXPECT_NEAR(10.42623774f, data.coordinates[0].z, 1.0e-5f);
+    }
+
+    if (data.num_models > 0) {
+        EXPECT_NEAR(data.models[0].cell[0][0], 1, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][1], 2, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][2], 3, 1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[1][0], 4, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][1], 5, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][2], 6, 1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[2][0], 7, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][1], 8, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][2], 9, 1.0e-5f);
+    }
+
+    md_xyz_data_free(&data, md_heap_allocator);
+}
+
+UTEST(xyz, extended_xyz_lattice_array) {
+    str_t input = STR(
+        "4\n"
+        "Lattice=[[1,2, 3], [4,5,6], [ 7 , 8, 9]] "
+        "Properties=species:S:1:pos:R:3:forces:R:3:energies:R:1\n"
+        "Zr      18.53562587      10.57149039      10.42623774       0.00024027       0.00000174       0.00000768      -2.78259732\n"
+        "Zr      18.53563066       0.09750089      20.90023074       0.00021729      -0.00005997      -0.00005202      -2.78258954\n"
+        "Zr       8.06153933      10.57150349      20.90023721       0.00023774       0.00003751      -0.00003056      -2.78259378\n"
+        "Zr       8.06156708       0.09752582      10.42625768       0.00025192      -0.00002267      -0.00007721      -2.78258456\n"
+    );
+
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_str(&data, input, md_heap_allocator);
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(1, data.num_models);
+    EXPECT_EQ(4, data.num_coordinates);
+
+    if (data.num_coordinates > 0) {
+        EXPECT_STREQ("Zr", data.coordinates[0].element_symbol);
+        EXPECT_NEAR(18.53562587f, data.coordinates[0].x, 1.0e-5f);
+        EXPECT_NEAR(10.57149039f, data.coordinates[0].y, 1.0e-5f);
+        EXPECT_NEAR(10.42623774f, data.coordinates[0].z, 1.0e-5f);
+    }
+
+    if (data.num_models > 0) {
+        EXPECT_NEAR(data.models[0].cell[0][0], 1, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][1], 2, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][2], 3, 1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[1][0], 4, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][1], 5, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][2], 6, 1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[2][0], 7, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][1], 8, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][2], 9, 1.0e-5f);
+    }
+
+    md_xyz_data_free(&data, md_heap_allocator);
+}
+
 UTEST(xyz, create_molecule) {
     md_allocator_i* alloc = md_heap_allocator;
     str_t path = STR(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");

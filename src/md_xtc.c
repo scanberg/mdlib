@@ -298,11 +298,16 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
     // Get header
     int natoms = 0, step = 0;
     float time = 0;
-    mat3_t box = mat3_ident();
-    result = xtc_frame_header(file, &natoms, &step, &time, box.elem);
+    float box[3][3];
+    result = xtc_frame_header(file, &natoms, &step, &time, box);
     if (result) {
         if (header) {
-            box = mat3_mul_f(box, 10.0f); // nm -> Ångström
+            // nm -> Ångström
+            for (int i = 0; i < 3; ++i) {
+                box[i][0] *= 10.0f;
+                box[i][1] *= 10.0f;
+                box[i][2] *= 10.0f;
+            }
             header->num_atoms = natoms;
             header->index = step;
             header->timestamp = time;

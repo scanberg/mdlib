@@ -1153,7 +1153,7 @@ bool md_gl_representation_free(md_gl_representation_t* ext_rep) {
 static bool compute_spline(const internal_mol_t* mol);
 
 static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, float scale);
-static bool draw_licorice  (gl_program_t program, const internal_rep_t* rep, float radius);
+static bool draw_licorice  (gl_program_t program, const internal_rep_t* rep, float radius, float max_length);
 static bool draw_ribbons   (gl_program_t program, const internal_rep_t* rep, float width_scale, float thickness_scale);
 static bool draw_cartoon   (gl_program_t program, const internal_rep_t* rep, float coil_scale, float helix_scale, float ribbon_scale);
 
@@ -1301,15 +1301,18 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             gl_buffer_set_sub_data(ctx.ubo, offsetof(gl_ubo_base_t, atom_index_base), sizeof(index_base), &index_base);
         }
 
+        // Maximum bond length in units (Ångström assumed)
+        const float max_length = 5.0f;
+
         switch (draw_op->type) {
         case MD_GL_REP_SPACE_FILL:
             draw_space_fill(shaders->spacefill[program_permutation], rep, scale * draw_op->args.space_fill.radius_scale);
             break;
         case MD_GL_REP_LICORICE:
-            draw_licorice(shaders->licorice[program_permutation], rep, 0.2f * scale * draw_op->args.licorice.radius);
+            draw_licorice(shaders->licorice[program_permutation], rep, 0.2f * scale * draw_op->args.licorice.radius, max_length);
             break;
         case MD_GL_REP_BALL_AND_STICK:
-            draw_licorice(shaders->licorice[program_permutation],    rep, 0.2f * scale * draw_op->args.ball_and_stick.stick_radius);
+            draw_licorice(shaders->licorice[program_permutation],    rep, 0.2f * scale * draw_op->args.ball_and_stick.stick_radius, max_length);
             draw_space_fill(shaders->spacefill[program_permutation], rep, 0.2f  * scale * draw_op->args.ball_and_stick.ball_scale);
             break;
         case MD_GL_REP_RIBBONS:
@@ -1386,7 +1389,7 @@ static bool draw_space_fill(gl_program_t program, const internal_rep_t* rep, flo
     return true;
 }
 
-static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float radius) {
+static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float radius, float max_length) {
     ASSERT(rep);
     ASSERT(rep->mol);
     ASSERT(rep->mol->buffer[GL_BUFFER_ATOM_POSITION].id);
@@ -1395,7 +1398,16 @@ static bool draw_licorice(gl_program_t program, const internal_rep_t* rep, float
     ASSERT(rep->mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
     ASSERT(rep->color.id);
 
-    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(radius), &radius);
+    if (max_length == 0) {
+        max_length = 1000.0f;
+    }
+
+    struct {
+		float radius;
+		float max_d2;
+	} params = { radius, max_length * max_length };
+
+    gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(params), &params);
 
     glBindVertexArray(ctx.vao);
 
