@@ -245,6 +245,77 @@ UTEST(xyz, extended_xyz) {
     md_xyz_data_free(&data, md_heap_allocator);
 }
 
+UTEST(xyz, extended1_xyz) {
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/extended1.xyz");
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(1,   data.num_models);
+    EXPECT_EQ(192, data.num_coordinates);
+
+    if (data.num_coordinates > 0) {
+        EXPECT_STREQ("Si", data.coordinates[0].element_symbol);
+        EXPECT_NEAR(0, data.coordinates[0].x, 1.0e-5f);
+        EXPECT_NEAR(0, data.coordinates[0].y, 1.0e-5f);
+        EXPECT_NEAR(0, data.coordinates[0].z, 1.0e-5f);
+    }
+
+    // Lattice="
+    // 20.94815017098275 -3.412045517350664e-05 -2.2269710615728675e-05
+    // -3.431827648979917e-05 20.947967304256764 -1.0983820669246559e-05
+    // -2.245407280127725e-05 -1.1267829933312672e-05 20.94797217314631" 
+    if (data.num_models > 0) {
+        EXPECT_NEAR(data.models[0].cell[0][0], 14.24,   1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][1], 0,       1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][2], 0,       1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[1][0], 0,       1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][1], 14.24,   1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][2], 0,       1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[2][0], 0,       1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][1], 0,       1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][2], 14.24,   1.0e-5f);
+    }
+
+    md_xyz_data_free(&data, md_heap_allocator);
+}
+
+UTEST(xyz, extended2_xyz) {
+    str_t path = STR(MD_UNITTEST_DATA_DIR "/extended2.xyz");
+    md_xyz_data_t data = {0};
+    bool result = md_xyz_data_parse_file(&data, path, md_heap_allocator);
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(1,  data.num_models);
+    EXPECT_EQ(22, data.num_coordinates);
+
+    if (data.num_coordinates > 0) {
+        // 12.01320886      16.80849934      -2.98503290
+        EXPECT_STREQ("H", data.coordinates[0].element_symbol);
+        EXPECT_NEAR(12.01320886, data.coordinates[0].x, 1.0e-5f);
+        EXPECT_NEAR(16.80849934, data.coordinates[0].y, 1.0e-5f);
+        EXPECT_NEAR(-2.98503290, data.coordinates[0].z, 1.0e-5f);
+    }
+
+    if (data.num_models > 0) {
+        EXPECT_NEAR(data.models[0].cell[0][0], 0, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][1], 0, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[0][2], 0, 1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[1][0], 0, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][1], 0, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[1][2], 0, 1.0e-5f);
+
+        EXPECT_NEAR(data.models[0].cell[2][0], 0, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][1], 0, 1.0e-5f);
+        EXPECT_NEAR(data.models[0].cell[2][2], 0, 1.0e-5f);
+    }
+
+    md_xyz_data_free(&data, md_heap_allocator);
+}
+
 UTEST(xyz, extended_xyz_lattice_braced) {
     str_t input = STR(
         "4\n"
