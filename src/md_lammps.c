@@ -635,12 +635,8 @@ static bool md_lammps_trajectory_parse(int64_t* num_atoms, md_unit_cell_t* unit_
 	str_t tokens[6];
 	int64_t num_frames = 0;
 
-	//int64_t array_max_size = 10000;
-	//Create an array with the frame times. We make for 10 000 frames as we dont know the max number before parsing
-	//md_array_resize(frame_times, array_max_size, alloc);
 
 	//Setup frames and first frame
-
 	md_buffered_reader_skip_line(reader);
 	md_buffered_reader_extract_line(&line, reader);
 	md_array_push(*frame_times, parse_int(line), alloc);
@@ -690,12 +686,6 @@ static bool md_lammps_trajectory_parse(int64_t* num_atoms, md_unit_cell_t* unit_
 		if (str_equal_cstr_n(line, "ITEM: TIMESTEP", 14)) {
 			md_buffered_reader_extract_line(&line, reader);
 			num_frames++;
-			/*
-			if (num_frames > array_max_size) {
-				MD_LOG_ERROR("num of frames > %i, max array size to low", array_max_size);
-				return false;
-			}
-			*/
 			md_array_push(*frame_times, parse_int(line), alloc);
 		}
 		else if (str_equal_cstr_n(line, "ITEM: ATOMS", 11)) {
@@ -708,22 +698,11 @@ static bool md_lammps_trajectory_parse(int64_t* num_atoms, md_unit_cell_t* unit_
 		}
 	}
 
-	//We add the end of the file to frame_offsets, to frame_offset size = num_frames + 1
+	//We add the end of the file to frame_offsets, so frame_offset size = num_frames + 1
 
 	const int64_t end_of_file = md_buffered_reader_tellg(reader);
 	md_array_push(*frame_offsets, end_of_file, alloc);
-
-	//md_array_resize(frame_times, num_frames, alloc);
-	//Lammps trajectory uses femtoseconds
-
-	//traj->magic = MD_LAMMPS_TRAJ_MAGIC;
-	//traj->header.time_unit = md_unit_femtosecond();
-	//traj->unit_cell = unit_cell;
-	//traj->frame_offsets = frame_offsets;
 	*num_frame_offsets = (int64_t)md_array_size(*frame_offsets);
-
-	//traj->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
-	//pdb->filesize = filesize;
 
 	return true;
 }
@@ -762,7 +741,7 @@ bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_traje
 
 	bool result = true;
 	const int64_t frame_size = lammps_fetch_frame_data(inst, frame_idx, NULL);
-	if (frame_size > 0) { //This seems to check first that there actually is data to be read, before writing to frame_data
+	if (frame_size > 0) { //This check first that there actually is data to be read, before writing to frame_data
 		// This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
 		void* frame_data = md_alloc(alloc, frame_size);
 		const int64_t read_size = lammps_fetch_frame_data(inst, frame_idx, frame_data);
@@ -895,15 +874,6 @@ static bool write_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t* un
 	return result;
 }
 
-/*
-void md_lammps_trajectory_data_free(md_lammps_trajectory_t* data, struct md_allocator_i* alloc) {
-	ASSERT(data);
-	ASSERT(alloc);
-	if (data->frame_offsets)           md_array_free(data->frame_offsets, alloc);
-	if (data->header.frame_times)           md_array_free(data->header.frame_times, alloc);
-}
-*/
-
 void lammps_trajectory_data_free(struct md_lammps_trajectory_t* lammps_traj) {
 	ASSERT(lammps_traj);
 	if (lammps_traj->file) md_file_close(lammps_traj->file);
@@ -975,7 +945,6 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	MEMSET(mem, 0, sizeof(md_trajectory_i) + sizeof(md_lammps_trajectory_t));
 
 	md_trajectory_i* traj = mem;
-	//TODO: Free traj if we return false
 	md_lammps_trajectory_t* traj_data = (md_lammps_trajectory_t*)(traj + 1);
 
 	//Can I set dataPtr to traj_data here?
