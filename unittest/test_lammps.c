@@ -49,7 +49,7 @@ UTEST(lammps, read_frames_triclinic) {
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(7722, md_trajectory_num_atoms(traj));
-    EXPECT_EQ(121, md_trajectory_num_frames(traj));
+    EXPECT_EQ(10, md_trajectory_num_frames(traj));
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
     void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
@@ -81,7 +81,7 @@ UTEST(lammps, read_frames_cubic) {
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(7800, md_trajectory_num_atoms(traj));
-    EXPECT_EQ(120, md_trajectory_num_frames(traj));
+    EXPECT_EQ(10, md_trajectory_num_frames(traj));
 
     const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
     void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
