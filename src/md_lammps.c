@@ -784,9 +784,15 @@ static bool try_read_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t*
 	md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
 	bool result = false;
 	if (file) {
-		int64_t num_offsets = 0;
 		uint32_t version = 0;
 		uint32_t magic = 0;
+		int64_t loc_num_atoms = 0;
+		md_unit_cell_t loc_unit_cell = { 0 };
+		int64_t num_offsets = 0;
+		md_array(int64_t) loc_frame_offsets = 0;
+		md_array(int64_t) loc_frame_times = 0;
+
+
 		int64_t loc_filesize = 0;
 
 
@@ -800,12 +806,12 @@ static bool try_read_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t*
 			goto done;
 		}
 
-		if (md_file_read(file, num_atoms, sizeof(*num_atoms)) != sizeof(*num_atoms) || *num_atoms == 0) {
+		if (md_file_read(file, &loc_num_atoms, sizeof(loc_num_atoms)) != sizeof(loc_num_atoms) || loc_num_atoms == 0) {
 			MD_LOG_ERROR("Failed to read offset cache, number of atoms was zero or corrupt");
 			goto done;
 		}
 
-		if (md_file_read(file, unit_cell, sizeof(md_unit_cell_t)) != sizeof(md_unit_cell_t)) {
+		if (md_file_read(file, &loc_unit_cell, sizeof(md_unit_cell_t)) != sizeof(md_unit_cell_t)) {
 			MD_LOG_ERROR("Failed to read offset cache, cell was corrupt");
 			goto done;
 		}
@@ -814,29 +820,35 @@ static bool try_read_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t*
 			MD_LOG_ERROR("Failed to read offset cache, number of frames was zero or corrupted");
 			goto done;
 		}
-		*num_frame_offsets = num_offsets;
 
-		md_array_resize(*frame_offsets, num_offsets, alloc);
-		const int64_t offset_bytes = md_array_bytes(*frame_offsets);
-		if (md_file_read(file, *frame_offsets, offset_bytes) != offset_bytes) {
+		md_array_resize(loc_frame_offsets, num_offsets, alloc);
+		const int64_t offset_bytes = md_array_bytes(loc_frame_offsets);
+		if (md_file_read(file, loc_frame_offsets, offset_bytes) != offset_bytes) {
 			MD_LOG_ERROR("Failed to read offset cache, offsets are incomplete");
-			md_array_free(*frame_offsets, alloc);
+			md_array_free(loc_frame_offsets, alloc);
 			goto done;
 		}
 
 		int64_t num_frames = num_offsets - 1;
-		md_array_resize(*frame_times, num_frames, alloc);
-		const int64_t frame_times_bytes = md_array_bytes(*frame_times);
-		if (md_file_read(file, *frame_times, frame_times_bytes) != frame_times_bytes) {
+		md_array_resize(loc_frame_times, num_frames, alloc);
+		const int64_t frame_times_bytes = md_array_bytes(loc_frame_times);
+		if (md_file_read(file, loc_frame_times, frame_times_bytes) != frame_times_bytes) {
 			MD_LOG_ERROR("Failed to read frame times cache, frame times are incomplete");
-			md_array_free(*frame_times, alloc);
+			md_array_free(loc_frame_times, alloc);
 			goto done;
 		}
 
-		if (md_file_read(file, &loc_filesize, sizeof(loc_filesize)) != sizeof(loc_filesize) || loc_filesize == filesize) {
+		if (md_file_read(file, &loc_filesize, sizeof(loc_filesize)) != sizeof(loc_filesize) || loc_filesize != filesize) {
 			MD_LOG_ERROR("Failed to read offset cache, filesize is not the same");
 			goto done;
 		}
+
+		//Only overwrite if all tests passed
+		*num_atoms = loc_num_atoms;
+		*unit_cell = loc_unit_cell;
+		*num_frame_offsets = num_offsets;
+		*frame_offsets = loc_frame_offsets;
+		*frame_times = loc_frame_times;
 
 		result = true;
 	done:
@@ -865,7 +877,7 @@ static bool write_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t* un
 			md_file_write(file, &num_frame_offsets, sizeof(int64_t)) != sizeof(int64_t) ||
 			md_file_write(file, *frame_offsets, offset_bytes) != offset_bytes ||
 			md_file_write(file, *frame_times, frame_times_bytes) != frame_times_bytes ||
-			md_file_write(file, filesize, sizeof(int64_t)) != sizeof(int64_t) ||)
+			md_file_write(file, filesize, sizeof(int64_t)) != sizeof(int64_t))
 		{
 			MD_LOG_ERROR("Failed to write lammps cache");
 			goto done;
@@ -926,7 +938,7 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	md_array(int64_t) offsets = 0;
 	md_array(int64_t) frame_times = 0;
 
-	if (!try_read_cache(cache_file, &num_atoms, &cell, &num_frame_offsets, &offsets, &frame_times, alloc)) { //If the cache file does not exist, we create one
+	if (!try_read_cache(cache_file, &num_atoms, &cell, &num_frame_offsets, &offsets, &frame_times, filesize, alloc)) { //If the cache file does not exist, we create one
 		if (!md_lammps_trajectory_parse_file(&num_atoms, &cell, &num_frame_offsets, &offsets, &frame_times, filename, md_heap_allocator)) {
 			//We could not parse the data file
 			md_array_free(offsets, alloc);
@@ -934,7 +946,7 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 			return false;
 		}
 
-		if (!write_cache(cache_file, &num_atoms, &cell, &offsets, &frame_times)) {
+		if (!write_cache(cache_file, &num_atoms, &cell, &offsets, &frame_times, &filesize)) {
 			MD_LOG_ERROR("Could not write cache");
 			md_array_free(offsets, alloc);
 			md_array_free(frame_times, alloc);
