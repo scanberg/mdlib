@@ -915,8 +915,8 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	int64_t num_atoms = 0;
 	md_unit_cell_t cell = { 0 };
 	int64_t num_frame_offsets = 0;
-	int64_t* offsets = 0;
-	int64_t* frame_times = 0;
+	md_array(int64_t) offsets = 0;
+	md_array(int64_t) frame_times = 0;
 
 	if (!try_read_cache(cache_file, &num_atoms, &cell, &num_frame_offsets, &offsets, &frame_times, alloc)) { //If the cache file does not exist, we create one
 		if (!md_lammps_trajectory_parse_file(&num_atoms, &cell, &num_frame_offsets, &offsets, &frame_times, filename, md_heap_allocator)) {
