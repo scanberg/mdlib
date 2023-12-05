@@ -780,13 +780,14 @@ bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_traje
 	return result;
 }
 
-static bool try_read_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t* unit_cell, int64_t* num_frame_offsets, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, md_allocator_i* alloc) {
+static bool try_read_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t* unit_cell, int64_t* num_frame_offsets, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, int64_t filesize, md_allocator_i* alloc) {
 	md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
 	bool result = false;
 	if (file) {
 		int64_t num_offsets = 0;
 		uint32_t version = 0;
 		uint32_t magic = 0;
+		int64_t loc_filesize = 0;
 
 
 		if (md_file_read(file, &magic, sizeof(magic)) != sizeof(magic) || magic != MD_LAMMPS_CACHE_MAGIC) {
@@ -831,6 +832,12 @@ static bool try_read_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t*
 			md_array_free(*frame_times, alloc);
 			goto done;
 		}
+
+		if (md_file_read(file, &loc_filesize, sizeof(loc_filesize)) != sizeof(loc_filesize) || loc_filesize == filesize) {
+			MD_LOG_ERROR("Failed to read offset cache, filesize is not the same");
+			goto done;
+		}
+
 		result = true;
 	done:
 		md_file_close(file);
@@ -838,7 +845,7 @@ static bool try_read_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t*
 	return result;
 }
 
-static bool write_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t* unit_cell, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times) {
+static bool write_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t* unit_cell, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, int64_t* filesize) {
 	bool result = false;
 	md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
 	if (file) {
@@ -857,7 +864,8 @@ static bool write_cache(str_t cache_file, int64_t* num_atoms, md_unit_cell_t* un
 			md_file_write(file, unit_cell, sizeof(md_unit_cell_t)) != sizeof(md_unit_cell_t) ||
 			md_file_write(file, &num_frame_offsets, sizeof(int64_t)) != sizeof(int64_t) ||
 			md_file_write(file, *frame_offsets, offset_bytes) != offset_bytes ||
-			md_file_write(file, *frame_times, frame_times_bytes) != frame_times_bytes)
+			md_file_write(file, *frame_times, frame_times_bytes) != frame_times_bytes ||
+			md_file_write(file, filesize, sizeof(int64_t)) != sizeof(int64_t) ||)
 		{
 			MD_LOG_ERROR("Failed to write lammps cache");
 			goto done;
