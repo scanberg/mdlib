@@ -13,6 +13,10 @@
 
 #include <string.h>
 
+#define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
+#define MD_LAMMPS_CACHE_MAGIC 0x89172bab
+#define MD_LAMMPS_CACHE_VERSION 15
+
 static const char* field_names[] = {
 	"id",
 	"resid",

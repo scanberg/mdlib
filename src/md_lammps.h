@@ -7,11 +7,6 @@
 #include <md_util.h>
 #include <md_trajectory.h>
 
-#define MD_LAMMPS_TRAJ_MAGIC 0x2312ad7b78a9bc20
-#define MD_LAMMPS_CACHE_MAGIC 0x89172bab
-#define MD_LAMMPS_CACHE_VERSION 15
-#define MD_LAMMPS_PARSE_BIOMT 1
-
 struct md_molecule_t;
 
 //All lammps units should have a 1:1 mapping to the md_molecule according to https://docs.lammps.org/2001/units.html
