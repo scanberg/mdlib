@@ -120,3 +120,62 @@ UTEST(lammps, water_ethane_triclinic) {
 
     md_lammps_data_free(&data, alloc);
 }
+
+UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
+    md_allocator_i* alloc = md_heap_allocator;
+    str_t path = STR(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
+    //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
+    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc);
+    ASSERT_TRUE(traj);
+
+    EXPECT_EQ(7800, md_trajectory_num_atoms(traj));
+    EXPECT_EQ(10, md_trajectory_num_frames(traj));
+
+    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
+    void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
+    float* x = (float*)mem_ptr;
+    float* y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
+    float* z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
+    md_trajectory_frame_header_t header;
+    for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_EQ(7800, header.num_atoms);
+    }
+    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
+    EXPECT_NE(x, 0);
+    EXPECT_NEAR(header.unit_cell.basis.col[0].x, 39.121262, 0.0001);
+
+    md_free(md_temp_allocator, mem_ptr, mem_size);
+    md_lammps_trajectory_free(traj);
+}
+
+UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
+    md_allocator_i* alloc = md_heap_allocator;
+    str_t path = STR(MD_UNITTEST_DATA_DIR"/triclinic_standardASCII.lammpstrj");
+    //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
+    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc);
+    ASSERT_TRUE(traj);
+
+    EXPECT_EQ(7722, md_trajectory_num_atoms(traj));
+    EXPECT_EQ(10, md_trajectory_num_frames(traj));
+    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
+    void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
+    float* x = (float*)mem_ptr;
+    float* y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
+    float* z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
+
+    md_trajectory_frame_header_t header;
+
+    for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
+        EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
+        EXPECT_EQ(7722, header.num_atoms);
+    }
+
+    EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
+    EXPECT_NE(x, 0);
+    //The coordinates are scaled by a vector, don't know what the correct number should be
+
+    md_free(md_temp_allocator, mem_ptr, mem_size);
+    md_lammps_trajectory_free(traj);
+
+}
