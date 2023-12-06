@@ -603,7 +603,10 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* frame_da
 				MD_LOG_ERROR("Fewer than 3 token types in ITEM: ATOMS line");
 				return false;
 			}
-			for (int32_t i = 0; i < num_tokens; i++) {
+			//We now know that there are at least 5 tokens
+
+			//We start on 2 since we know that [0] = ITEMS: and [1] = ATOMS
+			for (int32_t i = 2; i < num_token_types; i++) {
 				//Use the first complete coord combo. x,y,z,xs,ys picks x,y,z and x,y,xs,ys,zs picks xs,ys,zs
 				if (
 					str_equal_cstr(tokens[i], "x") && str_equal_cstr(tokens[i + 1], "y") && str_equal_cstr(tokens[i + 2], "z") ||
@@ -611,7 +614,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* frame_da
 					str_equal_cstr(tokens[i], "xu") && str_equal_cstr(tokens[i + 1], "yu") && str_equal_cstr(tokens[i + 2], "zu") ||
 					str_equal_cstr(tokens[i], "xs") && str_equal_cstr(tokens[i + 1], "ys") && str_equal_cstr(tokens[i + 2], "zs")) {
 					coord_type = tokens[i];
-					coord_start = i - 2; //Skip ITEM: ATOMS tokens
+					coord_start = i - 2; //ITEM: ATOMS x means that x = tokens[2], but the coord on the next line would be defined in the first token, token[coord_start = 0]
 					break;
 				}
 			}
@@ -703,14 +706,9 @@ static bool md_lammps_trajectory_parse(int64_t* num_atoms, md_unit_cell_t* unit_
 			}
 
 			if (box_bounds_found == false) {
-				num_tokens = extract_tokens(tokens, 16, &line);
-
-				if (!md_buffered_reader_extract_line(&line, reader)) { //Read BOX BOUNDS
-					MD_LOG_ERROR("Could not read box bounds");
-					return false;
-				}
 				float cell_extent[3] = { 0 };
 
+				num_tokens = extract_tokens(tokens, 16, &line);
 				if (str_equal_cstr(tokens[3], "pp")) {
 					//Cubic
 					for (int8_t i = 0; i < 3; i++) {
