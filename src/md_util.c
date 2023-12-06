@@ -15,6 +15,7 @@
 #include <core/md_spatial_hash.h>
 #include <core/md_bitfield.h>
 #include <core/md_str_builder.h>
+#include <core/md_os.h>
 
 #include <math.h>
 #include <string.h>
@@ -371,6 +372,45 @@ static inline str_t trim_label(str_t lbl) {
     end = c;
 
     return (str_t) { .ptr = beg, .len = end-beg };
+}
+
+// Modeled after gromacs implementation which assumes a separation of less than half smallest box dimension (diagonal element)
+// https://github.com/gromacs/gromacs/blob/4f423711fabc081226d43beef1ab80c33c25edf8/src/gromacs/mdlib/ns.cpp#L1263
+// Mostly used as a reference for correctness
+static float min_image_tric(float dx[3], const float box[3][3], const float inv_box_ext[3]) {
+    int   t[3];
+
+     t[2]  = (int)(dx[2]*inv_box_ext[2] + 2.5f) - 2;
+    dx[2] -= t[2]*box[2][2];
+    dx[1] -= t[2]*box[2][1];
+    dx[0] -= t[2]*box[2][0];
+
+    t[1]   = (int)(dx[1]*inv_box_ext[1] + 2.5f) - 2;
+    dx[1] -= t[1]*box[1][1];
+    dx[0] -= t[1]*box[1][0];
+
+    t[0]   = (int)(dx[0]*inv_box_ext[0] + 2.5f) - 2;
+    dx[0] -= t[0]*box[0][0];
+
+	float r2 = (dx[0] * dx[0]) + (dx[1] * dx[1]) + (dx[2] * dx[2]);
+	return r2;
+}
+
+static md_256 simd_min_image_tric(md_256 dx, md_256 dy, md_256 dz, const float box[3][3], const float inv_box_ext[3]) {
+	md_256 tz = md_mm256_round_ps(md_mm256_mul_ps(dz, md_mm256_set1_ps(inv_box_ext[2])));
+	dz = md_mm256_sub_ps(dz, md_mm256_mul_ps(tz, md_mm256_set1_ps(box[2][2])));
+	dy = md_mm256_sub_ps(dy, md_mm256_mul_ps(tz, md_mm256_set1_ps(box[2][1])));
+	dx = md_mm256_sub_ps(dx, md_mm256_mul_ps(tz, md_mm256_set1_ps(box[2][0])));
+
+    md_256 ty = md_mm256_round_ps(md_mm256_mul_ps(dy, md_mm256_set1_ps(inv_box_ext[1])));
+	dy = md_mm256_sub_ps(dy, md_mm256_mul_ps(ty, md_mm256_set1_ps(box[1][1])));
+	dx = md_mm256_sub_ps(dx, md_mm256_mul_ps(ty, md_mm256_set1_ps(box[1][0])));
+
+    md_256 tx = md_mm256_round_ps(md_mm256_mul_ps(dx, md_mm256_set1_ps(inv_box_ext[0])));
+    dx = md_mm256_sub_ps(dx, md_mm256_mul_ps(tx, md_mm256_set1_ps(box[0][0])));
+
+	md_256 r2 = md_mm256_fmadd_ps(dz, dz, md_mm256_fmadd_ps(dx, dx, md_mm256_mul_ps(dy, dy)));
+    return r2;
 }
 
 static inline md_256 simd_deperiodize(md_256 x, md_256 r, md_256 period, md_256 inv_period) {
@@ -1159,13 +1199,7 @@ static inline uint8_t covalent_bond_heuristic2(float d2, md_element_t a, md_elem
         (element_covalent_radii3[a][2] * 0.01f + element_covalent_radii3[b][2] * 0.01f),
     };
 
-
-
     const float x = sqrtf(d2);
-
-    if (a == C && b == C) {
-        while(0);
-    }
 
     const float k[3] = {-10, -20, -40}; 
     const float z[3] = {
@@ -4774,81 +4808,156 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     ASSERT(mol);
     ASSERT(alloc);
 
-    if (mol->atom.vx == 0) {
-        md_array_resize(mol->atom.vx, mol->atom.count, alloc);
-        MEMSET(mol->atom.vx, 0, md_array_size(mol->atom.vx) * sizeof(*mol->atom.vx));
-    }
-    if (mol->atom.vy == 0) {
-        md_array_resize(mol->atom.vy, mol->atom.count, alloc);
-        MEMSET(mol->atom.vy, 0, md_array_size(mol->atom.vy) * sizeof(*mol->atom.vy));
-    }
-    if (mol->atom.vz == 0) {
-        md_array_resize(mol->atom.vz, mol->atom.count, alloc);
-        MEMSET(mol->atom.vz, 0, md_array_size(mol->atom.vz) * sizeof(*mol->atom.vz));
-    }
-
-    if (mol->atom.flags == 0) {
-        md_array_resize(mol->atom.flags, mol->atom.count, alloc);
-        MEMSET(mol->atom.flags, 0, md_array_size(mol->atom.flags) * sizeof(*mol->atom.flags));
+    {
+#ifdef PROFILE
+        md_timestamp_t t0 = md_time_current();
+#endif
+        if (mol->atom.vx == 0) {
+            md_array_resize(mol->atom.vx, mol->atom.count, alloc);
+            MEMSET(mol->atom.vx, 0, md_array_size(mol->atom.vx) * sizeof(*mol->atom.vx));
+        }
+        if (mol->atom.vy == 0) {
+            md_array_resize(mol->atom.vy, mol->atom.count, alloc);
+            MEMSET(mol->atom.vy, 0, md_array_size(mol->atom.vy) * sizeof(*mol->atom.vy));
+        }
+        if (mol->atom.vz == 0) {
+            md_array_resize(mol->atom.vz, mol->atom.count, alloc);
+            MEMSET(mol->atom.vz, 0, md_array_size(mol->atom.vz) * sizeof(*mol->atom.vz));
+        }
+        if (mol->atom.flags == 0) {
+            md_array_resize(mol->atom.flags, mol->atom.count, alloc);
+            MEMSET(mol->atom.flags, 0, md_array_size(mol->atom.flags) * sizeof(*mol->atom.flags));
+        }
+#ifdef PROFILE
+        md_timestamp_t t1 = md_time_current();
+        MD_LOG_DEBUG("Postprocess: allocate missing fields %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
     }
 
     if (flags & MD_UTIL_POSTPROCESS_RESIDUE_BIT) {
         // Create residues from resids
         if (mol->residue.count == 0 && mol->atom.resid) {
+#ifdef PROFILE
+            md_timestamp_t t0 = md_time_current();
+#endif
 			md_util_compute_residue_data(&mol->residue, &mol->atom, alloc);
+#ifdef PROFILE
+            md_timestamp_t t1 = md_time_current();
+            MD_LOG_DEBUG("Postprocess: compute residues %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
 		}
     }
 
     if (flags & MD_UTIL_POSTPROCESS_ELEMENT_BIT) {
+#ifdef PROFILE
+        md_timestamp_t t0 = md_time_current();
+#endif
         if (mol->atom.element == 0) {
             md_array_resize(mol->atom.element, mol->atom.count, alloc);
             MEMSET(mol->atom.element, 0, mol->atom.count * sizeof(*mol->atom.element));
         }
         md_util_element_guess(mol->atom.element, mol->atom.count, mol);
+#ifdef PROFILE
+        md_timestamp_t t1 = md_time_current();
+        MD_LOG_DEBUG("Postprocess: guess elements %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
     }
 
     if (flags & MD_UTIL_POSTPROCESS_RADIUS_BIT) {
+#ifdef PROFILE
+        md_timestamp_t t0 = md_time_current();
+#endif
         if (mol->atom.radius == 0)  md_array_resize(mol->atom.radius, mol->atom.count, alloc);
         for (int64_t i = 0; i < mol->atom.count; ++i) {
             mol->atom.radius[i] = mol->atom.element ? md_util_element_vdw_radius(mol->atom.element[i]) : 1.0f;
         }
+#ifdef PROFILE
+        md_timestamp_t t1 = md_time_current();
+        MD_LOG_DEBUG("Postprocess: compute radii %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
     }
 
     if (flags & MD_UTIL_POSTPROCESS_MASS_BIT) {
         if (!mol->atom.mass) {
+#ifdef PROFILE
+            md_timestamp_t t0 = md_time_current();
+#endif
             md_array_resize(mol->atom.mass, mol->atom.count, alloc);
             for (int64_t i = 0; i < mol->atom.count; ++i) {
                 mol->atom.mass[i] = mol->atom.element ? md_util_element_atomic_mass(mol->atom.element[i]) : 1.0f;
             }
+#ifdef PROFILE
+            md_timestamp_t t1 = md_time_current();
+            MD_LOG_DEBUG("Postprocess: compute masses %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
         }
     }
    
     if (flags & MD_UTIL_POSTPROCESS_BOND_BIT) {
+#ifdef PROFILE
+        md_timestamp_t t0 = md_time_current();
+#endif
         mol->bond = md_util_compute_covalent_bonds(&mol->atom, &mol->residue, &mol->unit_cell, alloc);
+#ifdef PROFILE
+        md_timestamp_t t1 = md_time_current();
+        MD_LOG_DEBUG("Postprocess: compute bonds %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
     }
 
     if (flags & MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT) {
         if (mol->bond.pairs) {
+#ifdef PROFILE
+            md_timestamp_t t0 = md_time_current();
+#endif
             md_compute_connectivity(&mol->conn, &mol->atom, &mol->bond, alloc);
+#ifdef PROFILE
+            md_timestamp_t t1 = md_time_current();
+            MD_LOG_DEBUG("Postprocess: compute connectivity %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
         }
     }
 
     if (flags & MD_UTIL_POSTPROCESS_STRUCTURE_BIT) {
         if (mol->conn.count) {
+#ifdef PROFILE
+            md_timestamp_t t0 = md_time_current();
+#endif
             mol->structures = md_util_compute_structures(mol, alloc);
+#ifdef PROFILE
+            md_timestamp_t t1 = md_time_current();
+#endif
             mol->rings      = md_util_compute_rings(mol, alloc);
+#ifdef PROFILE
+            md_timestamp_t t2 = md_time_current();
+            MD_LOG_DEBUG("Postprocess: compute structures %.3f ms\n", md_time_as_milliseconds(t1-t0));
+            MD_LOG_DEBUG("Postprocess: compute rings %.3f ms\n", md_time_as_milliseconds(t2-t1));
+#endif
 		}
     }
 
     if (flags & MD_UTIL_POSTPROCESS_ION_BIT) {
         if (mol->atom.element) {
+#ifdef PROFILE
+            md_timestamp_t t0 = md_time_current();
+#endif
 			md_util_identify_ions(&mol->atom);
+#ifdef PROFILE
+            md_timestamp_t t1 = md_time_current();
+            MD_LOG_DEBUG("Postprocess: identify ions %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
 		}
     }
 
     if (flags & MD_UTIL_POSTPROCESS_CHAINS_BIT) {
         if (mol->chain.count == 0 && mol->residue.count > 0 && mol->bond.pairs) {
+#ifdef PROFILE
+            md_timestamp_t t0 = md_time_current();
+#endif
             md_util_compute_chain_data(&mol->chain, &mol->atom, &mol->residue, &mol->bond, alloc);
+#ifdef PROFILE
+            md_timestamp_t t1 = md_time_current();
+            MD_LOG_DEBUG("Postprocess: compute chains %.3f ms\n", md_time_as_milliseconds(t1-t0));
+#endif
         }
     }
 
@@ -5479,7 +5588,7 @@ static void map_next(state_t* state) {
             return;
         }
 
-#if DEBUG
+#if DEBUG_PRINT
         const int depth = (int)md_array_size(state->n_path);
         printf("%*s [%d, %d]\n", depth, "", n_idx, h_idx);
 #endif
@@ -5707,7 +5816,7 @@ static bool is_solution(subgraph_context_t* ctx) {
     return true;
 }
 
-#define DEBUG_PRINT DEBUG
+#define DEBUG_PRINT 0
 
 static void brute_force(subgraph_context_t* ctx, int depth) {
     if (is_solution(ctx)) {
@@ -5827,7 +5936,7 @@ static bool store_unique_callback(const int map[], int64_t length, void* user) {
         stbds_hmputs(data->map, e);
     }
 
-#if DEBUG
+#if DEBUG_PRINT
     const int depth = (int)length;
     printf("%*sSolution found!\n", depth, "");
 #endif
@@ -5839,7 +5948,7 @@ static bool store_first_callback(const int map[], int64_t length, void* user) {
     store_data_t* data = (store_data_t*)user;
 
     md_index_data_push_arr(data->result, map, length, data->alloc);
-#if DEBUG
+#if DEBUG_PRINT
     const int depth = (int)length;
     printf("%*sSolution found!\n", depth, "");
 #endif
@@ -5851,7 +5960,7 @@ static bool store_all_callback(const int map[], int64_t length, void* user) {
     store_data_t* data = (store_data_t*)user;
 
     md_index_data_push_arr(data->result, map, length, data->alloc);
-#if DEBUG
+#if DEBUG_PRINT
     const int depth = (int)length;
     printf("%*sSolution found!\n", depth, "");
 #endif
@@ -5953,7 +6062,7 @@ static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* h
         int n_idx = start_candidates[i].n_idx;
         int h_idx = start_candidates[i].h_idx;
 
-#if 0
+#if DEBUG_PRINT
         printf("STARTING ATTEMPT TO MATCH %d -> %d\n", n_idx, h_idx);
 #endif
 
@@ -6029,10 +6138,6 @@ static graph_t make_graph(const md_molecule_t* mol, const uint8_t atom_types[], 
         // Translate the global atom indices to local structure indices
         uint32_t edge_data_arr[8];
         uint32_t length = 0;
-
-        if (i == 238) {
-            while(0);
-        }
 
         md_conn_iter_t it = md_conn_iter(mol, idx);
         while (md_conn_iter_has_next(&it)) {

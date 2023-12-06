@@ -19,9 +19,10 @@
 extern "C" {
 #endif
 
-#define MD_XYZ_CACHE_MAGIC 0x8265485749172bab
-#define MD_XYZ_MOL_MAGIC   0x285ada29078a9bc8
-#define MD_XYZ_TRAJ_MAGIC  0x2312ad7b78a9bc78
+#define MD_XYZ_CACHE_MAGIC      0x8265485749172bab
+#define MD_XYZ_CACHE_VERSION    2
+#define MD_XYZ_MOL_MAGIC        0x285ada29078a9bc8
+#define MD_XYZ_TRAJ_MAGIC       0x2312ad7b78a9bc78
 
 enum {
     XYZ_TINKER          = 1,
@@ -506,7 +507,7 @@ int64_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
         return 0;
     }
 
-    if (!(0 <= frame_idx && frame_idx < (int64_t)md_array_size(xyz->frame_offsets) - 1)) {
+    if (frame_idx < 0 || xyz->header.num_frames <= frame_idx) {
         MD_LOG_ERROR("Frame index is out of range");
         return 0;
     }
@@ -804,92 +805,85 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return result;
 }
 
-static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_atoms, md_allocator_i* alloc) {
+typedef struct xyz_cache_t {
+    md_trajectory_cache_header_t header;
+    int64_t* offsets;
+} xyz_cache_t;
+
+static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, int64_t traj_num_bytes, md_allocator_i* alloc) {
+    ASSERT(cache);
+    ASSERT(alloc);
+
+    bool result = false;
     md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        int64_t read_bytes = 0;
-        int64_t num_offsets = 0;
-        uint64_t magic = 0;
-
-        bool result = true;
-
-        read_bytes = md_file_read(file, &magic, sizeof(uint64_t));
-        if (read_bytes != sizeof(uint64_t) || magic != MD_XYZ_CACHE_MAGIC) {
-            MD_LOG_ERROR("Failed to read offset cache, magic was incorrect or corrupt");
-            result = false;
+        if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
+            MD_LOG_ERROR("XYZ trajectory cache: failed to read header");
             goto done;
         }
 
-        read_bytes = md_file_read(file, num_atoms, sizeof(int64_t));
-        if (read_bytes != sizeof(int64_t) || num_atoms == 0) {
-            MD_LOG_ERROR("Failed to read offset cache, number of atoms was zero or corrupt");
-            result = false;
+        if (cache->header.magic != MD_XYZ_CACHE_MAGIC) {
+        	MD_LOG_ERROR("XYZ trajectory cache: magic was incorrect or corrupt");
+        	goto done;
+        }
+        if (cache->header.version != MD_XYZ_CACHE_VERSION) {
+            MD_LOG_INFO("XYZ trajectory cache: version mismatch, expected %i, got %i", MD_XYZ_CACHE_VERSION, (int)cache->header.version);
+        }
+        if (cache->header.num_bytes != traj_num_bytes) {
+			MD_LOG_INFO("XYZ trajectory cache: trajectory size mismatch, expected %i, got %i", (int)traj_num_bytes, (int)cache->header.num_bytes);
+		}
+        if (cache->header.num_atoms == 0) {
+			MD_LOG_ERROR("XYZ trajectory cache: num atoms was zero");
+			goto done;
+		}
+        if (cache->header.num_frames == 0) {
+            MD_LOG_ERROR("XYZ trajectory cache: num frames was zero");
             goto done;
         }
 
-        read_bytes = md_file_read(file, &num_offsets, sizeof(int64_t));
-        if (read_bytes != sizeof(int64_t) || num_offsets == 0) {
-            MD_LOG_ERROR("Failed to read offset cache, number of frames was zero or corrupted");
-            result = false;
-            goto done;
-        }
-
-        int64_t* tmp_offsets = 0;
-        md_array_resize(tmp_offsets, num_offsets, alloc);
-
-        read_bytes = md_file_read(file, tmp_offsets, num_offsets * sizeof(int64_t));
-        if (read_bytes != (int64_t)(num_offsets * sizeof(int64_t))) {
+        const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+        cache->offsets = md_alloc(alloc, offset_bytes);
+        if (md_file_read(file, cache->offsets, offset_bytes) != offset_bytes) {
             MD_LOG_ERROR("Failed to read offset cache, offsets are incomplete");
-            md_array_free(tmp_offsets, alloc);
-            result = false;
+            md_free(alloc, cache->offsets, offset_bytes);
             goto done;
         }
 
-        *offsets = tmp_offsets;
+        result = true;
     done:
         md_file_close(file);
-        return result;
     }
-
-    return false;
+    return result;
 }
 
-static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms) {
+static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
+    bool result = false;
+
     md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
-    if (file) {
-        int64_t num_offsets = md_array_size(offsets);
-        int64_t written_bytes = 0;
-        const uint64_t magic = MD_XYZ_CACHE_MAGIC;
-
-        written_bytes = md_file_write(file, &magic, sizeof(uint64_t));
-        ASSERT(written_bytes == sizeof(uint64_t));
-
-        written_bytes = md_file_write(file, &num_atoms, sizeof(int64_t));
-        ASSERT(written_bytes == sizeof(int64_t));
-
-        written_bytes = md_file_write(file, &num_offsets, sizeof(int64_t));
-        ASSERT(written_bytes == sizeof(int64_t));
-
-        written_bytes = md_file_write(file, offsets, num_offsets * sizeof(int64_t));
-        ASSERT(written_bytes == (int64_t)(num_offsets * sizeof(int64_t)));
-
-        md_file_close(file);
-        return true;
+    if (!file) {
+        MD_LOG_ERROR("XYZ trajectory cache: could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+        return false;
     }
 
-    MD_LOG_ERROR("Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
-    return false;
+    if (md_file_write(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
+		MD_LOG_ERROR("XYZ trajectory cache: failed to write header");
+		goto done;
+	}
+
+    const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+    if (md_file_write(file, cache->offsets, offset_bytes) != offset_bytes) {
+        MD_LOG_ERROR("Failed to write offset cache, offsets");
+        goto done;
+    }
+
+    result = true;
+
+done:
+    md_file_close(file);
+    return result;
 }
 
-void xyz_trajectory_free(struct md_trajectory_o* inst) {
-    ASSERT(inst);
-    xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
-    if (xyz->file) md_file_close(xyz->file);
-    if (xyz->frame_offsets) md_array_free(xyz->frame_offsets, xyz->allocator);
-    md_mutex_destroy(&xyz->mutex);
-}
-
-md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* alloc) {
+md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for XYZ trajectory");
@@ -914,48 +908,58 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
     str_t cache_file = {buf, len};
 
-    int64_t num_atoms = 0;
-    int64_t* offsets = 0;
+    md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-    if (!try_read_cache(cache_file, &offsets, &num_atoms, alloc)) {
+    xyz_cache_t cache = {0};
+    if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
+        md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+
+        bool result = false;
         md_xyz_data_t data = {0};
-        if (!md_xyz_data_parse_file(&data, filename, md_heap_allocator)) {
-            return false;
+        if (!md_xyz_data_parse_file(&data, filename, temp_alloc)) {
+            goto cleanup;
         }
 
         if (data.num_models <= 1) {
-            md_log(MD_LOG_TYPE_INFO, "The xyz file did not contain multiple entries and cannot be read as a trajectory");
-            md_xyz_data_free(&data, md_heap_allocator);
-            return false;
+            md_log(MD_LOG_TYPE_INFO, "The XYZ file did not contain multiple entries and cannot be read as a trajectory");
+            md_xyz_data_free(&data, temp_alloc);
+            goto cleanup;
         }
 
-        {
-            // Validate the models
-            const int64_t ref_length = data.models[0].end_coord_index - data.models[0].beg_coord_index;
-            for (int64_t i = 1; i < data.num_models; ++i) {
-                const int64_t length = data.models[i].end_coord_index - data.models[i].beg_coord_index;
-                if (length != ref_length) {
-                    MD_LOG_ERROR("The xyz file models are not of equal length and cannot be read as a trajectory");
-                    md_xyz_data_free(&data, md_heap_allocator);
-                    return false;
-                }
+        // Validate the models, pick the atom count in the first model and ensure that all other models have the same number of atoms
+        const int64_t num_atoms = data.models[0].end_coord_index - data.models[0].beg_coord_index;
+        for (int64_t i = 1; i < data.num_models; ++i) {
+            const int64_t length = data.models[i].end_coord_index - data.models[i].beg_coord_index;
+            if (length != num_atoms) {
+                MD_LOG_ERROR("The XYZ file models are not of equal length and cannot be read as a trajectory");
+                goto cleanup;
             }
-            num_atoms = ref_length;
         }
+
+        cache.header.magic = MD_XYZ_CACHE_MAGIC;
+        cache.header.version = MD_XYZ_CACHE_VERSION;
+        cache.header.num_bytes = filesize;
+        cache.header.num_atoms = num_atoms;
+        cache.header.num_frames = data.num_models;
+        cache.offsets = md_alloc(alloc, sizeof(int64_t) * (cache.header.num_frames + 1));
 
         for (int64_t i = 0; i < data.num_models; ++i) {
-            md_array_push(offsets, data.models[i].byte_offset, alloc);
+            cache.offsets[i] = data.models[i].byte_offset;
         }
-        md_array_push(offsets, filesize, alloc);
+        cache.offsets[data.num_models] = filesize;
+        write_cache(&cache, cache_file);
 
-        write_cache(cache_file, offsets, num_atoms);
+        result = true;
+    cleanup:
+        md_arena_allocator_destroy(temp_alloc);
+        if (!result) {
+            return false;
+        }
     }
 
     int64_t max_frame_size = 0;
-    for (int64_t i = 0; i < md_array_size(offsets) - 1; ++i) {
-        const int64_t beg = offsets[i + 0];
-        const int64_t end = offsets[i + 1];
-        const int64_t frame_size = end - beg;
+    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
+        const int64_t frame_size = cache.offsets[i + 1] - cache.offsets[i];
         max_frame_size = MAX(max_frame_size, frame_size);
     }
 
@@ -966,22 +970,20 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     md_trajectory_i* traj = mem;
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)(traj + 1);
 
-    const int64_t num_frames = md_array_size(offsets) - 1;
-
-    md_array(double) frame_times = md_array_create(double, num_frames, alloc);
-    for (int64_t i = 0; i < num_frames; ++i) {
+    md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
+    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
         frame_times[i] = (double)i;
     }
 
     xyz->magic = MD_XYZ_TRAJ_MAGIC;
     xyz->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     xyz->filesize = filesize;
-    xyz->frame_offsets = offsets;
+    xyz->frame_offsets = cache.offsets;
     xyz->allocator = alloc;
     xyz->mutex = md_mutex_create();
     xyz->header = (md_trajectory_header_t) {
-        .num_frames = num_frames,
-        .num_atoms = num_atoms,
+        .num_frames = cache.header.num_frames,
+        .num_atoms = cache.header.num_atoms,
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
         .frame_times = frame_times,
@@ -1007,9 +1009,9 @@ void md_xyz_trajectory_free(md_trajectory_i* traj) {
         return;
     }
     
-    md_allocator_i* alloc = xyz->allocator;
-    xyz_trajectory_free(traj->inst);
-    md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(xyz_trajectory_t));
+    if (xyz->file) md_file_close(xyz->file);
+    md_mutex_destroy(&xyz->mutex);
+    md_arena_allocator_destroy(xyz->allocator);
 }
 
 static md_trajectory_loader_i xyz_traj_loader = {

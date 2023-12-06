@@ -3835,6 +3835,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
             // If we have conflicting units, we make it unitless and let the user know.
             //LOG_WARNING(ctx->ir, node->token, "import: conflicting units, perhaps separate the import into two separate");
             unit = md_unit_none();
+            break;
         }
     }
 

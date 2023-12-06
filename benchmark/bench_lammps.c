@@ -13,14 +13,10 @@ UBENCH_EX(lammps, load) {
 	UBENCH_SET_BYTES(md_file_size(file));
 	md_file_close(file);
 
-	data_format_t* formatPtr, format;
-	formatPtr = &format;
-	get_data_format(formatPtr, full);
-
 	UBENCH_DO_BENCHMARK() {
 		md_arena_allocator_reset(alloc);
 		md_lammps_data_t lammps = {0};
-		md_lammps_data_parse_file(&lammps, path, alloc, formatPtr);
+		md_lammps_data_parse_file(&lammps, path, MD_LAMMPS_ATOM_FORMAT_FULL, alloc);
 	}
 
 	md_arena_allocator_destroy(alloc);

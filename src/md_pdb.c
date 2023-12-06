@@ -22,8 +22,8 @@ extern "C" {
 #endif
 
 #define MD_PDB_TRAJ_MAGIC 0x2312ad7b78a9bc78
-#define MD_PDB_CACHE_MAGIC 0x89172bab
-#define MD_PDB_CACHE_VERSION 14
+#define MD_PDB_CACHE_MAGIC 0x89172bab124545
+#define MD_PDB_CACHE_VERSION 15
 #define MD_PDB_PARSE_BIOMT 1
 
 // The opaque blob
@@ -219,7 +219,7 @@ int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
         return 0;
     }
 
-    if (!(0 <= frame_idx && frame_idx < (int64_t)md_array_size(pdb->frame_offsets) - 1)) {
+    if (frame_idx < 0 || pdb->header.num_frames <= frame_idx) {
         MD_LOG_ERROR("Frame index is out of range");
         return 0;
     }
@@ -741,45 +741,60 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return result;
 }
 
-static bool try_read_cache(str_t cache_file, md_array(int64_t)* offsets, int64_t* num_atoms, md_unit_cell_t* cell, md_allocator_i* alloc) {
-    md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
+typedef struct pdb_cache_t {
+    md_trajectory_cache_header_t header;
+    md_unit_cell_t cell;
+    int64_t* frame_offsets;
+} pdb_cache_t;
+
+static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, int64_t traj_num_bytes, md_allocator_i* alloc) {
+    ASSERT(cache);
+    ASSERT(alloc);
+
     bool result = false;
+    md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        int64_t num_offsets = 0;
-        uint32_t magic = 0;
-        uint32_t version = 0;
-
-        if (md_file_read(file, &magic, sizeof(magic)) != sizeof(magic) || magic != MD_PDB_CACHE_MAGIC) {
-            MD_LOG_ERROR("Failed to read offset cache, magic was incorrect or corrupt");
+        if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
+            MD_LOG_ERROR("PDB trajectory cache: failed to read header");
             goto done;
         }
 
-        if (md_file_read(file, &version, sizeof(version)) != sizeof(version) || version != MD_PDB_CACHE_VERSION) {
-            MD_LOG_ERROR("Failed to read offset cache, version was incorrect");
+        if (cache->header.magic != MD_PDB_CACHE_MAGIC) {
+            MD_LOG_ERROR("PDB trajectory cache: magic was incorrect or corrupt");
+            goto done;
+        }
+        if (cache->header.version != MD_PDB_CACHE_VERSION) {
+            MD_LOG_INFO("PDB trajectory cache: version mismatch, expected %i, got %i", MD_PDB_CACHE_VERSION, (int)cache->header.version);
+        }
+        if (cache->header.num_bytes != traj_num_bytes) {
+            MD_LOG_INFO("PDB trajectory cache: trajectory size mismatch, expected %i, got %i", (int)traj_num_bytes, (int)cache->header.num_bytes);
+        }
+        if (cache->header.num_atoms == 0) {
+            MD_LOG_ERROR("PDB trajectory cache: num atoms was zero");
+            goto done;
+        }
+        if (cache->header.num_frames == 0) {
+            MD_LOG_ERROR("PDB trajectory cache: num frames was zero");
             goto done;
         }
 
-        if (md_file_read(file, num_atoms, sizeof(num_atoms)) != sizeof(num_atoms) || num_atoms == 0) {
-            MD_LOG_ERROR("Failed to read offset cache, number of atoms was zero or corrupt");
+        if (md_file_read(file, &cache->cell, sizeof(cache->cell)) != sizeof(cache->cell)) {
+			MD_LOG_ERROR("PDB trajectory cache: failed to read unit cell");
+			goto done;
+		}
+
+        const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+        cache->frame_offsets = md_alloc(alloc, offset_bytes);
+        if (md_file_read(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
+            MD_LOG_ERROR("PDB trajectory cache: Failed to read offset data");
+            md_free(alloc, cache->frame_offsets, offset_bytes);
             goto done;
         }
 
-        if (md_file_read(file, cell, sizeof(md_unit_cell_t)) != sizeof(md_unit_cell_t)) {
-            MD_LOG_ERROR("Failed to read offset cache, cell was corrupt");
-            goto done;
-        }
-
-        if (md_file_read(file, &num_offsets, sizeof(num_offsets)) != sizeof(num_offsets) || num_offsets == 0) {
-            MD_LOG_ERROR("Failed to read offset cache, number of frames was zero or corrupted");
-            goto done;
-        }
-
-        md_array_resize(*offsets, num_offsets, alloc);
-
-        const int64_t offset_bytes = md_array_bytes(*offsets);
-        if (md_file_read(file, *offsets, offset_bytes) != offset_bytes) {
-            MD_LOG_ERROR("Failed to read offset cache, offsets are incomplete");
-            md_array_free(*offsets, alloc);
+        // Test position in file, we expect to be at the end of the file
+        if (md_file_tell(file) != md_file_size(file)) {
+            MD_LOG_ERROR("PDB trajectory cache: file position was not at the end of the file");
+            md_free(alloc, cache->frame_offsets, offset_bytes);
             goto done;
         }
 
@@ -790,119 +805,116 @@ static bool try_read_cache(str_t cache_file, md_array(int64_t)* offsets, int64_t
     return result;
 }
 
-static bool write_cache(str_t cache_file, const md_array(int64_t) offsets, int64_t num_offsets, int64_t num_atoms, const md_unit_cell_t* cell) {
+static bool write_cache(const pdb_cache_t* cache, str_t cache_file) {
     bool result = false;
+
     md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
-    if (file) {
-        const uint32_t magic    = MD_PDB_CACHE_MAGIC;
-        const uint32_t version  = MD_PDB_CACHE_VERSION;
-        const int64_t offset_bytes = num_offsets * sizeof(int64_t);
-
-        if (md_file_write(file, &magic,         sizeof(uint32_t))   != sizeof(uint32_t) ||
-            md_file_write(file, &version,       sizeof(uint32_t))   != sizeof(uint32_t) ||
-            md_file_write(file, &num_atoms,     sizeof(int64_t))    != sizeof(int64_t)  ||
-            md_file_write(file, cell,           sizeof(md_unit_cell_t))  != sizeof(md_unit_cell_t)||
-            md_file_write(file, &num_offsets,   sizeof(int64_t))    != sizeof(int64_t)  ||
-            md_file_write(file, offsets,        offset_bytes)       != offset_bytes)
-        {
-            MD_LOG_ERROR("Failed to write pdb cache");
-            goto done;
-        }
-
-        result = true;
-        
-        done:
-        md_file_close(file);
-    } else {
-        MD_LOG_ERROR("Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+    if (!file) {
+        MD_LOG_ERROR("PDB trajectory cache: could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+        return false;
     }
-    
+
+    if (md_file_write(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
+        MD_LOG_ERROR("PDB trajectory cache: failed to write header");
+        goto done;
+    }
+
+    if (md_file_write(file, &cache->cell, sizeof(cache->cell)) != sizeof(cache->cell)) {
+    	MD_LOG_ERROR("PDB trajectory cache: failed to write unit cell");
+    	goto done;
+    }
+
+    const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+    if (md_file_write(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
+        MD_LOG_ERROR("PDB trajectory cache: failed to write frame offsets");
+        goto done;
+    }
+
+    result = true;
+
+done:
+    md_file_close(file);
     return result;
 }
 
-void pdb_trajectory_free(struct md_trajectory_o* inst) {
-    ASSERT(inst);
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
-    if (pdb->file) md_file_close(pdb->file);
-    if (pdb->frame_offsets) md_array_free(pdb->frame_offsets, pdb->allocator);
-    if (pdb->header.frame_times) md_array_free(pdb->header.frame_times, pdb->allocator);
-    md_mutex_destroy(&pdb->mutex);
-}
-
-md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* alloc) {
+md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for PDB trajectory");
         return false;
     }
 
-    int64_t filesize = md_file_size(file);
+    const int64_t filesize = md_file_size(file);
     md_file_close(file);
 
     char buf[1024] = "";
     int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
     str_t cache_file = {buf, len};
 
-    md_unit_cell_t cell = {0};
-    int64_t num_atoms = 0;
-    int64_t* offsets = 0;
+    md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-    if (!try_read_cache(cache_file, &offsets, &num_atoms, &cell, alloc)) {
+    pdb_cache_t cache = {0};
+    if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
+        md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+
+        bool result = false;
         md_pdb_data_t data = {0};
-        if (!md_pdb_data_parse_file(&data, filename, md_heap_allocator)) {
-            return false;
+        if (!md_pdb_data_parse_file(&data, filename, temp_alloc)) {
+            goto cleanup;
         }
 
         if (data.num_models <= 1) {
             MD_LOG_INFO("The PDB file does not contain multiple model entries and cannot be read as a trajectory");
-            md_pdb_data_free(&data, md_heap_allocator);
-            return false;
+            goto cleanup;
         }
 
-        {
-            // Validate the models
-            const int64_t ref_length = data.models[0].end_atom_index - data.models[0].beg_atom_index;
-            for (int64_t i = 1; i < data.num_models; ++i) {
-                const int64_t length = data.models[i].end_atom_index - data.models[i].beg_atom_index;
-                if (length != ref_length) {
-                    MD_LOG_ERROR("The PDB file models are not of equal length and cannot be read as a trajectory");
-                    md_pdb_data_free(&data, md_heap_allocator);
-                    return false;
-                }
+        // Validate the models
+        const int64_t num_atoms = data.models[0].end_atom_index - data.models[0].beg_atom_index;
+        for (int64_t i = 1; i < data.num_models; ++i) {
+            const int64_t length = data.models[i].end_atom_index - data.models[i].beg_atom_index;
+            if (length != num_atoms) {
+                MD_LOG_ERROR("The PDB file models are not of equal length and cannot be read as a trajectory");
+                goto cleanup;
             }
-            num_atoms = ref_length;
         }
+        
+        cache.header.magic = MD_PDB_CACHE_MAGIC;
+        cache.header.version = MD_PDB_CACHE_VERSION;
+        cache.header.num_bytes = filesize;
+        cache.header.num_atoms = num_atoms;
+        cache.header.num_frames = data.num_models;
 
-        for (int64_t i = 0; i < data.num_models; ++i) {
-            md_array_push(offsets, data.models[i].byte_offset, alloc);
+        cache.frame_offsets = md_alloc(alloc, (cache.header.num_frames + 1) * sizeof(int64_t));
+        for (int64_t i = 0; i < cache.header.num_frames; ++i) {
+            cache.frame_offsets[i] = data.models[i].byte_offset;
         }
-        md_array_push(offsets, filesize, alloc);
+        cache.frame_offsets[cache.header.num_frames] = filesize;
 
         if (data.num_cryst1 > 0) {
             if (data.num_cryst1 > 1) {
                 md_log(MD_LOG_TYPE_INFO, "The PDB file contains multiple CRYST1 entries, will pick the first one for determining the simulation box");
             }
             // If it is in fact a box, that will be handled as well
-            cell = md_util_unit_cell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
+            cache.cell = md_util_unit_cell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
         }
 
-        write_cache(cache_file, offsets, md_array_size(offsets), num_atoms, &cell);
-        md_pdb_data_free(&data, md_heap_allocator);
+        result = write_cache(&cache, cache_file);
 
+        cleanup:
+        md_arena_allocator_destroy(temp_alloc);
+        if (!result) {
+            return false;
+        }
     }
 
-    const int64_t num_frames = md_array_size(offsets) - 1;
-
     int64_t max_frame_size = 0;
-    for (int64_t i = 0; i < num_frames; ++i) {
-        const int64_t beg = offsets[i + 0];
-        const int64_t end = offsets[i + 1];
-        const int64_t frame_size = end - beg;
+    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
+        const int64_t frame_size = cache.frame_offsets[i + 1] - cache.frame_offsets[i];
         max_frame_size = MAX(max_frame_size, frame_size);
     }
 
-    md_array(double) frame_times = md_array_create(double, num_frames, alloc);
-    for (int64_t i = 0; i < num_frames; ++i) {
+    md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
+    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
         frame_times[i] = (double)i;
     }
 
@@ -916,17 +928,17 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     pdb->magic = MD_PDB_TRAJ_MAGIC;
     pdb->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     pdb->filesize = filesize;
-    pdb->frame_offsets = offsets;
+    pdb->frame_offsets = cache.frame_offsets;
     pdb->allocator = alloc;
     pdb->mutex = md_mutex_create();
     pdb->header = (md_trajectory_header_t) {
-        .num_frames = md_array_size(offsets) - 1,
-        .num_atoms = num_atoms,
+        .num_frames = cache.header.num_frames,
+        .num_atoms = cache.header.num_atoms,
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
         .frame_times = frame_times,
     };
-    pdb->unit_cell = cell;
+    pdb->unit_cell = cache.cell;
 
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;
@@ -947,9 +959,9 @@ void md_pdb_trajectory_free(md_trajectory_i* traj) {
         return;
     }
     
-    md_allocator_i* alloc = pdb->allocator;
-    pdb_trajectory_free(traj->inst);
-    md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(pdb_trajectory_t));
+    if (pdb->file) md_file_close(pdb->file);
+    md_mutex_destroy(&pdb->mutex);
+    md_arena_allocator_destroy(pdb->allocator);
 }
 
 static md_trajectory_loader_i pdb_traj_loader = {

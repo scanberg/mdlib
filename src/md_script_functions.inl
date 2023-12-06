@@ -4202,13 +4202,13 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const data_t 
     }
 }
 
+#if 0
 static int visualize_rdf(const data_t arg[2], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
     ASSERT(ctx->vis);
 
     //position_visualize(arg[0], ctx);
     //position_visualize(arg[1], ctx);
     // Visualize
-#if 0
     if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
         const float min_cutoff2 = min_cutoff * min_cutoff;
         const float max_cutoff2 = max_cutoff * max_cutoff;
@@ -4232,10 +4232,10 @@ static int visualize_rdf(const data_t arg[2], float min_cutoff, float max_cutoff
             }
         }
     }
-#endif
 
     return 0;
 }
+#endif
 
 static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
     if (dst || ctx->vis) {
@@ -4249,7 +4249,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, &ctx->mol->unit_cell, ctx->temp_alloc, ctx);
         }
         if (ctx->vis) {
-            return visualize_rdf(arg, min_cutoff, max_cutoff, ctx);
+            //return visualize_rdf(arg, min_cutoff, max_cutoff, ctx);
         }
         return 0;
     }
