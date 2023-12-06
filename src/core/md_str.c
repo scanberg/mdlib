@@ -57,6 +57,18 @@ bool str_equal_ignore_case(const str_t str_a, const str_t str_b) {
     return true;
 }
 
+bool str_equal_n_ignore_case(const str_t str_a, const str_t str_b, int64_t n) {
+    if (!str_a.ptr || !str_b.ptr) return false;
+	if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
+
+	// str_a & str_b have equal len.
+	n = n < str_a.len ? n : str_a.len;
+	for (int64_t i = 0; i < n; ++i) {
+    	if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
+    }
+	return true;
+}
+
 bool str_equal_cstr(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
     for (int64_t i = 0; i < str.len; ++i) {
@@ -82,6 +94,16 @@ bool str_equal_cstr_ignore_case(str_t str, const char* cstr) {
         if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
     }
     return cstr[str.len] == '\0';
+}
+
+bool str_equal_cstr_n_ignore_case(str_t str, const char* cstr, int64_t n) {
+    if (n < 0) return false;
+    if (!str.ptr || !str.len || !cstr) return false;
+    n = n < str.len ? n : str.len;
+    for (int64_t i = 0; i < n; ++i) {
+        if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
+    }
+    return true;
 }
 
 int64_t str_count_equal_chars(str_t a, str_t b) {

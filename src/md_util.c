@@ -572,6 +572,17 @@ static bool nucleotide_heuristic(const md_label_t labels[], int size) {
 #define MIN_RES_LEN 4
 #define MAX_RES_LEN 25
 
+static bool is_organic(char c) {
+    switch(c) {
+        case 'C': return true;
+        case 'N': return true;
+        case 'O': return true;
+        case 'S': return true;
+        case 'P': return true;
+		default: return false;
+    }
+}
+
 bool md_util_element_guess(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol) {
     ASSERT(capacity >= 0);
     ASSERT(mol);
@@ -595,12 +606,28 @@ bool md_util_element_guess(md_element_t element[], int64_t capacity, const struc
             if (mol->atom.flags) {
                 const md_flags_t flags = mol->atom.flags[i];
                 if (flags & MD_FLAG_AMINO_ACID || flags & MD_FLAG_NUCLEOTIDE) {
-                    // EASY-PEASY, we just try to match against the first character
+                    // Try to match against the first character
                     name.len = 1;
                     elem = md_util_element_lookup_ignore_case(name);
                     goto done;
                 }
             }
+
+            // This is the same logic as above but more general, for the natural organic elements
+            if (is_organic(name.ptr[0]) && name.len > 1) {
+                if (name.ptr[1] - 'A' < 5) {
+                    if (mol->residue.count > 0 && mol->atom.res_idx) {
+                        int32_t res_idx = mol->atom.res_idx[i];
+                        md_range_t res_range = mol->residue.atom_range[res_idx];
+                        int res_len = res_range.end - res_range.beg;
+                        if (res_len > 3) {
+                            name.len = 1;
+                            elem = md_util_element_lookup_ignore_case(name);
+                            goto done;
+                        }
+                    }
+                }
+			}
 
             // Heuristic cases
 
