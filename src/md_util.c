@@ -1603,18 +1603,19 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
         return false;
     }
 
-    md_array_shrink(chain->id, 0);
-    md_array_shrink(chain->atom_range, 0);
-    md_array_shrink(chain->residue_range, 0);
-    chain->count = 0;
+    MEMSET(chain, 0, sizeof(md_chain_data_t));
+
+    if (res->count == 1) {
+        // There can be no chains if there is only one residue
+        return true;
+    }
 
     //md_array(uint64_t) res_bond_to_next = make_bitfield(res->count, md_temp_allocator);
-    md_array(uint64_t) res_bond_to_prev = make_bitfield(res->count, md_temp_allocator);
+    md_array(uint64_t) res_bond_to_prev = make_bitfield(res->count + 1, md_temp_allocator);
     for (int64_t i = 0; i < bond->count; ++i) {
         if (bond->flags[i] & MD_FLAG_INTER_BOND) {
             const md_residue_idx_t res_a = atom->res_idx[bond->pairs[i].idx[0]];
             const md_residue_idx_t res_b = atom->res_idx[bond->pairs[i].idx[1]];
-            //set_bit(res_bond_to_next, MIN(res_a, res_b));
             set_bit(res_bond_to_prev, MAX(res_a, res_b));
         }
     }
@@ -1668,8 +1669,10 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
         }
 #else
         int beg_idx = 0;
-        for (int i = 0; i < res->count; ++i) {
-            if (!test_bit(res_bond_to_prev, i) || i == res->count - 1) {
+        // We iterate up to res->count + 1 to ensure that the last residue is also included
+        // And it will automatically not be bonded to prev as its bit is zero and all is well
+        for (int i = 0; i <= res->count; ++i) {
+            if (!test_bit(res_bond_to_prev, i)) {
                 int end_idx = i;
                 if (end_idx - beg_idx > 1) {
                     const md_label_t id = generate_chain_id_from_index(chain->count);
@@ -1682,7 +1685,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
 
                     chain->count += 1;
                 }
-                beg_idx = i + 1;
+                beg_idx = i;
             }
         }
 #endif
