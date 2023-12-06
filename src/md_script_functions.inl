@@ -2488,8 +2488,9 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
         int64_t dst_idx = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            const md_flags_t flags = ctx->mol->residue.flags[i];
-            const md_range_t range = ctx->mol->residue.atom_range[i];
+            int32_t res_idx = res_indices[i];
+            const md_flags_t flags = ctx->mol->residue.flags[res_idx];
+            const md_range_t range = ctx->mol->residue.atom_range[res_idx];
             if (flags & MD_FLAG_WATER) {
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
                 // Do not progress this if we are evaluating in a filter context (we want a single bitfield then)
@@ -2500,7 +2501,8 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // Length query
         int count = 0;
         for (int64_t i = 0; i < md_array_size(res_indices); ++i) {
-            const md_flags_t flags = ctx->mol->residue.flags[i];
+            int32_t res_idx = res_indices[i];
+            const md_flags_t flags = ctx->mol->residue.flags[res_idx];
             count += (flags & MD_FLAG_WATER) ? 1 : 0;
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {

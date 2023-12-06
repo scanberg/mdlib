@@ -1476,11 +1476,12 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
     for (int64_t i = 0; i < res->count; ++i) {
         str_t resname = LBL_TO_STR(res->name[i]);
         md_range_t range = res->atom_range[i];
+        int32_t len = range.end - range.beg;
         if (md_util_resname_amino_acid(resname) || amino_acid_heuristic(atom->type + range.beg, range.end - range.beg)) {
 			res->flags[i] |= MD_FLAG_AMINO_ACID;
 		} else if (md_util_resname_nucleic_acid(resname) || nucleotide_heuristic(atom->type + range.beg, range.end - range.beg)) {
             res->flags[i] |= MD_FLAG_NUCLEOTIDE;
-        } else if (md_util_resname_water(resname) || (range.end == range.beg + 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg])))) {
+        } else if (md_util_resname_water(resname) || (len == 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg])))) {
             res->flags[i] |= MD_FLAG_WATER;
         }
 
