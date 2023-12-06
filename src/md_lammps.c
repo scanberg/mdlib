@@ -27,7 +27,7 @@ static const char* field_names[] = {
 	"z"
 };
 
-static int required_fields[] = {0,2,4,5,6};
+static int required_fields[] = { 0,2,4,5,6 };
 
 typedef struct mass_entry_t {
 	int32_t type;
@@ -127,7 +127,7 @@ static bool parse_angles(md_lammps_angle_t out_angles[], int32_t angle_cap, md_b
 			MD_LOG_ERROR("Failed to parse angle line, expected 5 tokens, got %i", (int)num_tok);
 			return false;
 		}
-	
+
 		md_lammps_angle_t* angle = &out_angles[num_angles++];
 		angle->id = (int32_t)parse_int(tok[0]);
 		angle->type = (int32_t)parse_int(tok[1]);
@@ -149,7 +149,7 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], int32_t dihedr
 			MD_LOG_ERROR("Failed to parse dihedral line, expected 6 tokens, got %i", (int)num_tok);
 			return false;
 		}
-	
+
 		md_lammps_dihedral_t* dihedral = &out_dihedrals[num_dihedrals++];
 		dihedral->id = (int32_t)parse_int(tok[0]);
 		dihedral->type = (int32_t)parse_int(tok[1]);
@@ -227,7 +227,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 					data->atoms[i].mass = type < md_array_size(mass_table) ? mass_table[data->atoms[i].type] : 0.0f;
 				}
 			}
-		} else if (num_tok > 0 && str_equal(tok[0], STR("Bonds"))) {
+		}
+		else if (num_tok > 0 && str_equal(tok[0], STR("Bonds"))) {
 			if (!data->num_bonds) {
 				MD_LOG_ERROR("Encountered Bond entries, but number of bonds were not set or zero");
 				return false;
@@ -237,7 +238,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_bonds(data->bonds, data->num_bonds, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_equal(tok[0], STR("Angles"))) {
+		}
+		else if (num_tok > 0 && str_equal(tok[0], STR("Angles"))) {
 			if (!data->num_angles) {
 				MD_LOG_ERROR("Encountered Angle entries, but number of angles were not set or zero");
 				return false;
@@ -247,7 +249,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_angles(data->angles, data->num_angles, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_equal(tok[0], STR("Dihedrals"))) {
+		}
+		else if (num_tok > 0 && str_equal(tok[0], STR("Dihedrals"))) {
 			if (!data->num_dihedrals) {
 				MD_LOG_ERROR("Encountered Dihedral entries, but number of dihedrals were not set or zero");
 				return false;
@@ -257,7 +260,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_angles(data->angles, data->num_angles, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_equal(tok[0], STR("Masses"))) {
+		}
+		else if (num_tok > 0 && str_equal(tok[0], STR("Masses"))) {
 			if (!data->num_atom_types) {
 				MD_LOG_ERROR("Encountered Mass entries, but number of atom types were not set or zero");
 				return false;
@@ -268,52 +272,66 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_masses(&mass_table, data->num_atom_types, reader, md_temp_allocator)) {
 				return false;
 			}
-		} else if (num_tok == 2 && is_int(tok[0])) {
+		}
+		else if (num_tok == 2 && is_int(tok[0])) {
 			if (str_equal(tok[1], STR("atoms"))) {
 				data->num_atoms = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("bonds"))) {
+			}
+			else if (str_equal(tok[1], STR("bonds"))) {
 				data->num_bonds = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("angles"))) {
+			}
+			else if (str_equal(tok[1], STR("angles"))) {
 				data->num_angles = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("dihedrals"))) {
+			}
+			else if (str_equal(tok[1], STR("dihedrals"))) {
 				data->num_dihedrals = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("impropers"))) {
+			}
+			else if (str_equal(tok[1], STR("impropers"))) {
 				data->num_impropers = (int32_t)parse_int(tok[0]);
 			}
-		} else if (num_tok == 3 && str_equal(tok[2], STR("types")) && is_int(tok[0])) {
+		}
+		else if (num_tok == 3 && str_equal(tok[2], STR("types")) && is_int(tok[0])) {
 			if (str_equal(tok[1], STR("atom"))) {
 				data->num_atom_types = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("bond"))) {
+			}
+			else if (str_equal(tok[1], STR("bond"))) {
 				data->num_bond_types = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("angle"))) {
+			}
+			else if (str_equal(tok[1], STR("angle"))) {
 				data->num_angle_types = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("dihedral"))) {
+			}
+			else if (str_equal(tok[1], STR("dihedral"))) {
 				data->num_dihedral_types = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("improper"))) {
+			}
+			else if (str_equal(tok[1], STR("improper"))) {
 				data->num_improper_types = (int32_t)parse_int(tok[0]);
-			} 
-		} else if (num_tok == 4 && str_equal(tok[2], STR("xlo")) && str_equal(tok[3], STR("xhi"))) {
+			}
+		}
+		else if (num_tok == 4 && str_equal(tok[2], STR("xlo")) && str_equal(tok[3], STR("xhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.xlo = (float)parse_float(tok[0]);
 			data->cell.xhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 4 && str_equal(tok[2], STR("ylo")) && str_equal(tok[3], STR("yhi"))) {
+		}
+		else if (num_tok == 4 && str_equal(tok[2], STR("ylo")) && str_equal(tok[3], STR("yhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.ylo = (float)parse_float(tok[0]);
 			data->cell.yhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 4 && str_equal(tok[2], STR("zlo")) && str_equal(tok[3], STR("zhi"))) {
+		}
+		else if (num_tok == 4 && str_equal(tok[2], STR("zlo")) && str_equal(tok[3], STR("zhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.zlo = (float)parse_float(tok[0]);
 			data->cell.zhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 6 && str_equal(tok[3], STR("xy")) && str_equal(tok[4], STR("xz")) && str_equal(tok[5], STR("yz"))) {
+		}
+		else if (num_tok == 6 && str_equal(tok[3], STR("xy")) && str_equal(tok[4], STR("xz")) && str_equal(tok[5], STR("yz"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1]) || !is_float(tok[2])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
@@ -374,12 +392,12 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 
 	const int64_t num_atoms = data->num_atoms;
 
-	md_array_resize(mol->atom.x,	 num_atoms, alloc);
-	md_array_resize(mol->atom.y,	 num_atoms, alloc);
-	md_array_resize(mol->atom.z,	 num_atoms, alloc);
+	md_array_resize(mol->atom.x, num_atoms, alloc);
+	md_array_resize(mol->atom.y, num_atoms, alloc);
+	md_array_resize(mol->atom.z, num_atoms, alloc);
 	md_array_resize(mol->atom.flags, num_atoms, alloc);
 	md_array_resize(mol->atom.resid, num_atoms, alloc);
-	md_array_resize(mol->atom.mass,  num_atoms, alloc);
+	md_array_resize(mol->atom.mass, num_atoms, alloc);
 
 	int32_t prev_res_id = -1;
 	for (int64_t i = 0; i < num_atoms; ++i) {
@@ -417,7 +435,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	M[2][0] = data->cell.xz;
 	M[2][1] = data->cell.yz;
 	mol->unit_cell = md_util_unit_cell_from_matrix(M);
-	
+
 	return true;
 }
 
@@ -539,6 +557,11 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* frame_da
 	const int64_t* ptr = frame_data_ptr;
 	int32_t frame_idx = (int32_t)ptr[0];
 
+	int64_t timestep = 0;
+
+	str_t coord_type = { 0 };
+	int32_t coord_start = -1;
+
 
 	lammps_trajectory_t* traj_data = (lammps_trajectory_t*)inst;
 	if (traj_data->magic != MD_LAMMPS_TRAJ_MAGIC) {
@@ -553,11 +576,27 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* frame_da
 	str_t str = { .ptr = (const char*)(ptr + 1), .len = frame_data_size };
 	str_t line;
 
-	//Parse the ITEM: ATOMS to see what type if coordinates we are working with
-	str_t coord_type = { 0 };
-	int32_t coord_start = -1;
-	if (str_extract_line(&line, &str)) {
-		if (str_equal_cstr_n(line, "ITEM: ATOMS", 11)) {
+	while (str_extract_line(&line, &str)) {
+		if (str_equal_cstr_n(line, "ITEM: TIMESTEP", 14)) {
+			if (!str_extract_line(&line, &str)) {
+				MD_LOG_ERROR("Could not extract timestep");
+				return false;
+			}
+			timestep = parse_int(line);
+		}
+		else if (str_equal_cstr_n(line, "ITEM: NUMBER OF ATOMS", 21)) {
+			if (!str_extract_line(&line, &str)) {
+				MD_LOG_ERROR("Could not extract number of atoms");
+				return false;
+			}
+			int64_t num_atoms = parse_int(line);
+			if (num_atoms != traj_data->header.num_atoms) {
+				MD_LOG_ERROR("num of atoms does not match, was %i, expected %i", num_atoms, traj_data->header.num_atoms);
+				return false;
+			}
+		}
+		else if (str_equal_cstr_n(line, "ITEM: ATOMS", 11)) {
+			
 			num_tokens = extract_tokens(tokens, 32, &line);
 			num_token_types = num_tokens - 2;
 			if (num_token_types < 3) {
@@ -580,9 +619,12 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* frame_da
 				MD_LOG_ERROR("Could not parse coord definition in ITEM: ATOMS line");
 				return false;
 			}
-			//step = (int32_t)parse_int(str_substr(line, 10, 4));
+			//We assume that ITEM: ATOMS is the last title and now continue to read the atoms
+			break;
 		}
 	}
+
+
 
 	//Extract coordinates and scale them if the type requires it. We leave unwrapped coordinates as is
 	int64_t i = 0;
@@ -615,7 +657,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* frame_da
 	if (header) {
 		header->num_atoms = traj_data->header.num_atoms;
 		header->index = frame_idx;
-		header->timestamp = (double)frame_idx;
+		header->timestamp = (double)timestep;
 		header->unit_cell = traj_data->unit_cell;
 	}
 
@@ -627,68 +669,105 @@ static bool md_lammps_trajectory_parse(int64_t* num_atoms, md_unit_cell_t* unit_
 	ASSERT(alloc);
 	str_t line;
 	str_t tokens[6];
-	int64_t num_frames = 0;
+	int64_t num_tokens = 0;
 
+	bool box_bounds_found = false;
+	bool num_atoms_found = false;
 
-	//Setup frames and first frame
-	md_buffered_reader_skip_line(reader);
-	md_buffered_reader_extract_line(&line, reader);
-	md_array_push(*frame_times, parse_int(line), alloc);
-	num_frames++;
-
-
-	//Parse num of atoms
-	{
-		md_buffered_reader_skip_line(reader);
-		md_buffered_reader_extract_line(&line, reader); //Read num of atoms
-		*num_atoms = parse_int(line);
-	}
-
-	//Parse unit_cell definition
-	{
-		float cell_extent[3];
-		float cell_tri[3]; //Triclinic
-
-		md_buffered_reader_extract_line(&line, reader); //Read BOX BOUNDS
-		if (str_equal_cstr(line, "ITEM: BOX BOUNDS pp pp pp")) {
-			//Cubic
-			for (int8_t i = 0; i < 3; i++) {
-				md_buffered_reader_extract_line(&line, reader);
-				extract_tokens(tokens, 4, &line);
-				cell_extent[i] = (float)(parse_float(tokens[1]) - parse_float(tokens[0]));
-			}
-			*unit_cell = md_util_unit_cell_from_extent(cell_extent[0], cell_extent[1], cell_extent[2]);
-		}
-		else if (str_equal_cstr(line, "ITEM: BOX BOUNDS xy xz yz pp pp pp")) {
-			//Triclinic
-			for (int8_t i = 0; i < 3; i++) {
-				md_buffered_reader_extract_line(&line, reader);
-				extract_tokens(tokens, 4, &line);
-				cell_extent[i] = (float)(parse_float(tokens[1]) - parse_float(tokens[0]));
-				cell_tri[i] = (float)parse_float(tokens[2]);
-			}
-			*unit_cell = md_util_unit_cell_from_triclinic(cell_extent[0], cell_extent[1], cell_extent[2], cell_tri[0], cell_tri[1], cell_tri[2]);
-		}
-		else {
-			MD_LOG_ERROR("Could not correctly parse BOX BOUND");
-			return false;
-		}
-	}
+	//We use start_of_frame_found to keep track of when a new frame starts. This is because we dont know which ITEM: title comes first in a frame definition
+	bool start_of_frame_found = false;
 
 	while (md_buffered_reader_extract_line(&line, reader)) {
 
 		if (str_equal_cstr_n(line, "ITEM: TIMESTEP", 14)) {
+			if (!start_of_frame_found) {
+				// This is a bit nasty, we want to get the correct offset to the beginning of the current line.
+				// Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
+				// all the way back in case there were skipped \r characters.
+				const int64_t offset = md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr);
+				md_array_push(*frame_offsets, offset, alloc);
+				start_of_frame_found = true;
+			}
 			md_buffered_reader_extract_line(&line, reader);
-			num_frames++;
 			md_array_push(*frame_times, parse_int(line), alloc);
 		}
-		else if (str_equal_cstr_n(line, "ITEM: ATOMS", 11)) {
+		//Parse unit cell definition
+		else if (str_equal_cstr_n(line, "ITEM: BOX BOUNDS", 16)) {
+			if (!start_of_frame_found) {
+				// This is a bit nasty, we want to get the correct offset to the beginning of the current line.
+				// Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
+				// all the way back in case there were skipped \r characters.
+				const int64_t offset = md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr);
+				md_array_push(*frame_offsets, offset, alloc);
+				start_of_frame_found = true;
+			}
 
-			// This is a bit nasty, we want to get the correct offset to the beginning of the current line.
-			// Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
-			// all the way back in case there were skipped \r characters.
-			const int64_t offset = md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr);
-			md_array_push(*frame_offsets, offset, alloc);
+			if (box_bounds_found == false) {
+				num_tokens = extract_tokens(tokens, 16, &line);
+
+				if (!md_buffered_reader_extract_line(&line, reader)) { //Read BOX BOUNDS
+					MD_LOG_ERROR("Could not read box bounds");
+					return false;
+				}
+				float cell_extent[3] = { 0 };
+
+				if (str_equal_cstr(tokens[3], "pp")) {
+					//Cubic
+					for (int8_t i = 0; i < 3; i++) {
+						md_buffered_reader_extract_line(&line, reader);
+						num_tokens = extract_tokens(tokens, 4, &line);
+						if (num_tokens != 2) {
+							MD_LOG_ERROR("Num of tokens does not match cubic definition");
+							return false;
+						}
+						cell_extent[i] = (float)(parse_float(tokens[1]) - parse_float(tokens[0]));
+					}
+					*unit_cell = md_util_unit_cell_from_extent(cell_extent[0], cell_extent[1], cell_extent[2]);
+				}
+				else if (str_equal_cstr(tokens[3], "xy")) {
+					//Triclinic
+					float cell_tri[3] = { 0 }; //Triclinic
+					for (int8_t i = 0; i < 3; i++) {
+						md_buffered_reader_extract_line(&line, reader);
+						num_tokens = extract_tokens(tokens, 4, &line);
+						if (num_tokens != 3) {
+							MD_LOG_ERROR("Num of tokens does not match triclinic definition");
+							return false;
+						}
+						cell_extent[i] = (float)(parse_float(tokens[1]) - parse_float(tokens[0]));
+						cell_tri[i] = (float)parse_float(tokens[2]);
+					}
+					*unit_cell = md_util_unit_cell_from_triclinic(cell_extent[0], cell_extent[1], cell_extent[2], cell_tri[0], cell_tri[1], cell_tri[2]);
+				}
+				else {
+					MD_LOG_ERROR("Could not correctly parse BOX BOUND");
+					return false;
+				}
+				box_bounds_found = true;
+			}
+		}
+		//Parse num of atoms
+		else if (str_equal_cstr_n(line, "ITEM: NUMBER OF ATOMS", 21)) {
+			if (!start_of_frame_found) {
+				// This is a bit nasty, we want to get the correct offset to the beginning of the current line.
+				// Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
+				// all the way back in case there were skipped \r characters.
+				const int64_t offset = md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr);
+				md_array_push(*frame_offsets, offset, alloc);
+				start_of_frame_found = true;
+			}
+			if (num_atoms_found == false) {
+				if (!md_buffered_reader_extract_line(&line, reader)) { //Read num of atoms
+					MD_LOG_ERROR("Could not read num of atoms");
+					return false;
+				}
+				*num_atoms = parse_int(line);
+				num_atoms_found = true;
+			}
+		}
+		else if (str_equal_cstr_n(line, "ITEM: ATOMS", 11)) {
+			//We reset start_of_frame_found when we get to ITEM: ATOMS
+			start_of_frame_found = false;
 		}
 	}
 
