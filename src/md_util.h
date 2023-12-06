@@ -23,6 +23,7 @@ enum {
     MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0040,
     MD_UTIL_POSTPROCESS_RESIDUE_BIT         = 0x0080,
     MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 0x0100,
+    MD_UTIL_POSTPROCESS_ION_BIT             = 0x0200,
 
     MD_UTIL_POSTPROCESS_ALL                 = 0xFFFF,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT
@@ -80,7 +81,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-//md_array(md_bond_t) md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
+md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_residue_data_t* res_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
@@ -118,8 +119,8 @@ md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z);
 // Construct possibly a triclinic cell from extents a,b,c and axis angles alpha, beta, gamma (in degrees)
 md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma);
 
-// Construct cell from mat3 basis
-md_unit_cell_t md_util_unit_cell_from_matrix(mat3_t M);
+// Construct cell from 3x3 matrix
+md_unit_cell_t md_util_unit_cell_from_matrix(float M[3][3]);
 
 //Construct cell from triclinic basis
 md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, double xy, double xz, double yz);
@@ -136,18 +137,13 @@ void md_util_unit_cell_distance_array(float* out_dist_arr, const vec3_t* coord_a
 float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell);
 float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell);
 
-// Applies periodic boundary conditions to coordinates of atoms within molecule
-// It ensures that residues and chains reside within the same period
-//bool md_util_pbc_ortho(struct md_molecule_t* mol, vec3_t pbc_ext);
-
-
-bool md_util_pbc_ortho(float* x, float* y, float* z, int64_t count, vec3_t box);
-
-bool md_util_unwrap_ortho(float* x, float* y, float* z, md_index_data_t structures, vec3_t box);
+// Applies periodic boundary conditions to coordinates
+//bool md_util_apply_pbc_ortho(float* in_out_x, float* in_out_y, float* in_out_z, int64_t count, vec3_t box);
+//bool md_util_unwrap_structures_ortho(float* in_out_x, float* in_out_y, float* in_out_z, int64_t count, const md_index_data_t* in_structures, vec3_t box);
 
 // Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
-bool md_util_deperiodize_system(float* x, float* y, float* z, const md_unit_cell_t* cell, const struct md_molecule_t* mol);
+bool md_util_deperiodize_system(float* in_out_x, float* in_out_y, float* in_out_z, const float* in_w, int64_t count, const md_unit_cell_t* in_cell, const md_index_data_t* in_structures);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
@@ -220,23 +216,30 @@ void md_util_spatial_sort(uint32_t* source_indices, const vec3_t* xyz, int64_t c
 // Which only selects the best matching permutation based on RMSD.
 
 typedef enum {
-    MD_UTIL_MATCH_LEVEL_ALL = 0,
-    MD_UTIL_MATCH_LEVEL_RESIDUE,
-    MD_UTIL_MATCH_LEVEL_CHAIN,
+    MD_UTIL_MATCH_LEVEL_STRUCTURE = 0,  // Match within complete structures
+    MD_UTIL_MATCH_LEVEL_RESIDUE,        // Match within residues
+    MD_UTIL_MATCH_LEVEL_CHAIN,          // Match within chains
 } md_util_match_level_t;
 
+typedef enum {
+    MD_UTIL_MATCH_MODE_UNIQUE = 0,      // Store only unique matches
+    MD_UTIL_MATCH_MODE_FIRST = 1,       // Store the first match
+    MD_UTIL_MATCH_MODE_ALL = 2,		    // Store all matches
+} md_util_match_mode_t;
+
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure.
-md_index_data_t md_util_match_structure_by_type(const int* ref_indices, int64_t ref_size, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
-md_index_data_t md_util_match_structure_by_elem(const int* ref_indices, int64_t ref_size, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_type(const int ref_indices[], int64_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_element(const int ref_indices[], int64_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
-md_index_data_t md_util_match_structure_smiles(str_t smiles, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Computes the maximum common subgraph between two structures
 // The indices which maps from the source structure to the target structure is written to dst_idx_map
 // The returned value is the number of common atoms
 // It is assumed that the dst_idx_map has the same length as src_count
-int64_t md_util_structure_maximum_common_substructure(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+int64_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+int64_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

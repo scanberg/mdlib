@@ -502,13 +502,13 @@ static inline bool extract_token(str_t* tok, str_t* str) {
 }
 
 // Extract multiple tokens with whitespace as delimiter
-static inline int64_t extract_tokens(str_t token_arr[], int64_t token_cap, str_t* str) {
-    ASSERT(token_arr);
-    ASSERT(token_cap >= 0);
+static inline int64_t extract_tokens(str_t tok_arr[], int64_t tok_cap, str_t* str) {
+    ASSERT(tok_arr);
+    ASSERT(tok_cap >= 0);
     ASSERT(str);
 
     int64_t num_tokens = 0;
-    while (num_tokens < token_cap && extract_token(&token_arr[num_tokens], str)) {
+    while (num_tokens < tok_cap && extract_token(&tok_arr[num_tokens], str)) {
         num_tokens += 1;
     }
     return num_tokens;
@@ -533,4 +533,17 @@ static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
     str->len = end - str->ptr;
 
     return true;
+}
+
+// Extracts token with specific delimiter
+static inline int64_t extract_tokens_delim(str_t tok_arr[], int64_t tok_cap, str_t* str, char delim) {
+    ASSERT(tok_arr);
+    ASSERT(tok_cap >= 0);
+    ASSERT(str);
+
+    int64_t num_tokens = 0;
+    while (num_tokens < tok_cap && extract_token_delim(&tok_arr[num_tokens], str, delim)) {
+        num_tokens += 1;
+    }
+    return num_tokens;
 }

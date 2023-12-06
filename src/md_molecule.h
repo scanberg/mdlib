@@ -29,7 +29,9 @@ typedef struct md_atom_data_t {
     md_residue_idx_t* res_idx;
     md_chain_idx_t* chain_idx;
 
-    uint32_t* conn_off_len;    // Stores index into connectivity data with offset in low 24 bits and length in high 8 bits
+    // Stores offset into connectivity data for the atom
+    // Length is implicit in the next atom's offset, which means this has length count + 1 if present
+    uint32_t* conn_offset;
 
     md_flags_t* flags;
 } md_atom_data_t;
@@ -73,6 +75,7 @@ typedef struct md_instance_data_t {
     mat4_t* transform;
 } md_instance_data_t;
 
+// Bond centric representation of bonds
 typedef struct md_bond_data_t {
     int64_t count;
     md_bond_pair_t* pairs;
@@ -87,6 +90,7 @@ typedef struct md_hbond_data_t {
     int8_t ideal_geom;
 } md_hbond_data_t;
 
+// Atom centric representation of bonds
 typedef struct md_conn_data_t {
     int64_t count;
     md_atom_idx_t*  index;
@@ -114,7 +118,6 @@ typedef struct md_molecule_t {
     // @TODO: move this into some containing structure
     //md_array(md_hbond_data_t)  hbond_data;     
 
-//    md_index_data_t         connectivity;       // Connectivity graph of the atoms within the molecule
     md_index_data_t         rings;              // Ring structures formed by persistent bonds
     md_index_data_t         structures;         // Isolated structures connected by persistent bonds
 
@@ -140,21 +143,12 @@ molecule data only the first part of the file is used.
 extern "C" {
 #endif
 
-static inline uint32_t md_conn_offset(uint32_t off_len) {
-    return off_len & 0x00FFFFFF;
-}
-
-static inline uint32_t md_conn_length(uint32_t off_len) {
-    return off_len >> 24;
-}
-
 static inline md_conn_iter_t md_conn_iter(const md_molecule_t* mol, md_atom_idx_t atom_idx) {
     md_conn_iter_t it = {0};
-    if (mol->atom.conn_off_len) {
-        uint32_t off_len = mol->atom.conn_off_len[atom_idx];
+    if (mol->atom.conn_offset) {
         it.data = &mol->conn;
-		it.beg_idx = md_conn_offset(off_len);
-		it.end_idx = it.beg_idx + md_conn_length(off_len);
+		it.beg_idx = mol->atom.conn_offset[atom_idx];
+		it.end_idx = mol->atom.conn_offset[atom_idx + 1];
         it.i = it.beg_idx;
     }
     return it;

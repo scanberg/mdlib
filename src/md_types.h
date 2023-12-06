@@ -35,7 +35,7 @@ enum {
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
-// Where ever they make sense, they can appear.
+// Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards
 enum {
     MD_FLAG_RES_BEG 		    = 1,
     MD_FLAG_RES_END 		    = 2,
@@ -43,9 +43,13 @@ enum {
     MD_FLAG_CHAIN_END 		    = 8,
     MD_FLAG_HETATM              = 16,
     MD_FLAG_AMINO_ACID		    = 32,
-    MD_FLAG_NUCLEIC_ACID	    = 64,
-    MD_FLAG_WATER			    = 128,
-    MD_FLAG_AROMATIC            = 256,
+    MD_FLAG_NUCLEOBASE          = 64,
+    MD_FLAG_NUCLEOTIDE	        = 128,
+    MD_FLAG_WATER			    = 256,
+    MD_FLAG_ION			        = 512,
+
+    MD_FLAG_AROMATIC            = 1024,
+    MD_FLAG_INTER_BOND          = 2048,
 };
 
 typedef int32_t     md_atom_idx_t;
@@ -129,11 +133,12 @@ typedef struct md_label_t {
 
 // Container structure for ranges of indices.
 // It stores a set of indices for every stored entity. (Think of it as an Array of Arrays of integers)
-// The indices are packed into a single array and we store explicit ranges referencing spans within this index array.
+// The indices are packed into a single array and we store explicit offsets to represent ranges within this index array.
 // It is used to represent connected structures, rings and atom connectivity etc.
+
 typedef struct md_index_data_t {
-    md_array(md_range_t) ranges;
-    md_array(int32_t)    indices;
+    md_array(uint32_t) offsets;
+    md_array(int32_t)  indices;
 } md_index_data_t;
 
 // OPERATIONS ON THE TYPES
@@ -184,51 +189,54 @@ static inline vec3_t md_vec3_soa_get(md_vec3_soa_t soa, int64_t idx) {
 
 // Access to substructure data
 static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* alloc) {
+    ASSERT(data);
     ASSERT(alloc);
-    if (data->ranges)  md_array_free(data->ranges,  alloc);
+    if (data->offsets) md_array_free(data->offsets,  alloc);
     if (data->indices) md_array_free(data->indices, alloc);
-    data->ranges = 0;
-    data->indices = 0;
+    MEMSET(data, 0, sizeof(md_index_data_t));
 }
 
-static inline int64_t md_index_data_push (md_index_data_t* data, int32_t* index_data, int64_t index_count, md_allocator_i* alloc) {
+static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, int64_t index_count, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
     ASSERT(index_count >= 0);
 
-    const int64_t range_idx = md_array_size(data->ranges);
-    const md_range_t range = {(int)md_array_size(data->indices), (int)md_array_size(data->indices) + (int)index_count};
-    md_array_push(data->ranges, range, alloc);
+    if (md_array_size(data->offsets) == 0) {
+        md_array_push(data->offsets, 0, alloc);
+    }
+
+    int64_t offset = *md_array_last(data->offsets);
     if (index_count > 0) {
         ASSERT(index_data);
         md_array_push_array(data->indices, index_data, index_count, alloc);
+        md_array_push(data->offsets, (int32_t)md_array_size(data->indices), alloc);
     }
 
-    return range_idx;
+    return offset;
 }
 
 static inline void md_index_data_data_clear(md_index_data_t* data) {
     ASSERT(data);
-    md_array_shrink(data->ranges,  0);
+    md_array_shrink(data->offsets,  0);
     md_array_shrink(data->indices, 0);
 }
 
 static inline int64_t md_index_data_count(md_index_data_t data) {
-    return md_array_size(data.ranges);
+    return MAX(md_array_size(data.offsets) - 1, 0);
 }
 
 // Access to individual substructures
 static inline int32_t* md_index_range_beg(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.ranges));
-    return data.indices + data.ranges[idx].beg;
+    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+    return data.indices + data.offsets[idx];
 }
 
 static inline int32_t* md_index_range_end(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.ranges));
-    return data.indices + data.ranges[idx].end;
+    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+    return data.indices + data.offsets[idx+1];
 }
 
 static inline int64_t md_index_range_size(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.ranges));
-    return data.ranges[idx].end - data.ranges[idx].beg;
+    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+    return data.offsets[idx+1] - data.offsets[idx];
 }

@@ -23,6 +23,14 @@ typedef struct md_trajectory_frame_header_t {
 	md_unit_cell_t unit_cell;
 } md_trajectory_frame_header_t;
 
+typedef struct md_trajectory_cache_header_t {
+	uint64_t magic;
+	uint64_t version;
+	int64_t num_bytes;
+	int64_t num_atoms;
+	int64_t num_frames;
+} md_trajectory_cache_header_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif

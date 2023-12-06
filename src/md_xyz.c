@@ -19,13 +19,15 @@
 extern "C" {
 #endif
 
-#define MD_XYZ_CACHE_MAGIC 0x8265485749172bab
-#define MD_XYZ_MOL_MAGIC   0x285ada29078a9bc8
-#define MD_XYZ_TRAJ_MAGIC  0x2312ad7b78a9bc78
+#define MD_XYZ_CACHE_MAGIC      0x8265485749172bab
+#define MD_XYZ_CACHE_VERSION    2
+#define MD_XYZ_MOL_MAGIC        0x285ada29078a9bc8
+#define MD_XYZ_TRAJ_MAGIC       0x2312ad7b78a9bc78
 
 enum {
     XYZ_TINKER          = 1,
     XYZ_ARC             = 2,
+    XYZ_EXTENDED		= 4,
 };
 
 // The opaque blob
@@ -103,7 +105,7 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
     }
 
     {
-        // Test if first line has an unsigned integer as first token (Should be universally applicable to all XYZ + ARC formats
+        // Test if first line has an unsigned integer as first token (Should be universally applicable to all XYZ formats
         str_t token;
         str_t line = lines[0];
         if (!extract_token(&token, &line) || !is_unsigned_int(token)) {
@@ -112,7 +114,10 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
         }
     }
 
-    {
+    // Test for extended XYZ format
+    if (str_find_str(lines[1], STR("Properties=")) != -1) {
+		*flags |= XYZ_EXTENDED;
+	} else {    
         // Test if we have an ARC trajectory
         // Second line should then contain exactly 6 floats
         str_t token[8];
@@ -156,6 +161,164 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
     return false;
 }
 
+static inline str_t extract_quoted_substr(str_t in_str) {
+	const char* beg = in_str.ptr;
+	const char* end = in_str.ptr + in_str.len;
+
+	str_t result = {0};
+
+	if (beg >= end) return result;
+
+	while (beg < end && *beg != '\"') {
+		++beg;
+	}
+
+	if (beg >= end) return result;
+
+	++beg;
+	const char* c = beg;
+	while (c < end && *c != '\"') {
+		++c;
+	}
+
+	if (c < end) {
+		result.ptr = beg;
+		result.len = (int64_t)(c - beg);
+	}
+
+	return result;
+}
+
+static inline str_t extract_balanced_substr(str_t in_str, char beg_char, char end_char) {
+	const char* beg = in_str.ptr;
+	const char* end = in_str.ptr + in_str.len;
+
+    ASSERT(beg_char != end_char);
+
+    str_t result = {0};
+
+	if (beg >= end) return result;
+
+	while (beg < end && *beg != beg_char) {
+		++beg;
+	}
+
+	if (beg >= end) return result;
+
+	++beg;
+	const char* c = beg;
+	int depth = 1;
+	while (c < end && depth > 0) {
+		if (*c == beg_char) {
+			++depth;
+		}
+        else if (*c == end_char) {
+			--depth;
+		}
+		++c;
+	}
+
+	if (depth == 0) {
+		result.ptr = beg;
+		result.len = (int64_t)(c - beg - 1);
+	}
+
+	return result;
+}
+
+// @NOTE(Robin):
+// Following the information available at https://github.com/libAtoms/extxyz
+// Which I assume is the correct specification for the file format?
+// It seems that Lattices can be encoded in a number of ways:
+// New style: string which is enclosed in quotes containing 9 whitespace separated floats
+// Old style: [] enclosed list of 3 vectors, each vector is a list of 3 floats: [[1,2,3],[4,5,6],[7,8,9]]
+// Old style: {} enclosed list 9 elements separated by whitespace: {1 2 3 4 5 6 7 8 9}
+
+static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
+    const str_t pattern = STR("Lattice=");
+    const int64_t pos = str_find_str(line, pattern);
+    if (pos == -1) {
+        // Lattice information not found, since Lattice is optional, this is not an error
+        return true;
+    }
+
+    line = str_substr(line, pos + pattern.len, -1);
+    if (line.len == 0) {
+	    MD_LOG_ERROR("Missing lattice information");
+		return false;
+	}
+
+    str_t tok[9];
+    int64_t num_tok = 0;
+
+    if (line.ptr[0] == '\"') {
+        line = extract_quoted_substr(line);
+        if (str_empty(line)) {
+            MD_LOG_ERROR("XYZ: Failed to extract quoted string");
+			return false;
+        }
+        num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+    } else if (line.ptr[0] == '{') {
+        line = extract_balanced_substr(line, '{', '}');
+        if (str_empty(line)) {
+            MD_LOG_ERROR("XYZ: Failed to extract curly-brace string");
+            return false;
+        }
+        num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+    } else if (line.ptr[0] == '[') {
+        // This is the cheeky one
+		line = extract_balanced_substr(line, '[', ']');
+		if (str_empty(line)) {
+			MD_LOG_ERROR("XYZ: Failed to extract bracketed string");
+            return false;
+        }
+        for (int i = 0; i < 3; ++i) {
+            str_t vec = extract_balanced_substr(line, '[', ']');
+            if (str_empty(vec)) {
+                MD_LOG_ERROR("XYZ: Failed to extract bracketed string");
+                return false;
+            }
+            line = str_substr(line, vec.len + 2, -1);
+            int64_t num_sub_toks = extract_tokens_delim(tok + i*3, ARRAY_SIZE(tok) - i*3, &vec, ',');
+            if (num_sub_toks != 3) {
+                MD_LOG_ERROR("XYZ: Failed to extract Lattice vector");
+				return false;
+			}
+            tok[i*3+0] = str_trim(tok[i*3+0]);
+            tok[i*3+1] = str_trim(tok[i*3+1]);
+            tok[i*3+2] = str_trim(tok[i*3+2]);
+            num_tok += num_sub_toks;
+        }
+    } else {
+		MD_LOG_ERROR("XYZ: Unrecognized Lattice encoding");
+		return false;
+	}
+
+    if (num_tok == 3) {
+        // Assume these encode the diagonal
+        for (int64_t i = 0; i < 3; ++i) {
+            if (is_float(tok[i])) {
+				cell[i][i] = (float)parse_float(tok[i]);
+			} else {
+				return false;
+			}
+		}
+    } else if (num_tok == 9) {
+        for (int64_t i = 0; i < num_tok; ++i) {
+            if (is_float(tok[i])) {
+                cell[i/3][i%3] = (float)parse_float(tok[i]);
+            } else {
+                return false;
+            }
+        }
+    } else {
+		MD_LOG_ERROR("XYZ: Invalid number of tokens in Lattice encoding");
+		return false;
+	}
+
+    return true;
+}
+
 static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_t flags) {
     ASSERT(coord);
 
@@ -185,7 +348,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     coord->y = (float)parse_float(tokens[tok_idx++]);
     coord->z = (float)parse_float(tokens[tok_idx++]);
     
-    if (tok_idx < num_tokens) {
+    if (!(flags & XYZ_EXTENDED) && tok_idx < num_tokens) {
         coord->atom_type = (int)parse_int(tokens[tok_idx++]);
 
         // Connectivity follows atom_type
@@ -260,14 +423,27 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
             MD_LOG_ERROR("Unexpected number of tokens (%i) when parsing XYZ Arc Cell data");
             return false;
         }
-        model->cell_extent[0] = (float)parse_float(tokens[0]);
-        model->cell_extent[1] = (float)parse_float(tokens[1]);
-        model->cell_extent[2] = (float)parse_float(tokens[2]);
 
-        model->cell_angle[0] = (float)parse_float(tokens[3]);
-        model->cell_angle[1] = (float)parse_float(tokens[4]);
-        model->cell_angle[2] = (float)parse_float(tokens[5]);
-    }
+        double extent[3];
+        double angle[3];
+
+        extent[0] = (float)parse_float(tokens[0]);
+        extent[1] = (float)parse_float(tokens[1]);
+        extent[2] = (float)parse_float(tokens[2]);
+
+        angle[0] = (float)parse_float(tokens[3]);
+        angle[1] = (float)parse_float(tokens[4]);
+        angle[2] = (float)parse_float(tokens[5]);
+
+        md_unit_cell_t cell = md_util_unit_cell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
+        MEMCPY(model->cell, cell.basis.elem, sizeof(model->cell));
+    } else if (flags & XYZ_EXTENDED) {
+		// Extract cell data from comment
+		if (!extract_extxyz_cell(model->cell, comment)) {
+			MD_LOG_ERROR("Failed to extract cell data from comment");
+			return false;
+		}
+	}
 
     *coord_count = count;
 
@@ -331,7 +507,7 @@ int64_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
         return 0;
     }
 
-    if (!(0 <= frame_idx && frame_idx < (int64_t)md_array_size(xyz->frame_offsets) - 1)) {
+    if (frame_idx < 0 || xyz->header.num_frames <= frame_idx) {
         MD_LOG_ERROR("Frame index is out of range");
         return 0;
     }
@@ -414,7 +590,8 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         header->num_atoms = i;
         header->index = step;
         header->timestamp = (double)(step); // This information is missing from xyz trajectories
-        header->unit_cell = md_util_unit_cell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
+        //header->unit_cell = md_util_unit_cell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
+        header->unit_cell = md_util_unit_cell_from_matrix(model.cell);
     }
 
     return true;
@@ -549,6 +726,8 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         md_array_push(mol->atom.flags, 0, alloc);
     }
 
+    mol->unit_cell = md_util_unit_cell_from_matrix(data->models[0].cell);
+
     return true;
 }
 
@@ -626,92 +805,85 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     return result;
 }
 
-static bool try_read_cache(str_t cache_file, int64_t** offsets, int64_t* num_atoms, md_allocator_i* alloc) {
+typedef struct xyz_cache_t {
+    md_trajectory_cache_header_t header;
+    int64_t* offsets;
+} xyz_cache_t;
+
+static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, int64_t traj_num_bytes, md_allocator_i* alloc) {
+    ASSERT(cache);
+    ASSERT(alloc);
+
+    bool result = false;
     md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        int64_t read_bytes = 0;
-        int64_t num_offsets = 0;
-        uint64_t magic = 0;
-
-        bool result = true;
-
-        read_bytes = md_file_read(file, &magic, sizeof(uint64_t));
-        if (read_bytes != sizeof(uint64_t) || magic != MD_XYZ_CACHE_MAGIC) {
-            MD_LOG_ERROR("Failed to read offset cache, magic was incorrect or corrupt");
-            result = false;
+        if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
+            MD_LOG_ERROR("XYZ trajectory cache: failed to read header");
             goto done;
         }
 
-        read_bytes = md_file_read(file, num_atoms, sizeof(int64_t));
-        if (read_bytes != sizeof(int64_t) || num_atoms == 0) {
-            MD_LOG_ERROR("Failed to read offset cache, number of atoms was zero or corrupt");
-            result = false;
+        if (cache->header.magic != MD_XYZ_CACHE_MAGIC) {
+        	MD_LOG_ERROR("XYZ trajectory cache: magic was incorrect or corrupt");
+        	goto done;
+        }
+        if (cache->header.version != MD_XYZ_CACHE_VERSION) {
+            MD_LOG_INFO("XYZ trajectory cache: version mismatch, expected %i, got %i", MD_XYZ_CACHE_VERSION, (int)cache->header.version);
+        }
+        if (cache->header.num_bytes != traj_num_bytes) {
+			MD_LOG_INFO("XYZ trajectory cache: trajectory size mismatch, expected %i, got %i", (int)traj_num_bytes, (int)cache->header.num_bytes);
+		}
+        if (cache->header.num_atoms == 0) {
+			MD_LOG_ERROR("XYZ trajectory cache: num atoms was zero");
+			goto done;
+		}
+        if (cache->header.num_frames == 0) {
+            MD_LOG_ERROR("XYZ trajectory cache: num frames was zero");
             goto done;
         }
 
-        read_bytes = md_file_read(file, &num_offsets, sizeof(int64_t));
-        if (read_bytes != sizeof(int64_t) || num_offsets == 0) {
-            MD_LOG_ERROR("Failed to read offset cache, number of frames was zero or corrupted");
-            result = false;
-            goto done;
-        }
-
-        int64_t* tmp_offsets = 0;
-        md_array_resize(tmp_offsets, num_offsets, alloc);
-
-        read_bytes = md_file_read(file, tmp_offsets, num_offsets * sizeof(int64_t));
-        if (read_bytes != (int64_t)(num_offsets * sizeof(int64_t))) {
+        const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+        cache->offsets = md_alloc(alloc, offset_bytes);
+        if (md_file_read(file, cache->offsets, offset_bytes) != offset_bytes) {
             MD_LOG_ERROR("Failed to read offset cache, offsets are incomplete");
-            md_array_free(tmp_offsets, alloc);
-            result = false;
+            md_free(alloc, cache->offsets, offset_bytes);
             goto done;
         }
 
-        *offsets = tmp_offsets;
+        result = true;
     done:
         md_file_close(file);
-        return result;
     }
-
-    return false;
+    return result;
 }
 
-static bool write_cache(str_t cache_file, int64_t* offsets, int64_t num_atoms) {
+static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
+    bool result = false;
+
     md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
-    if (file) {
-        int64_t num_offsets = md_array_size(offsets);
-        int64_t written_bytes = 0;
-        const uint64_t magic = MD_XYZ_CACHE_MAGIC;
-
-        written_bytes = md_file_write(file, &magic, sizeof(uint64_t));
-        ASSERT(written_bytes == sizeof(uint64_t));
-
-        written_bytes = md_file_write(file, &num_atoms, sizeof(int64_t));
-        ASSERT(written_bytes == sizeof(int64_t));
-
-        written_bytes = md_file_write(file, &num_offsets, sizeof(int64_t));
-        ASSERT(written_bytes == sizeof(int64_t));
-
-        written_bytes = md_file_write(file, offsets, num_offsets * sizeof(int64_t));
-        ASSERT(written_bytes == (int64_t)(num_offsets * sizeof(int64_t)));
-
-        md_file_close(file);
-        return true;
+    if (!file) {
+        MD_LOG_ERROR("XYZ trajectory cache: could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+        return false;
     }
 
-    MD_LOG_ERROR("Failed to write offset cache, could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
-    return false;
+    if (md_file_write(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
+		MD_LOG_ERROR("XYZ trajectory cache: failed to write header");
+		goto done;
+	}
+
+    const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+    if (md_file_write(file, cache->offsets, offset_bytes) != offset_bytes) {
+        MD_LOG_ERROR("Failed to write offset cache, offsets");
+        goto done;
+    }
+
+    result = true;
+
+done:
+    md_file_close(file);
+    return result;
 }
 
-void xyz_trajectory_free(struct md_trajectory_o* inst) {
-    ASSERT(inst);
-    xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
-    if (xyz->file) md_file_close(xyz->file);
-    if (xyz->frame_offsets) md_array_free(xyz->frame_offsets, xyz->allocator);
-    md_mutex_destroy(&xyz->mutex);
-}
-
-md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* alloc) {
+md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for XYZ trajectory");
@@ -736,48 +908,58 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
     str_t cache_file = {buf, len};
 
-    int64_t num_atoms = 0;
-    int64_t* offsets = 0;
+    md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-    if (!try_read_cache(cache_file, &offsets, &num_atoms, alloc)) {
+    xyz_cache_t cache = {0};
+    if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
+        md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+
+        bool result = false;
         md_xyz_data_t data = {0};
-        if (!md_xyz_data_parse_file(&data, filename, md_heap_allocator)) {
-            return false;
+        if (!md_xyz_data_parse_file(&data, filename, temp_alloc)) {
+            goto cleanup;
         }
 
         if (data.num_models <= 1) {
-            md_log(MD_LOG_TYPE_INFO, "The xyz file did not contain multiple entries and cannot be read as a trajectory");
-            md_xyz_data_free(&data, md_heap_allocator);
-            return false;
+            md_log(MD_LOG_TYPE_INFO, "The XYZ file did not contain multiple entries and cannot be read as a trajectory");
+            md_xyz_data_free(&data, temp_alloc);
+            goto cleanup;
         }
 
-        {
-            // Validate the models
-            const int64_t ref_length = data.models[0].end_coord_index - data.models[0].beg_coord_index;
-            for (int64_t i = 1; i < data.num_models; ++i) {
-                const int64_t length = data.models[i].end_coord_index - data.models[i].beg_coord_index;
-                if (length != ref_length) {
-                    MD_LOG_ERROR("The xyz file models are not of equal length and cannot be read as a trajectory");
-                    md_xyz_data_free(&data, md_heap_allocator);
-                    return false;
-                }
+        // Validate the models, pick the atom count in the first model and ensure that all other models have the same number of atoms
+        const int64_t num_atoms = data.models[0].end_coord_index - data.models[0].beg_coord_index;
+        for (int64_t i = 1; i < data.num_models; ++i) {
+            const int64_t length = data.models[i].end_coord_index - data.models[i].beg_coord_index;
+            if (length != num_atoms) {
+                MD_LOG_ERROR("The XYZ file models are not of equal length and cannot be read as a trajectory");
+                goto cleanup;
             }
-            num_atoms = ref_length;
         }
+
+        cache.header.magic = MD_XYZ_CACHE_MAGIC;
+        cache.header.version = MD_XYZ_CACHE_VERSION;
+        cache.header.num_bytes = filesize;
+        cache.header.num_atoms = num_atoms;
+        cache.header.num_frames = data.num_models;
+        cache.offsets = md_alloc(alloc, sizeof(int64_t) * (cache.header.num_frames + 1));
 
         for (int64_t i = 0; i < data.num_models; ++i) {
-            md_array_push(offsets, data.models[i].byte_offset, alloc);
+            cache.offsets[i] = data.models[i].byte_offset;
         }
-        md_array_push(offsets, filesize, alloc);
+        cache.offsets[data.num_models] = filesize;
+        write_cache(&cache, cache_file);
 
-        write_cache(cache_file, offsets, num_atoms);
+        result = true;
+    cleanup:
+        md_arena_allocator_destroy(temp_alloc);
+        if (!result) {
+            return false;
+        }
     }
 
     int64_t max_frame_size = 0;
-    for (int64_t i = 0; i < md_array_size(offsets) - 1; ++i) {
-        const int64_t beg = offsets[i + 0];
-        const int64_t end = offsets[i + 1];
-        const int64_t frame_size = end - beg;
+    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
+        const int64_t frame_size = cache.offsets[i + 1] - cache.offsets[i];
         max_frame_size = MAX(max_frame_size, frame_size);
     }
 
@@ -788,22 +970,20 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     md_trajectory_i* traj = mem;
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)(traj + 1);
 
-    const int64_t num_frames = md_array_size(offsets) - 1;
-
-    md_array(double) frame_times = md_array_create(double, num_frames, alloc);
-    for (int64_t i = 0; i < num_frames; ++i) {
+    md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
+    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
         frame_times[i] = (double)i;
     }
 
     xyz->magic = MD_XYZ_TRAJ_MAGIC;
     xyz->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     xyz->filesize = filesize;
-    xyz->frame_offsets = offsets;
+    xyz->frame_offsets = cache.offsets;
     xyz->allocator = alloc;
     xyz->mutex = md_mutex_create();
     xyz->header = (md_trajectory_header_t) {
-        .num_frames = num_frames,
-        .num_atoms = num_atoms,
+        .num_frames = cache.header.num_frames,
+        .num_atoms = cache.header.num_atoms,
         .max_frame_data_size = max_frame_size,
         .time_unit = {0},
         .frame_times = frame_times,
@@ -829,9 +1009,9 @@ void md_xyz_trajectory_free(md_trajectory_i* traj) {
         return;
     }
     
-    md_allocator_i* alloc = xyz->allocator;
-    xyz_trajectory_free(traj->inst);
-    md_free(alloc, traj, sizeof(md_trajectory_i) + sizeof(xyz_trajectory_t));
+    if (xyz->file) md_file_close(xyz->file);
+    md_mutex_destroy(&xyz->mutex);
+    md_arena_allocator_destroy(xyz->allocator);
 }
 
 static md_trajectory_loader_i xyz_traj_loader = {

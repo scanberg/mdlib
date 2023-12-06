@@ -5,6 +5,10 @@
 // 
 //  LICENSE: see license file
 
+/*
+@NOTE(Robin): This is a clusterf*ck API and I'm too lazy to change it by now since it will at some point be superseded by something that supports next gen rendering APIs.
+*/
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -41,7 +45,7 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 // The shaders are customizable in their output as mentioned in the comment above.
 // You could have multiple versions of shaders each compiled for a specific output.
 typedef struct md_gl_shaders_t {
-    uint64_t _opaque[4];
+    ALIGNAS(16) char _mem[32];
 } md_gl_shaders_t;
 
 bool md_gl_shaders_init(md_gl_shaders_t* shaders, const char* custom_shader_snippet_ptr, int64_t custom_shader_snippet_len);
@@ -67,7 +71,7 @@ bool md_gl_shaders_free(md_gl_shaders_t* shaders);
 //      - secondary_structure : md_secondary_structure_t = u8[4]
 
 typedef struct md_gl_molecule_t {
-    char _mem[128];
+    ALIGNAS(16) char _mem[128];
 } md_gl_molecule_t;
 
 bool md_gl_molecule_init(md_gl_molecule_t* gl_mol, const struct md_molecule_t* mol);
@@ -105,7 +109,7 @@ bool md_gl_molecule_set_backbone_secondary_structure(md_gl_molecule_t* mol, uint
 typedef struct md_gl_representation_t md_gl_representation_t;
 
 struct md_gl_representation_t { // This is an opaque blob which matches the size of internal memory used by the structure
-    char _mem[64];
+    ALIGNAS(16) char _mem[32];
 };
 
 bool md_gl_representation_init(md_gl_representation_t* rep, const md_gl_molecule_t* mol);

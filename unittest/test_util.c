@@ -333,16 +333,28 @@ UTEST_F(util, structure_matching_amyloid) {
 #if 0
     {
         // Test for the chains
-        const int ref_structure_idx = 1;
+        const int ref_structure_idx = 0;
         const int* ref_idx = md_index_range_beg(mol->structures, ref_structure_idx);
-        const int64_t ref_size = md_index_range_size(mol->structures, ref_structure_idx);
+        const int64_t ref_len = md_index_range_size(mol->structures, ref_structure_idx);
+
+        md_array(int) new_idx = 0;
+        for (int64_t i = 0; i < ref_len; ++i) {
+            if (mol->atom.element[i] != 1) {
+                md_array_push(new_idx, ref_idx[i], alloc);
+            }
+        }
+        const int64_t new_len = md_array_size(new_idx);
     
-        md_index_data_t result = md_util_structure_find_equivalent(ref_idx, ref_size, mol, alloc);
+        md_timestamp_t t0 = md_time_current();
+        md_index_data_t result = md_util_match_by_element(new_idx, new_len, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_CHAIN, mol, alloc);
+        md_timestamp_t t1 = md_time_current();
+        printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
         const int result_count = (int)md_index_data_count(result);
+        printf("result count: %d\n", result_count);
         EXPECT_EQ(result_count, 253);
     }
 #endif
-#if 0
+#if 1
     {
         // Test for the PFTAAs
         const int ref_structure_idx = 253;
@@ -350,10 +362,11 @@ UTEST_F(util, structure_matching_amyloid) {
         const int64_t ref_size = md_index_range_size(mol->structures, ref_structure_idx);
 
         md_timestamp_t t0 = md_time_current();
-        md_index_data_t result = md_util_structure_find_equivalent(ref_idx, ref_size, mol, alloc);
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
         md_timestamp_t t1 = md_time_current();
         printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
-        const int64_t result_count = md_index_data_count(result);
+        const int result_count = (int)md_index_data_count(result);
+        printf("result count: %d\n", result_count);
         EXPECT_EQ(result_count, 61);
     }
 #endif
@@ -363,12 +376,12 @@ UTEST_F(util, structure_matching_PFTAA) {
     md_allocator_i* alloc = utest_fixture->alloc;
     md_molecule_t* mol = &utest_fixture->mol_pftaa;
     {
-#if 0
+#if 1
         // Rings, represents a ring within the molecule
         const int ref_idx[] = {19,20,21,22,24};
         const int64_t ref_size = ARRAY_SIZE(ref_idx);
 
-        md_index_data_t result = md_util_structure_find_equivalent(ref_idx, ref_size, mol, alloc);
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, mol, alloc);
         const int64_t result_count = md_index_data_count(result);
         EXPECT_EQ(result_count, 5);
 #endif
@@ -386,13 +399,16 @@ UTEST_F(util, structure_matching_PFTAA) {
 #endif
     }
     {
-#if 0
+#if 1
         // Symmetry, represents half molecule minus the ring which holds the two symmetric parts together.
         const int ref_idx[] = {0,1,2,3,4,5,6,9,10,11,12,13,15,16,17,18,19,20,21,22,23,24,25,46,47,48};
         const int64_t ref_len = ARRAY_SIZE(ref_idx);
-
-        md_index_data_t result = md_util_structure_find_equivalent(ref_idx, ref_len, mol, alloc);
-        const int64_t result_count = md_index_data_count(result);
+        md_timestamp_t t0 = md_time_current();
+        md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_UNIQUE, MD_UTIL_MATCH_LEVEL_STRUCTURE, mol, alloc);
+        md_timestamp_t t1 = md_time_current();
+        printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
+        const int result_count = (int)md_index_data_count(result);
+        printf("result count: %d\n", result_count);
         EXPECT_EQ(result_count, 2);
 
         md_index_data_free(&result, alloc);
@@ -400,11 +416,13 @@ UTEST_F(util, structure_matching_PFTAA) {
     }
 }
 
-UTEST_F(util, structure_matching_smiles_ala) {
+UTEST_F(util, structure_matching_smiles) {
     md_allocator_i* alloc = utest_fixture->alloc;
     
-    const char ALANINE1[] = "N[C@@H]([CH3])C(=O)";
-    const char ALANINE2[] = "N[C@@H]([CH3])C(-O)(-O)";
+    const char ALANINE[] = "N[C@@H]([CH3])C(O)";
+    // There are natural variations in how the alanine molecule is structured depending on its environment.
+    //const char ALANINE1[] = "N[C@@H]([CH3])C(=O)"; 
+    //const char ALANINE2[] = "N[C@@H]([CH3])C(-O)(-O)";
 
     const char ARGININE[] = "N[C@@H](CCCNC(=N)N)C(=O)";
     const char ASPARAGINE[] = "C(C(C(=O)O)N)C(=O)N";
@@ -430,34 +448,28 @@ UTEST_F(util, structure_matching_smiles_ala) {
     const char PYRROLYSINE[] = "CC1CC=NC1C(=O)NCCCCC(C(=O)O)N";
 
     {
-#if 0
+#if 1
         const md_molecule_t* mol = &utest_fixture->mol_ala;
-        md_index_data_t res1 = md_util_structure_find_equivalent_smiles((str_t){ALANINE1, sizeof(ALANINE1)}, mol, alloc);
-        md_index_data_t res2 = md_util_structure_find_equivalent_smiles((str_t){ALANINE2, sizeof(ALANINE2)}, mol, alloc);
-        const int64_t res_count1 = md_index_data_count(res1);
-        const int64_t res_count2 = md_index_data_count(res2);
-        const int64_t count = res_count1 + res_count2;
+        md_timestamp_t t0 = md_time_current();
+        md_index_data_t res = md_util_match_smiles((str_t){ALANINE, sizeof(ALANINE)}, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
+        md_timestamp_t t1 = md_time_current();
+        const int64_t count = md_index_data_count(res);
+        printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
+        printf("result count: %d\n", (int)count);
         EXPECT_EQ(count, 15);
 #endif
     }
     {
-#if 0
+#if 1
         const md_molecule_t* mol = &utest_fixture->mol_centered;
-        md_index_data_t res1 = md_util_structure_find_equivalent_smiles((str_t){ALANINE1, sizeof(ALANINE1)}, mol, alloc);
-        md_index_data_t res2 = md_util_structure_find_equivalent_smiles((str_t){ALANINE2, sizeof(ALANINE2)}, mol, alloc);
-        const int64_t res_count1 = md_index_data_count(res1);
-        const int64_t res_count2 = md_index_data_count(res2);
-        const int64_t count = res_count1 + res_count2;
+        md_index_data_t res = md_util_match_smiles((str_t){ALANINE, sizeof(ALANINE)}, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
+        const int64_t count = md_index_data_count(res);
+        printf("result count: %d\n", (int)count);
         EXPECT_EQ(count, 1012);
         
-        for (int64_t i = 0; i < res_count1; ++i) {
-            int* it = md_index_range_beg(res1, i);
-            printf("[%d] resname: %s\n", utest_fixture->mol_centered.atom.res_idx[*it], utest_fixture->mol_centered.atom.resname[*it].buf);
-        }
-
-        for (int64_t i = 0; i < res_count2; ++i) {
-            int* it = md_index_range_beg(res2, i);
-            printf("[%d] resname: %s\n", utest_fixture->mol_centered.atom.res_idx[*it], utest_fixture->mol_centered.atom.resname[*it].buf);
+        for (int64_t i = 0; i < count; ++i) {
+            int* it = md_index_range_beg(res, i);
+            EXPECT_STREQ("ALA", mol->atom.resname[*it].buf);
         }
 #endif
     }
@@ -473,37 +485,37 @@ UTEST(util, parse_smiles) {
 
         ASSERT_EQ(len, 11);
         EXPECT_EQ(smiles[0].type, MD_SMILES_NODE_ATOM);
-        EXPECT_EQ(smiles[0].atom.symbol[0], 'C');
+        EXPECT_EQ(smiles[0].atom.element, 6);
         
-        EXPECT_EQ(smiles[1].type, MD_SMILES_NODE_RING_CLOSURE);
-        EXPECT_EQ(smiles[1].ring.index, 1);
+        EXPECT_EQ(smiles[1].type, MD_SMILES_NODE_BRIDGE);
+        EXPECT_EQ(smiles[1].bridge.index, 1);
         
         EXPECT_EQ(smiles[2].type, MD_SMILES_NODE_BOND);
         EXPECT_EQ(smiles[2].bond.symbol, '=');
 
         EXPECT_EQ(smiles[3].type, MD_SMILES_NODE_ATOM);
-		EXPECT_EQ(smiles[3].atom.symbol[0], 'C');
+		EXPECT_EQ(smiles[3].atom.element, 6);
         
         EXPECT_EQ(smiles[4].type, MD_SMILES_NODE_ATOM);
-		EXPECT_EQ(smiles[4].atom.symbol[0], 'C');
+		EXPECT_EQ(smiles[4].atom.element, 6);
         
         EXPECT_EQ(smiles[5].type, MD_SMILES_NODE_BOND);
 		EXPECT_EQ(smiles[5].bond.symbol, '=');
 
         EXPECT_EQ(smiles[6].type, MD_SMILES_NODE_ATOM);
-		EXPECT_EQ(smiles[6].atom.symbol[0], 'C');
+		EXPECT_EQ(smiles[6].atom.element, 6);
 
         EXPECT_EQ(smiles[7].type, MD_SMILES_NODE_ATOM);
-		EXPECT_EQ(smiles[7].atom.symbol[0], 'C');
+		EXPECT_EQ(smiles[7].atom.element, 6);
 
         EXPECT_EQ(smiles[8].type, MD_SMILES_NODE_BOND);
         EXPECT_EQ(smiles[8].bond.symbol, '=');
 
         EXPECT_EQ(smiles[9].type, MD_SMILES_NODE_ATOM);
-        EXPECT_EQ(smiles[9].atom.symbol[0], 'C');
+        EXPECT_EQ(smiles[9].atom.element, 6);
 
-		EXPECT_EQ(smiles[10].type, MD_SMILES_NODE_RING_CLOSURE);
-        EXPECT_EQ(smiles[10].ring.index, 1);
+		EXPECT_EQ(smiles[10].type, MD_SMILES_NODE_BRIDGE);
+        EXPECT_EQ(smiles[10].bridge.index, 1);
 
         md_array_free(smiles, alloc);
     }
@@ -515,9 +527,7 @@ UTEST(util, parse_smiles) {
         
         EXPECT_EQ(len, 16);
         EXPECT_EQ(smiles[0].type, MD_SMILES_NODE_ATOM);
-        EXPECT_EQ(smiles[0].atom.symbol[0], 'C');
-
-
+        EXPECT_EQ(smiles[0].atom.element, 6);
 
         md_array_free(smiles, alloc);
     }

@@ -90,11 +90,9 @@ void md_frame_cache_free(md_frame_cache_t* cache) {
 static inline void md_frame_cache_frame_lock_aquire(struct md_frame_cache_lock_t* lock) {
     ASSERT(lock);
     bool success = md_semaphore_aquire((md_semaphore_t*)lock);
+    (void)success;
 #if 0
-    char buf[512] = {0};
-    md_thread_id_t id = md_thread_id();
-    snprintf(buf, 512, "thread-id: %llu", id);
-    md_logf(MD_LOG_TYPE_DEBUG, "AQUIRE LOCK \t%llu: %s", (uint64_t)lock, buf);
+    MD_LOG_DEBUG("AQUIRED LOCK \t%llu on thread %llu", (uint64_t)lock, md_thread_id());
 #endif
     ASSERT(success);
 }
@@ -102,8 +100,9 @@ static inline void md_frame_cache_frame_lock_aquire(struct md_frame_cache_lock_t
 void md_frame_cache_frame_lock_release(struct md_frame_cache_lock_t* lock) {
     ASSERT(lock);
     bool success = md_semaphore_release((md_semaphore_t*)lock);
+    (void)success;
 #if 0
-    md_logf(MD_LOG_TYPE_DEBUG, "RELEASE\t%llu\n", (uint64_t)lock);
+    MD_LOG_DEBUG("RELEASED LOCK \t%llu on thread %llu", (uint64_t)lock, md_thread_id());
 #endif
     ASSERT(success);
 }

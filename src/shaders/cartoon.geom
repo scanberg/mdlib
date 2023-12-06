@@ -25,15 +25,16 @@ layout(lines) in;
 layout(triangle_strip, max_vertices = NUM_VERTS) out;
 
 in Vertex {
-    vec4  control_point;
-    vec4  support_vector;
-    vec4  support_tangent;
+    vec3  control_point;
+    vec3  support_vector;
+    vec3  support_tangent;
     vec3  view_velocity;
     float segment_t;
     vec3  secondary_structure;
-    uint  flags;
     vec4  color;
-    flat uint  picking_idx;
+    uint  spline_flags;
+    uint  atom_flags;
+    uint  picking_idx;
 } in_vert[];
 
 out Fragment {
@@ -56,9 +57,10 @@ void emit_vertex(in vec4 clip_coord, in vec4 normal, in int idx) {
 }
 
 void main() {
-    // We consider the rendered segment to fully belong to index 0
-    if ((in_vert[0].flags & u_atom_mask) != u_atom_mask) return;
+    if ((in_vert[0].atom_flags & u_atom_mask) != u_atom_mask) return;
+    if ((in_vert[1].atom_flags & u_atom_mask) != u_atom_mask) return;
     if (in_vert[0].color.a == 0.0f) return;
+    if (in_vert[1].color.a == 0.0f) return;
 
     vec4 x[2];
     vec4 y[2];
@@ -74,14 +76,14 @@ void main() {
     vec4 n1[RES];
     
     float flip = sign(dot(in_vert[0].support_vector, in_vert[1].support_vector));
-    x[0] = in_vert[0].support_vector;
-    x[1] = in_vert[1].support_vector * flip;
-    z[0] = in_vert[0].support_tangent;
-    z[1] = in_vert[1].support_tangent;
+    x[0] = vec4(in_vert[0].support_vector, 0);
+    x[1] = vec4(in_vert[1].support_vector * flip, 0);
+    z[0] = vec4(in_vert[0].support_tangent, 0);
+    z[1] = vec4(in_vert[1].support_tangent, 0);
     y[0] = vec4(normalize(cross(z[0].xyz, x[0].xyz)), 0); // To maintain right-handedness
     y[1] = vec4(normalize(cross(z[1].xyz, x[1].xyz)), 0);
-    w[0] = in_vert[0].control_point;
-    w[1] = in_vert[1].control_point;
+    w[0] = vec4(in_vert[0].control_point, 1);
+    w[1] = vec4(in_vert[1].control_point, 1);
 
     const float TWO_PI = 2.0 * 3.14159265;
 
@@ -121,7 +123,7 @@ void main() {
     EndPrimitive();
 
     // MAKE CAP
-    if ((in_vert[0].flags & 1U) != 0U) { // BEG_CHAIN
+    if ((in_vert[0].spline_flags & 1U) != 0U) { // BEG_CHAIN
         vec4 cc = M[0][3];
         vec4 cn = N[0] * vec4(0,0,-1,0);
         for (int i = 0; i < RES-1; i += 2) {
@@ -131,7 +133,8 @@ void main() {
             emit_vertex(v0[(i+2)%RES], cn, 0);
         }
         EndPrimitive();
-    } else if ((in_vert[1].flags & 2U) != 0U) { // END_CHAIN
+    } 
+    if ((in_vert[1].spline_flags & 2U) != 0U) { // END_CHAIN
         vec4 cc = M[1][3];
         vec4 cn = N[1] * vec4(0,0,1,0);
         for (int i = 0; i < RES-1; i += 2) {

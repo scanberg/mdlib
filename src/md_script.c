@@ -1056,7 +1056,9 @@ static identifier_t* get_identifier(md_script_ir_t* ir, str_t name) {
 }
 
 static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
-    ASSERT(get_identifier(ir, name) == NULL);
+    if (get_identifier(ir, name)) {
+        return NULL;
+    }
 
     identifier_t ident = {
         .name = str_copy(name, ir->arena),
@@ -3833,6 +3835,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
             // If we have conflicting units, we make it unitless and let the user know.
             //LOG_WARNING(ctx->ir, node->token, "import: conflicting units, perhaps separate the import into two separate");
             unit = md_unit_none();
+            break;
         }
     }
 
@@ -4241,6 +4244,10 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
             for (int i = 0; i < num_idents; ++i) {
                 ASSERT(idents[i]->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
                 identifier_t* ident = create_identifier(ctx->ir, idents[i]->ident);
+                if (!ident) {
+                    LOG_ERROR(ctx->ir, node->token, "Failed to create identifier. Is the identifier already taken?");
+                    return false;
+                }
 
                 ident->data = 0;
                 ident->node = rhs;
@@ -4271,7 +4278,10 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
             ASSERT(lhs->data.type.base_type == TYPE_UNDEFINED);  // Identifiers type should always be undefined until explicitly assigned.
 
             identifier_t* ident = create_identifier(ctx->ir, lhs->ident);
-            ASSERT(ident);
+            if (!ident) {
+                LOG_ERROR(ctx->ir, node->token, "Failed to create identifier. Is the identifier already taken?");
+                return false;
+            }
 
             ident->data  = &rhs->data;
             ident->node  = rhs;
@@ -4353,7 +4363,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
 
                 if (rhs->flags & FLAG_CONSTANT) {
                     ASSERT(rhs->data.ptr);
-                    ASSERT(rhs->data.size == num_contexts * sizeof(md_bitfield_t));
+                    ASSERT(rhs->data.size == num_contexts * (int64_t)sizeof(md_bitfield_t));
                     contexts = (md_bitfield_t*)rhs->data.ptr;
                 } else {
                     md_array_resize(contexts, num_contexts, ctx->ir->arena);
@@ -4363,7 +4373,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     result = evaluate_node(&rhs->data, rhs, ctx);
                     if (result) {
                         rhs->data.ptr = contexts;
-                        rhs->data.size = num_contexts * sizeof(md_bitfield_t);
+                        rhs->data.size = num_contexts * (int64_t)sizeof(md_bitfield_t);
                         ASSERT(md_array_size(contexts) == num_contexts);
                         result = true;
                     }
@@ -5488,6 +5498,8 @@ bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_b
             md_bitfield_copy(&node->value._bitfield, bitfield_identifiers[i].bitfield);
 
             identifier_t* ident = create_identifier(ir, name);
+            ASSERT(ident);
+
             ident->data = &node->data;
             ident->node = node;
         }

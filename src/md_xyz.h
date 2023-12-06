@@ -30,8 +30,7 @@ typedef struct md_xyz_model_t {
 	int64_t byte_offset;
 	int32_t beg_coord_index;
 	int32_t end_coord_index;
-	float cell_extent[3];	// Tinker (ARC) only
-	float cell_angle[3];	// Tinker (ARC) only
+	float cell[3][3];
 	char comment[88];
 } md_xyz_model_t;
 

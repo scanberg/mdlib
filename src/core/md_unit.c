@@ -75,7 +75,7 @@ typedef struct {
 #define UNIT_MILLISECOND    {.base = {.dim = {.time = 1,}},     .mult = 1e-3}
 #define UNIT_NANOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-9}
 #define UNIT_PIKOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-12}
-#define UNIT_FEMTOSECOND     {.base = {.dim = {.time = 1,}},     .mult = 1e-15}
+#define UNIT_FEMTOSECOND	{.base = {.dim = {.time = 1,}},     .mult = 1e-15}
 
 #define UNIT_DEGREE         {.base = {.dim = {.angle = 1,}},    .mult = RAD_TO_DEG(1),}
 
@@ -441,7 +441,7 @@ int internal_print_dims_SI(char* buf, int cap, md_unit_t unit) {
     return len;
 }
 
-int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
+int internal_print(char* buf, int cap, md_unit_t unit) {
     int len = 0;
 
     if (md_unit_empty(unit) || md_unit_unitless(unit)) {
@@ -592,7 +592,7 @@ int internal_print(char* buf, int cap, md_unit_t unit, int depth) {
 }
 
 int md_unit_print(char* buf, int cap, md_unit_t unit) {
-    return internal_print(buf, cap, unit, 0);
+    return internal_print(buf, cap, unit);
 }
 
 str_t md_unit_to_string(md_unit_t unit, struct md_allocator_i* alloc) {
@@ -721,9 +721,8 @@ md_unit_t md_unit_pikosecond() {
     return (md_unit_t)UNIT_PIKOSECOND;
 }
 
-md_unit_t md_unit_femtosecond()
-{
-    return (md_unit_t)UNIT_FEMTOSECOND;
+md_unit_t md_unit_femtosecond() {
+	return (md_unit_t)UNIT_FEMTOSECOND;
 }
 
 md_unit_t md_unit_ampere() {
