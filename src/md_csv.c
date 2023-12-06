@@ -28,7 +28,7 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
     // Also potentially extract field names from first row
     str_t tok;
     str_t first_line = line;
-    bool has_field_names = false;
+    bool has_field_names = true;
     int64_t num_fields = 0;
     while (extract_token_delim(&tok, &first_line, ',')) {
         tok = str_trim(tok);
@@ -48,8 +48,8 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
         // Read first line as field names
         for (int64_t i = 0; i < num_fields; ++i) {
             extract_token_delim(&tok, &line, ',');
-            tok = str_trim(tok);
-            md_array_push(csv->field_names, tok, alloc);
+            str_t name = str_copy(str_trim(tok), alloc);
+            md_array_push(csv->field_names, name, alloc);
         }
     }
 
@@ -60,7 +60,7 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
     while (md_buffered_reader_extract_line(&line, reader)) {
         int64_t i;
         for (i = 0; i < num_fields; ++i) {
-            if (extract_token_delim(&tok, &line, ',')) {
+            if (!extract_token_delim(&tok, &line, ',')) {
                 break;
             }
             tok = str_trim(tok);
@@ -76,6 +76,9 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
             return false;
         }
     }
+
+    csv->num_fields = num_fields;
+    csv->num_values = md_array_size(csv->field_values[0]);
 
     return true;
 }
