@@ -83,8 +83,9 @@ static inline const char* str_ptr(str_t str) {
 str_t str_trim(str_t str);
 
 bool str_equal(str_t str_a, str_t str_b);
-bool str_equal_n(str_t str_a, str_t str_b, int64_t n);
 bool str_equal_ignore_case(const str_t str_a, const str_t str_b);
+bool str_equal_n(str_t str_a, str_t str_b, int64_t n);
+bool str_equal_n_ignore_case(const str_t str_a, const str_t str_b, int64_t n);
 
 // Lexicographical comparison
 int str_compare_lex(str_t str_a, str_t str_b);
@@ -92,6 +93,7 @@ int str_compare_lex(str_t str_a, str_t str_b);
 bool str_equal_cstr(str_t str, const char* cstr);
 bool str_equal_cstr_n(str_t str, const char* cstr, int64_t n);
 bool str_equal_cstr_ignore_case(str_t str, const char* cstr);
+bool str_equal_cstr_n_ignore_case(str_t str, const char* cstr, int64_t n);
 
 int64_t str_count_equal_chars(str_t a, str_t b);
 int64_t str_count_occur_char(str_t str, char character);

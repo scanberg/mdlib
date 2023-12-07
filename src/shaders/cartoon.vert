@@ -1,6 +1,6 @@
 #version 330 core
 
-uniform samplerBuffer u_atom_color_buffer;
+uniform  samplerBuffer u_atom_color_buffer;
 uniform usamplerBuffer u_atom_flags_buffer;
 
 layout (std140) uniform ubo {
@@ -34,9 +34,9 @@ out Vertex {
     vec3  support_vector;
     vec3  support_tangent;
     vec3  view_velocity;
-    float segment_t;
-    vec3  secondary_structure;
     vec4  color;
+    vec3  secondary_structure;
+    float segment_t;
     uint  spline_flags;
     uint  atom_flags;
     uint  picking_idx;

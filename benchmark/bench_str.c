@@ -4,11 +4,17 @@
 #include <core/md_parse.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
+#include <core/md_log.h>
 
 #include <inttypes.h>
 
 UBENCH_EX(str, read_lines) {
-    md_file_o* file = md_file_open(STR(MD_BENCHMARK_DATA_DIR "/centered.gro"), MD_FILE_READ | MD_FILE_BINARY);
+    str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    if (!file) {
+        MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
+        return;
+    }
 
     UBENCH_SET_BYTES(md_file_size(file));
 
@@ -26,7 +32,12 @@ UBENCH_EX(str, read_lines) {
 }
 
 UBENCH_EX(str, buffered_reader) {
-    md_file_o* file = md_file_open(STR(MD_BENCHMARK_DATA_DIR "/centered.gro"), MD_FILE_READ | MD_FILE_BINARY);
+    str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    if (!file) {
+        MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
+        return;
+    }
     const int64_t cap = MEGABYTES(1);
     char* buf = md_alloc(md_heap_allocator, cap);
     

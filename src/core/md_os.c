@@ -407,7 +407,10 @@ int64_t md_file_tell(md_file_o* file) {
 }
 
 bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin) {
-    ASSERT(file);
+    if (!file) {
+        MD_LOG_ERROR("File handle was NULL");
+        return false;
+    }
 
     int o = 0;
     switch(origin) {
@@ -433,7 +436,10 @@ bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin)
 }
 
 int64_t md_file_size(md_file_o* file) {
-    ASSERT(file);
+    if (!file) {
+        MD_LOG_ERROR("File handle was NULL");
+        return 0;
+    }
     int64_t cur = md_file_tell(file);
     md_file_seek(file, 0, SEEK_END);
     int64_t end = md_file_tell(file);
@@ -443,7 +449,10 @@ int64_t md_file_size(md_file_o* file) {
 
 // Returns the number of successfully written/read bytes
 int64_t md_file_read(md_file_o* file, void* ptr, int64_t num_bytes) {
-    ASSERT(file);
+    if (!file) {
+        MD_LOG_ERROR("File handle was NULL");
+        return 0;
+    }
     return (int64_t)fread(ptr, 1, num_bytes, (FILE*)file);
 }
 

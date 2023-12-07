@@ -572,6 +572,17 @@ static bool nucleotide_heuristic(const md_label_t labels[], int size) {
 #define MIN_RES_LEN 4
 #define MAX_RES_LEN 25
 
+static bool is_organic(char c) {
+    switch(c) {
+        case 'C': return true;
+        case 'N': return true;
+        case 'O': return true;
+        case 'S': return true;
+        case 'P': return true;
+		default: return false;
+    }
+}
+
 bool md_util_element_guess(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol) {
     ASSERT(capacity >= 0);
     ASSERT(mol);
@@ -595,12 +606,28 @@ bool md_util_element_guess(md_element_t element[], int64_t capacity, const struc
             if (mol->atom.flags) {
                 const md_flags_t flags = mol->atom.flags[i];
                 if (flags & MD_FLAG_AMINO_ACID || flags & MD_FLAG_NUCLEOTIDE) {
-                    // EASY-PEASY, we just try to match against the first character
+                    // Try to match against the first character
                     name.len = 1;
                     elem = md_util_element_lookup_ignore_case(name);
                     goto done;
                 }
             }
+
+            // This is the same logic as above but more general, for the natural organic elements
+            if (is_organic(name.ptr[0]) && name.len > 1) {
+                if (name.ptr[1] - 'A' < 5) {
+                    if (mol->residue.count > 0 && mol->atom.res_idx) {
+                        int32_t res_idx = mol->atom.res_idx[i];
+                        md_range_t res_range = mol->residue.atom_range[res_idx];
+                        int res_len = res_range.end - res_range.beg;
+                        if (res_len > 3) {
+                            name.len = 1;
+                            elem = md_util_element_lookup_ignore_case(name);
+                            goto done;
+                        }
+                    }
+                }
+			}
 
             // Heuristic cases
 
@@ -1576,18 +1603,19 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
         return false;
     }
 
-    md_array_shrink(chain->id, 0);
-    md_array_shrink(chain->atom_range, 0);
-    md_array_shrink(chain->residue_range, 0);
-    chain->count = 0;
+    MEMSET(chain, 0, sizeof(md_chain_data_t));
+
+    if (res->count == 1) {
+        // There can be no chains if there is only one residue
+        return true;
+    }
 
     //md_array(uint64_t) res_bond_to_next = make_bitfield(res->count, md_temp_allocator);
-    md_array(uint64_t) res_bond_to_prev = make_bitfield(res->count, md_temp_allocator);
+    md_array(uint64_t) res_bond_to_prev = make_bitfield(res->count + 1, md_temp_allocator);
     for (int64_t i = 0; i < bond->count; ++i) {
         if (bond->flags[i] & MD_FLAG_INTER_BOND) {
             const md_residue_idx_t res_a = atom->res_idx[bond->pairs[i].idx[0]];
             const md_residue_idx_t res_b = atom->res_idx[bond->pairs[i].idx[1]];
-            //set_bit(res_bond_to_next, MIN(res_a, res_b));
             set_bit(res_bond_to_prev, MAX(res_a, res_b));
         }
     }
@@ -1641,8 +1669,10 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
         }
 #else
         int beg_idx = 0;
-        for (int i = 0; i < res->count; ++i) {
-            if (!test_bit(res_bond_to_prev, i) || i == res->count - 1) {
+        // We iterate up to res->count + 1 to ensure that the last residue is also included
+        // And it will automatically not be bonded to prev as its bit is zero and all is well
+        for (int i = 0; i <= res->count; ++i) {
+            if (!test_bit(res_bond_to_prev, i)) {
                 int end_idx = i;
                 if (end_idx - beg_idx > 1) {
                     const md_label_t id = generate_chain_id_from_index(chain->count);
@@ -1655,7 +1685,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
 
                     chain->count += 1;
                 }
-                beg_idx = i + 1;
+                beg_idx = i;
             }
         }
 #endif

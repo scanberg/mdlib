@@ -49,6 +49,29 @@ UTEST_F_TEARDOWN(util) {
     md_arena_allocator_destroy(utest_fixture->alloc);
 }
 
+UTEST_F(util, bonds) {
+    EXPECT_EQ(152,    utest_fixture->mol_ala.bond.count);
+    EXPECT_EQ(55,     utest_fixture->mol_pftaa.bond.count);
+    EXPECT_EQ(40,     utest_fixture->mol_nucleotides.bond.count);
+    EXPECT_EQ(163504, utest_fixture->mol_centered.bond.count);
+}
+
+UTEST_F(util, chain) {
+    EXPECT_EQ(1,   utest_fixture->mol_ala.chain.count);
+	EXPECT_EQ(0,   utest_fixture->mol_pftaa.chain.count);
+	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.chain.count);
+	EXPECT_EQ(253, utest_fixture->mol_centered.chain.count);
+}
+
+UTEST_F(util, backbone) {
+	EXPECT_EQ(0,   utest_fixture->mol_pftaa.backbone.range_count);
+	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.backbone.range_count);
+    EXPECT_EQ(1,   utest_fixture->mol_ala.backbone.range_count);
+    EXPECT_EQ(15,  utest_fixture->mol_ala.backbone.count);
+	EXPECT_EQ(253, utest_fixture->mol_centered.backbone.range_count);
+    EXPECT_EQ(10626, utest_fixture->mol_centered.backbone.count); // Should be equal to the total count of residues in chains
+}
+
 UTEST_F(util, rmsd) {
     md_allocator_i* alloc = utest_fixture->alloc;
     md_molecule_t* mol = &utest_fixture->mol_ala;
@@ -111,9 +134,8 @@ UTEST(util, com) {
         There are many different variations of how to handle this and it seems none of them are perfect.
         Unless you handpick your algorithm based on some external knowledge of the structure you are dealing with.
 
-        In this case, we have settled on an algorithm which iteratively accumulates the center of mass by deperiodizing
-        new points with respect to the previous point. This works in most cases when dealing with long structures, given that
-        the indices or subsequent points are not too far apart, which is almost always the case in real world datasets.
+        In this case, we have settled on the trigonometric approach presented in:
+        Bai, Linge, and David Breen. "Calculating center of mass in an unbounded 2D environment." Journal of Graphics Tools 13.4 (2008): 53-60.
     */
     {
         const vec4_t xyzw[] = {

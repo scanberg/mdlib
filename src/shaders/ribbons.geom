@@ -27,6 +27,7 @@ in Vertex {
     vec3 support_tangent;
     vec3 view_velocity;
     vec4 color;
+    float segment_t;
     uint picking_idx;
     uint spline_flags;
     uint atom_flags;
@@ -43,10 +44,11 @@ out Fragment {
 void emit_vertex(in vec4 clip_coord, in vec4 normal, in int idx) {
     vec4 view_coord = u_clip_to_view * clip_coord;
     out_frag.color = in_vert[idx].color;
+    //out_frag.color = mix(vec4(1,1,1,1), vec4(1,0,0,1), fract(in_vert[0].segment_t));
     out_frag.view_coord = view_coord.xyz / view_coord.w;
     out_frag.view_velocity = in_vert[idx].view_velocity;
     out_frag.view_normal = normal.xyz;
-    out_frag.picking_idx = in_vert[idx].picking_idx;
+    out_frag.picking_idx = in_vert[0].picking_idx;
     gl_Position = clip_coord;
     EmitVertex();
 }

@@ -3,6 +3,7 @@
 #define RES 6
 //#define NUM_VERTS 26    // RES * 2 + 2 (Cylinder) + 1 + RES (CAP)
 #define NUM_VERTS 26
+#define TWO_PI 6.28318530717958647693
 
 layout (std140) uniform ubo {
     mat4 u_world_to_view;
@@ -29,9 +30,9 @@ in Vertex {
     vec3  support_vector;
     vec3  support_tangent;
     vec3  view_velocity;
-    float segment_t;
-    vec3  secondary_structure;
     vec4  color;
+    vec3  secondary_structure;
+    float segment_t;
     uint  spline_flags;
     uint  atom_flags;
     uint  picking_idx;
@@ -47,6 +48,7 @@ out Fragment {
 
 void emit_vertex(in vec4 clip_coord, in vec4 normal, in int idx) {
     out_frag.color = in_vert[idx].color;
+    //out_frag.color = mix(vec4(1,1,1,1), vec4(1,0,0,1), fract(in_vert[0].segment_t));
     vec4 view_coord = u_clip_to_view * clip_coord;
     out_frag.view_coord     = view_coord.xyz / view_coord.w;
     out_frag.view_velocity  = in_vert[idx].view_velocity;
@@ -57,10 +59,9 @@ void emit_vertex(in vec4 clip_coord, in vec4 normal, in int idx) {
 }
 
 void main() {
+    // We consider the rendered segment to fully belong to index 0
     if ((in_vert[0].atom_flags & u_atom_mask) != u_atom_mask) return;
-    if ((in_vert[1].atom_flags & u_atom_mask) != u_atom_mask) return;
     if (in_vert[0].color.a == 0.0f) return;
-    if (in_vert[1].color.a == 0.0f) return;
 
     vec4 x[2];
     vec4 y[2];
@@ -84,8 +85,6 @@ void main() {
     y[1] = vec4(normalize(cross(z[1].xyz, x[1].xyz)), 0);
     w[0] = vec4(in_vert[0].control_point, 1);
     w[1] = vec4(in_vert[1].control_point, 1);
-
-    const float TWO_PI = 2.0 * 3.14159265;
 
     M[0] = u_world_to_clip * mat4(x[0], y[0], z[0], w[0]);
     M[1] = u_world_to_clip * mat4(x[1], y[1], z[1], w[1]);

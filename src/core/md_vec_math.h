@@ -1562,6 +1562,9 @@ static inline vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_m
 void vec3_batch_translate_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, int64_t count, vec3_t translation);
 void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation);
 
+void mat3_batch_transform_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, int64_t count, mat3_t transform);
+void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, mat3_t transform);
+
 void mat4_batch_transform_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, float w_comp, int64_t count, mat4_t transform);
 void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t transform);
 

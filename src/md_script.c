@@ -2591,9 +2591,11 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
 
     if (dst) {
         ASSERT(dst->ptr && dst->size >= type_info_total_byte_size(node->data.type));
-        
-        if (!ctx->frame_header) {
-            MD_LOG_ERROR("Missing frame header, cannot determine timestamp for table lookup");
+
+        const int64_t num_frames = md_trajectory_num_frames(ctx->traj);
+
+        if (!num_frames || !ctx->frame_header) {
+            MD_LOG_ERROR("Missing trajectory header data, cannot evaluate table");
             return false;
         }
         if (!is_type_equivalent(dst->type, node->data.type)) {
@@ -2606,72 +2608,74 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
         }
 
         const int64_t num_rows = node->table->num_values;
-        const double* time = node->table->field_values[0];
+        int64_t row_index = -1;
+        if (str_equal(node->table->field_names[0], STR("Time"))) {
+            // Complex case, find the matching time
+            const double* time = node->table->field_values[0];
 
-        if (!time) {
-            MD_LOG_DEBUG("Missing time field when evaluating table value");
-            return false;
-        }
+            if (!time) {
+                MD_LOG_DEBUG("Missing time field when evaluating table value");
+                return false;
+            }
 
-        const double ref_time = ctx->frame_header->timestamp;
+            const double ref_time = ctx->frame_header->timestamp;
 
-        // Find the row_index in the table which corresponds to the current time
-        const int64_t num_frames = md_trajectory_num_frames(ctx->traj);
+            // Find the row_index in the table which corresponds to the current time
+            double t0 = 0.0;
+            double t1 = 1.0;
+            const double* traj_times = md_trajectory_frame_times(ctx->traj);
+            if (traj_times) {
+                t0 = traj_times[0];
+                t1 = traj_times[num_frames - 1];
+            }
 
-        if (!num_frames) {
-            MD_LOG_DEBUG("Number of frames were 0");
-            return false;
-        }
+            // Make a guess based on the current time
+            const double t = (ref_time - t0) / (t1 - t0);
 
-        double t0 = 0.0;
-        double t1 = 1.0;
-        const double* traj_times = md_trajectory_frame_times(ctx->traj);
-        if (traj_times) {
-            t0 = traj_times[0];
-            t1 = traj_times[num_frames - 1];
-        }
+            // Guess row index from t
+            row_index = CLAMP((int64_t)(t * num_rows), 0, num_rows - 1);
 
-        const double t = (ref_time - t0) / (t1 - t0);
-
-        // Guess row index from t
-        int64_t row_index = CLAMP((int64_t)(t * num_rows), 0, num_rows - 1);
-
-        if (time[row_index] < ref_time) {
-            for (int64_t i = row_index; i < num_rows; ++i) {
-                if (timestamps_approx_equal(time[i], ref_time)) {
-                    row_index = i;
-                    break;
-                }
-                else if (time[i] - TIMESTAMP_ERROR_MARGIN > ref_time) {
-                    row_index = -1;
+            if (time[row_index] < ref_time) {
+                for (int64_t i = row_index; i < num_rows; ++i) {
+                    if (timestamps_approx_equal(time[i], ref_time)) {
+                        row_index = i;
+                        break;
+                    }
+                    else if (time[i] - TIMESTAMP_ERROR_MARGIN > ref_time) {
+                        row_index = -1;
+                    }
                 }
             }
-        }
-        else if (time[row_index] > ref_time) {
-            for (int64_t i = row_index; i >= 0; --i) {
-                if (timestamps_approx_equal(time[i], ref_time)) {
-                    row_index = i;
-                    break;
-                }
-                else if (time[i] + TIMESTAMP_ERROR_MARGIN < ref_time) {
-                    row_index = -1;
+            else if (time[row_index] > ref_time) {
+                for (int64_t i = row_index; i >= 0; --i) {
+                    if (timestamps_approx_equal(time[i], ref_time)) {
+                        row_index = i;
+                        break;
+                    }
+                    else if (time[i] + TIMESTAMP_ERROR_MARGIN < ref_time) {
+                        row_index = -1;
+                    }
                 }
             }
+        } else {
+            // Simple case, find the matching frame
+			row_index = ctx->frame_header->index;
         }
 
         if (row_index == -1) {
-            MD_LOG_DEBUG("Unable to find matching time value when evaluating table");
+            MD_LOG_DEBUG("Unable to lookup corresponding row when evaluating table");
             return false;
         }
 
-        ASSERT(0 <= row_index && row_index < num_rows);              
+        if (row_index >= num_rows) {
+			MD_LOG_DEBUG("Row index out of bounds when evaluating table");
+			return false;
+		}
+         
         for (int64_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
             int idx = node->table_field_indices[i];
             ((float*)dst->ptr)[i] = (float)node->table->field_values[idx][row_index];
         }
-    }
-    else if (ctx->vis) {
-        
     }
 
     return true;
@@ -3580,13 +3584,26 @@ static md_unit_t extract_unit_from_label(str_t label) {
 static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file, const md_trajectory_i* traj) {
     str_t ext = extract_ext(path_to_file);
     table_t* table = NULL;
+    md_unit_t traj_time_unit = md_trajectory_time_unit(traj);
     const int64_t num_frames = md_trajectory_num_frames(traj);
-    bool temporal_table = false;
-    
+    bool traj_has_time = !md_unit_empty(traj_time_unit);
+   
     if (str_equal_cstr_ignore_case(ext, "edr")) {
         md_edr_energies_t edr = {0};
         if (md_edr_energies_parse_file(&edr, path_to_file, md_heap_allocator)) {
-            if (frame_times_compatible(md_trajectory_frame_times(traj), num_frames, edr.frame_time, edr.num_frames)) {
+            bool success = true;
+            if (traj_has_time) {
+                if (!frame_times_compatible(md_trajectory_frame_times(traj), num_frames, edr.frame_time, edr.num_frames)) {
+                    LOG_ERROR(ir, tok, "EDR file is not compatible with loaded trajectory, could not match timestamps");
+                    success = false;
+                }
+            } else {
+                if (num_frames != edr.num_frames) {
+					LOG_ERROR(ir, tok, "EDR file is not compatible with loaded trajectory, number of frames did not match");
+					success = false;
+				}
+            }
+            if (success) {
                 table = md_array_push(ir->tables, (table_t){.num_values = edr.num_frames}, ir->arena);
                 table->name = str_copy(path_to_file, ir->arena);
 
@@ -3594,49 +3611,76 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 for (int64_t i = 0; i < edr.num_energies; ++i) {
                     table_push_field_f(table, edr.energy[i].name, edr.energy[i].unit, edr.energy[i].values, edr.num_frames, ir->arena);
                 }
-
-                temporal_table = true;
-            } else {
-                LOG_ERROR(ir, tok, "EDR file is not compatible with loaded trajectory, frame times did not match");
             }
         }
         md_edr_energies_free(&edr);
     } else if (str_equal_cstr_ignore_case(ext, "xvg")) {
         md_xvg_t xvg = {0};
         if (md_xvg_parse_file(&xvg, path_to_file, md_heap_allocator)) {
-            if (str_equal(xvg.header_info.xaxis_label, STR("Time (ps)"))) {
-                if (frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, xvg.fields[0], xvg.num_values)) {
-                    table = md_array_push(ir->tables, (table_t){.num_values = xvg.num_values}, ir->arena);
-                    table->name = str_copy(path_to_file, ir->arena);
-                    
-                    table_push_field_f(table, STR("Time"), md_unit_pikosecond(), xvg.fields[0], xvg.num_values, ir->arena);
-                    md_unit_t unit = extract_unit_from_label(xvg.header_info.yaxis_label);
-
-                    for (int64_t i = 1; i < xvg.num_fields; ++i) {
-                        str_t name = STR("");
-                        if (i-1 < md_array_size(xvg.header_info.legends)) {
-                            name = xvg.header_info.legends[i-1];
-                        }
-                        table_push_field_f(table, name, unit, xvg.fields[i], xvg.num_values, ir->arena);
-                    }
-                } else {
-                    LOG_ERROR(ir, tok, "XVG file is not compatible with loaded trajectory, frame times did not match");
+            bool success = true;
+            bool xvg_has_time = str_equal_cstr_n_ignore_case(xvg.header_info.xaxis_label, "time", 4);
+            if (traj_has_time && xvg_has_time) {
+                if (!frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, xvg.fields[0], xvg.num_values)) {
+                    LOG_ERROR(ir, tok, "XVG file is not compatible with loaded trajectory, could not match timestamps");
+                    success = false;
                 }
             } else {
-                LOG_ERROR(ir, tok, "Expected first column in XVG to contain time in picoseconds with label 'Time (ps)', got '%.*s'",
-                          (int)xvg.header_info.xaxis_label.len, xvg.header_info.xaxis_label.ptr);
+            	if (num_frames != xvg.num_values) {
+                	LOG_ERROR(ir, tok, "XVG file is not compatible with loaded trajectory, number of frames did not match");
+                	success = false;
+                }
             }
+            if (success) {
+                table = md_array_push(ir->tables, (table_t){.num_values = xvg.num_values}, ir->arena);
+                table->name = str_copy(path_to_file, ir->arena);
+                
+                int64_t i = 0;
+                if (xvg_has_time) {
+                    md_unit_t time_unit = extract_unit_from_label(xvg.header_info.xaxis_label);
+                    table_push_field_f(table, STR("Time"), time_unit, xvg.fields[0], xvg.num_values, ir->arena);
+                    i = 1;
+                }
 
+                md_unit_t unit = extract_unit_from_label(xvg.header_info.yaxis_label);
+                for (; i < xvg.num_fields; ++i) {
+                    str_t name = STR("");
+                    if (i-1 < md_array_size(xvg.header_info.legends)) {
+                        name = xvg.header_info.legends[i-1];
+                    }
+                    table_push_field_f(table, name, unit, xvg.fields[i], xvg.num_values, ir->arena);
+                }
+            }
             md_xvg_free(&xvg, md_heap_allocator);
         }
     } else if (str_equal_cstr_ignore_case(ext, "csv")) {
         md_csv_t csv = {0};
         if (md_csv_parse_file(&csv, path_to_file, md_heap_allocator)) {
-            if (frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, csv.field_values[0], csv.num_values)) {
+            bool success = true;
+            bool csv_has_time = csv.field_names && str_equal_cstr_n_ignore_case(csv.field_names[0], "time", 4);
+
+            if (traj_has_time && csv_has_time) {
+                if (!frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, csv.field_values[0], csv.num_values)) {
+                    LOG_ERROR(ir, tok, "CSV file is not compatible with loaded trajectory, could not match timestamps");
+                    success = false;
+                }
+            } else {
+                if (num_frames != csv.num_values) {
+					LOG_ERROR(ir, tok, "CSV file is not compatible with loaded trajectory, number of frames did not match");
+					success = false;
+				}
+            }
+            if (success) {
                 table = md_array_push(ir->tables, (table_t){.num_values = csv.num_values}, ir->arena);
                 table->name = str_copy(path_to_file, ir->arena);
 
-                for (int64_t i = 0; i < csv.num_fields; ++i) {
+                int64_t i = 0;
+                if (csv_has_time) {
+                    md_unit_t time_unit = extract_unit_from_label(csv.field_names[0]);
+                    table_push_field_f(table, STR("Time"), time_unit, csv.field_values[0], csv.num_values, ir->arena);
+                    i = 1;
+                }
+
+                for (; i < csv.num_fields; ++i) {
                     md_unit_t unit = md_unit_none();
                     str_t name = STR("");
                     if (csv.field_names) {
@@ -3645,9 +3689,8 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                     }
                     table_push_field_f(table, name, unit, csv.field_values[i], csv.num_values, ir->arena);
                 }
-            } else {
-                LOG_ERROR(ir, tok, "import: CSV file is not compatible with loaded trajectory, frame times could not be matched to first column");
             }
+
             md_csv_free(&csv, md_heap_allocator);
         }
     } else {
@@ -3752,12 +3795,12 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
             const int* ints = as_int_arr(arg->data);
             for (int64_t i = 0; i < count; ++i) {
                 int idx = ints[i];
-                if (idx < 1 || idx >= (int)table->num_fields) {
+                if (idx < 1 || (int)table->num_fields < idx) {
                     LOG_ERROR(ctx->ir, node->token, "import: second argument must be a valid field index within range [1, %d]",
-                        (int)table->num_fields-1);
+                        (int)table->num_fields);
                     return false;
                 }
-                md_array_push(field_indices, idx, ctx->ir->arena);
+                md_array_push(field_indices, idx - 1, ctx->ir->arena);
             }
         } else if (is_type_directly_compatible(type, (type_info_t)TI_IRANGE_ARR)) {
             const int64_t count = element_count(arg->data);
@@ -3772,12 +3815,12 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                 if (range.beg == INT32_MIN) range.beg = 1;
                 if (range.end == INT32_MAX) range.end = (int)table->num_fields;
                 for (int idx = range.beg; idx <= range.end; ++idx) {
-                    if (idx < 1 || idx >= (int)table->num_fields) {
+                    if (idx < 1 || (int)table->num_fields < idx) {
                         LOG_ERROR(ctx->ir, node->token, "import: second argument must be a valid field index within range [1, %d]",
-                            (int)table->num_fields-1);
+                            (int)table->num_fields);
                         return false;
                     }
-                    md_array_push(field_indices, idx, ctx->ir->arena);
+                    md_array_push(field_indices, idx - 1, ctx->ir->arena);
                 }
             }
         } else if (is_type_directly_compatible(type, (type_info_t)TI_STRING_ARR)) {
@@ -3790,7 +3833,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                     return false;
                 }
                 int match_idx = -1;
-                for (int j = 1; j < (int)table->num_fields; ++j) {
+                for (int j = 0; j < (int)table->num_fields; ++j) {
                     if (str_equal(str, table->field_names[j])) {
                         match_idx = j;
                         break;
@@ -3800,9 +3843,9 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                     char buf[512];
                     int len = 0;
                     int best_idx[3];
-                    const int64_t num_best_matches = str_find_n_best_matches(best_idx, ARRAY_SIZE(best_idx), str, table->field_names + 1, table->num_fields - 1);
+                    const int64_t num_best_matches = str_find_n_best_matches(best_idx, ARRAY_SIZE(best_idx), str, table->field_names, table->num_fields);
                     for (int64_t j = 0; j < num_best_matches; ++j) {
-                        int idx = best_idx[j] + 1;  // +1 because we skip the first field (which is the x axis (time))
+                        int idx = best_idx[j];
                         str_t name = table->field_names[idx];
                         len += snprintf(buf + len, sizeof(buf) - len, "'%.*s'\n", (int)name.len, name.ptr);
                     }
@@ -3819,18 +3862,18 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     } else {
         ASSERT(num_args == 1);
         // Setup node table fields to hold all available fields within the imported table
-        for (int i = 1; i < table->num_fields; ++i) {
+        for (int i = 0; i < table->num_fields; ++i) {
             md_array_push(field_indices, i, ctx->ir->arena);
         }
     }
 
     if (md_array_size(field_indices) == 0) {
-        LOG_ERROR(ctx->ir, node->token, "import: no fields");
+        LOG_ERROR(ctx->ir, node->token, "import: no fields matched");
         return false;
     }
 
     md_unit_t unit = table->field_units[field_indices[0]];
-    for (int64_t i = 1; i < md_array_size(field_indices); ++i) {
+    for (int64_t i = 0; i < md_array_size(field_indices); ++i) {
         if (!md_unit_equal(unit, table->field_units[field_indices[i]])) {
             // If we have conflicting units, we make it unitless and let the user know.
             //LOG_WARNING(ctx->ir, node->token, "import: conflicting units, perhaps separate the import into two separate");
@@ -3844,7 +3887,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     node->data.unit = unit;
     node->table = table;
     node->table_field_indices = field_indices;
-    node->flags |= FLAG_DYNAMIC; // It is not a constant value, but will change depending on what time we evaluate it.
+    node->flags |= FLAG_DYNAMIC; // It is not a constant value, it will change depending on what time we evaluate it.
 
     return true;
 }
@@ -5321,8 +5364,12 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
         bool matching_units = true;
         for (int64_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
             int idx = node->table_field_indices[i];
+            if (idx < 0 || (int)node->table->num_fields <= idx) {
+                MD_LOG_DEBUG("Attempting to read out of bounds in table_field_indices");
+                continue;
+            }
             str_t name = node->table->field_names[idx];
-            md_strb_fmt(&sb, "[%i]: \"%.*s\"", (int)(i+1), (int)name.len, name.ptr);
+            md_strb_fmt(&sb, "[%i]: \"%.*s\"", (int)(i + 1), (int)name.len, name.ptr);
             md_unit_t unit = node->table->field_units[idx];
             if (!md_unit_empty(unit) && !md_unit_unitless(unit)) {
                 str_t unit_str = md_unit_to_string(unit, md_temp_allocator);
