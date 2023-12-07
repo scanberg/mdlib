@@ -4,6 +4,7 @@
 #include <core/md_parse.h>
 #include <core/md_os.h>
 #include <core/md_allocator.h>
+#include <core/md_log.h>
 
 #include <inttypes.h>
 

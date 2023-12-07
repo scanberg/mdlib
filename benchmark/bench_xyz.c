@@ -4,6 +4,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
+#include <core/md_log.h>
 
 UBENCH_EX(xyz, xmol) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
