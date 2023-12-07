@@ -94,7 +94,6 @@ bool md_lammps_molecule_init(struct md_molecule_t* mol, const md_lammps_data_t* 
 //struct md_molecule_loader_i* md_lammps_molecule_api();
 
 //Trajectory
-bool md_lammps_trajectory_parse_file(int64_t* num_atoms, md_unit_cell_t* unit_cell, int64_t* num_frame_offsets, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, str_t filename, struct md_allocator_i* alloc);
 struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc);
 void md_lammps_trajectory_free(struct md_trajectory_i* traj);
 
