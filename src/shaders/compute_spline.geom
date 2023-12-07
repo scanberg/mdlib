@@ -5,6 +5,10 @@
 #define NUM_SUBDIVISIONS 8
 #endif
 
+#ifndef MAX_VERTICES
+#define MAX_VERTICES 9
+#endif
+
 #ifndef ORTHONORMALIZE
 #define ORTHONORMALIZE 1
 #endif
@@ -16,7 +20,7 @@
 uniform float u_tension = 0.5; // @NOTE: Only for catmull rom
 
 layout(lines_adjacency) in;
-layout(points, max_vertices = NUM_SUBDIVISIONS) out;
+layout(points, max_vertices = MAX_VERTICES) out;
 
 out vec3  out_position;
 out uint  out_atom_idx;
@@ -156,12 +160,13 @@ void main() {
     fl[0] = in_vert[1].flags;
     fl[1] = in_vert[2].flags;
 
-    for (int i = 0; i < NUM_SUBDIVISIONS; i++) {
+    int end_idx = (fl[1] & 2u) != 0U ? NUM_SUBDIVISIONS + 1 : NUM_SUBDIVISIONS;
+    for (int i = 0; i < end_idx; i++) {
         float t = float(i) / float(NUM_SUBDIVISIONS);
         vec3 s_vec = normalize(spline(sv[0], sv[1], sv[2], sv[3], t));
         vec3 s_tan = normalize(spline_tangent(cp[0], cp[1], cp[2], cp[3], t));
         vec3 s_sec = spline(ss[0], ss[1], ss[2], ss[3], t);
-        uint s_flags = (i == 0) ? fl[0] : (i == NUM_SUBDIVISIONS - 1) ? fl[1] : 0U;
+        uint s_flags = (i == 0) ? fl[0] : (i == end_idx - 1) ? fl[1] : 0U;
 
 #if ORTHONORMALIZE
         s_vec = normalize(s_vec - s_tan*dot(s_vec, s_tan));

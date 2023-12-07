@@ -864,7 +864,9 @@ bool md_gl_initialize() {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
         GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
 
-        const str_t defines = STR("#define NUM_SUBDIVISIONS " STRINGIFY_VAL(MD_GL_SPLINE_SUBDIVISION_COUNT));
+        char def_buf[256];
+        snprintf(def_buf, ARRAY_SIZE(def_buf), "#define NUM_SUBDIVISIONS %i\n#define MAX_VERTICES %i\n", MD_GL_SPLINE_SUBDIVISION_COUNT, MD_GL_SPLINE_SUBDIVISION_COUNT+1);
+        str_t defines = {def_buf, strlen(def_buf)};
 
         bool err;
         if ((err = compile_shader_from_source(vert_shader, (str_t){(const char*)compute_spline_vert, compute_spline_vert_size}, defines, empty_str)) != true ||
@@ -973,14 +975,15 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
                 uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
                 backbone_residue_count += res_count;
-                backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT;
+                backbone_spline_count += (res_count) * MD_GL_SPLINE_SUBDIVISION_COUNT;
             }
+            backbone_spline_count += 1; // End point
 
             const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
             const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range_count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1); // primitive restart between each chain
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1); // primitive restart between each chain + end
 
             gl_mol->buffer[GL_BUFFER_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
@@ -1053,10 +1056,11 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (spline_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
+                uint32_t range_count = (uint32_t)mol->backbone.range_count;
+                for (uint32_t i = 0; i < range_count; ++i) {
                     uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
                     if (res_count > 0) {
-                        for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT; ++j) {
+                        for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; ++j) {
                             spline_index[len++] = idx++;
                         }
                     }
@@ -1474,14 +1478,19 @@ bool draw_ribbons(gl_program_t program, const internal_rep_t* rep, float width_s
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, velocity));
 
     glEnableVertexAttribArray(3);
-    glVertexAttribIPointer(3, 1, GL_UNSIGNED_BYTE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, flags));
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, segment_t));
 
     glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, support_vector));
+    glVertexAttribPointer(4, 3, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, secondary_structure));
 
     glEnableVertexAttribArray(5);
-    glVertexAttribPointer(5, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, tangent_vector));
+    glVertexAttribIPointer(5, 1, GL_UNSIGNED_BYTE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, flags));
 
+    glEnableVertexAttribArray(6);
+    glVertexAttribPointer(6, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, support_vector));
+
+    glEnableVertexAttribArray(7);
+    glVertexAttribPointer(7, 3, GL_SHORT, GL_TRUE, sizeof(gl_control_point_t), (const void*)offsetof(gl_control_point_t, tangent_vector));
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, rep->mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX].id);
