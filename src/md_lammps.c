@@ -634,7 +634,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* frame_da
 	return true;
 }
 
-static bool md_lammps_trajectory_parse(int64_t* num_atoms, md_unit_cell_t* unit_cell, int64_t* num_frame_offsets, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, coord_type* coord_type, int64_t* coord_start, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
+static bool lammps_trajectory_parse(int64_t* num_atoms, md_unit_cell_t* unit_cell, int64_t* num_frame_offsets, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, coord_type* coord_type, int64_t* coord_start, md_buffered_reader_t* reader, struct md_allocator_i* alloc) {
 	ASSERT(reader);
 	ASSERT(alloc);
 	str_t line;
@@ -787,7 +787,7 @@ static bool md_lammps_trajectory_parse(int64_t* num_atoms, md_unit_cell_t* unit_
 	return true;
 }
 
-bool md_lammps_trajectory_parse_file(int64_t* num_atoms, md_unit_cell_t* unit_cell, int64_t* num_frame_offsets, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, coord_type* coord_type, int64_t* coord_start, str_t filename, struct md_allocator_i* alloc) {
+static bool lammps_trajectory_parse_file(int64_t* num_atoms, md_unit_cell_t* unit_cell, int64_t* num_frame_offsets, md_array(int64_t)* frame_offsets, md_array(int64_t)* frame_times, coord_type* coord_type, int64_t* coord_start, str_t filename, struct md_allocator_i* alloc) {
 	bool result = false;
 	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
 	if (file) {
@@ -795,7 +795,7 @@ bool md_lammps_trajectory_parse_file(int64_t* num_atoms, md_unit_cell_t* unit_ce
 		char* buf = md_alloc(md_heap_allocator, cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
-		result = md_lammps_trajectory_parse(num_atoms, unit_cell, num_frame_offsets, frame_offsets, frame_times, coord_type, coord_start, &line_reader, alloc);
+		result = lammps_trajectory_parse(num_atoms, unit_cell, num_frame_offsets, frame_offsets, frame_times, coord_type, coord_start, &line_reader, alloc);
 
 		md_free(md_heap_allocator, buf, cap);
 		md_file_close(file);
@@ -1016,7 +1016,7 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	int64_t coord_start = -1; //-1 means it is not valid
 
 	if (!try_read_cache(cache_file, &num_atoms, &cell, &num_frame_offsets, &offsets, &frame_times, filesize, &coord_type, &coord_start, alloc)) { //If the cache file does not exist, we create one
-		if (!md_lammps_trajectory_parse_file(&num_atoms, &cell, &num_frame_offsets, &offsets, &frame_times, &coord_type, &coord_start, filename, md_heap_allocator)) {
+		if (!lammps_trajectory_parse_file(&num_atoms, &cell, &num_frame_offsets, &offsets, &frame_times, &coord_type, &coord_start, filename, md_heap_allocator)) {
 			//We could not parse the data file
 			md_array_free(offsets, alloc);
 			md_array_free(frame_times, alloc);
