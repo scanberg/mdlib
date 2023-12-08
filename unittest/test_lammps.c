@@ -5,6 +5,7 @@
 #include <md_trajectory.h>
 #include <md_molecule.h>
 #include <core/md_allocator.h>
+#include <core/md_log.h>
 
 UTEST(lammps, water_ethane_cubic) {
     md_allocator_i* alloc = md_heap_allocator;
@@ -173,6 +174,8 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
 
     EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
     EXPECT_NE(x, 0);
+    MD_LOG_DEBUG("X value is %f", x);
+    MD_LOG_DEBUG("X value is %f", header.unit_cell.basis.elem[0][0]);
     //The coordinates are scaled by a vector, don't know what the correct number should be
 
     md_free(md_temp_allocator, mem_ptr, mem_size);
