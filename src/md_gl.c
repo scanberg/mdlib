@@ -983,7 +983,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
             const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range_count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1); // primitive restart between each chain + end
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1) + 1; // primitive restart between each chain + end
 
             gl_mol->buffer[GL_BUFFER_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
