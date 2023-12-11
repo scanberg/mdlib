@@ -975,15 +975,14 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
                 uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
                 backbone_residue_count += res_count;
-                backbone_spline_count += (res_count) * MD_GL_SPLINE_SUBDIVISION_COUNT;
+                backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; // +1 For the last point
             }
-            backbone_spline_count += 1; // End point
 
             const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
             const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range_count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1) + 1; // primitive restart between each chain + end
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1); // Primitive restart between chains
 
             gl_mol->buffer[GL_BUFFER_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
@@ -1064,7 +1063,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
                             spline_index[len++] = idx++;
                         }
                     }
-                    spline_index[len++] = 0xFFFFFFFF;
+                    spline_index[len++] = 0xFFFFFFFFU;
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             } else {

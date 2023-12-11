@@ -919,13 +919,22 @@ bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secon
         // Set squished isolated structures to the surrounding (only for sheets and helices)
         md_secondary_structure_t* ss = secondary_structure;
         for (int32_t i = range.beg + 1; i < range.end - 1; ++i) {
-            if (ss[i-1] != MD_SECONDARY_STRUCTURE_COIL && ss[i] != ss[i-1] && ss[i-1] == ss[i+1]) ss[i] = ss[i-1];
+            if (ss[i-1] == ss[i+1] &&
+                ss[i-1] != MD_SECONDARY_STRUCTURE_COIL &&
+                ss[i+1] != MD_SECONDARY_STRUCTURE_COIL)
+            {
+                ss[i] = ss[i-1];
+            }
         }
 
         // Set remaining isolated structures to coil
         if (ss[range.beg] != ss[range.beg + 1]) ss[range.beg] = MD_SECONDARY_STRUCTURE_COIL;
         for (int32_t i = range.beg + 1; i < range.end - 1; ++i) {
-            if (ss[i] != ss[i-1] && ss[i] != ss[i+1]) ss[i] = MD_SECONDARY_STRUCTURE_COIL;
+            if (ss[i] != ss[i-1] &&
+                ss[i] != ss[i+1])
+            {
+                ss[i] = MD_SECONDARY_STRUCTURE_COIL;
+            }
         }
         if (ss[range.end - 1] != ss[range.end - 2]) ss[range.end - 1] = MD_SECONDARY_STRUCTURE_COIL;
     }
