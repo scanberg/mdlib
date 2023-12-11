@@ -1523,7 +1523,12 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
 
         for (int32_t j = range.beg; j < range.end; ++j) {
             atom->res_idx[j] = (md_residue_idx_t)i;
+
+            // Propagate flags to atoms
             atom->flags[j] |= res->flags[i];
+
+            // Propagate chain flags up
+            res->flags[i] |= (atom->flags[j] & (MD_FLAG_CHAIN_BEG | MD_FLAG_CHAIN_END));
         }
     }
 
@@ -1629,75 +1634,37 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
         }
     }
 
-    if (atom->chainid) {
-        // Resolve chains from atom->chainid and atom->flags
-        str_t prev_id = {0};
-        md_flags_t prev_flags = 0;
-        for (int64_t i = 0; i < atom->count; ++i) {
-            const str_t id = LBL_TO_STR(atom->chainid[i]);
-            const md_residue_idx_t res_idx = atom->res_idx[i];
-			const md_flags_t flags = atom->flags[i];
-			if (!str_empty(id) && (!str_equal(id, prev_id) || (flags & MD_FLAG_CHAIN_BEG) || (prev_flags & MD_FLAG_CHAIN_END) || !test_bit(res_bond_to_prev, res_idx))) {
-				const md_range_t atom_range = {(int)i, (int)i};
-				md_array_push(chain->id, make_label(id), alloc);
-				md_array_push(chain->atom_range, atom_range, alloc);
-				chain->count += 1;
-			}
-			md_array_last(chain->atom_range)->end += 1;
-			prev_id = id;
-            prev_flags = flags;
+    int beg_idx = 0;
+    str_t prev_id = {0};
+    md_flags_t prev_flags = 0;
+    // We iterate up to res->count + 1 to ensure that the last residue is also included
+    // And it will automatically not be bonded to prev as its bit is zero and all is well
+    for (int i = 0; i <= res->count; ++i) {
+        str_t id = {0};
+        md_flags_t flags = 0;
+        if (i < res->count) {
+            const md_range_t atom_range = res->atom_range[i];
+            id = atom->chainid ? LBL_TO_STR(atom->chainid[atom_range.beg]) : (str_t){0};
+            flags = res->flags[i];
         }
 
-        md_array_resize(chain->residue_range, chain->count, alloc);
-        for (int64_t i = 0; i < chain->count; ++i) {
-            const md_range_t atom_range = chain->atom_range[i];
-			const md_range_t res_range = {atom->res_idx[atom_range.beg], atom->res_idx[atom_range.end - 1]};
-			chain->residue_range[i] = res_range;
-        }
-    } else {
-        // Create artificial chain ids from residue connectivity
+        if ((!str_empty(id) && !str_equal(id, prev_id)) || (flags & MD_FLAG_CHAIN_BEG) || (prev_flags & MD_FLAG_CHAIN_END) || !test_bit(res_bond_to_prev, i)) {
+            int end_idx = i;
+            if (end_idx - beg_idx > 1) {
+                md_label_t lbl = str_empty(prev_id) ? generate_chain_id_from_index(chain->count) : make_label(prev_id);
+                const md_range_t atom_range = {res->atom_range[beg_idx].beg, res->atom_range[end_idx - 1].end};
+                const md_range_t res_range  = {beg_idx, end_idx};
 
-#if 0
-        int beg_idx = 0;
-        for (int i = 0; i < res->count; ++i) {
-            if (!test_bit(res_bond_to_next, i) && i < res->count - 1) {
-                int end_idx = i + 1;
-                if (end_idx - beg_idx > 1) {
-                    const md_label_t id = generate_chain_id_from_index(chain->count);
-                    const md_range_t atom_range = {res->atom_range[beg_idx].beg, res->atom_range[end_idx - 1].end};
-                    const md_range_t res_range  = {beg_idx, end_idx};
+                md_array_push(chain->id, lbl, alloc);
+                md_array_push(chain->atom_range, atom_range, alloc);
+                md_array_push(chain->residue_range, res_range, alloc);
 
-                    md_array_push(chain->id, id, alloc);
-                    md_array_push(chain->atom_range, atom_range, alloc);
-                    md_array_push(chain->residue_range, res_range, alloc);
-
-                    chain->count += 1;
-                }
-                beg_idx = i + 1;
+                chain->count += 1;
             }
+            beg_idx = i;
         }
-#else
-        int beg_idx = 0;
-        // We iterate up to res->count + 1 to ensure that the last residue is also included
-        // And it will automatically not be bonded to prev as its bit is zero and all is well
-        for (int i = 0; i <= res->count; ++i) {
-            if (!test_bit(res_bond_to_prev, i)) {
-                int end_idx = i;
-                if (end_idx - beg_idx > 1) {
-                    const md_label_t id = generate_chain_id_from_index(chain->count);
-                    const md_range_t atom_range = {res->atom_range[beg_idx].beg, res->atom_range[end_idx - 1].end};
-                    const md_range_t res_range  = {beg_idx, end_idx};
-
-                    md_array_push(chain->id, id, alloc);
-                    md_array_push(chain->atom_range, atom_range, alloc);
-                    md_array_push(chain->residue_range, res_range, alloc);
-
-                    chain->count += 1;
-                }
-                beg_idx = i;
-            }
-        }
-#endif
+        prev_id = id;
+        prev_flags = flags;
     }
 
     md_array_resize(atom->chain_idx, atom->count, alloc);

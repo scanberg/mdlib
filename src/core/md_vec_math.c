@@ -270,6 +270,122 @@ mat4_t mat4_inverse(mat4_t M) {
     return mat4_mul_f(I, 1.0f / (dot0.x + dot0.y + dot0.z + dot0.w));
 }
 
+vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t viewport) {
+    vec4_t tmp = vec4_from_vec3(window_coords, 1.f);
+    tmp.x = (tmp.x - viewport.elem[0]) / viewport.elem[2];
+    tmp.y = (tmp.y - viewport.elem[1]) / viewport.elem[3];
+    tmp = vec4_sub_f(vec4_mul_f(tmp, 2.f), 1.f);
+
+    vec4_t obj = mat4_mul_vec4(inv_view_proj_mat, tmp);
+    obj = vec4_div_f(obj, obj.w);
+
+    return vec3_from_vec4(obj);
+}
+
+mat4_t mat4_look_at(vec3_t look_from, vec3_t look_at, vec3_t look_up) {
+    const vec3_t f = vec3_normalize(vec3_sub(look_at, look_from));
+    const vec3_t s = vec3_normalize(vec3_cross(f, look_up));
+    const vec3_t u = vec3_cross(s, f);
+    const mat4_t M = {
+        s.x, u.x, -f.x, 0.0f,
+        s.y, u.y, -f.y, 0.0f,
+        s.z, u.z, -f.z, 0.0f,
+        -vec3_dot(s, look_from), -vec3_dot(u, look_from), vec3_dot(f, look_from), 1.0f,
+    };
+    return M;
+}
+
+mat4_t mat4_ortho(float l, float r, float b, float t, float n, float f) {
+    mat4_t M = {0};
+    M.elem[0][0] = 2 / (r-l);
+    M.elem[1][1] = 2 / (t-b);
+    M.elem[2][2] = -2 / (f-n);
+    M.elem[3][0] = -(r+l) / (r-l);
+    M.elem[3][1] = -(t+b) / (t-b);
+    M.elem[3][2] = -(f+n) / (f-n);
+    M.elem[3][3] = 1;
+    return M;
+}
+
+mat4_t mat4_ortho_inv(float l, float r, float b, float t, float n, float f) {
+    mat4_t M = {0};
+    M.elem[0][0] = (r-l) / 2;
+    M.elem[1][1] = (t-b) / 2;
+    M.elem[2][2] = (n-f) / 2;
+    M.elem[3][0] = (l+r) / 2;
+    M.elem[3][1] = (b+t) / 2;
+    M.elem[3][2] = -(n+f) / 2;
+    M.elem[3][3] = 1;
+    return M;
+}
+
+mat4_t mat4_ortho_2d(float l, float r, float b, float t) {
+    mat4_t M = {0};
+    M.elem[0][0] = 2 / (r-l);
+    M.elem[1][1] = 2 / (t-b);
+    M.elem[2][2] = -1;
+    M.elem[3][0] = -(r+l) / (r-l);
+    M.elem[3][1] = -(t+b) / (t-b);
+    M.elem[3][3] = 1;
+    return M;
+}
+
+mat4_t mat4_ortho_2d_inv(float l, float r, float b, float t) {
+    mat4_t M = {0};
+    M.elem[0][0] = (r-l) / 2;
+    M.elem[1][1] = (t-b) / 2;
+    M.elem[2][2] = -1;
+    M.elem[3][0] = (l+r) / 2;
+    M.elem[3][1] = (b+t) / 2;
+    M.elem[3][3] = 1;
+    return M;
+}
+
+mat4_t mat4_persp(float fovy, float aspect, float near, float far) {
+    const float tan_half_fovy = tanf(fovy * 0.5f);
+    mat4_t M = {0};
+    M.elem[0][0] = 1.0f / (aspect * tan_half_fovy);
+    M.elem[1][1] = 1.0f / (tan_half_fovy);
+    M.elem[2][2] = -(far + near) / (far - near);
+    M.elem[2][3] = -1;
+    M.elem[3][2] = -(2 * far * near) / (far - near);
+    return M;
+}
+
+mat4_t mat4_persp_inv(float fovy, float aspect, float near, float far) {
+    const float tan_half_fovy = tanf(fovy * 0.5f);
+    mat4_t M = {0};
+    M.elem[0][0] = aspect * tan_half_fovy;
+    M.elem[1][1] = tan_half_fovy;
+    M.elem[2][3] = (near - far) / (2 * far * near);
+    M.elem[3][2] = -1;
+    M.elem[3][3] = (near + far) / (2 * far * near);
+    return M;
+}
+
+mat4_t mat4_frustum(float l, float r, float b, float t, float n, float f) {
+    mat4_t M = {0};
+    M.elem[0][0] = (2*n) / (r-l);
+    M.elem[1][1] = (2*n) / (t-b);
+    M.elem[2][0] = (r+l) / (r-l);
+    M.elem[2][1] = (t+b) / (t-b);
+    M.elem[2][2] = -(f+n) / (f-n);
+    M.elem[2][3] = -1;
+    M.elem[3][2] = -(2*n*f) / (f-n);
+    return M;
+}
+
+mat4_t mat4_frustum_inv(float l, float r, float b, float t, float n, float f) {
+    mat4_t M = {0};
+    M.elem[0][0] = (r-l) / (2*n);
+    M.elem[1][1] = (t-b) / (2*n);
+    M.elem[2][3] = (n-f) / (2*n*f);
+    M.elem[3][0] = (l+r) / (2*n);
+    M.elem[3][1] = (b+t) / (2*n);
+    M.elem[3][2] = -1;
+    M.elem[3][3] = (n+f) / (2*n*f);
+    return M;
+}
 
 void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, int64_t count, vec3_t translation) {
     int64_t i = 0;

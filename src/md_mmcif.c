@@ -8,7 +8,32 @@
 
 #define BAKE(str) {str, sizeof(str)-1}
 
-static const str_t atom_site_column_labels[] = {
+// Enumerate fields in _atom_site
+enum {
+	ATOM_SITE_ID,
+	ATOM_SITE_TYPE_SYMBOL,
+	ATOM_SITE_LABEL_ATOM_ID,
+	ATOM_SITE_LABEL_ALT_ID,
+	ATOM_SITE_LABEL_COMP_ID,
+	ATOM_SITE_LABEL_ASYM_ID,
+	ATOM_SITE_LABEL_ENTITY_ID,
+	ATOM_SITE_LABEL_SEQ_ID,
+	ATOM_SITE_PDBX_PDB_INS_CODE,
+	ATOM_SITE_CARTN_X,
+	ATOM_SITE_CARTN_Y,
+	ATOM_SITE_CARTN_Z,
+	ATOM_SITE_OCCUPANCY,
+	ATOM_SITE_B_ISO_OR_EQUIV,
+	ATOM_SITE_PDBX_FORMAL_CHARGE,
+	ATOM_SITE_AUTH_SEQ_ID,
+	ATOM_SITE_AUTH_COMP_ID,
+	ATOM_SITE_AUTH_ASYM_ID,
+	ATOM_SITE_AUTH_ATOM_ID,
+	ATOM_SITE_PDBX_PDB_MODEL_NUM,
+	ATOM_SITE_COUNT
+};
+
+static const str_t atom_site_labels[] = {
 	BAKE("id"),
 	BAKE("type_symbol"),
 	BAKE("label_atom_id"),
@@ -31,6 +56,20 @@ static const str_t atom_site_column_labels[] = {
 	BAKE("pdbx_PDB_model_num"),
 };
 
+static const int required_fields[] = {
+	ATOM_SITE_ID,
+	ATOM_SITE_TYPE_SYMBOL,
+	ATOM_SITE_LABEL_ATOM_ID,
+	ATOM_SITE_LABEL_ALT_ID,
+	ATOM_SITE_LABEL_COMP_ID,
+	ATOM_SITE_LABEL_ASYM_ID,
+	ATOM_SITE_LABEL_ENTITY_ID,
+	ATOM_SITE_LABEL_SEQ_ID,
+	ATOM_SITE_CARTN_X,
+	ATOM_SITE_CARTN_Y,
+	ATOM_SITE_CARTN_Z,
+};
+
 static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* reader, md_allocator_i* alloc) {
 	ASSERT(atom);
 	ASSERT(reader);
@@ -38,7 +77,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 	str_t line;
 	str_t tok[32];
 
-	int table[32];
+	int table[ATOM_SITE_COUNT];
 	MEMSET(table, -1, sizeof(table));
 	int num_cols = 0;
 	int num_atoms = 0;
@@ -47,11 +86,11 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 		line = str_trim(line);
 		if (str_equal_cstr_n(line, "_atom_site.", 11)) {
 			str_t field = str_substr(line, 11, -1);
-			for (int i = 0; i < (int)ARRAY_SIZE(atom_site_column_labels); ++i) {
+			for (int i = 0; i < (int)ARRAY_SIZE(atom_site_labels); ++i) {
 				if (table[i] != -1) {
 					continue;
 				}
-				if (str_equal(field, atom_site_column_labels[i])) {
+				if (str_equal(field, atom_site_labels[i])) {
 					table[i] = num_cols;
 					break;
 				}
@@ -63,11 +102,12 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 		}
 	}
 
-	// Assert that we have all the columns we need
-	// The minimum information is atom type, x, y, z
-	if (num_cols < 4 || table[2] == -1 || table[9] == -1 || table[10] == -1 || table[11] == -1) {
-		MD_LOG_ERROR("Missing required columns in _atom_site: type_symbol, Cartn_x, Cartn_y, Cartn_z");
-		return false;
+	// Assert that we have all the required fields
+	for (int i = 0; i < ARRAY_SIZE(required_fields); ++i) {
+		if (table[required_fields[i]] == -1) {
+			MD_LOG_ERROR("Missing required column in _atom_site: %.*s", STR_FMT(atom_site_labels[required_fields[i]]));
+			return false;
+		}
 	}
 
 	int32_t prev_entity_id = -1;
@@ -82,44 +122,46 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 			md_flags_t flags = 0;
 			int32_t entity_id = -1;
 			
-			if (table[1] != -1) { // type_symbol
-				md_element_t element = md_util_element_lookup(tok[table[1]]);
-				md_array_push(atom->element, element, alloc);
+			md_element_t element = md_util_element_lookup(tok[table[ATOM_SITE_TYPE_SYMBOL]]);
+			md_array_push(atom->element, element, alloc);
+
+			md_label_t type = make_label(tok[table[ATOM_SITE_LABEL_ATOM_ID]]);
+			md_array_push(atom->type, type, alloc);
+			
+			md_label_t resname = make_label(tok[table[ATOM_SITE_LABEL_COMP_ID]]);
+			md_array_push(atom->resname, resname, alloc);
+			
+			md_label_t chain_id = make_label(tok[table[ATOM_SITE_LABEL_ASYM_ID]]);
+			md_array_push(atom->chainid, chain_id, alloc);
+
+			str_t str = tok[table[ATOM_SITE_LABEL_ENTITY_ID]];
+			if (str.len > 0 && str.ptr[0] != '.') {
+				entity_id = (int32_t)parse_int(str);
 			}
-			if (table[2] != -1) { // label_atom_id
-				md_label_t type = make_label(tok[table[2]]);
-				md_array_push(atom->type, type, alloc);
-			}
-			if (table[4] != -1) { // label_comp_id
-				md_label_t resname = make_label(tok[table[4]]);
-				md_array_push(atom->resname, resname, alloc);
-			}
-			if (table[5] != -1) { // label_asym_id
-				md_label_t chain_id = make_label(tok[table[5]]);
-				md_array_push(atom->chainid, chain_id, alloc);
-			}
-			if (table[6] != -1) { // entity_id
-				str_t str = tok[table[6]];
-				if (str.len > 0 && str.ptr[0] != '.') {
-					entity_id = (int32_t)parse_int(str);
+			
+			{
+				md_residue_id_t res_id = -INT32_MAX;
+				str_t id = tok[table[ATOM_SITE_LABEL_SEQ_ID]];
+				if (id.len > 0 && id.ptr[0] != '.') {
+					res_id = (int32_t)parse_int(id);
+				} else if (table[ATOM_SITE_AUTH_SEQ_ID] != -1) {
+					id = tok[table[ATOM_SITE_AUTH_SEQ_ID]];
+					if (id.len > 0 && id.ptr[0] != '.') {
+						res_id = (int32_t)parse_int(id);
+					}
 				}
+				md_array_push(atom->resid, res_id, alloc);
 			}
-			if (table[7] != -1) { // label_seq_id
-				md_residue_id_t seq_id = (int32_t)parse_int(tok[table[7]]);
-				md_array_push(atom->resid, seq_id, alloc);
-			}
-			if (table[9] != -1) { // Cartn_x
-				float x = (float)parse_float(tok[table[9]]);
-				md_array_push(atom->x, x, alloc);
-			}
-			if (table[10] != -1) { // Cartn_y
-				float y = (float)parse_float(tok[table[10]]);
-				md_array_push(atom->y, y, alloc);
-			}
-			if (table[11] != -1) { // Cartn_z
-				float z = (float)parse_float(tok[table[11]]);
-				md_array_push(atom->z, z, alloc);
-			}
+			
+			float x = (float)parse_float(tok[table[ATOM_SITE_CARTN_X]]);
+			md_array_push(atom->x, x, alloc);
+			
+			float y = (float)parse_float(tok[table[ATOM_SITE_CARTN_Y]]);
+			md_array_push(atom->y, y, alloc);
+			
+			float z = (float)parse_float(tok[table[ATOM_SITE_CARTN_Z]]);
+			md_array_push(atom->z, z, alloc);
+			
 
 			if (tok[0].ptr[0] == 'H') {
 				flags |= MD_FLAG_HETATM;

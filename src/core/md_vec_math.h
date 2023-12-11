@@ -1546,17 +1546,20 @@ MD_VEC_INLINE bool mat4_equal(mat4_t A, mat4_t B) {
     return vec4_equal(A.col[0], B.col[0]) && vec4_equal(A.col[1], B.col[1]) && vec4_equal(A.col[2], B.col[2]) && vec4_equal(A.col[3], B.col[3]);
 }
 
-static inline vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t viewport) {
-    vec4_t tmp = vec4_from_vec3(window_coords, 1.f);
-    tmp.x = (tmp.x - viewport.elem[0]) / viewport.elem[2];
-    tmp.y = (tmp.y - viewport.elem[1]) / viewport.elem[3];
-    tmp = vec4_sub_f(vec4_mul_f(tmp, 2.f), 1.f);
+vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t viewport);
 
-    vec4_t obj = mat4_mul_vec4(inv_view_proj_mat, tmp);
-    obj = vec4_div_f(obj, obj.w);
+mat4_t mat4_look_at(vec3_t eye, vec3_t center, vec3_t up);
 
-    return vec3_from_vec4(obj);
-}
+mat4_t mat4_ortho(float left, float right, float bottom, float top, float near, float far);
+mat4_t mat4_ortho_inv(float left, float right, float bottom, float top, float near, float far);
+mat4_t mat4_ortho_2d(float left, float right, float bottom, float top);
+mat4_t mat4_ortho_2d_inv(float left, float right, float bottom, float top);
+
+mat4_t mat4_persp(float fovy, float aspect, float near, float far);
+mat4_t mat4_persp_inv(float fovy, float aspect, float near, float far);
+
+mat4_t mat4_frustum(float left, float right, float bottom, float top, float near, float far);
+mat4_t mat4_frustum_inv(float left, float right, float bottom, float top, float near, float far);
 
 // These are routines for performing the same operation on many items
 void vec3_batch_translate_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, int64_t count, vec3_t translation);
