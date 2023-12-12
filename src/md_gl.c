@@ -1022,8 +1022,7 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
                     for (uint32_t j = (uint32_t)mol->backbone.range[i].beg; j < (uint32_t)mol->backbone.range[i].end; ++j) {
-                        secondary_structure[idx] = mol->backbone.secondary_structure[j];
-                        ++idx;
+                        secondary_structure[idx++] = mol->backbone.secondary_structure[j];
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);

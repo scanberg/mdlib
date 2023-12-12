@@ -952,6 +952,11 @@ MD_VEC_INLINE void vec4_sincos(vec4_t x, vec4_t* s, vec4_t* c) {
 #endif
 }
 
+MD_VEC_INLINE quat_t quat_ident() {
+	quat_t q = {0, 0, 0, 1};
+	return q;
+}
+
 // quat
 MD_VEC_INLINE float quat_dot(quat_t a, quat_t b) {
     const float x = a.x * b.x + a.y * b.y;
