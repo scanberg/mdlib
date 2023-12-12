@@ -193,8 +193,6 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     EXPECT_NEAR(z[0], 23.680990, 0.0001); //Should be about 0.56 of cell
     EXPECT_NEAR(header.unit_cell.basis.col[2].z, 42.350327, 0.0001);
 
-    //The coordinates are scaled by a vector, don't know what the correct number should be
-
     md_free(md_temp_allocator, mem_ptr, mem_size);
     md_lammps_trajectory_free(traj);
 
