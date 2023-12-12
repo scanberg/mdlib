@@ -143,8 +143,17 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
         EXPECT_EQ(7800, header.num_atoms);
     }
     EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
-    EXPECT_NE(x, 0);
+    EXPECT_NE(x[0], 0);
+    
+
+    EXPECT_NEAR(x[0], 3.642992, 0.0001); //Should be about 0.09 of cell
     EXPECT_NEAR(header.unit_cell.basis.col[0].x, 39.121262, 0.0001);
+
+    EXPECT_NEAR(y[0], 5.586790, 0.0001); //Should be about 0.14 of cell
+    EXPECT_NEAR(header.unit_cell.basis.col[1].y, 39.121262, 0.0001);
+
+    EXPECT_NEAR(z[0], 4.678786, 0.0001); //Should be about 0.12 of cell
+    EXPECT_NEAR(header.unit_cell.basis.col[2].z, 39.121262, 0.0001);
 
     md_free(md_temp_allocator, mem_ptr, mem_size);
     md_lammps_trajectory_free(traj);
@@ -173,9 +182,17 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     }
 
     EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
-    EXPECT_NE(x, 0);
-    MD_LOG_DEBUG("X value is %f", x);
-    MD_LOG_DEBUG("X value is %f", header.unit_cell.basis.elem[0][0]);
+
+    EXPECT_NE(x[0], 0);
+    EXPECT_NEAR(x[0], 15.950872, 0.0001); //Should be about 0.35 of cell
+    EXPECT_NEAR(header.unit_cell.basis.col[0].x, 49.738342, 0.0001);
+
+    EXPECT_NEAR(y[0], 32.005634, 0.0001); //Should be about 0.87 of cell
+    EXPECT_NEAR(header.unit_cell.basis.col[1].y, 38.900734, 0.0001);
+
+    EXPECT_NEAR(z[0], 23.680990, 0.0001); //Should be about 0.56 of cell
+    EXPECT_NEAR(header.unit_cell.basis.col[2].z, 42.350327, 0.0001);
+
     //The coordinates are scaled by a vector, don't know what the correct number should be
 
     md_free(md_temp_allocator, mem_ptr, mem_size);
