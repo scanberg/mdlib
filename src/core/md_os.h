@@ -21,8 +21,12 @@ uint64_t md_os_num_processors();
 // ### PATH ###
 // Gets the current working directory
 // Writes into a buffer (up to buf_cap) and returns the number of characters written
-int64_t md_path_write_cwd(char* buf, int64_t buf_cap);
+size_t md_path_write_cwd(char* buf, size_t buf_cap);
 bool  md_path_set_cwd(str_t path);
+
+// Gets the path to the executable
+// Writes into a buffer (up to buf_cap) and returns the number of characters written
+size_t md_path_write_exe(char* buf, size_t buf_cap);
 
 // Writes a canonical path to buf.
 int64_t md_path_write_canonical(char* buf, int64_t buf_cap, str_t path);

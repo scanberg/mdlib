@@ -64,10 +64,12 @@ STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit
 #endif
 
 #if MD_PLATFORM_OSX
+#include <limits.h>
 #include <sys/param.h>
 #include <mach/mach_init.h>
 #include <mach/task.h>
 #include <mach/semaphore.h>
+#include <mach-o/dyld.h>
 
 STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
 #endif
@@ -141,7 +143,7 @@ static int64_t fullpath(char* buf, int64_t cap, str_t path) {
 #endif
 }
 
-int64_t md_path_write_cwd(char* buf, int64_t cap) {
+size_t md_path_write_cwd(char* buf, size_t cap) {
     char* val;
 #if MD_PLATFORM_WINDOWS
     val = _getcwd(buf, (int)cap);
@@ -154,7 +156,30 @@ int64_t md_path_write_cwd(char* buf, int64_t cap) {
     	MD_LOG_ERROR("Failed to get current working directory");
 		return 0;
     }
-    return (int64_t)strnlen(buf, cap);
+    return strnlen(buf, cap);
+}
+
+size_t md_path_write_exe(char* buf, size_t buf_cap) {
+#if MD_PLATFORM_WINDOWS
+    DWORD res = GetModuleFileName(NULL, buf, (DWORD)buf_cap);
+    if (res != 0) {
+        return (size_t)res;
+    }
+#elif MD_PLATFORM_LINUX
+    ssize_t res = readlink("/proc/self/exe", buf, buf_cap)
+    if (res != -1) {
+    	return (size_t)res;
+    }
+#elif MD_PLATFORM_OSX
+	uint32_t buf_cap32 = (uint32_t)buf_cap;
+	int res = _NSGetExecutablePath(buf, &buf_cap32);
+	if (res == 0) {
+    	return (size_t)buf_cap32;
+    }
+#else
+    ASSERT(false);
+#endif
+    return 0;
 }
 
 bool md_path_set_cwd(str_t path) {
