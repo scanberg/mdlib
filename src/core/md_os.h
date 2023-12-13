@@ -1,6 +1,8 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
 
 #include <core/md_str.h>
 
