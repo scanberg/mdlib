@@ -84,13 +84,13 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 
 	while (md_buffered_reader_peek_line(&line, reader)) {
 		line = str_trim(line);
-		if (str_equal_cstr_n(line, "_atom_site.", 11)) {
-			str_t field = str_substr(line, 11, -1);
+		if (str_eq_cstr_n(line, "_atom_site.", 11)) {
+			str_t field = str_substr(line, 11, SIZE_MAX);
 			for (int i = 0; i < (int)ARRAY_SIZE(atom_site_labels); ++i) {
 				if (table[i] != -1) {
 					continue;
 				}
-				if (str_equal(field, atom_site_labels[i])) {
+				if (str_eq(field, atom_site_labels[i])) {
 					table[i] = num_cols;
 					break;
 				}
@@ -105,17 +105,17 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 	// Assert that we have all the required fields
 	for (int i = 0; i < ARRAY_SIZE(required_fields); ++i) {
 		if (table[required_fields[i]] == -1) {
-			MD_LOG_ERROR("Missing required column in _atom_site: %.*s", STR_FMT(atom_site_labels[required_fields[i]]));
+			MD_LOG_ERROR("Missing required column in _atom_site: %.*s", STR_ARG(atom_site_labels[required_fields[i]]));
 			return false;
 		}
 	}
 
 	int32_t prev_entity_id = -1;
 	while (md_buffered_reader_peek_line(&line, reader)) {
-		if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
+		if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
 			const int64_t num_tokens = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 			if (num_tokens < num_cols) {
-				MD_LOG_ERROR("Too few tokens in line: %.*s", STR_FMT(line));
+				MD_LOG_ERROR("Too few tokens in line: %.*s", STR_ARG(line));
 				return false;
 			}
 
@@ -197,29 +197,29 @@ static bool mmcif_parse_cell(md_unit_cell_t* cell, md_buffered_reader_t* reader)
 
 	while (md_buffered_reader_peek_line(&line, reader)) {
 		line = str_trim(line);
-		if (str_equal_cstr_n(line, "_cell.", 6)) {
+		if (str_eq_cstr_n(line, "_cell.", 6)) {
 			str_t tok[2];
 			const int64_t num_tokens = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 			if (num_tokens == 0) {
 				break;
 			}
 
-			if (str_equal_cstr(tok[0], "_cell.angle_alpha")) {
+			if (str_eq_cstr(tok[0], "_cell.angle_alpha")) {
 				cell_flags |= 1;
 				param[0] = parse_float(tok[1]);
-			} else if (str_equal_cstr(tok[0], "_cell.angle_beta")) {
+			} else if (str_eq_cstr(tok[0], "_cell.angle_beta")) {
 				cell_flags |= 2;
 				param[1] = parse_float(tok[1]);
-			} else if (str_equal_cstr(tok[0], "_cell.angle_gamma")) {
+			} else if (str_eq_cstr(tok[0], "_cell.angle_gamma")) {
 				cell_flags |= 4;
 				param[2] = parse_float(tok[1]);
-			} else if (str_equal_cstr(tok[0], "_cell.length_a")) {
+			} else if (str_eq_cstr(tok[0], "_cell.length_a")) {
 				cell_flags |= 8;
 				param[3] = parse_float(tok[1]);
-			} else if (str_equal_cstr(tok[0], "_cell.length_b")) {
+			} else if (str_eq_cstr(tok[0], "_cell.length_b")) {
 				cell_flags |= 16;
 				param[4] = parse_float(tok[1]);
-			} else if (str_equal_cstr(tok[0], "_cell.length_c")) {
+			} else if (str_eq_cstr(tok[0], "_cell.length_c")) {
 				cell_flags |= 32;
 				param[5] = parse_float(tok[1]);
 			}
@@ -251,13 +251,13 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
 		if (line.len) {
 			line = str_trim(line);
 
-			if (str_equal_cstr_n(line, "_atom_site.", 11)) {
+			if (str_eq_cstr_n(line, "_atom_site.", 11)) {
 				if (!mmcif_parse_atom_site(&mol->atom, reader, alloc)) {
 					MD_LOG_ERROR("Failed to parse _atom_site");
 					return false;
 				}
 				atom_site = true;
-			} else if (str_equal_cstr_n(line, "_cell.", 6)) {
+			} else if (str_eq_cstr_n(line, "_cell.", 6)) {
 				if (!mmcif_parse_cell(&mol->unit_cell, reader)) {
 					MD_LOG_ERROR("Failed to parse _cell");
 					return false;

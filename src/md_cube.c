@@ -67,9 +67,9 @@ static bool open_file(md_file_o* file, str_t path) {
 }
 
 str_t tidy_comment(str_t comment) {
-    int64_t new_line = str_find_char(comment, '\n');
-	if (new_line != -1) {
-		comment.len = new_line;
+    size_t loc;
+	if (str_find_char(&loc, comment, '\n')) {
+		comment.len = loc;
 	}
     return comment;
 }

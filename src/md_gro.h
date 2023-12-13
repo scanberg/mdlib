@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 #include <core/md_str.h>
@@ -27,7 +28,7 @@ typedef struct md_gro_data_t {
     float box[3][3];
 
     // Field data
-    int64_t num_atoms;
+    size_t num_atoms;
     md_gro_atom_t* atom_data;
 } md_gro_data_t;
 

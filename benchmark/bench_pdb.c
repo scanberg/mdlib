@@ -12,7 +12,7 @@ UBENCH_EX(pdb, dppc64) {
 
     str_t text = load_textfile(path, md_heap_allocator);
     if (str_empty(text)) {
-    	MD_LOG_ERROR("Failed to load file: %.*s\n", STR_FMT(path));
+    	MD_LOG_ERROR("Failed to load file: %.*s\n", STR_ARG(path));
     	return;
     }  
     UBENCH_SET_BYTES(text.len);

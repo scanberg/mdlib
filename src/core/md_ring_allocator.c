@@ -1,6 +1,6 @@
 #include <core/md_ring_allocator.h>
 
-void* ring_realloc(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+void* ring_realloc(struct md_allocator_o* inst, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)inst;    
     (void)file;
     (void)line;

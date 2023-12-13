@@ -14,14 +14,14 @@
 
 #define MAGIC_NUMBER 0xdc1728367bca6273
 
-typedef struct allocation {
+typedef struct {
     void* ptr;
-    uint64_t size;
+    size_t size;
     const char* file;
-    uint32_t line;
+    size_t line;
 } allocation_t;
 
-typedef struct tracking {
+typedef struct {
     struct md_allocator_i* backing;
     allocation_t* allocations;
     md_mutex_t mutex;
@@ -29,26 +29,26 @@ typedef struct tracking {
 } tracking_t;
 
 allocation_t* find_allocation(tracking_t* tracking, void* ptr) {
-    for (int64_t i = 0; i < md_array_size(tracking->allocations); ++i) {
+    for (size_t i = 0; i < md_array_size(tracking->allocations); ++i) {
         if (tracking->allocations[i].ptr == ptr) return &tracking->allocations[i];
     }
     return NULL;
 }
 
 allocation_t* new_allocation(tracking_t* tracking) {
-    allocation_t item = {0,0,0,0};
+    allocation_t item = {0};
     return md_array_push(tracking->allocations, item, md_heap_allocator);
 }
 
 void delete_allocation(tracking_t* tracking, allocation_t* alloc) {
     ASSERT(find_allocation(tracking, alloc->ptr));
-    int64_t idx = alloc - tracking->allocations;
+    size_t idx = alloc - tracking->allocations;
     *alloc = *md_array_last(tracking->allocations);
     tracking->allocations[idx] = *alloc;
     md_array_pop(tracking->allocations);
 }
 
-static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)file;
     (void)line;
     tracking_t* tracking = (tracking_t*)inst;
@@ -112,10 +112,9 @@ void md_tracking_allocator_destroy(struct md_allocator_i* alloc) {
     tracking_t* tracking = (tracking_t*)alloc->inst;
     ASSERT(tracking->magic == MAGIC_NUMBER);
 
-
     md_mutex_lock(&tracking->mutex);
-    int64_t size = md_array_size(tracking->allocations);
-    for (int64_t i = 0; i < size; ++i) {
+    size_t size = md_array_size(tracking->allocations);
+    for (size_t i = 0; i < size; ++i) {
         md_logf(MD_LOG_TYPE_DEBUG, "Allocation never freed, in file '%s', at line '%i'.", tracking->allocations[i].file, tracking->allocations[i].line);
     }
     md_mutex_unlock(&tracking->mutex);

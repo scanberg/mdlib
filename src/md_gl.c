@@ -273,7 +273,7 @@ static inline uint32_t gl_texture_height(gl_texture_t tex, uint32_t level) {
 static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, str_t extra_src) {
     md_strb_t sb = md_strb_create(md_temp_allocator);
     
-    if (!str_equal_cstr_n(src, "#version ", 9)) {
+    if (!str_eq_cstr_n(src, "#version ", 9)) {
         MD_LOG_ERROR("Missing version string as first line in shader!");
         return false;
     }
@@ -290,7 +290,7 @@ static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, 
     if (!str_empty(extra_src)) {
         str_t line;
         while (str_extract_line(&line, &src)) {
-            if (!str_equal_cstr_n(line, "#pragma EXTRA_SRC", 17)) {
+            if (!str_eq_cstr_n(line, "#pragma EXTRA_SRC", 17)) {
                 md_strb_push_str(&sb, line);
                 md_strb_push_char(&sb, '\n');
             } else {
@@ -774,16 +774,16 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
         const str_t defines = perm_str[perm];
 
         if (!str_empty(vert_src) && !compile_shader_from_source(vert_shader, vert_src, defines, (str_t){0})) {
-            MD_LOG_ERROR("Error occured when compiling vertex shader for: '%.*s'", STR_FMT(identifier));
+            MD_LOG_ERROR("Error occured when compiling vertex shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
             
         if (!str_empty(geom_src) && !compile_shader_from_source(geom_shader, geom_src, defines, (str_t){0})) {
-            MD_LOG_ERROR("Error occured when compiling geometry shader for: '%.*s'", STR_FMT(identifier));
+            MD_LOG_ERROR("Error occured when compiling geometry shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
         if (!str_empty(frag_src) && !compile_shader_from_source(frag_shader, frag_src, defines, frag_output_src)) {
-            MD_LOG_ERROR("Error occured when compiling fragment shader for: '%.*s'", STR_FMT(identifier));
+            MD_LOG_ERROR("Error occured when compiling fragment shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
 
@@ -1238,7 +1238,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             md_array_push(draw_ops, draw_op, md_temp_allocator);
                 
             int64_t mol_idx = -1;
-            for (int64_t j = 0; j < md_array_size(draw_mols); j++) {
+            for (size_t j = 0; j < md_array_size(draw_mols); j++) {
                 if (draw_mols[j].mol == rep->mol) {
                     mol_idx = j;
                     break;
@@ -1274,7 +1274,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     uint32_t index_base[2] = {0,0};
         
     PUSH_GPU_SECTION("DRAW REPRESENTATIONS")
-    for (int64_t i = 0; i < md_array_size(draw_ops); i++) {
+    for (size_t i = 0; i < md_array_size(draw_ops); i++) {
         const md_gl_draw_op_t* draw_op = draw_ops[i];
         const internal_rep_t* rep  = (const internal_rep_t*)draw_ops[i]->rep;
         const internal_mol_t* mol  = (const internal_mol_t*)rep->mol; 

@@ -61,23 +61,23 @@ static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
 // This operation tries to deduce the element from the atom type/name which usually contains alot of cruft.
 // It also tries resolve some ambiguities: Such as CA, is that Carbon Alpha or is it calcium?
 // We can resolve that by looking at the residue name and in the case of Carbon Alpha, the residue name should be matched to an amino acid.
-bool md_util_element_guess(md_element_t element[], int64_t capacity, const struct md_molecule_t* mol);
+bool md_util_element_guess(md_element_t element[], size_t capacity, const struct md_molecule_t* mol);
 
-bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], int64_t count);
+bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // Extracts the atom indices which are central for a segment within the backbone for a single residue
 bool md_util_backbone_atoms_extract_from_residue_idx(md_backbone_atoms_t* backbone_atoms, md_residue_idx_t res_idx, const md_molecule_t* mol);
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as args->backbone.count
-bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structures[], int64_t capacity, const struct md_molecule_t* mol);
+bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structures[], size_t capacity, const struct md_molecule_t* mol);
 
 // Computes backbone angles from backbone atoms
 // Does not allocate any data, assumes that backbone_angles has the same length as args->backbone.count
-bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], int64_t capacity, const struct md_molecule_t* mol);
+bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const struct md_molecule_t* mol);
 
 // Classifies the ramachandran type (General / Glycine / Proline / Preproline) from the residue name
-bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], int64_t capacity, const struct md_molecule_t* mol);
+bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_types[], size_t capacity, const struct md_molecule_t* mol);
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
@@ -85,11 +85,11 @@ md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, c
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_grow_mask_by_bonds(struct md_bitfield_t* mask, const struct md_molecule_t* mol, int extent, const struct md_bitfield_t* viable_mask);
+void md_util_grow_mask_by_bonds(struct md_bitfield_t* mask, const struct md_molecule_t* mol, size_t extent, const struct md_bitfield_t* viable_mask);
 
 // Grow a mask by radius (in Angstrom)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_grow_mask_by_radius(struct md_bitfield_t* mask, const struct md_molecule_t* mol, float radius, const struct md_bitfield_t* viable_mask);
+void md_util_grow_mask_by_radius(struct md_bitfield_t* mask, const struct md_molecule_t* mol, double radius, const struct md_bitfield_t* viable_mask);
 
 //bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
@@ -132,10 +132,10 @@ md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, do
 // coord_b:   Array of coordinates (b)
 // num_b:     Length of coord_b
 // cell:      Periodic boundary cell
-void md_util_unit_cell_distance_array(float* out_dist_arr, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell);
+void md_util_unit_cell_distance_array(float* out_dist_arr, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell);
 
-float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell);
-float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, int64_t num_a, const vec3_t* coord_b, int64_t num_b, const md_unit_cell_t* cell);
+float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell);
+float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell);
 
 // Applies periodic boundary conditions to coordinates
 //bool md_util_apply_pbc_ortho(float* in_out_x, float* in_out_y, float* in_out_z, int64_t count, vec3_t box);
@@ -143,20 +143,20 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 
 // Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
-bool md_util_deperiodize_system(float* in_out_x, float* in_out_y, float* in_out_z, const float* in_w, int64_t count, const md_unit_cell_t* in_cell, const md_index_data_t* in_structures);
+bool md_util_deperiodize_system(float* in_out_x, float* in_out_y, float* in_out_z, const float* in_w, size_t count, const md_unit_cell_t* in_cell, const md_index_data_t* in_structures);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
-void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, int64_t count);
-void md_util_compute_aabb_vec4(vec3_t* aabb_min, vec3_t* aabb_max, const vec4_t* xyzr, const int32_t* indices, int64_t count);
+void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, size_t count);
+void md_util_compute_aabb_vec4(vec3_t* aabb_min, vec3_t* aabb_max, const vec4_t* xyzr, const int32_t* indices, size_t count);
 
 // Computes the center of mass for a set of points with a given weight
 // x,y,z / xyz: Arrays containing coordinates
 // w:           Array of weights (optional): set as NULL to use equal weights
 // indices:     Array of indices (optional): indices into the arrays (x,y,z,w)
 // count:       Length of all arrays
-vec3_t md_util_compute_com(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t count);
-vec3_t md_util_compute_com_vec4(const vec4_t* xyzw, const int32_t* indices, int64_t count);
+vec3_t md_util_compute_com(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, size_t count);
+vec3_t md_util_compute_com_vec4(const vec4_t* xyzw, const int32_t* indices, size_t count);
 
 // Computes the center of mass for a set of points with a given weight given in orthogonal periodic boundary conditions
 // The indices used to access the arrays are given in the indices array
@@ -165,8 +165,8 @@ vec3_t md_util_compute_com_vec4(const vec4_t* xyzw, const int32_t* indices, int6
 // indices:     Array of indices (optional): indices into the arrays (x,y,z,w)
 // count:       Number of elements to process, either the length of the indices array or the length of the x,y,z,w arrays
 // box:         Extent of periodic boundary box (optional per component): Set to zero if pbc does not apply in that dimension
-vec3_t md_util_compute_com_ortho(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, int64_t count, vec3_t box);
-vec3_t md_util_compute_com_vec4_ortho(const vec4_t* xyzw, const int32_t* indices, int64_t count, vec3_t box);
+vec3_t md_util_compute_com_ortho(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, size_t count, vec3_t box);
+vec3_t md_util_compute_com_vec4_ortho(const vec4_t* xyzw, const int32_t* indices, size_t count, vec3_t box);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
@@ -175,9 +175,9 @@ vec3_t md_util_compute_com_vec4_ortho(const vec4_t* xyzw, const int32_t* indices
 // com:     Center of mass [2] (xyz0), (xyz1)
 // w:       Array of weights (optional): set as NULL to use equal weights
 // count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
-double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, int64_t count);
+double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, size_t count);
 
-double md_util_compute_rmsd_vec4(const vec4_t* xyzw[2], const vec3_t com[2], int64_t count);
+double md_util_compute_rmsd_vec4(const vec4_t* xyzw[2], const vec3_t com[2], size_t count);
 
 // Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
 vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
@@ -188,7 +188,7 @@ vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
 // count:       Count of coordinates (this implies that all coordinate arrays must be equal in length)
 // box:         Extent of periodic boundary box (optional) set to zero if should be ignored
 // t: interpolation factor (0..1)
-bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], int64_t count, vec3_t box, float t);
+bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[2], size_t count, vec3_t box, float t);
 
 // Perform cubic interpolation of supplied coordinates
 // dst_coord:   Destination arrays (x,y,z)
@@ -197,17 +197,17 @@ bool md_util_linear_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t s
 // box:         Extent of periodic boundary (optional): Set to zero if pbc does not apply in that dimension
 // t:           Interpolation factor (0..1)
 // s:           Scaling factor (0..1), 0 is jerky, 0.5 is catmul rom, 1.0 is silky smooth
-bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], int64_t count, vec3_t box, float t, float s);
+bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_soa_t src_coord[4], size_t count, vec3_t box, float t, float s);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
-void md_util_spatial_sort_soa(uint32_t* source_indices, const float* x, const float* y, const float* z, int64_t count);
+void md_util_spatial_sort_soa(uint32_t* source_indices, const float* x, const float* y, const float* z, size_t count);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
-void md_util_spatial_sort(uint32_t* source_indices, const vec3_t* xyz, int64_t count);
+void md_util_spatial_sort(uint32_t* source_indices, const vec3_t* xyz, size_t count);
 
 // Structure matching operations
 // In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.
@@ -228,8 +228,8 @@ typedef enum {
 } md_util_match_mode_t;
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure.
-md_index_data_t md_util_match_by_type(const int ref_indices[], int64_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
-md_index_data_t md_util_match_by_element(const int ref_indices[], int64_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_type(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
 md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);

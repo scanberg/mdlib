@@ -38,7 +38,7 @@ static int interpret_format(int mappings[ARRAY_SIZE(field_names)], const char* a
 	for (int64_t i = 0; i < num_tokens; ++i) {
 		const str_t token = tokens[i];
 		for (int64_t j = 0; j < ARRAY_SIZE(field_names); ++j) {
-			if (str_equal(token, str_from_cstr(field_names[j]))) {
+			if (str_eq(token, str_from_cstr(field_names[j]))) {
 				if (mappings[j] != -1) {
 					MD_LOG_ERROR("Lammps atom format: Contains duplicate field name '%.*s'", token.len, token.ptr);
 					return 0;
@@ -61,7 +61,7 @@ static int interpret_format(int mappings[ARRAY_SIZE(field_names)], const char* a
 	return (int)num_tokens;
 }
 
-static bool parse_atoms(md_lammps_atom_t out_atoms[], int32_t num_atoms, md_buffered_reader_t* reader, const int mappings[]) {
+static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffered_reader_t* reader, const int mappings[]) {
 	ASSERT(mappings[0] != -1);
 	ASSERT(mappings[2] != -1);
 	ASSERT(mappings[4] != -1);
@@ -70,7 +70,7 @@ static bool parse_atoms(md_lammps_atom_t out_atoms[], int32_t num_atoms, md_buff
 
 	str_t tok[16];
 	str_t line;
-	int32_t read_atoms = 0;
+	size_t read_atoms = 0;
 	while (read_atoms < num_atoms && md_buffered_reader_extract_line(&line, reader)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 5) {
@@ -91,10 +91,10 @@ static bool parse_atoms(md_lammps_atom_t out_atoms[], int32_t num_atoms, md_buff
 	return true;
 }
 
-static bool parse_bonds(md_lammps_bond_t out_bonds[], int32_t bond_cap, md_buffered_reader_t* reader) {
+static bool parse_bonds(md_lammps_bond_t out_bonds[], size_t bond_cap, md_buffered_reader_t* reader) {
 	str_t tok[4];
 	str_t line;
-	int32_t num_bonds = 0;
+	size_t num_bonds = 0;
 	while (num_bonds < bond_cap && md_buffered_reader_extract_line(&line, reader)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 4) {
@@ -112,10 +112,10 @@ static bool parse_bonds(md_lammps_bond_t out_bonds[], int32_t bond_cap, md_buffe
 	return true;
 }
 
-static bool parse_angles(md_lammps_angle_t out_angles[], int32_t angle_cap, md_buffered_reader_t* reader) {
+static bool parse_angles(md_lammps_angle_t out_angles[], size_t angle_cap, md_buffered_reader_t* reader) {
 	str_t tok[8];
 	str_t line;
-	int32_t num_angles = 0;
+	size_t num_angles = 0;
 	while (num_angles < angle_cap && md_buffered_reader_extract_line(&line, reader)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 5) {
@@ -134,10 +134,10 @@ static bool parse_angles(md_lammps_angle_t out_angles[], int32_t angle_cap, md_b
 	return true;
 }
 
-static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], int32_t dihedral_cap, md_buffered_reader_t* reader) {
+static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedral_cap, md_buffered_reader_t* reader) {
 	str_t tok[8];
 	str_t line;
-	int32_t num_dihedrals = 0;
+	size_t num_dihedrals = 0;
 	while (num_dihedrals < dihedral_cap && md_buffered_reader_extract_line(&line, reader)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 6) {
@@ -157,10 +157,10 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], int32_t dihedr
 	return true;
 }
 
-static bool parse_masses(md_array(float)* mass_type_table, int32_t num_atom_types, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static bool parse_masses(md_array(float)* mass_type_table, size_t num_atom_types, md_buffered_reader_t* reader, md_allocator_i* alloc) {
 	str_t tok[4];
 	str_t line;
-	int32_t num_mass = 0;
+	size_t num_mass = 0;
 	while (num_mass < num_atom_types && md_buffered_reader_extract_line(&line, reader)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 2) {
@@ -206,7 +206,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	// Parse headers and sections
 	while (md_buffered_reader_extract_line(&line, reader)) {
 		const int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok > 0 && str_equal(tok[0], STR("Atoms"))) {
+		if (num_tok > 0 && str_eq(tok[0], STR("Atoms"))) {
 			if (!data->num_atoms) {
 				MD_LOG_ERROR("Encountered Atom entries, but number of atoms were not set or zero");
 				return false;
@@ -217,12 +217,12 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 			if (mass_table) {
-				for (int64_t i = 0; i < data->num_atoms; ++i) {
+				for (size_t i = 0; i < data->num_atoms; ++i) {
 					int32_t type = data->atoms[i].type;
 					data->atoms[i].mass = type < md_array_size(mass_table) ? mass_table[data->atoms[i].type] : 0.0f;
 				}
 			}
-		} else if (num_tok > 0 && str_equal(tok[0], STR("Bonds"))) {
+		} else if (num_tok > 0 && str_eq(tok[0], STR("Bonds"))) {
 			if (!data->num_bonds) {
 				MD_LOG_ERROR("Encountered Bond entries, but number of bonds were not set or zero");
 				return false;
@@ -232,7 +232,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_bonds(data->bonds, data->num_bonds, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_equal(tok[0], STR("Angles"))) {
+		} else if (num_tok > 0 && str_eq(tok[0], STR("Angles"))) {
 			if (!data->num_angles) {
 				MD_LOG_ERROR("Encountered Angle entries, but number of angles were not set or zero");
 				return false;
@@ -242,7 +242,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_angles(data->angles, data->num_angles, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_equal(tok[0], STR("Dihedrals"))) {
+		} else if (num_tok > 0 && str_eq(tok[0], STR("Dihedrals"))) {
 			if (!data->num_dihedrals) {
 				MD_LOG_ERROR("Encountered Dihedral entries, but number of dihedrals were not set or zero");
 				return false;
@@ -252,7 +252,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_angles(data->angles, data->num_angles, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_equal(tok[0], STR("Masses"))) {
+		} else if (num_tok > 0 && str_eq(tok[0], STR("Masses"))) {
 			if (!data->num_atom_types) {
 				MD_LOG_ERROR("Encountered Mass entries, but number of atom types were not set or zero");
 				return false;
@@ -264,51 +264,51 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 		} else if (num_tok == 2 && is_int(tok[0])) {
-			if (str_equal(tok[1], STR("atoms"))) {
+			if (str_eq(tok[1], STR("atoms"))) {
 				data->num_atoms = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("bonds"))) {
+			} else if (str_eq(tok[1], STR("bonds"))) {
 				data->num_bonds = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("angles"))) {
+			} else if (str_eq(tok[1], STR("angles"))) {
 				data->num_angles = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("dihedrals"))) {
+			} else if (str_eq(tok[1], STR("dihedrals"))) {
 				data->num_dihedrals = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("impropers"))) {
+			} else if (str_eq(tok[1], STR("impropers"))) {
 				data->num_impropers = (int32_t)parse_int(tok[0]);
 			}
-		} else if (num_tok == 3 && str_equal(tok[2], STR("types")) && is_int(tok[0])) {
-			if (str_equal(tok[1], STR("atom"))) {
+		} else if (num_tok == 3 && str_eq(tok[2], STR("types")) && is_int(tok[0])) {
+			if (str_eq(tok[1], STR("atom"))) {
 				data->num_atom_types = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("bond"))) {
+			} else if (str_eq(tok[1], STR("bond"))) {
 				data->num_bond_types = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("angle"))) {
+			} else if (str_eq(tok[1], STR("angle"))) {
 				data->num_angle_types = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("dihedral"))) {
+			} else if (str_eq(tok[1], STR("dihedral"))) {
 				data->num_dihedral_types = (int32_t)parse_int(tok[0]);
-			} else if (str_equal(tok[1], STR("improper"))) {
+			} else if (str_eq(tok[1], STR("improper"))) {
 				data->num_improper_types = (int32_t)parse_int(tok[0]);
 			} 
-		} else if (num_tok == 4 && str_equal(tok[2], STR("xlo")) && str_equal(tok[3], STR("xhi"))) {
+		} else if (num_tok == 4 && str_eq(tok[2], STR("xlo")) && str_eq(tok[3], STR("xhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.xlo = (float)parse_float(tok[0]);
 			data->cell.xhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 4 && str_equal(tok[2], STR("ylo")) && str_equal(tok[3], STR("yhi"))) {
+		} else if (num_tok == 4 && str_eq(tok[2], STR("ylo")) && str_eq(tok[3], STR("yhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.ylo = (float)parse_float(tok[0]);
 			data->cell.yhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 4 && str_equal(tok[2], STR("zlo")) && str_equal(tok[3], STR("zhi"))) {
+		} else if (num_tok == 4 && str_eq(tok[2], STR("zlo")) && str_eq(tok[3], STR("zhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.zlo = (float)parse_float(tok[0]);
 			data->cell.zhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 6 && str_equal(tok[3], STR("xy")) && str_equal(tok[4], STR("xz")) && str_equal(tok[5], STR("yz"))) {
+		} else if (num_tok == 6 && str_eq(tok[3], STR("xy")) && str_eq(tok[4], STR("xz")) && str_eq(tok[5], STR("yz"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1]) || !is_float(tok[2])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
@@ -367,7 +367,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 
 	MEMSET(mol, 0, sizeof(md_molecule_t));
 
-	const int64_t num_atoms = data->num_atoms;
+	const size_t num_atoms = data->num_atoms;
 
 	md_array_resize(mol->atom.x,	 num_atoms, alloc);
 	md_array_resize(mol->atom.y,	 num_atoms, alloc);
@@ -377,7 +377,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	md_array_resize(mol->atom.mass,  num_atoms, alloc);
 
 	int32_t prev_res_id = -1;
-	for (int64_t i = 0; i < num_atoms; ++i) {
+	for (size_t i = 0; i < num_atoms; ++i) {
 		mol->atom.x[i] = data->atoms[i].x;
 		mol->atom.y[i] = data->atoms[i].y;
 		mol->atom.z[i] = data->atoms[i].z;

@@ -1,6 +1,7 @@
 #include <core/md_spatial_hash.h>
 
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
@@ -53,7 +54,67 @@ struct md_spatial_acc_t {
 };
 */
 
-static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const vec3_t* in_xyz, const int32_t* indices, int64_t count, vec4_t pbc_ext) {
+#if 0
+typedef struct {
+    md_unit_cell_t unit_cell;
+    elem_t*   elems;
+    size_t    elem_count;
+    uint32_t* cell_offsets;
+    size_t    cell_count;
+    md_allocator_i* alloc;
+} md_spatial_acc_t;
+
+bool init_spatial_acc(md_spatial_acc_t* acc, const float in_x[], const float in_y[], const float in_z[], size_t byte_stride, const int32_t in_idx[], size_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+    ASSERT(acc);
+    ASSERT(in_x);
+    ASSERT(in_y);
+    ASSERT(in_z);
+
+    md_allocator_i* temp_alloc = md_heap_allocator;
+    size_t temp_bytes = (sizeof(uint32_t)) * count;
+    void* temp_mem = md_alloc(temp_alloc, temp_bytes);
+
+    acc->alloc = alloc;
+    acc->elems = md_alloc(alloc, sizeof(elem_t) * count);
+
+    // Compute AABB
+    vec4_t aabb_min = vec4_set1(+FLT_MAX);
+    vec4_t aabb_max = vec4_set1(-FLT_MAX);
+
+    if (unit_cell) {
+        mat4_t basis     = mat4_from_mat3(unit_cell->basis);
+        mat4_t inv_basis = mat4_from_mat3(unit_cell->inv_basis);
+        for (size_t i = 0; i < count; ++i) {
+            float x = *(const float*)((const char*)in_x + i * byte_stride);
+            float y = *(const float*)((const char*)in_y + i * byte_stride);
+            float z = *(const float*)((const char*)in_z + i * byte_stride);
+            vec4_t c = vec4_set(x, y, z, 1);
+            vec4_t fc = vec4_fract(mat4_mul_vec4(inv_basis, c)); // fractional coordinates
+            aabb_min = vec4_min(aabb_min, fc);
+            aabb_max = vec4_max(aabb_max, fc);
+        }
+        aabb_min = mat4_mul_vec4(basis, aabb_min);
+        aabb_max = mat4_mul_vec4(basis, aabb_max);
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            float x = *(const float*)((const char*)in_x + i * byte_stride);
+            float y = *(const float*)((const char*)in_y + i * byte_stride);
+            float z = *(const float*)((const char*)in_z + i * byte_stride);
+            vec4_t c = vec4_set(x, y, z, 1);
+            aabb_min = vec4_min(aabb_min, c);
+            aabb_max = vec4_max(aabb_max, c);
+        }
+    }
+
+    // Determine cell extent
+    vec4_t aabb_ext = vec4_sub(aabb_max, aabb_min);
+    vec4_t cell_est = vec4_ceil(vec4_div_f(aabb_ext, CELL_EXT));
+
+    md_free(temp_alloc, temp_mem, temp_bytes);
+}
+#endif
+
+static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const vec3_t in_xyz[], const int32_t indices[], int64_t count, vec4_t pbc_ext) {
     const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
 
@@ -446,7 +507,7 @@ bool md_spatial_acc_iter_next(md_spatial_acc_iter_t* iter) {
 }
 */
 
-md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32_t* in_indices, int64_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], int64_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
     ASSERT(in_xyz);
     ASSERT(alloc);
 
@@ -476,7 +537,7 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
     }
 
     vec4_t aabb_min, aabb_max;
-    compute_aabb_vec3(&aabb_min, &aabb_max, in_xyz, in_indices, count, ext);
+    compute_aabb_vec3(&aabb_min, &aabb_max, in_xyz, in_idx, count, ext);
 
     const vec4_t c_min = vec4_floor(vec4_div_f(aabb_min, CELL_EXT));
     const vec4_t c_max = vec4_floor(vec4_div_f(aabb_max, CELL_EXT));
@@ -508,7 +569,7 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
 
     // Allocate needed data
     const size_t element_bytes = ALIGN_TO(count, 8) * sizeof(elem_t);
-    const int64_t tot_bytes = sizeof(md_spatial_hash_t) + element_bytes + sizeof(cell_t) * cell_count;
+    const size_t tot_bytes = sizeof(md_spatial_hash_t) + element_bytes + sizeof(cell_t) * (cell_count + 1);
     void* mem = md_alloc(alloc, tot_bytes);
     void* data = (char*)mem + sizeof(md_spatial_hash_t);
 
@@ -521,7 +582,7 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
 
     // Handle remainder
     for (int64_t i = 0; i < count; ++i) {
-        const int64_t idx = in_indices ? in_indices[i] : i;
+        const int64_t idx = in_idx ? in_idx[i] : i;
         const vec4_t coord = vec4_from_vec3(in_xyz[idx], 0);
         vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
         vec4_t whole = vec4_floor(cell);
@@ -549,7 +610,7 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
 
     for (int64_t i = 0; i < count; ++i) {
         const int64_t cell_idx = cell_index[i];
-        const int64_t src_idx  = in_indices ? in_indices[i] : i;
+        const int64_t src_idx  = in_idx ? in_idx[i] : i;
         const int64_t dst_idx  = (cell_data[cell_idx] >> LENGTH_BITS) + local_idx[i];
         const vec4_t coord     = vec4_deperiodize(vec4_from_vec3(in_xyz[src_idx], 0), ref, ext);
         elem_data[dst_idx]     = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};
@@ -568,7 +629,7 @@ done:
     return hash;
 }
 
-md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in_y, const float* in_z, const int32_t* in_indices, int64_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], int64_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -600,7 +661,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
     }
 
     vec4_t aabb_min, aabb_max;
-    compute_aabb_soa(&aabb_min, &aabb_max, in_x, in_y, in_z, in_indices, count, ext);
+    compute_aabb_soa(&aabb_min, &aabb_max, in_x, in_y, in_z, in_idx, count, ext);
 
     vec4_t c_min = vec4_floor(vec4_div_f(aabb_min, CELL_EXT));
     vec4_t c_max = vec4_floor(vec4_div_f(aabb_max, CELL_EXT));
@@ -721,7 +782,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
 
     // Handle remainder
     for (int64_t i = 0; i < count; ++i) {
-        const int64_t idx = in_indices ? in_indices[i] : i;
+        const int64_t idx = in_idx ? in_idx[i] : i;
         const vec4_t coord = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0);
         vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
 
@@ -753,7 +814,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
 
     for (int64_t i = 0; i < count; ++i) {
         const int64_t cell_idx  = cell_index[i];
-        const int64_t src_idx   = in_indices ? in_indices[i] : i;
+        const int64_t src_idx   = in_idx ? in_idx[i] : i;
         const int64_t dst_idx   = (cell_data[cell_idx] >> LENGTH_BITS) + local_idx[i];
         const vec4_t coord      = vec4_deperiodize(vec4_set(in_x[src_idx], in_y[src_idx], in_z[src_idx], 0), ref, ext);
         elem_data[dst_idx]      = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};

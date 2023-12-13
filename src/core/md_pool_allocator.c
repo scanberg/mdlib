@@ -18,17 +18,17 @@ typedef struct page_t {
 // TODO:
 // We need a free list for pages, where we insert pages that have one or more available slots.
 typedef struct pool_t {
-    uint64_t magic_number;
-    uint64_t slot_size;
+    uint64_t magic;
+    size_t slot_size;
     page_t* pages;
     md_allocator_i* alloc;
 } pool_t;
 
-static inline uint64_t pool_page_size(const pool_t* pool) {
+static inline size_t pool_page_size(const pool_t* pool) {
     return pool->slot_size * PAGE_SLOT_CAPACITY;
 }
 
-static inline void* page_slot_ptr(const page_t* page, uint64_t idx, uint64_t slot_size) {
+static inline void* page_slot_ptr(const page_t* page, uint64_t idx, size_t slot_size) {
     return (char*)page->mem + idx * slot_size;
 }
 
@@ -41,12 +41,12 @@ static inline page_t* pool_new_page(pool_t* pool) {
     return md_array_push(pool->pages, page, pool->alloc);
 }
 
-static void* pool_new_slot(pool_t* pool, uint64_t size) {
+static void* pool_new_slot(pool_t* pool, size_t size) {
     (void)size;
     ASSERT(size <= pool->slot_size);
     
     page_t* page = NULL;
-    for (int64_t i = 0; i < md_array_size(pool->pages); ++i) {
+    for (size_t i = 0; i < md_array_size(pool->pages); ++i) {
         if (pool->pages[i].free_slots) {
             page = &pool->pages[i];
             break;
@@ -64,8 +64,8 @@ static void* pool_new_slot(pool_t* pool, uint64_t size) {
 }
 
 static void pool_free_slot(pool_t* pool, void* mem) {
-    const uint64_t page_size = pool_page_size(pool);
-    for (int64_t i = 0; i < md_array_size(pool->pages); ++i) {
+    const size_t page_size = pool_page_size(pool);
+    for (size_t i = 0; i < md_array_size(pool->pages); ++i) {
         const char* base = (const char*)pool->pages[i].mem;
         if (base <= (char*)mem && (char*)mem < (base + page_size)) {
             uint64_t idx = ((uint64_t)mem - (uint64_t)pool->pages[i].mem) / pool->slot_size;
@@ -76,29 +76,29 @@ static void pool_free_slot(pool_t* pool, void* mem) {
     ASSERT(false); // failed to find page
 }
 
-static void pool_init(pool_t* pool, md_allocator_i* alloc, int64_t slot_size) {
-    pool->magic_number = MAGIC_NUMBER;
-    pool->slot_size = (uint64_t)slot_size;
+static void pool_init(pool_t* pool, md_allocator_i* alloc, size_t slot_size) {
+    pool->magic = MAGIC_NUMBER;
+    pool->slot_size = slot_size;
     pool->pages = NULL;
     pool->alloc = alloc;
     pool_new_page(pool);
 }
 
 static void pool_free(pool_t* pool) {
-    const uint64_t page_size = pool_page_size(pool);
-    for (int64_t i = 0; i < md_array_size(pool->pages); ++i) {
+    const size_t page_size = pool_page_size(pool);
+    for (size_t i = 0; i < md_array_size(pool->pages); ++i) {
         md_free(pool->alloc, pool->pages[i].mem, page_size);
     }
     md_array_free(pool->pages, pool->alloc);
 }
 
-static void* pool_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+static void* pool_realloc(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)file;
     (void)line;
     (void)old_size;
 
     pool_t* pool = (pool_t*)inst;
-    ASSERT(pool && pool->magic_number == MAGIC_NUMBER);
+    ASSERT(pool && pool->magic == MAGIC_NUMBER);
     if (new_size == 0) {
         pool_free_slot(pool, ptr);
         return NULL;
@@ -109,10 +109,10 @@ static void* pool_realloc(struct md_allocator_o *inst, void *ptr, uint64_t old_s
     return pool_new_slot(pool, new_size);
 }
 
-struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, uint64_t slot_size) {
+struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, size_t slot_size) {
     ASSERT(backing);
     ASSERT(slot_size > 0);
-    uint64_t mem_size = sizeof(md_allocator_i) + sizeof(pool_t);
+    size_t mem_size = sizeof(md_allocator_i) + sizeof(pool_t);
     void* mem = md_alloc(backing, mem_size);
     MEMSET(mem, 0, mem_size);
 
@@ -130,7 +130,7 @@ struct md_allocator_i* md_pool_allocator_create(struct md_allocator_i* backing, 
 
 void md_pool_allocator_destroy(struct md_allocator_i* a) {
     pool_t* pool = (pool_t*)a->inst;
-    ASSERT(pool->magic_number == MAGIC_NUMBER); // Make sure this allocator is a pool allocator
+    ASSERT(pool->magic == MAGIC_NUMBER); // Make sure this allocator is a pool allocator
     pool_free(pool);
     md_free(pool->alloc, a, sizeof(md_allocator_i) + sizeof(pool_t));
 }

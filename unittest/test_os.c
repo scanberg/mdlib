@@ -168,7 +168,7 @@ UTEST(os, file_read_lines) {
     }
 
     str_t str = md_strb_to_str(&sb);
-    EXPECT_TRUE(str_equal(str, ref));
+    EXPECT_TRUE(str_eq(str, ref));
 
     md_free(md_heap_allocator, buf, cap);
 }

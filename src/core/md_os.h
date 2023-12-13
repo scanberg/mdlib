@@ -16,9 +16,10 @@ extern "C" {
 
 // ### MISC OS ###
 // returns total physical ram available on the machine
-uint64_t md_os_physical_ram();
+size_t md_os_physical_ram();
+
 // returns number of processors available on machine
-uint64_t md_os_num_processors();
+size_t md_os_num_processors();
 
 // ### PATH ###
 // Gets the current working directory
@@ -31,11 +32,11 @@ bool  md_path_set_cwd(str_t path);
 size_t md_path_write_exe(char* buf, size_t buf_cap);
 
 // Writes a canonical path to buf.
-int64_t md_path_write_canonical(char* buf, int64_t buf_cap, str_t path);
+size_t md_path_write_canonical(char* buf, size_t buf_cap, str_t path);
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
 
 // Writes a relative path from path_from to path_to to buf.
-int64_t md_path_write_relative(char* buf, int64_t buf_cap, str_t path_from, str_t path_to);
+size_t md_path_write_relative(char* buf, size_t buf_cap, str_t path_from, str_t path_to);
 str_t md_path_make_relative(str_t path_from, str_t path_to, struct md_allocator_i* alloc);
 
 // Checks if a path to a file or directory is valid: i.e. it points to an actual file / dir on disk.
@@ -67,20 +68,20 @@ void        md_file_close(md_file_o* file);
 bool        md_file_eof(md_file_o* file);
 int64_t     md_file_tell(md_file_o* file);
 bool        md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin);
-int64_t     md_file_size(md_file_o* file);
+size_t      md_file_size(md_file_o* file);
 
 // Reads a line from the file by searching for the first occurrence of new-line character '\n'.
 // Returns the number of bytes read (up to cap-1)
-int64_t     md_file_read_line(md_file_o* file, char* buf, int64_t cap);
+size_t      md_file_read_line(md_file_o* file, char* buf, size_t cap);
 
 // Reads multiple lines from the file by filling the buffer with as many complete lines as possible.
 // returns the number of bytes read (up to cap-1)
-int64_t     md_file_read_lines(md_file_o* file, char* buf, int64_t cap);
+size_t      md_file_read_lines(md_file_o* file, char* buf, size_t cap);
 
-int64_t     md_file_read(md_file_o* file, void* ptr, int64_t num_bytes);
-int64_t     md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes);
+size_t      md_file_read(md_file_o* file, void* ptr, size_t num_bytes);
+size_t      md_file_write(md_file_o* file, const void* ptr, size_t num_bytes);
 
-int64_t     md_file_printf(md_file_o* file, const char* format, ...);
+size_t      md_file_printf(md_file_o* file, const char* format, ...);
 
 // ### TIME ###
 // This represents a os specific time stamp with the highest precision available (usually nanoseconds)
@@ -100,11 +101,11 @@ double  md_time_as_seconds(md_timestamp_t t);
 // pointer and size should be aligned on page_size, otherwise it will most certainly crash on some OS
 
 // ### VIRTUAL MEMORY ###
-uint64_t	md_vm_page_size(void);
-void*		md_vm_reserve(uint64_t size);
-void		md_vm_release(void* ptr, uint64_t size);
-void		md_vm_commit(void* ptr, uint64_t size);
-void		md_vm_decommit(void* ptr, uint64_t size);
+size_t  md_vm_page_size(void);
+void*	md_vm_reserve(size_t size);
+void	md_vm_release (void* ptr, size_t size);
+void	md_vm_commit  (void* ptr, size_t size);
+void	md_vm_decommit(void* ptr, size_t size);
 
 // ### THREAD ###
 typedef void (*md_thread_exit) (void* data);

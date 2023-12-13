@@ -45,7 +45,7 @@ static str_t find_prefix_str_from_value(float value) {
 
 static float find_prefix_value_from_str(str_t str) {
     for (int i = 0; i < (int)ARRAY_SIZE(si_prefixes); ++i) {
-        if (str_equal(str, si_prefixes[i].prefix)) return si_prefixes[i].value;
+        if (str_eq(str, si_prefixes[i].prefix)) return si_prefixes[i].value;
     }
     return 0;
 }
@@ -128,7 +128,7 @@ static const unit_name_t predefined_units[] = {
 
 static md_unit_t find_unit_from_predefined(str_t name) {
     for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
-        if (str_equal(name, predefined_units[i].str)) {
+        if (str_eq(name, predefined_units[i].str)) {
             return predefined_units[i].unit;
         }
     }
@@ -613,26 +613,23 @@ md_unit_t md_unit_from_string(str_t str) {
         return (md_unit_t) {0};
     }
 
-    int64_t delim;
+    size_t loc;
     
-    delim = str_find_char(str, '/');
-    if (delim != -1) {
-        str_t num = str_substr(str, 0, delim);
-        str_t den = str_substr(str, delim + 1, str.len);
+    if (str_find_char(&loc, str, '/')) {
+        str_t num = str_substr(str, 0, loc);
+        str_t den = str_substr(str, loc + 1, str.len);
         return md_unit_div(md_unit_from_string(num), md_unit_from_string(den));
     }
 
-    delim = str_find_char(str, '*');
-    if (delim != -1) {
-        str_t p1 = str_substr(str, 0, delim);
-        str_t p2 = str_substr(str, delim + 1, str.len);
+    if (str_find_char(&loc, str, '*')) {
+        str_t p1 = str_substr(str, 0, loc);
+        str_t p2 = str_substr(str, loc + 1, str.len);
         return md_unit_mul(md_unit_from_string(p1), md_unit_from_string(p2));
     }
     
-    delim = str_find_char(str, ' ');
-    if (delim != -1) {
-        str_t p1 = str_substr(str, 0, delim);
-        str_t p2 = str_substr(str, delim + 1, str.len);
+    if (str_find_char(&loc, str, ' ')) {
+        str_t p1 = str_substr(str, 0, loc);
+        str_t p2 = str_substr(str, loc + 1, str.len);
         return md_unit_mul(md_unit_from_string(p1), md_unit_from_string(p2));
     }
     
@@ -643,15 +640,14 @@ md_unit_t md_unit_from_string(str_t str) {
     }
         
     // Try to match against longest matching predefined unit (from right to left)
-    delim = str_find_char(str, '^');
     str_t base = str;
     str_t exp = {0};
     str_t rest = {0};
-    if (delim != -1) {
-        base = str_substr(str, 0, delim);
-        int64_t i = delim + 1;
+    if (str_find_char(&loc, str, '^')) {
+        base = str_substr(str, 0, loc);
+        size_t i = loc + 1;
         while (i < str.len && (str.ptr[i] == '-' || str.ptr[i] == '+' || is_alpha(str.ptr[i]))) ++i;
-        exp = str_substr(str, delim + 1, i);
+        exp = str_substr(str, loc + 1, i);
         rest = str_substr(str, i + 1, str.len);
     }
         

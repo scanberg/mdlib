@@ -54,11 +54,11 @@ static inline int64_t find_char(const char* ptr, int64_t len, char character) {
 typedef struct md_buffered_reader_t {
     str_t   str;
     char*   buf;
-    int64_t cap;
+    size_t  cap;
     md_file_o* file;
 } md_buffered_reader_t;
 
-static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, int64_t cap, md_file_o* file) {
+static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, size_t cap, md_file_o* file) {
     ASSERT(buf);
     ASSERT(cap > 0);
     ASSERT(file);
@@ -331,7 +331,7 @@ static inline int64_t parse_int(str_t str) {
     return neg ? -val : val;
 }
 
-static inline __m128i mask(int64_t n) {
+static inline __m128i mask(size_t n) {
     //ALIGNAS(32) static const char mask[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
     //return _mm_loadu_si128((const __m128i*)(mask + n));
     return _mm_cmpgt_epi8(_mm_set1_epi8((char)n), _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
@@ -384,7 +384,7 @@ static inline uint64_t load_u64(const char* ptr) {
     return val;
 }
 
-static inline uint32_t parse_u32(const char* ptr, int64_t len) {
+static inline uint32_t parse_u32(const char* ptr, size_t len) {
     const uint64_t mask = 0x000000FF000000FF;
     const uint64_t mul1 = 0x000F424000000064; // 100 + (1000000ULL << 32)
     const uint64_t mul2 = 0x0000271000000001; // 1 + (10000ULL << 32)
@@ -397,7 +397,7 @@ static inline uint32_t parse_u32(const char* ptr, int64_t len) {
     return (uint32_t)val;
 }
 
-static inline uint64_t parse_uint_wide(const char* ptr, int64_t len) {
+static inline uint64_t parse_uint_wide(const char* ptr, size_t len) {
     uint64_t val;
     switch (len >> 3) {
         case 0:  val = parse_u32(ptr, len); break;
@@ -406,7 +406,7 @@ static inline uint64_t parse_uint_wide(const char* ptr, int64_t len) {
     return val;
 }
 
-static inline int64_t parse_int_wide(const char* ptr, int64_t len) {
+static inline int64_t parse_int_wide(const char* ptr, size_t len) {
 	bool neg = (*ptr == '-');
     if (*ptr == '-') {
         ++ptr;
@@ -459,7 +459,7 @@ struct float_token_t {
 
 // Specialized version where the the integer and fractional part each
 // are expected to fit into 8 characters.
-static inline double parse_float_wide(const char* ptr, int64_t len) {
+static inline double parse_float_wide(const char* ptr, size_t len) {
     int neg = (*ptr == '-');
     if (*ptr == '-') {
         ++ptr;
@@ -502,12 +502,12 @@ static inline bool extract_token(str_t* tok, str_t* str) {
 }
 
 // Extract multiple tokens with whitespace as delimiter
-static inline int64_t extract_tokens(str_t tok_arr[], int64_t tok_cap, str_t* str) {
+static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str) {
     ASSERT(tok_arr);
     ASSERT(tok_cap >= 0);
     ASSERT(str);
 
-    int64_t num_tokens = 0;
+    size_t num_tokens = 0;
     while (num_tokens < tok_cap && extract_token(&tok_arr[num_tokens], str)) {
         num_tokens += 1;
     }
@@ -536,12 +536,12 @@ static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
 }
 
 // Extracts token with specific delimiter
-static inline int64_t extract_tokens_delim(str_t tok_arr[], int64_t tok_cap, str_t* str, char delim) {
+static inline size_t extract_tokens_delim(str_t tok_arr[], size_t tok_cap, str_t* str, char delim) {
     ASSERT(tok_arr);
     ASSERT(tok_cap >= 0);
     ASSERT(str);
 
-    int64_t num_tokens = 0;
+    size_t num_tokens = 0;
     while (num_tokens < tok_cap && extract_token_delim(&tok_arr[num_tokens], str, delim)) {
         num_tokens += 1;
     }

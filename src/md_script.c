@@ -277,7 +277,7 @@ struct type_info_t {
 struct data_t {
     type_info_t type;
     void*       ptr;    // Pointer to the data
-    int64_t     size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
+    size_t      size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
 
     frange_t    value_range;
     md_unit_t   unit;
@@ -421,7 +421,7 @@ struct ast_node_t {
     md_array(int)       table_field_indices;  // Indices into the table fields which are used for this node
 
     // CONTEXT
-    int64_t             num_contexts;   // Number of arguments for procedure calls
+    size_t              num_contexts;   // Number of arguments for procedure calls
     type_info_t*        lhs_context_types; // For static type checking
     const md_bitfield_t* contexts;  // Since contexts have to be statically known at compile time, we store a reference to it.
 };
@@ -584,12 +584,12 @@ static bool is_variable_length(type_info_t ti) {
     return ti.dim[ti.len_dim] == -1;
 }
 
-static int64_t type_info_array_len(type_info_t ti) {
+static int type_info_array_len(type_info_t ti) {
     ASSERT(ti.len_dim < MAX_SUPPORTED_TYPE_DIMS);
     return ti.dim[ti.len_dim];
 }
 
-static int64_t element_count(data_t arg) {
+static size_t element_count(data_t arg) {
     ASSERT(arg.type.dim[arg.type.len_dim] >= 0);
     return arg.type.dim[arg.type.len_dim];
 }
@@ -604,7 +604,7 @@ static type_info_t type_info_element_type(type_info_t ti) {
 }
 
 // Size of the base type structure
-static uint64_t base_type_element_byte_size(base_type_t type) {
+static size_t base_type_element_byte_size(base_type_t type) {
     switch (type) {
     case TYPE_FLOAT:    return sizeof(float);
     case TYPE_INT:      return sizeof(int);
@@ -685,8 +685,8 @@ static bool is_type_directly_compatible(type_info_t from, type_info_t to) {
     return false;
 }
 
-static bool compare_type_info_array(const type_info_t a[], const type_info_t b[], int64_t num_arg_types) {
-    for (int64_t i = 0; i < num_arg_types; ++i) {
+static bool compare_type_info_array(const type_info_t a[], const type_info_t b[], size_t num_arg_types) {
+    for (size_t i = 0; i < num_arg_types; ++i) {
         if (!is_type_directly_compatible(a[i], b[i])) {
             return false;
         }
@@ -697,28 +697,30 @@ static bool compare_type_info_array(const type_info_t a[], const type_info_t b[]
 // Returns the count of elements for this type, i.e an array of [4][4][1] would return 16
 // NOTE: It does not include the last dimension which encodes the length of the array
 // 
-static int64_t type_info_element_stride_count(type_info_t ti) {
+static size_t type_info_element_stride_count(type_info_t ti) {
     if (ti.len_dim == 0) return 1;
-    int64_t stride = ti.dim[0];
+    ASSERT(ti.dim[0] >= 0);
+    size_t stride = ti.dim[0];
     for (int32_t i = 1; i < ti.len_dim; ++i) {
+        ASSERT(ti.dim[i] >= 0);
         stride *= ti.dim[i];
     }
     return stride;
 }
 
-static int64_t type_info_element_byte_stride(type_info_t ti) {
+static size_t type_info_element_byte_stride(type_info_t ti) {
     return type_info_element_stride_count(ti) * base_type_element_byte_size(ti.base_type);
 }
 
-static int64_t type_info_total_byte_size(type_info_t ti) {
+static size_t type_info_total_byte_size(type_info_t ti) {
     return type_info_element_byte_stride(ti) * type_info_array_len(ti);
 }
 
-static int64_t type_info_total_element_count(type_info_t ti) {
+static size_t type_info_total_element_count(type_info_t ti) {
     return type_info_element_stride_count(ti) * type_info_array_len(ti);
 }
 
-static int64_t bitfield_byte_size(int64_t num_bits) {
+static size_t bitfield_byte_size(size_t num_bits) {
     return DIV_UP(num_bits, 64) * sizeof(int64_t);
 }
 
@@ -1017,7 +1019,7 @@ static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
 }
 
 static inline bool is_identifier_static_procedure(str_t ident) {
-    if (str_equal(ident, STR("import"))) {
+    if (str_eq(ident, STR("import"))) {
         return true;   
     }
     return false;
@@ -1025,7 +1027,7 @@ static inline bool is_identifier_static_procedure(str_t ident) {
 
 static inline bool is_identifier_procedure(str_t ident) {
     for (size_t i = 0; i < ARRAY_SIZE(procedures); ++i) {
-        if (str_equal(ident, procedures[i].name)) {
+        if (str_eq(ident, procedures[i].name)) {
             return true;
         }
     }
@@ -1044,7 +1046,7 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
 
 static identifier_t* find_identifier(str_t name, identifier_t* identifiers, int64_t count) {
     for (int64_t i = 0; i < count; ++i) {
-        if (str_equal(name, identifiers[i].name)) {
+        if (str_eq(name, identifiers[i].name)) {
             return &identifiers[i];
         }
     }
@@ -1140,7 +1142,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
 
     for (int64_t i = 0; i < num_cantidates; ++i) {
         procedure_t* proc = &candidates[i];
-        if (str_equal(proc->name, name)) {
+        if (str_eq(proc->name, name)) {
             if (num_arg_types == proc->num_args) {
                 if (compare_type_info_array(arg_types, proc->arg_type, num_arg_types)) {
                     res.success = true;
@@ -1173,7 +1175,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
 
         for (int64_t i = 0; i < num_cantidates; ++i) {
             procedure_t* proc = &candidates[i];
-            if (str_equal(proc->name, name)) {
+            if (str_eq(proc->name, name)) {
                 if (num_arg_types == proc->num_args) {
                     // Same name and same number of args...
 
@@ -1272,7 +1274,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
 
 static constant_t* find_constant(str_t name) {
     for (size_t i = 0; i < ARRAY_SIZE(constants); ++i) {
-        if (str_equal(constants[i].name, name)) {
+        if (str_eq(constants[i].name, name)) {
             return &constants[i];
         }
     }
@@ -1342,28 +1344,28 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             const int n = j - i;
             if (n == 2) {
                 str_t str = {buf+i, 2};
-                if (str_equal(str, STR("or"))) {
+                if (str_eq(str, STR("or"))) {
                     token.type = TOKEN_OR;
                 }
-                else if (str_equal(str, STR("in"))) {
+                else if (str_eq(str, STR("in"))) {
                     token.type = TOKEN_IN;
                 }
-                else if (str_equal(str, STR("of"))) {
+                else if (str_eq(str, STR("of"))) {
                     token.type = TOKEN_OF;
                 }
             }
             else if (n == 3) {
                 str_t str = {buf+i, 3};
-                if (str_equal(str, STR("and"))) {
+                if (str_eq(str, STR("and"))) {
                     token.type = TOKEN_AND;
                 }
-                else if (str_equal(str, STR("not"))) {
+                else if (str_eq(str, STR("not"))) {
                     token.type = TOKEN_NOT;
                 }
-                else if (str_equal(str, STR("xor"))) {
+                else if (str_eq(str, STR("xor"))) {
                     token.type = TOKEN_XOR;
                 }
-                else if (str_equal(str, STR("out"))) {
+                else if (str_eq(str, STR("out"))) {
                     token.type = TOKEN_OUT;
                 }
             }
@@ -1428,7 +1430,7 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             if (n == 2) {
                 str_t str = {buf + i, 2};
                 for (size_t k = 0; k < ARRAY_SIZE(symbols_2); ++k) {
-                    if (str_equal(str, (str_t){symbols_2[k].str, 2})) {
+                    if (str_eq(str, (str_t){symbols_2[k].str, 2})) {
                         token.type = symbols_2[k].type;
                         j = i + 2;
                         break;
@@ -1889,7 +1891,7 @@ static void save_expressions_to_json(expression_t** expr, uint64_t num_expr, str
 
 static void expand_node_token_range_with_children(ast_node_t* node) {
     ASSERT(node);
-    for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+    for (size_t i = 0; i < md_array_size(node->children); ++i) {
         ASSERT(node->children[i] != node);
         if (!node->children[i]) continue;
         expand_node_token_range_with_children(node->children[i]);
@@ -2068,7 +2070,7 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
     
     if (!lhs || lhs->type != AST_IDENTIFIER) {
         if (lhs->type == AST_ARRAY) {
-            for (int64_t i = 0; i < md_array_size(lhs->children); ++i) {
+            for (size_t i = 0; i < md_array_size(lhs->children); ++i) {
 				if (lhs->children[i]->type != AST_IDENTIFIER) {
 					LOG_ERROR(ctx->ir, lhs->children[i]->token, "'%s' is not a valid identifier.", lhs->children[i]->token.str.ptr);
 					return NULL;
@@ -2609,7 +2611,7 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
 
         const int64_t num_rows = node->table->num_values;
         int64_t row_index = -1;
-        if (str_equal(node->table->field_names[0], STR("Time"))) {
+        if (str_eq(node->table->field_names[0], STR("Time"))) {
             // Complex case, find the matching time
             const double* time = node->table->field_values[0];
 
@@ -2672,7 +2674,7 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
 			return false;
 		}
          
-        for (int64_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
+        for (size_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
             int idx = node->table_field_indices[i];
             ((float*)dst->ptr)[i] = (float)node->table->field_values[idx][row_index];
         }
@@ -2686,9 +2688,9 @@ static identifier_t* find_static_identifier(str_t name, eval_context_t* ctx) {
 
     // Static Identifiers from Compilation
     if (ctx->ir) {
-        for (int64_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
+        for (size_t i = 0; i < md_array_size(ctx->ir->identifiers); ++i) {
             // Only return IR identifiers if they are constant
-            if (ctx->ir->identifiers[i].node && (ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && str_equal(name, ctx->ir->identifiers[i].name)) {
+            if (ctx->ir->identifiers[i].node && (ctx->ir->identifiers[i].node->flags & FLAG_CONSTANT) && str_eq(name, ctx->ir->identifiers[i].name)) {
                 return &ctx->ir->identifiers[i];
             }
         }
@@ -2702,8 +2704,8 @@ static identifier_t* find_dynamic_identifier(str_t name, eval_context_t* ctx) {
     ASSERT(ctx);
 
     // Dynamic Identifiers from Evaluation
-    for (int64_t i = 0; i < md_array_size(ctx->identifiers); ++i) {
-        if (str_equal(name, ctx->identifiers[i].name)) {
+    for (size_t i = 0; i < md_array_size(ctx->identifiers); ++i) {
+        if (str_eq(name, ctx->identifiers[i].name)) {
             return &ctx->identifiers[i];
         }
     }
@@ -2814,7 +2816,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
 }
 
 static bool index_present_in_subscript_ranges(int idx, const md_array(irange_t) ranges) {
-    for (int64_t i = 0; i < md_array_size(ranges); ++i) {
+    for (size_t i = 0; i < md_array_size(ranges); ++i) {
         if (ranges[i].beg <= idx && idx <= ranges[i].end) return true;
     }
     return false;
@@ -2845,7 +2847,7 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
     ASSERT(node && node->type == AST_ARRAY);
 
     // Even if we do not have a dst parameter we still want to propagate the evaluation to the children
-    const int64_t num_args = md_array_size(node->children);
+    const size_t num_args = md_array_size(node->children);
     ast_node_t** const args = node->children;
     bool result = false;
 
@@ -2855,8 +2857,8 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
     if (dst) {
         ASSERT(type_info_equal(type_info_element_type(dst->type), type_info_element_type(node->data.type)));
 
-        int64_t byte_offset = 0;
-        for (int64_t i = 0; i < num_args; ++i) {
+        size_t byte_offset = 0;
+        for (size_t i = 0; i < num_args; ++i) {
             type_info_t type = args[i]->data.type;
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, args[i], ctx)) {
@@ -2883,7 +2885,7 @@ static bool evaluate_array(data_t* dst, const ast_node_t* node, eval_context_t* 
     }
     else {
 
-        for (int64_t i = 0; i < num_args; ++i) {
+        for (size_t i = 0; i < num_args; ++i) {
             md_script_vis_t* vis = ctx->vis;
             if (ranges && !index_present_in_subscript_ranges((int)i + 1, ranges)) {
                 ctx->vis = 0;
@@ -2928,13 +2930,13 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     if (dst) {
         ASSERT(type_info_equal(dst->type, node->data.type));
         ASSERT(dst->ptr);
-        const int64_t elem_size = type_info_element_byte_stride(arr_data.type);
-        int64_t write_offset = 0;
-        for (int64_t i = 0; i < md_array_size(idx_ranges); ++i) {
+        const size_t elem_size = type_info_element_byte_stride(arr_data.type);
+        size_t write_offset = 0;
+        for (size_t i = 0; i < md_array_size(idx_ranges); ++i) {
             irange_t range = idx_ranges[i];
             range.beg -= 1; // Offset since script is one based
-            const int64_t bytes = elem_size * (range.end - range.beg);
-            const int64_t read_offset = elem_size * range.beg;
+            const size_t bytes = elem_size * (range.end - range.beg);
+            const size_t read_offset = elem_size * range.beg;
             data_t dst_slice       = {dst->type, (char*)dst->ptr + write_offset, bytes};
             const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, bytes};
             copy_data(&dst_slice, &src_slice);
@@ -2998,7 +3000,11 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     ASSERT(ctx_node->data.type.base_type == TYPE_BITFIELD);
     ASSERT(ctx_node->data.ptr);
 
-    const int64_t num_ctx = type_info_array_len(ctx_node->data.type);
+    const int num_ctx = type_info_array_len(ctx_node->data.type);
+    if (num_ctx < 0) {
+        LOG_ERROR(ctx->ir, node->token, "Invalid number of contexts (%i) in context expression", num_ctx);
+		return false;
+    }
     const md_bitfield_t* ctx_bf = (const md_bitfield_t*)ctx_node->data.ptr;
 
     ASSERT(node->lhs_context_types);
@@ -3511,8 +3517,8 @@ static int print_argument_list(char* buf, int cap, const type_info_t arg_type[],
 }
 
 static table_t* find_table(md_script_ir_t* ir, str_t name) {
-    for (int64_t i = 0; i < md_array_size(ir->tables); ++i) {
-        if (str_equal(ir->tables[i].name, name)) {
+    for (size_t i = 0; i < md_array_size(ir->tables); ++i) {
+        if (str_eq(ir->tables[i].name, name)) {
             return &ir->tables[i];
         }
     }
@@ -3569,10 +3575,9 @@ static bool frame_times_compatible_f(const double* traj_times, int64_t num_traj_
 // Find the possible occurrence of parenthesis and try to match its contents to a unit.
 static md_unit_t extract_unit_from_label(str_t label) {
     md_unit_t unit = md_unit_none();
-    const int64_t beg_paren = str_find_char(label, '(');
-    const int64_t end_paren = str_rfind_char(label, ')');
-    if (beg_paren != -1 && end_paren != -1) {
-        str_t unit_str = str_substr(label, beg_paren + 1, end_paren - beg_paren - 1);
+    size_t beg_loc, end_loc;
+    if (str_find_char(&beg_loc, label, '(') && str_find_char(&end_loc, label, ')')) {
+        str_t unit_str = str_substr(label, beg_loc + 1, end_loc - beg_loc - 1);
         md_unit_t xvg_unit = md_unit_from_string(unit_str);
         if (!md_unit_empty(xvg_unit)) {
             unit = xvg_unit;
@@ -3582,13 +3587,17 @@ static md_unit_t extract_unit_from_label(str_t label) {
 }
 
 static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file, const md_trajectory_i* traj) {
-    str_t ext = extract_ext(path_to_file);
+    str_t ext;
+    if (!extract_ext(&ext, path_to_file)) {
+        LOG_ERROR(ir, tok, "Could not extract extension from file path '%.*s'", STR_ARG(path_to_file));
+        return NULL;
+    }
     table_t* table = NULL;
     md_unit_t traj_time_unit = md_trajectory_time_unit(traj);
     const int64_t num_frames = md_trajectory_num_frames(traj);
     bool traj_has_time = !md_unit_empty(traj_time_unit);
    
-    if (str_equal_cstr_ignore_case(ext, "edr")) {
+    if (str_eq_cstr_ignore_case(ext, "edr")) {
         md_edr_energies_t edr = {0};
         if (md_edr_energies_parse_file(&edr, path_to_file, md_heap_allocator)) {
             bool success = true;
@@ -3614,11 +3623,11 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
             }
         }
         md_edr_energies_free(&edr);
-    } else if (str_equal_cstr_ignore_case(ext, "xvg")) {
+    } else if (str_eq_cstr_ignore_case(ext, "xvg")) {
         md_xvg_t xvg = {0};
         if (md_xvg_parse_file(&xvg, path_to_file, md_heap_allocator)) {
             bool success = true;
-            bool xvg_has_time = str_equal_cstr_n_ignore_case(xvg.header_info.xaxis_label, "time", 4);
+            bool xvg_has_time = str_eq_cstr_n_ignore_case(xvg.header_info.xaxis_label, "time", 4);
             if (traj_has_time && xvg_has_time) {
                 if (!frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, xvg.fields[0], xvg.num_values)) {
                     LOG_ERROR(ir, tok, "XVG file is not compatible with loaded trajectory, could not match timestamps");
@@ -3644,7 +3653,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 md_unit_t unit = extract_unit_from_label(xvg.header_info.yaxis_label);
                 for (; i < xvg.num_fields; ++i) {
                     str_t name = STR("");
-                    if (i-1 < md_array_size(xvg.header_info.legends)) {
+                    if (i-1 < (int64_t)md_array_size(xvg.header_info.legends)) {
                         name = xvg.header_info.legends[i-1];
                     }
                     table_push_field_f(table, name, unit, xvg.fields[i], xvg.num_values, ir->arena);
@@ -3652,11 +3661,11 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
             }
             md_xvg_free(&xvg, md_heap_allocator);
         }
-    } else if (str_equal_cstr_ignore_case(ext, "csv")) {
+    } else if (str_eq_cstr_ignore_case(ext, "csv")) {
         md_csv_t csv = {0};
         if (md_csv_parse_file(&csv, path_to_file, md_heap_allocator)) {
             bool success = true;
-            bool csv_has_time = csv.field_names && str_equal_cstr_n_ignore_case(csv.field_names[0], "time", 4);
+            bool csv_has_time = csv.field_names && str_eq_cstr_n_ignore_case(csv.field_names[0], "time", 4);
 
             if (traj_has_time && csv_has_time) {
                 if (!frame_times_compatible_f(md_trajectory_frame_times(traj), num_frames, csv.field_values[0], csv.num_values)) {
@@ -3834,7 +3843,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                 }
                 int match_idx = -1;
                 for (int j = 0; j < (int)table->num_fields; ++j) {
-                    if (str_equal(str, table->field_names[j])) {
+                    if (str_eq(str, table->field_names[j])) {
                         match_idx = j;
                         break;
                     }
@@ -3873,7 +3882,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     }
 
     md_unit_t unit = table->field_units[field_indices[0]];
-    for (int64_t i = 0; i < md_array_size(field_indices); ++i) {
+    for (size_t i = 0; i < md_array_size(field_indices); ++i) {
         if (!md_unit_equal(unit, table->field_units[field_indices[i]])) {
             // If we have conflicting units, we make it unitless and let the user know.
             //LOG_WARNING(ctx->ir, node->token, "import: conflicting units, perhaps separate the import into two separate");
@@ -3899,7 +3908,7 @@ static bool static_check_static_proc(ast_node_t* node, eval_context_t* ctx) {
         return false;
     }
 
-    if (str_equal(node->ident, STR("import"))) {
+    if (str_eq(node->ident, STR("import"))) {
         return static_check_import(node, ctx);
     }
 
@@ -4238,7 +4247,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
     ast_node_t** idents = &lhs;
 
     if (lhs->type == AST_ARRAY) {
-        for (int64_t i = 0; i < md_array_size(lhs->children); ++i) {
+        for (size_t i = 0; i < md_array_size(lhs->children); ++i) {
 			if (lhs->children[i]->type != AST_IDENTIFIER) {
 				LOG_ERROR(ctx->ir, node->token, "An element on the left hand side of assignment is not an identifier");
 				return false;
@@ -4345,7 +4354,7 @@ static void propagate_contexts(ast_node_t* node, const md_bitfield_t* contexts, 
     ASSERT(node);
     node->num_contexts = num_contexts;
     node->contexts = contexts;
-    for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+    for (size_t i = 0; i < md_array_size(node->children); ++i) {
         propagate_contexts(node->children[i], contexts, num_contexts);
     }
 }
@@ -4406,7 +4415,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
 
                 if (rhs->flags & FLAG_CONSTANT) {
                     ASSERT(rhs->data.ptr);
-                    ASSERT(rhs->data.size == num_contexts * (int64_t)sizeof(md_bitfield_t));
+                    ASSERT(rhs->data.size == (size_t)(num_contexts * sizeof(md_bitfield_t)));
                     contexts = (md_bitfield_t*)rhs->data.ptr;
                 } else {
                     md_array_resize(contexts, num_contexts, ctx->ir->arena);
@@ -4582,7 +4591,7 @@ static uint64_t hash_node(const ast_node_t*);
 
 static uint64_t hash_children(const ast_node_t* node) {
     uint64_t hash = 127365712389ull;
-    for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+    for (size_t i = 0; i < md_array_size(node->children); ++i) {
         hash ^= hash_node(node->children[i]);
     }
     return hash;
@@ -4618,7 +4627,7 @@ static uint64_t hash_node(const ast_node_t* node) {
 // Prunes the tree from AST_EXPRESSION, since that is just an unnecessary indirection for sorting the tree correctly on precedence
 static ast_node_t* prune_expressions(ast_node_t* node) {
     if (node) {
-        for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+        for (size_t i = 0; i < md_array_size(node->children); ++i) {
             if (node->children[i]) {
                 ASSERT(node->children[i] != node);
                 node->children[i] = prune_expressions(node->children[i]);
@@ -4719,7 +4728,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
 
     ir->stage = "Static Type Checking";
 
-    for (int64_t i = 0; i < md_array_size(ir->expressions); ++i) {
+    for (size_t i = 0; i < md_array_size(ir->expressions); ++i) {
         ir->record_log = true;   // We reset the error recording flag before each statement
         if (static_check_node(ir->expressions[i]->node, &ctx)) {
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
@@ -4736,7 +4745,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
 }
 
 static void assign_node_parent(ast_node_t* node) {
-    for (int64_t i = 0; i < md_array_size(node->children); ++i) {
+    for (size_t i = 0; i < md_array_size(node->children); ++i) {
         node->children[i]->parent = node;
         assign_node_parent(node->children[i]);
     }
@@ -4745,7 +4754,7 @@ static void assign_node_parent(ast_node_t* node) {
 // We want to finalize the tree by setting parents to all children
 static bool finalize_ast(md_script_ir_t* ir) {
     ASSERT(ir);
-    for (int64_t i = 0; i < md_array_size(ir->expressions); ++i) {
+    for (size_t i = 0; i < md_array_size(ir->expressions); ++i) {
         ast_node_t* node = ir->expressions[i]->node;
         if (node) {
             assign_node_parent(node);
@@ -4758,7 +4767,7 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
     ASSERT(ir);
 
     // Check all type checked expressions for dynamic flag
-    for (int64_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
+    for (size_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
         expression_t* expr = ir->type_checked_expressions[i];
         ASSERT(expr);
         ASSERT(expr->node);
@@ -4791,14 +4800,14 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(ctx->ir);
 
-    const int64_t num_children = md_array_size(node->children);
+    const size_t num_children = md_array_size(node->children);
     bool result = true;
     
     // Propagate the evaluation all the way down to the children.
     if (node->children) {
-        int64_t offset = 0;
+        size_t offset = 0;
         if (node->type == AST_CONTEXT) offset = 1;  // We don't want to evaluate the lhs in a context on its own since then it will loose its context
-        for (int64_t i = offset; i < num_children; ++i) {
+        for (size_t i = offset; i < num_children; ++i) {
             result &= static_eval_node(node->children[i], ctx);
         }
     }
@@ -4837,7 +4846,7 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     bool result = true;
 
     // Evaluate every node which is not flagged with FLAG_DYNAMIC and store its value.
-    for (int64_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
+    for (size_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
         result &= static_eval_node(ir->type_checked_expressions[i]->node, &ctx);
         md_vm_arena_reset(&vm_arena);
     }
@@ -5362,7 +5371,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
         // Write header contents of table to provide an overview of what is there
         md_strb_push_char(&sb, '\n');
         bool matching_units = true;
-        for (int64_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
+        for (size_t i = 0; i < md_array_size(node->table_field_indices); ++i) {
             int idx = node->table_field_indices[i];
             if (idx < 0 || (int)node->table->num_fields <= idx) {
                 MD_LOG_DEBUG("Attempting to read out of bounds in table_field_indices");
@@ -5674,8 +5683,8 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
     md_bitfield_init(&eval->completed_frames, eval->arena);
     md_bitfield_reserve_range(&eval->completed_frames, 0, num_frames);
 
-    int64_t num_prop_expr = 0;
-    for (int64_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
+    size_t num_prop_expr = 0;
+    for (size_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
         expression_t* expr = ir->eval_targets[i];
         ASSERT(expr);
         ASSERT(expr->node);
@@ -5689,7 +5698,7 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
                 num_prop_expr += 1;
             } else if (expr->node->children[0]->type == AST_ARRAY) {
             	ast_node_t* lhs = expr->node->children[0];
-				for (int64_t j = 0; j < md_array_size(lhs->children); ++j) {
+				for (size_t j = 0; j < md_array_size(lhs->children); ++j) {
 					ast_node_t* child = lhs->children[j];
 					ASSERT(child->type == AST_IDENTIFIER);
 					md_script_property_t prop = {0};
@@ -5709,7 +5718,7 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
     md_array_resize(eval->prop_dist_mutex, num_prop_expr, eval->arena);
     clear_properties(eval->properties, num_prop_expr);
         
-    for (int64_t i = 0; i < num_prop_expr; ++i) {
+    for (size_t i = 0; i < num_prop_expr; ++i) {
         eval->prop_dist_count[i] = 0;
         md_mutex_init(&eval->prop_dist_mutex[i]);
     }
@@ -5724,7 +5733,7 @@ void md_script_eval_clear(md_script_eval_t* eval) {
     ASSERT(eval->magic == SCRIPT_EVAL_MAGIC);
     clear_properties(eval->properties, md_array_size(eval->properties));
     md_bitfield_clear(&eval->completed_frames);
-    for (int64_t i = 0; i < md_array_size(eval->prop_dist_count); ++i) {
+    for (size_t i = 0; i < md_array_size(eval->prop_dist_count); ++i) {
         eval->prop_dist_count[i] = 0;
     }
     eval->interrupt = false;
@@ -5764,7 +5773,7 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
     bool result = eval_properties(eval, mol, traj, ir, frame_beg, frame_end);
 
     const uint64_t fingerprint = generate_fingerprint();
-    for (int64_t i = 0; i < md_array_size(eval->properties); ++i) {
+    for (size_t i = 0; i < md_array_size(eval->properties); ++i) {
         eval->properties[i].data.fingerprint = fingerprint;
     }
 
@@ -5780,7 +5789,7 @@ uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval) {
 
 void md_script_eval_free(md_script_eval_t* eval) {
     if (validate_eval(eval)) {
-        for (int64_t i = 0; i < md_array_size(eval->prop_dist_mutex); ++i) {
+        for (size_t i = 0; i < md_array_size(eval->prop_dist_mutex); ++i) {
             md_mutex_destroy(&eval->prop_dist_mutex[i]);
         }
         md_mutex_destroy(&eval->frame_mutex);
@@ -5859,7 +5868,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
     }
 
     if (ir->errors) {
-        for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
+        for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
             MD_LOG_ERROR("%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
         }
     }
@@ -5949,8 +5958,8 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     }
 
     if (err_buf) {
-        int64_t len = 0;
-        for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
+        size_t len = 0;
+        for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
             int64_t space_left = MAX(0, (int64_t)err_cap - len);
             if (space_left) len += snprintf(err_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
         }
@@ -6071,8 +6080,8 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
     }
 
     if (err_buf) {
-        int64_t len = 0;
-        for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
+        size_t len = 0;
+        for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
             int space_left = MAX(0, (int)(err_cap - len));
             if (space_left) len += snprintf(err_buf + len, (size_t)space_left, "%.*s\n", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
         }
@@ -6122,7 +6131,7 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         if (data.ptr) {
             evaluate_node(&data, node, ctx);
             const md_bitfield_t* bf_arr = data.ptr;
-            for (int64_t i = 0; i < element_count(data); ++i) {
+            for (size_t i = 0; i < element_count(data); ++i) {
                 md_bitfield_or_inplace(&ctx->vis->atom_mask, &bf_arr[i]);
             }
             free_data(&data, ctx->temp_alloc);
@@ -6138,9 +6147,9 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         // This could be a reference to atomic indices, such as integers and iranges or similar. (given by the arg_type which is then POSITION)
         // In such case, we want to visualize these atoms using the position
         int64_t arg_idx = -1;
-        for (int64_t i = 0; i < md_array_size(node->parent->children); ++i) {
+        for (size_t i = 0; i < md_array_size(node->parent->children); ++i) {
             if (node->parent->children[i] == node) {
-                arg_idx = i;
+                arg_idx = (int64_t)i;
                 break;
             }
         }
@@ -6162,7 +6171,7 @@ static void visualize_node(const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(ctx->vis);
     if (node->type != AST_CONTEXT && node->num_contexts) {
         ASSERT(node->contexts);
-        for (int64_t i = 0; i < node->num_contexts; ++i) {
+        for (size_t i = 0; i < node->num_contexts; ++i) {
             ctx->mol_ctx = &node->contexts[i];
             do_vis_eval(node, ctx);
         }
@@ -6246,7 +6255,7 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
     ASSERT(ctx.vis_structure == &vis->atom_mask);
 
     // Append all structures into the 'global' atom mask
-    for (int64_t i = 0; i < md_array_size(vis->structures); ++i) {
+    for (size_t i = 0; i < md_array_size(vis->structures); ++i) {
         md_bitfield_or_inplace(&vis->atom_mask, &vis->structures[i]);
     }
 

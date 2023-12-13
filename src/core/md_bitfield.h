@@ -41,7 +41,7 @@ uint64_t md_bitfield_end_bit    (const md_bitfield_t* bf);
 
 void md_bitfield_set_range      (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 void md_bitfield_set_bit        (md_bitfield_t* bf, uint64_t bit_idx);
-void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, uint64_t num_indices);
+void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, size_t num_indices);
 
 void md_bitfield_clear          (md_bitfield_t* bf);
 void md_bitfield_clear_range    (md_bitfield_t* bf, uint64_t beg, uint64_t end);
@@ -66,8 +66,8 @@ void md_bitfield_not_inplace    (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 void md_bitfield_copy           (md_bitfield_t* dst, const md_bitfield_t* src);
 
 // Count number of bits set
-uint64_t md_bitfield_popcount    (const md_bitfield_t* bf);
-uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
+size_t md_bitfield_popcount    (const md_bitfield_t* bf);
+size_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 // Test if bits are set
 bool md_bitfield_test_bit   (const md_bitfield_t* bf, uint64_t idx);
@@ -119,18 +119,18 @@ bool md_bitfield_get_range(uint64_t* first_idx, uint64_t* last_idx, const md_bit
 // cap is the capacity (num elements) of the buffer.
 // returns the number of indices written to the buffer
 // Use popcount to determine required capacity of buffer.
-int64_t md_bitfield_extract_indices(int32_t* buf, int64_t cap, const md_bitfield_t* bf);
+size_t md_bitfield_extract_indices(int32_t* buf, size_t cap, const md_bitfield_t* bf);
 
 // Returns the maximum serialization size in bytes of a bitfield
-uint64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf);
+size_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf);
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
-uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
+size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
 
 // Deserializes a compressed buffer into a bitfield.
 // User must ensure that the bitfield is properly initialized with an allocator
-bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_bytes);
+bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_bytes);
 
 // Compute hash for the bitfield
 uint64_t md_bitfield_hash(const md_bitfield_t* bf);

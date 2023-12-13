@@ -126,6 +126,17 @@ typedef struct mat4_t {
 #endif
 } mat4_t;
 
+typedef struct mat4x3_t {
+	union {
+		float elem[3][4];
+		vec4_t col[3];
+	};
+    #ifdef __cplusplus
+	vec4_t& operator[](int64_t i)       { return col[i]; }
+    const vec4_t& operator[](int64_t i) const { return col[i]; }
+    #endif
+} mat4x3_t;
+
 #if MD_COMPILER_CLANG
 #	pragma clang diagnostic pop
 #elif MD_COMPILER_GCC
@@ -1089,14 +1100,23 @@ static inline quat_t quat_from_mat4(mat4_t M) {
 }
 
 #if MD_VEC_MATH_USE_SIMD
-MD_VEC_INLINE md_128 linear_combine_sse(md_128 a, mat4_t B) {
+MD_VEC_INLINE md_128 linear_combine_4(md_128 a, md_128 B[4]) {
     md_128 res;
-    res = md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x00), B.col[0].m128);
-    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x55), B.col[1].m128));
-    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xaa), B.col[2].m128));
-    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xff), B.col[3].m128));
+    res = md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x00), B[0]);
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x55), B[1]));
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xaa), B[2]));
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xff), B[3]));
     return res;
 }
+
+MD_VEC_INLINE md_128 linear_combine_3(md_128 a, md_128 B[3]) {
+    md_128 res;
+    res = md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x00), B[0]);
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x55), B[1]));
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xaa), B[2]));
+    return res;
+}
+
 #endif
 
 // MAT2
@@ -1433,10 +1453,10 @@ MD_VEC_INLINE mat4_t mat4_sub(mat4_t A, mat4_t B) {
 MD_VEC_INLINE mat4_t mat4_mul(mat4_t A, mat4_t B) {
     mat4_t C;
 #if MD_VEC_MATH_USE_SIMD
-    C.col[0].m128 = linear_combine_sse(B.col[0].m128, A);
-    C.col[1].m128 = linear_combine_sse(B.col[1].m128, A);
-    C.col[2].m128 = linear_combine_sse(B.col[2].m128, A);
-    C.col[3].m128 = linear_combine_sse(B.col[3].m128, A);
+    C.col[0].m128 = linear_combine_4(B.col[0].m128, &A.col[0].m128);
+    C.col[1].m128 = linear_combine_4(B.col[1].m128, &A.col[0].m128);
+    C.col[2].m128 = linear_combine_4(B.col[2].m128, &A.col[0].m128);
+    C.col[3].m128 = linear_combine_4(B.col[3].m128, &A.col[0].m128);
 #else
 #define MULT(col, row) \
     A.elem[0][row] * B.elem[col][0] + A.elem[1][row] * B.elem[col][1] + A.elem[2][row] * B.elem[col][2] + A.elem[3][row] * B.elem[col][3]
@@ -1467,7 +1487,7 @@ MD_VEC_INLINE mat4_t mat4_mul(mat4_t A, mat4_t B) {
 MD_VEC_INLINE vec4_t mat4_mul_vec4(mat4_t M, vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.m128 = linear_combine_sse(v.m128, M);
+    r.m128 = linear_combine_4(v.m128, &M.col[0].m128);
 #else
     r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z + M.elem[3][0] * v.w;
     r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z + M.elem[3][1] * v.w;

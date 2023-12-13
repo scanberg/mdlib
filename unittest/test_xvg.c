@@ -23,11 +23,11 @@ UTEST(xvg, rdf) {
     EXPECT_NEAR(0.000, xvg.fields[1][50], 1.0e-6f);
 
     ASSERT_EQ(1, xvg.header_info.num_legends);
-    EXPECT_TRUE(str_equal(xvg.header_info.legends[0], STR("OW")));
+    EXPECT_TRUE(str_eq(xvg.header_info.legends[0], STR("OW")));
 
-    EXPECT_TRUE(str_equal(xvg.header_info.title, STR("Radial distribution")));
-    EXPECT_TRUE(str_equal(xvg.header_info.xaxis_label, STR("r (nm)")));
-    EXPECT_TRUE(str_equal(xvg.header_info.yaxis_label, STR("g(r)")));
+    EXPECT_TRUE(str_eq(xvg.header_info.title, STR("Radial distribution")));
+    EXPECT_TRUE(str_eq(xvg.header_info.xaxis_label, STR("r (nm)")));
+    EXPECT_TRUE(str_eq(xvg.header_info.yaxis_label, STR("g(r)")));
 
     md_xvg_free(&xvg, md_heap_allocator);
 }
@@ -56,14 +56,14 @@ UTEST(xvg, energy) {
     EXPECT_NEAR(-2500.806641, xvg.fields[4][355], 1.0e-6f);
 
     ASSERT_EQ(4, xvg.header_info.num_legends);
-    EXPECT_TRUE(str_equal(xvg.header_info.legends[0], STR("Coul-SR:2S29-2S29")));
-    EXPECT_TRUE(str_equal(xvg.header_info.legends[1], STR("LJ-SR:2S29-2S29")));
-    EXPECT_TRUE(str_equal(xvg.header_info.legends[2], STR("Coul-SR:2S29-SOL")));
-    EXPECT_TRUE(str_equal(xvg.header_info.legends[3], STR("LJ-SR:2S29-SOL")));
+    EXPECT_TRUE(str_eq(xvg.header_info.legends[0], STR("Coul-SR:2S29-2S29")));
+    EXPECT_TRUE(str_eq(xvg.header_info.legends[1], STR("LJ-SR:2S29-2S29")));
+    EXPECT_TRUE(str_eq(xvg.header_info.legends[2], STR("Coul-SR:2S29-SOL")));
+    EXPECT_TRUE(str_eq(xvg.header_info.legends[3], STR("LJ-SR:2S29-SOL")));
 
-    EXPECT_TRUE(str_equal(xvg.header_info.title, STR("GROMACS Energies")));
-    EXPECT_TRUE(str_equal(xvg.header_info.xaxis_label, STR("Time (ps)")));
-    EXPECT_TRUE(str_equal(xvg.header_info.yaxis_label, STR("(kJ/mol)")));
+    EXPECT_TRUE(str_eq(xvg.header_info.title, STR("GROMACS Energies")));
+    EXPECT_TRUE(str_eq(xvg.header_info.xaxis_label, STR("Time (ps)")));
+    EXPECT_TRUE(str_eq(xvg.header_info.yaxis_label, STR("(kJ/mol)")));
 
     md_xvg_free(&xvg, md_heap_allocator);
 }

@@ -49,12 +49,12 @@ typedef struct xyz_trajectory_t {
 
 // We massage the beg and end indices here to correspond the xyz specification
 // This makes our life easier when specifying all the different ranges
-static inline int32_t extract_int(str_t line, int64_t beg, int64_t end) {
+static inline int32_t extract_int(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0;
     return (int32_t)parse_int(str_trim(str_substr(line, beg, end-beg)));
 }
 
-static inline float extract_float(str_t line, int64_t beg, int64_t end) {
+static inline float extract_float(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0.0f;
     return (float)parse_float(str_trim(str_substr(line, beg, end-beg)));
 }
@@ -115,7 +115,7 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
     }
 
     // Test for extended XYZ format
-    if (str_find_str(lines[1], STR("Properties=")) != -1) {
+    if (str_find_str(NULL, lines[1], STR("Properties=")) != -1) {
 		*flags |= XYZ_EXTENDED;
 	} else {    
         // Test if we have an ARC trajectory
@@ -236,13 +236,13 @@ static inline str_t extract_balanced_substr(str_t in_str, char beg_char, char en
 
 static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
     const str_t pattern = STR("Lattice=");
-    const int64_t pos = str_find_str(line, pattern);
-    if (pos == -1) {
+    size_t loc;
+    if (!str_find_str(&loc, line, pattern)) {
         // Lattice information not found, since Lattice is optional, this is not an error
         return true;
     }
 
-    line = str_substr(line, pos + pattern.len, -1);
+    line = str_substr(line, loc + pattern.len, SIZE_MAX);
     if (line.len == 0) {
 	    MD_LOG_ERROR("Missing lattice information");
 		return false;
@@ -278,7 +278,7 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
                 MD_LOG_ERROR("XYZ: Failed to extract bracketed string");
                 return false;
             }
-            line = str_substr(line, vec.len + 2, -1);
+            line = str_substr(line, vec.len + 2, SIZE_MAX);
             int64_t num_sub_toks = extract_tokens_delim(tok + i*3, ARRAY_SIZE(tok) - i*3, &vec, ',');
             if (num_sub_toks != 3) {
                 MD_LOG_ERROR("XYZ: Failed to extract Lattice vector");
@@ -406,7 +406,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
 
     if (flags & XYZ_TINKER) {
         // Comment encoded after the first token
-        comment = str_substr(line[0], (int64_t)(tokens[1].ptr - line[0].ptr), -1);
+        comment = str_substr(line[0], (int64_t)(tokens[1].ptr - line[0].ptr), SIZE_MAX);
     } else {
         // Second line is the comment
         comment = line[1];
@@ -487,7 +487,7 @@ bool xyz_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
 // Returns size in bytes of frame, frame_data_ptr is optional and is the destination to write the frame data to.
-int64_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
+size_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)inst;
     ASSERT(xyz);
     ASSERT(xyz->magic == MD_XYZ_TRAJ_MAGIC);
@@ -533,7 +533,7 @@ int64_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
     return total_size;
 }
 
-bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, int64_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
     ASSERT(frame_data_ptr);
     ASSERT(frame_data_size);
@@ -567,7 +567,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     while (md_buffered_reader_extract_line(&line, &reader) && i < xyz->header.num_atoms) {
         if (line.len < 6) continue;
 
-        const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
+        const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 
         if (num_tokens < 4) {
             MD_LOG_ERROR("Error when decoding coordinate");
@@ -703,7 +703,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
 
-    const int64_t num_atoms = end_coord_index - beg_coord_index;
+    const size_t num_atoms = end_coord_index - beg_coord_index;
 
     md_array_ensure(mol->atom.x, num_atoms, alloc);
     md_array_ensure(mol->atom.y, num_atoms, alloc);

@@ -35,10 +35,10 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     num_cache_frames = MIN(num_cache_frames, num_traj_frames);
 
     // We want to ensure that there are enough padding for each frame to avoid overlap if one wants to do full-width simd stores.
-    const int64_t num_atoms = ALIGN_TO(md_trajectory_num_atoms(traj), 8); 
-    const int64_t bytes_per_frame = sizeof(md_semaphore_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
-    const int64_t num_slots = ALIGN_TO(num_cache_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
-    const int64_t total_bytes = num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT;
+    const size_t num_atoms = ALIGN_TO(md_trajectory_num_atoms(traj), 8); 
+    const size_t bytes_per_frame = sizeof(md_semaphore_t) + sizeof(md_slot_header_t) + sizeof(md_frame_data_t) + num_atoms * sizeof(float) * 3;
+    const size_t num_slots = ALIGN_TO(num_cache_frames, CACHE_ASSOCIATIVITY); // This needs to be divisible by N for N-way associativity.
+    const size_t total_bytes = num_slots * bytes_per_frame + CACHE_MEM_ALIGNMENT;
 
     cache->alloc = alloc;
     cache->traj = traj;
@@ -58,7 +58,7 @@ bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allo
     cache->magic = CACHE_MAGIC;
 
     float* coord_data = (float*)(cache->slot.data + num_slots);
-    for (int64_t i = 0; i < num_slots; ++i) {
+    for (size_t i = 0; i < num_slots; ++i) {
         md_semaphore_init(&cache->slot.lock[i], 1);
 
         cache->slot.header[i].frame_index = 0xFFFFFFFF;
@@ -176,7 +176,7 @@ bool md_frame_cache_load_frame_data(md_frame_cache_t* cache, int64_t frame_idx, 
     ASSERT(cache->magic == CACHE_MAGIC);
     ASSERT(cache->traj);
 
-    if (frame_idx < 0 || md_trajectory_num_frames(cache->traj) <= frame_idx) return false;
+    if (frame_idx < 0 || (int64_t)md_trajectory_num_frames(cache->traj) <= frame_idx) return false;
 
     md_frame_data_t* data = NULL;
     struct md_frame_cache_lock_t* lock = NULL;

@@ -172,14 +172,14 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	// Read meta
 	while (str_extract_line(&line, &header)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok && str_equal(tok[0], STR("@"))) {
-			if		  (str_equal(tok[1], STR("title"))) {
+		if (num_tok && str_eq(tok[0], STR("@"))) {
+			if		  (str_eq(tok[1], STR("title"))) {
 				header_info->title = remove_quotes(concat_tokens(tok[2], tok[num_tok - 1]));
-			} else if (str_equal(tok[1], STR("xaxis"))) {
+			} else if (str_eq(tok[1], STR("xaxis"))) {
 				header_info->xaxis_label = remove_quotes(concat_tokens(tok[3], tok[num_tok - 1]));
-			} else if (str_equal(tok[1], STR("yaxis"))) {
+			} else if (str_eq(tok[1], STR("yaxis"))) {
 				header_info->yaxis_label = remove_quotes(concat_tokens(tok[3], tok[num_tok - 1]));
-			} else if (str_equal(tok[2], STR("legend"))) {
+			} else if (str_eq(tok[2], STR("legend"))) {
 				md_array_push(header_info->legends, remove_quotes(concat_tokens(tok[3], tok[num_tok - 1])), alloc);
 			}
 		}

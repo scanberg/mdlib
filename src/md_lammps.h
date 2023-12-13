@@ -61,17 +61,17 @@ typedef struct md_lammps_cell_t {
 typedef struct md_lammps_data_t {
 	char title[256];
 
-	int32_t num_atoms;
-	int32_t num_bonds;
-	int32_t num_angles;
-	int32_t num_dihedrals;
-	int32_t num_impropers;
+	size_t num_atoms;
+	size_t num_bonds;
+	size_t num_angles;
+	size_t num_dihedrals;
+	size_t num_impropers;
 
-	int32_t num_atom_types;
-	int32_t num_bond_types;
-	int32_t num_angle_types;
-	int32_t num_dihedral_types;
-	int32_t num_improper_types;
+	size_t num_atom_types;
+	size_t num_bond_types;
+	size_t num_angle_types;
+	size_t num_dihedral_types;
+	size_t num_improper_types;
 
 	md_lammps_cell_t cell;
 

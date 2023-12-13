@@ -6,7 +6,7 @@
 #include <md_types.h>
 
 typedef struct md_atom_data_t {
-    int64_t count;
+    size_t count;
     // Coordinates
     float* x;
     float* y;
@@ -38,7 +38,7 @@ typedef struct md_atom_data_t {
 
 // These are a bit superflous, but just replicate whatever is present in the atom data
 typedef struct md_residue_data_t {
-    int64_t count;
+    size_t count;
     md_label_t* name;
     md_residue_id_t* id;
     md_range_t* atom_range;
@@ -46,7 +46,7 @@ typedef struct md_residue_data_t {
 } md_residue_data_t;
 
 typedef struct md_chain_data_t {
-    int64_t count;
+    size_t count;
     md_label_t* id;
     md_range_t* residue_range;
     md_range_t* atom_range;
@@ -54,11 +54,11 @@ typedef struct md_chain_data_t {
 
 typedef struct md_backbone_data_t {
     // This holds the consecutive ranges which form the backbones
-    int64_t range_count;
+    size_t range_count;
     md_range_t* range;
 
     // These fields share the same length 'count'
-    int64_t count;
+    size_t count;
     md_backbone_atoms_t* atoms;
     md_backbone_angles_t* angle;
     md_secondary_structure_t* secondary_structure;
@@ -69,7 +69,7 @@ typedef struct md_backbone_data_t {
 // This represents symmetries which are instanced, commonly found
 // in PDB data. It is up to the renderer to properly render this instanced data.
 typedef struct md_instance_data_t {
-    int64_t count;
+    size_t count;
     md_range_t* atom_range;
     md_label_t* label;
     mat4_t* transform;
@@ -77,7 +77,7 @@ typedef struct md_instance_data_t {
 
 // Bond centric representation of bonds
 typedef struct md_bond_data_t {
-    int64_t count;
+    size_t count;
     md_bond_pair_t* pairs;
     md_order_t*     order;
     md_flags_t*     flags;
@@ -92,7 +92,7 @@ typedef struct md_hbond_data_t {
 
 // Atom centric representation of bonds
 typedef struct md_conn_data_t {
-    int64_t count;
+    size_t count;
     md_atom_idx_t*  index;
     uint8_t*        order;
     md_flags_t*     flags;

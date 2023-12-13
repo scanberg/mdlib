@@ -180,7 +180,7 @@ static inline md_vec3_soa_t md_vec3_soa_from_vec3(vec3_t* ptr) {
     return soa;
 }
 
-static inline vec3_t md_vec3_soa_get(md_vec3_soa_t soa, int64_t idx) {
+static inline vec3_t md_vec3_soa_get(md_vec3_soa_t soa, size_t idx) {
     ASSERT(soa.stride != 0);
     vec3_t v = {*(float*)((char*)soa.x + idx * soa.stride), *(float*)((char*)soa.y + idx * soa.stride), *(float*)((char*)soa.z + idx * soa.stride)};
     return v;
@@ -196,7 +196,7 @@ static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* al
     MEMSET(data, 0, sizeof(md_index_data_t));
 }
 
-static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, int64_t index_count, md_allocator_i* alloc) {
+static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
     ASSERT(index_count >= 0);
@@ -221,22 +221,22 @@ static inline void md_index_data_data_clear(md_index_data_t* data) {
     md_array_shrink(data->indices, 0);
 }
 
-static inline int64_t md_index_data_count(md_index_data_t data) {
-    return MAX(md_array_size(data.offsets) - 1, 0);
+static inline size_t md_index_data_count(md_index_data_t data) {
+    return data.offsets ? md_array_size(data.offsets) - 1 : 0;
 }
 
 // Access to individual substructures
-static inline int32_t* md_index_range_beg(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+static inline int32_t* md_index_range_beg(md_index_data_t data, size_t idx) {
+    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
     return data.indices + data.offsets[idx];
 }
 
-static inline int32_t* md_index_range_end(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+static inline int32_t* md_index_range_end(md_index_data_t data, size_t idx) {
+    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
     return data.indices + data.offsets[idx+1];
 }
 
-static inline int64_t md_index_range_size(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+static inline size_t md_index_range_size(md_index_data_t data, size_t idx) {
+    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
     return data.offsets[idx+1] - data.offsets[idx];
 }

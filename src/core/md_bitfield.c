@@ -623,14 +623,14 @@ void md_bitfield_copy(md_bitfield_t* dst, const md_bitfield_t* src) {
 }
 
 // Counts the number of bits set
-uint64_t md_bitfield_popcount(const md_bitfield_t* bf) {
+size_t md_bitfield_popcount(const md_bitfield_t* bf) {
     ASSERT(md_bitfield_validate(bf));
 
     if (bf->bits == NULL || bf->beg_bit == bf->end_bit) return 0;
     return bit_count(u64_base(bf), bf->beg_bit, bf->end_bit);
 }
 
-uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
+size_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     ASSERT(beg <= end);
     ASSERT(md_bitfield_validate(bf));
 
@@ -780,14 +780,14 @@ bool md_bitfield_extract_u64(uint64_t* dst_ptr, uint64_t num_bits, const md_bitf
     return true;
 }
 
-int64_t md_bitfield_extract_indices(int32_t* buf, int64_t cap, const md_bitfield_t* bf) {
+size_t md_bitfield_extract_indices(int32_t* buf, size_t cap, const md_bitfield_t* bf) {
     ASSERT(bf);
     ASSERT(md_bitfield_validate(bf));
     ASSERT(cap >= 0);
 
     if (!buf || cap == 0) return 0;
 
-    int64_t len = 0;
+    size_t len = 0;
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
 
     while (len < cap && md_bitfield_iter_next(&it)) {
@@ -923,7 +923,7 @@ uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
     return lz_bytes;
 }
 
-bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_bytes) {
+bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_bytes) {
     ASSERT(bf);
     ASSERT(md_bitfield_validate(bf));
     ASSERT(src);

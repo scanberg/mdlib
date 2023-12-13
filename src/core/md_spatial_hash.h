@@ -16,7 +16,7 @@
  *  - Internally works for periodic data as well as non-periodic
  * 
  *  Things to improve:
- *  Simlify implementation. The current version of using fixed cell size makes it a bit more complicated in the periodic case than it needs to be.
+ *  Simplify implementation. The current version of using fixed cell size makes it a bit more complicated in the periodic case than it needs to be.
  *  Query should be handled with an external state object which can be used to iterate. The current callback is just cumersome and fugly.
  *  There should be an init function which should accept x,y,z + indices and xyz + indices
  * 
@@ -95,8 +95,8 @@ static inline vec3_t md_spatial_acc_iter_pos(const md_spatial_acc_iter_t* iter) 
 
 // Initialize a spatial hash structure with a set of coordinates given by array of vec3_t (xyz) or separate arrays (x,y,z).
 // pbc_ext is optional and supplies the periodic extent for each axis. To disable periodicity, supply (0,0,0).
-md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* xyz, const int32_t* indices, int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
-md_spatial_hash_t* md_spatial_hash_create_soa (const float* x, const float* y, const float* z, const int32_t* indices, int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_soa (const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
 
 void md_spatial_hash_free(md_spatial_hash_t* spatial_hash);
 

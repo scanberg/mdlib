@@ -138,7 +138,7 @@ bool md_csv_write_to_file(const float* field_values[], const str_t field_names[]
             md_strb_t sb = md_strb_create(md_heap_allocator);
             write(&sb, field_values, field_names, num_fields, num_values);
             str_t str = md_strb_to_str(&sb);
-            const int64_t written_bytes = md_file_write(file, str.ptr, str.len);
+            const size_t written_bytes = md_file_write(file, str.ptr, str.len);
             md_strb_free(&sb);
             md_file_close(file);
             
@@ -159,12 +159,12 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
     if (csv->field_names) {
-        for (int64_t i = 0; i < md_array_size(csv->field_names); ++i) {
+        for (size_t i = 0; i < md_array_size(csv->field_names); ++i) {
             str_free(csv->field_names[i], alloc);
         }
     }
     
-    for (int64_t i = 0; i < md_array_size(csv->field_values); ++i) {
+    for (size_t i = 0; i < md_array_size(csv->field_values); ++i) {
         md_array_free(csv->field_values[i], alloc);
     }
     MEMSET(csv, 0, sizeof(md_csv_t));

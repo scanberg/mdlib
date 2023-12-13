@@ -13,7 +13,7 @@
 
 #define MAX_TEMP_ALLOCATION_SIZE (MD_TEMP_ALLOC_SIZE / 2)
 
-uint64_t md_temp_allocator_max_allocation_size() {
+size_t md_temp_allocator_max_allocation_size(void) {
     return MAX_TEMP_ALLOCATION_SIZE;
 }
 
@@ -25,7 +25,7 @@ THREAD_LOCAL md_ring_allocator_t _ring_alloc = {
 };
 
 
-static void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+static void* realloc_internal(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)inst;
     (void)old_size;
     (void)file;
@@ -37,9 +37,9 @@ static void* realloc_internal(struct md_allocator_o *inst, void *ptr, uint64_t o
     return realloc(ptr, (size_t)new_size);
 }
 
-extern void* ring_realloc(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line);
+extern void* ring_realloc(struct md_allocator_o* inst, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line);
 
-static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)inst;
     return ring_realloc((md_allocator_o*)md_thread_ring_allocator(), ptr, old_size, new_size, file, line);
 }
@@ -74,10 +74,10 @@ static struct md_allocator_i _default_temp_allocator = {
 struct md_allocator_i* md_heap_allocator = &_default_allocator;
 struct md_allocator_i* md_temp_allocator = &_default_temp_allocator;
 
-void* md_temp_push(uint64_t bytes) {
+void* md_temp_push(size_t bytes) {
     return md_ring_allocator_push(md_thread_ring_allocator(), bytes);
 }
 
-void md_temp_pop (uint64_t bytes) {
+void md_temp_pop (size_t bytes) {
     md_ring_allocator_pop(md_thread_ring_allocator(), bytes);
 }

@@ -143,26 +143,26 @@ typedef struct md_pdb_assembly_t {
     int32_t id;
     char    apply_to_chains[32];
     // These offset and count refer into the separate transform array
-    int32_t transform_offset;
-    int32_t transform_count;
+    uint32_t transform_offset;
+    uint32_t transform_count;
 } md_pdb_assembly_t;
 
 typedef struct md_pdb_data_t {
-    int64_t num_cryst1;
+    size_t num_cryst1;
     md_pdb_cryst1_t* cryst1;
-    int64_t num_models;
+    size_t num_models;
     md_pdb_model_t* models;
-    int64_t num_atom_coordinates;
+    size_t num_atom_coordinates;
     md_pdb_coordinate_t* atom_coordinates;
-    int64_t num_helices;
+    size_t num_helices;
     md_pdb_helix_t* helices;
-    int64_t num_sheets;
+    size_t num_sheets;
     md_pdb_sheet_t* sheets;
-    int64_t num_connections;
+    size_t num_connections;
     md_pdb_connect_t* connections;
-    int64_t num_assemblies;
+    size_t num_assemblies;
     md_pdb_assembly_t* assemblies;
-    int64_t num_transforms;
+    size_t num_transforms;
     struct mat4_t* transforms;
 } md_pdb_data_t;
 
