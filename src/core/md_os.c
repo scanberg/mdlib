@@ -166,7 +166,7 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
         return (size_t)res;
     }
 #elif MD_PLATFORM_LINUX
-    ssize_t res = readlink("/proc/self/exe", buf, buf_cap)
+    ssize_t res = readlink("/proc/self/exe", buf, buf_cap);
     if (res != -1) {
     	return (size_t)res;
     }
