@@ -75,7 +75,7 @@ enum {
     GL_BUFFER_ATOM_RADIUS,                     // float
     GL_BUFFER_ATOM_VELOCITY,                   // vec3
     GL_BUFFER_ATOM_FLAGS,                      // u8
-    GL_BUFFER_RESIDUE_ATOM_RANGE,              // u32[2]   (beg, end)
+    //GL_BUFFER_RESIDUE_ATOM_RANGE,              // u32[2]   (beg, end)
     GL_BUFFER_RESIDUE_AABB,                    // vec3[2]  (aabb_min, aabb_max)
     GL_BUFFER_RESIDUE_VISIBLE,                 // int
     GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
@@ -962,14 +962,14 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         //if (mol->atom.flags)  md_gl_molecule_set_atom_flags(ext_mol,  0, gl_mol->atom_count, mol->atom.flags, 0);
 
         gl_mol->residue_count = (uint32_t)mol->residue.count;
-        gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
         gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
         gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
 
-        if (mol->residue.atom_range)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
+        //if (mol->residue.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
         //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
-        if (mol->backbone.range_count > 0 && mol->backbone.range && mol->backbone.atoms && mol->residue.atom_range && mol->backbone.secondary_structure) {
+        if (mol->backbone.range_count > 0 && mol->backbone.range && mol->backbone.atoms && mol->backbone.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
             for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {

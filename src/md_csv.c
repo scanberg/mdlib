@@ -29,7 +29,7 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
     str_t tok;
     str_t first_line = line;
     bool has_field_names = true;
-    int64_t num_fields = 0;
+    size_t num_fields = 0;
     while (extract_token_delim(&tok, &first_line, ',')) {
         tok = str_trim(tok);
         if (is_float(tok)) {
@@ -46,19 +46,19 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
     if (has_field_names) {
         MD_LOG_INFO("CSV: First row contains non-numeric values, assuming field names");
         // Read first line as field names
-        for (int64_t i = 0; i < num_fields; ++i) {
+        for (size_t i = 0; i < num_fields; ++i) {
             extract_token_delim(&tok, &line, ',');
             str_t name = str_copy(str_trim(tok), alloc);
             md_array_push(csv->field_names, name, alloc);
         }
     }
 
-    for (int64_t i = 0; i < num_fields; ++i) {
+    for (size_t i = 0; i < num_fields; ++i) {
         md_array_push(csv->field_values, NULL, alloc);
     }
 
     while (md_buffered_reader_extract_line(&line, reader)) {
-        int64_t i;
+        size_t i;
         for (i = 0; i < num_fields; ++i) {
             if (!extract_token_delim(&tok, &line, ',')) {
                 break;
@@ -103,16 +103,16 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
     return false;
 }
 
-static void write(md_strb_t* sb, const float* field_values[], const str_t field_names[], int64_t num_fields, int64_t num_values) {
+static void write(md_strb_t* sb, const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
     if (field_names) {
-        for (int64_t i = 0; i < num_fields; ++i) {
+        for (size_t i = 0; i < num_fields; ++i) {
             md_strb_fmt(sb, "%.*s", (int)field_names[i].len, field_names[i].ptr);
             const char c = i < num_fields - 1 ? ',' : '\n';
             md_strb_push_char(sb, c);
         }
     }
-    for (int row = 0; row < num_values; ++row) {
-        for (int64_t col = 0; col < num_fields; ++col) {
+    for (size_t row = 0; row < num_values; ++row) {
+        for (size_t col = 0; col < num_fields; ++col) {
             md_strb_fmt(sb, "%f", field_values[col][row]);
             const char c = col < num_fields - 1 ? ',' : '\n';
             md_strb_push_char(sb, c);
@@ -120,7 +120,7 @@ static void write(md_strb_t* sb, const float* field_values[], const str_t field_
     }
 }
 
-str_t md_csv_write_to_str (const float* field_values[], const str_t field_names[], int64_t num_fields, int64_t num_values, struct md_allocator_i* alloc) {
+str_t md_csv_write_to_str (const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* alloc) {
     str_t result = {0};
     if (field_values && num_fields > 0 && num_values > 0) {
         md_strb_t sb = md_strb_create(md_heap_allocator);
@@ -131,7 +131,7 @@ str_t md_csv_write_to_str (const float* field_values[], const str_t field_names[
     return result;
 }
 
-bool md_csv_write_to_file(const float* field_values[], const str_t field_names[], int64_t num_fields, int64_t num_values, str_t path) {
+bool md_csv_write_to_file(const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path) {
     if (field_values && num_fields > 0 && num_values > 0) {
         md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
         if (file) {

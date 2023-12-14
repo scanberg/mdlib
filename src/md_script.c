@@ -3594,7 +3594,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
     }
     table_t* table = NULL;
     md_unit_t traj_time_unit = md_trajectory_time_unit(traj);
-    const int64_t num_frames = md_trajectory_num_frames(traj);
+    const size_t num_frames = md_trajectory_num_frames(traj);
     bool traj_has_time = !md_unit_empty(traj_time_unit);
    
     if (str_eq_cstr_ignore_case(ext, "edr")) {
@@ -3617,7 +3617,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 table->name = str_copy(path_to_file, ir->arena);
 
                 table_push_field_d(table, STR("Time"), md_unit_pikosecond(), edr.frame_time, edr.num_frames, ir->arena);
-                for (int64_t i = 0; i < edr.num_energies; ++i) {
+                for (size_t i = 0; i < edr.num_energies; ++i) {
                     table_push_field_f(table, edr.energy[i].name, edr.energy[i].unit, edr.energy[i].values, edr.num_frames, ir->arena);
                 }
             }
@@ -3643,7 +3643,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 table = md_array_push(ir->tables, (table_t){.num_values = xvg.num_values}, ir->arena);
                 table->name = str_copy(path_to_file, ir->arena);
                 
-                int64_t i = 0;
+                size_t i = 0;
                 if (xvg_has_time) {
                     md_unit_t time_unit = extract_unit_from_label(xvg.header_info.xaxis_label);
                     table_push_field_f(table, STR("Time"), time_unit, xvg.fields[0], xvg.num_values, ir->arena);
@@ -3653,7 +3653,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 md_unit_t unit = extract_unit_from_label(xvg.header_info.yaxis_label);
                 for (; i < xvg.num_fields; ++i) {
                     str_t name = STR("");
-                    if (i-1 < (int64_t)md_array_size(xvg.header_info.legends)) {
+                    if (0 < i && i-1 < md_array_size(xvg.header_info.legends)) {
                         name = xvg.header_info.legends[i-1];
                     }
                     table_push_field_f(table, name, unit, xvg.fields[i], xvg.num_values, ir->arena);
@@ -3682,7 +3682,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 table = md_array_push(ir->tables, (table_t){.num_values = csv.num_values}, ir->arena);
                 table->name = str_copy(path_to_file, ir->arena);
 
-                int64_t i = 0;
+                size_t i = 0;
                 if (csv_has_time) {
                     md_unit_t time_unit = extract_unit_from_label(csv.field_names[0]);
                     table_push_field_f(table, STR("Time"), time_unit, csv.field_values[0], csv.num_values, ir->arena);
@@ -4408,24 +4408,25 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     
     if (result && rhs->data.type.base_type == TYPE_BITFIELD) {
         if (!(rhs->flags & FLAG_DYNAMIC)) {
-            const int64_t num_contexts = type_info_array_len(rhs->data.type);
-            if (num_contexts > 0) {
+            const int ctx_len = type_info_array_len(rhs->data.type);
+            if (ctx_len > 0) {
+                const size_t num_contexts = (size_t)ctx_len;
                 // Store this persistently and set this as a context for all child nodes
                 md_bitfield_t* contexts = 0;
 
                 if (rhs->flags & FLAG_CONSTANT) {
                     ASSERT(rhs->data.ptr);
-                    ASSERT(rhs->data.size == (size_t)(num_contexts * sizeof(md_bitfield_t)));
+                    ASSERT(rhs->data.size == num_contexts * sizeof(md_bitfield_t));
                     contexts = (md_bitfield_t*)rhs->data.ptr;
                 } else {
                     md_array_resize(contexts, num_contexts, ctx->ir->arena);
-                    for (int64_t i = 0; i < num_contexts; ++i) {
+                    for (size_t i = 0; i < num_contexts; ++i) {
                         md_bitfield_init(&contexts[i], ctx->ir->arena);
                     }
                     result = evaluate_node(&rhs->data, rhs, ctx);
                     if (result) {
                         rhs->data.ptr = contexts;
-                        rhs->data.size = num_contexts * (int64_t)sizeof(md_bitfield_t);
+                        rhs->data.size = num_contexts * sizeof(md_bitfield_t);
                         ASSERT(md_array_size(contexts) == num_contexts);
                         result = true;
                     }
@@ -4441,8 +4442,8 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     const bool contexts_equivalent = are_bitfields_equivalent(contexts, num_contexts, ctx->mol); 
 
                     node->lhs_context_types = 0;
-                    int64_t arr_len = 0;
-                    for (int64_t i = 0; i < num_contexts; ++i) {
+                    size_t arr_len = 0;
+                    for (size_t i = 0; i < num_contexts; ++i) {
                         eval_context_t local_ctx = *ctx;
                         local_ctx.mol_ctx = &contexts[i];
                         local_ctx.eval_flags |= EVAL_FLAG_NO_STATIC_EVAL;
@@ -4468,13 +4469,17 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                         }
                         */
 
-                        int64_t len = type_info_array_len(local_type);
+                        int len = type_info_array_len(local_type);
                         // Some arrays will be zero and that is accepted
                         // We still have to keep it even though it does not contribute
                         // To keep arrays in sync.
+                        if (len < 0) {
+                            LOG_ERROR(ctx->ir, lhs->token, "The type of the left hand side of 'in' must have a static length");
+                            return false;
+                        }
 
                         md_array_push(node->lhs_context_types, local_type, ctx->ir->arena);
-                        arr_len += len;
+                        arr_len += (size_t)len;
                     }
 
                     node->flags |= lhs->flags & FLAG_AST_PROPAGATION_MASK;

@@ -931,8 +931,8 @@ static md_array(int32_t) get_residue_indices_in_context(const md_molecule_t* mol
     if (mol->residue.count) {
         if (bitfield) {
             for (size_t i = 0; i < mol->residue.count; ++i) {
-                size_t popcount = md_bitfield_popcount_range(bitfield, mol->residue.atom_range[i].beg, mol->residue.atom_range[i].end);
-                if (popcount) {
+                md_range_t res = md_residue_atom_range(mol->residue, i);
+                if (md_bitfield_popcount_range(bitfield, res.beg, res.end)) {
                     md_array_push(arr, (int32_t)i, alloc);
                 }
             }
@@ -949,16 +949,14 @@ static md_array(int32_t) get_residue_indices_in_context(const md_molecule_t* mol
 
 static md_array(int32_t) get_chain_indices_in_context(const md_molecule_t* mol, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
     ASSERT(mol);
-    ASSERT(mol->chain.atom_range);
     ASSERT(alloc);
 
     md_array(int32_t) arr = 0;
-
     if (mol->chain.count) {
         if (bitfield) {
             for (size_t i = 0; i < mol->chain.count; ++i) {
-                size_t popcount = md_bitfield_popcount_range(bitfield, mol->chain.atom_range[i].beg, mol->chain.atom_range[i].end);
-                if (popcount) {
+                md_range_t range = md_chain_atom_range(mol->chain, i);
+                if (md_bitfield_popcount_range(bitfield, range.beg, range.end)) {
                     md_array_push(arr, (int32_t)i, alloc);
                 }
             }
@@ -990,8 +988,8 @@ static inline irange_t get_residue_range_in_context(const md_molecule_t* mol, co
         range.beg = INT_MAX;
         range.end = 0;
         for (size_t i = 0; i < mol->residue.count; ++i) {
-            size_t popcount = md_bitfield_popcount_range(mol_ctx, mol->residue.atom_range[i].beg, mol->residue.atom_range[i].end);
-			if (popcount) {
+            md_range_t res = md_residue_atom_range(mol->residue, i);
+			if (md_bitfield_popcount_range(mol_ctx, res.beg, res.end)) {
 				range.beg = MIN(range.beg, (int32_t)i);
                 range.end = MAX(range.end, (int32_t)i + 1);
 				break;
@@ -1008,8 +1006,8 @@ static inline irange_t get_chain_range_in_context(const md_molecule_t* mol, cons
         range.beg = INT_MAX;
         range.end = 0;
         for (size_t i = 0; i < mol->chain.count; ++i) {
-            size_t popcount = md_bitfield_popcount_range(mol_ctx, mol->chain.atom_range[i].beg, mol->chain.atom_range[i].end);
-            if (popcount) {
+            md_range_t atom_range = md_chain_atom_range(mol->chain, i);
+            if (md_bitfield_popcount_range(mol_ctx, atom_range.beg, atom_range.end)) {
                 range.beg = MIN(range.beg, (int32_t)i);
                 range.end = MAX(range.end, (int32_t)i + 1);
                 break;
@@ -2471,7 +2469,7 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     (void)arg;
 
-    if (!ctx->mol->residue.atom_range || !ctx->mol->residue.flags) {
+    if (!ctx->mol->residue.atom_offset || !ctx->mol->residue.flags) {
         return 0;
     }
 
@@ -2480,19 +2478,19 @@ static int _water(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst) {
         ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
-        const int64_t capacity = type_info_array_len(dst->type);
-        (void)capacity;
+        const int64_t cap = type_info_array_len(dst->type);
+        if (cap == 0) return 0;
 
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
         int64_t dst_idx = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
             const md_flags_t flags = ctx->mol->residue.flags[res_idx];
-            const md_range_t range = ctx->mol->residue.atom_range[res_idx];
+            const md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
             if (flags & MD_FLAG_WATER) {
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
                 // Do not progress this if we are evaluating in a filter context (we want a single bitfield then)
-                dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
+                dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
             }
         }
     } else {
@@ -2525,21 +2523,17 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
-        const int cap = type_info_array_len(dst->type);
-        if (cap <= 0) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The destination bitfield array has a capacity of zero");
-            return -1;
-        }
-        size_t capacity = cap;
-        size_t dst_idx = 0;
-
+        const int64_t cap = type_info_array_len(dst->type);
+        if (cap == 0) return 0;
+        
+        int64_t dst_idx = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
             if (ctx->mol->residue.flags[res_idx] & MD_FLAG_AMINO_ACID) {
-                md_range_t range = ctx->mol->residue.atom_range[res_idx];
-                ASSERT(dst_idx < capacity);
+                const md_range_t range = md_residue_atom_range(ctx->mol->residue, res_idx);
+                ASSERT(dst_idx < cap);
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
-                dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
+                dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
             }
         }
     }
@@ -2578,21 +2572,17 @@ static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(dst && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
-        const int cap = type_info_array_len(dst->type);
-        if (cap <= 0) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The destination bitfield array has a capacity of zero");
-            return -1;
-        }
-        size_t capacity = cap;
-        size_t dst_idx = 0;
+        const int64_t cap = type_info_array_len(dst->type);
+        if (cap == 0) return 0;
 
+        int64_t dst_idx = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
             int32_t res_idx = res_indices[i];
             if (ctx->mol->residue.flags[res_idx] & MD_FLAG_NUCLEOTIDE) {
-                md_range_t range = ctx->mol->residue.atom_range[res_idx];
-                ASSERT(dst_idx < capacity);
+                const md_range_t range = md_residue_atom_range(ctx->mol->residue, res_idx);
+                ASSERT(dst_idx < cap);
                 md_bitfield_set_range(&bf[dst_idx], range.beg, range.end);
-                dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
+                dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
             }
         }
     }
@@ -2652,7 +2642,7 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 
 static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(ctx && ctx->mol && ctx->mol->residue.atom_range);
+    ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
     int result = 0;
@@ -2668,15 +2658,10 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
-            const int cap = type_info_array_len(dst->type);
-            if (cap <= 0) {
-                LOG_ERROR(ctx->ir, ctx->op_token, "The destination bitfield array has a capacity of zero");
-                return -1;
-            }
+            const int64_t cap = type_info_array_len(dst->type);
+            if (cap == 0) return 0;
 
-            size_t capacity = cap;
-            size_t dst_idx = 0;
-
+            int64_t dst_idx = 0;
             for (size_t i = 0; i < num_ranges; ++i) {
                 irange_t range = remap_range_to_context(ranges[i], ctx_range);
                 range = clamp_range(range, ctx_range);
@@ -2684,10 +2669,10 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     //const uint64_t offset = ctx->mol->residue.atom_range[j].beg;
                     //const uint64_t length = ctx->mol->residue.atom_range[j].end - ctx->mol->residue.atom_range[j].beg;
                     //bit_set(result.bits, offset, length);
-                    const md_range_t atom_range = ctx->mol->residue.atom_range[j];
-                    ASSERT(dst_idx < capacity);
+                    const md_range_t atom_range = md_residue_atom_range(ctx->mol->residue, j);
+                    ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
-                    dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
+                    dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
                     md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
                     if (ctx->mol_ctx) {
                         md_bitfield_and_inplace(bf, ctx->mol_ctx);
@@ -2731,23 +2716,23 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     int result = STATIC_VALIDATION_ERROR;
-    if (ctx->mol && ctx->mol->residue.atom_range) {
+    if (ctx->mol && ctx->mol->residue.atom_offset) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             const int cap = type_info_array_len(dst->type);
-            if (cap <= 0) {
-                LOG_ERROR(ctx->ir, ctx->op_token, "The destination bitfield array has a capacity of zero");
-                return -1;
-            }
+            if (cap == 0) return 0;
+            ASSERT(cap > 0);
+
             const size_t capacity = cap;
             const size_t inc = capacity > 1 ? 1 : 0;
 
             size_t dst_idx = 0;
             for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
+                const md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
                 ASSERT(dst_idx <= capacity);
-                uint64_t popcount = md_bitfield_popcount_range(src_bf, ctx->mol->residue.atom_range[i].beg, ctx->mol->residue.atom_range[i].end);
+                size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
                 if (popcount) {
-                    md_bitfield_set_range(&dst_bf[dst_idx], ctx->mol->residue.atom_range[i].beg, ctx->mol->residue.atom_range[i].end);
+                    md_bitfield_set_range(&dst_bf[dst_idx], range.beg, range.end);
                     dst_idx += inc;
                 }
             }
@@ -2763,7 +2748,8 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
 
             for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
-				uint64_t popcount = md_bitfield_popcount_range(src_bf, ctx->mol->residue.atom_range[i].beg, ctx->mol->residue.atom_range[i].end);
+                const md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
+				size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
 				if (popcount) {
 					count += 1;
 				}
@@ -2799,18 +2785,19 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     int result = 0;
-    if (ctx->mol && ctx->mol->chain.atom_range) {
+    if (ctx->mol && ctx->mol->chain.atom_offset) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
-            const int64_t capacity = type_info_array_len(dst->type);
-            const int64_t inc = capacity > 1 ? 1 : 0;
+            const int64_t cap = type_info_array_len(dst->type);
+            if (cap == 0) return 0;
+            const int64_t inc = cap > 1 ? 1 : 0;
 
             int64_t dst_idx = 0;
             for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
-                ASSERT(dst_idx <= capacity);
-                size_t popcount = md_bitfield_popcount_range(src_bf, ctx->mol->chain.atom_range[i].beg, ctx->mol->chain.atom_range[i].end);
-                if (popcount) {
-                    md_bitfield_set_range(&dst_bf[dst_idx], ctx->mol->chain.atom_range[i].beg, ctx->mol->chain.atom_range[i].end);
+                ASSERT(dst_idx <= cap);
+                md_range_t range = md_chain_atom_range(ctx->mol->chain, i);
+                if (md_bitfield_popcount_range(src_bf, range.beg, range.end)) {
+                    md_bitfield_set_range(&dst_bf[dst_idx], range.beg, range.end);
                     dst_idx += inc;
                 }
             }
@@ -2826,7 +2813,8 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
 
             for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
-                size_t popcount = md_bitfield_popcount_range(src_bf, ctx->mol->chain.atom_range[i].beg, ctx->mol->chain.atom_range[i].end);
+                md_range_t range = md_chain_atom_range(ctx->mol->chain, i);
+                size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
                 if (popcount) {
                     count += 1;
                 }
@@ -2868,20 +2856,18 @@ static int _resname(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
-            const int64_t capacity = type_info_array_len(dst->type);
+            const int64_t cap = type_info_array_len(dst->type);
+            if (cap == 0) return 0;
             int64_t dst_idx = 0;
 
             for (int64_t i = 0; i < res_count; ++i) {
                 const int64_t res_idx = res_indices[i];
                 for (int64_t j = 0; j < num_queries; ++j) {
                     if (match_query(queries[j], LBL_TO_STR(ctx->mol->residue.name[res_idx]))) {
-                        //uint64_t offset = ctx->mol->residue.atom_range[i].beg;
-                        //uint64_t length = ctx->mol->residue.atom_range[i].end - ctx->mol->residue.atom_range[i].beg;
-                        //bit_set(result.bits, offset, length);
-                        const md_range_t atom_range = ctx->mol->residue.atom_range[res_idx];
-                        ASSERT(dst_idx < capacity);
+                        const md_range_t atom_range = md_residue_atom_range(ctx->mol->residue, res_idx);
+                        ASSERT(dst_idx < cap);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
-                        dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
+                        dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
                         // @TODO: These two operations could be replaced with a single copy_range routine if implemented in the future
                         md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
                         if (ctx->mol_ctx) {
@@ -2946,22 +2932,23 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
-            const int64_t capacity = type_info_array_len(dst->type);
+            const int64_t cap = type_info_array_len(dst->type);
+            if (cap == 0) return 0;
 
             int64_t dst_idx = 0;
             for (size_t i = 0; i < md_array_size(res_indices); ++i) {
                 const int64_t res_idx = res_indices[i];
                 for (size_t j = 0; j < num_rid; ++j) {
                     if (idx_in_range((int)ctx->mol->residue.id[res_idx], rid[j])) {
-                        const md_range_t atom_range = ctx->mol->residue.atom_range[res_idx];
+                        const md_range_t atom_range = md_residue_atom_range(ctx->mol->residue, res_idx);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
-                        dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
+                        dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
                         md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
                         if (ctx->mol_ctx) {
                             md_bitfield_and_inplace(bf, ctx->mol_ctx);
                         }
 
-                        ASSERT(dst_idx <= capacity);
+                        ASSERT(dst_idx <= cap);
                         break;
                     }
                 }
@@ -2998,7 +2985,7 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_IRANGE_ARR));
 
-    if (ctx->mol->chain.count == 0 || !ctx->mol->chain.atom_range) {
+    if (ctx->mol->chain.count == 0) {
         LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The molecule does not contain any chains");
         return -1;
     }
@@ -3014,16 +3001,17 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
-            const int64_t capacity = type_info_array_len(dst->type);
+            const int64_t cap = type_info_array_len(dst->type);
+            if (cap == 0) return 0;
 
             int64_t dst_idx = 0;
             for (size_t i = 0; i < num_ranges; ++i) {
                 irange_t range = remap_range_to_context(ranges[i], ctx_range);
                 for (int64_t j = range.beg; j < range.end; ++j) {
-                    const md_range_t atom_range = ctx->mol->chain.atom_range[j];
-                    ASSERT(dst_idx < capacity);
+                    const md_range_t atom_range = md_chain_atom_range(ctx->mol->chain, j);
+                    ASSERT(dst_idx < cap);
                     md_bitfield_t* bf = &bf_arr[dst_idx];
-                    dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
+                    dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
                     md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
                     if (ctx->mol_ctx) {
                         md_bitfield_and_inplace(bf, ctx->mol_ctx);
@@ -3073,20 +3061,17 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
         if (dst->ptr) {
             md_bitfield_t* bf_arr = (md_bitfield_t*)dst->ptr;
-            const int64_t capacity = type_info_array_len(dst->type);
-            if (capacity <= 0) {
-				LOG_ERROR(ctx->ir, ctx->op_token, "The destination bitfield array has a capacity of zero");
-				return -1;
-			}
+            const int64_t cap = type_info_array_len(dst->type);
+            if (cap == 0) return 0;
 
             int64_t dst_idx = 0;
             for (size_t i = 0; i < md_array_size(chain_indices); ++i) {
                 for (size_t j = 0; j < num_str; ++j) {
                     if (match_query(str[j], LBL_TO_STR(ctx->mol->chain.id[i]))) {
-                        ASSERT(dst_idx < capacity);
+                        ASSERT(dst_idx < cap);
                         md_bitfield_t* bf = &bf_arr[dst_idx];
-                        dst_idx = (capacity == 1) ? dst_idx : dst_idx + 1;
-                        const md_range_t atom_range = ctx->mol->chain.atom_range[i];
+                        dst_idx = (cap == 1) ? dst_idx : dst_idx + 1;
+                        const md_range_t atom_range = md_chain_atom_range(ctx->mol->chain, i);
                         md_bitfield_set_range(bf, atom_range.beg, atom_range.end);
                         if (ctx->mol_ctx) {
                             md_bitfield_and_inplace(bf, ctx->mol_ctx);

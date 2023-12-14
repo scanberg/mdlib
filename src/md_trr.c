@@ -484,7 +484,7 @@ static size_t trr_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_i
         return 0;
     }
 
-    if (frame_idx < 0 || trr->header.num_frames <= frame_idx) {
+    if (frame_idx < 0 || (int64_t)trr->header.num_frames <= frame_idx) {
         MD_LOG_ERROR("TRR: Frame index is out of range");
         return 0;
     }

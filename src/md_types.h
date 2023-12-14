@@ -73,7 +73,7 @@ typedef struct md_vec3_soa_t {
     float* z;
     // The stride signifies the byte stride between each entry of the pointers.
     // If the arrays are packed and not part of a larger struct, this value would be sizeof(float) == 4
-    uint64_t stride;
+    size_t stride;
 } md_vec3_soa_t;
 
 // Open ended range of indices (e.g. range(0,4) -> [0,1,2,3])
@@ -166,10 +166,8 @@ static inline bool label_empty(md_label_t lbl) {
 static inline md_label_t make_label(str_t str) {
     md_label_t lbl = {0};
     if (str.ptr) {
-        const int64_t len = MIN(str.len, (int64_t)sizeof(lbl.buf) - 1);
-        for (int64_t i = 0; i < len; ++i) {
-            lbl.buf[i] = str.ptr[i];
-        }
+        const size_t len = MIN(str.len, sizeof(lbl.buf) - 1);
+        MEMCPY(lbl.buf, str.ptr, len);
         lbl.len = (uint8_t)len;
     }
     return lbl;

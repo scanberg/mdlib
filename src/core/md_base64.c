@@ -1,7 +1,5 @@
 #include <core/md_base64.h>
-
 #include <core/md_log.h>
-
 #include <stdint.h>
 
 #ifndef NULL
@@ -39,12 +37,12 @@ static inline char decode_character(char c) {
 static int mod_table[] = {0, 2, 1};
 
 // Gives the length in bytes of the encoded string which is required to be the minimum buffer size supplied as 'output' into base64_encode
-int md_base64_encode_size_in_bytes(int input_length) {
+size_t md_base64_encode_size_in_bytes(size_t input_length) {
     return 4 * ((input_length + 2) / 3);
 }
 
 // 
-int md_base64_encode(char* output, const void* input, int input_length) {
+size_t md_base64_encode(char* output, const void* input, size_t input_length) {
     if (output == NULL) {
         MD_LOG_ERROR("Base64: Supplied output buffer was NULL");
         return 0;
@@ -74,7 +72,7 @@ int md_base64_encode(char* output, const void* input, int input_length) {
         output[j++] = encoding_table[(triple >>  0) &0x3F];
     }
 
-    int output_length = md_base64_encode_size_in_bytes(input_length);
+    size_t output_length = md_base64_encode_size_in_bytes(input_length);
 
     // Fill up with empty
     for (int i = 0; i < mod_table[input_length % 3]; i++)
@@ -84,11 +82,11 @@ int md_base64_encode(char* output, const void* input, int input_length) {
 }
 
 // Gives the length in bytes of the encoded string which is required to be the minimum buffer size supplied as 'output' into base64_decode
-int md_base64_decode_size_in_bytes(int input_length) {
+size_t md_base64_decode_size_in_bytes(size_t input_length) {
     return (input_length / 4) * 3;
 }
 
-int md_base64_decode(void* output, const char *input, int input_length) {
+size_t md_base64_decode(void* output, const char *input, size_t input_length) {
     if (output == NULL) {
         MD_LOG_ERROR("Base64: Supplied output buffer was NULL");
         return 0;
@@ -103,17 +101,17 @@ int md_base64_decode(void* output, const char *input, int input_length) {
         return 0;
     }
 
-    int output_length = md_base64_decode_size_in_bytes(input_length);
+    size_t output_length = md_base64_decode_size_in_bytes(input_length);
 
     if (input[input_length - 1] == '=' || input[input_length - 1] == '.') output_length -= 1;
     if (input[input_length - 2] == '=' || input[input_length - 2] == '.') output_length -= 1;
 
     char* out_bytes = (char*)output;
 
-    for (int i = 0, j = 0; i < input_length;) {
+    for (size_t i = 0, j = 0; i < input_length;) {
         // Read and and decode 4 bytes at a time
         uint32_t byte[4];
-        for (int k = 0; k < 4; ++k, ++i) {
+        for (size_t k = 0; k < 4; ++k, ++i) {
             while (i < input_length && (input[i] == '\r' || input[i] == '\n')) i += 1;
             if (i == input_length) {
                 MD_LOG_ERROR("Base64: Failed to read and decode 4 consecutive bytes in input");

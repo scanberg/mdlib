@@ -41,15 +41,15 @@ typedef struct md_residue_data_t {
     size_t count;
     md_label_t* name;
     md_residue_id_t* id;
-    md_range_t* atom_range;
+    uint32_t* atom_offset;
     md_flags_t* flags;
 } md_residue_data_t;
 
 typedef struct md_chain_data_t {
     size_t count;
     md_label_t* id;
-    md_range_t* residue_range;
-    md_range_t* atom_range;
+    uint32_t* res_offset;
+    uint32_t* atom_offset;
 } md_chain_data_t;
 
 typedef struct md_backbone_data_t {
@@ -129,21 +129,69 @@ typedef struct md_molecule_t {
     md_array(md_bond_pair_t)     hydrogen_bonds;
 } md_molecule_t;
 
-/*
-
-The molecule loader api is just a convenience API for abstracing the functionality of initializing molecule data
-
-The reason for providing a distinct function for initializing from file is that some molecule files can
-also contain their trajectories, such as PDB files. In such case, the whole file would have to be read and passed, but for
-molecule data only the first part of the file is used.
-
-*/
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-static inline md_conn_iter_t md_conn_iter(const md_molecule_t* mol, md_atom_idx_t atom_idx) {
+static inline md_range_t md_residue_atom_range(md_residue_data_t res, int64_t res_idx) {
+	md_range_t range = {0};
+    size_t i = (size_t)res_idx; // Cast to unsigned to only check for positive
+	if (res.atom_offset && i < res.count) {
+		range.beg = res.atom_offset[i];
+		range.end = res.atom_offset[i + 1];
+	}
+	return range;
+}
+
+static inline size_t md_residue_atom_count(md_residue_data_t res, int64_t res_idx) {
+    size_t count = 0;
+    size_t i = (size_t)res_idx;
+    if (res.atom_offset && i < res.count) {
+        count = res.atom_offset[i + 1] - res.atom_offset[i];
+    }
+    return count;
+}
+
+
+static inline md_range_t md_chain_residue_range(md_chain_data_t chain, int64_t chain_idx) {
+    md_range_t range = {0};
+    size_t i = (size_t)chain_idx; // Cast to unsigned to only check for positive
+    if (chain.res_offset && i < chain.count) {
+        range.beg = chain.res_offset[i];
+        range.end = chain.res_offset[i + 1];
+    }
+    return range;
+}
+
+static inline size_t md_chain_residue_count(md_chain_data_t chain, int64_t chain_idx) {
+    size_t count = 0;
+    size_t i = (size_t)chain_idx; // Cast to unsigned to only check for positive
+    if (chain.res_offset && i < chain.count) {
+        count = chain.res_offset[i + 1] - chain.res_offset[i];
+    }
+    return count;
+}
+
+static inline md_range_t md_chain_atom_range(md_chain_data_t chain, int64_t chain_idx) {
+    md_range_t range = {0};
+    size_t i = (size_t)chain_idx; // Cast to unsigned to only check for positive
+    if (chain.atom_offset && i < chain.count) {
+        range.beg = chain.atom_offset[i];
+        range.end = chain.atom_offset[i + 1];
+    }
+    return range;
+}
+
+static inline size_t md_chain_atom_count(md_chain_data_t chain, int64_t chain_idx) {
+    size_t count = 0;
+    size_t i = (size_t)chain_idx; // Cast to unsigned to only check for positive
+    if (chain.atom_offset && i < chain.count) {
+        count = chain.atom_offset[i + 1] - chain.atom_offset[i];
+    }
+    return count;
+}
+
+static inline md_conn_iter_t md_conn_iter(const md_molecule_t* mol, int64_t atom_idx) {
     md_conn_iter_t it = {0};
     if (mol->atom.conn_offset) {
         it.data = &mol->conn;
@@ -173,6 +221,16 @@ static inline md_order_t md_conn_iter_order(const md_conn_iter_t* it) {
 static inline md_flags_t md_conn_iter_flags(const md_conn_iter_t* it) {
 	return it->data->flags[it->i];
 }
+
+/*
+
+The molecule loader api is just a convenience API for abstracing the functionality of initializing molecule data
+
+The reason for providing a distinct function for initializing from file is that some molecule files can
+also contain their trajectories, such as PDB files. In such case, the whole file would have to be read and passed, but for
+molecule data only the first part of the file is used.
+
+*/
 
 typedef struct md_molecule_loader_i {
     bool (*init_from_str) (md_molecule_t* mol, str_t string,   struct md_allocator_i* alloc);

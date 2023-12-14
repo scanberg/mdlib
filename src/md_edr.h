@@ -20,10 +20,10 @@ typedef struct md_edr_energy_t {
 } md_edr_energy_t;
 
 typedef struct md_edr_energies_t {
-	int64_t			 num_frames;
+	size_t			 num_frames;
 	double*			 frame_time;	// timestamp of frames
 
-	int64_t			 num_energies;
+	size_t			 num_energies;
 	md_edr_energy_t* energy;
 	
 	struct md_allocator_i* alloc;

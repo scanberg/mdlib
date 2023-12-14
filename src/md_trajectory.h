@@ -9,17 +9,17 @@
 struct md_trajectory_o;
 
 typedef struct md_trajectory_header_t {
-	int64_t   num_frames;
-	int64_t   num_atoms;
-	int64_t   max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
+	size_t   num_frames;
+	size_t   num_atoms;
+	size_t   max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
 	md_unit_t time_unit;
     const double* frame_times;  // Array of length num_frames
 } md_trajectory_header_t;
 
 typedef struct md_trajectory_frame_header_t {
-	int64_t   num_atoms;
-	int64_t   index;
-	double    timestamp;
+	size_t  num_atoms;
+	int64_t index;
+	double  timestamp;
 	md_unit_cell_t unit_cell;
 } md_trajectory_frame_header_t;
 

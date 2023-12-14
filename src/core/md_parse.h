@@ -319,10 +319,15 @@ static inline int64_t parse_int(str_t str) {
     int64_t val = 0;
     const char* c   = str.ptr;
     const char* end = str.ptr + str.len;
-    bool neg = (*c == '-');
 
-    if (*c == '-')
-        ++c;
+    // Skip space
+    while (c < end && is_whitespace(*c)) ++c;
+
+    bool neg = false;
+    if (*c == '-') {
+		neg = true;
+		++c;
+	}
 
     while (c < end && is_digit(*c)) {
         val = val * 10 + ((int64_t)(*c) - (int64_t)'0');

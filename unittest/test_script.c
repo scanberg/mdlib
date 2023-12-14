@@ -68,12 +68,12 @@ static md_chain_idx_t c_idx[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 #define RES_COUNT 4
 static md_label_t r_name[] = {MAKE_LABEL("SOL"), MAKE_LABEL("LYS"), MAKE_LABEL("PFT"), MAKE_LABEL("PFT")};
 static md_residue_id_t r_id[] = {1, 2, 3, 4};
-static md_range_t r_range[] = {{0, 3}, {3, 8}, {8,12}, {12,16}};
+static uint32_t r_off[] = {0, 3, 8, 12, 16};
 
 #define CHAIN_COUNT 1
 static md_label_t c_id[] = {MAKE_LABEL("A")};
-static md_range_t c_arange[] = {0,16};
-static md_range_t c_rrange[] = {0,4};
+static uint32_t c_aoff[] = {0,16};
+static uint32_t c_roff[] = {0,4};
 
 md_molecule_t test_mol = {
     .atom = {
@@ -91,13 +91,13 @@ md_molecule_t test_mol = {
         .count = RES_COUNT,
         .name = r_name,
         .id = r_id,
-        .atom_range = r_range
+        .atom_offset = r_off
 },
 .chain = {
         .count = CHAIN_COUNT,
         .id = c_id,
-        .atom_range = c_arange,
-        .residue_range = c_rrange
+        .atom_offset = c_aoff,
+        .res_offset = c_roff
 }
 };
 

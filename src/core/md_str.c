@@ -85,7 +85,7 @@ bool str_eq_cstr(str_t str, const char* cstr) {
 
 // Compare str and cstr only up to n characters
 bool str_eq_cstr_n(str_t str, const char* cstr, size_t n) {
-    if (n < 0) return false;
+    if (!n) return false;
     if (!str.ptr || !str.len || !cstr) return false;
     n = n < str.len ? n : str.len;
     for (size_t i = 0; i < n; ++i) {
@@ -103,7 +103,7 @@ bool str_eq_cstr_ignore_case(str_t str, const char* cstr) {
 }
 
 bool str_eq_cstr_n_ignore_case(str_t str, const char* cstr, size_t n) {
-    if (n < 0) return false;
+    if (!n) return false;
     if (!str.ptr || !str.len || !cstr) return false;
     n = n < str.len ? n : str.len;
     for (size_t i = 0; i < n; ++i) {

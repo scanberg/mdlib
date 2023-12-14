@@ -29,8 +29,8 @@ typedef struct md_xyz_coordinate_t {
 
 typedef struct md_xyz_model_t {
 	size_t byte_offset;
-	int32_t beg_coord_index;
-	int32_t end_coord_index;
+	int64_t beg_coord_index;
+	int64_t end_coord_index;
 	float cell[3][3];
 	char comment[88];
 } md_xyz_model_t;

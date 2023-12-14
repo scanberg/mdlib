@@ -502,9 +502,9 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
         return false;
     }
 
-	if (frame->nre > md_array_size(frame->ener)) {
-		const int64_t new_size = frame->nre;
-		const int64_t old_size = md_array_size(frame->ener);
+	if (frame->nre > (int)md_array_size(frame->ener)) {
+		const size_t new_size = (size_t)frame->nre;
+		const size_t old_size = md_array_size(frame->ener);
 		md_array_resize(frame->ener, frame->nre, alloc);
 		MEMSET(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
 	}

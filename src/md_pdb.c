@@ -46,12 +46,12 @@ static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64
 // This makes our life easier when specifying all the different ranges
 static inline int32_t extract_int(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0;
-    return (int32_t)parse_int(str_trim(str_substr(line, beg - 1, end-beg + 1)));
+    return (int32_t)parse_int(str_substr(line, beg - 1, end-beg + 1));
 }
 
 static inline float extract_float(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0.0f;
-    return (float)parse_float(str_trim(str_substr(line, beg - 1, end-beg + 1)));
+    return (float)parse_float(str_substr(line, beg - 1, end-beg + 1));
 }
 
 static inline char extract_char(str_t line, size_t idx) {
@@ -219,7 +219,7 @@ size_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
         return 0;
     }
 
-    if (frame_idx < 0 || pdb->header.num_frames <= frame_idx) {
+    if (frame_idx < 0 || (int64_t)pdb->header.num_frames <= frame_idx) {
         MD_LOG_ERROR("Frame index is out of range");
         return 0;
     }
@@ -262,7 +262,7 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
         }
     }
 
-    int64_t i = 0;
+    size_t i = 0;
     while (str_extract_line(&line, &str) && i < pdb->header.num_atoms) {
         if (line.len < 6) continue;
         if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
@@ -355,7 +355,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
         else if (str_eq_cstr_n(line, "REMARK 350", 10)) {
             if (str_eq_cstr(str_substr(line, 11, 12), "BIOMOLECULE:")) {
                 md_pdb_assembly_t assembly = {0};
-                assembly.id = (int32_t)parse_int(str_trim(str_substr(line, 23, SIZE_MAX)));
+                assembly.id = (int32_t)parse_int(str_substr(line, 23, SIZE_MAX));
                 assembly.transform_offset = (int32_t)md_array_size(data->transforms);
                 md_array_push(data->assemblies, assembly, alloc);
             }

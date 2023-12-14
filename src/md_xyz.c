@@ -115,7 +115,7 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
     }
 
     // Test for extended XYZ format
-    if (str_find_str(NULL, lines[1], STR("Properties=")) != -1) {
+    if (str_find_str(NULL, lines[1], STR("Properties="))) {
 		*flags |= XYZ_EXTENDED;
 	} else {    
         // Test if we have an ARC trajectory
@@ -364,12 +364,12 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     return true;
 }
 
-static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_reader_t* reader, uint32_t flags, int32_t* coord_count) {
+static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_reader_t* reader, uint32_t flags, size_t* coord_count) {
     ASSERT(model);
     ASSERT(reader);
     ASSERT(coord_count);
 
-    str_t line[2];
+    str_t line[2] = {0};
     str_t tokens[8];
     str_t comment = {0};
     int32_t count = 0;
@@ -394,7 +394,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
     }
 
     // Parse data from first line, we only need the first two tokens even though more may exist
-    const int64_t num_tok = extract_tokens(tokens, 2, &line[0]);
+    const size_t num_tok = extract_tokens(tokens, 2, &line[0]);
     if (num_tok) {
         count = (int32_t)parse_int(tokens[0]);
     }
@@ -417,10 +417,10 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
     }
 
     if (flags & XYZ_ARC) {
-        const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line[1]);
+        const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line[1]);
         
         if (num_tokens != 6) {
-            MD_LOG_ERROR("Unexpected number of tokens (%i) when parsing XYZ Arc Cell data");
+            MD_LOG_ERROR("Unexpected number of tokens (%zu) when parsing XYZ Arc Cell data", num_tokens);
             return false;
         }
 
@@ -507,15 +507,15 @@ size_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
         return 0;
     }
 
-    if (frame_idx < 0 || xyz->header.num_frames <= frame_idx) {
+    if (frame_idx < 0 || (int64_t)xyz->header.num_frames <= frame_idx) {
         MD_LOG_ERROR("Frame index is out of range");
         return 0;
     }
 
     const int64_t beg = xyz->frame_offsets[frame_idx + 0];
     const int64_t end = xyz->frame_offsets[frame_idx + 1];
-    const int64_t frame_size = end - beg;
-    const int64_t total_size = sizeof(int64_t) + frame_size;
+    const size_t frame_size = (size_t)(end - beg);
+    const size_t total_size = sizeof(int64_t) + frame_size;
 
     if (frame_data_ptr) {
         // Store the index to the frame since this is generally not found within the actual frame data
@@ -525,7 +525,8 @@ size_t xyz_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
         ASSERT(xyz->file);
         md_mutex_lock(&xyz->mutex);
         md_file_seek(xyz->file, beg, MD_FILE_BEG);
-        const int64_t bytes_read = md_file_read(xyz->file, &ptr[1], frame_size);
+        const size_t bytes_read = md_file_read(xyz->file, &ptr[1], frame_size);
+        (void)bytes_read;
         md_mutex_unlock(&xyz->mutex);
         ASSERT(frame_size == bytes_read);
     }
@@ -545,8 +546,8 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     }
 
     const int64_t* ptr = frame_data_ptr;
-    int32_t step = (int32_t)ptr[0];
-    if (step < 0 || step >= xyz->header.num_frames) {
+    const int64_t step = (int64_t)ptr[0];
+    if (step < 0 || step >= (int64_t)xyz->header.num_frames) {
         MD_LOG_ERROR("Error when decoding frame data, corrupt frame index");
         return false;
     }
@@ -555,13 +556,13 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
 
     md_xyz_model_t model = {0};
-    int32_t coord_count = 0;
+    size_t coord_count = 0;
     if (!xyz_parse_model_header(&model, &reader, xyz->flags, &coord_count)) {
         MD_LOG_ERROR("Error when decoding header");
         return false;
     }
 
-    int64_t i = 0;
+    size_t i = 0;
     str_t line;
     str_t tokens[8];
     while (md_buffered_reader_extract_line(&line, &reader) && i < xyz->header.num_atoms) {
@@ -608,7 +609,7 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
         return false;
     }
 
-    int32_t expected_count = 0;
+    size_t expected_count = 0;
     md_xyz_model_t mdl = {0};
     int64_t byte_offset = 0;
 
@@ -617,7 +618,7 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
         
         mdl.byte_offset = byte_offset;
         mdl.beg_coord_index = (int32_t)md_array_size(data->coordinates);
-        for (int32_t i = 0; i < expected_count; ++i) {
+        for (size_t i = 0; i < expected_count; ++i) {
             str_t line;
             md_xyz_coordinate_t coord = {0};
             if (md_buffered_reader_extract_line(&line, reader) &&
@@ -810,7 +811,7 @@ typedef struct xyz_cache_t {
     int64_t* offsets;
 } xyz_cache_t;
 
-static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, int64_t traj_num_bytes, md_allocator_i* alloc) {
+static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_allocator_i* alloc) {
     ASSERT(cache);
     ASSERT(alloc);
 
@@ -830,7 +831,7 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, int64_t traj_nu
             MD_LOG_INFO("XYZ trajectory cache: version mismatch, expected %i, got %i", MD_XYZ_CACHE_VERSION, (int)cache->header.version);
         }
         if (cache->header.num_bytes != traj_num_bytes) {
-			MD_LOG_INFO("XYZ trajectory cache: trajectory size mismatch, expected %i, got %i", (int)traj_num_bytes, (int)cache->header.num_bytes);
+			MD_LOG_INFO("XYZ trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
 		}
         if (cache->header.num_atoms == 0) {
 			MD_LOG_ERROR("XYZ trajectory cache: num atoms was zero");
@@ -841,7 +842,7 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, int64_t traj_nu
             goto done;
         }
 
-        const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+        const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
         cache->offsets = md_alloc(alloc, offset_bytes);
         if (md_file_read(file, cache->offsets, offset_bytes) != offset_bytes) {
             MD_LOG_ERROR("Failed to read offset cache, offsets are incomplete");
@@ -870,7 +871,7 @@ static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
 		goto done;
 	}
 
-    const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+    const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
     if (md_file_write(file, cache->offsets, offset_bytes) != offset_bytes) {
         MD_LOG_ERROR("Failed to write offset cache, offsets");
         goto done;
@@ -893,7 +894,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     uint32_t flags = 0;
     {
         char buf[1024];
-        int64_t len = md_file_read(file, buf, sizeof(buf));
+        size_t len = md_file_read(file, buf, sizeof(buf));
         md_buffered_reader_t reader = md_buffered_reader_from_str((str_t){buf, len});
         if (!extract_flags(&flags, &reader)) {
             MD_LOG_ERROR("Failed to determine format for XYZ trajectory");
@@ -906,7 +907,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
 
     char buf[1024] = "";
     int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
-    str_t cache_file = {buf, len};
+    str_t cache_file = {buf, (size_t)len};
 
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
@@ -928,7 +929,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
 
         // Validate the models, pick the atom count in the first model and ensure that all other models have the same number of atoms
         const int64_t num_atoms = data.models[0].end_coord_index - data.models[0].beg_coord_index;
-        for (int64_t i = 1; i < data.num_models; ++i) {
+        for (size_t i = 1; i < data.num_models; ++i) {
             const int64_t length = data.models[i].end_coord_index - data.models[i].beg_coord_index;
             if (length != num_atoms) {
                 MD_LOG_ERROR("The XYZ file models are not of equal length and cannot be read as a trajectory");
@@ -943,7 +944,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
         cache.header.num_frames = data.num_models;
         cache.offsets = md_alloc(alloc, sizeof(int64_t) * (cache.header.num_frames + 1));
 
-        for (int64_t i = 0; i < data.num_models; ++i) {
+        for (size_t i = 0; i < data.num_models; ++i) {
             cache.offsets[i] = data.models[i].byte_offset;
         }
         cache.offsets[data.num_models] = filesize;
@@ -957,9 +958,9 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
         }
     }
 
-    int64_t max_frame_size = 0;
-    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
-        const int64_t frame_size = cache.offsets[i + 1] - cache.offsets[i];
+    size_t max_frame_size = 0;
+    for (size_t i = 0; i < cache.header.num_frames; ++i) {
+        const size_t frame_size = (size_t)MAX(0, cache.offsets[i + 1] - cache.offsets[i]);
         max_frame_size = MAX(max_frame_size, frame_size);
     }
 
@@ -971,7 +972,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     xyz_trajectory_t* xyz = (xyz_trajectory_t*)(traj + 1);
 
     md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
-    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
+    for (size_t i = 0; i < cache.header.num_frames; ++i) {
         frame_times[i] = (double)i;
     }
 
