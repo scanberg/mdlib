@@ -413,6 +413,7 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
     }
 
     if (comment.len > 0) {
+
         str_copy_to_char_buf(model->comment, sizeof(model->comment), comment);
     }
 

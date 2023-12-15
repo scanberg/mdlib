@@ -103,9 +103,9 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 	}
 
 	// Assert that we have all the required fields
-	for (int i = 0; i < ARRAY_SIZE(required_fields); ++i) {
+	for (size_t i = 0; i < ARRAY_SIZE(required_fields); ++i) {
 		if (table[required_fields[i]] == -1) {
-			MD_LOG_ERROR("Missing required column in _atom_site: %.*s", STR_ARG(atom_site_labels[required_fields[i]]));
+			MD_LOG_ERROR("Missing required column in _atom_site: "STR_FMT, STR_ARG(atom_site_labels[required_fields[i]]));
 			return false;
 		}
 	}
@@ -115,7 +115,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 		if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
 			const int64_t num_tokens = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 			if (num_tokens < num_cols) {
-				MD_LOG_ERROR("Too few tokens in line: %.*s", STR_ARG(line));
+				MD_LOG_ERROR("Too few tokens in line: "STR_FMT, STR_ARG(line));
 				return false;
 			}
 

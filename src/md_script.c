@@ -558,7 +558,7 @@ static bool compare_type_info_dim(type_info_t a, type_info_t b) {
 static bool type_info_equal(type_info_t a, type_info_t b) {
     if (a.base_type != b.base_type) return false;
     if (MEMCMP(a.dim, b.dim, sizeof(a.dim)) == 0) return true; 
-    for (int i = 0; i < ARRAY_SIZE(a.dim); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(a.dim); ++i) {
         if (a.dim[i] == b.dim[i]) continue;
         if (i > 0) {
             if (a.dim[i] == 0) return b.dim[i] == 0 || b.dim[i] == 1;
@@ -1000,8 +1000,8 @@ static void create_log_token(log_level_t level, md_script_ir_t* ir, token_t toke
             ++end;
         }
         static const char long_ass_carret[] = "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~";
-        md_logf(MD_LOG_TYPE_DEBUG, "%.*s", (end-beg), beg);
-        md_logf(MD_LOG_TYPE_DEBUG, "%*s^%.*s", (token.str.ptr - beg), "", token.str.len-1, long_ass_carret);
+        md_logf(MD_LOG_TYPE_DEBUG, ""STR_FMT"", (end-beg), beg);
+        md_logf(MD_LOG_TYPE_DEBUG, "%*s^"STR_FMT"", (token.str.ptr - beg), "", token.str.len-1, long_ass_carret);
     }
     */
 }
@@ -1287,7 +1287,7 @@ static inline bool is_token_type_comparison(token_type_t type) {
 
 static bool expect_token_type(md_script_ir_t* ir, token_t token, token_type_t type) {
     if (token.type != type) {
-        LOG_ERROR(ir, token, "Unexpected token '%.*s', expected token '%s'", token.str.len, token.str.ptr, get_token_type_str(type));
+        LOG_ERROR(ir, token, "Unexpected token '"STR_FMT"', expected token '%s'", token.str.len, token.str.ptr, get_token_type_str(type));
         return false;
     }
     return true;
@@ -1300,7 +1300,7 @@ static bool expect_token_type(md_script_ir_t* ir, token_t token, token_type_t ty
 static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
     token_t token = {0};
 
-    if (tokenizer->cur >= tokenizer->str.len) {
+    if (tokenizer->cur >= (int)tokenizer->str.len) {
         tokenizer->cur = (int)tokenizer->str.len;
         token.type = TOKEN_END;
         token.line_beg = tokenizer->line;
@@ -1522,15 +1522,15 @@ static tokenizer_t tokenizer_init(str_t str) {
 // ###   PRINTING   ###
 // ####################
 
-static int print_type_info(char* buf, int buf_size, type_info_t info) {
-    int len = snprintf(buf, buf_size, "%s", get_value_type_str(info.base_type));
+static size_t print_type_info(char* buf, size_t cap, type_info_t info) {
+    size_t len = snprintf(buf, cap, "%s", get_value_type_str(info.base_type));
 
-    for (int i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
+    for (size_t i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
         if (info.dim[i] == -1) {
-            len += snprintf(buf + len, MAX(0, buf_size - len), "[..]");
+            len += snprintf(buf + len, cap - MIN(len, cap), "[..]");
         }
         else if (info.dim[i] >= 1) {
-            len += snprintf(buf + len, MAX(0, buf_size - len), "[%i]", (int)info.dim[i]);
+            len += snprintf(buf + len, cap - MIN(len, cap), "[%i]", (int)info.dim[i]);
         }
         else if (info.dim[i] == 0) {
             break;
@@ -1543,18 +1543,18 @@ static int print_type_info(char* buf, int buf_size, type_info_t info) {
     return len;
 }
 
-#define PRINT(...) len += snprintf(buf + len, MAX(0, buf_size - len), ##__VA_ARGS__)
+#define PRINT(...) len += snprintf(buf + len, cap - MIN(len, cap), ##__VA_ARGS__)
 
-static int print_bitfield(char* buf, int buf_size, const md_bitfield_t* bitfield) {
+static size_t print_bitfield(char* buf, size_t cap, const md_bitfield_t* bitfield) {
     ASSERT(bitfield);
-    if (buf_size <= 0) return 0;
+    if (cap <= 0) return 0;
 
-    const int64_t max_bits = 64;
-    const int64_t num_bits = MIN((int64_t)bitfield->end_bit - (int64_t)bitfield->beg_bit, max_bits);
-    int len = 0;
+    const size_t max_bits = 64;
+    const size_t num_bits = MIN(bitfield->end_bit - bitfield->beg_bit, max_bits);
+    size_t len = 0;
 
     PRINT("<%i,%i>[", bitfield->beg_bit, bitfield->end_bit);
-    for (int64_t i = 0; i < num_bits; ++i) {
+    for (size_t i = 0; i < num_bits; ++i) {
         PRINT("%i", md_bitfield_test_bit(bitfield, i) ? 1 : 0);
     }
     PRINT("%s]", num_bits == max_bits ? "..." : "");
@@ -1562,10 +1562,10 @@ static int print_bitfield(char* buf, int buf_size, const md_bitfield_t* bitfield
     return len;
 }
 
-static int print_data_value(char* buf, int buf_size, data_t data) {
-    int len = 0;
+static size_t print_data_value(char* buf, size_t cap, data_t data) {
+    size_t len = 0;
     if (is_variable_length(data.type)) return 0;
-    if (buf_size <= 0) return 0;
+    if (cap <= 0) return 0;
 
     if (data.ptr) {
         if (is_array(data.type) && data.type.base_type != TYPE_BITFIELD) {
@@ -1585,7 +1585,7 @@ static int print_data_value(char* buf, int buf_size, data_t data) {
                     .size = data.size,
                     .type = type,
                 };
-                len += print_data_value(buf + len, buf_size - len, elem_data);
+                len += print_data_value(buf + len, cap - MIN(len, cap), elem_data);
                 if (i < arr_len - 1) PRINT(",");
             }
             PRINT("}");
@@ -1634,7 +1634,7 @@ static int print_data_value(char* buf, int buf_size, data_t data) {
             case TYPE_STRING:
             {
                 str_t str = *(str_t*)data.ptr;
-                PRINT("%.*s", (int)str.len, str.ptr);
+                PRINT(STR_FMT, STR_ARG(str));
                 break;
             }
             default:
@@ -1646,7 +1646,7 @@ static int print_data_value(char* buf, int buf_size, data_t data) {
         PRINT("NULL");
     }
     if (!md_unit_empty(data.unit)) {
-        len += md_unit_print(buf + len, MAX(0, (int)sizeof(buf) - len), data.unit);
+        len += md_unit_print(buf + len, cap - MIN(len, cap), data.unit);
     }
     return len;
 }
@@ -1727,7 +1727,7 @@ static void print_data_value(FILE* file, data_t data) {
             case TYPE_STRING:
             {
                 str_t str = *(str_t*)data.ptr;
-                fprintf(file, "%.*s", (int)str.len, str.ptr);
+                fprintf(file, ""STR_FMT"", (int)str.len, str.ptr);
                 break;
             }
             default:
@@ -1750,7 +1750,7 @@ static void print_label(FILE* file, const ast_node_t* node) {
         break;
     case AST_PROC_CALL:
         if (node->proc) {
-            fprintf(file, "%.*s", (int)node->proc->name.len, node->proc->name.ptr);
+            fprintf(file, ""STR_FMT"", (int)node->proc->name.len, node->proc->name.ptr);
         }
         else {
             fprintf(file, "NULL");
@@ -1766,7 +1766,7 @@ static void print_label(FILE* file, const ast_node_t* node) {
         fprintf(file, "cast (%s) ->", buf);
         break;
     case AST_IDENTIFIER:
-        fprintf(file, "%.*s", (int)node->ident.len, node->ident.ptr);
+        fprintf(file, ""STR_FMT"", (int)node->ident.len, node->ident.ptr);
         fprintf(file, " (identifier)");
         break;
     case AST_ARRAY:
@@ -1861,7 +1861,7 @@ static void print_expr(FILE* file, str_t str) {
         }
     }
 
-    fprintf(file, "\"%.*s\"\n", (int)at, buf);
+    fprintf(file, "\""STR_FMT"\"\n", (int)at, buf);
 }
 
 static void save_expressions_to_json(expression_t** expr, uint64_t num_expr, str_t filename) {
@@ -1995,7 +1995,7 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
         token_t next = tokenizer_peek_next(ctx->tokenizer);
         if (next.type == '(') {
             // This is an intended procedure call, but has no matching procedure by that name
-            LOG_ERROR(ctx->ir, token, "Undefined procedure '%.*s'", ident.len, ident.ptr);
+            LOG_ERROR(ctx->ir, token, "Undefined procedure '"STR_FMT"'", ident.len, ident.ptr);
 
             token_type_t token_types[] = {'(', ')', ';'};
             int paren_bal = 0;
@@ -2384,7 +2384,7 @@ static ast_node_t* parse_argument(parse_context_t* ctx) {
         tokenizer_consume_next(ctx->tokenizer);
         return NULL;
     default:
-        LOG_ERROR(ctx->ir, next, "Unexpected marker value! '%.*s'",
+        LOG_ERROR(ctx->ir, next, "Unexpected marker value! '"STR_FMT"'",
             next.str.len, next.str.ptr);
         return NULL;
     }
@@ -2456,7 +2456,7 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
             tokenizer_consume_next(ctx->tokenizer);
             return NULL;
             default:
-            LOG_ERROR(ctx->ir, token, "Unexpected token: '%.*s'", token.str.len, token.str.ptr);
+            LOG_ERROR(ctx->ir, token, "Unexpected token: '"STR_FMT"'", token.str.len, token.str.ptr);
             return NULL;
         }
         if (!ctx->node) goto done;
@@ -3495,19 +3495,19 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
     return result;
 }
 
-static int extract_argument_types(type_info_t arg_type[], int cap, const ast_node_t* node) {
+static size_t extract_argument_types(type_info_t arg_type[], size_t cap, const ast_node_t* node) {
     ASSERT(arg_type);
     ASSERT(node);
-    const int num_args = MIN(cap, (int)md_array_size(node->children));
-    for (int i = 0; i < num_args; ++i) {
+    const size_t num_args = MIN(cap, md_array_size(node->children));
+    for (size_t i = 0; i < num_args; ++i) {
         arg_type[i] = node->children[i]->data.type;
     }
     return num_args;
 }
 
-static int print_argument_list(char* buf, int cap, const type_info_t arg_type[], int num_args) {
-    int len = 0;
-    for (int i = 0; i < num_args; ++i) {
+static size_t print_argument_list(char* buf, size_t cap, const type_info_t arg_type[], size_t num_args) {
+    size_t len = 0;
+    for (size_t i = 0; i < num_args; ++i) {
         len += print_type_info(buf + len, cap - len, arg_type[i]);
         if (i + 1 != num_args) {
             len += snprintf(buf + len, cap - len, ",");
@@ -3589,7 +3589,7 @@ static md_unit_t extract_unit_from_label(str_t label) {
 static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file, const md_trajectory_i* traj) {
     str_t ext;
     if (!extract_ext(&ext, path_to_file)) {
-        LOG_ERROR(ir, tok, "Could not extract extension from file path '%.*s'", STR_ARG(path_to_file));
+        LOG_ERROR(ir, tok, "Could not extract extension from file path '"STR_FMT"'", STR_ARG(path_to_file));
         return NULL;
     }
     table_t* table = NULL;
@@ -3703,7 +3703,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
             md_csv_free(&csv, md_heap_allocator);
         }
     } else {
-        LOG_ERROR(ir, (token_t){0}, "import: unsupported file extension '%.*s'", (int)ext.len, ext.ptr);
+        LOG_ERROR(ir, (token_t){0}, "import: unsupported file extension '"STR_FMT"'", (int)ext.len, ext.ptr);
         return NULL;
     }
 
@@ -3774,7 +3774,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
 
     str_t full_path = md_path_make_canonical(args[0]->value._string, ctx->temp_alloc);
     if (str_empty(full_path)) {
-        LOG_ERROR(ctx->ir, node->token, "import: failed to resolve path '%.*s'", (int)full_path.len, full_path.ptr);
+        LOG_ERROR(ctx->ir, node->token, "import: failed to resolve path '"STR_FMT"'", (int)full_path.len, full_path.ptr);
         return false;
     }
 
@@ -3782,7 +3782,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     if (!table) {
         table = import_table(ctx->ir, node->token, full_path, ctx->traj);
         if (!table) {
-            LOG_ERROR(ctx->ir, node->token, "import: failed to import file '%.*s'", (int)full_path.len, full_path.ptr);
+            LOG_ERROR(ctx->ir, node->token, "import: failed to import file '"STR_FMT"'", (int)full_path.len, full_path.ptr);
             return false;
         }
     }
@@ -3856,10 +3856,10 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                     for (int64_t j = 0; j < num_best_matches; ++j) {
                         int idx = best_idx[j];
                         str_t name = table->field_names[idx];
-                        len += snprintf(buf + len, sizeof(buf) - len, "'%.*s'\n", (int)name.len, name.ptr);
+                        len += snprintf(buf + len, sizeof(buf) - len, "'"STR_FMT"'\n", (int)name.len, name.ptr);
                     }
                     
-                    LOG_ERROR(ctx->ir, node->token, "import: field '%.*s' not found, closest field names are:\n%s", (int)str.len, str.ptr, buf);
+                    LOG_ERROR(ctx->ir, node->token, "import: field '"STR_FMT"' not found, closest field names are:\n%s", (int)str.len, str.ptr, buf);
                     return false;
                 }
                 md_array_push(field_indices, match_idx, ctx->ir->arena);
@@ -3913,14 +3913,14 @@ static bool static_check_static_proc(ast_node_t* node, eval_context_t* ctx) {
     }
 
     type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
-    int num_args = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
+    size_t num_args = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
     
     char buf[512];
-    int len = print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
+    print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
         
     LOG_ERROR(ctx->ir, node->token,
-        "Could not find matching static procedure '%.*s' which takes the following argument(s) (%.*s)",
-        (int)node->ident.len, node->ident.ptr, len, buf);
+        "Could not find matching static procedure '"STR_FMT"' which takes the following argument(s): '%s'",
+        STR_ARG(node->ident), buf);
     
     return false;
 }
@@ -3934,15 +3934,16 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     if (!node->proc) {
         result = static_check_children(node, ctx);
         if (result) {
-            const int num_args = (int)md_array_size(node->children);
+            const size_t num_args = md_array_size(node->children);
             const str_t proc_name = node->ident;
 
             // One or more arguments
             ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
             type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
             
-            int arg_len = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
+            size_t arg_len = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
             ASSERT(arg_len == num_args);
+            (void)arg_len;
 
             procedure_match_result_t res = find_procedure_supporting_arg_types(proc_name, arg_type, num_args, true);
             result = result && res.success;
@@ -3953,14 +3954,14 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             } else {
                 if (num_args == 0) {
                     LOG_ERROR(ctx->ir, node->token,
-                        "Could not find matching procedure '%.*s' which takes no arguments", (int)proc_name.len, proc_name.ptr);
+                        "Could not find matching procedure '"STR_FMT"' which takes no arguments", STR_ARG(proc_name));
                 } else {
                     char buf[512];
-                    int len = print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
+                    print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
 
                     LOG_ERROR(ctx->ir, node->token,
-                        "Could not find matching procedure '%.*s' which takes the following argument(s) (%.*s)",
-                        (int)proc_name.len, proc_name.ptr, len, buf);
+                        "Could not find matching procedure '"STR_FMT"' which takes the following argument(s): '%s'",
+                        STR_ARG(proc_name), buf);
                 }
             }
         }
@@ -4179,7 +4180,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
                     arg->value._irange.end = range.end;
                 }
             }
-            if (range.beg <= range.end && 1 <= range.beg && range.end <= element_count(lhs->data)) {
+            if (range.beg <= range.end && 1 <= range.beg && range.end <= (int)element_count(lhs->data)) {
                 ASSERT(lhs->data.type.dim[0] > 0);
                 type_info_t type = lhs->data.type;
                 type.dim[type.len_dim] = range.end - range.beg + 1;
@@ -4218,7 +4219,7 @@ static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* 
     identifier_t* ident = get_identifier(ctx->ir, node->ident);
     if (ident && ident->node) {
         if (ident->node->data.type.base_type == TYPE_UNDEFINED) {
-            LOG_ERROR(ctx->ir, node->token, "Identifier (%.*s) has an unresolved type", ident->name.len, ident->name.ptr);
+            LOG_ERROR(ctx->ir, node->token, "Identifier ("STR_FMT") has an unresolved type", ident->name.len, ident->name.ptr);
         } else {
             node->flags = ident->node->flags;
             if (ident->data) {
@@ -4230,7 +4231,7 @@ static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* 
             return true;
         }
     } else {
-        LOG_ERROR(ctx->ir, node->token, "Unresolved reference to identifier (%.*s)", node->ident.len, node->ident.ptr);
+        LOG_ERROR(ctx->ir, node->token, "Unresolved reference to identifier ("STR_FMT")", node->ident.len, node->ident.ptr);
     }
     return false;
 }
@@ -4739,7 +4740,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
             ir->flags |= (ir->expressions[i]->node->flags & FLAG_IR_PROPAGATION_MASK);
         } else {
-            MD_LOG_DEBUG("Static type checking failed for expression: '%.*s'", (int)ir->expressions[i]->str.len, ir->expressions[i]->str.ptr);
+            MD_LOG_DEBUG("Static type checking failed for expression: '"STR_FMT"'", (int)ir->expressions[i]->str.len, ir->expressions[i]->str.ptr);
             result = false;
         }
     }
@@ -5060,13 +5061,13 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     ASSERT(traj);
     ASSERT(ir);
 
-    const int64_t num_props = md_array_size(eval->properties);
+    const size_t num_props = md_array_size(eval->properties);
     md_script_property_t* props = eval->properties;
 
     // No properties to evaluate!
     if (num_props == 0) return true;
     
-    const int64_t num_expr = md_array_size(ir->eval_targets);
+    const size_t num_expr = md_array_size(ir->eval_targets);
     expression_t** const expr = ir->eval_targets;
     
     //ASSERT(md_array_size(ir->prop_eval_target_indices) == num_props);
@@ -5074,15 +5075,15 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     // coordinate data for reading trajectory frames into
-    const int64_t stride = ALIGN_TO(mol->atom.count, 8);    // Round up allocation size to simd width to allow for vectorized operations
-    const int64_t coord_bytes = stride * 3 * sizeof(float);
+    const size_t stride = ALIGN_TO(mol->atom.count, 8);    // Round up allocation size to simd width to allow for vectorized operations
+    const size_t coord_bytes = stride * 3 * sizeof(float);
     float* init_coords = md_vm_arena_push(&vm_arena, coord_bytes);
     float* curr_coords = md_vm_arena_push(&vm_arena, coord_bytes);
     
     // This data is meant to hold the evaluated expressions
     data_t* data = md_vm_arena_push(&vm_arena, num_expr * sizeof(data_t));
 
-    const uint64_t STACK_RESET_POINT = md_vm_arena_get_pos(&vm_arena);
+    const size_t STACK_RESET_POINT = md_vm_arena_get_pos(&vm_arena);
 
     //int thread_id = (md_thread_id() & 0xFFFF);
     //md_logf(MD_LOG_TYPE_DEBUG, "Starting evaluation on thread %i, range (%i,%i) arena size: %.2f MB", thread_id, (int)frame_beg, (int)frame_end, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
@@ -5146,12 +5147,12 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             ctx.spatial_hash = md_spatial_hash_create_soa(curr_x, curr_y, curr_z, NULL, mol->atom.count, &curr_header.unit_cell, &temp_alloc);
         }
 
-        for (int64_t i = 0; i < num_expr; ++i) {
+        for (size_t i = 0; i < num_expr; ++i) {
             type_info_t type = expr[i]->node->data.type;
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, expr[i]->node, &ctx)) {
                     str_t str = expr[i]->str;
-                    MD_LOG_ERROR("Evaluation error when evaluating the following expression '%.*s', failed to finalize its type", (int)str.len, str.ptr);
+                    MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"', failed to finalize its type", (int)str.len, str.ptr);
                     result = false;
                     goto done;
                 }
@@ -5165,13 +5166,13 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             }
             if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
                 str_t str = expr[i]->str;
-                MD_LOG_ERROR("Evaluation error when evaluating the following expression '%.*s' at frame %i", (int)str.len, str.ptr, (int)f_idx);
+                MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"' at frame %i", (int)str.len, str.ptr, (int)f_idx);
                 result = false;
                 goto done;
             }
         }
 
-        for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
+        for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
             md_script_property_t* prop = &props[p_idx];
 
             // Find data matching property identifier
@@ -5260,7 +5261,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                     const md_256 N = md_mm256_set1_ps((float)(count));
                     const md_256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
 
-                    for (int64_t i = 0; i < prop->data.num_values; i += 8) {
+                    for (size_t i = 0; i < prop->data.num_values; i += 8) {
                         md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(prop->data.values + i), N);
                         md_256 new_val = md_mm256_loadu_ps(values + i);
                         md_mm256_storeu_ps(prop->data.values + i, md_mm256_mul_ps(md_mm256_add_ps(new_val, old_val), scl));
@@ -5278,7 +5279,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         md_mutex_unlock(&eval->frame_mutex);
 
         uint64_t fingerprint = generate_fingerprint();
-        for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
+        for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
             props[p_idx].data.fingerprint = fingerprint;
         }
         
@@ -5363,13 +5364,13 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     md_strb_init(&sb, md_temp_allocator);
 
     char type_buf[128];
-    int type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
-    md_strb_fmt(&sb, "%.*s", type_len, type_buf);
+    size_t type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
+    md_strb_push_cstrl(&sb, type_buf, type_len);
 
     char unit_buf[128];
-    int unit_len = md_unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit);
+    int unit_len = (int)md_unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit);
     if (unit_len) {
-        md_strb_fmt(&sb, " (%.*s)", unit_len, unit_buf);
+        md_strb_fmt(&sb, " ("STR_FMT")", unit_len, unit_buf);
     }
 
     if (node->type == AST_TABLE) {
@@ -5383,12 +5384,12 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
                 continue;
             }
             str_t name = node->table->field_names[idx];
-            md_strb_fmt(&sb, "[%i]: \"%.*s\"", (int)(i + 1), (int)name.len, name.ptr);
+            md_strb_fmt(&sb, "[%i]: \""STR_FMT"\"", (int)(i + 1), STR_ARG(name));
             md_unit_t unit = node->table->field_units[idx];
             if (!md_unit_empty(unit) && !md_unit_unitless(unit)) {
                 str_t unit_str = md_unit_to_string(unit, md_temp_allocator);
                 if (!str_empty(unit_str)) {
-                    md_strb_fmt(&sb, " (%.*s)", (int)unit_str.len, unit_str.ptr);
+                    md_strb_fmt(&sb, " ("STR_FMT")", STR_ARG(unit_str));
                 }
             }
             if (!md_unit_equal(node->data.unit, unit)) {
@@ -5403,7 +5404,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
         if (node->data.type.base_type != TYPE_BITFIELD) {
             md_strb_push_char(&sb, '\n');
             char val_buf[128] = {0};
-            int val_len = print_data_value(val_buf, sizeof(val_buf), node->data);
+            size_t val_len = print_data_value(val_buf, sizeof(val_buf), node->data);
             md_strb_push_cstrl(&sb, val_buf, val_len);
         }
     } else {
@@ -5533,21 +5534,21 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
     return ir->compile_success;
 }
 
-bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, int64_t count) {
+bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, size_t count) {
     if (!validate_ir(ir)) {
         MD_LOG_ERROR("Script Add Bitfield Identifiers: IR is not valid");
         return false;
     }
 
     if (bitfield_identifiers && count > 0) {
-        for (int64_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count; ++i) {
             str_t name = bitfield_identifiers[i].identifier_name;
             if (!md_script_identifier_name_valid(name)) {
-                MD_LOG_ERROR("Script Add Bitfield Identifiers: Invalid identifier name: '%.*s')", (int)name.len, name.ptr);
+                MD_LOG_ERROR("Script Add Bitfield Identifiers: Invalid identifier name: '"STR_FMT"')", (int)name.len, name.ptr);
                 return false;
             }
             if (find_identifier(name, ir->identifiers, md_array_size(ir->identifiers))) {
-                MD_LOG_ERROR("Script Add Bitfield Identifiers: Identifier name collision: '%.*s')", (int)name.len, name.ptr);
+                MD_LOG_ERROR("Script Add Bitfield Identifiers: Identifier name collision: '"STR_FMT"')", (int)name.len, name.ptr);
                 return false;
             }
             
@@ -5581,7 +5582,7 @@ void md_script_ir_clear(md_script_ir_t* ir) {
     }
 }
 
-int64_t md_script_ir_num_warnings(const md_script_ir_t* ir) {
+size_t md_script_ir_num_warnings(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return 0;
     }
@@ -5595,7 +5596,7 @@ const md_log_token_t* md_script_ir_warnings(const md_script_ir_t* ir) {
     return ir->warnings;
 }
 
-int64_t md_script_ir_num_errors(const md_script_ir_t* ir) {
+size_t md_script_ir_num_errors(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return 0;
     }
@@ -5609,7 +5610,7 @@ const md_log_token_t* md_script_ir_errors(const md_script_ir_t* ir) {
     return ir->errors;
 }
 
-int64_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir) {
+size_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return 0;
     }
@@ -5637,7 +5638,7 @@ uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir) {
     return ir->fingerprint;
 }
 
-int64_t md_script_ir_num_identifiers(const md_script_ir_t* ir) {
+size_t md_script_ir_num_identifiers(const md_script_ir_t* ir) {
     if (!validate_ir(ir)) {
         return 0;
     }
@@ -5810,7 +5811,7 @@ str_t md_script_eval_label(const md_script_eval_t* eval) {
 }
 
 
-int64_t md_script_eval_num_properties(const md_script_eval_t* eval) {
+size_t md_script_eval_num_properties(const md_script_eval_t* eval) {
     if (validate_eval(eval)) {        
         return md_array_size(eval->properties);
     }
@@ -5874,7 +5875,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
 
     if (ir->errors) {
         for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
-            MD_LOG_ERROR("%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
+            MD_LOG_ERROR(""STR_FMT"", ir->errors[i].text.len, ir->errors[i].text.ptr);
         }
     }
 
@@ -5883,7 +5884,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
     return result;
 }
 
-bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_molecule_t* mol, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, int err_cap, md_allocator_i* alloc) {
+bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_molecule_t* mol, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
     ASSERT(bitfields);
     ASSERT(mol);
     ASSERT(alloc);
@@ -5965,8 +5966,9 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     if (err_buf) {
         size_t len = 0;
         for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
-            int64_t space_left = MAX(0, (int64_t)err_cap - len);
-            if (space_left) len += snprintf(err_buf + len, (size_t)space_left, "%.*s", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
+            size_t space_left = err_cap - MIN(len, err_cap);
+            if (!space_left) break;
+            len += snprintf(err_buf + len, space_left, ""STR_FMT"", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
         }
     }
 
@@ -5974,7 +5976,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
     return success;
 }
 
-bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mol, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, int err_cap) {
+bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mol, const struct md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap) {
     ASSERT(mol);
 
     if (!dst_bf || !md_bitfield_validate(dst_bf)) {
@@ -6088,7 +6090,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
         size_t len = 0;
         for (size_t i = 0; i < md_array_size(ir->errors); ++i) {
             int space_left = MAX(0, (int)(err_cap - len));
-            if (space_left) len += snprintf(err_buf + len, (size_t)space_left, "%.*s\n", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
+            if (space_left) len += snprintf(err_buf + len, (size_t)space_left, ""STR_FMT"\n", (int)ir->errors[i].text.len, ir->errors[i].text.ptr);
         }
     }
 

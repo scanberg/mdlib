@@ -56,7 +56,7 @@ typedef struct md_pdb_model_t {
     // These are just meta data used for extracting trajectory information
     int32_t beg_atom_index; // Inclusive
     int32_t end_atom_index; // Exclusive
-    int64_t byte_offset;    
+    size_t byte_offset;    
 } md_pdb_model_t;
 
 typedef struct md_pdb_helix_t {

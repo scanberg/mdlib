@@ -30,7 +30,7 @@ extern "C" {
 typedef struct pdb_trajectory_t {
     uint64_t magic;
     md_file_o* file;
-    uint64_t filesize;
+    size_t filesize;
     int64_t* frame_offsets;
     md_unit_cell_t unit_cell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
@@ -38,7 +38,7 @@ typedef struct pdb_trajectory_t {
     md_mutex_t mutex;
 } pdb_trajectory_t;
 
-static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64_t beg, int64_t end) {
+static inline void copy_str_field(char* dst, size_t dst_size, str_t line, size_t beg, size_t end) {
     str_copy_to_char_buf(dst, dst_size, str_trim(str_substr(line, beg - 1, end-beg + 1)));
 }
 
@@ -173,18 +173,6 @@ static inline struct md_pdb_cryst1_t extract_cryst1(str_t line) {
 
 static inline void append_connect(md_pdb_connect_t* connect, const md_pdb_connect_t* other) {
     MEMCPY(&connect->atom_serial[5], &other->atom_serial[1], 3 * sizeof(int32_t));
-}
-
-static inline int32_t count_pdb_coordinate_entries(str_t str) {
-    int32_t count = 0;
-    str_t line;
-    while (str_extract_line(&line, &str)) {
-        if (line.len < 6) continue;
-        if ((str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6))) {
-            count += 1;
-        }
-    }
-    return count;
 }
 
 bool pdb_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
@@ -331,7 +319,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
             // This is a bit nasty, we want to get the correct offset to the beginning of the current line.
             // Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
             // all the way back in case there were skipped \r characters.
-            const int64_t offset = md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr);
+            const int64_t offset = (size_t)MAX(0, md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr));
             md_pdb_model_t model = {
                 .serial = (int32_t)parse_int(str_substr(line, 6, SIZE_MAX)),
                 .beg_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1,
@@ -427,7 +415,7 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i*
     bool result = false;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        const int64_t cap = MEGABYTES(1);
+        const size_t cap = MEGABYTES(1);
         char* buf = md_alloc(md_heap_allocator, cap);
         
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
@@ -684,7 +672,7 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
 static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        int64_t cap = MEGABYTES(1);
+        const size_t cap = MEGABYTES(1);
         char *buf = md_alloc(md_heap_allocator, cap);
         ASSERT(buf);
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
@@ -724,11 +712,11 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     md_allocator_i* alloc = md_temp_allocator;
 
     bool result = true;
-    const int64_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
+    const size_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
         // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
         void* frame_data = md_alloc(alloc, frame_size);
-        const int64_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
+        const size_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
             MD_LOG_ERROR("Failed to read the expected size");
             md_free(alloc, frame_data, frame_size);
@@ -845,7 +833,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         return false;
     }
 
-    const int64_t filesize = md_file_size(file);
+    const size_t filesize = md_file_size(file);
     md_file_close(file);
 
     char buf[1024] = "";

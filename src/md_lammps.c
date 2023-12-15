@@ -29,15 +29,15 @@ typedef struct mass_entry_t {
 	float   mass;
 } mass_entry_t;
 
-static int interpret_format(int mappings[ARRAY_SIZE(field_names)], const char* atom_format) {
+static size_t interpret_format(int mappings[ARRAY_SIZE(field_names)], const char* atom_format) {
 	MEMSET(mappings, -1, sizeof(int) * ARRAY_SIZE(field_names));
 
 	str_t str = str_trim(str_from_cstr(atom_format));
 	str_t tokens[16];
-	const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &str);
-	for (int64_t i = 0; i < num_tokens; ++i) {
+	const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &str);
+	for (size_t i = 0; i < num_tokens; ++i) {
 		const str_t token = tokens[i];
-		for (int64_t j = 0; j < ARRAY_SIZE(field_names); ++j) {
+		for (size_t j = 0; j < ARRAY_SIZE(field_names); ++j) {
 			if (str_eq(token, str_from_cstr(field_names[j]))) {
 				if (mappings[j] != -1) {
 					MD_LOG_ERROR("Lammps atom format: Contains duplicate field name '%.*s'", token.len, token.ptr);
@@ -50,7 +50,7 @@ static int interpret_format(int mappings[ARRAY_SIZE(field_names)], const char* a
 	}
 
 	// Check required mappings
-	for (int i = 0; i < ARRAY_SIZE(required_fields); ++i) {
+	for (size_t i = 0; i < ARRAY_SIZE(required_fields); ++i) {
 		int idx = required_fields[i];
 		if (mappings[idx] == -1) {
 			MD_LOG_ERROR("Lammps atom format: Missing required identifier '%s'", field_names[idx]);
@@ -58,7 +58,7 @@ static int interpret_format(int mappings[ARRAY_SIZE(field_names)], const char* a
 		}
 	}
 
-	return (int)num_tokens;
+	return num_tokens;
 }
 
 static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffered_reader_t* reader, const int mappings[]) {
@@ -72,7 +72,7 @@ static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffe
 	str_t line;
 	size_t read_atoms = 0;
 	while (read_atoms < num_atoms && md_buffered_reader_extract_line(&line, reader)) {
-		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 5) {
 			MD_LOG_ERROR("Failed to parse atom line, expected at least 5 tokens, got %i", (int)num_tok);
 			return false;
@@ -96,7 +96,7 @@ static bool parse_bonds(md_lammps_bond_t out_bonds[], size_t bond_cap, md_buffer
 	str_t line;
 	size_t num_bonds = 0;
 	while (num_bonds < bond_cap && md_buffered_reader_extract_line(&line, reader)) {
-		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 4) {
 			MD_LOG_ERROR("Failed to parse bond line, expected 4 tokens, got %i", (int)num_tok);
 			return false;
@@ -117,7 +117,7 @@ static bool parse_angles(md_lammps_angle_t out_angles[], size_t angle_cap, md_bu
 	str_t line;
 	size_t num_angles = 0;
 	while (num_angles < angle_cap && md_buffered_reader_extract_line(&line, reader)) {
-		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 5) {
 			MD_LOG_ERROR("Failed to parse angle line, expected 5 tokens, got %i", (int)num_tok);
 			return false;
@@ -139,7 +139,7 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedra
 	str_t line;
 	size_t num_dihedrals = 0;
 	while (num_dihedrals < dihedral_cap && md_buffered_reader_extract_line(&line, reader)) {
-		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 6) {
 			MD_LOG_ERROR("Failed to parse dihedral line, expected 6 tokens, got %i", (int)num_tok);
 			return false;
@@ -162,15 +162,15 @@ static bool parse_masses(md_array(float)* mass_type_table, size_t num_atom_types
 	str_t line;
 	size_t num_mass = 0;
 	while (num_mass < num_atom_types && md_buffered_reader_extract_line(&line, reader)) {
-		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 2) {
 			MD_LOG_ERROR("Failed to parse mass line, expected 2 tokens, got %i", (int)num_tok);
 			return false;
 		}
 		int   type = (int)parse_int(tok[0]);
 		float mass = (float)parse_float(tok[1]);
-		if (type >= md_array_size(*mass_type_table)) {
-			md_array_resize(*mass_type_table, type, alloc);
+		if (type >= (int)md_array_size(*mass_type_table)) {
+			md_array_resize(*mass_type_table, (size_t)type, alloc);
 		}
 		(*mass_type_table)[type] = mass;
 		num_mass += 1;
@@ -186,7 +186,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	str_t tok[16];
 
 	int mappings[ARRAY_SIZE(field_names)];
-	int num_fields = interpret_format(mappings, format);
+	size_t num_fields = interpret_format(mappings, format);
 	if (num_fields == 0) {
 		return false;
 	}
@@ -205,7 +205,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 
 	// Parse headers and sections
 	while (md_buffered_reader_extract_line(&line, reader)) {
-		const int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
+		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok > 0 && str_eq(tok[0], STR("Atoms"))) {
 			if (!data->num_atoms) {
 				MD_LOG_ERROR("Encountered Atom entries, but number of atoms were not set or zero");
@@ -219,7 +219,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (mass_table) {
 				for (size_t i = 0; i < data->num_atoms; ++i) {
 					int32_t type = data->atoms[i].type;
-					data->atoms[i].mass = type < md_array_size(mass_table) ? mass_table[data->atoms[i].type] : 0.0f;
+					data->atoms[i].mass = type < (int)md_array_size(mass_table) ? mass_table[data->atoms[i].type] : 0.0f;
 				}
 			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR("Bonds"))) {
@@ -334,7 +334,7 @@ bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const cha
 	bool result = false;
 	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
 	if (file) {
-		const int64_t cap = MEGABYTES(1);
+		const size_t cap = MEGABYTES(1);
 		char* buf = md_alloc(md_heap_allocator, cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);

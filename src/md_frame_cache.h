@@ -22,7 +22,7 @@ struct md_slot_header_t;
 
 typedef struct md_frame_cache_t {
     struct {
-        int64_t count;
+        size_t count;
         struct md_semaphore_t*   lock;
         struct md_slot_header_t* header;
         struct md_frame_data_t*  data;
@@ -42,13 +42,13 @@ extern "C" {
 
 // Initialize a frame cache with supplied trajectory, allocator and number of cache frames it should at least contain.
 // The actual number of frames which is allocated and used may differ from the supplied number depending on the associativity of the cache.
-bool md_frame_cache_init(md_frame_cache_t* cache, struct md_trajectory_i* traj, struct md_allocator_i* alloc, int64_t num_cache_frames);
+bool md_frame_cache_init(md_frame_cache_t* cache, struct md_trajectory_i* traj, struct md_allocator_i* alloc, size_t num_cache_frames);
 void md_frame_cache_free(md_frame_cache_t* cache);
 
 // Clears the cache by whiping the headers
 void md_frame_cache_clear(md_frame_cache_t* cache);
 
-int64_t md_frame_cache_num_frames(const md_frame_cache_t* cache);
+size_t md_frame_cache_num_frames(const md_frame_cache_t* cache);
 
 // This will load the data from a frame into the memory of the supplied pointers.
 // The pointers are each optional and if the value of NULL is passed for that pointer, then no data will be written to that adress.

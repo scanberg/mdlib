@@ -635,10 +635,10 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
 
             // Heuristic cases
 
-            int num_alpha = 0;
+            size_t num_alpha = 0;
             while (num_alpha < original.len && is_alpha(original.ptr[num_alpha])) ++num_alpha;
             
-            int num_digits = 0;
+            size_t num_digits = 0;
             str_t digits = str_substr(original, num_alpha, SIZE_MAX);
             while (num_digits < digits.len && is_digit(digits.ptr[num_digits])) ++num_digits;
 
@@ -824,7 +824,7 @@ static inline bool cmp2(const char* str, const char* ref) {
 bool md_util_backbone_atoms_extract_from_residue_idx(md_backbone_atoms_t* backbone_atoms, md_residue_idx_t res_idx, const md_molecule_t* mol) {
     ASSERT(backbone_atoms);
     ASSERT(mol);
-    if (res_idx < 0 || mol->residue.count <= res_idx) return false;
+    if (res_idx < 0 || (int)mol->residue.count <= res_idx) return false;
     md_range_t res = md_residue_atom_range(mol->residue, res_idx);
 
     const md_label_t* types = mol->atom.type;
@@ -887,7 +887,7 @@ static inline bool is_sheet(const md_molecule_t* mol, md_range_t bb_range, int i
 // doi:10.1093/nar/gki524
 bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structure[], size_t capacity, const struct md_molecule_t* mol) {
     if (!secondary_structure) return false;
-    if (capacity < 0) return false;
+    if (capacity == 0) return false;
 
     MEMSET(secondary_structure, 0, capacity * sizeof(md_secondary_structure_t));
 
@@ -956,7 +956,7 @@ static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
 
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_molecule_t* mol) {
     if (!backbone_angles) return false;
-    if (capacity < 0) return false;
+    if (capacity == 0) return false;
 
     MEMSET(backbone_angles, 0, sizeof(md_backbone_angles_t) * capacity);
 
@@ -992,7 +992,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     ASSERT(ramachandran_types);
     MEMSET(ramachandran_types, MD_RAMACHANDRAN_TYPE_UNKNOWN, sizeof(md_ramachandran_type_t) * capacity);
 
-    if (capacity < 0) return false;
+    if (capacity == 0) return false;
     if (mol->backbone.count == 0) return false;
     if (mol->residue.count == 0) return false;
 
@@ -1374,13 +1374,7 @@ md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom, const 
     ASSERT(alloc);
 
     md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
-
     md_bond_data_t bond = {0};
-
-    if (atom->count < 0) {
-        MD_LOG_ERROR("Incorrect number of atoms: %i", (int)atom->count);
-        goto done;
-    }
     
     if (!atom->x || !atom->y || !atom->z) {
         MD_LOG_ERROR("Missing atom field (x/y/z)");
@@ -1397,7 +1391,7 @@ md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom, const 
     if (res->count > 0) {
         md_range_t prev_range = md_residue_atom_range(*res, 0);
         find_bonds_in_ranges(&bond, atom, cell, prev_range, prev_range, 0, alloc, temp_alloc);
-        for (int i = 1; i < res->count; ++i) {
+        for (int64_t i = 1; i < (int64_t)res->count; ++i) {
             md_range_t curr_range = md_residue_atom_range(*res, i);
 			find_bonds_in_ranges(&bond, atom, cell, prev_range, curr_range, MD_FLAG_INTER_BOND, alloc, temp_alloc);
             find_bonds_in_ranges(&bond, atom, cell, curr_range, curr_range, 0,                  alloc, temp_alloc);
@@ -1642,10 +1636,10 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
     md_flags_t prev_flags = 0;
     // We iterate up to res->count + 1 to ensure that the last residue is also included
     // And it will automatically not be bonded to prev as its bit is zero and all is well
-    for (int i = 0; i <= res->count; ++i) {
+    for (int i = 0; i <= (int)res->count; ++i) {
         str_t id = {0};
         md_flags_t flags = 0;
-        if (i < res->count) {
+        if (i < (int)res->count) {
             const md_range_t atom_range = md_residue_atom_range(*res, i);
             id = atom->chainid ? LBL_TO_STR(atom->chainid[atom_range.beg]) : (str_t){0};
             flags = res->flags[i];
@@ -1664,7 +1658,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
             }
             beg_idx = i;
 
-            if (i == res->count) {
+            if (i == (int)res->count) {
                 md_array_push(chain->atom_offset, res->atom_offset[i - 1], alloc);
                 md_array_push(chain->res_offset, end_idx, alloc);
             }
@@ -1678,7 +1672,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
 
     for (size_t i = 0; i < chain->count; ++i) {
         const md_range_t atom_range = md_chain_atom_range(*chain, i);
-        for (size_t j = atom_range.beg; j < atom_range.end; ++j) {
+        for (int j = atom_range.beg; j < atom_range.end; ++j) {
             atom->chain_idx[j] = (md_chain_idx_t)i;
         }
     }
@@ -1692,18 +1686,8 @@ bool md_util_compute_atom_valence(md_valence_t atom_valence[], size_t atom_count
         return false;
     }
 
-    if (atom_count < 0) {
-        MD_LOG_ERROR("Invalid input: atom count");
-        return false;
-    }
-
     if (!bond_pairs) {
         MD_LOG_ERROR("Missing input: bond pairs");
-        return false;
-    }
-
-    if (bond_count < 0) {
-        MD_LOG_ERROR("Invalid input: bond count");
         return false;
     }
 
@@ -1894,7 +1878,7 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
     uint64_t processed_ring_elements = 0;
 #endif
 
-    for (int i = 0; i < mol->atom.count; ++i) {
+    for (int i = 0; i < (int)mol->atom.count; ++i) {
         // Skip any atom that has already been colored in the previous search
         if (color[i] == current_color) continue;
 
@@ -2028,7 +2012,7 @@ md_index_data_t md_util_compute_structures(const md_molecule_t* mol, struct md_a
     md_array(int) indices = 0;
     md_array_ensure(indices, 256, temp_alloc);
 
-    for (int i = 0; i < mol->atom.count; ++i) {
+    for (int i = 0; i < (int)mol->atom.count; ++i) {
         // Skip any atom which has already been touched
         if (test_bit(visited, i)) continue;
 
@@ -2086,9 +2070,8 @@ void md_util_grow_mask_by_bonds(md_bitfield_t* mask, const md_molecule_t* mol, s
 
     fifo_t queue = fifo_create(64, temp_alloc);
 
-    int64_t num_atoms = mol->atom.count;
-    uint8_t* depth = md_alloc(temp_alloc, num_atoms * sizeof(uint8_t));
-    MEMSET(depth, 0, num_atoms * sizeof(uint8_t));
+    uint8_t* depth = md_alloc(temp_alloc, mol->atom.count * sizeof(uint8_t));
+    MEMSET(depth, 0, mol->atom.count * sizeof(uint8_t));
 
     {
         md_bitfield_iter_t it = md_bitfield_iter_create(mask);
@@ -2098,7 +2081,7 @@ void md_util_grow_mask_by_bonds(md_bitfield_t* mask, const md_molecule_t* mol, s
         }
     }
     
-    for (int j = 0; j < num_indices; ++j) {
+    for (size_t j = 0; j < num_indices; ++j) {
         int i = indices[j];
 
         fifo_clear(&queue);
@@ -2368,6 +2351,7 @@ static vec3_t compute_com_periodic_trig_vec4(const vec4_t* in_xyzw, const int32_
     return com;
 }
 
+#if 0
 // Regular version, deperiodization is done with respect to the previous element
 static vec3_t compute_com_periodic_reg_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, vec3_t ext) {
     const vec4_t period = vec4_from_vec3(ext, 0.0f);
@@ -2387,6 +2371,7 @@ static vec3_t compute_com_periodic_reg_vec4(const vec4_t* in_xyzw, const int32_t
     vec3_t com = vec3_from_vec4(vec4_div(acc_xyzw, vec4_splat_w(acc_xyzw)));
     return com;
 }
+#endif
 
 #define TRIG_ATAN2_R2_THRESHOLD 1.0e-8
 
@@ -3353,7 +3338,7 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
 #endif
 
     if (i == 0) {
-        int64_t idx = in_idx ? in_idx[i] : i;
+        int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
         acc_x = in_x[idx];
         acc_w = in_w ? in_w[idx] : 1.0;
     }
@@ -3567,7 +3552,7 @@ vec3_t md_util_compute_com_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
     // @TODO: Vectorize with full register width
     vec4_t sum_xyzw = {0,0,0,0};
     for (size_t i = 0; i < count; ++i) {
-        int64_t idx = in_idx ? in_idx[i] : i;
+        int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
         vec4_t xyzw = in_xyzw[idx];
         vec4_t www1 = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
         sum_xyzw = vec4_add(sum_xyzw, vec4_mul(xyzw, www1));
@@ -4164,11 +4149,6 @@ static bool md_util_pbc_ortho(float* x, float* y, float* z, const int32_t* indic
         return false;
     }
 
-    if (count < 0) {
-        MD_LOG_ERROR("Invalid count");
-        return false;
-    }
-
     if (box_ext.x < 0 || box_ext.y < 0 || box_ext.z < 0) {
         MD_LOG_ERROR("Invalid PBC extent: One or more components were negative.");
         return false;
@@ -4207,11 +4187,6 @@ static bool md_util_pbc_ortho(float* x, float* y, float* z, const int32_t* indic
 static bool md_util_pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
-        return false;
-    }
-
-    if (count < 0) {
-        MD_LOG_ERROR("Invalid count");
         return false;
     }
 
@@ -5253,7 +5228,7 @@ static bool graph_vertex_has_connection(const graph_t* g, int vidx, int other_vi
 
 static bool graph_equivalent(const graph_t* a, const graph_t* b) {
 	if (a->vertex_count != b->vertex_count) return false;
-	for (int i = 0; i < a->vertex_count; ++i) {
+	for (int64_t i = 0; i < (int64_t)a->vertex_count; ++i) {
 		if (graph_vertex_type(a, i) != graph_vertex_type(b, i)) return false;
 		if (graph_vertex_edge_count(a, i) != graph_vertex_edge_count(b, i)) return false;
 
@@ -6021,9 +5996,9 @@ static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* h
 
     // Create list of starting candidate pairs
     md_array(pair_t) start_candidates = 0;
-    for (int i = 0; i < needle->vertex_count; ++i) {
+    for (int i = 0; i < (int)needle->vertex_count; ++i) {
         if (graph_vertex_type(needle, i) != start_type) continue;
-        for (int j = 0; j < haystack->vertex_count; ++j) {
+        for (int j = 0; j < (int)haystack->vertex_count; ++j) {
             if (graph_vertex_type(haystack, j) != start_type) continue;
             md_array_push(start_candidates, ((pair_t){i,j}), temp_alloc);
         }

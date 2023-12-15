@@ -238,8 +238,8 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
 // The indices which maps from the source structure to the target structure is written to dst_idx_map
 // The returned value is the number of common atoms
 // It is assumed that the dst_idx_map has the same length as src_count
-int64_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
-int64_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, int64_t trg_count, const int* src_indices, int64_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+int64_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+int64_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

@@ -422,8 +422,8 @@ static int64_t trr_read_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* 
     int est_nframes = (int)(filesize / ((int64_t)(framebytes + TRR_MIN_HEADER_SIZE)) + 1); /* must be at least 1 for successful growth */
 
     /* Allocate memory for the frame index array */
-    md_array_ensure(*offsets, est_nframes, alloc);
-    md_array_ensure(*times,   est_nframes, alloc);
+    md_array_ensure(*offsets, (size_t)est_nframes, alloc);
+    md_array_ensure(*times,   (size_t)est_nframes, alloc);
     md_array_push(*offsets, 0, alloc);
 
     int64_t num_frames = 1;
@@ -500,6 +500,7 @@ static size_t trr_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_i
         // Since we use a shared file handle internally
         xdr_seek(trr->file, beg, SEEK_SET);
         const size_t bytes_read = xdr_read(trr->file, frame_data_ptr, frame_size);
+        (void)bytes_read;
         md_mutex_unlock(&trr->mutex);
         ASSERT(frame_size == bytes_read);
     }
@@ -566,10 +567,11 @@ bool trr_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     md_allocator_i* alloc = md_heap_allocator;
 
     bool result = true;
-    const int64_t frame_size = trr_fetch_frame_data(inst, frame_idx, NULL);
+    const size_t frame_size = trr_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
         void* frame_data = md_alloc(alloc, frame_size);
-        const int64_t read_size = trr_fetch_frame_data(inst, frame_idx, frame_data);
+        const size_t read_size = trr_fetch_frame_data(inst, frame_idx, frame_data);
+        (void)read_size;
         ASSERT(read_size == frame_size);
 
         result = trr_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);

@@ -67,12 +67,12 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
             if (is_float(tok)) {
                 md_array_push(csv->field_values[i], (float)parse_float(tok), alloc);
             } else {
-                MD_LOG_ERROR("CSV: Unable to parse float from token: '%.*s'", (int)tok.len, tok.ptr);
+                MD_LOG_ERROR("CSV: Unable to parse float from token: '"STR_FMT"'", STR_ARG(tok));
                 return false;
             }
         }
         if (i < num_fields || !str_empty(line)) {
-            MD_LOG_ERROR("CSV: Number of columns in row %i does not match the first row", (int)num_fields);
+            MD_LOG_ERROR("CSV: Number of columns in row %zu does not match the first row", num_fields);
             return false;
         }
     }
@@ -98,7 +98,7 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
         md_free(md_heap_allocator, buf, cap);
         return result;
     } else {
-        MD_LOG_ERROR("CSV: Failed to open file '%.*s'", (int)in_path.len, in_path.ptr);
+        MD_LOG_ERROR("CSV: Failed to open file '"STR_FMT"'", STR_ARG(in_path));
     }
     return false;
 }
@@ -106,7 +106,7 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
 static void write(md_strb_t* sb, const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
     if (field_names) {
         for (size_t i = 0; i < num_fields; ++i) {
-            md_strb_fmt(sb, "%.*s", (int)field_names[i].len, field_names[i].ptr);
+            md_strb_fmt(sb, STR_FMT, STR_ARG(field_names[i]));
             const char c = i < num_fields - 1 ? ',' : '\n';
             md_strb_push_char(sb, c);
         }

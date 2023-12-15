@@ -29,15 +29,16 @@ typedef struct md_xyz_coordinate_t {
 
 typedef struct md_xyz_model_t {
 	size_t byte_offset;
-	int64_t beg_coord_index;
-	int64_t end_coord_index;
+	uint32_t beg_coord_index;
+	uint32_t end_coord_index;
 	float cell[3][3];
-	char comment[88];
+	char comment[72];		// This is dimwitted
 } md_xyz_model_t;
 
 typedef struct md_xyz_data_t {
 	size_t num_coordinates;
 	md_xyz_coordinate_t* coordinates;
+
 	size_t num_models;
 	md_xyz_model_t* models;
 } md_xyz_data_t;

@@ -167,7 +167,7 @@ static int find_best_matching_predefined(md_unit_t unit) {
     return best_match_idx;
 }
 
-static int print_exponent(char* buf, int cap, int exp) {
+static size_t print_exponent(char* buf, size_t cap, int exp) {
     switch (exp) {
     case 0: return 0;
     case 1: return 0;
@@ -350,7 +350,7 @@ bool md_unit_convert_inplace_f(float* values, int64_t num_values, md_unit_t cur_
 }
 
 
-#define PRINT(...) len += snprintf(buf + len, MAX(0, cap - len), ##__VA_ARGS__)
+#define PRINT(...) len += snprintf(buf + len, cap - MIN(len, cap), ##__VA_ARGS__)
 
 md_unit_t mask_pos(md_unit_t unit) {
     md_unit_t unit_pos = {
@@ -404,8 +404,8 @@ uint8_t base_count(md_unit_t unit) {
     return count;
 }
 
-int internal_print_dims_SI(char* buf, int cap, md_unit_t unit) {
-    int len = 0;
+size_t internal_print_dims_SI(char* buf, size_t cap, md_unit_t unit) {
+    size_t len = 0;
     if (unit.base.dim.length != 0) {
         PRINT("m");
         len += print_exponent(buf + len, cap - len, unit.base.dim.length);
@@ -441,8 +441,8 @@ int internal_print_dims_SI(char* buf, int cap, md_unit_t unit) {
     return len;
 }
 
-int internal_print(char* buf, int cap, md_unit_t unit) {
-    int len = 0;
+size_t internal_print(char* buf, size_t cap, md_unit_t unit) {
+    size_t len = 0;
 
     if (md_unit_empty(unit) || md_unit_unitless(unit)) {
         return 0;
@@ -456,7 +456,7 @@ int internal_print(char* buf, int cap, md_unit_t unit) {
     // Try to match against predefined units (exact)
     str_t exact = find_name_from_predefined(unit);
     if (!str_empty(exact)) {
-        PRINT("%.*s", (int)exact.len, exact.ptr);
+        PRINT(STR_FMT, STR_ARG(exact));
         return len;
     }
 
@@ -464,13 +464,13 @@ int internal_print(char* buf, int cap, md_unit_t unit) {
     {
         str_t str = find_name_from_predefined(md_unit_inv(unit));
         if (!str_empty(str)) {
-            PRINT("1/%.*s", (int)str.len, str.ptr);
+            PRINT("1/"STR_FMT, STR_ARG(str));
             return len;
         }
     }
 
     // Try to match find an exact matching base and see if we can apply a prefix
-    for (int i = 0; i < (int)ARRAY_SIZE(predefined_units); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(predefined_units); ++i) {
         if (md_unit_base_equal(unit, predefined_units[i].unit)) {
             // We found a matching base, we just need to work out a matching prefix scaling
             str_t str  = predefined_units[i].str;
@@ -503,7 +503,7 @@ int internal_print(char* buf, int cap, md_unit_t unit) {
                 }
             }
 
-            PRINT("1/%.*s%.*s", (int)prefix.len, prefix.ptr, (int)str.len, str.ptr);
+            PRINT("1/"STR_FMT""STR_FMT, STR_ARG(prefix), STR_ARG(str));
             return len;
         }
     }
@@ -512,28 +512,28 @@ int internal_print(char* buf, int cap, md_unit_t unit) {
     {
         md_unit_t original_unit = unit;
 
+        size_t num_len = 0;
+        size_t den_len = 0;
         int num_arr[32];
-        int num_count = 0;
         int den_arr[32];
-        int den_count = 0;
-        for (int i = 0; i < (int)ARRAY_SIZE(num_arr); ++i) {
+        for (size_t i = 0; i < ARRAY_SIZE(num_arr); ++i) {
             int idx = find_best_matching_predefined(unit);
             if (idx == -1) {
                 break;
             }
-            num_arr[num_count++] = idx;
+            num_arr[num_len++] = idx;
             unit = md_unit_div(unit, predefined_units[idx].unit);
             if (unit.base.raw_bits == 0) {
                 break;
             }
         }
         if (unit.base.raw_bits != 0) {
-            for (int i = 0; i < (int)ARRAY_SIZE(den_arr); ++i) {
+            for (size_t i = 0; i < ARRAY_SIZE(den_arr); ++i) {
                 int idx = find_best_matching_predefined(md_unit_inv(unit));
                 if (idx == -1) {
                     break;
                 }
-                den_arr[den_count++] = idx;
+                den_arr[den_len++] = idx;
                 unit = md_unit_mul(unit, predefined_units[idx].unit);
                 if (unit.base.raw_bits == 0) {
                     break;
@@ -551,18 +551,18 @@ int internal_print(char* buf, int cap, md_unit_t unit) {
                 }
             }
 
-            PRINT("%.*s", (int)prefix.len, prefix.ptr);
-            for (int i = 0; i < num_count; ++i) {
+            PRINT(STR_FMT, STR_ARG(prefix));
+            for (size_t i = 0; i < num_len; ++i) {
                 int idx = num_arr[i];
                 str_t str = predefined_units[idx].str;
-                PRINT("%.*s", (int)str.len, str.ptr);
+                PRINT(STR_FMT, STR_ARG(str));
             }
-            if (den_count > 0) {
+            if (den_len > 0) {
                 PRINT("/");
-                for (int i = 0; i < den_count; ++i) {
+                for (size_t i = 0; i < den_len; ++i) {
                     int idx = den_arr[i];
                     str_t str = predefined_units[idx].str;
-                    PRINT("%.*s", (int)str.len, str.ptr);
+                    PRINT(STR_FMT, STR_ARG(str));
                 }
             }
             return len;
@@ -575,7 +575,7 @@ int internal_print(char* buf, int cap, md_unit_t unit) {
     {
         str_t prefix = find_prefix_str_from_value((float)unit.mult);
         if (!str_empty(prefix)) {
-            PRINT("%.*s", (int)prefix.len, prefix.ptr);
+            PRINT(STR_FMT, STR_ARG(prefix));
         }
         else if (unit.mult != 1.0) {
             PRINT("%f*", unit.mult);
@@ -591,7 +591,7 @@ int internal_print(char* buf, int cap, md_unit_t unit) {
     return len;
 }
 
-int md_unit_print(char* buf, int cap, md_unit_t unit) {
+size_t md_unit_print(char* buf, size_t cap, md_unit_t unit) {
     return internal_print(buf, cap, unit);
 }
 
@@ -599,7 +599,7 @@ str_t md_unit_to_string(md_unit_t unit, struct md_allocator_i* alloc) {
     str_t str = {0};
 
     char buf[128];
-    int len = md_unit_print(buf, sizeof(buf), unit);
+    size_t len = md_unit_print(buf, sizeof(buf), unit);
     if (len > 0) {
         str = str_copy((str_t){buf, len}, alloc);
     }

@@ -648,6 +648,7 @@ void md_vm_release(void* ptr, size_t size) {
     //ASSERT(result == 0);
     result = munmap(ptr, gb_snapped_size);
     ASSERT(result == 0);
+    (void)result;
 #else
     ASSERT(false);
 #endif
@@ -661,6 +662,7 @@ void md_vm_commit(void* ptr, size_t size) {
 #elif MD_PLATFORM_UNIX
     int result = mprotect(ptr, page_snapped_size, PROT_READ | PROT_WRITE);
     ASSERT(result == 0);
+    (void)result;
 #else
     ASSERT(false);
 #endif
@@ -679,6 +681,7 @@ void md_vm_decommit(void* ptr, uint64_t size) {
     ASSERT(result == 0);
     result = madvise(ptr, page_snapped_size, MADV_DONTNEED);
     ASSERT(result == 0);
+    (void)result;
 #else
     ASSERT(false);
 #endif

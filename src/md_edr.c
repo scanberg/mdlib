@@ -505,7 +505,7 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
 	if (frame->nre > (int)md_array_size(frame->ener)) {
 		const size_t new_size = (size_t)frame->nre;
 		const size_t old_size = md_array_size(frame->ener);
-		md_array_resize(frame->ener, frame->nre, alloc);
+		md_array_resize(frame->ener, (size_t)frame->nre, alloc);
 		MEMSET(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
 	}
 
@@ -699,7 +699,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 	}
 
 	if (fp->old.old_file_open) {
-		md_array_resize(fp->old.ener_prev, frame.nre, md_heap_allocator);
+		md_array_resize(fp->old.ener_prev, (size_t)frame.nre, md_heap_allocator);
 	}
 
 	xdr_seek(fp->xdr, 0, SEEK_END);
@@ -785,7 +785,7 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 	energies->frame_time = NULL;
 
 	energies->num_energies = frame.nre;
-	md_array_resize(energies->energy, frame.nre, energies->alloc);
+	md_array_resize(energies->energy, (size_t)frame.nre, energies->alloc);
 	
 	for (int i = 0; i < frame.nre; ++i) {
         energies->energy[i].name	 = str_copy(frame.e_names[i], energies->alloc);

@@ -59,7 +59,7 @@ size_t md_base64_encode(char* output, const void* input, size_t input_length) {
 
     const unsigned char* in_bytes = (const unsigned char*)input;
 
-    for (int i =0, j =0; i < input_length;) {
+    for (size_t i = 0, j = 0; i < input_length;) {
         uint32_t a = i < input_length ? in_bytes[i++] : 0;
         uint32_t b = i < input_length ? in_bytes[i++] : 0;
         uint32_t c = i < input_length ? in_bytes[i++] : 0;

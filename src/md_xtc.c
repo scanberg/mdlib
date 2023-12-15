@@ -111,7 +111,7 @@ static bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
     return true;
 }
 
-static int64_t xtc_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
+static size_t xtc_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
     int step, natoms;
     float time;
     float box[3][3];
@@ -131,18 +131,18 @@ static int64_t xtc_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* frame
         return 0;
     }
     /* Cursor position is equivalent to file size */
-    int64_t filesize = xdr_tell(xd);
+    size_t filesize = (size_t)xdr_tell(xd);
 
     /* Dont bother with compression for nine atoms or less */
     if (natoms <= 9) {
-        const int64_t framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
-        const int64_t num_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
+        const size_t framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
+        const size_t num_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
 
         md_array_push(*frame_offsets, 0, alloc);
         md_array_push(*frame_times, time, alloc);
 
-        for (int64_t i = 1; i < num_frames; i++) {
-            const int64_t offset = i * framebytes;
+        for (size_t i = 1; i < num_frames; i++) {
+            const size_t offset = i * framebytes;
 
             if (xdr_seek(xd, offset, SEEK_SET) != exdrOK || !xtc_frame_header(xd, &natoms, &step, &time, box)) {
                 md_array_free(*frame_offsets, alloc);
@@ -182,16 +182,16 @@ static int64_t xtc_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* frame
             goto fail;
         }
         
-        md_array_ensure(*frame_offsets, est_nframes, alloc);
-        md_array_ensure(*frame_times,   est_nframes, alloc);
+        md_array_ensure(*frame_offsets, (size_t)est_nframes, alloc);
+        md_array_ensure(*frame_times,   (size_t)est_nframes, alloc);
 
         md_array_push(*frame_offsets, 0, alloc);
         md_array_push(*frame_times, time, alloc);
-        int64_t num_frames = 1;
+        size_t num_frames = 1;
 
         while (1) {
             const int64_t offset = xdr_tell(xd);
-            if (offset == filesize) {
+            if (offset == (int64_t)filesize) {
                 // Add last offset
                 md_array_push(*frame_offsets, offset, alloc);
                 return num_frames;
@@ -262,14 +262,14 @@ static size_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_i
 
     const int64_t beg = xtc->frame_offsets[frame_idx];
     const int64_t end = xtc->frame_offsets[frame_idx + 1];
-    const int64_t frame_size = end - beg;
+    const size_t frame_size = (size_t)MAX(0, end - beg);
 
     if (frame_data_ptr) {
         ASSERT(xtc->file);
         md_mutex_lock(&xtc->mutex);
         // Seek and read must be an atomic operation to avoid race conditions
         xdr_seek(xtc->file, beg, SEEK_SET);
-        const int64_t bytes_read = xdr_read(xtc->file, frame_data_ptr, frame_size);
+        const size_t bytes_read = xdr_read(xtc->file, frame_data_ptr, frame_size);
         md_mutex_unlock(&xtc->mutex);
         (void)bytes_read;
         ASSERT(frame_size == bytes_read);
@@ -319,7 +319,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
         }
 
         if (x || y || z) {
-            int64_t byte_size = natoms * sizeof(rvec);
+            size_t byte_size = natoms * sizeof(rvec);
             rvec* pos = md_alloc(md_heap_allocator, byte_size);
             result = xtc_frame_coords(file, natoms, pos);
             if (result) {            
@@ -352,11 +352,12 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     md_allocator_i* alloc = md_temp_allocator;
 
     bool result = true;
-    const int64_t frame_size = xtc_fetch_frame_data(inst, frame_idx, NULL);
+    const size_t frame_size = xtc_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
         // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
         void* frame_data = md_alloc(alloc, frame_size);
-        const int64_t read_size = xtc_fetch_frame_data(inst, frame_idx, frame_data);
+        const size_t read_size = xtc_fetch_frame_data(inst, frame_idx, frame_data);
+        (void)read_size;
         ASSERT(read_size == frame_size);
 
         result = xtc_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);

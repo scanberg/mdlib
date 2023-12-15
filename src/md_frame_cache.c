@@ -20,12 +20,12 @@ typedef struct md_slot_header_t {
     uint32_t access_count;
 } md_slot_header_t;
 
-bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allocator_i* alloc, int64_t num_cache_frames) {
+bool md_frame_cache_init(md_frame_cache_t* cache, md_trajectory_i* traj, md_allocator_i* alloc, size_t num_cache_frames) {
     ASSERT(cache);
     ASSERT(traj);
     ASSERT(alloc);
 
-    int64_t num_traj_frames = md_trajectory_num_frames(traj);
+    size_t num_traj_frames = md_trajectory_num_frames(traj);
     if (num_traj_frames == 0) {
         MD_LOG_ERROR("Frame Cache: The supplied trajectory has no frames");
     }
@@ -77,7 +77,7 @@ void md_frame_cache_free(md_frame_cache_t* cache) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     if (cache->buf) {
-        for (int64_t i = 0; i < cache->slot.count; ++i) {
+        for (size_t i = 0; i < cache->slot.count; ++i) {
             md_semaphore_destroy(&cache->slot.lock[i]);
         }
 
@@ -112,7 +112,7 @@ void md_frame_cache_clear(md_frame_cache_t* cache) {
     ASSERT(cache->magic == CACHE_MAGIC);
 
     // If the frame is already in cache -> return data
-    for (int64_t i = 0; i < cache->slot.count; ++i) {
+    for (size_t i = 0; i < cache->slot.count; ++i) {
         md_frame_cache_frame_lock_aquire((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);
         cache->slot.header[i].frame_index = 0xFFFFFFFFU;
         cache->slot.header[i].access_count = 0;
@@ -120,7 +120,7 @@ void md_frame_cache_clear(md_frame_cache_t* cache) {
     }
 }
 
-int64_t md_frame_cache_num_frames(const md_frame_cache_t* cache) {
+size_t md_frame_cache_num_frames(const md_frame_cache_t* cache) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);
     return cache->slot.count;
