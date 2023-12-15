@@ -3009,7 +3009,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
 
     ASSERT(node->lhs_context_types);
     const type_info_t* lhs_types = node->lhs_context_types;
-    ASSERT(md_array_size(lhs_types) == num_ctx);
+    ASSERT((int)md_array_size(lhs_types) == num_ctx);
 
     data_t data = {0};
     data.unit = expr_node->data.unit;

@@ -900,7 +900,7 @@ bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secon
 
     for (size_t bb_idx = 0; bb_idx < mol->backbone.range_count; ++bb_idx) {
         const md_range_t range = mol->backbone.range[bb_idx];
-        ASSERT(range.end <= capacity);
+        ASSERT(range.end <= (int)capacity);
 
         if (range.end - range.beg < 4) {
             continue;
@@ -968,7 +968,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
 
     for (size_t bb_idx = 0; bb_idx < mol->backbone.range_count; ++bb_idx) {
         const md_range_t range = mol->backbone.range[bb_idx];
-        ASSERT(range.end <= capacity);
+        ASSERT(range.end <= (int)capacity);
 
         if (range.end - range.beg < 4) {
             continue;
@@ -1071,8 +1071,8 @@ static bool md_compute_connectivity(md_conn_data_t* conn, md_atom_data_t* atom, 
         const int idx_a = off_a + local_a;
         const int idx_b = off_b + local_b;
 
-        ASSERT(idx_a < conn->count);
-        ASSERT(idx_b < conn->count);
+        ASSERT(idx_a < (int)conn->count);
+        ASSERT(idx_b < (int)conn->count);
 
         // Store the cross references to the 'other' atom index signified by the bond in the correct location
         conn->index[idx_a] = atom_b;
@@ -1952,7 +1952,7 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                             }
 
                             // Otherwise we made a big whoopsie
-                            ASSERT(len < ARRAY_SIZE(ring));
+                            ASSERT(len < (int)ARRAY_SIZE(ring));
 
                             if (MIN_RING_SIZE <= len && len <= MAX_RING_SIZE) {
                                 sort_arr(ring, len);
@@ -6257,7 +6257,7 @@ md_index_data_t match_structure(const int* ref_idx, int64_t ref_len, md_util_mat
         }
     } else {
         for (size_t i = 0; i < mol->atom.count; ++i) {
-            size_t key;
+            size_t key = 0;
             switch (mapping) {
             case VERTEX_TYPE_MAPPING_TYPE:
                 key = stbds_hash_string(mol->atom.type[i].buf, 0);

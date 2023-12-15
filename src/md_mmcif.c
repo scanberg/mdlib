@@ -245,8 +245,6 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
 	bool atom_site = false;
 
 	str_t line;
-
-	int64_t line_count = 0;
 	while (md_buffered_reader_peek_line(&line, reader)) {
 		if (line.len) {
 			line = str_trim(line);
@@ -265,7 +263,6 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
 			}
 		}
 
-		line_count += 1;
 		md_buffered_reader_skip_line(reader);
 	}
 
