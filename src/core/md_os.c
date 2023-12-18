@@ -575,32 +575,32 @@ double md_time_as_seconds(md_timestamp_t t) {
 // Linux equivalent of virtual memory allocation is partly taken from here
 // https://forums.pcsx2.net/Thread-blog-VirtualAlloc-on-Linux
 
-uint64_t md_os_physical_ram(void) {
+size_t md_os_physical_ram(void) {
 #if MD_PLATFORM_WINDOWS
     MEMORYSTATUSEX status = {
         .dwLength = sizeof(MEMORYSTATUSEX),
     };
     GlobalMemoryStatusEx(&status);
-    return status.ullTotalPhys;
+    return (size_t)status.ullTotalPhys;
 #elif MD_PLATFORM_UNIX
     long pages = sysconf(_SC_PHYS_PAGES);
     long page_size = sysconf(_SC_PAGE_SIZE);
-    return pages * page_size;
+    return (size_t)(pages * page_size);
 #else
     ASSERT(false);
     return 0;
 #endif
 }
 
-uint64_t md_os_num_processors(void) {
+size_t md_os_num_processors(void) {
 #if MD_PLATFORM_WINDOWS
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);
     int num_cpu = sysinfo.dwNumberOfProcessors;
-    return (uint64_t)num_cpu;
+    return (size_t)num_cpu;
 #elif MD_PLATFORM_UNIX
     int num_cpu = sysconf(_SC_NPROCESSORS_ONLN);
-    return (uint64_t)num_cpu;
+    return (size_t)num_cpu;
 #else
     ASSERT(false);
     return 0;
