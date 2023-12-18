@@ -863,11 +863,13 @@ bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
 #elif MD_PLATFORM_LINUX
     return sem_init((sem_t*)semaphore, 0, (uint32_t)initial_count) == 0;
 #elif MD_PLATFORM_OSX
+    semaphore_t sema;
     mach_port_t self = mach_task_self();
-    kern_return_t ret = semaphore_create(self, (semaphore_t*)semaphore, SYNC_POLICY_FIFO, (int)initial_count);
+    kern_return_t ret = semaphore_create(self, &sema, SYNC_POLICY_FIFO, (int)initial_count);
     if (ret != KERN_SUCCESS) {
         MD_LOG_ERROR("Failed to initialize semaphore");
     }
+    MEMCPY(semaphore, &sema, sizeof(semaphore_t));
     return ret == KERN_SUCCESS;
 #endif
 }
@@ -884,8 +886,10 @@ bool md_semaphore_destroy(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_destroy((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
+    semaphore_t sema;
+    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
     mach_port_t self = mach_task_self();
-    return semaphore_destroy(self, *((semaphore_t*)semaphore))) == KERN_SUCCESS;
+    return semaphore_destroy(self, sema) == KERN_SUCCESS;
 #endif
 }
 
@@ -895,7 +899,9 @@ bool md_semaphore_aquire(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_wait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
-    return semaphore_wait(*((semaphore_t*)semaphore)) == KERN_SUCCESS;
+    semaphore_t sema;
+    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    return semaphore_wait(sema) == KERN_SUCCESS;
 #endif
 }
 
@@ -905,10 +911,12 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_trywait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
+    semaphore_t sema;
+    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
     mach_timespec_t mts;
     mts.tv_sec = 0;
     mts.tv_nsec = 0;
-    return semaphore_timedwait(*((semaphore_t*)semaphore)), mts) == KERN_SUCCESS;
+    return semaphore_timedwait(sema, mts) == KERN_SUCCESS;
 #endif
 }
 
@@ -945,7 +953,9 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_post((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
-    return semaphore_signal(*((semaphore_t*)semaphore))) == KERN_SUCCESS;
+    semaphore_t sema;
+    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    return semaphore_signal(sema) == KERN_SUCCESS;
 #endif
 }
 
