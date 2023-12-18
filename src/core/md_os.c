@@ -223,7 +223,7 @@ size_t md_path_write_canonical(char* buf, size_t cap, str_t path) {
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char buf[MD_MAX_PATH];
-    const int64_t len = fullpath(buf, sizeof(buf), path);
+    const size_t len = fullpath(buf, sizeof(buf), path);
     str_t result = {0};
 
     if (path.len > 0 && len == 0) {
@@ -299,7 +299,7 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
 str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char  rel_buf[MD_MAX_PATH];
-    int64_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
+    size_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
     if (!len) {
         MD_LOG_ERROR("Failed to extract relative path.");
         return (str_t){0};
@@ -642,7 +642,7 @@ void md_vm_release(void* ptr, size_t size) {
     (void)size;
     VirtualFree(ptr, 0, MEM_RELEASE);
 #elif MD_PLATFORM_UNIX
-    uint64_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+    size_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
     int result;
     //result = madvise(ptr, -1, MADV_DONTNEED);
     //ASSERT(result == 0);
@@ -668,7 +668,7 @@ void md_vm_commit(void* ptr, size_t size) {
 #endif
 }
 
-void md_vm_decommit(void* ptr, uint64_t size) {
+void md_vm_decommit(void* ptr, size_t size) {
 #if MD_PLATFORM_WINDOWS
 #if MD_COMPILER_MSVC
 #   pragma warning(suppress : 6250)
@@ -676,7 +676,7 @@ void md_vm_decommit(void* ptr, uint64_t size) {
     VirtualFree(ptr, size, MEM_DECOMMIT);
 #elif MD_PLATFORM_UNIX
     int result;
-    uint64_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+    size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
     result = mprotect(ptr, page_snapped_size, PROT_NONE);
     ASSERT(result == 0);
     result = madvise(ptr, page_snapped_size, MADV_DONTNEED);
@@ -773,7 +773,7 @@ bool md_thread_on_exit(md_thread_exit callback) {
 #endif
 }
 
-void md_thread_sleep(uint64_t milliseconds) {
+void md_thread_sleep(size_t milliseconds) {
 #if MD_PLATFORM_WINDOWS
     Sleep((DWORD)milliseconds);
 #elif MD_PLATFORM_UNIX
@@ -856,20 +856,18 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 
 // ### SEMAPHORE ###
 
-bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
+bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
 #if MD_PLATFORM_WINDOWS
     semaphore->_data[0] = CreateSemaphoreA(NULL, (LONG)initial_count, MAXLONG, NULL);
     return semaphore != NULL;
 #elif MD_PLATFORM_LINUX
     return sem_init((sem_t*)semaphore, 0, (uint32_t)initial_count) == 0;
 #elif MD_PLATFORM_OSX
-    semaphore_t sema;
     mach_port_t self = mach_task_self();
-    kern_return_t ret = semaphore_create(self, &sema, SYNC_POLICY_FIFO, initial_count);
+    kern_return_t ret = semaphore_create(self, (semaphore_t*)semaphore, SYNC_POLICY_FIFO, (int)initial_count);
     if (ret != KERN_SUCCESS) {
         MD_LOG_ERROR("Failed to initialize semaphore");
     }
-    semaphore->_data[0] = (void*)(uint64_t)sema;
     return ret == KERN_SUCCESS;
 #endif
 }
@@ -887,7 +885,7 @@ bool md_semaphore_destroy(md_semaphore_t* semaphore) {
     return sem_destroy((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
     mach_port_t self = mach_task_self();
-    return semaphore_destroy(self, (semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
+    return semaphore_destroy(self, *((semaphore_t*)semaphore))) == KERN_SUCCESS;
 #endif
 }
 
@@ -897,7 +895,7 @@ bool md_semaphore_aquire(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_wait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
-    return semaphore_wait((semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
+    return semaphore_wait(*((semaphore_t*)semaphore)) == KERN_SUCCESS;
 #endif
 }
 
@@ -910,11 +908,11 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
     mach_timespec_t mts;
     mts.tv_sec = 0;
     mts.tv_nsec = 0;
-    return semaphore_timedwait((semaphore_t)semaphore->_data[0], mts) == KERN_SUCCESS;
+    return semaphore_timedwait(*((semaphore_t*)semaphore)), mts) == KERN_SUCCESS;
 #endif
 }
 
-bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count) {
+bool md_semaphore_query_count(md_semaphore_t* semaphore, size_t* count) {
     ASSERT(semaphore);
     ASSERT(count);
 #if MD_PLATFORM_WINDOWS
@@ -947,22 +945,22 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_post((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
-    return semaphore_signal((semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
+    return semaphore_signal(*((semaphore_t*)semaphore))) == KERN_SUCCESS;
 #endif
 }
 
 // Common high level Semaphore operations
 
-md_semaphore_t md_semaphore_create(int32_t initial_count) {
+md_semaphore_t md_semaphore_create(size_t initial_count) {
     md_semaphore_t semaphore;
     md_semaphore_init(&semaphore, initial_count);
     return semaphore;
 }
 
-bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, int32_t count) {
+bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, size_t count) {
     ASSERT(count > 0);
-    int32_t aquired_count = 0;
-    for (int32_t i = 0; i < count; ++i) {
+    size_t aquired_count = 0;
+    for (size_t i = 0; i < count; ++i) {
         aquired_count += md_semaphore_try_aquire(semaphore) == true ? 1 : 0;
     }
     if (aquired_count == count) {
@@ -972,9 +970,9 @@ bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, int32_t count) {
     return false;
 }
 
-bool md_semaphore_release_n(md_semaphore_t* semaphore, int32_t count) {
+bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
     bool result = true;
-    for (int32_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         result |= md_semaphore_release(semaphore);
     }
     return result;

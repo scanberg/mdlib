@@ -324,10 +324,10 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     str_t result = {0,0};
     if (file) {
-        int64_t file_size = md_file_size(file);
+        size_t file_size = md_file_size(file);
         char* mem = md_alloc(alloc, file_size + 1);
         if (mem) {
-            int64_t read_size = md_file_read(file, mem, file_size);
+            size_t read_size = md_file_read(file, mem, file_size);
             if (read_size == file_size) {
                 mem[file_size] = '\0'; // Zero terminate as a nice guy
                 result.ptr = mem;
@@ -344,7 +344,7 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     return result;
 }
 
-str_t str_alloc(uint64_t len, struct md_allocator_i* alloc) {
+str_t str_alloc(size_t len, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char* mem = md_alloc(alloc, len + 1);
     MEMSET(mem, 0, len + 1);
@@ -374,7 +374,7 @@ str_t str_copy_cstr(const char* cstr, md_allocator_i* alloc) {
     ASSERT(alloc);
     str_t result = {0,0};
     if (cstr) {
-        int64_t len = strlen(cstr);
+        size_t len = strlen(cstr);
         char* data = md_alloc(alloc, len + 1);
         data[len] = '\0';
         MEMCPY(data, cstr, len);
@@ -384,7 +384,7 @@ str_t str_copy_cstr(const char* cstr, md_allocator_i* alloc) {
     return result;
 }
 
-str_t str_copy_cstrn(const char* cstr, int64_t len, md_allocator_i* alloc) {
+str_t str_copy_cstrn(const char* cstr, size_t len, md_allocator_i* alloc) {
     ASSERT(alloc);
     str_t result = {0,0};
     if (cstr) {
@@ -403,6 +403,10 @@ str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
     va_start(args, format);
     int64_t len = vsnprintf(NULL, 0, format, args);
     va_end(args);
+
+    if (len <= 0) {
+        return (str_t){0};
+    }
 
     char* buf = md_alloc(alloc, len + 1);
 

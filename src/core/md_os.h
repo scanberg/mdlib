@@ -127,7 +127,7 @@ md_thread_id_t	md_thread_get_id(md_thread_t* thread);
 md_thread_id_t	md_thread_id(void);
 
 // Put the current thread to sleep for a supplied number of milliseconds
-void			md_thread_sleep(uint64_t milliseconds);
+void			md_thread_sleep(size_t milliseconds);
 
 // ### MUTEX ###
 typedef struct md_mutex_t {
@@ -151,18 +151,18 @@ typedef struct md_semaphore_t {
     void* _data[4];
 } md_semaphore_t;
 
-md_semaphore_t md_semaphore_create(int32_t initial_count);
-bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count);
+md_semaphore_t md_semaphore_create(size_t initial_count);
+bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count);
 bool md_semaphore_destroy(md_semaphore_t* semaphore);
 
 bool md_semaphore_aquire(md_semaphore_t* semaphore);
 bool md_semaphore_try_aquire(md_semaphore_t* semaphore);
-bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, int32_t count);
+bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, size_t count);
 
-bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count);
+bool md_semaphore_query_count(md_semaphore_t* semaphore, size_t* count);
 
 bool md_semaphore_release(md_semaphore_t* semaphore);
-bool md_semaphore_release_n(md_semaphore_t* semaphore, int32_t count);
+bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count);
 
 #ifdef __cplusplus
 }

@@ -104,11 +104,11 @@ bool str_starts_with(str_t str, str_t prefix);
 bool str_ends_with(str_t str, str_t suffix);
 
 // Will allocate one extra character for zero termination
-str_t str_alloc(uint64_t len, struct md_allocator_i* alloc);
+str_t str_alloc(size_t len, struct md_allocator_i* alloc);
 void  str_free(str_t str, struct md_allocator_i* alloc);
 str_t str_copy(str_t str, struct md_allocator_i* alloc);
 str_t str_copy_cstr(const char* cstr, struct md_allocator_i* alloc);
-str_t str_copy_cstrn(const char* cstr, int64_t len, struct md_allocator_i* alloc);
+str_t str_copy_cstrn(const char* cstr, size_t len, struct md_allocator_i* alloc);
 
 // This should probably be removed
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
