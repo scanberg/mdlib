@@ -868,10 +868,10 @@ uint16_t* get_serialization_block_indices(const md_bitfield_t* bf, md_allocator_
 }
 
 // Returns the maximum serialization size in bytes of a bitfield
-uint64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf) {
-    uint64_t size = sizeof(uint16_t);
+size_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf) {
+    size_t size = sizeof(uint16_t);
     uint16_t* indices = get_serialization_block_indices(bf, md_temp_allocator);
-    for (uint64_t i = 0; i < (uint64_t)md_array_size(indices); ++i) {
+    for (size_t i = 0; i < md_array_size(indices); ++i) {
         if (indices[i] & BLOCK_IDX_FLAG_ALL_SET) continue;
         size += sizeof(indices[i]) + sizeof(block_t);
     }
@@ -889,7 +889,7 @@ typedef union block_idx_t {
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
-uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
+size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
     md_allocator_i* alloc = md_temp_allocator;
 
     uint16_t* indices = get_serialization_block_indices(bf, alloc);
@@ -920,7 +920,7 @@ uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
     md_array_free(data, alloc);
     md_array_free(indices, alloc);
 
-    return lz_bytes;
+    return (size_t)lz_bytes;
 }
 
 bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_bytes) {
