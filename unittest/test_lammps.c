@@ -12,7 +12,9 @@ UTEST(lammps, water_ethane_cubic) {
     str_t path = STR(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
     md_lammps_data_t data = {0};
 
-    bool result = md_lammps_data_parse_file(&data, path, MD_LAMMPS_ATOM_FORMAT_FULL, alloc);
+    const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
+    bool result = md_lammps_data_parse_file(&data, path, atom_format, alloc);
+
     ASSERT_TRUE(result);
     EXPECT_EQ(data.num_atoms, 7800);
     EXPECT_EQ(data.num_atom_types, 4);
@@ -69,7 +71,9 @@ UTEST(lammps, water_ethane_triclinic) {
     str_t path = STR(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
     md_lammps_data_t data = {0};
 
-    bool result = md_lammps_data_parse_file(&data, path, MD_LAMMPS_ATOM_FORMAT_FULL, alloc);
+    const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
+    bool result = md_lammps_data_parse_file(&data, path, atom_format, alloc);
+
     ASSERT_TRUE(result);
     EXPECT_EQ(data.num_atoms, 7722);
     EXPECT_EQ(data.num_atom_types, 4);

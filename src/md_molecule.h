@@ -224,7 +224,7 @@ static inline md_flags_t md_conn_iter_flags(const md_conn_iter_t* it) {
 
 /*
 
-The molecule loader api is just a convenience API for abstracing the functionality of initializing molecule data
+The molecule loader interface is just a convenience interface for abstracing the functionality of initializing molecule data
 
 The reason for providing a distinct function for initializing from file is that some molecule files can
 also contain their trajectories, such as PDB files. In such case, the whole file would have to be read and passed, but for
@@ -233,8 +233,8 @@ molecule data only the first part of the file is used.
 */
 
 typedef struct md_molecule_loader_i {
-    bool (*init_from_str) (md_molecule_t* mol, str_t string,   struct md_allocator_i* alloc);
-    bool (*init_from_file)(md_molecule_t* mol, str_t filename, struct md_allocator_i* alloc);
+    bool (*init_from_str) (md_molecule_t* mol, str_t string,   const void* arg, struct md_allocator_i* alloc);
+    bool (*init_from_file)(md_molecule_t* mol, str_t filename, const void* arg, struct md_allocator_i* alloc);
 } md_molecule_loader_i;
 
 // @NOTE(Robin): This is just to be thorough,

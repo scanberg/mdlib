@@ -1481,17 +1481,16 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
     ASSERT(alloc);
 
     md_residue_id_t prev_resid = -1;
-    str_t prev_resstr = {0};
+    str_t prev_resstr = STR("");
     md_flags_t prev_flags = 0;
     for (size_t i = 0; i < atom->count; ++i) {
         const md_residue_id_t resid = atom->resid[i];
         const md_flags_t flags = atom->flags[i];
-        const md_label_t resname = atom->resname[i];
-        const str_t resstr = LBL_TO_STR(atom->resname[i]);
+        const str_t resstr = atom->resname ? LBL_TO_STR(atom->resname[i]) : STR("");
 
         if (resid != prev_resid || !str_eq(resstr, prev_resstr) || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END) {
             md_array_push(res->id, resid, alloc);
-            md_array_push(res->name, resname, alloc);
+            md_array_push(res->name, make_label(resstr), alloc);
             md_array_push(res->atom_offset, (uint32_t)i, alloc);
             md_array_push(res->flags, 0, alloc);
             res->count += 1;
@@ -1510,16 +1509,16 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
     for (size_t i = 0; i < res->count; ++i) {
         str_t resname = LBL_TO_STR(res->name[i]);
         md_range_t range = md_residue_atom_range(*res, i);
-        int32_t len = range.end - range.beg;
-        if (md_util_resname_amino_acid(resname) || amino_acid_heuristic(atom->type + range.beg, range.end - range.beg)) {
+        int len = range.end - range.beg;
+        if (md_util_resname_amino_acid(resname) || (atom->type && amino_acid_heuristic(atom->type + range.beg, range.end - range.beg))) {
 			res->flags[i] |= MD_FLAG_AMINO_ACID;
-		} else if (md_util_resname_nucleic_acid(resname) || nucleotide_heuristic(atom->type + range.beg, range.end - range.beg)) {
+		} else if (md_util_resname_nucleic_acid(resname) || (atom->type && nucleotide_heuristic(atom->type + range.beg, range.end - range.beg))) {
             res->flags[i] |= MD_FLAG_NUCLEOTIDE;
-        } else if (md_util_resname_water(resname) || (len == 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg])))) {
+        } else if (md_util_resname_water(resname) || (atom->type && len == 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg])))) {
             res->flags[i] |= MD_FLAG_WATER;
         }
 
-        for (int32_t j = range.beg; j < range.end; ++j) {
+        for (int j = range.beg; j < range.end; ++j) {
             atom->res_idx[j] = (md_residue_idx_t)i;
 
             // Propagate flags to atoms
@@ -1634,6 +1633,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
     int beg_idx = 0;
     str_t prev_id = {0};
     md_flags_t prev_flags = 0;
+    int chain_end_idx = 0;
     // We iterate up to res->count + 1 to ensure that the last residue is also included
     // And it will automatically not be bonded to prev as its bit is zero and all is well
     for (int i = 0; i <= (int)res->count; ++i) {
@@ -1654,17 +1654,19 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
                 md_array_push(chain->atom_offset, res->atom_offset[beg_idx], alloc);
                 md_array_push(chain->res_offset, beg_idx, alloc);
 
+                chain_end_idx = i;
                 chain->count += 1;
             }
             beg_idx = i;
-
-            if (i == (int)res->count) {
-                md_array_push(chain->atom_offset, res->atom_offset[i - 1], alloc);
-                md_array_push(chain->res_offset, end_idx, alloc);
-            }
         }
         prev_id = id;
         prev_flags = flags;
+    }
+
+    // Set end offsets
+    if (chain->count) {
+        md_array_push(chain->res_offset, chain_end_idx, alloc);
+        md_array_push(chain->atom_offset, res->atom_offset[chain_end_idx], alloc);
     }
 
     md_array_resize(atom->chain_idx, atom->count, alloc);
@@ -4801,19 +4803,23 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
 #endif
         if (mol->atom.vx == 0) {
             md_array_resize(mol->atom.vx, mol->atom.count, alloc);
-            MEMSET(mol->atom.vx, 0, md_array_size(mol->atom.vx) * sizeof(*mol->atom.vx));
+            MEMSET(mol->atom.vx, 0, md_array_bytes(mol->atom.vx));
         }
         if (mol->atom.vy == 0) {
             md_array_resize(mol->atom.vy, mol->atom.count, alloc);
-            MEMSET(mol->atom.vy, 0, md_array_size(mol->atom.vy) * sizeof(*mol->atom.vy));
+            MEMSET(mol->atom.vy, 0, md_array_bytes(mol->atom.vy));
         }
         if (mol->atom.vz == 0) {
             md_array_resize(mol->atom.vz, mol->atom.count, alloc);
-            MEMSET(mol->atom.vz, 0, md_array_size(mol->atom.vz) * sizeof(*mol->atom.vz));
+            MEMSET(mol->atom.vz, 0, md_array_bytes(mol->atom.vz));
         }
         if (mol->atom.flags == 0) {
             md_array_resize(mol->atom.flags, mol->atom.count, alloc);
-            MEMSET(mol->atom.flags, 0, md_array_size(mol->atom.flags) * sizeof(*mol->atom.flags));
+            MEMSET(mol->atom.flags, 0, md_array_bytes(mol->atom.flags));
+        }
+        if (mol->atom.type == 0) {
+            md_array_resize(mol->atom.type, mol->atom.count, alloc);
+            MEMSET(mol->atom.type, 0, md_array_bytes(mol->atom.type));
         }
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();
@@ -4949,7 +4955,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
     }
 
     if (flags & MD_UTIL_POSTPROCESS_BACKBONE_BIT) {
-        if (mol->chain.count) {
+        if (mol->chain.count && mol->atom.type) {
             // Compute backbone data
             // 
             // @NOTE: We should only attempt to compute backbone data for valid residues (e.g. amino acids / dna)
@@ -5252,6 +5258,8 @@ static bool graph_equivalent(const graph_t* a, const graph_t* b) {
 	}
 	return true;
 }
+
+#define DEBUG_PRINT 0
 
 // VF2 Isomorphism algorithm
 typedef struct candidate_t {
@@ -5804,8 +5812,6 @@ static bool is_solution(subgraph_context_t* ctx) {
     return true;
 }
 
-#define DEBUG_PRINT 0
-
 static void brute_force(subgraph_context_t* ctx, int depth) {
     if (is_solution(ctx)) {
 		record_solution(ctx);
@@ -5894,6 +5900,7 @@ static void brute_force_non_recursive(subgraph_context_t* ctx) {
 }
 
 typedef struct store_data_t {
+    size_t* count;
     md_index_data_t* result;
     md_allocator_i*  alloc;
     // Only for unique
@@ -5920,6 +5927,7 @@ static bool store_unique_callback(const int map[], size_t length, void* user) {
     } else {
         // Store new entry if unique solution
         int result_idx = (int)md_index_data_push_arr(data->result, map, length, data->alloc);
+        *data->count += 1;
         result_entry_t e = {key, value, result_idx};
         stbds_hmputs(data->map, e);
     }
@@ -5936,6 +5944,7 @@ static bool store_first_callback(const int map[], size_t length, void* user) {
     store_data_t* data = (store_data_t*)user;
 
     md_index_data_push_arr(data->result, map, length, data->alloc);
+    *data->count += 1;
 #if DEBUG_PRINT
     const int depth = (int)length;
     printf("%*sSolution found!\n", depth, "");
@@ -5948,6 +5957,7 @@ static bool store_all_callback(const int map[], size_t length, void* user) {
     store_data_t* data = (store_data_t*)user;
 
     md_index_data_push_arr(data->result, map, length, data->alloc);
+    *data->count += 1;
 #if DEBUG_PRINT
     const int depth = (int)length;
     printf("%*sSolution found!\n", depth, "");
@@ -5956,23 +5966,32 @@ static bool store_all_callback(const int map[], size_t length, void* user) {
     return false;
 }
 
-static bool store_count_callback(const int map[], size_t length, void* user) {
+
+static bool count_first_callback(const int map[], size_t length, void* user) {
     (void)map;
     (void)length;
     size_t* count = (size_t*)user;
-	++(*count);
+    *count += 1;
+    return true;
+}
+
+static bool count_all_callback(const int map[], size_t length, void* user) {
+    (void)map;
+    (void)length;
+    size_t* count = (size_t*)user;
+	*count += 1;
 	return false;
 }
 
 // Attempt to find subgraphs in a larger graph (haystack) which match a reference graph (needle)
 // Returns an array of graphs which match the topologically match the reference
 // start_type is a hint of the most unusual type in the graphs and serve as good starting points
-static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* haystack, md_util_match_mode_t mode, int start_type, md_allocator_i* alloc) {
-    md_index_data_t result = {0};
-
+static size_t find_isomorphisms(md_index_data_t* mappings, const graph_t* needle, const graph_t* haystack, md_util_match_mode_t mode, int start_type, md_allocator_i* alloc) {
+    size_t count = 0;
+    
     // Impossible case
     if (needle->vertex_count > haystack->vertex_count) {
-        return result;
+        return 0;
     }
 
     // The not so problematic case
@@ -5987,7 +6006,7 @@ static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* h
             md_array_resize(result.ranges, 1, alloc);
             result.ranges[0] = (md_range_t){0, (int)haystack->count};
 		}
-        return result;
+        return 1;
     }
 #endif
 
@@ -6026,23 +6045,46 @@ static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* h
 
     state_t state = {0};
     state_init(&state, needle, haystack, temp_alloc);
+    store_data_t store_data = {
+        .count = &count
+    };
 
-    store_data_t store_data = {&result, alloc};
-    state.user_data = &store_data;
+    if (!mappings) {
+        state.user_data = &count;
+        switch (mode) {
+        case MD_UTIL_MATCH_MODE_UNIQUE:
+            MD_LOG_ERROR("Cannot count unique occurrences without supplying mappings");
+            goto done;
+            break;
+        case MD_UTIL_MATCH_MODE_FIRST:
+            state.callback = count_first_callback;
+            break;
+        case MD_UTIL_MATCH_MODE_ALL:
+            state.callback = count_all_callback;
+            break;
+        default:
+            ASSERT(false);
+            break;
+        }
+    } else {
+        store_data.result = mappings;
+        store_data.alloc = alloc;
+        state.user_data = &store_data;
 
-    switch (mode) {
-    case MD_UTIL_MATCH_MODE_UNIQUE:
-        state.callback = store_unique_callback;
-        break;
-    case MD_UTIL_MATCH_MODE_FIRST:
-        state.callback = store_first_callback;
-        break;
-    case MD_UTIL_MATCH_MODE_ALL:
-        state.callback = store_all_callback;
-        break;
-    default:
-        ASSERT(false);
-        break;
+        switch (mode) {
+        case MD_UTIL_MATCH_MODE_UNIQUE:
+            state.callback = store_unique_callback;
+            break;
+        case MD_UTIL_MATCH_MODE_FIRST:
+            state.callback = store_first_callback;
+            break;
+        case MD_UTIL_MATCH_MODE_ALL:
+            state.callback = store_all_callback;
+            break;
+        default:
+            ASSERT(false);
+            break;
+        }
     }
 
     const int64_t num_candidates = md_array_size(start_candidates);
@@ -6079,14 +6121,15 @@ static md_index_data_t find_isomorphisms(const graph_t* needle, const graph_t* h
 		}
 #endif
 
-        if (mode == MD_UTIL_MATCH_MODE_FIRST && md_index_data_count(result) > 0) {
+        if (mode == MD_UTIL_MATCH_MODE_FIRST && count > 0) {
             goto done;
         }
     }
     
 done:    
     md_arena_allocator_destroy(temp_alloc);
-    return result;
+
+    return count;
 }
 
 enum {
@@ -6354,10 +6397,12 @@ md_index_data_t match_structure(const int* ref_idx, int64_t ref_len, md_util_mat
         }
 
         graph_t graph = make_graph(mol, atom_type, s_idx, s_len, temp_alloc);
-        result = find_isomorphisms(&ref_graph, &graph, s_mode, starting_type, alloc);
+        size_t pre_count = md_index_data_count(result);
+        find_isomorphisms(&result, &ref_graph, &graph, s_mode, starting_type, alloc);
+        size_t post_count = md_index_data_count(result);
 
         // Remap indices to global indices in result
-        for (size_t j = 0; j < md_index_data_count(result); ++j) {
+        for (size_t j = pre_count; j < post_count; ++j) {
             int* beg = md_index_range_beg(result, j);
             int* end = md_index_range_end(result, j);
             for (int* it = beg; it != end; ++it) {
@@ -6366,6 +6411,8 @@ md_index_data_t match_structure(const int* ref_idx, int64_t ref_len, md_util_mat
         }
     next:;
     }
+
+
 
 done:
     md_arena_allocator_destroy(temp_alloc);
@@ -6573,12 +6620,12 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
 
     for (size_t i = 0; i < num_structures; ++i) {
         const size_t s_size = md_index_range_size(structures, i);
-        const int* s_indices = md_index_range_beg(structures, i);
+        const int* s_idx = md_index_range_beg(structures, i);
         if (s_size < ref_graph.vertex_count) continue;
 
         int s_type_count[256] = {0};
         for (size_t j = 0; j < s_size; ++j) {
-            int idx = s_indices[j];
+            int idx = s_idx[j];
             uint8_t type = mol->atom.element[idx];
             s_type_count[type]++;
         }
@@ -6588,16 +6635,19 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
             if (ref_type_count[j] > s_type_count[j]) goto next;
         }
         
-        graph_t s_graph = make_graph(mol, mol->atom.element, s_indices, s_size, temp_alloc);
-        result = find_isomorphisms(&ref_graph, &s_graph, mode, starting_type, alloc);
+        graph_t s_graph = make_graph(mol, mol->atom.element, s_idx, s_size, temp_alloc);
+
+        size_t pre_count = md_index_data_count(result);
+        find_isomorphisms(&result, &ref_graph, &s_graph, mode, starting_type, alloc);
+        size_t post_count = md_index_data_count(result);
 
         // Remap indices to global indices in result
-        for (size_t j = 0; j < md_index_data_count(result); ++j) {
+        for (size_t j = pre_count; j < post_count; ++j) {
             int* beg = md_index_range_beg(result, j);
             int* end = md_index_range_end(result, j);
             for (int* it = beg; it != end; ++it) {
-				*it = s_indices[*it];
-			}
+                *it = s_idx[*it];
+            }
         }
 next:;
     }

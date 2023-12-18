@@ -217,7 +217,8 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     return true;
 }
 
-static bool gro_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
+static bool gro_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_str(&data, str, md_heap_allocator)) {
@@ -228,7 +229,8 @@ static bool gro_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
     return success;
 }
 
-static bool gro_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
+static bool gro_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_file(&data, filename, md_heap_allocator)) {

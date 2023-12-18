@@ -9,7 +9,7 @@ UTEST(mmcif, 1fez) {
     str_t path = STR(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
     md_molecule_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, md_heap_allocator);
+    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);
     EXPECT_TRUE(result);
 
     if (result) {
@@ -33,7 +33,7 @@ UTEST(mmcif, 2or2) {
     str_t path = STR(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
     md_molecule_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, md_heap_allocator);
+    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);
     EXPECT_TRUE(result);
     //md_util_postprocess_molecule(&mol, md_heap_allocator, MD_UTIL_POSTPROCESS_ALL);
 
@@ -58,7 +58,7 @@ UTEST(mmcif, 8g7u) {
     str_t path = STR(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
     md_molecule_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, md_heap_allocator);
+    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);
     EXPECT_TRUE(result);
     md_util_postprocess_molecule(&mol, md_heap_allocator, MD_UTIL_POSTPROCESS_ALL);
 

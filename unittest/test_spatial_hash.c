@@ -148,7 +148,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     md_molecule_t mol;
-    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc));
+    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
     ASSERT_TRUE(spatial_hash);
@@ -188,7 +188,7 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     md_molecule_t mol;
-    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc));
+    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
     vec3_t* xyz = md_array_create(vec3_t, mol.atom.count, alloc);
     for (int i = 0; i < mol.atom.count; ++i) {
@@ -233,7 +233,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     md_molecule_t mol;
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/water.gro"), alloc));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, NULL, alloc);
     ASSERT_TRUE(spatial_hash);
@@ -317,7 +317,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     md_molecule_t mol;
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/water.gro"), alloc));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
     ASSERT_TRUE(spatial_hash);

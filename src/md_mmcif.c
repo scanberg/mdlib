@@ -56,7 +56,7 @@ static const str_t atom_site_labels[] = {
 	BAKE("pdbx_PDB_model_num"),
 };
 
-static const int required_fields[] = {
+static const int atom_field_required[] = {
 	ATOM_SITE_ID,
 	ATOM_SITE_TYPE_SYMBOL,
 	ATOM_SITE_LABEL_ATOM_ID,
@@ -103,9 +103,9 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
 	}
 
 	// Assert that we have all the required fields
-	for (size_t i = 0; i < ARRAY_SIZE(required_fields); ++i) {
-		if (table[required_fields[i]] == -1) {
-			MD_LOG_ERROR("Missing required column in _atom_site: "STR_FMT, STR_ARG(atom_site_labels[required_fields[i]]));
+	for (size_t i = 0; i < ARRAY_SIZE(atom_field_required); ++i) {
+		if (table[atom_field_required[i]] == -1) {
+			MD_LOG_ERROR("Missing required column in _atom_site: "STR_FMT, STR_ARG(atom_site_labels[atom_field_required[i]]));
 			return false;
 		}
 	}
@@ -269,13 +269,15 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
 	return atom_site;
 }
 
-static bool mmcif_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
+static bool mmcif_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+	(void)arg;
 	md_buffered_reader_t reader = md_buffered_reader_from_str(str);
 	MEMSET(mol, 0, sizeof(md_molecule_t));
 	return mmcif_parse(mol, &reader, alloc);
 }
 
-static bool mmcif_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
+static bool mmcif_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+	(void)arg;
 	bool result = false;
 	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
 

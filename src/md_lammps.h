@@ -11,15 +11,34 @@ struct md_molecule_t;
 
 // We follow the convention of MDAnalysis and encode the atom fields within a string
 // https://github.com/MDAnalysis/mdanalysis/blob/develop/package/MDAnalysis/topology/LAMMPSParser.py
-// The only fields extracted are "id, resid, type, charge, x, y, z"
+// The only fields extracted are "id, resid, type, q, x, y, z"
 // Where "id, type, x, y, z" are required fields
 
-#define MD_LAMMPS_ATOM_FORMAT_FULL   "id resid type charge x y z"
-#define MD_LAMMPS_ATOM_FORMAT_ATOMIC "id type x y z"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+typedef enum {
+	MD_LAMMPS_ATOM_FORMAT_UNKNOWN,
+	MD_LAMMPS_ATOM_FORMAT_ANGLE,
+	MD_LAMMPS_ATOM_FORMAT_ATOMIC,
+	MD_LAMMPS_ATOM_FORMAT_BODY,
+	MD_LAMMPS_ATOM_FORMAT_BOND,
+	MD_LAMMPS_ATOM_FORMAT_CHARGE,
+	MD_LAMMPS_ATOM_FORMAT_DIPOLE,
+	MD_LAMMPS_ATOM_FORMAT_DPD,
+	MD_LAMMPS_ATOM_FORMAT_EDPD,
+	MD_LAMMPS_ATOM_FORMAT_MDPD,
+	MD_LAMMPS_ATOM_FORMAT_ELECTRON,
+	MD_LAMMPS_ATOM_FORMAT_ELLIPSOID,
+	MD_LAMMPS_ATOM_FORMAT_FULL,
+	MD_LAMMPS_ATOM_FORMAT_LINE,
+	MD_LAMMPS_ATOM_FORMAT_MESO,
+	MD_LAMMPS_ATOM_FORMAT_MOLECULAR,
+	MD_LAMMPS_ATOM_FORMAT_PERI,
+	MD_LAMMPS_ATOM_FORMAT_SMD,
+	MD_LAMMPS_ATOM_FORMAT_SPHERE,
+	MD_LAMMPS_ATOM_FORMAT_TEMPLATE,
+	MD_LAMMPS_ATOM_FORMAT_TRI,
+	MD_LAMMPS_ATOM_FORMAT_WAVEPACKET,
+	MD_LAMMPS_ATOM_FORMAT_COUNT
+} md_lammps_atom_format_t;
 
 //Contains data about a single atom
 typedef struct md_lammps_atom_t {
@@ -82,14 +101,41 @@ typedef struct md_lammps_data_t {
 	md_lammps_dihedral_t* impropers;
 } md_lammps_data_t;
 
-bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* atom_format, struct md_allocator_i* alloc);
-bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const char* atom_format, struct md_allocator_i* alloc);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Get name or string representation of a atom format
+const char** md_lammps_atom_format_names();
+const char** md_lammps_atom_format_strings();
+
+// Try to find a predefined atom format from input
+md_lammps_atom_format_t md_lammps_atom_format_from_str(str_t str);
+md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t filename);
+
+// validate a arbitrary atom format encoded in a string
+// Must contain the fields: 'id type x y z'
+bool md_lammps_validate_atom_format(const char* atom_format, char* err_buf, size_t err_cap);
+
+bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* atom_format_str, struct md_allocator_i* alloc);
+bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const char* atom_format_str, struct md_allocator_i* alloc);
 void md_lammps_data_free(md_lammps_data_t* data, struct md_allocator_i* alloc);
 
 // Molecule
 bool md_lammps_molecule_init(struct md_molecule_t* mol, const md_lammps_data_t* lammps_data, struct md_allocator_i* alloc);
 
-//struct md_molecule_loader_i* md_lammps_molecule_api();
+// Loader API
+
+// This object has to be passed as the 'arg' parameter in the loader api
+typedef struct md_lammps_molecule_loader_arg_t {
+	uint64_t type;
+	const char* atom_format_str;
+}md_lammps_molecule_loader_arg_t;
+
+// Use this to create a valid arg object which can be passed to the loader api
+md_lammps_molecule_loader_arg_t md_lammps_molecule_loader_arg(const char* atom_format_str);
+
+struct md_molecule_loader_i* md_lammps_molecule_api();
 
 
 #ifdef __cplusplus

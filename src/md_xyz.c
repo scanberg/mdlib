@@ -733,7 +733,9 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
     return true;
 }
 
-static bool xyz_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
+static bool xyz_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
+
     md_xyz_data_t data = {0};
     
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
@@ -744,7 +746,8 @@ static bool xyz_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
     return result;
 }
 
-static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
+static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_xyz_data_t data = {0};
     
     bool result = false;

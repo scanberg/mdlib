@@ -659,7 +659,8 @@ done:
     return result;
 }
 
-static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
+static bool pdb_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_pdb_data_t data = {0};
 
     md_pdb_data_parse_str(&data, str, md_heap_allocator);
@@ -669,7 +670,8 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
     return success;
 }
 
-static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
+static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         const size_t cap = MEGABYTES(1);

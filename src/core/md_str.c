@@ -12,8 +12,10 @@
 #include <stdio.h>
 
 str_t str_from_cstr(const char* cstr) {
-    str_t str = {cstr, strlen(cstr)};
-    return str;
+    if (cstr) {
+		return (str_t){cstr, strlen(cstr)};
+	}
+    return (str_t){0};
 }
 
 void str_swap(str_t a, str_t b) {
