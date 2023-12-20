@@ -81,15 +81,15 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom_data, const md_residue_data_t* res_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
+md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom_data, const md_residue_data_t* res_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_grow_mask_by_bonds(struct md_bitfield_t* mask, const struct md_molecule_t* mol, size_t extent, const struct md_bitfield_t* viable_mask);
+void md_util_mask_grow_by_bonds(struct md_bitfield_t* mask, const struct md_molecule_t* mol, size_t extent, const struct md_bitfield_t* viable_mask);
 
 // Grow a mask by radius (in Angstrom)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
-void md_util_grow_mask_by_radius(struct md_bitfield_t* mask, const struct md_molecule_t* mol, double radius, const struct md_bitfield_t* viable_mask);
+void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_molecule_t* mol, double radius, const struct md_bitfield_t* viable_mask);
 
 //bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
@@ -108,12 +108,12 @@ void md_util_grow_mask_by_radius(struct md_bitfield_t* mask, const struct md_mol
 //bool md_util_compute_structures(md_index_data_t* structures, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
-bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
+bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);
 
 
-// ### CELL ###
+// ### UNIT CELL ###
 
-// Construct cells from orthographic extents
+// Construct unit cell from orthographic extents
 md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z);
 
 // Construct possibly a triclinic cell from extents a,b,c and axis angles alpha, beta, gamma (in degrees)
@@ -122,7 +122,7 @@ md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, doub
 // Construct cell from 3x3 matrix
 md_unit_cell_t md_util_unit_cell_from_matrix(float M[3][3]);
 
-//Construct cell from triclinic basis
+//Construct cell from upper triangular matrix components
 md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, double xy, double xz, double yz);
 
 // Computes an array of distances between two sets of coordinates in a periodic domain (cell)
@@ -143,20 +143,20 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 
 // Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
-bool md_util_deperiodize_system(float* in_out_x, float* in_out_y, float* in_out_z, const float* in_w, size_t count, const md_unit_cell_t* in_cell, const md_index_data_t* in_structures);
+bool md_util_deperiodize_system(float* in_out_x, float* in_out_y, float* in_out_z, const float* in_w, size_t count, const md_unit_cell_t* in_cell, const uint32_t* structure_offsets, const int* structure_indices, size_t num_structures);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
-void md_util_compute_aabb(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, size_t count);
-void md_util_compute_aabb_vec4(vec3_t* aabb_min, vec3_t* aabb_max, const vec4_t* xyzr, const int32_t* indices, size_t count);
+void md_util_aabb_compute(vec3_t* aabb_min, vec3_t* aabb_max, const float* x, const float* y, const float* z, const float* r, const int32_t* indices, size_t count);
+void md_util_aabb_compute_vec4(vec3_t* aabb_min, vec3_t* aabb_max, const vec4_t* xyzr, const int32_t* indices, size_t count);
 
 // Computes the center of mass for a set of points with a given weight
 // x,y,z / xyz: Arrays containing coordinates
 // w:           Array of weights (optional): set as NULL to use equal weights
 // indices:     Array of indices (optional): indices into the arrays (x,y,z,w)
 // count:       Length of all arrays
-vec3_t md_util_compute_com(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, size_t count);
-vec3_t md_util_compute_com_vec4(const vec4_t* xyzw, const int32_t* indices, size_t count);
+vec3_t md_util_com_compute(const float *x, const float* y, const float* z, const float* w, const int32_t* indices, size_t count);
+vec3_t md_util_com_compute_vec4(const vec4_t* xyzw, const int32_t* indices, size_t count);
 
 // Computes the center of mass for a set of points with a given weight given in orthogonal periodic boundary conditions
 // The indices used to access the arrays are given in the indices array
@@ -175,9 +175,8 @@ vec3_t md_util_compute_com_vec4_ortho(const vec4_t* xyzw, const int32_t* indices
 // com:     Center of mass [2] (xyz0), (xyz1)
 // w:       Array of weights (optional): set as NULL to use equal weights
 // count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
-double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, size_t count);
-
-double md_util_compute_rmsd_vec4(const vec4_t* xyzw[2], const vec3_t com[2], size_t count);
+double md_util_rmsd_compute(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, size_t count);
+double md_util_rmsd_compute_vec4(const vec4_t* xyzw[2], const vec3_t com[2], size_t count);
 
 // Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
 vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
@@ -202,12 +201,12 @@ bool md_util_cubic_spline_interpolation(md_vec3_soa_t dst_coord, const md_vec3_s
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
-void md_util_spatial_sort_soa(uint32_t* source_indices, const float* x, const float* y, const float* z, size_t count);
+void md_util_spatial_sort(uint32_t* source_indices, const float* x, const float* y, const float* z, size_t count);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
-void md_util_spatial_sort(uint32_t* source_indices, const vec3_t* xyz, size_t count);
+void md_util_spatial_sort_vec3(uint32_t* source_indices, const vec3_t* xyz, size_t count);
 
 // Structure matching operations
 // In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.

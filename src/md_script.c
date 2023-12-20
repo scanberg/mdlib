@@ -178,7 +178,7 @@ typedef enum base_type_t {
     TYPE_IRANGE,
     TYPE_BITFIELD,      // Bitfield used to represent a selection of atoms
     TYPE_STRING,
-    TYPE_POSITION,      // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a position (INT, IRANGE, BITFIELD or float[3])
+    TYPE_COORDINATE,      // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a coordinate (INT, IRANGE, BITFIELD or float[3])
 } base_type_t;
 
 typedef enum flags_t {
@@ -664,7 +664,7 @@ static bool is_type_position_compatible(type_info_t type) {
 }
 
 static bool is_type_directly_compatible(type_info_t from, type_info_t to) {
-    if (to.base_type == TYPE_POSITION && is_type_position_compatible(from)) {
+    if (to.base_type == TYPE_COORDINATE && is_type_position_compatible(from)) {
         to.base_type = from.base_type;
         if (from.base_type == TYPE_FLOAT) {
             to.dim[1] = to.dim[0];
@@ -3332,6 +3332,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             ast_node_t* tmp_child = node->children[0];
             node->children[0] = node->children[1];
             node->children[1] = tmp_child;
+            node->proc_flags &= ~FLAG_SYMMETRIC_ARGS; // Clear flags so we don't swap again
         }
 
         // Make sure we cast the arguments into the expected types of the procedure.
@@ -3510,7 +3511,7 @@ static size_t print_argument_list(char* buf, size_t cap, const type_info_t arg_t
     for (size_t i = 0; i < num_args; ++i) {
         len += print_type_info(buf + len, cap - len, arg_type[i]);
         if (i + 1 != num_args) {
-            len += snprintf(buf + len, cap - len, ",");
+            len += snprintf(buf + len, cap - len, ", ");
         }
     }
     return len;
@@ -3960,7 +3961,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
                     print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
 
                     LOG_ERROR(ctx->ir, node->token,
-                        "Could not find matching procedure '"STR_FMT"' which takes the following argument(s): '%s'",
+                        "Could not find matching procedure '"STR_FMT"' which takes the following argument(s): %s",
                         STR_ARG(proc_name), buf);
                 }
             }
@@ -6163,9 +6164,9 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         ASSERT(arg_idx != -1);
         
         const procedure_t* proc = node->parent->proc;
-        if (is_type_directly_compatible(proc->arg_type[arg_idx], (type_info_t)TI_POSITION_ARR)) {
+        if (is_type_directly_compatible(proc->arg_type[arg_idx], (type_info_t)TI_COORDINATE_ARR)) {
             if (node->data.ptr) {
-                position_visualize(node->data, ctx);
+                coordinate_visualize(node->data, ctx);
             } else {
                 // Could potentially evaluate the non constant value expression here into a data_t item and visualize it.
             }

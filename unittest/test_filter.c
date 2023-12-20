@@ -17,7 +17,7 @@ UTEST(filter, centered) {
     const str_t gro_file = STR(MD_UNITTEST_DATA_DIR "/centered.gro");
 
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, gro_file, NULL, md_heap_allocator));
-    ASSERT_TRUE(md_util_postprocess_molecule(&mol, md_heap_allocator, MD_UTIL_POSTPROCESS_ALL));
+    ASSERT_TRUE(md_util_molecule_postprocess(&mol, md_heap_allocator, MD_UTIL_POSTPROCESS_ALL));
     
     md_bitfield_t bf = md_bitfield_create(md_heap_allocator);
     char err[256];

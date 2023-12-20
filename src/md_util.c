@@ -1368,7 +1368,7 @@ static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* ato
     }
 }
 
-md_bond_data_t md_util_compute_covalent_bonds(const md_atom_data_t* atom, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
     ASSERT(atom);
     ASSERT(res);
     ASSERT(alloc);
@@ -2050,7 +2050,7 @@ md_index_data_t md_util_compute_structures(const md_molecule_t* mol, struct md_a
     return structures;
 }
 
-void md_util_grow_mask_by_bonds(md_bitfield_t* mask, const md_molecule_t* mol, size_t extent, const md_bitfield_t* viable_mask) {
+void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_molecule_t* mol, size_t extent, const md_bitfield_t* viable_mask) {
     ASSERT(mask);
     ASSERT(mol);
 
@@ -2117,7 +2117,7 @@ void md_util_grow_mask_by_bonds(md_bitfield_t* mask, const md_molecule_t* mol, s
     md_arena_allocator_destroy(temp_alloc);
 }
 
-void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t* mol, double radius, const md_bitfield_t* viable_mask) {
+void md_util_mask_grow_by_radius(md_bitfield_t* mask, const struct md_molecule_t* mol, double radius, const md_bitfield_t* viable_mask) {
     ASSERT(mask);
     ASSERT(mol);
     
@@ -2155,8 +2155,16 @@ void md_util_grow_mask_by_radius(md_bitfield_t* mask, const struct md_molecule_t
     md_vm_arena_free(&arena);
 }
 
+void md_util_grow_mask_by_residue(md_bitfield_t* mask, const md_molecule_t* mol) {
+
+}
+
+void md_util_grow_mask_by_structure(struct md_bitfield_t* mask, const uint32_t* structure_offsets, const int32_t* structure_indices, size_t num_structures) {
+
+}
+
 // Computes the minimum axis aligned bounding box for a set of points with a given radius (radius is optional), indices are used to select a subset of points
-void md_util_compute_aabb_vec4(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const vec4_t* in_xyzr, const int32_t* in_idx, size_t count) {
+void md_util_aabb_compute_vec4(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const vec4_t* in_xyzr, const int32_t* in_idx, size_t count) {
     vec4_t aabb_min = vec4_set1( FLT_MAX);
     vec4_t aabb_max = vec4_set1(-FLT_MAX);
     if (in_idx) {
@@ -2179,7 +2187,7 @@ void md_util_compute_aabb_vec4(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const
     *out_aabb_max = vec3_from_vec4(aabb_max);
 }
 
-void md_util_compute_aabb(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count) {
+void md_util_aabb_compute(vec3_t* out_aabb_min, vec3_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count) {
     md_256 vx_min = md_mm256_set1_ps(+FLT_MAX);
     md_256 vy_min = md_mm256_set1_ps(+FLT_MAX);
     md_256 vz_min = md_mm256_set1_ps(+FLT_MAX);
@@ -3543,7 +3551,7 @@ static float compute_com(const float* in_x, const float* in_w, const int32_t* in
     return com;
 }
 
-vec3_t md_util_compute_com_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count) {
+vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count) {
     ASSERT(in_xyzw);
 
     if (count <= 0) {
@@ -3563,7 +3571,7 @@ vec3_t md_util_compute_com_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
     return vec3_div_f(vec3_from_vec4(sum_xyzw), sum_xyzw.w);
 }
 
-vec3_t md_util_compute_com(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count) {
+vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -3848,7 +3856,7 @@ vec3_t md_util_compute_com_ortho(const float* in_x, const float* in_y, const flo
     if (mask == 7) {
 		return compute_com_periodic_trig_xyz(in_x, in_y, in_z, in_w, in_idx, count, pbc_ext);
 	} else if (mask == 0) {
-        return md_util_compute_com(in_x, in_y, in_z, in_w, in_idx, count);
+        return md_util_com_compute(in_x, in_y, in_z, in_w, in_idx, count);
     }
 
     // We need to pick the version based on each component of pdc_ext, since one or more may be zero
@@ -4240,7 +4248,7 @@ static bool md_util_pbc_triclinic(float* x, float* y, float* z, const int32_t* i
     return true;
 }
 
-bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* structures, vec3_t box_ext) {
+bool md_util_unwrap_ortho(float* x, float* y, float* z, vec3_t box_ext, const uint32_t* structure_offsets, const int* structure_indices, size_t num_structures) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
@@ -4258,17 +4266,16 @@ bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* s
 
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
     
-    const int64_t num_structures = md_index_data_count(*structures);
-    for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
-        const int* indices  = md_index_range_beg(*structures, s_idx);
-        const int64_t count = md_index_range_size(*structures, s_idx);
+    for (size_t s_idx = 0; s_idx < num_structures; ++s_idx) {
+        const uint32_t beg = structure_offsets[s_idx];
+        const uint32_t end = structure_offsets[s_idx + 1];
         
         // Indices are sorted with respect to covalent bond 'depth' from the first atom
         // This means we can use the inherent order of indices to iterate and unwrap.
-        int idx = indices[0];
+        int idx = structure_indices ? structure_indices[beg] : beg;
         vec4_t ref_pos = {x[idx], y[idx], z[idx], 0};
-        for (int64_t i = 1; i < count; ++i) {
-            idx = indices[i];
+        for (uint32_t i = beg + 1; i < end; ++i) {
+            idx = structure_indices ? structure_indices[i] : i;
             const vec4_t pos = vec4_deperiodize((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
             x[idx] = pos.x;
             y[idx] = pos.y;
@@ -4279,7 +4286,7 @@ bool md_util_unwrap_ortho(float* x, float* y, float* z, const md_index_data_t* s
     return true;
 }
 
-bool md_util_unwrap_triclinic(float* x, float* y, float* z, const md_index_data_t* structures, const md_unit_cell_t* cell) {
+bool md_util_unwrap_triclinic(float* x, float* y, float* z, const md_unit_cell_t* cell, const uint32_t* structure_offsets, const int* structure_indices, size_t num_structures) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
@@ -4295,43 +4302,43 @@ bool md_util_unwrap_triclinic(float* x, float* y, float* z, const md_index_data_
         return false;
     }
 
-    const int64_t num_structures = md_index_data_count(*structures);
-    for (int64_t s_idx = 0; s_idx < num_structures; ++s_idx) {
-        const int* indices  = md_index_range_beg(*structures, s_idx);
-        const int64_t count = md_index_range_size(*structures, s_idx);
+    for (size_t s_idx = 0; s_idx < num_structures; ++s_idx) {
+        const uint32_t beg = structure_offsets[s_idx];
+        const uint32_t end = structure_offsets[s_idx + 1];
 
         // Indices are sorted with respect to covalent bond 'depth' from the first atom
         // This means we can use the inherent order of indices to iterate and unwrap.
-        int idx = indices[0];
-        vec3_t ref = {x[idx], y[idx], z[idx]};
-        for (int64_t i = 1; i < count; ++i) {
-            idx = indices[i];
+        int idx = structure_indices ? structure_indices[beg] : beg;
+        vec3_t ref_pos = {x[idx], y[idx], z[idx]};
+        for (uint32_t i = beg + 1; i < end; ++i) {
+            idx = structure_indices ? structure_indices[i] : i;
             vec3_t pos = {x[idx], y[idx], z[idx]};
-            deperiodize_triclinic(pos.elem, ref.elem, cell->basis.elem);
+            deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
             x[idx] = pos.x;
             y[idx] = pos.y;
             z[idx] = pos.z;
-            ref = pos;
+            ref_pos = pos;
         }
     }
     return true;
 }
 
-bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, size_t count, const md_unit_cell_t* cell, const md_index_data_t* structures) {
+bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, size_t num_atoms, const md_unit_cell_t* cell, const uint32_t* structure_offsets, const int* structure_indices, size_t num_structures) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
-    ASSERT(cell);
-    ASSERT(structures);
-
-    const size_t num_atoms = count;
-    const size_t num_structures = md_index_data_count(*structures);
-
-    if (cell->flags & MD_CELL_TRICLINIC) {
-        MD_LOG_ERROR("Triclinic cells are not supported!");
+    
+    if (!cell) {
         return false;
     }
 
+    if (!(cell->flags & MD_CELL_ORTHOGONAL) &&
+        !(cell->flags & MD_CELL_TRICLINIC) ) {
+        // Nothing for us to do here!
+        return false;
+    }
+
+	bool ortho = cell->flags & MD_CELL_ORTHOGONAL;
     const vec3_t box = mat3_diag(cell->basis);
 
     if (cell->flags & MD_CELL_ORTHOGONAL) {
@@ -4340,28 +4347,42 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, si
         md_util_pbc_triclinic(x, y, z, NULL, num_atoms, cell);
     }
     if (num_structures > 0) {
-        if (cell->flags & MD_CELL_ORTHOGONAL) {
-            md_util_unwrap_ortho(x, y, z, structures, box);
-        } else if (cell->flags & MD_CELL_TRICLINIC) {
-			md_util_unwrap_triclinic(x, y, z, structures, cell);
+        if (ortho) {
+            md_util_unwrap_ortho(x, y, z, box, structure_offsets, structure_indices, num_structures);
+        } else {
+			md_util_unwrap_triclinic(x, y, z, cell, structure_offsets, structure_indices, num_structures);
 		}
     
         // Place any defined covalent structure such that its center of mass is within the correct periodic image
         const vec4_t ext = vec4_from_vec3(box, 0);
-        const vec4_t ref = vec4_mul_f(ext, 0.5f);
+        const vec4_t ref = ortho ? vec4_mul_f(ext, 0.5f) : vec4_from_vec3(mat3_mul_vec3(cell->basis, vec3_set1(0.5f)), 0);
 
         for (size_t s_idx = 0; s_idx < num_structures; ++s_idx) {
-            const int32_t* indices   = md_index_range_beg(*structures, s_idx);
-            const size_t num_indices = md_index_range_size(*structures, s_idx);
+            const uint32_t s_beg = structure_offsets[s_idx];
+            const uint32_t s_end = structure_offsets[s_idx + 1];
+            const uint32_t s_len = s_end - s_beg;
+            vec3_t s_com;
 
-            const vec4_t com = vec4_from_vec3(md_util_compute_com(x, y, z, w, indices, num_indices), 0);
-            const vec4_t pbc_com = vec4_deperiodize(com, ref, ext);
+            if (structure_indices) {
+                s_com = md_util_com_compute(x, y, z, w, structure_indices + s_beg, s_len);
+            } else {
+                s_com = md_util_com_compute(x + s_beg, y + s_beg, z + s_beg, w + s_beg, 0, s_len);
+            }
+
+            const vec4_t com = vec4_from_vec3(s_com, 0);
+            vec4_t pbc_com;
+            if (ortho) {
+                pbc_com = vec4_deperiodize(com, ref, ext);
+            } else {
+                pbc_com = com;
+                deperiodize_triclinic(pbc_com.elem, ref.elem, cell->basis.elem);
+            }
             const vec4_t delta = vec4_sub(pbc_com, com);
             const vec4_t abs_delta = vec4_abs(delta);
             
             if (vec4_dot(delta, delta) > 0) {
-                for (size_t i = 0; i < num_indices; ++i) {
-                    const int32_t j = indices[i];
+                for (size_t i = s_beg; i < s_end; ++i) {
+                    const int j = structure_indices ? structure_indices[i] : (int)i;
                     if (abs_delta.x > 0) x[j] += delta.x;
                     if (abs_delta.y > 0) y[j] += delta.y;
                     if (abs_delta.z > 0) z[j] += delta.z;
@@ -4481,7 +4502,7 @@ bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_
 }
 #endif
 
-double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, size_t count) {
+double md_util_rmsd_compute(const md_vec3_soa_t coord[2], const vec3_t com[2], const float* w, size_t count) {
     const mat3_t R = mat3_optimal_rotation(coord[0].x, coord[0].y, coord[0].z, coord[1].x, coord[1].y, coord[1].z, w, com[0], com[1], count);
     double d_sum = 0;
     double w_sum = 0;
@@ -4498,7 +4519,7 @@ double md_util_compute_rmsd(const md_vec3_soa_t coord[2], const vec3_t com[2], c
     return sqrt(d_sum / w_sum);
 }
 
-double md_util_compute_rmsd_vec4(const vec4_t* xyzw[2], const vec3_t com[2], size_t count) {
+double md_util_rmsd_compute_vec4(const vec4_t* xyzw[2], const vec3_t com[2], size_t count) {
     const mat3_t R = mat3_optimal_rotation_vec4(xyzw[0], xyzw[1], com[0], com[1], count);
     double d_sum = 0;
     double w_sum = 0;
@@ -4793,7 +4814,7 @@ static void md_util_compute_backbone_data(md_backbone_data_t* backbone, const md
 // (Coordinates & Elements) -> Covalent Bonds
 // (resid & Bonds)          -> Chains
 // (resname & types)        -> Backbone
-bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags) {
+bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags) {
     ASSERT(mol);
     ASSERT(alloc);
 
@@ -4890,7 +4911,7 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
 #ifdef PROFILE
         md_timestamp_t t0 = md_time_current();
 #endif
-        mol->bond = md_util_compute_covalent_bonds(&mol->atom, &mol->residue, &mol->unit_cell, alloc);
+        mol->bond = md_util_covalent_bonds_compute(&mol->atom, &mol->residue, &mol->unit_cell, alloc);
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();
         MD_LOG_DEBUG("Postprocess: compute bonds %.3f ms\n", md_time_as_milliseconds(t1-t0));
@@ -5006,6 +5027,12 @@ bool md_util_postprocess_molecule(struct md_molecule_t* mol, struct md_allocator
         }
     }
 
+#if 1
+    if (mol->chain.count) {
+        md_util_deperiodize_system(mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.mass, mol->atom.count, &mol->unit_cell, mol->chain.atom_offset, 0, mol->chain.count);
+    }
+#endif
+
     return true;
 }
 
@@ -5101,7 +5128,7 @@ static void radixPass(uint32_t* destination, const uint32_t* source, const uint3
     }
 }
 
-void md_util_spatial_sort_soa(uint32_t* source, const float* x, const float* y, const float* z, size_t count) {
+void md_util_spatial_sort(uint32_t* source, const float* x, const float* y, const float* z, size_t count) {
     if (!source || !z || !y || !z || count <= 0) return;
 
     md_allocator_i* alloc = md_heap_allocator;
@@ -5127,7 +5154,7 @@ void md_util_spatial_sort_soa(uint32_t* source, const float* x, const float* y, 
     md_free(alloc, keys,    sizeof(uint32_t) * count);
 }
 
-void md_util_spatial_sort(uint32_t* source, const vec3_t* xyz, size_t count) {
+void md_util_spatial_sort_vec3(uint32_t* source, const vec3_t* xyz, size_t count) {
     if (!source || !xyz || count <= 0) return;
 
     md_allocator_i* alloc = md_heap_allocator;

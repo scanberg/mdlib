@@ -361,7 +361,7 @@ void md_bitfield_set_bit(md_bitfield_t* bf, uint64_t bit_idx) {
     block_set_bit(get_block_ptr(bf, block_idx(bit_idx)), bit_idx - block_bit(bit_idx));
 }
 
-void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, size_t num_indices) {
+void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, size_t num_indices) {
     ASSERT(md_bitfield_validate(bf));
     ASSERT(indices);    
 

@@ -117,8 +117,8 @@ UTEST_F_SETUP(script) {
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&utest_fixture->amy, STR(MD_UNITTEST_DATA_DIR "/centered.gro"),   NULL, &utest_fixture->alloc));
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&utest_fixture->ala, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, &utest_fixture->alloc));
 
-    md_util_postprocess_molecule(&utest_fixture->amy, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
-    md_util_postprocess_molecule(&utest_fixture->ala, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_util_molecule_postprocess(&utest_fixture->amy, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_util_molecule_postprocess(&utest_fixture->ala, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
 
     utest_fixture->ala_traj = md_pdb_trajectory_create(STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), &utest_fixture->alloc);
 }

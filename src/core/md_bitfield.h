@@ -42,7 +42,7 @@ uint64_t md_bitfield_end_bit    (const md_bitfield_t* bf);
 
 void md_bitfield_set_range      (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 void md_bitfield_set_bit        (md_bitfield_t* bf, uint64_t bit_idx);
-void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, size_t num_indices);
+void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, size_t num_indices);
 
 void md_bitfield_clear          (md_bitfield_t* bf);
 void md_bitfield_clear_range    (md_bitfield_t* bf, uint64_t beg, uint64_t end);

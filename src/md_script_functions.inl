@@ -11,6 +11,8 @@
 
 #define STATIC_VALIDATION_ERROR -2
 
+#define BAKE_STR(str) {str"", sizeof(str)-1}
+
 // Type info declaration helpers
 #define TI_BOOL         {TYPE_BOOL, {1}, 0}
 
@@ -44,8 +46,8 @@
 #define TI_BITFIELD     {TYPE_BITFIELD, {1}, 0}
 #define TI_BITFIELD_ARR {TYPE_BITFIELD, {ANY_LENGTH}, 0}
 
-#define TI_POSITION     {TYPE_POSITION, {1}, 0}
-#define TI_POSITION_ARR {TYPE_POSITION, {ANY_LENGTH}, 0}
+#define TI_COORDINATE     {TYPE_COORDINATE, {1}, 0}
+#define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}, 0}
 
 #define as_float(arg) (*((float*)((arg).ptr)))
 #define as_float_arr(arg) ((float*)((arg).ptr))
@@ -305,7 +307,7 @@ static int _cast_int_arr_to_flt_arr     (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
-static int _flatten_bf_arr              (data_t*, data_t[], eval_context_t*);
+static int _join_bf_arr              (data_t*, data_t[], eval_context_t*);
 
 // Basic operations
 static int _min_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
@@ -347,7 +349,7 @@ static int _resid   (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) 
 static int _residue (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
 
 static int _fill_residue(data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
-static int _fill_chain  (data_t*, data_t[], eval_context_t*);    // (bitfield[]) -> bitfield
+static int _fill_chain  (data_t*, data_t[], eval_context_t*);   // (bitfield[]) -> bitfield
 
 // Chain level selectors
 static int _chain_irng  (data_t*, data_t[], eval_context_t*); // (irange[]) -> bitfield
@@ -373,15 +375,15 @@ static int _sdf     (data_t*, data_t[], eval_context_t*); // (bitfield, bitfield
 // Geometric operations
 static int _com     (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3]
 static int _plane   (data_t*, data_t[], eval_context_t*);  // (position[]) -> float[4]
-static int _position(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3][]
-static int _position_x(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
-static int _position_y(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
-static int _position_z(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
+static int _coordinate(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[3][]
+static int _coordinate_x(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
+static int _coordinate_y(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
+static int _coordinate_z(data_t*, data_t[], eval_context_t*);  // (position[]) -> float[]
 
-static int _position_xy(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
-static int _position_xz(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
+static int _coordinate_xy(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
+static int _coordinate_xz(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
 
-static int _position_yz(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
+static int _coordinate_yz(data_t*, data_t[], eval_context_t*);  // (position[]) -> float2[]
 
 static int _shape_weights(data_t*, data_t[], eval_context_t*); // (position[]) -> float
 
@@ -397,8 +399,11 @@ static int _vec3 (data_t*, data_t[], eval_context_t*); // (float, float, float) 
 static int _vec4 (data_t*, data_t[], eval_context_t*); // (float, float, float, float) -> float[4]
 
 // Misc
-// Count the number of bits set
+// Count the number of bits set (popcount)
 static int _count (data_t*, data_t[], eval_context_t*); // (bitfield) -> float
+
+// Specialized count function with supplied argument
+static int _count_with_arg(data_t* , data_t[], eval_context_t*); // (bitfield) -> float
 
 static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
@@ -439,9 +444,9 @@ static procedure_t casts[] = {
     {CSTR("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_RET_AND_ARG_EQUAL_LENGTH},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
-    {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _flatten_bf_arr},
+    {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _join_bf_arr},
 
-    //{CSTR("cast"),    TI_FLOAT3_ARR,    1,  {TI_POSITION_ARR},  _position, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_DYNAMIC_LENGTH},
+    //{CSTR("cast"),    TI_FLOAT3_ARR,    1,  {TI_COORDINATE_ARR},  _coordinate, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_DYNAMIC_LENGTH},
 };
 
 static procedure_t operators[] = {
@@ -610,46 +615,52 @@ static procedure_t procedures[] = {
     {CSTR("within_z"),      TI_BITFIELD, 1, {TI_FRANGE},    _within_z,     FLAG_DYNAMIC},
     {CSTR("within_xyz"),    TI_BITFIELD, 3, {TI_FRANGE, TI_FRANGE, TI_FRANGE}, _within_xyz,     FLAG_DYNAMIC},
 
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT,  TI_POSITION_ARR},   _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY},
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_FRANGE, TI_POSITION_ARR},   _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY},
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_BITFIELD_ARR,   TI_FLOAT},  _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY | FLAG_SYMMETRIC_ARGS },
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT3_ARR,     TI_FLOAT},  _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY | FLAG_SYMMETRIC_ARGS },
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_BITFIELD_ARR,   TI_FRANGE}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY | FLAG_SYMMETRIC_ARGS },
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT3_ARR,     TI_FRANGE}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY | FLAG_SYMMETRIC_ARGS },
+
     {CSTR("within"),    TI_BITFIELD, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY},
     {CSTR("within"),    TI_BITFIELD, 1, {TI_FRANGE},                    _within_impl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY},
 
     // --- PROPERTY COMPUTE ---
-    {CSTR("distance"),          TI_FLOAT,       2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("distance_min"),      TI_FLOAT,       2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("distance_max"),      TI_FLOAT,       2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("distance_pair"),     TI_FLOAT_ARR,   2,  {TI_POSITION_ARR, TI_POSITION_ARR}, _distance_pair,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH | FLAG_NO_FLATTEN},
+    {CSTR("distance"),          TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("distance_min"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("distance_max"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("distance_pair"),     TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_pair,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH | FLAG_NO_FLATTEN},
 
-    {CSTR("angle"),     TI_FLOAT,   3,  {TI_POSITION_ARR, TI_POSITION_ARR, TI_POSITION_ARR},                    _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("dihedral"),  TI_FLOAT,   4,  {TI_POSITION_ARR, TI_POSITION_ARR, TI_POSITION_ARR, TI_POSITION_ARR},   _dihedral,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                    _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("dihedral"),  TI_FLOAT,   4,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},   _dihedral,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
     {CSTR("rmsd"),      TI_FLOAT,   1,  {TI_BITFIELD},    _rmsd,     FLAG_DYNAMIC | FLAG_VISUALIZE},
 
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_POSITION_ARR, TI_POSITION_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_POSITION_ARR, TI_POSITION_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
     {CSTR("sdf"),       TI_VOLUME, 3, {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
     // --- GEOMETRICAL OPERATIONS ---
-    {CSTR("com"),           TI_FLOAT3,      1,  {TI_POSITION_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("plane"),         TI_FLOAT4,      1,  {TI_POSITION_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("shape_weights"), TI_FLOAT3,      1,  {TI_POSITION_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {CSTR("com"),           TI_FLOAT3,   1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("plane"),         TI_FLOAT4,   1,  {TI_COORDINATE_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("shape_weights"), TI_FLOAT3,   1,  {TI_COORDINATE_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
 
-    {CSTR("position"),      TI_FLOAT3_ARR,  1,  {TI_POSITION_ARR},  _position,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("position_x"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("position_y"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("position_z"),    TI_FLOAT_ARR,   1,  {TI_POSITION_ARR},  _position_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("coord"),      TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("coord_x"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("coord_y"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_y,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("coord_z"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_z,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
-    {CSTR("position_xy"),   TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xy,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
-    {CSTR("position_xz"),   TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_xz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("coord_xy"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_xy,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("coord_xz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_xz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
-    {CSTR("position_yz"),   TI_FLOAT2_ARR,  1,  {TI_POSITION_ARR},  _position_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
 
     // --- MISC ---
-    {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD_ARR},  _count},
-    {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _flatten_bf_arr, FLAG_FLATTEN},
+    {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD},              _count},
+    {CSTR("count"),     TI_FLOAT,           2,  {TI_BITFIELD, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
+
+    {CSTR("join"),      TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
+
     {CSTR("residue"),   TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_NO_FLATTEN},
     {CSTR("chain"),     TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_NO_FLATTEN},
 
@@ -1017,8 +1028,8 @@ static inline irange_t get_chain_range_in_context(const md_molecule_t* mol, cons
     return range;
 }
 
-static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
+static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     if (element_count(arg) == 0) return 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
     const int64_t ctx_size = ctx_range.end - ctx_range.beg;
@@ -1091,8 +1102,8 @@ static int position_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     }
 }
 
-static void position_visualize(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
+static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     ASSERT(ctx->vis);
 
     if (element_count(arg) == 0) return;
@@ -1170,8 +1181,8 @@ static void position_visualize(data_t arg, eval_context_t* ctx) {
 }
 
 // Atom indices is optional and if supplied, will be filled with the atom indices corresponding to the positions
-static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
+static vec3_t* coordinate_extract(data_t arg, eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     vec3_t* positions = 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
@@ -1263,7 +1274,7 @@ static vec3_t* position_extract(data_t arg, eval_context_t* ctx) {
 }
 
 static md_array(int) position_extract_indices(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     md_array(int) out_indices = 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
@@ -1323,7 +1334,7 @@ static md_array(int) position_extract_indices(data_t arg, eval_context_t* ctx) {
             }
         }
         else {
-            // @NOTE(Robin): We want to be consistent with the position_extract function which in the case of multiple bitfields returns the com of each bitfield
+            // @NOTE(Robin): We want to be consistent with the coordinate_extract function which in the case of multiple bitfields returns the com of each bitfield
             // Therefore we do not want in this case to return some index as we cannot map the single position to a single atom
         }
 
@@ -1337,7 +1348,7 @@ static md_array(int) position_extract_indices(data_t arg, eval_context_t* ctx) {
 }
 
 static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     vec4_t sum = { 0 };
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
@@ -2054,23 +2065,23 @@ static bool within_float_iter(const md_spatial_hash_elem_t* elem, int mask, void
 
 static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
 
-    const float radius = as_float(arg[0]);
+    const float radius = as_float(arg[1]);
 
     if (dst || ctx->vis) {
         if (!ctx->spatial_hash) {
             MD_LOG_DEBUG("Within: spatial_hash structure not present during evaluation");
             return -1;
         }
-        const vec3_t* in_pos = position_extract(arg[1], ctx);
+        const vec3_t* in_pos = coordinate_extract(arg[0], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_bitfield_t* bf_mask = 0;
         md_bitfield_t* bf_dst = 0;
         
-        if (is_type_equivalent(arg[1].type, (type_info_t)TI_BITFIELD)) {           
-            bf_mask = as_bitfield(arg[1]);
+        if (is_type_equivalent(arg[0].type, (type_info_t)TI_BITFIELD)) {           
+            bf_mask = as_bitfield(arg[0]);
         }
 
         if (dst) {
@@ -2083,7 +2094,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Visualize
             ASSERT(ctx->vis);
             bf_dst = ctx->vis_structure;
-            position_visualize(arg[1], ctx);
+            coordinate_visualize(arg[0], ctx);
             
             for (size_t i = 0; i < num_pos; ++i) {
                 push_sphere(in_pos[i], radius, COLOR_WHITE, ctx->vis);
@@ -2098,9 +2109,9 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (position_validate(arg[1], 1, ctx) < 0) return -1;
+        if (coordinate_validate(arg[0], 1, ctx) < 0) return -1;
         if (radius <= 0) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied radius is negative or zero, please supply a positive value");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied radius is negative or zero, please supply a positive value");
             return -1;
         }
     }
@@ -2179,23 +2190,23 @@ static bool within_frng_iter(const md_spatial_hash_elem_t* elem, void* user_data
 
 static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FRANGE));
 
-    const frange_t rad_range = as_frange(arg[0]);
+    const frange_t rad_range = as_frange(arg[1]);
 
     if (dst || ctx->vis) {
         if (!ctx->spatial_hash) {
             MD_LOG_DEBUG("Within: spatial_hash structure not present during evaluation");
             return -1;
         }
-        const vec3_t* in_pos = position_extract(arg[1], ctx);
+        const vec3_t* in_pos = coordinate_extract(arg[0], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_bitfield_t* bf_mask = 0;
         md_bitfield_t* bf_dst = 0;
             
-        if (is_type_equivalent(arg[1].type, (type_info_t)TI_BITFIELD)) {           
-            bf_mask = as_bitfield(arg[1]);
+        if (is_type_equivalent(arg[0].type, (type_info_t)TI_BITFIELD)) {           
+            bf_mask = as_bitfield(arg[0]);
         }
         
         const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(ctx->mol->unit_cell.basis, vec3_set1(1.0f)), 0);
@@ -2232,9 +2243,9 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (position_validate(arg[1], 1, ctx) < 0) return -1;
+        if (coordinate_validate(arg[0], 1, ctx) < 0) return -1;
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "The supplied radius range is invalid, ");
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied radius range is invalid, ");
             return -1;
         }
     }
@@ -2922,8 +2933,8 @@ static int _resid(data_t* dst, data_t arg[], eval_context_t* ctx) {
         return -1;
     }
 
-    const size_t    num_rid = element_count(arg[0]);
-    const irange_t* rid = arg[0].ptr;
+    const size_t num_rid = element_count(arg[0]);
+    const irange_t*  rid = arg[0].ptr;
 
     // Here we only pick the residues which are represented within the context (by having bits set)
     int32_t* res_indices = get_residue_indices_in_context(ctx->mol, ctx->mol_ctx, ctx->temp_alloc);
@@ -3116,8 +3127,8 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         vec3_t a = position_extract_com(arg[0], ctx);
@@ -3129,8 +3140,8 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_util_unit_cell_distance_array(dst_arr, &a, 1, &b, 1, &ctx->mol->unit_cell);
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
-            position_visualize(arg[1], ctx);
+            coordinate_visualize(arg[0], ctx);
+            coordinate_visualize(arg[1], ctx);
 
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 md_script_vis_vertex_t va = vertex(a, COLOR_WHITE);
@@ -3142,8 +3153,8 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        int res_a = position_validate(arg[0], 0, ctx);
-        int res_b = position_validate(arg[1], 1, ctx);
+        int res_a = coordinate_validate(arg[0], 0, ctx);
+        int res_b = coordinate_validate(arg[1], 1, ctx);
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
@@ -3158,12 +3169,12 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        const vec3_t* a_pos = position_extract(arg[0], ctx);
-        const vec3_t* b_pos = position_extract(arg[1], ctx);
+        const vec3_t* a_pos = coordinate_extract(arg[0], ctx);
+        const vec3_t* b_pos = coordinate_extract(arg[1], ctx);
         const size_t  a_len = md_array_size(a_pos);
         const size_t  b_len = md_array_size(b_pos);
 
@@ -3175,8 +3186,8 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
             as_float(*dst) = min_dist;
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
-            position_visualize(arg[1], ctx);
+            coordinate_visualize(arg[0], ctx);
+            coordinate_visualize(arg[1], ctx);
 
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 if (a_pos && b_pos) {
@@ -3190,8 +3201,8 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        int res_a = position_validate(arg[0], 0, ctx);
-        int res_b = position_validate(arg[1], 1, ctx);
+        int res_a = coordinate_validate(arg[0], 0, ctx);
+        int res_b = coordinate_validate(arg[1], 1, ctx);
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
@@ -3206,12 +3217,12 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        const vec3_t* a_pos = position_extract(arg[0], ctx);
-        const vec3_t* b_pos = position_extract(arg[1], ctx);
+        const vec3_t* a_pos = coordinate_extract(arg[0], ctx);
+        const vec3_t* b_pos = coordinate_extract(arg[1], ctx);
         const size_t  a_len = md_array_size(a_pos);
         const size_t  b_len = md_array_size(b_pos);
 
@@ -3223,8 +3234,8 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
             as_float(*dst) = max_dist;
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
-            position_visualize(arg[1], ctx);
+            coordinate_visualize(arg[0], ctx);
+            coordinate_visualize(arg[1], ctx);
 
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 if (a_pos && b_pos) {
@@ -3237,8 +3248,8 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
     } else {
-        int res_a = position_validate(arg[0], 0, ctx);
-        int res_b = position_validate(arg[1], 1, ctx);
+        int res_a = coordinate_validate(arg[0], 0, ctx);
+        int res_b = coordinate_validate(arg[1], 1, ctx);
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
@@ -3252,16 +3263,16 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
     
     int result = 0;
 
     if (dst || ctx->vis) {
         md_vm_arena_temp_t temp = md_vm_arena_temp_begin(ctx->temp_arena);
 
-        vec3_t* a_pos = position_extract(arg[0], ctx);
-        vec3_t* b_pos = position_extract(arg[1], ctx);
+        vec3_t* a_pos = coordinate_extract(arg[0], ctx);
+        vec3_t* b_pos = coordinate_extract(arg[1], ctx);
         const int64_t a_len = md_array_size(a_pos);
         const int64_t b_len = md_array_size(b_pos);
 
@@ -3325,8 +3336,8 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     }
                 }
             } else {
-                position_visualize(arg[0], ctx);
-                position_visualize(arg[1], ctx);
+                coordinate_visualize(arg[0], ctx);
+                coordinate_visualize(arg[1], ctx);
 
                 if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                     for (int64_t i = 0; i < a_len; ++i) {
@@ -3343,8 +3354,8 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         md_vm_arena_temp_end(temp);
     } else {
-        int res0 = position_validate(arg[0], 0, ctx);
-        int res1 = position_validate(arg[1], 1, ctx);
+        int res0 = coordinate_validate(arg[0], 0, ctx);
+        int res1 = coordinate_validate(arg[1], 1, ctx);
         if (res0 < 0) return res0;
         if (res1 < 0) return res1;
         if (ctx->backchannel) {
@@ -3363,9 +3374,9 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
     
     if (dst || ctx->vis) {
         const vec3_t a = position_extract_com(arg[0], ctx);
@@ -3380,9 +3391,9 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
-            position_visualize(arg[1], ctx);
-            position_visualize(arg[2], ctx);
+            coordinate_visualize(arg[0], ctx);
+            coordinate_visualize(arg[1], ctx);
+            coordinate_visualize(arg[2], ctx);
 
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 md_script_vis_vertex_t va = vertex(a, COLOR_WHITE);
@@ -3405,9 +3416,9 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     } else {
         // Validate input
-        if (position_validate(arg[0], 0, ctx) < 0) return STATIC_VALIDATION_ERROR;
-        if (position_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
-        if (position_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (coordinate_validate(arg[0], 0, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (coordinate_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (coordinate_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
             ctx->backchannel->unit = md_unit_radian();
             //ctx->backchannel->value_range = (frange_t){0, PI};
@@ -3418,10 +3429,10 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         const vec3_t a = position_extract_com(arg[0], ctx);
@@ -3434,10 +3445,10 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             as_float(*dst) = (float)dihedral_angle(a,b,c,d);
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
-            position_visualize(arg[1], ctx);
-            position_visualize(arg[2], ctx);
-            position_visualize(arg[3], ctx);
+            coordinate_visualize(arg[0], ctx);
+            coordinate_visualize(arg[1], ctx);
+            coordinate_visualize(arg[2], ctx);
+            coordinate_visualize(arg[3], ctx);
 
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
 
@@ -3460,10 +3471,10 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     } else {
         // Validate input
-        if (position_validate(arg[0], 0, ctx) < 0) return STATIC_VALIDATION_ERROR;
-        if (position_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
-        if (position_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
-        if (position_validate(arg[3], 3, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (coordinate_validate(arg[0], 0, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (coordinate_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (coordinate_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
+        if (coordinate_validate(arg[3], 3, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
             ctx->backchannel->unit = md_unit_radian();
             //ctx->backchannel->value_range = (frange_t){-PI, PI};
@@ -3517,11 +3528,11 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 extract_xyzw(coord[1].x, coord[1].y, coord[1].z, w, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
 
                 const vec3_t com[2] = {
-                    md_util_compute_com(coord[0].x, coord[0].y, coord[0].z, w, 0, count),
-                    md_util_compute_com(coord[1].x, coord[1].y, coord[1].z, w, 0, count),
+                    md_util_com_compute(coord[0].x, coord[0].y, coord[0].z, w, 0, count),
+                    md_util_com_compute(coord[1].x, coord[1].y, coord[1].z, w, 0, count),
                 };
 
-                as_float(*dst) = (float)md_util_compute_rmsd(coord, com, w, count);
+                as_float(*dst) = (float)md_util_rmsd_compute(coord, com, w, count);
                 md_free(ctx->temp_alloc, coord_data, coord_bytes);
             }
         }
@@ -3530,7 +3541,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             // Visualize
             // I don't think we need another visualization than the bitfield highlighting the atoms involved...
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
         } else {
             // Validate args
             // Nothing really to validate, arguments are of type bitfields and if the bitfield is empty, that would be ok, since that would yield a valid rmsd -> 0.
@@ -3723,7 +3734,7 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
     return result;
 }
 
-static int _flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     (void)ctx;
     if (!dst) return 0;
 
@@ -3742,7 +3753,7 @@ static int _flatten_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     vec3_t com;
     if (dst || ctx->vis) {
@@ -3752,9 +3763,9 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
             as_vec3(*dst) = com;
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                vec3_t* pos = position_extract(arg[0], ctx);
+                vec3_t* pos = coordinate_extract(arg[0], ctx);
                 md_script_vis_vertex_t c = vertex(com, COLOR_WHITE);
                 push_point(c, ctx->vis);
                 for (size_t i = 0; i < md_array_size(pos); ++i) {
@@ -3765,13 +3776,13 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        return position_validate(arg[0], 0, ctx);
+        return coordinate_validate(arg[0], 0, ctx);
     }
     return 0;
 }
 
 static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
     (void)ctx;
 
     if (dst || ctx->vis) {
@@ -3780,7 +3791,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         
         md_array(int) idx = position_extract_indices(arg[0], ctx);
 
-        vec3_t com = md_util_compute_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, idx, md_array_size(idx));
+        vec3_t com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, idx, md_array_size(idx));
         mat3_t COV = mat3_covariance_matrix(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, idx, com, md_array_size(idx));
         mat3_eigen_t eigen = mat3_eigen(COV);
 
@@ -3794,7 +3805,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                 vec3_t v = vec3_mul_f(eigen.vectors.col[0], eigen.values.elem[0]);
                 vec3_t u = vec3_mul_f(eigen.vectors.col[1], eigen.values.elem[1]);
@@ -3819,7 +3830,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
     } else {
-        int count = position_validate(arg[0], 0, ctx);
+        int count = coordinate_validate(arg[0], 0, ctx);
         if (count < 0) return -1;
         if (count < 3) {
             LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "Invalid number of positions, need at least 3 to compute a plane");
@@ -3830,32 +3841,32 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return 0;
 }
 
-static int _position(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+static int _coordinate(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
-            const vec3_t* pos = position_extract(arg[0], ctx);
+            const vec3_t* pos = coordinate_extract(arg[0], ctx);
             ASSERT(dst->size == md_array_bytes(pos));
             MEMCPY(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
         }
     } else {
-        return position_validate(arg[0], 0, ctx);
+        return coordinate_validate(arg[0], 0, ctx);
     }
     return 0;
 }
 
-static int _position_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+static int _coordinate_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-            const vec3_t* pos = position_extract(arg[0], ctx);
+            const vec3_t* pos = coordinate_extract(arg[0], ctx);
             ASSERT(element_count(*dst) == md_array_size(pos));
             float* x = as_float_arr(*dst);
             for (size_t i = 0; i < element_count(*dst); ++i) {
@@ -3863,21 +3874,21 @@ static int _position_x(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
         }
     } else {
-        return position_validate(arg[0], 0, ctx);
+        return coordinate_validate(arg[0], 0, ctx);
     }
     return 0;
 }
 
-static int _position_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+static int _coordinate_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-            const vec3_t* pos = position_extract(arg[0], ctx);
+            const vec3_t* pos = coordinate_extract(arg[0], ctx);
             ASSERT(element_count(*dst) == md_array_size(pos));
             float* y = as_float_arr(*dst);
             for (size_t i = 0; i < element_count(*dst); ++i) {
@@ -3885,21 +3896,21 @@ static int _position_y(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
         }
     } else {
-        return position_validate(arg[0], 0, ctx);
+        return coordinate_validate(arg[0], 0, ctx);
     }
     return 0;
 }
 
-static int _position_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+static int _coordinate_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
-            const vec3_t* pos = position_extract(arg[0], ctx);
+            const vec3_t* pos = coordinate_extract(arg[0], ctx);
             ASSERT(element_count(*dst) == md_array_size(pos));
             float* z = as_float_arr(*dst);
             for (size_t i = 0; i < element_count(*dst); ++i) {
@@ -3907,21 +3918,21 @@ static int _position_z(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
         }
     } else {
-        return position_validate(arg[0], 0, ctx);
+        return coordinate_validate(arg[0], 0, ctx);
     }
     return 0;
 }
 
-static int _position_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+static int _coordinate_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-            const vec3_t* pos = position_extract(arg[0], ctx);
+            const vec3_t* pos = coordinate_extract(arg[0], ctx);
             ASSERT(element_count(*dst) == md_array_size(pos));
         
             vec2_t* xy = as_vec2_arr(*dst);
@@ -3930,21 +3941,21 @@ static int _position_xy(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
         }
     } else {
-        return position_validate(arg[0], 0, ctx);
+        return coordinate_validate(arg[0], 0, ctx);
     }
     return 0;
 }
 
-static int _position_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+static int _coordinate_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-            const vec3_t* pos = position_extract(arg[0], ctx);
+            const vec3_t* pos = coordinate_extract(arg[0], ctx);
             ASSERT(element_count(*dst) == md_array_size(pos));
 
             vec2_t* xz = as_vec2_arr(*dst);
@@ -3953,21 +3964,21 @@ static int _position_xz(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
         }
     } else {
-        return position_validate(arg[0], 0, ctx);
+        return coordinate_validate(arg[0], 0, ctx);
     }
     return 0;
 }
 
-static int _position_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
+static int _coordinate_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT2_ARR));
-            const vec3_t* pos = position_extract(arg[0], ctx);
+            const vec3_t* pos = coordinate_extract(arg[0], ctx);
             ASSERT(element_count(*dst) == md_array_size(pos));
 
             vec2_t* yz = as_vec2_arr(*dst);
@@ -3976,10 +3987,10 @@ static int _position_yz(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         }
         if (ctx->vis) {
-            position_visualize(arg[0], ctx);
+            coordinate_visualize(arg[0], ctx);
         }
     } else {
-        return position_validate(arg[0], 0, ctx);
+        return coordinate_validate(arg[0], 0, ctx);
     }
     return 0;
 }
@@ -4088,11 +4099,11 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const data_t 
 			ref_pos[i] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
 		}
     } else {
-		ref_pos = position_extract(arg[0], ctx);
+		ref_pos = coordinate_extract(arg[0], ctx);
 	}
     const size_t ref_len = md_array_size(ref_pos);
 
-    md_array(vec3_t) trg_pos = position_extract(arg[1], ctx);
+    md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
     const size_t trg_len = md_array_size(trg_pos);
 
     const vec4_t ext = unit_cell ? vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0) : vec4_zero();
@@ -4167,8 +4178,8 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const data_t 
 static int visualize_rdf(const data_t arg[2], float min_cutoff, float max_cutoff, eval_context_t* ctx) {
     ASSERT(ctx->vis);
 
-    //position_visualize(arg[0], ctx);
-    //position_visualize(arg[1], ctx);
+    //coordinate_visualize(arg[0], ctx);
+    //coordinate_visualize(arg[1], ctx);
     // Visualize
     if (ctx->vis && ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
         const float min_cutoff2 = min_cutoff * min_cutoff;
@@ -4215,8 +4226,8 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
         return 0;
     }
     else {
-        int ref_len = position_validate(arg[0], 0, ctx);
-        int trg_len = position_validate(arg[1], 1, ctx);
+        int ref_len = coordinate_validate(arg[0], 0, ctx);
+        int trg_len = coordinate_validate(arg[1], 1, ctx);
 
         // Validate input
         if (ref_len <= 0) {
@@ -4244,8 +4255,8 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
 }
 
 static int _rdf_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_POSITION_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
 
     const float cutoff = as_float(arg[2]);
@@ -4261,15 +4272,126 @@ static int _rdf_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return internal_rdf(dst, arg, cutoff.beg, cutoff.end, ctx);
 }
 
+typedef enum {
+    COUNT_TYPE_UNKNOWN = 0,
+    COUNT_TYPE_ATOM = 1,
+    COUNT_TYPE_RESIDUE = 2,
+    COUNT_TYPE_CHAIN = 3,
+    COUNT_TYPE_STRUCTURE = 4,
+    COUNT_TYPE_COUNT
+} count_type_t;
+
+static const str_t count_type_str[] = {
+	BAKE_STR(""),
+	BAKE_STR("atom"),
+	BAKE_STR("residue"),
+	BAKE_STR("chain"),
+	BAKE_STR("structure"),
+};
+
+count_type_t count_type_from_str(str_t str) {
+	for (size_t i = 0; i < COUNT_TYPE_COUNT; ++i) {
+		if (str_eq(str, count_type_str[i])) {
+			return (count_type_t)i;
+		}
+	}
+	return COUNT_TYPE_UNKNOWN;
+}
+
+size_t internal_count(const md_bitfield_t* bf, count_type_t count_type, eval_context_t* ctx) {
+    ASSERT(bf);
+    ASSERT(ctx);
+
+    md_bitfield_t tmp = {0};
+    if (ctx->mol_ctx) {
+        md_bitfield_and(&tmp, bf, ctx->mol_ctx);
+		bf = &tmp;
+    }
+    
+    size_t count = 0;
+
+    switch (count_type) {
+    	case COUNT_TYPE_ATOM: {
+			return md_bitfield_popcount(bf);
+		}
+		case COUNT_TYPE_RESIDUE:
+			for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
+                md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
+                if (md_bitfield_popcount_range(bf, range.beg, range.end) > 0) {
+					count += 1;
+				}
+            }
+            break;
+		case COUNT_TYPE_CHAIN: {
+            for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
+                md_range_t range = md_chain_atom_range(ctx->mol->chain, i);
+                if (md_bitfield_popcount_range(bf, range.beg, range.end) > 0) {
+                    count += 1;
+                }
+            }
+            break;
+		}
+		case COUNT_TYPE_STRUCTURE: {
+            size_t num_structures = md_index_data_count(ctx->mol->structures);
+            md_bitfield_t tmp2 = md_bitfield_create(ctx->temp_alloc);
+			for (size_t i = 0; i < num_structures; ++i) {
+                const int32_t* idx = md_index_range_beg(ctx->mol->structures, i);
+                const size_t num_idx = md_index_range_size(ctx->mol->structures, i);
+            
+                md_bitfield_clear(&tmp2);
+                md_bitfield_set_indices_u32(&tmp2, (const uint32_t*)idx, num_idx);
+                md_bitfield_and_inplace(&tmp2, bf);
+                if (md_bitfield_popcount(&tmp2) > 0) {
+                	count += 1;
+                }
+            }
+            break;
+		}
+		default: {
+			ASSERT(false);
+			break;
+		}
+    }
+    return count;
+}
+
 static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-        const int64_t count = position_validate(arg[0], 0, ctx);
-        as_float(*dst) = (float)count;
+        const md_bitfield_t* bf = as_bitfield(arg[0]);
+
+        as_float(*dst) = (float)internal_count(bf, COUNT_TYPE_ATOM, ctx);
     }
-    
+
+    return 0;
+}
+
+static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING));
+
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
+
+        const md_bitfield_t* bf = as_bitfield(arg[0]);
+        count_type_t type = count_type_from_str(as_string(arg[1]));
+
+        as_float(*dst) = (float)internal_count(bf, type, ctx);
+    } else {
+        str_t str = as_string(arg[1]);
+        count_type_t type = count_type_from_str(str);
+        if (type == COUNT_TYPE_UNKNOWN) {
+            md_strb_t sb = md_strb_create(ctx->temp_alloc);
+            for (int i = 1; i < COUNT_TYPE_COUNT; ++i) {
+                md_strb_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
+            }
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(&sb)));
+			return -1;
+		}
+    }
+
     return 0;
 }
 
@@ -4446,7 +4568,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Fetch target positions
         vec3_t* target_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, target_bitfield, ctx->temp_alloc);
-        ref_com[0] = md_util_compute_com(ref[0].x, ref[0].y, ref[0].z, ref_w, 0, ref_size);
+        ref_com[0] = md_util_com_compute(ref[0].x, ref[0].y, ref[0].z, ref_w, 0, ref_size);
 
         // @TODO(Robin): This should be measured
         const bool brute_force = target_size < 3000;
@@ -4474,7 +4596,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const md_bitfield_t* bf = &ref_bitfields[i];
 
             extract_xyz(ref[1].x, ref[1].y, ref[1].z, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, bf);
-            ref_com[1] = md_util_compute_com(ref[1].x, ref[1].y, ref[1].z, ref_w, 0, ref_size);
+            ref_com[1] = md_util_com_compute(ref[1].x, ref[1].y, ref[1].z, ref_w, 0, ref_size);
             mat3_t R = mat3_optimal_rotation(ref[0].x, ref[0].y, ref[0].z, ref[1].x, ref[1].y, ref[1].z, ref_w, ref_com[0], ref_com[1], ref_size);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
@@ -4569,7 +4691,7 @@ static vec3_t compute_shape_weights(data_t arg[], eval_context_t* ctx) {
 
     if (indices) {
         const size_t count = md_array_size(indices);
-        const vec3_t com = md_util_compute_com(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, count);
+        const vec3_t com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, count);
         const mat3_t M = mat3_covariance_matrix(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, com, count);
         weights = md_util_shape_weights(&M);
     }
@@ -4580,7 +4702,7 @@ static vec3_t compute_shape_weights(data_t arg[], eval_context_t* ctx) {
 
 static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_POSITION_ARR));    
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));    
     ASSERT(arg[0].ptr);
 
     if (dst) {
