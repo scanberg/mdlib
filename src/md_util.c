@@ -1272,14 +1272,6 @@ static inline bool covalent_bond_heuristic(float d2, md_element_t elem_a, md_ele
     return (r_min * r_min) < d2 && d2 < (r_max * r_max);
 }
 
-int64_t md_util_compute_covalent_bounds_upper_bound(const md_element_t* element, int64_t count) {
-    int64_t result = 0;
-    for (int64_t i = 0; i < count; ++i) {
-        result += md_util_element_max_valence(element[i]);
-    }
-    return result;
-}
-
 static float distance_squared(vec4_t pos_a, vec4_t pos_b, const md_unit_cell_t* cell) {
     if (cell->flags & MD_CELL_ORTHOGONAL) {
         const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
