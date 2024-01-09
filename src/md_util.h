@@ -141,7 +141,7 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 bool md_util_pbc(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 
 // Unwraps a structure 
-bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, int64_t count, const md_unit_cell_t* unit_cell);
+bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 
 // Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.

@@ -91,7 +91,6 @@ static inline void* md_array_set_capacity_internal(void* arr, size_t new_cap, si
 }
 
 static inline void* md_array_create_internal(size_t size, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
-    ASSERT(size >= 0);
     void* arr = md_array_set_capacity_internal(NULL, size, item_size, alloc, file, line);
     md_array_header(arr)->size = size;
     return arr;
