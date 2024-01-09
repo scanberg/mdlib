@@ -52,10 +52,17 @@ typedef struct md_chain_data_t {
     uint32_t* atom_offset;
 } md_chain_data_t;
 
+// @TODO: Split this into two or more structures,
+// One for nucleic backbone and one for protein backbone
 typedef struct md_backbone_data_t {
     // This holds the consecutive ranges which form the backbones
-    size_t range_count;
-    md_range_t* range;
+    struct {
+        size_t count;
+        uint32_t* offset; // Offsets into the backbone fields stored bellow
+        md_chain_idx_t* chain_idx; // Reference to the chain in which the backbone is located
+    } range;
+    //size_t range_count;
+    //md_range_t* range;
 
     // These fields share the same length 'count'
     size_t count;

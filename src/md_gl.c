@@ -963,26 +963,26 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
 
         gl_mol->residue_count = (uint32_t)mol->residue.count;
         //gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
-        gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
-        gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
 
         //if (mol->residue.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
         //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
-        if (mol->backbone.range_count > 0 && mol->backbone.range && mol->backbone.atoms && mol->backbone.secondary_structure) {
+        if (mol->backbone.range.count > 0 && mol->backbone.range.offset && mol->backbone.atoms && mol->backbone.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
-            for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
-                uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
+            for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
+                uint32_t res_count = mol->backbone.range.offset[i+1] - mol->backbone.range.offset[i];
                 backbone_residue_count += res_count;
                 backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; // +1 For the last point
             }
 
             const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
-            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range_count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
+            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1); // Primitive restart between chains
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range.count * (1); // Primitive restart between chains
 
             gl_mol->buffer[GL_BUFFER_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
@@ -997,13 +997,13 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
-                    uint32_t beg = (uint32_t)mol->backbone.range[i].beg;
-                    uint32_t end = (uint32_t)mol->backbone.range[i].end;
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
+                    uint32_t beg = (uint32_t)mol->backbone.range.offset[i];
+                    uint32_t end = (uint32_t)mol->backbone.range.offset[i+1];
                     for (uint32_t j = beg; j < end; ++j) {
                         const uint32_t flags = (j == beg ? 1 : 0) | (j == end - 1 ? 2 : 0);
                         backbone_data[idx].residue_idx = j;
-                        backbone_data[idx].segment_idx = j - mol->backbone.range[i].beg;
+                        backbone_data[idx].segment_idx = j - beg;
                         backbone_data[idx].ca_idx = mol->backbone.atoms[j].ca;
                         backbone_data[idx].c_idx  = mol->backbone.atoms[j].c;
                         backbone_data[idx].o_idx  = mol->backbone.atoms[j].o;
@@ -1020,8 +1020,8 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (secondary_structure) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
-                    for (uint32_t j = (uint32_t)mol->backbone.range[i].beg; j < (uint32_t)mol->backbone.range[i].end; ++j) {
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
+                    for (uint32_t j = mol->backbone.range.offset[i]; j < mol->backbone.range.offset[i+1]; ++j) {
                         secondary_structure[idx++] = mol->backbone.secondary_structure[j];
                     }
                 }
@@ -1035,9 +1035,9 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (control_point_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
                     control_point_index[len++] = idx;
-                    for (uint32_t j = (uint32_t)mol->backbone.range[i].beg; j < (uint32_t)mol->backbone.range[i].end; ++j) {
+                    for (uint32_t j = mol->backbone.range.offset[i]; j < mol->backbone.range.offset[i+1]; ++j) {
                         control_point_index[len++] = idx++;
                     }
                     control_point_index[len++] = idx-1;
@@ -1054,9 +1054,9 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (spline_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                uint32_t range_count = (uint32_t)mol->backbone.range_count;
+                uint32_t range_count = (uint32_t)mol->backbone.range.count;
                 for (uint32_t i = 0; i < range_count; ++i) {
-                    uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
+                    uint32_t res_count = mol->backbone.range.offset[i+1] - mol->backbone.range.offset[i];
                     if (res_count > 0) {
                         for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; ++j) {
                             spline_index[len++] = idx++;

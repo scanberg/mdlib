@@ -26,12 +26,12 @@ enum {
 
 // Cell information
 enum {
-    MD_CELL_NONE                    = 0,
-    MD_CELL_ORTHOGONAL              = 1,
-    MD_CELL_TRICLINIC               = 2,
-    MD_CELL_X                       = 4,
-    MD_CELL_Y                       = 8,
-    MD_CELL_Z                       = 16,
+    MD_UNIT_CELL_FLAG_NONE          = 0,
+    MD_UNIT_CELL_FLAG_ORTHO         = 1,
+    MD_UNIT_CELL_FLAG_TRICLINIC     = 2,
+    MD_UNIT_CELL_FLAG_PBC_X         = 4,
+    MD_UNIT_CELL_FLAG_PBC_Y         = 8,
+    MD_UNIT_CELL_FLAG_PBC_Z         = 16,
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.

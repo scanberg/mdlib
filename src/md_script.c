@@ -4730,7 +4730,6 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
         .alloc = ir->arena,
         .mol = mol,
         .traj = traj,
-        .spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc)
     };
 
     ir->stage = "Static Type Checking";
@@ -5137,16 +5136,15 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         result = md_trajectory_load_frame(traj, f_idx, &curr_header, curr_x, curr_y, curr_z);
 
         if (!result) {
-            MD_LOG_ERROR("Something went wrong when loading the frames during evaluation");
+            MD_LOG_ERROR("Failed to load frame during evaluation");
             goto done;
         }
+
+        MEMCPY(&mol->unit_cell, &curr_header.unit_cell, sizeof(md_unit_cell_t));
         
         md_vm_arena_set_pos(&vm_arena, STACK_RESET_POINT);
         ctx.identifiers = 0;
-
-        if (ir->flags & FLAG_SPATIAL_QUERY) {
-            ctx.spatial_hash = md_spatial_hash_create_soa(curr_x, curr_y, curr_z, NULL, mol->atom.count, &curr_header.unit_cell, &temp_alloc);
-        }
+        ctx.spatial_hash = 0;
 
         for (size_t i = 0; i < num_expr; ++i) {
             type_info_t type = expr[i]->node->data.type;
@@ -5927,8 +5925,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
                 .y = mol->atom.y,
                 .z = mol->atom.z,
             },
-            .eval_flags = 0,
-            .spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc),
+            .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
         };
 
         if (static_check_node(node, &ctx)) {
@@ -6035,7 +6032,6 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                 .z = mol->atom.z,
             },
             .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL,
-            .spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc),
         };
 
         if (static_check_node(node, &ctx)) {
@@ -6252,10 +6248,6 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
         },
         .subscript_ranges = ranges,
     };
-
-    if (vis_ctx->ir->flags & FLAG_SPATIAL_QUERY) {
-        ctx.spatial_hash = md_spatial_hash_create_soa(vis_ctx->mol->atom.x, vis_ctx->mol->atom.y, vis_ctx->mol->atom.z, NULL, num_atoms, &vis_ctx->mol->unit_cell, &temp_alloc);
-    }
 
     visualize_node((ast_node_t*)payload, &ctx);
 

@@ -896,10 +896,10 @@ bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secon
     if (!mol->atom.y) return false;
     if (!mol->atom.z) return false;
     if (!mol->backbone.atoms) return false;
-    if (!mol->backbone.range) return false;
+    if (!mol->backbone.range.offset) return false;
 
-    for (size_t bb_idx = 0; bb_idx < mol->backbone.range_count; ++bb_idx) {
-        const md_range_t range = mol->backbone.range[bb_idx];
+    for (size_t bb_idx = 0; bb_idx < mol->backbone.range.count; ++bb_idx) {
+        const md_range_t range = {mol->backbone.range.offset[bb_idx], mol->backbone.range.offset[bb_idx + 1]};
         ASSERT(range.end <= (int)capacity);
 
         if (range.end - range.beg < 4) {
@@ -966,8 +966,8 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
     if (!mol->atom.z) return false;
     if (!mol->backbone.atoms) return false;
 
-    for (size_t bb_idx = 0; bb_idx < mol->backbone.range_count; ++bb_idx) {
-        const md_range_t range = mol->backbone.range[bb_idx];
+    for (size_t bb_idx = 0; bb_idx < mol->backbone.range.count; ++bb_idx) {
+        const md_range_t range = {mol->backbone.range.offset[bb_idx], mol->backbone.range.offset[bb_idx + 1]};
         ASSERT(range.end <= (int)capacity);
 
         if (range.end - range.beg < 4) {
@@ -1273,10 +1273,10 @@ static inline bool covalent_bond_heuristic(float d2, md_element_t elem_a, md_ele
 }
 
 static float distance_squared(vec4_t pos_a, vec4_t pos_b, const md_unit_cell_t* cell) {
-    if (cell->flags & MD_CELL_ORTHOGONAL) {
+    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
         const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
         return vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext);
-    } else if (cell->flags & MD_CELL_TRICLINIC) {
+    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
         vec4_t dx = vec4_sub(pos_a, pos_b);
         minimum_image_triclinic(dx.elem, cell->basis.elem);
         return vec4_length_squared(dx);
@@ -3921,7 +3921,7 @@ md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z) {
             0, y != 0.0 ? 1.0/y : 0, 0,
             0, 0, z != 0.0 ? 1.0/z : 0,
         },
-        .flags = MD_CELL_ORTHOGONAL | (x != 0.0 ? MD_CELL_X : 0) | (y != 0.0 ? MD_CELL_Y : 0) | (z != 0.0 ? MD_CELL_Z : 0),
+        .flags = MD_UNIT_CELL_FLAG_ORTHO | (x != 0.0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (y != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (z != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
     };
     return cell;
 }
@@ -3966,7 +3966,7 @@ md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, doub
         .inv_basis = {
             I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
         },
-        .flags = MD_CELL_TRICLINIC | (a != 0.0 ? MD_CELL_X : 0) | (b != 0.0 ? MD_CELL_Y : 0) | (c != 0.0 ? MD_CELL_Z : 0),
+        .flags = MD_UNIT_CELL_FLAG_TRICLINIC | (a != 0.0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (b != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (c != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
     };
 
     return cell;
@@ -3998,7 +3998,7 @@ md_unit_cell_t md_util_unit_cell_from_matrix(float M[3][3]) {
             .inv_basis = {
                 I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
             },
-            .flags = MD_CELL_TRICLINIC | (a != 0 ? MD_CELL_X : 0) | (b != 0 ? MD_CELL_Y : 0) | (c != 0 ? MD_CELL_Z : 0),
+            .flags = MD_UNIT_CELL_FLAG_TRICLINIC | (a != 0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (b != 0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (c != 0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
         };
         return cell;
     }
@@ -4012,7 +4012,7 @@ void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, si
             }
         }
     }
-    else if (cell->flags & MD_CELL_ORTHOGONAL) {
+    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
         const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
         for (size_t i = 0; i < num_a; ++i) {
             for (size_t j = 0; j < num_b; ++j) {
@@ -4021,7 +4021,7 @@ void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, si
                 out_dist[i * num_b + j] = vec4_periodic_distance(a, b, box);
             }
         }
-    } else if (cell->flags & MD_CELL_TRICLINIC) {
+    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (size_t i = 0; i < num_a; ++i) {
             for (size_t j = 0; j < num_b; ++j) {
@@ -4050,7 +4050,7 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
             }
         }
     }
-    else if (cell->flags & MD_CELL_ORTHOGONAL) {
+    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
         const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
@@ -4064,7 +4064,7 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
                 }
             }
         }
-    } else if (cell->flags & MD_CELL_TRICLINIC) {
+    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
@@ -4103,7 +4103,7 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
             }
         }
     }
-    else if (cell->flags & MD_CELL_ORTHOGONAL) {
+    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
         const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
@@ -4117,7 +4117,7 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
                 }
             }
         }
-    } else if (cell->flags & MD_CELL_TRICLINIC) {
+    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
@@ -4145,21 +4145,10 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 #   pragma warning( pop )
 #endif
 
-static bool md_util_pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size_t count, vec3_t box_ext) {
-    if (!x || !y || !z) {
-        MD_LOG_ERROR("Missing required input: x,y or z");
-        return false;
-    }
-
-    if (box_ext.x < 0 || box_ext.y < 0 || box_ext.z < 0) {
-        MD_LOG_ERROR("Invalid PBC extent: One or more components were negative.");
-        return false;
-    }
-
-    if (vec3_equal(box_ext, vec3_zero())) {
-        MD_LOG_ERROR("PBC extent is zero, unable to apply it!");
-        return false;
-    }
+static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size_t count, vec3_t box_ext) {
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
 
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
@@ -4182,25 +4171,12 @@ static bool md_util_pbc_ortho(float* x, float* y, float* z, const int32_t* indic
             z[i] = pos.z;
         }
     }
-
-    return true;
 }
 
-static bool md_util_pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
-    if (!x || !y || !z) {
-        MD_LOG_ERROR("Missing required input: x,y or z");
-        return false;
-    }
-
-    if (!cell) {
-        MD_LOG_ERROR("Missing cell");
-        return false;
-    }
-
-    if (!(cell->flags & MD_CELL_TRICLINIC)) {
-		MD_LOG_ERROR("Cell is not triclinic");
-		return false;
-	}
+static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
 
     if (indices) {
         for (size_t i = 0; i < count; ++i) {
@@ -4209,13 +4185,13 @@ static bool md_util_pbc_triclinic(float* x, float* y, float* z, const int32_t* i
             coord = mat3_mul_vec3(cell->inv_basis, coord);
             coord = vec3_fract(coord);
             coord = mat3_mul_vec3(cell->basis, coord);
-            if (cell->flags & MD_CELL_X) {
+            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_X) {
                 x[idx] = coord.x;
             }
-            if (cell->flags & MD_CELL_Y) {
+            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) {
                 y[idx] = coord.y;
             }
-            if (cell->flags & MD_CELL_Z) {
+            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) {
                 z[idx] = coord.z;
             }
         }
@@ -4225,60 +4201,20 @@ static bool md_util_pbc_triclinic(float* x, float* y, float* z, const int32_t* i
             coord = mat3_mul_vec3(cell->inv_basis, coord);
             coord = vec3_fract(coord);
             coord = mat3_mul_vec3(cell->basis, coord);
-            if (cell->flags & MD_CELL_X) {
+            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_X) {
                 x[i] = coord.x;
             }
-            if (cell->flags & MD_CELL_Y) {
+            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) {
                 y[i] = coord.y;
             }
-            if (cell->flags & MD_CELL_Z) {
+            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) {
                 z[i] = coord.z;
             }
         }
     }
-
-    return true;
 }
 
-bool md_util_unwrap_ortho(float* x, float* y, float* z, vec3_t box_ext, const uint32_t* structure_offsets, const int* structure_indices, size_t num_structures) {
-    if (!x || !y || !z) {
-        MD_LOG_ERROR("Missing required input: x,y or z");
-        return false;
-    }
-
-    if (box_ext.x < 0 || box_ext.y < 0 || box_ext.z < 0) {
-        MD_LOG_ERROR("Invalid box extent: One or more components were negative.");
-        return false;
-    }
-
-    if (vec3_equal(box_ext, vec3_zero())) {
-        MD_LOG_ERROR("Box extent is zero.");
-        return false;
-    }
-
-    const vec4_t ext = vec4_from_vec3(box_ext, 0);
-    
-    for (size_t s_idx = 0; s_idx < num_structures; ++s_idx) {
-        const uint32_t beg = structure_offsets[s_idx];
-        const uint32_t end = structure_offsets[s_idx + 1];
-        
-        // Indices are sorted with respect to covalent bond 'depth' from the first atom
-        // This means we can use the inherent order of indices to iterate and unwrap.
-        int idx = structure_indices ? structure_indices[beg] : beg;
-        vec4_t ref_pos = {x[idx], y[idx], z[idx], 0};
-        for (uint32_t i = beg + 1; i < end; ++i) {
-            idx = structure_indices ? structure_indices[i] : i;
-            const vec4_t pos = vec4_deperiodize((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
-            x[idx] = pos.x;
-            y[idx] = pos.y;
-            z[idx] = pos.z;
-            ref_pos = pos;
-        }
-    }
-    return true;
-}
-
-bool md_util_unwrap_triclinic(float* x, float* y, float* z, const md_unit_cell_t* cell, const uint32_t* structure_offsets, const int* structure_indices, size_t num_structures) {
+bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
@@ -4289,21 +4225,55 @@ bool md_util_unwrap_triclinic(float* x, float* y, float* z, const md_unit_cell_t
         return false;
     }
 
-    if (!(cell->flags & MD_CELL_TRICLINIC)) {
-        MD_LOG_ERROR("Cell is not triclinic");
-        return false;
+    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        vec3_t ext = mat3_diag(cell->basis);
+        pbc_ortho(x, y, z, indices, count, ext);
+        return true;
+    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        pbc_triclinic(x, y, z, indices, count, cell);
+        return true;
     }
 
-    for (size_t s_idx = 0; s_idx < num_structures; ++s_idx) {
-        const uint32_t beg = structure_offsets[s_idx];
-        const uint32_t end = structure_offsets[s_idx + 1];
+    MD_LOG_ERROR("Uninitialized unitcell");
+    return false;
+}
 
-        // Indices are sorted with respect to covalent bond 'depth' from the first atom
-        // This means we can use the inherent order of indices to iterate and unwrap.
-        int idx = structure_indices ? structure_indices[beg] : beg;
+static void unwrap_ortho(float* x, float* y, float* z, const int32_t* indices, size_t count, vec3_t box_ext) {
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
+
+    const vec4_t ext = vec4_from_vec3(box_ext, 0);
+
+    if (indices) {
+        int idx = indices[0];
+        vec4_t ref_pos = {x[idx], y[idx], z[idx], 0};
+        for (size_t i = 1; i < count; ++i) {
+            idx = indices[i];
+            const vec4_t pos = vec4_deperiodize((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
+            x[idx] = pos.x;
+            y[idx] = pos.y;
+            z[idx] = pos.z;
+            ref_pos = pos;
+        }
+    } else {
+        vec4_t ref_pos = {x[0], y[0], z[0], 0};
+        for (size_t i = 1; i < count; ++i) {
+            const vec4_t pos = vec4_deperiodize((vec4_t){x[i], y[i], z[i], 0}, ref_pos, ext);
+            x[i] = pos.x;
+            y[i] = pos.y;
+            z[i] = pos.z;
+            ref_pos = pos;
+        }
+    }
+}
+
+static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+    if (indices) {
+        int idx = indices[0];
         vec3_t ref_pos = {x[idx], y[idx], z[idx]};
-        for (uint32_t i = beg + 1; i < end; ++i) {
-            idx = structure_indices ? structure_indices[i] : i;
+        for (size_t i = 1; i < count; ++i) {
+            idx = indices[i];
             vec3_t pos = {x[idx], y[idx], z[idx]};
             deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
             x[idx] = pos.x;
@@ -4311,8 +4281,41 @@ bool md_util_unwrap_triclinic(float* x, float* y, float* z, const md_unit_cell_t
             z[idx] = pos.z;
             ref_pos = pos;
         }
+    } else {
+        vec3_t ref_pos = {x[0], y[0], z[0]};
+        for (size_t i = 1; i < count; ++i) {
+            vec3_t pos = {x[i], y[i], z[i]};
+            deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
+            x[i] = pos.x;
+            y[i] = pos.y;
+            z[i] = pos.z;
+            ref_pos = pos;
+        }
     }
-    return true;
+}
+
+bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+	if (!x || !y || !z) {
+    	MD_LOG_ERROR("Missing required input: x,y or z");
+    	return false;
+    }
+
+	if (!cell) {
+    	MD_LOG_ERROR("Missing cell");
+    	return false;
+    }
+
+	if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+    	vec3_t ext = mat3_diag(cell->basis);
+    	unwrap_ortho(x, y, z, indices, count, ext);
+    	return true;
+    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        unwrap_triclinic(x, y, z, indices, count, cell);
+        return true;
+    }
+
+    MD_LOG_ERROR("Uninitialized unitcell");
+    return false;
 }
 
 bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, size_t num_atoms, const md_unit_cell_t* cell, const uint32_t* structure_offsets, const int* structure_indices, size_t num_structures) {
@@ -4324,27 +4327,18 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, si
         return false;
     }
 
-    if (!(cell->flags & MD_CELL_ORTHOGONAL) &&
-        !(cell->flags & MD_CELL_TRICLINIC) ) {
+    if (!(cell->flags & MD_UNIT_CELL_FLAG_ORTHO) &&
+        !(cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) ) {
         // Nothing for us to do here!
         return false;
     }
 
-	bool ortho = cell->flags & MD_CELL_ORTHOGONAL;
+	bool ortho = cell->flags & MD_UNIT_CELL_FLAG_ORTHO;
     const vec3_t box = mat3_diag(cell->basis);
 
-    if (cell->flags & MD_CELL_ORTHOGONAL) {
-        md_util_pbc_ortho(x, y, z, NULL, num_atoms, box);
-    } else if (cell->flags & MD_CELL_TRICLINIC) {
-        md_util_pbc_triclinic(x, y, z, NULL, num_atoms, cell);
-    }
-    if (num_structures > 0) {
-        if (ortho) {
-            md_util_unwrap_ortho(x, y, z, box, structure_offsets, structure_indices, num_structures);
-        } else {
-			md_util_unwrap_triclinic(x, y, z, cell, structure_offsets, structure_indices, num_structures);
-		}
-    
+    md_util_pbc(x, y, z, NULL, num_atoms, cell);
+
+    if (num_structures > 0) {   
         // Place any defined covalent structure such that its center of mass is within the correct periodic image
         const vec4_t ext = vec4_from_vec3(box, 0);
         const vec4_t ref = ortho ? vec4_mul_f(ext, 0.5f) : vec4_from_vec3(mat3_mul_vec3(cell->basis, vec3_set1(0.5f)), 0);
@@ -4355,9 +4349,12 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, si
             const uint32_t s_len = s_end - s_beg;
             vec3_t s_com;
 
+
             if (structure_indices) {
+                md_util_unwrap(x, y, z, structure_indices + s_beg, s_len, cell);
                 s_com = md_util_com_compute(x, y, z, w, structure_indices + s_beg, s_len);
             } else {
+                md_util_unwrap(x + s_beg, y + s_beg, z + s_beg, 0, s_len, cell);
                 s_com = md_util_com_compute(x + s_beg, y + s_beg, z + s_beg, w + s_beg, 0, s_len);
             }
 
@@ -4371,8 +4368,9 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, si
             }
             const vec4_t delta = vec4_sub(pbc_com, com);
             const vec4_t abs_delta = vec4_abs(delta);
+            const float eps = 1e-3f;
             
-            if (vec4_dot(delta, delta) > 0) {
+            if (vec4_dot(delta, delta) > eps) {
                 for (size_t i = s_beg; i < s_end; ++i) {
                     const int j = structure_indices ? structure_indices[i] : (int)i;
                     if (abs_delta.x > 0) x[j] += delta.x;
@@ -4735,10 +4733,11 @@ static inline bool ranges_overlap(md_range_t a, md_range_t b) {
     return (a.beg < b.end && b.beg < a.end);
 }
 
-static inline void commit_backbone(md_backbone_atoms_t* backbone, md_range_t res_range, md_molecule_t* mol, md_allocator_i* alloc) {
-    md_range_t  bb_range = {(int32_t)md_array_size(mol->backbone.atoms), (int32_t)(md_array_size(mol->backbone.atoms) + md_array_size(backbone))};
-    md_array_push_array(mol->backbone.atoms, backbone, md_array_size(backbone), alloc);
-    md_array_push(mol->backbone.range, bb_range, alloc);
+static inline void commit_backbone(md_backbone_atoms_t* bb_atoms, md_range_t res_range, md_chain_idx_t chain_idx, md_molecule_t* mol, md_allocator_i* alloc) {
+    uint32_t offset = (uint32_t)md_array_size(mol->backbone.atoms);
+    md_array_push_array(mol->backbone.atoms, bb_atoms, md_array_size(bb_atoms), alloc);
+    md_array_push(mol->backbone.range.offset, offset, alloc);
+    md_array_push(mol->backbone.range.chain_idx, chain_idx, alloc);
 
     for (int32_t i = res_range.beg; i < res_range.end; ++i) {
         md_array_push(mol->backbone.residue_idx, i, alloc);
@@ -4988,7 +4987,7 @@ bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator
                         if (md_array_size(backbone) >= MIN_BACKBONE_LENGTH) {
                             // Commit the backbone
                             md_range_t res_range = {(res_idx - (int32_t)md_array_size(backbone)), res_idx};
-                            commit_backbone(backbone, res_range, mol, alloc);
+                            commit_backbone(backbone, res_range, (md_chain_idx_t)chain_idx, mol, alloc);
                         }
                         md_array_shrink(backbone, 0);
                     }
@@ -4997,14 +4996,18 @@ bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator
                 if (md_array_size(backbone) >= MIN_BACKBONE_LENGTH) {
                     int64_t res_idx = mol->chain.res_offset[chain_idx + 1];
                     md_range_t res_range = {(int32_t)(res_idx - md_array_size(backbone)), (int32_t)res_idx};
-                    commit_backbone(backbone, res_range, mol, alloc);
+                    commit_backbone(backbone, res_range, (md_chain_idx_t)chain_idx, mol, alloc);
                 }
                 md_array_shrink(backbone, 0);
             }
 
             md_array_free(backbone, md_heap_allocator);
 
-            mol->backbone.range_count = md_array_size(mol->backbone.range);
+            mol->backbone.range.count = md_array_size(mol->backbone.range.offset);
+            if (mol->backbone.range.count) {
+                // Add end offset
+                md_array_push(mol->backbone.range.offset, (uint32_t)md_array_size(mol->backbone.atoms), alloc);
+            }
             mol->backbone.count = md_array_size(mol->backbone.atoms);
 
             md_array_resize(mol->backbone.angle, mol->backbone.count, alloc);
@@ -5019,11 +5022,16 @@ bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator
         }
     }
 
-#if 1
-    if (mol->chain.count) {
-        md_util_deperiodize_system(mol->atom.x, mol->atom.y, mol->atom.z, mol->atom.mass, mol->atom.count, &mol->unit_cell, mol->chain.atom_offset, 0, mol->chain.count);
+    if ((mol->unit_cell.flags != MD_UNIT_CELL_FLAG_NONE) &&
+        mol->backbone.count)
+    {
+        for (size_t i = 0; i < mol->backbone.range.count; ++i) {
+            md_chain_idx_t chain_idx = mol->backbone.range.chain_idx[i];
+            size_t beg = md_chain_atom_range(mol->chain, chain_idx).beg;
+            size_t len = md_chain_atom_count(mol->chain, chain_idx);
+            md_util_unwrap(mol->atom.x + beg, mol->atom.y + beg, mol->atom.z + beg, 0, len, &mol->unit_cell);
+        }
     }
-#endif
 
     return true;
 }

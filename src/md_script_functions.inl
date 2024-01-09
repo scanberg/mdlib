@@ -668,6 +668,15 @@ static procedure_t procedures[] = {
 
 #undef CSTR
 
+static inline md_spatial_hash_t* get_spatial_hash(eval_context_t* ctx) {
+	ASSERT(ctx);
+    if (!ctx->spatial_hash) {
+        // Lazily generate the spatial hash if needed
+        ctx->spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, 0, ctx->mol->atom.count, &ctx->mol->unit_cell, ctx->temp_alloc);
+    }
+	return ctx->spatial_hash;
+}
+
 static inline void visualize_atom_mask(const md_bitfield_t* mask, eval_context_t* ctx) {
     ASSERT(ctx->vis);
     if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
@@ -1899,6 +1908,8 @@ static int _element_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
 
+        md_bitfield_reserve_range(bf, 0, ctx->mol->atom.count);
+
         for (int64_t i = ctx_range.beg; i < ctx_range.end; ++i) {
             if (ctx->mol_ctx && !md_bitfield_test_bit(ctx->mol_ctx, i)) continue;
             for (size_t j = 0; j < num_elem; ++j) {
@@ -2071,12 +2082,9 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const float radius = as_float(arg[1]);
 
     if (dst || ctx->vis) {
-        if (!ctx->spatial_hash) {
-            MD_LOG_DEBUG("Within: spatial_hash structure not present during evaluation");
-            return -1;
-        }
         const vec3_t* in_pos = coordinate_extract(arg[0], ctx);
         const size_t num_pos = md_array_size(in_pos);
+        const md_spatial_hash_t* sh = get_spatial_hash(ctx);
         const md_bitfield_t* bf_mask = 0;
         md_bitfield_t* bf_dst = 0;
         
@@ -2088,7 +2096,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
             bf_dst = as_bitfield(*dst);
             for (size_t i = 0; i < num_pos; ++i) {
-                md_spatial_hash_query_batch(ctx->spatial_hash, in_pos[i], radius, within_float_iter, bf_dst);
+                md_spatial_hash_query_batch(sh, in_pos[i], radius, within_float_iter, bf_dst);
             }
         } else {
             // Visualize
@@ -2098,7 +2106,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             
             for (size_t i = 0; i < num_pos; ++i) {
                 push_sphere(in_pos[i], radius, COLOR_WHITE, ctx->vis);
-                md_spatial_hash_query_batch(ctx->spatial_hash, in_pos[i], radius, within_float_iter, bf_dst);
+                md_spatial_hash_query_batch(sh, in_pos[i], radius, within_float_iter, bf_dst);
             }
         }
             
@@ -2127,10 +2135,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-        if (!ctx->spatial_hash) {
-            MD_LOG_DEBUG("Within: spatial_hash structure not present during evaluation");
-            return -1;
-        }
+        const md_spatial_hash_t* sh = get_spatial_hash(ctx);
         const vec3_t* in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
         const size_t num_pos = md_array_size(in_pos);
             
@@ -2140,7 +2145,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
             bf_dst = as_bitfield(*dst);
             for (size_t i = 0; i < num_pos; ++i) {
-                md_spatial_hash_query_batch(ctx->spatial_hash, in_pos[i], radius, within_float_iter, bf_dst);
+                md_spatial_hash_query_batch(sh, in_pos[i], radius, within_float_iter, bf_dst);
             }
         }
         else {
@@ -2150,7 +2155,7 @@ static int _within_impl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             visualize_atom_mask(ctx->mol_ctx, ctx);
             for (size_t i = 0; i < num_pos; ++i) {
                 push_sphere(in_pos[i], radius, COLOR_WHITE, ctx->vis);
-                md_spatial_hash_query_batch(ctx->spatial_hash, in_pos[i], radius, within_float_iter, bf_dst);
+                md_spatial_hash_query_batch(sh, in_pos[i], radius, within_float_iter, bf_dst);
             }
         }
         // Exclude the input atoms from the result
@@ -2196,10 +2201,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const frange_t rad_range = as_frange(arg[1]);
 
     if (dst || ctx->vis) {
-        if (!ctx->spatial_hash) {
-            MD_LOG_DEBUG("Within: spatial_hash structure not present during evaluation");
-            return -1;
-        }
+        const md_spatial_hash_t* sh = get_spatial_hash(ctx);
         const vec3_t* in_pos = coordinate_extract(arg[0], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_bitfield_t* bf_mask = 0;
@@ -2222,7 +2224,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < num_pos; ++i) {
                 const float rad = rad_range.end;
                 payload.ref_pos = vec4_from_vec3(in_pos[i], 0);
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                md_spatial_hash_query(sh, in_pos[i], rad, within_frng_iter, &payload);
             }
         }
         else {
@@ -2232,7 +2234,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < num_pos; ++i) {
                 const float rad = rad_range.end;
                 payload.ref_pos = vec4_from_vec3(in_pos[i], 0);
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                md_spatial_hash_query(sh, in_pos[i], rad, within_frng_iter, &payload);
                 push_sphere(in_pos[i], rad, COLOR_WHITE, ctx->vis);
             }
         }
@@ -2261,10 +2263,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst || ctx->vis) {
         ASSERT(ctx->mol_ctx);
-        if (!ctx->spatial_hash) {
-            MD_LOG_DEBUG("Within: spatial_hash structure not present during evaluation");
-            return -1;
-        }
+        const md_spatial_hash_t* sh = get_spatial_hash(ctx);
         const vec3_t* in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
         const size_t num_pos = md_array_size(in_pos);
         md_bitfield_t* bf_dst = 0;
@@ -2282,7 +2281,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < num_pos; ++i) {
                 const float rad = rad_range.end;
                 payload.ref_pos = vec4_from_vec3(in_pos[i], 0);
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                md_spatial_hash_query(sh, in_pos[i], rad, within_frng_iter, &payload);
             }
         }
         else {
@@ -2292,7 +2291,7 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (size_t i = 0; i < num_pos; ++i) {
                 const float rad = rad_range.end;
                 payload.ref_pos = vec4_from_vec3(in_pos[i], 0);
-                md_spatial_hash_query(ctx->spatial_hash, in_pos[i], rad, within_frng_iter, &payload);
+                md_spatial_hash_query(sh, in_pos[i], rad, within_frng_iter, &payload);
                 push_sphere(in_pos[i], rad, COLOR_WHITE, ctx->vis);
             }
         }
@@ -2536,6 +2535,9 @@ static int _protein(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_t* bf = (md_bitfield_t*)dst->ptr;
         const int64_t cap = type_info_array_len(dst->type);
         if (cap == 0) return 0;
+
+        // Its a pretty good guess that the bitfield should be in the ballpark of the size of the entire thing.
+        md_bitfield_reserve_range(bf, 0, ctx->mol->atom.count);
         
         int64_t dst_idx = 0;
         for (size_t i = 0; i < md_array_size(res_indices); ++i) {
