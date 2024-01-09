@@ -19,6 +19,7 @@ typedef struct md_array_header_t {
     size_t size;
 } md_array_header_t;
 
+// Silly typedef to semantically differentiate between a pointer and an array
 #define md_array(Type) Type*
 
 #define md_array_header(a)              ((md_array_header_t*)((uint8_t*)(a) - sizeof(md_array_header_t)))

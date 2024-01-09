@@ -215,7 +215,7 @@ bool md_path_set_cwd(str_t path) {
 size_t md_path_write_canonical(char* buf, size_t cap, str_t path) {
     size_t len = fullpath(buf, cap, path);
 #if MD_PLATFORM_WINDOWS
-    convert_backslashes(buf, len);
+    replace_char(buf, len, '\\', '/');
 #endif
     return len;
 }
@@ -232,7 +232,7 @@ str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     }
 
 #if MD_PLATFORM_WINDOWS
-    convert_backslashes(buf, len);
+    replace_char(buf, len, '\\', '/');
 #endif
     
     return str_copy_cstrn(buf, len, alloc);
@@ -257,7 +257,7 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     
     success = PathRelativePathTo(out_buf, from_buf, FILE_ATTRIBUTE_NORMAL, to_buf, FILE_ATTRIBUTE_NORMAL);
     len = strnlen(out_buf, out_cap);
-    convert_backslashes(out_buf, len);
+    replace_char(out_buf, len, '\\', '/');
 #elif MD_PLATFORM_UNIX
 
     // Find the common base

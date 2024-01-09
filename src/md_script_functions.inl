@@ -4387,7 +4387,7 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
             for (int i = 1; i < COUNT_TYPE_COUNT; ++i) {
                 md_strb_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
             }
-            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(&sb)));
+            LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
 			return -1;
 		}
     }

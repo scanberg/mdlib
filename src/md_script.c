@@ -1019,7 +1019,7 @@ static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
 }
 
 static inline bool is_identifier_static_procedure(str_t ident) {
-    if (str_eq(ident, STR("import"))) {
+    if (str_eq(ident, STR_LIT("import"))) {
         return true;   
     }
     return false;
@@ -1249,21 +1249,21 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     // Map marker type to string which we use to identify operator procedures
     str_t name = {0};
     switch(op) {
-    case AST_ADD: name = STR("+");   break;
+    case AST_ADD: name = STR_LIT("+");   break;
     case AST_UNARY_NEG:
-    case AST_SUB: name = STR("-");   break;
-    case AST_MUL: name = STR("*");   break;
-    case AST_DIV: name = STR("/");   break;
-    case AST_AND: name = STR("and"); break;
-    case AST_OR:  name = STR("or");  break;
-    case AST_XOR: name = STR("xor");  break;
-    case AST_NOT: name = STR("not"); break;
-    case AST_EQ:  name = STR("==");  break;
-    case AST_NE:  name = STR("!=");  break;
-    case AST_LT:  name = STR("<");   break;
-    case AST_GT:  name = STR(">");   break;
-    case AST_LE:  name = STR("<=");  break;
-    case AST_GE:  name = STR(">=");  break;
+    case AST_SUB: name = STR_LIT("-");   break;
+    case AST_MUL: name = STR_LIT("*");   break;
+    case AST_DIV: name = STR_LIT("/");   break;
+    case AST_AND: name = STR_LIT("and"); break;
+    case AST_OR:  name = STR_LIT("or");  break;
+    case AST_XOR: name = STR_LIT("xor");  break;
+    case AST_NOT: name = STR_LIT("not"); break;
+    case AST_EQ:  name = STR_LIT("==");  break;
+    case AST_NE:  name = STR_LIT("!=");  break;
+    case AST_LT:  name = STR_LIT("<");   break;
+    case AST_GT:  name = STR_LIT(">");   break;
+    case AST_LE:  name = STR_LIT("<=");  break;
+    case AST_GE:  name = STR_LIT(">=");  break;
 
     default:
         ASSERT(false);
@@ -1344,28 +1344,28 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             const int n = j - i;
             if (n == 2) {
                 str_t str = {buf+i, 2};
-                if (str_eq(str, STR("or"))) {
+                if (str_eq(str, STR_LIT("or"))) {
                     token.type = TOKEN_OR;
                 }
-                else if (str_eq(str, STR("in"))) {
+                else if (str_eq(str, STR_LIT("in"))) {
                     token.type = TOKEN_IN;
                 }
-                else if (str_eq(str, STR("of"))) {
+                else if (str_eq(str, STR_LIT("of"))) {
                     token.type = TOKEN_OF;
                 }
             }
             else if (n == 3) {
                 str_t str = {buf+i, 3};
-                if (str_eq(str, STR("and"))) {
+                if (str_eq(str, STR_LIT("and"))) {
                     token.type = TOKEN_AND;
                 }
-                else if (str_eq(str, STR("not"))) {
+                else if (str_eq(str, STR_LIT("not"))) {
                     token.type = TOKEN_NOT;
                 }
-                else if (str_eq(str, STR("xor"))) {
+                else if (str_eq(str, STR_LIT("xor"))) {
                     token.type = TOKEN_XOR;
                 }
-                else if (str_eq(str, STR("out"))) {
+                else if (str_eq(str, STR_LIT("out"))) {
                     token.type = TOKEN_OUT;
                 }
             }
@@ -2611,7 +2611,7 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
 
         const int64_t num_rows = node->table->num_values;
         int64_t row_index = -1;
-        if (str_eq(node->table->field_names[0], STR("Time"))) {
+        if (str_eq(node->table->field_names[0], STR_LIT("Time"))) {
             // Complex case, find the matching time
             const double* time = node->table->field_values[0];
 
@@ -3617,7 +3617,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 table = md_array_push(ir->tables, (table_t){.num_values = edr.num_frames}, ir->arena);
                 table->name = str_copy(path_to_file, ir->arena);
 
-                table_push_field_d(table, STR("Time"), md_unit_pikosecond(), edr.frame_time, edr.num_frames, ir->arena);
+                table_push_field_d(table, STR_LIT("Time"), md_unit_pikosecond(), edr.frame_time, edr.num_frames, ir->arena);
                 for (size_t i = 0; i < edr.num_energies; ++i) {
                     table_push_field_f(table, edr.energy[i].name, edr.energy[i].unit, edr.energy[i].values, edr.num_frames, ir->arena);
                 }
@@ -3647,13 +3647,13 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 size_t i = 0;
                 if (xvg_has_time) {
                     md_unit_t time_unit = extract_unit_from_label(xvg.header_info.xaxis_label);
-                    table_push_field_f(table, STR("Time"), time_unit, xvg.fields[0], xvg.num_values, ir->arena);
+                    table_push_field_f(table, STR_LIT("Time"), time_unit, xvg.fields[0], xvg.num_values, ir->arena);
                     i = 1;
                 }
 
                 md_unit_t unit = extract_unit_from_label(xvg.header_info.yaxis_label);
                 for (; i < xvg.num_fields; ++i) {
-                    str_t name = STR("");
+                    str_t name = STR_LIT("");
                     if (0 < i && i-1 < md_array_size(xvg.header_info.legends)) {
                         name = xvg.header_info.legends[i-1];
                     }
@@ -3686,13 +3686,13 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 size_t i = 0;
                 if (csv_has_time) {
                     md_unit_t time_unit = extract_unit_from_label(csv.field_names[0]);
-                    table_push_field_f(table, STR("Time"), time_unit, csv.field_values[0], csv.num_values, ir->arena);
+                    table_push_field_f(table, STR_LIT("Time"), time_unit, csv.field_values[0], csv.num_values, ir->arena);
                     i = 1;
                 }
 
                 for (; i < csv.num_fields; ++i) {
                     md_unit_t unit = md_unit_none();
-                    str_t name = STR("");
+                    str_t name = STR_LIT("");
                     if (csv.field_names) {
                         name = csv.field_names[i];
                         unit = extract_unit_from_label(csv.field_names[i]);
@@ -3909,7 +3909,7 @@ static bool static_check_static_proc(ast_node_t* node, eval_context_t* ctx) {
         return false;
     }
 
-    if (str_eq(node->ident, STR("import"))) {
+    if (str_eq(node->ident, STR_LIT("import"))) {
         return static_check_import(node, ctx);
     }
 
@@ -5409,7 +5409,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
             md_strb_push_cstrl(&sb, val_buf, val_len);
         }
     } else {
-        md_strb_push_str(&sb, STR(" [d]"));
+        md_strb_push_str(&sb, STR_LIT(" [d]"));
     }
 
 #if 0
@@ -5427,7 +5427,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     vis.range.beg = node->token.beg;
     vis.range.end = node->token.end;
     vis.depth = depth;
-    vis.text = str_copy(md_strb_to_str(&sb), ir->arena);
+    vis.text = str_copy(md_strb_to_str(sb), ir->arena);
     vis.payload = (const struct md_script_vis_payload_o*)(node_override ? node_override : node);
 
     // Parent marker should be last marker added (unless empty)
@@ -6034,7 +6034,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                 .y = mol->atom.y,
                 .z = mol->atom.z,
             },
-            .eval_flags = EVAL_FLAG_FLATTEN,
+            .eval_flags = EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_STATIC_EVAL,
             .spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, &temp_alloc),
         };
 

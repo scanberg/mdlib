@@ -59,7 +59,7 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, si
 		md_strb_fmt(&sb, "@ s%d legend \"%.*s\"\n", (int)i, (int)legends[i].len, legends[i].ptr);
 	}
 
-	str_t result = str_copy(md_strb_to_str(&sb), str_alloc);
+	str_t result = str_copy(md_strb_to_str(sb), str_alloc);
 
 	md_strb_free(&sb);
 	return result;
@@ -96,7 +96,7 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
 		}
 	}
 
-	str = str_copy(md_strb_to_str(&sb), str_alloc);
+	str = str_copy(md_strb_to_str(sb), str_alloc);
 	md_strb_free(&sb);
 done:
 	return str;
@@ -150,13 +150,13 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 		md_strb_push_char(&sb, '\n');
 	}
 
-	if (md_strb_len(&sb) == 0) {
+	if (md_strb_len(sb) == 0) {
 		MD_LOG_ERROR("XVG: Expected header section");
 		goto done;
 	}
 
 	// Extract string from reader
-	str_t header = str_copy(md_strb_to_str(&sb), alloc);
+	str_t header = str_copy(md_strb_to_str(sb), alloc);
 	header_info->header = header;
 
 	// read comment
@@ -172,14 +172,14 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	// Read meta
 	while (str_extract_line(&line, &header)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok && str_eq(tok[0], STR("@"))) {
-			if		  (str_eq(tok[1], STR("title"))) {
+		if (num_tok && str_eq(tok[0], STR_LIT("@"))) {
+			if		  (str_eq(tok[1], STR_LIT("title"))) {
 				header_info->title = remove_quotes(concat_tokens(tok[2], tok[num_tok - 1]));
-			} else if (str_eq(tok[1], STR("xaxis"))) {
+			} else if (str_eq(tok[1], STR_LIT("xaxis"))) {
 				header_info->xaxis_label = remove_quotes(concat_tokens(tok[3], tok[num_tok - 1]));
-			} else if (str_eq(tok[1], STR("yaxis"))) {
+			} else if (str_eq(tok[1], STR_LIT("yaxis"))) {
 				header_info->yaxis_label = remove_quotes(concat_tokens(tok[3], tok[num_tok - 1]));
-			} else if (str_eq(tok[2], STR("legend"))) {
+			} else if (str_eq(tok[2], STR_LIT("legend"))) {
 				md_array_push(header_info->legends, remove_quotes(concat_tokens(tok[3], tok[num_tok - 1])), alloc);
 			}
 		}

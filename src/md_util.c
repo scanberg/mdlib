@@ -1473,12 +1473,12 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
     ASSERT(alloc);
 
     md_residue_id_t prev_resid = -1;
-    str_t prev_resstr = STR("");
+    str_t prev_resstr = STR_LIT("");
     md_flags_t prev_flags = 0;
     for (size_t i = 0; i < atom->count; ++i) {
         const md_residue_id_t resid = atom->resid[i];
         const md_flags_t flags = atom->flags[i];
-        const str_t resstr = atom->resname ? LBL_TO_STR(atom->resname[i]) : STR("");
+        const str_t resstr = atom->resname ? LBL_TO_STR(atom->resname[i]) : STR_LIT("");
 
         if (resid != prev_resid || !str_eq(resstr, prev_resstr) || flags & MD_FLAG_RES_BEG || prev_flags & MD_FLAG_RES_END) {
             md_array_push(res->id, resid, alloc);
@@ -5649,7 +5649,7 @@ static void print_solution(const subgraph_context_t* ctx) {
             md_strb_push_cstr(&sb, ", ");
         }
     }
-    MD_LOG_DEBUG("Found solution: {%s}", md_strb_to_cstr(&sb));
+    MD_LOG_DEBUG("Found solution: {%s}", md_strb_to_cstr(sb));
     md_strb_free(&sb);
 }
 

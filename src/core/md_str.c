@@ -397,7 +397,7 @@ str_t str_copy_cstrn(const char* cstr, size_t len, md_allocator_i* alloc) {
     return result;
 }
 
-str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
+str_t str_printf(struct md_allocator_i* alloc, const char* format, ...) {
     va_list args;
 
     va_start(args, format);
@@ -473,11 +473,10 @@ bool extract_folder_path(str_t* folder_path, str_t path) {
     return true;
 }
 
-// Converts Windows backslashes '\\' to forward slashes '/'
-void convert_backslashes(char* str, size_t len) {
-    ASSERT(str);
-    for (char* c = str; c != str + len; ++c) {
-        if (*c == '\\') *c = '/';
+void replace_char(char* str, size_t len, char target, char replacement) {
+    if (!str) return;
+	for (char* c = str; c != str + len; ++c) {
+    	if (*c == target) *c = replacement;
     }
 }
 

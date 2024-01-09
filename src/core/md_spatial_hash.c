@@ -589,9 +589,9 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int3
         vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
         vec4_t whole = vec4_floor(cell);
         
-        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]);
-        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]);
-        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]);
+        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]) % cell_dim[0];
+        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]) % cell_dim[1];
+        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]) % cell_dim[2];
         uint32_t ci = cz * cell_dim_01 + cy * cell_dim[0] + cx;
 
         cell_index[i] = ci;
@@ -701,7 +701,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in
     hash = mem;
     elem_t* elem_data = data;
     uint32_t* cell_offset = (uint32_t*)((char*)data + element_bytes);
-    MEMSET(cell_offset, 0, sizeof(cell_offset) * cell_offset_count);
+    MEMSET(cell_offset, 0, sizeof(uint32_t) * cell_offset_count);
 
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
 
@@ -790,9 +790,9 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in
         vec4_t whole = vec4_floor(cell);
         //vec4_t fract = vec4_sub(cell, whole);
         //vec4_t packed = vec4_fmadd(fract, vec4_set1(1023.0f), vec4_set1(0.5f));
-        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]);
-        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]);
-        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]);
+        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]) % cell_dim[0];
+        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]) % cell_dim[1];
+        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]) % cell_dim[2];
         uint32_t ci = cz * cell_dim_01 + cy * cell_dim[0] + cx;
 
         cell_index[i] = ci;

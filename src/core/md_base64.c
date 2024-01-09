@@ -66,10 +66,10 @@ size_t md_base64_encode(char* output, const void* input, size_t input_length) {
 
         uint32_t triple = (a << 16) + (b << 8) + c;
 
-        output[j++] = encoding_table[(triple >> 18) &0x3F];
-        output[j++] = encoding_table[(triple >> 12) &0x3F];
-        output[j++] = encoding_table[(triple >>  6) &0x3F];
-        output[j++] = encoding_table[(triple >>  0) &0x3F];
+        output[j++] = encoding_table[(triple >> 18) & 0x3F];
+        output[j++] = encoding_table[(triple >> 12) & 0x3F];
+        output[j++] = encoding_table[(triple >>  6) & 0x3F];
+        output[j++] = encoding_table[(triple >>  0) & 0x3F];
     }
 
     size_t output_length = md_base64_encode_size_in_bytes(input_length);

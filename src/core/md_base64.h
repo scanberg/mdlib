@@ -14,7 +14,7 @@ size_t md_base64_encode_size_in_bytes(size_t length);
 // Returns the encoded length in bytes
 size_t md_base64_encode(char* out_encoded, const void* in_raw, size_t length);
 
-// Gives the length in bytes of the encoded string which is required to be the minimum buffer size supplied as 'output' into base64_decode
+// Returns the length in bytes of the encoded string which is required to be the minimum buffer size supplied as 'output' into base64_decode
 size_t md_base64_decode_size_in_bytes(size_t length);
 
 // Decodes a sequence of characters given in Base64

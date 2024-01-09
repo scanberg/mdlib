@@ -9,7 +9,7 @@
 UTEST(lammps, water_ethane_cubic) {
     md_allocator_i* alloc = md_heap_allocator;
 
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
     md_lammps_data_t data = {0};
 
     const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
@@ -68,7 +68,7 @@ UTEST(lammps, water_ethane_cubic) {
 UTEST(lammps, water_ethane_triclinic) {
     md_allocator_i* alloc = md_heap_allocator;
 
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
     md_lammps_data_t data = {0};
 
     const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];

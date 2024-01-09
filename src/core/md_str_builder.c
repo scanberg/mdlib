@@ -92,22 +92,28 @@ void md_strb_reset(md_strb_t* sb) {
 	md_array_shrink(sb->buf, 0);
 }
 
-const char* md_strb_to_cstr(const md_strb_t* sb) {
-	return sb->buf;
+size_t md_strb_size(md_strb_t sb) {
+	return md_array_size(sb.buf);
 }
 
-size_t md_strb_size(const md_strb_t* sb) {
-	return md_array_size(sb->buf);
+char* md_strb_ptr(md_strb_t sb) {
+	return sb.buf;
 }
 
-size_t md_strb_len(const md_strb_t* sb) {
-    const size_t size = md_array_size(sb->buf);
+size_t md_strb_len(md_strb_t sb) {
+    const size_t size = md_array_size(sb.buf);
     return size ? size - 1 : 0;
 }
 
-str_t md_strb_to_str(const md_strb_t* sb) {
-	ASSERT(sb);
-	const size_t len = md_strb_len(sb);
-	return (str_t) { len ? sb->buf : NULL, len };
+size_t md_strb_cap(md_strb_t sb) {
+	return md_array_capacity(sb.buf);
 }
 
+const char* md_strb_to_cstr(md_strb_t sb) {
+	return sb.buf;
+}
+
+str_t md_strb_to_str(md_strb_t sb) {
+	const size_t len = md_strb_len(sb);
+	return (str_t) { len > 0 ? sb.buf : NULL, len };
+}

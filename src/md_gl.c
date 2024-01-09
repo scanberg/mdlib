@@ -302,7 +302,7 @@ static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, 
         md_strb_push_str(&sb, src);
     }
 
-    const char* csrc = md_strb_to_cstr(&sb);
+    const char* csrc = md_strb_to_cstr(sb);
     
     glShaderSource(shader, 1, &csrc, 0);
     glCompileShader(shader);
@@ -764,8 +764,8 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
     GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
     const str_t perm_str[] = {
-        STR("#define ORTHO 0"),
-        STR("#define ORTHO 1"),
+        STR_LIT("#define ORTHO 0"),
+        STR_LIT("#define ORTHO 1"),
     };
     
     ASSERT(ARRAY_SIZE(perm_str) <= MAX_SHADER_PERMUTATIONS);
@@ -913,10 +913,10 @@ bool md_gl_shaders_init(md_gl_shaders_t* ext_shaders, const char* custom_shader_
         if (str_empty(custom_shader_snippet)) {
             custom_shader_snippet = default_shader_output;
         }
-        if (!create_permuted_program(STR("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_geom, spacefill_geom_size},   (str_t){(const char*)spacefill_frag, spacefill_frag_size},    custom_shader_snippet)) return false;
-        if (!create_permuted_program(STR("Licorice"),  shaders->licorice,   (str_t){(const char*)licorice_vert, licorice_vert_size},   (str_t){(const char*)licorice_geom, licorice_geom_size},     (str_t){(const char*)licorice_frag, licorice_frag_size},      custom_shader_snippet)) return false;
-        if (!create_permuted_program(STR("Ribbons"),   shaders->ribbons,    (str_t){(const char*)ribbons_vert, ribbons_vert_size},     (str_t){(const char*)ribbons_geom, ribbons_geom_size},       (str_t){(const char*)ribbons_frag, ribbons_frag_size},        custom_shader_snippet)) return false;
-        if (!create_permuted_program(STR("Cartoon"),   shaders->cartoon,    (str_t){(const char*)cartoon_vert, cartoon_vert_size},     (str_t){(const char*)cartoon_geom, cartoon_geom_size},       (str_t){(const char*)cartoon_frag, cartoon_frag_size},        custom_shader_snippet)) return false;
+        if (!create_permuted_program(STR_LIT("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_geom, spacefill_geom_size},   (str_t){(const char*)spacefill_frag, spacefill_frag_size},    custom_shader_snippet)) return false;
+        if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   (str_t){(const char*)licorice_vert, licorice_vert_size},   (str_t){(const char*)licorice_geom, licorice_geom_size},     (str_t){(const char*)licorice_frag, licorice_frag_size},      custom_shader_snippet)) return false;
+        if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    (str_t){(const char*)ribbons_vert, ribbons_vert_size},     (str_t){(const char*)ribbons_geom, ribbons_geom_size},       (str_t){(const char*)ribbons_frag, ribbons_frag_size},        custom_shader_snippet)) return false;
+        if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    (str_t){(const char*)cartoon_vert, cartoon_vert_size},     (str_t){(const char*)cartoon_geom, cartoon_geom_size},       (str_t){(const char*)cartoon_frag, cartoon_frag_size},        custom_shader_snippet)) return false;
     }
 
     return true;

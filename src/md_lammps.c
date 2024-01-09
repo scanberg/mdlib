@@ -171,8 +171,8 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 	while (md_buffered_reader_extract_line(&line, reader)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok > 0) {
-			if (str_eq(tok[0], STR("Atoms"))) {
-				if (num_tok == 3 && str_eq(tok[1], STR("#"))) {
+			if (str_eq(tok[0], STR_LIT("Atoms"))) {
+				if (num_tok == 3 && str_eq(tok[1], STR_LIT("#"))) {
 					hint = tok[2];
 				}
 
@@ -452,7 +452,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 	// Parse headers and sections
 	while (md_buffered_reader_extract_line(&line, reader)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok > 0 && str_eq(tok[0], STR("Atoms"))) {
+		if (num_tok > 0 && str_eq(tok[0], STR_LIT("Atoms"))) {
 			if (!data->num_atoms) {
 				MD_LOG_ERROR("Encountered Atom entries, but number of atoms were not set or zero");
 				return false;
@@ -468,7 +468,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 					data->atoms[i].mass = type < (int)md_array_size(mass_table) ? mass_table[data->atoms[i].type] : 0.0f;
 				}
 			}
-		} else if (num_tok > 0 && str_eq(tok[0], STR("Bonds"))) {
+		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Bonds"))) {
 			if (!data->num_bonds) {
 				MD_LOG_ERROR("Encountered Bond entries, but number of bonds were not set or zero");
 				return false;
@@ -478,7 +478,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_bonds(data->bonds, data->num_bonds, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_eq(tok[0], STR("Angles"))) {
+		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Angles"))) {
 			if (!data->num_angles) {
 				MD_LOG_ERROR("Encountered Angle entries, but number of angles were not set or zero");
 				return false;
@@ -488,7 +488,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_angles(data->angles, data->num_angles, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_eq(tok[0], STR("Dihedrals"))) {
+		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Dihedrals"))) {
 			if (!data->num_dihedrals) {
 				MD_LOG_ERROR("Encountered Dihedral entries, but number of dihedrals were not set or zero");
 				return false;
@@ -498,7 +498,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_angles(data->angles, data->num_angles, reader)) {
 				return false;
 			}
-		} else if (num_tok > 0 && str_eq(tok[0], STR("Masses"))) {
+		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Masses"))) {
 			if (!data->num_atom_types) {
 				MD_LOG_ERROR("Encountered Mass entries, but number of atom types were not set or zero");
 				return false;
@@ -510,51 +510,51 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 		} else if (num_tok == 2 && is_int(tok[0])) {
-			if (str_eq(tok[1], STR("atoms"))) {
+			if (str_eq(tok[1], STR_LIT("atoms"))) {
 				data->num_atoms = (int32_t)parse_int(tok[0]);
-			} else if (str_eq(tok[1], STR("bonds"))) {
+			} else if (str_eq(tok[1], STR_LIT("bonds"))) {
 				data->num_bonds = (int32_t)parse_int(tok[0]);
-			} else if (str_eq(tok[1], STR("angles"))) {
+			} else if (str_eq(tok[1], STR_LIT("angles"))) {
 				data->num_angles = (int32_t)parse_int(tok[0]);
-			} else if (str_eq(tok[1], STR("dihedrals"))) {
+			} else if (str_eq(tok[1], STR_LIT("dihedrals"))) {
 				data->num_dihedrals = (int32_t)parse_int(tok[0]);
-			} else if (str_eq(tok[1], STR("impropers"))) {
+			} else if (str_eq(tok[1], STR_LIT("impropers"))) {
 				data->num_impropers = (int32_t)parse_int(tok[0]);
 			}
-		} else if (num_tok == 3 && str_eq(tok[2], STR("types")) && is_int(tok[0])) {
-			if (str_eq(tok[1], STR("atom"))) {
+		} else if (num_tok == 3 && str_eq(tok[2], STR_LIT("types")) && is_int(tok[0])) {
+			if (str_eq(tok[1], STR_LIT("atom"))) {
 				data->num_atom_types = (int32_t)parse_int(tok[0]);
-			} else if (str_eq(tok[1], STR("bond"))) {
+			} else if (str_eq(tok[1], STR_LIT("bond"))) {
 				data->num_bond_types = (int32_t)parse_int(tok[0]);
-			} else if (str_eq(tok[1], STR("angle"))) {
+			} else if (str_eq(tok[1], STR_LIT("angle"))) {
 				data->num_angle_types = (int32_t)parse_int(tok[0]);
-			} else if (str_eq(tok[1], STR("dihedral"))) {
+			} else if (str_eq(tok[1], STR_LIT("dihedral"))) {
 				data->num_dihedral_types = (int32_t)parse_int(tok[0]);
-			} else if (str_eq(tok[1], STR("improper"))) {
+			} else if (str_eq(tok[1], STR_LIT("improper"))) {
 				data->num_improper_types = (int32_t)parse_int(tok[0]);
 			} 
-		} else if (num_tok == 4 && str_eq(tok[2], STR("xlo")) && str_eq(tok[3], STR("xhi"))) {
+		} else if (num_tok == 4 && str_eq(tok[2], STR_LIT("xlo")) && str_eq(tok[3], STR_LIT("xhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.xlo = (float)parse_float(tok[0]);
 			data->cell.xhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 4 && str_eq(tok[2], STR("ylo")) && str_eq(tok[3], STR("yhi"))) {
+		} else if (num_tok == 4 && str_eq(tok[2], STR_LIT("ylo")) && str_eq(tok[3], STR_LIT("yhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.ylo = (float)parse_float(tok[0]);
 			data->cell.yhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 4 && str_eq(tok[2], STR("zlo")) && str_eq(tok[3], STR("zhi"))) {
+		} else if (num_tok == 4 && str_eq(tok[2], STR_LIT("zlo")) && str_eq(tok[3], STR_LIT("zhi"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;
 			}
 			data->cell.zlo = (float)parse_float(tok[0]);
 			data->cell.zhi = (float)parse_float(tok[1]);
-		} else if (num_tok == 6 && str_eq(tok[3], STR("xy")) && str_eq(tok[4], STR("xz")) && str_eq(tok[5], STR("yz"))) {
+		} else if (num_tok == 6 && str_eq(tok[3], STR_LIT("xy")) && str_eq(tok[4], STR_LIT("xz")) && str_eq(tok[5], STR_LIT("yz"))) {
 			if (!is_float(tok[0]) || !is_float(tok[1]) || !is_float(tok[2])) {
 				MD_LOG_ERROR("Failed to parse cell definition");
 				return false;

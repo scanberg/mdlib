@@ -30,19 +30,19 @@ UTEST_F_SETUP(util) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     utest_fixture->alloc = alloc;
 
-    md_pdb_molecule_api()->init_from_file(&utest_fixture->mol_ala, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc);
+    md_pdb_molecule_api()->init_from_file(&utest_fixture->mol_ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_ala, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_pftaa, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL, alloc);
+    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_pftaa, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_pftaa, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_nucleotides, STR(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL, alloc);
+    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_nucleotides, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_nucleotides, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_centered, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc);
+    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_centered, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_centered, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    utest_fixture->traj_ala = md_pdb_trajectory_create(STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc);
+    utest_fixture->traj_ala = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc);
 }
 
 UTEST_F_TEARDOWN(util) {
@@ -280,7 +280,7 @@ UTEST_F(util, rings_common) {
 UTEST(util, rings_c60) {
 	md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
 	md_molecule_t mol = {0};
-	md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL, alloc);
+	md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL, alloc);
 	md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
 	EXPECT_EQ(mol.atom.count, 60);
@@ -298,7 +298,7 @@ UTEST(util, rings_c60) {
 UTEST(util, rings_14kr) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
+    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
@@ -310,7 +310,7 @@ UTEST(util, rings_14kr) {
 UTEST(util, rings_trytophan_pdb) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
+    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
@@ -325,7 +325,7 @@ UTEST(util, rings_trytophan_pdb) {
 UTEST(util, rings_trytophan_xyz) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_xyz_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
+    md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
@@ -340,7 +340,7 @@ UTEST(util, rings_trytophan_xyz) {
 UTEST(util, rings_full) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_xyz_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL, alloc);
+    md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
@@ -355,7 +355,7 @@ UTEST(util, rings_full) {
 UTEST(util, rings_ciprofloxacin) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL, alloc);
+    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL, alloc);
     md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);

@@ -475,7 +475,7 @@ size_t internal_print(char* buf, size_t cap, md_unit_t unit) {
             // We found a matching base, we just need to work out a matching prefix scaling
             str_t str  = predefined_units[i].str;
             double mult  = unit.mult / predefined_units[i].unit.mult;
-            str_t prefix = STR("");
+            str_t prefix = STR_LIT("");
 
             if (mult != 1.0) {
                 prefix = find_prefix_str_from_value((float)mult);
@@ -493,7 +493,7 @@ size_t internal_print(char* buf, size_t cap, md_unit_t unit) {
             // We found a matching unit, we just need to work out a matching prefix scaling
             str_t str  = predefined_units[i].str;
             double mult  = unit.mult / predefined_units[i].unit.mult;
-            str_t prefix = STR("");
+            str_t prefix = STR_LIT("");
 
             if (mult != 1.0) {
                 prefix = find_prefix_str_from_value((float)mult);
@@ -542,7 +542,7 @@ size_t internal_print(char* buf, size_t cap, md_unit_t unit) {
         }
 
         if (unit.base.raw_bits == 0) {
-            str_t prefix = STR("");
+            str_t prefix = STR_LIT("");
             if (unit.mult != 1.0) {
                 prefix = find_prefix_str_from_value((float)unit.mult);
                 if (str_empty(prefix)) {

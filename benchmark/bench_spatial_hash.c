@@ -22,7 +22,7 @@ UBENCH_F_SETUP(spatial_hash) {
     ubench_fixture->alloc = md_vm_arena_create_interface(&ubench_fixture->arena);
 
     md_gro_data_t gro_data = {0};
-    md_gro_data_parse_file(&gro_data, STR(MD_BENCHMARK_DATA_DIR "/centered.gro"), &ubench_fixture->alloc);
+    md_gro_data_parse_file(&gro_data, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"), &ubench_fixture->alloc);
     md_gro_molecule_init(&ubench_fixture->mol, &gro_data, &ubench_fixture->alloc);
     ubench_fixture->pbc_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, &ubench_fixture->mol.unit_cell, &ubench_fixture->alloc);
     ubench_fixture->reg_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, NULL, &ubench_fixture->alloc);

@@ -8,7 +8,7 @@
 
 UBENCH_EX(xyz, xmol) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
-    str_t path = STR(MD_BENCHMARK_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+    str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/40-40-2-ddba-dyna.xmol");
 
     md_file_o* file = md_file_open(path, MD_FILE_READ);
     if (!file) {

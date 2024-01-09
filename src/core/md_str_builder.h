@@ -1,13 +1,14 @@
 #pragma once
 
 #include <core/md_str.h>
+#include <core/md_array.h>
 
 // String Builder API
 
 struct md_allocator_i;
 
 typedef struct md_strb_t {
-    char* buf;
+    md_array(char) buf;
     struct md_allocator_i* alloc;
 
 #ifdef __cplusplus
@@ -42,14 +43,20 @@ void md_strb_push_str(md_strb_t* sb, str_t str);
 void md_strb_reset(md_strb_t* sb);
 void md_strb_pop(md_strb_t* sb, size_t n);
 
+// Pointer to string buffer
+char* md_strb_ptr(md_strb_t sb);
+
 // Length of string in bytes (excluding zero terminator)
-size_t md_strb_len(const md_strb_t* sb);
+size_t md_strb_len(md_strb_t sb);
+
+// Capacity of buffer in bytes
+size_t md_strb_cap(md_strb_t sb);
 
 // Size of buffer in bytes (including zero terminator)
-size_t md_strb_size(const md_strb_t* sb);
+size_t md_strb_size(md_strb_t sb);
 
-const char* md_strb_to_cstr(const md_strb_t* sb);
-str_t       md_strb_to_str(const md_strb_t* sb);
+const char* md_strb_to_cstr(md_strb_t sb);
+str_t       md_strb_to_str (md_strb_t sb);
 
 #ifdef __cplusplus
 
@@ -69,7 +76,7 @@ inline md_strb_t& md_strb_t::operator += (int c) {
 }
 
 inline md_strb_t::operator str_t() const {
-	return md_strb_to_str(this);
+	return md_strb_to_str(*this);
 }
 
 }

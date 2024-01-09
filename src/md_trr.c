@@ -691,7 +691,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
     // Ensure that the path is zero terminated (not guaranteed by str_t)
     md_strb_t sb = md_strb_create(md_temp_allocator);
     md_strb_push_str(&sb, filename);
-    XDRFILE* file = xdrfile_open(md_strb_to_cstr(&sb), "r");
+    XDRFILE* file = xdrfile_open(md_strb_to_cstr(sb), "r");
 
     if (file) {
         xdr_seek(file, 0L, SEEK_END);
@@ -709,7 +709,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
         }
 
         md_strb_push_cstr(&sb, ".cache");
-        str_t cache_file = md_strb_to_str(&sb);
+        str_t cache_file = md_strb_to_str(sb);
 
         trr_cache_t cache = {0};
         if (!try_read_cache(&cache, cache_file, filesize, alloc)) {

@@ -10,7 +10,7 @@ typedef struct {
 	str_t     str;
 } item_t;
 
-#define ADD(unit, cstr) md_array_push(table, ((item_t){unit, STR(cstr)}), alloc)
+#define ADD(unit, cstr) md_array_push(table, ((item_t){unit, STR_LIT(cstr)}), alloc)
 
 #define UNIT_KILOGRAM       {.base = {.dim = {.mass = 1,}},     .mult = 1.0}
 #define UNIT_NANOMETER      {.base = {.dim = {.length = 1,}},   .mult = 1e-9}
@@ -61,19 +61,19 @@ UTEST(unit, print) {
 
 UTEST(unit, from_string) {
 	
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_KILOGRAM,		md_unit_from_string(STR("kg"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_PASCAL,		md_unit_from_string(STR("Pa"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NANOMETER,	md_unit_from_string(STR("nm"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_BAR,			md_unit_from_string(STR("bar"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_M_S2,			md_unit_from_string(STR("m/s^2"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_M_S2,			md_unit_from_string(STR("m*s^-2"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_KJ_MOL,		md_unit_from_string(STR("kJ/mol"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		md_unit_from_string(STR("kg*m/s^2"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		md_unit_from_string(STR("m kg/s^2"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		md_unit_from_string(STR("N"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_VOLT,			md_unit_from_string(STR("V"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_COULOMB,		md_unit_from_string(STR("C"))));
-	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_AMPEREHOUR,	md_unit_from_string(STR("Ah"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_KILOGRAM,		md_unit_from_string(STR_LIT("kg"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_PASCAL,		md_unit_from_string(STR_LIT("Pa"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NANOMETER,	md_unit_from_string(STR_LIT("nm"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_BAR,			md_unit_from_string(STR_LIT("bar"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_M_S2,			md_unit_from_string(STR_LIT("m/s^2"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_M_S2,			md_unit_from_string(STR_LIT("m*s^-2"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_KJ_MOL,		md_unit_from_string(STR_LIT("kJ/mol"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		md_unit_from_string(STR_LIT("kg*m/s^2"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		md_unit_from_string(STR_LIT("m kg/s^2"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_NEWTON,		md_unit_from_string(STR_LIT("N"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_VOLT,			md_unit_from_string(STR_LIT("V"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_COULOMB,		md_unit_from_string(STR_LIT("C"))));
+	EXPECT_TRUE(md_unit_equal((md_unit_t)UNIT_AMPEREHOUR,	md_unit_from_string(STR_LIT("Ah"))));
 	
 }
 

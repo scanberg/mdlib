@@ -10,11 +10,11 @@
 
 #include <md_filter.h>
 
-#define TEST(str) md_filter(&bf, STR(str), &mol, NULL, &is_dynamic, err, sizeof(err))
+#define TEST(str) md_filter(&bf, STR_LIT(str), &mol, NULL, &is_dynamic, err, sizeof(err))
 
 UTEST(filter, centered) {
     md_molecule_t mol = {0};
-    const str_t gro_file = STR(MD_UNITTEST_DATA_DIR "/centered.gro");
+    const str_t gro_file = STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro");
 
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, gro_file, NULL, md_heap_allocator));
     ASSERT_TRUE(md_util_molecule_postprocess(&mol, md_heap_allocator, MD_UTIL_POSTPROCESS_ALL));

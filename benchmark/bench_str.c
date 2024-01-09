@@ -9,7 +9,7 @@
 #include <inttypes.h>
 
 UBENCH_EX(str, read_lines) {
-    str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
@@ -32,7 +32,7 @@ UBENCH_EX(str, read_lines) {
 }
 
 UBENCH_EX(str, buffered_reader) {
-    str_t path = STR(MD_BENCHMARK_DATA_DIR "/centered.gro");
+    str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
@@ -59,10 +59,10 @@ UBENCH_EX(str, buffered_reader) {
 
 UBENCH_EX(str, parse_int) {
     str_t str[] = {
-        STR("1928123123123"),
-        STR("1123"),
-        STR("19228123"),
-        STR("1921238123"),
+        STR_LIT("1928123123123"),
+        STR_LIT("1123"),
+        STR_LIT("19228123"),
+        STR_LIT("1921238123"),
     };
 
     int64_t num_bytes = 0;
@@ -96,10 +96,10 @@ UBENCH_EX(str, parse_int) {
 
 UBENCH_EX(str, parse_int_simd) {
     str_t str[] = {
-        STR("19312312"),
-        STR("1123"),
-        STR("19228123"),
-        STR("19212381"),
+        STR_LIT("19312312"),
+        STR_LIT("1123"),
+        STR_LIT("19228123"),
+        STR_LIT("19212381"),
     };
 
     int64_t num_bytes = 0;
@@ -133,10 +133,10 @@ UBENCH_EX(str, parse_int_simd) {
 
 UBENCH_EX(str, parse_float) {
     str_t str[] = {
-        STR("1928123.2767"),
-        STR("19.2"),
-        STR("12323"),
-        STR("0.000000"),
+        STR_LIT("1928123.2767"),
+        STR_LIT("19.2"),
+        STR_LIT("12323"),
+        STR_LIT("0.000000"),
     };
 
     int64_t num_bytes = 0;
@@ -170,10 +170,10 @@ UBENCH_EX(str, parse_float) {
 
 UBENCH_EX(str, parse_float_simd) {
     str_t str[] = {
-        STR("1928123.2767"),
-        STR("19.2"),
-        STR("12323"),
-        STR("0.000000"),
+        STR_LIT("1928123.2767"),
+        STR_LIT("19.2"),
+        STR_LIT("12323"),
+        STR_LIT("0.000000"),
     };
 
     int64_t num_bytes = 0;

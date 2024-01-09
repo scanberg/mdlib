@@ -31,9 +31,9 @@ typedef struct str_t {
 
 // Macro to bake a string literal into a str_t
 #ifdef __cplusplus
-#define STR(cstr) {(cstr""), (sizeof(cstr)-1)}
+#define STR_LIT(cstr) {(cstr""), (sizeof(cstr)-1)}
 #else
-#define STR(cstr) (str_t){(cstr""), (sizeof(cstr)-1)}
+#define STR_LIT(cstr) (str_t){(cstr""), (sizeof(cstr)-1)}
 #endif
 
 #define STR_FMT "%.*s"
@@ -110,9 +110,10 @@ str_t str_copy(str_t str, struct md_allocator_i* alloc);
 str_t str_copy_cstr(const char* cstr, struct md_allocator_i* alloc);
 str_t str_copy_cstrn(const char* cstr, size_t len, struct md_allocator_i* alloc);
 
+str_t str_printf(struct md_allocator_i* alloc, const char* format, ...);
+
 // This should probably be removed
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
-str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...);
 
 // c:/folder/file.ext -> ext
 bool extract_ext(str_t* ext, str_t path);
@@ -123,8 +124,8 @@ bool extract_file(str_t* file, str_t path);
 // c:/folder/file.ext -> c:/folder/
 bool extract_folder_path(str_t* folder_path, str_t path);
 
-// Converts Windows backslashes '\\' to forward slashes '/'
-void convert_backslashes(char* str, size_t len);
+// Mutating string operations
+void replace_char(char* str, size_t len, char c, char replacement);
 void convert_to_lower(char* str, size_t len);
 void convert_to_upper(char* str, size_t len);
 

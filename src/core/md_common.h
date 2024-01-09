@@ -221,32 +221,11 @@ __int64 __cdecl _abs64(__int64 n);
 #pragma intrinsic(memset)
 #pragma intrinsic(memmove)
 #pragma intrinsic(memcmp)
-//#pragma intrinsic(fabsf)
-#pragma intrinsic(fabs)
-#pragma intrinsic(abs)
-#pragma intrinsic(labs)
-#pragma intrinsic(llabs)
-#pragma intrinsic(_abs64)
 
 #define MEMCPY  memcpy
 #define MEMSET  memset
 #define MEMMOVE memmove
 #define MEMCMP  memcmp
-
-#if __STDC_VERSION__ == 201112L
-// We have C11 generics
-#ifndef ABS
-#define ABS(x) _Generic((x), float:  fabsf, \
-                             double: fabs,  \
-                             int:    abs,   \
-                             long:   labs,  \
-                        long long:   llabs)(x)
-#endif
-#else
-#ifndef ABS
-#define ABS(x) ((x) > 0 ? (x) : -(x))
-#endif
-#endif
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 #define MEMCPY  __builtin_memcpy

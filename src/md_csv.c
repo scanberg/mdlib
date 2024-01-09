@@ -125,7 +125,7 @@ str_t md_csv_write_to_str (const float* field_values[], const str_t field_names[
     if (field_values && num_fields > 0 && num_values > 0) {
         md_strb_t sb = md_strb_create(md_heap_allocator);
         write(&sb, field_values, field_names, num_fields, num_values);
-        result = str_copy(md_strb_to_str(&sb), alloc);
+        result = str_copy(md_strb_to_str(sb), alloc);
         md_strb_free(&sb);
     }
     return result;
@@ -137,7 +137,7 @@ bool md_csv_write_to_file(const float* field_values[], const str_t field_names[]
         if (file) {
             md_strb_t sb = md_strb_create(md_heap_allocator);
             write(&sb, field_values, field_names, num_fields, num_values);
-            str_t str = md_strb_to_str(&sb);
+            str_t str = md_strb_to_str(sb);
             const size_t written_bytes = md_file_write(file, str.ptr, str.len);
             md_strb_free(&sb);
             md_file_close(file);

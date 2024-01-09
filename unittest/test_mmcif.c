@@ -6,7 +6,7 @@
 #include <core/md_allocator.h>
 
 UTEST(mmcif, 1fez) {
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/1fez.cif");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
     md_molecule_t mol;
     bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);
@@ -30,7 +30,7 @@ UTEST(mmcif, 1fez) {
 }
 
 UTEST(mmcif, 2or2) {
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/2or2.cif");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
     md_molecule_t mol;
     bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);
@@ -55,7 +55,7 @@ UTEST(mmcif, 2or2) {
 }
 
 UTEST(mmcif, 8g7u) {
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/8g7u.cif");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
     md_molecule_t mol;
     bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);

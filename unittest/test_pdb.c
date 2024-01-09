@@ -8,7 +8,7 @@
 #include <core/md_os.h>
 
 UTEST(pdb, parse_ordinary) {
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1k4r.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, md_heap_allocator);
     EXPECT_TRUE(result);
@@ -23,7 +23,7 @@ UTEST(pdb, parse_ordinary) {
 }
 
 UTEST(pdb, unmatched_model_entry) {
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/dppc64.pdb");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/dppc64.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, md_heap_allocator);
     EXPECT_TRUE(result);
@@ -38,7 +38,7 @@ UTEST(pdb, unmatched_model_entry) {
 }
 
 UTEST(pdb, parse_trajectory) {
-    str_t path = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_pdb_data_t pdb_data = {0};
     bool result = md_pdb_data_parse_file(&pdb_data, path, md_heap_allocator);
     EXPECT_TRUE(result);
@@ -63,7 +63,7 @@ UTEST(pdb, parse_trajectory) {
 }
 
 UTEST(pdb, trajectory_i) {
-    const str_t path = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
     md_trajectory_i* traj = md_pdb_trajectory_create(path, md_heap_allocator);
     ASSERT_TRUE(traj);
 
@@ -88,7 +88,7 @@ UTEST(pdb, trajectory_i) {
 
 UTEST(pdb, create_molecule) {
     md_allocator_i* alloc = md_heap_allocator;
-    str_t path = STR(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, path, alloc));

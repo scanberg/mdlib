@@ -385,7 +385,7 @@ typedef struct include_file_t {
 #define APPEND_STR(a, str, alloc)   md_array_push_array(a, str.ptr, str.len, alloc)
 #define APPEND_CSTR(a, cstr, alloc) md_array_push_array(a, cstr, (int64_t)strlen(cstr), alloc)
 #define APPEND_CHAR(a, ch, alloc) md_array_push(a, ch, alloc);
-#define APPEND_LINE(a, line, alloc) APPEND_STR(a, alloc_printf(alloc, "#line %u\n", line), alloc)
+#define APPEND_LINE(a, line, alloc) APPEND_STR(a, str_printf(alloc, "#line %u\n", line), alloc)
 
 static bool compile_shader_from_source(GLuint shader, const char* source, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     if (!source) {
@@ -410,7 +410,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     APPEND_STR(buf, version_str, alloc);
     line_count += 1;
 
-    str_t glsl_define = STR("#ifndef GLSL\n#define GLSL\n#endif");
+    str_t glsl_define = STR_LIT("#ifndef GLSL\n#define GLSL\n#endif");
     APPEND_STR(buf, glsl_define, alloc);
     line_count += 3;
 
@@ -697,7 +697,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         ctx.color.capacity = 4 * 1000 * 1000;
         ctx.color_buf = gl_buffer_create(ctx.color.capacity * sizeof(md_gfx_color_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
-#define CONCAT_STR(STR_A, STR_B) (alloc_printf(md_temp_allocator, "%s%s", STR_A, STR_B).ptr)
+#define CONCAT_STR(STR_A, STR_B) (str_printf(md_temp_allocator, "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
         str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), md_temp_allocator);

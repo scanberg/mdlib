@@ -119,7 +119,7 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 		}
 	}
 	
-	str = str_copy(md_strb_to_str(&sb), alloc);
+	str = str_copy(md_strb_to_str(sb), alloc);
 	md_strb_free(&sb);
 done:
 	return str;

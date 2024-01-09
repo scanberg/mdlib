@@ -9,9 +9,6 @@
  *  This is an attempt of a spatial hashing structure intended for accelerated spatial queries.
  *  It makes some assumptions as it is not intended to be a general purpose spatial hash:
  *  - Only 3-dimensions (You could surely use it for 2D and 1D, but it would still do some redundant work)
- *  - Each cell can only hold up to 1023 entries, this is because the offset and length is packed into a single 32-bit integer.
- *      This implies the input data has a certain spatial distribution and the cell size is not too small.
- *  - The internal coordinates are compressed as 3x10-bit integers, which means there is some loss in precision. (Could change over time)
  *  - The cell size is currently fixed for simplicity. Could certainly change over time.
  *  - Internally works for periodic data as well as non-periodic
  * 

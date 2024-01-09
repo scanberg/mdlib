@@ -115,7 +115,7 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
     }
 
     // Test for extended XYZ format
-    if (str_find_str(NULL, lines[1], STR("Properties="))) {
+    if (str_find_str(NULL, lines[1], STR_LIT("Properties="))) {
 		*flags |= XYZ_EXTENDED;
 	} else {    
         // Test if we have an ARC trajectory
@@ -235,7 +235,7 @@ static inline str_t extract_balanced_substr(str_t in_str, char beg_char, char en
 // Old style: {} enclosed list 9 elements separated by whitespace: {1 2 3 4 5 6 7 8 9}
 
 static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
-    const str_t pattern = STR("Lattice=");
+    const str_t pattern = STR_LIT("Lattice=");
     size_t loc;
     if (!str_find_str(&loc, line, pattern)) {
         // Lattice information not found, since Lattice is optional, this is not an error
