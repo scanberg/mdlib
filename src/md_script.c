@@ -5140,7 +5140,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             goto done;
         }
 
-        MEMCPY(&mol->unit_cell, &curr_header.unit_cell, sizeof(md_unit_cell_t));
+        MEMCPY(&mutable_mol.unit_cell, &curr_header.unit_cell, sizeof(md_unit_cell_t));
         
         md_vm_arena_set_pos(&vm_arena, STACK_RESET_POINT);
         ctx.identifiers = 0;
