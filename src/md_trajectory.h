@@ -46,7 +46,7 @@ typedef struct md_trajectory_i {
 	bool (*load_frame)(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 
 	// --- ADVANCED MODE ---
-	// Returns size in bytes of frame, frame_data_ptr is optional and if supplied, the frame data will be written to it.
+	// Returns size in bytes of frame, data_ptr is optional and if supplied, the frame data will be written to it.
 	size_t (*fetch_frame_data)(struct md_trajectory_o* inst, int64_t idx, void* data_ptr);
 
 	// Decodes the raw frame data
