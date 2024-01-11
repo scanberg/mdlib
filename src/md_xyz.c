@@ -866,7 +866,7 @@ static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
 
     md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
     if (!file) {
-        MD_LOG_ERROR("XYZ trajectory cache: could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+        MD_LOG_INFO("XYZ trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }
 
