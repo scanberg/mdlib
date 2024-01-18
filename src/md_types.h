@@ -26,12 +26,12 @@ enum {
 
 // Cell information
 enum {
-    MD_CELL_NONE                    = 0,
-    MD_CELL_ORTHOGONAL              = 1,
-    MD_CELL_TRICLINIC               = 2,
-    MD_CELL_X                       = 4,
-    MD_CELL_Y                       = 8,
-    MD_CELL_Z                       = 16,
+    MD_UNIT_CELL_FLAG_NONE          = 0,
+    MD_UNIT_CELL_FLAG_ORTHO         = 1,
+    MD_UNIT_CELL_FLAG_TRICLINIC     = 2,
+    MD_UNIT_CELL_FLAG_PBC_X         = 4,
+    MD_UNIT_CELL_FLAG_PBC_Y         = 8,
+    MD_UNIT_CELL_FLAG_PBC_Z         = 16,
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
@@ -64,17 +64,6 @@ typedef uint8_t     md_element_t;
 typedef uint8_t     md_ramachandran_type_t;
 typedef uint8_t     md_valence_t;
 typedef uint8_t     md_order_t;
-
-// Structure Of Array layout version of vec3_t
-// This is to simplify the interfaces a bit when dealing with multiple coordinate streams
-typedef struct md_vec3_soa_t {
-    float* x;
-    float* y;
-    float* z;
-    // The stride signifies the byte stride between each entry of the pointers.
-    // If the arrays are packed and not part of a larger struct, this value would be sizeof(float) == 4
-    uint64_t stride;
-} md_vec3_soa_t;
 
 // Open ended range of indices (e.g. range(0,4) -> [0,1,2,3])
 typedef struct md_range_t {
@@ -166,26 +155,12 @@ static inline bool label_empty(md_label_t lbl) {
 static inline md_label_t make_label(str_t str) {
     md_label_t lbl = {0};
     if (str.ptr) {
-        const int64_t len = MIN(str.len, (int64_t)sizeof(lbl.buf) - 1);
-        for (int64_t i = 0; i < len; ++i) {
-            lbl.buf[i] = str.ptr[i];
-        }
+        const size_t len = MIN(str.len, sizeof(lbl.buf) - 1);
+        MEMCPY(lbl.buf, str.ptr, len);
         lbl.len = (uint8_t)len;
     }
     return lbl;
 }
-
-static inline md_vec3_soa_t md_vec3_soa_from_vec3(vec3_t* ptr) {
-    md_vec3_soa_t soa = {&ptr->x, &ptr->y, &ptr->z, sizeof(vec3_t)};
-    return soa;
-}
-
-static inline vec3_t md_vec3_soa_get(md_vec3_soa_t soa, int64_t idx) {
-    ASSERT(soa.stride != 0);
-    vec3_t v = {*(float*)((char*)soa.x + idx * soa.stride), *(float*)((char*)soa.y + idx * soa.stride), *(float*)((char*)soa.z + idx * soa.stride)};
-    return v;
-}
-
 
 // Access to substructure data
 static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* alloc) {
@@ -196,7 +171,7 @@ static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* al
     MEMSET(data, 0, sizeof(md_index_data_t));
 }
 
-static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, int64_t index_count, md_allocator_i* alloc) {
+static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
     ASSERT(index_count >= 0);
@@ -221,22 +196,22 @@ static inline void md_index_data_data_clear(md_index_data_t* data) {
     md_array_shrink(data->indices, 0);
 }
 
-static inline int64_t md_index_data_count(md_index_data_t data) {
-    return MAX(md_array_size(data.offsets) - 1, 0);
+static inline size_t md_index_data_count(md_index_data_t data) {
+    return data.offsets ? md_array_size(data.offsets) - 1 : 0;
 }
 
 // Access to individual substructures
-static inline int32_t* md_index_range_beg(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+static inline int32_t* md_index_range_beg(md_index_data_t data, size_t idx) {
+    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
     return data.indices + data.offsets[idx];
 }
 
-static inline int32_t* md_index_range_end(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+static inline int32_t* md_index_range_end(md_index_data_t data, size_t idx) {
+    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
     return data.indices + data.offsets[idx+1];
 }
 
-static inline int64_t md_index_range_size(md_index_data_t data, int64_t idx) {
-    ASSERT(idx >= 0 && idx < md_array_size(data.offsets) - 1);
+static inline size_t md_index_range_size(md_index_data_t data, size_t idx) {
+    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
     return data.offsets[idx+1] - data.offsets[idx];
 }

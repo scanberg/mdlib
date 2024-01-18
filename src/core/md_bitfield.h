@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 struct md_allocator_i;
@@ -41,7 +42,7 @@ uint64_t md_bitfield_end_bit    (const md_bitfield_t* bf);
 
 void md_bitfield_set_range      (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 void md_bitfield_set_bit        (md_bitfield_t* bf, uint64_t bit_idx);
-void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, uint64_t num_indices);
+void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, size_t num_indices);
 
 void md_bitfield_clear          (md_bitfield_t* bf);
 void md_bitfield_clear_range    (md_bitfield_t* bf, uint64_t beg, uint64_t end);
@@ -66,8 +67,8 @@ void md_bitfield_not_inplace    (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 void md_bitfield_copy           (md_bitfield_t* dst, const md_bitfield_t* src);
 
 // Count number of bits set
-uint64_t md_bitfield_popcount    (const md_bitfield_t* bf);
-uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
+size_t md_bitfield_popcount    (const md_bitfield_t* bf);
+size_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 // Test if bits are set
 bool md_bitfield_test_bit   (const md_bitfield_t* bf, uint64_t idx);
@@ -98,10 +99,17 @@ uint64_t md_bitfield_scan(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 md_bitfield_iter_t md_bitfield_iter_create(const md_bitfield_t* bf);
 
 // Create iterator with range
-md_bitfield_iter_t md_bitfield_iter_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
+md_bitfield_iter_t md_bitfield_iter_range_create(const md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 // Go to the next bit set in the bitfield, returns true if found, false if not found
 bool md_bitfield_iter_next(md_bitfield_iter_t* iter);
+
+// Extract the indices which are represented by the iterator
+// Writes the indices of bits set to the given buffer.
+// cap is the capacity (num elements) of the buffer.
+// returns the number of indices written to the buffer
+// Use popcount to determine required capacity of buffer.
+size_t md_bitfield_iter_extract_indices(int32_t* buf, size_t cap, md_bitfield_iter_t iter);
 
 // Returns the actual index to the bit pointed to by the iterator
 static inline uint64_t md_bitfield_iter_idx(const md_bitfield_iter_t* it) {
@@ -114,23 +122,16 @@ bool md_bitfield_get_range(uint64_t* first_idx, uint64_t* last_idx, const md_bit
 // Copy the contents of the bitfield into an external buffer
 //bool md_bitfield_extract_bits_u64(uint64_t* dst_ptr, int64_t num_bits, const md_bitfield_t* src);
 
-
-// Writes the indices of bits set in the bitfield to the given buffer.
-// cap is the capacity (num elements) of the buffer.
-// returns the number of indices written to the buffer
-// Use popcount to determine required capacity of buffer.
-int64_t md_bitfield_extract_indices(int32_t* buf, int64_t cap, const md_bitfield_t* bf);
-
 // Returns the maximum serialization size in bytes of a bitfield
-uint64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf);
+size_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf);
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
-uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
+size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
 
 // Deserializes a compressed buffer into a bitfield.
 // User must ensure that the bitfield is properly initialized with an allocator
-bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_bytes);
+bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_bytes);
 
 // Compute hash for the bitfield
 uint64_t md_bitfield_hash(const md_bitfield_t* bf);

@@ -21,8 +21,8 @@ typedef struct gro_molecule {
 
 // This is a specialized version of tokenization that only extracts float tokens.
 // It is designed to avoid the issue where floats are not separated by whitespace.
-static int64_t extract_float_tokens(str_t* tok_arr, int64_t tok_cap, str_t str) {
-    int64_t n = 0;
+static size_t extract_float_tokens(str_t* tok_arr, size_t tok_cap, str_t str) {
+    size_t n = 0;
     const char* c = str.ptr;
     const char* end = str.ptr + str.len;
     
@@ -74,12 +74,12 @@ static bool md_gro_data_parse(md_gro_data_t* data, md_buffered_reader_t* reader,
 
     md_array_resize(data->atom_data, data->num_atoms, alloc);
 
-    for (int64_t i = 0; i < data->num_atoms; ++i) {
+    for (size_t i = 0; i < data->num_atoms; ++i) {
         if (!md_buffered_reader_extract_line(&line, reader)) {
             MD_LOG_ERROR("Failed to extract atom line");
             return false;
         }
-        const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, -1));
+        const int64_t num_tokens = extract_float_tokens(tokens, ARRAY_SIZE(tokens), str_substr(line, 20, SIZE_MAX));
         if (num_tokens < 3) {
             MD_LOG_ERROR("Failed to parse atom coordinates, expected at least 3 tokens, got %i", (int)num_tokens);
             return false;
@@ -217,7 +217,8 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     return true;
 }
 
-static bool gro_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
+static bool gro_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_str(&data, str, md_heap_allocator)) {
@@ -228,7 +229,8 @@ static bool gro_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
     return success;
 }
 
-static bool gro_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
+static bool gro_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
     if (md_gro_data_parse_file(&data, filename, md_heap_allocator)) {

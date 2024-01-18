@@ -33,10 +33,10 @@ void md_strb_free(md_strb_t* sb) {
 }
 
 void md_strb_push_cstr(md_strb_t* sb, const char* cstr) {
-	md_strb_push_cstrl(sb, cstr, (int64_t)strlen(cstr));
+	md_strb_push_cstrl(sb, cstr, strlen(cstr));
 }
 
-void md_strb_push_cstrl(md_strb_t* sb, const char* cstr, int64_t len) {
+void md_strb_push_cstrl(md_strb_t* sb, const char* cstr, size_t len) {
 	ASSERT(sb);
 	if (len > 0) {
 		if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
@@ -54,7 +54,7 @@ void md_strb_fmt(md_strb_t* sb, const char* format, ...) {
 
 	if (len > 0) {
 		if (md_array_size(sb->buf)) md_array_pop(sb->buf); // Remove zero terminator
-		int64_t offset = md_array_size(sb->buf);
+		size_t offset = md_array_size(sb->buf);
 		md_array_resize(sb->buf, md_array_size(sb->buf) + len + 1, sb->alloc);
 
 		va_start(args, format);
@@ -72,10 +72,11 @@ void md_strb_push_str(md_strb_t* sb, str_t str) {
 	}
 }
 
-void md_strb_pop(md_strb_t* sb, int64_t n) {
+void md_strb_pop(md_strb_t* sb, size_t n) {
 	ASSERT(sb);
 	ASSERT(n > 0);
-	md_array_shrink(sb->buf, MAX(0, md_array_size(sb->buf) - (n+1)));
+	n = MIN(n, md_array_size(sb->buf));
+	md_array_shrink(sb->buf, n);
 	md_array_push(sb->buf, '\0', sb->alloc);
 }
 
@@ -91,22 +92,28 @@ void md_strb_reset(md_strb_t* sb) {
 	md_array_shrink(sb->buf, 0);
 }
 
-const char* md_strb_to_cstr(const md_strb_t* sb) {
-	return sb->buf;
+size_t md_strb_size(md_strb_t sb) {
+	return md_array_size(sb.buf);
 }
 
-int64_t md_strb_size(const md_strb_t* sb) {
-	return md_array_size(sb->buf);
+char* md_strb_ptr(md_strb_t sb) {
+	return sb.buf;
 }
 
-int64_t md_strb_len(const md_strb_t* sb) {
-    const int64_t size = md_array_size(sb->buf);
+size_t md_strb_len(md_strb_t sb) {
+    const size_t size = md_array_size(sb.buf);
     return size ? size - 1 : 0;
 }
 
-str_t md_strb_to_str(const md_strb_t* sb) {
-	ASSERT(sb);
-	int64_t len = md_strb_len(sb);
-	return (str_t) { len ? sb->buf : NULL, len };
+size_t md_strb_cap(md_strb_t sb) {
+	return md_array_capacity(sb.buf);
 }
 
+const char* md_strb_to_cstr(md_strb_t sb) {
+	return sb.buf;
+}
+
+str_t md_strb_to_str(md_strb_t sb) {
+	const size_t len = md_strb_len(sb);
+	return (str_t) { len > 0 ? sb.buf : NULL, len };
+}

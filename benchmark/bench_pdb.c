@@ -8,11 +8,11 @@
 
 UBENCH_EX(pdb, dppc64) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
-    str_t path = STR(MD_BENCHMARK_DATA_DIR "/dppc64.pdb");
+    str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/dppc64.pdb");
 
     str_t text = load_textfile(path, md_heap_allocator);
     if (str_empty(text)) {
-    	MD_LOG_ERROR("Failed to load file: %.*s\n", STR_FMT(path));
+    	MD_LOG_ERROR("Failed to load file: %.*s\n", STR_ARG(path));
     	return;
     }  
     UBENCH_SET_BYTES(text.len);
@@ -20,7 +20,7 @@ UBENCH_EX(pdb, dppc64) {
     UBENCH_DO_BENCHMARK() {
         md_arena_allocator_reset(alloc);
         md_pdb_data_t pdb = {0};
-        //md_pdb_data_parse_file(&pdb, STR(MD_BENCHMARK_DATA_DIR"/dppc64.pdb"), alloc);
+        //md_pdb_data_parse_file(&pdb, STR_LIT(MD_BENCHMARK_DATA_DIR"/dppc64.pdb"), alloc);
         md_pdb_data_parse_str(&pdb, text, alloc);
     }
 

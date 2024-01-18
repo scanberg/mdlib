@@ -1,5 +1,6 @@
 [![Windows (MSVC)](https://github.com/scanberg/mold/actions/workflows/windows.yml/badge.svg)](https://github.com/scanberg/mold/actions/workflows/windows.yml)
 [![Ubuntu 20.04 (GCC 9)](https://github.com/scanberg/mold/actions/workflows/ubuntu20.yml/badge.svg)](https://github.com/scanberg/mold/actions/workflows/ubuntu20.yml)
+[![Ubuntu 22.04 (GCC 11)](https://github.com/scanberg/mold/actions/workflows/ubuntu22.yml/badge.svg)](https://github.com/scanberg/mold/actions/workflows/ubuntu22.yml)
 [![MacOS (Clang)](https://github.com/scanberg/mold/actions/workflows/macos.yml/badge.svg)](https://github.com/scanberg/mold/actions/workflows/macos.yml)
 # MD-lib
 Molecule Dynamics Library

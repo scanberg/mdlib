@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -16,11 +17,11 @@ struct md_allocator_i;
 // Non owning string_view type
 typedef struct str_t {
     const char* ptr;
-    int64_t     len;
+    size_t      len;
 
 #ifdef __cplusplus
-    constexpr char operator[](int64_t idx) noexcept       { return ptr[idx]; }
-    constexpr char operator[](int64_t idx) const noexcept { return ptr[idx]; }
+    constexpr char operator[](size_t idx) noexcept       { return ptr[idx]; }
+    constexpr char operator[](size_t idx) const noexcept { return ptr[idx]; }
 
     constexpr const char* beg() noexcept { return ptr; }
     constexpr const char* end() noexcept { return ptr + len; }
@@ -30,12 +31,13 @@ typedef struct str_t {
 
 // Macro to bake a string literal into a str_t
 #ifdef __cplusplus
-#define STR(cstr) {(cstr""), (sizeof(cstr)-1)}
+#define STR_LIT(cstr) {(cstr""), (sizeof(cstr)-1)}
 #else
-#define STR(cstr) (str_t){(cstr""), (sizeof(cstr)-1)}
+#define STR_LIT(cstr) (str_t){(cstr""), (sizeof(cstr)-1)}
 #endif
 
-#define STR_FMT(str) (int)str.len, str.ptr
+#define STR_FMT "%.*s"
+#define STR_ARG(str) (int)str.len, str.ptr
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,118 +56,85 @@ static inline bool is_symbol(int c) {
     return (32 < c && c < 48) || (57 < c && c < 65) || (90 < c && c < 97) || (122 < c && c < 127);
 }
 
-static inline void str_swap(str_t a, str_t b) {
-    str_t tmp = a;
-	a = b;
-	b = tmp;
-}
+static inline bool str_empty(str_t str) { return str.ptr == 0 || str.len == 0; }
 
-static inline bool str_empty(str_t str) {
-    return str.ptr == 0 || str.len == 0;
-}
+static inline const char* str_beg(str_t str) { return str.ptr; }
+static inline const char* str_end(str_t str) { return str.ptr + str.len; }
 
-static inline const char* str_beg(str_t str) {
-    return str.ptr;
-}
+static inline size_t      str_len(str_t str) { return str.len; }
+static inline const char* str_ptr(str_t str) { return str.ptr; }
 
-static inline const char* str_end(str_t str) {
-    return str.ptr + str.len;
-}
-
-static inline int64_t str_len(str_t str) {
-    return str.len;
-}
-
-static inline const char* str_ptr(str_t str) {
-    return str.ptr;
-}
+void str_swap(str_t a, str_t b);
 
 str_t str_trim(str_t str);
+str_t str_trim_left(str_t str);
+str_t str_trim_right(str_t str);
 
-bool str_equal(str_t str_a, str_t str_b);
-bool str_equal_ignore_case(const str_t str_a, const str_t str_b);
-bool str_equal_n(str_t str_a, str_t str_b, int64_t n);
-bool str_equal_n_ignore_case(const str_t str_a, const str_t str_b, int64_t n);
+bool str_eq(str_t str_a, str_t str_b);
+bool str_eq_ignore_case(const str_t str_a, const str_t str_b);
+bool str_eq_n(str_t str_a, str_t str_b, size_t n);
+bool str_eq_n_ignore_case(const str_t str_a, const str_t str_b, size_t n);
 
 // Lexicographical comparison
-int str_compare_lex(str_t str_a, str_t str_b);
+int str_cmp_lex(str_t a, str_t b);
 
-bool str_equal_cstr(str_t str, const char* cstr);
-bool str_equal_cstr_n(str_t str, const char* cstr, int64_t n);
-bool str_equal_cstr_ignore_case(str_t str, const char* cstr);
-bool str_equal_cstr_n_ignore_case(str_t str, const char* cstr, int64_t n);
+bool str_eq_cstr(str_t str, const char* cstr);
+bool str_eq_cstr_n(str_t str, const char* cstr, size_t n);
+bool str_eq_cstr_ignore_case(str_t str, const char* cstr);
+bool str_eq_cstr_n_ignore_case(str_t str, const char* cstr, size_t n);
 
-int64_t str_count_equal_chars(str_t a, str_t b);
-int64_t str_count_occur_char(str_t str, char character);
+size_t str_count_equal_chars(str_t a, str_t b);
+size_t str_count_occur_char(str_t str, char character);
 
-str_t str_substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1));
+str_t str_substr(str_t str, size_t offset, size_t length DEF_VAL(SIZE_MAX));
 
-bool str_skip_line(str_t* in_out_str);
-bool str_peek_line(str_t* out_line, const str_t* in_str);
+bool str_skip_line   (str_t* in_out_str);
+bool str_peek_line   (str_t* out_line, const str_t* in_str);
 bool str_extract_line(str_t* out_line, str_t* in_out_str);
 
-bool str_extract_i32  (int* val, str_t* in_out_str);
-bool str_extract_i64(int64_t* val, str_t* in_out_str);
+bool str_extract_i32  (int32_t* val, str_t* in_out_str);
+bool str_extract_i64  (int64_t* val, str_t* in_out_str);
 
-bool str_extract_f32(float* val,  str_t* in_out_str);
-bool str_extract_f64(double* val,  str_t* in_out_str);
+bool str_extract_f32  (float*  val,  str_t* in_out_str);
+bool str_extract_f64  (double* val,  str_t* in_out_str);
 
 // Returns the offset where the item was found or -1 if nothing was found.
-int64_t str_find_char(str_t str, int c);
-int64_t str_rfind_char(str_t str, int c);
-int64_t str_find_str(str_t str, str_t str_to_find);
+bool str_find_char (size_t* loc, str_t str, int c);
+bool str_rfind_char(size_t* loc, str_t str, int c);
+bool str_find_str  (size_t* loc, str_t haystack, str_t needle);
 
 bool str_starts_with(str_t str, str_t prefix);
 bool str_ends_with(str_t str, str_t suffix);
 
 // Will allocate one extra character for zero termination
-str_t str_alloc(uint64_t len, struct md_allocator_i* alloc);
+str_t str_alloc(size_t len, struct md_allocator_i* alloc);
 void  str_free(str_t str, struct md_allocator_i* alloc);
 str_t str_copy(str_t str, struct md_allocator_i* alloc);
 str_t str_copy_cstr(const char* cstr, struct md_allocator_i* alloc);
-str_t str_copy_cstrn(const char* cstr, int64_t len, struct md_allocator_i* alloc);
+str_t str_copy_cstrn(const char* cstr, size_t len, struct md_allocator_i* alloc);
+
+str_t str_printf(struct md_allocator_i* alloc, const char* format, ...);
 
 // This should probably be removed
 str_t load_textfile(str_t path, struct md_allocator_i* alloc);
-str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...);
 
 // c:/folder/file.ext -> ext
-str_t extract_ext(str_t path);
+bool extract_ext(str_t* ext, str_t path);
 
 // c:/folder/file.ext -> file.ext
-str_t extract_file(str_t path);
-
-// c:/folder/file.ext -> c:/folder/file
-str_t extract_path_without_ext(str_t path);
+bool extract_file(str_t* file, str_t path);
 
 // c:/folder/file.ext -> c:/folder/
-str_t extract_path_without_file(str_t path);
+bool extract_folder_path(str_t* folder_path, str_t path);
 
-// Converts Windows backslashes '\\' to forward slashes '/'
-static inline void convert_backslashes(char* str, int64_t len) {
-    ASSERT(str);
-    for (char* c = str; c != str + len; ++c) {
-        if (*c == '\\') *c = '/';
-    }
-}
-
-static inline void convert_to_lower(char* str, int64_t len) {
-    ASSERT(str);
-    for (char* c = str; c != str + len; ++c) {
-        *c = (char)to_lower(*c);
-    }
-}
-
-static inline void convert_to_upper(char* str, int64_t len) {
-    ASSERT(str);
-    for (char* c = str; c != str + len; ++c) {
-        *c = (char)to_upper(*c);
-    }
-}
+// Mutating string operations
+void replace_char(char* str, size_t len, char c, char replacement);
+void convert_to_lower(char* str, size_t len);
+void convert_to_upper(char* str, size_t len);
 
 // Copies the contents of a str_t into a char buffer and ensures zero termination
 // Returns the number of characters written (excluding the zero termination character)
-int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str);
+size_t str_copy_to_char_buf(char* buf, size_t cap, str_t str);
 
 // Returns the Levenshtein edit distance between two strings
 // https://en.wikipedia.org/wiki/Levenshtein_distance

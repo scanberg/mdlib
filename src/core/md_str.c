@@ -12,134 +12,169 @@
 #include <stdio.h>
 
 str_t str_from_cstr(const char* cstr) {
-    str_t str = {cstr, strlen(cstr)};
-    return str;
+    if (cstr) {
+		return (str_t){cstr, strlen(cstr)};
+	}
+    return (str_t){0};
+}
+
+void str_swap(str_t a, str_t b) {
+    str_t tmp = a;
+    a = b;
+    b = tmp;
+}
+
+static inline const char* trim_left(const char* beg, const char* end) {
+    while (beg < end && is_whitespace(*beg)) ++beg;
+	return beg;
+}
+
+static inline const char* trim_right(const char* beg, const char* end) {
+    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
+	return end;
 }
 
 str_t str_trim(str_t str) {
-    const char* beg = str.ptr;
-    const char* end = str.ptr + str.len;
-    while (beg < end && is_whitespace(*beg)) ++beg;
-    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
+    const char* beg = str_beg(str);
+    const char* end = str_end(str);
+    beg = trim_left(beg, end);
+	end = trim_right(beg, end);
     str.ptr = beg;
     str.len = end - beg;
     return str;
 }
 
-bool str_equal(str_t str_a, str_t str_b) {
+str_t str_trim_left(str_t str) {
+    const char* beg = str_beg(str);
+	const char* end = str_end(str);
+	beg = trim_left(beg, end);
+	str.ptr = beg;
+	str.len = end - beg;
+	return str;
+}
+
+str_t str_trim_right(str_t str) {
+    const char* beg = str_beg(str);
+	const char* end = str_end(str);
+	end = trim_right (beg, end);
+	str.ptr = beg;
+	str.len = end - beg;
+	return str;
+}
+
+bool str_eq(str_t str_a, str_t str_b) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if (str_a.len != str_b.len) return false;
-    for (int64_t i = 0; i < str_a.len; ++i) {
+    for (size_t i = 0; i < str_a.len; ++i) {
         if (str_a.ptr[i] != str_b.ptr[i]) return false;
     }
     return true;
 }
 
-bool str_equal_n(str_t str_a, str_t str_b, int64_t n) {
+bool str_eq_n(str_t str_a, str_t str_b, size_t n) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
 
     // str_a & str_b have equal len.
     n = n < str_a.len ? n : str_a.len;
-    for (int64_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i) {
         if (str_a.ptr[i] != str_b.ptr[i]) return false;
     }
     return true;
 }
 
 
-bool str_equal_ignore_case(const str_t str_a, const str_t str_b) {
+bool str_eq_ignore_case(const str_t str_a, const str_t str_b) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if (str_a.len != str_b.len) return false;
-    for (int64_t i = 0; i < str_a.len; ++i) {
+    for (size_t i = 0; i < str_a.len; ++i) {
         if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
     }
     return true;
 }
 
-bool str_equal_n_ignore_case(const str_t str_a, const str_t str_b, int64_t n) {
+bool str_eq_n_ignore_case(const str_t str_a, const str_t str_b, size_t n) {
     if (!str_a.ptr || !str_b.ptr) return false;
 	if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
 
 	// str_a & str_b have equal len.
 	n = n < str_a.len ? n : str_a.len;
-	for (int64_t i = 0; i < n; ++i) {
+	for (size_t i = 0; i < n; ++i) {
     	if (to_lower(str_a.ptr[i]) != to_lower(str_b.ptr[i])) return false;
     }
 	return true;
 }
 
-bool str_equal_cstr(str_t str, const char* cstr) {
+bool str_eq_cstr(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
-    for (int64_t i = 0; i < str.len; ++i) {
+    for (size_t i = 0; i < str.len; ++i) {
         if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
     }
     return cstr[str.len] == '\0';
 }
 
 // Compare str and cstr only up to n characters
-bool str_equal_cstr_n(str_t str, const char* cstr, int64_t n) {
-    if (n < 0) return false;
+bool str_eq_cstr_n(str_t str, const char* cstr, size_t n) {
+    if (!n) return false;
     if (!str.ptr || !str.len || !cstr) return false;
     n = n < str.len ? n : str.len;
-    for (int64_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i) {
         if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
     }
     return true;
 }
 
-bool str_equal_cstr_ignore_case(str_t str, const char* cstr) {
+bool str_eq_cstr_ignore_case(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
-    for (int64_t i = 0; i < str.len; ++i) {
+    for (size_t i = 0; i < str.len; ++i) {
         if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
     }
     return cstr[str.len] == '\0';
 }
 
-bool str_equal_cstr_n_ignore_case(str_t str, const char* cstr, int64_t n) {
-    if (n < 0) return false;
+bool str_eq_cstr_n_ignore_case(str_t str, const char* cstr, size_t n) {
+    if (!n) return false;
     if (!str.ptr || !str.len || !cstr) return false;
     n = n < str.len ? n : str.len;
-    for (int64_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i) {
         if (cstr[i] == '\0' || to_lower(str.ptr[i]) != to_lower(cstr[i])) return false;
     }
     return true;
 }
 
-int64_t str_count_equal_chars(str_t a, str_t b) {
+size_t str_count_equal_chars(str_t a, str_t b) {
     if (!a.ptr || a.len <= 0 || !b.ptr || b.len <= 0) return 0;
-    const int64_t len = MIN(a.len, b.len);
-    int64_t i = 0;
+    const size_t len = MIN(a.len, b.len);
+    size_t i = 0;
     for (; i < len; ++i) {
         if (a.ptr[i] != b.ptr[i]) break;
     }
     return i;
 }
 
-int64_t str_count_occur_char(str_t str, char character) {
+size_t str_count_occur_char(str_t str, char c) {
     if (!str.ptr || str.len <= 0) return 0;
-    int64_t count = 0;
-    for (int64_t i = 0; i < str.len; ++i) {
-        if (str.ptr[i] == character) count += 1;
+    size_t count = 0;
+    for (size_t i = 0; i < str.len; ++i) {
+        if (str.ptr[i] == c) count += 1;
     }
     return count;
 }
 
-str_t str_substr(str_t str, int64_t offset, int64_t length DEF_VAL(-1)) {
-    if (offset < 0 || offset > str.len) {
-        str_t res = {0,0};
-        return res;
+str_t str_substr(str_t str, size_t offset, size_t length) {
+    if (offset > str.len) {
+        return (str_t){0};
     }
-    const int64_t max_len = str.len - offset;
-    length = length < 0 ? max_len : MIN(length, max_len);
+    const size_t max_len = str.len - offset;
+    length = MIN(length, max_len);
 
     str_t res = { str.ptr + offset, length};
     return res;
 }
 
-int str_compare_lex(str_t a, str_t b) {
-    int64_t len = a.len < b.len ? a.len : b.len;
-    for (int64_t i = 0; i < len; ++i) {
+int str_cmp_lex(str_t a, str_t b) {
+    size_t len = a.len < b.len ? a.len : b.len;
+    for (size_t i = 0; i < len; ++i) {
         if (a.ptr[i] < b.ptr[i]) return -1;
         if (a.ptr[i] > b.ptr[i]) return 1;
     }
@@ -197,7 +232,7 @@ bool str_extract_line(str_t* out_line, str_t* in_out_str) {
     return true;
 }
 
-bool str_extract_i32(int* val, str_t* str) {
+bool str_extract_i32(int32_t* val, str_t* str) {
     ASSERT(val);
     ASSERT(str);
 
@@ -249,43 +284,43 @@ bool str_extract_f64(double* val, str_t* str) {
     return true;
 }
 
-int64_t str_find_char(str_t str, int c) {
+bool str_find_char(size_t* loc, str_t str, int c) {
     // @TODO: Implement support for UTF encodings here.
     // Identify the effective width used in c and search for that.
-    for (int64_t i = 0; i < (int64_t)str.len; ++i) {
-        if (str.ptr[i] == c) return i;
+
+    for (size_t i = 0; i < str.len; ++i) {
+        if (str.ptr[i] == c) {
+            if (loc) *loc = i;
+            return true;
+        }
     }
-    return -1;
+    return false;
 }
 
-int64_t str_rfind_char(str_t str, int c) {
-    for (int64_t i = str.len - 1; i >= 0; --i) {
-        if (str.ptr[i] == c) return i;
+bool str_rfind_char(size_t* loc, str_t str, int c) {
+    if (str_empty(str)) return false;
+    for (int64_t i = (int64_t)str.len - 1; i >= 0; --i) {
+        if (str.ptr[i] == c) {
+            if (loc) *loc = (size_t)i;
+            return true;
+        }
     }
-    return -1;
+    return false;
 }
 
-bool str_starts_with(str_t str, str_t prefix) {
-    return str.len >= prefix.len && strncmp(str.ptr, prefix.ptr, prefix.len) == 0;
-}
+bool str_find_str(size_t* loc, str_t haystack, str_t needle) {
+    if (haystack.len == 0) return false;
+    if (needle.len   == 0) return false;
 
-bool str_ends_with(str_t str, str_t suffix) {
-    return str.len >= suffix.len && strncmp(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
-}
-
-int64_t str_find_str(str_t haystack, str_t needle) {
-    const char* h_beg = haystack.ptr;
-    const char* h_end = haystack.ptr + haystack.len;
-    int64_t loc = -1;
-
-    if (haystack.len == 0) return loc;
-    if (needle.len == 0) return loc;
     if (needle.len > haystack.len) {
         MD_LOG_ERROR("Trying to find 'needle' which is larger than supplied 'haystack'");
-        return loc;
+        return false;
     }
 
-    int64_t i = 0;
+    const char* h_beg = haystack.ptr;
+    const char* h_end = haystack.ptr + haystack.len;
+
+    size_t i = 0;
     const char* n_beg = 0;
     for (const char* c = h_beg; c != h_end; ++c) {
         if (*c == needle.ptr[i]) {
@@ -296,12 +331,20 @@ int64_t str_find_str(str_t haystack, str_t needle) {
         }
 
         if (i == needle.len) {
-            loc = n_beg - h_beg;
-            break;
+            if (loc) *loc = n_beg - h_beg;
+            return true;
         }
     }
 
-    return loc;
+    return false;
+}
+
+bool str_starts_with(str_t str, str_t prefix) {
+    return str.len >= prefix.len && strncmp(str.ptr, prefix.ptr, prefix.len) == 0;
+}
+
+bool str_ends_with(str_t str, str_t suffix) {
+    return str.len >= suffix.len && strncmp(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
 }
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
@@ -309,10 +352,10 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     str_t result = {0,0};
     if (file) {
-        int64_t file_size = md_file_size(file);
+        size_t file_size = md_file_size(file);
         char* mem = md_alloc(alloc, file_size + 1);
         if (mem) {
-            int64_t read_size = md_file_read(file, mem, file_size);
+            size_t read_size = md_file_read(file, mem, file_size);
             if (read_size == file_size) {
                 mem[file_size] = '\0'; // Zero terminate as a nice guy
                 result.ptr = mem;
@@ -329,7 +372,7 @@ str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     return result;
 }
 
-str_t str_alloc(uint64_t len, struct md_allocator_i* alloc) {
+str_t str_alloc(size_t len, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char* mem = md_alloc(alloc, len + 1);
     MEMSET(mem, 0, len + 1);
@@ -359,7 +402,7 @@ str_t str_copy_cstr(const char* cstr, md_allocator_i* alloc) {
     ASSERT(alloc);
     str_t result = {0,0};
     if (cstr) {
-        int64_t len = strlen(cstr);
+        size_t len = strlen(cstr);
         char* data = md_alloc(alloc, len + 1);
         data[len] = '\0';
         MEMCPY(data, cstr, len);
@@ -369,7 +412,7 @@ str_t str_copy_cstr(const char* cstr, md_allocator_i* alloc) {
     return result;
 }
 
-str_t str_copy_cstrn(const char* cstr, int64_t len, md_allocator_i* alloc) {
+str_t str_copy_cstrn(const char* cstr, size_t len, md_allocator_i* alloc) {
     ASSERT(alloc);
     str_t result = {0,0};
     if (cstr) {
@@ -382,12 +425,16 @@ str_t str_copy_cstrn(const char* cstr, int64_t len, md_allocator_i* alloc) {
     return result;
 }
 
-str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
+str_t str_printf(struct md_allocator_i* alloc, const char* format, ...) {
     va_list args;
 
     va_start(args, format);
     int64_t len = vsnprintf(NULL, 0, format, args);
     va_end(args);
+
+    if (len <= 0) {
+        return (str_t){0};
+    }
 
     char* buf = md_alloc(alloc, len + 1);
 
@@ -399,67 +446,88 @@ str_t alloc_printf(struct md_allocator_i* alloc, const char* format, ...) {
 }
 
 // c:/folder/file.ext -> ext
-str_t extract_ext(str_t path) {
-    int64_t pos = str_rfind_char(path, '.');
-
-    str_t res = {0,0};
-    if (pos > -1) {
-        pos += 1; // skip '.'
-        res.ptr = path.ptr + pos;
-        res.len = path.len - pos;
+bool extract_ext(str_t* ext, str_t path) {
+    size_t loc;
+    if (str_rfind_char(&loc, path, '.')) {
+        if (ext) {
+            loc += 1; // skip '.'
+            ext->ptr = path.ptr + loc;
+            ext->len = path.len - loc;
+        }
+        return true;
     }
-    return res;
+    return false;
 }
 
 // c:/folder/file.ext -> file.ext
-str_t extract_file(str_t path) {
-    int64_t pos = str_rfind_char(path, '/');
-    if (pos == -1) {
-        pos = str_rfind_char(path, '\\');
+bool extract_file(str_t* file, str_t path) {
+    size_t loc;
+    if (!str_rfind_char(&loc, path, '/') && !str_rfind_char(&loc, path, '\\')) {
+        return false;
     }
 
-    str_t res = {0,0};
-    if (pos != -1) {
-        pos += 1; // skip slash or backslash
-        res.ptr = path.ptr + pos;
-        res.len = path.len - pos;
+    if (file) {
+        loc += 1; // skip slash or backslash
+        file->ptr = path.ptr + loc;
+        file->len = path.len - loc;
     }
-    return res;
+    return true;
 }
 
+# if 0
 // c:/folder/file.ext -> c:/folder/file.
 str_t extract_path_without_ext(str_t path) {
-    const int64_t pos = str_rfind_char(path, '.');
+    size_t loc;
+    if (str_rfind_char(&loc, path, '.')) {
 
-    str_t res = {0,0};
-    if (pos) {
         res.ptr = path.ptr;
         res.len = pos;
     }
     return res;
 }
+#endif
 
 // c:/folder/file.ext -> c:/folder/
-str_t extract_path_without_file(str_t path) {
-    int64_t pos = str_rfind_char(path, '/');
-    if (pos == -1) {
-        pos = str_rfind_char(path, '\\');
+bool extract_folder_path(str_t* folder_path, str_t path) {
+    size_t loc;
+    if (!str_rfind_char(&loc, path, '/') && !str_rfind_char(&loc, path, '\\')) {
+        return false;
     }
 
-    str_t res = {0};
-    if (pos != -1) {
-        res.ptr = path.ptr;
-        res.len = pos+1;    // include '/' or '\'
+    if (folder_path) {
+        folder_path->ptr = path.ptr;
+        folder_path->len = loc+1;    // include '/' or '\'
     }
-    return res;
+    return true;
 }
 
-int64_t str_copy_to_char_buf(char* buf, int64_t cap, str_t str) {
+void replace_char(char* str, size_t len, char target, char replacement) {
+    if (!str) return;
+	for (char* c = str; c != str + len; ++c) {
+    	if (*c == target) *c = replacement;
+    }
+}
+
+void convert_to_lower(char* str, size_t len) {
+    ASSERT(str);
+    for (char* c = str; c != str + len; ++c) {
+        *c = (char)to_lower(*c);
+    }
+}
+
+void convert_to_upper(char* str, size_t len) {
+    ASSERT(str);
+    for (char* c = str; c != str + len; ++c) {
+        *c = (char)to_upper(*c);
+    }
+}
+
+size_t str_copy_to_char_buf(char* buf, size_t cap, str_t str) {
     ASSERT(buf);
     if (cap == 0) return 0;
     if (str_empty(str)) return 0;
-    const int64_t len = CLAMP(str.len, 0, cap - 1);
-    MEMCPY(buf, str.ptr, (uint64_t)len);
+    const size_t len = CLAMP(str.len, 0, cap - 1);
+    MEMCPY(buf, str.ptr, len);
     buf[len] = '\0';
     return len;
 }

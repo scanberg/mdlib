@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 
 // This is a non feature complete parser for SMILES strings
 // It does not resolve the implicit hydrogens, nor does it resolve the aromaticity
@@ -56,7 +57,7 @@ extern "C" {
 // Returns the number of nodes parsed
 // The nodes array must be large enough to hold the parsed nodes
 // The upper bound of dst nodes can be estimated as the length of the input string
-int64_t md_smiles_parse(md_smiles_node_t* out_node_arr, int64_t in_node_cap, const char* in_str_ptr, int64_t in_str_len);
+size_t md_smiles_parse(md_smiles_node_t* out_node_arr, size_t in_node_cap, const char* in_str_ptr, size_t in_str_len);
 
 #ifdef __cplusplus
 }

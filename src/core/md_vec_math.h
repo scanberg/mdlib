@@ -43,8 +43,8 @@ typedef struct vec2_t {
         float elem[2];
     };
 #ifdef __cplusplus
-    float& operator[](int64_t i)       { return elem[i]; }
-    const float& operator[](int64_t i) const { return elem[i]; }
+    float& operator[](size_t i)       { return elem[i]; }
+    const float& operator[](size_t i) const { return elem[i]; }
 #endif
 } vec2_t;
 
@@ -56,8 +56,8 @@ typedef struct vec3_t {
         float elem[3];
     };
 #ifdef __cplusplus
-    float& operator[](int64_t i)       { return elem[i]; }
-    const float& operator[](int64_t i) const { return elem[i]; }
+    float& operator[](size_t i)       { return elem[i]; }
+    const float& operator[](size_t i) const { return elem[i]; }
 #endif
 } vec3_t;
 
@@ -72,8 +72,8 @@ typedef struct vec4_t {
 #endif
     };
 #ifdef __cplusplus
-    float& operator[](int64_t i)       { return elem[i]; }
-    const float& operator[](int64_t i) const { return elem[i]; }
+    float& operator[](size_t i)       { return elem[i]; }
+    const float& operator[](size_t i) const { return elem[i]; }
 #endif
 } vec4_t;
 
@@ -88,8 +88,8 @@ typedef struct quat_t {
 #endif
     };
 #ifdef __cplusplus
-        float& operator[](int64_t i)       { return elem[i]; }
-        const float& operator[](int64_t i) const { return elem[i]; }
+        float& operator[](size_t i)       { return elem[i]; }
+        const float& operator[](size_t i) const { return elem[i]; }
 #endif
 } quat_t;
 
@@ -99,8 +99,8 @@ typedef struct mat2_t {
         vec2_t col[2];
     };
 #ifdef __cplusplus
-    vec2_t& operator[](int64_t i)       { return col[i]; }
-    const vec2_t& operator[](int64_t i) const { return col[i]; }
+    vec2_t& operator[](size_t i)       { return col[i]; }
+    const vec2_t& operator[](size_t i) const { return col[i]; }
 #endif
 } mat2_t;
 
@@ -110,8 +110,8 @@ typedef struct mat3_t {
         vec3_t col[3];
     };
 #ifdef __cplusplus
-    vec3_t& operator[](int64_t i)       { return col[i]; }
-    const vec3_t& operator[](int64_t i) const { return col[i]; }
+    vec3_t& operator[](size_t i)       { return col[i]; }
+    const vec3_t& operator[](size_t i) const { return col[i]; }
 #endif
 } mat3_t;
 
@@ -121,10 +121,21 @@ typedef struct mat4_t {
         vec4_t col[4];
     };
 #ifdef __cplusplus
-    vec4_t& operator[](int64_t i)       { return col[i]; }
-    const vec4_t& operator[](int64_t i) const { return col[i]; }
+    vec4_t& operator[](size_t i)       { return col[i]; }
+    const vec4_t& operator[](size_t i) const { return col[i]; }
 #endif
 } mat4_t;
+
+typedef struct mat4x3_t {
+	union {
+		float elem[3][4];
+		vec4_t col[3];
+	};
+    #ifdef __cplusplus
+	vec4_t& operator[](size_t i)       { return col[i]; }
+    const vec4_t& operator[](size_t i) const { return col[i]; }
+    #endif
+} mat4x3_t;
 
 #if MD_COMPILER_CLANG
 #	pragma clang diagnostic pop
@@ -952,6 +963,11 @@ MD_VEC_INLINE void vec4_sincos(vec4_t x, vec4_t* s, vec4_t* c) {
 #endif
 }
 
+MD_VEC_INLINE quat_t quat_ident() {
+	quat_t q = {0, 0, 0, 1};
+	return q;
+}
+
 // quat
 MD_VEC_INLINE float quat_dot(quat_t a, quat_t b) {
     const float x = a.x * b.x + a.y * b.y;
@@ -1084,14 +1100,23 @@ static inline quat_t quat_from_mat4(mat4_t M) {
 }
 
 #if MD_VEC_MATH_USE_SIMD
-MD_VEC_INLINE md_128 linear_combine_sse(md_128 a, mat4_t B) {
+MD_VEC_INLINE md_128 linear_combine_4(md_128 a, md_128 B[4]) {
     md_128 res;
-    res = md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x00), B.col[0].m128);
-    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x55), B.col[1].m128));
-    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xaa), B.col[2].m128));
-    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xff), B.col[3].m128));
+    res = md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x00), B[0]);
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x55), B[1]));
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xaa), B[2]));
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xff), B[3]));
     return res;
 }
+
+MD_VEC_INLINE md_128 linear_combine_3(md_128 a, md_128 B[3]) {
+    md_128 res;
+    res = md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x00), B[0]);
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0x55), B[1]));
+    res = md_mm_add_ps(res, md_mm_mul_ps(md_mm_shuffle_ps(a, a, 0xaa), B[2]));
+    return res;
+}
+
 #endif
 
 // MAT2
@@ -1288,8 +1313,8 @@ mat3_t       mat3_extract_rotation(mat3_t M);
 // indices:     indices of the coordinates to use (optional)
 // com:         center of mass
 // count:       number of coordinates or indices
-mat3_t mat3_covariance_matrix(const float* x, const float* y, const float* z, const float* w, const int32_t* indices, vec3_t com, int64_t count);
-mat3_t mat3_covariance_matrix_vec4(const vec4_t* xyzw, const int32_t* indices, vec3_t com, int64_t count);
+mat3_t mat3_covariance_matrix(const float* x, const float* y, const float* z, const float* w, const int32_t* indices, vec3_t com, size_t count);
+mat3_t mat3_covariance_matrix_vec4(const vec4_t* xyzw, const int32_t* indices, vec3_t com, size_t count);
 
 // Computes the cross covariance matrix for two set of coordinates with given center of mass.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.
@@ -1299,7 +1324,7 @@ mat3_t mat3_cross_covariance_matrix(
     const float* w,
     vec3_t com0,
     vec3_t com1,
-    int64_t count);
+    size_t count);
 
 // Compute the cross covariance matrix for two set of coordinates with given center of mass.
 mat3_t mat3_cross_covariance_matrix_vec4(
@@ -1307,7 +1332,7 @@ mat3_t mat3_cross_covariance_matrix_vec4(
 	const vec4_t* xyzw1,
 	vec3_t com0,
 	vec3_t com1,
-	int64_t count);
+	size_t count);
 
 // Computes the optimal rotation matrix that minimizes the RMSD between two sets of coordinates.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.
@@ -1317,7 +1342,7 @@ mat3_t mat3_optimal_rotation(
     const float* weight,
     vec3_t com0,
     vec3_t com1,
-    int64_t count);
+    size_t count);
 
 // Computes the optimal rotation matrix that minimizes the RMSD between two sets of coordinates.
 mat3_t mat3_optimal_rotation_vec4(
@@ -1325,7 +1350,7 @@ mat3_t mat3_optimal_rotation_vec4(
 	const vec4_t* xyzw1,
 	vec3_t com0,
 	vec3_t com1,
-	int64_t count);
+	size_t count);
 
 // MAT4
 MD_VEC_INLINE mat4_t mat4_ident() {
@@ -1428,10 +1453,10 @@ MD_VEC_INLINE mat4_t mat4_sub(mat4_t A, mat4_t B) {
 MD_VEC_INLINE mat4_t mat4_mul(mat4_t A, mat4_t B) {
     mat4_t C;
 #if MD_VEC_MATH_USE_SIMD
-    C.col[0].m128 = linear_combine_sse(B.col[0].m128, A);
-    C.col[1].m128 = linear_combine_sse(B.col[1].m128, A);
-    C.col[2].m128 = linear_combine_sse(B.col[2].m128, A);
-    C.col[3].m128 = linear_combine_sse(B.col[3].m128, A);
+    C.col[0].m128 = linear_combine_4(B.col[0].m128, &A.col[0].m128);
+    C.col[1].m128 = linear_combine_4(B.col[1].m128, &A.col[0].m128);
+    C.col[2].m128 = linear_combine_4(B.col[2].m128, &A.col[0].m128);
+    C.col[3].m128 = linear_combine_4(B.col[3].m128, &A.col[0].m128);
 #else
 #define MULT(col, row) \
     A.elem[0][row] * B.elem[col][0] + A.elem[1][row] * B.elem[col][1] + A.elem[2][row] * B.elem[col][2] + A.elem[3][row] * B.elem[col][3]
@@ -1462,7 +1487,7 @@ MD_VEC_INLINE mat4_t mat4_mul(mat4_t A, mat4_t B) {
 MD_VEC_INLINE vec4_t mat4_mul_vec4(mat4_t M, vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.m128 = linear_combine_sse(v.m128, M);
+    r.m128 = linear_combine_4(v.m128, &M.col[0].m128);
 #else
     r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z + M.elem[3][0] * v.w;
     r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z + M.elem[3][1] * v.w;
@@ -1546,27 +1571,30 @@ MD_VEC_INLINE bool mat4_equal(mat4_t A, mat4_t B) {
     return vec4_equal(A.col[0], B.col[0]) && vec4_equal(A.col[1], B.col[1]) && vec4_equal(A.col[2], B.col[2]) && vec4_equal(A.col[3], B.col[3]);
 }
 
-static inline vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t viewport) {
-    vec4_t tmp = vec4_from_vec3(window_coords, 1.f);
-    tmp.x = (tmp.x - viewport.elem[0]) / viewport.elem[2];
-    tmp.y = (tmp.y - viewport.elem[1]) / viewport.elem[3];
-    tmp = vec4_sub_f(vec4_mul_f(tmp, 2.f), 1.f);
+vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t viewport);
 
-    vec4_t obj = mat4_mul_vec4(inv_view_proj_mat, tmp);
-    obj = vec4_div_f(obj, obj.w);
+mat4_t mat4_look_at(vec3_t eye, vec3_t center, vec3_t up);
 
-    return vec3_from_vec4(obj);
-}
+mat4_t mat4_ortho(float left, float right, float bottom, float top, float near, float far);
+mat4_t mat4_ortho_inv(float left, float right, float bottom, float top, float near, float far);
+mat4_t mat4_ortho_2d(float left, float right, float bottom, float top);
+mat4_t mat4_ortho_2d_inv(float left, float right, float bottom, float top);
+
+mat4_t mat4_persp(float fovy, float aspect, float near, float far);
+mat4_t mat4_persp_inv(float fovy, float aspect, float near, float far);
+
+mat4_t mat4_frustum(float left, float right, float bottom, float top, float near, float far);
+mat4_t mat4_frustum_inv(float left, float right, float bottom, float top, float near, float far);
 
 // These are routines for performing the same operation on many items
-void vec3_batch_translate_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, int64_t count, vec3_t translation);
-void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation);
+void vec3_batch_translate_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, size_t count, vec3_t translation);
+void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, size_t count, vec3_t translation);
 
-void mat3_batch_transform_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, int64_t count, mat3_t transform);
-void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, mat3_t transform);
+void mat3_batch_transform_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, size_t count, mat3_t transform);
+void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, size_t count, mat3_t transform);
 
-void mat4_batch_transform_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, float w_comp, int64_t count, mat4_t transform);
-void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t transform);
+void mat4_batch_transform_inplace(float* RESTRICT x, float* RESTRICT y, float* RESTRICT z, float w_comp, size_t count, mat4_t transform);
+void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, size_t count, mat4_t transform);
 
 #ifdef __cplusplus
 }

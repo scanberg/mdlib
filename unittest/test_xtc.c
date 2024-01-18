@@ -10,7 +10,7 @@
 #include <core/md_os.h>
 
 UTEST(xtc, trajectory_i) {
-    const str_t path = STR(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
+    const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
     md_trajectory_i* traj = md_xtc_trajectory_create(path, md_heap_allocator);
     ASSERT_TRUE(traj);
 

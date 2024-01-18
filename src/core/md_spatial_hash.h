@@ -9,14 +9,11 @@
  *  This is an attempt of a spatial hashing structure intended for accelerated spatial queries.
  *  It makes some assumptions as it is not intended to be a general purpose spatial hash:
  *  - Only 3-dimensions (You could surely use it for 2D and 1D, but it would still do some redundant work)
- *  - Each cell can only hold up to 1023 entries, this is because the offset and length is packed into a single 32-bit integer.
- *      This implies the input data has a certain spatial distribution and the cell size is not too small.
- *  - The internal coordinates are compressed as 3x10-bit integers, which means there is some loss in precision. (Could change over time)
  *  - The cell size is currently fixed for simplicity. Could certainly change over time.
  *  - Internally works for periodic data as well as non-periodic
  * 
  *  Things to improve:
- *  Simlify implementation. The current version of using fixed cell size makes it a bit more complicated in the periodic case than it needs to be.
+ *  Simplify implementation. The current version of using fixed cell size makes it a bit more complicated in the periodic case than it needs to be.
  *  Query should be handled with an external state object which can be used to iterate. The current callback is just cumersome and fugly.
  *  There should be an init function which should accept x,y,z + indices and xyz + indices
  * 
@@ -95,8 +92,8 @@ static inline vec3_t md_spatial_acc_iter_pos(const md_spatial_acc_iter_t* iter) 
 
 // Initialize a spatial hash structure with a set of coordinates given by array of vec3_t (xyz) or separate arrays (x,y,z).
 // pbc_ext is optional and supplies the periodic extent for each axis. To disable periodicity, supply (0,0,0).
-md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* xyz, const int32_t* indices, int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
-md_spatial_hash_t* md_spatial_hash_create_soa (const float* x, const float* y, const float* z, const int32_t* indices, int64_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], size_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_soa (const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
 
 void md_spatial_hash_free(md_spatial_hash_t* spatial_hash);
 
@@ -108,7 +105,7 @@ void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t p
 
 // Get a list of indices which fall within the search space (pos + radius)
 // Writes directly to the supplied buffer and will return the number of indices written.
-int64_t md_spatial_hash_query_idx(int32_t* buf_idx, int64_t buf_cap, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius);
+size_t  md_spatial_hash_query_idx(int32_t* buf_idx, size_t buf_cap, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius);
 void    md_spatial_hash_query_bits(struct md_bitfield_t* bf, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius);
 
 #ifdef __cplusplus

@@ -30,19 +30,19 @@ UTEST_F_SETUP(util) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     utest_fixture->alloc = alloc;
 
-    md_pdb_molecule_api()->init_from_file(&utest_fixture->mol_ala, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc);
-    md_util_postprocess_molecule(&utest_fixture->mol_ala, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_pdb_molecule_api()->init_from_file(&utest_fixture->mol_ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc);
+    md_util_molecule_postprocess(&utest_fixture->mol_ala, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_pftaa, STR(MD_UNITTEST_DATA_DIR "/pftaa.gro"), alloc);
-    md_util_postprocess_molecule(&utest_fixture->mol_pftaa, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_pftaa, STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro"), NULL, alloc);
+    md_util_molecule_postprocess(&utest_fixture->mol_pftaa, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_nucleotides, STR(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), alloc);
-    md_util_postprocess_molecule(&utest_fixture->mol_nucleotides, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_nucleotides, STR_LIT(MD_UNITTEST_DATA_DIR "/nucleotides.gro"), NULL, alloc);
+    md_util_molecule_postprocess(&utest_fixture->mol_nucleotides, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_centered, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc);
-    md_util_postprocess_molecule(&utest_fixture->mol_centered, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_gro_molecule_api()->init_from_file(&utest_fixture->mol_centered, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc);
+    md_util_molecule_postprocess(&utest_fixture->mol_centered, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    utest_fixture->traj_ala = md_pdb_trajectory_create(STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc);
+    utest_fixture->traj_ala = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc);
 }
 
 UTEST_F_TEARDOWN(util) {
@@ -61,15 +61,35 @@ UTEST_F(util, chain) {
 	EXPECT_EQ(0,   utest_fixture->mol_pftaa.chain.count);
 	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.chain.count);
 	EXPECT_EQ(253, utest_fixture->mol_centered.chain.count);
+
+    const md_molecule_t* mol = &utest_fixture->mol_centered;
+    if (mol->chain.count == 0) return;
+
+    size_t ref_size = md_chain_atom_count(mol->chain, 0);
+    for (size_t i = 1; i < mol->chain.count; ++i) {
+        size_t size = md_chain_atom_count(mol->chain, i);
+        EXPECT_EQ(ref_size, size);
+    }
 }
 
 UTEST_F(util, backbone) {
-	EXPECT_EQ(0,   utest_fixture->mol_pftaa.backbone.range_count);
-	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.backbone.range_count);
-    EXPECT_EQ(1,   utest_fixture->mol_ala.backbone.range_count);
+	EXPECT_EQ(0,   utest_fixture->mol_pftaa.backbone.range.count);
+	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.backbone.range.count);
+    EXPECT_EQ(1,   utest_fixture->mol_ala.backbone.range.count);
     EXPECT_EQ(15,  utest_fixture->mol_ala.backbone.count);
-	EXPECT_EQ(253, utest_fixture->mol_centered.backbone.range_count);
+	EXPECT_EQ(253, utest_fixture->mol_centered.backbone.range.count);
     EXPECT_EQ(10626, utest_fixture->mol_centered.backbone.count); // Should be equal to the total count of residues in chains
+}
+
+UTEST_F(util, structure) {
+    size_t num_structures_pftaa = md_index_data_count(utest_fixture->mol_pftaa.structures);
+    EXPECT_EQ(1, num_structures_pftaa);
+    size_t num_structures_nucleotides = md_index_data_count(utest_fixture->mol_nucleotides.structures);
+    EXPECT_EQ(2, num_structures_nucleotides);
+    size_t num_structures_ala = md_index_data_count(utest_fixture->mol_ala.structures);
+	EXPECT_EQ(1, num_structures_ala);
+	size_t num_structures_centered = md_index_data_count(utest_fixture->mol_centered.structures);
+	EXPECT_EQ(253+61, num_structures_centered);
 }
 
 UTEST_F(util, rmsd) {
@@ -82,33 +102,35 @@ UTEST_F(util, rmsd) {
     const int64_t stride = mol->atom.count;
     const int64_t mem_size = stride * 6 * sizeof(float) + stride * 6 * sizeof(double);
     float* mem = md_alloc(alloc, mem_size);
-    md_vec3_soa_t coord[2] = {
-        {
-            mem + stride * 0,
-            mem + stride * 1,
-            mem + stride * 2,
-        },
-        {
-            mem + stride * 3,
-            mem + stride * 4,
-            mem + stride * 5,
-        },
+    float* x[2] = {
+        mem + stride * 0,
+        mem + stride * 1,
     };
+    float* y[2] = {
+        mem + stride * 2,
+        mem + stride * 3,
+    };
+    float* z[2] = {
+        mem + stride * 4,
+        mem + stride * 5,
+    };
+
+    const float* w = mol->atom.mass;
 
     double* xyz0 = (double*)(mem + stride * 6);
     double* xyz1 = (double*)(mem + stride * 6) + stride * 3;
 
-    md_trajectory_load_frame(traj, 0, NULL, coord[0].x, coord[0].y, coord[0].z);
-    md_trajectory_load_frame(traj, 1, NULL, coord[1].x, coord[1].y, coord[1].z);
+    md_trajectory_load_frame(traj, 0, NULL, x[0], y[0], z[0]);
+    md_trajectory_load_frame(traj, 1, NULL, x[1], y[1], z[1]);
 
     for (int64_t i = 0; i < mol->atom.count; ++i) {
-        xyz0[i * 3 + 0] = coord[0].x[i];
-        xyz0[i * 3 + 1] = coord[0].y[i];
-        xyz0[i * 3 + 2] = coord[0].z[i];
+        xyz0[i * 3 + 0] = x[0][i];
+        xyz0[i * 3 + 1] = y[0][i];
+        xyz0[i * 3 + 2] = z[0][i];
 
-        xyz1[i * 3 + 0] = coord[1].x[i];
-        xyz1[i * 3 + 1] = coord[1].y[i];
-        xyz1[i * 3 + 2] = coord[1].z[i];
+        xyz1[i * 3 + 0] = x[1][i];
+        xyz1[i * 3 + 1] = y[1][i];
+        xyz1[i * 3 + 2] = z[1][i];
     }
 
     // Reference
@@ -117,10 +139,10 @@ UTEST_F(util, rmsd) {
 
     // Our implementation
     vec3_t com[2] = {
-        md_util_compute_com(coord[0].x, coord[0].y, coord[0].z, mol->atom.mass, 0, mol->atom.count),
-        md_util_compute_com(coord[1].x, coord[1].y, coord[1].z, mol->atom.mass, 0, mol->atom.count),
+        md_util_com_compute(x[0], y[0], z[0], w, 0, mol->atom.count, 0),
+        md_util_com_compute(x[1], y[1], z[1], w, 0, mol->atom.count, 0),
     };
-    double rmsd = md_util_compute_rmsd(coord, com, mol->atom.mass, mol->atom.count);
+    double rmsd = md_util_rmsd_compute(x, y, z, w, mol->atom.count, com);
     
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
@@ -137,6 +159,8 @@ UTEST(util, com) {
         In this case, we have settled on the trigonometric approach presented in:
         Bai, Linge, and David Breen. "Calculating center of mass in an unbounded 2D environment." Journal of Graphics Tools 13.4 (2008): 53-60.
     */
+    vec3_t pbc_ext = {5,0,0};
+    md_unit_cell_t unit_cell = md_util_unit_cell_from_extent(5,0,0);
     {
         const vec4_t xyzw[] = {
             {1,0,0,1},
@@ -144,9 +168,8 @@ UTEST(util, com) {
             {3,0,0,1},
             {4,0,0,1},
         };
-        const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_vec4_ortho(xyzw, 0, ARRAY_SIZE(xyzw), pbc_ext);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -157,9 +180,8 @@ UTEST(util, com) {
             {0,0,0,1},
             {5,0,0,1},
         };
-        const vec3_t pbc_ext = { 5,0,0 };
 
-        vec3_t com = md_util_compute_com_vec4_ortho(xyzw, 0, ARRAY_SIZE(xyzw), pbc_ext);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
 		com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -171,7 +193,6 @@ UTEST(util, com) {
             {0,0,0,1},
             {4,0,0,1},
         };
-        const vec3_t pbc_ext = { 5,0,0 };
 
         /*
         Here we expect the 4 to wrap around to -1,
@@ -179,7 +200,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        vec3_t com = md_util_compute_com_vec4_ortho(xyzw, 0, ARRAY_SIZE(xyzw), pbc_ext);
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
         com = vec3_deperiodize(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -210,9 +231,9 @@ UTEST(util, com) {
             {2 ,0, 0, 1},
         };
 
-        vec3_t com0 = md_util_compute_com_vec4_ortho(pos0, 0, ARRAY_SIZE(pos0), pbc_ext);
-        vec3_t com1 = md_util_compute_com_vec4_ortho(pos1, 0, ARRAY_SIZE(pos1), pbc_ext);
-        vec3_t com2 = md_util_compute_com_vec4_ortho(pos2, 0, ARRAY_SIZE(pos2), pbc_ext);
+        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, ARRAY_SIZE(pos0), &unit_cell);
+        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, ARRAY_SIZE(pos1), &unit_cell);
+        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, ARRAY_SIZE(pos2), &unit_cell);
 
         com0 = vec3_deperiodize(com0, (vec3_t){ 0,0,0 }, pbc_ext);
         com1 = vec3_deperiodize(com1, (vec3_t){ 0,0,0 }, pbc_ext);
@@ -260,8 +281,8 @@ UTEST_F(util, rings_common) {
 UTEST(util, rings_c60) {
 	md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
 	md_molecule_t mol = {0};
-	md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/c60.pdb"), alloc);
-	md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+	md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/c60.pdb"), NULL, alloc);
+	md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
 	EXPECT_EQ(mol.atom.count, 60);
 	EXPECT_EQ(mol.bond.count, 90);
@@ -278,8 +299,8 @@ UTEST(util, rings_c60) {
 UTEST(util, rings_14kr) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), alloc);
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1k4r.pdb"), NULL, alloc);
+    md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
     EXPECT_EQ(num_rings, 207);
@@ -290,8 +311,8 @@ UTEST(util, rings_14kr) {
 UTEST(util, rings_trytophan_pdb) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), alloc);
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.pdb"), NULL, alloc);
+    md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
     EXPECT_EQ(num_rings, 2);
@@ -305,8 +326,8 @@ UTEST(util, rings_trytophan_pdb) {
 UTEST(util, rings_trytophan_xyz) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_xyz_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), alloc);
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan.xyz"), NULL, alloc);
+    md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
     EXPECT_EQ(num_rings, 2);
@@ -320,8 +341,8 @@ UTEST(util, rings_trytophan_xyz) {
 UTEST(util, rings_full) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_xyz_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/full.xyz"), alloc);
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_xyz_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/full.xyz"), NULL, alloc);
+    md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
     EXPECT_EQ(num_rings, 195);
@@ -335,8 +356,8 @@ UTEST(util, rings_full) {
 UTEST(util, rings_ciprofloxacin) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
     md_molecule_t mol = {0};
-    md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), alloc);
-    md_util_postprocess_molecule(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/ciprofloxacin.pdb"), NULL, alloc);
+    md_util_molecule_postprocess(&mol, alloc, MD_UTIL_POSTPROCESS_ALL);
 
     const int64_t num_rings = md_index_data_count(mol.rings);
     ASSERT_EQ(num_rings, 4);
@@ -381,7 +402,7 @@ UTEST_F(util, structure_matching_amyloid) {
         // Test for the PFTAAs
         const int ref_structure_idx = 253;
         const int* ref_idx = md_index_range_beg(mol->structures, ref_structure_idx);
-        const int64_t ref_size = md_index_range_size(mol->structures, ref_structure_idx);
+        const size_t ref_size = md_index_range_size(mol->structures, ref_structure_idx);
 
         md_timestamp_t t0 = md_time_current();
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);

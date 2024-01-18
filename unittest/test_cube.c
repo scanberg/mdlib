@@ -5,7 +5,7 @@
 
 UTEST(cube, read_benzene) {
 	md_cube_t cube = {0};
-	bool result = md_cube_file_load(&cube, STR(MD_UNITTEST_DATA_DIR "/benzene-pot.cube"), md_heap_allocator);
+	bool result = md_cube_file_load(&cube, STR_LIT(MD_UNITTEST_DATA_DIR "/benzene-pot.cube"), md_heap_allocator);
 	ASSERT_TRUE(result);
 
 	EXPECT_NEAR(-9.053142, cube.origin[0], 1e-5);
@@ -39,7 +39,7 @@ UTEST(cube, read_benzene) {
 
 UTEST(cube, read_A2B2) {
 	md_cube_t cube = {0};
-	bool result = md_cube_file_load(&cube, STR(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube"), md_heap_allocator);
+	bool result = md_cube_file_load(&cube, STR_LIT(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube"), md_heap_allocator);
 	ASSERT_TRUE(result);
 
 	EXPECT_NEAR(-16.311785, cube.origin[0], 1e-5);
@@ -81,7 +81,7 @@ static bool cmp_cube_v3(md_cube_v3 a, md_cube_v3 b) {
 
 UTEST(cube, serialize_deserialize) {
 	md_cube_t cube_a = {0};
-	str_t path = STR(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube");
+	str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube");
 	ASSERT_TRUE(md_cube_file_load(&cube_a, path, md_heap_allocator));
 	
 	str_t str = md_cube_serialize(&cube_a, md_heap_allocator);

@@ -78,7 +78,7 @@ bool md_unit_convert_inplace_f(float*  values, int64_t num_values, md_unit_t cur
 //void unit_convert_f(float* dst_values, const float* src_values, int64_t num_values, md_unit_t* dst_unit, md_unit_t src_unit, md_unit_base_t new_base);
 
 // Print a unit into a supplied buffer
-int md_unit_print(char* buf, int cap, md_unit_t unit);
+size_t md_unit_print(char* buf, size_t cap, md_unit_t unit);
 
 // Write unit to a string allocated by supplied allocator
 str_t md_unit_to_string(md_unit_t unit, struct md_allocator_i* alloc);

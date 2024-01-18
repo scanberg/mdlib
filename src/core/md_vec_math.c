@@ -42,9 +42,9 @@ mat3_eigen_t mat3_eigen(mat3_t M) {
     return res;
 }
 
-mat3_t mat3_covariance_matrix( const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, vec3_t com, int64_t count) {
+mat3_t mat3_covariance_matrix( const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, vec3_t com, size_t count) {
     mat3_t A = {0};
-    for (int64_t i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         const int64_t idx = indices ? indices[i] : i;
         const float x = in_x[idx] - com.x;
         const float y = in_y[idx] - com.y;
@@ -65,9 +65,9 @@ mat3_t mat3_covariance_matrix( const float* in_x, const float* in_y, const float
     return A;
 }
 
-mat3_t mat3_covariance_matrix_vec4(const vec4_t* in_xyzw, const int32_t* indices, vec3_t com, int64_t count) {
+mat3_t mat3_covariance_matrix_vec4(const vec4_t* in_xyzw, const int32_t* indices, vec3_t com, size_t count) {
     mat3_t A = {0};
-    for (int64_t i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         const int64_t idx = indices ? indices[i] : i;
         const float x = in_xyzw[idx].x - com.x;
         const float y = in_xyzw[idx].y - com.y;
@@ -94,12 +94,12 @@ mat3_t mat3_cross_covariance_matrix(
     const float* in_w,
     vec3_t com0,
     vec3_t com1,
-    int64_t count) {
+    size_t count) {
 
     mat3_t A = {0};
 
     if (in_w) {
-        for (int64_t i = 0; i < count; i++) {
+        for (size_t i = 0; i < count; i++) {
             const float px = in_x0[i] - com0.x;
             const float py = in_y0[i] - com0.y;
             const float pz = in_z0[i] - com0.z;
@@ -121,7 +121,7 @@ mat3_t mat3_cross_covariance_matrix(
             A.elem[2][2] += w * pz * qz;
         }
     } else {
-        for (int64_t i = 0; i < count; i++) {
+        for (size_t i = 0; i < count; i++) {
             const float px = in_x0[i] - com0.x;
             const float py = in_y0[i] - com0.y;
             const float pz = in_z0[i] - com0.z;
@@ -145,10 +145,10 @@ mat3_t mat3_cross_covariance_matrix(
     return A;
 }
 
-mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* in_xyzw0, const vec4_t* in_xyzw1, vec3_t com0, vec3_t com1, int64_t count) {
+mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* in_xyzw0, const vec4_t* in_xyzw1, vec3_t com0, vec3_t com1, size_t count) {
     mat3_t A = {0};
 
-    for (int64_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         const float px = in_xyzw0[i].x - com0.x;
         const float py = in_xyzw0[i].y - com0.y;
         const float pz = in_xyzw0[i].z - com0.z;
@@ -194,7 +194,7 @@ mat3_t mat3_optimal_rotation(
     const float* weight,
     vec3_t com0,
     vec3_t com1,
-    int64_t count) {
+    size_t count) {
     
     if (count < 1) {
         return mat3_ident();
@@ -204,7 +204,7 @@ mat3_t mat3_optimal_rotation(
     return mat3_extract_rotation(cov_mat);
 }
 
-mat3_t mat3_optimal_rotation_vec4(const vec4_t* xyzw0, const vec4_t* xyzw1, vec3_t com0, vec3_t com1, int64_t count) {
+mat3_t mat3_optimal_rotation_vec4(const vec4_t* xyzw0, const vec4_t* xyzw1, vec3_t com0, vec3_t com1, size_t count) {
     if (count < 1) {
 		return mat3_ident();
 	}
@@ -270,11 +270,127 @@ mat4_t mat4_inverse(mat4_t M) {
     return mat4_mul_f(I, 1.0f / (dot0.x + dot0.y + dot0.z + dot0.w));
 }
 
+vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t viewport) {
+    vec4_t tmp = vec4_from_vec3(window_coords, 1.f);
+    tmp.x = (tmp.x - viewport.elem[0]) / viewport.elem[2];
+    tmp.y = (tmp.y - viewport.elem[1]) / viewport.elem[3];
+    tmp = vec4_sub_f(vec4_mul_f(tmp, 2.f), 1.f);
 
-void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, int64_t count, vec3_t translation) {
-    int64_t i = 0;
+    vec4_t obj = mat4_mul_vec4(inv_view_proj_mat, tmp);
+    obj = vec4_div_f(obj, obj.w);
 
-    const int64_t simd_count = ROUND_DOWN(count, 8);
+    return vec3_from_vec4(obj);
+}
+
+mat4_t mat4_look_at(vec3_t look_from, vec3_t look_at, vec3_t look_up) {
+    const vec3_t f = vec3_normalize(vec3_sub(look_at, look_from));
+    const vec3_t s = vec3_normalize(vec3_cross(f, look_up));
+    const vec3_t u = vec3_cross(s, f);
+    const mat4_t M = {
+        s.x, u.x, -f.x, 0.0f,
+        s.y, u.y, -f.y, 0.0f,
+        s.z, u.z, -f.z, 0.0f,
+        -vec3_dot(s, look_from), -vec3_dot(u, look_from), vec3_dot(f, look_from), 1.0f,
+    };
+    return M;
+}
+
+mat4_t mat4_ortho(float l, float r, float b, float t, float n, float f) {
+    mat4_t M = {0};
+    M.elem[0][0] = 2 / (r-l);
+    M.elem[1][1] = 2 / (t-b);
+    M.elem[2][2] = -2 / (f-n);
+    M.elem[3][0] = -(r+l) / (r-l);
+    M.elem[3][1] = -(t+b) / (t-b);
+    M.elem[3][2] = -(f+n) / (f-n);
+    M.elem[3][3] = 1;
+    return M;
+}
+
+mat4_t mat4_ortho_inv(float l, float r, float b, float t, float n, float f) {
+    mat4_t M = {0};
+    M.elem[0][0] = (r-l) / 2;
+    M.elem[1][1] = (t-b) / 2;
+    M.elem[2][2] = (n-f) / 2;
+    M.elem[3][0] = (l+r) / 2;
+    M.elem[3][1] = (b+t) / 2;
+    M.elem[3][2] = -(n+f) / 2;
+    M.elem[3][3] = 1;
+    return M;
+}
+
+mat4_t mat4_ortho_2d(float l, float r, float b, float t) {
+    mat4_t M = {0};
+    M.elem[0][0] = 2 / (r-l);
+    M.elem[1][1] = 2 / (t-b);
+    M.elem[2][2] = -1;
+    M.elem[3][0] = -(r+l) / (r-l);
+    M.elem[3][1] = -(t+b) / (t-b);
+    M.elem[3][3] = 1;
+    return M;
+}
+
+mat4_t mat4_ortho_2d_inv(float l, float r, float b, float t) {
+    mat4_t M = {0};
+    M.elem[0][0] = (r-l) / 2;
+    M.elem[1][1] = (t-b) / 2;
+    M.elem[2][2] = -1;
+    M.elem[3][0] = (l+r) / 2;
+    M.elem[3][1] = (b+t) / 2;
+    M.elem[3][3] = 1;
+    return M;
+}
+
+mat4_t mat4_persp(float fovy, float aspect, float near, float far) {
+    const float tan_half_fovy = tanf(fovy * 0.5f);
+    mat4_t M = {0};
+    M.elem[0][0] = 1.0f / (aspect * tan_half_fovy);
+    M.elem[1][1] = 1.0f / (tan_half_fovy);
+    M.elem[2][2] = -(far + near) / (far - near);
+    M.elem[2][3] = -1;
+    M.elem[3][2] = -(2 * far * near) / (far - near);
+    return M;
+}
+
+mat4_t mat4_persp_inv(float fovy, float aspect, float near, float far) {
+    const float tan_half_fovy = tanf(fovy * 0.5f);
+    mat4_t M = {0};
+    M.elem[0][0] = aspect * tan_half_fovy;
+    M.elem[1][1] = tan_half_fovy;
+    M.elem[2][3] = (near - far) / (2 * far * near);
+    M.elem[3][2] = -1;
+    M.elem[3][3] = (near + far) / (2 * far * near);
+    return M;
+}
+
+mat4_t mat4_frustum(float l, float r, float b, float t, float n, float f) {
+    mat4_t M = {0};
+    M.elem[0][0] = (2*n) / (r-l);
+    M.elem[1][1] = (2*n) / (t-b);
+    M.elem[2][0] = (r+l) / (r-l);
+    M.elem[2][1] = (t+b) / (t-b);
+    M.elem[2][2] = -(f+n) / (f-n);
+    M.elem[2][3] = -1;
+    M.elem[3][2] = -(2*n*f) / (f-n);
+    return M;
+}
+
+mat4_t mat4_frustum_inv(float l, float r, float b, float t, float n, float f) {
+    mat4_t M = {0};
+    M.elem[0][0] = (r-l) / (2*n);
+    M.elem[1][1] = (t-b) / (2*n);
+    M.elem[2][3] = (n-f) / (2*n*f);
+    M.elem[3][0] = (l+r) / (2*n);
+    M.elem[3][1] = (b+t) / (2*n);
+    M.elem[3][2] = -1;
+    M.elem[3][3] = (n+f) / (2*n*f);
+    return M;
+}
+
+void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, size_t count, vec3_t translation) {
+    size_t i = 0;
+
+    const size_t simd_count = ROUND_DOWN(count, 8);
     if (simd_count > 0) {
         md_256 t_x = md_mm256_set1_ps(translation.x);
         md_256 t_y = md_mm256_set1_ps(translation.y);
@@ -302,10 +418,10 @@ void vec3_batch_translate_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
     }
 }
 
-void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, vec3_t translation) {
-    int64_t i = 0;
+void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, size_t count, vec3_t translation) {
+    size_t i = 0;
 
-    const int64_t simd_count = ROUND_DOWN(count, 8);
+    const size_t simd_count = ROUND_DOWN(count, 8);
     if (simd_count > 0) {
         md_256 t_x = md_mm256_set1_ps(translation.x);
         md_256 t_y = md_mm256_set1_ps(translation.y);
@@ -333,7 +449,7 @@ void vec3_batch_translate(float* out_x, float* out_y, float* out_z, const float*
     }
 }
 
-void mat3_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, int64_t count, mat3_t M) {
+void mat3_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, size_t count, mat3_t M) {
     const md_256 m11 = md_mm256_set1_ps(M.elem[0][0]);
     const md_256 m12 = md_mm256_set1_ps(M.elem[0][1]);
     const md_256 m13 = md_mm256_set1_ps(M.elem[0][2]);
@@ -346,8 +462,8 @@ void mat3_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
     const md_256 m32 = md_mm256_set1_ps(M.elem[2][1]);
     const md_256 m33 = md_mm256_set1_ps(M.elem[2][2]);
 
-    int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, 8);
+    size_t i = 0;
+    const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         const md_256 x = md_mm256_loadu_ps(in_out_x + i);
         const md_256 y = md_mm256_loadu_ps(in_out_y + i);
@@ -385,7 +501,7 @@ void mat3_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
     }
 }
 
-void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, int64_t count, mat3_t M) {
+void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, size_t count, mat3_t M) {
     const md_256 m11 = md_mm256_set1_ps(M.elem[0][0]);
     const md_256 m12 = md_mm256_set1_ps(M.elem[0][1]);
     const md_256 m13 = md_mm256_set1_ps(M.elem[0][2]);
@@ -398,8 +514,8 @@ void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float*
     const md_256 m32 = md_mm256_set1_ps(M.elem[2][1]);
     const md_256 m33 = md_mm256_set1_ps(M.elem[2][2]);
 
-    int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, 8);
+    size_t i = 0;
+    const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         md_256 x = md_mm256_loadu_ps(in_x + i);
         md_256 y = md_mm256_loadu_ps(in_y + i);
@@ -437,7 +553,7 @@ void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float*
     }
 }
 
-void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, float w_comp, int64_t count, mat4_t M) {
+void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_out_y, float* RESTRICT in_out_z, float w_comp, size_t count, mat4_t M) {
     const md_256 m11 = md_mm256_set1_ps(M.elem[0][0]);
     const md_256 m12 = md_mm256_set1_ps(M.elem[0][1]);
     const md_256 m13 = md_mm256_set1_ps(M.elem[0][2]);
@@ -456,8 +572,8 @@ void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
 
     const md_256 w = md_mm256_set1_ps(w_comp);
 
-    int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, 8);
+    size_t i = 0;
+    const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         const md_256 x = md_mm256_loadu_ps(in_out_x + i);
         const md_256 y = md_mm256_loadu_ps(in_out_y + i);
@@ -498,7 +614,7 @@ void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
     }
 }
 
-void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, int64_t count, mat4_t M) {
+void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float* in_x, const float* in_y, const float* in_z, float w_comp, size_t count, mat4_t M) {
     const md_256 m11 = md_mm256_set1_ps(M.elem[0][0]);
     const md_256 m12 = md_mm256_set1_ps(M.elem[0][1]);
     const md_256 m13 = md_mm256_set1_ps(M.elem[0][2]);
@@ -517,8 +633,8 @@ void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float*
 
     const md_256 w = md_mm256_set1_ps(w_comp);
 
-    int64_t i = 0;
-    const int64_t simd_count = ROUND_DOWN(count, 8);
+    size_t i = 0;
+    const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         md_256 x = md_mm256_loadu_ps(in_x + i);
         md_256 y = md_mm256_loadu_ps(in_y + i);

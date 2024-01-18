@@ -7,12 +7,12 @@
 
 UTEST(str, parse_int) {
     str_t test_data[] = {
-        STR("1023"),
-        STR("-248"),
-        STR("1232326745"),
-        STR("1"),
-        STR("0"),
-        STR("-0"),
+        STR_LIT("1023"),
+        STR_LIT("-248"),
+        STR_LIT("1232326745"),
+        STR_LIT("1"),
+        STR_LIT("0"),
+        STR_LIT("-0"),
     };
 
     int64_t ref_data[] = {
@@ -27,7 +27,7 @@ UTEST(str, parse_int) {
 }
 
 UTEST(str, perf_int) {
-    const str_t str = STR("128326746123");
+    const str_t str = STR_LIT("128326746123");
     const int64_t num_iter = 1000000;
     int64_t acc = 0;
 
@@ -50,13 +50,13 @@ UTEST(str, perf_int) {
 
 UTEST(str, parse_float) {
     str_t test_data[] = {
-        STR("1023.22311283798172389718923789172389"),
-        STR("-248.273"),
-        STR("0000000000000.273"),
-        STR("1232326745e10"),
-        STR("1.0e-29"),
-        STR("0.02e+10"),
-        STR("-0"),
+        STR_LIT("1023.22311283798172389718923789172389"),
+        STR_LIT("-248.273"),
+        STR_LIT("0000000000000.273"),
+        STR_LIT("1232326745e10"),
+        STR_LIT("1.0e-29"),
+        STR_LIT("0.02e+10"),
+        STR_LIT("-0"),
     };
 
     double ref_data[] = {
@@ -77,7 +77,7 @@ UTEST(str, parse_float) {
 }
 
 UTEST(str, perf_float) {
-    const str_t str = STR("-248.271233");
+    const str_t str = STR_LIT("-248.271233");
     const int64_t num_iter = 1000000;
     double acc = 0;
 
@@ -98,7 +98,7 @@ UTEST(str, perf_float) {
 }
 
 UTEST(str, extract_line) {
-    str_t str = STR(
+    str_t str = STR_LIT(
         "this is some text\n"
         "this is line 2\n"
         "\n"
@@ -133,26 +133,26 @@ UTEST(str, extract_line) {
 UTEST(str, edit_distance) {
     int dist;
 
-    dist = str_edit_distance(STR("kitten"), STR("sitting"));
+    dist = str_edit_distance(STR_LIT("kitten"), STR_LIT("sitting"));
     EXPECT_EQ(3, dist);
     
-    dist = str_edit_distance(STR("rosettacode"), STR("raisethysword"));
+    dist = str_edit_distance(STR_LIT("rosettacode"), STR_LIT("raisethysword"));
     EXPECT_EQ(8, dist);
 
-    dist = str_edit_distance(STR(""), STR("something"));
+    dist = str_edit_distance(STR_LIT(""), STR_LIT("something"));
     EXPECT_EQ(9, dist);
 }
 
 UTEST(str, count_equal_chars) {
     int count;
-    count = str_count_equal_chars(STR("kitten"), STR("kittenz"));
+    count = str_count_equal_chars(STR_LIT("kitten"), STR_LIT("kittenz"));
     EXPECT_EQ(6, count);
 
-    count = str_count_equal_chars(STR("kitten"), STR("sitting"));
+    count = str_count_equal_chars(STR_LIT("kitten"), STR_LIT("sitting"));
     EXPECT_EQ(0, count);
 
     count = str_count_equal_chars(
-        STR("/mnt/e/git/viamd/ext/mdlib/test_data/dir/subdir"),
-        STR("/mnt/e/git/viamd/ext/mdlib/test_data/40-40-2-ddba-dyna.xmol"));
+        STR_LIT("/mnt/e/git/viamd/ext/mdlib/test_data/dir/subdir"),
+        STR_LIT("/mnt/e/git/viamd/ext/mdlib/test_data/40-40-2-ddba-dyna.xmol"));
     EXPECT_EQ(sizeof("/mnt/e/git/viamd/ext/mdlib/test_data/") - 1, count);
 }

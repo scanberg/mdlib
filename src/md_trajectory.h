@@ -9,26 +9,28 @@
 struct md_trajectory_o;
 
 typedef struct md_trajectory_header_t {
-	int64_t   num_frames;
-	int64_t   num_atoms;
-	int64_t   max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
+	size_t   num_frames;
+	size_t   num_atoms;
+	size_t   max_frame_data_size; // This represents the maximum size of any frame which is extracted using extract_frame_data.
 	md_unit_t time_unit;
     const double* frame_times;  // Array of length num_frames
 } md_trajectory_header_t;
 
 typedef struct md_trajectory_frame_header_t {
-	int64_t   num_atoms;
-	int64_t   index;
-	double    timestamp;
+	size_t  num_atoms;
+	int64_t index;
+	double  timestamp;
 	md_unit_cell_t unit_cell;
 } md_trajectory_frame_header_t;
 
+// This is a common header we use for generated cache files
+// Fileformats may have more fields, but this is the shared first part.
 typedef struct md_trajectory_cache_header_t {
 	uint64_t magic;
 	uint64_t version;
-	int64_t num_bytes;
-	int64_t num_atoms;
-	int64_t num_frames;
+	size_t num_bytes;
+	size_t num_atoms;
+	size_t num_frames;
 } md_trajectory_cache_header_t;
 
 #ifdef __cplusplus
@@ -46,11 +48,11 @@ typedef struct md_trajectory_i {
 	bool (*load_frame)(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 
 	// --- ADVANCED MODE ---
-	// Returns size in bytes of frame, frame_data_ptr is optional and if supplied, the frame data will be written to it.
-	int64_t (*fetch_frame_data)(struct md_trajectory_o* inst, int64_t idx, void* data_ptr);
+	// Returns size in bytes of frame, data_ptr is optional and if supplied, the frame data will be written to it.
+	size_t (*fetch_frame_data)(struct md_trajectory_o* inst, int64_t idx, void* data_ptr);
 
 	// Decodes the raw frame data
-	bool (*decode_frame_data)(struct md_trajectory_o* inst, const void* data_ptr, int64_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
+	bool (*decode_frame_data)(struct md_trajectory_o* inst, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
 } md_trajectory_i;
 
 typedef struct md_trajectory_loader_i {
@@ -63,7 +65,7 @@ typedef struct md_trajectory_loader_i {
 #endif
 
 // Easy mode accessors
-static inline int64_t md_trajectory_num_frames(const md_trajectory_i* traj) {
+static inline size_t md_trajectory_num_frames(const md_trajectory_i* traj) {
 	md_trajectory_header_t header;
 	if (traj && traj->get_header && traj->get_header(traj->inst, &header)) {
 		return header.num_frames;
@@ -71,7 +73,7 @@ static inline int64_t md_trajectory_num_frames(const md_trajectory_i* traj) {
 	return 0;
 }
 
-static inline int64_t md_trajectory_num_atoms(const md_trajectory_i* traj) {
+static inline size_t md_trajectory_num_atoms(const md_trajectory_i* traj) {
 	md_trajectory_header_t header;
 	if (traj && traj->get_header && traj->get_header(traj->inst, &header)) {
 		return header.num_atoms;
@@ -79,7 +81,7 @@ static inline int64_t md_trajectory_num_atoms(const md_trajectory_i* traj) {
 	return 0;
 }
 
-static inline int64_t md_trajectory_max_frame_data_size(const md_trajectory_i* traj) {
+static inline size_t md_trajectory_max_frame_data_size(const md_trajectory_i* traj) {
 	md_trajectory_header_t header;
 	if (traj && traj->get_header && traj->get_header(traj->inst, &header)) {
 		return header.max_frame_data_size;
@@ -119,14 +121,14 @@ static inline bool md_trajectory_load_frame(const md_trajectory_i* traj, int64_t
 	return false;
 }
 
-static inline int64_t md_trajectory_fetch_frame_data(const md_trajectory_i* traj, int64_t idx, void* data_ptr) {
+static inline size_t md_trajectory_fetch_frame_data(const md_trajectory_i* traj, int64_t idx, void* data_ptr) {
 	if (traj && traj->inst && traj->fetch_frame_data) {
 		return traj->fetch_frame_data(traj->inst, idx, data_ptr);
 	}
 	return 0;
 }
 
-static inline bool md_trajectory_decode_frame_data(const md_trajectory_i* traj, const void* data_ptr, int64_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static inline bool md_trajectory_decode_frame_data(const md_trajectory_i* traj, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
 	if (traj && traj->inst && traj->decode_frame_data) {
 		return traj->decode_frame_data(traj->inst, data_ptr, data_size, header, x, y, z);
 	}

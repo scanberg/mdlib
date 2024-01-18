@@ -30,7 +30,6 @@ extern "C" {
 typedef struct pdb_trajectory_t {
     uint64_t magic;
     md_file_o* file;
-    uint64_t filesize;
     int64_t* frame_offsets;
     md_unit_cell_t unit_cell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
@@ -38,23 +37,23 @@ typedef struct pdb_trajectory_t {
     md_mutex_t mutex;
 } pdb_trajectory_t;
 
-static inline void copy_str_field(char* dst, int64_t dst_size, str_t line, int64_t beg, int64_t end) {
+static inline void copy_str_field(char* dst, size_t dst_size, str_t line, size_t beg, size_t end) {
     str_copy_to_char_buf(dst, dst_size, str_trim(str_substr(line, beg - 1, end-beg + 1)));
 }
 
 // We massage the beg and end indices here to correspond the pdb specification
 // This makes our life easier when specifying all the different ranges
-static inline int32_t extract_int(str_t line, int64_t beg, int64_t end) {
+static inline int32_t extract_int(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0;
-    return (int32_t)parse_int(str_trim(str_substr(line, beg - 1, end-beg + 1)));
+    return (int32_t)parse_int(str_substr(line, beg - 1, end-beg + 1));
 }
 
-static inline float extract_float(str_t line, int64_t beg, int64_t end) {
+static inline float extract_float(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0.0f;
-    return (float)parse_float(str_trim(str_substr(line, beg - 1, end-beg + 1)));
+    return (float)parse_float(str_substr(line, beg - 1, end-beg + 1));
 }
 
-static inline char extract_char(str_t line, int32_t idx) {
+static inline char extract_char(str_t line, size_t idx) {
     if (line.len < idx) return 0;
     return line.ptr[idx - 1];
 }
@@ -175,18 +174,6 @@ static inline void append_connect(md_pdb_connect_t* connect, const md_pdb_connec
     MEMCPY(&connect->atom_serial[5], &other->atom_serial[1], 3 * sizeof(int32_t));
 }
 
-static inline int32_t count_pdb_coordinate_entries(str_t str) {
-    int32_t count = 0;
-    str_t line;
-    while (str_extract_line(&line, &str)) {
-        if (line.len < 6) continue;
-        if ((str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6))) {
-            count += 1;
-        }
-    }
-    return count;
-}
-
 bool pdb_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     ASSERT(pdb);
@@ -199,15 +186,10 @@ bool pdb_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
 // Returns size in bytes of frame, frame_data_ptr is optional and is the destination to write the frame data to.
-int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
+size_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
     ASSERT(pdb);
     ASSERT(pdb->magic == MD_PDB_TRAJ_MAGIC);
-
-    if (!pdb->filesize) {
-        MD_LOG_ERROR("File size is zero");
-        return 0;
-    }
 
     if (!pdb->file) {
         MD_LOG_ERROR("File handle is NULL");
@@ -219,20 +201,21 @@ int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
         return 0;
     }
 
-    if (frame_idx < 0 || pdb->header.num_frames <= frame_idx) {
+    if (frame_idx < 0 || (int64_t)pdb->header.num_frames <= frame_idx) {
         MD_LOG_ERROR("Frame index is out of range");
         return 0;
     }
 
     const int64_t beg = pdb->frame_offsets[frame_idx + 0];
     const int64_t end = pdb->frame_offsets[frame_idx + 1];
-    const int64_t frame_size = end - beg;
+    const size_t frame_size = (size_t)MAX(0, end - beg);
 
     if (frame_data_ptr) {
         ASSERT(pdb->file);
         md_mutex_lock(&pdb->mutex);
         md_file_seek(pdb->file, beg, MD_FILE_BEG);
-        const int64_t bytes_read = md_file_read(pdb->file, frame_data_ptr, frame_size);
+        const size_t bytes_read = md_file_read(pdb->file, frame_data_ptr, frame_size);
+        (void)bytes_read;
         md_mutex_unlock(&pdb->mutex);
         ASSERT(frame_size == bytes_read);
     }
@@ -240,7 +223,7 @@ int64_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, vo
     return frame_size;
 }
 
-bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, int64_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
     ASSERT(frame_data_ptr);
     ASSERT(frame_data_size);
@@ -256,15 +239,15 @@ bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_
 
     int32_t step = 0;
     if (str_extract_line(&line, &str)) {
-        if (str_equal_cstr_n(line, "MODEL", 5)) {
+        if (str_eq_cstr_n(line, "MODEL", 5)) {
             step = (int32_t)parse_int(str_substr(line, 10, 4));
         }
     }
 
-    int64_t i = 0;
+    size_t i = 0;
     while (str_extract_line(&line, &str) && i < pdb->header.num_atoms) {
         if (line.len < 6) continue;
-        if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
+        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
             if (x) { x[i] = extract_float(line, 31, 38); }
             if (y) { y[i] = extract_float(line, 39, 46); }
             if (z) { z[i] = extract_float(line, 47, 54); }
@@ -293,26 +276,26 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
     str_t line;
     while (md_buffered_reader_extract_line(&line, reader)) {
         if (line.len < 6) continue;
-        if (str_equal_cstr_n(line, "ATOM", 4) || str_equal_cstr_n(line, "HETATM", 6)) {
+        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
             coord.flags |= MD_PDB_COORD_FLAG_HETATM;
             md_array_push(data->atom_coordinates, coord, alloc);
         }
-        else if (str_equal_cstr_n(line, "TER", 3)) {
+        else if (str_eq_cstr_n(line, "TER", 3)) {
 			md_pdb_coordinate_t* last = md_array_last(data->atom_coordinates);
             if (last) {
 				last->flags |= MD_PDB_COORD_FLAG_TERMINATOR;
             }
         }
-        else if (str_equal_cstr_n(line, "HELIX", 5)) {
+        else if (str_eq_cstr_n(line, "HELIX", 5)) {
             md_pdb_helix_t helix = extract_helix(line);
             md_array_push(data->helices, helix, alloc);
         }
-        else if (str_equal_cstr_n(line, "SHEET", 5)) {
+        else if (str_eq_cstr_n(line, "SHEET", 5)) {
             md_pdb_sheet_t sheet = extract_sheet(line);
             md_array_push(data->sheets, sheet, alloc);
         }
-        else if (str_equal_cstr_n(line, "CONECT", 6)) {
+        else if (str_eq_cstr_n(line, "CONECT", 6)) {
             md_pdb_connect_t connect = extract_connect(line);
             md_pdb_connect_t* last = md_array_last(data->connections);
             if (last && last->atom_serial[0] == connect.atom_serial[0]) {
@@ -322,7 +305,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
                 md_array_push(data->connections, connect, alloc);
             }
         }
-        else if (str_equal_cstr_n(line, "MODEL", 5)) {
+        else if (str_eq_cstr_n(line, "MODEL", 5)) {
             if (stop_after_first_model && md_array_size(data->models) > 0) {
                 break;
             }
@@ -330,16 +313,16 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
             // This is a bit nasty, we want to get the correct offset to the beginning of the current line.
             // Therefore we need to do some pointer arithmetic because just using the length of the line may not get us
             // all the way back in case there were skipped \r characters.
-            const int64_t offset = md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr);
+            const int64_t offset = (size_t)MAX(0, md_buffered_reader_tellg(reader) - (reader->str.ptr - line.ptr));
             md_pdb_model_t model = {
-                .serial = (int32_t)parse_int(str_substr(line, 6, -1)),
+                .serial = (int32_t)parse_int(str_substr(line, 6, SIZE_MAX)),
                 .beg_atom_serial = num_coords > 0 ? data->atom_coordinates[num_coords-1].atom_serial : 1,
                 .beg_atom_index = num_coords,
                 .byte_offset = offset,
             };
             md_array_push(data->models, model, alloc);
         }
-        else if (str_equal_cstr_n(line, "ENDMDL", 6)) {
+        else if (str_eq_cstr_n(line, "ENDMDL", 6)) {
             const int32_t num_coords = (int32_t)md_array_size(data->atom_coordinates);
             md_pdb_model_t* model = md_array_last(data->models);
             if (model) {
@@ -347,19 +330,19 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
                 model->end_atom_index = num_coords;
             }
         }
-        else if (str_equal_cstr_n(line, "CRYST1", 6)) {
+        else if (str_eq_cstr_n(line, "CRYST1", 6)) {
             md_pdb_cryst1_t cryst1 = extract_cryst1(line);
             md_array_push(data->cryst1, cryst1, alloc);
         }
-        else if (str_equal_cstr_n(line, "REMARK 350", 10)) {
-            if (str_equal_cstr(str_substr(line, 11, 12), "BIOMOLECULE:")) {
+        else if (str_eq_cstr_n(line, "REMARK 350", 10)) {
+            if (str_eq_cstr(str_substr(line, 11, 12), "BIOMOLECULE:")) {
                 md_pdb_assembly_t assembly = {0};
-                assembly.id = (int32_t)parse_int(str_trim(str_substr(line, 23, -1)));
+                assembly.id = (int32_t)parse_int(str_substr(line, 23, SIZE_MAX));
                 assembly.transform_offset = (int32_t)md_array_size(data->transforms);
                 md_array_push(data->assemblies, assembly, alloc);
             }
-            else if (str_equal_cstr(str_substr(line, 11, 30), "APPLY THE FOLLOWING TO CHAINS:") ||
-                     str_equal_cstr(str_substr(line, 11, 30), "                   AND CHAINS:")) {
+            else if (str_eq_cstr(str_substr(line, 11, 30), "APPLY THE FOLLOWING TO CHAINS:") ||
+                     str_eq_cstr(str_substr(line, 11, 30), "                   AND CHAINS:")) {
                 md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
                 if (assembly) {
                     str_t chains = str_trim(str_substr(line, 41, 30));
@@ -378,7 +361,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
                     md_log(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, assembly is missing");
                 }
             }
-            else if (str_equal_cstr(str_substr(line, 13, 5), "BIOMT")) {
+            else if (str_eq_cstr(str_substr(line, 13, 5), "BIOMT")) {
                 md_pdb_assembly_t* assembly = md_array_last(data->assemblies);
                 if (assembly) {
                     const int32_t row_idx = char_to_digit(line.ptr[18]) - 1;
@@ -394,7 +377,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
                         transform->elem[0][row_idx] = (float)parse_float(str_trim(str_substr(line, 23, 10)));
                         transform->elem[1][row_idx] = (float)parse_float(str_trim(str_substr(line, 33, 10)));
                         transform->elem[2][row_idx] = (float)parse_float(str_trim(str_substr(line, 43, 10)));
-                        transform->elem[3][row_idx] = (float)parse_float(str_trim(str_substr(line, 53, -1)));
+                        transform->elem[3][row_idx] = (float)parse_float(str_trim(str_substr(line, 53, SIZE_MAX)));
                     } else {
                         md_log(MD_LOG_TYPE_DEBUG, "Error while parsing PDB assembly, transform is missing");
                     }
@@ -426,7 +409,7 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i*
     bool result = false;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        const int64_t cap = MEGABYTES(1);
+        const size_t cap = MEGABYTES(1);
         char* buf = md_alloc(md_heap_allocator, cap);
         
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
@@ -468,8 +451,8 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
 
-    int64_t beg_atom_index = 0;
-    int64_t end_atom_index = data->num_atom_coordinates;
+    size_t beg_atom_index = 0;
+    size_t end_atom_index = data->num_atom_coordinates;
 
     // if we have more than one model, interperet it as a trajectory and only load the first model
     if (data->num_models > 0 && !(options & MD_PDB_OPTION_CONCAT_MODELS)) {
@@ -480,7 +463,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
 
-    int64_t num_atoms = end_atom_index - beg_atom_index;
+    size_t num_atoms = end_atom_index - beg_atom_index;
 
     md_array(md_label_t) chain_ids = 0;
     md_array(md_range_t) chain_ranges = 0;
@@ -499,7 +482,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     int32_t prev_res_id = -1;
     char prev_chain_id = -1;
 
-    for (int64_t i = beg_atom_index; i < end_atom_index; ++i) {
+    for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
         float x = data->atom_coordinates[i].x;
         float y = data->atom_coordinates[i].y;
         float z = data->atom_coordinates[i].z;
@@ -578,12 +561,12 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     };
 
     // Create instances from assemblies
-    for (int64_t aidx = 0; aidx < data->num_assemblies; ++aidx) {
+    for (size_t aidx = 0; aidx < data->num_assemblies; ++aidx) {
         const md_pdb_assembly_t* assembly = &data->assemblies[aidx];
         md_label_t instance_label = {0};
         instance_label.len = (uint8_t)snprintf(instance_label.buf, sizeof(instance_label.buf), "ASM_%i", assembly->id);
 
-        for (int64_t tidx = assembly->transform_offset; tidx < assembly->transform_offset + assembly->transform_count; ++tidx) {
+        for (uint32_t tidx = assembly->transform_offset; tidx < assembly->transform_offset + assembly->transform_count; ++tidx) {
             if (mat4_equal(data->transforms[tidx], mat4_ident())) {
                 // Do not add the identity transform as an instance, that is implicit in the structure
                 // Only add the additional instances
@@ -600,7 +583,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                 }
 
                 int chain_idx = -1;
-                for (int64_t i = 0; i < md_array_size(chain_ranges); ++i) {
+                for (size_t i = 0; i < md_array_size(chain_ranges); ++i) {
                     if (mol->chain.id[chain_ranges[i].beg].buf[0] == chain_id) {
 						chain_idx = (int)i;
 						break;
@@ -670,7 +653,8 @@ done:
     return result;
 }
 
-static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* alloc) {
+static bool pdb_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_pdb_data_t data = {0};
 
     md_pdb_data_parse_str(&data, str, md_heap_allocator);
@@ -680,10 +664,11 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, md_allocator_i* all
     return success;
 }
 
-static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, md_allocator_i* alloc) {
+static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+    (void)arg;
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
-        int64_t cap = MEGABYTES(1);
+        const size_t cap = MEGABYTES(1);
         char *buf = md_alloc(md_heap_allocator, cap);
         ASSERT(buf);
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
@@ -723,11 +708,11 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     md_allocator_i* alloc = md_temp_allocator;
 
     bool result = true;
-    const int64_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
+    const size_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
         // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
         void* frame_data = md_alloc(alloc, frame_size);
-        const int64_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
+        const size_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
             MD_LOG_ERROR("Failed to read the expected size");
             md_free(alloc, frame_data, frame_size);
@@ -747,7 +732,7 @@ typedef struct pdb_cache_t {
     int64_t* frame_offsets;
 } pdb_cache_t;
 
-static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, int64_t traj_num_bytes, md_allocator_i* alloc) {
+static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_allocator_i* alloc) {
     ASSERT(cache);
     ASSERT(alloc);
 
@@ -767,7 +752,7 @@ static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, int64_t traj_nu
             MD_LOG_INFO("PDB trajectory cache: version mismatch, expected %i, got %i", MD_PDB_CACHE_VERSION, (int)cache->header.version);
         }
         if (cache->header.num_bytes != traj_num_bytes) {
-            MD_LOG_INFO("PDB trajectory cache: trajectory size mismatch, expected %i, got %i", (int)traj_num_bytes, (int)cache->header.num_bytes);
+            MD_LOG_INFO("PDB trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
         }
         if (cache->header.num_atoms == 0) {
             MD_LOG_ERROR("PDB trajectory cache: num atoms was zero");
@@ -783,7 +768,7 @@ static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, int64_t traj_nu
 			goto done;
 		}
 
-        const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+        const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
         cache->frame_offsets = md_alloc(alloc, offset_bytes);
         if (md_file_read(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
             MD_LOG_ERROR("PDB trajectory cache: Failed to read offset data");
@@ -792,7 +777,7 @@ static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, int64_t traj_nu
         }
 
         // Test position in file, we expect to be at the end of the file
-        if (md_file_tell(file) != md_file_size(file)) {
+        if (md_file_tell(file) != (int64_t)md_file_size(file)) {
             MD_LOG_ERROR("PDB trajectory cache: file position was not at the end of the file");
             md_free(alloc, cache->frame_offsets, offset_bytes);
             goto done;
@@ -810,7 +795,7 @@ static bool write_cache(const pdb_cache_t* cache, str_t cache_file) {
 
     md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
     if (!file) {
-        MD_LOG_ERROR("PDB trajectory cache: could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+        MD_LOG_INFO("PDB trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }
 
@@ -824,7 +809,7 @@ static bool write_cache(const pdb_cache_t* cache, str_t cache_file) {
     	goto done;
     }
 
-    const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+    const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
     if (md_file_write(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
         MD_LOG_ERROR("PDB trajectory cache: failed to write frame offsets");
         goto done;
@@ -844,7 +829,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         return false;
     }
 
-    const int64_t filesize = md_file_size(file);
+    const size_t filesize = md_file_size(file);
     md_file_close(file);
 
     char buf[1024] = "";
@@ -869,11 +854,15 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         }
 
         // Validate the models
-        const int64_t num_atoms = data.models[0].end_atom_index - data.models[0].beg_atom_index;
-        for (int64_t i = 1; i < data.num_models; ++i) {
-            const int64_t length = data.models[i].end_atom_index - data.models[i].beg_atom_index;
-            if (length != num_atoms) {
-                MD_LOG_ERROR("The PDB file models are not of equal length and cannot be read as a trajectory");
+        const size_t num_atoms = (size_t)MAX(0, data.models[0].end_atom_index - data.models[0].beg_atom_index);
+        if (!num_atoms) {
+			MD_LOG_ERROR("The PDB file models are empty and cannot be read as a trajectory");
+			goto cleanup;
+		}
+        for (size_t i = 1; i < data.num_models; ++i) {
+            const size_t length = (size_t)MAX(0, data.models[i].end_atom_index - data.models[i].beg_atom_index);
+            if (length && length != num_atoms) {
+                MD_LOG_ERROR("The PDB file models are empty or not of equal length and cannot be read as a trajectory");
                 goto cleanup;
             }
         }
@@ -885,7 +874,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         cache.header.num_frames = data.num_models;
 
         cache.frame_offsets = md_alloc(alloc, (cache.header.num_frames + 1) * sizeof(int64_t));
-        for (int64_t i = 0; i < cache.header.num_frames; ++i) {
+        for (size_t i = 0; i < cache.header.num_frames; ++i) {
             cache.frame_offsets[i] = data.models[i].byte_offset;
         }
         cache.frame_offsets[cache.header.num_frames] = filesize;
@@ -907,14 +896,14 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
         }
     }
 
-    int64_t max_frame_size = 0;
-    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
-        const int64_t frame_size = cache.frame_offsets[i + 1] - cache.frame_offsets[i];
+    size_t max_frame_size = 0;
+    for (size_t i = 0; i < cache.header.num_frames; ++i) {
+        const size_t frame_size = (size_t)MAX(0, cache.frame_offsets[i + 1] - cache.frame_offsets[i]);
         max_frame_size = MAX(max_frame_size, frame_size);
     }
 
     md_array(double) frame_times = md_array_create(double, cache.header.num_frames, alloc);
-    for (int64_t i = 0; i < cache.header.num_frames; ++i) {
+    for (size_t i = 0; i < cache.header.num_frames; ++i) {
         frame_times[i] = (double)i;
     }
 
@@ -927,7 +916,6 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
 
     pdb->magic = MD_PDB_TRAJ_MAGIC;
     pdb->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
-    pdb->filesize = filesize;
     pdb->frame_offsets = cache.frame_offsets;
     pdb->allocator = alloc;
     pdb->mutex = md_mutex_create();

@@ -361,7 +361,7 @@ void md_bitfield_set_bit(md_bitfield_t* bf, uint64_t bit_idx) {
     block_set_bit(get_block_ptr(bf, block_idx(bit_idx)), bit_idx - block_bit(bit_idx));
 }
 
-void md_bitfield_set_indices_u32(md_bitfield_t* bf, uint32_t* indices, uint64_t num_indices) {
+void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, size_t num_indices) {
     ASSERT(md_bitfield_validate(bf));
     ASSERT(indices);    
 
@@ -623,14 +623,14 @@ void md_bitfield_copy(md_bitfield_t* dst, const md_bitfield_t* src) {
 }
 
 // Counts the number of bits set
-uint64_t md_bitfield_popcount(const md_bitfield_t* bf) {
+size_t md_bitfield_popcount(const md_bitfield_t* bf) {
     ASSERT(md_bitfield_validate(bf));
 
     if (bf->bits == NULL || bf->beg_bit == bf->end_bit) return 0;
     return bit_count(u64_base(bf), bf->beg_bit, bf->end_bit);
 }
 
-uint64_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
+size_t md_bitfield_popcount_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     ASSERT(beg <= end);
     ASSERT(md_bitfield_validate(bf));
 
@@ -703,7 +703,7 @@ md_bitfield_iter_t md_bitfield_iter_create(const md_bitfield_t* bf) {
     return iter;
 }
 
-md_bitfield_iter_t md_bitfield_iter_range(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
+md_bitfield_iter_t md_bitfield_iter_range_create(const md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     md_bitfield_iter_t iter = {
         .bf = bf,
         .idx = bf->beg_bit,
@@ -780,16 +780,13 @@ bool md_bitfield_extract_u64(uint64_t* dst_ptr, uint64_t num_bits, const md_bitf
     return true;
 }
 
-int64_t md_bitfield_extract_indices(int32_t* buf, int64_t cap, const md_bitfield_t* bf) {
-    ASSERT(bf);
-    ASSERT(md_bitfield_validate(bf));
+size_t md_bitfield_iter_extract_indices(int32_t* buf, size_t cap, md_bitfield_iter_t it) {
+    ASSERT(md_bitfield_validate(it.bf));
     ASSERT(cap >= 0);
 
     if (!buf || cap == 0) return 0;
 
-    int64_t len = 0;
-    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
-
+    size_t len = 0;
     while (len < cap && md_bitfield_iter_next(&it)) {
         buf[len++] = (int32_t)md_bitfield_iter_idx(&it);
     }
@@ -868,10 +865,10 @@ uint16_t* get_serialization_block_indices(const md_bitfield_t* bf, md_allocator_
 }
 
 // Returns the maximum serialization size in bytes of a bitfield
-uint64_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf) {
-    uint64_t size = sizeof(uint16_t);
+size_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf) {
+    size_t size = sizeof(uint16_t);
     uint16_t* indices = get_serialization_block_indices(bf, md_temp_allocator);
-    for (uint64_t i = 0; i < (uint64_t)md_array_size(indices); ++i) {
+    for (size_t i = 0; i < md_array_size(indices); ++i) {
         if (indices[i] & BLOCK_IDX_FLAG_ALL_SET) continue;
         size += sizeof(indices[i]) + sizeof(block_t);
     }
@@ -889,7 +886,7 @@ typedef union block_idx_t {
 
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
-uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
+size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
     md_allocator_i* alloc = md_temp_allocator;
 
     uint16_t* indices = get_serialization_block_indices(bf, alloc);
@@ -920,10 +917,10 @@ uint64_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
     md_array_free(data, alloc);
     md_array_free(indices, alloc);
 
-    return lz_bytes;
+    return (size_t)lz_bytes;
 }
 
-bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, uint64_t num_bytes) {
+bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_bytes) {
     ASSERT(bf);
     ASSERT(md_bitfield_validate(bf));
     ASSERT(src);

@@ -1,6 +1,6 @@
 #include <core/md_linear_allocator.h>
 
-static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, uint64_t old_size, uint64_t new_size, const char* file, uint32_t line) {
+static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)file;
     (void)line;
     md_linear_allocator_t* linear = (md_linear_allocator_t*)alloc;

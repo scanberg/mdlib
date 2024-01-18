@@ -12,8 +12,8 @@ typedef struct state_t {
     const char* c;
     const char* end;
     md_smiles_node_t* nodes;
-    int64_t node_len;
-    int64_t node_cap;
+    size_t node_len;
+    size_t node_cap;
     bool dot;
     bool abort;
 } state_t;
@@ -292,7 +292,8 @@ static bool parse_branch(state_t* s) {
 
     int num = 0;
     while (peek_char(s) != ')') {
-        parse_bond(s) || parse_dot(s);
+        parse_bond(s);
+        parse_dot(s);
         if (!parse_line(s)) {
             MD_LOG_ERROR("Failed to parse line in branch\n");
             terminate(s);
@@ -363,7 +364,7 @@ static bool parse_line(state_t* s) {
     return true;
 }
 
-int64_t md_smiles_parse(md_smiles_node_t* out_nodes, int64_t in_cap, const char* in_str, int64_t in_len) {
+size_t md_smiles_parse(md_smiles_node_t* out_nodes, size_t in_cap, const char* in_str, size_t in_len) {
     if (!in_str || in_len <= 0) {
         MD_LOG_ERROR("Smiles: Invalid input string");
         return 0;

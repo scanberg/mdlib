@@ -385,7 +385,7 @@ typedef struct include_file_t {
 #define APPEND_STR(a, str, alloc)   md_array_push_array(a, str.ptr, str.len, alloc)
 #define APPEND_CSTR(a, cstr, alloc) md_array_push_array(a, cstr, (int64_t)strlen(cstr), alloc)
 #define APPEND_CHAR(a, ch, alloc) md_array_push(a, ch, alloc);
-#define APPEND_LINE(a, line, alloc) APPEND_STR(a, alloc_printf(alloc, "#line %u\n", line), alloc)
+#define APPEND_LINE(a, line, alloc) APPEND_STR(a, str_printf(alloc, "#line %u\n", line), alloc)
 
 static bool compile_shader_from_source(GLuint shader, const char* source, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
     if (!source) {
@@ -396,7 +396,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     str_t str = str_from_cstr(source);
 
     str_t version_str;
-    if (!str_extract_line(&version_str, &str) || !str_equal_cstr_n(version_str, "#version", 8)) {
+    if (!str_extract_line(&version_str, &str) || !str_eq_cstr_n(version_str, "#version", 8)) {
         MD_LOG_ERROR("Missing version as first line in shader!");
         return false;
     }
@@ -410,7 +410,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
     APPEND_STR(buf, version_str, alloc);
     line_count += 1;
 
-    str_t glsl_define = STR("#ifndef GLSL\n#define GLSL\n#endif");
+    str_t glsl_define = STR_LIT("#ifndef GLSL\n#define GLSL\n#endif");
     APPEND_STR(buf, glsl_define, alloc);
     line_count += 3;
 
@@ -422,12 +422,12 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
 
     str_t line;
     while (str_extract_line(&line, &str)) {
-        if (str_equal_cstr_n(line, "#include", 8)) {
+        if (str_eq_cstr_n(line, "#include", 8)) {
             if (include_file_count == 0 || !include_files) {
                 MD_LOG_ERROR("Failed to parse include in shader file: no include files have been supplied");
                 return false;
             }
-            str_t file = str_trim(str_substr(line, 8, -1));
+            str_t file = str_trim(str_substr(line, 8, SIZE_MAX));
             if (!file.len) {
                 MD_LOG_ERROR("Failed to parse include in shader file: file is missing");
                 return false;
@@ -444,7 +444,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
             file = str_substr(file, 1, file.len-2);
             str_t src = {0};
             for (uint32_t i = 0; i < include_file_count; ++i) {
-                if (str_equal_cstr(file, include_files[i].filename)) {
+                if (str_eq_cstr(file, include_files[i].filename)) {
                     src = str_from_cstr(include_files[i].source);
                     break;
                 }
@@ -697,7 +697,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         ctx.color.capacity = 4 * 1000 * 1000;
         ctx.color_buf = gl_buffer_create(ctx.color.capacity * sizeof(md_gfx_color_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
-#define CONCAT_STR(STR_A, STR_B) (alloc_printf(md_temp_allocator, "%s%s", STR_A, STR_B).ptr)
+#define CONCAT_STR(STR_A, STR_B) (str_printf(md_temp_allocator, "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
         str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), md_temp_allocator);
@@ -906,7 +906,7 @@ static void field_free(allocation_field_t* field, allocation_range_t range) {
 
 md_gfx_handle_t md_gfx_structure_create_from_mol(const md_molecule_t* mol) {
     ASSERT(mol);
-    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)md_array_size(mol->bond.pairs), (uint32_t)mol->backbone.count, (uint32_t)mol->backbone.range_count, (uint32_t)mol->residue.count, (uint32_t)mol->instance.count);
+    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)md_array_size(mol->bond.pairs), (uint32_t)mol->backbone.count, (uint32_t)mol->backbone.range.count, (uint32_t)mol->residue.count, (uint32_t)mol->instance.count);
 }
 
 md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t group_count, uint32_t instance_count) {
@@ -1064,7 +1064,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     }
 
     uint32_t* grp_src_indices = md_vm_arena_push(&vm_arena, sizeof(uint32_t) * grp_count);
-    md_util_spatial_sort(grp_src_indices, grp_cent, grp_count);
+    md_util_spatial_sort_vec3(grp_src_indices, grp_cent, grp_count);
 
     uint32_t* src_indices = NULL;
     range_t* base_groups  = NULL;
@@ -1135,7 +1135,7 @@ void recompute_clusters(structure_t* s, const float* x, const float* y, const fl
     uint32_t* cluster_ranges = NULL;
     uint32_t* src_indices = md_alloc(alloc, sizeof(uint32_t) * count);
 
-    md_util_spatial_sort_soa(src_indices, x, y, z, count);
+    md_util_spatial_sort(src_indices, x, y, z, count);
     md_array_ensure(cluster_ranges, DIV_UP(count, MIN_COUNT_PER_CLUSTER), alloc);
 
     vec3_t min_xyz = {+FLT_MAX, +FLT_MAX, +FLT_MAX};

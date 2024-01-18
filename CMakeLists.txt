@@ -171,8 +171,9 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       
     set(MD_DEFINES ${MD_DEFINES} "_CRT_SECURE_NO_WARNINGS")
     
-    set(MD_FLAGS_DEB ${MD_FLAGS_DEB} "/Ob1")
+    set(MD_FLAGS_DEB ${MD_FLAGS_DEB} "/Ob1" "/ZI")
     set(MD_FLAGS_REL ${MD_FLAGS_REL} "/GS-" "/GL")
+    set(MD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB} "/INCREMENTAL")
     set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} "/LTCG")
     set(PROJ_FILES ${PROJ_FILES} "mdlib.natvis")
 endif()

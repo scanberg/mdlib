@@ -29,7 +29,7 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
     str_t tok;
     str_t first_line = line;
     bool has_field_names = true;
-    int64_t num_fields = 0;
+    size_t num_fields = 0;
     while (extract_token_delim(&tok, &first_line, ',')) {
         tok = str_trim(tok);
         if (is_float(tok)) {
@@ -46,19 +46,19 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
     if (has_field_names) {
         MD_LOG_INFO("CSV: First row contains non-numeric values, assuming field names");
         // Read first line as field names
-        for (int64_t i = 0; i < num_fields; ++i) {
+        for (size_t i = 0; i < num_fields; ++i) {
             extract_token_delim(&tok, &line, ',');
             str_t name = str_copy(str_trim(tok), alloc);
             md_array_push(csv->field_names, name, alloc);
         }
     }
 
-    for (int64_t i = 0; i < num_fields; ++i) {
+    for (size_t i = 0; i < num_fields; ++i) {
         md_array_push(csv->field_values, NULL, alloc);
     }
 
     while (md_buffered_reader_extract_line(&line, reader)) {
-        int64_t i;
+        size_t i;
         for (i = 0; i < num_fields; ++i) {
             if (!extract_token_delim(&tok, &line, ',')) {
                 break;
@@ -67,12 +67,12 @@ static bool parse(md_csv_t* csv, md_buffered_reader_t* reader, struct md_allocat
             if (is_float(tok)) {
                 md_array_push(csv->field_values[i], (float)parse_float(tok), alloc);
             } else {
-                MD_LOG_ERROR("CSV: Unable to parse float from token: '%.*s'", (int)tok.len, tok.ptr);
+                MD_LOG_ERROR("CSV: Unable to parse float from token: '"STR_FMT"'", STR_ARG(tok));
                 return false;
             }
         }
         if (i < num_fields || !str_empty(line)) {
-            MD_LOG_ERROR("CSV: Number of columns in row %i does not match the first row", (int)num_fields);
+            MD_LOG_ERROR("CSV: Number of columns in row %zu does not match the first row", num_fields);
             return false;
         }
     }
@@ -98,21 +98,21 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
         md_free(md_heap_allocator, buf, cap);
         return result;
     } else {
-        MD_LOG_ERROR("CSV: Failed to open file '%.*s'", (int)in_path.len, in_path.ptr);
+        MD_LOG_ERROR("CSV: Failed to open file '"STR_FMT"'", STR_ARG(in_path));
     }
     return false;
 }
 
-static void write(md_strb_t* sb, const float* field_values[], const str_t field_names[], int64_t num_fields, int64_t num_values) {
+static void write(md_strb_t* sb, const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
     if (field_names) {
-        for (int64_t i = 0; i < num_fields; ++i) {
-            md_strb_fmt(sb, "%.*s", (int)field_names[i].len, field_names[i].ptr);
+        for (size_t i = 0; i < num_fields; ++i) {
+            md_strb_fmt(sb, STR_FMT, STR_ARG(field_names[i]));
             const char c = i < num_fields - 1 ? ',' : '\n';
             md_strb_push_char(sb, c);
         }
     }
-    for (int row = 0; row < num_values; ++row) {
-        for (int64_t col = 0; col < num_fields; ++col) {
+    for (size_t row = 0; row < num_values; ++row) {
+        for (size_t col = 0; col < num_fields; ++col) {
             md_strb_fmt(sb, "%f", field_values[col][row]);
             const char c = col < num_fields - 1 ? ',' : '\n';
             md_strb_push_char(sb, c);
@@ -120,25 +120,25 @@ static void write(md_strb_t* sb, const float* field_values[], const str_t field_
     }
 }
 
-str_t md_csv_write_to_str (const float* field_values[], const str_t field_names[], int64_t num_fields, int64_t num_values, struct md_allocator_i* alloc) {
+str_t md_csv_write_to_str (const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* alloc) {
     str_t result = {0};
     if (field_values && num_fields > 0 && num_values > 0) {
         md_strb_t sb = md_strb_create(md_heap_allocator);
         write(&sb, field_values, field_names, num_fields, num_values);
-        result = str_copy(md_strb_to_str(&sb), alloc);
+        result = str_copy(md_strb_to_str(sb), alloc);
         md_strb_free(&sb);
     }
     return result;
 }
 
-bool md_csv_write_to_file(const float* field_values[], const str_t field_names[], int64_t num_fields, int64_t num_values, str_t path) {
+bool md_csv_write_to_file(const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path) {
     if (field_values && num_fields > 0 && num_values > 0) {
         md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
         if (file) {
             md_strb_t sb = md_strb_create(md_heap_allocator);
             write(&sb, field_values, field_names, num_fields, num_values);
-            str_t str = md_strb_to_str(&sb);
-            const int64_t written_bytes = md_file_write(file, str.ptr, str.len);
+            str_t str = md_strb_to_str(sb);
+            const size_t written_bytes = md_file_write(file, str.ptr, str.len);
             md_strb_free(&sb);
             md_file_close(file);
             
@@ -159,12 +159,12 @@ void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc) {
     ASSERT(alloc);
 
     if (csv->field_names) {
-        for (int64_t i = 0; i < md_array_size(csv->field_names); ++i) {
+        for (size_t i = 0; i < md_array_size(csv->field_names); ++i) {
             str_free(csv->field_names[i], alloc);
         }
     }
     
-    for (int64_t i = 0; i < md_array_size(csv->field_values); ++i) {
+    for (size_t i = 0; i < md_array_size(csv->field_values); ++i) {
         md_array_free(csv->field_values[i], alloc);
     }
     MEMSET(csv, 0, sizeof(md_csv_t));

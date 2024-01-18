@@ -26,7 +26,7 @@ static bool open_file(md_file_o* file, str_t path) {
 	return true;
 }
 
-str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, int64_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc) {
+str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, size_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc) {
 	ASSERT(str_alloc);
 	
 	md_strb_t sb = md_strb_create(md_heap_allocator);
@@ -55,27 +55,27 @@ str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, in
 	md_strb_fmt(&sb, "@ legend 0.78, 0.8\n");
 	md_strb_fmt(&sb, "@ legend length 2\n");
 	
-	for (int64_t i = 0; i < num_legends; ++i) {
+	for (size_t i = 0; i < num_legends; ++i) {
 		md_strb_fmt(&sb, "@ s%d legend \"%.*s\"\n", (int)i, (int)legends[i].len, legends[i].ptr);
 	}
 
-	str_t result = str_copy(md_strb_to_str(&sb), str_alloc);
+	str_t result = str_copy(md_strb_to_str(sb), str_alloc);
 
 	md_strb_free(&sb);
 	return result;
 }
 
-str_t md_xvg_format(str_t header, int64_t num_fields, int64_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc) {
+str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc) {
 	ASSERT(str_alloc);
 	str_t str = {0};
 
-	if (num_fields <= 0) {
-        MD_LOG_ERROR("XVG: num_fields <= 0");
+	if (num_fields == 0) {
+        MD_LOG_ERROR("XVG: num_fields is zero");
         goto done;
 	}
 
-	if (num_values <= 0) {
-        MD_LOG_ERROR("XVG: num_values <= 0");
+	if (num_values == 0) {
+        MD_LOG_ERROR("XVG: num_values is zero");
         goto done;
     }
 
@@ -88,15 +88,15 @@ str_t md_xvg_format(str_t header, int64_t num_fields, int64_t num_values, const 
 	md_strb_init(&sb, md_heap_allocator);
 	md_strb_push_str(&sb, header);
 
-	for (int i=0; i < num_values; ++i) {
-		for (int j=0; j < num_fields; ++j) {
+	for (size_t i = 0; i < num_values; ++i) {
+		for (size_t j = 0; j < num_fields; ++j) {
 			md_strb_fmt(&sb, "%12.6f", field_values[j][i]);
 			const char c = (j < num_fields - 1) ? ' ' : '\n';
 			md_strb_push_char(&sb, c);
 		}
 	}
 
-	str = str_copy(md_strb_to_str(&sb), str_alloc);
+	str = str_copy(md_strb_to_str(sb), str_alloc);
 	md_strb_free(&sb);
 done:
 	return str;
@@ -150,13 +150,13 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 		md_strb_push_char(&sb, '\n');
 	}
 
-	if (md_strb_len(&sb) == 0) {
+	if (md_strb_len(sb) == 0) {
 		MD_LOG_ERROR("XVG: Expected header section");
 		goto done;
 	}
 
 	// Extract string from reader
-	str_t header = str_copy(md_strb_to_str(&sb), alloc);
+	str_t header = str_copy(md_strb_to_str(sb), alloc);
 	header_info->header = header;
 
 	// read comment
@@ -172,14 +172,14 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	// Read meta
 	while (str_extract_line(&line, &header)) {
 		int64_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
-		if (num_tok && str_equal(tok[0], STR("@"))) {
-			if		  (str_equal(tok[1], STR("title"))) {
+		if (num_tok && str_eq(tok[0], STR_LIT("@"))) {
+			if		  (str_eq(tok[1], STR_LIT("title"))) {
 				header_info->title = remove_quotes(concat_tokens(tok[2], tok[num_tok - 1]));
-			} else if (str_equal(tok[1], STR("xaxis"))) {
+			} else if (str_eq(tok[1], STR_LIT("xaxis"))) {
 				header_info->xaxis_label = remove_quotes(concat_tokens(tok[3], tok[num_tok - 1]));
-			} else if (str_equal(tok[1], STR("yaxis"))) {
+			} else if (str_eq(tok[1], STR_LIT("yaxis"))) {
 				header_info->yaxis_label = remove_quotes(concat_tokens(tok[3], tok[num_tok - 1]));
-			} else if (str_equal(tok[2], STR("legend"))) {
+			} else if (str_eq(tok[2], STR_LIT("legend"))) {
 				md_array_push(header_info->legends, remove_quotes(concat_tokens(tok[3], tok[num_tok - 1])), alloc);
 			}
 		}
@@ -207,10 +207,10 @@ bool parse(md_xvg_t* xvg, md_buffered_reader_t* reader, md_allocator_i* alloc) {
 
 	// Go over the first line and make this our reference field line.
 	// Every following line is expected to contain as many values as this line.
-	str_t tok;
+	str_t tok = {0};
 	while (extract_token(&tok, &line)) {
 		if (!is_float(tok)) {
-			MD_LOG_ERROR("XVG: Invalid float among field values: '%*s'", (int)tok.len, tok.ptr);
+			MD_LOG_ERROR("XVG: Invalid float among field values: '"STR_FMT"'", STR_ARG(tok));
 			return false;
 		}
 		md_array(float) values = 0;
@@ -218,17 +218,17 @@ bool parse(md_xvg_t* xvg, md_buffered_reader_t* reader, md_allocator_i* alloc) {
 		md_array_push(fields, values, alloc);
 	}
 
-	const int64_t num_fields = md_array_size(fields);
+	const size_t num_fields = md_array_size(fields);
 	
 	while (md_buffered_reader_extract_line(&line, reader)) {
-		for (int64_t i = 0; i < num_fields; ++i) {
+		for (size_t i = 0; i < num_fields; ++i) {
 			if (!extract_token(&tok, &line)) {
-				MD_LOG_ERROR("XVG: To few entries in field line, expected %i, got %i: '%*s'", (int)num_fields, i);
+				MD_LOG_ERROR("XVG: To few entries in field line, expected %i, got %i", (int)num_fields, i);
 				return false;
 			}
 
 			if (!is_float(tok)) {
-				MD_LOG_ERROR("XVG: Invalid float: '%*s'", (int)tok.len, tok.ptr);
+				MD_LOG_ERROR("XVG: Invalid float: '"STR_FMT"'", STR_ARG(tok));
 				return false;
 			}
 
@@ -237,7 +237,7 @@ bool parse(md_xvg_t* xvg, md_buffered_reader_t* reader, md_allocator_i* alloc) {
 	}
 
 	if (fields == 0) {
-		MD_LOG_ERROR("XVG: Missing field values", (int)tok.len, tok.ptr);
+		MD_LOG_ERROR("XVG: Missing field values");
 		return false;
 	}
 	
@@ -261,11 +261,11 @@ bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 	md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
 
 	if (!file) {
-		MD_LOG_ERROR("XVG: Failed to deserialize file, file could not be opened '%.*s'", (int)path.len, path.ptr);
+		MD_LOG_ERROR("XVG: Failed to deserialize file, file could not be opened '"STR_FMT"'", STR_ARG(path));
 		return false;
 	}
 
-	int64_t cap = MEGABYTES(1);
+	const size_t cap = MEGABYTES(1);
 	char* buf = md_alloc(md_heap_allocator, cap);
 	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 

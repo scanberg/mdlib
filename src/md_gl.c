@@ -75,7 +75,7 @@ enum {
     GL_BUFFER_ATOM_RADIUS,                     // float
     GL_BUFFER_ATOM_VELOCITY,                   // vec3
     GL_BUFFER_ATOM_FLAGS,                      // u8
-    GL_BUFFER_RESIDUE_ATOM_RANGE,              // u32[2]   (beg, end)
+    //GL_BUFFER_RESIDUE_ATOM_RANGE,              // u32[2]   (beg, end)
     GL_BUFFER_RESIDUE_AABB,                    // vec3[2]  (aabb_min, aabb_max)
     GL_BUFFER_RESIDUE_VISIBLE,                 // int
     GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
@@ -273,7 +273,7 @@ static inline uint32_t gl_texture_height(gl_texture_t tex, uint32_t level) {
 static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, str_t extra_src) {
     md_strb_t sb = md_strb_create(md_temp_allocator);
     
-    if (!str_equal_cstr_n(src, "#version ", 9)) {
+    if (!str_eq_cstr_n(src, "#version ", 9)) {
         MD_LOG_ERROR("Missing version string as first line in shader!");
         return false;
     }
@@ -290,7 +290,7 @@ static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, 
     if (!str_empty(extra_src)) {
         str_t line;
         while (str_extract_line(&line, &src)) {
-            if (!str_equal_cstr_n(line, "#pragma EXTRA_SRC", 17)) {
+            if (!str_eq_cstr_n(line, "#pragma EXTRA_SRC", 17)) {
                 md_strb_push_str(&sb, line);
                 md_strb_push_char(&sb, '\n');
             } else {
@@ -302,7 +302,7 @@ static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, 
         md_strb_push_str(&sb, src);
     }
 
-    const char* csrc = md_strb_to_cstr(&sb);
+    const char* csrc = md_strb_to_cstr(sb);
     
     glShaderSource(shader, 1, &csrc, 0);
     glCompileShader(shader);
@@ -764,8 +764,8 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
     GLuint frag_shader = glCreateShader(GL_FRAGMENT_SHADER);
 
     const str_t perm_str[] = {
-        STR("#define ORTHO 0"),
-        STR("#define ORTHO 1"),
+        STR_LIT("#define ORTHO 0"),
+        STR_LIT("#define ORTHO 1"),
     };
     
     ASSERT(ARRAY_SIZE(perm_str) <= MAX_SHADER_PERMUTATIONS);
@@ -774,16 +774,16 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
         const str_t defines = perm_str[perm];
 
         if (!str_empty(vert_src) && !compile_shader_from_source(vert_shader, vert_src, defines, (str_t){0})) {
-            MD_LOG_ERROR("Error occured when compiling vertex shader for: '%.*s'", STR_FMT(identifier));
+            MD_LOG_ERROR("Error occured when compiling vertex shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
             
         if (!str_empty(geom_src) && !compile_shader_from_source(geom_shader, geom_src, defines, (str_t){0})) {
-            MD_LOG_ERROR("Error occured when compiling geometry shader for: '%.*s'", STR_FMT(identifier));
+            MD_LOG_ERROR("Error occured when compiling geometry shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
         if (!str_empty(frag_src) && !compile_shader_from_source(frag_shader, frag_src, defines, frag_output_src)) {
-            MD_LOG_ERROR("Error occured when compiling fragment shader for: '%.*s'", STR_FMT(identifier));
+            MD_LOG_ERROR("Error occured when compiling fragment shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
 
@@ -913,10 +913,10 @@ bool md_gl_shaders_init(md_gl_shaders_t* ext_shaders, const char* custom_shader_
         if (str_empty(custom_shader_snippet)) {
             custom_shader_snippet = default_shader_output;
         }
-        if (!create_permuted_program(STR("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_geom, spacefill_geom_size},   (str_t){(const char*)spacefill_frag, spacefill_frag_size},    custom_shader_snippet)) return false;
-        if (!create_permuted_program(STR("Licorice"),  shaders->licorice,   (str_t){(const char*)licorice_vert, licorice_vert_size},   (str_t){(const char*)licorice_geom, licorice_geom_size},     (str_t){(const char*)licorice_frag, licorice_frag_size},      custom_shader_snippet)) return false;
-        if (!create_permuted_program(STR("Ribbons"),   shaders->ribbons,    (str_t){(const char*)ribbons_vert, ribbons_vert_size},     (str_t){(const char*)ribbons_geom, ribbons_geom_size},       (str_t){(const char*)ribbons_frag, ribbons_frag_size},        custom_shader_snippet)) return false;
-        if (!create_permuted_program(STR("Cartoon"),   shaders->cartoon,    (str_t){(const char*)cartoon_vert, cartoon_vert_size},     (str_t){(const char*)cartoon_geom, cartoon_geom_size},       (str_t){(const char*)cartoon_frag, cartoon_frag_size},        custom_shader_snippet)) return false;
+        if (!create_permuted_program(STR_LIT("SpaceFill"), shaders->spacefill,  (str_t){(const char*)spacefill_vert, spacefill_vert_size}, (str_t){(const char*)spacefill_geom, spacefill_geom_size},   (str_t){(const char*)spacefill_frag, spacefill_frag_size},    custom_shader_snippet)) return false;
+        if (!create_permuted_program(STR_LIT("Licorice"),  shaders->licorice,   (str_t){(const char*)licorice_vert, licorice_vert_size},   (str_t){(const char*)licorice_geom, licorice_geom_size},     (str_t){(const char*)licorice_frag, licorice_frag_size},      custom_shader_snippet)) return false;
+        if (!create_permuted_program(STR_LIT("Ribbons"),   shaders->ribbons,    (str_t){(const char*)ribbons_vert, ribbons_vert_size},     (str_t){(const char*)ribbons_geom, ribbons_geom_size},       (str_t){(const char*)ribbons_frag, ribbons_frag_size},        custom_shader_snippet)) return false;
+        if (!create_permuted_program(STR_LIT("Cartoon"),   shaders->cartoon,    (str_t){(const char*)cartoon_vert, cartoon_vert_size},     (str_t){(const char*)cartoon_geom, cartoon_geom_size},       (str_t){(const char*)cartoon_frag, cartoon_frag_size},        custom_shader_snippet)) return false;
     }
 
     return true;
@@ -962,28 +962,27 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
         //if (mol->atom.flags)  md_gl_molecule_set_atom_flags(ext_mol,  0, gl_mol->atom_count, mol->atom.flags, 0);
 
         gl_mol->residue_count = (uint32_t)mol->residue.count;
-        gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
-        gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
-        gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE]          = gl_buffer_create(gl_mol->residue_count * sizeof(md_range_t),   NULL, GL_STATIC_DRAW);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_AABB]                = gl_buffer_create(gl_mol->residue_count * sizeof(float) * 6,    NULL, GL_DYNAMIC_COPY);
+        //gl_mol->buffer[GL_BUFFER_RESIDUE_VISIBLE]             = gl_buffer_create(gl_mol->residue_count * sizeof(int),          NULL, GL_DYNAMIC_COPY);
 
-        if (mol->residue.atom_range)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
+        //if (mol->residue.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
         //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
-        if (mol->backbone.range_count > 0 && mol->backbone.range && mol->backbone.atoms && mol->residue.atom_range && mol->backbone.secondary_structure) {
+        if (mol->backbone.range.count > 0 && mol->backbone.range.offset && mol->backbone.atoms && mol->backbone.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
-            for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
-                uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
+            for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
+                uint32_t res_count = mol->backbone.range.offset[i+1] - mol->backbone.range.offset[i];
                 backbone_residue_count += res_count;
-                backbone_spline_count += (res_count) * MD_GL_SPLINE_SUBDIVISION_COUNT;
+                backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; // +1 For the last point
             }
-            backbone_spline_count += 1; // End point
 
             const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
-            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range_count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
+            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range_count * (1); // primitive restart between each chain + end
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range.count * (1); // Primitive restart between chains
 
             gl_mol->buffer[GL_BUFFER_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
@@ -998,13 +997,13 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
-                    uint32_t beg = (uint32_t)mol->backbone.range[i].beg;
-                    uint32_t end = (uint32_t)mol->backbone.range[i].end;
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
+                    uint32_t beg = (uint32_t)mol->backbone.range.offset[i];
+                    uint32_t end = (uint32_t)mol->backbone.range.offset[i+1];
                     for (uint32_t j = beg; j < end; ++j) {
                         const uint32_t flags = (j == beg ? 1 : 0) | (j == end - 1 ? 2 : 0);
                         backbone_data[idx].residue_idx = j;
-                        backbone_data[idx].segment_idx = j - mol->backbone.range[i].beg;
+                        backbone_data[idx].segment_idx = j - beg;
                         backbone_data[idx].ca_idx = mol->backbone.atoms[j].ca;
                         backbone_data[idx].c_idx  = mol->backbone.atoms[j].c;
                         backbone_data[idx].o_idx  = mol->backbone.atoms[j].o;
@@ -1021,10 +1020,9 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (secondary_structure) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
-                    for (uint32_t j = (uint32_t)mol->backbone.range[i].beg; j < (uint32_t)mol->backbone.range[i].end; ++j) {
-                        secondary_structure[idx] = mol->backbone.secondary_structure[j];
-                        ++idx;
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
+                    for (uint32_t j = mol->backbone.range.offset[i]; j < mol->backbone.range.offset[i+1]; ++j) {
+                        secondary_structure[idx++] = mol->backbone.secondary_structure[j];
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -1037,9 +1035,9 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (control_point_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range_count; ++i) {
+                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
                     control_point_index[len++] = idx;
-                    for (uint32_t j = (uint32_t)mol->backbone.range[i].beg; j < (uint32_t)mol->backbone.range[i].end; ++j) {
+                    for (uint32_t j = mol->backbone.range.offset[i]; j < mol->backbone.range.offset[i+1]; ++j) {
                         control_point_index[len++] = idx++;
                     }
                     control_point_index[len++] = idx-1;
@@ -1056,15 +1054,15 @@ bool md_gl_molecule_init(md_gl_molecule_t* ext_mol, const md_molecule_t* mol) {
             if (spline_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                uint32_t range_count = (uint32_t)mol->backbone.range_count;
+                uint32_t range_count = (uint32_t)mol->backbone.range.count;
                 for (uint32_t i = 0; i < range_count; ++i) {
-                    uint32_t res_count = mol->backbone.range[i].end - mol->backbone.range[i].beg;
+                    uint32_t res_count = mol->backbone.range.offset[i+1] - mol->backbone.range.offset[i];
                     if (res_count > 0) {
                         for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; ++j) {
                             spline_index[len++] = idx++;
                         }
                     }
-                    spline_index[len++] = 0xFFFFFFFF;
+                    spline_index[len++] = 0xFFFFFFFFU;
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
             } else {
@@ -1240,7 +1238,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             md_array_push(draw_ops, draw_op, md_temp_allocator);
                 
             int64_t mol_idx = -1;
-            for (int64_t j = 0; j < md_array_size(draw_mols); j++) {
+            for (size_t j = 0; j < md_array_size(draw_mols); j++) {
                 if (draw_mols[j].mol == rep->mol) {
                     mol_idx = j;
                     break;
@@ -1276,7 +1274,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     uint32_t index_base[2] = {0,0};
         
     PUSH_GPU_SECTION("DRAW REPRESENTATIONS")
-    for (int64_t i = 0; i < md_array_size(draw_ops); i++) {
+    for (size_t i = 0; i < md_array_size(draw_ops); i++) {
         const md_gl_draw_op_t* draw_op = draw_ops[i];
         const internal_rep_t* rep  = (const internal_rep_t*)draw_ops[i]->rep;
         const internal_mol_t* mol  = (const internal_mol_t*)rep->mol; 

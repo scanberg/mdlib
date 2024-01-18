@@ -39,7 +39,7 @@ UTEST(spatial_hash, small_periodic) {
 
 UTEST(spatial_hash, big) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(64));
-    const str_t pdb_file = STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
+    const str_t pdb_file = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
     ASSERT_TRUE(md_pdb_data_parse_file(&pdb_data, pdb_file, alloc));
@@ -73,7 +73,7 @@ UTEST_F_SETUP(spatial_hash) {
     utest_fixture->alloc = md_vm_arena_create_interface(&utest_fixture->arena);
 
     md_gro_data_t gro_data = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR(MD_UNITTEST_DATA_DIR "/centered.gro"), &utest_fixture->alloc));
+    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), &utest_fixture->alloc));
     ASSERT_TRUE(md_gro_molecule_init(&utest_fixture->mol, &gro_data, &utest_fixture->alloc));
     utest_fixture->pbc_ext = mat3_mul_vec3(utest_fixture->mol.unit_cell.basis, vec3_set1(1.f));
 }
@@ -148,7 +148,7 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     md_molecule_t mol;
-    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc));
+    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
     ASSERT_TRUE(spatial_hash);
@@ -188,7 +188,7 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     md_molecule_t mol;
-    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc));
+    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
     vec3_t* xyz = md_array_create(vec3_t, mol.atom.count, alloc);
     for (int i = 0; i < mol.atom.count; ++i) {
@@ -233,7 +233,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     md_molecule_t mol;
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/water.gro"), alloc));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, NULL, alloc);
     ASSERT_TRUE(spatial_hash);
@@ -317,7 +317,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
     md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
 
     md_molecule_t mol;
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR(MD_UNITTEST_DATA_DIR "/water.gro"), alloc));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
     ASSERT_TRUE(spatial_hash);

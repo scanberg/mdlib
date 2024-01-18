@@ -64,10 +64,12 @@ STATIC_ASSERT(sizeof(sem_t) <= sizeof(md_semaphore_t), "Linux sem_t does not fit
 #endif
 
 #if MD_PLATFORM_OSX
+#include <limits.h>
 #include <sys/param.h>
 #include <mach/mach_init.h>
 #include <mach/task.h>
 #include <mach/semaphore.h>
+#include <mach-o/dyld.h>
 
 STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t does not fit into md_semaphore_t!");
 #endif
@@ -97,12 +99,12 @@ static void print_windows_error() {
 }
 #endif
 
-static int64_t fullpath(char* buf, int64_t cap, str_t path) {
+static size_t fullpath(char* buf, size_t cap, str_t path) {
     str_t zpath = str_copy(path, md_temp_allocator); // Zero terminate
     if (zpath.len == 0) return 0;
     
 #if MD_PLATFORM_WINDOWS
-    int64_t len = (int64_t)GetFullPathName(zpath.ptr, (DWORD)cap, buf, NULL);
+    size_t len = GetFullPathName(zpath.ptr, (DWORD)cap, buf, NULL);
     if (len == 0) {
         print_windows_error();
         return 0;
@@ -110,11 +112,11 @@ static int64_t fullpath(char* buf, int64_t cap, str_t path) {
     return len;
 
 #elif MD_PLATFORM_UNIX
-    int64_t len = 0;
+    size_t len = 0;
     if (realpath(zpath.ptr, buf) != NULL) {
         // realpath will not append a trailing '/' if the path is a directory. We want this to
         // be able to resolve relative paths more easily
-        len = (int64_t)strnlen(buf, cap);
+        len = strnlen(buf, cap);
         if (len > 0 && md_path_is_directory((str_t){buf, len}) && buf[len-1] != '/') {
             if (len < cap) {
                 buf[len++] = '/';
@@ -141,7 +143,7 @@ static int64_t fullpath(char* buf, int64_t cap, str_t path) {
 #endif
 }
 
-int64_t md_path_write_cwd(char* buf, int64_t cap) {
+size_t md_path_write_cwd(char* buf, size_t cap) {
     char* val;
 #if MD_PLATFORM_WINDOWS
     val = _getcwd(buf, (int)cap);
@@ -154,7 +156,30 @@ int64_t md_path_write_cwd(char* buf, int64_t cap) {
     	MD_LOG_ERROR("Failed to get current working directory");
 		return 0;
     }
-    return (int64_t)strnlen(buf, cap);
+    return strnlen(buf, cap);
+}
+
+size_t md_path_write_exe(char* buf, size_t buf_cap) {
+#if MD_PLATFORM_WINDOWS
+    DWORD res = GetModuleFileName(NULL, buf, (DWORD)buf_cap);
+    if (res != 0) {
+        return (size_t)res;
+    }
+#elif MD_PLATFORM_LINUX
+    ssize_t res = readlink("/proc/self/exe", buf, buf_cap);
+    if (res != -1) {
+    	return (size_t)res;
+    }
+#elif MD_PLATFORM_OSX
+	uint32_t buf_cap32 = (uint32_t)buf_cap;
+	int res = _NSGetExecutablePath(buf, &buf_cap32);
+	if (res == 0) {
+    	return (size_t)buf_cap32;
+    }
+#else
+    ASSERT(false);
+#endif
+    return 0;
 }
 
 bool md_path_set_cwd(str_t path) {
@@ -187,10 +212,10 @@ bool md_path_set_cwd(str_t path) {
     return false;
 }
 
-int64_t md_path_write_canonical(char* buf, int64_t cap, str_t path) {
-    int64_t len = fullpath(buf, cap, path);
+size_t md_path_write_canonical(char* buf, size_t cap, str_t path) {
+    size_t len = fullpath(buf, cap, path);
 #if MD_PLATFORM_WINDOWS
-    convert_backslashes(buf, len);
+    replace_char(buf, len, '\\', '/');
 #endif
     return len;
 }
@@ -198,7 +223,7 @@ int64_t md_path_write_canonical(char* buf, int64_t cap, str_t path) {
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char buf[MD_MAX_PATH];
-    const int64_t len = fullpath(buf, sizeof(buf), path);
+    const size_t len = fullpath(buf, sizeof(buf), path);
     str_t result = {0};
 
     if (path.len > 0 && len == 0) {
@@ -207,22 +232,22 @@ str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc) {
     }
 
 #if MD_PLATFORM_WINDOWS
-    convert_backslashes(buf, len);
+    replace_char(buf, len, '\\', '/');
 #endif
     
     return str_copy_cstrn(buf, len, alloc);
 }
 
-int64_t md_path_write_relative(char* out_buf, int64_t out_cap, str_t from, str_t to) {
+size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t to) {
     char from_buf[MD_MAX_PATH];
     char   to_buf[MD_MAX_PATH];
 
     bool success = false;
-    int64_t len = 0;
+    size_t len = 0;
 
     // Make 2 canonical paths
-    const int64_t from_len = fullpath(from_buf, sizeof(from_buf), from);
-    const int64_t to_len   = fullpath(to_buf, sizeof(to_buf), to);
+    const size_t from_len = fullpath(from_buf, sizeof(from_buf), from);
+    const size_t to_len   = fullpath(to_buf, sizeof(to_buf), to);
 
 #if MD_PLATFORM_WINDOWS
     (void)from_len;
@@ -231,8 +256,8 @@ int64_t md_path_write_relative(char* out_buf, int64_t out_cap, str_t from, str_t
     //MD_LOG_DEBUG("rel_to:   '%s'", to_buf);
     
     success = PathRelativePathTo(out_buf, from_buf, FILE_ATTRIBUTE_NORMAL, to_buf, FILE_ATTRIBUTE_NORMAL);
-    len = (int64_t)strnlen(out_buf, out_cap);
-    convert_backslashes(out_buf, len);
+    len = strnlen(out_buf, out_cap);
+    replace_char(out_buf, len, '\\', '/');
 #elif MD_PLATFORM_UNIX
 
     // Find the common base
@@ -242,7 +267,7 @@ int64_t md_path_write_relative(char* out_buf, int64_t out_cap, str_t from, str_t
     //MD_LOG_DEBUG("rel_from: '%.*s'", (int)can_from.len, can_from.ptr);
     //MD_LOG_DEBUG("rel_to:   '%.*s'", (int)can_to.len, can_to.ptr);
     
-    int64_t count = str_count_equal_chars(can_from, can_to);
+    size_t count = str_count_equal_chars(can_from, can_to);
     success = count > 0;
 
     if (success) {
@@ -250,7 +275,7 @@ int64_t md_path_write_relative(char* out_buf, int64_t out_cap, str_t from, str_t
         str_t rel_to   = str_substr(can_to,   count, -1);
 
         // Count number of folders as N in from and add N times '../'
-        int64_t folder_count = str_count_occur_char(rel_from, '/');
+        size_t folder_count = str_count_occur_char(rel_from, '/');
         if (folder_count) {
             while (folder_count-- > 0) {
                 len += snprintf(out_buf + len, out_cap - len, "../");
@@ -274,7 +299,7 @@ int64_t md_path_write_relative(char* out_buf, int64_t out_cap, str_t from, str_t
 str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) {
     ASSERT(alloc);
     char  rel_buf[MD_MAX_PATH];
-    int64_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
+    size_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
     if (!len) {
         MD_LOG_ERROR("Failed to extract relative path.");
         return (str_t){0};
@@ -435,7 +460,7 @@ bool md_file_seek(md_file_o* file, int64_t offset, md_file_seek_origin_t origin)
 #endif
 }
 
-int64_t md_file_size(md_file_o* file) {
+size_t md_file_size(md_file_o* file) {
     if (!file) {
         MD_LOG_ERROR("File handle was NULL");
         return 0;
@@ -444,33 +469,33 @@ int64_t md_file_size(md_file_o* file) {
     md_file_seek(file, 0, SEEK_END);
     int64_t end = md_file_tell(file);
     md_file_seek(file, cur, SEEK_SET);
-    return end;
+    return (size_t)end;
 }
 
 // Returns the number of successfully written/read bytes
-int64_t md_file_read(md_file_o* file, void* ptr, int64_t num_bytes) {
+size_t md_file_read(md_file_o* file, void* ptr, size_t num_bytes) {
     if (!file) {
         MD_LOG_ERROR("File handle was NULL");
         return 0;
     }
-    return (int64_t)fread(ptr, 1, num_bytes, (FILE*)file);
+    return fread(ptr, 1, num_bytes, (FILE*)file);
 }
 
-int64_t md_file_read_line(md_file_o* file, char* buf, int64_t cap) {
+size_t md_file_read_line(md_file_o* file, char* buf, size_t cap) {
     int64_t pos = md_file_tell(file);
     char* res = fgets(buf, (int)cap, (FILE*)file);
     int64_t len = md_file_tell(file) - pos;
     return res ? len : 0;
 }
 
-int64_t md_file_read_lines(md_file_o* file, char* buf, int64_t cap) {
+size_t md_file_read_lines(md_file_o* file, char* buf, size_t cap) {
     if (!file || !buf || cap < 1) return 0;
     
-    int64_t len = (int64_t)fread(buf, 1, cap, (FILE*)file);
+    size_t len = fread(buf, 1, cap, (FILE*)file);
     if (len == cap) {
+        size_t loc;
         const str_t str = {buf, len};
-        const int64_t loc = str_rfind_char(str, '\n');
-        if (loc != -1) {
+        if (str_rfind_char(&loc, str, '\n')) {
             const long offset = (long)loc + 1 - (long)len;
             fseek((FILE*)file, offset, SEEK_CUR);
             len = loc + 1;
@@ -479,12 +504,12 @@ int64_t md_file_read_lines(md_file_o* file, char* buf, int64_t cap) {
     return len;
 }
 
-int64_t md_file_write(md_file_o* file, const void* ptr, int64_t num_bytes) {
+size_t md_file_write(md_file_o* file, const void* ptr, size_t num_bytes) {
     ASSERT(file);
     return fwrite(ptr, 1, num_bytes, (FILE*)file);
 }
 
-int64_t md_file_printf(md_file_o* file, const char* format, ...) {
+size_t md_file_printf(md_file_o* file, const char* format, ...) {
     ASSERT(file);
     va_list args;
     va_start (args, format);
@@ -550,41 +575,41 @@ double md_time_as_seconds(md_timestamp_t t) {
 // Linux equivalent of virtual memory allocation is partly taken from here
 // https://forums.pcsx2.net/Thread-blog-VirtualAlloc-on-Linux
 
-uint64_t md_os_physical_ram(void) {
+size_t md_os_physical_ram(void) {
 #if MD_PLATFORM_WINDOWS
     MEMORYSTATUSEX status = {
         .dwLength = sizeof(MEMORYSTATUSEX),
     };
     GlobalMemoryStatusEx(&status);
-    return status.ullTotalPhys;
+    return (size_t)status.ullTotalPhys;
 #elif MD_PLATFORM_UNIX
     long pages = sysconf(_SC_PHYS_PAGES);
     long page_size = sysconf(_SC_PAGE_SIZE);
-    return pages * page_size;
+    return (size_t)(pages * page_size);
 #else
     ASSERT(false);
     return 0;
 #endif
 }
 
-uint64_t md_os_num_processors(void) {
+size_t md_os_num_processors(void) {
 #if MD_PLATFORM_WINDOWS
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);
     int num_cpu = sysinfo.dwNumberOfProcessors;
-    return (uint64_t)num_cpu;
+    return (size_t)num_cpu;
 #elif MD_PLATFORM_UNIX
     int num_cpu = sysconf(_SC_NPROCESSORS_ONLN);
-    return (uint64_t)num_cpu;
+    return (size_t)num_cpu;
 #else
     ASSERT(false);
     return 0;
 #endif
 }
 
-static uint64_t page_size = 0;
+static size_t page_size = 0;
 
-uint64_t md_vm_page_size(void) {
+size_t md_vm_page_size(void) {
     if (!page_size) {
 #if MD_PLATFORM_WINDOWS
         SYSTEM_INFO info;
@@ -599,8 +624,8 @@ uint64_t md_vm_page_size(void) {
     return page_size;
 }
 
-void* md_vm_reserve(uint64_t size) {
-    const uint64_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+void* md_vm_reserve(size_t size) {
+    const size_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
 #if MD_PLATFORM_WINDOWS
     return VirtualAlloc(0, gb_snapped_size, MEM_RESERVE, PAGE_NOACCESS);
 #elif MD_PLATFORM_UNIX
@@ -612,36 +637,38 @@ void* md_vm_reserve(uint64_t size) {
 #endif
 }
 
-void md_vm_release(void* ptr, uint64_t size) {
+void md_vm_release(void* ptr, size_t size) {
 #if MD_PLATFORM_WINDOWS
     (void)size;
     VirtualFree(ptr, 0, MEM_RELEASE);
 #elif MD_PLATFORM_UNIX
-    uint64_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
+    size_t gb_snapped_size = ALIGN_TO(size, GIGABYTES(1));
     int result;
     //result = madvise(ptr, -1, MADV_DONTNEED);
     //ASSERT(result == 0);
     result = munmap(ptr, gb_snapped_size);
     ASSERT(result == 0);
+    (void)result;
 #else
     ASSERT(false);
 #endif
 }
 
-void md_vm_commit(void* ptr, uint64_t size) {
-    const uint64_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+void md_vm_commit(void* ptr, size_t size) {
+    const size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
 #if MD_PLATFORM_WINDOWS
     void* result = VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
     ASSERT(result != NULL);
 #elif MD_PLATFORM_UNIX
     int result = mprotect(ptr, page_snapped_size, PROT_READ | PROT_WRITE);
     ASSERT(result == 0);
+    (void)result;
 #else
     ASSERT(false);
 #endif
 }
 
-void md_vm_decommit(void* ptr, uint64_t size) {
+void md_vm_decommit(void* ptr, size_t size) {
 #if MD_PLATFORM_WINDOWS
 #if MD_COMPILER_MSVC
 #   pragma warning(suppress : 6250)
@@ -649,11 +676,12 @@ void md_vm_decommit(void* ptr, uint64_t size) {
     VirtualFree(ptr, size, MEM_DECOMMIT);
 #elif MD_PLATFORM_UNIX
     int result;
-    uint64_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
+    size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
     result = mprotect(ptr, page_snapped_size, PROT_NONE);
     ASSERT(result == 0);
     result = madvise(ptr, page_snapped_size, MADV_DONTNEED);
     ASSERT(result == 0);
+    (void)result;
 #else
     ASSERT(false);
 #endif
@@ -745,7 +773,7 @@ bool md_thread_on_exit(md_thread_exit callback) {
 #endif
 }
 
-void md_thread_sleep(uint64_t milliseconds) {
+void md_thread_sleep(size_t milliseconds) {
 #if MD_PLATFORM_WINDOWS
     Sleep((DWORD)milliseconds);
 #elif MD_PLATFORM_UNIX
@@ -828,7 +856,7 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 
 // ### SEMAPHORE ###
 
-bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
+bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
 #if MD_PLATFORM_WINDOWS
     semaphore->_data[0] = CreateSemaphoreA(NULL, (LONG)initial_count, MAXLONG, NULL);
     return semaphore != NULL;
@@ -837,11 +865,11 @@ bool md_semaphore_init(md_semaphore_t* semaphore, int32_t initial_count) {
 #elif MD_PLATFORM_OSX
     semaphore_t sema;
     mach_port_t self = mach_task_self();
-    kern_return_t ret = semaphore_create(self, &sema, SYNC_POLICY_FIFO, initial_count);
+    kern_return_t ret = semaphore_create(self, &sema, SYNC_POLICY_FIFO, (int)initial_count);
     if (ret != KERN_SUCCESS) {
         MD_LOG_ERROR("Failed to initialize semaphore");
     }
-    semaphore->_data[0] = (void*)(uint64_t)sema;
+    MEMCPY(semaphore, &sema, sizeof(semaphore_t));
     return ret == KERN_SUCCESS;
 #endif
 }
@@ -858,8 +886,10 @@ bool md_semaphore_destroy(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_destroy((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
+    semaphore_t sema;
+    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
     mach_port_t self = mach_task_self();
-    return semaphore_destroy(self, (semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
+    return semaphore_destroy(self, sema) == KERN_SUCCESS;
 #endif
 }
 
@@ -869,7 +899,9 @@ bool md_semaphore_aquire(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_wait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
-    return semaphore_wait((semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
+    semaphore_t sema;
+    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    return semaphore_wait(sema) == KERN_SUCCESS;
 #endif
 }
 
@@ -879,14 +911,16 @@ bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_trywait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
+    semaphore_t sema;
+    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
     mach_timespec_t mts;
     mts.tv_sec = 0;
     mts.tv_nsec = 0;
-    return semaphore_timedwait((semaphore_t)semaphore->_data[0], mts) == KERN_SUCCESS;
+    return semaphore_timedwait(sema, mts) == KERN_SUCCESS;
 #endif
 }
 
-bool md_semaphore_query_count(md_semaphore_t* semaphore, int32_t* count) {
+bool md_semaphore_query_count(md_semaphore_t* semaphore, size_t* count) {
     ASSERT(semaphore);
     ASSERT(count);
 #if MD_PLATFORM_WINDOWS
@@ -919,22 +953,24 @@ bool md_semaphore_release(md_semaphore_t* semaphore) {
 #elif MD_PLATFORM_LINUX
     return sem_post((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
-    return semaphore_signal((semaphore_t)semaphore->_data[0]) == KERN_SUCCESS;
+    semaphore_t sema;
+    MEMCPY(&sema, semaphore, sizeof(semaphore_t));
+    return semaphore_signal(sema) == KERN_SUCCESS;
 #endif
 }
 
 // Common high level Semaphore operations
 
-md_semaphore_t md_semaphore_create(int32_t initial_count) {
+md_semaphore_t md_semaphore_create(size_t initial_count) {
     md_semaphore_t semaphore;
     md_semaphore_init(&semaphore, initial_count);
     return semaphore;
 }
 
-bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, int32_t count) {
+bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, size_t count) {
     ASSERT(count > 0);
-    int32_t aquired_count = 0;
-    for (int32_t i = 0; i < count; ++i) {
+    size_t aquired_count = 0;
+    for (size_t i = 0; i < count; ++i) {
         aquired_count += md_semaphore_try_aquire(semaphore) == true ? 1 : 0;
     }
     if (aquired_count == count) {
@@ -944,9 +980,9 @@ bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, int32_t count) {
     return false;
 }
 
-bool md_semaphore_release_n(md_semaphore_t* semaphore, int32_t count) {
+bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
     bool result = true;
-    for (int32_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         result |= md_semaphore_release(semaphore);
     }
     return result;

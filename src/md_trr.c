@@ -183,7 +183,7 @@ static bool trr_read_frame_header(XDRFILE* xd, trr_header_t* sh) {
     return true;
 }
 
-static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box, md_vec3_soa_t* x, md_vec3_soa_t* v, md_vec3_soa_t* f) {
+static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box, float* x[3], float* v[3], float* f[3]) {
     bool allocate_temp = (sh->x_size != 0) || (sh->v_size != 0) || (sh->f_size != 0);
 
     /* Double */
@@ -230,9 +230,9 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                 for (int i = 0; i < sh->natoms; ++i) {
                     if (xdrfile_read_double(c, DIM, xd) == DIM) {
                         // @TODO: This scaling should be moved out of the core parts and into the loader which ties it with viamd.
-                        x->x[i] = (float)(c[0] * 10);
-                        x->y[i] = (float)(c[1] * 10);
-                        x->z[i] = (float)(c[2] * 10);
+                        x[0][i] = (float)(c[0] * 10);
+                        x[1][i] = (float)(c[1] * 10);
+                        x[2][i] = (float)(c[2] * 10);
                     } else {
                         MD_LOG_ERROR("TRR: Failed to read coordinate entry in frame");
                         return false;
@@ -251,9 +251,9 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                 for (int i = 0; i < sh->natoms; ++i) {
                     if (xdrfile_read_double(c, DIM, xd) == DIM) {
                         // @TODO: This scaling should be moved out of the core parts and into the loader which ties it with viamd.
-                        v->x[i] = (float)(c[0] * 10);
-                        v->y[i] = (float)(c[1] * 10);
-                        v->z[i] = (float)(c[2] * 10);
+                        v[0][i] = (float)(c[0] * 10);
+                        v[1][i] = (float)(c[1] * 10);
+                        v[2][i] = (float)(c[2] * 10);
                     } else {
                         MD_LOG_ERROR("TRR: Failed to read velocity entry in frame");
                         return false;
@@ -271,9 +271,9 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                 double c[3];
                 for (int i = 0; i < sh->natoms; ++i) {
                     if (xdrfile_read_double(c, DIM, xd) == DIM) {
-                        f->x[i] = (float)c[0];
-                        f->y[i] = (float)c[1];
-                        f->z[i] = (float)c[2];
+                        f[0][i] = (float)c[0];
+                        f[1][i] = (float)c[1];
+                        f[2][i] = (float)c[2];
                     } else {
                         MD_LOG_ERROR("TRR: Failed to read force entry in frame");
                         return false;
@@ -335,9 +335,9 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                 for (int i = 0; i < sh->natoms; ++i) {
                     if (xdrfile_read_float(c, DIM, xd) == DIM) {
                         // @TODO: This scaling should be moved out of the core parts and into the loader which ties it with viamd.
-                        x->x[i] = c[0] * 10;
-                        x->y[i] = c[1] * 10;
-                        x->z[i] = c[2] * 10;
+                        x[0][i] = c[0] * 10;
+                        x[1][i] = c[1] * 10;
+                        x[2][i] = c[2] * 10;
                     } else {
                         MD_LOG_ERROR("TRR: Failed to read coordinate entry in frame");
                         return false;
@@ -356,9 +356,9 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                 for (int i = 0; i < sh->natoms; ++i) {
                     if (xdrfile_read_float(c, DIM, xd) == DIM) {
                         // @TODO: This scaling should be moved out of the core parts and into the loader which ties it with viamd.
-                        v->x[i] = c[0] * 10;
-                        v->y[i] = c[1] * 10;
-                        v->z[i] = c[2] * 10;
+                        v[0][i] = c[0] * 10;
+                        v[1][i] = c[1] * 10;
+                        v[2][i] = c[2] * 10;
                     } else {
                         MD_LOG_ERROR("TRR: Failed to read velocity entry in frame");
                         return false;
@@ -376,9 +376,9 @@ static bool trr_read_frame_data(XDRFILE* xd, const trr_header_t* sh, matrix box,
                 float c[3];
                 for (int i = 0; i < sh->natoms; ++i) {
                     if (xdrfile_read_float(c, DIM, xd) == DIM) {
-                        f->x[i] = c[0];
-                        f->y[i] = c[1];
-                        f->z[i] = c[2];
+                        f[0][i] = c[0];
+                        f[1][i] = c[1];
+                        f[2][i] = c[2];
                     } else {
                         MD_LOG_ERROR("TRR: Failed to read force entry in frame");
                         return false;
@@ -422,8 +422,8 @@ static int64_t trr_read_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* 
     int est_nframes = (int)(filesize / ((int64_t)(framebytes + TRR_MIN_HEADER_SIZE)) + 1); /* must be at least 1 for successful growth */
 
     /* Allocate memory for the frame index array */
-    md_array_ensure(*offsets, est_nframes, alloc);
-    md_array_ensure(*times,   est_nframes, alloc);
+    md_array_ensure(*offsets, (size_t)est_nframes, alloc);
+    md_array_ensure(*times,   (size_t)est_nframes, alloc);
     md_array_push(*offsets, 0, alloc);
 
     int64_t num_frames = 1;
@@ -469,7 +469,7 @@ bool trr_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
 }
 
 // This is lowlevel cruft for enabling parallel loading and decoding of frames
-static int64_t trr_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
+static size_t trr_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
     trr_t* trr = (trr_t*)inst;
     ASSERT(trr);
     ASSERT(trr->magic == MD_TRR_TRAJ_MAGIC);
@@ -484,14 +484,14 @@ static int64_t trr_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_
         return 0;
     }
 
-    if (frame_idx < 0 || trr->header.num_frames <= frame_idx) {
+    if (frame_idx < 0 || (int64_t)trr->header.num_frames <= frame_idx) {
         MD_LOG_ERROR("TRR: Frame index is out of range");
         return 0;
     }
 
     const int64_t beg = trr->frame_offsets[frame_idx];
     const int64_t end = trr->frame_offsets[frame_idx + 1];
-    const int64_t frame_size = end - beg;
+    const size_t frame_size = (size_t)(end - beg);
 
     if (frame_data_ptr) {
         ASSERT(trr->file);
@@ -499,14 +499,15 @@ static int64_t trr_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_
         // Seek and read must be an atomic operation to avoid race conditions
         // Since we use a shared file handle internally
         xdr_seek(trr->file, beg, SEEK_SET);
-        const int64_t bytes_read = xdr_read(trr->file, frame_data_ptr, frame_size);
+        const size_t bytes_read = xdr_read(trr->file, frame_data_ptr, frame_size);
+        (void)bytes_read;
         md_mutex_unlock(&trr->mutex);
         ASSERT(frame_size == bytes_read);
     }
     return frame_size;
 }
 
-static bool trr_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, int64_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+static bool trr_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     ASSERT(inst);
     ASSERT(frame_data_ptr);
     ASSERT(frame_data_size);
@@ -531,8 +532,8 @@ static bool trr_decode_frame_data(struct md_trajectory_o* inst, const void* fram
     // Get header
     trr_header_t sh;
     float box[3][3];
-    md_vec3_soa_t coords = { x, y, z };
-    result = trr_read_frame_header(file, &sh) && trr_read_frame_data(file, &sh, box, &coords, 0, 0);
+    float* coords[3] = { x, y, z };
+    result = trr_read_frame_header(file, &sh) && trr_read_frame_data(file, &sh, box, coords, 0, 0);
     if (result && header) {
         // @TODO: This scaling should be moved out of the core parts and into the loader which ties it with viamd.
         // nm -> Ångström
@@ -566,10 +567,11 @@ bool trr_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     md_allocator_i* alloc = md_heap_allocator;
 
     bool result = true;
-    const int64_t frame_size = trr_fetch_frame_data(inst, frame_idx, NULL);
+    const size_t frame_size = trr_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
         void* frame_data = md_alloc(alloc, frame_size);
-        const int64_t read_size = trr_fetch_frame_data(inst, frame_idx, frame_data);
+        const size_t read_size = trr_fetch_frame_data(inst, frame_idx, frame_data);
+        (void)read_size;
         ASSERT(read_size == frame_size);
 
         result = trr_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
@@ -586,7 +588,7 @@ typedef struct trr_cache_t {
     double*  frame_times;
 } trr_cache_t;
 
-static bool try_read_cache(trr_cache_t* cache, str_t cache_file, int64_t traj_num_bytes, md_allocator_i* alloc) {
+static bool try_read_cache(trr_cache_t* cache, str_t cache_file, size_t traj_num_bytes, md_allocator_i* alloc) {
     ASSERT(cache);
     ASSERT(alloc);
 
@@ -606,7 +608,7 @@ static bool try_read_cache(trr_cache_t* cache, str_t cache_file, int64_t traj_nu
             MD_LOG_INFO("TRR trajectory cache: version mismatch, expected %i, got %i", MD_TRR_CACHE_VERSION, (int)cache->header.version);
         }
         if (cache->header.num_bytes != traj_num_bytes) {
-            MD_LOG_INFO("TRR trajectory cache: trajectory size mismatch, expected %i, got %i", (int)traj_num_bytes, (int)cache->header.num_bytes);
+            MD_LOG_INFO("TRR trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
         }
         if (cache->header.num_atoms == 0) {
             MD_LOG_ERROR("TRR trajectory cache: num atoms was zero");
@@ -617,7 +619,7 @@ static bool try_read_cache(trr_cache_t* cache, str_t cache_file, int64_t traj_nu
             goto done;
         }
 
-        const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+        const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
         cache->frame_offsets = md_alloc(alloc, offset_bytes);
         if (md_file_read(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
             MD_LOG_ERROR("TRR trajectory cache: Failed to read offset data");
@@ -625,7 +627,7 @@ static bool try_read_cache(trr_cache_t* cache, str_t cache_file, int64_t traj_nu
             goto done;
         }
 
-        const int64_t time_bytes = cache->header.num_frames * sizeof(double);
+        const size_t time_bytes = cache->header.num_frames * sizeof(double);
         cache->frame_times = md_alloc(alloc, time_bytes);
         if (md_file_read(file, cache->frame_times, time_bytes) != time_bytes) {
             MD_LOG_ERROR("TRR trajectory cache: times are incomplete");
@@ -635,7 +637,7 @@ static bool try_read_cache(trr_cache_t* cache, str_t cache_file, int64_t traj_nu
         }
 
         // Test position in file, we expect to be at the end of the file
-        if (md_file_tell(file) != md_file_size(file)) {
+        if (md_file_tell(file) != (int64_t)md_file_size(file)) {
             MD_LOG_ERROR("TRR trajectory cache: file position was not at the end of the file");
             md_free(alloc, cache->frame_offsets, offset_bytes);
             md_free(alloc, cache->frame_times, time_bytes);
@@ -654,7 +656,7 @@ static bool write_cache(const trr_cache_t* cache, str_t cache_file) {
 
     md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
     if (!file) {
-        MD_LOG_ERROR("TRR trajectory cache: could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
+        MD_LOG_INFO("TRR trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
     }
 
@@ -663,13 +665,13 @@ static bool write_cache(const trr_cache_t* cache, str_t cache_file) {
         goto done;
     }
 
-    const int64_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
+    const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
     if (md_file_write(file, cache->frame_offsets, offset_bytes) != offset_bytes) {
         MD_LOG_ERROR("TRR trajectory cache: failed to write offsets");
         goto done;
     }
 
-    const int64_t time_bytes = cache->header.num_frames * sizeof(double);
+    const size_t time_bytes = cache->header.num_frames * sizeof(double);
     if (md_file_write(file, cache->frame_times, time_bytes) != time_bytes) {
         MD_LOG_ERROR("TRR trajectory cache: failed to write times");
         goto done;
@@ -689,7 +691,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
     // Ensure that the path is zero terminated (not guaranteed by str_t)
     md_strb_t sb = md_strb_create(md_temp_allocator);
     md_strb_push_str(&sb, filename);
-    XDRFILE* file = xdrfile_open(md_strb_to_cstr(&sb), "r");
+    XDRFILE* file = xdrfile_open(md_strb_to_cstr(sb), "r");
 
     if (file) {
         xdr_seek(file, 0L, SEEK_END);
@@ -707,7 +709,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
         }
 
         md_strb_push_cstr(&sb, ".cache");
-        str_t cache_file = md_strb_to_str(&sb);
+        str_t cache_file = md_strb_to_str(sb);
 
         trr_cache_t cache = {0};
         if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
@@ -732,9 +734,9 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
             goto fail;
         }
 
-        int64_t max_frame_size = 0;
-        for (int64_t i = 0; i < cache.header.num_frames; ++i) {
-            const int64_t frame_size = cache.frame_offsets[i + 1] - cache.frame_offsets[i];
+        size_t max_frame_size = 0;
+        for (size_t i = 0; i < cache.header.num_frames; ++i) {
+            const size_t frame_size = (size_t)MAX(0, cache.frame_offsets[i + 1] - cache.frame_offsets[i]);
             max_frame_size = MAX(max_frame_size, frame_size);
         }
 

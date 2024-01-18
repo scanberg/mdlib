@@ -67,9 +67,9 @@ static bool open_file(md_file_o* file, str_t path) {
 }
 
 str_t tidy_comment(str_t comment) {
-    int64_t new_line = str_find_char(comment, '\n');
-	if (new_line != -1) {
-		comment.len = new_line;
+    size_t loc;
+	if (str_find_char(&loc, comment, '\n')) {
+		comment.len = loc;
 	}
     return comment;
 }
@@ -119,7 +119,7 @@ str_t md_cube_serialize(const md_cube_t* cube, struct md_allocator_i* alloc) {
 		}
 	}
 	
-	str = str_copy(md_strb_to_str(&sb), alloc);
+	str = str_copy(md_strb_to_str(sb), alloc);
 	md_strb_free(&sb);
 done:
 	return str;

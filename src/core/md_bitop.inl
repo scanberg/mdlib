@@ -20,6 +20,7 @@ static inline uint64_t bit_pattern(uint64_t bit_idx) {
     const uint64_t end_mask =  (bit_pattern(end_bit) - 1)
 
 static inline void bit_set(uint64_t* bits, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return;
     BITOP_PREAMBLE;
     
     if (beg_idx == end_idx) {
@@ -38,6 +39,7 @@ static inline void bit_set_idx(uint64_t* bits, uint64_t bit_idx) {
 }
 
 static inline void bit_clear(uint64_t* bits, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return;
     BITOP_PREAMBLE;
     
     if (beg_idx == end_idx) {
@@ -56,6 +58,7 @@ static inline void bit_clear_idx(uint64_t* bits, uint64_t bit_idx) {
 }
 
 static inline void bit_or(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return;
     BITOP_PREAMBLE;
     
     if (beg_idx == end_idx) {
@@ -72,6 +75,7 @@ static inline void bit_or(uint64_t* dst, const uint64_t* src_a, const uint64_t* 
 }
 
 static inline void bit_and(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return;
     BITOP_PREAMBLE;
     
     if (beg_idx == end_idx) {
@@ -88,6 +92,7 @@ static inline void bit_and(uint64_t* dst, const uint64_t* src_a, const uint64_t*
 }
 
 static inline void bit_xor(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return;
     BITOP_PREAMBLE;
     
     if (beg_idx == end_idx) {
@@ -104,6 +109,7 @@ static inline void bit_xor(uint64_t* dst, const uint64_t* src_a, const uint64_t*
 }
 
 static inline void bit_not(uint64_t* dst, const uint64_t* src, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return;
     BITOP_PREAMBLE;
 
     if (beg_idx == end_idx) {
@@ -120,6 +126,7 @@ static inline void bit_not(uint64_t* dst, const uint64_t* src, uint64_t beg_bit,
 }
 
 static inline void bit_or_not(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return;
     BITOP_PREAMBLE;
     
     if (beg_idx == end_idx) {
@@ -136,6 +143,7 @@ static inline void bit_or_not(uint64_t* dst, const uint64_t* src_a, const uint64
 }
 
 static inline void bit_and_not(uint64_t* dst, const uint64_t* src_a, const uint64_t* src_b, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return;
     BITOP_PREAMBLE;
     
     if (beg_idx == end_idx) {
@@ -153,6 +161,7 @@ static inline void bit_and_not(uint64_t* dst, const uint64_t* src_a, const uint6
 
 
 static inline uint64_t bit_count(const uint64_t* bits, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return 0;
     BITOP_PREAMBLE;
     
     uint64_t count = 0;
@@ -177,6 +186,7 @@ static inline bool bit_test(const uint64_t* bits, uint64_t idx) {
 }
 
 static inline bool bit_cmp(const uint64_t* src_a, const uint64_t* src_b, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return false;
     BITOP_PREAMBLE;
 
     if (beg_idx == end_idx) {
@@ -191,6 +201,7 @@ static inline bool bit_cmp(const uint64_t* src_a, const uint64_t* src_b, uint64_
 }
 
 static inline uint64_t bit_scan_forward(const uint64_t* bits, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return 0;
     BITOP_PREAMBLE;
 
     uint64_t val;
@@ -213,6 +224,7 @@ static inline uint64_t bit_scan_forward(const uint64_t* bits, uint64_t beg_bit, 
 }
 
 static inline uint64_t bit_scan_reverse(const uint64_t* bits, uint64_t beg_bit, uint64_t end_bit) {
+    if (end_bit <= beg_bit) return 0;
     BITOP_PREAMBLE;
 
     uint64_t val;

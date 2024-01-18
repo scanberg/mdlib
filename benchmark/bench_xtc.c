@@ -7,7 +7,7 @@
 
 UBENCH_EX(xtc, load) {
     md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
-    md_trajectory_i* traj = md_xtc_trajectory_create(STR(MD_BENCHMARK_DATA_DIR "/catalyst.xtc"), alloc);
+    md_trajectory_i* traj = md_xtc_trajectory_create(STR_LIT(MD_BENCHMARK_DATA_DIR "/catalyst.xtc"), alloc);
 
     if (!traj) {
         printf("Failed to load trajectory\n");

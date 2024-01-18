@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
 #include <core/md_str.h>
@@ -16,7 +17,7 @@ struct md_trajectory_i;
 struct md_trajectory_loader_i;
 
 typedef struct md_xyz_coordinate_t {
-	int atom_index;
+	int  atom_index;
 	char element_symbol[4];
 	int  atomic_number;
 	float x;
@@ -27,17 +28,18 @@ typedef struct md_xyz_coordinate_t {
 } md_xyz_coordinate_t;
 
 typedef struct md_xyz_model_t {
-	int64_t byte_offset;
-	int32_t beg_coord_index;
-	int32_t end_coord_index;
+	size_t byte_offset;
+	uint32_t beg_coord_index;
+	uint32_t end_coord_index;
 	float cell[3][3];
-	char comment[88];
+	char comment[72];		// This is dimwitted
 } md_xyz_model_t;
 
 typedef struct md_xyz_data_t {
-	int64_t num_coordinates;
+	size_t num_coordinates;
 	md_xyz_coordinate_t* coordinates;
-	int64_t num_models;
+
+	size_t num_models;
 	md_xyz_model_t* models;
 } md_xyz_data_t;
 

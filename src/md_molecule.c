@@ -30,15 +30,15 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     // Residue
     if (mol->residue.name) md_array_free(mol->residue.name, alloc);
     if (mol->residue.id) md_array_free(mol->residue.id, alloc);
-    if (mol->residue.atom_range) md_array_free(mol->residue.atom_range, alloc);
+    if (mol->residue.atom_offset) md_array_free(mol->residue.atom_offset, alloc);
 
     // Chain
     if (mol->chain.id) md_array_free(mol->chain.id, alloc);
-    if (mol->chain.residue_range) md_array_free(mol->chain.residue_range, alloc);
-    if (mol->chain.atom_range) md_array_free(mol->chain.atom_range, alloc);
+    if (mol->chain.res_offset) md_array_free(mol->chain.res_offset, alloc);
+    if (mol->chain.atom_offset) md_array_free(mol->chain.atom_offset, alloc);
 
     // Backbone
-    if (mol->backbone.range) md_array_free(mol->backbone.range, alloc);
+    if (mol->backbone.range.offset) md_array_free(mol->backbone.range.offset, alloc);
     if (mol->backbone.atoms) md_array_free(mol->backbone.atoms, alloc);
     if (mol->backbone.angle) md_array_free(mol->backbone.angle, alloc);
     if (mol->backbone.secondary_structure) md_array_free(mol->backbone.secondary_structure, alloc);
@@ -108,22 +108,22 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(backbone, ramachandran_type);
     ARRAY_PUSH(backbone, residue_idx);
 
-    md_array_push_array(dst->backbone.range, src->backbone.range, src->backbone.range_count, alloc);
+    md_array_push_array(dst->backbone.range.offset, src->backbone.range.offset, src->backbone.range.count, alloc);
 
     ARRAY_PUSH(chain, id);
-    ARRAY_PUSH(chain, residue_range);
-    ARRAY_PUSH(chain, atom_range);
+    ARRAY_PUSH(chain, res_offset);
+    ARRAY_PUSH(chain, atom_offset);
 
     md_array_push_array(dst->hydrogen_bonds, src->hydrogen_bonds, md_array_size(src->hydrogen_bonds), alloc);
     md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
 
     ARRAY_PUSH(residue, name);
     ARRAY_PUSH(residue, id);
-    ARRAY_PUSH(residue, atom_range);
+    ARRAY_PUSH(residue, atom_offset);
 
     dst->atom.count           = src->atom.count;
     dst->backbone.count       = src->backbone.count;
-    dst->backbone.range_count = src->backbone.range_count;
+    dst->backbone.range.count = src->backbone.range.count;
     dst->chain.count          = src->chain.count;
     dst->residue.count        = src->residue.count;
 }

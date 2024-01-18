@@ -8,7 +8,7 @@ UTEST(os, path_canonical) {
     {
         char buf[1024];
         md_path_write_cwd(buf, sizeof(buf));
-        str_t path = alloc_printf(md_temp_allocator, "%s/../../", buf);
+        str_t path = str_printf(md_temp_allocator, "%s/../../", buf);
         str_t result = md_path_make_canonical(path, md_temp_allocator);
         printf("result: '%.*s'\n", (int)result.len, result.ptr);
     }
@@ -16,14 +16,14 @@ UTEST(os, path_canonical) {
         /*
         // FAILS ON UNIX
         // Probably because the file does not exist
-        str_t path = STR("cool/fool/../bool/../file.txt");
+        str_t path = STR_LIT("cool/fool/../bool/../file.txt");
         str_t result = md_path_make_canonical(path, md_temp_allocator);
-        str_t ref = STR("cool/file.txt");
+        str_t ref = STR_LIT("cool/file.txt");
         EXPECT_TRUE(str_equal(result, ref));
         */
     }
     {
-        str_t path = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
         str_t result = md_path_make_canonical(path, md_temp_allocator);
         printf("canonical: '%.*s'\n", (int)result.len, result.ptr);
     }
@@ -31,32 +31,32 @@ UTEST(os, path_canonical) {
 
 UTEST(os, path_relative) {
     {
-        str_t from = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-        str_t to   = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         str_t result = md_path_make_relative(from, to, md_temp_allocator);
         EXPECT_STREQ("../../40-40-2-ddba-dyna.xmol", result.ptr);
     }
     {
-        str_t from = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
-        str_t to   = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
         str_t result = md_path_make_relative(from, to, md_temp_allocator);
         EXPECT_STREQ("./dir/subdir/", result.ptr);
     }
     {
-        str_t from = STR(MD_UNITTEST_DATA_DIR "/" );
-        str_t to   = STR(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
+        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/" );
+        str_t to   = STR_LIT(MD_UNITTEST_DATA_DIR "/40-40-2-ddba-dyna.xmol");
         str_t result = md_path_make_relative(from, to, md_temp_allocator);
         EXPECT_STREQ("./40-40-2-ddba-dyna.xmol", result.ptr);
     }
     {
-        str_t from = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
-        str_t to = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
         str_t result = md_path_make_relative(from, to, md_temp_allocator);
         EXPECT_STREQ("./file.txt", result.ptr);
     }
     {
-        str_t from = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
-        str_t to = STR(MD_UNITTEST_DATA_DIR "/dir/subdir/");
+        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/");
         str_t result = md_path_make_relative(from, to, md_temp_allocator);
         EXPECT_STREQ("./", result.ptr);
     }
@@ -151,7 +151,7 @@ UTEST(os, semaphore) {
 #include <core/md_str_builder.h>
 
 UTEST(os, file_read_lines) {
-    str_t path = STR(MD_UNITTEST_DATA_DIR "/pftaa.gro");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro");
     str_t ref = load_textfile(path, md_heap_allocator);
 
     
@@ -167,8 +167,8 @@ UTEST(os, file_read_lines) {
         md_strb_push_str(&sb, (str_t){buf, bytes_read});
     }
 
-    str_t str = md_strb_to_str(&sb);
-    EXPECT_TRUE(str_equal(str, ref));
+    str_t str = md_strb_to_str(sb);
+    EXPECT_TRUE(str_eq(str, ref));
 
     md_free(md_heap_allocator, buf, cap);
 }

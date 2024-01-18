@@ -1,6 +1,7 @@
 #include <core/md_spatial_hash.h>
 
 #include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_log.h>
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
@@ -17,10 +18,6 @@
 #define CELL_EXT (6.0f)
 #define INV_CELL_EXT (1.0f / CELL_EXT)
 #define SQRT_CELL_EXT (8.4852813742385702f)
-#define LENGTH_BITS 10
-#define LENGTH_MASK ((1 << LENGTH_BITS) - 1)
-#define OFFSET_BITS (32 - LENGTH_BITS)
-#define LENGTH_CAP (1 << LENGTH_BITS)
 #define MAX_CELL_DIM 1023
 
 #define SCL (CELL_EXT / 1023.f)
@@ -29,15 +26,14 @@
 
 typedef md_spatial_hash_elem_t elem_t;
 
-typedef uint32_t cell_t;
-
 typedef struct md_spatial_hash_t {
     vec4_t pbc_ext;
     int32_t cell_min[3];
     uint32_t elem_count;
     int32_t cell_dim[3];
-    uint32_t magic;
-    void* data;
+    uint32_t  cell_offset_count;
+    uint32_t* cell_offsets;
+    elem_t*   elem_data;
     md_allocator_i* alloc;
 } md_spatial_hash_t;
 
@@ -53,7 +49,67 @@ struct md_spatial_acc_t {
 };
 */
 
-static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const vec3_t* in_xyz, const int32_t* indices, int64_t count, vec4_t pbc_ext) {
+#if 0
+typedef struct {
+    md_unit_cell_t unit_cell;
+    elem_t*   elems;
+    size_t    elem_count;
+    uint32_t* cell_offsets;
+    size_t    cell_count;
+    md_allocator_i* alloc;
+} md_spatial_acc_t;
+
+bool init_spatial_acc(md_spatial_acc_t* acc, const float in_x[], const float in_y[], const float in_z[], size_t byte_stride, const int32_t in_idx[], size_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+    ASSERT(acc);
+    ASSERT(in_x);
+    ASSERT(in_y);
+    ASSERT(in_z);
+
+    md_allocator_i* temp_alloc = md_heap_allocator;
+    size_t temp_bytes = (sizeof(uint32_t)) * count;
+    void* temp_mem = md_alloc(temp_alloc, temp_bytes);
+
+    acc->alloc = alloc;
+    acc->elems = md_alloc(alloc, sizeof(elem_t) * count);
+
+    // Compute AABB
+    vec4_t aabb_min = vec4_set1(+FLT_MAX);
+    vec4_t aabb_max = vec4_set1(-FLT_MAX);
+
+    if (unit_cell) {
+        mat4_t basis     = mat4_from_mat3(unit_cell->basis);
+        mat4_t inv_basis = mat4_from_mat3(unit_cell->inv_basis);
+        for (size_t i = 0; i < count; ++i) {
+            float x = *(const float*)((const char*)in_x + i * byte_stride);
+            float y = *(const float*)((const char*)in_y + i * byte_stride);
+            float z = *(const float*)((const char*)in_z + i * byte_stride);
+            vec4_t c = vec4_set(x, y, z, 1);
+            vec4_t fc = vec4_fract(mat4_mul_vec4(inv_basis, c)); // fractional coordinates
+            aabb_min = vec4_min(aabb_min, fc);
+            aabb_max = vec4_max(aabb_max, fc);
+        }
+        aabb_min = mat4_mul_vec4(basis, aabb_min);
+        aabb_max = mat4_mul_vec4(basis, aabb_max);
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            float x = *(const float*)((const char*)in_x + i * byte_stride);
+            float y = *(const float*)((const char*)in_y + i * byte_stride);
+            float z = *(const float*)((const char*)in_z + i * byte_stride);
+            vec4_t c = vec4_set(x, y, z, 1);
+            aabb_min = vec4_min(aabb_min, c);
+            aabb_max = vec4_max(aabb_max, c);
+        }
+    }
+
+    // Determine cell extent
+    vec4_t aabb_ext = vec4_sub(aabb_max, aabb_min);
+    vec4_t cell_est = vec4_ceil(vec4_div_f(aabb_ext, CELL_EXT));
+
+    md_free(temp_alloc, temp_mem, temp_bytes);
+}
+#endif
+
+static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const vec3_t in_xyz[], const int32_t in_idx[], size_t count, vec4_t pbc_ext) {
     const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
 
@@ -66,19 +122,29 @@ static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const 
     vec4_t aabb_min = vec4_set1(+FLT_MAX);
     vec4_t aabb_max = vec4_set1(-FLT_MAX);
     
-    for (int64_t i = 0; i < count; ++i) {
-        int32_t idx = indices ? indices[i] : (int32_t)i;
-        vec4_t c = vec4_from_vec3(in_xyz[idx], 0);
-        c = vec4_deperiodize(c, ref, ext);
-        aabb_min = vec4_min(aabb_min, c);
-        aabb_max = vec4_max(aabb_max, c);
+    if (in_idx) {
+        for (size_t i = 0; i < count; ++i) {
+            int32_t idx = in_idx[i];
+            vec4_t c = vec4_from_vec3(in_xyz[idx], 0);
+            c = vec4_deperiodize(c, ref, ext);
+            aabb_min = vec4_min(aabb_min, c);
+            aabb_max = vec4_max(aabb_max, c);
+        }
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            vec4_t c = vec4_from_vec3(in_xyz[i], 0);
+            c = vec4_deperiodize(c, ref, ext);
+            aabb_min = vec4_min(aabb_min, c);
+            aabb_max = vec4_max(aabb_max, c);
+        }
     }
+
 
     *out_aabb_min = aabb_min;
     *out_aabb_max = aabb_max;
 }
 
-static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const int32_t* indices, int64_t count, vec4_t pbc_ext) {
+static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const float* in_x, const float* in_y, const float* in_z, const int32_t* indices, size_t count, vec4_t pbc_ext) {
     const vec4_t ext = pbc_ext;
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
     const bool deperiodize = !vec4_equal(pbc_ext, vec4_zero());
@@ -92,7 +158,7 @@ static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const f
     vec4_t aabb_min = vec4_set1(FLT_MAX);
     vec4_t aabb_max = vec4_set1(-FLT_MAX);
 
-    for (int64_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         const int32_t idx = indices ? indices[i] : (int32_t)i;
         vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 0 };
         if (deperiodize) {
@@ -446,14 +512,17 @@ bool md_spatial_acc_iter_next(md_spatial_acc_iter_t* iter) {
 }
 */
 
-md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32_t* in_indices, int64_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
-    ASSERT(in_xyz);
-    ASSERT(alloc);
-
-    if (count < 0) {
-        MD_LOG_ERROR("Invalid count");
+md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], size_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+    if (!in_xyz) {
+        MD_LOG_ERROR("Missing required input");
         return NULL;
     }
+
+    if (count == 0) {
+        return NULL;
+    }
+
+    ASSERT(alloc);
 
     md_spatial_hash_t* hash = NULL;
 
@@ -476,10 +545,10 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
     }
 
     vec4_t aabb_min, aabb_max;
-    compute_aabb_vec3(&aabb_min, &aabb_max, in_xyz, in_indices, count, ext);
+    compute_aabb_vec3(&aabb_min, &aabb_max, in_xyz, in_idx, count, ext);
 
     const vec4_t c_min = vec4_floor(vec4_div_f(aabb_min, CELL_EXT));
-    const vec4_t c_max = vec4_floor(vec4_div_f(aabb_max, CELL_EXT));
+    const vec4_t c_max =  vec4_ceil(vec4_div_f(aabb_max, CELL_EXT));
 
     // Compute the cell indices
     cell_min[0] = (int32_t)c_min.x;
@@ -487,9 +556,9 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
     cell_min[2] = (int32_t)c_min.z;
 
     const int32_t cell_max[3] = {
-        (int32_t)c_max.x + 1,
-        (int32_t)c_max.y + 1,
-        (int32_t)c_max.z + 1,
+        (int32_t)c_max.x,
+        (int32_t)c_max.y,
+        (int32_t)c_max.z,
     };
 
     cell_dim[0] = MAX(1, cell_max[0] - cell_min[0]);
@@ -504,53 +573,50 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
         goto done;
     }
 
-    const uint32_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
+    const uint32_t cell_offset_count = cell_dim[0] * cell_dim[1] * cell_dim[2] + 1;
 
     // Allocate needed data
     const size_t element_bytes = ALIGN_TO(count, 8) * sizeof(elem_t);
-    const int64_t tot_bytes = sizeof(md_spatial_hash_t) + element_bytes + sizeof(cell_t) * cell_count;
+    const size_t tot_bytes = sizeof(md_spatial_hash_t) + element_bytes + sizeof(uint32_t) * (cell_offset_count);
     void* mem = md_alloc(alloc, tot_bytes);
     void* data = (char*)mem + sizeof(md_spatial_hash_t);
 
     hash = mem;
     elem_t* elem_data = data;
-    cell_t* cell_data = (cell_t*)((char*)data + element_bytes);
-    MEMSET(cell_data, 0, sizeof(cell_t) * cell_count);
+    uint32_t* cell_offset = (uint32_t*)((char*)data + element_bytes);
+    MEMSET(cell_offset, 0, sizeof(uint32_t) * cell_offset_count);
 
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
 
     // Handle remainder
-    for (int64_t i = 0; i < count; ++i) {
-        const int64_t idx = in_indices ? in_indices[i] : i;
+    for (size_t i = 0; i < count; ++i) {
+        const int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
         const vec4_t coord = vec4_from_vec3(in_xyz[idx], 0);
         vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
         vec4_t whole = vec4_floor(cell);
         
-        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]);
-        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]);
-        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]);
+        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]) % cell_dim[0];
+        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]) % cell_dim[1];
+        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]) % cell_dim[2];
         uint32_t ci = cz * cell_dim_01 + cy * cell_dim[0] + cx;
 
         cell_index[i] = ci;
-        ASSERT(ci < cell_count);
+        ASSERT(ci < cell_offset_count - 1);
 
-        local_idx[i]  = cell_data[ci]++;
-        ASSERT(cell_data[ci] < LENGTH_CAP && "Too many entities per cell");
+        local_idx[i]  = cell_offset[ci]++;
     }
 
-    uint32_t offset = cell_data[0];
-    for (uint32_t i = 1; i < cell_count; ++i) {
-        const uint32_t length = cell_data[i];
-        if (length) {
-            cell_data[i] = (offset << 10) | length;
-        }
+    uint32_t offset = 0;
+    for (uint32_t i = 0; i < cell_offset_count; ++i) {
+        uint32_t length = cell_offset[i];
+        cell_offset[i] = offset;
         offset += length;
     }
 
-    for (int64_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         const int64_t cell_idx = cell_index[i];
-        const int64_t src_idx  = in_indices ? in_indices[i] : i;
-        const int64_t dst_idx  = (cell_data[cell_idx] >> LENGTH_BITS) + local_idx[i];
+        const int64_t src_idx  = in_idx ? in_idx[i] : (int64_t)i;
+        const int64_t dst_idx  = cell_offset[cell_idx] + local_idx[i];
         const vec4_t coord     = vec4_deperiodize(vec4_from_vec3(in_xyz[src_idx], 0), ref, ext);
         elem_data[dst_idx]     = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};
     }
@@ -559,8 +625,9 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t* in_xyz, const int32
     MEMCPY(hash->cell_min, cell_min, sizeof(cell_min));
     hash->elem_count = (uint32_t)count;
     MEMCPY(hash->cell_dim, cell_dim, sizeof(cell_dim));
-    hash->magic = MD_SPATIAL_HASH_MAGIC;
-    hash->data  = data;
+    hash->cell_offset_count = cell_offset_count;
+    hash->cell_offsets = cell_offset;
+    hash->elem_data = elem_data;
     hash->alloc = alloc;
 
 done:
@@ -568,16 +635,17 @@ done:
     return hash;
 }
 
-md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in_y, const float* in_z, const int32_t* in_indices, int64_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
-    ASSERT(in_x);
-    ASSERT(in_y);
-    ASSERT(in_z);
-    ASSERT(alloc);
-
-    if (count < 0) {
-        MD_LOG_ERROR("Invalid count");
+md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const md_unit_cell_t* unit_cell, md_allocator_i* alloc) {
+    if (!in_x || !in_y || !in_z) {
+        MD_LOG_ERROR("Missing input data");
         return NULL;
     }
+
+    if (count == 0) {
+        return NULL;
+    }
+
+    ASSERT(alloc);
 
     md_spatial_hash_t* hash = NULL;
 
@@ -600,10 +668,10 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
     }
 
     vec4_t aabb_min, aabb_max;
-    compute_aabb_soa(&aabb_min, &aabb_max, in_x, in_y, in_z, in_indices, count, ext);
+    compute_aabb_soa(&aabb_min, &aabb_max, in_x, in_y, in_z, in_idx, count, ext);
 
     vec4_t c_min = vec4_floor(vec4_div_f(aabb_min, CELL_EXT));
-    vec4_t c_max = vec4_floor(vec4_div_f(aabb_max, CELL_EXT));
+    vec4_t c_max = vec4_ceil (vec4_div_f(aabb_max, CELL_EXT));
 
     // Compute the cell indices
     cell_min[0] = (int32_t)c_min.x;
@@ -611,9 +679,9 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
     cell_min[2] = (int32_t)c_min.z;
 
     const int32_t cell_max[3] = {
-        (int32_t)c_max.x + 1,
-        (int32_t)c_max.y + 1,
-        (int32_t)c_max.z + 1,
+        (int32_t)c_max.x,
+        (int32_t)c_max.y,
+        (int32_t)c_max.z,
     };
 
     cell_dim[0] = MAX(1, cell_max[0] - cell_min[0]);
@@ -628,18 +696,18 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
         goto done;
     }
 
-    const uint32_t cell_count = cell_dim[0] * cell_dim[1] * cell_dim[2];
+    const uint32_t cell_offset_count = cell_dim[0] * cell_dim[1] * cell_dim[2] + 1;
 
     // Allocate needed data
     const size_t element_bytes = ALIGN_TO(count, 8) * sizeof(elem_t);
-    const int64_t tot_bytes = sizeof(md_spatial_hash_t) + sizeof(elem_t) * element_bytes + sizeof(cell_t) * cell_count;
+    const size_t tot_bytes = sizeof(md_spatial_hash_t) + sizeof(elem_t) * element_bytes + sizeof(uint32_t) * cell_offset_count;
     void* mem = md_alloc(alloc, tot_bytes);
     void* data = (char*)mem + sizeof(md_spatial_hash_t);
 
     hash = mem;
     elem_t* elem_data = data;
-    cell_t* cell_data = (cell_t*)((char*)data + element_bytes);
-    MEMSET(cell_data, 0, sizeof(cell_t) * cell_count);
+    uint32_t* cell_offset = (uint32_t*)((char*)data + element_bytes);
+    MEMSET(cell_offset, 0, sizeof(uint32_t) * cell_offset_count);
 
     const int32_t cell_dim_01 = cell_dim[0] * cell_dim[1];
 
@@ -720,41 +788,38 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
     */
 
     // Handle remainder
-    for (int64_t i = 0; i < count; ++i) {
-        const int64_t idx = in_indices ? in_indices[i] : i;
+    for (size_t i = 0; i < count; ++i) {
+        const int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
         const vec4_t coord = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0);
         vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
 
         vec4_t whole = vec4_floor(cell);
         //vec4_t fract = vec4_sub(cell, whole);
         //vec4_t packed = vec4_fmadd(fract, vec4_set1(1023.0f), vec4_set1(0.5f));
-        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]);
-        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]);
-        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]);
+        int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]) % cell_dim[0];
+        int32_t cy = MAX(0, (int32_t)whole.y - cell_min[1]) % cell_dim[1];
+        int32_t cz = MAX(0, (int32_t)whole.z - cell_min[2]) % cell_dim[2];
         uint32_t ci = cz * cell_dim_01 + cy * cell_dim[0] + cx;
 
         cell_index[i] = ci;
-        ASSERT(ci < cell_count);
+        ASSERT(ci < cell_offset_count - 1);
 
-        local_idx[i]  = cell_data[ci]++;
-        ASSERT(cell_data[ci] < LENGTH_CAP && "Too many entities per cell");
+        local_idx[i]  = cell_offset[ci]++;
         
         //fract_coord[i] = ((uint32_t)packed.z << 20) | ((uint32_t)packed.y << 10) | (uint32_t)packed.x;
     }
 
-    uint32_t offset = cell_data[0];
-    for (uint32_t i = 1; i < cell_count; ++i) {
-        const uint32_t length = cell_data[i];
-        if (length) {
-            cell_data[i] = (offset << 10) | length;
-        }
+    uint32_t offset = 0;
+    for (uint32_t i = 0; i < cell_offset_count; ++i) {
+        uint32_t length = cell_offset[i];
+        cell_offset[i] = offset;
         offset += length;
     }
 
-    for (int64_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         const int64_t cell_idx  = cell_index[i];
-        const int64_t src_idx   = in_indices ? in_indices[i] : i;
-        const int64_t dst_idx   = (cell_data[cell_idx] >> LENGTH_BITS) + local_idx[i];
+        const int64_t src_idx   = in_idx ? in_idx[i] : (int64_t)i;
+        const int64_t dst_idx   = cell_offset[cell_idx] + local_idx[i];
         const vec4_t coord      = vec4_deperiodize(vec4_set(in_x[src_idx], in_y[src_idx], in_z[src_idx], 0), ref, ext);
         elem_data[dst_idx]      = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};
     }
@@ -763,8 +828,9 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float* in_x, const float* in
     MEMCPY(hash->cell_min, cell_min, sizeof(cell_min));
     hash->elem_count = (uint32_t)count;
     MEMCPY(hash->cell_dim, cell_dim, sizeof(cell_dim));
-    hash->magic = MD_SPATIAL_HASH_MAGIC;
-    hash->data  = data;
+    hash->cell_offset_count = cell_offset_count;
+    hash->cell_offsets = cell_offset;
+    hash->elem_data = elem_data;
     hash->alloc = alloc;
 
 done:
@@ -774,10 +840,10 @@ done:
 
 void md_spatial_hash_free(md_spatial_hash_t* hash) {
     ASSERT(hash);
-    ASSERT(hash->magic == MD_SPATIAL_HASH_MAGIC);
     ASSERT(hash->alloc);
     md_allocator_i* alloc = hash->alloc;
-    const int64_t size = sizeof(md_spatial_hash_t) + sizeof(cell_t) * hash->cell_dim[0] * hash->cell_dim[1] * hash->cell_dim[2] + sizeof(elem_t) * hash->elem_count;
+
+    const size_t size = sizeof(md_spatial_hash_t) + sizeof(uint32_t) * hash->cell_offset_count + sizeof(elem_t) * hash->elem_count;
     // Only zero the hash, not the actual array fields
     MEMSET(hash, 0, sizeof(md_spatial_hash_t));
     md_free(alloc, hash, size);
@@ -794,8 +860,8 @@ static inline void query_pos_rad(const md_spatial_hash_t* hash, vec3_t position,
 
     const int32_t* cell_min = hash->cell_min;
     const int32_t* cell_dim = hash->cell_dim;
-    const elem_t* elems = hash->data;
-    const cell_t* cells = (const cell_t*)((const char*)hash->data + sizeof(elem_t) * ROUND_UP(hash->elem_count, 8));
+    const elem_t* elems = hash->elem_data;
+    const uint32_t* cell_offsets = hash->cell_offsets;
 
     int32_t cell_beg[3] = {
         CLAMP((int32_t)(floorf((pos.x - rad) * INV_CELL_EXT)) - cell_min[0], 0, cell_dim[0] - 1),
@@ -814,13 +880,12 @@ static inline void query_pos_rad(const md_spatial_hash_t* hash, vec3_t position,
         for (cc[1] = cell_beg[1]; cc[1] < cell_end[1]; ++cc[1]) {
             for (cc[0] = cell_beg[0]; cc[0] < cell_end[0]; ++cc[0]) {
                 const uint32_t cell_idx = cc[2] * cell_dim[1] * cell_dim[0] + cc[1] * cell_dim[0] + cc[0];
-                const uint32_t cell_data = cells[cell_idx];
-                if (cell_data == 0) {
+                const uint32_t beg = cell_offsets[cell_idx];
+                const uint32_t end = cell_offsets[cell_idx + 1];
+                if (beg == end) {
                     continue;
                 }
-                const uint32_t cell_offset = cell_data >> LENGTH_BITS;
-                const uint32_t cell_length = cell_data  & LENGTH_MASK;
-                for (uint32_t i = cell_offset; i < cell_offset + cell_length; ++i) {
+                for (uint32_t i = beg; i < end; ++i) {
                     const elem_t* elem = &elems[i];
                     const vec4_t p = vec4_from_vec3(elem->xyz, 0);
                     const float d2 = vec4_distance_squared(p, pos);
@@ -844,8 +909,8 @@ static inline void query_pos_rad_batch(const md_spatial_hash_t* hash, vec3_t pos
 
     const int32_t* cell_min = hash->cell_min;
     const int32_t* cell_dim = hash->cell_dim;
-    const elem_t* elems = hash->data;
-    const cell_t* cells = (const cell_t*)((const char*)hash->data + sizeof(elem_t) * ROUND_UP(hash->elem_count, 8));
+    const elem_t* elems = hash->elem_data;
+    const uint32_t* cell_offsets = hash->cell_offsets;
 
     const int32_t cc_beg_x = (int32_t)(floorf((pos.x - radius) * INV_CELL_EXT)) - cell_min[0];
     const int32_t cc_beg_y = (int32_t)(floorf((pos.y - radius) * INV_CELL_EXT)) - cell_min[1];
@@ -877,16 +942,14 @@ static inline void query_pos_rad_batch(const md_spatial_hash_t* hash, vec3_t pos
             const int32_t czy = cz + cc[1] * cd_0;
             for (cc[0] = cc_beg[0]; cc[0] < cc_end[0]; ++cc[0]) {
                 const uint32_t cell_idx  = czy + cc[0];
-                const uint32_t cell_data = cells[cell_idx];
-
-                if (cell_data == 0) {
+                const uint32_t beg = cell_offsets[cell_idx];
+                const uint32_t end = cell_offsets[cell_idx + 1];
+                if (beg == end) {
                     continue;
                 }
-                const uint32_t cell_offset = cell_data >> LENGTH_BITS;
-                const uint32_t cell_length = cell_data  & LENGTH_MASK;
 
-                int len = cell_length;
-                const elem_t* elem = elems + cell_offset;
+                int len = (end - beg);
+                const elem_t* elem = elems + beg;
 
                 while (len > 0) {
                     md_256 vx,vy,vz;
@@ -944,8 +1007,8 @@ static inline void query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
 
     const int32_t* cell_min = hash->cell_min;
     const int32_t* cell_dim = hash->cell_dim;
-    const elem_t* elems = hash->data;
-    const cell_t* cells = (const cell_t*)((const char*)hash->data + sizeof(elem_t) * ROUND_UP(hash->elem_count, 8));
+    const elem_t* elems = hash->elem_data;
+    const uint32_t* cell_offsets = hash->cell_offsets;
 
     const int cell_max[3] = {
         cell_min[0] + cell_dim[0],
@@ -983,9 +1046,9 @@ static inline void query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
 
     // How far ahead we need skip in order to end up within the occupied cell domain of the next period
     const int cell_jmp[3] = {
-        cell_pbc[0] - cell_dim[0],
-        cell_pbc[1] - cell_dim[1],
-        cell_pbc[2] - cell_dim[2],
+        MAX(0, cell_pbc[0] - cell_dim[0]),
+        MAX(0, cell_pbc[1] - cell_dim[1]),
+        MAX(0, cell_pbc[2] - cell_dim[2]),
     };
     
     // If cell beg is outside of occupied cell domain [cell_min, cell_dim[ we skip forward to next period and accomodate for that jump
@@ -1033,18 +1096,14 @@ static inline void query_pos_rad_periodic(const md_spatial_hash_t* hash, vec3_t 
                 ASSERT(0 <= cix && cix < cell_dim[0]);
 
                 const uint32_t cell_idx = idx_yz + cix;
-                const uint32_t cell_data = cells[cell_idx];
-                if (cell_data == 0) {
+
+                const uint32_t beg = cell_offsets[cell_idx];
+                const uint32_t end = cell_offsets[cell_idx + 1];
+                if (beg == end) {
                     continue;
                 }
-
-                const int cell_offset = cell_data >> LENGTH_BITS;
-                const int cell_length = cell_data & LENGTH_MASK;
-
-                const elem_t* cell_elem = elems + cell_offset;               
-                
-                for (int i = 0; i < cell_length; ++i) {
-                    const elem_t* elem = cell_elem + i;
+                for (uint32_t i = beg; i < end; ++i) {
+                    const elem_t* elem = elems + i;
                     const vec4_t p = vec4_from_vec3(elem->xyz, 0);
                     const float d2 = vec4_periodic_distance_squared(p, pos, pbc_ext);
                     if (d2 < rad2) {
@@ -1073,8 +1132,8 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
 
     const int32_t* cell_min = hash->cell_min;
     const int32_t* cell_dim = hash->cell_dim;
-    const elem_t* elems = hash->data;
-    const cell_t* cells = (const cell_t*)((const char*)hash->data + sizeof(elem_t) * ROUND_UP(hash->elem_count, 8));
+    const elem_t* elems = hash->elem_data;
+    const uint32_t* cell_offsets = hash->cell_offsets;
 
     const int32_t cell_max[3] = {
         cell_min[0] + cell_dim[0],
@@ -1111,9 +1170,9 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
 
     // How far ahead we need skip in order to end up within the occupied cell domain of the next period
     const int32_t cell_jmp[3] = {
-        cell_pbc[0] - cell_dim[0],
-        cell_pbc[1] - cell_dim[1],
-        cell_pbc[2] - cell_dim[2],
+        MAX(0, cell_pbc[0] - cell_dim[0]),
+        MAX(0, cell_pbc[1] - cell_dim[1]),
+        MAX(0, cell_pbc[2] - cell_dim[2]),
     };
 
     // If cell beg is outside of occupied cell domain [cell_min, cell_dim[ we skip forward to next period and accomodate for that jump
@@ -1170,17 +1229,14 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
                 ASSERT(0 <= cix && cix < cell_dim[0]);
 
                 const uint32_t cell_idx = idx_yz + cix;
-                const uint32_t cell_data = cells[cell_idx];
-                if (cell_data == 0) {
+                const uint32_t beg = cell_offsets[cell_idx];
+                const uint32_t end = cell_offsets[cell_idx + 1];
+                if (beg == end) {
                     continue;
                 }
 
-                const int32_t cell_offset = cell_data >> LENGTH_BITS;
-                const int32_t cell_length = cell_data  & LENGTH_MASK;
-
-                int32_t len = cell_length;
-
-                const elem_t* elem = elems + cell_offset;
+                int32_t len = end - beg;
+                const elem_t* elem = elems + beg;
 
                 while (len > 0) {
                     md_256 vx,vy,vz;
@@ -1209,14 +1265,16 @@ static inline void query_pos_rad_periodic_batch(const md_spatial_hash_t* hash, v
 
 bool validate_spatial_hash(const md_spatial_hash_t* spatial_hash) {
     if (!spatial_hash) {
-        MD_LOG_ERROR("spatial_hash is null");
         return false;
     }
-    
-    if (spatial_hash->magic != MD_SPATIAL_HASH_MAGIC) {
-        MD_LOG_ERROR("spatial_hash has invalid magic");
+
+    if (!spatial_hash->cell_offsets) {
         return false;
     }
+
+    if (!spatial_hash->elem_data) {
+		return false;
+	}
 
     return true;
 }
@@ -1261,18 +1319,18 @@ bool idx_fn(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) 
     return true;
 }
 
-int64_t md_spatial_hash_query_idx(int32_t* buf, int64_t cap, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius) {
+size_t md_spatial_hash_query_idx(int32_t* buf, size_t cap, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius) {
     md_bitfield_t bf = md_bitfield_create(md_temp_allocator);
     md_bitfield_reserve_range(&bf, 0, spatial_hash->elem_count);
 
     md_spatial_hash_query_batch(spatial_hash, pos, radius, idx_fn, &bf);
 #if DEBUG
-    if ((int64_t)md_bitfield_popcount(&bf) > cap) {
+    if (md_bitfield_popcount(&bf) > cap) {
         MD_LOG_DEBUG("Size exceeds the capacity, some elements will not be written");
     }
 #endif
 
-    return md_bitfield_extract_indices(buf, cap, &bf);
+    return md_bitfield_iter_extract_indices(buf, cap, md_bitfield_iter_create(&bf));
 }
 
 void md_spatial_hash_query_bits(md_bitfield_t* bf, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius) {

@@ -132,7 +132,7 @@ static bool read_real(double* ptr, int ndata, edr_fp_t* fp) {
 	}
 }
 
-static void resize_data_subblock(md_enxsubblock_t* subblock, int64_t new_size, md_allocator_i* alloc) {
+static void resize_data_subblock(md_enxsubblock_t* subblock, size_t new_size, md_allocator_i* alloc) {
 	switch (subblock->type) {
 	case MD_ENX_DATATYPE_INT32:  md_array_resize(subblock->value.ival, new_size, alloc); break;
 	case MD_ENX_DATATYPE_FLOAT:  md_array_resize(subblock->value.fval, new_size, alloc); break;
@@ -145,16 +145,16 @@ static void resize_data_subblock(md_enxsubblock_t* subblock, int64_t new_size, m
 	}
 }
 
-static void add_subblock_enxblock(md_enxblock_t* block, int64_t new_size, md_allocator_i* alloc) {
-	const int64_t old_size = md_array_size(block->sub);
+static void add_subblock_enxblock(md_enxblock_t* block, size_t new_size, md_allocator_i* alloc) {
+	const size_t old_size = md_array_size(block->sub);
 	md_array_resize(block->sub, new_size, alloc);
 	if (new_size > old_size) {
 		MEMSET(block->sub + old_size, 0, (new_size - old_size) * sizeof(md_enxsubblock_t));
 	}
 }
 
-static void add_blocks_enxframe(md_enxframe_t* frame, int64_t new_size, md_allocator_i* alloc) {
-	const int64_t old_size = md_array_size(frame->block);
+static void add_blocks_enxframe(md_enxframe_t* frame, size_t new_size, md_allocator_i* alloc) {
+	const size_t old_size = md_array_size(frame->block);
 	md_array_resize(frame->block, new_size, alloc);
 	if (new_size > old_size) {
 		MEMSET(frame->block + old_size, 0, (new_size - old_size) * sizeof(md_enxblock_t));
@@ -502,10 +502,10 @@ static bool read_frame(edr_fp_t* fp, md_enxframe_t* frame, int file_version, md_
         return false;
     }
 
-	if (frame->nre > md_array_size(frame->ener)) {
-		const int64_t new_size = frame->nre;
-		const int64_t old_size = md_array_size(frame->ener);
-		md_array_resize(frame->ener, frame->nre, alloc);
+	if (frame->nre > (int)md_array_size(frame->ener)) {
+		const size_t new_size = (size_t)frame->nre;
+		const size_t old_size = md_array_size(frame->ener);
+		md_array_resize(frame->ener, (size_t)frame->nre, alloc);
 		MEMSET(frame->ener + old_size, 0, (new_size - old_size) * sizeof(md_energy_t));
 	}
 
@@ -699,7 +699,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 	}
 
 	if (fp->old.old_file_open) {
-		md_array_resize(fp->old.ener_prev, frame.nre, md_heap_allocator);
+		md_array_resize(fp->old.ener_prev, (size_t)frame.nre, md_heap_allocator);
 	}
 
 	xdr_seek(fp->xdr, 0, SEEK_END);
@@ -729,30 +729,30 @@ static md_unit_t unit_from_str(str_t str) {
 		// Return unitless unit
 		return (md_unit_t) {0, 1};
 	}
-	if (str_equal_cstr(str, "kJ/mol")) {
+	if (str_eq_cstr(str, "kJ/mol")) {
 		md_unit_t kJ = md_unit_joule();
 		kJ.mult = 1e3;
 		return md_unit_div(kJ, md_unit_mole());
 	}
-	if (str_equal_cstr(str, "K")) {
+	if (str_eq_cstr(str, "K")) {
 		return md_unit_kelvin();
 	}
-	if (str_equal_cstr(str, "bar")) {
+	if (str_eq_cstr(str, "bar")) {
 		return md_unit_bar();
 	}
-	if (str_equal_cstr(str, "bar nm")) {
+	if (str_eq_cstr(str, "bar nm")) {
 		return md_unit_mul(md_unit_bar(), md_unit_nanometer());
 	}
-	if (str_equal_cstr(str, "nm")) {
+	if (str_eq_cstr(str, "nm")) {
 		return md_unit_nanometer();
 	}
-	if (str_equal_cstr(str, "nm^3")) {
+	if (str_eq_cstr(str, "nm^3")) {
 		return md_unit_pow(md_unit_nanometer(), 3);
 	}
-	if (str_equal_cstr(str, "kg/m^3")) {
+	if (str_eq_cstr(str, "kg/m^3")) {
 		return md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
 	}
-	if (str_equal_cstr(str, "nm/ps")) {
+	if (str_eq_cstr(str, "nm/ps")) {
 		return md_unit_div(md_unit_nanometer(), md_unit_pikosecond());
 	}
 
@@ -785,7 +785,7 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 	energies->frame_time = NULL;
 
 	energies->num_energies = frame.nre;
-	md_array_resize(energies->energy, frame.nre, energies->alloc);
+	md_array_resize(energies->energy, (size_t)frame.nre, energies->alloc);
 	
 	for (int i = 0; i < frame.nre; ++i) {
         energies->energy[i].name	 = str_copy(frame.e_names[i], energies->alloc);

@@ -122,7 +122,7 @@ const float* md_script_prop_values(pid_t);
 typedef struct md_script_property_data_t {
     int32_t dim[4];     // Dimension of values, they are exposed packed in a linear array
 
-    int64_t num_values; // Raw 1D length of values
+    size_t num_values; // Raw 1D length of values
     float*  values;     // Raw linear access to values, check dim for the dimensions of the data
     float*  weights;    // Optional, only applicable to distributions
 
@@ -217,17 +217,17 @@ typedef struct md_script_bitfield_identifier_t {
     const struct md_bitfield_t* bitfield;
 } md_script_bitfield_identifier_t;
 
-bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, int64_t count);
+bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, size_t count);
 
 bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const md_script_ir_t* ctx_ir);
 
-int64_t md_script_ir_num_errors(const md_script_ir_t* ir);
+size_t md_script_ir_num_errors(const md_script_ir_t* ir);
 const md_log_token_t* md_script_ir_errors(const md_script_ir_t* ir);
 
-int64_t md_script_ir_num_warnings(const md_script_ir_t* ir);
+size_t md_script_ir_num_warnings(const md_script_ir_t* ir);
 const md_log_token_t* md_script_ir_warnings(const md_script_ir_t* ir);
 
-int64_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir);
+size_t md_script_ir_num_vis_tokens(const md_script_ir_t* ir);
 const md_script_vis_token_t* md_script_ir_vis_tokens(const md_script_ir_t* ir);
 
 bool md_script_ir_valid(const md_script_ir_t* ir);
@@ -235,7 +235,7 @@ bool md_script_ir_valid(const md_script_ir_t* ir);
 uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir);
 
 // Get identifiers within a script
-int64_t md_script_ir_num_identifiers(const md_script_ir_t* ir);
+size_t md_script_ir_num_identifiers(const md_script_ir_t* ir);
 const str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
 
 // ### EVALUATE ###
@@ -268,7 +268,7 @@ bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_i
 str_t md_script_eval_label(const md_script_eval_t* eval);
 
 // Extract properties within in an evaluation
-int64_t md_script_eval_num_properties(const md_script_eval_t* eval);
+size_t md_script_eval_num_properties(const md_script_eval_t* eval);
 const md_script_property_t* md_script_eval_properties(const md_script_eval_t* eval);
 
 // Compile and evaluate a single property from a string
