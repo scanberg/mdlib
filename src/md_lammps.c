@@ -871,7 +871,7 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_buffered_reader_t* rea
 		return false;
 	}
 
-	line = str_trim_left(str_substr(line, 16, SIZE_MAX));
+	line = str_trim_beg(str_substr(line, 16, SIZE_MAX));
 
 	bool triclinic;
 	// Should either match "pp pp pp" or "xy xz yz pp pp pp"

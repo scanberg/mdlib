@@ -67,8 +67,8 @@ static inline const char* str_ptr(str_t str) { return str.ptr; }
 void str_swap(str_t a, str_t b);
 
 str_t str_trim(str_t str);
-str_t str_trim_left(str_t str);
-str_t str_trim_right(str_t str);
+str_t str_trim_beg(str_t str);
+str_t str_trim_end(str_t str);
 
 bool str_eq(str_t str_a, str_t str_b);
 bool str_eq_ignore_case(const str_t str_a, const str_t str_b);

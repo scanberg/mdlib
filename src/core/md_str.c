@@ -24,12 +24,12 @@ void str_swap(str_t a, str_t b) {
     b = tmp;
 }
 
-static inline const char* trim_left(const char* beg, const char* end) {
+static inline const char* _trim_beg(const char* beg, const char* end) {
     while (beg < end && is_whitespace(*beg)) ++beg;
 	return beg;
 }
 
-static inline const char* trim_right(const char* beg, const char* end) {
+static inline const char* _trim_end(const char* beg, const char* end) {
     while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
 	return end;
 }
@@ -37,26 +37,26 @@ static inline const char* trim_right(const char* beg, const char* end) {
 str_t str_trim(str_t str) {
     const char* beg = str_beg(str);
     const char* end = str_end(str);
-    beg = trim_left(beg, end);
-	end = trim_right(beg, end);
+    beg = _trim_beg(beg, end);
+	end = _trim_end(beg, end);
     str.ptr = beg;
     str.len = end - beg;
     return str;
 }
 
-str_t str_trim_left(str_t str) {
+str_t str_trim_beg(str_t str) {
     const char* beg = str_beg(str);
 	const char* end = str_end(str);
-	beg = trim_left(beg, end);
+	beg = _trim_beg(beg, end);
 	str.ptr = beg;
 	str.len = end - beg;
 	return str;
 }
 
-str_t str_trim_right(str_t str) {
+str_t str_trim_end(str_t str) {
     const char* beg = str_beg(str);
 	const char* end = str_end(str);
-	end = trim_right (beg, end);
+	end = _trim_end(beg, end);
 	str.ptr = beg;
 	str.len = end - beg;
 	return str;
