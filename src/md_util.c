@@ -4024,7 +4024,6 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         md_128 v_x = md_mm_loadu_ps(in_x + i);
         md_128 v_y = md_mm_loadu_ps(in_y + i);
         md_128 v_z = md_mm_loadu_ps(in_z + i);
-        md_128 v_w = md_mm_loadu_ps(in_w + i);
         // Compute thetas 
         // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
         // This is achieved by performing a dot product with the corresponding row of the inverse matrix
