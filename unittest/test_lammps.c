@@ -10,10 +10,12 @@
 UTEST(lammps, water_ethane_cubic) {
     md_allocator_i* alloc = md_heap_allocator;
 
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
     md_lammps_data_t data = {0};
 
-    bool result = md_lammps_data_parse_file(&data, path, MD_LAMMPS_ATOM_FORMAT_FULL, alloc);
+    const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
+    bool result = md_lammps_data_parse_file(&data, path, atom_format, alloc);
+
     ASSERT_TRUE(result);
     EXPECT_EQ(data.num_atoms, 7800);
     EXPECT_EQ(data.num_atom_types, 4);
@@ -67,10 +69,12 @@ UTEST(lammps, water_ethane_cubic) {
 UTEST(lammps, water_ethane_triclinic) {
     md_allocator_i* alloc = md_heap_allocator;
 
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
     md_lammps_data_t data = {0};
 
-    bool result = md_lammps_data_parse_file(&data, path, MD_LAMMPS_ATOM_FORMAT_FULL, alloc);
+    const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
+    bool result = md_lammps_data_parse_file(&data, path, atom_format, alloc);
+
     ASSERT_TRUE(result);
     EXPECT_EQ(data.num_atoms, 7722);
     EXPECT_EQ(data.num_atom_types, 4);
@@ -124,21 +128,24 @@ UTEST(lammps, water_ethane_triclinic) {
 
 UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     md_allocator_i* alloc = md_heap_allocator;
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
     //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
     md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc);
     ASSERT_TRUE(traj);
 
-    EXPECT_EQ(7800, md_trajectory_num_atoms(traj));
-    EXPECT_EQ(10, md_trajectory_num_frames(traj));
+    size_t num_atoms = md_trajectory_num_atoms(traj);
+    size_t num_frames = md_trajectory_num_frames(traj);
+    EXPECT_EQ(7800, num_atoms);
+    EXPECT_EQ(10, num_frames);
+    size_t stride = ALIGN_TO(num_atoms, 16);
+    const size_t bytes = stride * 3 * sizeof(float);
+    void* mem = md_alloc(md_temp_allocator, bytes);
+    float* x = (float*)mem + stride * 0;
+    float* y = (float*)mem + stride * 1;
+    float* z = (float*)mem + stride * 2;
 
-    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
-    float* x = (float*)mem_ptr;
-    float* y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
-    float* z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
     md_trajectory_frame_header_t header;
-    for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
+    for (size_t i = 0; i < num_frames; ++i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
         EXPECT_EQ(7800, header.num_atoms);
     }
@@ -155,45 +162,47 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     EXPECT_NEAR(z[0], 4.678786, 0.0001); //Should be about 0.12 of cell
     EXPECT_NEAR(header.unit_cell.basis.col[2].z, 39.121262, 0.0001);
 
-    md_free(md_temp_allocator, mem_ptr, mem_size);
+    md_free(md_temp_allocator, mem, bytes);
     md_lammps_trajectory_free(traj);
 }
 
 UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     md_allocator_i* alloc = md_heap_allocator;
-    str_t path = STR(MD_UNITTEST_DATA_DIR"/triclinic_standardASCII.lammpstrj");
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/triclinic_standardASCII.lammpstrj");
     //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
     md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc);
     ASSERT_TRUE(traj);
 
-    EXPECT_EQ(7722, md_trajectory_num_atoms(traj));
-    EXPECT_EQ(10, md_trajectory_num_frames(traj));
-    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
-    float* x = (float*)mem_ptr;
-    float* y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
-    float* z = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 2;
+    size_t num_atoms = md_trajectory_num_atoms(traj);
+    size_t num_frames = md_trajectory_num_frames(traj);
+    EXPECT_EQ(7722, num_atoms);
+    EXPECT_EQ(10, num_frames);
+    size_t stride = ALIGN_TO(num_atoms, 16);
+    const size_t bytes = stride * 3 * sizeof(float);
+    void* mem = md_alloc(md_temp_allocator, bytes);
+    float* x = (float*)mem + stride * 0;
+    float* y = (float*)mem + stride * 1;
+    float* z = (float*)mem + stride * 2;
 
     md_trajectory_frame_header_t header;
 
-    for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
+    for (size_t i = 0; i < num_frames; ++i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
         EXPECT_EQ(7722, header.num_atoms);
     }
 
     EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
 
-    EXPECT_NE(x[0], 0);
-    EXPECT_NEAR(x[0], 15.950872, 0.0001); //Should be about 0.35 of cell
-    EXPECT_NEAR(header.unit_cell.basis.col[0].x, 49.738342, 0.0001);
+    EXPECT_NEAR(12.2316074, x[0], 0.0001); //Should be about 0.35 of cell
+    EXPECT_NEAR(39.1199989, header.unit_cell.basis.elem[0][0], 0.0001);
 
-    EXPECT_NEAR(y[0], 32.005634, 0.0001); //Should be about 0.87 of cell
-    EXPECT_NEAR(header.unit_cell.basis.col[1].y, 38.900734, 0.0001);
+    EXPECT_NEAR(29.3010769, y[0], 0.0001); //Should be about 0.87 of cell
+    EXPECT_NEAR(35.7833138, header.unit_cell.basis.elem[1][1], 0.0001);
 
-    EXPECT_NEAR(z[0], 23.680990, 0.0001); //Should be about 0.56 of cell
-    EXPECT_NEAR(header.unit_cell.basis.col[2].z, 42.350327, 0.0001);
+    EXPECT_NEAR(23.6809902, z[0], 0.0001); //Should be about 0.56 of cell
+    EXPECT_NEAR(42.3503265, header.unit_cell.basis.elem[2][2], 0.0001);
 
-    md_free(md_temp_allocator, mem_ptr, mem_size);
+    md_free(md_temp_allocator, mem, bytes);
     md_lammps_trajectory_free(traj);
 
 }
