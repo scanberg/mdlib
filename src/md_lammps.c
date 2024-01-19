@@ -56,7 +56,8 @@ enum {
 typedef struct coord_mappings_t {
 	uint8_t coord_idx[3];
 	uint8_t image_idx[3];
-	uint16_t flags; // Enlarge if needed in the future
+	uint8_t num_coord_tokens;
+	uint8_t flags; // Enlarge if needed in the future
 } coord_mappings_t;
 
 typedef struct lammps_trajectory_t {
@@ -873,22 +874,15 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_buffered_reader_t* rea
 
 	line = str_trim_beg(str_substr(line, 16, SIZE_MAX));
 
-	bool triclinic;
 	// Should either match "pp pp pp" or "xy xz yz pp pp pp"
-	if (str_eq_cstr_n(line, "pp pp pp", 8)) {
-		triclinic = false;
-	}
-	else if (str_eq_cstr_n(line, "xy xz yz pp pp pp", 17)) {
-		triclinic = true;
-	}
-	else {
+	if (!str_eq_cstr_n(line, "pp pp pp", 8) && !str_eq_cstr_n(line, "xy xz yz pp pp pp", 17)) {
 		MD_LOG_ERROR("Unrecognized format in ITEM: BOX BOUNDS: '" STR_FMT "'", STR_ARG(line));
 		return false;
 	}
 
 	str_t tokens[4];
 	double values[3][3] = {0};
-	for (int i = 0; i < 3; ++i) {
+	for (size_t i = 0; i < 3; ++i) {
 		if (!md_buffered_reader_extract_line(&line, reader)) {
 			MD_LOG_ERROR("Failed to extract box bounds");
 			return false;
@@ -898,7 +892,7 @@ static bool parse_box_bounds(box_bounds_t* box_bounds, md_buffered_reader_t* rea
 			MD_LOG_ERROR("Failed to extract box bounds");
 			return false;
 		}
-		for (int j = 0; j < num_tokens; ++j) {
+		for (size_t j = 0; j < num_tokens; ++j) {
 			values[i][j] = parse_float(tokens[j]);
 		}
 	}
@@ -964,9 +958,8 @@ static bool parse_header(header_t* header, md_buffered_reader_t* reader) {
 }
 
 // num_atom_tokens returns the number of expected tokens for the atom coordinates
-static bool parse_coord_mappings(coord_mappings_t* mappings, size_t* num_atom_tokens, str_t str) {
+static bool parse_coord_mappings(coord_mappings_t* mappings, str_t str) {
 	ASSERT(mappings);
-	ASSERT(num_atom_tokens);
 
 	str_t tokens[32];
 	size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &str);
@@ -1021,7 +1014,8 @@ static bool parse_coord_mappings(coord_mappings_t* mappings, size_t* num_atom_to
 		}
 	}
 
-	*num_atom_tokens = num_tokens - 2;
+	ASSERT(num_tokens - 2 < 256);
+	mappings->num_coord_tokens = (uint8_t)(num_tokens - 2);
 
 	if (mappings->flags) {
 		if (mappings->flags & COORD_FLAG_UNWRAP) {
@@ -1039,7 +1033,6 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 	ASSERT(data_size);
 
 	str_t tokens[32];
-	size_t num_tokens;
 	int64_t timestep = 0;
 	int64_t frame_idx = ((int64_t*)data_ptr)[0];
 	md_unit_cell_t unit_cell = {0};
@@ -1098,8 +1091,13 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 			return false;
 		}
 		size_t i = 0;
+		size_t expected_num_tokens = traj_data->coord_mappings.num_coord_tokens;
 		while (md_buffered_reader_extract_line(&line, &reader) && i < header.num_atoms) {
-			num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
+			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
+			if (num_tokens != expected_num_tokens) {
+				MD_LOG_ERROR("Unexpected number of tokens in ITEM: ATOMS line, got %zu, expected %zu", num_tokens, expected_num_tokens);
+				return false;
+			}
 			vec4_t coord = {
 				(float)parse_float(tokens[traj_data->coord_mappings.coord_idx[0]]),
 				(float)parse_float(tokens[traj_data->coord_mappings.coord_idx[1]]),
@@ -1145,7 +1143,6 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 	str_t tokens[32];
 	size_t num_atoms = 0;
 	size_t num_frames = 0;
-	size_t num_atom_coord_tokens = 0;
 	coord_mappings_t mappings = {0};
 
 	while (md_buffered_reader_peek_line(&line, reader)) {
@@ -1170,7 +1167,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 
 		if (num_frames == 0) {
 			// Parse coord mappings
-			if (!parse_coord_mappings(&mappings, &num_atom_coord_tokens, line)) {
+			if (!parse_coord_mappings(&mappings, line)) {
 				MD_LOG_ERROR("Could not parse coord mappings");
 				return false;
 			}
@@ -1187,7 +1184,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 			}
 			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 			// Expect these to match for all frames
-			if (num_tokens != num_atom_coord_tokens) {
+			if (num_tokens != (size_t)mappings.num_coord_tokens) {
 				MD_LOG_ERROR("Number of tokens in ITEM: ATOMS line does not match between frames");
 				return false;
 			}
@@ -1198,7 +1195,11 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 		num_frames += 1;
 	}
 
-	cache->header.num_frames = md_array_size(cache->frame_offsets);
+	if (num_frames == 0) {
+		return false;
+	}
+
+	cache->header.num_frames = num_frames;
 	cache->header.num_atoms = num_atoms;
 	cache->coord_mappings = mappings;
 	//We add the end of the file to frame_offsets, so frame_offset size = num_frames + 1
@@ -1423,7 +1424,7 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 			return false;
 		}
 
-		cache.header.magic = MD_LAMMPS_CACHE_MAGIC;
+		cache.header.magic   = MD_LAMMPS_CACHE_MAGIC;
 		cache.header.version = MD_LAMMPS_CACHE_VERSION;
 		cache.header.num_bytes = filesize;
 
