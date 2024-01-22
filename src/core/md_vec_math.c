@@ -45,7 +45,7 @@ mat3_eigen_t mat3_eigen(mat3_t M) {
 mat3_t mat3_covariance_matrix( const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* indices, vec3_t com, size_t count) {
     mat3_t A = {0};
     for (size_t i = 0; i < count; i++) {
-        const int64_t idx = indices ? indices[i] : i;
+        const int64_t idx = indices ? indices[i] : (int64_t)i;
         const float x = in_x[idx] - com.x;
         const float y = in_y[idx] - com.y;
         const float z = in_z[idx] - com.z;
@@ -68,7 +68,7 @@ mat3_t mat3_covariance_matrix( const float* in_x, const float* in_y, const float
 mat3_t mat3_covariance_matrix_vec4(const vec4_t* in_xyzw, const int32_t* indices, vec3_t com, size_t count) {
     mat3_t A = {0};
     for (size_t i = 0; i < count; i++) {
-        const int64_t idx = indices ? indices[i] : i;
+        const int64_t idx = indices ? indices[i] : (int64_t)i;
         const float x = in_xyzw[idx].x - com.x;
         const float y = in_xyzw[idx].y - com.y;
         const float z = in_xyzw[idx].z - com.z;

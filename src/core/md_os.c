@@ -23,6 +23,7 @@
 
 #include <Windows.h>
 #include <Shlwapi.h>
+#include <ShlObj.h>
 #include <direct.h>
 
 // If we need to explicitly link against some lib
@@ -54,7 +55,9 @@ STATIC_ASSERT(sizeof(CRITICAL_SECTION) <= sizeof(md_mutex_t), "Win32 CRITICAL_SE
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/types.h>
 #include <pthread.h>
+#include <pwd.h>
 
 #endif
 
@@ -180,6 +183,42 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
     ASSERT(false);
 #endif
     return 0;
+}
+
+// https://stackoverflow.com/questions/2899013/how-do-i-get-the-application-data-path-in-windows-using-c
+// https://stackoverflow.com/questions/2910377/get-home-directory-in-linux
+size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
+#if MD_PLATFORM_WINDOWS
+    WCHAR* homedir = NULL;
+    HRESULT res = SHGetKnownFolderPath(&FOLDERID_Profile, 0, NULL, &homedir);
+    if (res != S_OK) {
+		MD_LOG_ERROR("Failed to get home directory");
+        return 0;
+	}
+	res = WideCharToMultiByte(CP_UTF8, 0, homedir, -1, buf, (int)buf_cap, NULL, NULL);
+	CoTaskMemFree(homedir);
+	if (res == 0) {
+		MD_LOG_ERROR("Failed to convert home directory to UTF8");
+		return 0;
+	}
+	return strnlen(buf, buf_cap);
+#elif MD_PLATFORM_UNIX
+    const char *homedir = NULL;
+    if ((homedir = getenv("HOME")) == NULL) {
+        struct passwd* pwd = getpwuid(getuid());
+        if (pwd) {
+			homedir = pwd->pw_dir;
+		}
+    }
+    if (!homedir) {
+        MD_LOG_ERROR("Failed to get home directory");
+		return 0;
+    }
+    return (size_t)snprintf(buf, buf_cap, "%s", homedir);
+#else
+    ASSERT(false);
+#endif
+	return 0;
 }
 
 bool md_path_set_cwd(str_t path) {
@@ -857,6 +896,7 @@ bool md_mutex_unlock(md_mutex_t* mutex) {
 // ### SEMAPHORE ###
 
 bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
+    ASSERT(initial_count < INT32_MAX);
 #if MD_PLATFORM_WINDOWS
     semaphore->_data[0] = CreateSemaphoreA(NULL, (LONG)initial_count, MAXLONG, NULL);
     return semaphore != NULL;
@@ -874,12 +914,6 @@ bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count) {
 #endif
 }
 
-#if MD_PLATFORM_WINDOWS
-static inline bool win32_semaphore_wait(md_semaphore_t* semaphore, DWORD milliseconds) {
-    return WaitForSingleObjectEx((HANDLE)semaphore->_data[0], milliseconds, FALSE) == WAIT_OBJECT_0;
-}
-#endif
-
 bool md_semaphore_destroy(md_semaphore_t* semaphore) {
 #if MD_PLATFORM_WINDOWS
     return CloseHandle((HANDLE)semaphore->_data[0]);
@@ -895,7 +929,7 @@ bool md_semaphore_destroy(md_semaphore_t* semaphore) {
 
 bool md_semaphore_aquire(md_semaphore_t* semaphore) {
 #if MD_PLATFORM_WINDOWS
-    return win32_semaphore_wait(semaphore, INFINITE);
+    return WaitForSingleObjectEx((HANDLE)semaphore->_data[0], INFINITE, FALSE) == WAIT_OBJECT_0;
 #elif MD_PLATFORM_LINUX
     return sem_wait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
@@ -907,7 +941,7 @@ bool md_semaphore_aquire(md_semaphore_t* semaphore) {
 
 bool md_semaphore_try_aquire(md_semaphore_t* semaphore) {
 #if MD_PLATFORM_WINDOWS
-    return win32_semaphore_wait(semaphore, 0);
+    return WaitForSingleObjectEx((HANDLE)semaphore->_data[0], 0, FALSE) == WAIT_OBJECT_0;
 #elif MD_PLATFORM_LINUX
     return sem_trywait((sem_t*)semaphore) == 0;
 #elif MD_PLATFORM_OSX
@@ -938,7 +972,13 @@ bool md_semaphore_query_count(md_semaphore_t* semaphore, size_t* count) {
     }
     return false;
 #elif MD_PLATFORM_LINUX
-    return sem_getvalue((sem_t*)semaphore, count) == 0;
+    int val;
+    if (sem_getvalue((sem_t*)semaphore, &val) != 0) {
+        MD_LOG_ERROR("Failed to query semaphore value");
+        return false;
+	}
+    *count = (size_t)val;
+	return true;
 #elif MD_PLATFORM_OSX
     (void)semaphore;
     (void)count;
@@ -971,19 +1011,28 @@ bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, size_t count) {
     ASSERT(count > 0);
     size_t aquired_count = 0;
     for (size_t i = 0; i < count; ++i) {
-        aquired_count += md_semaphore_try_aquire(semaphore) == true ? 1 : 0;
+        if (!md_semaphore_try_aquire(semaphore)) {
+            break;
+        }
+        aquired_count += 1;
     }
     if (aquired_count == count) {
         return true;
     }
+    // If we did not manage to aquire the sufficient count, we release it again.
     md_semaphore_release_n(semaphore, aquired_count);
     return false;
 }
 
 bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
-    bool result = true;
+#if MD_PLATFORM_WINDOWS
+    return ReleaseSemaphore((HANDLE)semaphore->_data[0], count, NULL);
+#else
     for (size_t i = 0; i < count; ++i) {
-        result |= md_semaphore_release(semaphore);
+        if (!md_semaphore_release(semaphore)) {
+            return false;
+        }
     }
-    return result;
+    return true;
+#endif
 }

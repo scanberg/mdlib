@@ -31,6 +31,13 @@ bool  md_path_set_cwd(str_t path);
 // Writes into a buffer (up to buf_cap) and returns the number of characters written
 size_t md_path_write_exe(char* buf, size_t buf_cap);
 
+// Gets the path to the user directory
+// Writes into a buffer (up to buf_cap) and returns the number of characters written
+// On windows this would correspond to the user's home directory e.g. C:\Users\username
+// On linux this would correspond to the user's home directory e.g. /home/username
+// On mac this would correspond to the user's home directory e.g. /Users/username
+size_t md_path_write_user_dir(char* buf, size_t buf_cap);
+
 // Writes a canonical path to buf.
 size_t md_path_write_canonical(char* buf, size_t buf_cap, str_t path);
 str_t md_path_make_canonical(str_t path, struct md_allocator_i* alloc);
@@ -150,6 +157,9 @@ bool md_mutex_unlock(md_mutex_t* mutex);
 typedef struct md_semaphore_t {
     void* _data[4];
 } md_semaphore_t;
+
+// @NOTE: The size type does not reflect the actual size of the semaphore which is probably (int).
+// But it is used to make the API more consistent.
 
 md_semaphore_t md_semaphore_create(size_t initial_count);
 bool md_semaphore_init(md_semaphore_t* semaphore, size_t initial_count);
