@@ -3785,42 +3785,42 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
 #if defined(__AVX512F__)
     md_512 v_acc_c[3] = { 0 };
     md_512 v_acc_s[3] = { 0 };
-    md_512 v_acc_w = md_mm512_setzero_ps();
+    md_512 v_acc_w = _mm512_setzero_ps();
     const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         // Load
-        md_512 v_x = md_mm512_loadu_ps(in_x + i);
-        md_512 v_y = md_mm512_loadu_ps(in_y + i);
-        md_512 v_z = md_mm512_loadu_ps(in_z + i);
-        md_512 v_w = md_mm512_loadu_ps(in_w + i);
+        md_512 v_x = _mm512_loadu_ps(in_x + i);
+        md_512 v_y = _mm512_loadu_ps(in_y + i);
+        md_512 v_z = _mm512_loadu_ps(in_z + i);
+        md_512 v_w = _mm512_loadu_ps(in_w + i);
         // Compute thetas 
         // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
         // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = md_mm512_fmadd_ps(v_x, md_mm512_set1_ps(M[0][0]), md_mm512_fmadd_ps(v_x, md_mm512_set1_ps(M[0][1]), md_mm512_mul_ps(v_x, md_mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = md_mm512_fmadd_ps(v_y, md_mm512_set1_ps(M[1][0]), md_mm512_fmadd_ps(v_y, md_mm512_set1_ps(M[1][1]), md_mm512_mul_ps(v_y, md_mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = md_mm512_fmadd_ps(v_z, md_mm512_set1_ps(M[2][0]), md_mm512_fmadd_ps(v_z, md_mm512_set1_ps(M[2][1]), md_mm512_mul_ps(v_z, md_mm512_set1_ps(M[2][2]))));
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
+        _mm512_sincos_ps(v_tx, &v_sx, &v_cx);
+        _mm512_sincos_ps(v_ty, &v_sy, &v_cy);
+        _mm512_sincos_ps(v_tz, &v_sz, &v_cz);
         // Accumulate
-        v_acc_s[0] = md_mm512_fmadd_ps(v_sx, v_w, v_acc_s[0]);
-        v_acc_c[0] = md_mm512_fmadd_ps(v_cx, v_w, v_acc_c[0]);
-        v_acc_s[1] = md_mm512_fmadd_ps(v_sy, v_w, v_acc_s[1]);
-        v_acc_c[1] = md_mm512_fmadd_ps(v_cy, v_w, v_acc_c[1]);
-        v_acc_s[2] = md_mm512_fmadd_ps(v_sz, v_w, v_acc_s[2]);
-        v_acc_c[2] = md_mm512_fmadd_ps(v_cz, v_w, v_acc_c[2]);
-        v_acc_w    = md_mm512_add_ps(v_acc_w, v_w);
+        v_acc_s[0] = _mm512_fmadd_ps(v_sx, v_w, v_acc_s[0]);
+        v_acc_c[0] = _mm512_fmadd_ps(v_cx, v_w, v_acc_c[0]);
+        v_acc_s[1] = _mm512_fmadd_ps(v_sy, v_w, v_acc_s[1]);
+        v_acc_c[1] = _mm512_fmadd_ps(v_cy, v_w, v_acc_c[1]);
+        v_acc_s[2] = _mm512_fmadd_ps(v_sz, v_w, v_acc_s[2]);
+        v_acc_c[2] = _mm512_fmadd_ps(v_cz, v_w, v_acc_c[2]);
+        v_acc_w    = _mm512_add_ps(v_acc_w, v_w);
     }
     // Reduce
-    acc_s[0] = md_mm512_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm512_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm512_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm512_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm512_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm512_reduce_add_ps(v_acc_c[2]);
-    acc_w    = md_mm512_reduce_add_ps(v_acc_w);
+    acc_s[0] = _mm512_reduce_add_ps(v_acc_s[0]);
+    acc_c[0] = _mm512_reduce_add_ps(v_acc_c[0]);
+    acc_s[1] = _mm512_reduce_add_ps(v_acc_s[1]);
+    acc_c[1] = _mm512_reduce_add_ps(v_acc_c[1]);
+    acc_s[2] = _mm512_reduce_add_ps(v_acc_s[2]);
+    acc_c[2] = _mm512_reduce_add_ps(v_acc_c[2]);
+    acc_w    = _mm512_reduce_add_ps(v_acc_w);
 #elif defined(__AVX2__)
     md_256 v_acc_c[3] = { 0 };
     md_256 v_acc_s[3] = { 0 };
@@ -3951,35 +3951,35 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
     const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         // Load
-        md_512 v_x = md_mm512_loadu_ps(in_x + i);
-        md_512 v_y = md_mm512_loadu_ps(in_y + i);
-        md_512 v_z = md_mm512_loadu_ps(in_z + i);
+        md_512 v_x = _mm512_loadu_ps(in_x + i);
+        md_512 v_y = _mm512_loadu_ps(in_y + i);
+        md_512 v_z = _mm512_loadu_ps(in_z + i);
         // Compute thetas 
         // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
         // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = md_mm512_fmadd_ps(v_x, md_mm512_set1_ps(M[0][0]), md_mm512_fmadd_ps(v_x, md_mm512_set1_ps(M[0][1]), md_mm512_mul_ps(v_x, md_mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = md_mm512_fmadd_ps(v_y, md_mm512_set1_ps(M[1][0]), md_mm512_fmadd_ps(v_y, md_mm512_set1_ps(M[1][1]), md_mm512_mul_ps(v_y, md_mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = md_mm512_fmadd_ps(v_z, md_mm512_set1_ps(M[2][0]), md_mm512_fmadd_ps(v_z, md_mm512_set1_ps(M[2][1]), md_mm512_mul_ps(v_z, md_mm512_set1_ps(M[2][2]))));
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
+        _mm512_sincos_ps(v_tx, &v_sx, &v_cx);
+        _mm512_sincos_ps(v_ty, &v_sy, &v_cy);
+        _mm512_sincos_ps(v_tz, &v_sz, &v_cz);
         // Accumulate
-        v_acc_s[0] = md_mm512_add_ps(v_acc_s[0], v_sx);
-        v_acc_c[0] = md_mm512_add_ps(v_acc_c[0], v_cx);
-        v_acc_s[1] = md_mm512_add_ps(v_acc_s[1], v_sy);
-        v_acc_c[1] = md_mm512_add_ps(v_acc_c[1], v_cy);
-        v_acc_s[2] = md_mm512_add_ps(v_acc_s[2], v_sz);
-        v_acc_c[2] = md_mm512_add_ps(v_acc_c[2], v_cz);
+        v_acc_s[0] = _mm512_add_ps(v_acc_s[0], v_sx);
+        v_acc_c[0] = _mm512_add_ps(v_acc_c[0], v_cx);
+        v_acc_s[1] = _mm512_add_ps(v_acc_s[1], v_sy);
+        v_acc_c[1] = _mm512_add_ps(v_acc_c[1], v_cy);
+        v_acc_s[2] = _mm512_add_ps(v_acc_s[2], v_sz);
+        v_acc_c[2] = _mm512_add_ps(v_acc_c[2], v_cz);
     }
     // Reduce
-    acc_s[0] = md_mm512_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm512_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm512_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm512_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm512_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm512_reduce_add_ps(v_acc_c[2]);
+    acc_s[0] = _mm512_reduce_add_ps(v_acc_s[0]);
+    acc_c[0] = _mm512_reduce_add_ps(v_acc_c[0]);
+    acc_s[1] = _mm512_reduce_add_ps(v_acc_s[1]);
+    acc_c[1] = _mm512_reduce_add_ps(v_acc_c[1]);
+    acc_s[2] = _mm512_reduce_add_ps(v_acc_s[2]);
+    acc_c[2] = _mm512_reduce_add_ps(v_acc_c[2]);
 #elif defined(__AVX2__)
     md_256 v_acc_c[3] = { 0 };
     md_256 v_acc_s[3] = { 0 };
@@ -4100,36 +4100,36 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         // Load
-        md_512i idx = md_mm512_loadu_si256(in_idx + i);
-        md_512 v_x  = md_mm512_i32gather_ps(idx, in_x, 4);
-        md_512 v_y  = md_mm512_i32gather_ps(idx, in_y, 4);
-        md_512 v_z  = md_mm512_i32gather_ps(idx, in_z, 4);
+        md_512i idx = _mm512_loadu_si256(in_idx + i);
+        md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
+        md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
+        md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
         // Compute thetas 
         // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
         // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = md_mm512_fmadd_ps(v_x, md_mm512_set1_ps(M[0][0]), md_mm512_fmadd_ps(v_x, md_mm512_set1_ps(M[0][1]), md_mm512_mul_ps(v_x, md_mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = md_mm512_fmadd_ps(v_y, md_mm512_set1_ps(M[1][0]), md_mm512_fmadd_ps(v_y, md_mm512_set1_ps(M[1][1]), md_mm512_mul_ps(v_y, md_mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = md_mm512_fmadd_ps(v_z, md_mm512_set1_ps(M[2][0]), md_mm512_fmadd_ps(v_z, md_mm512_set1_ps(M[2][1]), md_mm512_mul_ps(v_z, md_mm512_set1_ps(M[2][2]))));
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
+        _mm512_sincos_ps(v_tx, &v_sx, &v_cx);
+        _mm512_sincos_ps(v_ty, &v_sy, &v_cy);
+        _mm512_sincos_ps(v_tz, &v_sz, &v_cz);
         // Accumulate
-        v_acc_s[0] = md_mm512_add_ps(v_acc_s[0], v_sx);
-        v_acc_c[0] = md_mm512_add_ps(v_acc_c[0], v_cx);
-        v_acc_s[1] = md_mm512_add_ps(v_acc_s[1], v_sy);
-        v_acc_c[1] = md_mm512_add_ps(v_acc_c[1], v_cy);
-        v_acc_s[2] = md_mm512_add_ps(v_acc_s[2], v_sz);
-        v_acc_c[2] = md_mm512_add_ps(v_acc_c[2], v_cz);
+        v_acc_s[0] = _mm512_add_ps(v_acc_s[0], v_sx);
+        v_acc_c[0] = _mm512_add_ps(v_acc_c[0], v_cx);
+        v_acc_s[1] = _mm512_add_ps(v_acc_s[1], v_sy);
+        v_acc_c[1] = _mm512_add_ps(v_acc_c[1], v_cy);
+        v_acc_s[2] = _mm512_add_ps(v_acc_s[2], v_sz);
+        v_acc_c[2] = _mm512_add_ps(v_acc_c[2], v_cz);
     }
     // Reduce
-    acc_s[0] = md_mm512_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm512_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm512_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm512_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm512_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm512_reduce_add_ps(v_acc_c[2]);
+    acc_s[0] = _mm512_reduce_add_ps(v_acc_s[0]);
+    acc_c[0] = _mm512_reduce_add_ps(v_acc_c[0]);
+    acc_s[1] = _mm512_reduce_add_ps(v_acc_s[1]);
+    acc_c[1] = _mm512_reduce_add_ps(v_acc_c[1]);
+    acc_s[2] = _mm512_reduce_add_ps(v_acc_s[2]);
+    acc_c[2] = _mm512_reduce_add_ps(v_acc_c[2]);
 #elif defined(__AVX2__)
     md_256 v_acc_c[3] = { 0 };
     md_256 v_acc_s[3] = { 0 };
@@ -4251,43 +4251,43 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
 #if defined(__AVX512F__)
     md_512 v_acc_c[3] = { 0 };
     md_512 v_acc_s[3] = { 0 };
-    md_512 v_acc_w = md_mm512_setzero_ps();
+    md_512 v_acc_w = _mm512_setzero_ps();
     const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         // Load
-        md_512i idx = md_mm512_loadu_si256(in_idx + i);
-        md_512 v_x  = md_mm512_i32gather_ps(idx, in_x, 4);
-        md_512 v_y  = md_mm512_i32gather_ps(idx, in_y, 4);
-        md_512 v_z  = md_mm512_i32gather_ps(idx, in_z, 4);
-        md_512 v_w  = md_mm512_i32gather_ps(idx, in_w, 4);
+        md_512i idx = _mm512_loadu_si256(in_idx + i);
+        md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
+        md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
+        md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
+        md_512 v_w  = _mm512_i32gather_ps(idx, in_w, 4);
         // Compute thetas 
         // In the non orthogonal case, this corresponds to 'multiplying' by the inverse of the Matrix
         // This is achieved by performing a dot product with the corresponding row of the inverse matrix
-        md_512 v_tx = md_mm512_fmadd_ps(v_x, md_mm512_set1_ps(M[0][0]), md_mm512_fmadd_ps(v_x, md_mm512_set1_ps(M[0][1]), md_mm512_mul_ps(v_x, md_mm512_set1_ps(M[0][2]))));
-        md_512 v_ty = md_mm512_fmadd_ps(v_y, md_mm512_set1_ps(M[1][0]), md_mm512_fmadd_ps(v_y, md_mm512_set1_ps(M[1][1]), md_mm512_mul_ps(v_y, md_mm512_set1_ps(M[1][2]))));
-        md_512 v_tz = md_mm512_fmadd_ps(v_z, md_mm512_set1_ps(M[2][0]), md_mm512_fmadd_ps(v_z, md_mm512_set1_ps(M[2][1]), md_mm512_mul_ps(v_z, md_mm512_set1_ps(M[2][2]))));
+        md_512 v_tx = _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][0]), _mm512_fmadd_ps(v_x, _mm512_set1_ps(M[0][1]), _mm512_mul_ps(v_x, _mm512_set1_ps(M[0][2]))));
+        md_512 v_ty = _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][0]), _mm512_fmadd_ps(v_y, _mm512_set1_ps(M[1][1]), _mm512_mul_ps(v_y, _mm512_set1_ps(M[1][2]))));
+        md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
+        _mm512_sincos_ps(v_tx, &v_sx, &v_cx);
+        _mm512_sincos_ps(v_ty, &v_sy, &v_cy);
+        _mm512_sincos_ps(v_tz, &v_sz, &v_cz);
         // Accumulate
-        v_acc_s[0] = md_mm512_fmadd_ps(v_sx, v_w, v_acc_s[0]);
-        v_acc_c[0] = md_mm512_fmadd_ps(v_cx, v_w, v_acc_c[0]);
-        v_acc_s[1] = md_mm512_fmadd_ps(v_sy, v_w, v_acc_s[1]);
-        v_acc_c[1] = md_mm512_fmadd_ps(v_cy, v_w, v_acc_c[1]);
-        v_acc_s[2] = md_mm512_fmadd_ps(v_sz, v_w, v_acc_s[2]);
-        v_acc_c[2] = md_mm512_fmadd_ps(v_cz, v_w, v_acc_c[2]);
-        v_acc_w    = md_mm512_add_ps(v_acc_w, v_w);
+        v_acc_s[0] = _mm512_fmadd_ps(v_sx, v_w, v_acc_s[0]);
+        v_acc_c[0] = _mm512_fmadd_ps(v_cx, v_w, v_acc_c[0]);
+        v_acc_s[1] = _mm512_fmadd_ps(v_sy, v_w, v_acc_s[1]);
+        v_acc_c[1] = _mm512_fmadd_ps(v_cy, v_w, v_acc_c[1]);
+        v_acc_s[2] = _mm512_fmadd_ps(v_sz, v_w, v_acc_s[2]);
+        v_acc_c[2] = _mm512_fmadd_ps(v_cz, v_w, v_acc_c[2]);
+        v_acc_w    = _mm512_add_ps(v_acc_w, v_w);
     }
     // Reduce
-    acc_s[0] = md_mm512_reduce_add_ps(v_acc_s[0]);
-    acc_c[0] = md_mm512_reduce_add_ps(v_acc_c[0]);
-    acc_s[1] = md_mm512_reduce_add_ps(v_acc_s[1]);
-    acc_c[1] = md_mm512_reduce_add_ps(v_acc_c[1]);
-    acc_s[2] = md_mm512_reduce_add_ps(v_acc_s[2]);
-    acc_c[2] = md_mm512_reduce_add_ps(v_acc_c[2]);
-    acc_w    = md_mm512_reduce_add_ps(v_acc_w);
+    acc_s[0] = _mm512_reduce_add_ps(v_acc_s[0]);
+    acc_c[0] = _mm512_reduce_add_ps(v_acc_c[0]);
+    acc_s[1] = _mm512_reduce_add_ps(v_acc_s[1]);
+    acc_c[1] = _mm512_reduce_add_ps(v_acc_c[1]);
+    acc_s[2] = _mm512_reduce_add_ps(v_acc_s[2]);
+    acc_c[2] = _mm512_reduce_add_ps(v_acc_c[2]);
+    acc_w    = _mm512_reduce_add_ps(v_acc_w);
 #elif defined(__AVX2__)
     md_256 v_acc_c[3] = { 0 };
     md_256 v_acc_s[3] = { 0 };
