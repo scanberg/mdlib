@@ -4100,7 +4100,7 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
     const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         // Load
-        md_512i idx = _mm512_loadu_si256(in_idx + i);
+        md_512i idx = _mm512_loadu_si512(in_idx + i);
         md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
         md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
         md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
@@ -4255,7 +4255,7 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     const size_t simd_count = ROUND_DOWN(count, 8);
     for (; i < simd_count; i += 8) {
         // Load
-        md_512i idx = _mm512_loadu_si256(in_idx + i);
+        md_512i idx = _mm512_loadu_si512(in_idx + i);
         md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
         md_512 v_y  = _mm512_i32gather_ps(idx, in_y, 4);
         md_512 v_z  = _mm512_i32gather_ps(idx, in_z, 4);
