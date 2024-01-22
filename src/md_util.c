@@ -3801,9 +3801,9 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
         md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        _mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        _mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        _mm512_sincos_ps(v_tz, &v_sz, &v_cz);
+        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
+        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
+        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
         // Accumulate
         v_acc_s[0] = _mm512_fmadd_ps(v_sx, v_w, v_acc_s[0]);
         v_acc_c[0] = _mm512_fmadd_ps(v_cx, v_w, v_acc_c[0]);
@@ -3962,9 +3962,9 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
         md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        _mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        _mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        _mm512_sincos_ps(v_tz, &v_sz, &v_cz);
+        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
+        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
+        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
         // Accumulate
         v_acc_s[0] = _mm512_add_ps(v_acc_s[0], v_sx);
         v_acc_c[0] = _mm512_add_ps(v_acc_c[0], v_cx);
@@ -4112,9 +4112,9 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
         md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        _mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        _mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        _mm512_sincos_ps(v_tz, &v_sz, &v_cz);
+        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
+        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
+        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
         // Accumulate
         v_acc_s[0] = _mm512_add_ps(v_acc_s[0], v_sx);
         v_acc_c[0] = _mm512_add_ps(v_acc_c[0], v_cx);
@@ -4268,9 +4268,9 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
         md_512 v_tz = _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][0]), _mm512_fmadd_ps(v_z, _mm512_set1_ps(M[2][1]), _mm512_mul_ps(v_z, _mm512_set1_ps(M[2][2]))));
         // Compute sin cos
         md_512 v_cx, v_cy, v_cz, v_sx, v_sy, v_sz;
-        _mm512_sincos_ps(v_tx, &v_sx, &v_cx);
-        _mm512_sincos_ps(v_ty, &v_sy, &v_cy);
-        _mm512_sincos_ps(v_tz, &v_sz, &v_cz);
+        md_mm512_sincos_ps(v_tx, &v_sx, &v_cx);
+        md_mm512_sincos_ps(v_ty, &v_sy, &v_cy);
+        md_mm512_sincos_ps(v_tz, &v_sz, &v_cz);
         // Accumulate
         v_acc_s[0] = _mm512_fmadd_ps(v_sx, v_w, v_acc_s[0]);
         v_acc_c[0] = _mm512_fmadd_ps(v_cx, v_w, v_acc_c[0]);
