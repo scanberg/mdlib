@@ -695,9 +695,9 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	}
 
 	for (size_t i = 0; i < num_atoms; ++i) {
-		mol->atom.x[i] = data->atoms[i].x;
-		mol->atom.y[i] = data->atoms[i].y;
-		mol->atom.z[i] = data->atoms[i].z;
+		mol->atom.x[i] = data->atoms[i].x - data->cell.xlo;
+		mol->atom.y[i] = data->atoms[i].y - data->cell.ylo;
+		mol->atom.z[i] = data->atoms[i].z - data->cell.zlo;
 		mol->atom.mass[i] = data->atoms[i].mass;
 		if (has_resid) {
 			mol->atom.resid[i] = data->atoms[i].resid;
@@ -1079,10 +1079,9 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 
 	// transform matrix to apply
 	mat4_t M = mat4_translate(-(float)xlo, -(float)ylo, -(float)zlo);
-
 	if (traj_data->coord_mappings.flags & COORD_FLAG_SCALED) {
 		// Scaling
-		M = mat4_from_mat3(unit_cell.basis);
+		M = mat4_mul(M, mat4_from_mat3(unit_cell.basis));
 	}
 
 	if (output_coords) {
