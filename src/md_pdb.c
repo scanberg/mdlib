@@ -59,12 +59,16 @@ static inline char extract_char(str_t line, size_t idx) {
 }
 
 static inline md_pdb_coordinate_t extract_coord(str_t line) {
+    char chain_id = extract_char(line, 22);
+    if (!is_alpha(chain_id)) {
+		chain_id = ' ';
+	}
     md_pdb_coordinate_t coord = {
         .atom_serial = extract_int(line, 7, 11),
         .atom_name = {0},
         .alt_loc = extract_char(line, 17),
         .res_name = {0},
-        .chain_id = extract_char(line, 22),
+        .chain_id = chain_id,
         .res_seq = extract_int(line, 23, 26),
         .icode = extract_char(line, 27),
         .x = extract_float(line, 31, 38),
