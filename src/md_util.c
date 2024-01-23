@@ -3786,8 +3786,8 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
     md_512 v_acc_c[3] = { 0 };
     md_512 v_acc_s[3] = { 0 };
     md_512 v_acc_w = _mm512_setzero_ps();
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
+    const size_t simd_count = ROUND_DOWN(count, 16);
+    for (; i < simd_count; i += 16) {
         // Load
         md_512 v_x = _mm512_loadu_ps(in_x + i);
         md_512 v_y = _mm512_loadu_ps(in_y + i);
@@ -3864,8 +3864,8 @@ static void _com_pbc_w(float out_com[3], const float* in_x, const float* in_y, c
     md_128 v_acc_c[3] = { 0 };
     md_128 v_acc_s[3] = { 0 };
     md_128 v_acc_w = md_mm_setzero_ps();
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
+    const size_t simd_count = ROUND_DOWN(count, 4);
+    for (; i < simd_count; i += 4) {
         // Load
         md_128 v_x = md_mm_loadu_ps(in_x + i);
         md_128 v_y = md_mm_loadu_ps(in_y + i);
@@ -3948,8 +3948,8 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
 #if defined(__AVX512F__)
     md_512 v_acc_c[3] = { 0 };
     md_512 v_acc_s[3] = { 0 };
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
+    const size_t simd_count = ROUND_DOWN(count, 16);
+    for (; i < simd_count; i += 16) {
         // Load
         md_512 v_x = _mm512_loadu_ps(in_x + i);
         md_512 v_y = _mm512_loadu_ps(in_y + i);
@@ -4018,8 +4018,8 @@ static void _com_pbc(float out_com[3], const float* in_x, const float* in_y, con
 #elif defined(__SSE2__)
     md_128 v_acc_c[3] = { 0 };
     md_128 v_acc_s[3] = { 0 };
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
+    const size_t simd_count = ROUND_DOWN(count, 4);
+    for (; i < simd_count; i += 4) {
         // Load
         md_128 v_x = md_mm_loadu_ps(in_x + i);
         md_128 v_y = md_mm_loadu_ps(in_y + i);
@@ -4097,8 +4097,8 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
 #if defined(__AVX512F__)
     md_512 v_acc_c[3] = { 0 };
     md_512 v_acc_s[3] = { 0 };
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
+    const size_t simd_count = ROUND_DOWN(count, 16);
+    for (; i < simd_count; i += 16) {
         // Load
         md_512i idx = _mm512_loadu_si512(in_idx + i);
         md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
@@ -4169,8 +4169,8 @@ static void _com_pbc_i(float out_com[3], const float* in_x, const float* in_y, c
 #elif defined(__SSE2__)
     md_128 v_acc_c[3] = { 0 };
     md_128 v_acc_s[3] = { 0 };
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
+    const size_t simd_count = ROUND_DOWN(count, 4);
+    for (; i < simd_count; i += 4) {
         // Load
         md_128i idx = md_mm_loadu_si128(in_idx + i);
         md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
@@ -4252,8 +4252,8 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     md_512 v_acc_c[3] = { 0 };
     md_512 v_acc_s[3] = { 0 };
     md_512 v_acc_w = _mm512_setzero_ps();
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
+    const size_t simd_count = ROUND_DOWN(count, 16);
+    for (; i < simd_count; i += 16) {
         // Load
         md_512i idx = _mm512_loadu_si512(in_idx + i);
         md_512 v_x  = _mm512_i32gather_ps(idx, in_x, 4);
@@ -4332,8 +4332,8 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
     md_128 v_acc_c[3] = { 0 };
     md_128 v_acc_s[3] = { 0 };
     md_128 v_acc_w = md_mm_setzero_ps();
-    const size_t simd_count = ROUND_DOWN(count, 8);
-    for (; i < simd_count; i += 8) {
+    const size_t simd_count = ROUND_DOWN(count, 4);
+    for (; i < simd_count; i += 4) {
         // Load
         md_128i idx = md_mm_loadu_si128(in_idx + i);
         md_128 v_x  = md_mm_i32gather_ps(in_x, idx, 4);
