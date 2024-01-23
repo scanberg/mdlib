@@ -4413,15 +4413,15 @@ static void com_pbc(float* out_com, const float* in_x, const float* in_y, const 
     // Here we select the correct internal version based on the available inputs
     if (in_w) {
         if (in_idx) {
-            _com_pbc_iw(out_com, in_x, in_y, in_z, in_w, in_idx, count, M.elem, I.elem);
+            _com_pbc_iw(out_com, in_x, in_y, in_z, in_w, in_idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
 		} else {
-			_com_pbc_w(out_com, in_x, in_y, in_z, in_w, count, M.elem, I.elem);
+			_com_pbc_w(out_com, in_x, in_y, in_z, in_w, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
         }
     } else {
 		if (in_idx) {
-			_com_pbc_i(out_com, in_x, in_y, in_z, in_idx, count, M.elem, I.elem);
+			_com_pbc_i(out_com, in_x, in_y, in_z, in_idx, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
 		} else {
-			_com_pbc(out_com, in_x, in_y, in_z, count, M.elem, I.elem);
+			_com_pbc(out_com, in_x, in_y, in_z, count, (const float (*)[3])M.elem, (const float (*)[3])I.elem);
 		}
     }
 }
@@ -4520,7 +4520,6 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             }
         }
 
-        const float w = acc_xyzw.w;
         for (int i = 0; i < 3; ++i) {
             const double y = acc_s.elem[i] / acc_xyzw.w;
             const double x = acc_c.elem[i] / acc_xyzw.w;
@@ -4559,7 +4558,7 @@ vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in
     return xyz;
 }
 
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, size_t count, const md_unit_cell_t* unit_cell) {
     ASSERT(in_xyzw);
 
     if (count == 0) {
@@ -4568,9 +4567,9 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
 
     vec3_t xyz = {0};
     if (unit_cell && (unit_cell->flags & (MD_UNIT_CELL_FLAG_ORTHO | MD_UNIT_CELL_FLAG_TRICLINIC))) {
-        com_pbc_vec4(xyz.elem, in_xyzw, in_idx, count, unit_cell);
+        com_pbc_vec4(xyz.elem, in_xyzw, 0, count, unit_cell);
     } else {
-        com_vec4(xyz.elem, in_xyzw, in_idx, count);
+        com_vec4(xyz.elem, in_xyzw, 0, count);
     }
 
     return xyz;
@@ -4884,6 +4883,14 @@ static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size
     }
 }
 
+static void pbc_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
+    const vec4_t ext = vec4_from_vec3(box_ext, 0);
+    const vec4_t ref = vec4_mul_f(ext, 0.5f);
+    for (size_t i = 0; i < count; ++i) {
+        xyzw[i] = vec4_deperiodize(xyzw[i], ref, ext);
+    }
+}
+
 static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
     ASSERT(x);
     ASSERT(y);
@@ -4925,27 +4932,61 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
     }
 }
 
-bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
+	for (size_t i = 0; i < count; ++i) {
+        vec4_t c = xyzw[i];
+		c = mat4_mul_vec4(mat4_from_mat3(cell->inv_basis), c);
+		c = vec4_fract(c);
+		c = mat4_mul_vec4(mat4_from_mat3(cell->basis), c);
+        xyzw[i] = c;
+	}
+}
+
+bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* unit_cell) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
     }
 
-    if (!cell) {
-        MD_LOG_ERROR("Missing cell");
+    if (!unit_cell) {
+        MD_LOG_ERROR("Missing unit cell");
         return false;
     }
 
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(cell->basis);
+    if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        vec3_t ext = mat3_diag(unit_cell->basis);
         pbc_ortho(x, y, z, indices, count, ext);
         return true;
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        pbc_triclinic(x, y, z, indices, count, cell);
+    } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        pbc_triclinic(x, y, z, indices, count, unit_cell);
         return true;
     }
 
-    MD_LOG_ERROR("Uninitialized unitcell");
+    // The unit cell is not initialized or is simply not periodic
+    return false;
+}
+
+bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell) {
+    if (!in_out_xyzw) {
+        MD_LOG_ERROR("Missing required input: in_out_xyzw");
+		return false;
+    }
+
+    if (!unit_cell) {
+		MD_LOG_ERROR("Missing unit cell");
+		return false;
+	}
+
+    if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+		vec3_t ext = mat3_diag(unit_cell->basis);
+		pbc_ortho_vec4(in_out_xyzw, count, ext);
+		return true;
+	} else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+		pbc_triclinic_vec4(in_out_xyzw, count, unit_cell);
+		return true;
+	}
+
+    // The unit cell is not initialized or is simply not periodic
     return false;
 }
 
@@ -4979,6 +5020,16 @@ static void unwrap_ortho(float* x, float* y, float* z, const int32_t* indices, s
     }
 }
 
+static void unwrap_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
+    const vec4_t ext = vec4_from_vec3(box_ext, 0);
+	vec4_t ref_pos = xyzw[0];
+	for (size_t i = 1; i < count; ++i) {
+		const vec4_t pos = vec4_deperiodize(xyzw[i], ref_pos, ext);
+		xyzw[i] = pos;
+		ref_pos = pos;
+	}
+}
+
 static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
     if (indices) {
         int idx = indices[0];
@@ -5005,6 +5056,17 @@ static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indice
     }
 }
 
+static void unwrap_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
+    vec4_t ref_pos = xyzw[0];
+	for (size_t i = 1; i < count; ++i) {
+		vec4_t pos = xyzw[i];
+		deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
+		xyzw[i] = pos;
+		ref_pos = pos;
+	}
+
+}
+
 bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
 	if (!x || !y || !z) {
     	MD_LOG_ERROR("Missing required input: x,y or z");
@@ -5025,7 +5087,31 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
         return true;
     }
 
-    MD_LOG_ERROR("Uninitialized unitcell");
+    // The unit cell is not initialized or is simply not periodic
+    return false;
+}
+
+bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
+    if (!xyzw) {
+        MD_LOG_ERROR("Missing required input: in_out_xyzw");
+        return false;
+    }
+
+    if (!cell) {
+        MD_LOG_ERROR("Missing cell");
+        return false;
+    }
+
+    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        vec3_t ext = mat3_diag(cell->basis);
+        unwrap_ortho_vec4(xyzw, count, ext);
+        return true;
+    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        unwrap_triclinic_vec4(xyzw, count, cell);
+        return true;
+    }
+
+    // The unit cell is not initialized or is simply not periodic
     return false;
 }
 
@@ -5042,9 +5128,6 @@ bool md_util_deperiodize_system(float* x, float* y, float* z, const float* w, si
         // Nothing for us to do here!
         return false;
     }
-
-	bool ortho = cell->flags & MD_UNIT_CELL_FLAG_ORTHO;
-    const vec3_t box = mat3_diag(cell->basis);
 
     md_util_pbc(x, y, z, NULL, num_atoms, cell);
 
@@ -5204,35 +5287,61 @@ bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_
 }
 #endif
 
-double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, size_t count, const vec3_t in_com[2]) {
-    const mat3_t R = mat3_optimal_rotation(in_x[0], in_y[0], in_z[0], in_x[1], in_y[1], in_z[1], in_w, in_com[0], in_com[1], count);
+double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, const int32_t* in_idx, const size_t count, const vec3_t in_com[2]) {
+    const mat3_t R = mat3_optimal_rotation(in_x, in_y, in_z, in_w, in_idx, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
-    for (size_t i = 0; i < count; ++i) {
-        vec3_t u = {in_x[0][i] - in_com[0].x, in_y[0][i] - in_com[0].y, in_z[0][i] - in_com[0].z};
-        vec3_t v = {in_x[1][i] - in_com[1].x, in_y[1][i] - in_com[1].y, in_z[1][i] - in_com[1].z};
-        vec3_t vp = mat3_mul_vec3(R, v);
-        vec3_t d = vec3_sub(u, vp);
-        float weight = in_w ? in_w[i] : 1.0f;
-        d_sum += weight * vec3_dot(d, d);
-        w_sum += weight;
+    if (in_idx) {
+        for (size_t i = 0; i < count; ++i) {
+            int32_t idx = in_idx[i];
+            vec3_t u = {in_x[0][idx] - in_com[0].x, in_y[0][idx] - in_com[0].y, in_z[0][idx] - in_com[0].z};
+            vec3_t v = {in_x[1][idx] - in_com[1].x, in_y[1][idx] - in_com[1].y, in_z[1][idx] - in_com[1].z};
+            vec3_t vp = mat3_mul_vec3(R, v);
+            vec3_t d = vec3_sub(u, vp);
+            float weight = in_w ? in_w[idx] : 1.0f;
+            d_sum += weight * vec3_dot(d, d);
+            w_sum += weight;
+        }
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            vec3_t u = {in_x[0][i] - in_com[0].x, in_y[0][i] - in_com[0].y, in_z[0][i] - in_com[0].z};
+            vec3_t v = {in_x[1][i] - in_com[1].x, in_y[1][i] - in_com[1].y, in_z[1][i] - in_com[1].z};
+            vec3_t vp = mat3_mul_vec3(R, v);
+            vec3_t d = vec3_sub(u, vp);
+            float weight = in_w ? in_w[i] : 1.0f;
+            d_sum += weight * vec3_dot(d, d);
+            w_sum += weight;
+        }
     }
 
     return sqrt(d_sum / w_sum);
 }
 
-double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], size_t count, const vec3_t in_com[2]) {
-    const mat3_t R = mat3_optimal_rotation_vec4(in_xyzw[0], in_xyzw[1], in_com[0], in_com[1], count);
+double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* in_idx, size_t count, const vec3_t in_com[2]) {
+    const mat3_t R = mat3_optimal_rotation_vec4(in_xyzw, in_idx, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
-    for (size_t i = 0; i < count; ++i) {
-        vec3_t u = {in_xyzw[0][i].x - in_com[0].x, in_xyzw[0][i].y - in_com[0].y, in_xyzw[0][i].z - in_com[0].z};
-		vec3_t v = {in_xyzw[1][i].x - in_com[1].x, in_xyzw[1][i].y - in_com[1].y, in_xyzw[1][i].z - in_com[1].z};
-		vec3_t vp = mat3_mul_vec3(R, v);
-		vec3_t d = vec3_sub(u, vp);
-		float w = (in_xyzw[0][i].w + in_xyzw[1][i].w) * 0.5f;
-		d_sum += w * vec3_dot(d, d);
-		w_sum += w;
+    if (in_idx) {
+        for (size_t i = 0; i < count; ++i) {
+            int32_t idx = in_idx[i];
+            vec3_t u = {in_xyzw[0][idx].x - in_com[0].x, in_xyzw[0][idx].y - in_com[0].y, in_xyzw[0][idx].z - in_com[0].z};
+		    vec3_t v = {in_xyzw[1][idx].x - in_com[1].x, in_xyzw[1][idx].y - in_com[1].y, in_xyzw[1][idx].z - in_com[1].z};
+		    vec3_t vp = mat3_mul_vec3(R, v);
+		    vec3_t d = vec3_sub(u, vp);
+		    float w = (in_xyzw[0][idx].w + in_xyzw[1][idx].w) * 0.5f;
+		    d_sum += w * vec3_dot(d, d);
+		    w_sum += w;
+        }
+    } else {
+        for (size_t i = 0; i < count; ++i) {
+            vec3_t u = {in_xyzw[0][i].x - in_com[0].x, in_xyzw[0][i].y - in_com[0].y, in_xyzw[0][i].z - in_com[0].z};
+            vec3_t v = {in_xyzw[1][i].x - in_com[1].x, in_xyzw[1][i].y - in_com[1].y, in_xyzw[1][i].z - in_com[1].z};
+            vec3_t vp = mat3_mul_vec3(R, v);
+            vec3_t d = vec3_sub(u, vp);
+            float w = (in_xyzw[0][i].w + in_xyzw[1][i].w) * 0.5f;
+            d_sum += w * vec3_dot(d, d);
+            w_sum += w;
+        }
     }
 
     return sqrt(d_sum / w_sum);

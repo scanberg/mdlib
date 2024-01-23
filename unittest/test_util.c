@@ -142,7 +142,7 @@ UTEST_F(util, rmsd) {
         md_util_com_compute(x[0], y[0], z[0], w, 0, mol->atom.count, 0),
         md_util_com_compute(x[1], y[1], z[1], w, 0, mol->atom.count, 0),
     };
-    double rmsd = md_util_rmsd_compute(x, y, z, w, mol->atom.count, com);
+    double rmsd = md_util_rmsd_compute(x, y, z, w, 0, mol->atom.count, com);
     
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
@@ -169,7 +169,7 @@ UTEST(util, com) {
             {4,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, ARRAY_SIZE(xyzw), &unit_cell);
         EXPECT_NEAR(2.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -181,7 +181,7 @@ UTEST(util, com) {
             {5,0,0,1},
         };
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, ARRAY_SIZE(xyzw), &unit_cell);
 		com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -200,7 +200,7 @@ UTEST(util, com) {
         which is then placed within the period to 4.5.
         */
 
-        vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
+        vec3_t com = md_util_com_compute_vec4(xyzw, ARRAY_SIZE(xyzw), &unit_cell);
         com = vec3_deperiodize(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
@@ -231,9 +231,9 @@ UTEST(util, com) {
             {2 ,0, 0, 1},
         };
 
-        vec3_t com0 = md_util_com_compute_vec4(pos0, 0, ARRAY_SIZE(pos0), &unit_cell);
-        vec3_t com1 = md_util_com_compute_vec4(pos1, 0, ARRAY_SIZE(pos1), &unit_cell);
-        vec3_t com2 = md_util_com_compute_vec4(pos2, 0, ARRAY_SIZE(pos2), &unit_cell);
+        vec3_t com0 = md_util_com_compute_vec4(pos0, ARRAY_SIZE(pos0), &unit_cell);
+        vec3_t com1 = md_util_com_compute_vec4(pos1, ARRAY_SIZE(pos1), &unit_cell);
+        vec3_t com2 = md_util_com_compute_vec4(pos2, ARRAY_SIZE(pos2), &unit_cell);
 
         com0 = vec3_deperiodize(com0, (vec3_t){ 0,0,0 }, pbc_ext);
         com1 = vec3_deperiodize(com1, (vec3_t){ 0,0,0 }, pbc_ext);

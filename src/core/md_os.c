@@ -697,6 +697,7 @@ void md_vm_commit(void* ptr, size_t size) {
     const size_t page_snapped_size = ALIGN_TO(size, md_vm_page_size());
 #if MD_PLATFORM_WINDOWS
     void* result = VirtualAlloc(ptr, page_snapped_size, MEM_COMMIT, PAGE_READWRITE);
+    (void)result;
     ASSERT(result != NULL);
 #elif MD_PLATFORM_UNIX
     int result = mprotect(ptr, page_snapped_size, PROT_READ | PROT_WRITE);
@@ -1026,7 +1027,7 @@ bool md_semaphore_try_aquire_n(md_semaphore_t* semaphore, size_t count) {
 
 bool md_semaphore_release_n(md_semaphore_t* semaphore, size_t count) {
 #if MD_PLATFORM_WINDOWS
-    return ReleaseSemaphore((HANDLE)semaphore->_data[0], count, NULL);
+    return ReleaseSemaphore((HANDLE)semaphore->_data[0], (LONG)count, NULL);
 #else
     for (size_t i = 0; i < count; ++i) {
         if (!md_semaphore_release(semaphore)) {

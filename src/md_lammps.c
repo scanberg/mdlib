@@ -54,10 +54,12 @@ enum {
 };
 
 typedef struct coord_mappings_t {
-	uint8_t coord_idx[3];
-	uint8_t image_idx[3];
-	uint8_t num_coord_tokens;
-	uint8_t flags; // Enlarge if needed in the future
+	int8_t  id_idx;
+	int8_t  coord_idx[3];
+	int8_t  image_idx[3];
+	int8_t  num_coord_tokens;	// This encodes the expected number of tokens in a coordinate entry
+	int8_t  flags;
+	int8_t  _pad[7];
 } coord_mappings_t;
 
 typedef struct lammps_trajectory_t {
@@ -155,6 +157,7 @@ static const int atom_field_type[ATOM_FIELD_COUNT] = {
 
 static const int atom_field_required[] = {1,2,3,4,5};
 
+#if 0
 static const char* coord_field_name[] = {
 	"unknown",
 	"x",
@@ -173,6 +176,7 @@ static const char* coord_field_name[] = {
 	"iy",
 	"iz",
 };
+#endif
 
 static size_t interpret_format(int mappings[ATOM_FIELD_COUNT], const char* atom_format, char* err_buf, size_t err_cap) {
 	MEMSET(mappings, -1, sizeof(int) * ATOM_FIELD_COUNT);
@@ -970,56 +974,63 @@ static bool parse_coord_mappings(coord_mappings_t* mappings, str_t str) {
 		return false;
 	}
 
-	MEMSET(mappings, 0, sizeof(coord_mappings_t));
+	const str_t* labels = tokens + 2;
+	size_t num_labels = num_tokens - 2;
 
-	for (size_t i = 2; i < num_tokens - 2; ++i) {
+	MEMSET(mappings, -1, sizeof(coord_mappings_t));
+
+	for (size_t i = 0; i < num_labels; ++i) {
 		// @NOTE: We only try to match the first occurence of the coordinate mapping
 		// This is because there is an implicit order to the mappings that we prefer to use
-		if (mappings->flags == 0) {
-			if (str_eq(tokens[i], STR_LIT("x")) && str_eq(tokens[i+1], STR_LIT("y")) && str_eq(tokens[i+2], STR_LIT("z"))) {
-				mappings->coord_idx[0] = (uint8_t)i - 2;
-				mappings->coord_idx[1] = (uint8_t)i - 1;
-				mappings->coord_idx[2] = (uint8_t)i;
+		if (str_eq(labels[i], STR_LIT("id"))) {
+			mappings->id_idx = (int8_t)i;
+		}
+		if (mappings->flags == -1) {
+			if (str_eq(labels[i], STR_LIT("x")) && str_eq(labels[i+1], STR_LIT("y")) && str_eq(labels[i+2], STR_LIT("z"))) {
+				mappings->coord_idx[0] = (int8_t)i;
+				mappings->coord_idx[1] = (int8_t)i + 1;
+				mappings->coord_idx[2] = (int8_t)i + 2;
 				mappings->flags = COORD_FLAG_CARTESIAN;
-				break;
+				i += 2;
 			}
-			else if (str_eq(tokens[i], STR_LIT("xs")) && str_eq(tokens[i+1], STR_LIT("ys")) && str_eq(tokens[i+2], STR_LIT("zs"))) {
-				mappings->coord_idx[0] = (uint8_t)i - 2;
-				mappings->coord_idx[1] = (uint8_t)i - 1;
-				mappings->coord_idx[2] = (uint8_t)i;
+			else if (str_eq(labels[i], STR_LIT("xs")) && str_eq(labels[i+1], STR_LIT("ys")) && str_eq(labels[i+2], STR_LIT("zs"))) {
+				mappings->coord_idx[0] = (int8_t)i;
+				mappings->coord_idx[1] = (int8_t)i + 1;
+				mappings->coord_idx[2] = (int8_t)i + 2;
 				mappings->flags = COORD_FLAG_SCALED;
-				break;
+				i += 2;
 			}
-			else if (str_eq(tokens[i], STR_LIT("xu")) && str_eq(tokens[i+1], STR_LIT("yu")) && str_eq(tokens[i+2], STR_LIT("zu"))) {
-				mappings->coord_idx[0] = (uint8_t)i - 2;
-				mappings->coord_idx[1] = (uint8_t)i - 1;
-				mappings->coord_idx[2] = (uint8_t)i;
-				mappings->flags = COORD_FLAG_CARTESIAN | COORD_FLAG_UNWRAP;
-				i += 3;
+			else if (str_eq(labels[i], STR_LIT("xu")) && str_eq(labels[i+1], STR_LIT("yu")) && str_eq(labels[i+2], STR_LIT("zu"))) {
+				mappings->coord_idx[0] = (int8_t)i;
+				mappings->coord_idx[1] = (int8_t)i + 1;
+				mappings->coord_idx[2] = (int8_t)i + 2;
+				mappings->flags = COORD_FLAG_CARTESIAN;
+				i += 2;
 			}
-			else if (str_eq(tokens[i], STR_LIT("xsu")) && str_eq(tokens[i+1], STR_LIT("ysu")) && str_eq(tokens[i+2], STR_LIT("zsu"))) {
-				mappings->coord_idx[0] = (uint8_t)i - 2;
-				mappings->coord_idx[1] = (uint8_t)i - 1;
-				mappings->coord_idx[2] = (uint8_t)i;
-				mappings->flags = COORD_FLAG_SCALED | COORD_FLAG_UNWRAP;
-				i += 3;
+			else if (str_eq(labels[i], STR_LIT("xsu")) && str_eq(labels[i+1], STR_LIT("ysu")) && str_eq(labels[i+2], STR_LIT("zsu"))) {
+				mappings->coord_idx[0] = (int8_t)i;
+				mappings->coord_idx[1] = (int8_t)i + 1;
+				mappings->coord_idx[2] = (int8_t)i + 2;
+				mappings->flags = COORD_FLAG_SCALED;
+				i += 2;
 			}
 		} else {
-			if (str_eq(tokens[i], STR_LIT("ix")) && str_eq(tokens[i+1], STR_LIT("iy")) && str_eq(tokens[i+2], STR_LIT("iz"))) {
-				mappings->image_idx[0] = (uint8_t)i - 2;
-				mappings->image_idx[1] = (uint8_t)i - 1;
-				mappings->image_idx[2] = (uint8_t)i;
-				i += 3;
+			if (str_eq(labels[i], STR_LIT("ix")) && str_eq(labels[i+1], STR_LIT("iy")) && str_eq(labels[i+2], STR_LIT("iz"))) {
+				mappings->image_idx[0] = (int8_t)i;
+				mappings->image_idx[1] = (int8_t)i + 1;
+				mappings->image_idx[2] = (int8_t)i + 2;
+				mappings->flags = COORD_FLAG_UNWRAP;
+				i += 2;
 			}
 		}
 	}
 
-	ASSERT(num_tokens - 2 < 256);
-	mappings->num_coord_tokens = (uint8_t)(num_tokens - 2);
+	ASSERT(num_labels < 127);
+	mappings->num_coord_tokens = (int8_t)num_labels;
 
-	if (mappings->flags) {
+	if (mappings->id_idx != -1 && mappings->flags != -1) {
 		if (mappings->flags & COORD_FLAG_UNWRAP) {
-			return mappings->image_idx[0] != 0;
+			return mappings->image_idx[0] != -1;
 		}
 		return true;
 	}
@@ -1081,7 +1092,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 	mat4_t M = mat4_translate(-(float)xlo, -(float)ylo, -(float)zlo);
 	if (traj_data->coord_mappings.flags & COORD_FLAG_SCALED) {
 		// Scaling
-		M = mat4_mul(M, mat4_from_mat3(unit_cell.basis));
+		M = mat4_from_mat3(unit_cell.basis);
 	}
 
 	if (output_coords) {
@@ -1089,14 +1100,20 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 			MD_LOG_ERROR("Expected ITEM: ATOMS after header");
 			return false;
 		}
-		size_t i = 0;
+		size_t line_count = 0;
 		size_t expected_num_tokens = traj_data->coord_mappings.num_coord_tokens;
-		while (md_buffered_reader_extract_line(&line, &reader) && i < header.num_atoms) {
+		while (md_buffered_reader_extract_line(&line, &reader) && line_count < header.num_atoms) {
 			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 			if (num_tokens != expected_num_tokens) {
 				MD_LOG_ERROR("Unexpected number of tokens in ITEM: ATOMS line, got %zu, expected %zu", num_tokens, expected_num_tokens);
 				return false;
 			}
+			int64_t idx = (size_t)parse_int(tokens[traj_data->coord_mappings.id_idx]) - 1;
+			if (!(0 <= idx && idx < (int64_t)header.num_atoms)) {
+				MD_LOG_ERROR("Invalid atom index: %i", (int)idx);
+				return false;
+			}
+
 			vec4_t coord = {
 				(float)parse_float(tokens[traj_data->coord_mappings.coord_idx[0]]),
 				(float)parse_float(tokens[traj_data->coord_mappings.coord_idx[1]]),
@@ -1107,20 +1124,23 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 			coord = mat4_mul_vec4(M, coord);
 
 			if (traj_data->coord_mappings.flags & COORD_FLAG_UNWRAP) {
-				vec4_t scale = {
-					(float)(parse_int(tokens[traj_data->coord_mappings.image_idx[0]]) * xlen),
-					(float)(parse_int(tokens[traj_data->coord_mappings.image_idx[1]]) * ylen),
-					(float)(parse_int(tokens[traj_data->coord_mappings.image_idx[2]]) * zlen),
+				int64_t ix = parse_int(tokens[traj_data->coord_mappings.image_idx[0]]);
+				int64_t iy = parse_int(tokens[traj_data->coord_mappings.image_idx[1]]);
+				int64_t iz = parse_int(tokens[traj_data->coord_mappings.image_idx[2]]);
+				vec4_t trans = {
+					(float)(ix * xlen),
+					(float)(iy * ylen),
+					(float)(iz * zlen),
 					1.0f
 				};
-				coord = vec4_mul(coord, scale);
+				coord = vec4_add(coord, trans);
 			}
 
-			out_x[i] = coord.x;
-			out_y[i] = coord.y;
-			out_z[i] = coord.z;
+			out_x[idx] = coord.x;
+			out_y[idx] = coord.y;
+			out_z[idx] = coord.z;
 
-			i++;
+			line_count++;
 		}
 	}
 

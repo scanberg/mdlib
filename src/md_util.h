@@ -139,9 +139,11 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 
 // Applies periodic boundary conditions to coordinates
 bool md_util_pbc(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
+bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
 
 // Unwraps a structure 
 bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
+bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
 
 // Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
 // If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
@@ -159,7 +161,7 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
 // count:       Length of all arrays
 // unit_cell:   The unit_cell of the system [Optional]
 vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
+vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, size_t count, const md_unit_cell_t* unit_cell);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
@@ -168,8 +170,8 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
 // com:     Center of mass [2] (xyz0), (xyz1)
 // w:       Array of weights (optional): set as NULL to use equal weights
 // count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
-double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, size_t count, const vec3_t in_com[2]);
-double md_util_rmsd_compute_vec4(const vec4_t* const xyzw[2], size_t count, const vec3_t in_com[2]);
+double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, const int32_t* in_idx, size_t count, const vec3_t in_com[2]);
+double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* in_idx, size_t count, const vec3_t in_com[2]);
 
 // Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
 vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
