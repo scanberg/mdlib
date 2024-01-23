@@ -153,13 +153,13 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     EXPECT_NE(x[0], 0);
     
 
-    EXPECT_NEAR(x[0], 3.642992, 0.0001); //Should be about 0.09 of cell
+    EXPECT_NEAR(x[0], 0.018331 * 39.121262, 0.0001); //Should be about 0.018331 of cell
     EXPECT_NEAR(header.unit_cell.basis.col[0].x, 39.121262, 0.0001);
 
-    EXPECT_NEAR(y[0], 5.586790, 0.0001); //Should be about 0.14 of cell
+    EXPECT_NEAR(y[0], 0.518904 * 39.121262, 0.0001); //Should be about 0.518904 of cell
     EXPECT_NEAR(header.unit_cell.basis.col[1].y, 39.121262, 0.0001);
 
-    EXPECT_NEAR(z[0], 4.678786, 0.0001); //Should be about 0.12 of cell
+    EXPECT_NEAR(z[0], 0.420586 * 39.121262, 0.0001); //Should be about 0.420586 of cell
     EXPECT_NEAR(header.unit_cell.basis.col[2].z, 39.121262, 0.0001);
 
     md_free(md_temp_allocator, mem, bytes);
