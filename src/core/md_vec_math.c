@@ -163,22 +163,25 @@ mat3_t mat3_covariance_matrix_vec4(const vec4_t* in_xyzw, const int32_t* in_idx,
     return A;
 }
 
-mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, const int32_t* in_idx, size_t count, const vec3_t com[2]) {
+mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
     double A[3][3] = {0};
     double w_sum = 0.0;
 
     if (in_idx) {
+        ASSERT(in_idx[0]);
+        ASSERT(in_idx[1]);
         for (size_t i = 0; i < count; i++) {
-            const int32_t idx = in_idx[i];
-            const float px = in_x[0][idx] - com[0].x;
-            const float py = in_y[0][idx] - com[0].y;
-            const float pz = in_z[0][idx] - com[0].z;
+            const int32_t i0 = in_idx[0][i];
+            const int32_t i1 = in_idx[1][i];
+            const float px = in_x[0][i0] - com[0].x;
+            const float py = in_y[0][i0] - com[0].y;
+            const float pz = in_z[0][i0] - com[0].z;
 
-            const float qx = in_x[1][idx] - com[1].x;
-            const float qy = in_y[1][idx] - com[1].y;
-            const float qz = in_z[1][idx] - com[1].z;
+            const float qx = in_x[1][i1] - com[1].x;
+            const float qy = in_y[1][i1] - com[1].y;
+            const float qz = in_z[1][i1] - com[1].z;
 
-            const float w = in_w ? in_w[idx] : 1.0f;
+            const float w = in_w ? (in_w[0][i0] + in_w[1][i1]) * 0.5f : 1.0f;
 
             const double scl = 1.0 / (w_sum + w);
             A[0][0] += (w * px * qx - A[0][0]) * scl;
@@ -202,7 +205,7 @@ mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* con
             const float qy = in_y[1][i] - com[1].y;
             const float qz = in_z[1][i] - com[1].z;
 
-            const float w = in_w ? in_w[i] : 1.0f;
+            const float w = in_w ? (in_w[0][i] + in_w[1][i]) * 0.5f  : 1.0f;
 
             const double scl = 1.0 / (w_sum + w);
             A[0][0] += (w * px * qx - A[0][0]) * scl;
@@ -225,15 +228,18 @@ mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* con
     };
 }
 
-mat3_t mat3_cross_covariance_matrix_vec4(vec4_t* const in_xyzw[2], const int32_t* in_idx, size_t count, const vec3_t com[2]) {
+mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
     double A[3][3] = {0};
     double w_sum = 0.0;
 
     if (in_idx) {
+        ASSERT(in_idx[0]);
+        ASSERT(in_idx[1]);
         for (size_t i = 0; i < count; ++i) {
-            const int32_t idx = in_idx[i];
-            vec4_t p = vec4_sub(in_xyzw[0][idx], vec4_from_vec3(com[0], 0));
-            vec4_t q = vec4_sub(in_xyzw[1][idx], vec4_from_vec3(com[1], 0));
+            const int32_t i0 = in_idx[0][i];
+            const int32_t i1 = in_idx[1][i];
+            vec4_t p = vec4_sub(in_xyzw[0][i0], vec4_from_vec3(com[0], 0));
+            vec4_t q = vec4_sub(in_xyzw[1][i1], vec4_from_vec3(com[1], 0));
 
             // The question here is how to combine the weights.
             // For now we just take the average.
@@ -292,7 +298,7 @@ mat3_t mat3_extract_rotation(mat3_t M) {
     return R;
 }
 
-mat3_t mat3_optimal_rotation(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, const int32_t* in_idx, size_t count, const vec3_t com[2]) {
+mat3_t mat3_optimal_rotation(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
     if (count < 1) {
         return mat3_ident();
     }
@@ -301,7 +307,7 @@ mat3_t mat3_optimal_rotation(const float* const in_x[2], const float* const in_y
     return mat3_extract_rotation(cov_mat);
 }
 
-mat3_t mat3_optimal_rotation_vec4(const vec4_t* const in_xyzw[2], const int32_t* in_idx, size_t count, const vec3_t com[2]) {
+mat3_t mat3_optimal_rotation_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
     if (count < 1) {
 		return mat3_ident();
 	}

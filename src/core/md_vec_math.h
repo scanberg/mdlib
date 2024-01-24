@@ -1319,34 +1319,34 @@ mat3_t mat3_covariance_matrix_vec4(const vec4_t* xyzw, const int32_t* indices, s
 // Computes the cross covariance matrix for two set of coordinates with given center of mass.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.
 // x[2],y[2],z[2] / xyz: coordinate streams
-// w:                    weights (optional)
-// indices:              indices into coordinates and weights (optional)
+// w[2]:                    weights (optional)
+// indices[2]:              indices into coordinates and weights (optional)
 // count:                number of coordinates or indices
 // com[2]:               center of mass
-mat3_t mat3_cross_covariance_matrix(const float* const x[2], const float* const y[2], const float* const z[2], const float* w, const int32_t* indices, size_t count, const vec3_t com[2]);
+mat3_t mat3_cross_covariance_matrix(const float* const x[2], const float* const y[2], const float* const z[2], const float* const w[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
 
 // Compute the cross covariance matrix for two set of coordinates with given center of mass.
 // xyzw[2]: coordinate + weights
 // indices: indices into coordinates and weights (optional)
 // count:   number of coordinates or indices
 // com[2]:  center of mass
-mat3_t mat3_cross_covariance_matrix_vec4(vec4_t* const xyzw[2], const int32_t* indices, size_t count, const vec3_t com[2]);
+mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const xyzw[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
 
 // Computes the optimal rotation matrix that minimizes the RMSD between two sets of coordinates.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.
 // x[2],y[2],z[2] / xyz: coordinate streams
-// w:                    weights (optional)
-// indices:              indices into coordinates and weights (optional)
+// w[2]:                 weights (optional)
+// indices[2]:           indices into coordinates and weights (optional)
 // count:                number of coordinates or indices
 // com[2]:               center of mass
-mat3_t mat3_optimal_rotation(const float* const x[2], const float* const y[2], const float* const z[2], const float* w, const int32_t* indices, size_t count, const vec3_t com[2]);
+mat3_t mat3_optimal_rotation(const float* const x[2], const float* const y[2], const float* const z[2], const float* const w[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
 
 // Computes the optimal rotation matrix that minimizes the RMSD between two sets of coordinates.
 // xyzw[2]: coordinate + weights
 // indices: indices into coordinates and weights (optional)
 // count:   number of coordinates or indices
 // com[2]:  center of mass
-mat3_t mat3_optimal_rotation_vec4(const vec4_t* const xyzw[2], const int32_t* indices, size_t count, const vec3_t com[2]);
+mat3_t mat3_optimal_rotation_vec4(const vec4_t* const xyzw[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
 
 // MAT4
 MD_VEC_INLINE mat4_t mat4_ident() {

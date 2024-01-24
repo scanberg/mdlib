@@ -4567,10 +4567,13 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // Allocate temporary memory
-        int32_t* ref_idx = md_alloc(ctx->temp_alloc, sizeof(int32_t) * ref_size);
+        int32_t* ref_idx[2] = {
+            md_alloc(ctx->temp_alloc, sizeof(int32_t) * ref_size),
+            md_alloc(ctx->temp_alloc, sizeof(int32_t) * ref_size)
+        };
 
         // Extract indices
-        md_bitfield_iter_extract_indices(ref_idx, ref_size, md_bitfield_iter_create(ref_bf));
+        md_bitfield_iter_extract_indices(ref_idx[0], ref_size, md_bitfield_iter_create(ref_bf));
 
         /*
         const int64_t mem_size = sizeof(float) * (ref_size * 7);
@@ -4584,7 +4587,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const float* const ref_x[2] = {ctx->initial_configuration.x, (const float*)ctx->mol->atom.x};
         const float* const ref_y[2] = {ctx->initial_configuration.y, (const float*)ctx->mol->atom.y};
         const float* const ref_z[2] = {ctx->initial_configuration.z, (const float*)ctx->mol->atom.z};
-        const float* ref_w = ctx->mol->atom.mass;
+        const float* const ref_w[2] = {ctx->mol->atom.mass, ctx->mol->atom.mass};
         vec3_t ref_com[2] = {0};
 
         // Fetch initial reference positions
@@ -4592,10 +4595,10 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Fetch target positions
         vec3_t* trg_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_bf, ctx->temp_alloc);
-        ref_com[0] = md_util_com_compute(ref_x[0], ref_y[0], ref_z[0], ref_w, ref_idx, ref_size, &ctx->mol->unit_cell);
+        ref_com[0] = md_util_com_compute(ref_x[0], ref_y[0], ref_z[0], ref_w[0], ref_idx[0], ref_size, &ctx->mol->unit_cell);
 
         // @TODO(Robin): This should be measured
-        const bool brute_force = trg_size < 3000;
+        const bool brute_force = trg_size < 5000;
 
         md_spatial_hash_t* spatial_hash = NULL;
         const float spatial_hash_radius = sqrtf(cutoff * cutoff * 3); // distance from center of volume to corners of the volume.
@@ -4605,7 +4608,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
-        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix(ref_x[0], ref_y[0], ref_z[0], ref_w, ref_idx, ref_size, ref_com[0]));
+        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix(ref_x[0], ref_y[0], ref_z[0], ref_w[0], ref_idx[0], ref_size, ref_com[0]));
         mat4_t A = mat4_from_mat3(mat3_transpose(eigen.vectors));
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
@@ -4617,10 +4620,11 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         for (int64_t i = 0; i < num_ref_bitfields; ++i) {
-            const md_bitfield_t* bf = &ref_bf[i];
+            const md_bitfield_t* bf = &ref_bf_arr[i];
+            md_bitfield_iter_extract_indices(ref_idx[1], ref_size, md_bitfield_iter_create(bf));
 
-            ref_com[1] = md_util_com_compute(ref_x[1], ref_y[1], ref_z[1], ref_w, ref_idx, ref_size, &ctx->mol->unit_cell);
-            mat3_t R  = mat3_optimal_rotation(ref_x, ref_y, ref_z, ref_w, ref_idx, ref_size, ref_com);
+            ref_com[1] = md_util_com_compute(ref_x[1], ref_y[1], ref_z[1], ref_w[1], ref_idx[1], ref_size, &ctx->mol->unit_cell);
+            mat3_t R  = mat3_optimal_rotation(ref_x, ref_y, ref_z, ref_w, (const int32_t* const*)ref_idx, ref_size, ref_com);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
             if (vol) {

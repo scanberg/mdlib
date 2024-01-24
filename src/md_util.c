@@ -5288,7 +5288,10 @@ bool md_util_apply_pbc_preserve_covalent(float* x, float* y, float* z, const md_
 #endif
 
 double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, const int32_t* in_idx, const size_t count, const vec3_t in_com[2]) {
-    const mat3_t R = mat3_optimal_rotation(in_x, in_y, in_z, in_w, in_idx, count, in_com);
+    const float*     w2[2] = {in_w, in_w};
+    const int32_t* idx2[2] = {in_idx, in_idx};
+    
+    const mat3_t R = mat3_optimal_rotation(in_x, in_y, in_z, in_w ? w2 : NULL, in_idx ? idx2 : NULL, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
     if (in_idx) {
@@ -5318,7 +5321,8 @@ double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[
 }
 
 double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* in_idx, size_t count, const vec3_t in_com[2]) {
-    const mat3_t R = mat3_optimal_rotation_vec4(in_xyzw, in_idx, count, in_com);
+    const int32_t* idx2[2] = {in_idx, in_idx};
+    const mat3_t R = mat3_optimal_rotation_vec4(in_xyzw, in_idx ? idx2 : NULL, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
     if (in_idx) {
