@@ -145,10 +145,6 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* u
 bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
 
-// Deperiodizes the coordinates of an entire system and unwraps structures defined given by the covalent bonds across the periodic boundaries.
-// If finally ensures that the center of mass of all structures (including individual atoms) reside within box.
-bool md_util_deperiodize_system(float* in_out_x, float* in_out_y, float* in_out_z, const float* in_w, size_t count, const md_unit_cell_t* unit_cell, const uint32_t* structure_offsets, const int* structure_indices, size_t num_structures);
-
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
 void md_util_aabb_compute     (float out_aabb_min[3], float out_aabb_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count);

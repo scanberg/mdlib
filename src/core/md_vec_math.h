@@ -1312,25 +1312,25 @@ mat3_t       mat3_extract_rotation(mat3_t M);
 // w:           weights (optional)
 // indices:     indices into coordinates and weights (optional)
 // count:       number of coordinates or indices
-// com:         center of mass
-mat3_t mat3_covariance_matrix(const float* x, const float* y, const float* z, const float* w, const int32_t* indices, size_t count, vec3_t com);
-mat3_t mat3_covariance_matrix_vec4(const vec4_t* xyzw, const int32_t* indices, size_t count, vec3_t com);
+// mean:        mean (com if coordinates)
+mat3_t mat3_covariance_matrix(const float* x, const float* y, const float* z, const float* w, const int32_t* indices, size_t count, vec3_t mean);
+mat3_t mat3_covariance_matrix_vec4(const vec4_t* xyzw, const int32_t* indices, size_t count, vec3_t mean);
 
 // Computes the cross covariance matrix for two set of coordinates with given center of mass.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.
 // x[2],y[2],z[2] / xyz: coordinate streams
-// w[2]:                    weights (optional)
-// indices[2]:              indices into coordinates and weights (optional)
+// w[2]:                 weights (optional)
+// indices[2]:           indices into coordinates and weights (optional)
 // count:                number of coordinates or indices
-// com[2]:               center of mass
-mat3_t mat3_cross_covariance_matrix(const float* const x[2], const float* const y[2], const float* const z[2], const float* const w[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
+// mean[2]:              mean (com if coordinates)
+mat3_t mat3_cross_covariance_matrix(const float* const x[2], const float* const y[2], const float* const z[2], const float* const w[2], const int32_t* const indices[2], size_t count, const vec3_t mean[2]);
 
 // Compute the cross covariance matrix for two set of coordinates with given center of mass.
 // xyzw[2]: coordinate + weights
 // indices: indices into coordinates and weights (optional)
 // count:   number of coordinates or indices
-// com[2]:  center of mass
-mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const xyzw[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
+// mean[2]: mean (com if coordinates)
+mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const xyzw[2], const int32_t* const indices[2], size_t count, const vec3_t mean[2]);
 
 // Computes the optimal rotation matrix that minimizes the RMSD between two sets of coordinates.
 // The set of points are assumed to have equal length and if w is not NULL, the same weight.

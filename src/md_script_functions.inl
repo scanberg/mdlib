@@ -880,7 +880,6 @@ static inline int64_t extract_xyzw_vec4(vec4_t* dst_xyzw, const float* src_x, co
     ASSERT(src_x);
     ASSERT(src_y);
     ASSERT(src_z);
-    ASSERT(src_w);
     ASSERT(bf);
 
     int64_t count = 0;
@@ -888,7 +887,7 @@ static inline int64_t extract_xyzw_vec4(vec4_t* dst_xyzw, const float* src_x, co
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
         const int64_t idx = md_bitfield_iter_idx(&it);
-        dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], src_w[idx]);
+        dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], src_w ? src_w[idx] : 1.0f);
         count += 1;
     }
 
@@ -3798,16 +3797,16 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         // Compute eigen vectors from covariance matrix
         // normal should be the third axis (i.e. the smallest eigen value)
-        md_array(int) indices = coordinate_extract_indices(arg[0], ctx);
-        size_t count = md_array_size(indices);
+        // We don't know the source of the inputs, so we have to use this as to get the actual coordinates
+        md_array(vec3_t) xyz = coordinate_extract(arg[0], ctx);
 
+        size_t count = md_array_size(xyz);
         vec4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count);
         for (size_t i = 0; i < count; ++i) {
-            int32_t idx = indices[i];
-            float w = ctx->mol->atom.mass ? ctx->mol->atom.mass[idx] : 1.0f;
-			xyzw[i] = (vec4_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], w};
+			xyzw[i] = vec4_from_vec3(xyz[i], 1.0f);
 		}
 
+        // Place structure within the same period
         md_util_unwrap_vec4(xyzw, count, &ctx->mol->unit_cell);
         vec3_t com = md_util_com_compute_vec4(xyzw, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
         mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
@@ -3867,7 +3866,7 @@ static int _coordinate(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst || ctx->vis) {
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
-            const vec3_t* pos = coordinate_extract(arg[0], ctx);
+            md_array(vec3_t) pos = coordinate_extract(arg[0], ctx);
             ASSERT(dst->size == md_array_bytes(pos));
             MEMCPY(dst->ptr, pos, md_array_size(pos) * sizeof(vec3_t));
         }
@@ -4572,6 +4571,11 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_alloc(ctx->temp_alloc, sizeof(int32_t) * ref_size)
         };
 
+        vec4_t* ref_xyzw[2] = {
+            md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size),
+			md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size)
+		};
+
         // Extract indices
         md_bitfield_iter_extract_indices(ref_idx[0], ref_size, md_bitfield_iter_create(ref_bf));
 
@@ -4587,15 +4591,17 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const float* const ref_x[2] = {ctx->initial_configuration.x, (const float*)ctx->mol->atom.x};
         const float* const ref_y[2] = {ctx->initial_configuration.y, (const float*)ctx->mol->atom.y};
         const float* const ref_z[2] = {ctx->initial_configuration.z, (const float*)ctx->mol->atom.z};
-        const float* const ref_w[2] = {ctx->mol->atom.mass, ctx->mol->atom.mass};
+        const float* ref_w = (const float*)ctx->mol->atom.mass;
+
         vec3_t ref_com[2] = {0};
 
-        // Fetch initial reference positions
-        //extract_xyzw(ref_x[0], ref_y[0], ref_z[0], ref_w, ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, ref_bf);
+        extract_xyzw_vec4(ref_xyzw[0], ref_x[0], ref_y[0], ref_z[0], ref_w, ref_bf);
 
         // Fetch target positions
         vec3_t* trg_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_bf, ctx->temp_alloc);
-        ref_com[0] = md_util_com_compute(ref_x[0], ref_y[0], ref_z[0], ref_w[0], ref_idx[0], ref_size, &ctx->mol->unit_cell);
+
+        md_util_unwrap_vec4(ref_xyzw[0], ref_size, &ctx->mol->unit_cell);
+        ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], ref_size, 0);
 
         // @TODO(Robin): This should be measured
         const bool brute_force = trg_size < 5000;
@@ -4608,7 +4614,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
-        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix(ref_x[0], ref_y[0], ref_z[0], ref_w[0], ref_idx[0], ref_size, ref_com[0]));
+        mat3_eigen_t eigen = mat3_eigen(mat3_covariance_matrix_vec4(ref_xyzw[0], 0, ref_size, ref_com[0]));
         mat4_t A = mat4_from_mat3(mat3_transpose(eigen.vectors));
 
         // V for volume matrix scale and align with the volume which we aim to populate with density
@@ -4621,10 +4627,19 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         for (int64_t i = 0; i < num_ref_bitfields; ++i) {
             const md_bitfield_t* bf = &ref_bf_arr[i];
-            md_bitfield_iter_extract_indices(ref_idx[1], ref_size, md_bitfield_iter_create(bf));
 
-            ref_com[1] = md_util_com_compute(ref_x[1], ref_y[1], ref_z[1], ref_w[1], ref_idx[1], ref_size, &ctx->mol->unit_cell);
-            mat3_t R  = mat3_optimal_rotation(ref_x, ref_y, ref_z, ref_w, (const int32_t* const*)ref_idx, ref_size, ref_com);
+            extract_xyzw_vec4(ref_xyzw[1], ref_x[1], ref_y[1], ref_z[1], ref_w, bf);
+            md_util_unwrap_vec4(ref_xyzw[1], ref_size, &ctx->mol->unit_cell);
+            ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
+            mat3_t R = mat3_optimal_rotation_vec4(ref_xyzw, 0, ref_size, ref_com);
+
+            if (ctx->frame_header->index == 0) {
+                while(0) {};
+            }
+
+            //md_bitfield_iter_extract_indices(ref_idx[1], ref_size, md_bitfield_iter_create(bf));
+            //ref_com[1] = md_util_com_compute(ref_x[1], ref_y[1], ref_z[1], ref_w[1], ref_idx[1], ref_size, &ctx->mol->unit_cell);
+            //mat3_t R  = mat3_optimal_rotation(ref_x, ref_y, ref_z, ref_w, (const int32_t* const*)ref_idx, ref_size, ref_com);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
             if (vol) {

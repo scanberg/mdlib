@@ -42,74 +42,66 @@ mat3_eigen_t mat3_eigen(mat3_t M) {
     return res;
 }
 
-mat3_t mat3_covariance_matrix(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, vec3_t com) {   
+mat3_t mat3_covariance_matrix(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, vec3_t in_mean) {   
     // The covariance matrix is symmetric, so we only need to compute the upper triangular part
-    double A00 = 0.0;
-    double A01 = 0.0;
-    double A02 = 0.0;
-    double A11 = 0.0;
-    double A12 = 0.0;
-    double A22 = 0.0;
+    double A[3][3] = {0};
     double w_sum = 0.0;
 
     if (in_idx) {
         for (size_t i = 0; i < count; i++) {
             const int32_t idx = in_idx[i];
-            const float x = in_x[idx] - com.x;
-            const float y = in_y[idx] - com.y;
-            const float z = in_z[idx] - com.z;
+            const float x = in_x[idx] - in_mean.x;
+            const float y = in_y[idx] - in_mean.y;
+            const float z = in_z[idx] - in_mean.z;
             const float w = in_w ? in_w[idx] : 1.0f;
 
-            // Compute moving average
-            const double scl = 1.0 / (w_sum + w);
-            A00 += (w * x * x - A00) * scl;
-            A01 += (w * x * y - A01) * scl;
-            A02 += (w * x * z - A02) * scl;
-            A11 += (w * y * y - A11) * scl;
-            A12 += (w * y * z - A12) * scl;
-			A22 += (w * z * z - A22) * scl;
+            A[0][0] += w * x * x;
+            A[0][1] += w * x * y;
+            A[0][2] += w * x * z;
+            A[1][0] += w * y * x;
+            A[1][1] += w * y * y;
+            A[1][2] += w * y * z;
+            A[2][0] += w * z * x;
+            A[2][1] += w * z * y;
+            A[2][2] += w * z * z;
             w_sum += w;
         }
     } else {
         for (size_t i = 0; i < count; i++) {
-            const float x = in_x[i] - com.x;
-            const float y = in_y[i] - com.y;
-            const float z = in_z[i] - com.z;
+            const float x = in_x[i] - in_mean.x;
+            const float y = in_y[i] - in_mean.y;
+            const float z = in_z[i] - in_mean.z;
             const float w = in_w ? in_w[i] : 1.0f;
 
-            // Compute moving average
-            const double scl = 1.0 / (w_sum + w);
-            A00 += (w * x * x - A00) * scl;
-            A01 += (w * x * y - A01) * scl;
-            A02 += (w * x * z - A02) * scl;
-            A11 += (w * y * y - A11) * scl;
-            A12 += (w * y * z - A12) * scl;
-            A22 += (w * z * z - A22) * scl;
+            A[0][0] += w * x * x;
+            A[0][1] += w * x * y;
+            A[0][2] += w * x * z;
+            A[1][0] += w * y * x;
+            A[1][1] += w * y * y;
+            A[1][2] += w * y * z;
+            A[2][0] += w * z * x;
+            A[2][1] += w * z * y;
+            A[2][2] += w * z * z;
             w_sum += w;
         }
     }
 
-    mat3_t A;
-    A.elem[0][0] = (float)A00;
-    A.elem[0][1] = (float)A01;
-    A.elem[0][2] = (float)A02;
-    A.elem[1][0] = (float)A01;
-    A.elem[1][1] = (float)A11;
-    A.elem[1][2] = (float)A12;
-    A.elem[2][0] = (float)A02;
-    A.elem[2][1] = (float)A12;
-    A.elem[2][2] = (float)A22;
-    return A;
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            A[i][j] /= w_sum;
+        }
+    }
+
+    return (mat3_t) {
+        (float)A[0][0], (float)A[0][1], (float)A[0][2],
+        (float)A[1][0], (float)A[1][1], (float)A[1][2],
+        (float)A[2][0], (float)A[2][1], (float)A[2][2],
+    };
 }
 
 mat3_t mat3_covariance_matrix_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, vec3_t com) {
     // The covariance matrix is symmetric, so we only need to compute the upper triangular part
-    double A00 = 0.0;
-    double A01 = 0.0;
-    double A02 = 0.0;
-    double A11 = 0.0;
-    double A12 = 0.0;
-    double A22 = 0.0;
+    double A[3][3] = {0};
     double w_sum = 0.0;
 
     if (in_idx) {
@@ -120,47 +112,48 @@ mat3_t mat3_covariance_matrix_vec4(const vec4_t* in_xyzw, const int32_t* in_idx,
             const float z = in_xyzw[idx].z - com.z;
             const float w = in_xyzw[idx].w;
 
-            // Compute moving average
-            const double scl = 1.0 / (w_sum + w);
-            A00 += (w * x * x - A00) * scl;
-            A01 += (w * x * y - A01) * scl;
-            A02 += (w * x * z - A02) * scl;
-            A11 += (w * y * y - A11) * scl;
-            A12 += (w * y * z - A12) * scl;
-            A22 += (w * z * z - A22) * scl;
+            A[0][0] += w * x * x;
+            A[0][1] += w * x * y;
+            A[0][2] += w * x * z;
+            A[1][0] += w * y * x;
+            A[1][1] += w * y * y;
+            A[1][2] += w * y * z;
+            A[2][0] += w * z * x;
+            A[2][1] += w * z * y;
+            A[2][2] += w * z * z;
             w_sum += w;
         }
     } else {
         for (size_t i = 0; i < count; i++) {
-            const int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
-            const float x = in_xyzw[idx].x - com.x;
-            const float y = in_xyzw[idx].y - com.y;
-            const float z = in_xyzw[idx].z - com.z;
-            const float w = in_xyzw[idx].w;
+            const float x = in_xyzw[i].x - com.x;
+            const float y = in_xyzw[i].y - com.y;
+            const float z = in_xyzw[i].z - com.z;
+            const float w = in_xyzw[i].w;
 
-            // Compute moving average
-            const double scl = 1.0 / (w_sum + w);
-            A00 += (w * x * x - A00) * scl;
-            A01 += (w * x * y - A01) * scl;
-            A02 += (w * x * z - A02) * scl;
-            A11 += (w * y * y - A11) * scl;
-            A12 += (w * y * z - A12) * scl;
-            A22 += (w * z * z - A22) * scl;
+            A[0][0] += w * x * x;
+            A[0][1] += w * x * y;
+            A[0][2] += w * x * z;
+            A[1][0] += w * y * x;
+            A[1][1] += w * y * y;
+            A[1][2] += w * y * z;
+            A[2][0] += w * z * x;
+            A[2][1] += w * z * y;
+            A[2][2] += w * z * z;
             w_sum += w;
         }
     }
 
-    mat3_t A;
-    A.elem[0][0] = (float)A00;
-    A.elem[0][1] = (float)A01;
-    A.elem[0][2] = (float)A02;
-    A.elem[1][0] = (float)A01;
-    A.elem[1][1] = (float)A11;
-    A.elem[1][2] = (float)A12;
-    A.elem[2][0] = (float)A02;
-    A.elem[2][1] = (float)A12;
-    A.elem[2][2] = (float)A22;
-    return A;
+    for (size_t i = 0; i < 3; i++) {
+    	for (size_t j = 0; j < 3; j++) {
+            A[i][j] /= w_sum;
+        }
+    }
+
+    return (mat3_t) {
+        (float)A[0][0], (float)A[0][1], (float)A[0][2],
+        (float)A[1][0], (float)A[1][1], (float)A[1][2],
+        (float)A[2][0], (float)A[2][1], (float)A[2][2],
+    };
 }
 
 mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {
@@ -183,16 +176,15 @@ mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* con
 
             const float w = in_w ? (in_w[0][i0] + in_w[1][i1]) * 0.5f : 1.0f;
 
-            const double scl = 1.0 / (w_sum + w);
-            A[0][0] += (w * px * qx - A[0][0]) * scl;
-            A[0][1] += (w * px * qy - A[0][1]) * scl;
-            A[0][2] += (w * px * qz - A[0][2]) * scl;
-            A[1][0] += (w * py * qx - A[1][0]) * scl;
-            A[1][1] += (w * py * qy - A[1][1]) * scl;
-            A[1][2] += (w * py * qz - A[1][2]) * scl;
-            A[2][0] += (w * pz * qx - A[2][0]) * scl;
-            A[2][1] += (w * pz * qy - A[2][1]) * scl;
-            A[2][2] += (w * pz * qz - A[2][2]) * scl;
+            A[0][0] += w * px * qx;
+            A[0][1] += w * px * qy;
+            A[0][2] += w * px * qz;
+            A[1][0] += w * py * qx;
+            A[1][1] += w * py * qy;
+            A[1][2] += w * py * qz;
+            A[2][0] += w * pz * qx;
+            A[2][1] += w * pz * qy;
+            A[2][2] += w * pz * qz;
             w_sum += w;
         }
     } else {
@@ -205,19 +197,24 @@ mat3_t mat3_cross_covariance_matrix(const float* const in_x[2], const float* con
             const float qy = in_y[1][i] - com[1].y;
             const float qz = in_z[1][i] - com[1].z;
 
-            const float w = in_w ? (in_w[0][i] + in_w[1][i]) * 0.5f  : 1.0f;
+            const float w = in_w ? (in_w[0][i] + in_w[1][i]) * 0.5f : 1.0f;
 
-            const double scl = 1.0 / (w_sum + w);
-            A[0][0] += (w * px * qx - A[0][0]) * scl;
-            A[0][1] += (w * px * qy - A[0][1]) * scl;
-            A[0][2] += (w * px * qz - A[0][2]) * scl;
-            A[1][0] += (w * py * qx - A[1][0]) * scl;
-            A[1][1] += (w * py * qy - A[1][1]) * scl;
-            A[1][2] += (w * py * qz - A[1][2]) * scl;
-            A[2][0] += (w * pz * qx - A[2][0]) * scl;
-            A[2][1] += (w * pz * qy - A[2][1]) * scl;
-            A[2][2] += (w * pz * qz - A[2][2]) * scl;
+            A[0][0] += w * px * qx;
+            A[0][1] += w * px * qy;
+            A[0][2] += w * px * qz;
+            A[1][0] += w * py * qx;
+            A[1][1] += w * py * qy;
+            A[1][2] += w * py * qz;
+            A[2][0] += w * pz * qx;
+            A[2][1] += w * pz * qy;
+            A[2][2] += w * pz * qz;
             w_sum += w;
+        }
+    }
+
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            A[i][j] /= w_sum;
         }
     }
 
@@ -246,16 +243,15 @@ mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const in_xyzw[2], const i
             // This should be equivalent to the other case where the weights for both sets are equal.
             const float w = (p.w + q.w) * 0.5f;
 
-            const double scl = 1.0 / (w_sum + w);
-            A[0][0] += (w * p.x * q.x - A[0][0]) * scl;
-            A[0][1] += (w * p.x * q.y - A[0][1]) * scl;
-            A[0][2] += (w * p.x * q.z - A[0][2]) * scl;
-            A[1][0] += (w * p.y * q.x - A[1][0]) * scl;
-            A[1][1] += (w * p.y * q.y - A[1][1]) * scl;
-            A[1][2] += (w * p.y * q.z - A[1][2]) * scl;
-            A[2][0] += (w * p.z * q.x - A[2][0]) * scl;
-            A[2][1] += (w * p.z * q.y - A[2][1]) * scl;
-            A[2][2] += (w * p.z * q.z - A[2][2]) * scl;
+            A[0][0] += w * p.x * q.x;
+            A[0][1] += w * p.x * q.y;
+            A[0][2] += w * p.x * q.z;
+            A[1][0] += w * p.y * q.x;
+            A[1][1] += w * p.y * q.y;
+            A[1][2] += w * p.y * q.z;
+            A[2][0] += w * p.z * q.x;
+            A[2][1] += w * p.z * q.y;
+            A[2][2] += w * p.z * q.z;
             w_sum += w;
         }
     } else {
@@ -268,16 +264,22 @@ mat3_t mat3_cross_covariance_matrix_vec4(const vec4_t* const in_xyzw[2], const i
             // This should be equivalent to the other case where the weights for both sets are equal.
             const float w = (p.w + q.w) * 0.5f;
 
-            const double scl = 1.0 / (w_sum + w);
-            A[0][0] += (w * p.x * q.x - A[0][0]) * scl;
-            A[0][1] += (w * p.x * q.y - A[0][1]) * scl;
-            A[0][2] += (w * p.x * q.z - A[0][2]) * scl;
-            A[1][0] += (w * p.y * q.x - A[1][0]) * scl;
-            A[1][1] += (w * p.y * q.y - A[1][1]) * scl;
-            A[1][2] += (w * p.y * q.z - A[1][2]) * scl;
-            A[2][0] += (w * p.z * q.x - A[2][0]) * scl;
-            A[2][1] += (w * p.z * q.y - A[2][1]) * scl;
-            A[2][2] += (w * p.z * q.z - A[2][2]) * scl;
+            A[0][0] += w * p.x * q.x;
+            A[0][1] += w * p.x * q.y;
+            A[0][2] += w * p.x * q.z;
+            A[1][0] += w * p.y * q.x;
+            A[1][1] += w * p.y * q.y;
+            A[1][2] += w * p.y * q.z;
+            A[2][0] += w * p.z * q.x;
+            A[2][1] += w * p.z * q.y;
+            A[2][2] += w * p.z * q.z;
+            w_sum += w;
+        }
+    }
+
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            A[i][j] /= w_sum;
         }
     }
 
