@@ -218,7 +218,6 @@ size_t md_path_write_user_dir(char* buf, size_t buf_cap) {
 #else
     ASSERT(false);
 #endif
-	return 0;
 }
 
 bool md_path_set_cwd(str_t path) {
@@ -340,7 +339,6 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
     char  rel_buf[MD_MAX_PATH];
     size_t len = md_path_write_relative(rel_buf, sizeof(rel_buf), from, to);
     if (!len) {
-        MD_LOG_ERROR("Failed to extract relative path.");
         return (str_t){0};
     }
     return str_copy_cstrn(rel_buf, len, alloc);
