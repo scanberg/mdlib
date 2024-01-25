@@ -299,8 +299,13 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
 #elif MD_PLATFORM_UNIX
 
     // Find the common base
-    str_t can_from = {from_buf, from_len};
+    str_t can_from = {0};
     str_t can_to   = {to_buf, to_len};
+
+    if (!extract_folder_path(&can_from, (str_t){from_buf, from_len})) {
+    	MD_LOG_ERROR("Failed to extract folder path from '" STR_FMT "'", STR_ARG(from));
+		return 0;
+    }
 
     //MD_LOG_DEBUG("rel_from: '%.*s'", (int)can_from.len, can_from.ptr);
     //MD_LOG_DEBUG("rel_to:   '%.*s'", (int)can_to.len, can_to.ptr);

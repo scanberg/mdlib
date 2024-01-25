@@ -60,6 +60,12 @@ UTEST(os, path_relative) {
         str_t result = md_path_make_relative(from, to, md_temp_allocator);
         EXPECT_STREQ("./", result.ptr);
     }
+    {
+        str_t from = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt");
+        str_t to = STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.dat");
+        str_t result = md_path_make_relative(from, to, md_temp_allocator);
+        EXPECT_STREQ("./file.dat", result.ptr);
+    }
 }
 
 UTEST(os, ram) {
