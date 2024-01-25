@@ -1292,6 +1292,20 @@ MD_VEC_INLINE vec3_t mat3_diag(mat3_t M) {
     return v;
 }
 
+// Construct a rotation matrix from and angle and axis (Expects axis to be normalized)
+MD_VEC_INLINE mat3_t mat3_angle_axis(float angle, vec3_t axis) {
+    float c = cosf(angle);
+	float s = sinf(angle);
+	float t = 1.0f - c;
+
+	mat3_t M = {
+		t * axis.x * axis.x + c, t * axis.x * axis.y - s * axis.z, t * axis.x * axis.z + s * axis.y,
+		t * axis.x * axis.y + s * axis.z, t * axis.y * axis.y + c, t * axis.y * axis.z - s * axis.x,
+		t * axis.x * axis.z - s * axis.y, t * axis.y * axis.z + s * axis.x, t * axis.z * axis.z + c
+	};
+	return M;
+}
+
 typedef struct mat3_eigen_t {
     mat3_t vectors;
     vec3_t values;
