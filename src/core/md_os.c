@@ -309,8 +309,8 @@ size_t md_path_write_relative(char* out_buf, size_t out_cap, str_t from, str_t t
     success = count > 0;
 
     if (success) {
-        str_t rel_from = str_substr(can_from, count, -1);
-        str_t rel_to   = str_substr(can_to,   count, -1);
+        str_t rel_from = str_substr(can_from, count, SIZE_MAX);
+        str_t rel_to   = str_substr(can_to,   count, SIZE_MAX);
 
         // Count number of folders as N in from and add N times '../'
         size_t folder_count = str_count_occur_char(rel_from, '/');
