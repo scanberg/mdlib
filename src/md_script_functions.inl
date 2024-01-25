@@ -4631,7 +4631,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             extract_xyzw_vec4(ref_xyzw[1], ref_x[1], ref_y[1], ref_z[1], ref_w, bf);
             md_util_unwrap_vec4(ref_xyzw[1], ref_size, &ctx->mol->unit_cell);
             ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
-            mat3_t R = mat3_optimal_rotation_vec4(ref_xyzw, 0, ref_size, ref_com);
+            mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
 
             if (ctx->frame_header->index == 0) {
                 while(0) {};
