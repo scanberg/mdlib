@@ -423,6 +423,12 @@ UTEST_F(script, property_compute) {
 
     {
         md_script_ir_clear(ir);
+        md_script_ir_compile_from_source(ir, STR_LIT("V = sdf(residue(1), element('H'), 5.0) * 1;"), mol, traj, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+    }
+
+    {
+        md_script_ir_clear(ir);
         md_script_ir_compile_from_source(ir, STR_LIT("prop1 = rdf(element('C'), element('O'), 20.0);"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
@@ -578,6 +584,9 @@ UTEST_F(script, parse_unary_binary) {
     md_script_ir_t* ir = md_script_ir_create(alloc);
     {
         md_script_ir_clear(ir);
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sqrt(2) * -4;"), mol, NULL, NULL));
+
+        md_script_ir_clear(ir);
         EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = 5-4;"), mol, NULL, NULL));
         
         md_script_ir_clear(ir);
@@ -591,9 +600,6 @@ UTEST_F(script, parse_unary_binary) {
 
         md_script_ir_clear(ir);
         EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = 5 * -4;"), mol, NULL, NULL));
-        
-        md_script_ir_clear(ir);
-        EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = sqrt(2) * -4;"), mol, NULL, NULL));
 
         md_script_ir_clear(ir);
         EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = (5) - 4;"), mol, NULL, NULL));

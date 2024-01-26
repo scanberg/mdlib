@@ -185,7 +185,7 @@ typedef enum flags_t {
     // Function Flags
     FLAG_SYMMETRIC_ARGS             = 0x00001, // Indicates that the first two arguments are symmetric, meaning they can be swapped
     FLAG_ARGS_EQUAL_LENGTH          = 0x00002, // Arguments should have the same array length
-    FLAG_RET_AND_ARG_EQUAL_LENGTH   = 0x00004, // Return type array length matches argument arrays' length
+    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH   = 0x00004, // Return type array length matches argument arrays' length
     FLAG_DYNAMIC_LENGTH             = 0x00008, // Return type has a varying length which is not constant over frames
     FLAG_QUERYABLE_LENGTH           = 0x00010, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
     FLAG_STATIC_VALIDATION          = 0x00020, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
@@ -640,7 +640,14 @@ static bool is_type_dim_compatible(type_info_t from, type_info_t to) {
 
     for (int i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
         if (from.dim[i] == to.dim[i] && from.dim[i] > 0) continue;
-        else if (from.dim[i] == -1 || to.dim[i] == -1) return true; // We consider a zero length array to be a valid type as well
+        else if (from.dim[i] == -1 || to.dim[i] == -1) {
+            // This is only true if we have a single unspecified dimension
+            if (from.dim[i] == -1) {
+                return to.len_dim == i;
+            } else {
+                return from.len_dim == i;
+            }
+        }
         if (i > 1) {
             if (from.dim[i] == 0 && to.dim[i] == 1) return true;
             if (from.dim[i] == 1 && to.dim[i] == 0) return true;
@@ -1137,6 +1144,29 @@ static procedure_match_result_t find_cast_procedure(type_info_t from, type_info_
     return res;
 }
 
+static uint32_t compute_cost(const procedure_t* proc, const type_info_t arg_types[], int64_t num_arg_types) {
+    uint32_t cost = 0;
+    for (int64_t j = 0; j < proc->num_args; ++j) {
+        if (type_info_equal(arg_types[j], proc->arg_type[j])) {
+            // No conversion needed for this argument (0 cost)
+        }
+        else if (is_type_directly_compatible(arg_types[j], proc->arg_type[j])) {
+            // It is not a perfect match, but we can do a direct conversion (probably variable array length)
+            cost += 1;
+        }
+        else if (is_type_implicitly_convertible(arg_types[j], proc->arg_type[j])) {
+            // Implicit conversions are more expensive than direct conversions
+            cost += 4;
+        }
+        else {
+            // We are smoked.. This particular matching procedure cannot be resolved using implicit conversions...
+            cost = 0xFFFFFFFFU;
+            break;
+        }
+    }
+    return cost;
+}
+
 static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], int64_t num_arg_types, procedure_t* candidates, int64_t num_cantidates, bool allow_implicit_conversions) {
     procedure_match_result_t res = {0};
 
@@ -1179,26 +1209,11 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                 if (num_arg_types == proc->num_args) {
                     // Same name and same number of args...
 
-                    uint32_t cost = 0;
-                    uint32_t flags = 0;
-                    for (int64_t j = 0; j < proc->num_args; ++j) {
-                        if (is_type_directly_compatible(arg_types[j], proc->arg_type[j])) {
-                            // No conversion needed for this argument (0 cost)
-                        }
-                        else if (is_type_implicitly_convertible(arg_types[j], proc->arg_type[j])) {
-                            ++cost;
-                        }
-                        else {
-                            // We are smoked.. This particular matching procedure cannot be resolved using implicit conversions...
-                            cost = 0xFFFFFFFFU;
-                            break;
-                        }
-                    }
-
+                    uint32_t cost = compute_cost(proc, arg_types, num_arg_types);
                     if (cost < best_cost) {
                         best_cost = cost;
                         best_proc = proc;
-                        best_flags = flags;
+                        best_flags = 0;
                     }
 
                     if (proc->flags & FLAG_SYMMETRIC_ARGS) {
@@ -1206,26 +1221,11 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                         // Test if we can get a (better) result by swapping the arguments
                         type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
 
-                        cost = 0;
-                        flags = FLAG_SYMMETRIC_ARGS;
-                        for (int64_t j = 0; j < 2; ++j) {
-                            if (is_type_directly_compatible(swapped_args[j], proc->arg_type[j])) {
-                                // No conversion needed for this argument (0 cost)
-                            }
-                            else if (is_type_implicitly_convertible(swapped_args[j], proc->arg_type[j])) {
-                                ++cost;
-                            }
-                            else {
-                                // We are smoked.. This particular matching procedure cannot be resolved using implicit conversions...
-                                cost = 0xFFFFFFFFU;
-                                break;
-                            }
-                        }
-
+                        cost = compute_cost(proc, swapped_args, num_arg_types);;
                         if (cost < best_cost) {
                             best_cost = cost;
                             best_proc = proc;
-                            best_flags = flags;
+                            best_flags = FLAG_SYMMETRIC_ARGS;
                         }
                     }
                 }
@@ -3136,7 +3136,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
 
         if (node->type == AST_CONSTANT_VALUE) {
             if (type_info_array_len(to) == -1) {
-                if (res.procedure->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
+                if (res.procedure->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
                     to.dim[to.len_dim] = (int)type_info_array_len(from);
                 } else {
                     ASSERT(res.procedure->flags & FLAG_QUERYABLE_LENGTH);
@@ -3210,7 +3210,7 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
     ast_node_t** const args = node->children;
     int64_t num_args = md_array_size(node->children);
 
-    if (node->proc->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
+    if (node->proc->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
         ASSERT(num_args > 0);
         // We can deduce the length of the array from the input type (take the array which is the longest???)
         int64_t max_len = 0;
@@ -3408,17 +3408,11 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 LOG_ERROR(ctx->ir, node->token, "Failed to determine length of procedure return type!");
                 return false;
             }
-        } else if (node->proc->flags & FLAG_RET_AND_ARG_EQUAL_LENGTH) {
-            // We can deduce the length of the array from the input length. Use take the largest of the arguments.
+        } else if (node->proc->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
+            // We can deduce the length of the array by using the type of the first argument
             ASSERT(num_args > 0);
-
-            int64_t max_len = 0;
-            for (int64_t i = 0; i < num_args; ++i) {
-                int64_t len = (int32_t)type_info_array_len(args[i]->data.type);
-                ASSERT(len > -1);
-                max_len = MAX(len, max_len);
-            }
-            node->data.type.dim[node->data.type.len_dim] = (int32_t)max_len;
+            ASSERT(node->proc->arg_type[0].base_type == args[0]->data.type.base_type);
+            node->data.type = args[0]->data.type;
             return true;
         } else {
             LOG_ERROR(ctx->ir, node->token, "Procedure returns variable length, but its length cannot be determined.");

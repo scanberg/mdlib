@@ -439,9 +439,9 @@ static procedure_t casts[] = {
     {CSTR("cast"),    TI_FLOAT,         1,  {TI_INT},           _cast_int_to_flt},
     {CSTR("cast"),    TI_IRANGE,        1,  {TI_INT},           _cast_int_to_irng},
     {CSTR("cast"),    TI_FRANGE,        1,  {TI_IRANGE},        _cast_irng_to_frng},
-    {CSTR("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_RET_AND_ARG_EQUAL_LENGTH},
-    {CSTR("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_RET_AND_ARG_EQUAL_LENGTH},
-    {CSTR("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {CSTR("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _join_bf_arr},
@@ -463,71 +463,71 @@ static procedure_t operators[] = {
 
     // Binary add
     {CSTR("+"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_add_f_f},
-    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_add_farr_farr, FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_add_farr_f,    FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_add_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_add_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("+"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_add_i_i},
-    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_add_iarr_i,         FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_add_iarr_iarr,      FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_add_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_add_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
     // Unary negation
     {CSTR("-"),      TI_FLOAT,          1,  {TI_FLOAT},                             _op_neg_f},
-    {CSTR("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {CSTR("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
     {CSTR("-"),      TI_INT,            1,  {TI_INT},                               _op_neg_i},
-    {CSTR("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_RET_AND_ARG_EQUAL_LENGTH},
-    {CSTR("-"),      TI_DISTRIBUTION,   1,  {TI_DISTRIBUTION},                      _op_simd_neg_farr,      FLAG_RET_AND_ARG_EQUAL_LENGTH},
-    {CSTR("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {CSTR("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("-"),      TI_DISTRIBUTION,   1,  {TI_DISTRIBUTION},                      _op_simd_neg_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
 
     // Binary sub
     {CSTR("-"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_sub_f_f},
-    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_sub_farr_farr, FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_sub_farr_f,    FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_sub_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_sub_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("-"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_sub_i_i},
-    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary mul
     {CSTR("*"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_mul_f_f},
-    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul_farr_f,         FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul_farr_farr,      FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul_farr_farr, FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul_farr_f,    FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul_farr_farr, FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul_farr_f,    FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("*"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_mul_i_i},
-    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_mul_iarr_iarr,      FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_mul_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary div
     {CSTR("/"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_div_f_f},
-    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr, FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,    FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
     
-    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("/"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
-    {CSTR("/"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("/"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_RET_AND_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 };
 
 static procedure_t procedures[] = {
@@ -555,9 +555,9 @@ static procedure_t procedures[] = {
     {CSTR("max"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _fmaxf},
 
     // ARRAY VERSIONS OF NATIVE FUNCS
-    {CSTR("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_RET_AND_ARG_EQUAL_LENGTH},
-    {CSTR("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_RET_AND_ARG_EQUAL_LENGTH},
-    {CSTR("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_RET_AND_ARG_EQUAL_LENGTH},
+    {CSTR("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
     {CSTR("min"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _min_farr},
     {CSTR("max"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _max_farr},
 
