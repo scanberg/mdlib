@@ -5290,7 +5290,6 @@ static inline bool validate_ir(const md_script_ir_t* ir) {
     }
 
     if (ir->magic != SCRIPT_IR_MAGIC) {
-        MD_LOG_ERROR("Script object is corrupt or invalid.");
         return false;
     }
 
@@ -5299,12 +5298,10 @@ static inline bool validate_ir(const md_script_ir_t* ir) {
 
 static inline bool validate_eval(const md_script_eval_t* eval) {
     if (!eval) {
-        MD_LOG_ERROR("Eval object is NULL.");
         return false;
     }
 
     if (eval->magic != SCRIPT_EVAL_MAGIC) {
-        MD_LOG_ERROR("Eval object is corrupt or invalid.");
         return false;
     }
 
