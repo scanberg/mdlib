@@ -47,6 +47,11 @@ static inline void* md_linear_allocator_push_aligned(md_linear_allocator_t* line
     return mem;
 }
 
+static inline size_t md_linear_allocator_avail_bytes(md_linear_allocator_t* linear) {
+    ASSERT(linear && linear->magic == MD_LINEAR_ALLOCATOR_MAGIC);
+    return (size_t)MAX(0, (int64_t)linear->cap - (int64_t)linear->pos);
+}
+
 static inline void* md_linear_allocator_push(md_linear_allocator_t* linear, size_t size) {
     size_t alignment = size <= 2 ? size : MD_LINEAR_ALLOCATOR_DEFAULT_ALIGNMENT;
     return md_linear_allocator_push_aligned(linear, size, alignment);
