@@ -416,11 +416,12 @@ static md_256 simd_min_image_tric(md_256 dx, md_256 dy, md_256 dz, const float b
     return r2;
 }
 
-static inline md_256 simd_deperiodize(md_256 x, md_256 r, md_256 period, md_256 inv_period) {
+static inline md_256 simd_deperiodize_ortho(md_256 x, md_256 r, md_256 period, md_256 inv_period) {
     md_256 d = md_mm256_sub_ps(x, r);
     md_256 dx = md_mm256_mul_ps(d, inv_period);
     dx = md_mm256_sub_ps(dx, md_mm256_round_ps(dx));
-    return md_mm256_add_ps(r, md_mm256_mul_ps(dx, period));
+    md_256 x_prim = md_mm256_add_ps(r, md_mm256_mul_ps(dx, period));
+    return md_mm256_blendv_ps(x_prim, x, md_mm256_cmpeq_ps(period, md_mm256_setzero_ps()));
 }
 
 static inline int simd_xyz_mask(float ext[3]) {
@@ -5212,9 +5213,9 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
 		    };
 
             if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-                simd_deperiodize(x1[0], x0[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-                simd_deperiodize(x1[1], x0[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-                simd_deperiodize(x1[2], x0[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
+                simd_deperiodize_ortho(x1[0], x0[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
+                simd_deperiodize_ortho(x1[1], x0[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
+                simd_deperiodize_ortho(x1[2], x0[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
             } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
                 simd_deperiodize_triclinic(x1, x0, unit_cell->basis.elem);
             }
@@ -5288,15 +5289,15 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
         };
 
         if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-            x0[0] = simd_deperiodize(x0[0], x1[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x2[0] = simd_deperiodize(x2[0], x1[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x3[0] = simd_deperiodize(x3[0], x2[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x0[1] = simd_deperiodize(x0[1], x1[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x2[1] = simd_deperiodize(x2[1], x1[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x3[1] = simd_deperiodize(x3[1], x2[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x0[2] = simd_deperiodize(x0[2], x1[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-            x2[2] = simd_deperiodize(x2[2], x1[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-            x3[2] = simd_deperiodize(x3[2], x2[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
+            x0[0] = simd_deperiodize_ortho(x0[0], x1[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
+            x2[0] = simd_deperiodize_ortho(x2[0], x1[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
+            x3[0] = simd_deperiodize_ortho(x3[0], x2[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
+            x0[1] = simd_deperiodize_ortho(x0[1], x1[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
+            x2[1] = simd_deperiodize_ortho(x2[1], x1[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
+            x3[1] = simd_deperiodize_ortho(x3[1], x2[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
+            x0[2] = simd_deperiodize_ortho(x0[2], x1[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
+            x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
+            x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
         } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
             simd_deperiodize_triclinic(x0, x1, unit_cell->basis.elem);
             simd_deperiodize_triclinic(x2, x1, unit_cell->basis.elem);

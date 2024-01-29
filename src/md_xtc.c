@@ -84,16 +84,6 @@ static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, m
         MD_LOG_ERROR("XTC: Failed to read box dimensions");
         return false;
     }
-    /*
-    if ((result = xdrfile_read_int(&natoms2, 1, xd)) != 1) {
-        MD_LOG_ERROR("Failed to read number of atoms (second)");
-        return false;
-    }
-    if (*natoms != natoms2) {
-        MD_LOG_ERROR("Number of atoms did not match second number of atoms, header might be corrupt");
-        return false;
-    }
-    */
 
     return true;
 }
@@ -324,7 +314,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
             result = xtc_frame_coords(file, natoms, pos);
             if (result) {            
                 // nm -> Ångström
-                for (int64_t i = 0; i < natoms; ++i) {
+                for (size_t i = 0; i < natoms; ++i) {
                     if (x) x[i] = pos[i][0] * 10.0f;
                     if (y) y[i] = pos[i][1] * 10.0f;
                     if (z) z[i] = pos[i][2] * 10.0f;
