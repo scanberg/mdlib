@@ -656,8 +656,8 @@ static procedure_t procedures[] = {
 
 
     // --- MISC ---
-    {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD},              _count},
-    {CSTR("count"),     TI_FLOAT,           2,  {TI_BITFIELD, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
+    {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD_ARR},              _count},
+    {CSTR("count"),     TI_FLOAT,           2,  {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
 
     {CSTR("join"),      TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
     {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
@@ -4317,26 +4317,30 @@ count_type_t count_type_from_str(str_t str) {
 	return COUNT_TYPE_UNKNOWN;
 }
 
-size_t internal_count(const md_bitfield_t* bf, count_type_t count_type, eval_context_t* ctx) {
-    ASSERT(bf);
+size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t count_type, eval_context_t* ctx) {
     ASSERT(ctx);
+    if (!bf_arr || bf_len == 0) {
+		return 0;
+	}
+
+    md_bitfield_t bf = _internal_flatten_bf(bf_arr, bf_len, ctx->temp_alloc);
 
     md_bitfield_t tmp = {0};
     if (ctx->mol_ctx) {
-        md_bitfield_and(&tmp, bf, ctx->mol_ctx);
-		bf = &tmp;
+        md_bitfield_and(&tmp, &bf, ctx->mol_ctx);
+		bf = tmp;
     }
     
     size_t count = 0;
 
     switch (count_type) {
     	case COUNT_TYPE_ATOM: {
-			return md_bitfield_popcount(bf);
+			return md_bitfield_popcount(&bf);
 		}
 		case COUNT_TYPE_RESIDUE:
 			for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
                 md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
-                if (md_bitfield_popcount_range(bf, range.beg, range.end) > 0) {
+                if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
 					count += 1;
 				}
             }
@@ -4344,7 +4348,7 @@ size_t internal_count(const md_bitfield_t* bf, count_type_t count_type, eval_con
 		case COUNT_TYPE_CHAIN: {
             for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
                 md_range_t range = md_chain_atom_range(ctx->mol->chain, i);
-                if (md_bitfield_popcount_range(bf, range.beg, range.end) > 0) {
+                if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
                     count += 1;
                 }
             }
@@ -4359,7 +4363,7 @@ size_t internal_count(const md_bitfield_t* bf, count_type_t count_type, eval_con
             
                 md_bitfield_clear(&tmp2);
                 md_bitfield_set_indices_u32(&tmp2, (const uint32_t*)idx, num_idx);
-                md_bitfield_and_inplace(&tmp2, bf);
+                md_bitfield_and_inplace(&tmp2, &bf);
                 if (md_bitfield_popcount(&tmp2) > 0) {
                 	count += 1;
                 }
@@ -4375,29 +4379,28 @@ size_t internal_count(const md_bitfield_t* bf, count_type_t count_type, eval_con
 }
 
 static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
         const md_bitfield_t* bf = as_bitfield(arg[0]);
-
-        as_float(*dst) = (float)internal_count(bf, COUNT_TYPE_ATOM, ctx);
+        size_t len = element_count(arg[0]);
+        as_float(*dst) = (float)internal_count(bf, len, COUNT_TYPE_ATOM, ctx);
     }
 
     return 0;
 }
 
 static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING));
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-
         const md_bitfield_t* bf = as_bitfield(arg[0]);
+        size_t len = element_count(arg[0]);
         count_type_t type = count_type_from_str(as_string(arg[1]));
-
-        as_float(*dst) = (float)internal_count(bf, type, ctx);
+        as_float(*dst) = (float)internal_count(bf, len, type, ctx);
     } else {
         str_t str = as_string(arg[1]);
         count_type_t type = count_type_from_str(str);

@@ -401,6 +401,21 @@ UTEST_F(script, property_compute) {
     uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
+
+    {
+        md_script_ir_clear(ir);
+        str_t src = STR_LIT("num = count(residue(resname('ALA') and within(3.0, protein)));");
+        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        EXPECT_NE(NULL, eval);
+        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+
+        md_script_eval_free(eval);
+    }
+
     {
         md_script_ir_clear(ir);
         str_t src = STR_LIT("prop1 = distance_pair(com(resname(\"ALA\")), 1);");

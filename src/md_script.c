@@ -376,7 +376,8 @@ typedef struct table_t {
     md_array(md_array(double)) field_values;
 } table_t;
 
-void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double* data, int64_t count, md_allocator_i* alloc) {
+void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double* data, size_t count, md_allocator_i* alloc) {
+    (void)count;
     ASSERT(count == table->num_values);
     md_array_push(table->field_names, str_copy(name, alloc), alloc);
     md_array_push(table->field_units, unit, alloc);
@@ -386,7 +387,8 @@ void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double
     table->num_fields = md_array_size(table->field_names);
 }
 
-void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float* data, int64_t count, md_allocator_i* alloc) {
+void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float* data, size_t count, md_allocator_i* alloc) {
+    (void)count;
     ASSERT(count == table->num_values);
     md_array_push(table->field_names, str_copy(name, alloc), alloc);
     md_array_push(table->field_units, unit, alloc);
@@ -1144,7 +1146,7 @@ static procedure_match_result_t find_cast_procedure(type_info_t from, type_info_
     return res;
 }
 
-static uint32_t compute_cost(const procedure_t* proc, const type_info_t arg_types[], int64_t num_arg_types) {
+static uint32_t compute_cost(const procedure_t* proc, const type_info_t arg_types[]) {
     uint32_t cost = 0;
     for (int64_t j = 0; j < proc->num_args; ++j) {
         if (type_info_equal(arg_types[j], proc->arg_type[j])) {
@@ -1209,7 +1211,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                 if (num_arg_types == proc->num_args) {
                     // Same name and same number of args...
 
-                    uint32_t cost = compute_cost(proc, arg_types, num_arg_types);
+                    uint32_t cost = compute_cost(proc, arg_types);
                     if (cost < best_cost) {
                         best_cost = cost;
                         best_proc = proc;
@@ -1221,7 +1223,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
                         // Test if we can get a (better) result by swapping the arguments
                         type_info_t swapped_args[2] = {arg_types[1], arg_types[0]};
 
-                        cost = compute_cost(proc, swapped_args, num_arg_types);;
+                        cost = compute_cost(proc, swapped_args);
                         if (cost < best_cost) {
                             best_cost = cost;
                             best_proc = proc;
@@ -1865,20 +1867,20 @@ static void print_expr(FILE* file, str_t str) {
 }
 
 static void save_expressions_to_json(expression_t** expr, uint64_t num_expr, str_t filename) {
-    FILE* file = (FILE*)md_file_open(filename, MD_FILE_WRITE);
+    md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
 
     if (file) {
-        fprintf(file, "var treeData = [\n");
+        md_file_printf(file, "var treeData = [\n");
         for (uint64_t i = 0; i < num_expr; ++i) {
-            fprintf(file, "{\n\"node\" :\n");
+            md_file_printf(file, "{\n\"node\" :\n");
             print_node(file, expr[i]->node, 1);
-            fprintf(file, "\"flags\" : %u,\n", expr[i]->node->flags);
-            fprintf(file, "\"expr\" : ");
+            md_file_printf(file, "\"flags\" : %u,\n", expr[i]->node->flags);
+            md_file_printf(file, "\"expr\" : ");
             print_expr(file, expr[i]->str);
-            fprintf(file, "},\n");
+            md_file_printf(file, "},\n");
 
         }
-        fprintf(file, "];");
+        md_file_printf(file, "];");
         md_file_close((md_file_o*)file);
     }
 }
