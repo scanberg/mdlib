@@ -95,3 +95,12 @@ static inline uint64_t next_power_of_two64 (uint64_t x) {
     if (x < 2) return x;  // avoid clz(0)
     return 1ULL << (sizeof(uint64_t) * 8 - clz64(x-1));
 }
+
+static inline uint32_t swap_endian32(uint32_t x) {
+	return (x >> 24) | ((x >> 8) & 0x0000FF00) | ((x << 8) & 0x00FF0000) | (x << 24);
+}
+
+static inline uint64_t swap_endian64(uint64_t x) {
+	return (x >> 56) | ((x >> 40) & 0x000000000000FF00) | ((x >> 24) & 0x0000000000FF0000) | ((x >> 8) & 0x00000000FF000000) |
+	       ((x << 8) & 0x000000FF00000000) | ((x << 24) & 0x0000FF0000000000) | ((x << 40) & 0x00FF000000000000) | (x << 56);
+}
