@@ -5679,7 +5679,7 @@ static void computeOrder(uint32_t* result, const float* vx, const float* vy, con
     }
 }
 
-static void computeHistogram(uint32_t hist[1024][3], const uint32_t* data, size_t count) {
+static void computeHistogram10(uint32_t hist[1024][3], const uint32_t* data, size_t count) {
     // compute 3 10-bit histograms in parallel
     for (size_t i = 0; i < count; ++i) {
         uint32_t id = data[i];
@@ -5707,7 +5707,7 @@ static void computeHistogram(uint32_t hist[1024][3], const uint32_t* data, size_
     ASSERT(sumx == count && sumy == count && sumz == count);
 }
 
-static void radixPass(uint32_t* destination, const uint32_t* source, const uint32_t* keys, size_t count, uint32_t hist[1024][3], int pass) {
+static void radixPass10(uint32_t* destination, const uint32_t* source, const uint32_t* keys, size_t count, uint32_t hist[1024][3], int pass) {
     int bitoff = pass * 10;
     for (size_t i = 0; i < count; ++i) {
         uint32_t id = (keys[source[i]] >> bitoff) & 1023;
@@ -5715,7 +5715,7 @@ static void radixPass(uint32_t* destination, const uint32_t* source, const uint3
     }
 }
 
-void md_util_spatial_sort(uint32_t* source, const float* x, const float* y, const float* z, size_t count) {
+void md_util_sort_spatial(uint32_t* source, const float* x, const float* y, const float* z, size_t count) {
     if (!source || !z || !y || !z || count <= 0) return;
 
     md_allocator_i* alloc = md_heap_allocator;
@@ -5725,23 +5725,23 @@ void md_util_spatial_sort(uint32_t* source, const float* x, const float* y, cons
 
     // Important to zero the data here, since we increment when computing the histogram
     uint32_t hist[1024][3] = {0};
-    computeHistogram(hist, keys, count);
+    computeHistogram10(hist, keys, count);
 
     uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
     for (uint32_t i = 0; i < (uint32_t)count; ++i) {
         scratch[i] = i;
     }
 
-    // 3-pass radix sort computes the resulting order into scratch
-    radixPass(source, scratch, keys, count, hist, 0);
-    radixPass(scratch, source, keys, count, hist, 1);
-    radixPass(source, scratch, keys, count, hist, 2);
+    // 3-pass 10-bit radix sort computes the resulting order into scratch
+    radixPass10(source, scratch, keys, count, hist, 0);
+    radixPass10(scratch, source, keys, count, hist, 1);
+    radixPass10(source, scratch, keys, count, hist, 2);
 
     md_free(alloc, scratch, sizeof(uint32_t) * count);
     md_free(alloc, keys,    sizeof(uint32_t) * count);
 }
 
-void md_util_spatial_sort_vec3(uint32_t* source, const vec3_t* xyz, size_t count) {
+void md_util_sort_spatial_vec3(uint32_t* source, const vec3_t* xyz, size_t count) {
     if (!source || !xyz || count <= 0) return;
 
     md_allocator_i* alloc = md_heap_allocator;
@@ -5755,7 +5755,7 @@ void md_util_spatial_sort_vec3(uint32_t* source, const vec3_t* xyz, size_t count
 
     // Important to zero the data here, since we increment when computing the histogram
     uint32_t hist[1024][3] = {0};
-    computeHistogram(hist, keys, count);
+    computeHistogram10(hist, keys, count);
 
     uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
     for (uint32_t i = 0; i < (uint32_t)count; ++i) {
@@ -5763,13 +5763,94 @@ void md_util_spatial_sort_vec3(uint32_t* source, const vec3_t* xyz, size_t count
     }
 
     // 3-pass radix sort computes the resulting order into scratch
-    radixPass(source, scratch, keys, count, hist, 0);
-    radixPass(scratch, source, keys, count, hist, 1);
-    radixPass(source, scratch, keys, count, hist, 2);
+    radixPass10(source, scratch, keys, count, hist, 0);
+    radixPass10(scratch, source, keys, count, hist, 1);
+    radixPass10(source, scratch, keys, count, hist, 2);
 
     md_free(alloc, scratch, sizeof(uint32_t) * count);
     md_free(alloc, keys,    sizeof(uint32_t) * count);
 }
+
+static void computeHistogram8(uint32_t hist[256][4], const uint32_t* data, size_t count) {
+    // compute 4 8-bit histograms in parallel
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t id = data[i];
+
+        hist[(id >> 0)  & 255][0]++;
+        hist[(id >> 8)  & 255][1]++;
+        hist[(id >> 16) & 255][2]++;
+        hist[(id >> 24) & 255][3]++;
+    }
+
+    uint32_t sumx = 0, sumy = 0, sumz = 0, sumw = 0;
+
+    // replace histogram data with prefix histogram sums in-place
+    for (int i = 0; i < 256; ++i) {
+        uint32_t hx = hist[i][0], hy = hist[i][1], hz = hist[i][2], hw = hist[i][3];
+
+        hist[i][0] = sumx;
+        hist[i][1] = sumy;
+        hist[i][2] = sumz;
+        hist[i][3] = sumw;
+
+        sumx += hx;
+        sumy += hy;
+        sumz += hz;
+        sumw += hw;
+    }
+
+    ASSERT(sumx == count && sumy == count && sumz == count && sumw == count);
+}
+
+void radixPass8(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[256][4], int pass) {
+	int bitoff = pass * 8;
+    
+    for (size_t i = 0; i < count; ++i) {
+    	uint32_t id = (src[i] >> bitoff) & 255;
+        dst[hist[id][pass]++] = src[i];
+    }
+}
+
+void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count) {
+    if (!data || count <= 0) return;
+
+	md_allocator_i* alloc = md_heap_allocator;
+	uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
+
+    uint32_t hist[256][4] = {0};
+    for (size_t i = 0; i < count; ++i) {
+		uint32_t id = data[i];
+		hist[(id >> 0)  & 255][0]++;
+		hist[(id >> 8)  & 255][1]++;
+		hist[(id >> 16) & 255][2]++;
+		hist[(id >> 24) & 255][3]++;
+	}
+
+    uint32_t sum[4] = {0};
+    for (size_t i = 0; i < ARRAY_SIZE(hist); ++i) {
+        uint32_t val[4] = { hist[i][0], hist[i][1], hist[i][2], hist[i][3] };
+		hist[i][0] = sum[0];
+		hist[i][1] = sum[1];
+		hist[i][2] = sum[2];
+		hist[i][3] = sum[3];
+		sum[0] += val[0];
+		sum[1] += val[1];
+		sum[2] += val[2];
+		sum[3] += val[3];
+	}
+
+	// 4-pass 8-bit radix sort computes the resulting order into scratch
+    radixPass8(scratch, data, count, hist, 0);
+	radixPass8(data, scratch, count, hist, 1);
+	radixPass8(scratch, data, count, hist, 2);
+	radixPass8(data, scratch, count, hist, 3);
+
+	md_free(alloc, scratch, sizeof(uint32_t) * count);
+}
+
+// Non inplace version of radix sort which should fill in the source indices which represents the sorted order
+//void md_util_sort_radix_uint32(uint32_t* source_indices, const uint32_t* data, size_t count) {
+//}
 
 typedef struct graph_t {
     size_t    vertex_count;

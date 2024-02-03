@@ -193,12 +193,19 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
-void md_util_spatial_sort(uint32_t* source_indices, const float* x, const float* y, const float* z, size_t count);
+void md_util_sort_spatial(uint32_t* source_indices, const float* x, const float* y, const float* z, size_t count);
 
 // Spatially sorts the input positions according to morton order. This makes it easy to create spatially coherent clusters, just select ranges within this space.
 // There are some larger jumps within the morton order as well, so when creating clusters from consecutive ranges, this should be considered as well.
 // The result (source_indices) is an array of remapping indices. It is assumed that the user has reserved space for this.
-void md_util_spatial_sort_vec3(uint32_t* source_indices, const vec3_t* xyz, size_t count);
+void md_util_sort_spatial_vec3(uint32_t* source_indices, const vec3_t* xyz, size_t count);
+
+// Sort array of uint32_t in place using radix sort
+void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count);
+
+// Sort array of uint32_t by producing a remapping array of source indices
+// The source_indices represents the indices of the sorted array, i.e. source_indices[0] is the index of the smallest element in data
+//void md_util_sort_radix_uint32(uint32_t* source_indices, const uint32_t* data, size_t count);
 
 // Structure matching operations
 // In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.
