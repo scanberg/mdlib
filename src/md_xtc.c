@@ -541,8 +541,8 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         traj->inst = (struct md_trajectory_o*)xtc;
         traj->get_header = xtc_get_header;
         traj->load_frame = xtc_load_frame;
-        traj->fetch_frame_data = xtc_fetch_frame_data;
-        traj->decode_frame_data = xtc_decode_frame_data;
+        //traj->fetch_frame_data = xtc_fetch_frame_data;
+        //traj->decode_frame_data = xtc_decode_frame_data;
 
         return traj;
     }

@@ -94,13 +94,8 @@ UTEST(xyz, xyz_tinker) {
     EXPECT_EQ(20,           data.coordinates[0].connectivity[1]);
     EXPECT_EQ(270,          data.coordinates[0].connectivity[2]);
     
-<<<<<<< Updated upstream
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    ASSERT_NE((FILE*)file, NULL);
-=======
-    md_file_o* file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
->>>>>>> Stashed changes
     for (int64_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
