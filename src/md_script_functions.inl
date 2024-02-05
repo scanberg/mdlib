@@ -1037,11 +1037,47 @@ static inline irange_t get_chain_range_in_context(const md_molecule_t* mol, cons
     return range;
 }
 
+static bool validate_atom_index_in_context(int32_t in_idx, token_t token, const eval_context_t* ctx) {
+    ASSERT(ctx);
+
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const int ctx_size = ctx_range.end - ctx_range.beg;
+    const int32_t ctx_idx = remap_index_to_context(in_idx, ctx_range);
+    if (ctx_idx < ctx_range.beg || ctx_idx >= ctx_range.end) {
+        LOG_ERROR(ctx->ir, token, "supplied index (%i) is not within range of its context (%i:%i)", in_idx, 1, ctx_size);
+        return false;
+    }
+    if (ctx->mol_ctx) {
+        if (!md_bitfield_test_bit(ctx->mol_ctx, ctx_idx)) {
+            LOG_ERROR(ctx->ir, token, "supplied index (%i) is not represented within the supplied context", in_idx);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool validate_atom_range_in_context(irange_t in_range, token_t token, const eval_context_t* ctx) {
+    ASSERT(ctx);
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+    const int ctx_size = ctx_range.end - ctx_range.beg;
+    const irange_t range = remap_range_to_context(in_range, ctx_range);
+    if (!range_in_range(range, ctx_range)) {
+        LOG_ERROR(ctx->ir, token, "supplied range (%i:%i) is not within range of its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
+        return false;
+    }
+    if (ctx->mol_ctx) {
+        if (!range_in_range(range, ctx_range)) {
+			LOG_ERROR(ctx->ir, token, "supplied range (%i:%i) is not contained within its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
+			return false;
+		}
+    }
+    return true;
+}
+
 static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     if (element_count(arg) == 0) return 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int64_t ctx_size = ctx_range.end - ctx_range.beg;
 
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
@@ -1051,20 +1087,26 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
         int* indices = as_int_arr(arg);
         int count = 0;
         for (size_t i = 0; i < element_count(arg); ++i) {
-            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
-
-            if (!(ctx_range.beg <= idx && idx < ctx_range.end)) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[arg_idx], "supplied index (%i) is not within expected range (%i:%i)",
-                    (int)idx, 1, ctx_size);
+            if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[arg_idx], ctx)) {
+				return STATIC_VALIDATION_ERROR;
+			}                
+            count += 1;
+        }
+        return count;
+    }
+    case TYPE_IRANGE: {
+        if (ctx->backchannel && ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
+            ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
+        }
+        const irange_t* ranges = as_irange_arr(arg);
+        size_t num_ranges = element_count(arg);
+        int count = 0;
+        for (size_t i = 0; i < num_ranges; ++i) {
+            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[arg_idx], ctx)) {
                 return STATIC_VALIDATION_ERROR;
             }
-            if (ctx->mol_ctx) {
-                if (!md_bitfield_test_bit(ctx->mol_ctx, idx)) {
-                    LOG_ERROR(ctx->ir, ctx->arg_tokens[arg_idx], "supplied index (%i) is not represented within the supplied context", (int)idx);
-                    return STATIC_VALIDATION_ERROR;
-                }
-            }
-            count += 1;
+            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
+            count += ctx->mol_ctx ? (int)md_bitfield_popcount_range(ctx->mol_ctx, range.beg, range.end) : (range.end - range.beg);
         }
         return count;
     }
@@ -1079,31 +1121,6 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
         else {
             return (int)type_info_array_len(arg.type);
         }
-    }
-    case TYPE_IRANGE:
-    {
-        if (ctx->backchannel && ctx->arg_flags[arg_idx] & FLAG_DYNAMIC) {
-            ctx->backchannel->flags |= FLAG_DYNAMIC_LENGTH;
-        }
-        irange_t* ranges = as_irange_arr(arg);
-        int count = 0;
-        for (size_t i = 0; i < element_count(arg); ++i) {
-            irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (range_in_range(range, ctx_range)) {
-                if (ctx->mol_ctx) {
-                    count += (int)md_bitfield_popcount_range(ctx->mol_ctx, range.beg, range.end);
-                }
-                else {
-                    count += range.end - range.beg;
-                }
-            }
-            else {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
-                    ranges[i].beg, ranges[i].end, 1, ctx_size);
-                return STATIC_VALIDATION_ERROR;
-            }
-        }
-        return count;
     }
     default:
         ASSERT(false);
@@ -2357,12 +2374,9 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         ASSERT(ctx->arg_tokens);
         for (size_t i = 0; i < num_ranges; ++i) {
-            irange_t range = ranges[i];
-            if (!range_in_range(remap_range_to_context(range, ctx_range), ctx_range)) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
-                    range.beg, range.end, 1, ctx_range.end - ctx_range.beg);
-                return -1;
-            }
+            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
+				return STATIC_VALIDATION_ERROR;
+			}
         }
     }
 
@@ -2381,7 +2395,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
         for (size_t i = 0; i < num_indices; ++i) {
-            int32_t idx = remap_index_to_context(indices[i], ctx_range);
+            const int32_t idx = remap_index_to_context(indices[i], ctx_range);
             ASSERT(idx_in_range(idx, ctx_range));
             md_bitfield_set_bit(bf, idx);
         }
@@ -2389,11 +2403,9 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         ASSERT(ctx->arg_tokens);
         for (size_t i = 0; i < num_indices; ++i) {
-            if (!idx_in_range(remap_index_to_context(indices[i], ctx_range), ctx_range)) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)",
-                    indices[i], 1, ctx_range.end - ctx_range.beg);
-                return -1;
-            }
+            if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[0], ctx)) {
+                return STATIC_VALIDATION_ERROR;
+			}
         }
     }
 
@@ -2656,8 +2668,9 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->mol_ctx) {
             md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
             while (md_bitfield_iter_next(&it)) {
-				if (ctx->mol->atom.flags[it.idx] & MD_FLAG_ION) {
-					md_bitfield_set_bit(bf, it.idx);
+                uint64_t idx = md_bitfield_iter_idx(&it);
+				if (ctx->mol->atom.flags[idx] & MD_FLAG_ION) {
+					md_bitfield_set_bit(bf, idx);
 				}
 			}
         } else {
@@ -2685,7 +2698,6 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     // Here we use the implicit range given by the context and use that to select substructures within it
     // The supplied iranges will be used as relative indices into the context
     const irange_t ctx_range = get_residue_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int32_t ctx_size = ctx_range.end - ctx_range.beg;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -2717,12 +2729,10 @@ static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         int count = 0;
         for (size_t i = 0; i < num_ranges; ++i) {
-            irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (!range_in_range(range, ctx_range)) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
-                    ranges[i].beg, ranges[i].end, 1, ctx_size);
-                return -1;
+            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
+                return STATIC_VALIDATION_ERROR;
             }
+            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
             count += range.end - range.beg;
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
@@ -3028,7 +3038,6 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const size_t num_ranges = element_count(arg[0]);
     const irange_t* ranges = as_irange_arr(arg[0]);
     const irange_t ctx_range = get_chain_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int32_t ctx_size = ctx_range.end - ctx_range.beg;
 
     if (dst) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
@@ -3049,7 +3058,6 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     if (ctx->mol_ctx) {
                         md_bitfield_and_inplace(bf, ctx->mol_ctx);
                     }
-
                 }
             }
         }
@@ -3057,13 +3065,10 @@ static int _chain_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     else {
         int count = 0;
         for (size_t i = 0; i < num_ranges; ++i) {
-            irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (!range_in_range(range, ctx_range)) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
-                    ranges[i].beg, ranges[i].end, 1, ctx_size);
-                return -1;
+            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
+                return STATIC_VALIDATION_ERROR;
             }
-
+            const irange_t range = remap_range_to_context(ranges[i], ctx_range);
             count += range.end - range.beg;
         }
         if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
@@ -3660,7 +3665,6 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     const int32_t* indices = as_int_arr(arg[0]);
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int64_t ctx_size = ctx_range.end - ctx_range.beg;
     const size_t num_idx = element_count(arg[0]);
 
     // The idea here is that if we have a context, we only make sure to add the indices which are represented within the context.
@@ -3668,30 +3672,20 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
-       
         for (size_t i = 0; i < num_idx; ++i) {
             // Shift here since we use 1 based indices for atoms
-            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
+            const int64_t idx = remap_index_to_context(indices[i], ctx_range);
             if (ctx->mol_ctx) {
                 ASSERT(md_bitfield_test_bit(ctx->mol_ctx, idx));
-                // This is pre-checked in the static check bellow in the else statement
+                // This is pre-checked in the static check
             }
             md_bitfield_set_bit(bf, idx);
         }
     } else {
         for (size_t i = 0; i < num_idx; ++i) {
-            const int64_t idx = (int64_t)ctx_range.beg + (int64_t)indices[i] - 1;
-
-            if (!(ctx_range.beg <= idx && idx < ctx_range.end)) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not within expected range (%i:%i)", (int)idx, 1, ctx_size);
-                return -1;
-            }
-            if (ctx->mol_ctx) {
-                if (!md_bitfield_test_bit(ctx->mol_ctx, idx)) {
-                    LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied index (%i) is not represented within the supplied context", (int)idx);
-                    return -1;
-                }
-            }
+            if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[0], ctx)) {
+				return STATIC_VALIDATION_ERROR;
+			}
         }
     }
 
@@ -3707,20 +3701,16 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
     const size_t num_ranges = element_count(arg[0]);
     const irange_t* ranges = as_irange_arr(arg[0]);
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
-    const int32_t ctx_size = ctx_range.end - ctx_range.beg;
 
     if (dst) {
         ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
         for (size_t i = 0; i < num_ranges; ++i) {
-            irange_t range = clamp_range(remap_range_to_context(ranges[i], ctx_range), ctx_range);
-
+            const irange_t range = clamp_range(remap_range_to_context(ranges[i], ctx_range), ctx_range);
             if (ctx->mol_ctx) {
-                int64_t beg_bit = range.beg;
-                int64_t end_bit = range.end;
-                while ((beg_bit = md_bitfield_scan(ctx->mol_ctx, beg_bit, end_bit)) != 0) {
-                    const int64_t idx = beg_bit - 1;
-                    md_bitfield_set_bit(bf, idx);
+                md_bitfield_iter_t it = md_bitfield_iter_range_create(ctx->mol_ctx, range.beg, range.end);
+                while (md_bitfield_iter_next(&it)) {
+                    md_bitfield_set_bit(bf, md_bitfield_iter_idx(&it));
                 }
             }
             else {
@@ -3731,12 +3721,9 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
         }
     } else {
         for (size_t i = 0; i < num_ranges; ++i) {
-            irange_t range = remap_range_to_context(ranges[i], ctx_range);
-            if (!range_in_range(range, ctx_range)) {
-                LOG_ERROR(ctx->ir, ctx->arg_tokens[0], "supplied range (%i:%i) is not within expected range (%i:%i)",
-                    ranges[i].beg, ranges[i].end, 1, ctx_size);
-                return -1;
-            }
+            if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
+				return STATIC_VALIDATION_ERROR;
+			}
         }
     }
 
@@ -4327,6 +4314,7 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
 
     md_bitfield_t tmp = {0};
     if (ctx->mol_ctx) {
+        tmp = md_bitfield_create(ctx->temp_alloc);
         md_bitfield_and(&tmp, &bf, ctx->mol_ctx);
 		bf = tmp;
     }
@@ -4385,7 +4373,8 @@ static int _count(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
         const md_bitfield_t* bf = as_bitfield(arg[0]);
         size_t len = element_count(arg[0]);
-        as_float(*dst) = (float)internal_count(bf, len, COUNT_TYPE_ATOM, ctx);
+        size_t count = internal_count(bf, len, COUNT_TYPE_ATOM, ctx);
+        as_float(*dst) = (float)count;
     }
 
     return 0;
