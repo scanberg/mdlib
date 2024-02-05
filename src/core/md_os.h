@@ -64,9 +64,9 @@ typedef enum {
 } md_file_flags_t;
 
 typedef enum {
-    MD_FILE_BEG,
-    MD_FILE_CUR,
-    MD_FILE_END
+    MD_FILE_BEG = 0,
+    MD_FILE_CUR = 1,
+    MD_FILE_END = 2,
 } md_file_seek_origin_t;
 
 md_file_o*  md_file_open(str_t filename, uint32_t file_flags);

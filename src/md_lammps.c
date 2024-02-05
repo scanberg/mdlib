@@ -234,14 +234,13 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 	str_t line;
 	str_t hint = {0};
 	size_t atom_line_count = 0;
-	size_t line_count = 0;
 	md_lammps_atom_format_t format = MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 
 	while (md_buffered_reader_extract_line(&line, reader)) {
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok > 0) {
 			if (str_eq(tok[0], STR_LIT("Atoms"))) {
-				if (num_tok == 3 && str_eq(tok[1], STR_LIT("#"))) {
+				if (num_tok >= 3 && str_eq(tok[1], STR_LIT("#"))) {
 					hint = tok[2];
 				}
 
@@ -264,7 +263,8 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 			}
 		}
 
-		if (line_count++ > 256) {
+		if (md_buffered_reader_tellg(reader) > MEGABYTES(1)) {
+			// If we cannot find the Atom entry within the first megabyte, we give up
 			MD_LOG_ERROR("Failed to detect atom format, could not find 'Atoms' entry");
 			return format;
 		}
@@ -283,9 +283,7 @@ static md_lammps_atom_format_t detect_atom_format(md_buffered_reader_t* reader) 
 			}
 		} else {
 			size_t num_tokens = extract_tokens(tok, ARRAY_SIZE(tok), &atom_lines[0]);
-			if (num_tokens == 5) {
-				format = MD_LAMMPS_ATOM_FORMAT_ATOMIC;
-			} else if (num_tokens == 8 && is_int(tok[5]) && is_int(tok[6]) && is_int(tok[7]))  {
+			if (num_tokens == 5 || (num_tokens == 8 && is_int(tok[5]) && is_int(tok[6]) && is_int(tok[7]))) {
 				format = MD_LAMMPS_ATOM_FORMAT_ATOMIC;
 			}
 		}
@@ -356,7 +354,7 @@ static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffe
 			return false;
 		}
 
-		md_lammps_atom_t* atom = &out_atoms[read_atoms++];
+		md_lammps_atom_t* atom = out_atoms + read_atoms;
 		atom->id = (int32_t)parse_int(tok[mappings[ATOM_FIELD_ID]]);
 		atom->resid = mappings[ATOM_FIELD_RESID] != -1 ? (int32_t)parse_int(tok[mappings[ATOM_FIELD_RESID]]) : -1;
 		atom->type = (int32_t)parse_int(tok[mappings[ATOM_FIELD_TYPE]]);
@@ -365,6 +363,8 @@ static bool parse_atoms(md_lammps_atom_t out_atoms[], size_t num_atoms, md_buffe
 		atom->x = (float)parse_float(tok[mappings[ATOM_FIELD_X]]);
 		atom->y = (float)parse_float(tok[mappings[ATOM_FIELD_Y]]);
 		atom->z = (float)parse_float(tok[mappings[ATOM_FIELD_Z]]);
+
+		read_atoms += 1;
 	}
 
 	return true;
@@ -481,7 +481,7 @@ md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
 		return MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
 	}
 
-	const size_t cap = KILOBYTES(4);
+	const size_t cap = MEGABYTES(1);
 	char* buf = md_temp_push(cap);
 
 	md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
@@ -491,6 +491,12 @@ md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
 	md_file_close(file);
 
 	return format;
+}
+
+static int compare_atom(const void* a, const void* b) {
+	const md_lammps_atom_t* atom_a = (const md_lammps_atom_t*)a;
+	const md_lammps_atom_t* atom_b = (const md_lammps_atom_t*)b;
+	return atom_a->id - atom_b->id;
 }
 
 static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* reader, const char* format, struct md_allocator_i* alloc) {
@@ -531,6 +537,9 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (!parse_atoms(data->atoms, data->num_atoms, reader, mappings)) {
 				return false;
 			}
+			// Sort atoms by id
+			qsort(data->atoms, data->num_atoms, sizeof(md_lammps_atom_t), compare_atom);
+
 			if (mass_table) {
 				for (size_t i = 0; i < data->num_atoms; ++i) {
 					int32_t type = data->atoms[i].type;
@@ -1038,6 +1047,17 @@ static bool parse_coord_mappings(coord_mappings_t* mappings, str_t str) {
 	return false;
 }
 
+typedef struct {
+	int32_t id;
+	float x, y, z;
+} id_xyz_t;
+
+int compare_id_xyz(const void* a, const void* b) {
+	const id_xyz_t* id_xyz_a = (const id_xyz_t*)a;
+	const id_xyz_t* id_xyz_b = (const id_xyz_t*)b;
+	return id_xyz_a->id - id_xyz_b->id;
+}
+
 bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* out_frame_header, float* out_x, float* out_y, float* out_z) {
 	ASSERT(inst);
 	ASSERT(data_ptr);
@@ -1102,25 +1122,24 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 		}
 		size_t line_count = 0;
 		size_t expected_num_tokens = traj_data->coord_mappings.num_coord_tokens;
+
+		// We need to store the coordinates in a temporary buffer since we need to sort them by id
+		id_xyz_t* id_xyz = md_alloc(md_heap_allocator, sizeof(id_xyz_t) * header.num_atoms);
+
 		while (md_buffered_reader_extract_line(&line, &reader) && line_count < header.num_atoms) {
 			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 			if (num_tokens != expected_num_tokens) {
 				MD_LOG_ERROR("Unexpected number of tokens in ITEM: ATOMS line, got %zu, expected %zu", num_tokens, expected_num_tokens);
 				return false;
 			}
-			int64_t idx = (size_t)parse_int(tokens[traj_data->coord_mappings.id_idx]) - 1;
-			if (!(0 <= idx && idx < (int64_t)header.num_atoms)) {
-				MD_LOG_ERROR("Invalid atom index: %i", (int)idx);
-				return false;
-			}
 
+			int32_t id = (int32_t)parse_int(tokens[traj_data->coord_mappings.id_idx]);
 			vec4_t coord = {
 				(float)parse_float(tokens[traj_data->coord_mappings.coord_idx[0]]),
 				(float)parse_float(tokens[traj_data->coord_mappings.coord_idx[1]]),
 				(float)parse_float(tokens[traj_data->coord_mappings.coord_idx[2]]),
 				1.0f
 			};
-
 			coord = mat4_mul_vec4(M, coord);
 
 			if (traj_data->coord_mappings.flags & COORD_FLAG_UNWRAP) {
@@ -1136,11 +1155,17 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 				coord = vec4_add(coord, trans);
 			}
 
-			out_x[idx] = coord.x;
-			out_y[idx] = coord.y;
-			out_z[idx] = coord.z;
+			id_xyz[line_count] = (id_xyz_t){ id, coord.x, coord.y, coord.z };
+			line_count += 1;
+		}
 
-			line_count++;
+		// Sort atoms by id
+		qsort(id_xyz, line_count, sizeof(id_xyz_t), compare_id_xyz);
+
+		for (size_t i = 0; i < line_count; ++i) {
+			out_x[i] = id_xyz[i].x;
+			out_y[i] = id_xyz[i].y;
+			out_z[i] = id_xyz[i].z;
 		}
 	}
 
@@ -1493,8 +1518,8 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	traj->inst = (struct md_trajectory_o*)traj_data;
 	traj->get_header = lammps_get_header;
 	traj->load_frame = lammps_load_frame;
-	traj->fetch_frame_data = lammps_fetch_frame_data;
-	traj->decode_frame_data = lammps_decode_frame_data;
+	//traj->fetch_frame_data = lammps_fetch_frame_data;
+	//traj->decode_frame_data = lammps_decode_frame_data;
 
 	return traj;
 }

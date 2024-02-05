@@ -297,15 +297,26 @@ bool str_find_char(size_t* loc, str_t str, int c) {
     return false;
 }
 
+// Insired by this
+// https://github.com/Alexpux/Cygwin/blob/master/newlib/libc/string/memrchr.c#L62
+// memrchr is a GNU extension
 bool str_rfind_char(size_t* loc, str_t str, int c) {
-    if (str_empty(str)) return false;
-    for (int64_t i = (int64_t)str.len - 1; i >= 0; --i) {
-        if (str.ptr[i] == c) {
-            if (loc) *loc = (size_t)i;
+    const char* ptr = str.ptr + str.len - 1;
+    size_t len = str.len;
+
+    // This should only be used until the pointer is aligned to 8-bytes
+    while (true) {
+        if (!len--) {
+            return false;
+        }
+        if (*ptr == c) {
+            if (loc) *loc = (size_t)(ptr - str.ptr);
             return true;
         }
+        ptr--;
     }
-    return false;
+
+    // @TODO: Check for character 8-characters at a time
 }
 
 bool str_find_str(size_t* loc, str_t haystack, str_t needle) {

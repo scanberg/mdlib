@@ -577,3 +577,13 @@ UTEST(util, parse_smiles) {
 
     md_arena_allocator_destroy(alloc);
 }
+
+UTEST(util, radix_sort) {
+    uint32_t arr[] = { 1, 278, 128312745, 4, 5, 0, 12382, 26, 12, 12, 7 };
+    size_t len = ARRAY_SIZE(arr);
+    md_util_sort_radix_inplace_uint32(arr, len);
+
+    for (size_t i = 0; i < len - 1; ++i) {
+    	EXPECT_LE(arr[i], arr[i+1]);
+    }
+}
