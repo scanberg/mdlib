@@ -3414,7 +3414,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             // We can deduce the length of the array by using the type of the first argument
             ASSERT(num_args > 0);
             ASSERT(node->proc->arg_type[0].base_type == args[0]->data.type.base_type);
-            node->data.type = args[0]->data.type;
+            node->data.type.dim[node->data.type.len_dim] = type_info_array_len(args[0]->data.type);
             return true;
         } else {
             LOG_ERROR(ctx->ir, node->token, "Procedure returns variable length, but its length cannot be determined.");

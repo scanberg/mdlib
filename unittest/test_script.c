@@ -341,6 +341,14 @@ UTEST_F(script, compile_script) {
     md_arena_allocator_destroy(alloc);
 }
 
+UTEST_F(script, implicit_conversion) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->amy;
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sel = residue({1,2,3,4});"), mol, NULL, NULL));
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST_F(script, semantic) {
     md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->amy;
