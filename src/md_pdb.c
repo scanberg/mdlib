@@ -30,6 +30,7 @@ extern "C" {
 typedef struct pdb_trajectory_t {
     uint64_t magic;
     md_file_o* file;
+    md_file_mapping_o* mapping;
     int64_t* frame_offsets;
     md_unit_cell_t unit_cell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
@@ -227,38 +228,33 @@ size_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
     return frame_size;
 }
 
-bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    ASSERT(inst);
-    ASSERT(frame_data_ptr);
-    ASSERT(frame_data_size);
-
-    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
-    if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
-        MD_LOG_ERROR("Error when decoding frame header, pdb magic did not match");
-        return false;
-    }
-
-    str_t str = { .ptr = (char*)frame_data_ptr, .len = frame_data_size };
+static bool pdb_decode_frame(const pdb_trajectory_t* pdb, str_t frame_str, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
     str_t line;
 
     int32_t step = 0;
-    if (str_extract_line(&line, &str)) {
+    if (str_extract_line(&line, &frame_str)) {
         if (str_eq_cstr_n(line, "MODEL", 5)) {
             step = (int32_t)parse_int(str_substr(line, 10, 4));
         }
     }
 
     size_t i = 0;
-    while (str_extract_line(&line, &str) && i < pdb->header.num_atoms) {
-        if (line.len < 6) continue;
-        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-            if (x) { x[i] = extract_float(line, 31, 38); }
-            if (y) { y[i] = extract_float(line, 39, 46); }
-            if (z) { z[i] = extract_float(line, 47, 54); }
-
-            i += 1;
+    if (x && y && z) {
+        while (str_extract_line(&line, &frame_str) && i < pdb->header.num_atoms) {
+            if (line.len < 6) continue;
+            if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
+                x[i] = extract_float(line, 31, 38);
+                y[i] = extract_float(line, 39, 46);
+                z[i] = extract_float(line, 47, 54);
+                i += 1;
+            }
         }
     }
+
+    if (i != pdb->header.num_atoms) {
+		MD_LOG_ERROR("Number of atoms in frame does not match expected number");
+		return false;
+	}
 
     if (header) {
         header->num_atoms = i;
@@ -411,7 +407,7 @@ bool md_pdb_data_parse_str(md_pdb_data_t* data, str_t str, md_allocator_i* alloc
 
 bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i* alloc) {
     bool result = false;
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
         const size_t cap = MEGABYTES(1);
         char* buf = md_alloc(md_heap_allocator, cap);
@@ -670,7 +666,7 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
 
 static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
     (void)arg;
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
         const size_t cap = MEGABYTES(1);
         char *buf = md_alloc(md_heap_allocator, cap);
@@ -706,26 +702,30 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
         MD_LOG_ERROR("Error when decoding frame coord, xtc magic did not match");
         return false;
-    }
+    }   
 
-    // Should this be exposed?
-    md_allocator_i* alloc = md_temp_allocator;
+    const int64_t beg = pdb->frame_offsets[frame_idx + 0];
+    const int64_t end = pdb->frame_offsets[frame_idx + 1];
+    const size_t frame_size = (size_t)MAX(0, end - beg);
 
-    bool result = true;
-    const size_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
-    if (frame_size > 0) {
-        // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
-        void* frame_data = md_alloc(alloc, frame_size);
-        const size_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
-        if (read_size != frame_size) {
-            MD_LOG_ERROR("Failed to read the expected size");
-            md_free(alloc, frame_data, frame_size);
-            return false;
-        }
+    if (frame_size == 0) {
+		MD_LOG_ERROR("Frame size was zero");
+		return false;
+	}
 
-        result = pdb_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-        md_free(alloc, frame_data, frame_size);
-    }
+    if (!pdb->mapping) {
+		MD_LOG_ERROR("File mapping is NULL");
+		return false;
+	}
+    const char* frame_data = md_file_mem_map_view(pdb->mapping, beg, frame_size);
+    if (!frame_data) {
+		MD_LOG_ERROR("Failed to map view of file");
+		return false;
+	}
+
+    str_t frame_str = {frame_data, frame_size};
+    bool result = pdb_decode_frame(pdb, frame_str, header, x, y, z);
+    md_file_mem_unmap_view(frame_data, frame_size);
 
     return result;
 }
@@ -741,7 +741,7 @@ static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num
     ASSERT(alloc);
 
     bool result = false;
-    md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(cache_file, MD_FILE_READ);
     if (file) {
         if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
             MD_LOG_ERROR("PDB trajectory cache: failed to read header");
@@ -797,7 +797,7 @@ static bool try_read_cache(pdb_cache_t* cache, str_t cache_file, size_t traj_num
 static bool write_cache(const pdb_cache_t* cache, str_t cache_file) {
     bool result = false;
 
-    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE);
     if (!file) {
         MD_LOG_INFO("PDB trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
@@ -827,7 +827,7 @@ done:
 }
 
 md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for PDB trajectory");
         return false;
@@ -919,7 +919,8 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     pdb_trajectory_t* pdb = (pdb_trajectory_t*)(traj + 1);
 
     pdb->magic = MD_PDB_TRAJ_MAGIC;
-    pdb->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    pdb->file = md_file_open(filename, MD_FILE_READ);
+    pdb->mapping = md_file_mem_map(pdb->file);
     pdb->frame_offsets = cache.frame_offsets;
     pdb->allocator = alloc;
     pdb->mutex = md_mutex_create();
@@ -950,7 +951,7 @@ void md_pdb_trajectory_free(md_trajectory_i* traj) {
         ASSERT(false);
         return;
     }
-    
+    if (pdb->mapping) md_file_mem_unmap(pdb->mapping);
     if (pdb->file) md_file_close(pdb->file);
     md_mutex_destroy(&pdb->mutex);
     md_arena_allocator_destroy(pdb->allocator);

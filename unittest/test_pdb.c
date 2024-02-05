@@ -49,7 +49,7 @@ UTEST(pdb, parse_trajectory) {
     EXPECT_EQ(pdb_data.num_helices, 0);
     EXPECT_EQ(pdb_data.num_sheets, 0);
 
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(path, MD_FILE_READ);
     ASSERT_TRUE(file);
     for (int64_t i = 0; i < pdb_data.num_models; ++i) {
         char data[6] = {0};

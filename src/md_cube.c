@@ -57,7 +57,7 @@ static bool open_file(md_file_o* file, str_t path) {
 		return false;
 	}
 
-	file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+	file = md_file_open(path, MD_FILE_READ);
 	if (!file) {
 		MD_LOG_ERROR("CUBE: Could not open file: '%.*s'", path.len, path.ptr);
 		return false;

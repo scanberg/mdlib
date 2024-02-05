@@ -279,7 +279,7 @@ static bool mmcif_init_from_str(md_molecule_t* mol, str_t str, const void* arg, 
 static bool mmcif_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
 	(void)arg;
 	bool result = false;
-	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+	md_file_o* file = md_file_open(filename, MD_FILE_READ);
 
 	if (file) {
 		const int64_t cap = MEGABYTES(1);

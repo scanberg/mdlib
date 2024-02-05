@@ -154,27 +154,75 @@ UTEST(os, semaphore) {
     EXPECT_TRUE(md_semaphore_destroy(&sema));
 }
 
-#include <core/md_str_builder.h>
+UTEST(os, file_basic) {
+	md_file_o* file = md_file_open(STR_LIT(MD_UNITTEST_DATA_DIR "/dir/subdir/file.txt"), MD_FILE_READ);
+    EXPECT_TRUE(file);
 
-UTEST(os, file_read_lines) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/pftaa.gro");
-    str_t ref = load_textfile(path, md_heap_allocator);
+    size_t filesize = md_file_size(file);
+    EXPECT_EQ(filesize, 5);
 
-    
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
-    
-    md_strb_t sb = md_strb_create(md_heap_allocator);
-    
-    const int64_t cap = KILOBYTES(1);
-    char* buf = md_alloc(md_heap_allocator, cap);
-    
-    int64_t bytes_read;
-    while (bytes_read = md_file_read_lines(file, buf, cap)) {
-        md_strb_push_str(&sb, (str_t){buf, bytes_read});
+    char buf[1024];
+    size_t bytes_read = md_file_read(file, buf, sizeof(buf));
+
+    EXPECT_EQ(bytes_read, 5);
+
+    str_t str = { buf, bytes_read };
+    EXPECT_TRUE(str_eq_cstr(str, "hello"));
+
+	md_file_close(file);
+}
+
+UTEST(os, file_write) {
+    str_t test_string = STR_LIT("Lorem ipsum dolor sit amet, consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.");
+    md_file_o* file = md_file_open(STR_LIT("temp_file.txt"), MD_FILE_WRITE);
+    ASSERT_TRUE(file);
+
+    for (int i = 0; i < 100; ++i) {
+    	size_t bytes_written = md_file_write(file, test_string.ptr, test_string.len);
+    	EXPECT_EQ(bytes_written, test_string.len);
     }
 
-    str_t str = md_strb_to_str(sb);
-    EXPECT_TRUE(str_eq(str, ref));
+    md_file_close(file);
 
-    md_free(md_heap_allocator, buf, cap);
+    file = md_file_open(STR_LIT("temp_file.txt"), MD_FILE_READ);
+    ASSERT_TRUE(file);
+    size_t filesize = md_file_size(file);
+    EXPECT_EQ(filesize, test_string.len * 100);
+    char buf[1024];
+    for (int i = 0; i < 100; ++i) {
+    	size_t bytes_read = md_file_read(file, buf, test_string.len);
+    	EXPECT_EQ(bytes_read, test_string.len);
+    	str_t str = { buf, bytes_read };
+    	EXPECT_TRUE(str_eq(str, test_string));
+    }
+    md_file_close(file);
+}
+
+UTEST(os, file_memmap) {
+    md_file_o* file = md_file_open(STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), MD_FILE_READ);
+    ASSERT_TRUE(file);
+
+    md_file_mapping_o* mapping = md_file_mem_map(file);
+    ASSERT_TRUE(mapping);
+    {
+        const char* addr = md_file_mem_map_view(mapping, 5, 1024);
+        EXPECT_NE(addr, NULL);
+        str_t str = { addr, 1024 };
+        str_t ref = STR_LIT("ated by trjconv : Protein in water t= 4000.00000");
+        EXPECT_TRUE(str_eq_n(str, ref, ref.len));
+        md_file_mem_unmap_view(addr, 1024);
+    }
+    
+    size_t page_size = md_vm_page_size();
+    const char* addr = md_file_mem_map_view(mapping, page_size - 1, page_size + 1);
+    EXPECT_NE(addr, NULL);
+    str_t str = { addr, 1024 };
+    str_t ref = STR_LIT(" 13.281  11.447\n"
+                        "    6HIS    ND1   91   7.718  13.081  11.291\n"
+                        "    6HIS     CG   92   7.750  13.201  11.351\n");
+    EXPECT_TRUE(str_eq_n(str, ref, ref.len));
+    md_file_mem_unmap_view(addr, page_size + 1);
+
+    md_file_mem_unmap(mapping);
+    md_file_close(file);
 }

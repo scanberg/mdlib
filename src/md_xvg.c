@@ -17,7 +17,7 @@ static bool open_file(md_file_o* file, str_t path) {
 		return false;
 	}
 
-	file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+	file = md_file_open(path, MD_FILE_READ);
 	if (!file) {
 		MD_LOG_ERROR("XVG: Could not open file: '%.*s'", path.len, path.ptr);
 		return false;
@@ -258,7 +258,7 @@ bool md_xvg_parse_str(md_xvg_t* xvg, str_t str, md_allocator_i* alloc) {
 bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 	ASSERT(alloc);
 
-	md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+	md_file_o* file = md_file_open(path, MD_FILE_READ);
 
 	if (!file) {
 		MD_LOG_ERROR("XVG: Failed to deserialize file, file could not be opened '"STR_FMT"'", STR_ARG(path));

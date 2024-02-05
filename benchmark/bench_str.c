@@ -33,7 +33,7 @@ UBENCH_EX(str, read_lines) {
 
 UBENCH_EX(str, buffered_reader) {
     str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(path, MD_FILE_READ);
     if (!file) {
         MD_LOG_ERROR("Could not open file '%.*s'", path.len, path.ptr);
         return;

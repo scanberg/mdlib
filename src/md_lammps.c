@@ -475,7 +475,7 @@ md_lammps_atom_format_t md_lammps_atom_format_from_str(str_t str) {
 }
 
 md_lammps_atom_format_t md_lammps_atom_format_from_file(str_t str) {
-	md_file_o* file = md_file_open(str, MD_FILE_READ | MD_FILE_BINARY);
+	md_file_o* file = md_file_open(str, MD_FILE_READ);
 	if (!file) {
 		MD_LOG_ERROR("Could not open file '%.*s'", str.len, str.ptr);
 		return MD_LAMMPS_ATOM_FORMAT_UNKNOWN;
@@ -652,7 +652,7 @@ bool md_lammps_data_parse_str(md_lammps_data_t* data, str_t str, const char* for
 
 bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const char* format, struct md_allocator_i* alloc) {
 	bool result = false;
-	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+	md_file_o* file = md_file_open(filename, MD_FILE_READ);
 	if (file) {
 		const size_t cap = MEGABYTES(1);
 		char* buf = md_alloc(md_heap_allocator, cap);
@@ -1231,7 +1231,7 @@ static bool lammps_trajectory_parse(lammps_cache_t* cache, md_buffered_reader_t*
 
 static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, struct md_allocator_i* alloc) {
 	bool result = false;
-	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+	md_file_o* file = md_file_open(filename, MD_FILE_READ);
 	if (file) {
 		const int64_t cap = MEGABYTES(1);
 		char* buf = md_alloc(md_heap_allocator, cap);
@@ -1285,7 +1285,7 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 	ASSERT(cache);
 	ASSERT(alloc);
 
-	md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
+	md_file_o* file = md_file_open(cache_file, MD_FILE_READ);
 	bool result = false;
 	if (file) {
 		
@@ -1361,7 +1361,7 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 static bool write_cache(str_t cache_file, lammps_cache_t* cache) {
 	bool result = false;
 
-	md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
+	md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE);
 	if (!file) {
 		MD_LOG_ERROR("LAMMPS trajectory cache: could not open file '%.*s", (int)cache_file.len, cache_file.ptr);
 		return false;
@@ -1415,7 +1415,7 @@ void lammps_trajectory_free(struct md_trajectory_o* inst) {
 }
 
 md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
-	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+	md_file_o* file = md_file_open(filename, MD_FILE_READ);
 	if (!file) {
 		MD_LOG_ERROR("Failed to open file for LAMMPS trajectory");
 		return false;
@@ -1475,7 +1475,7 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	lammps_trajectory_t* traj_data = (lammps_trajectory_t*)(traj + 1);
 
 	traj_data->magic = MD_LAMMPS_TRAJ_MAGIC;
-	traj_data->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+	traj_data->file = md_file_open(filename, MD_FILE_READ);
 	traj_data->frame_offsets = cache.frame_offsets;
 	traj_data->allocator = alloc;
 	traj_data->mutex = md_mutex_create();

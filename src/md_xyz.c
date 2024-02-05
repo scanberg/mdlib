@@ -665,7 +665,7 @@ bool md_xyz_data_parse_str(md_xyz_data_t* data, str_t str, struct md_allocator_i
 
 bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_allocator_i* alloc) {
     bool result = false;
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
         int64_t cap = MEGABYTES(1);
         char* buf = md_alloc(md_heap_allocator, cap);
@@ -752,7 +752,7 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, const void* a
     md_xyz_data_t data = {0};
     
     bool result = false;
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
         int64_t cap = MEGABYTES(1);
         char* buf = md_alloc(md_heap_allocator, cap);
@@ -821,7 +821,7 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num
     ASSERT(alloc);
 
     bool result = false;
-    md_file_o* file = md_file_open(cache_file, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(cache_file, MD_FILE_READ);
     if (file) {
         if (md_file_read(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
             MD_LOG_ERROR("XYZ trajectory cache: failed to read header");
@@ -865,7 +865,7 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num
 static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
     bool result = false;
 
-    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE);
     if (!file) {
         MD_LOG_INFO("XYZ trajectory cache: could not open file '"STR_FMT"'", STR_ARG(cache_file));
         return false;
@@ -890,7 +890,7 @@ done:
 }
 
 md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for XYZ trajectory");
         return false;
@@ -982,7 +982,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     }
 
     xyz->magic = MD_XYZ_TRAJ_MAGIC;
-    xyz->file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    xyz->file = md_file_open(filename, MD_FILE_READ);
     xyz->frame_offsets = cache.offsets;
     xyz->allocator = alloc;
     xyz->mutex = md_mutex_create();

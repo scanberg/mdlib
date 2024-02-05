@@ -349,7 +349,7 @@ bool str_ends_with(str_t str, str_t suffix) {
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
     ASSERT(alloc);
-    md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(filename, MD_FILE_READ);
     str_t result = {0,0};
     if (file) {
         size_t file_size = md_file_size(file);
