@@ -1386,6 +1386,11 @@ static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
         ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
         vec3_t* in_pos = as_vec3_arr(arg);
         size_t len = element_count(arg);
+
+        if (len == 1) {
+            return in_pos[0];
+        }
+
         vec4_t* xyzw = md_vm_arena_push(ctx->temp_arena, len * sizeof(vec4_t));
         for (size_t i = 0; i < len; ++i) {
             xyzw[i] = vec4_from_vec3(in_pos[i], 1.0f);
@@ -1396,12 +1401,17 @@ static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
     case TYPE_INT: {
         const int32_t* in_idx = as_int_arr(arg);
         size_t num_idx = element_count(arg);
+
         if (ctx->mol_ctx) {
             int32_t* indices = md_vm_arena_push(ctx->temp_arena, num_idx * sizeof(int32_t));
             for (size_t i = 0; i < num_idx; ++i) {
                 indices[i] = remap_index_to_context(in_idx[i], ctx_range);
             }
             in_idx = indices;
+        }
+
+        if (num_idx == 1) {
+            return (vec3_t) { ctx->mol->atom.x[in_idx[0]], ctx->mol->atom.y[in_idx[0]], ctx->mol->atom.z[in_idx[0]] };
         }
         
         com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, in_idx, num_idx, &ctx->mol->unit_cell);
@@ -3462,10 +3472,10 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        const vec3_t a = position_extract_com(arg[0], ctx);
-        const vec3_t b = position_extract_com(arg[1], ctx);
-        const vec3_t c = position_extract_com(arg[2], ctx);
-        const vec3_t d = position_extract_com(arg[3], ctx);
+        vec3_t a = position_extract_com(arg[0], ctx);
+        vec3_t b = position_extract_com(arg[1], ctx);
+        vec3_t c = position_extract_com(arg[2], ctx);
+        vec3_t d = position_extract_com(arg[3], ctx);
 
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
@@ -3478,7 +3488,6 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             coordinate_visualize(arg[3], ctx);
 
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-
                 md_script_vis_vertex_t va = vertex(a, COLOR_WHITE);
                 md_script_vis_vertex_t vb = vertex(b, COLOR_WHITE);
                 md_script_vis_vertex_t vc = vertex(c, COLOR_WHITE);
@@ -3533,21 +3542,30 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             const size_t count = md_bitfield_popcount(&bf);
             if (count > 0) {
-                int32_t* indices = md_alloc(ctx->temp_alloc, sizeof(int32_t) * count);
-                md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(&bf));
-
-                const float* const in_x[2] = {ctx->initial_configuration.x, (const float*)ctx->mol->atom.x};
-                const float* const in_y[2] = {ctx->initial_configuration.y, (const float*)ctx->mol->atom.y};
-                const float* const in_z[2] = {ctx->initial_configuration.z, (const float*)ctx->mol->atom.z};
-                const float* in_w = ctx->mol->atom.mass;
-
-                const vec3_t com[2] = {
-                    md_util_com_compute(in_x[0], in_y[0], in_z[0], in_w, NULL, count, NULL),
-                    md_util_com_compute(in_x[1], in_y[1], in_z[1], in_w, NULL, count, NULL),
+                md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(ctx->temp_arena);
+                //int32_t* indices = md_alloc(ctx->temp_alloc, sizeof(int32_t) * count);
+                //md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(&bf));
+                vec4_t* xyzw[2] = {
+                    md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
+                    md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count),
                 };
 
-                as_float(*dst) = (float)md_util_rmsd_compute(in_x, in_y, in_z, in_w, indices, count, com);
-                md_free(ctx->temp_alloc, indices, sizeof(int32_t) * count);
+                extract_xyzw_vec4(xyzw[0], ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, &bf);
+                extract_xyzw_vec4(xyzw[1], ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
+
+                md_util_pbc_vec4(xyzw[0], count, &ctx->mol->unit_cell);
+                md_util_unwrap_vec4(xyzw[0], count, &ctx->mol->unit_cell);
+
+                md_util_pbc_vec4(xyzw[1], count, &ctx->mol->unit_cell);
+                md_util_unwrap_vec4(xyzw[1], count, &ctx->mol->unit_cell);
+
+                const vec3_t com[2] = {
+                    md_util_com_compute_vec4(xyzw[0], count, NULL),
+                    md_util_com_compute_vec4(xyzw[1], count, NULL),
+                };
+
+                as_float(*dst) = (float)md_util_rmsd_compute_vec4(xyzw, 0, count, com);
+                md_vm_arena_temp_end(tmp);
             }
         }
     }

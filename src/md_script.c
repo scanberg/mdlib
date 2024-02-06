@@ -2085,14 +2085,12 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
 				}
 			}
         } else {
-            LOG_ERROR(ctx->ir, token,
-                            "Left hand side of assignment (=) is not a valid identifier.");
+            LOG_ERROR(ctx->ir, token, "Left hand side of assignment (=) is not a valid identifier.");
             return NULL;
         }
     }
     if (!rhs) {
-        LOG_ERROR(ctx->ir, token,
-                     "Right hand side of token '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
+        LOG_ERROR(ctx->ir, token, "Right hand side of token '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
         return NULL;
     }
 
