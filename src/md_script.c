@@ -2068,10 +2068,15 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
     ASSERT(token.type == '=');
     
     ast_node_t* lhs = ctx->node;
+    if (!lhs) {
+		LOG_ERROR(ctx->ir, token, "Left hand side of assignment (=) did not evaluate to a valid expression.");
+		return NULL;
+	}
+
     ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
     
-    if (!lhs || lhs->type != AST_IDENTIFIER) {
+    if (lhs->type != AST_IDENTIFIER) {
         if (lhs->type == AST_ARRAY) {
             for (size_t i = 0; i < md_array_size(lhs->children); ++i) {
 				if (lhs->children[i]->type != AST_IDENTIFIER) {
@@ -2081,7 +2086,7 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
 			}
         } else {
             LOG_ERROR(ctx->ir, token,
-                            "Left hand side of '%s' is not a valid identifier.", get_token_type_str(token.type));
+                            "Left hand side of assignment (=) is not a valid identifier.");
             return NULL;
         }
     }
