@@ -639,6 +639,10 @@ static procedure_t procedures[] = {
 
     {CSTR("sdf"),       TI_VOLUME, 3, {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
+    {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD_ARR},              _count},
+    {CSTR("count"),     TI_FLOAT,           2,  {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
+
+
     // --- GEOMETRICAL OPERATIONS ---
     {CSTR("com"),           TI_FLOAT3,   1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
     {CSTR("plane"),         TI_FLOAT4,   1,  {TI_COORDINATE_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
@@ -654,10 +658,7 @@ static procedure_t procedures[] = {
 
     {CSTR("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
-
     // --- MISC ---
-    {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD_ARR},              _count},
-    {CSTR("count"),     TI_FLOAT,           2,  {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
 
     {CSTR("join"),      TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
     {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
