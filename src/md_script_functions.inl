@@ -14,40 +14,40 @@
 #define BAKE_STR(str) {str"", sizeof(str)-1}
 
 // Type info declaration helpers
-#define TI_BOOL         {TYPE_BOOL, {1}, 0}
-
-#define TI_FLOAT        {TYPE_FLOAT, {1}, 0}
-#define TI_FLOAT_ARR    {TYPE_FLOAT, {ANY_LENGTH}, 0}
-#define TI_FLOAT2       {TYPE_FLOAT, {2,1}, 1}
-#define TI_FLOAT2_ARR   {TYPE_FLOAT, {2,ANY_LENGTH}, 1}
-#define TI_FLOAT3       {TYPE_FLOAT, {3,1}, 1}
-#define TI_FLOAT3_ARR   {TYPE_FLOAT, {3,ANY_LENGTH}, 1}
-#define TI_FLOAT4       {TYPE_FLOAT, {4,1}, 1}
-#define TI_FLOAT4_ARR   {TYPE_FLOAT, {4,ANY_LENGTH}, 1}
-#define TI_FLOAT44      {TYPE_FLOAT, {4,4,1}, 2}
-#define TI_FLOAT44_ARR  {TYPE_FLOAT, {4,4,ANY_LENGTH}, 2}
+#define TI_BOOL         {TYPE_BOOL,  {1}}
+#define TI_BOOL_ARR     {TYPE_BOOL,  {ANY_LENGTH}}
+#define TI_FLOAT        {TYPE_FLOAT, {1}}
+#define TI_FLOAT_ARR    {TYPE_FLOAT, {ANY_LENGTH}}
+#define TI_FLOAT2       {TYPE_FLOAT, {2}}
+#define TI_FLOAT2_ARR   {TYPE_FLOAT, {ANY_LENGTH,2}}
+#define TI_FLOAT3       {TYPE_FLOAT, {3}}
+#define TI_FLOAT3_ARR   {TYPE_FLOAT, {ANY_LENGTH,3}}
+#define TI_FLOAT4       {TYPE_FLOAT, {4}}
+#define TI_FLOAT4_ARR   {TYPE_FLOAT, {ANY_LENGTH,4}}
+#define TI_FLOAT44      {TYPE_FLOAT, {4,4}}
+#define TI_FLOAT44_ARR  {TYPE_FLOAT, {ANY_LENGTH,4,4}}
 
 // The second dimension in the distribution encodes weights for each bin
-#define TI_DISTRIBUTION {TYPE_FLOAT, {MD_DIST_BINS,2}, 1}
-#define TI_VOLUME       {TYPE_FLOAT, {MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM,1}, 3}
+#define TI_DISTRIBUTION {TYPE_FLOAT, {2,MD_DIST_BINS}}
+#define TI_VOLUME       {TYPE_FLOAT, {MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM}}
 
-#define TI_INT          {TYPE_INT, {1}, 0}
-#define TI_INT_ARR      {TYPE_INT, {ANY_LENGTH}, 0}
+#define TI_INT          {TYPE_INT, {1}}
+#define TI_INT_ARR      {TYPE_INT, {ANY_LENGTH}}
 
-#define TI_FRANGE       {TYPE_FRANGE, {1}, 0}
-#define TI_FRANGE_ARR   {TYPE_FRANGE, {ANY_LENGTH}, 0}
+#define TI_FRANGE       {TYPE_FRANGE, {1}}
+#define TI_FRANGE_ARR   {TYPE_FRANGE, {ANY_LENGTH}}
 
-#define TI_IRANGE       {TYPE_IRANGE, {1}, 0}
-#define TI_IRANGE_ARR   {TYPE_IRANGE, {ANY_LENGTH}, 0}
+#define TI_IRANGE       {TYPE_IRANGE, {1}}
+#define TI_IRANGE_ARR   {TYPE_IRANGE, {ANY_LENGTH}}
 
-#define TI_STRING       {TYPE_STRING, {1}, 0}
-#define TI_STRING_ARR   {TYPE_STRING, {ANY_LENGTH}, 0}
+#define TI_STRING       {TYPE_STRING, {1}}
+#define TI_STRING_ARR   {TYPE_STRING, {ANY_LENGTH}}
 
-#define TI_BITFIELD     {TYPE_BITFIELD, {1}, 0}
-#define TI_BITFIELD_ARR {TYPE_BITFIELD, {ANY_LENGTH}, 0}
+#define TI_BITFIELD     {TYPE_BITFIELD, {1}}
+#define TI_BITFIELD_ARR {TYPE_BITFIELD, {ANY_LENGTH}}
 
-#define TI_COORDINATE     {TYPE_COORDINATE, {1}, 0}
-#define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}, 0}
+#define TI_COORDINATE     {TYPE_COORDINATE, {1}}
+#define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}}
 
 #define as_float(arg) (*((float*)((arg).ptr)))
 #define as_float_arr(arg) ((float*)((arg).ptr))
@@ -1374,7 +1374,7 @@ static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx)
     return out_indices;
 }
 
-static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
+static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     vec3_t com = {0};
 
@@ -1402,20 +1402,17 @@ static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
     case TYPE_INT: {
         const int32_t* in_idx = as_int_arr(arg);
         size_t num_idx = element_count(arg);
+        int32_t* idx = md_vm_arena_push(ctx->temp_arena, num_idx * sizeof(int32_t));
 
-        if (ctx->mol_ctx) {
-            int32_t* indices = md_vm_arena_push(ctx->temp_arena, num_idx * sizeof(int32_t));
-            for (size_t i = 0; i < num_idx; ++i) {
-                indices[i] = remap_index_to_context(in_idx[i], ctx_range);
-            }
-            in_idx = indices;
+        for (size_t i = 0; i < num_idx; ++i) {
+            idx[i] = remap_index_to_context(in_idx[i], ctx_range);
         }
 
         if (num_idx == 1) {
-            return (vec3_t) { ctx->mol->atom.x[in_idx[0]], ctx->mol->atom.y[in_idx[0]], ctx->mol->atom.z[in_idx[0]] };
+            return (vec3_t) { ctx->mol->atom.x[idx[0]], ctx->mol->atom.y[idx[0]], ctx->mol->atom.z[idx[0]] };
         }
         
-        com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, in_idx, num_idx, &ctx->mol->unit_cell);
+        com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, idx, num_idx, &ctx->mol->unit_cell);
         break;
     }
     case TYPE_IRANGE: {
@@ -1437,8 +1434,9 @@ static vec3_t position_extract_com(data_t arg, eval_context_t* ctx) {
             else {
                 size_t len = range.end - range.beg;
                 md_array_ensure(indices, len, ctx->temp_alloc);
-                md_array_shrink(indices, len);
+                md_array_shrink(indices, 0);
                 for (int32_t j = range.beg; j < range.end; ++j) {
+                    // 1 based indexing to 0 based indexing
 					md_array_push(indices, j, ctx->temp_alloc);
 				}
                 xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
@@ -1616,7 +1614,7 @@ static inline md_bitfield_t _internal_flatten_bf(const md_bitfield_t* bf_arr, si
 }
 
 static int _not(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
 
     if (dst) {
@@ -1824,7 +1822,7 @@ static int _vec2(data_t* dst, data_t arg[], eval_context_t* ctx) {
 }
 
 static int _vec3(data_t* dst, data_t arg[], eval_context_t* ctx) {
-    ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT3));
+    ASSERT(is_type_directly_compatible(dst->type,  (type_info_t)TI_FLOAT3));
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
@@ -2367,7 +2365,7 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
 
         for (size_t i = 0; i < num_ranges; ++i) {
@@ -2403,7 +2401,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (dst) {
-        ASSERT(dst->ptr && is_type_equivalent(dst->type, (type_info_t)TI_BITFIELD));
+        ASSERT(dst->ptr && is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD));
         md_bitfield_t* bf = as_bitfield(*dst);
         for (size_t i = 0; i < num_indices; ++i) {
             const int32_t idx = remap_index_to_context(indices[i], ctx_range);
@@ -3169,11 +3167,11 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        vec3_t a = position_extract_com(arg[0], ctx);
-        vec3_t b = position_extract_com(arg[1], ctx);
+        vec3_t a = coordinate_extract_com(arg[0], ctx);
+        vec3_t b = coordinate_extract_com(arg[1], ctx);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
             float* dst_arr = as_float_arr(*dst);
             md_util_unit_cell_distance_array(dst_arr, &a, 1, &b, 1, &ctx->mol->unit_cell);
         }
@@ -3220,7 +3218,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         float min_dist = md_util_unit_cell_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
 
         if (dst) {
-            ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
             as_float(*dst) = min_dist;
         }
         if (ctx->vis) {
@@ -3417,9 +3415,9 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_COORDINATE_ARR));
     
     if (dst || ctx->vis) {
-        const vec3_t a = position_extract_com(arg[0], ctx);
-        const vec3_t b = position_extract_com(arg[1], ctx);
-        const vec3_t c = position_extract_com(arg[2], ctx);
+        const vec3_t a = coordinate_extract_com(arg[0], ctx);
+        const vec3_t b = coordinate_extract_com(arg[1], ctx);
+        const vec3_t c = coordinate_extract_com(arg[2], ctx);
         const vec3_t v0 = vec3_normalize(vec3_sub(a, b));
         const vec3_t v1 = vec3_normalize(vec3_sub(c, b));
 
@@ -3473,10 +3471,10 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        vec3_t a = position_extract_com(arg[0], ctx);
-        vec3_t b = position_extract_com(arg[1], ctx);
-        vec3_t c = position_extract_com(arg[2], ctx);
-        vec3_t d = position_extract_com(arg[3], ctx);
+        vec3_t a = coordinate_extract_com(arg[0], ctx);
+        vec3_t b = coordinate_extract_com(arg[1], ctx);
+        vec3_t c = coordinate_extract_com(arg[2], ctx);
+        vec3_t d = coordinate_extract_com(arg[3], ctx);
 
         if (dst) {
             ASSERT(is_type_equivalent(dst->type, (type_info_t)TI_FLOAT));
@@ -3772,9 +3770,9 @@ static int _com(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     vec3_t com;
     if (dst || ctx->vis) {
-        com = position_extract_com(arg[0], ctx);
+        com = coordinate_extract_com(arg[0], ctx);
         if (dst) {
-            ASSERT(type_info_equal(dst->type, (type_info_t)TI_FLOAT3));
+            ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3));
             as_vec3(*dst) = com;
         }
         if (ctx->vis) {
