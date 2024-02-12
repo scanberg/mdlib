@@ -31,6 +31,12 @@ static inline void md_linear_allocator_init(md_linear_allocator_t* linear, void*
     linear->ptr = backing_buffer;
 }
 
+static inline md_linear_allocator_t md_linear_allocator_create(void* backing_buffer, size_t buffer_capacity) {
+    md_linear_allocator_t linear;
+    md_linear_allocator_init(&linear, backing_buffer, buffer_capacity);
+    return linear;
+}
+
 static inline void* md_linear_allocator_push_aligned(md_linear_allocator_t* linear, size_t size, size_t align) {
     ASSERT(linear && linear->magic == MD_LINEAR_ALLOCATOR_MAGIC);
     ASSERT(IS_POW2(align));

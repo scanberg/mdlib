@@ -702,6 +702,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in
     const size_t element_bytes = ALIGN_TO(count, 8) * sizeof(elem_t);
     const size_t tot_bytes = sizeof(md_spatial_hash_t) + sizeof(elem_t) * element_bytes + sizeof(uint32_t) * cell_offset_count;
     void* mem = md_alloc(alloc, tot_bytes);
+    ASSERT(mem);
     void* data = (char*)mem + sizeof(md_spatial_hash_t);
 
     hash = mem;
