@@ -490,10 +490,9 @@ struct md_script_eval_t {
 
     str_t label;
 
-    md_script_property_t    *properties;
-    volatile uint32_t       *prop_dist_count;   // Counters property distributions
-    md_mutex_t              *prop_dist_mutex;   // Protect the data when writing to it in a threaded context (Distributions)
-    uint32_t                *prop_expr_idx;     // Original expression index in list (required to reference back when computing data silly silly)
+    md_array(md_script_property_t)    properties;
+    md_array(volatile uint32_t)       prop_dist_count;   // Counters property distributions
+    md_array(md_mutex_t)              prop_dist_mutex;   // Protect the data when writing to it in a threaded context (Distributions)
 };
 
 struct parse_context_t {
@@ -5018,7 +5017,7 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
 
 static inline bool is_temporal_type(type_info_t ti) {
     const int ndim = dim_ndims(ti.dim);
-    return ((ti.dim[0] != -1) && (ti.base_type == TYPE_FLOAT) && (ndim == 1)) || (ndim == 2 && ti.dim[0] == 1);
+    return ((ti.dim[0] != -1) && (ti.base_type == TYPE_FLOAT) && (ndim == 1)) || (ndim == 2 && ti.dim[1] == 1);
 }
 
 static inline bool is_distribution_type(type_info_t ti) {
@@ -5111,7 +5110,7 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
 				dim_shift_right(type.dim);
 			}
             prop->data.dim[0] = (int32_t)num_frames;
-            prop->data.dim[1] = type.dim[1];
+            prop->data.dim[1] = type.dim[0];
             break;
         case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION:
             if (dim_ndims(type.dim) < 3) {
@@ -5208,7 +5207,7 @@ static void init_property(md_script_property_t* prop, size_t num_frames, str_t i
     allocate_property_data(prop, node->data.type, num_frames, alloc);
 }
 
-void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_mean, float* out_var, const float* data, int count) {
+static void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_mean, float* out_var, const float* data, size_t count) {
     ASSERT(out_min);
     ASSERT(out_max);
     ASSERT(out_mean);
@@ -5937,7 +5936,6 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
                 md_script_property_t prop = {0};
                 init_property(&prop, num_frames, lhs->ident, expr->node, eval->arena);
                 md_array_push(eval->properties, prop, eval->arena);
-                md_array_push(eval->prop_expr_idx, (uint32_t)i, eval->arena);
                 num_prop_expr += 1;
             } else if (expr->node->children[0]->type == AST_ARRAY) {
             	ast_node_t* lhs = expr->node->children[0];
@@ -5947,7 +5945,6 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
 					md_script_property_t prop = {0};
 					init_property(&prop, num_frames, child->ident, child, eval->arena);
 					md_array_push(eval->properties, prop, eval->arena);
-					md_array_push(eval->prop_expr_idx, (uint32_t)i, eval->arena);
 					num_prop_expr += 1;
 				}
 			} else {
