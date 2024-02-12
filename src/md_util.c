@@ -288,6 +288,64 @@ static const char* neutral[] = { "VAL", "PHE", "GLN", "TYR", "HIS", "CYS", "MET"
 static const char* water[] = { "H2O", "HHO", "OHH", "HOH", "OH2", "SOL", "WAT", "TIP", "TIP2", "TIP3", "TIP4", "W", "DOD", "D30" };
 static const char* hydrophobic[] = { "ALA", "VAL", "ILE", "LEU", "MET", "PHE", "TYR", "TRP", "CYX" };
 
+// Taken from here
+// https://github.com/molstar/molstar/blob/master/src/mol-model/structure/model/properties/atomic/bonds.ts
+/*
+* Copyright (c) 2019 mol* contributors, licensed under MIT, See LICENSE file for more info.
+* @author Alexander Rose <alexander.rose@weirdbyte.de>
+*/
+
+// If an entry exists in this table, it has order 2
+static str_t intra_bond_order_table[] = {
+    bake("HIS|CD2|CG"),
+    bake("HIS|CE1|ND1"),
+    bake("ARG|CZ|NH2"),
+    bake("PHE|CE1|CZ"),
+    bake("PHE|CD2|CE2"),
+    bake("PHE|CD1|CG"),
+    bake("TRP|CD1|CG"),
+    bake("TRP|CD2|CE2"),
+    bake("TRP|CE3|CZ3"),
+    bake("TRP|CH2|CZ2"),
+    bake("ASN|CG|OD1"),
+    bake("GLN|CD|OE1"),
+    bake("TYR|CD1|CG"),
+    bake("TYR|CD2|CE2"),
+    bake("TYR|CE1|CZ"),
+    bake("ASP|CG|OD1"),
+    bake("GLU|CD|OE1"),
+
+    bake("G|C8|N7"),
+    bake("G|C4|C5"),
+    bake("G|C2|N3"),
+    bake("G|C6|O6"),
+    bake("C|C4|N3"),
+    bake("C|C5|C6"),
+    bake("C|C2|O2"),
+    bake("A|C2|N3"),
+    bake("A|C6|N1"),
+    bake("A|C4|C5"),
+    bake("A|C8|N7"),
+    bake("U|C5|C6"),
+    bake("U|C2|O2"),
+    bake("U|C4|O4"),
+
+    bake("DG|C8|N7"),
+    bake("DG|C4|C5"),
+    bake("DG|C2|N3"),
+    bake("DG|C6|O6"),
+    bake("DC|C4|N3"),
+    bake("DC|C5|C6"),
+    bake("DC|C2|O2"),
+    bake("DA|C2|N3"),
+    bake("DA|C6|N1"),
+    bake("DA|C4|C5"),
+    bake("DA|C8|N7"),
+    bake("DT|C5|C6"),
+    bake("DT|C2|O2"),
+    bake("DT|C4|O4"),
+};
+
 static const uint8_t aromatic_ring_elements[] = {
     B, C, N, O, Si, P, S, Ge, As, Sn, Sb, Bi
 };
@@ -354,7 +412,17 @@ static inline size_t popcount_bitfield(const md_array(uint64_t) bits) {
     return popcount_bits(bits, bits + md_array_size(bits));
 }
 
-static inline int64_t find_str_in_array(size_t* loc, str_t str, const char* arr[], size_t arr_len) {
+static inline bool find_str_in_str_arr(size_t* out_loc, str_t str, const str_t str_arr[], size_t arr_len) {
+    for (size_t i = 0; i < arr_len; ++i) {
+        if (str_eq(str, str_arr[i])) {
+            if (out_loc) *out_loc = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline bool find_str_in_cstr_arr(size_t* loc, str_t str, const char* arr[], size_t arr_len) {
     for (size_t i = 0; i < arr_len; ++i) {
         if (str_eq_cstr(str, arr[i])) {
             if (loc) *loc = i;
@@ -434,41 +502,41 @@ static inline int simd_xyz_mask(float ext[3]) {
 
 bool md_util_resname_rna(str_t str) {
     str = trim_label(str);
-    return find_str_in_array(NULL, str, rna, ARRAY_SIZE(rna));
+    return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna));
 }
     
 bool md_util_resname_dna(str_t str) {
     str = trim_label(str);
-    return find_str_in_array(NULL, str, dna, ARRAY_SIZE(dna));
+    return find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
 
 bool md_util_resname_nucleic_acid(str_t str) {
     str = trim_label(str);
-    return find_str_in_array(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_array(NULL, str, dna, ARRAY_SIZE(dna));
+    return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
     
 bool md_util_resname_acidic(str_t str) {
-    return find_str_in_array(NULL, str, acidic, ARRAY_SIZE(acidic));
+    return find_str_in_cstr_arr(NULL, str, acidic, ARRAY_SIZE(acidic));
 }
 
 bool md_util_resname_basic(str_t str) {
-    return find_str_in_array(NULL, str, basic, ARRAY_SIZE(basic));
+    return find_str_in_cstr_arr(NULL, str, basic, ARRAY_SIZE(basic));
 }
     
 bool md_util_resname_neutral(str_t str) {
-    return find_str_in_array(NULL, str, neutral, ARRAY_SIZE(neutral));
+    return find_str_in_cstr_arr(NULL, str, neutral, ARRAY_SIZE(neutral));
 }
     
 bool md_util_resname_water(str_t str) {
-    return find_str_in_array(NULL, str, water, ARRAY_SIZE(water));
+    return find_str_in_cstr_arr(NULL, str, water, ARRAY_SIZE(water));
 }
     
 bool md_util_resname_hydrophobic(str_t str) {
-    return find_str_in_array(NULL, str, hydrophobic, ARRAY_SIZE(hydrophobic));
+    return find_str_in_cstr_arr(NULL, str, hydrophobic, ARRAY_SIZE(hydrophobic));
 }
     
 bool md_util_resname_amino_acid(str_t str) {
-    return find_str_in_array(NULL, str, amino_acids, ARRAY_SIZE(amino_acids));
+    return find_str_in_cstr_arr(NULL, str, amino_acids, ARRAY_SIZE(amino_acids));
 }
 
 md_element_t md_util_element_lookup(str_t str) {
@@ -1142,64 +1210,6 @@ static bool md_compute_connectivity(md_conn_data_t* conn, md_atom_data_t* atom, 
     return true;
 }
 
-// Taken from here
-// https://github.com/molstar/molstar/blob/master/src/mol-model/structure/model/properties/atomic/bonds.ts
-/*
-* Copyright (c) 2019 mol* contributors, licensed under MIT, See LICENSE file for more info.
-* @author Alexander Rose <alexander.rose@weirdbyte.de>
-*/
-
-// If an entry exists in this table, it has order 2
-static const char* intra_bond_order_table[] = {
-    "HIS|CD2|CG",
-    "HIS|CE1|ND1",
-    "ARG|CZ|NH2",
-    "PHE|CE1|CZ",
-    "PHE|CD2|CE2",
-    "PHE|CD1|CG",
-    "TRP|CD1|CG",
-    "TRP|CD2|CE2",
-    "TRP|CE3|CZ3",
-    "TRP|CH2|CZ2",
-    "ASN|CG|OD1",
-    "GLN|CD|OE1",
-    "TYR|CD1|CG",
-    "TYR|CD2|CE2",
-    "TYR|CE1|CZ",
-    "ASP|CG|OD1",
-    "GLU|CD|OE1",
-
-    "G|C8|N7",
-    "G|C4|C5",
-    "G|C2|N3",
-    "G|C6|O6",
-    "C|C4|N3",
-    "C|C5|C6",
-    "C|C2|O2",
-    "A|C2|N3",
-    "A|C6|N1",
-    "A|C4|C5",
-    "A|C8|N7",
-    "U|C5|C6",
-    "U|C2|O2",
-    "U|C4|O4",
-
-    "DG|C8|N7",
-    "DG|C4|C5",
-    "DG|C2|N3",
-    "DG|C6|O6",
-    "DC|C4|N3",
-    "DC|C5|C6",
-    "DC|C2|O2",
-    "DA|C2|N3",
-    "DA|C6|N1",
-    "DA|C4|C5",
-    "DA|C8|N7",
-    "DT|C5|C6",
-    "DT|C2|O2",
-    "DT|C4|O4",
-};
-
 static inline int build_key(char* buf, str_t res, str_t a, str_t b) {
     int len = 0;
     while (res.len) {
@@ -1248,12 +1258,12 @@ bool md_util_compute_covalent_bond_order(md_order_t* bond_order, const md_bond_p
                 str_swap(type_a, type_b);
             }
             // Intra
-            if (md_util_resname_amino_acid(comp_a) && str_eq_cstr(type_a, "C") && str_eq_cstr(type_b, "O")) {
+            if (str_eq_cstr(type_a, "C") && str_eq_cstr(type_b, "O") && md_util_resname_amino_acid(comp_a)) {
                 order = 2;
             } else {
                 char buf[32];
                 int len = build_key(buf, comp_a, type_a, type_b);
-                if (find_str_in_array(NULL, (str_t){buf,len}, intra_bond_order_table, ARRAY_SIZE(intra_bond_order_table))) {
+                if (find_str_in_str_arr(NULL, (str_t){buf,len}, intra_bond_order_table, ARRAY_SIZE(intra_bond_order_table))) {
                     bond_order[i] = 2;
                 }
             }
@@ -1369,9 +1379,8 @@ static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* ato
         } else {
             for (int i = range_a.beg; i < range_a.end; ++i) {
                 const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
-                for (int j = range_b.beg; j < range_b.end; ++j) {
-                    // Only store monotonic bond connections
-                    if (j < i) continue;
+                // @NOTE: Only store monotonic bond connections
+                for (int j = MAX(i+1, range_b.beg); j < range_b.end; ++j) {
                     const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
                     const float d2 = distance_squared(a, b, cell);
                     if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {

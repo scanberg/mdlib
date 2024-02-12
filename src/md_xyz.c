@@ -789,15 +789,12 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         return false;
     }
 
-    // Should this be exposed?
-    md_allocator_i* alloc = md_temp_allocator;
-
     bool result = true;
-    const int64_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
+    const size_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
+        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_heap_allocator : md_temp_allocator;
         void* frame_data = md_alloc(alloc, frame_size);
-        const int64_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
+        const size_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
             MD_LOG_ERROR("Failed to read the expected size");
             md_free(alloc, frame_data, frame_size);
@@ -998,8 +995,8 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
     traj->inst = (struct md_trajectory_o*)xyz;
     traj->get_header = xyz_get_header;
     traj->load_frame = xyz_load_frame;
-    traj->fetch_frame_data = xyz_fetch_frame_data;
-    traj->decode_frame_data = xyz_decode_frame_data;
+    //traj->fetch_frame_data = xyz_fetch_frame_data;
+    //traj->decode_frame_data = xyz_decode_frame_data;
 
     return traj;
 }

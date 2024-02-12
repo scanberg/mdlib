@@ -51,6 +51,23 @@ static inline int64_t find_char(const char* ptr, int64_t len, char character) {
 }
 */
 
+// Attempts to read complete lines from a file (As many that can fit into buf with given capacity)
+static inline size_t md_parse_read_lines(md_file_o* file, char* buf, size_t cap) {
+    if (!file || !buf || cap < 1) return 0;
+    size_t len = md_file_read(file, buf, cap);
+    if (len == cap) {
+        size_t loc;
+        const str_t str = {buf, len};
+        if (str_rfind_char(&loc, str, '\n')) {
+            const int64_t offset = (int64_t)loc + 1 - (int64_t)len;
+            // Set file pointer to the beginning of the next line
+            md_file_seek(file, offset, MD_FILE_CUR);
+            len = loc + 1;
+        }
+    }
+    return len;
+}
+
 typedef struct md_buffered_reader_t {
     str_t   str;
     char*   buf;
@@ -87,7 +104,7 @@ static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_read
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
         ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_file_read_lines(r->file, r->buf, r->cap);
+        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -103,7 +120,7 @@ static inline bool md_buffered_reader_peek_line(str_t* line, md_buffered_reader_
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
         ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_file_read_lines(r->file, r->buf, r->cap);
+        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -118,7 +135,7 @@ static inline bool md_buffered_reader_skip_line(md_buffered_reader_t* r) {
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
         ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_file_read_lines(r->file, r->buf, r->cap);
+        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -141,6 +158,7 @@ static inline void md_buffered_reader_reset(md_buffered_reader_t* r) {
     }
 }
 
+/*
 static inline bool md_buffered_reader_eof(const md_buffered_reader_t* r) {
     if (r->file) {
         return md_file_eof(r->file) && r->str.len == 0;
@@ -148,6 +166,7 @@ static inline bool md_buffered_reader_eof(const md_buffered_reader_t* r) {
         return r->str.len == 0;
     }
 }
+*/
 
 #if 0
 static inline void md_buffered_reader_seekg(md_buffered_reader_t* r, int64_t pos) {

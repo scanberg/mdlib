@@ -36,24 +36,22 @@ UBENCH_EX_F(spatial_hash, init_regular) {
     md_molecule_t* mol = &ubench_fixture->mol;
     md_allocator_i* alloc = &ubench_fixture->alloc;
 
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
     UBENCH_DO_BENCHMARK() {
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
         UBENCH_DO_NOTHING(md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, NULL, alloc));
+        md_vm_arena_temp_end(temp);
     }
-
-    md_vm_arena_temp_end(temp);
 }
 
 UBENCH_EX_F(spatial_hash, init_periodic) {
     md_molecule_t* mol = &ubench_fixture->mol;
     md_allocator_i* alloc = &ubench_fixture->alloc;
 
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
     UBENCH_DO_BENCHMARK() {
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
         UBENCH_DO_NOTHING(md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, alloc));
+        md_vm_arena_temp_end(temp);
     }
-
-    md_vm_arena_temp_end(temp);
 }
 
 static bool func(const md_spatial_hash_elem_t* elem, void* user_data) {

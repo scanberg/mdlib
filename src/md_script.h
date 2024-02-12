@@ -52,6 +52,7 @@ typedef struct md_script_vis_token_t {
 typedef struct md_log_token_t {
     md_script_range_marker_t range;
     str_t text;
+    md_bitfield_t* context;
 } md_log_token_t;
 
 // Opaque Immediate Representation (compilation result)
@@ -61,7 +62,7 @@ typedef struct md_script_ir_t md_script_ir_t;
 typedef struct md_script_eval_t md_script_eval_t;
 
 typedef struct md_script_aggregate_t {
-    int64_t num_values;
+    size_t  num_values;
     float*  population_mean;
     float*  population_var;
     vec2_t* population_ext; // min and max
@@ -244,7 +245,7 @@ const str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
 // Allocate and initialize the data for properties within the evaluation
 // We need to pass the number of frames we want the data to hold
 // Should be performed as soon as the IR has changed.
-md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, str_t label, struct md_allocator_i* alloc);
+md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t* ir, str_t label, struct md_allocator_i* alloc);
 
 uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval);
 

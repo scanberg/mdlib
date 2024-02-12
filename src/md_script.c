@@ -77,7 +77,7 @@
 #define SCRIPT_EVAL_MAGIC 0x89bca715287bcaff
 
 #define MAX_SUPPORTED_PROC_ARGS 8
-#define MAX_SUPPORTED_TYPE_DIMS 4
+#define MAX_NUM_DIMS 4
 #define TIMESTAMP_ERROR_MARGIN 1.0e-4
 
 #define SETUP_TEMP_ALLOC(reserve_size) \
@@ -178,11 +178,11 @@ typedef enum base_type_t {
     TYPE_IRANGE,
     TYPE_BITFIELD,      // Bitfield used to represent a selection of atoms
     TYPE_STRING,
-    TYPE_COORDINATE,      // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a coordinate (INT, IRANGE, BITFIELD or float[3])
+    TYPE_COORDINATE,    // This is a pseudo type which signifies that the underlying type is something that can be interpereted as a coordinate (INT, IRANGE, BITFIELD or float[3])
 } base_type_t;
 
 typedef enum flags_t {
-    // Function Flags
+    // Procedure Flags
     FLAG_SYMMETRIC_ARGS             = 0x00001, // Indicates that the first two arguments are symmetric, meaning they can be swapped
     FLAG_ARGS_EQUAL_LENGTH          = 0x00002, // Arguments should have the same array length
     FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH   = 0x00004, // Return type array length matches argument arrays' length
@@ -192,8 +192,10 @@ typedef enum flags_t {
     FLAG_FLATTEN                    = 0x00040, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
     FLAG_NO_FLATTEN                 = 0x00080, // Hints that a procedure do not want flattened bitfields as input, e.g. com
     
+    // Node flags
     FLAG_CONSTANT                   = 0x00100, // Marks the node as constant and should not be modified. It should also have data in its ptr
-    FLAG_CONTEXTS_EQUIVALENT        = 0x00200, // Marks the contexts in the node as equivalent, meaning it 
+    FLAG_CONTEXTS_EQUIVALENT        = 0x00200, // Marks the contexts in the node as equivalent, meaning it
+    FLAG_COORDINATE                 = 0x00400, // Marks the node as a coordinate, meaning it can be visualized as a coordinate
 
     // Flags from 0x10000 and upwards are automatically propagated upwards the Nodes of the AST_TREE
     FLAG_DYNAMIC                    = 0x10000, // Indicates that it needs to be reevaluated for every frame of the trajectory (it has a dependency on atomic positions)
@@ -264,9 +266,8 @@ struct type_info_t {
     // dim = [-1][0][0][0] Would sample_mean that this argument accepts arrays of base_type of any length
     // dim = [4][-1][0][0] Would sample_mean that this argument accepts arrays of base_type[4] of any length
 
-    int dim[MAX_SUPPORTED_TYPE_DIMS]; // The dimensionality of a single element, each entry in dim represents a multidimensional length
-    int len_dim;                      // Tells us which dimension in dim that encodes the length
-//    context_level_t level;                    // Is only used for bitfields to signify which context they operate on. Should always be 0 otherwise
+    int dim[MAX_NUM_DIMS]; // The dimensionality of a single element, each entry in dim represents a multidimensional length
+    //int len_dim;                      // Tells us which dimension in dim that encodes the length
 };
 
 // There is a conceptual twist here if len should belong to the type_info_t or if it should belong to data_t
@@ -318,11 +319,11 @@ typedef struct static_backchannel_t {
 typedef struct eval_context_t {
     md_script_ir_t* ir;
     const md_molecule_t* mol;
-    const md_bitfield_t* mol_ctx;   // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
+    const md_bitfield_t* mol_ctx;       // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
     const md_trajectory_i* traj;
 
-    md_vm_arena_t* temp_arena;
-    md_allocator_i* temp_alloc;         // For allocating transient data (Generic interface to temp_arena)
+    md_vm_arena_t* temp_arena;          // For allocating transient data  Raw interface, prefer this
+    md_allocator_i* temp_alloc;         // For allocating transient data  (Generic interface to temp_arena)
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
 
     // Contextual information for static checking 
@@ -360,7 +361,7 @@ typedef struct eval_context_t {
 struct procedure_t {
     str_t name;
     type_info_t return_type;
-    int64_t num_args;
+    size_t num_args;
     type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
     int  (*proc_ptr)(data_t*, data_t[], eval_context_t*); // Function pointer to the "C" procedure    
     flags_t flags;
@@ -368,8 +369,8 @@ struct procedure_t {
 
 typedef struct table_t {
     str_t name;
-    int64_t num_fields;
-    int64_t num_values;
+    size_t num_fields;
+    size_t num_values;
     
     md_array(str_t) field_names;
     md_array(md_unit_t) field_units;
@@ -393,7 +394,7 @@ void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float*
     md_array_push(table->field_names, str_copy(name, alloc), alloc);
     md_array_push(table->field_units, unit, alloc);
     md_array(double) field_data = md_array_create(double, table->num_values, alloc);
-    for (int64_t i = 0; i < table->num_values; ++i) {
+    for (size_t i = 0; i < table->num_values; ++i) {
         field_data[i] = data[i];
     }
     md_array_push(table->field_values, field_data, alloc);
@@ -401,24 +402,29 @@ void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float*
 }
 
 struct ast_node_t {
-    // @OPTIMIZE: Make specific types for each type of Ast_node, where the first member is the type which we can use and cast after.
+    // @TODO, @PERF: Make specific types for each type of Ast_node, where the first member is the type which we can use and cast by.
+
     ast_type_t          type;    
-    token_t             token;      // Corresponding token from which the node was created (used to tie errors back into src)
     flags_t             flags;      // Flags for node (set during static type checking)
+    token_t             token;      // Corresponding token from which the node was created (used to tie errors back into src)
 
     // PAYLOAD
-    ast_node_t*         parent;     // Parent node
     ast_node_t**        children;   // For AND, OR, NOT, procedure arguments etc.
     value_t             value;      // Scalar values for storing data directly inside the node
     data_t              data;       // Structure for passing as argument into procedure. (Holds pointer, length and type)
 
+    // PROCEDURE
     const procedure_t*  proc;       // Procedure reference
     uint32_t            proc_flags; // Additional flags used for e.g. swapping arguments which may be required for the procedure call
+
+    // IDENTIFIER
     str_t               ident;      // Identifier reference (also used for procedure name lookup)
 
-    uint32_t            data_offset;
-    uint32_t            data_stride;
+    // ARRAY SUBSCRIPT
+    irange_t            subscript_ranges[MAX_NUM_DIMS]; // The ranges for the array subscript operator
+    size_t              subscript_dim;
 
+    // TABLE
     const table_t*      table;
     md_array(int)       table_field_indices;  // Indices into the table fields which are used for this node
 
@@ -553,21 +559,49 @@ static uint32_t operator_precedence(ast_type_t type) {
     return 0;
 }
 
-static bool compare_type_info_dim(type_info_t a, type_info_t b) {
-    return (MEMCMP(&a.dim, &b.dim, sizeof(a.dim)) == 0) && (a.len_dim == b.len_dim);
+// This is used to get the dim of an element in an array for example
+static void dim_shift_left(int dim[MAX_NUM_DIMS]) {
+    for (int i = 0; i < MAX_NUM_DIMS - 1; ++i) {
+        dim[i] = dim[i+1];
+    }
+    dim[MAX_NUM_DIMS-1] = 0;
+}
+
+// The semantics are a bit weird, but the idea is that if we shift right,
+// that means we are creating an array of length 1, which is the same as a scalar
+static void dim_shift_right(int dim[MAX_NUM_DIMS]) {
+    for (int i = MAX_NUM_DIMS - 1; i > 0; --i) {
+        dim[i] = dim[i-1];
+    }
+    dim[0] = 1;
+}
+
+// returns the number of non zero dimensions
+static int dim_ndims(const int dim[MAX_NUM_DIMS]) {
+    for (int i = 0; i < 4; ++i) {
+        if (dim[i] == 0) return i;
+    }
+    return 4;
+}
+
+// Return the product of the dimensions (excluding zero dimensions)
+static int dim_size(const int dim[MAX_NUM_DIMS]) {
+	int size = 1;
+	for (int i = 0; i < MAX_NUM_DIMS; ++i) {
+    	if (dim[i] == 0) break;
+    	size *= dim[i];
+    }
+	return size;
+}
+
+static void dim_flatten(int dim[MAX_NUM_DIMS]) {
+    int size = dim_size(dim);
+    MEMSET(dim, 0, sizeof(int) * MAX_NUM_DIMS);
+    dim[0] = size;
 }
 
 static bool type_info_equal(type_info_t a, type_info_t b) {
-    if (a.base_type != b.base_type) return false;
-    if (MEMCMP(a.dim, b.dim, sizeof(a.dim)) == 0) return true; 
-    for (size_t i = 0; i < ARRAY_SIZE(a.dim); ++i) {
-        if (a.dim[i] == b.dim[i]) continue;
-        if (i > 0) {
-            if (a.dim[i] == 0) return b.dim[i] == 0 || b.dim[i] == 1;
-            if (b.dim[i] == 0) return a.dim[i] == 0 || a.dim[i] == 1;
-        }
-    }
-    return false;
+    return MEMCMP(&a, &b, sizeof(type_info_t)) == 0;
 }
 
 static bool is_undefined_type(type_info_t ti) {
@@ -579,30 +613,24 @@ static bool is_array(type_info_t ti) {
 }
 
 static bool is_scalar(type_info_t ti) {
-    return ti.dim[0] == 1 && ti.dim[1] == 0 && ti.len_dim == 0;
+    return ti.dim[0] == 1 && ti.dim[1] == 0;
 }
 
 static bool is_variable_length(type_info_t ti) {
-    return ti.dim[ti.len_dim] == -1;
+    return ti.dim[0] == -1;
 }
 
 static int type_info_array_len(type_info_t ti) {
-    ASSERT(ti.len_dim < MAX_SUPPORTED_TYPE_DIMS);
-    return ti.dim[ti.len_dim];
+    return ti.dim[0];
 }
 
 static size_t element_count(data_t arg) {
-    ASSERT(arg.type.dim[arg.type.len_dim] >= 0);
-    return arg.type.dim[arg.type.len_dim];
+    return arg.type.dim[0];
 }
 
-// If the type is a scalar, then it is its own element type.
-// If the type is an array, then its element type is the type of one element within the array
 static type_info_t type_info_element_type(type_info_t ti) {
-    if (is_scalar(ti)) return ti;
-    type_info_t elem_ti = ti;
-    elem_ti.dim[elem_ti.len_dim] = 1;
-    return elem_ti;
+    ti.dim[0] = 1;
+    return ti;
 }
 
 // Size of the base type structure
@@ -640,25 +668,26 @@ static bool is_type_dim_compatible(type_info_t from, type_info_t to) {
     // Is this always the case??? (Not if we want to support the last special case
     //if (from.len_dim != to.len_dim) return false;
 
-    for (int i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
-        if (from.dim[i] == to.dim[i] && from.dim[i] > 0) continue;
-        else if (from.dim[i] == -1 || to.dim[i] == -1) {
-            // This is only true if we have a single unspecified dimension
-            if (from.dim[i] == -1) {
-                return to.len_dim == i;
-            } else {
-                return from.len_dim == i;
-            }
+    for (int i = 0; i < MAX_NUM_DIMS; ++i) {
+        if (i == 0) {
+            if (from.dim[i] == to.dim[i]) continue;
+            if (from.dim[i] == -1 && to.dim[i] > 0) continue;
+            if (from.dim[i] > 0 && to.dim[i] == -1) continue;
+            return false;
         }
-        if (i > 1) {
-            if (from.dim[i] == 0 && to.dim[i] == 1) return true;
-            if (from.dim[i] == 1 && to.dim[i] == 0) return true;
+        else {
+            if (from.dim[i] != to.dim[i]) return false;
         }
     }
-    return false;
+    return true;
 }
 
 static bool is_type_equivalent(type_info_t a, type_info_t b) {
+    if (a.base_type != b.base_type) return false;
+    for (int i = 0; i < MAX_NUM_DIMS; ++i) {
+        if (a.dim[i] == 0) a.dim[i] = 1;
+        if (b.dim[i] == 0) b.dim[i] = 1;
+    }
     return MEMCMP(&a, &b, sizeof(type_info_t)) == 0;
 }
 
@@ -667,7 +696,8 @@ static bool is_type_position_compatible(type_info_t type) {
         case TYPE_INT: return true;
         case TYPE_IRANGE: return true;
         case TYPE_BITFIELD: return true;
-        case TYPE_FLOAT: return type.dim[0] == 3;
+        case TYPE_FLOAT: 
+            return (type.dim[0] == 3 && type.dim[1] == 0) || (type.dim[1] == 3 && type.dim[2] == 0);
         default: return false;
     }
 }
@@ -676,15 +706,39 @@ static bool is_type_directly_compatible(type_info_t from, type_info_t to) {
     if (to.base_type == TYPE_COORDINATE && is_type_position_compatible(from)) {
         to.base_type = from.base_type;
         if (from.base_type == TYPE_FLOAT) {
-            to.dim[1] = to.dim[0];
-            to.dim[0] = 3;
-            to.len_dim = 1;
+            if (from.dim[1] != 0) {
+                to.dim[0] = from.dim[0];
+                to.dim[1] = 3;
+            } else {
+                to.dim[0] = 3;
+            }
         }
+    }
+
+    int from_ndim = dim_ndims(from.dim);
+    int to_ndim   = dim_ndims(to.dim);
+    int max_ndim  = MAX(from_ndim, to_ndim);
+    if (from.dim[0] != -1) {
+        for (int i = 0; i < max_ndim - from_ndim; ++i) {
+            dim_shift_right(from.dim);
+        }
+    }
+    if (to.dim[0] != -1) {
+        for (int i = 0; i < max_ndim - to_ndim; ++i) {
+            dim_shift_right(to.dim);
+        }
+    }
+    for (int i = from_ndim; i < MAX_NUM_DIMS; ++i) {
+        if (from.dim[i] == 0) from.dim[i] = 1;
+    }
+    for (int i = to_ndim; i < MAX_NUM_DIMS; ++i) {
+        if (to.dim[i] == 0) to.dim[i] = 1;
     }
 
     if (type_info_equal(from, to)) return true;
 
     if (from.base_type == to.base_type) {
+
         // This is essentially a logical XOR, we only want to support this operation if we have one unspecified array dimension.
         if (is_variable_length(from) != is_variable_length(to)) {
             return is_type_dim_compatible(from, to);
@@ -703,10 +757,16 @@ static bool compare_type_info_array(const type_info_t a[], const type_info_t b[]
     return true;
 }
 
-// Returns the count of elements for this type, i.e an array of [4][4][1] would return 16
+// Returns the count of elements for this type, i.e an array of [1][4][4] would return 16
 // NOTE: It does not include the last dimension which encodes the length of the array
-// 
 static size_t type_info_element_stride_count(type_info_t ti) {
+    if (ti.dim[1] == 0) return 1;
+    size_t stride = ti.dim[1];
+    for (int32_t i = 2; i < MAX_NUM_DIMS; ++i) {
+		if (ti.dim[i] == 0) break;
+		stride *= ti.dim[i];
+	}
+    /*
     if (ti.len_dim == 0) return 1;
     ASSERT(ti.dim[0] >= 0);
     size_t stride = ti.dim[0];
@@ -714,6 +774,7 @@ static size_t type_info_element_stride_count(type_info_t ti) {
         ASSERT(ti.dim[i] >= 0);
         stride *= ti.dim[i];
     }
+    */
     return stride;
 }
 
@@ -812,7 +873,6 @@ static void copy_data(data_t* dst, const data_t* src) {
         // Set bit pointers into destination memory
         for (uint64_t i = 0; i < num_elem; ++i) {
             md_bitfield_copy(&dst_bf[i], &src_bf[i]);
-            //dst_bf->bits = (uint64_t*)((char*)dst->ptr + ((uint64_t)src_bf->bits - (uint64_t)src->ptr));
         }
     } else {
         MEMCPY(dst->ptr, src->ptr, src->size);
@@ -958,6 +1018,7 @@ static const char* get_value_type_str(base_type_t type) {
 #define LOG_ERROR(ir, tok, fmt, ...)    create_log_token(LOG_LEVEL_ERROR, ir, tok, fmt, ##__VA_ARGS__)
 
 static void create_log_token(log_level_t level, md_script_ir_t* ir, token_t token, const char* format, ...) {
+    ASSERT(ir);
     if (!ir->record_log) return;
 
     if (level >= LOG_LEVEL_ERROR) {
@@ -965,7 +1026,7 @@ static void create_log_token(log_level_t level, md_script_ir_t* ir, token_t toke
         ir->record_log = false;
     }
     
-    char buf[512] = {0};
+    char buf[1024];
     va_list args;
     va_start(args, format);
     int len = vsnprintf(buf, ARRAY_SIZE(buf), format, args);
@@ -1053,8 +1114,8 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
     return node;
 }
 
-static identifier_t* find_identifier(str_t name, identifier_t* identifiers, int64_t count) {
-    for (int64_t i = 0; i < count; ++i) {
+static identifier_t* find_identifier(str_t name, identifier_t* identifiers, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
         if (str_eq(name, identifiers[i].name)) {
             return &identifiers[i];
         }
@@ -1148,7 +1209,7 @@ static procedure_match_result_t find_cast_procedure(type_info_t from, type_info_
 
 static uint32_t compute_cost(const procedure_t* proc, const type_info_t arg_types[]) {
     uint32_t cost = 0;
-    for (int64_t j = 0; j < proc->num_args; ++j) {
+    for (size_t j = 0; j < proc->num_args; ++j) {
         if (type_info_equal(arg_types[j], proc->arg_type[j])) {
             // No conversion needed for this argument (0 cost)
         }
@@ -1169,10 +1230,10 @@ static uint32_t compute_cost(const procedure_t* proc, const type_info_t arg_type
     return cost;
 }
 
-static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], int64_t num_arg_types, procedure_t* candidates, int64_t num_cantidates, bool allow_implicit_conversions) {
+static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], size_t num_arg_types, procedure_t* candidates, size_t num_cantidates, bool allow_implicit_conversions) {
     procedure_match_result_t res = {0};
 
-    for (int64_t i = 0; i < num_cantidates; ++i) {
+    for (size_t i = 0; i < num_cantidates; ++i) {
         procedure_t* proc = &candidates[i];
         if (str_eq(proc->name, name)) {
             if (num_arg_types == proc->num_args) {
@@ -1205,7 +1266,7 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
         uint32_t        best_flags = 0;
         uint32_t        best_cost  = 0xFFFFFFFFU;
 
-        for (int64_t i = 0; i < num_cantidates; ++i) {
+        for (size_t i = 0; i < num_cantidates; ++i) {
             procedure_t* proc = &candidates[i];
             if (str_eq(proc->name, name)) {
                 if (num_arg_types == proc->num_args) {
@@ -1243,11 +1304,11 @@ static procedure_match_result_t find_procedure_supporting_arg_types_in_candidate
     return res;
 }
 
-static procedure_match_result_t find_procedure_supporting_arg_types(str_t name, const type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
+static procedure_match_result_t find_procedure_supporting_arg_types(str_t name, const type_info_t arg_types[], size_t num_arg_types, bool allow_implicit_conversions) {
     return find_procedure_supporting_arg_types_in_candidates(name, arg_types, num_arg_types, procedures, ARRAY_SIZE(procedures), allow_implicit_conversions);
 }
 
-static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op, const type_info_t arg_types[], uint64_t num_arg_types, bool allow_implicit_conversions) {
+static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op, const type_info_t arg_types[], size_t num_arg_types, bool allow_implicit_conversions) {
     // Map marker type to string which we use to identify operator procedures
     str_t name = {0};
     switch(op) {
@@ -1495,10 +1556,10 @@ static token_t tokenizer_peek_next(tokenizer_t* tokenizer) {
     return token;
 }
 
-static token_t tokenizer_consume_until_type(tokenizer_t* tokenizer, token_type_t* types, uint64_t num_types) {
+static token_t tokenizer_consume_until_type(tokenizer_t* tokenizer, token_type_t* types, size_t num_types) {
     token_t token = {0};
     while (token = tokenizer_get_next_from_buffer(tokenizer), token.type != TOKEN_END) {
-        for (uint64_t i = 0; i < num_types; ++i) {
+        for (size_t i = 0; i < num_types; ++i) {
             if (token.type == types[i]) goto end;
         }
         if (token.str.ptr && token.str.len) {
@@ -1527,7 +1588,7 @@ static tokenizer_t tokenizer_init(str_t str) {
 static size_t print_type_info(char* buf, size_t cap, type_info_t info) {
     size_t len = snprintf(buf, cap, "%s", get_value_type_str(info.base_type));
 
-    for (size_t i = 0; i < MAX_SUPPORTED_TYPE_DIMS; ++i) {
+    for (size_t i = 0; i < MAX_NUM_DIMS; ++i) {
         if (info.dim[i] == -1) {
             len += snprintf(buf + len, cap - MIN(len, cap), "[..]");
         }
@@ -1571,14 +1632,13 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
 
     if (data.ptr) {
         if (is_array(data.type) && data.type.base_type != TYPE_BITFIELD) {
-            int64_t arr_len = data.type.dim[data.type.len_dim];
+            int arr_len = data.type.dim[0];
             if (arr_len == 1) {
-                data.type.dim[data.type.len_dim] = 0;
-                data.type.len_dim = MAX(0, data.type.len_dim-1);
-                arr_len = data.type.dim[data.type.len_dim];
+                dim_shift_left(data.type.dim);
+                arr_len = data.type.dim[0];
             }
             type_info_t type = type_info_element_type(data.type);
-            int64_t stride = type_info_element_byte_stride(data.type);
+            int64_t stride = (int64_t)type_info_element_byte_stride(data.type);
 
             PRINT("{");
             for (int64_t i = 0; i < arr_len; ++i) {
@@ -1945,7 +2005,7 @@ static ast_node_t* parse_procedure_call(parse_context_t* ctx, token_t token) {
         if (expect_token_type(ctx->ir, next, ')')) {
             node = create_node(ctx->ir, AST_PROC_CALL, token);
             node->ident = str_copy(token.str, ctx->ir->arena);
-            const int64_t num_args = md_array_size(args);
+            const size_t num_args = md_array_size(args);
             if (num_args) {
                 md_array_push_array(node->children, args, num_args, ctx->ir->arena);
             }
@@ -2067,10 +2127,15 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
     ASSERT(token.type == '=');
     
     ast_node_t* lhs = ctx->node;
+    if (!lhs) {
+		LOG_ERROR(ctx->ir, token, "Left hand side of assignment (=) did not evaluate to a valid expression.");
+		return NULL;
+	}
+
     ctx->node = 0;
     ast_node_t* rhs = parse_expression(ctx);
     
-    if (!lhs || lhs->type != AST_IDENTIFIER) {
+    if (lhs->type != AST_IDENTIFIER) {
         if (lhs->type == AST_ARRAY) {
             for (size_t i = 0; i < md_array_size(lhs->children); ++i) {
 				if (lhs->children[i]->type != AST_IDENTIFIER) {
@@ -2079,14 +2144,12 @@ ast_node_t* parse_assignment(parse_context_t* ctx) {
 				}
 			}
         } else {
-            LOG_ERROR(ctx->ir, token,
-                            "Left hand side of '%s' is not a valid identifier.", get_token_type_str(token.type));
+            LOG_ERROR(ctx->ir, token, "Left hand side of assignment (=) is not a valid identifier.");
             return NULL;
         }
     }
     if (!rhs) {
-        LOG_ERROR(ctx->ir, token,
-                     "Right hand side of token '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
+        LOG_ERROR(ctx->ir, token, "Right hand side of token '%s' did not evaluate to a valid expression.", get_token_type_str(token.type));
         return NULL;
     }
 
@@ -2238,7 +2301,7 @@ ast_node_t* parse_array_subscript(parse_context_t* ctx) {
         ast_node_t** elements = parse_comma_separated_arguments_until_token(ctx, ']');
         token_t next = tokenizer_consume_next(ctx->tokenizer);
         if (expect_token_type(ctx->ir, next, ']')) {
-            const int64_t num_elements = md_array_size(elements);
+            const size_t num_elements = md_array_size(elements);
             if (num_elements) {
 
                 ast_node_t* node_copy = create_node(ctx->ir, node->type, token);
@@ -2275,7 +2338,7 @@ ast_node_t* parse_array(parse_context_t* ctx) {
     ast_node_t** elements = parse_comma_separated_arguments_until_token(ctx, '}');
     token_t next = tokenizer_consume_next(ctx->tokenizer);
     if (expect_token_type(ctx->ir, next, '}')) {
-        const int64_t num_elements = md_array_size(elements);
+        const size_t num_elements = md_array_size(elements);
         if (num_elements) {
             // We only commit the results if everything at least parsed ok.
             ast_node_t* node = create_node(ctx->ir, AST_ARRAY, token);
@@ -2478,7 +2541,7 @@ done:
 static bool finalize_type(type_info_t* type, const ast_node_t* node, eval_context_t* ctx);
 static bool evaluate_node(data_t*, const ast_node_t*, eval_context_t*);
 
-static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** const args, int64_t num_args, eval_context_t* ctx) {
+static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** const args, size_t num_args, eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(proc);
     ASSERT(num_args < MAX_SUPPORTED_PROC_ARGS);
@@ -2489,9 +2552,8 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
     if (visualize_only && !(proc->flags & FLAG_VISUALIZE)) {
         // If the node has not been flagged with visualize, it should not be called during visualization
         // Unless there is some data (dst) which should be filled in.
-
         // Do however propagate the evaluation to the children
-        for (int64_t i = 0; i < num_args; ++i) {
+        for (size_t i = 0; i < num_args; ++i) {
             if (!evaluate_node(NULL, args[i], ctx)) {
                 return -1;
             }
@@ -2511,27 +2573,33 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
         ctx->vis = 0;
     }
 
-    for (int64_t i = 0; i < num_args; ++i) {
+    for (size_t i = 0; i < num_args; ++i) {
         // We need to evaluate the argument nodes first before we make the proc call.
         // In this context we are not interested in storing any data (since it is only used to be passed as arguments)
         // so we can allocate the data required for the node with the temp alloc
 
         arg_tokens[i] = args[i]->token;
         arg_flags[i] = args[i]->flags;
-        type_info_t arg_type = args[i]->data.type;
 
-        if (is_variable_length(arg_type)) {
-            if (!finalize_type(&arg_type, args[i], ctx)) {
-                MD_LOG_ERROR("Failed to finalize dynamic type in procedure call");
+        if (args[i]->flags & FLAG_CONSTANT) {
+            ASSERT(args[i]->data.ptr);
+            MEMCPY(&arg_data[i], &args[i]->data, sizeof(data_t));
+        }
+        else {
+            type_info_t arg_type = args[i]->data.type;
+
+            if (is_variable_length(arg_type)) {
+                if (!finalize_type(&arg_type, args[i], ctx)) {
+                    MD_LOG_ERROR("Failed to finalize dynamic type in procedure call");
+                    result = -1;
+                    goto done;
+                }
+            }
+            allocate_data(&arg_data[i], arg_type, ctx->temp_alloc);
+            if (!evaluate_node(&arg_data[i], args[i], ctx)) {
                 result = -1;
                 goto done;
             }
-        }
-
-        allocate_data(&arg_data[i], arg_type, ctx->temp_alloc);
-        if (!evaluate_node(&arg_data[i], args[i], ctx)) {
-            result = -1;
-            goto done;
         }
     }
 
@@ -2550,8 +2618,10 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
     ctx->arg_tokens = old_arg_tokens;
 
 done:
-    for (int64_t i = num_args - 1; i >= 0; --i) {
-        free_data(&arg_data[i], ctx->temp_alloc);
+    for (int64_t i = (int64_t)num_args - 1; i >= 0; --i) {
+        if (!(args[i]->flags & FLAG_CONSTANT)) {
+            free_data(&arg_data[i], ctx->temp_alloc);
+        }
     }
 
     // @NOTE(Robin): We cannot simply reset the stack since bitfields are lazily allocated, meaning they allocate data on demand.
@@ -2579,10 +2649,10 @@ static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context
 
 static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CONSTANT_VALUE);
-    ASSERT(node->data.ptr && node->data.size > 0);  // Assume that the static check set the data already
     (void)ctx;
 
     if (dst) {
+        ASSERT(node->data.ptr && node->data.size > 0);  // Assume that the static check set the data already
         ASSERT(dst->ptr && dst->size >= node->data.size); // Make sure we have the expected size
         copy_data(dst, &node->data);
     }
@@ -2596,7 +2666,7 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
     if (dst) {
         ASSERT(dst->ptr && dst->size >= type_info_total_byte_size(node->data.type));
 
-        const int64_t num_frames = md_trajectory_num_frames(ctx->traj);
+        const size_t num_frames = md_trajectory_num_frames(ctx->traj);
 
         if (!num_frames || !ctx->frame_header) {
             MD_LOG_ERROR("Missing trajectory header data, cannot evaluate table");
@@ -2611,7 +2681,7 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
             return false;
         }
 
-        const int64_t num_rows = node->table->num_values;
+        const int64_t num_rows = (int64_t)node->table->num_values;
         int64_t row_index = -1;
         if (str_eq(node->table->field_names[0], STR_LIT("Time"))) {
             // Complex case, find the matching time
@@ -2776,6 +2846,8 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
             return evaluate_node(dst, rhs, ctx);
         }
     } else if (lhs->type == AST_ARRAY) {
+        // assignment of LHS which is an array of Identifiers
+        // e.g {x,y,z} = coord(1);
         int count = (int)md_array_size(lhs->children);
         if (rhs->flags & FLAG_CONSTANT) {
             if (dst) {
@@ -2805,7 +2877,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
                 };
                 if (dst && dst->ptr) {
                     *id.data = child->data;
-                    id.data->ptr = dst + stride * i;
+                    id.data->ptr = (char*)dst->ptr + stride * i;
                     id.data->size = stride;
                 }
                 ident = md_array_push(ctx->identifiers, id, ctx->alloc);
@@ -2828,14 +2900,14 @@ static md_array(irange_t) extract_subscript_ranges(const data_t data, md_allocat
     md_array(irange_t) result = 0;
 
     if (type_info_equal(data.type, (type_info_t)TI_INT)) {
-        int64_t len = type_info_array_len(data.type);
-        for (int64_t i = 0; i < len; ++i) {
+        int len = type_info_array_len(data.type);
+        for (int i = 0; i < len; ++i) {
             int value = *(int*)data.ptr;
             irange_t range = {value, value};
             md_array_push(result, range, alloc);
         }
     } else if (type_info_equal(data.type, (type_info_t)TI_IRANGE)) {
-        int64_t len = type_info_array_len(data.type);
+        int len = type_info_array_len(data.type);
         irange_t* ranges = (irange_t*)(data.ptr);
         md_array_push_array(result, ranges, len, alloc);
     } else {
@@ -2907,19 +2979,17 @@ done:
 
 static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_ARRAY_SUBSCRIPT);
-    ASSERT(md_array_size(node->children) == 2);
+    ASSERT(node->children);
 
     const ast_node_t* arr = node->children[0];
-    const ast_node_t* idx = node->children[1];
-
     data_t arr_data = {0};
-    data_t idx_data = {0};
 
     if (!allocate_data(&arr_data, arr->data.type, ctx->temp_alloc)) return false;
-    if (!allocate_data(&idx_data, idx->data.type, ctx->temp_alloc)) return false;
 
-    if (!evaluate_node(&idx_data, idx, ctx)) return false;
-    md_array(irange_t) idx_ranges = extract_subscript_ranges(idx_data, ctx->temp_alloc);
+    // @NOTE: This is a bit of a hack, we should not need to allocate the subscript ranges here
+    // It is just to serve the poor design of the current propagation of array subscripts in the context
+    md_array(irange_t) idx_ranges = md_array_create(irange_t, node->subscript_dim, ctx->temp_alloc);
+    MEMCPY(idx_ranges, node->subscript_ranges, sizeof(irange_t) * node->subscript_dim);
 
     md_array(irange_t) old_ranges = ctx->subscript_ranges;
     ctx->subscript_ranges = idx_ranges;
@@ -2927,13 +2997,88 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     ctx->subscript_ranges = old_ranges;
 
     ASSERT(arr_data.ptr);
-    ASSERT(idx_data.ptr);
 
     if (dst) {
+        // Extract data from the underlying type given the subscript ranges
         ASSERT(type_info_equal(dst->type, node->data.type));
         ASSERT(dst->ptr);
-        const size_t elem_size = type_info_element_byte_stride(arr_data.type);
+
+        const size_t elem_size = base_type_element_byte_size(arr_data.type.base_type);
         size_t write_offset = 0;
+        const irange_t* src_rng = node->subscript_ranges;
+        const int* src_dim = arr_data.type.dim;
+
+        switch (node->subscript_dim) {
+            case 1: {
+                const size_t slice_size = (src_rng[0].end - src_rng[0].beg) * elem_size;
+                const size_t read_offset = src_rng[0].beg * elem_size;
+                data_t dst_slice = {dst->type, (char*)dst->ptr + write_offset, slice_size};
+                const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, slice_size};
+                copy_data(&dst_slice, &src_slice);
+            } break;
+            case 2:
+                for (int i = src_rng[0].beg; i < src_rng[0].end; ++i) {
+                    const size_t slice_size = (src_rng[1].end - src_rng[1].beg) * elem_size;
+                    const size_t read_offset = (i * src_dim[1] + src_rng[1].beg) * elem_size;
+                    data_t dst_slice = {dst->type, (char*)dst->ptr + write_offset, slice_size};
+                    const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, slice_size};
+                    copy_data(&dst_slice, &src_slice);
+                    write_offset += slice_size;
+                }
+                break;
+            case 3:
+                // @NOTE: TO BE TESTED
+                for (int j = src_rng[0].beg; j < src_rng[0].end; ++j) {
+                    for (int i = src_rng[1].beg; i < src_rng[1].end; ++i) {
+                        const size_t slice_size = (src_rng[2].end - src_rng[2].beg) * elem_size;
+                        const size_t read_offset = (j * src_dim[1] * src_dim[2] + i * src_dim[2] + src_rng[2].beg) * elem_size;
+                        data_t dst_slice = {dst->type, (char*)dst->ptr + write_offset, slice_size};
+                        const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, slice_size};
+                        copy_data(&dst_slice, &src_slice);
+                        write_offset += slice_size;
+                    }
+                }
+                break;
+            case 4:
+                // @NOTE: TO BE TESTED
+                for (int k = src_rng[0].beg; k < src_rng[0].end; ++k) {
+                    for (int j = src_rng[1].beg; j < src_rng[1].end; ++j) {
+                        for (int i = src_rng[2].beg; i < src_rng[2].end; ++i) {
+                            const size_t slice_size = (src_rng[3].end - src_rng[3].beg) * elem_size;
+                            const size_t read_offset = (k * src_dim[1] * src_dim[2] * src_dim[3] + j * src_dim[2] * src_dim[3] + i * src_dim[3] + src_rng[3].beg) * elem_size;
+                            data_t dst_slice = {dst->type, (char*)dst->ptr + write_offset, slice_size};
+                            const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, slice_size};
+                            copy_data(&dst_slice, &src_slice);
+                            write_offset += slice_size;
+                        }
+                    }
+                }
+                break;
+            default:
+                ASSERT(false);
+        }
+
+
+        // This is not beautiful, but it gets the job done
+        // We need to copy element by element, because of bitfields
+        // This can be optimized if the base type is not bitfields
+        // And also if its just a 1D subscript range
+        /*
+        for (int i = src_rng[0].beg; i < src_rng[0].end; ++i) {
+            for (int j = src_rng[1].beg; j < src_rng[1].end; ++j) {
+                for (int k = src_rng[2].beg; k < src_rng[2].end; ++k) {
+                    for (int l = src_rng[3].beg; l < src_rng[3].end; ++l) {
+						const size_t read_offset = elem_size * (i + j + k + l);
+						data_t dst_slice       = {dst->type, (char*)dst->ptr    + write_offset, elem_size};
+						const data_t src_slice = {dst->type, (char*)arr_data.ptr + read_offset, elem_size};
+						copy_data(&dst_slice, &src_slice);
+						write_offset += elem_size;
+					}
+                }
+            }
+        }
+        */
+        /*
         for (size_t i = 0; i < md_array_size(idx_ranges); ++i) {
             irange_t range = idx_ranges[i];
             range.beg -= 1; // Offset since script is one based
@@ -2944,6 +3089,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
             copy_data(&dst_slice, &src_slice);
             write_offset += bytes;
         }
+        */
     }
 
 
@@ -3029,7 +3175,7 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
         sub_ctx.subscript_ranges = 0;
 
         if (dst) {
-            const uint64_t elem_size = type_info_element_byte_stride(dst->type);
+            const size_t elem_size = type_info_element_byte_stride(dst->type);
             data.type = lhs_types[i];
             data.ptr = (char*)dst->ptr + elem_size * dst_idx;
             data.size = type_info_total_byte_size(lhs_types[i]);;
@@ -3110,7 +3256,6 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
         case AST_LT:
         case AST_GT:
         case AST_CAST:      // Casts should have been resolved during static check and converted into a proc-call
-            //return evaluate_proc_call(dst, node, ctx);
         case AST_UNDEFINED:
         default:
             ASSERT(false);
@@ -3136,10 +3281,10 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
         // We need to update the return type here
         to = res.procedure->return_type;
 
-        if (node->type == AST_CONSTANT_VALUE) {
-            if (type_info_array_len(to) == -1) {
+        if (node->flags & FLAG_CONSTANT) {
+            if (to.dim[0] == -1) {
                 if (res.procedure->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
-                    to.dim[to.len_dim] = (int)type_info_array_len(from);
+                    to.dim[0] = from.dim[0];
                 } else {
                     ASSERT(res.procedure->flags & FLAG_QUERYABLE_LENGTH);
 
@@ -3150,7 +3295,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
                     ctx->op_token = old_op_token;
 
                     if (query_result >= 0) { // Zero length is valid
-                        to.dim[to.len_dim] = query_result;
+                        to.dim[0] = query_result;
                     }
                     else {
                         LOG_ERROR(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
@@ -3159,7 +3304,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
                 }
             }
 
-            ASSERT(type_info_array_len(to) > -1);
+            ASSERT(to.dim[0] > -1);
 
             value_t val = node->value;
             data_t old = {
@@ -3179,7 +3324,8 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
 
             // Perform the data conversion
             if (res.procedure->proc_ptr(&node->data, &old, ctx) == 0) {
-                return true;
+                // Do static evaluation of the node
+                return static_eval_node(node, ctx);
             }
         } else {
             // We need to convert this node into a cast node and add the original node data as a child
@@ -3201,7 +3347,6 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
     return false;
 }
 
-
 static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(type);
     ASSERT(node);
@@ -3210,18 +3355,19 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
     *type = node->data.type;
 
     ast_node_t** const args = node->children;
-    int64_t num_args = md_array_size(node->children);
+    const size_t num_args = md_array_size(node->children);
 
     if (node->proc->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
-        ASSERT(num_args > 0);
-        // We can deduce the length of the array from the input type (take the array which is the longest???)
-        int64_t max_len = 0;
-        for (int64_t i = 0; i < num_args; ++i) {
-            int64_t len = (int32_t)type_info_array_len(args[i]->data.type);
-            ASSERT(len > -1);
-            max_len = MAX(len, max_len);
+        if (!args || num_args == 0) {
+            LOG_ERROR(ctx->ir, node->token, "Unexpected number of arguments (0), but procedure is marked to extract length from first argument");
+            return false;
         }
-        type->dim[type->len_dim] = (int32_t)max_len;
+        // We can deduce the length of the array from the input type (first argument)
+        type->dim[0] = type_info_array_len(args[0]->data.type);
+        if (type->dim[0] == -1) {
+            LOG_ERROR(ctx->ir, node->token, "Procedure is marked to extract length from first argument, but the provided length was not set!");
+            return false;
+        }
     } else {
         ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
 
@@ -3235,7 +3381,7 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
         ctx->vis = old_vis;
 
         if (query_result >= 0) { // Zero length is valid
-            type->dim[type->len_dim] = query_result;
+            type->dim[0] = query_result;
         } else {
             LOG_ERROR(ctx->ir, node->token, "Unexpected return value (%i) when querying procedure for array length.", query_result);
             return false;
@@ -3251,9 +3397,9 @@ static bool finalize_type_array(type_info_t* type, const ast_node_t* node, eval_
     ASSERT(ctx->temp_alloc);
 
     ast_node_t** const children = node->children;
-    const int64_t num_children = md_array_size(node->children);
+    const size_t num_children = md_array_size(node->children);
     int length = 0;
-    for (int64_t i = 0; i < num_children; ++i) {
+    for (size_t i = 0; i < num_children; ++i) {
         type_info_t c_type = children[i]->data.type;
         if (is_variable_length(c_type)) {
             if (!finalize_type(&c_type, children[i], ctx)) {
@@ -3267,7 +3413,7 @@ static bool finalize_type_array(type_info_t* type, const ast_node_t* node, eval_
         length += (int)type_info_array_len(c_type);
     }
 
-    type->dim[type->len_dim] = length;
+    type->dim[0] = length;
     return true;
 }
 
@@ -3324,12 +3470,24 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
     node->data.type = node->proc->return_type;
 
-    const int64_t num_args = md_array_size(node->children);
+    const size_t num_args = md_array_size(node->children);
     ast_node_t** args = node->children;
 
     if (num_args > 0) {
+        for (size_t i = 0; i < num_args; ++i) {
+            if (node->proc->arg_type[i].base_type == TYPE_COORDINATE) {
+                // Set coordinate flag, so we can visualize it properly later, since the coordinate type is a pseudo type
+                args[i]->flags |= FLAG_COORDINATE;
+
+                if (args[i]->data.type.base_type == TYPE_FLOAT && dim_ndims(args[i]->data.type.dim) == 1 && node->proc->arg_type[i].dim[0] == -1) {
+                    // If the procedures expects a coordinate array, but the input is a single coordinate, we need to convert it to an array
+					dim_shift_right(args[i]->data.type.dim);
+                }
+            }
+        }
+
         if (node->proc_flags & FLAG_SYMMETRIC_ARGS) {
-            // If the symmetric flag is set, we need to swap the arguments
+            // If the symmetric flag is set, we swap the first two arguments
             ASSERT(num_args >= 2);
             ast_node_t* tmp_child = node->children[0];
             node->children[0] = node->children[1];
@@ -3338,7 +3496,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
         }
 
         // Make sure we cast the arguments into the expected types of the procedure.
-        for (int64_t i = 0; i < num_args; ++i) {
+        for (size_t i = 0; i < num_args; ++i) {
             if (!is_type_directly_compatible(args[i]->data.type, node->proc->arg_type[i])) {
                 // Types are not directly compatible, but should be implicitly convertible (otherwise the match should never have been found)
                 ASSERT(is_type_implicitly_convertible(args[i]->data.type, node->proc->arg_type[i]));
@@ -3353,11 +3511,11 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
         if (node->proc->flags & FLAG_ARGS_EQUAL_LENGTH) {
             ASSERT(num_args > 1); // This flag should only be set for procedures with multiple arguments
                                   // Make sure that the input arrays are of equal length. Otherwise create an error.
-            const int64_t expected_len = type_info_array_len(args[0]->data.type);
-            for (int64_t i = 1; i < num_args; ++i) {
-                int64_t len = type_info_array_len(args[i]->data.type);
+            const int expected_len = type_info_array_len(args[0]->data.type);
+            for (size_t i = 1; i < num_args; ++i) {
+                int len = type_info_array_len(args[i]->data.type);
                 if (len != expected_len) {
-                    LOG_ERROR(ctx->ir, node->token, "Expected array-length of arguments to match. arg 0 has length %i, arg %i has length %i.", (int)expected_len, (int)i, (int)len);
+                    LOG_ERROR(ctx->ir, node->token, "Expected array-length of arguments to match. arg 0 has length %i, arg %i has length %i.", expected_len, (int)i, len);
                     return false;
                 }
             }
@@ -3402,7 +3560,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             }
 
             if (query_result >= 0) { // Zero length is valid
-                node->data.type.dim[node->data.type.len_dim] = query_result;
+                node->data.type.dim[0] = query_result;
                 return true;
             } else {
                 //node-> flags |= FLAG_DYNAMIC_LENGTH;
@@ -3414,7 +3572,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             // We can deduce the length of the array by using the type of the first argument
             ASSERT(num_args > 0);
             ASSERT(node->proc->arg_type[0].base_type == args[0]->data.type.base_type);
-            node->data.type = args[0]->data.type;
+            node->data.type.dim[0] = type_info_array_len(args[0]->data.type);
             return true;
         } else {
             LOG_ERROR(ctx->ir, node->token, "Procedure returns variable length, but its length cannot be determined.");
@@ -3426,8 +3584,8 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
 }
 
 static bool static_check_children(ast_node_t* node, eval_context_t* ctx) {
-    const int64_t num_children = md_array_size(node->children);
-    for (int64_t i = 0; i < num_children; ++i) {
+    const size_t num_children = md_array_size(node->children);
+    for (size_t i = 0; i < num_children; ++i) {
         ASSERT(node != node->children[i]);
         if (static_check_node(node->children[i], ctx)) {
             node->flags |= node->children[i]->flags & FLAG_AST_PROPAGATION_MASK;
@@ -3455,7 +3613,7 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
     bool result = false;
 
     if (static_check_children(node, ctx)) {
-        const int64_t num_args = md_array_size(node->children);
+        const size_t num_args = md_array_size(node->children);
         ast_node_t** arg = node->children;
 
         type_info_t arg_type[2] = {arg[0]->data.type, num_args > 1 ? arg[1]->data.type : (type_info_t){0}};
@@ -3478,7 +3636,7 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
             result = finalize_proc_call(node, ctx);
         } else {
             char arg_type_str[2][64] = {"empty", "empty"};
-            for (int i = 0; i < num_args; ++i) {
+            for (size_t i = 0; i < num_args; ++i) {
                 if (arg[i]) print_type_info(arg_type_str[i], ARRAY_SIZE(arg_type_str[i]), arg[i]->data.type);                
             }
             LOG_ERROR(ctx->ir, node->token,
@@ -3525,7 +3683,7 @@ static table_t* find_table(md_script_ir_t* ir, str_t name) {
 // There are some heuristics/mumbo jumbo here,
 // we try to match the frame times of the trajectory and the table.
 // If the table has more frames than the trajectory, we assume that the table is a subset of the trajectory.
-static bool frame_times_compatible(const double* traj_times, int64_t num_traj_frames, const double* table_times, int64_t num_table_frames) {
+static bool frame_times_compatible(const double* traj_times, size_t num_traj_frames, const double* table_times, size_t num_table_frames) {
     if (!traj_times) return false;
     if (!table_times) return false;
 
@@ -3534,8 +3692,8 @@ static bool frame_times_compatible(const double* traj_times, int64_t num_traj_fr
     }
 
     // We want to ensure that every frame time in the trajectory is present in the table.
-    int64_t table_idx = 0;
-    for (int64_t i = 0; i < num_traj_frames; ++i) {
+    size_t table_idx = 0;
+    for (size_t i = 0; i < num_traj_frames; ++i) {
         while (table_idx < num_table_frames && table_times[table_idx] + TIMESTAMP_ERROR_MARGIN < traj_times[i]) {
             ++table_idx;
         }
@@ -3547,7 +3705,7 @@ static bool frame_times_compatible(const double* traj_times, int64_t num_traj_fr
     return true;
 }
 
-static bool frame_times_compatible_f(const double* traj_times, int64_t num_traj_frames, const float* table_times, int64_t num_table_frames) {
+static bool frame_times_compatible_f(const double* traj_times, size_t num_traj_frames, const float* table_times, size_t num_table_frames) {
     if (!traj_times) return false;
     if (!table_times) return false;
 
@@ -3556,8 +3714,8 @@ static bool frame_times_compatible_f(const double* traj_times, int64_t num_traj_
     }
 
     // We want to ensure that every frame time in the trajectory is present in the table.
-    int64_t table_idx = 0;
-    for (int64_t i = 0; i < num_traj_frames; ++i) {
+    size_t table_idx = 0;
+    for (size_t i = 0; i < num_traj_frames; ++i) {
         while (table_idx < num_table_frames && (double)table_times[table_idx] + TIMESTAMP_ERROR_MARGIN < traj_times[i]) {
             ++table_idx;
         }
@@ -3714,19 +3872,19 @@ static void swap_int(int* a, int* b) {
 }
 
 // The number of matches may be more than number of candidates, therefore the true number of matches computed are returned
-static int64_t str_find_n_best_matches(int match_idx[], int64_t num_idx, str_t str, str_t candidates[], int64_t num_candidates) {
+static size_t str_find_n_best_matches(int match_idx[], size_t num_idx, str_t str, str_t candidates[], size_t num_candidates) {
     num_idx = MIN(num_idx, num_candidates);
     int* distances = md_temp_push(sizeof(int) * num_idx);
-    for (int64_t i = 0; i < num_idx; ++i) {
+    for (size_t i = 0; i < num_idx; ++i) {
         distances[i] = INT32_MAX;
     }
-    for (int64_t i = 0; i < num_candidates; ++i) {
+    for (size_t i = 0; i < num_candidates; ++i) {
         str_t can = candidates[i];
         int dist = str_edit_distance(str, can);
         
         // If the first characters differ, then add a penalty
-        const int64_t min_len = MIN(str.len, can.len);
-        for (int64_t j = 0; j < MIN(3, min_len); ++j) {
+        const size_t min_len = MIN(str.len, can.len);
+        for (size_t j = 0; j < MIN(3, min_len); ++j) {
             if (to_lower(str.ptr[j]) != to_lower(can.ptr[j])) {
                 dist += 10;
             }
@@ -3736,7 +3894,7 @@ static int64_t str_find_n_best_matches(int match_idx[], int64_t num_idx, str_t s
             // Insertion sort
             distances[num_idx - 1] = dist;
             match_idx[num_idx - 1] = (int)i;
-            int64_t j = num_idx - 1;
+            size_t j = num_idx - 1;
             while (j > 0 && distances[j] < distances[j - 1]) {
                 swap_int(&distances[j], &distances[j-1]);
                 swap_int(&match_idx[j], &match_idx[j-1]);
@@ -3751,7 +3909,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(ctx);
 
-    const int64_t num_args = md_array_size(node->children);
+    const size_t num_args = md_array_size(node->children);
     ast_node_t** const args = node->children;
 
     if (num_args == 0) {
@@ -3797,9 +3955,9 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
         }
        
         if (is_type_directly_compatible(type, (type_info_t)TI_INT_ARR)) {
-            const int64_t count = element_count(arg->data);
+            const size_t count = element_count(arg->data);
             const int* ints = as_int_arr(arg->data);
-            for (int64_t i = 0; i < count; ++i) {
+            for (size_t i = 0; i < count; ++i) {
                 int idx = ints[i];
                 if (idx < 1 || (int)table->num_fields < idx) {
                     LOG_ERROR(ctx->ir, node->token, "import: second argument must be a valid field index within range [1, %d]",
@@ -3809,10 +3967,10 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                 md_array_push(field_indices, idx - 1, ctx->ir->arena);
             }
         } else if (is_type_directly_compatible(type, (type_info_t)TI_IRANGE_ARR)) {
-            const int64_t count = element_count(arg->data);
+            const size_t count = element_count(arg->data);
             const irange_t* ranges = as_irange_arr(arg->data);
 
-            for (int64_t i = 0; i < count; ++i) {
+            for (size_t i = 0; i < count; ++i) {
                 irange_t range = ranges[i];
                 if (range.end < range.beg) {
                     LOG_ERROR(ctx->ir, node->token, "import: invalid range");
@@ -3830,9 +3988,9 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                 }
             }
         } else if (is_type_directly_compatible(type, (type_info_t)TI_STRING_ARR)) {
-            const int64_t count = element_count(arg->data);
+            const size_t count = element_count(arg->data);
             const str_t* strings = as_string_arr(arg->data);
-            for (int64_t i = 0; i < count; ++i) {
+            for (size_t i = 0; i < count; ++i) {
                 str_t str = strings[i];
                 if (str.len == 0) {
                     LOG_ERROR(ctx->ir, node->token, "import: empty string not allowed");
@@ -3849,8 +4007,8 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
                     char buf[512];
                     int len = 0;
                     int best_idx[3];
-                    const int64_t num_best_matches = str_find_n_best_matches(best_idx, ARRAY_SIZE(best_idx), str, table->field_names, table->num_fields);
-                    for (int64_t j = 0; j < num_best_matches; ++j) {
+                    const size_t num_best_matches = str_find_n_best_matches(best_idx, ARRAY_SIZE(best_idx), str, table->field_names, table->num_fields);
+                    for (size_t j = 0; j < num_best_matches; ++j) {
                         int idx = best_idx[j];
                         str_t name = table->field_names[idx];
                         len += snprintf(buf + len, sizeof(buf) - len, "'"STR_FMT"'\n", (int)name.len, name.ptr);
@@ -3868,8 +4026,8 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     } else {
         ASSERT(num_args == 1);
         // Setup node table fields to hold all available fields within the imported table
-        for (int i = 0; i < table->num_fields; ++i) {
-            md_array_push(field_indices, i, ctx->ir->arena);
+        for (size_t i = 0; i < table->num_fields; ++i) {
+            md_array_push(field_indices, (int)i, ctx->ir->arena);
         }
     }
 
@@ -3889,7 +4047,7 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     }
 
     node->type = AST_TABLE;
-    node->data.type = (type_info_t) {TYPE_FLOAT, {(int)md_array_size(field_indices),0}, 0};
+    node->data.type = (type_info_t) {TYPE_FLOAT, {(int)md_array_size(field_indices)}};
     node->data.unit = unit;
     node->table = table;
     node->table_field_indices = field_indices;
@@ -3926,10 +4084,27 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node->type == AST_PROC_CALL);
     uint32_t backup_flags = ctx->eval_flags;
 
+    if (str_eq(node->token.str, STR_LIT("distance(atom(1:7) in resname(\"PFT\"), vec3(0,0,0))"))) {
+        while(0) {};
+    }
+
+    if (str_eq(node->token.str, STR_LIT("sdf(chain(:), resname(\"PFT\"), 30.0)"))) {
+        while(0){};
+    }
+
+    if (str_eq_cstr_n(node->token.str, "distance(atom(1:7)", 17)) {
+        while(0){};
+    }
+
     bool result = true;
     // @NOTE: We do not want to overwrite the procedure if already assigned, as it might have been assigned as an operator (which is a proc call)
     if (!node->proc) {
+        // No point in letting expressions statically evaluate and store its data within the tree at this point
+        // Conversions and other stuff may occur later
+        uint32_t flags = ctx->eval_flags;
+        ctx->eval_flags |= EVAL_FLAG_NO_STATIC_EVAL;
         result = static_check_children(node, ctx);
+        ctx->eval_flags = flags;
         if (result) {
             const size_t num_args = md_array_size(node->children);
             const str_t proc_name = node->ident;
@@ -3974,7 +4149,8 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         }
         
         // Perform new child check here since children may have changed due to conversions etc.
-        result = result && static_check_children(node, ctx) && finalize_proc_call(node, ctx);
+        // Here we let the static evalu
+        result = result && finalize_proc_call(node, ctx);
 
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
@@ -3998,8 +4174,9 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node->data.type.base_type != TYPE_UNDEFINED);
     ASSERT(is_scalar(node->data.type));
 
-    node->data.ptr = &node->value;
+    node->data.ptr  = &node->value;
     node->data.size = base_type_element_byte_size(node->data.type.base_type);
+    node->flags |= FLAG_CONSTANT;
 
     if (node->data.type.base_type == TYPE_IRANGE) {
         // Make sure the range is given in an ascending format, lo:hi
@@ -4025,58 +4202,81 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
     if (static_check_children(node, ctx)) {
 
-        const int64_t num_elem = md_array_size(node->children);
-        ast_node_t**      elem = node->children;
+        const size_t num_elem = md_array_size(node->children);
+        ast_node_t**     elem = node->children;
 
-        int64_t array_len = 0;
+        int array_len = 0;
         type_info_t array_type = {0};
         md_unit_t array_unit = md_unit_none();
         
         // Pass 1: find a suitable base_type for the array
-        for (int64_t i = 0; i < num_elem; ++i) {
-            type_info_t elem_type = type_info_element_type(elem[i]->data.type);
-
-            if (is_variable_length(elem[i]->data.type)) {
+        for (size_t i = 0; i < num_elem; ++i) {
+            type_info_t elem_type = elem[i]->data.type;
+            if (is_variable_length(elem_type)) {
                 array_len = -1;
             }
-            if (array_len >= 0) array_len += type_info_array_len(elem[i]->data.type);
+
+            // Normalize the type and dimensions here for the length to be computed correctly
+            if (elem_type.base_type != TYPE_BITFIELD) {
+                int ndim = dim_ndims(elem_type.dim);
+                if (ndim == 1 || (ndim > 1 && elem_type.dim[0] != 1)) {
+                    dim_shift_right(elem_type.dim);
+                }
+                // Turn the normalized form into a single entity
+                elem_type.dim[0] = 1;
+            } else {
+                // Bitfield
+                dim_flatten(elem_type.dim);
+            }
+
+            if (array_len >= 0) array_len += type_info_array_len(elem_type);
 
             if (array_type.base_type == TYPE_UNDEFINED) {
                 // Assign type from first element
                 array_type = elem_type;
             }
             else {
-                if (!is_type_directly_compatible(elem_type, array_type)) {
-                    if (is_type_implicitly_convertible(elem[i]->data.type, array_type)) {
-                        // We can convert the element to the array type.   
-                    }
-                    else if (is_type_implicitly_convertible(array_type, elem_type)) {
-                        // Option 2: We can convert the array type into the elements type (e.g int to float)
-                        // Promote the type of the array
-                        array_type = elem_type;
-
-                        // Just to make sure, we recheck all elements up until this one
-                        for (int64_t j = 0; j < i; ++j) {
-                            if (!is_type_directly_compatible(elem_type, array_type) &&
-                                !is_type_implicitly_convertible(elem_type, array_type)) {
-                                LOG_ERROR(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
-                                return false;
-                            }
-                        }
-                    }
-                    else {
-                        // Incompatible types...
+                if (array_type.base_type == TYPE_BITFIELD) {
+                    // Bitfields are handled separately and concatenated
+                    if (elem_type.base_type != TYPE_BITFIELD) {
                         LOG_ERROR(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
                         return false;
+                    }
+                } else {
+                    // Other standard types are packed into an array, but require type checking to ensure that the element types are the same
+                    // Or can be converted into some common base element
+                    if (!is_type_directly_compatible(elem_type, array_type)) {
+                        if (is_type_implicitly_convertible(elem[i]->data.type, array_type)) {
+                            // We can convert the element to the array type.   
+                        }
+                        else if (is_type_implicitly_convertible(array_type, elem_type)) {
+                            // Option 2: We can convert the array type into the elements type (e.g int to float)
+                            // Promote the type of the array
+                            array_type = elem_type;
+
+                            // Just to make sure, we recheck all elements up until this one
+                            for (size_t j = 0; j < i; ++j) {
+                                if (!is_type_directly_compatible(elem_type, array_type) &&
+                                    !is_type_implicitly_convertible(elem_type, array_type)) {
+                                    LOG_ERROR(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
+                                    return false;
+                                }
+                            }
+                        }
+                        else {
+                            // Incompatible types...
+                            LOG_ERROR(ctx->ir, elem[i]->token, "Incompatible types wihin array construct");
+                            return false;
+                        }
                     }
                 }
             }
         }
 
         // Pass 2: Perform implicit conversions of nodes if required
-        for (int64_t i = 0; i < num_elem; ++i) {
+        for (size_t i = 0; i < num_elem; ++i) {
             type_info_t converted_type = array_type;
-            converted_type.dim[converted_type.len_dim] = (int32_t)type_info_array_len(elem[i]->data.type);
+            converted_type.dim[0] = type_info_array_len(elem[i]->data.type);
 
             if (!is_type_directly_compatible(elem[i]->data.type, converted_type) &&
                 is_type_implicitly_convertible(elem[i]->data.type, converted_type)) {
@@ -4086,10 +4286,10 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
             }
         }
 
-        // Pass 3: Deduce the unit, if applicable, and the same.
+        // Pass 3: Deduce the unit, if defined and the same.
         if (num_elem > 0) {
             array_unit = elem[0]->data.unit;
-            for (int64_t i = 1; i < num_elem; ++i) {
+            for (size_t i = 1; i < num_elem; ++i) {
                 if (!md_unit_equal(elem[i]->data.unit, array_unit)) {
                     array_unit = md_unit_none();
                     break;
@@ -4097,20 +4297,20 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
             }
         }
 
-        // Finalize the type for the array
-        array_type.dim[array_type.len_dim] = (int32_t)array_len;
+        // Finalize the type of the array (dimensionality)
+        array_type.dim[0] = (int32_t)array_len;
         node->data.type = array_type;
         node->data.unit = array_unit;
 
         bool children_constant = true;
-        for (int64_t i = 0; i < num_elem; ++i) {
+        for (size_t i = 0; i < num_elem; ++i) {
             if (elem[i]->type != AST_CONSTANT_VALUE) {
                 children_constant = false;
                 break;
             }
         }
 
-        if (children_constant) {
+        if (children_constant && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
             return static_eval_node(node, ctx);
         }
 
@@ -4128,82 +4328,105 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
     // @TODO: In the future, se should expand this to support mixed integers and ranges and create a proper subset of the original data
     // @TODO: evaluate the children in order to determine the length and values (to make sure they are in range)
 
-    const uint64_t  num_elem = md_array_size(node->children);
-    ast_node_t**    elem = node->children;
+    const size_t num_elem = md_array_size(node->children);
+    ast_node_t**     elem = node->children;
 
     if (num_elem < 2) {
         LOG_ERROR(ctx->ir, node->token, "Missing arguments in array subscript");
         return false;
     }
-    else if (num_elem > 2) {
-        LOG_ERROR(ctx->ir, elem[2]->token, "Only single entries are allowed inside array subscript");
-        return false;
-    }
+    //else if (num_elem > 2) {
+    //    LOG_ERROR(ctx->ir, elem[2]->token, "Only single entries are allowed inside array subscript");
+    //    return false;
+    //}
 
     uint32_t eval_flags = ctx->eval_flags;
     ctx->eval_flags = ctx->eval_flags & ~(EVAL_FLAG_FLATTEN);
     if (!static_check_node(elem[0], ctx)) return false;
     ctx->eval_flags = eval_flags;
 
-    if (!static_check_node(elem[1], ctx)) return false;
+    for (size_t i = 1; i < num_elem; ++i) {
+        if (!static_check_node(elem[i], ctx)) return false;
+    }
 
-    ast_node_t* lhs = elem[0];
-    ast_node_t* arg = elem[1];
+    ast_node_t*  lhs  = elem[0];
+    ast_node_t** args = elem + 1;
+    const size_t num_args = num_elem - 1;
 
     if (is_variable_length(lhs->data.type)) {
         LOG_ERROR(ctx->ir, lhs->token, "Array subscript operator can only be applied to expressions which have a static length");
         return false;
     }
 
-    if (arg->flags & FLAG_DYNAMIC) {
-        LOG_ERROR(ctx->ir, arg->token, "Only static expressions are allowed within array subscript");
-        return false;
+    int num_dim = dim_ndims(lhs->data.type.dim);
+    if (num_args > 1 && num_args != (size_t)num_dim) {
+    	LOG_ERROR(ctx->ir, elem[1]->token, "Invalid number of arguments (%i) in array subscript, expected number of arguments to match number of dimensions of lhs (%i)", (int)num_args, num_dim);
+		return false;
     }
 
-    if (is_scalar(arg->data.type)) {
-        if (arg->data.type.base_type == TYPE_INT || arg->data.type.base_type == TYPE_IRANGE) {
-            irange_t range = {0};
-            if (arg->data.type.base_type == TYPE_INT) {
-                range.beg = arg->value._int;
-                range.end = arg->value._int;
-            } else {
-                range = arg->value._irange;
-                if (range.beg == INT32_MIN) {
-                    range.beg = 1;
-                    arg->value._irange.beg = 1;
-                }
-                if (range.end == INT32_MAX) {
-                    range.end = (int32_t)element_count(lhs->data);
-                    arg->value._irange.end = range.end;
-                }
-            }
-            if (range.beg <= range.end && 1 <= range.beg && range.end <= (int)element_count(lhs->data)) {
-                ASSERT(lhs->data.type.dim[0] > 0);
-                type_info_t type = lhs->data.type;
-                type.dim[type.len_dim] = range.end - range.beg + 1;
+    type_info_t result_type = lhs->data.type;
+    for (size_t i = 0; i < num_args; ++i) {
+        int lhs_dim = lhs->data.type.dim[i];
+        if (lhs_dim <= 0) {
+            LOG_ERROR(ctx->ir, lhs->token, "Unexpected length (%i) in dimension (%i) of lhs", lhs_dim, (int)i);
+            return false;
+        }
+        ast_node_t* arg = args[i];
+        if (arg->flags & FLAG_DYNAMIC) {
+            LOG_ERROR(ctx->ir, args[i]->token, "Only static expressions are allowed within array subscript");
+            return false;
+        }
 
-                if (type.dim[type.len_dim] == 1 && type.len_dim > 0) {
-                    type.dim[type.len_dim] = 0;
-                    type.len_dim -= 1;
+        if (is_scalar(arg->data.type)) {
+            if (arg->data.type.base_type == TYPE_INT || arg->data.type.base_type == TYPE_IRANGE) {
+                irange_t range = {0};
+                if (arg->data.type.base_type == TYPE_INT) {
+                    range.beg = arg->value._int;
+                    range.end = arg->value._int;
+                } else {
+                    range = arg->value._irange;
+                    if (range.beg == INT32_MIN) {
+                        range.beg = 1;
+                        arg->value._irange.beg = 1;
+                    }
+                    if (range.end == INT32_MAX) {
+                        range.end = lhs_dim;
+                        arg->value._irange.end = range.end;
+                    }
                 }
-                
-                // SUCCESS!
-                node->flags = lhs->flags;
-                node->data.type = type;
-                node->data.unit = lhs->data.unit;
-                return true;
+                if (range.beg <= range.end && 1 <= range.beg && range.end <= lhs_dim) {
+                    node->subscript_ranges[i] = (irange_t){range.beg - 1, range.end};
+                    result_type.dim[i] = range.end - range.beg + 1;
+                } else {
+                    LOG_ERROR(ctx->ir, arg->token, "Invalid Array subscript range");
+                    return false;
+                }
             } else {
-                LOG_ERROR(ctx->ir, arg->token, "Invalid Array subscript range");
+                LOG_ERROR(ctx->ir, arg->token, "Only int and int-ranges are allowed inside array subscript");
                 return false;
             }
         } else {
-            LOG_ERROR(ctx->ir, arg->token, "Only int and int-ranges are allowed inside array subscript");
+            LOG_ERROR(ctx->ir, arg->token, "No arrays are allowed inside array subscript");
             return false;
         }
-    } else {
-        LOG_ERROR(ctx->ir, arg->token, "No arrays are allowed inside array subscript");
-        return false;
     }
+
+    // Squash any dimensions that are of length 1
+    for (int i = 0; i < MAX_NUM_DIMS; ++i) {
+        if (result_type.dim[i] == 0) break;
+        if (result_type.dim[i] == 1) {            
+            for (int j = i; j < MAX_NUM_DIMS; ++j) {
+				result_type.dim[j] = j < MAX_NUM_DIMS - 1 ? result_type.dim[j+1] : 0;
+			}
+		}
+    }
+
+    // SUCCESS!
+    node->subscript_dim = num_args;
+    node->flags = lhs->flags;
+    node->data.type = result_type;
+    node->data.unit = lhs->data.unit;
+    return true;
 }
 
 static bool static_check_identifier_reference(ast_node_t* node, eval_context_t* ctx) {
@@ -4285,6 +4508,15 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                 LOG_ERROR(ctx->ir, node->token, "Assignment mismatch between left and right hand side: The right hand side has a variable length");
                 return false;
             }
+
+            // Sometimes the dimensions of the right had side will be given in normalized form, i.e. [1][3][0][0]
+            // In such cases, we still want to match assign this if the left hand side is provided as three identifiers.
+            // Therefore we shift the dimensions of the rhs to fit.
+            if (rhs->data.type.dim[0] == 1) {
+                dim_shift_left(rhs->data.type.dim);
+                rhs_len = (int)type_info_array_len(rhs->data.type);
+            }
+
             // This is valid if the array length of rhs is equal to the number of identifiers on the left hand side
             if (rhs_len != num_idents) {
                 LOG_ERROR(ctx->ir, node->token, "Assignment mismatch between left and right hand side: The number of identifiers on the left hand side must match the length of the right hand side");
@@ -4309,16 +4541,12 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                 }
                 else {
                     idents[i]->data.type = type_info_element_type(rhs->data.type);
-                    if (rhs->flags & FLAG_CONSTANT) {
-                        const int stride = (int)type_info_element_byte_stride(rhs->data.type);
-                        ident->data = md_alloc(ctx->ir->arena, sizeof(data_t));
-                        *ident->data = rhs->data;
-                        ident->data->type = type_info_element_type(rhs->data.type);
-                        ident->data->ptr = (char*)rhs->data.ptr + i * stride;
-                        ident->data->size = stride;
-				    } else {
-                        ident->data = 0;
-                    }
+                    const int stride = (int)type_info_element_byte_stride(rhs->data.type);
+                    ident->data = md_alloc(ctx->ir->arena, sizeof(data_t));
+                    *ident->data = rhs->data;
+                    ident->data->type = type_info_element_type(rhs->data.type);
+                    ident->data->size = stride;
+                    ident->data->ptr = 0;
                 }
                 if (!static_check_node(idents[i], ctx)) {
                     return false;
@@ -4383,6 +4611,10 @@ static bool static_check_out(ast_node_t* node, eval_context_t* ctx) {
 static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CONTEXT && node->children && md_array_size(node->children) == 2);
 
+    if (str_eq(node->token.str, STR_LIT("atom(1:7) in resname(\"PFT\")"))) {
+        while(0) {};
+    }
+
     // The rules are as follows:
     // A context RHS must be a bitfield type.
     //     
@@ -4418,16 +4650,13 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     contexts = (md_bitfield_t*)rhs->data.ptr;
                 } else {
                     md_array_resize(contexts, num_contexts, ctx->ir->arena);
+                    ASSERT(md_array_size(contexts) == num_contexts);
                     for (size_t i = 0; i < num_contexts; ++i) {
                         md_bitfield_init(&contexts[i], ctx->ir->arena);
                     }
+                    rhs->data.ptr = contexts;
+                    rhs->data.size = num_contexts * sizeof(md_bitfield_t);
                     result = evaluate_node(&rhs->data, rhs, ctx);
-                    if (result) {
-                        rhs->data.ptr = contexts;
-                        rhs->data.size = num_contexts * sizeof(md_bitfield_t);
-                        ASSERT(md_array_size(contexts) == num_contexts);
-                        result = true;
-                    }
                 }
 
                 //allocate_data(&rhs->data, ctx->ir->arena);
@@ -4447,6 +4676,13 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                         local_ctx.eval_flags |= EVAL_FLAG_NO_STATIC_EVAL;
 
                         if (!static_check_node(lhs, &local_ctx)) {
+                            // @NOTE: This is a bit wild wild west,
+                            // We hijack the last error message created and expand it with information about the context
+                            // This is not a good solution, but it is a solution for now.
+                            md_log_token_t* last_error = md_array_last(ctx->ir->errors);
+                            if (last_error) {
+                                last_error->context = &contexts[i];
+                            }
                             return false;
                         }
 
@@ -4459,13 +4695,13 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                             }
                         }
 
-                        /*
-                        // We need to augment the type with an extra dimension to emulate an array of a higher dimension in order for the array length to be correct
-                        if (!is_scalar(local_type) && local_type.base_type != TYPE_BITFIELD) {
-                            local_type.len_dim += 1;
-                            local_type.dim[local_type.len_dim] = 1;
+                        // Normalize the type and dimensions here for the length to be computed correctly
+                        if (local_type.base_type != TYPE_BITFIELD) {
+                            int ndim = dim_ndims(local_type.dim);
+                            if (ndim == 1 || (ndim > 1 && local_type.dim[0] != 1)) {
+                                dim_shift_right(local_type.dim);
+                            }
                         }
-                        */
 
                         int len = type_info_array_len(local_type);
                         // Some arrays will be zero and that is accepted
@@ -4482,7 +4718,15 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
 
                     node->flags |= lhs->flags & FLAG_AST_PROPAGATION_MASK;
                     node->data.type = node->lhs_context_types[0];
-                    node->data.type.dim[node->data.type.len_dim] = (int32_t)arr_len;
+                    if (node->data.type.base_type == TYPE_BITFIELD) {
+                        node->data.type.dim[0] *= (int)arr_len;
+                        // This is a flattening of the dimensions
+                        int len = dim_size(node->data.type.dim);
+                        MEMSET(node->data.type.dim, 0, sizeof(node->data.type.dim));
+                        node->data.type.dim[0] = len;
+                    } else {
+                        node->data.type.dim[0] = (int)arr_len;
+                    }
                     node->data.unit = lhs->data.unit;
                     node->data.value_range = lhs->data.value_range;
 
@@ -4503,7 +4747,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
             LOG_ERROR(ctx->ir, node->token, "Right hand side of 'in' must be known at compile time.");
         }
     } else {
-        char buf[128] = {0};
+        char buf[128];
         print_type_info(buf, ARRAY_SIZE(buf), rhs->data.type);
         LOG_ERROR(ctx->ir, node->token, "Right hand side of keyword 'in' has an incompatible type: Expected bitfield, got '%s'.", buf);
     }
@@ -4518,6 +4762,10 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     // This is not done in the parsing step as we want the full context before attempting this operation.
 
     ASSERT(node);
+
+    if (str_eq_cstr_n(node->token.str, "dist3 = distance(atom(1:7)", 26)) {
+        while(0);
+    }
 
     bool result = false;
 
@@ -4573,7 +4821,10 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 
     if (result && !(node->flags & FLAG_DYNAMIC) && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
         static_eval_node(node, ctx);
-        node->flags |= FLAG_CONSTANT;
+    }
+
+    if (result == false) {
+        while(0) {};
     }
 
     return result;
@@ -4679,7 +4930,7 @@ static bool parse_script(md_script_ir_t* ir) {
             }
 
             const char* end = tok.str.ptr + tok.str.len;
-            str_t expr_str = {beg, (uint64_t)(end - beg)};
+            str_t expr_str = {beg, (size_t)(end - beg)};
 
             /*
             if (pruned_node->type == AST_ASSIGNMENT) {
@@ -4732,6 +4983,9 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
 
     for (size_t i = 0; i < md_array_size(ir->expressions); ++i) {
         ir->record_log = true;   // We reset the error recording flag before each statement
+        if (str_eq(ir->expressions[i]->str, STR_LIT("rdf2 = rdf(com(element('C')) in resname(\"PFT\"), element('O'), 20.0);"))) {
+            while(0){};
+        }
         if (static_check_node(ir->expressions[i]->node, &ctx)) {
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
             ir->flags |= (ir->expressions[i]->node->flags & FLAG_IR_PROPAGATION_MASK);
@@ -4744,25 +4998,6 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
     FREE_TEMP_ALLOC();
 
     return result;
-}
-
-static void assign_node_parent(ast_node_t* node) {
-    for (size_t i = 0; i < md_array_size(node->children); ++i) {
-        node->children[i]->parent = node;
-        assign_node_parent(node->children[i]);
-    }
-}
-
-// We want to finalize the tree by setting parents to all children
-static bool finalize_ast(md_script_ir_t* ir) {
-    ASSERT(ir);
-    for (size_t i = 0; i < md_array_size(ir->expressions); ++i) {
-        ast_node_t* node = ir->expressions[i]->node;
-        if (node) {
-            assign_node_parent(node);
-        }
-    }
-    return true;
 }
 
 static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
@@ -4782,15 +5017,16 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
 }
 
 static inline bool is_temporal_type(type_info_t ti) {
-    return (ti.base_type == TYPE_FLOAT && ti.dim[0] > 0 && (ti.dim[1] == 0 || ti.dim[1] == 1));
+    const int ndim = dim_ndims(ti.dim);
+    return ((ti.dim[0] != -1) && (ti.base_type == TYPE_FLOAT) && (ndim == 1)) || (ndim == 2 && ti.dim[0] == 1);
 }
 
 static inline bool is_distribution_type(type_info_t ti) {
-    return (ti.base_type == TYPE_FLOAT && ti.dim[0] == MD_DIST_BINS && ti.dim[1] > 0 && ti.dim[2] == 0);
+    return ti.dim[0] != -1 && is_type_directly_compatible(ti, (type_info_t)TI_DISTRIBUTION);
 }
 
 static inline bool is_volume_type(type_info_t ti) {
-    return (ti.base_type == TYPE_FLOAT && ti.dim[0] == MD_VOL_DIM && ti.dim[1] == MD_VOL_DIM && ti.dim[2] == MD_VOL_DIM && ti.dim[3] > 0);
+    return ti.dim[0] != -1 && is_type_directly_compatible(ti, (type_info_t)TI_VOLUME);
 }
 
 static inline bool is_property_type(type_info_t ti) {
@@ -4824,6 +5060,7 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
                 // If its a context node, we copy the data to the child as well
                 node->children[0]->data = node->data;
             }
+            node->flags |= FLAG_CONSTANT;
         } else {
             LOG_ERROR(ctx->ir, node->token, "Could not allocate data for node during static evaluation");
         }
@@ -4858,54 +5095,62 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     return result;
 }
 
-static void allocate_property_data(md_script_property_t* prop, type_info_t type, int64_t num_frames, md_allocator_i* alloc) {
-    MEMCPY(prop->data.dim, type.dim, sizeof(type.dim));
+static void allocate_property_data(md_script_property_t* prop, type_info_t type, size_t num_frames, md_allocator_i* alloc) {
+    ASSERT(prop);    
+    ASSERT(alloc);
 
-    bool    aggregate  = false;
-    int64_t num_values = 0;
+    // @NOTE: We need to 'normalize' the dimensionality of the types in a consistent way, since the properties will be exposed
+    // Therefore we make sure all types encode the array length in the first dimension, even if its a scalar, i.e. [1]
+    // This simplifies extraction later on.
 
-    if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) {
-        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) == 0);
-        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) == 0);
-
-        // For temporal data, we store and expose all values, this enables filtering to be performed afterwards to create distributions
-        prop->data.dim[1] = (int32_t)num_frames;
-        num_values = prop->data.dim[0] * prop->data.dim[1];
-        aggregate = (type_info_array_len(type) > 1);
+    // @NOTE: At this stage, the flags should only contain the property type
+    switch (prop->flags) {
+        case MD_SCRIPT_PROPERTY_FLAG_TEMPORAL:
+            // For temporal data, we store and expose all values, this enables filtering to be performed afterwards to create distributions
+            if (dim_ndims(type.dim) < 2) {
+				dim_shift_right(type.dim);
+			}
+            prop->data.dim[0] = (int32_t)num_frames;
+            prop->data.dim[1] = type.dim[1];
+            break;
+        case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION:
+            if (dim_ndims(type.dim) < 3) {
+                dim_shift_right(type.dim);
+            }
+            MEMCPY(prop->data.dim, type.dim, sizeof(type.dim));
+            // @NOTE: Multidimensional distributions are not supported yet
+            ASSERT(prop->data.dim[0] == 1);
+            break;
+        case MD_SCRIPT_PROPERTY_FLAG_VOLUME:
+            if (dim_ndims(type.dim) < 4) {
+            	dim_shift_right(type.dim);
+            }
+            MEMCPY(prop->data.dim, type.dim, sizeof(type.dim));
+            // @NOTE: Multidimensional volumes are not supported yet
+            ASSERT(prop->data.dim[0] == 1);
+            break;
+        default:
+            ASSERT(false);
+            break;
     }
-    else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) == 0);
-        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) == 0);
 
-        // For distributions we only store and expose the aggregate
-        num_values = prop->data.dim[0] * prop->data.dim[1];
-    }
-    else if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_VOLUME) {
-        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_TEMPORAL) == 0);
-        ASSERT((prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) == 0);
-
-        // For volumes we only store and expose the aggregate
-        num_values = MD_VOL_DIM * MD_VOL_DIM * MD_VOL_DIM;
-    }
-    else {
-        ASSERT(false);
-    }
-
-    const int64_t num_bytes = num_values * sizeof(float);
+    const size_t num_values = (size_t)dim_size(prop->data.dim);
+    const size_t num_bytes  = num_values * sizeof(float);
     prop->data.values = md_alloc(alloc, num_bytes);
     MEMSET(prop->data.values, 0, num_bytes);
     prop->data.num_values = num_values;
 
-    if (prop->flags & MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
-        prop->data.weights = prop->data.values + prop->data.dim[0];
-        for (int64_t i = 0; i < num_values; ++i) {
+    if (prop->flags == MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION) {
+        prop->data.weights = prop->data.values + prop->data.dim[2];
+        for (size_t i = 0; i < num_values; ++i) {
             prop->data.weights[i] = 1.0f;
         }
     }
 
-    if (aggregate) {
-        const int64_t aggregate_size = num_frames;
-        // Need to allocate data for aggregate as well.
+    int ndim = dim_ndims(prop->data.dim);
+    if (prop->data.dim[ndim - 1] > 1) {
+        // Allocate data for aggregate
+        const size_t aggregate_size = num_frames;
         prop->data.aggregate = md_alloc(alloc, sizeof(md_script_aggregate_t));
 
         MEMSET(prop->data.aggregate, 0, sizeof(md_script_aggregate_t));
@@ -4934,7 +5179,7 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
     }
 }
 
-static void init_property(md_script_property_t* prop, int64_t num_frames, str_t ident, const ast_node_t* node, md_allocator_i* alloc) {
+static void init_property(md_script_property_t* prop, size_t num_frames, str_t ident, const ast_node_t* node, md_allocator_i* alloc) {
     ASSERT(prop);
     ASSERT(num_frames > 0);
     ASSERT(ident.ptr && ident.len);
@@ -5032,9 +5277,9 @@ void compute_min_max_mean_variance(float* out_min, float* out_max, float* out_me
     * */
 }
 
-static void clear_properties(md_script_property_t* props, int64_t num_props) {
+static void clear_properties(md_script_property_t* props, size_t num_props) {
     // Preprocess the property data
-    for (int64_t p_idx = 0; p_idx < num_props; ++p_idx) {
+    for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
         md_script_property_t* prop = &props[p_idx];
         MEMSET(prop->data.values, 0, prop->data.num_values * sizeof(float));
         if (prop->data.aggregate) {
@@ -5436,21 +5681,21 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     }
 
     // Recurse and add children
-    const int64_t num_children = md_array_size(node->children);
+    const size_t num_children = md_array_size(node->children);
     if (node->type == AST_CONTEXT) {
         ASSERT(num_children == 2);
         create_vis_tokens(ir, node->children[0], node, depth + 1);
         create_vis_tokens(ir, node->children[1], NULL, depth + 1);
     } else {
-        for (int64_t i = 0; i < num_children; ++i) {
+        for (size_t i = 0; i < num_children; ++i) {
             create_vis_tokens(ir, node->children[i], NULL, depth + 1);
         }
     }
 }
 
 bool extract_vis_tokens(md_script_ir_t* ir) {
-    const int64_t num_expr = md_array_size(ir->type_checked_expressions);
-    for (int64_t i = 0; i < num_expr; ++i) {
+    const size_t num_expr = md_array_size(ir->type_checked_expressions);
+    for (size_t i = 0; i < num_expr; ++i) {
         expression_t* expr = ir->type_checked_expressions[i];
         create_vis_tokens(ir, expr->node, NULL, 0);
     }
@@ -5459,8 +5704,8 @@ bool extract_vis_tokens(md_script_ir_t* ir) {
 }
 
 bool extract_identifiers(md_script_ir_t* ir) {
-    const int64_t num_ident = md_array_size(ir->identifiers);
-    for (int64_t i = 0; i < num_ident; ++i) {
+    const size_t num_ident = md_array_size(ir->identifiers);
+    for (size_t i = 0; i < num_ident; ++i) {
         md_array_push(ir->identifier_names, ir->identifiers->name, ir->arena);
     }
     return true;
@@ -5499,7 +5744,6 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
     ir->compile_success =
         parse_script(ir) &&
         static_type_check(ir, mol, traj) &&
-        finalize_ast(ir) &&
         // optimize ast?
         //static_evaluation(ir, mol) &&
         extract_dynamic_evaluation_targets(ir) &&
@@ -5511,8 +5755,8 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
 #endif
 
     ir->fingerprint = 89017241625762ull;
-    const int64_t num_expr = md_array_size(ir->type_checked_expressions);
-    for (int64_t i = 0; i < num_expr; ++i) {
+    const size_t num_expr = md_array_size(ir->type_checked_expressions);
+    for (size_t i = 0; i < num_expr; ++i) {
         uint64_t hash = hash_node(ir->type_checked_expressions[i]->node);
 #if DEBUG
         //md_logf(MD_LOG_TYPE_DEBUG, "%llu", hash);
@@ -5653,7 +5897,7 @@ static md_script_eval_t* create_eval(md_allocator_i* alloc) {
     return eval;
 }
 
-md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t* ir, str_t label, md_allocator_i* alloc) {
+md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t* ir, str_t label, md_allocator_i* alloc) {
     if (num_frames == 0) {
         MD_LOG_ERROR("Script eval: Number of frames was 0");
         return NULL;
@@ -5700,7 +5944,7 @@ md_script_eval_t* md_script_eval_create(int64_t num_frames, const md_script_ir_t
 					ast_node_t* child = lhs->children[j];
 					ASSERT(child->type == AST_IDENTIFIER);
 					md_script_property_t prop = {0};
-					init_property(&prop, num_frames, child->ident, expr->node, eval->arena);
+					init_property(&prop, num_frames, child->ident, child, eval->arena);
 					md_array_push(eval->properties, prop, eval->arena);
 					md_array_push(eval->prop_expr_idx, (uint32_t)i, eval->arena);
 					num_prop_expr += 1;
@@ -6135,31 +6379,21 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         } else {
             md_log(MD_LOG_TYPE_DEBUG,"Failed to allocate data for bitfield visualization");
         }
+    } else if (node->flags & FLAG_COORDINATE) {
+        data_t tmp_data = {0};
+        const data_t* data = &node->data;
+        if (!node->data.ptr) {
+            // Evaluate the non constant value expression here into a data_t item and visualize it.
+            allocate_data(&tmp_data, node->data.type, ctx->temp_alloc);
+            if (!evaluate_node(&tmp_data, node, ctx)) {
+                MD_LOG_ERROR("Vis Eval: Failed to evaluate coordinate expression");
+                return;
+			}
+		    data = &tmp_data;
+        }
+        coordinate_visualize(*data, ctx);
     } else {
         evaluate_node(NULL, node, ctx);
-    }
-
-    if (node->parent && node->parent->type == AST_PROC_CALL) {
-        // This is an argument node to a proc call.
-        // This could be a reference to atomic indices, such as integers and iranges or similar. (given by the arg_type which is then POSITION)
-        // In such case, we want to visualize these atoms using the position
-        int64_t arg_idx = -1;
-        for (size_t i = 0; i < md_array_size(node->parent->children); ++i) {
-            if (node->parent->children[i] == node) {
-                arg_idx = (int64_t)i;
-                break;
-            }
-        }
-        ASSERT(arg_idx != -1);
-        
-        const procedure_t* proc = node->parent->proc;
-        if (is_type_directly_compatible(proc->arg_type[arg_idx], (type_info_t)TI_COORDINATE_ARR)) {
-            if (node->data.ptr) {
-                coordinate_visualize(node->data, ctx);
-            } else {
-                // Could potentially evaluate the non constant value expression here into a data_t item and visualize it.
-            }
-        }
     }
 }
 

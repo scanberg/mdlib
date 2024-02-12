@@ -65,22 +65,18 @@ str_t str_trim_end(str_t str) {
 bool str_eq(str_t str_a, str_t str_b) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if (str_a.len != str_b.len) return false;
-    for (size_t i = 0; i < str_a.len; ++i) {
-        if (str_a.ptr[i] != str_b.ptr[i]) return false;
-    }
-    return true;
+    if (str_a.ptr[0] != str_b.ptr[0]) return false;
+    return memcmp(str_a.ptr, str_b.ptr, MIN(str_a.len, str_b.len)) == 0;
+
 }
 
 bool str_eq_n(str_t str_a, str_t str_b, size_t n) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
-
-    // str_a & str_b have equal len.
+    if (str_a.ptr[0] != str_b.ptr[0]) return false;
+    // str_a & str_b have equal len at this point
     n = n < str_a.len ? n : str_a.len;
-    for (size_t i = 0; i < n; ++i) {
-        if (str_a.ptr[i] != str_b.ptr[i]) return false;
-    }
-    return true;
+    return memcmp(str_a.ptr, str_b.ptr, n) == 0;
 }
 
 
@@ -107,21 +103,17 @@ bool str_eq_n_ignore_case(const str_t str_a, const str_t str_b, size_t n) {
 
 bool str_eq_cstr(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
-    for (size_t i = 0; i < str.len; ++i) {
-        if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
-    }
-    return cstr[str.len] == '\0';
+    if (str.ptr[0] != cstr[0]) return false;
+    return strncmp(str.ptr, cstr, str.len) == 0;
 }
 
 // Compare str and cstr only up to n characters
 bool str_eq_cstr_n(str_t str, const char* cstr, size_t n) {
     if (!n) return false;
     if (!str.ptr || !str.len || !cstr) return false;
+    if (str.ptr[0] != cstr[0]) return false;
     n = n < str.len ? n : str.len;
-    for (size_t i = 0; i < n; ++i) {
-        if (cstr[i] == '\0' || str.ptr[i] != cstr[i]) return false;
-    }
-    return true;
+    return strncmp(str.ptr, cstr, n) == 0;
 }
 
 bool str_eq_cstr_ignore_case(str_t str, const char* cstr) {
@@ -297,15 +289,26 @@ bool str_find_char(size_t* loc, str_t str, int c) {
     return false;
 }
 
+// Insired by this
+// https://github.com/Alexpux/Cygwin/blob/master/newlib/libc/string/memrchr.c#L62
+// memrchr is a GNU extension
 bool str_rfind_char(size_t* loc, str_t str, int c) {
-    if (str_empty(str)) return false;
-    for (int64_t i = (int64_t)str.len - 1; i >= 0; --i) {
-        if (str.ptr[i] == c) {
-            if (loc) *loc = (size_t)i;
+    const char* ptr = str.ptr + str.len - 1;
+    size_t len = str.len;
+
+    // This should only be used until the pointer is aligned to 8-bytes
+    while (true) {
+        if (!len--) {
+            return false;
+        }
+        if (*ptr == c) {
+            if (loc) *loc = (size_t)(ptr - str.ptr);
             return true;
         }
+        ptr--;
     }
-    return false;
+
+    // @TODO: Check for character 8-characters at a time
 }
 
 bool str_find_str(size_t* loc, str_t haystack, str_t needle) {

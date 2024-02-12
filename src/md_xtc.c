@@ -306,7 +306,7 @@ static bool xtc_decode_frame(const void* frame_data_ptr, size_t frame_data_size,
             result = xtc_frame_coords(xdr, natoms, pos);
             if (result) {            
                 // nm -> Ångström
-                for (size_t i = 0; i < natoms; ++i) {
+                for (int i = 0; i < natoms; ++i) {
                     if (x) x[i] = pos[i][0] * 10.0f;
                     if (y) y[i] = pos[i][1] * 10.0f;
                     if (z) z[i] = pos[i][2] * 10.0f;

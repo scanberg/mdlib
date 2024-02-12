@@ -62,9 +62,9 @@ typedef enum {
 } md_file_flags_t;
 
 typedef enum {
-    MD_FILE_BEG,
-    MD_FILE_CUR,
-    MD_FILE_END
+    MD_FILE_BEG = 0,
+    MD_FILE_CUR = 1,
+    MD_FILE_END = 2,
 } md_file_seek_origin_t;
 
 // Opens a file with the supplied flags

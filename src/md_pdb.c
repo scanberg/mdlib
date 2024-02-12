@@ -936,8 +936,8 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     traj->inst = (struct md_trajectory_o*)pdb;
     traj->get_header = pdb_get_header;
     traj->load_frame = pdb_load_frame;
-    traj->fetch_frame_data = pdb_fetch_frame_data;
-    traj->decode_frame_data = pdb_decode_frame_data;
+    //traj->fetch_frame_data = pdb_fetch_frame_data;
+    //traj->decode_frame_data = pdb_decode_frame;
 
     return traj;
 }
