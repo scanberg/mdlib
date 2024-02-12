@@ -3563,7 +3563,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     md_util_com_compute_vec4(xyzw[1], count, NULL),
                 };
 
-                as_float(*dst) = (float)md_util_rmsd_compute_vec4(xyzw, 0, count, com);
+                as_float(*dst) = (float)md_util_rmsd_compute_vec4((const vec4_t* const*)xyzw, 0, count, com);
                 md_vm_arena_temp_end(tmp);
             }
         }

@@ -596,7 +596,7 @@ static int dim_size(const int dim[MAX_NUM_DIMS]) {
 
 static void dim_flatten(int dim[MAX_NUM_DIMS]) {
     int size = dim_size(dim);
-    MEMSET(dim, 0, sizeof(dim));
+    MEMSET(dim, 0, sizeof(int) * MAX_NUM_DIMS);
     dim[0] = size;
 }
 
@@ -3358,10 +3358,16 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
     const size_t num_args = md_array_size(node->children);
 
     if (node->proc->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
-        ASSERT(num_args > 0);
+        if (!args || num_args == 0) {
+            LOG_ERROR(ctx->ir, node->token, "Unexpected number of arguments (0), but procedure is marked to extract length from first argument");
+            return false;
+        }
         // We can deduce the length of the array from the input type (first argument)
         type->dim[0] = type_info_array_len(args[0]->data.type);
-        ASSERT(type->dim[0] > -1);
+        if (type->dim[0] == -1) {
+            LOG_ERROR(ctx->ir, node->token, "Procedure is marked to extract length from first argument, but the provided length was not set!");
+            return false;
+        }
     } else {
         ASSERT(node->proc->flags & FLAG_QUERYABLE_LENGTH);
 
@@ -3630,7 +3636,7 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
             result = finalize_proc_call(node, ctx);
         } else {
             char arg_type_str[2][64] = {"empty", "empty"};
-            for (int i = 0; i < num_args; ++i) {
+            for (size_t i = 0; i < num_args; ++i) {
                 if (arg[i]) print_type_info(arg_type_str[i], ARRAY_SIZE(arg_type_str[i]), arg[i]->data.type);                
             }
             LOG_ERROR(ctx->ir, node->token,
@@ -4020,8 +4026,8 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     } else {
         ASSERT(num_args == 1);
         // Setup node table fields to hold all available fields within the imported table
-        for (int i = 0; i < table->num_fields; ++i) {
-            md_array_push(field_indices, i, ctx->ir->arena);
+        for (size_t i = 0; i < table->num_fields; ++i) {
+            md_array_push(field_indices, (int)i, ctx->ir->arena);
         }
     }
 
@@ -4410,7 +4416,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
         if (result_type.dim[i] == 0) break;
         if (result_type.dim[i] == 1) {            
             for (int j = i; j < MAX_NUM_DIMS; ++j) {
-				result_type.dim[j] = j < ARRAY_SIZE(result_type.dim) - 1 ? result_type.dim[j+1] : 0;
+				result_type.dim[j] = j < MAX_NUM_DIMS - 1 ? result_type.dim[j+1] : 0;
 			}
 		}
     }
@@ -5012,7 +5018,7 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
 
 static inline bool is_temporal_type(type_info_t ti) {
     const int ndim = dim_ndims(ti.dim);
-    return ti.dim[0] != -1 && (ti.base_type == TYPE_FLOAT) && (ndim == 1) || (ndim == 2 && ti.dim[0] == 1);
+    return ((ti.dim[0] != -1) && (ti.base_type == TYPE_FLOAT) && (ndim == 1)) || (ndim == 2 && ti.dim[0] == 1);
 }
 
 static inline bool is_distribution_type(type_info_t ti) {
