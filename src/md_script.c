@@ -5457,8 +5457,9 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 // Accumulate values
                 ASSERT(prop->data.values);
 
+                size_t num_bins = prop->data.dim[2];
                 float min, max, mean, var;
-                compute_min_max_mean_variance(&min, &max, &mean, &var, values, prop->data.dim[0]);
+                compute_min_max_mean_variance(&min, &max, &mean, &var, values, num_bins);
 
                 // ATOMIC WRITE
                 md_mutex_lock(&eval->prop_dist_mutex[p_idx]);
@@ -5468,7 +5469,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                     const md_256 N   = md_mm256_set1_ps((float)(count));
                     const md_256 scl = md_mm256_set1_ps(1.0f / (float)(count + 1));
 
-                    const int64_t length = ALIGN_TO(prop->data.dim[0], 8);
+                    const int64_t length = ALIGN_TO(num_bins, 8);
                     for (int64_t i = 0; i < length; i += 8) {
                         md_256 old_val = md_mm256_mul_ps(md_mm256_loadu_ps(prop->data.values + i), N);
                         md_256 new_val = md_mm256_loadu_ps(values + i);
@@ -5476,7 +5477,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                     }
 
                     // Copy weights
-                    MEMCPY(prop->data.weights, values + prop->data.dim[0], prop->data.dim[0] * sizeof(float));
+                    MEMCPY(prop->data.weights, values + num_bins, num_bins * sizeof(float));
                     
                     // Determine min max values
                     prop->data.min_value = MIN(prop->data.min_value, min);
