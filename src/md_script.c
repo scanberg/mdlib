@@ -2552,7 +2552,6 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
     if (visualize_only && !(proc->flags & FLAG_VISUALIZE)) {
         // If the node has not been flagged with visualize, it should not be called during visualization
         // Unless there is some data (dst) which should be filled in.
-
         // Do however propagate the evaluation to the children
         for (size_t i = 0; i < num_args; ++i) {
             if (!evaluate_node(NULL, args[i], ctx)) {
@@ -2581,20 +2580,26 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
         arg_tokens[i] = args[i]->token;
         arg_flags[i] = args[i]->flags;
-        type_info_t arg_type = args[i]->data.type;
 
-        if (is_variable_length(arg_type)) {
-            if (!finalize_type(&arg_type, args[i], ctx)) {
-                MD_LOG_ERROR("Failed to finalize dynamic type in procedure call");
+        if (args[i]->flags & FLAG_CONSTANT) {
+            ASSERT(args[i]->data.ptr);
+            MEMCPY(&arg_data[i], &args[i]->data, sizeof(data_t));
+        }
+        else {
+            type_info_t arg_type = args[i]->data.type;
+
+            if (is_variable_length(arg_type)) {
+                if (!finalize_type(&arg_type, args[i], ctx)) {
+                    MD_LOG_ERROR("Failed to finalize dynamic type in procedure call");
+                    result = -1;
+                    goto done;
+                }
+            }
+            allocate_data(&arg_data[i], arg_type, ctx->temp_alloc);
+            if (!evaluate_node(&arg_data[i], args[i], ctx)) {
                 result = -1;
                 goto done;
             }
-        }
-
-        allocate_data(&arg_data[i], arg_type, ctx->temp_alloc);
-        if (!evaluate_node(&arg_data[i], args[i], ctx)) {
-            result = -1;
-            goto done;
         }
     }
 
@@ -2614,7 +2619,9 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
 
 done:
     for (int64_t i = (int64_t)num_args - 1; i >= 0; --i) {
-        free_data(&arg_data[i], ctx->temp_alloc);
+        if (!(args[i]->flags & FLAG_CONSTANT)) {
+            free_data(&arg_data[i], ctx->temp_alloc);
+        }
     }
 
     // @NOTE(Robin): We cannot simply reset the stack since bitfields are lazily allocated, meaning they allocate data on demand.
@@ -2642,10 +2649,10 @@ static bool evaluate_proc_call(data_t* dst, const ast_node_t* node, eval_context
 
 static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CONSTANT_VALUE);
-    ASSERT(node->data.ptr && node->data.size > 0);  // Assume that the static check set the data already
     (void)ctx;
 
     if (dst) {
+        ASSERT(node->data.ptr && node->data.size > 0);  // Assume that the static check set the data already
         ASSERT(dst->ptr && dst->size >= node->data.size); // Make sure we have the expected size
         copy_data(dst, &node->data);
     }
@@ -2839,6 +2846,8 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
             return evaluate_node(dst, rhs, ctx);
         }
     } else if (lhs->type == AST_ARRAY) {
+        // assignment of LHS which is an array of Identifiers
+        // e.g {x,y,z} = coord(1);
         int count = (int)md_array_size(lhs->children);
         if (rhs->flags & FLAG_CONSTANT) {
             if (dst) {
@@ -2868,7 +2877,7 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
                 };
                 if (dst && dst->ptr) {
                     *id.data = child->data;
-                    id.data->ptr = dst + stride * i;
+                    id.data->ptr = (char*)dst->ptr + stride * i;
                     id.data->size = stride;
                 }
                 ident = md_array_push(ctx->identifiers, id, ctx->alloc);
@@ -3272,7 +3281,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
         // We need to update the return type here
         to = res.procedure->return_type;
 
-        if (node->type == AST_CONSTANT_VALUE && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
+        if (node->flags & FLAG_CONSTANT) {
             if (to.dim[0] == -1) {
                 if (res.procedure->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
                     to.dim[0] = from.dim[0];
@@ -3315,7 +3324,8 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
 
             // Perform the data conversion
             if (res.procedure->proc_ptr(&node->data, &old, ctx) == 0) {
-                return true;
+                // Do static evaluation of the node
+                return static_eval_node(node, ctx);
             }
         } else {
             // We need to convert this node into a cast node and add the original node data as a child
@@ -3336,7 +3346,6 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
     ASSERT(false);
     return false;
 }
-
 
 static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(type);
@@ -4073,10 +4082,23 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         while(0) {};
     }
 
+    if (str_eq(node->token.str, STR_LIT("sdf(chain(:), resname(\"PFT\"), 30.0)"))) {
+        while(0){};
+    }
+
+    if (str_eq_cstr_n(node->token.str, "distance(atom(1:7)", 17)) {
+        while(0){};
+    }
+
     bool result = true;
     // @NOTE: We do not want to overwrite the procedure if already assigned, as it might have been assigned as an operator (which is a proc call)
     if (!node->proc) {
+        // No point in letting expressions statically evaluate and store its data within the tree at this point
+        // Conversions and other stuff may occur later
+        uint32_t flags = ctx->eval_flags;
+        ctx->eval_flags |= EVAL_FLAG_NO_STATIC_EVAL;
         result = static_check_children(node, ctx);
+        ctx->eval_flags = flags;
         if (result) {
             const size_t num_args = md_array_size(node->children);
             const str_t proc_name = node->ident;
@@ -4121,7 +4143,8 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         }
         
         // Perform new child check here since children may have changed due to conversions etc.
-        result = result && static_check_children(node, ctx) && finalize_proc_call(node, ctx);
+        // Here we let the static evalu
+        result = result && finalize_proc_call(node, ctx);
 
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
@@ -4147,6 +4170,7 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
 
     node->data.ptr  = &node->value;
     node->data.size = base_type_element_byte_size(node->data.type.base_type);
+    node->flags |= FLAG_CONSTANT;
 
     if (node->data.type.base_type == TYPE_IRANGE) {
         // Make sure the range is given in an ascending format, lo:hi
@@ -4315,7 +4339,9 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
     if (!static_check_node(elem[0], ctx)) return false;
     ctx->eval_flags = eval_flags;
 
-    if (!static_check_node(elem[1], ctx)) return false;
+    for (size_t i = 1; i < num_elem; ++i) {
+        if (!static_check_node(elem[i], ctx)) return false;
+    }
 
     ast_node_t*  lhs  = elem[0];
     ast_node_t** args = elem + 1;
@@ -4476,6 +4502,15 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                 LOG_ERROR(ctx->ir, node->token, "Assignment mismatch between left and right hand side: The right hand side has a variable length");
                 return false;
             }
+
+            // Sometimes the dimensions of the right had side will be given in normalized form, i.e. [1][3][0][0]
+            // In such cases, we still want to match assign this if the left hand side is provided as three identifiers.
+            // Therefore we shift the dimensions of the rhs to fit.
+            if (rhs->data.type.dim[0] == 1) {
+                dim_shift_left(rhs->data.type.dim);
+                rhs_len = (int)type_info_array_len(rhs->data.type);
+            }
+
             // This is valid if the array length of rhs is equal to the number of identifiers on the left hand side
             if (rhs_len != num_idents) {
                 LOG_ERROR(ctx->ir, node->token, "Assignment mismatch between left and right hand side: The number of identifiers on the left hand side must match the length of the right hand side");
@@ -4505,6 +4540,7 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
                     *ident->data = rhs->data;
                     ident->data->type = type_info_element_type(rhs->data.type);
                     ident->data->size = stride;
+                    ident->data->ptr = 0;
                 }
                 if (!static_check_node(idents[i], ctx)) {
                     return false;
@@ -4569,6 +4605,10 @@ static bool static_check_out(ast_node_t* node, eval_context_t* ctx) {
 static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CONTEXT && node->children && md_array_size(node->children) == 2);
 
+    if (str_eq(node->token.str, STR_LIT("atom(1:7) in resname(\"PFT\")"))) {
+        while(0) {};
+    }
+
     // The rules are as follows:
     // A context RHS must be a bitfield type.
     //     
@@ -4604,16 +4644,13 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     contexts = (md_bitfield_t*)rhs->data.ptr;
                 } else {
                     md_array_resize(contexts, num_contexts, ctx->ir->arena);
+                    ASSERT(md_array_size(contexts) == num_contexts);
                     for (size_t i = 0; i < num_contexts; ++i) {
                         md_bitfield_init(&contexts[i], ctx->ir->arena);
                     }
+                    rhs->data.ptr = contexts;
+                    rhs->data.size = num_contexts * sizeof(md_bitfield_t);
                     result = evaluate_node(&rhs->data, rhs, ctx);
-                    if (result) {
-                        rhs->data.ptr = contexts;
-                        rhs->data.size = num_contexts * sizeof(md_bitfield_t);
-                        ASSERT(md_array_size(contexts) == num_contexts);
-                        result = true;
-                    }
                 }
 
                 //allocate_data(&rhs->data, ctx->ir->arena);
@@ -4720,6 +4757,10 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 
     ASSERT(node);
 
+    if (str_eq_cstr_n(node->token.str, "dist3 = distance(atom(1:7)", 26)) {
+        while(0);
+    }
+
     bool result = false;
 
     switch (node->type) {
@@ -4774,7 +4815,6 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 
     if (result && !(node->flags & FLAG_DYNAMIC) && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
         static_eval_node(node, ctx);
-        node->flags |= FLAG_CONSTANT;
     }
 
     if (result == false) {
@@ -5014,6 +5054,7 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
                 // If its a context node, we copy the data to the child as well
                 node->children[0]->data = node->data;
             }
+            node->flags |= FLAG_CONSTANT;
         } else {
             LOG_ERROR(ctx->ir, node->token, "Could not allocate data for node during static evaluation");
         }
@@ -5897,7 +5938,7 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
 					ast_node_t* child = lhs->children[j];
 					ASSERT(child->type == AST_IDENTIFIER);
 					md_script_property_t prop = {0};
-					init_property(&prop, num_frames, child->ident, expr->node, eval->arena);
+					init_property(&prop, num_frames, child->ident, child, eval->arena);
 					md_array_push(eval->properties, prop, eval->arena);
 					md_array_push(eval->prop_expr_idx, (uint32_t)i, eval->arena);
 					num_prop_expr += 1;

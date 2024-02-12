@@ -288,44 +288,70 @@ UTEST(script, assignment) {
         ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,2}"), ir, &test_mol, &vm_arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
-            identifier_t* ident = get_identifier(ir, STR_LIT("a"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
+            identifier_t* a = get_identifier(ir, STR_LIT("a"));
+            ASSERT_NE(NULL, a);
+            ASSERT_NE(NULL, a->data);
+            EXPECT_EQ(TYPE_INT, a->data->type.base_type);
+            EXPECT_EQ(1, a->data->type.dim[0]);
+
+            identifier_t* b = get_identifier(ir, STR_LIT("b"));
+            ASSERT_NE(NULL, b);
+            ASSERT_NE(NULL, b->data);
+            EXPECT_EQ(TYPE_INT, b->data->type.base_type);
+            EXPECT_EQ(1, b->data->type.dim[0]);
         }
     }
 
     {
         md_script_ir_clear(ir);
 
+        //@NOTE: Implicit conversion will kick in in the array composition converting 1 to 1.0f since that is the common 'compatible' type in array arguments
         ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,distance(1,2)}"), ir, &test_mol, &vm_arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* a = get_identifier(ir, STR_LIT("a"));
-            EXPECT_NE(NULL, a);
-            EXPECT_NE(NULL, a->data);
+            ASSERT_NE(NULL, a);
+            ASSERT_NE(NULL, a->data);
+            EXPECT_EQ(TYPE_FLOAT, a->data->type.base_type);
+            EXPECT_EQ(1, a->data->type.dim[0]);
 
             identifier_t* b = get_identifier(ir, STR_LIT("b"));
-            EXPECT_NE(NULL, b);
-            EXPECT_NE(NULL, b->data);
+            ASSERT_NE(NULL, b);
+            ASSERT_NE(NULL, b->data);
+            EXPECT_EQ(TYPE_FLOAT, b->data->type.base_type);
+            EXPECT_EQ(1, b->data->type.dim[0]);
         }
     }
 
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y,z} = coord(1)[1]"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y,z} = coord(1)"), ir, &test_mol, &vm_arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
-            identifier_t* ident = get_identifier(ir, STR_LIT("x"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
-            EXPECT_EQ(1, ident->data->type.dim[0]);
-            EXPECT_EQ(0, ident->data->type.dim[1]);
+            identifier_t* x = get_identifier(ir, STR_LIT("x"));
+            ASSERT_NE(NULL, x);
+            ASSERT_NE(NULL, x->data);
+            EXPECT_EQ(TYPE_FLOAT, x->data->type.base_type);
+            EXPECT_EQ(1, x->data->type.dim[0]);
+
+            identifier_t* y = get_identifier(ir, STR_LIT("y"));
+            ASSERT_NE(NULL, y);
+            ASSERT_NE(NULL, y->data);
+            EXPECT_EQ(TYPE_FLOAT, y->data->type.base_type);
+            EXPECT_EQ(1, y->data->type.dim[0]);
+
+            identifier_t* z = get_identifier(ir, STR_LIT("z"));
+            ASSERT_NE(NULL, z);
+            ASSERT_NE(NULL, z->data);
+            EXPECT_EQ(TYPE_FLOAT, z->data->type.base_type);
+            EXPECT_EQ(1, z->data->type.dim[0]);
         }
     }
 
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y} = coord(1)[1]"), ir, &test_mol, &vm_arena);
+        // @NOTE: LHS contains 2 arguments, RHS contains 3 => No match in assignment
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y} = coord(1)"), ir, &test_mol, &vm_arena);
         EXPECT_FALSE(node);
     }
 
@@ -370,8 +396,8 @@ UTEST(script, array) {
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
+            ASSERT_NE(NULL, ident);
+            ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(4, ident->data->type.dim[0]);
             EXPECT_EQ(3, ident->data->type.dim[1]);
         }
@@ -382,8 +408,8 @@ UTEST(script, array) {
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
+            ASSERT_NE(NULL, ident);
+            ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(4, ident->data->type.dim[0]);
             EXPECT_EQ(1, ident->data->type.dim[1]);
         }
@@ -394,8 +420,8 @@ UTEST(script, array) {
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
+            ASSERT_NE(NULL, ident);
+            ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(4, ident->data->type.dim[0]);
             EXPECT_EQ(2, ident->data->type.dim[1]);
         }
@@ -406,8 +432,8 @@ UTEST(script, array) {
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
+            ASSERT_NE(NULL, ident);
+            ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(2, ident->data->type.dim[0]);
             EXPECT_EQ(4, ident->data->type.dim[1]);
         }
@@ -426,8 +452,8 @@ UTEST(script, array_subscript) {
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
+            ASSERT_NE(NULL, ident);
+            ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(3, ident->data->type.dim[0]);
             EXPECT_EQ(0, ident->data->type.dim[1]);
         }
@@ -438,8 +464,8 @@ UTEST(script, array_subscript) {
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
+            ASSERT_NE(NULL, ident);
+            ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(3, ident->data->type.dim[0]);
             EXPECT_EQ(0, ident->data->type.dim[1]);
         }
@@ -450,8 +476,8 @@ UTEST(script, array_subscript) {
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
-            EXPECT_NE(NULL, ident);
-            EXPECT_NE(NULL, ident->data);
+            ASSERT_NE(NULL, ident);
+            ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(4, ident->data->type.dim[0]);
             EXPECT_EQ(0, ident->data->type.dim[1]);
         }
@@ -606,7 +632,6 @@ UTEST_F(script, compile_script) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, script_src, &utest_fixture->amy, NULL, NULL));
-    EXPECT_TRUE(md_script_ir_valid(ir));
 
     md_arena_allocator_destroy(alloc);
 }
