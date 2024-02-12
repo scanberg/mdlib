@@ -1091,6 +1091,10 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     if (element_count(arg) == 0) return 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
+    if (ctx->backchannel) {
+        ctx->backchannel->unit = md_unit_angstrom();
+    }
+
     switch (arg.type.base_type) {
     case TYPE_FLOAT:
         ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
@@ -1194,18 +1198,34 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_ATOMS) {
             md_bitfield_t tmp_bf = {0};
             const md_bitfield_t* in_bf = as_bitfield(arg);
+            size_t bf_len = element_count(arg);
 
             if (ctx->mol_ctx) {
                 md_bitfield_init(&tmp_bf, ctx->temp_alloc);
             }
 
-            for (size_t i = 0; i < element_count(arg); ++i) {
-                const md_bitfield_t* bf = &in_bf[i];
-                if (ctx->mol_ctx) {
-                    md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
-                    bf = &tmp_bf;
+            if (ctx->subscript_ranges) {
+                for (size_t ri = 0; ri < md_array_size(ctx->subscript_ranges); ++ri) {
+                    irange_t range = ctx->subscript_ranges[ri];
+                    range.beg -= 1; // @NOTE: We subtract 1 here because the ranges are 1-indexed
+                    for (int i = range.beg; i < range.end; ++i) {
+                        const md_bitfield_t* bf = &in_bf[i];
+                        if (ctx->mol_ctx) {
+                            md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                            bf = &tmp_bf;
+                        }
+                        visualize_atom_mask(bf, ctx);
+                    }
                 }
-                visualize_atom_mask(bf, ctx);
+            } else {
+                for (size_t i = 0; i < bf_len; ++i) {
+                    const md_bitfield_t* bf = &in_bf[i];
+                    if (ctx->mol_ctx) {
+                        md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                        bf = &tmp_bf;
+                    }
+                    visualize_atom_mask(bf, ctx);
+                }
             }
 
             if (ctx->mol_ctx) {
@@ -3904,11 +3924,11 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             }
         } else {
             float* ptr = dst->ptr;
-            density[0] = ptr + MD_DIST_BINS * 0;
-            weight[0]  = ptr + MD_DIST_BINS * 1;
+            density[axis] = ptr + MD_DIST_BINS * 0;
+            weight[axis]  = ptr + MD_DIST_BINS * 1;
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                weight [0][i] = 1.0f;
-                density[0][i] = 0.0f;
+                weight [axis][i] = 1.0f;
+                density[axis][i] = 0.0f;
             }
         }
 
@@ -3942,7 +3962,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
                 density[1][bin_idx[1]] += w;
                 density[2][bin_idx[2]] += w;
             } else {
-                density[0][bin_idx[axis]] += w;
+                density[axis][bin_idx[axis]] += w;
             }
         }
 
@@ -3958,7 +3978,8 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
         // Convert atomic mass / Ångström^3 to SI units KG/M^3
         // 1660.5390666?
-        const double normalization_factor[3] = {
+        // divide by bin volume
+        const double factor[3] = {
             1660.5390666 / slice_volume[0],
             1660.5390666 / slice_volume[1],
             1660.5390666 / slice_volume[2],
@@ -3966,13 +3987,13 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
         if (axis == -1) {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[0][i] *= normalization_factor[0];
-                density[1][i] *= normalization_factor[1];
-                density[2][i] *= normalization_factor[2];
+                density[0][i] = (float)(density[0][i] * factor[0]);
+                density[1][i] = (float)(density[1][i] * factor[1]);
+                density[2][i] = (float)(density[2][i] * factor[2]);
             }
         } else {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[0][i] *= normalization_factor[axis];
+                density[axis][i] = (float)(density[axis][i] * factor[axis]);
             }
         }
     } else {

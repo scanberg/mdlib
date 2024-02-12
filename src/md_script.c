@@ -211,6 +211,7 @@ typedef enum eval_flags_t {
     //EVAL_FLAG_EVALUATE              = 0x2,
     EVAL_FLAG_FLATTEN               = 0x100,
     EVAL_FLAG_NO_STATIC_EVAL        = 0x200,
+    EVAL_FLAG_NO_LENGTH_CHECK       = 0x400,
 } eval_flags_t;
 
 // Propagate upwards to parent nodes within the AST tree
@@ -3540,7 +3541,7 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     }
     */
 
-    if (is_variable_length(node->data.type)) {
+    if (!(ctx->eval_flags & EVAL_FLAG_NO_LENGTH_CHECK) && is_variable_length(node->data.type)) {
         if (node->proc->flags & FLAG_QUERYABLE_LENGTH) {
             // Try to resolve length by calling the procedure
             static_backchannel_t channel = {0};
@@ -4101,7 +4102,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         // No point in letting expressions statically evaluate and store its data within the tree at this point
         // Conversions and other stuff may occur later
         uint32_t flags = ctx->eval_flags;
-        ctx->eval_flags |= EVAL_FLAG_NO_STATIC_EVAL;
+        ctx->eval_flags |= EVAL_FLAG_NO_STATIC_EVAL | EVAL_FLAG_NO_LENGTH_CHECK;
         result = static_check_children(node, ctx);
         ctx->eval_flags = flags;
         if (result) {
@@ -4148,8 +4149,8 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         }
         
         // Perform new child check here since children may have changed due to conversions etc.
-        // Here we let the static evalu
-        result = result && finalize_proc_call(node, ctx);
+        // Also allow for any static evaluation to occur and for length to be determined etc.
+        result = result && finalize_proc_call(node, ctx) && static_check_children(node, ctx);
 
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
@@ -5110,7 +5111,7 @@ static void allocate_property_data(md_script_property_t* prop, type_info_t type,
 				dim_shift_right(type.dim);
 			}
             prop->data.dim[0] = (int32_t)num_frames;
-            prop->data.dim[1] = type.dim[0];
+            prop->data.dim[1] = type.dim[1];
             break;
         case MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION:
             if (dim_ndims(type.dim) < 3) {
