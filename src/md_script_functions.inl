@@ -371,7 +371,7 @@ static int _rdf_flt (data_t*, data_t[], eval_context_t*); // (position[], positi
 static int _rdf_frng(data_t*, data_t[], eval_context_t*); // (position[], position[], frange) -> float[1024] (Histogram).
 
 // Density along the axis of the unit cell
-static int _density  (data_t*, data_t[],   eval_context_t*);
+static int _density  (data_t*, data_t[], eval_context_t*);
 static int _density_x(data_t*, data_t[], eval_context_t*);
 static int _density_y(data_t*, data_t[], eval_context_t*);
 static int _density_z(data_t*, data_t[], eval_context_t*);
@@ -635,7 +635,7 @@ static procedure_t procedures[] = {
     {CSTR("distance_max"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
     {CSTR("distance_pair"),     TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_pair,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH | FLAG_NO_FLATTEN},
 
-    {CSTR("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                    _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
+    {CSTR("angle"),     TI_FLOAT,   3,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},                      _angle,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
     {CSTR("dihedral"),  TI_FLOAT,   4,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_COORDINATE_ARR},   _dihedral,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_NO_FLATTEN},
 
     {CSTR("rmsd"),      TI_FLOAT,   1,  {TI_BITFIELD},    _rmsd,     FLAG_DYNAMIC | FLAG_VISUALIZE},
@@ -3942,7 +3942,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
                 density[1][bin_idx[1]] += w;
                 density[2][bin_idx[2]] += w;
             } else {
-                density[0][bin_idx[0]] += w;
+                density[0][bin_idx[axis]] += w;
             }
         }
 
@@ -3950,21 +3950,29 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         const vec3_t vy = ctx->mol->unit_cell.basis.col[1];
         const vec3_t vz = ctx->mol->unit_cell.basis.col[2];
 
-        const float slice_volume[3] = {
-            fabsf(vec3_dot(vec3_cross(vy, vz), vec3_div_f(vx, MD_DIST_BINS))),
-            fabsf(vec3_dot(vec3_cross(vx, vz), vec3_div_f(vy, MD_DIST_BINS))),
-            fabsf(vec3_dot(vec3_cross(vx, vy), vec3_div_f(vz, MD_DIST_BINS))),
+        const double slice_volume[3] = {
+            fabs(vec3_length(vec3_cross(vy, vz)) * vec3_length(vx) / MD_DIST_BINS),
+            fabs(vec3_length(vec3_cross(vx, vz)) * vec3_length(vy) / MD_DIST_BINS),
+            fabs(vec3_length(vec3_cross(vx, vy)) * vec3_length(vz) / MD_DIST_BINS),
+        };
+
+        // Convert atomic mass / Ångström^3 to SI units KG/M^3
+        // 1660.5390666?
+        const double normalization_factor[3] = {
+            1660.5390666 / slice_volume[0],
+            1660.5390666 / slice_volume[1],
+            1660.5390666 / slice_volume[2],
         };
 
         if (axis == -1) {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[0][i] /= slice_volume[0];
-                density[1][i] /= slice_volume[1];
-                density[2][i] /= slice_volume[2];
+                density[0][i] *= normalization_factor[0];
+                density[1][i] *= normalization_factor[1];
+                density[2][i] *= normalization_factor[2];
             }
         } else {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[0][i] /= slice_volume[axis];
+                density[0][i] *= normalization_factor[axis];
             }
         }
     } else {
@@ -3985,7 +3993,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             }
         }
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ 0 };
+            ctx->backchannel->unit = md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
             ctx->backchannel->value_range = (frange_t){0, 1};
         }
     }
