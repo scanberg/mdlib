@@ -716,6 +716,10 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
                 elem = H;
                 goto done;
             }
+            if (str_eq_cstr(name, "HS")) {
+                elem = H;
+                goto done;
+            }
 
             // 2-3 letters + 1-2 digit (e.g. HO(H)[0-99]) usually means just look at the first letter
             if ((num_alpha == 2 || num_alpha == 3) && (num_digits == 1 || num_digits == 2)) {
