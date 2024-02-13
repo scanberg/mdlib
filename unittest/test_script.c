@@ -391,6 +391,65 @@ UTEST(script, array) {
     }
 
     {
+        str_t src = STR_LIT(
+            "d1 = distance(1,2) in residue(1:2);\n"
+            "d2 = distance(1,2) in residue(2:4);\n"
+            "d = {d1, d2};"
+        );
+
+        md_script_ir_clear(ir);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(result);
+        identifier_t* d1 = get_identifier(ir, STR_LIT("d1"));
+        identifier_t* d2 = get_identifier(ir, STR_LIT("d2"));
+        identifier_t* d  = get_identifier(ir, STR_LIT("d"));
+
+        if (d1) {
+            EXPECT_EQ(d1->data->type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(d1->data->type.dim[0], 2);
+        }
+        if (d2) {
+            EXPECT_EQ(d2->data->type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(d2->data->type.dim[0], 3);
+        }
+        if (d) {
+            EXPECT_EQ(d->data->type.base_type,  TYPE_FLOAT);
+            EXPECT_EQ(d->data->type.dim[0], 5);
+        }
+    }
+
+    {
+        str_t src = STR_LIT(
+            "c1 = coord(1:2);\n"
+            "c2 = coord(4:6);\n"
+            "c = {c1, c2};"
+        );
+
+        md_script_ir_clear(ir);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(result);
+        identifier_t* c1 = get_identifier(ir, STR_LIT("c1"));
+        identifier_t* c2 = get_identifier(ir, STR_LIT("c2"));
+        identifier_t* c  = get_identifier(ir, STR_LIT("c"));
+
+        if (c1) {
+            EXPECT_EQ(c1->data->type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(c1->data->type.dim[0], 2);
+            EXPECT_EQ(c1->data->type.dim[1], 3);
+        }
+        if (c2) {
+            EXPECT_EQ(c2->data->type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(c2->data->type.dim[0], 3);
+            EXPECT_EQ(c1->data->type.dim[1], 3);
+        }
+        if (c) {
+            EXPECT_EQ(c->data->type.base_type,  TYPE_FLOAT);
+            EXPECT_EQ(c->data->type.dim[0], 5);
+            EXPECT_EQ(c->data->type.dim[1], 3);
+        }
+    }
+
+    {
         md_script_ir_clear(ir);
         ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = coord(1) in residue(:)"), ir, &test_mol, &vm_arena);
         EXPECT_TRUE(node != NULL);
@@ -411,7 +470,6 @@ UTEST(script, array) {
             ASSERT_NE(NULL, ident);
             ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(4, ident->data->type.dim[0]);
-            EXPECT_EQ(1, ident->data->type.dim[1]);
         }
     }
     {
@@ -434,8 +492,7 @@ UTEST(script, array) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
             ASSERT_NE(NULL, ident);
             ASSERT_NE(NULL, ident->data);
-            EXPECT_EQ(2, ident->data->type.dim[0]);
-            EXPECT_EQ(4, ident->data->type.dim[1]);
+            EXPECT_EQ(8, ident->data->type.dim[0]);
         }
     }
 

@@ -93,7 +93,6 @@
 
 typedef struct tokenizer_t tokenizer_t;
 typedef struct token_t token_t;
-typedef struct expression_t expression_t;
 typedef struct ast_node_t ast_node_t;
 typedef struct procedure_t procedure_t;
 typedef struct identifier_t identifier_t;
@@ -141,7 +140,6 @@ typedef enum token_type_t {
 typedef enum ast_type_t {
     AST_UNDEFINED = 0,
     AST_EXPRESSION,         // Parenthesis wrapped expression, We need to have it up here to ensure its precedence over things
-    AST_STATIC_PROC,
     AST_PROC_CALL,          // Procedure call, Operators are directly translated into procedure calls as well.
     AST_CONSTANT_VALUE,
     AST_TABLE,
@@ -167,6 +165,7 @@ typedef enum ast_type_t {
     AST_OUT,
     AST_CONTEXT,
     AST_ASSIGNMENT,
+    AST_FLATTEN,
 } ast_type_t;
 
 typedef enum base_type_t {
@@ -241,34 +240,7 @@ struct irange_t {
 
 struct type_info_t {
     base_type_t  base_type;
-
-    // This is how we encode the types dimensionality in dim
-    // The example is given with base_type == float
-    // 
-    // dim = [0][0][0][0], len_dim = 0,  Uninitialized
-    // dim = [1][0][0][0], len_dim = 0,  float[1]       (scalar)
-    // 
-    // dim = [2][0][0][0], len_dim = 0   float[2]       (float of length 2)
-    // dim = [2][0][0][0], len_dim = 1   float[2][0]    (float[2] of length 0)
-    // dim = [2][2][0][0], len_dim = 1   float[2][2]    (float[2] of length 2)
-    // 
-    // dim = [4][0][0][0], len_dim = 0   float[4]       (float of length 4)
-    // dim = [4][1][0][0], len_dim = 1   float[4][1]    (float[4] of length 1)
-    // 
-    // dim = [4][4][0][0], len_dim = 1   float[4][4]    (float[4] of length 4)
-    // dim = [4][4][1][0], len_dim = 2   float[4][4][1] (mat4 of length 1)
-    // 
-    // dim = [4][4][3][0], len_dim = 2   float[4][4][3] (mat4 of length 3)
-    // 
-    // Note that there is no differentiation between a true scalar and an array of length [1]. This is intentional to implicitly support scalars
-    // as input arguments to procedures which operate on arrays of varying length.
-    // 
-    // Procedures encode their support of varying length in arguments and return values by encoding that particular dimension with -1
-    // dim = [-1][0][0][0] Would sample_mean that this argument accepts arrays of base_type of any length
-    // dim = [4][-1][0][0] Would sample_mean that this argument accepts arrays of base_type[4] of any length
-
     int dim[MAX_NUM_DIMS]; // The dimensionality of a single element, each entry in dim represents a multidimensional length
-    //int len_dim;                      // Tells us which dimension in dim that encodes the length
 };
 
 // There is a conceptual twist here if len should belong to the type_info_t or if it should belong to data_t
@@ -442,12 +414,6 @@ typedef struct tokenizer_t {
     int     line_offset;  // offset to the current line
 } tokenizer_t;
 
-typedef struct expression_t {
-    ast_node_t*   node;     
-    //identifier_t* ident;
-    str_t str;
-} expression_t;
-
 struct md_script_ir_t {
     uint64_t magic;
     uint64_t fingerprint;
@@ -460,9 +426,13 @@ struct md_script_ir_t {
     
     md_array(ast_node_t*) nodes;                        // All nodes in the AST tree
 
-    md_array(expression_t*) expressions;                // List of all expressions in the script
-    md_array(expression_t*) type_checked_expressions;   // List of expressions which passed type checking
-    md_array(expression_t*) eval_targets;               // List of dynamic expressions which needs to be evaluated per frame
+    md_array(ast_node_t*) expressions;                  // List of all expressions in the script
+    md_array(ast_node_t*) type_checked_expressions;     // List of expressions which passed type checking
+    md_array(ast_node_t*) eval_targets;                 // List of dynamic expressions which needs to be evaluated per frame
+
+    md_array(data_t)    static_expression_data;         // Static expressions which are constant and evaluated during static analysis. These form the basis for common subexpression elimination
+    md_array(uint64_t)  static_expression_hash;         // hash of expression
+    md_array(str_t)     static_expression_str;          // string for debugging
     
     md_array(identifier_t)  identifiers;                // List of identifiers, notice that the data in a const context should only be used if it is flagged as
     md_array(table_t) tables;                           // List of tables which are used in the script
@@ -515,13 +485,13 @@ static uint64_t generate_fingerprint() {
 static uint32_t operator_precedence(ast_type_t type) {
     switch(type) {
     case AST_EXPRESSION:
-    case AST_STATIC_PROC:
     case AST_PROC_CALL:
     case AST_CONSTANT_VALUE:
     case AST_TABLE:
     case AST_IDENTIFIER:
     case AST_ARRAY:
     case AST_ARRAY_SUBSCRIPT:
+    case AST_FLATTEN:
         return 1;
     case AST_CAST:
     case AST_UNARY_NEG:
@@ -1090,6 +1060,9 @@ static inline bool is_value_type_logical_operator_compatible(base_type_t type) {
 static inline bool is_identifier_static_procedure(str_t ident) {
     if (str_eq(ident, STR_LIT("import"))) {
         return true;   
+    }
+    else if (str_eq(ident, STR_LIT("flatten"))) {
+        return true;
     }
     return false;
 }
@@ -2034,10 +2007,15 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
     ast_node_t* node = 0;
     constant_t* c = 0;
     
-    if (is_identifier_static_procedure(ident)) {
+    if (str_eq(ident, STR_LIT("import"))) {
         node = parse_procedure_call(ctx, token);
         if (node) {
-            node->type = AST_STATIC_PROC;
+            node->type = AST_TABLE;
+        }
+    } else if (str_eq(ident, STR_LIT("flatten"))) {
+        node = parse_procedure_call(ctx, token);
+        if (node) {
+            node->type = AST_FLATTEN;
         }
     } else if (is_identifier_procedure(ident)) {
         // The identifier has matched some procedure name
@@ -2659,7 +2637,7 @@ static bool evaluate_constant_value(data_t* dst, const ast_node_t* node, eval_co
     return true;
 }
 
-static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+static bool evaluate_table_lookup(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_TABLE);
 
     if (dst) {
@@ -2752,6 +2730,48 @@ static bool evaluate_table_value(data_t* dst, const ast_node_t* node, eval_conte
     }
 
     return true;
+}
+
+static bool evaluate_flatten(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node && node->type == AST_FLATTEN);
+    ASSERT(node->children && md_array_size(node->children) == 1);
+    const ast_node_t* arg = node->children[0];
+
+    if (dst) {
+        if (node->data.type.base_type == TYPE_BITFIELD) {
+            data_t data = {0};
+            const md_bitfield_t* src_arr = 0;
+            size_t src_len = 0;
+
+            if (arg->flags & FLAG_CONSTANT && arg->data.ptr) {
+                // Assume that it has data. No need to copy here...
+                src_arr = arg->data.ptr;
+                src_len = type_info_array_len(arg->data.type);
+            } else {
+                if (!allocate_data(&data, arg->data.type, ctx->temp_alloc)) {
+                    LOG_ERROR(ctx->ir, node->token, "Failed to allocate data to evaluate flatten operation");
+                    return false;
+                }
+                if (!evaluate_node(&data, arg, ctx)) {
+                    return false;
+                }
+                src_arr = data.ptr;
+                src_len = type_info_array_len(data.type);
+            }
+
+            md_bitfield_t* dst_bf = dst->ptr;
+            for (size_t i = 0; i < src_len; ++i) {
+                md_bitfield_or_inplace(dst_bf, src_arr + i);
+            }
+            return true;
+        } else {
+            data_t new_dst = *dst;
+            new_dst.type = arg->data.type;
+            return evaluate_node(&new_dst, arg, ctx);
+        }
+    } else {
+        return evaluate_node(dst, arg, ctx);
+    }
 }
 
 static identifier_t* find_static_identifier(str_t name, eval_context_t* ctx) {
@@ -3137,6 +3157,12 @@ static bool evaluate_out(data_t* dst, const ast_node_t* node, eval_context_t* ct
 static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(node && node->type == AST_CONTEXT);
+
+    if (dst && node->flags & FLAG_CONSTANT) {
+        copy_data(dst, &node->data);
+        return true;
+    }
+
     ASSERT(md_array_size(node->children) == 2);
 
     const ast_node_t* expr_node = node->children[0];
@@ -3220,6 +3246,11 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
 static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
 
+    if (dst && node->flags & FLAG_CONSTANT) {
+        copy_data(dst, &node->data);
+        return true;
+    }
+
     switch (node->type) {
         case AST_PROC_CALL:
             return evaluate_proc_call(dst, node, ctx);
@@ -3232,7 +3263,9 @@ static bool evaluate_node(data_t* dst, const ast_node_t* node, eval_context_t* c
         case AST_CONSTANT_VALUE:
             return evaluate_constant_value(dst, node, ctx);
         case AST_TABLE:
-            return evaluate_table_value(dst, node, ctx);
+            return evaluate_table_lookup(dst, node, ctx);
+        case AST_FLATTEN:
+            return evaluate_flatten(dst, node, ctx);
         case AST_IDENTIFIER:
             return evaluate_identifier_reference(dst, node, ctx);
         case AST_CONTEXT:
@@ -3894,6 +3927,10 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node);
     ASSERT(ctx);
 
+    if (!static_check_children(node, ctx)) {
+        return false;
+    }
+
     const size_t num_args = md_array_size(node->children);
     ast_node_t** const args = node->children;
 
@@ -4041,28 +4078,45 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
     return true;
 }
 
-static bool static_check_static_proc(ast_node_t* node, eval_context_t* ctx) {
-    ASSERT(node->type == AST_STATIC_PROC);
+static bool static_check_flatten(ast_node_t* node, eval_context_t* ctx) {
+    ASSERT(node);
+    ASSERT(node->type == AST_FLATTEN);
+    ASSERT(ctx);
 
-    if (!static_check_children(node, ctx)) {
+    size_t num_args = md_array_size(node->children);
+    if (num_args != 1) {
+        LOG_ERROR(ctx->ir, node->token, "Expected 1 argument to built in procedure flatten, got %zu", num_args);
         return false;
     }
 
-    if (str_eq(node->ident, STR_LIT("import"))) {
-        return static_check_import(node, ctx);
+    uint32_t flags = ctx->eval_flags;
+    ctx->eval_flags |= EVAL_FLAG_FLATTEN;
+    if (!static_check_children(node, ctx)) {
+        return false;
+    }
+    ctx->eval_flags = flags;
+
+    const ast_node_t* arg = node->children[0];
+    if (arg->data.type.base_type == TYPE_UNDEFINED) {
+        LOG_ERROR(ctx->ir, arg->token, "Argument to built in procedure 'flatten' has undefined base type");
+        return false;
     }
 
-    type_info_t arg_type[MAX_SUPPORTED_PROC_ARGS];
-    size_t num_args = extract_argument_types(arg_type, ARRAY_SIZE(arg_type), node);
-    
-    char buf[512];
-    print_argument_list(buf, ARRAY_SIZE(buf), arg_type, num_args);
-        
-    LOG_ERROR(ctx->ir, node->token,
-        "Could not find matching static procedure '"STR_FMT"' which takes the following argument(s): '%s'",
-        STR_ARG(node->ident), buf);
-    
-    return false;
+    // @NOTE: Flatten conceptually flattens the dimensions into a one dimensional array
+    node->data = arg->data;
+    MEMSET(node->data.type.dim, 0, sizeof(int) * MAX_NUM_DIMS);
+    if (arg->data.type.dim[0] == -1) {
+        node->data.type.dim[0] = -1;
+    } else {
+        node->data.type.dim[0] = dim_size(arg->data.type.dim);
+    }
+
+    if (node->data.type.base_type == TYPE_BITFIELD) {
+        // If we are dealing with bitfields, we flatten even further by collapsing it into a single bitfield
+        node->data.type.dim[0] = 1;
+    }
+
+    return true;
 }
 
 static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
@@ -4167,10 +4221,6 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node->data.type.base_type != TYPE_UNDEFINED);
     ASSERT(is_scalar(node->data.type));
 
-    node->data.ptr  = &node->value;
-    node->data.size = base_type_element_byte_size(node->data.type.base_type);
-    node->flags |= FLAG_CONSTANT;
-
     if (node->data.type.base_type == TYPE_IRANGE) {
         // Make sure the range is given in an ascending format, lo:hi
         irange_t rng = node->value._irange;
@@ -4179,6 +4229,10 @@ static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
             return false;
         }
     }
+
+    node->data.ptr  = &node->value;
+    node->data.size = base_type_element_byte_size(node->data.type.base_type);
+    node->flags |= FLAG_CONSTANT;
     
     return true;
 }
@@ -4204,11 +4258,13 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         
         // Pass 1: find a suitable base_type for the array
         for (size_t i = 0; i < num_elem; ++i) {
-            type_info_t elem_type = elem[i]->data.type;
+            int elem_len = type_info_array_len(elem[i]->data.type);
+            type_info_t elem_type = type_info_element_type(elem[i]->data.type);
             if (is_variable_length(elem_type)) {
                 array_len = -1;
             }
 
+            /*
             // Normalize the type and dimensions here for the length to be computed correctly
             if (elem_type.base_type != TYPE_BITFIELD) {
                 int ndim = dim_ndims(elem_type.dim);
@@ -4217,12 +4273,14 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
                 }
                 // Turn the normalized form into a single entity
                 elem_type.dim[0] = 1;
-            } else {
+            }
+            */
+            if (elem_type.base_type == TYPE_BITFIELD) {
                 // Bitfield
                 dim_flatten(elem_type.dim);
             }
 
-            if (array_len >= 0) array_len += type_info_array_len(elem_type);
+            if (array_len >= 0) array_len += elem_len;
 
             if (array_type.base_type == TYPE_UNDEFINED) {
                 // Assign type from first element
@@ -4416,7 +4474,7 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
 
     // SUCCESS!
     node->subscript_dim = num_args;
-    node->flags = lhs->flags;
+    node->flags = (lhs->flags & FLAG_AST_PROPAGATION_MASK);
     node->data.type = result_type;
     node->data.unit = lhs->data.unit;
     return true;
@@ -4769,8 +4827,11 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     case AST_IDENTIFIER:
         result = static_check_identifier_reference(node, ctx);
         break;
-    case AST_STATIC_PROC:
-        result = static_check_static_proc(node, ctx);
+    case AST_TABLE:
+        result = static_check_import(node, ctx);
+        break;
+    case AST_FLATTEN:
+        result = static_check_flatten(node, ctx);
         break;
     case AST_PROC_CALL:
         result = static_check_proc_call(node, ctx);
@@ -4805,6 +4866,13 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 
     if (result && !(node->flags & FLAG_DYNAMIC) && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
         static_eval_node(node, ctx);
+    }
+
+    // Prune trailing ones in dimensions
+    for (int i = MAX_NUM_DIMS - 1; i > 0; --i) {
+        if (node->data.type.dim[i] == 1) {
+            node->data.type.dim[i] = 0;
+        }
     }
 
     return result;
@@ -4850,11 +4918,15 @@ static uint64_t hash_node(const ast_node_t* node) {
             return hash64(node->data.ptr, node->data.size);
         }
     case AST_IDENTIFIER:
-        return hash64(node->ident.ptr, node->ident.len);
+        return AST_IDENTIFIER ^ hash64(node->ident.ptr, node->ident.len);
     case AST_PROC_CALL:
-        return hash64(node->ident.ptr, node->ident.len) ^ hash_children(node);
+        return AST_PROC_CALL ^ hash64(node->ident.ptr, node->ident.len) ^ hash_children(node);
+    case AST_TABLE:
+        return AST_TABLE ^ hash64(node->table->name.ptr, node->table->name.len) ^ hash64((const char*)node->table_field_indices, sizeof(int) * md_array_size(node->table_field_indices));
+    case AST_ARRAY:
+    case AST_ARRAY_SUBSCRIPT:
     default:
-        return hash_children(node);
+        return node->type ^ hash_children(node);
     }
 }
 
@@ -4895,8 +4967,6 @@ static bool parse_script(md_script_ir_t* ir) {
 
     token_t tok = {0};
     while (tok = tokenizer_peek_next(ctx.tokenizer), tok.type != TOKEN_END) {
-        const char* beg = tok.str.ptr;
-
         ctx.node = 0;
         ir->record_log = true;   // We reset the error recording flag before each statement
         ast_node_t* raw_node = parse_expression(&ctx);
@@ -4908,29 +4978,7 @@ static bool parse_script(md_script_ir_t* ir) {
                 result = false;
                 continue;
             }
-
-            const char* end = tok.str.ptr + tok.str.len;
-            str_t expr_str = {beg, (size_t)(end - beg)};
-
-            /*
-            if (pruned_node->type == AST_ASSIGNMENT) {
-                ASSERT(md_array_size(pruned_node->children) == 2);
-                if (pruned_node->children[0]->type == AST_IDENTIFIER) {
-                    identifier_t* ident = get_identifier(ir, pruned_node->children[0]->ident);
-                    ASSERT(ident);
-
-                } else if (pruned_node->children[0]->type == AST_ARRAY) {
-
-                } else {
-                    ASSERT(false);
-                }
-            }
-            */
-            expression_t* expr = md_alloc(ir->arena, sizeof(expression_t));
-            expr->node = pruned_node;
-            //expr->ident = ident;
-            expr->str = expr_str;
-            md_array_push(ir->expressions, expr, ir->arena);
+            md_array_push(ir->expressions, pruned_node, ir->arena);
         } else {
             token_type_t types[1] = {';'};
             tokenizer_consume_until_type(ctx.tokenizer, types, ARRAY_SIZE(types)); // Goto next statement
@@ -4963,11 +5011,11 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
 
     for (size_t i = 0; i < md_array_size(ir->expressions); ++i) {
         ir->record_log = true;   // We reset the error recording flag before each statement
-        if (static_check_node(ir->expressions[i]->node, &ctx)) {
+        if (static_check_node(ir->expressions[i], &ctx)) {
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
-            ir->flags |= (ir->expressions[i]->node->flags & FLAG_IR_PROPAGATION_MASK);
+            ir->flags |= (ir->expressions[i]->flags & FLAG_IR_PROPAGATION_MASK);
         } else {
-            MD_LOG_DEBUG("Static type checking failed for expression: '"STR_FMT"'", (int)ir->expressions[i]->str.len, ir->expressions[i]->str.ptr);
+            MD_LOG_DEBUG("Static type checking failed for expression: '"STR_FMT"'", STR_ARG(ir->expressions[i]->token.str));
             result = false;
         }
     }
@@ -4982,10 +5030,9 @@ static bool extract_dynamic_evaluation_targets(md_script_ir_t* ir) {
 
     // Check all type checked expressions for dynamic flag
     for (size_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
-        expression_t* expr = ir->type_checked_expressions[i];
+        ast_node_t* expr = ir->type_checked_expressions[i];
         ASSERT(expr);
-        ASSERT(expr->node);
-        if (expr->node->flags & FLAG_DYNAMIC && expr->node->type == AST_ASSIGNMENT) {
+        if (expr->flags & FLAG_DYNAMIC && expr->type == AST_ASSIGNMENT) {
             // If it does not have an identifier, it cannot be referenced and therefore we don't need to evaluate it dynamcally
             md_array_push(ir->eval_targets, ir->type_checked_expressions[i], ir->arena);
         }
@@ -5016,34 +5063,60 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(ctx->ir);
 
     const size_t num_children = md_array_size(node->children);
-    bool result = true;
     
     // Propagate the evaluation all the way down to the children.
     if (node->children) {
         size_t offset = 0;
         if (node->type == AST_CONTEXT) offset = 1;  // We don't want to evaluate the lhs in a context on its own since then it will loose its context
         for (size_t i = offset; i < num_children; ++i) {
-            result &= static_eval_node(node->children[i], ctx);
+            if (!static_eval_node(node->children[i], ctx)) {
+                return false;
+            }
         }
     }
 
     // Only evaluate the node if it is not flagged as dynamic
     // Only evaluate if data.ptr is not already set (which can happen during static check)
     if (!(node->flags & FLAG_DYNAMIC) && !node->data.ptr) {
-        if (allocate_data(&node->data, node->data.type, ctx->ir->arena)) {
-            result &= evaluate_node(&node->data, node, ctx);
+        uint64_t hash = hash_node(node);
+
+        // Try to find in existing expressions
+        const size_t num_expressions = md_array_size(ctx->ir->static_expression_hash);
+        for (size_t i = 0; i < num_expressions; ++i) {
+            if (hash == ctx->ir->static_expression_hash[i]) {
+                // str_t str = ctx->ir->static_expression_str[i];
+                node->data = ctx->ir->static_expression_data[i];
+                node->flags |= FLAG_CONSTANT;
+                return true;
+            }
+        }
+
+        data_t data = {0};
+        if (allocate_data(&data, node->data.type, ctx->ir->arena)) {
+            if (!evaluate_node(&data, node, ctx)) {
+                LOG_ERROR(ctx->ir, node->token, "Failed to evaluate node during static evaluation");
+                return false;
+            }
             if (node->type == AST_CONTEXT) {
                 ASSERT(node->children);
                 // If its a context node, we copy the data to the child as well
-                node->children[0]->data = node->data;
+                node->children[0]->data = data;
             }
+            node->data = data;
             node->flags |= FLAG_CONSTANT;
+
+            md_array_push(ctx->ir->static_expression_hash, hash, ctx->alloc);
+            md_array_push(ctx->ir->static_expression_data, data, ctx->alloc);
+            md_array_push(ctx->ir->static_expression_str, node->token.str, ctx->alloc);
+
+            return true;
         } else {
             LOG_ERROR(ctx->ir, node->token, "Could not allocate data for node during static evaluation");
+            return false;
         }
     }
 
-    return result;
+    return true;
 }
 
 static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
@@ -5063,7 +5136,7 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
 
     // Evaluate every node which is not flagged with FLAG_DYNAMIC and store its value.
     for (size_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
-        result &= static_eval_node(ir->type_checked_expressions[i]->node, &ctx);
+        result &= static_eval_node(ir->type_checked_expressions[i], &ctx);
         md_vm_arena_reset(&vm_arena);
     }
 
@@ -5293,7 +5366,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     if (num_props == 0) return true;
     
     const size_t num_expr = md_array_size(ir->eval_targets);
-    expression_t** const expr = ir->eval_targets;
+    ast_node_t** const expr = ir->eval_targets;
     
     //ASSERT(md_array_size(ir->prop_eval_target_indices) == num_props);
 
@@ -5372,25 +5445,25 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         ctx.spatial_hash = 0;
 
         for (size_t i = 0; i < num_expr; ++i) {
-            type_info_t type = expr[i]->node->data.type;
+            type_info_t type = expr[i]->data.type;
             if (is_variable_length(type)) {
-                if (!finalize_type(&type, expr[i]->node, &ctx)) {
-                    str_t str = expr[i]->str;
-                    MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"', failed to finalize its type", (int)str.len, str.ptr);
+                if (!finalize_type(&type, expr[i], &ctx)) {
+                    str_t str = expr[i]->token.str;
+                    MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"', failed to finalize its type", STR_ARG(str));
                     result = false;
                     goto done;
                 }
             }
             allocate_data(&data[i], type, &temp_alloc);
-            data[i].unit = expr[i]->node->data.unit;
-            data[i].value_range = expr[i]->node->data.value_range;
+            data[i].unit = expr[i]->data.unit;
+            data[i].value_range = expr[i]->data.value_range;
             if (data[i].value_range.beg == 0 && data[i].value_range.end == 0) {
                 data[i].value_range.beg = -FLT_MAX;
                 data[i].value_range.end = +FLT_MAX;
             }
-            if (!evaluate_node(&data[i], expr[i]->node, &ctx)) {
-                str_t str = expr[i]->str;
-                MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"' at frame %i", (int)str.len, str.ptr, (int)f_idx);
+            if (!evaluate_node(&data[i], expr[i], &ctx)) {
+                str_t str = expr[i]->token.str;
+                MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"' at frame %i", STR_ARG(str), (int)f_idx);
                 result = false;
                 goto done;
             }
@@ -5681,8 +5754,8 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
 bool extract_vis_tokens(md_script_ir_t* ir) {
     const size_t num_expr = md_array_size(ir->type_checked_expressions);
     for (size_t i = 0; i < num_expr; ++i) {
-        expression_t* expr = ir->type_checked_expressions[i];
-        create_vis_tokens(ir, expr->node, NULL, 0);
+        ast_node_t* expr = ir->type_checked_expressions[i];
+        create_vis_tokens(ir, expr, NULL, 0);
     }
 
     return true;
@@ -5742,7 +5815,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
     ir->fingerprint = 89017241625762ull;
     const size_t num_expr = md_array_size(ir->type_checked_expressions);
     for (size_t i = 0; i < num_expr; ++i) {
-        uint64_t hash = hash_node(ir->type_checked_expressions[i]->node);
+        uint64_t hash = hash_node(ir->type_checked_expressions[i]);
 #if DEBUG
         //md_logf(MD_LOG_TYPE_DEBUG, "%llu", hash);
 #endif
@@ -5912,18 +5985,17 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
 
     size_t num_prop_expr = 0;
     for (size_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
-        expression_t* expr = ir->eval_targets[i];
+        ast_node_t* expr = ir->eval_targets[i];
         ASSERT(expr);
-        ASSERT(expr->node);
-        if (expr->node->type == AST_ASSIGNMENT && is_property_type(expr->node->data.type)) {
-            if (expr->node->children[0]->type == AST_IDENTIFIER) {
-                ast_node_t* lhs = expr->node->children[0];
+        if (expr->type == AST_ASSIGNMENT && is_property_type(expr->data.type)) {
+            if (expr->children[0]->type == AST_IDENTIFIER) {
+                ast_node_t* lhs = expr->children[0];
                 md_script_property_t prop = {0};
-                init_property(&prop, num_frames, lhs->ident, expr->node, eval->arena);
+                init_property(&prop, num_frames, lhs->ident, expr, eval->arena);
                 md_array_push(eval->properties, prop, eval->arena);
                 num_prop_expr += 1;
-            } else if (expr->node->children[0]->type == AST_ARRAY) {
-            	ast_node_t* lhs = expr->node->children[0];
+            } else if (expr->children[0]->type == AST_ARRAY) {
+            	ast_node_t* lhs = expr->children[0];
 				for (size_t j = 0; j < md_array_size(lhs->children); ++j) {
 					ast_node_t* child = lhs->children[j];
 					ASSERT(child->type == AST_IDENTIFIER);

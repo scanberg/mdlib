@@ -18,13 +18,13 @@
 #define TI_BOOL_ARR     {TYPE_BOOL,  {ANY_LENGTH}}
 #define TI_FLOAT        {TYPE_FLOAT, {1}}
 #define TI_FLOAT_ARR    {TYPE_FLOAT, {ANY_LENGTH}}
-#define TI_FLOAT2       {TYPE_FLOAT, {2}}
+#define TI_FLOAT2       {TYPE_FLOAT, {1,2}}
 #define TI_FLOAT2_ARR   {TYPE_FLOAT, {ANY_LENGTH,2}}
-#define TI_FLOAT3       {TYPE_FLOAT, {3}}
+#define TI_FLOAT3       {TYPE_FLOAT, {1,3}}
 #define TI_FLOAT3_ARR   {TYPE_FLOAT, {ANY_LENGTH,3}}
-#define TI_FLOAT4       {TYPE_FLOAT, {4}}
+#define TI_FLOAT4       {TYPE_FLOAT, {1,4}}
 #define TI_FLOAT4_ARR   {TYPE_FLOAT, {ANY_LENGTH,4}}
-#define TI_FLOAT44      {TYPE_FLOAT, {4,4}}
+#define TI_FLOAT44      {TYPE_FLOAT, {1,4,4}}
 #define TI_FLOAT44_ARR  {TYPE_FLOAT, {ANY_LENGTH,4,4}}
 
 // The second dimension in the distribution encodes weights for each bin
@@ -669,12 +669,11 @@ static procedure_t procedures[] = {
     {CSTR("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
 
     // --- MISC ---
+    {CSTR("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
+    {CSTR("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
 
-    {CSTR("join"),      TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
-    {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
-
-    {CSTR("residue"),   TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {CSTR("chain"),     TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {CSTR("residue"),   TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {CSTR("chain"),     TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
 };
 

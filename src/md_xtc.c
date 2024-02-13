@@ -308,16 +308,16 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
             header->unit_cell = md_util_unit_cell_from_matrix(box);
         }
 
-        if (x || y || z) {
+        if (x && y && z) {
             size_t byte_size = natoms * sizeof(rvec);
             rvec* pos = md_alloc(md_heap_allocator, byte_size);
             result = xtc_frame_coords(file, natoms, pos);
             if (result) {            
                 // nm -> Ångström
                 for (int i = 0; i < natoms; ++i) {
-                    if (x) x[i] = pos[i][0] * 10.0f;
-                    if (y) y[i] = pos[i][1] * 10.0f;
-                    if (z) z[i] = pos[i][2] * 10.0f;
+                    x[i] = pos[i][0] * 10.0f;
+                    y[i] = pos[i][1] * 10.0f;
+                    z[i] = pos[i][2] * 10.0f;
                 }
             }
             md_free(md_heap_allocator, pos, byte_size);
