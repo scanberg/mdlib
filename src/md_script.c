@@ -190,7 +190,7 @@ typedef enum flags_t {
     FLAG_QUERYABLE_LENGTH           = 0x00010, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
     FLAG_STATIC_VALIDATION          = 0x00020, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
     FLAG_FLATTEN                    = 0x00040, // Hints that a procedure want flattened bitfields as input, e.g. within, this can be propagated to the arguments during static type checking
-    FLAG_NO_FLATTEN                 = 0x00080, // Hints that a procedure do not want flattened bitfields as input, e.g. com
+    //FLAG_NO_FLATTEN                 = 0x00080, // Hints that a procedure do not want flattened bitfields as input, e.g. com
     
     // Node flags
     FLAG_CONSTANT                   = 0x00100, // Marks the node as constant and should not be modified. It should also have data in its ptr
@@ -738,9 +738,8 @@ static bool is_type_directly_compatible(type_info_t from, type_info_t to) {
     if (type_info_equal(from, to)) return true;
 
     if (from.base_type == to.base_type) {
-
         // This is essentially a logical XOR, we only want to support this operation if we have one unspecified array dimension.
-        if (is_variable_length(from) != is_variable_length(to)) {
+        if (!is_variable_length(from) && is_variable_length(to)) {
             return is_type_dim_compatible(from, to);
         }
     }
@@ -3306,27 +3305,25 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
 
             ASSERT(to.dim[0] > -1);
 
-            value_t val = node->value;
-            data_t old = {
-                .type = node->data.type,
-                .size = node->data.size,
-                .ptr = &val,
-            };
-
-            // Convert the type
-            node->data.type = to;
-            node->data.size = type_info_total_byte_size(to);
-
-            if (to.base_type == TYPE_BITFIELD) {
-                // Initialize that sucker (only type that needs to be initialized)
-                md_bitfield_init(&node->value._bitfield, ctx->alloc);
+            data_t new_data = {0};
+            if (node->type == AST_CONSTANT_VALUE) {
+                new_data = node->data;
+                ASSERT(is_scalar(to));
+                new_data.type = to;
+                new_data.size = type_info_total_byte_size(to);
+                new_data.ptr  = &node->value;
+            } else {
+                allocate_data(&new_data, to, ctx->alloc);        
             }
 
             // Perform the data conversion
-            if (res.procedure->proc_ptr(&node->data, &old, ctx) == 0) {
-                // Do static evaluation of the node
-                return static_eval_node(node, ctx);
+            if (do_proc_call(&new_data, res.procedure, &node, 1, ctx) < 0) {
+                LOG_ERROR(ctx->ir, node->token, "Failed to perform data conversion of static data");
+                return false;
             }
+            // Finalize the node with the new converted data
+            node->data = new_data;
+            return true;
         } else {
             // We need to convert this node into a cast node and add the original node data as a child
             ast_node_t* node_copy = create_node(ctx->ir, node->type, node->token);
@@ -3474,18 +3471,6 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ast_node_t** args = node->children;
 
     if (num_args > 0) {
-        for (size_t i = 0; i < num_args; ++i) {
-            if (node->proc->arg_type[i].base_type == TYPE_COORDINATE) {
-                // Set coordinate flag, so we can visualize it properly later, since the coordinate type is a pseudo type
-                args[i]->flags |= FLAG_COORDINATE;
-
-                if (args[i]->data.type.base_type == TYPE_FLOAT && dim_ndims(args[i]->data.type.dim) == 1 && node->proc->arg_type[i].dim[0] == -1) {
-                    // If the procedures expects a coordinate array, but the input is a single coordinate, we need to convert it to an array
-					dim_shift_right(args[i]->data.type.dim);
-                }
-            }
-        }
-
         if (node->proc_flags & FLAG_SYMMETRIC_ARGS) {
             // If the symmetric flag is set, we swap the first two arguments
             ASSERT(num_args >= 2);
@@ -4084,18 +4069,6 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node->type == AST_PROC_CALL);
     uint32_t backup_flags = ctx->eval_flags;
 
-    if (str_eq(node->token.str, STR_LIT("distance(atom(1:7) in resname(\"PFT\"), vec3(0,0,0))"))) {
-        while(0) {};
-    }
-
-    if (str_eq(node->token.str, STR_LIT("sdf(chain(:), resname(\"PFT\"), 30.0)"))) {
-        while(0){};
-    }
-
-    if (str_eq_cstr_n(node->token.str, "distance(atom(1:7)", 17)) {
-        while(0){};
-    }
-
     bool result = true;
     // @NOTE: We do not want to overwrite the procedure if already assigned, as it might have been assigned as an operator (which is a proc call)
     if (!node->proc) {
@@ -4141,16 +4114,36 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
 
     // Resolve type of returned data
     if (result && node->proc) {
-        // If we have procedure flags modifying flatten state, then we need to recheck children with flags set
+        // Set eval flags from procedures before performing the final type check on arguments
         if (node->proc->flags & FLAG_FLATTEN) {
             ctx->eval_flags |= EVAL_FLAG_FLATTEN;
-        } else if (node->proc->flags & FLAG_NO_FLATTEN) {
+        }
+        /*
+        else if (node->proc->flags & FLAG_NO_FLATTEN) {
             ctx->eval_flags = ctx->eval_flags & (~EVAL_FLAG_FLATTEN);
         }
+        */
         
         // Perform new child check here since children may have changed due to conversions etc.
         // Also allow for any static evaluation to occur and for length to be determined etc.
-        result = result && finalize_proc_call(node, ctx) && static_check_children(node, ctx);
+        result = result && static_check_children(node, ctx);
+            
+        const size_t num_args = md_array_size(node->children);
+        ast_node_t** args = node->children;
+        for (size_t i = 0; i < num_args; ++i) {
+            if (node->proc->arg_type[i].base_type == TYPE_COORDINATE) {
+                if (args[i]->data.type.base_type == TYPE_FLOAT && dim_ndims(args[i]->data.type.dim) < 2) {
+                    // I.e. if the procedures expects a coordinate array, but the input is a single coordinate (float[3]), we need to convert it to an array (float[1][3])
+                    // To properly propagate the number of supplied coordinates (1)
+                    dim_shift_right(args[i]->data.type.dim);
+                }
+                // Set coordinate flag, so we can visualize it properly later, since the coordinate type is a pseudo type
+                args[i]->flags |= FLAG_COORDINATE;
+            }
+        }
+
+        // Finalize the procedure call and its type
+        result = result && finalize_proc_call(node, ctx);
 
         // Perform static validation by evaluating with NULL ptr
         if (result && node->proc->flags & FLAG_STATIC_VALIDATION) {
@@ -4169,7 +4162,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
 }
 
 static bool static_check_constant_value(ast_node_t* node, eval_context_t* ctx) {
-    (void)ctx;
+    (void)ctx; 
     ASSERT(node && node->type == AST_CONSTANT_VALUE);
     ASSERT(node->data.type.base_type != TYPE_UNDEFINED);
     ASSERT(is_scalar(node->data.type));
@@ -4611,10 +4604,6 @@ static bool static_check_out(ast_node_t* node, eval_context_t* ctx) {
 static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     ASSERT(node && node->type == AST_CONTEXT && node->children && md_array_size(node->children) == 2);
 
-    if (str_eq(node->token.str, STR_LIT("atom(1:7) in resname(\"PFT\")"))) {
-        while(0) {};
-    }
-
     // The rules are as follows:
     // A context RHS must be a bitfield type.
     //     
@@ -4629,11 +4618,10 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
     ast_node_t* rhs = node->children[1];
 
     // @NOTE: We explicitly dissallow any flattening for type checking of the Right hand side
+    // Also we need to allow the length check to occur in order to determine the size of the context (rhs)
     uint32_t backup_flags = ctx->eval_flags;
-    ctx->eval_flags &= ~EVAL_FLAG_FLATTEN;
-
+    ctx->eval_flags &= ~(EVAL_FLAG_FLATTEN | EVAL_FLAG_NO_LENGTH_CHECK);
     bool result = static_check_node(rhs, ctx);
-
     ctx->eval_flags = backup_flags;
     
     if (result && rhs->data.type.base_type == TYPE_BITFIELD) {
@@ -4763,10 +4751,6 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 
     ASSERT(node);
 
-    if (str_eq_cstr_n(node->token.str, "dist3 = distance(atom(1:7)", 26)) {
-        while(0);
-    }
-
     bool result = false;
 
     switch (node->type) {
@@ -4821,10 +4805,6 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
 
     if (result && !(node->flags & FLAG_DYNAMIC) && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
         static_eval_node(node, ctx);
-    }
-
-    if (result == false) {
-        while(0) {};
     }
 
     return result;
@@ -4983,9 +4963,6 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
 
     for (size_t i = 0; i < md_array_size(ir->expressions); ++i) {
         ir->record_log = true;   // We reset the error recording flag before each statement
-        if (str_eq(ir->expressions[i]->str, STR_LIT("rdf2 = rdf(com(element('C')) in resname(\"PFT\"), element('O'), 20.0);"))) {
-            while(0){};
-        }
         if (static_check_node(ir->expressions[i]->node, &ctx)) {
             md_array_push(ir->type_checked_expressions, ir->expressions[i], ir->arena);
             ir->flags |= (ir->expressions[i]->node->flags & FLAG_IR_PROPAGATION_MASK);
@@ -5095,13 +5072,20 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     return result;
 }
 
-static void allocate_property_data(md_script_property_t* prop, type_info_t type, size_t num_frames, md_allocator_i* alloc) {
+ static void allocate_property_data(md_script_property_t* prop, type_info_t type, size_t num_frames, md_allocator_i* alloc) {
     ASSERT(prop);    
     ASSERT(alloc);
 
     // @NOTE: We need to 'normalize' the dimensionality of the types in a consistent way, since the properties will be exposed
     // Therefore we make sure all types encode the array length in the first dimension, even if its a scalar, i.e. [1]
     // This simplifies extraction later on.
+
+    // Step 1: Prune trailing ones
+    for (int i = MAX_NUM_DIMS - 1; i > 0; --i) {
+        if (type.dim[i] == 1) {
+            type.dim[i] = 0;
+        }
+    }
 
     // @NOTE: At this stage, the flags should only contain the property type
     switch (prop->flags) {
@@ -6089,6 +6073,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
             .mol = mol,
             .temp_arena = &vm_arena,
             .temp_alloc = &temp_alloc,
+            .alloc = &temp_alloc,
         };
 
         if (static_check_node(node, &ctx)) {
