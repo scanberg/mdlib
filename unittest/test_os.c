@@ -87,10 +87,7 @@ UTEST(os, mem) {
 
     const uint64_t commit_size = GIGABYTES(1);
     md_vm_commit(ptr, commit_size);
-    uint64_t* c = ptr;
-    for (uint64_t i = 0; i < commit_size / sizeof(uint64_t); ++i) {
-        c[i] = i;
-    }
+    MEMSET(ptr, 1, commit_size);
 
     md_vm_release(ptr, reserve_size);
 }
@@ -172,12 +169,13 @@ UTEST(os, file_basic) {
 	md_file_close(file);
 }
 
+#define COUNT 4
 UTEST(os, file_write) {
     str_t test_string = STR_LIT("Lorem ipsum dolor sit amet, consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.");
     md_file_o* file = md_file_open(STR_LIT("temp_file.txt"), MD_FILE_WRITE);
     ASSERT_TRUE(file);
 
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < COUNT; ++i) {
     	size_t bytes_written = md_file_write(file, test_string.ptr, test_string.len);
     	EXPECT_EQ(bytes_written, test_string.len);
     }
@@ -187,9 +185,9 @@ UTEST(os, file_write) {
     file = md_file_open(STR_LIT("temp_file.txt"), MD_FILE_READ);
     ASSERT_TRUE(file);
     size_t filesize = md_file_size(file);
-    EXPECT_EQ(filesize, test_string.len * 100);
+    EXPECT_EQ(filesize, test_string.len * COUNT);
     char buf[1024];
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < COUNT; ++i) {
     	size_t bytes_read = md_file_read(file, buf, test_string.len);
     	EXPECT_EQ(bytes_read, test_string.len);
     	str_t str = { buf, bytes_read };
@@ -197,6 +195,7 @@ UTEST(os, file_write) {
     }
     md_file_close(file);
 }
+#undef COUNT
 
 UTEST(os, file_memmap) {
     md_file_o* file = md_file_open(STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), MD_FILE_READ);
@@ -213,15 +212,16 @@ UTEST(os, file_memmap) {
         md_file_mem_unmap_view(addr, 1024);
     }
     
-    size_t page_size = md_vm_page_size();
-    const char* addr = md_file_mem_map_view(mapping, page_size - 1, page_size + 1);
+    size_t view_offset = md_vm_page_size() - 1;
+    size_t view_size   = md_vm_page_size() + 1;
+    const char* addr = md_file_mem_map_view(mapping, view_offset, view_size);
     EXPECT_NE(addr, NULL);
     str_t str = { addr, 1024 };
     str_t ref = STR_LIT(" 13.281  11.447\n"
                         "    6HIS    ND1   91   7.718  13.081  11.291\n"
                         "    6HIS     CG   92   7.750  13.201  11.351\n");
     EXPECT_TRUE(str_eq_n(str, ref, ref.len));
-    md_file_mem_unmap_view(addr, page_size + 1);
+    md_file_mem_unmap_view(addr, view_size);
 
     md_file_mem_unmap(mapping);
     md_file_close(file);

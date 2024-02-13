@@ -396,6 +396,11 @@ bool md_path_is_directory(str_t path) {
 md_file_o* md_file_open(str_t filename, uint32_t in_flags) {
     if (!filename.ptr || !filename.len) return NULL;
 
+    if (in_flags == 0) {
+        MD_LOG_ERROR("No flags passed to file_open, expected at least MD_FILE_READ or MD_FILE_WRITE");
+        return NULL;
+    }
+
 #if MD_PLATFORM_WINDOWS
     wchar_t w_file[MD_MAX_PATH] = {0};
     const int w_file_len = MultiByteToWideChar(CP_UTF8, 0, filename.ptr, (int)filename.len, w_file, ARRAY_SIZE(w_file));
@@ -437,7 +442,7 @@ md_file_o* md_file_open(str_t filename, uint32_t in_flags) {
 #elif MD_PLATFORM_UNIX
     int flags = 0;
 
-    if (in_flags & MD_FILE_READ) {
+    if (in_flags == MD_FILE_READ) {
         flags |= O_RDONLY;
 	}
     if (in_flags & MD_FILE_WRITE) {
@@ -745,7 +750,7 @@ size_t md_file_write(md_file_o* file, const void* in_ptr, size_t num_bytes) {
     	if (!WriteFile((HANDLE*)file, ptr, bytes_to_write, &bytes_written, NULL)) {
             MD_LOG_ERROR("Failed to write to file");
             print_windows_error();
-            return 0;
+            goto done;
         }
         num_bytes -= bytes_written;
         ptr += bytes_written;
@@ -753,6 +758,7 @@ size_t md_file_write(md_file_o* file, const void* in_ptr, size_t num_bytes) {
             break;
         }
     }
+done:
     ASSERT(ptr >= (char*)in_ptr);
     return (size_t)(ptr - (char*)in_ptr);
 #elif MD_PLATFORM_UNIX
@@ -761,16 +767,18 @@ size_t md_file_write(md_file_o* file, const void* in_ptr, size_t num_bytes) {
     while (num_bytes > 0) {
         size_t bytes_to_write = MIN(num_bytes, 0x7ffff000);
         ssize_t bytes_written = write((int)fd, ptr, bytes_to_write);
-		if (bytes_written == -1) {
+        if (bytes_written < 0) {
 			MD_LOG_ERROR("Failed to write to file");
-            return 0;
+            goto done;
         }
+        MD_LOG_DEBUG("bytes_written: %zu", (size_t)bytes_written);
         num_bytes -= bytes_written;
         ptr += bytes_written;
         if ((size_t)bytes_written < bytes_to_write) {
             break;
         }
     }
+done:
     ASSERT(ptr >= (char*)in_ptr);
     return (size_t)(ptr - (char*)in_ptr);
 #else 
