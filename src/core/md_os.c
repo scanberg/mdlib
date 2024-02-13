@@ -442,9 +442,14 @@ md_file_o* md_file_open(str_t filename, uint32_t in_flags) {
 #elif MD_PLATFORM_UNIX
     int flags = 0;
 
-    if (in_flags == MD_FILE_READ) {
+    if (in_flags & (MD_FILE_READ | MD_FILE_WRITE)) {
+        flags |= O_RDWR;
+    } else if (in_flags & MD_FILE_READ) {
         flags |= O_RDONLY;
-	}
+    } else if (in_flags & MD_FILE_WRITE) {
+        flags |= O_WRONLY;
+    }
+
     if (in_flags & MD_FILE_WRITE) {
 		if (in_flags & MD_FILE_APPEND) {
 			flags |= O_APPEND;
@@ -771,7 +776,6 @@ done:
 			MD_LOG_ERROR("Failed to write to file");
             goto done;
         }
-        MD_LOG_DEBUG("bytes_written: %zu", (size_t)bytes_written);
         num_bytes -= bytes_written;
         ptr += bytes_written;
         if ((size_t)bytes_written < bytes_to_write) {
