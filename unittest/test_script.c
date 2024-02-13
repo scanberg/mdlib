@@ -640,7 +640,12 @@ UTEST_F(script, implicit_conversion) {
     md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->amy;
     md_script_ir_t* ir = md_script_ir_create(alloc);
+    
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("sel = residue({1,2,3,4});"), mol, NULL, NULL));
+
+    md_script_ir_clear(ir);
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("v = sdf(chain(:), resname(\"PFT\"), 50);"), mol, NULL, NULL));
+
     md_arena_allocator_destroy(alloc);
 }
 
@@ -723,12 +728,17 @@ UTEST_F(script, property_compute) {
         md_script_ir_clear(ir);
         str_t src = STR_LIT("prop1 = distance_pair(com(resname(\"ALA\")), 1);");
         md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
-        EXPECT_TRUE(md_script_ir_valid(ir));
+        ASSERT_TRUE(md_script_ir_valid(ir));
+
+        identifier_t* prop1 = get_identifier(ir, STR_LIT("prop1"));
+        ASSERT_TRUE(prop1);
+        EXPECT_EQ(TYPE_FLOAT, prop1->data->type.base_type);
+        EXPECT_EQ(1, prop1->data->type.dim[0]);
 
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
-        EXPECT_NE(NULL, eval);
+        ASSERT_TRUE(eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
     }
@@ -741,7 +751,7 @@ UTEST_F(script, property_compute) {
 
     {
         md_script_ir_clear(ir);
-        md_script_ir_compile_from_source(ir, STR_LIT("V = sdf(residue(1), element('H'), 5.0) * 1;"), mol, traj, NULL);
+        md_script_ir_compile_from_source(ir, STR_LIT("V = sdf(residue(1), element('H'), 5.0) * 2;"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
     }
 
