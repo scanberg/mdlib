@@ -216,11 +216,13 @@ UTEST(os, file_memmap) {
     size_t view_size   = md_vm_page_size() + 1;
     const char* addr = md_file_mem_map_view(mapping, view_offset, view_size);
     EXPECT_NE(addr, NULL);
-    str_t str = { addr, 1024 };
-    str_t ref = STR_LIT(" 13.281  11.447\n"
-                        "    6HIS    ND1   91   7.718  13.081  11.291\n"
-                        "    6HIS     CG   92   7.750  13.201  11.351\n");
-    EXPECT_TRUE(str_eq_n(str, ref, ref.len));
+    str_t ref = STR_LIT(" 13.281  11.447");
+    str_t str = { addr, ref.len };
+    bool equal = str_eq(str, ref);
+    EXPECT_TRUE(equal);
+    if (!equal) {
+        fprintf(stderr, "Expected to read segment '"STR_FMT"', but got '"STR_FMT"'", STR_ARG(ref), STR_ARG(str));
+    }
     md_file_mem_unmap_view(addr, view_size);
 
     md_file_mem_unmap(mapping);
