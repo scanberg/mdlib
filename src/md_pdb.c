@@ -7,6 +7,7 @@
 #include <core/md_common.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
+#include <core/md_str_builder.h>
 #include <core/md_parse.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
@@ -826,7 +827,7 @@ done:
     return result;
 }
 
-md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
+md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for PDB trajectory");
@@ -836,9 +837,9 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     const size_t filesize = md_file_size(file);
     md_file_close(file);
 
-    char buf[1024] = "";
-    int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
-    str_t cache_file = {buf, len};
+    md_strb_t sb = md_strb_create(md_temp_allocator);
+    md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
+    str_t cache_file = md_strb_to_str(sb);
 
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
@@ -891,7 +892,14 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
             cache.cell = md_util_unit_cell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
         }
 
-        result = write_cache(&cache, cache_file);
+        if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
+            // If we fail to write the cache, that's ok, we can inform about it, but do not halt
+            if (write_cache(&cache, cache_file)) {
+                MD_LOG_INFO("PDB: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
+            }
+        }
+
+        result = true;
 
         cleanup:
         md_arena_allocator_destroy(temp_alloc);

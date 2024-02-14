@@ -130,7 +130,7 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     md_allocator_i* alloc = md_heap_allocator;
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
     //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
-    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc);
+    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
     size_t num_atoms = md_trajectory_num_atoms(traj);
@@ -170,7 +170,7 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     md_allocator_i* alloc = md_heap_allocator;
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/triclinic_standardASCII.lammpstrj");
     //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
-    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc);
+    md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
     size_t num_atoms = md_trajectory_num_atoms(traj);

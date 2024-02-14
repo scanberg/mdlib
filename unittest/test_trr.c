@@ -9,7 +9,7 @@
 #include <core/md_os.h>
 
 UTEST(trr, trajectory_i) {
-    md_trajectory_i* traj = md_trr_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), md_heap_allocator);
+    md_trajectory_i* traj = md_trr_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/tryptophan-md.trr"), md_heap_allocator, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(md_trajectory_num_atoms(traj), 6495);

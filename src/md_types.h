@@ -35,7 +35,7 @@ enum {
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
-// Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards
+// Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
     MD_FLAG_RES_BEG 		    = 1,
     MD_FLAG_RES_END 		    = 2,
@@ -49,7 +49,7 @@ enum {
     MD_FLAG_ION			        = 512,
 
     MD_FLAG_AROMATIC            = 1024,
-    MD_FLAG_INTER_BOND          = 2048,
+    MD_FLAG_INTER_BOND          = 2048, // Bond that exists between components/residues
 };
 
 typedef int32_t     md_atom_idx_t;

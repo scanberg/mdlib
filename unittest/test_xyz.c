@@ -425,7 +425,7 @@ UTEST(xyz, create_molecule) {
 
 UTEST(xyz, trajectory_i) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/traj-30-P_10.xyz");
-    md_trajectory_i* traj = md_xyz_trajectory_create(path, md_heap_allocator);
+    md_trajectory_i* traj = md_xyz_trajectory_create(path, md_heap_allocator, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(2280, md_trajectory_num_atoms(traj));

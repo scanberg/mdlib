@@ -42,7 +42,7 @@ UTEST_F_SETUP(util) {
     md_gro_molecule_api()->init_from_file(&utest_fixture->mol_centered, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, alloc);
     md_util_molecule_postprocess(&utest_fixture->mol_centered, alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    utest_fixture->traj_ala = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc);
+    utest_fixture->traj_ala = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
 }
 
 UTEST_F_TEARDOWN(util) {

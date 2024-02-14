@@ -6,6 +6,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+enum {
+	MD_TRAJECTORY_FLAG_NONE					= 0,
+	MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE	= 1,	
+};
+
+typedef uint32_t md_trajectory_flags_t;
+
 struct md_trajectory_o;
 
 typedef struct md_trajectory_header_t {
@@ -58,7 +65,7 @@ typedef struct md_trajectory_i {
 } md_trajectory_i;
 
 typedef struct md_trajectory_loader_i {
-	md_trajectory_i* (*create)(str_t filename, struct md_allocator_i* alloc);
+	md_trajectory_i* (*create)(str_t filename, struct md_allocator_i* alloc, md_trajectory_flags_t flags);
 	void (*destroy)(md_trajectory_i* traj);
 } md_trajectory_loader_i;
 

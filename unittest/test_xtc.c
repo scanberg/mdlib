@@ -11,7 +11,7 @@
 
 UTEST(xtc, trajectory_i) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
-    md_trajectory_i* traj = md_xtc_trajectory_create(path, md_heap_allocator);
+    md_trajectory_i* traj = md_xtc_trajectory_create(path, md_heap_allocator, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
     const int64_t num_atoms = md_trajectory_num_atoms(traj);

@@ -2,6 +2,7 @@
 
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_str_builder.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -1383,7 +1384,7 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 	return result;
 }
 
-static bool write_cache(str_t cache_file, lammps_cache_t* cache) {
+static bool write_cache(lammps_cache_t* cache, str_t cache_file) {
 	bool result = false;
 
 	md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE | MD_FILE_BINARY);
@@ -1439,7 +1440,7 @@ void lammps_trajectory_free(struct md_trajectory_o* inst) {
 	lammps_trajectory_data_free(lammps_traj);
 }
 
-md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
+md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
 	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
 	if (!file) {
 		MD_LOG_ERROR("Failed to open file for LAMMPS trajectory");
@@ -1449,31 +1450,37 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	int64_t filesize = md_file_size(file);
 	md_file_close(file);
 
-	char buf[1024];
-	int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
-	if (len <= 0) {
-		MD_LOG_ERROR("Failed to create cache filename");
-		return false;
-	}
-	str_t cache_file = { buf, (size_t)len };
+	md_strb_t sb = md_strb_create(md_temp_allocator);
+	md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
+	str_t cache_file = md_strb_to_str(sb);
 
 	lammps_cache_t cache = {0};
-
 	md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
 	if (!try_read_cache(cache_file, &cache, filesize, alloc)) { //If the cache file does not exist, we create one
+		md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+		bool result = false;
 
-		if (!lammps_trajectory_parse_file(&cache, filename, alloc)) {
+		if (!lammps_trajectory_parse_file(&cache, filename, temp_alloc)) {
 			MD_LOG_ERROR("LAMMPS trajectory could not be read from file");
-			return false;
+			goto cleanup;
 		}
 
-		cache.header.magic   = MD_LAMMPS_CACHE_MAGIC;
-		cache.header.version = MD_LAMMPS_CACHE_VERSION;
+		cache.header.magic     = MD_LAMMPS_CACHE_MAGIC;
+		cache.header.version   = MD_LAMMPS_CACHE_VERSION;
 		cache.header.num_bytes = filesize;
 
-		if (!write_cache(cache_file, &cache)) {
-			MD_LOG_ERROR("LAMMPS trajectory could not be written to cache");
+		if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
+			// If we fail to write the cache, that's ok, we can inform about it, but do not halt
+			if (write_cache(&cache, cache_file)) {
+				MD_LOG_INFO("LAMMPS: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
+			}
+		}
+
+		result = true;
+	cleanup:
+		md_arena_allocator_destroy(temp_alloc);
+		if (!result) {
 			return false;
 		}
 	}

@@ -124,7 +124,7 @@ UTEST_F_SETUP(script) {
     md_util_molecule_postprocess(&utest_fixture->amy, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
     md_util_molecule_postprocess(&utest_fixture->ala, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
 
-    utest_fixture->ala_traj = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), &utest_fixture->alloc);
+    utest_fixture->ala_traj = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), &utest_fixture->alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
 }
 
 UTEST_F_TEARDOWN(script) {
@@ -776,8 +776,50 @@ UTEST_F(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
+        md_script_eval_free(eval);
+    }
+
+    {
+        md_script_ir_clear(ir);
+        str_t src = STR_LIT("{lin, plan, iso} = shape_weights(:);");
+        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        identifier_t* lin  = get_identifier(ir, STR_LIT("lin"));
+        identifier_t* plan = get_identifier(ir, STR_LIT("plan"));
+        identifier_t* iso  = get_identifier(ir, STR_LIT("iso"));
+
+        EXPECT_TRUE(lin);
+        if (lin) {
+            EXPECT_EQ(TYPE_FLOAT, lin->data->type.base_type);
+            EXPECT_EQ(1, lin->data->type.dim[0]);
+        }
+
+        EXPECT_TRUE(plan);
+        if (plan) {
+            EXPECT_EQ(TYPE_FLOAT, plan->data->type.base_type);
+            EXPECT_EQ(1, plan->data->type.dim[0]);
+        }
+
+        EXPECT_TRUE(iso);
+        if (iso) {
+            EXPECT_EQ(TYPE_FLOAT, iso->data->type.base_type);
+            EXPECT_EQ(1, iso->data->type.dim[0]);
+        }
+
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        EXPECT_NE(NULL, eval);
+        EXPECT_EQ(md_script_eval_num_properties(eval), 3);
+        md_script_property_t* props = md_script_eval_properties(eval);
+        EXPECT_TRUE(props);
+        if (props) {
+            EXPECT_STREQ("lin",  props[0].ident.ptr);
+            EXPECT_STREQ("plan", props[1].ident.ptr);
+            EXPECT_STREQ("iso",  props[2].ident.ptr);
+        }
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
         md_script_eval_free(eval);
     }
 

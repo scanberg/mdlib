@@ -886,19 +886,19 @@ done:
     return result;
 }
 
-md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
+md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_alloc, uint32_t traj_flags) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for XYZ trajectory");
         return false;
     }
 
-    uint32_t flags = 0;
+    uint32_t xyz_flags = 0;
     {
         char buf[1024];
         size_t len = md_file_read(file, buf, sizeof(buf));
         md_buffered_reader_t reader = md_buffered_reader_from_str((str_t){buf, len});
-        if (!extract_flags(&flags, &reader)) {
+        if (!extract_flags(&xyz_flags, &reader)) {
             MD_LOG_ERROR("Failed to determine format for XYZ trajectory");
             return false;
         }
@@ -950,7 +950,13 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
             cache.offsets[i] = data.models[i].byte_offset;
         }
         cache.offsets[data.num_models] = filesize;
-        write_cache(&cache, cache_file);
+
+        if (!(traj_flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
+            // If we fail to write the cache, that's ok, we can inform about it, but do not halt
+            if (write_cache(&cache, cache_file)) {
+                MD_LOG_INFO("XYZ: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
+            }
+        }
 
         result = true;
     cleanup:
@@ -990,7 +996,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
         .time_unit = {0},
         .frame_times = frame_times,
     };
-    xyz->flags = flags;
+    xyz->flags = xyz_flags;
 
     traj->inst = (struct md_trajectory_o*)xyz;
     traj->get_header = xyz_get_header;

@@ -64,7 +64,7 @@ UTEST(pdb, parse_trajectory) {
 
 UTEST(pdb, trajectory_i) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
-    md_trajectory_i* traj = md_pdb_trajectory_create(path, md_heap_allocator);
+    md_trajectory_i* traj = md_pdb_trajectory_create(path, md_heap_allocator, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
     EXPECT_EQ(md_trajectory_num_atoms(traj), 153);

@@ -430,7 +430,8 @@ struct md_script_ir_t {
     md_array(ast_node_t*) type_checked_expressions;     // List of expressions which passed type checking
     md_array(ast_node_t*) eval_targets;                 // List of dynamic expressions which needs to be evaluated per frame
 
-    md_array(data_t)    static_expression_data;         // Static expressions which are constant and evaluated during static analysis. These form the basis for common subexpression elimination
+    // These form the basis for 'static' common subexpression elimination
+    md_array(data_t)    static_expression_data;         // Static expressions which are constant and evaluated during static analysis.
     md_array(uint64_t)  static_expression_hash;         // hash of expression
     md_array(str_t)     static_expression_str;          // string for debugging
     
@@ -438,13 +439,13 @@ struct md_script_ir_t {
     md_array(table_t) tables;                           // List of tables which are used in the script
 
     // These are the final products which can be read through the public part of the structure
-    md_array(md_log_token_t)     warnings;
-    md_array(md_log_token_t)     errors;
+    md_array(md_log_token_t)        warnings;
+    md_array(md_log_token_t)        errors;
     md_array(md_script_vis_token_t) vis_tokens;
     md_array(str_t)                 identifier_names;
 
-    const char* stage;  // This is just to supply a context for the errors i.e. which stage the error occured
-    bool record_log; // This is to toggle if new errors should be registered... We don't want to flood the errors
+    const char* stage;      // This is just to supply a context for the errors i.e. in which compilation stage the error occured
+    bool record_log;        // This is to toggle if new errors should be registered... We don't want to flood the errors
     bool compile_success;
 };
 
@@ -5987,8 +5988,8 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
     for (size_t i = 0; i < md_array_size(ir->eval_targets); ++i) {
         ast_node_t* expr = ir->eval_targets[i];
         ASSERT(expr);
-        if (expr->type == AST_ASSIGNMENT && is_property_type(expr->data.type)) {
-            if (expr->children[0]->type == AST_IDENTIFIER) {
+        if (expr->type == AST_ASSIGNMENT) {
+            if (expr->children[0]->type == AST_IDENTIFIER && is_property_type(expr->data.type)) {
                 ast_node_t* lhs = expr->children[0];
                 md_script_property_t prop = {0};
                 init_property(&prop, num_frames, lhs->ident, expr, eval->arena);
@@ -5998,16 +5999,14 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
             	ast_node_t* lhs = expr->children[0];
 				for (size_t j = 0; j < md_array_size(lhs->children); ++j) {
 					ast_node_t* child = lhs->children[j];
-					ASSERT(child->type == AST_IDENTIFIER);
-					md_script_property_t prop = {0};
-					init_property(&prop, num_frames, child->ident, child, eval->arena);
-					md_array_push(eval->properties, prop, eval->arena);
-					num_prop_expr += 1;
+                    if (child->type == AST_IDENTIFIER && is_property_type(child->data.type)) {
+					    md_script_property_t prop = {0};
+					    init_property(&prop, num_frames, child->ident, child, eval->arena);
+					    md_array_push(eval->properties, prop, eval->arena);
+					    num_prop_expr += 1;
+                    }
 				}
-			} else {
-				ASSERT(false);
-            }
-
+			}
         }
     }
     

@@ -681,7 +681,7 @@ done:
     return result;
 }
 
-md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_alloc) {
+md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_alloc, md_trajectory_flags_t flags) {
     ASSERT(ext_alloc);
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
@@ -719,10 +719,11 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
                 goto fail;
             }
 
-            if (write_cache(&cache, cache_file)) {
-                MD_LOG_INFO("TRR: Successfully created cache file for trajectory");
-            } else {
-                MD_LOG_ERROR("TRR: Failed to write cache file for trajectory");
+            if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
+                // If we fail to write the cache, that's ok, we can inform about it, but do not halt
+                if (write_cache(&cache, cache_file)) {
+                    MD_LOG_INFO("TRR: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
+                }
             }
         }
 

@@ -55,7 +55,7 @@ bool md_xyz_molecule_init(struct md_molecule_t* mol, const md_xyz_data_t* data, 
 struct md_molecule_loader_i* md_xyz_molecule_api();
 
 // TRAJECTORY
-struct md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* alloc);
+struct md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
 void md_xyz_trajectory_free(struct md_trajectory_i* traj);
 
 struct md_trajectory_loader_i* md_xyz_trajectory_loader();
