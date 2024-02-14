@@ -77,7 +77,6 @@ typedef struct md_buffered_reader_t {
 
 static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, size_t cap, md_file_o* file) {
     ASSERT(buf);
-    ASSERT(cap > 0);
     ASSERT(file);
     
     md_buffered_reader_t lr = {
@@ -103,8 +102,7 @@ static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_read
     ASSERT(line);
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
-        ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
+        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -119,8 +117,7 @@ static inline bool md_buffered_reader_peek_line(str_t* line, md_buffered_reader_
     ASSERT(line);
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
-        ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
+        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -134,8 +131,7 @@ static inline bool md_buffered_reader_skip_line(md_buffered_reader_t* r) {
     ASSERT(r);
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
-        ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
+        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -528,7 +524,6 @@ static inline bool extract_token(str_t* tok, str_t* str) {
 // Extract multiple tokens with whitespace as delimiter
 static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str) {
     ASSERT(tok_arr);
-    ASSERT(tok_cap >= 0);
     ASSERT(str);
 
     size_t num_tokens = 0;
@@ -562,7 +557,6 @@ static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
 // Extracts token with specific delimiter
 static inline size_t extract_tokens_delim(str_t tok_arr[], size_t tok_cap, str_t* str, char delim) {
     ASSERT(tok_arr);
-    ASSERT(tok_cap >= 0);
     ASSERT(str);
 
     size_t num_tokens = 0;
