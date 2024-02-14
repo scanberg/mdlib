@@ -1457,13 +1457,11 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	lammps_cache_t cache = {0};
 	md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-	if (!try_read_cache(cache_file, &cache, filesize, alloc)) { //If the cache file does not exist, we create one
-		md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
-		bool result = false;
-
-		if (!lammps_trajectory_parse_file(&cache, filename, temp_alloc)) {
+	if (!try_read_cache(cache_file, &cache, filesize, alloc)) {
+		//If the cache file does not exist, we create one
+		if (!lammps_trajectory_parse_file(&cache, filename, alloc)) {
 			MD_LOG_ERROR("LAMMPS trajectory could not be read from file");
-			goto cleanup;
+			return false;
 		}
 
 		cache.header.magic     = MD_LAMMPS_CACHE_MAGIC;
@@ -1475,13 +1473,6 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 			if (write_cache(&cache, cache_file)) {
 				MD_LOG_INFO("LAMMPS: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
 			}
-		}
-
-		result = true;
-	cleanup:
-		md_arena_allocator_destroy(temp_alloc);
-		if (!result) {
-			return false;
 		}
 	}
 
