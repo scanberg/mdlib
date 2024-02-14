@@ -5277,7 +5277,7 @@ static void compute_min_max_mean_variance(float* out_min, float* out_max, float*
     float max = -FLT_MAX;
     float s1 = 0;
     float s2 = 0;
-    int i = 0;
+    size_t i = 0;
 
     for (i = 0; i < count; ++i) {
         s1 += data[i];

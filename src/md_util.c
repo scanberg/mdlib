@@ -277,7 +277,7 @@ static const char* amino_acids[] = {
     "HID", "HIE", "HIP", "LYN", "ASH", "GLH",
 };
 
-static const char* peptides[] = {"APN", "CPN", "TPN", "GPN"};
+/*static const char* peptides[] = {"APN", "CPN", "TPN", "GPN"};*/
 static const char* rna[] = {"A", "C", "T", "G", "I", "U", "N"};
 static const char* dna[] = {"DA", "DC", "DT", "DG", "DI", "DU", "DN"};
 
@@ -346,9 +346,11 @@ static str_t intra_bond_order_table[] = {
     bake("DT|C4|O4"),
 };
 
+/*
 static const uint8_t aromatic_ring_elements[] = {
     B, C, N, O, Si, P, S, Ge, As, Sn, Sb, Bi
 };
+*/
 
 static md_array(uint64_t) copy_bitfield(const md_array(uint64_t) src, md_allocator_i* alloc) {
     md_array(uint64_t) copy = md_array_create(uint64_t, md_array_size(src), alloc);
