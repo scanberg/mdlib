@@ -141,9 +141,13 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 bool md_util_pbc(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
 
-// Unwraps a structure 
+// Unwraps a structure
+// It implicitly uses the previous coordinate as a reference when deperiodizing
 bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
+
+// Batch deperiodize a set of coordinates (vec4) with respect to a given reference
+bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unit_cell_t* cell);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process

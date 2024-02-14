@@ -5015,7 +5015,7 @@ static void unwrap_ortho(float* x, float* y, float* z, const int32_t* indices, s
 
     if (indices) {
         int idx = indices[0];
-        vec4_t ref_pos = {x[idx], y[idx], z[idx], 0};
+        vec4_t ref_pos = vec4_set(x[idx], y[idx], z[idx], 0);
         for (size_t i = 1; i < count; ++i) {
             idx = indices[i];
             const vec4_t pos = vec4_deperiodize((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
@@ -5124,6 +5124,38 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell)
         return true;
     } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
         unwrap_triclinic_vec4(xyzw, count, cell);
+        return true;
+    }
+
+    // The unit cell is not initialized or is simply not periodic
+    return false;
+}
+
+bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unit_cell_t* cell) {
+    if (!xyzw) {
+        MD_LOG_ERROR("Missing required input: in_out_xyzw");
+        return false;
+    }
+
+    if (!cell) {
+        MD_LOG_ERROR("Missing cell");
+        return false;
+    }
+
+    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        vec4_t ref_pos = vec4_from_vec3(ref_xyz, 0);
+        vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+        for (size_t i = 0; i < count; ++i) {
+            const vec4_t pos = vec4_deperiodize(xyzw[i], ref_pos, ext);
+            xyzw[i] = pos;
+        }
+        return true;
+    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        for (size_t i = 1; i < count; ++i) {
+            vec4_t pos = xyzw[i];
+            deperiodize_triclinic(pos.elem, ref_xyz.elem, cell->basis.elem);
+            xyzw[i] = pos;
+        }
         return true;
     }
 
