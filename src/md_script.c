@@ -4463,13 +4463,11 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
         }
     }
 
-    // Squash any dimensions that are of length 1
-    for (int i = 0; i < MAX_NUM_DIMS; ++i) {
+    // Remove leading ones in the dimensions
+    for (int i = 0; i < MAX_NUM_DIMS - 1; ++i) {
         if (result_type.dim[i] == 0) break;
-        if (result_type.dim[i] == 1) {            
-            for (int j = i; j < MAX_NUM_DIMS; ++j) {
-				result_type.dim[j] = j < MAX_NUM_DIMS - 1 ? result_type.dim[j+1] : 0;
-			}
+        if (result_type.dim[i] == 1 && result_type.dim[i+1] > 0) {
+            dim_shift_left(result_type.dim);
 		}
     }
 
@@ -4865,10 +4863,6 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
         ASSERT(false);
     }
 
-    if (result && !(node->flags & FLAG_DYNAMIC) && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
-        static_eval_node(node, ctx);
-    }
-
     // Prune trailing ones in dimensions
     for (int i = MAX_NUM_DIMS - 1; i > 0; --i) {
         if (node->data.type.dim[i] == 1) {
@@ -4876,10 +4870,15 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
         }
     }
 
+    if (result && !(node->flags & FLAG_DYNAMIC) && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
+        static_eval_node(node, ctx);
+    }
+
     return result;
 }
 
-static inline uint64_t hash64(const char* key, uint64_t len) {
+static inline uint64_t hash64(const void* ptr, size_t len) {
+    const char* key = ptr;
     // Murmur one at a time
     uint64_t h = 525201411107845655ull;
     for (uint64_t i = 0; i < len; ++i) {
@@ -4898,6 +4897,11 @@ static uint64_t hash_children(const ast_node_t* node) {
         hash ^= hash_node(node->children[i]);
     }
     return hash;
+}
+
+static uint64_t hash_type(type_info_t ti) {
+    // @Normalize dimensions
+    return hash64(&ti.base_type, sizeof(ti.base_type)) ^ hash64(ti.dim, sizeof(ti.dim));
 }
 
 static uint64_t hash_node(const ast_node_t* node) {
@@ -4919,15 +4923,15 @@ static uint64_t hash_node(const ast_node_t* node) {
             return hash64(node->data.ptr, node->data.size);
         }
     case AST_IDENTIFIER:
-        return AST_IDENTIFIER ^ hash64(node->ident.ptr, node->ident.len);
+        return AST_IDENTIFIER ^ hash64(node->ident.ptr, node->ident.len) ^ hash_type(node->data.type);
     case AST_PROC_CALL:
-        return AST_PROC_CALL ^ hash64(node->ident.ptr, node->ident.len) ^ hash_children(node);
+        return AST_PROC_CALL ^ hash64(node->ident.ptr, node->ident.len) ^ hash_type(node->data.type) ^ hash_children(node);
     case AST_TABLE:
-        return AST_TABLE ^ hash64(node->table->name.ptr, node->table->name.len) ^ hash64((const char*)node->table_field_indices, sizeof(int) * md_array_size(node->table_field_indices));
+        return AST_TABLE ^ hash64(node->table->name.ptr, node->table->name.len) ^ hash64(node->table_field_indices, md_array_bytes(node->table_field_indices));
     case AST_ARRAY:
     case AST_ARRAY_SUBSCRIPT:
     default:
-        return node->type ^ hash_children(node);
+        return node->type ^ hash_type(node->data.type) ^ hash_children(node);
     }
 }
 

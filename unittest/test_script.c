@@ -812,7 +812,7 @@ UTEST_F(script, property_compute) {
         md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
         EXPECT_NE(NULL, eval);
         EXPECT_EQ(md_script_eval_num_properties(eval), 3);
-        md_script_property_t* props = md_script_eval_properties(eval);
+        const md_script_property_t* props = md_script_eval_properties(eval);
         EXPECT_TRUE(props);
         if (props) {
             EXPECT_STREQ("lin",  props[0].ident.ptr);
