@@ -2840,8 +2840,8 @@ static bool evaluate_transpose(data_t* dst, const ast_node_t* node, eval_context
         const size_t num_bytes = base_type_element_byte_size(dst->type.base_type);
         char* dst_base = dst->ptr;
         const char* src_base = data.ptr;
-        for (int col = 0; col < num_col; ++col) {
-            for (int row = 0; row < num_row; ++row) {
+        for (size_t col = 0; col < num_col; ++col) {
+            for (size_t row = 0; row < num_row; ++row) {
                 MEMCPY(dst_base + (col * num_row + row) * num_bytes, src_base + (row * num_col + col) * num_bytes, num_bytes);
             }
         }
@@ -3085,7 +3085,7 @@ static bool evaluate_array_subscript(data_t* dst, const ast_node_t* node, eval_c
     MEMCPY(idx_ranges, node->subscript_ranges, sizeof(irange_t) * node->subscript_dim);
 
     if (ext_ranges) {
-        for (int i = 0; i < node->subscript_dim; ++i) {
+        for (size_t i = 0; i < node->subscript_dim; ++i) {
             if (ext_ranges[i].beg == 0 && ext_ranges[i].end == 0) {
                 idx_ranges[i].beg = node->subscript_ranges[i].beg;
                 idx_ranges[i].end = node->subscript_ranges[i].end;
@@ -4500,8 +4500,8 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
         return false;
     }
 
-    int num_dim = dim_ndims(lhs->data.type.dim);
-    if (num_args > 1 && num_args != (size_t)num_dim) {
+    size_t num_dim = (size_t)dim_ndims(lhs->data.type.dim);
+    if (num_args > 1 && num_args != num_dim) {
     	LOG_ERROR(ctx->ir, elem[1]->token, "Invalid number of arguments (%i) in array subscript, expected number of arguments to match number of dimensions of lhs (%i)", (int)num_args, num_dim);
 		return false;
     }
