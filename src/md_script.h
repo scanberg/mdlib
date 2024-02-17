@@ -23,11 +23,11 @@ in order to make it work within VIAMD
 
 */
 
-
 // This is represents an opaque marker of something which can be visualized
 typedef struct md_script_vis_payload_o md_script_vis_payload_o;
 
 typedef enum md_script_property_flags_t {
+    MD_SCRIPT_PROPERTY_FLAG_NONE            = 0,
     MD_SCRIPT_PROPERTY_FLAG_TEMPORAL        = 0x0001,
     MD_SCRIPT_PROPERTY_FLAG_DISTRIBUTION    = 0x0002,
     MD_SCRIPT_PROPERTY_FLAG_VOLUME          = 0x0004,
@@ -70,56 +70,6 @@ typedef struct md_script_aggregate_t {
     //float*  population_max;
 } md_script_aggregate_t;
 
-#if 0
-
-// This is some draft structures for a simpler API
-
-// Additional data field available if property is computed from a Spatial Distribution Function
-typedef struct md_script_data_sdf_t {
-    int64_t count;
-    mat4_t* matrices;
-    struct md_bitfield_t* structures;
-    float extent;
-} md_script_data_sdf_t;
-
-// The histogram is a quantization of a 1D-range populated with occurrences that fall within this range
-// The values of the bins have been normalized (often, but not always by a division of the number of samples) to represent a probablistic distribution.
-typedef struct md_script_data_histogram_t {
-    const float* bin_values;
-    int bin_count;
-    int num_samples;
-
-    float range_min;
-    float range_max;
-} md_script_data_histogram_t;
-
-typedef struct md_script_data_scalar_t {
-    int dim;
-    const float* values;
-};
-
-typedef struct md_script_data_volume_t {
-    int   dim[3];
-    float ext[3];
-    const float* values;
-} md_script_data_volume_t;
-
-
-typedef uint64_t pid_t;
-
-int64_t md_script_prop_count(md_script_ir_t* eval);
-pid_t*  md_script_prop_ids(md_script_ir_t* eval);
-
-vec2_t md_script_prop_period(md_script_ir_t* eval, pid_t id);
-
-
-int[3] md_script_prop_vol_extent(md_script_ir_t* eval, pid_t id);
-vec3_t md_script_prop_vol_extent(md_script_ir_t* eval, pid_t id);
-
-const float* md_script_prop_values(pid_t);
-
-#endif
-
 typedef struct md_script_property_data_t {
     int32_t dim[4];     // Dimension of values, they are exposed packed in a linear array
 
@@ -132,14 +82,14 @@ typedef struct md_script_property_data_t {
     float   min_value;      // min total value
     float   max_value;      // max total value
 
-    float   min_range[4];   // min range in each dimension
-    float   max_range[4];   // max range in each dimension
+    float   min_range[2];   // min range in each dimension, [0] for temporal, [0]+[1] for distribution
+    float   max_range[2];   // max range in each dimension, [0] for temporal, [0]+[1] for distribution
 
-    md_unit_t unit;
+    md_unit_t unit;      // [0] for temporal, [0]+[1] for distribution
 
-    uint64_t fingerprint; // Unique ID to compare against to see if your version is up to date.
+    uint64_t fingerprint;   // Essentially a checksum of the data to compare against
 } md_script_property_data_t;
-
+ 
 typedef struct md_script_property_t {
     str_t ident;
     
@@ -213,12 +163,10 @@ void md_script_ir_free(md_script_ir_t* ir);
 
 void md_script_ir_clear(md_script_ir_t* ir);
 
-typedef struct md_script_bitfield_identifier_t {
-    str_t identifier_name;
-    const struct md_bitfield_t* bitfield;
-} md_script_bitfield_identifier_t;
+bool md_script_ir_add_identifier_bitfield(md_script_ir_t* ir, str_t ident, const struct md_bitfield_t* bf);
 
-bool md_script_ir_add_bitfield_identifiers(md_script_ir_t* ir, const md_script_bitfield_identifier_t* bitfield_identifiers, size_t count);
+// Returns true if any expression in the script contains a reference to to an identifier by supplied name
+bool md_script_ir_contains_identifier_reference(const md_script_ir_t* ir, str_t name);
 
 bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, const md_script_ir_t* ctx_ir);
 
@@ -239,20 +187,32 @@ uint64_t md_script_ir_fingerprint(const md_script_ir_t* ir);
 size_t md_script_ir_num_identifiers(const md_script_ir_t* ir);
 const str_t* md_script_ir_identifiers(const md_script_ir_t* ir);
 
+// ### PROPERTIES ###
+size_t       md_script_ir_property_count(const md_script_ir_t* ir);
+const str_t* md_script_ir_property_names(const md_script_ir_t* ir);
+
+// Extract properties which has the supplied flags set.
+//size_t md_script_ir_property_id_filter_on_flags(str_t* out_names, size_t out_cap, const md_script_ir_t* ir, md_script_property_flags_t flags);
+
+// If the name does not exist, it will return 0
+md_script_property_flags_t      md_script_ir_property_flags(const md_script_ir_t* ir, str_t name);
+const md_script_vis_payload_o*  md_script_ir_property_vis_payload(const md_script_ir_t* ir, str_t name);
+
+
 // ### EVALUATE ###
 // This API is a dumpster-fire currently and should REALLY be simplified.
 
 // Allocate and initialize the data for properties within the evaluation
 // We need to pass the number of frames we want the data to hold
 // Should be performed as soon as the IR has changed.
-md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t* ir, str_t label, struct md_allocator_i* alloc);
+md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t* ir, struct md_allocator_i* alloc);
 
 uint64_t md_script_eval_ir_fingerprint(const md_script_eval_t* eval);
 
 void md_script_eval_free(md_script_eval_t* eval);
 
 // Clear before evaluating (computing data) frames
-void md_script_eval_clear(md_script_eval_t* eval);
+void md_script_eval_clear_data(md_script_eval_t* eval);
 
 // Compute properties
 // Must be performed after the eval_init
@@ -263,20 +223,13 @@ void md_script_eval_clear(md_script_eval_t* eval);
 // frame_(beg/end)  : range of frames [beg,end[ to evaluate 
 bool md_script_eval_frame_range(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_beg, uint32_t frame_end);
 
-// This is perhaps the granularity to operate on in a threaded context, in order to be able to interrupt evaluations without too much wait time.
-//bool md_script_eval_frame(md_script_eval_t* eval, const struct md_script_ir_t* ir, const struct md_molecule_t* mol, const struct md_trajectory_i* traj, uint32_t frame_idx);
+// Extract property data within in an evaluation
+size_t md_script_eval_property_count(const md_script_eval_t* eval);
+const md_script_property_data_t* md_script_eval_property_data(const md_script_eval_t* eval, str_t name);
 
-str_t md_script_eval_label(const md_script_eval_t* eval);
-
-// Extract properties within in an evaluation
-size_t md_script_eval_num_properties(const md_script_eval_t* eval);
-const md_script_property_t* md_script_eval_properties(const md_script_eval_t* eval);
-
-// Compile and evaluate a single property from a string
-//bool md_script_compile_and_eval_property(md_script_property_t* prop, str_t expr, const struct md_molecule_t* mol, struct md_allocator_i* alloc, const md_script_ir_t* ctx_ir, char* err_str, int64_t err_cap);
-
-// Get the frames encoded in a bitfield of the completed frames
-const struct md_bitfield_t* md_script_eval_completed_frames(const md_script_eval_t* eval);
+// Get the frames encoded as a bitfield of the completed frames
+size_t md_script_eval_frame_count(const md_script_eval_t* eval);
+const struct md_bitfield_t* md_script_eval_frame_mask(const md_script_eval_t* eval);
 
 // Interrupt the current evaluation
 void md_script_eval_interrupt(md_script_eval_t* eval);

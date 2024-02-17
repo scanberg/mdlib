@@ -7,6 +7,7 @@
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_bitop.inl>
+#include <core/md_hash.h>
 
 #include <fastlz.h>
 
@@ -984,21 +985,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
     return true;
 }
 
-// This can certainly be improved!
-// Not really performance critical
-
-static inline uint64_t hash64(const char* key, uint64_t len) {
-    // Murmur one at a time
-    uint64_t h = 525201411107845655ull;
-    for (uint64_t i = 0; i < len; ++i) {
-        h ^= key[i];
-        h *= 0x5bd1e9955bd1e995;
-        h ^= h >> 47;
-    }
-    return h;
-}
-
-uint64_t md_bitfield_hash(const md_bitfield_t* bf) {
+uint64_t md_bitfield_hash64(const md_bitfield_t* bf, uint64_t seed) {
     ASSERT(bf);
 
     if (bf->beg_bit == bf->end_bit) return 0;
@@ -1006,10 +993,10 @@ uint64_t md_bitfield_hash(const md_bitfield_t* bf) {
     const uint64_t length = num_blocks(bf->beg_bit, bf->end_bit);
     const uint64_t offset = block_idx(bf->beg_bit);
 
-    uint64_t hash = 91827481724897189ull;
+    uint64_t hash = seed;
     for (uint64_t i = offset; i < offset + length; ++i) {
         block_t blk = get_block(bf, i);
-        hash *= hash64((const char*)blk.u64, sizeof(blk.u64));
+        hash = md_hash64((const char*)blk.u64, sizeof(blk.u64), hash);
     }
 
     return hash;

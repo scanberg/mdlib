@@ -134,7 +134,7 @@ size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
 bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_bytes);
 
 // Compute hash for the bitfield
-uint64_t md_bitfield_hash(const md_bitfield_t* bf);
+uint64_t md_bitfield_hash64(const md_bitfield_t* bf, uint64_t seed);
 
 #ifdef __cplusplus
 }

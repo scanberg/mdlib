@@ -22,8 +22,8 @@
 // Create molecule for evaulation
 #define ATOM_COUNT 16
 static float mol_x[] = {1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8};
-static float mol_y[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
-static float mol_z[] = {2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2};
+static float mol_y[] = {4,3,2,1,4,3,2,1,1,1,1,1,1,1,1,1};
+static float mol_z[] = {3,2,1,4,3,2,1,2,2,2,2,2,2,2,2,2};
 static float mol_r[] = {1,2,3,4,4,4,5,1,1,2,3,4,4,4,5,1};
 static float mol_m[] = {1,2,2,2,2,4,4,4,1,2,2,2,2,4,4,4};
 static uint8_t mol_e[] = {1,8,1,2,6,8,6,8,1,8,1,2,6,7,6,8};
@@ -544,6 +544,7 @@ UTEST(script, array_subscript) {
             "xyz  = coord(:);"
             "xyz1 = xyz[1,:];"
             "xyz2 = xyz[2,2:];"
+            "xyz3 = xyz[2];"
             "x    = xyz[:,1];"
             "y    = xyz[:,2];"
             "z    = xyz[:,3];"
@@ -597,6 +598,22 @@ UTEST(script, array_subscript) {
             EXPECT_NEAR(mol_z[1], coord[1], 1.0e-6f);
         }
 
+        identifier_t* xyz3 = get_identifier(ir, STR_LIT("xyz3"));
+        EXPECT_TRUE(xyz3);
+        if (xyz3) {
+            EXPECT_TRUE(xyz1->data);
+            EXPECT_EQ(3, xyz3->data->type.dim[0]);
+            EXPECT_EQ(0, xyz3->data->type.dim[1]);
+
+            data_t data = {0};
+            allocate_data(&data, xyz3->data->type, &temp_alloc);
+            evaluate_node(&data, xyz3->node, &ctx);
+            const float* coord = (const float*)data.ptr;
+            EXPECT_NEAR(mol_x[1], coord[0], 1.0e-6f);
+            EXPECT_NEAR(mol_y[1], coord[1], 1.0e-6f);
+            EXPECT_NEAR(mol_z[1], coord[2], 1.0e-6f);
+        }
+
         identifier_t* x = get_identifier(ir, STR_LIT("x"));
         EXPECT_TRUE(x);
         if (x) {
@@ -642,6 +659,134 @@ UTEST(script, array_subscript) {
             const float* coord = (const float*)data.ptr;
             for (int i = 0; i < ATOM_COUNT; ++i) {
                 EXPECT_NEAR(mol_z[i], coord[i], 1.0e-6f);
+            }
+        }
+    }
+
+    FREE_TEMP_ALLOC();
+}
+
+UTEST(script, dim_op) {
+    SETUP_TEMP_ALLOC(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(&temp_alloc);
+
+    {
+        str_t src = STR_LIT(
+            "xyz  = coord(1:15);\n"
+            "flat = flatten(xyz);\n"
+            "xyz_t = transpose(xyz);\n"
+            "sw = shape_weights(residue(1:4));\n"
+            "{lin,plan,iso} = transpose(shape_weights(residue(1:4)));"
+        );
+        md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        eval_context_t ctx = {
+            .ir = ir,
+            .mol = &test_mol,
+            .temp_arena = &vm_arena,
+            .temp_alloc = &temp_alloc,
+            .alloc = &temp_alloc,
+        };
+
+        {
+            identifier_t* xyz = get_identifier(ir, STR_LIT("xyz"));
+            EXPECT_TRUE(xyz);
+            if (xyz) {
+                EXPECT_EQ(TYPE_FLOAT, xyz->data->type.base_type);
+                EXPECT_EQ(15, xyz->data->type.dim[0]);
+                EXPECT_EQ(3,  xyz->data->type.dim[1]);
+            }
+
+            data_t data = {0};
+            allocate_data(&data, xyz->data->type, &temp_alloc);
+            evaluate_node(&data, xyz->node, &ctx);
+            const vec3_t* coord = (const vec3_t*)data.ptr;
+            for (int i = 0; i < xyz->data->type.dim[0]; ++i) {
+                EXPECT_NEAR(mol_x[i], coord[i].x, 1.0e-6f);
+                EXPECT_NEAR(mol_y[i], coord[i].y, 1.0e-6f);
+                EXPECT_NEAR(mol_z[i], coord[i].z, 1.0e-6f);
+            }
+        }
+
+        {
+            identifier_t* flat = get_identifier(ir, STR_LIT("flat"));
+            EXPECT_TRUE(flat);
+            if (flat) {
+                EXPECT_EQ(TYPE_FLOAT, flat->data->type.base_type);
+                EXPECT_EQ(45, flat->data->type.dim[0]);
+                EXPECT_EQ(0,  flat->data->type.dim[1]);
+            }
+
+            data_t data = {0};
+            allocate_data(&data, flat->data->type, &temp_alloc);
+            evaluate_node(&data, flat->node, &ctx);
+            const float* coord = (const float*)data.ptr;
+            for (int i = 0; i < flat->data->type.dim[0]; ++i) {
+                switch(i % 3) {
+                case 0: EXPECT_NEAR(mol_x[i / 3], coord[i], 1.0e-6f); break;
+                case 1: EXPECT_NEAR(mol_y[i / 3], coord[i], 1.0e-6f); break;
+                case 2: EXPECT_NEAR(mol_z[i / 3], coord[i], 1.0e-6f); break;
+                }
+            }
+        }
+
+        {
+            identifier_t* xyz_t = get_identifier(ir, STR_LIT("xyz_t"));
+            EXPECT_TRUE(xyz_t);
+            if (xyz_t) {
+                EXPECT_EQ(TYPE_FLOAT, xyz_t->data->type.base_type);
+                EXPECT_EQ(3,  xyz_t->data->type.dim[0]);
+                EXPECT_EQ(15, xyz_t->data->type.dim[1]);
+
+                data_t data = {0};
+                allocate_data(&data, xyz_t->data->type, &temp_alloc);
+                evaluate_node(&data, xyz_t->node, &ctx);
+                const float* coords = (const float*)data.ptr;
+                const float* x = coords + 0 * xyz_t->data->type.dim[1];
+                const float* y = coords + 1 * xyz_t->data->type.dim[1];
+                const float* z = coords + 2 * xyz_t->data->type.dim[1];
+                for (int i = 0; i < xyz_t->data->type.dim[1]; ++i) {
+                    EXPECT_NEAR(mol_x[i], x[i], 1.0e-6f);
+                    EXPECT_NEAR(mol_y[i], y[i], 1.0e-6f);
+                    EXPECT_NEAR(mol_z[i], z[i], 1.0e-6f);
+                }
+            }
+        }
+
+        {
+            identifier_t* sw = get_identifier(ir, STR_LIT("sw"));
+            EXPECT_TRUE(sw);
+            if (sw) {
+                EXPECT_EQ(TYPE_FLOAT, sw->data->type.base_type);
+                EXPECT_EQ(4, sw->data->type.dim[0]);
+                EXPECT_EQ(3, sw->data->type.dim[1]);
+            }
+        }
+
+        {
+            identifier_t* lin  = get_identifier(ir, STR_LIT("lin"));
+            identifier_t* plan = get_identifier(ir, STR_LIT("plan"));
+            identifier_t* iso  = get_identifier(ir, STR_LIT("iso"));
+
+            EXPECT_TRUE(lin);
+            EXPECT_TRUE(plan);
+            EXPECT_TRUE(iso);
+
+            if (lin) {
+                EXPECT_EQ(TYPE_FLOAT, lin->data->type.base_type);
+                EXPECT_EQ(4, lin->data->type.dim[0]);
+                EXPECT_EQ(0, lin->data->type.dim[1]);
+            }
+            if (plan) {
+                EXPECT_EQ(TYPE_FLOAT, plan->data->type.base_type);
+                EXPECT_EQ(4, plan->data->type.dim[0]);
+                EXPECT_EQ(0, plan->data->type.dim[1]);
+            }
+            if (iso) {
+                EXPECT_EQ(TYPE_FLOAT, iso->data->type.base_type);
+                EXPECT_EQ(4, iso->data->type.dim[0]);
+                EXPECT_EQ(0, iso->data->type.dim[1]);
             }
         }
     }
@@ -773,9 +918,9 @@ UTEST_F(script, property_compute) {
         md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        EXPECT_EQ(1, md_script_eval_property_count(eval));
         EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
@@ -808,16 +953,13 @@ UTEST_F(script, property_compute) {
             EXPECT_EQ(TYPE_FLOAT, iso->data->type.base_type);
             EXPECT_EQ(1, iso->data->type.dim[0]);
         }
-
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        EXPECT_EQ(md_script_ir_property_count(ir), 3);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 3);
-        const md_script_property_t* props = md_script_eval_properties(eval);
-        EXPECT_TRUE(props);
-        if (props) {
-            EXPECT_STREQ("lin",  props[0].ident.ptr);
-            EXPECT_STREQ("plan", props[1].ident.ptr);
-            EXPECT_STREQ("iso",  props[2].ident.ptr);
+        if (eval) {
+            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("lin")));
+            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("plan")));
+            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("iso")));
         }
         EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
         md_script_eval_free(eval);
@@ -834,9 +976,9 @@ UTEST_F(script, property_compute) {
         EXPECT_EQ(TYPE_FLOAT, prop1->data->type.base_type);
         EXPECT_EQ(1, prop1->data->type.dim[0]);
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         ASSERT_TRUE(eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        EXPECT_EQ(1, md_script_eval_property_count(eval));
         EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
@@ -859,9 +1001,9 @@ UTEST_F(script, property_compute) {
         md_script_ir_compile_from_source(ir, STR_LIT("prop1 = rdf(element('C'), element('O'), 20.0);"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        EXPECT_EQ(1, md_script_eval_property_count(eval));
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
@@ -872,9 +1014,9 @@ UTEST_F(script, property_compute) {
         md_script_ir_compile_from_source(ir, STR_LIT("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        EXPECT_EQ(1, md_script_eval_property_count(eval));
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
@@ -886,7 +1028,7 @@ UTEST_F(script, property_compute) {
         md_script_ir_clear(ir);
         md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
         md_script_eval_free(eval);
     }
@@ -907,21 +1049,18 @@ typedef struct thread_data_t {
 
 void func(void* user_data) {
     thread_data_t* data = (thread_data_t*)user_data;
-    const int64_t num_cur_prop = md_script_eval_num_properties(data->eval);
-    const md_script_property_t* cur_prop = md_script_eval_properties(data->eval);
-
-    const int64_t num_ref_prop = md_script_eval_num_properties(data->ref_eval);
-    const md_script_property_t* ref_prop = md_script_eval_properties(data->ref_eval);
-
-    ASSERT(num_cur_prop == num_ref_prop);
+    const size_t num_props = md_script_ir_property_count(data->ir);
+    const str_t* props = md_script_ir_property_names(data->ir);
     const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(data->traj);
     if (md_script_eval_frame_range(data->eval, data->ir, data->mol, data->traj, 0, num_frames)) {
-        for (int64_t p_idx = 0; p_idx < num_cur_prop; ++p_idx) {
-            ASSERT(cur_prop[p_idx].data.num_values == ref_prop[p_idx].data.num_values);
-            for (int64_t i = 0; i < cur_prop[p_idx].data.num_values; ++i) {
-                if (cur_prop[p_idx].data.values[i] != ref_prop[p_idx].data.values[i]) {
+        for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
+            const md_script_property_data_t* cur_data = md_script_eval_property_data(data->eval,     props[p_idx]);
+            const md_script_property_data_t* ref_data = md_script_eval_property_data(data->ref_eval, props[p_idx]);
+            ASSERT(cur_data->num_values == ref_data->num_values);
+            for (size_t i = 0; i < cur_data->num_values; ++i) {
+                if (cur_data->values[i] != ref_data->values[i]) {
                     data->num_corrupt_values += 1;
-                    fprintf(stderr, "Corruption occured in thread %"PRIu64" at frame %i, expected: '%g', got: '%g'\n", md_thread_id(), (int)i, ref_prop[p_idx].data.values[i], cur_prop[p_idx].data.values[i]);
+                    fprintf(stderr, "Corruption occured in thread %"PRIu64" at frame %i, expected: '%g', got: '%g'\n", md_thread_id(), (int)i, ref_data->values[i], cur_data->values[i]);
                 }
             }
         }
@@ -939,17 +1078,20 @@ UTEST_F(script, parallel_evaluation) {
     md_thread_t* threads[NUM_THREADS] = {0};
     thread_data_t thread_data[NUM_THREADS] = {0};
 
-    int64_t num_frames = md_trajectory_num_frames(traj);
+    size_t num_frames = md_trajectory_num_frames(traj);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_script_ir_compile_from_source(ir, script, mol, traj, NULL);
     EXPECT_TRUE(md_script_ir_valid(ir));
+    ASSERT_EQ(1, md_script_ir_property_count(ir));
 
-    md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+    md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, alloc);
+    EXPECT_EQ(num_frames, md_script_eval_frame_count(ref_eval));
     ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, mol, traj, 0, (uint32_t)num_frames));
 
-    ASSERT_EQ(1, md_script_eval_num_properties(ref_eval));
-    ASSERT_EQ(num_frames, md_script_eval_properties(ref_eval)[0].data.num_values);
+    const md_script_property_data_t* data = md_script_eval_property_data(ref_eval, STR_LIT("p1"));
+    ASSERT_TRUE(data);
+    ASSERT_EQ(num_frames, data->num_values);
 
 #if 0
     printf("Ref Values:\n");
@@ -961,7 +1103,7 @@ UTEST_F(script, parallel_evaluation) {
 
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
-            eval[i] = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+            eval[i] = md_script_eval_create(num_frames, ir, alloc);
             EXPECT_NE(NULL, eval[i]);
         }
 
@@ -1018,6 +1160,46 @@ UTEST_F(script, parse_unary_binary) {
 
         md_script_ir_clear(ir);
         EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = (5) - 4;"), mol, NULL, NULL));
+    }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST_F(script, visualize) {
+    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->ala;
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    {
+        str_t src = STR_LIT(
+        "w = shape_weights(residue(:));"
+        "{x,y,z} = {w[:,1], w[:,2], w[:,3]};"
+        "sx = w[5,1];"
+        );
+        md_script_ir_clear(ir);
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, src, mol, NULL, NULL));
+
+        identifier_t*  x = get_identifier(ir, STR_LIT("x"));
+        identifier_t* sx = get_identifier(ir, STR_LIT("sx"));
+
+        ASSERT_TRUE(x);
+        ASSERT_TRUE(sx);
+
+        md_script_vis_t vis = {0};
+        md_script_vis_init(&vis, alloc);
+        md_script_vis_ctx_t ctx = {
+            .ir = ir,
+            .mol = mol,
+        };
+        
+        EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)x->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+        EXPECT_EQ(mol->atom.count, md_bitfield_popcount(&vis.atom_mask));
+        
+        md_script_vis_clear(&vis);
+        EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)sx->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+        size_t res_atom_count = md_residue_atom_count(mol->residue, 4);
+        size_t pop_count = md_bitfield_popcount(&vis.atom_mask);
+        EXPECT_EQ(res_atom_count, pop_count);
     }
 
     md_arena_allocator_destroy(alloc);
