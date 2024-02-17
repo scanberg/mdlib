@@ -573,8 +573,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 			md_buffered_reader_skip_line(reader);
-			md_array_resize(data->angles, data->num_angles, alloc);
-			if (!parse_angles(data->angles, data->num_angles, reader)) {
+			md_array_resize(data->dihedrals, data->num_dihedrals, alloc);
+			if (!parse_dihedrals(data->dihedrals, data->num_dihedrals, reader)) {
 				return false;
 			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Masses"))) {
