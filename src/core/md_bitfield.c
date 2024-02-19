@@ -200,7 +200,7 @@ static inline block_t get_block(const md_bitfield_t* bf, uint64_t blk_idx) {
     return (block_t) {0};
 }
 
-#define get_block_ptr(bf, idx) ((block_t*)bf->bits + (idx - block_idx(bf->beg_bit)))
+#define get_blk_ptr(bf, idx) ((block_t*)bf->bits + (idx - block_idx(bf->beg_bit)))
 
 static inline void free_blocks(md_bitfield_t* bf) {
     ASSERT(bf);
@@ -359,7 +359,7 @@ void md_bitfield_set_bit(md_bitfield_t* bf, uint64_t bit_idx) {
     ASSERT(md_bitfield_validate(bf));
 
     ensure_range(bf, bit_idx, bit_idx+1);
-    block_set_bit(get_block_ptr(bf, block_idx(bit_idx)), bit_idx - block_bit(bit_idx));
+    block_set_bit(get_blk_ptr(bf, block_idx(bit_idx)), bit_idx - block_bit(bit_idx));
 }
 
 void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, size_t num_indices) {
@@ -964,10 +964,10 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
         uint16_t blk_idx = block_indices[i];
         if (blk_idx & BLOCK_IDX_FLAG_ALL_SET) {
             blk_idx &= ~BLOCK_IDX_FLAG_ALL_SET;
-            block_t* blk_ptr = get_block_ptr(bf, blk_idx);
+            block_t* blk_ptr = get_blk_ptr(bf, blk_idx);
             MEMSET(blk_ptr, 0xFFFFFFFF, sizeof(block_t));
         } else {
-            block_t* blk_ptr = get_block_ptr(bf, blk_idx);
+            block_t* blk_ptr = get_blk_ptr(bf, blk_idx);
             MEMCPY(blk_ptr, block_data + src_offset, sizeof(block_t));
             src_offset += sizeof(block_t);
         }
@@ -987,17 +987,8 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
 
 uint64_t md_bitfield_hash64(const md_bitfield_t* bf, uint64_t seed) {
     ASSERT(bf);
-
     if (bf->beg_bit == bf->end_bit) return 0;
-
-    const uint64_t length = num_blocks(bf->beg_bit, bf->end_bit);
-    const uint64_t offset = block_idx(bf->beg_bit);
-
-    uint64_t hash = seed;
-    for (uint64_t i = offset; i < offset + length; ++i) {
-        block_t blk = get_block(bf, i);
-        hash = md_hash64((const char*)blk.u64, sizeof(blk.u64), hash);
-    }
-
-    return hash;
+    const block_t* ptr = (const block_t*)bf->bits;
+    const size_t num_blk = num_blocks(bf->beg_bit, bf->end_bit);
+    return md_hash64(ptr, sizeof(block_t) * num_blk, seed);
 }
