@@ -7,8 +7,7 @@
 #include <core/md_arena_allocator.h>
 
 struct spatial_hash {
-    md_vm_arena_t arena;
-    md_allocator_i alloc;
+    md_allocator_i* arena;
     md_molecule_t mol;
     md_spatial_hash_t* pbc_sh;
     vec3_t pbc_ext;
@@ -17,27 +16,26 @@ struct spatial_hash {
 };
 
 UBENCH_F_SETUP(spatial_hash) {
-    md_vm_arena_init(&ubench_fixture->arena, GIGABYTES(4));
-
-    ubench_fixture->alloc = md_vm_arena_create_interface(&ubench_fixture->arena);
+    ubench_fixture->arena = md_vm_arena_create(GIGABYTES(4));
+    md_allocator_i* alloc = ubench_fixture->arena;
 
     md_gro_data_t gro_data = {0};
-    md_gro_data_parse_file(&gro_data, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"), &ubench_fixture->alloc);
-    md_gro_molecule_init(&ubench_fixture->mol, &gro_data, &ubench_fixture->alloc);
-    ubench_fixture->pbc_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, &ubench_fixture->mol.unit_cell, &ubench_fixture->alloc);
-    ubench_fixture->reg_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, NULL, &ubench_fixture->alloc);
+    md_gro_data_parse_file(&gro_data, STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro"), alloc);
+    md_gro_molecule_init(&ubench_fixture->mol, &gro_data, alloc);
+    ubench_fixture->pbc_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, &ubench_fixture->mol.unit_cell, alloc);
+    ubench_fixture->reg_sh = md_spatial_hash_create_soa(ubench_fixture->mol.atom.x, ubench_fixture->mol.atom.y, ubench_fixture->mol.atom.z, NULL, ubench_fixture->mol.atom.count, NULL, alloc);
 }
 
 UBENCH_F_TEARDOWN(spatial_hash) {
-    md_vm_arena_free(&ubench_fixture->arena);
+    md_vm_arena_destroy(ubench_fixture->arena);
 }
 
 UBENCH_EX_F(spatial_hash, init_regular) {
     md_molecule_t* mol = &ubench_fixture->mol;
-    md_allocator_i* alloc = &ubench_fixture->alloc;
+    md_allocator_i* alloc = ubench_fixture->arena;
 
     UBENCH_DO_BENCHMARK() {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(alloc);
         UBENCH_DO_NOTHING(md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, NULL, alloc));
         md_vm_arena_temp_end(temp);
     }
@@ -45,10 +43,10 @@ UBENCH_EX_F(spatial_hash, init_regular) {
 
 UBENCH_EX_F(spatial_hash, init_periodic) {
     md_molecule_t* mol = &ubench_fixture->mol;
-    md_allocator_i* alloc = &ubench_fixture->alloc;
+    md_allocator_i* alloc = ubench_fixture->arena;
 
     UBENCH_DO_BENCHMARK() {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&ubench_fixture->arena);
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(alloc);
         UBENCH_DO_NOTHING(md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, alloc));
         md_vm_arena_temp_end(temp);
     }

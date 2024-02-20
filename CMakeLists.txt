@@ -1,15 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(mdlib VERSION 0.1.11 LANGUAGES C)
+include(cmake/common.cmake)
 
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_C_STANDARD_REQUIRED ON)
-if(CMAKE_COMPILER_IS_GNUCC)
-  set(CMAKE_C_EXTENSIONS ON)
-endif()
+project(mdlib VERSION 0.1.12 LANGUAGES C)
 
 include(CMakeDependentOption)
-include(cmake/common.cmake)
 include(cmake/FindAVX.cmake)
 
 # Options
@@ -21,7 +16,15 @@ option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
+option(MD_ENABLE_NETCDF "Enable NetCDF" OFF)
+option(MD_ENABLE_HDF5 "Enable HDF5" OFF)
 set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+if(CMAKE_COMPILER_IS_GNUCC)
+  set(CMAKE_C_EXTENSIONS ON)
+endif()
 
 file(GLOB SRC_FILES src/*.h src/*.c src/*.inl)
 file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
@@ -74,6 +77,17 @@ set(MD_FLAGS_AVX)
 set(MD_LINK_FLAGS)
 set(MD_LINK_FLAGS_REL)
 set(MD_LINK_FLAGS_DEB)
+set(MD_LIBS)
+
+if (MD_ENABLE_NETCDF)
+    find_package(netcdf REQUIRED)
+    set(MD_LIBS ${MD_LIBS} netcdf)
+endif()
+
+if (MD_ENABLE_HDF5)
+    find_package(hdf5 REQUIRED)
+    set(MD_LIBS ${MD_LIBS} hdf5::hdf5-shared)
+endif()
 
 create_resources("${SHADER_FILES}" "gen/gl_shaders.inl")
 

@@ -2178,26 +2178,23 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const struct md_molecule_t
     ASSERT(mol);
     
     if (radius <= 0.0) return;
-
-    md_vm_arena_t arena = { 0 };
-    md_vm_arena_init(&arena, GIGABYTES(1));
-    md_allocator_i arena_alloc = md_vm_arena_create_interface(&arena);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     
     int32_t* indices = 0;
     size_t count = mol->atom.count;
         
     if (viable_mask) {
-        md_bitfield_t tmp_bf = md_bitfield_create(&arena_alloc);
+        md_bitfield_t tmp_bf = md_bitfield_create(arena);
         md_bitfield_andnot(&tmp_bf, viable_mask, mask);
             
         const size_t num_atoms = md_bitfield_popcount(&tmp_bf);
-        indices = md_vm_arena_push(&arena, num_atoms * sizeof(int32_t));
+        indices = md_vm_arena_push(arena, num_atoms * sizeof(int32_t));
         count = md_bitfield_iter_extract_indices(indices, num_atoms, md_bitfield_iter_create(&tmp_bf));
     }
 
-    md_spatial_hash_t* ctx = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, indices, count, &mol->unit_cell, &arena_alloc);
+    md_spatial_hash_t* ctx = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, indices, count, &mol->unit_cell, arena);
     
-    md_bitfield_t old_mask = md_bitfield_create(&arena_alloc);
+    md_bitfield_t old_mask = md_bitfield_create(arena);
     md_bitfield_copy(&old_mask, mask);
 
     md_bitfield_iter_t it = md_bitfield_iter_create(&old_mask);
@@ -2208,7 +2205,7 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const struct md_molecule_t
         md_spatial_hash_query_bits(mask, ctx, pos, rad);
     }
 
-    md_vm_arena_free(&arena);
+    md_vm_arena_destroy(arena);
 }
 
 void md_util_grow_mask_by_residue(md_bitfield_t* mask, const md_molecule_t* mol) {
@@ -5447,18 +5444,6 @@ bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator
 #ifdef PROFILE
         md_timestamp_t t0 = md_time_current();
 #endif
-        if (mol->atom.vx == 0) {
-            md_array_resize(mol->atom.vx, mol->atom.count, alloc);
-            MEMSET(mol->atom.vx, 0, md_array_bytes(mol->atom.vx));
-        }
-        if (mol->atom.vy == 0) {
-            md_array_resize(mol->atom.vy, mol->atom.count, alloc);
-            MEMSET(mol->atom.vy, 0, md_array_bytes(mol->atom.vy));
-        }
-        if (mol->atom.vz == 0) {
-            md_array_resize(mol->atom.vz, mol->atom.count, alloc);
-            MEMSET(mol->atom.vz, 0, md_array_bytes(mol->atom.vz));
-        }
         if (mol->atom.flags == 0) {
             md_array_resize(mol->atom.flags, mol->atom.count, alloc);
             MEMSET(mol->atom.flags, 0, md_array_bytes(mol->atom.flags));

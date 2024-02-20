@@ -15,12 +15,8 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->atom.x) md_array_free(mol->atom.x, alloc);
     if (mol->atom.y) md_array_free(mol->atom.y, alloc);
     if (mol->atom.z) md_array_free(mol->atom.z, alloc);
-    if (mol->atom.vx) md_array_free(mol->atom.vx, alloc);
-    if (mol->atom.vy) md_array_free(mol->atom.vy, alloc);
-    if (mol->atom.vz) md_array_free(mol->atom.vz, alloc);
     if (mol->atom.radius) md_array_free(mol->atom.radius, alloc);
     if (mol->atom.mass) md_array_free(mol->atom.mass, alloc);
-    if (mol->atom.valence) md_array_free(mol->atom.valence, alloc);
     if (mol->atom.element) md_array_free(mol->atom.element, alloc);
     if (mol->atom.resid) md_array_free(mol->atom.resid, alloc);
     if (mol->atom.resname) md_array_free(mol->atom.resname, alloc);
@@ -89,12 +85,8 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(atom, x);
     ARRAY_PUSH(atom, y);
     ARRAY_PUSH(atom, z);
-    ARRAY_PUSH(atom, vx);
-    ARRAY_PUSH(atom, vy);
-    ARRAY_PUSH(atom, vz);
     ARRAY_PUSH(atom, radius);
     ARRAY_PUSH(atom, mass);
-    ARRAY_PUSH(atom, valence);
     ARRAY_PUSH(atom, element);
     ARRAY_PUSH(atom, type);
     ARRAY_PUSH(atom, flags);

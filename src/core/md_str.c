@@ -164,6 +164,15 @@ str_t str_substr(str_t str, size_t offset, size_t length) {
     return res;
 }
 
+str_t str_join(str_t first, str_t last) {
+    ASSERT(first.ptr < last.ptr + last.len);
+    str_t str = {
+        str_beg(first),
+        str_end(last) - str_beg(first)
+    };
+    return str;
+}
+
 int str_cmp_lex(str_t a, str_t b) {
     size_t len = a.len < b.len ? a.len : b.len;
     for (size_t i = 0; i < len; ++i) {
@@ -342,12 +351,12 @@ bool str_find_str(size_t* loc, str_t haystack, str_t needle) {
     return false;
 }
 
-bool str_starts_with(str_t str, str_t prefix) {
-    return str.len >= prefix.len && strncmp(str.ptr, prefix.ptr, prefix.len) == 0;
+bool str_begins_with(str_t str, str_t prefix) {
+    return str.len >= prefix.len && MEMCMP(str.ptr, prefix.ptr, prefix.len) == 0;
 }
 
 bool str_ends_with(str_t str, str_t suffix) {
-    return str.len >= suffix.len && strncmp(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
+    return str.len >= suffix.len && MEMCMP(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
 }
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {

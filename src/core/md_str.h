@@ -88,6 +88,12 @@ size_t str_count_occur_char(str_t str, char character);
 
 str_t str_substr(str_t str, size_t offset, size_t length DEF_VAL(SIZE_MAX));
 
+// Joins two strings by taking the beginning of the first and the end of the last
+// @WARNING:
+// This does no allocation of any sort, it simply creates a new string view from the two inputs which correspond to the total span
+// Use at your own risk!
+str_t str_join(str_t first, str_t last);
+
 bool str_skip_line   (str_t* in_out_str);
 bool str_peek_line   (str_t* out_line, const str_t* in_str);
 bool str_extract_line(str_t* out_line, str_t* in_out_str);
@@ -103,7 +109,7 @@ bool str_find_char (size_t* loc, str_t str, int c);
 bool str_rfind_char(size_t* loc, str_t str, int c);
 bool str_find_str  (size_t* loc, str_t haystack, str_t needle);
 
-bool str_starts_with(str_t str, str_t prefix);
+bool str_begins_with(str_t str, str_t prefix);
 bool str_ends_with(str_t str, str_t suffix);
 
 // Will allocate one extra character for zero termination

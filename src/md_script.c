@@ -81,12 +81,8 @@
 #define MAX_NUM_DIMS 4
 #define TIMESTAMP_ERROR_MARGIN 1.0e-4
 
-#define SETUP_TEMP_ALLOC(reserve_size) \
-    md_vm_arena_t vm_arena; \
-    md_vm_arena_init(&vm_arena, reserve_size); \
-    md_allocator_i temp_alloc = md_vm_arena_create_interface(&vm_arena);
-
-#define FREE_TEMP_ALLOC() md_vm_arena_free(&vm_arena);
+#define SETUP_TEMP_ALLOC(reserve_size) md_allocator_i* temp_alloc = md_vm_arena_create(reserve_size);
+#define FREE_TEMP_ALLOC md_vm_arena_destroy(temp_alloc);
 
 // ################################
 // ###   FORWARD DECLARATIONS   ###
@@ -297,8 +293,7 @@ typedef struct eval_context_t {
     const md_bitfield_t* mol_ctx;       // The atomic bit context in which we perform the operation, this can be null, in that case we are not limited to a smaller context and the full molecule is our context
     const md_trajectory_i* traj;
 
-    md_vm_arena_t* temp_arena;          // For allocating transient data  Raw interface, prefer this
-    md_allocator_i* temp_alloc;         // For allocating transient data  (Generic interface to temp_arena)
+    md_allocator_i* temp_alloc;         // For allocating transient data  (interface to temp vm arena)
     md_allocator_i* alloc;              // For allocating persistent data (for the duration of the evaluation)
 
     // Contextual information for static checking 
@@ -5100,8 +5095,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
 
     eval_context_t ctx = {
         .ir = ir,
-        .temp_arena = &vm_arena,
-        .temp_alloc = &temp_alloc,
+        .temp_alloc = temp_alloc,
         .alloc = ir->arena,
         .mol = mol,
         .traj = traj,
@@ -5120,7 +5114,7 @@ static bool static_type_check(md_script_ir_t* ir, const md_molecule_t* mol, cons
         }
     }
 
-    FREE_TEMP_ALLOC();
+    FREE_TEMP_ALLOC;
 
     return result;
 }
@@ -5222,13 +5216,12 @@ static bool static_eval_node(ast_node_t* node, eval_context_t* ctx) {
 static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     ASSERT(mol);
 
-    SETUP_TEMP_ALLOC(GIGABYTES(4));
+    SETUP_TEMP_ALLOC(GIGABYTES(4))
 
     eval_context_t ctx = {
         .ir = ir,
         .mol = mol,
-        .temp_arena = &vm_arena,
-        .temp_alloc = &temp_alloc,
+        .temp_alloc = temp_alloc,
     };
 
     ir->stage = "Static Evaluation";
@@ -5237,10 +5230,10 @@ static bool static_evaluation(md_script_ir_t* ir, const md_molecule_t* mol) {
     // Evaluate every node which is not flagged with FLAG_DYNAMIC and store its value.
     for (size_t i = 0; i < md_array_size(ir->type_checked_expressions); ++i) {
         result &= static_eval_node(ir->type_checked_expressions[i], &ctx);
-        md_vm_arena_reset(&vm_arena);
+        md_vm_arena_reset(temp_alloc);
     }
 
-    FREE_TEMP_ALLOC();
+    FREE_TEMP_ALLOC
 
     return result;
 }
@@ -5431,13 +5424,13 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     // coordinate data for reading trajectory frames into
     const size_t stride = ALIGN_TO(mol->atom.count, 8);    // Round up allocation size to simd width to allow for vectorized operations
     const size_t coord_bytes = stride * 3 * sizeof(float);
-    float* init_coords = md_vm_arena_push(&vm_arena, coord_bytes);
-    float* curr_coords = md_vm_arena_push(&vm_arena, coord_bytes);
+    float* init_coords = md_vm_arena_push(temp_alloc, coord_bytes);
+    float* curr_coords = md_vm_arena_push(temp_alloc, coord_bytes);
     
     // This data is meant to hold the evaluated expressions
-    data_t* data = md_vm_arena_push(&vm_arena, num_expr * sizeof(data_t));
+    data_t* data = md_vm_arena_push(temp_alloc, num_expr * sizeof(data_t));
 
-    const size_t STACK_RESET_POINT = md_vm_arena_get_pos(&vm_arena);
+    const size_t STACK_RESET_POINT = md_vm_arena_get_pos(temp_alloc);
 
     //int thread_id = (md_thread_id() & 0xFFFF);
     //md_logf(MD_LOG_TYPE_DEBUG, "Starting evaluation on thread %i, range (%i,%i) arena size: %.2f MB", thread_id, (int)frame_beg, (int)frame_end, (double)vm_arena.commit_pos / (double)MEGABYTES(1));
@@ -5464,9 +5457,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
         .ir = (md_script_ir_t*)ir,  // We cast away the const here. The evaluation will not modify ir.
         .mol = &mutable_mol,
         .traj = traj,
-        .temp_arena = &vm_arena,
-        .temp_alloc = &temp_alloc,
-        .alloc = &temp_alloc,
+        .temp_alloc = temp_alloc,
+        .alloc = temp_alloc,
         .frame_header = &curr_header,
         .initial_configuration = {
             .header = &init_header,
@@ -5496,7 +5488,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
 
         MEMCPY(&mutable_mol.unit_cell, &curr_header.unit_cell, sizeof(md_unit_cell_t));
         
-        md_vm_arena_set_pos(&vm_arena, STACK_RESET_POINT);
+        md_vm_arena_set_pos(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = 0;
         ctx.spatial_hash = 0;
 
@@ -5510,7 +5502,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                     goto done;
                 }
             }
-            allocate_data(&data[i], type, &temp_alloc);
+            allocate_data(&data[i], type, temp_alloc);
             data[i].unit = expr[i]->data.unit;
             data[i].value_range = expr[i]->data.value_range;
             if (data[i].value_range.beg == 0 && data[i].value_range.end == 0) {
@@ -5640,7 +5632,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
     }
 done:
     //md_logf(MD_LOG_TYPE_DEBUG, "Finished evaluation on thread %i, max arena size: %.2f MB", thread_id, (double)max_arena_pos / (double)MEGABYTES(1));
-    FREE_TEMP_ALLOC();
+    FREE_TEMP_ALLOC;
     return result;
 }
 
@@ -6317,20 +6309,19 @@ void md_script_eval_interrupt(md_script_eval_t* eval) {
 static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allocator_i* alloc) {
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
 
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     bool result = false;
 
-    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = &temp_alloc});
+    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc});
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .temp_arena = &vm_arena,
-            .temp_alloc = &temp_alloc,
-            .alloc = &temp_alloc,
+            .temp_alloc = temp_alloc,
+            .alloc = temp_alloc,
         };
 
         if (static_check_node(node, &ctx)) {
@@ -6356,7 +6347,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
         }
     }
 
-    FREE_TEMP_ALLOC();
+    FREE_TEMP_ALLOC;
 
     return result;
 }
@@ -6370,7 +6361,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
 
     if (ctx_ir) {
@@ -6383,7 +6374,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
-        .temp_alloc = &temp_alloc,
+        .temp_alloc = temp_alloc,
     };
 
     ir->stage = "Filter evaluate";
@@ -6395,9 +6386,8 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .temp_arena = &vm_arena,
-            .temp_alloc = &temp_alloc,
-            .alloc = &temp_alloc,
+            .temp_alloc = temp_alloc,
+            .alloc = temp_alloc,
             .initial_configuration = {
                 .x = mol->atom.x,
                 .y = mol->atom.y,
@@ -6413,7 +6403,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
                 }
 
                 data_t data = {0};
-                allocate_data(&data, node->data.type, &temp_alloc);
+                allocate_data(&data, node->data.type, temp_alloc);
 
                 if (evaluate_node(&data, node, &ctx)) {
                     const int64_t len = type_info_array_len(data.type);
@@ -6449,7 +6439,7 @@ bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md
         }
     }
 
-    FREE_TEMP_ALLOC();
+    FREE_TEMP_ALLOC;
     return success;
 }
 
@@ -6477,7 +6467,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
 
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_script_ir_t* ir = create_ir(temp_alloc);
     ir->str = str_copy(expr, ir->arena);
 
     if (ctx_ir) {
@@ -6490,7 +6480,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
-        .temp_alloc = &temp_alloc,
+        .temp_alloc = temp_alloc,
     };
 
     ir->stage = "Filter evaluate";
@@ -6502,9 +6492,8 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .temp_arena = &vm_arena,
-            .temp_alloc = &temp_alloc,
-            .alloc = &temp_alloc,
+            .temp_alloc = temp_alloc,
+            .alloc = temp_alloc,
             .initial_configuration = {
                 .x = mol->atom.x,
                 .y = mol->atom.y,
@@ -6535,7 +6524,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
                     }
                 } else if (len > 1) {
                     data_t data = {0};
-                    allocate_data(&data, node->data.type, &temp_alloc);
+                    allocate_data(&data, node->data.type, temp_alloc);
                     
                     if (evaluate_node(&data, node, &ctx)) {
                         success = true;
@@ -6570,7 +6559,7 @@ bool md_filter(md_bitfield_t* dst_bf, str_t expr, const struct md_molecule_t* mo
         }
     }
 
-    FREE_TEMP_ALLOC();
+    FREE_TEMP_ALLOC;
     return success;
 }
 
@@ -6685,9 +6674,9 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
     SETUP_TEMP_ALLOC(GIGABYTES(4));
 
     int64_t num_atoms = md_trajectory_num_atoms(vis_ctx->traj);
-    float* init_x = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
-    float* init_y = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
-    float* init_z = md_vm_arena_push(&vm_arena, num_atoms * sizeof(float));
+    float* init_x = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
+    float* init_y = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
+    float* init_z = md_vm_arena_push(temp_alloc, num_atoms * sizeof(float));
 
     md_trajectory_frame_header_t header = { 0 };
     if (vis_ctx->traj) {
@@ -6701,15 +6690,14 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
     md_array(irange_t) ranges = 0;
     if (subidx > -1) {
         irange_t range = {subidx, subidx+1};
-        md_array_push(ranges, range, &temp_alloc);
+        md_array_push(ranges, range, temp_alloc);
     }
 
     eval_context_t ctx = {
         .ir = (md_script_ir_t*)vis_ctx->ir,
         .mol = vis_ctx->mol,
         .traj = vis_ctx->traj,
-        .temp_arena = &vm_arena,
-        .temp_alloc = &temp_alloc,
+        .temp_alloc = temp_alloc,
         .vis = vis,
         .vis_flags = flags,
         .vis_structure = &vis->atom_mask,
@@ -6733,7 +6721,7 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
         md_bitfield_or_inplace(&vis->atom_mask, &vis->structures[i]);
     }
 
-    FREE_TEMP_ALLOC();
+    FREE_TEMP_ALLOC;
 
     return true;
 }

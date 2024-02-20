@@ -559,8 +559,6 @@ UTEST(util, parse_smiles) {
 
 		EXPECT_EQ(smiles[10].type, MD_SMILES_NODE_BRIDGE);
         EXPECT_EQ(smiles[10].bridge.index, 1);
-
-        md_array_free(smiles, alloc);
     }
 
     {
@@ -571,8 +569,6 @@ UTEST(util, parse_smiles) {
         EXPECT_EQ(len, 16);
         EXPECT_EQ(smiles[0].type, MD_SMILES_NODE_ATOM);
         EXPECT_EQ(smiles[0].atom.element, 6);
-
-        md_array_free(smiles, alloc);
     }
 
     md_arena_allocator_destroy(alloc);

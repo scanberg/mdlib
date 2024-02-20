@@ -7,18 +7,15 @@
 
 typedef struct md_atom_data_t {
     size_t count;
+
     // Coordinates
     float* x;
     float* y;
     float* z;
-    // Velocities
-    float* vx;
-    float* vy;
-    float* vz;
+
     // Misc
     float* radius;
     float* mass;
-    md_valence_t* valence;
     md_element_t* element;
     md_label_t* type;
 

@@ -103,8 +103,7 @@ md_molecule_t test_mol = {
 
 struct script {
     bool initialized;
-    md_vm_arena_t arena;
-    md_allocator_i alloc;
+    md_allocator_i* arena;
     md_molecule_t amy;
     md_molecule_t ala;
     md_trajectory_i* ala_traj;
@@ -115,20 +114,19 @@ static md_molecule_t* ala = 0;
 static md_trajectory_i* ala_traj = 0;
 
 UTEST_F_SETUP(script) {
-    md_vm_arena_init(&utest_fixture->arena, GIGABYTES(4));
-    utest_fixture->alloc = md_vm_arena_create_interface(&utest_fixture->arena);
+    utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
 
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"),   NULL, &utest_fixture->alloc));
-    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, &utest_fixture->alloc));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"),   NULL, utest_fixture->arena));
+    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, utest_fixture->arena));
 
-    md_util_molecule_postprocess(&utest_fixture->amy, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
-    md_util_molecule_postprocess(&utest_fixture->ala, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_util_molecule_postprocess(&utest_fixture->amy, utest_fixture->arena, MD_UTIL_POSTPROCESS_ALL);
+    md_util_molecule_postprocess(&utest_fixture->ala, utest_fixture->arena, MD_UTIL_POSTPROCESS_ALL);
 
-    utest_fixture->ala_traj = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), &utest_fixture->alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
+    utest_fixture->ala_traj = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), utest_fixture->arena, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
 }
 
 UTEST_F_TEARDOWN(script) {
-    md_vm_arena_free(&utest_fixture->arena);
+    md_vm_arena_destroy(utest_fixture->arena);
 }
 
 static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule_t* mol) {
@@ -244,25 +242,22 @@ UTEST(script, basic_expressions) {
 		.alloc = &temp_alloc, \
 	}
 
-ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_molecule_t* mol, md_vm_arena_t* temp_arena) {
+ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_molecule_t* mol, md_allocator_i* arena) {
     // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
     // Which means that the actual string data is contained within the ir->arena => temp_alloc
     ir->str = str_copy(expr, ir->arena);
 
-    md_allocator_i temp_alloc = md_vm_arena_create_interface(temp_arena);
-
     tokenizer_t tokenizer = tokenizer_init(ir->str);
     bool result = false;
 
-    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = &temp_alloc});
+    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = arena});
     node = prune_expressions(node);
     if (node) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = mol,
-            .temp_arena = temp_arena,
-            .temp_alloc = &temp_alloc,
-            .alloc = &temp_alloc,
+            .temp_alloc = arena,
+            .alloc = arena,
         };
 
         if (static_check_node(node, &ctx)) {
@@ -279,13 +274,13 @@ ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_m
 }
 
 UTEST(script, assignment) {
-    SETUP_TEMP_ALLOC(GIGABYTES(1));
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
 
     {
         md_script_ir_clear(ir);
 
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,2}"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,2}"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* a = get_identifier(ir, STR_LIT("a"));
@@ -306,7 +301,7 @@ UTEST(script, assignment) {
         md_script_ir_clear(ir);
 
         //@NOTE: Implicit conversion will kick in in the array composition converting 1 to 1.0f since that is the common 'compatible' type in array arguments
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,distance(1,2)}"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,distance(1,2)}"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* a = get_identifier(ir, STR_LIT("a"));
@@ -325,7 +320,7 @@ UTEST(script, assignment) {
 
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y,z} = coord(1)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y,z} = coord(1)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* x = get_identifier(ir, STR_LIT("x"));
@@ -351,16 +346,16 @@ UTEST(script, assignment) {
     {
         md_script_ir_clear(ir);
         // @NOTE: LHS contains 2 arguments, RHS contains 3 => No match in assignment
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y} = coord(1)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y} = coord(1)"), ir, &test_mol, arena);
         EXPECT_FALSE(node);
     }
 
-    FREE_TEMP_ALLOC();
+    md_vm_arena_destroy(arena);
 }
 
 UTEST(script, array) {
-    SETUP_TEMP_ALLOC(GIGABYTES(1));
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
 
     {
         str_t src = STR_LIT(
@@ -451,7 +446,7 @@ UTEST(script, array) {
 
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = coord(1) in residue(:)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = coord(1) in residue(:)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -463,7 +458,7 @@ UTEST(script, array) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = angle(1,2,3) in residue(:)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = angle(1,2,3) in residue(:)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -474,7 +469,7 @@ UTEST(script, array) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = {angle(1,2,3), angle(3,2,1)} in residue(:)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = {angle(1,2,3), angle(3,2,1)} in residue(:)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -486,7 +481,7 @@ UTEST(script, array) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = {angle(1,2,3) in residue(:), angle(3,2,1) in residue(:)}"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = {angle(1,2,3) in residue(:), angle(3,2,1) in residue(:)}"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -496,16 +491,16 @@ UTEST(script, array) {
         }
     }
 
-    FREE_TEMP_ALLOC();
+    md_vm_arena_destroy(arena);
 }
 
 UTEST(script, array_subscript) {
-    SETUP_TEMP_ALLOC(GIGABYTES(1));
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
 
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[1]"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[1]"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -517,7 +512,7 @@ UTEST(script, array_subscript) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[1,:]"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[1,:]"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -529,7 +524,7 @@ UTEST(script, array_subscript) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[:,1]"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[:,1]"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -555,9 +550,8 @@ UTEST(script, array_subscript) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = &test_mol,
-            .temp_arena = &vm_arena,
-            .temp_alloc = &temp_alloc,
-            .alloc = &temp_alloc,
+            .temp_alloc = arena,
+            .alloc = arena,
         };
 
         identifier_t* xyz = get_identifier(ir, STR_LIT("xyz"));
@@ -575,7 +569,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0, xyz1->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, xyz1->data->type, &temp_alloc);
+            allocate_data(&data, xyz1->data->type, arena);
             evaluate_node(&data, xyz1->node, &ctx);
             const float* coord = (const float*)data.ptr;
             EXPECT_NEAR(mol_x[0], coord[0], 1.0e-6f);
@@ -591,7 +585,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0, xyz2->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, xyz2->data->type, &temp_alloc);
+            allocate_data(&data, xyz2->data->type, arena);
             evaluate_node(&data, xyz2->node, &ctx);
             const float* coord = (const float*)data.ptr;
             EXPECT_NEAR(mol_y[1], coord[0], 1.0e-6f);
@@ -606,7 +600,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0, xyz3->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, xyz3->data->type, &temp_alloc);
+            allocate_data(&data, xyz3->data->type, arena);
             evaluate_node(&data, xyz3->node, &ctx);
             const float* coord = (const float*)data.ptr;
             EXPECT_NEAR(mol_x[1], coord[0], 1.0e-6f);
@@ -622,7 +616,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0,  x->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, x->data->type, &temp_alloc);
+            allocate_data(&data, x->data->type, arena);
             evaluate_node(&data, x->node, &ctx);
             const float* coord = (const float*)data.ptr;
             for (int i = 0; i < ATOM_COUNT; ++i) {
@@ -638,7 +632,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0,  y->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, y->data->type, &temp_alloc);
+            allocate_data(&data, y->data->type, arena);
             evaluate_node(&data, y->node, &ctx);
             const float* coord = (const float*)data.ptr;
             for (int i = 0; i < ATOM_COUNT; ++i) {
@@ -654,7 +648,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0,  z->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, z->data->type, &temp_alloc);
+            allocate_data(&data, z->data->type, arena);
             evaluate_node(&data, z->node, &ctx);
             const float* coord = (const float*)data.ptr;
             for (int i = 0; i < ATOM_COUNT; ++i) {
@@ -663,12 +657,12 @@ UTEST(script, array_subscript) {
         }
     }
 
-    FREE_TEMP_ALLOC();
+    md_vm_arena_destroy(arena);
 }
 
 UTEST(script, dim_op) {
-    SETUP_TEMP_ALLOC(GIGABYTES(1));
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
 
     {
         str_t src = STR_LIT(
@@ -684,9 +678,8 @@ UTEST(script, dim_op) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = &test_mol,
-            .temp_arena = &vm_arena,
-            .temp_alloc = &temp_alloc,
-            .alloc = &temp_alloc,
+            .temp_alloc = arena,
+            .alloc = arena,
         };
 
         {
@@ -699,7 +692,7 @@ UTEST(script, dim_op) {
             }
 
             data_t data = {0};
-            allocate_data(&data, xyz->data->type, &temp_alloc);
+            allocate_data(&data, xyz->data->type, arena);
             evaluate_node(&data, xyz->node, &ctx);
             const vec3_t* coord = (const vec3_t*)data.ptr;
             for (int i = 0; i < xyz->data->type.dim[0]; ++i) {
@@ -719,7 +712,7 @@ UTEST(script, dim_op) {
             }
 
             data_t data = {0};
-            allocate_data(&data, flat->data->type, &temp_alloc);
+            allocate_data(&data, flat->data->type, arena);
             evaluate_node(&data, flat->node, &ctx);
             const float* coord = (const float*)data.ptr;
             for (int i = 0; i < flat->data->type.dim[0]; ++i) {
@@ -740,7 +733,7 @@ UTEST(script, dim_op) {
                 EXPECT_EQ(15, xyz_t->data->type.dim[1]);
 
                 data_t data = {0};
-                allocate_data(&data, xyz_t->data->type, &temp_alloc);
+                allocate_data(&data, xyz_t->data->type, arena);
                 evaluate_node(&data, xyz_t->node, &ctx);
                 const float* coords = (const float*)data.ptr;
                 const float* x = coords + 0 * xyz_t->data->type.dim[1];
@@ -791,7 +784,7 @@ UTEST(script, dim_op) {
         }
     }
 
-    FREE_TEMP_ALLOC();
+    md_vm_arena_destroy(arena);
 }
 
 static bool test_selection(const char* expr, const char* ref_bit_str) {
@@ -829,7 +822,7 @@ UTEST(script, selection) {
 }
 
 UTEST_F(script, compile_script) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     str_t script_src = load_textfile(STR_LIT(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -839,7 +832,7 @@ UTEST_F(script, compile_script) {
 }
 
 UTEST_F(script, implicit_conversion) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->amy;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     
@@ -852,7 +845,7 @@ UTEST_F(script, implicit_conversion) {
 }
 
 UTEST_F(script, semantic) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->amy;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -880,7 +873,7 @@ UTEST_F(script, semantic) {
 }
 
 UTEST_F(script, selection_big) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->amy;
 
     md_bitfield_t bf = md_bitfield_create(alloc);
@@ -890,7 +883,7 @@ UTEST_F(script, selection_big) {
 }
 
 UTEST_F(script, dynamic_length) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
 
@@ -905,7 +898,7 @@ UTEST_F(script, dynamic_length) {
 }
 
 UTEST_F(script, property_compute) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
     uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
@@ -1068,7 +1061,7 @@ void func(void* user_data) {
 }
 
 UTEST_F(script, parallel_evaluation) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
 
@@ -1135,7 +1128,7 @@ UTEST_F(script, parallel_evaluation) {
 }
 
 UTEST_F(script, parse_unary_binary) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -1166,7 +1159,7 @@ UTEST_F(script, parse_unary_binary) {
 }
 
 UTEST_F(script, visualize) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);

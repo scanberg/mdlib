@@ -1,3 +1,12 @@
+# We do not want to have a hard dependency on VCPKG
+# As it is only used for big external libs
+# So if VCPKG_ROOT is defined in the environment, we use the cmake toolchain of vcpkg
+if (NOT DEFINED {CMAKE_TOOLCHAIN_FILE} AND DEFINED ENV{VCPKG_ROOT})
+    set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+    message(STATUS "VCPKG_ROOT is defined, using vcpkg-toolchain: " ${CMAKE_TOOLCHAIN_FILE})
+endif()
+
+enable_language(C CXX)
 include(GNUInstallDirs)
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR})

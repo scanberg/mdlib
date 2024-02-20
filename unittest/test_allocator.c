@@ -139,35 +139,34 @@ UTEST(allocator, arena_extended) {
 }
 
 UTEST(allocator, vm_arena) {
-    md_vm_arena_t arena;
-    md_vm_arena_init(&arena, GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    ASSERT_TRUE(arena);
 
     for (uint32_t i = 0; i < 1000; ++i) {
         size_t size = rand() % 63 + 1;
-        void* mem = md_vm_arena_push(&arena, size);
-        memset(mem, 0, size);   // Important to touch memory in order to validate that it is writable
+        void* mem = md_vm_arena_push(arena, size);
+        MEMSET(mem, 0, size);   // Important to touch memory in order to validate that it is writable
     }
 
-    md_vm_arena_reset(&arena);
+    md_vm_arena_reset(arena);
 
     for (uint32_t i = 0; i < 1000; ++i) {
         size_t size = rand() % 127 + 1;
-        void* mem = md_vm_arena_push_aligned(&arena, size, 32);
-        memset(mem, 0, size); // Important to touch memory in order to validate that it is writable
+        void* mem = md_vm_arena_push_aligned(arena, size, 32);
+        MEMSET(mem, 0, size); // Important to touch memory in order to validate that it is writable
+        md_vm_arena_pop(arena, size);
     }
 
-    md_vm_arena_free(&arena);
+    md_vm_arena_destroy(arena);
 }
 
 UTEST(allocator, vm_arena_generic) {
-    md_vm_arena_t arena;
-    md_vm_arena_init(&arena, GIGABYTES(4));
-    md_allocator_i vm_alloc = md_vm_arena_create_interface(&arena);
-    md_allocator_i* alloc = &vm_alloc;
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    ASSERT_TRUE(alloc);
 
     COMMON_ALLOCATOR_TEST_BODY
 
-    md_vm_arena_free(&arena);
+    md_vm_arena_destroy(alloc);
 }
 
 
