@@ -348,6 +348,8 @@ bool md_vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, struct md_alloca
 		md_strb_push_str(&sb, STR_LIT(".scf.h5"));
 	}
 
+	// This is just toying around in an attempt to extract the orbital coefficients and other data
+
 	hid_t  file_id, dataset_id, space_id; /* identifiers */
 	herr_t status;
 
