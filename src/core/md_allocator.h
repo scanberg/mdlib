@@ -41,7 +41,6 @@ static inline void md_aligned_free(struct md_allocator_i* alloc, void* ptr, size
     md_free(alloc, p1, alloc_size);
 }
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -54,12 +53,12 @@ extern struct md_allocator_i* md_heap_allocator;
 // General allocator interface to thread local ring buffer
 extern struct md_allocator_i* md_temp_allocator;
 
-// Direct interface to the thread local ring buffer (Prefer this)
-struct md_ring_allocator_t* md_thread_ring_allocator(void);
-
 // Simple interface to the thread local ring buffer
-void* md_temp_push(size_t bytes);
-void  md_temp_pop (size_t bytes);
+void*  md_temp_push(size_t bytes);
+void   md_temp_pop (size_t bytes);
+
+size_t md_temp_get_pos();
+void   md_temp_set_pos_back(size_t pos);
 
 #ifdef __cplusplus
 }

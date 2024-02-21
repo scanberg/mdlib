@@ -17,13 +17,25 @@ size_t md_temp_allocator_max_allocation_size(void) {
     return MAX_TEMP_ALLOCATION_SIZE;
 }
 
-THREAD_LOCAL md_ring_allocator_t _ring_alloc = {
-    .pos = 0,
-    .cap = MD_TEMP_ALLOC_SIZE,
-    .magic = MD_RING_ALLOCATOR_MAGIC,
-    .ptr = 0,
-};
+THREAD_LOCAL void* _ring_buf = 0;
+THREAD_LOCAL md_allocator_i* _ring_alloc = 0;
 
+static void release_ring_buffer(void* data) {
+    (void)data;
+    if (_ring_buf) {
+        free(_ring_buf);
+    }
+}
+
+md_allocator_i* md_thread_ring_allocator() {
+    if (!_ring_alloc) {
+        ASSERT(!_ring_buf);
+        _ring_buf = malloc(MD_TEMP_ALLOC_SIZE);
+        _ring_alloc = md_ring_allocator_create(_ring_buf, MD_TEMP_ALLOC_SIZE);
+        md_thread_on_exit(release_ring_buffer);
+    }
+    return _ring_alloc;
+}
 
 static void* realloc_internal(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)inst;
@@ -37,28 +49,11 @@ static void* realloc_internal(struct md_allocator_o *inst, void *ptr, size_t old
     return realloc(ptr, (size_t)new_size);
 }
 
-extern void* ring_realloc(struct md_allocator_o* inst, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line);
-
-static void* ring_realloc_internal(struct md_allocator_o* inst, void* ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
+// Ugly^2 indirection here just to keep the temp API somewhat homogeneous
+static void* ring_realloc_internal(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
     (void)inst;
-    return ring_realloc((md_allocator_o*)md_thread_ring_allocator(), ptr, old_size, new_size, file, line);
-}
-
-static void release_ring_buffer(void* data) {
-    (void)data;
-    ASSERT(_ring_alloc.ptr);
-    if (_ring_alloc.ptr) {
-        free(_ring_alloc.ptr);
-    }
-}
-
-struct md_ring_allocator_t* md_thread_ring_allocator() {
-    if (!_ring_alloc.ptr) {
-        _ring_alloc.ptr = malloc(MD_TEMP_ALLOC_SIZE);
-        ASSERT(_ring_alloc.ptr);
-        md_thread_on_exit(release_ring_buffer);
-    }
-    return &_ring_alloc;
+    md_allocator_i* thread_ring = md_thread_ring_allocator();
+    return thread_ring->realloc(thread_ring->inst, ptr, old_size, new_size, file, line);
 }
 
 static struct md_allocator_i _default_allocator = {
@@ -80,4 +75,12 @@ void* md_temp_push(size_t bytes) {
 
 void md_temp_pop (size_t bytes) {
     md_ring_allocator_pop(md_thread_ring_allocator(), bytes);
+}
+
+size_t md_temp_get_pos() {
+    return md_ring_allocator_get_pos(md_thread_ring_allocator());
+}
+
+void md_temp_set_pos_back(size_t pos) {
+    md_ring_allocator_set_pos_back(md_thread_ring_allocator(), pos);
 }
