@@ -21,11 +21,11 @@ set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segme
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-if(CMAKE_COMPILER_IS_GNUCC)
+if (CMAKE_COMPILER_IS_GNUCC)
   set(CMAKE_C_EXTENSIONS ON)
 endif()
 
-if(${MD_ENABLE_VLX})
+if (${MD_ENABLE_VLX})
     set(MD_ENABLE_HDF5 TRUE)
 endif()
 
@@ -76,10 +76,6 @@ set(SRC_FILES
     src/md_xyz.h
 )
 
-if (${MD_ENABLE_VLX})
-    set (SRC_FILES ${SRC_FILES} src/md_vlx.c src/md_vlx.h)
-endif()
-
 set(SHADER_FILES 
     src/shaders/compute_spline.vert
     src/shaders/compute_spline.geom
@@ -127,6 +123,11 @@ set(MD_LINK_FLAGS)
 set(MD_LINK_FLAGS_REL)
 set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
+
+if (${MD_ENABLE_VLX})
+    set (SRC_FILES ${SRC_FILES} src/md_vlx.c src/md_vlx.h)
+    set (MD_DEFINES ${MD_DEFINES} MD_VLX)
+endif()
 
 if (MD_ENABLE_NETCDF)
     find_package(NetCDF REQUIRED)
