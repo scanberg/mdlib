@@ -16,8 +16,7 @@ option(MD_ENABLE_AVX2 "Enable AVX2 extensions" ${HAVE_AVX2_EXTENSIONS})
 option(MD_ENABLE_AVX512 "Enable AVX512 extensions" ${HAVE_AVX512_EXTENSIONS})
 cmake_dependent_option(MD_ENABLE_FMA "Enable FMA extensions" ON "HAVE_FMA_EXTENSIONS" OFF)
 option(MD_FORCE_ASSERTIONS "Force assertions" OFF)
-option(MD_ENABLE_NETCDF "Enable NetCDF" OFF)
-option(MD_ENABLE_HDF5 "Enable HDF5" OFF)
+option(MD_ENABLE_VLX "Enable Veloxchem Support" OFF)
 set(MD_GL_SPLINE_SUBDIVISION_COUNT "8" CACHE STRING "Number of subdivision segments for splines used in secondary structures")
 
 set(CMAKE_C_STANDARD 11)
@@ -26,10 +25,60 @@ if(CMAKE_COMPILER_IS_GNUCC)
   set(CMAKE_C_EXTENSIONS ON)
 endif()
 
-file(GLOB SRC_FILES src/*.h src/*.c src/*.inl)
+if(${MD_ENABLE_VLX})
+    set(MD_ENABLE_HDF5 TRUE)
+endif()
+
 file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)
 file(GLOB_RECURSE EXT_FILES ext/*)
 file(GLOB_RECURSE PROJ_FILES cmake/*)
+
+set(SRC_FILES
+    src/md_csv.c
+    src/md_csv.h
+    src/md_cube.c
+    src/md_cube.h
+    src/md_edr.c
+    src/md_edr.h
+    src/md_filter.h
+    src/md_frame_cache.c
+    src/md_frame_cache.h
+    src/md_gfx.c
+    src/md_gfx.h
+    src/md_gl.c
+    src/md_gl.h
+    src/md_gro.c
+    src/md_gro.h
+    src/md_lammps.c
+    src/md_lammps.h
+    src/md_mmcif.c
+    src/md_mmcif.h
+    src/md_molecule.c
+    src/md_molecule.h
+    src/md_pdb.c
+    src/md_pdb.h
+    src/md_script.c
+    src/md_script.h
+    src/md_script_functions.inl
+    src/md_smiles.c
+    src/md_smiles.h
+    src/md_trajectory.h
+    src/md_trr.c
+    src/md_trr.h
+    src/md_types.h
+    src/md_util.c
+    src/md_util.h
+    src/md_xtc.c
+    src/md_xtc.h
+    src/md_xvg.c
+    src/md_xvg.h
+    src/md_xyz.c
+    src/md_xyz.h
+)
+
+if (${MD_ENABLE_VLX})
+    set (SRC_FILES ${SRC_FILES} src/md_vlx.c src/md_vlx.h)
+endif()
 
 set(SHADER_FILES 
     src/shaders/compute_spline.vert
@@ -80,8 +129,8 @@ set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
 
 if (MD_ENABLE_NETCDF)
-    find_package(netcdf REQUIRED)
-    set(MD_LIBS ${MD_LIBS} netcdf)
+    find_package(NetCDF REQUIRED)
+    set(MD_LIBS ${MD_LIBS} NetCDF::NetCDF_C)
 endif()
 
 if (MD_ENABLE_HDF5)
@@ -214,11 +263,8 @@ add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES} ${PROJ
 
 if (MD_LINK_STDLIB_STATIC)
     set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    #set_target_properties(mdlib PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
     set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-
-    #set_target_properties(mdlib PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 target_include_directories(mdlib
