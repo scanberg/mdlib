@@ -5,6 +5,7 @@
 #include <core/md_parse.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str_builder.h>
+#include <md_molecule.h>
 
 #include <hdf5.h>
 #include <hdf5_hl.h>
@@ -299,47 +300,43 @@ static bool parse_rsp(md_vlx_rsp_t* rsp, md_buffered_reader_t* reader, md_alloca
 	return false;
 }
 
-bool md_vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, struct md_allocator_i* alloc) {
-	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
-	if (!file) {
-		MD_LOG_ERROR("Failed to open file: '"STR_FMT"'", STR_ARG(filename));
-		return false;
-	}
-	bool result = false;
-
-	MEMSET(vlx, 0, sizeof(md_vlx_data_t));
-
-	char buf[KILOBYTES(16)];
-	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, sizeof(buf), file);
-
-	vlx->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
-
+bool vlx_parse(md_vlx_data_t* vlx, md_buffered_reader_t* reader) {
 	str_t line;
-	while (md_buffered_reader_extract_line(&line, &reader)) {
+	int mask = 0;
+	while (md_buffered_reader_extract_line(&line, reader)) {
 		str_t str = str_trim(line);
 		if (str_eq(str, STR_LIT("Molecular Geometry (Angstroms)"))) {
-			if (!parse_geom(&vlx->geom, &reader, vlx->alloc)) {
+			if (!parse_geom(&vlx->geom, reader, vlx->alloc)) {
 				MD_LOG_ERROR("Failed to parse geometry");
-				goto done;
+				return false;
 			}
+			mask |= 1;
 		} else if (str_eq(str, STR_LIT("Molecular Basis (Atomic Basis)"))) {
-			if (!parse_basis(&vlx->basis, &reader, vlx->alloc)) {
+			if (!parse_basis(&vlx->basis, reader, vlx->alloc)) {
 				MD_LOG_ERROR("Failed to parse basis");
-				goto done;
+				return false;
 			}
+			mask |= 2;
 		} else if (str_eq(str, STR_LIT("Self Consistent Field Driver Setup"))) {
-			if (!parse_scf(&vlx->scf, &reader, vlx->alloc)) {
+			if (!parse_scf(&vlx->scf, reader, vlx->alloc)) {
 				MD_LOG_ERROR("Failed to parse SCF section");
-				goto done;
+				return false;
 			}
+			mask |= 4;
 		} else if (str_eq(str, STR_LIT("Lhd5 read dataset type and dataspaceinear Response EigenSolver Setup"))) {
-			if (!parse_rsp(&vlx->rsp, &reader, vlx->alloc)) {
+			if (!parse_rsp(&vlx->rsp, reader, vlx->alloc)) {
 				MD_LOG_ERROR("Failed to parse SCF section");
-				goto done;
+				return false;
 			}
 		}
 	}
 
+	if (mask != 7) {
+		MD_LOG_ERROR("Missing one or more expected sections in Veloxchem output file");
+		return false;
+	}
+
+#if 0
 	// parse scf coefficients
 	md_strb_t sb = md_strb_create(md_temp_allocator);
 	size_t loc;
@@ -392,9 +389,8 @@ bool md_vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, struct md_alloca
 	status = H5Fclose(file_id);
 
 	result = true;
-done:
-	md_file_close(file);
-	return result;
+#endif
+	return true;
 }
 
 void md_vlx_data_free(md_vlx_data_t* data) {
@@ -403,4 +399,87 @@ void md_vlx_data_free(md_vlx_data_t* data) {
 		md_arena_allocator_destroy(data->alloc);
 	}
 	MEMSET(data, 0, sizeof(md_vlx_data_t));
+}
+
+bool md_vlx_data_parse_str(md_vlx_data_t* vlx, str_t str, md_allocator_i* alloc) {
+	MEMSET(vlx, 0, sizeof(md_vlx_data_t));
+	vlx->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
+	md_buffered_reader_t reader = md_buffered_reader_from_str(str);
+	return vlx_parse(vlx, &reader);
+}
+
+bool md_vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator_i* alloc) {
+	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
+	if (!file) {
+		MD_LOG_ERROR("Failed to open file: '"STR_FMT"'", STR_ARG(filename));
+		return false;
+	}
+
+	MEMSET(vlx, 0, sizeof(md_vlx_data_t));
+	vlx->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
+
+	char buf[KILOBYTES(16)];
+	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, sizeof(buf), file);
+
+	bool result = vlx_parse(vlx, &reader);
+	md_file_close(file);
+	return result;
+}
+
+bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_data_t* vlx, md_allocator_i* alloc) {
+	ASSERT(mol);
+	ASSERT(vlx);
+
+	if (vlx->geom.num_atoms == 0) {
+		MD_LOG_ERROR("The veloxchem data object contains no atoms");
+		return false;
+	}
+
+	mol->atom.count = vlx->geom.num_atoms;
+	md_array_resize(mol->atom.type, mol->atom.count, alloc);
+	md_array_resize(mol->atom.x, mol->atom.count, alloc);
+	md_array_resize(mol->atom.y, mol->atom.count, alloc);
+	md_array_resize(mol->atom.z, mol->atom.count, alloc);
+
+	for (size_t i = 0; i < vlx->geom.num_atoms; ++i) {
+		mol->atom.type[i] = vlx->geom.atom_symbol[i];
+		mol->atom.x[i] = (float)vlx->geom.coord_x[i];
+		mol->atom.y[i] = (float)vlx->geom.coord_y[i];
+		mol->atom.z[i] = (float)vlx->geom.coord_z[i];
+	}
+
+	return true;
+}
+
+static bool vlx_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+	(void)arg;
+	md_vlx_data_t vlx = {0};
+	bool success = false;
+	if (md_vlx_data_parse_str(&vlx, str, md_heap_allocator)) {
+		success = md_vlx_molecule_init(mol, &vlx, alloc);
+	}
+	md_vlx_data_free(&vlx);
+
+	return success;
+}
+
+static bool vlx_init_from_file(md_molecule_t* mol, str_t filename, const void* arg, md_allocator_i* alloc) {
+	(void)arg;
+	md_vlx_data_t vlx = {0};
+	bool success = false;
+	if (md_vlx_data_parse_file(&vlx, filename, md_heap_allocator)) {
+		success = md_vlx_molecule_init(mol, &vlx, alloc);
+	}
+	md_vlx_data_free(&vlx);
+
+	return success;
+}
+
+static md_molecule_loader_i vlx_loader = {
+	vlx_init_from_str,
+	vlx_init_from_file
+};
+
+md_molecule_loader_i* md_vlx_molecule_api() {
+	return &vlx_loader;
 }

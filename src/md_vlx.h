@@ -85,6 +85,7 @@ typedef struct md_vlx_data_t {
 } md_vlx_data_t;
 
 // RAW FUNCTIONS
+bool md_vlx_data_parse_str(md_vlx_data_t* data, str_t string, struct md_allocator_i* alloc);
 bool md_vlx_data_parse_file(md_vlx_data_t* data, str_t filename, struct md_allocator_i* alloc);
 void md_vlx_data_free(md_vlx_data_t* data);
 
