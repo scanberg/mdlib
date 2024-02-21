@@ -22,7 +22,6 @@ void md_ring_allocator_reset(struct md_allocator_i* alloc);
 void md_ring_allocator_set_pos_back(struct md_allocator_i* alloc, size_t pos);
 size_t md_ring_allocator_get_pos(struct md_allocator_i* alloc);
 
-
 #ifdef __cplusplus
 }
 #endif

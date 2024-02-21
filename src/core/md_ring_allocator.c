@@ -123,7 +123,7 @@ void md_ring_allocator_set_pos_back(md_allocator_i* alloc, size_t pos) {
     ring_set_pos(ring, pos);
 }
 
-uint64_t md_ring_allocator_get_pos(md_allocator_i* alloc) {
+size_t md_ring_allocator_get_pos(md_allocator_i* alloc) {
     VALIDATE_AND_EXTRACT_RING(alloc)
     return ring->pos;
 }
