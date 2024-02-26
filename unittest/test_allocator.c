@@ -12,7 +12,7 @@
     void* mem = 0; \
     mem = md_alloc(alloc, 16); \
     EXPECT_NE(mem, NULL); \
-    EXPECT_EQ(md_free(alloc, mem, 16), NULL); \
+    md_free(alloc, mem, 16); \
     \
     int64_t* arr = NULL; \
     for (int64_t i = 0; i < 1000; ++i) { \
