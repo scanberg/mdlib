@@ -42,13 +42,7 @@ static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, size_t old_
     linear_alloc_t* linear = (linear_alloc_t*)alloc;
     ASSERT(linear && linear->magic == LINEAR_MAGIC);
 
-    if (new_size == 0) {
-        if ((char*)linear->ptr + linear->pos == (char*)ptr + old_size) {
-            linear_set_pos(linear, linear->pos - old_size);
-        }
-        return NULL;
-    }
-
+    // Realloc or Free
     if (old_size) {
         ASSERT(ptr);
         if ((char*)linear->ptr + linear->pos == (char*)ptr + old_size) {
@@ -58,12 +52,20 @@ static void* linear_realloc(struct md_allocator_o* alloc, void* ptr, size_t old_
             linear->pos = new_cur;
             return ptr;
         }
+
+        if (new_size == 0) {
+            // Free
+            return NULL;
+        }
+
+        // Realloc
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         void* new_ptr = linear_push(linear, new_size, alignment);
         MEMCPY(new_ptr, ptr, old_size);
         return new_ptr;
     }
 
+    // Alloc
     size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
     return linear_push(linear, new_size, alignment);
 }

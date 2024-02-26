@@ -4833,9 +4833,6 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(arg[2].ptr);
 
     const int64_t num_ref_bitfields = element_count(arg[0]);
     const md_bitfield_t* ref_bf_arr = as_bitfield(arg[0]);

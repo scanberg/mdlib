@@ -90,22 +90,21 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
     arena_t* arena = (arena_t*)inst;
     ASSERT(arena && arena->magic == ARENA_MAGIC);
 
-    // Free
-    if (new_size == 0) {
-        if (old_size) arena_pop(arena, old_size);
-        return NULL;
-    }
-    // Realloc
+    // Realloc or Free
     if (ptr && old_size) {
         if ((char*)ptr + old_size == (char*)arena->curr_page->mem + arena->curr_page->curr) {
             // This is the last allocation that occured, then we can shrink or grow that sucker
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
             int64_t new_curr = (int64_t)arena->curr_page->curr + diff;
-            ASSERT(new_curr > 0);
+            ASSERT(new_curr >= 0);
             if (new_curr < (int64_t)arena->curr_page->size) {
                 arena->curr_page->curr = new_curr;
                 return ptr;
             }
+        }
+        if (new_size == 0) {
+            // Free
+            return NULL;
         }
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         // ptr is not the last allocation or the new size did not fit into the existing page.
@@ -137,6 +136,11 @@ struct md_allocator_i* md_arena_allocator_create(struct md_allocator_i* backing,
 void md_arena_allocator_reset(struct md_allocator_i* alloc) {
     VALIDATE_AND_EXTRACT_ARENA(alloc);
     arena_reset(arena);
+}
+
+md_allocator_i* md_arena_allocator_backing(md_allocator_i* alloc) {
+    VALIDATE_AND_EXTRACT_ARENA(alloc);
+    return arena->backing;
 }
 
 void md_arena_allocator_destroy(struct md_allocator_i* alloc) {

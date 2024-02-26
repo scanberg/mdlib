@@ -40,12 +40,13 @@ allocation_t* new_allocation(tracking_t* tracking) {
     return md_array_push(tracking->allocations, item, md_heap_allocator);
 }
 
-void delete_allocation(tracking_t* tracking, allocation_t* alloc) {
+void register_deallocation(tracking_t* tracking, allocation_t* alloc) {
     ASSERT(find_allocation(tracking, alloc->ptr));
     size_t idx = alloc - tracking->allocations;
-    *alloc = *md_array_last(tracking->allocations);
-    tracking->allocations[idx] = *alloc;
-    md_array_pop(tracking->allocations);
+    md_array_swap_back_and_pop(tracking->allocations, idx);
+    //*alloc = *md_array_last(tracking->allocations);
+    //tracking->allocations[idx] = *alloc;
+    //md_array_pop(tracking->allocations);
 }
 
 static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line) {
@@ -75,10 +76,10 @@ static void* tracking_realloc(struct md_allocator_o *inst, void *ptr, size_t old
         }
         else {
             // FREE
-            delete_allocation(tracking, alloc);
+            register_deallocation(tracking, alloc);
             result = NULL;
         }
-    } else {
+    } else if (new_size) {
         // MALLOC
         allocation_t* alloc = new_allocation(tracking);
         alloc->ptr = tracking->backing->realloc(tracking->backing->inst, ptr, old_size, new_size, file, line);
@@ -115,11 +116,29 @@ void md_tracking_allocator_destroy(struct md_allocator_i* alloc) {
     md_mutex_lock(&tracking->mutex);
     size_t size = md_array_size(tracking->allocations);
     for (size_t i = 0; i < size; ++i) {
-        md_logf(MD_LOG_TYPE_DEBUG, "Allocation never freed, in file '%s', at line '%i'.", tracking->allocations[i].file, tracking->allocations[i].line);
+        MD_LOG_DEBUG("Allocation never freed, in file '%s', at line '%i'.", tracking->allocations[i].file, tracking->allocations[i].line);
     }
     md_mutex_unlock(&tracking->mutex);
     md_mutex_destroy(&tracking->mutex);
 
     md_free(tracking->backing, tracking, sizeof(tracking_t) + sizeof(md_allocator_i));
+}
+
+void md_tracking_allocator_print(struct md_allocator_i* alloc) {
+    ASSERT(alloc);
+    ASSERT(alloc->inst);
+    tracking_t* tracking = (tracking_t*)alloc->inst;
+    ASSERT(tracking->magic == MAGIC_NUMBER);
+
+    md_mutex_lock(&tracking->mutex);
+
+    MD_LOG_DEBUG("### Beg of Allocated Data ###");
+    size_t size = md_array_size(tracking->allocations);
+    for (size_t i = 0; i < size; ++i) {
+        MD_LOG_DEBUG("'%s':%i", tracking->allocations[i].file, tracking->allocations[i].line);
+    }
+    MD_LOG_DEBUG("### End of Allocated Data ###");
+
+    md_mutex_unlock(&tracking->mutex);
 }
 

@@ -2581,7 +2581,9 @@ static int do_proc_call(data_t* dst, const procedure_t* proc,  ast_node_t** cons
         arg_flags[i] = args[i]->flags;
 
         if (args[i]->flags & FLAG_CONSTANT) {
-            ASSERT(args[i]->data.ptr);
+            //ASSERT(args[i]->data.ptr);
+            ASSERT(args[i]->data.type.base_type != TYPE_UNDEFINED);
+            ASSERT(args[i]->data.type.dim[0] != -1);
             MEMCPY(&arg_data[i], &args[i]->data, sizeof(data_t));
         }
         else {
@@ -5690,13 +5692,6 @@ static bool add_ir_ctx(md_script_ir_t* ir, const md_script_ir_t* ctx_ir) {
     return true;
 }
 
-static void free_ir(md_script_ir_t* ir) {
-    if (validate_ir(ir)) {
-        md_arena_allocator_destroy(ir->arena);
-        memset(ir, 0, sizeof(md_script_ir_t));
-    }
-}
-
 static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const ast_node_t* node_override, int32_t depth) {
     md_script_vis_token_t vis = {0};
 
@@ -5994,7 +5989,10 @@ bool md_script_ir_contains_identifier_reference(const md_script_ir_t* ir, str_t 
 
 void md_script_ir_free(md_script_ir_t* ir) {
     if (validate_ir(ir)) {
-        free_ir(ir);
+        md_allocator_i* alloc = md_arena_allocator_backing(ir->arena);
+        md_arena_allocator_destroy(ir->arena);
+        MEMSET(ir, 0, sizeof(md_script_ir_t));
+        md_free(alloc, ir, sizeof(md_script_ir_t));
     }
 }
 

@@ -10,6 +10,9 @@ extern "C" {
 struct md_allocator_i* md_tracking_allocator_create(struct md_allocator_i* backing);
 void md_tracking_allocator_destroy(struct md_allocator_i* tracking_alloc);
 
+// Prints out all the current allocations
+void md_tracking_allocator_print(struct md_allocator_i* tracking_alloc);
+
 #ifdef __cplusplus
 }
 #endif
