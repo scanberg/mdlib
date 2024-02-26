@@ -1779,7 +1779,7 @@ static void fifo_grow(fifo_t* fifo, size_t new_capacity) {
 
 static void fifo_init(fifo_t* fifo, size_t capacity, md_allocator_i* alloc) {
     ASSERT(fifo);
-    ASSERT(capacity < SIZE_MAX); // LOL
+    ASSERT(alloc);
     fifo->alloc = alloc;
     fifo->head = 0;
     fifo->tail = 0;
@@ -5476,9 +5476,9 @@ bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator
 #ifdef PROFILE
         md_timestamp_t t0 = md_time_current();
 #endif
-        if (mol->atom.element == 0) {
+        if (!mol->atom.element) {
             md_array_resize(mol->atom.element, mol->atom.count, alloc);
-            MEMSET(mol->atom.element, 0, mol->atom.count * sizeof(*mol->atom.element));
+            MEMSET(mol->atom.element, 0, md_array_bytes(mol->atom.element));
         }
         md_util_element_guess(mol->atom.element, mol->atom.count, mol);
 #ifdef PROFILE
@@ -5491,9 +5491,11 @@ bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator
 #ifdef PROFILE
         md_timestamp_t t0 = md_time_current();
 #endif
-        if (mol->atom.radius == 0)  md_array_resize(mol->atom.radius, mol->atom.count, alloc);
-        for (size_t i = 0; i < mol->atom.count; ++i) {
-            mol->atom.radius[i] = mol->atom.element ? md_util_element_vdw_radius(mol->atom.element[i]) : 1.0f;
+        if (!mol->atom.radius) {
+            md_array_resize(mol->atom.radius, mol->atom.count, alloc);
+            for (size_t i = 0; i < mol->atom.count; ++i) {
+                mol->atom.radius[i] = mol->atom.element ? md_util_element_vdw_radius(mol->atom.element[i]) : 1.0f;
+            }
         }
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();

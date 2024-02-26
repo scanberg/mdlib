@@ -103,7 +103,7 @@ bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* allo
     return false;
 }
 
-static void write(md_strb_t* sb, const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
+static void write(md_strb_t* sb, const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values) {
     if (field_names) {
         for (size_t i = 0; i < num_fields; ++i) {
             md_strb_fmt(sb, STR_FMT, STR_ARG(field_names[i]));
@@ -120,7 +120,7 @@ static void write(md_strb_t* sb, const float* field_values[], const str_t field_
     }
 }
 
-str_t md_csv_write_to_str (const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* alloc) {
+str_t md_csv_write_to_str (const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* alloc) {
     str_t result = {0};
     if (field_values && num_fields > 0 && num_values > 0) {
         md_strb_t sb = md_strb_create(md_heap_allocator);
@@ -131,7 +131,7 @@ str_t md_csv_write_to_str (const float* field_values[], const str_t field_names[
     return result;
 }
 
-bool md_csv_write_to_file(const float* field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path) {
+bool md_csv_write_to_file(const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path) {
     if (field_values && num_fields > 0 && num_values > 0) {
         md_file_o* file = md_file_open(path, MD_FILE_WRITE | MD_FILE_BINARY);
         if (file) {

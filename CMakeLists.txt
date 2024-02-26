@@ -253,11 +253,11 @@ if (MD_BENCHMARK)
   add_subdirectory(benchmark)
 endif()
 
-source_group("src" FILES ${SRC_FILES}) 
-source_group("core" FILES ${CORE_FILES})
-source_group("ext" FILES ${EXT_FILES})
-source_group("shaders" FILES ${SHADER_FILES})
-source_group("proj" FILES ${PROJ_FILES})
+source_group("src"      FILES ${SRC_FILES}) 
+source_group("core"     FILES ${CORE_FILES})
+source_group("ext"      FILES ${EXT_FILES})
+source_group("shaders"  FILES ${SHADER_FILES})
+source_group("proj"     FILES ${PROJ_FILES})
 
 add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES} ${PROJ_FILES})
 

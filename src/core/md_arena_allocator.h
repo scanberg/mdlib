@@ -32,6 +32,9 @@ void md_arena_allocator_pop(struct md_allocator_i* arena, size_t size);
 
 void md_arena_allocator_reset(struct md_allocator_i* arena);
 
+// Get the backing allocator for the arena
+struct md_allocator_i* md_arena_allocator_backing(struct md_allocator_i* arena);
+
 // Specialized arena allocator which uses resorts to the os virtual memory allocator
 // Should be prefered whenever possible over the very generic version above
 

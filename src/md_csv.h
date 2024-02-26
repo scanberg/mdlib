@@ -22,8 +22,8 @@ typedef struct md_csv_t {
 bool md_csv_parse_str (md_csv_t* csv, str_t in_str,  struct md_allocator_i* alloc);
 bool md_csv_parse_file(md_csv_t* csv, str_t in_path, struct md_allocator_i* alloc);
 
-str_t md_csv_write_to_str (const float* fields[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* str_alloc);
-bool  md_csv_write_to_file(const float* fields[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path);
+str_t md_csv_write_to_str (const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, struct md_allocator_i* str_alloc);
+bool  md_csv_write_to_file(const float* const field_values[], const str_t field_names[], size_t num_fields, size_t num_values, str_t path_to_file);
 
 // Free csv structures created from the csv_parse functions
 void md_csv_free(md_csv_t* csv, struct md_allocator_i* alloc);
