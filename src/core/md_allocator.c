@@ -24,6 +24,8 @@ static void release_ring_buffer(void* data) {
     (void)data;
     if (_ring_buf) {
         free(_ring_buf);
+        _ring_buf = 0;
+        _ring_alloc = 0;
     }
 }
 
