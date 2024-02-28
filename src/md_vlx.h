@@ -11,14 +11,15 @@
 extern "C" {
 #endif
 
-
 struct md_allocator_i;
 struct md_molecule_t;
 struct md_molecule_loader_i;
+struct basis_set_t;
 
 typedef struct md_vlx_geom_t {
 	size_t num_atoms;
 	md_label_t* atom_symbol;
+	md_element_t* atomic_number;
 	double* coord_x;
 	double* coord_y;
 	double* coord_z;
@@ -40,6 +41,7 @@ typedef struct md_vlx_basis_t {
 	str_t ident;
 	size_t num_contracted_basis_functions;
 	size_t num_primitive_basis_functions;
+	struct basis_set_t* basis_set;
 } md_vlx_basis_t;
 
 // Self Consistent Field
@@ -60,7 +62,22 @@ typedef struct md_vlx_scf_t {
 	double nuclear_repulsion_energy;
 	double gradient_norm;
 
-	str_t scf_file;
+	struct {
+		struct {
+			size_t count;
+			double* data;
+		} energies;
+
+		struct {
+			size_t count;
+			double* data;
+		} occupations;
+
+		struct {
+			size_t dim[2];
+			double* data;
+		} orbitals;
+	} alpha;
 
 	md_vlx_dipole_moment_t ground_state_dipole_moment;
 } md_vlx_scf_t;

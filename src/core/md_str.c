@@ -486,18 +486,19 @@ bool extract_file(str_t* file, str_t path) {
     return true;
 }
 
-# if 0
-// c:/folder/file.ext -> c:/folder/file.
-str_t extract_path_without_ext(str_t path) {
+// c:/folder/file.ext -> c:/folder/file
+bool extract_file_path_without_ext(str_t* file_path, str_t path) {
     size_t loc;
-    if (str_rfind_char(&loc, path, '.')) {
-
-        res.ptr = path.ptr;
-        res.len = pos;
+    if (!str_rfind_char(&loc, path, '.')) {
+        return false;
     }
-    return res;
+
+    if (file_path) {
+        file_path->ptr = path.ptr;
+        file_path->len = loc;
+    }
+    return true;
 }
-#endif
 
 // c:/folder/file.ext -> c:/folder/
 bool extract_folder_path(str_t* folder_path, str_t path) {

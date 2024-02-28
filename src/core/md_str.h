@@ -130,6 +130,9 @@ bool extract_ext(str_t* ext, str_t path);
 // c:/folder/file.ext -> file.ext
 bool extract_file(str_t* file, str_t path);
 
+// c:/folder/file.ext -> c:/folder/file
+bool extract_file_path_without_ext(str_t* file_path, str_t path);
+
 // c:/folder/file.ext -> c:/folder/
 bool extract_folder_path(str_t* folder_path, str_t path);
 

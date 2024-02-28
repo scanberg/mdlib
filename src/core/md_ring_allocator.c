@@ -64,10 +64,11 @@ void* ring_realloc(struct md_allocator_o* inst, void* ptr, size_t old_size, size
         // realloc
         if ((char*)ring->ptr + ring->pos == (char*)ptr + old_size) {
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
-            const int64_t new_cur = ring->pos + diff;
-            ASSERT(0 <= new_cur && new_cur < (int64_t)ring->cap);
-            ring->pos = new_cur;
-            return ptr;
+            int64_t new_pos = ring->pos + diff;
+            if (new_pos < ring->cap) {
+                ring->pos = new_pos;
+                return ptr;
+            }
         }
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         void* new_ptr = ring_push(ring, new_size, alignment);
