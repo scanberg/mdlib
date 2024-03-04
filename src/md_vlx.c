@@ -5,6 +5,7 @@
 #include <core/md_parse.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_str_builder.h>
+#include <core/md_simd.h>
 #include <md_util.h>
 #include <md_molecule.h>
 
@@ -88,24 +89,9 @@ static int compute_max_angular_momentum(const basis_set_t* basis_set, const md_e
 	return max_angl;
 }
 
-static inline int spherical_momentum_num_components(int angl) {
-	return angl * 2 + 1;
-}
-
-static inline int spherical_momentum_num_factors(int angl, int isph) {
-	static const uint8_t table[5][9] = {
-		{1},
-		{1,1,1},
-		{1,1,3,1,2},
-		{2,1,3,3,3,2,2},
-		{2,2,3,3,6,3,4,2,3},
-	};
-	return table[angl][isph];
-}
-
 #define d3  3.464101615137754587
 #define f5  1.581138830084189666
-#define f15 3.872983346207416885
+#define f15 7.745966692414833770
 #define f3  1.224744871391589049
 #define g35 4.0 * 5.916079783099616042
 #define g17 4.0 * 4.183300132670377739
@@ -114,18 +100,22 @@ static inline int spherical_momentum_num_factors(int angl, int isph) {
 
 static const double		S_factors[] = {1.0};
 static const uint8_t    S_indices[] = {0};
+static const uint8_t	S_num_fac[] = {1};
 
 static const double		P_factors[] = {1.0, 1.0, 1.0};
 static const uint8_t	P_indices[] = {1, 2, 0};
 static const uint8_t	P_offsets[] = {0, 1, 2};
+static const uint8_t	P_num_fac[] = {1, 1, 1};
 
 static const double		D_factors[] = {d3, d3, -1.0, -1.0, 2.0, d3, 0.5 * d3, -0.5 * d3};
 static const uint8_t    D_indices[] = {1, 4, 0, 3, 5, 2, 0, 3};
 static const uint8_t    D_offsets[] = {0, 1, 2, 5, 6};
+static const uint8_t	D_num_fac[] = {1, 1, 3, 1, 2};
 
-static const double		F_factors[] = {3.0 * f5, -f5, 2.0 * f15, 4.0 * f3, -f3, -f3, 2.0, -3.0, -3.0, 4.0 * f3, -f3, -f3, f15, -f15, f5, -3.0 * f5};
+static const double		F_factors[] = {3.0 * f5, -f5, f15, 4.0 * f3, -f3, -f3, 2.0, -3.0, -3.0, 4.0 * f3, -f3, -f3, 0.5 * f15, -0.5 * f15, f5, -3.0 * f5};
 static const uint8_t    F_indices[] = {1, 6, 4, 8, 1, 6, 9, 2, 7, 5, 0, 3, 2, 7, 0, 3};
 static const uint8_t	F_offsets[] = {0, 2, 3, 6, 9, 12, 14};
+static const uint8_t	F_num_fac[] = {2, 1, 3, 3, 3, 2, 2};
 
 static const double		G_factors[] = {
 	g35, -g35, 3.0 * g17, -g17, 6.0 * g5, -g5, -g5, 4.0 * g2, -3.0 * g2, -3.0 * g2,
@@ -133,6 +123,7 @@ static const double		G_factors[] = {
 	-3.0 * g5, -0.5 * g5, 0.5 * g5,  g17,  -3.0 * g17, 0.25 * g35, 0.25 * g35, -1.50 * g35};
 static const uint8_t    G_indices[] = {1, 6, 4, 11, 8, 1, 6, 13, 4, 11, 14, 0, 10, 3, 5, 12, 9, 2, 7, 5, 12, 0, 10, 2, 7, 0, 10, 3};
 static const uint8_t	G_offsets[] = {0, 2, 4, 7, 10, 16, 19, 23, 25};
+static const uint8_t	G_num_fac[] = {2, 2, 3, 3, 6, 3, 4, 2, 3};
 
 #undef d3
 #undef f5
@@ -142,6 +133,23 @@ static const uint8_t	G_offsets[] = {0, 2, 4, 7, 10, 16, 19, 23, 25};
 #undef g17
 #undef g5 
 #undef g2 
+
+static inline int spherical_momentum_num_components(int angl) {
+	return angl * 2 + 1;
+}
+
+static inline int spherical_momentum_num_factors(int angl, int isph) {
+	switch(angl) {
+	case 0:	return S_num_fac[isph];
+	case 1:	return P_num_fac[isph];
+	case 2: return D_num_fac[isph];
+	case 3:	return F_num_fac[isph];
+	case 4: return G_num_fac[isph];
+	default:
+		ASSERT(false);
+		return 0;
+	}
+}
 
 static inline const double* spherical_momentum_factors(int angl, int isph) {
 	switch(angl) {
@@ -182,7 +190,6 @@ static const lmn_t F_lmn[10] = {{3,0,0}, {2,1,0}, {2,0,1}, {1,2,0}, {1,1,1}, {1,
 // G: xxxx xxxy xxxz xxyy xxyz xxzz xyyy xyyz xyzz xzzz yyyy yyyz yyzz yzzz zzzz
 static const lmn_t G_lmn[15] = {{4,0,0}, {3,1,0}, {3,0,1}, {2,2,0}, {2,1,1}, {2,0,2}, {1,3,0}, {1,2,1}, {1,1,2}, {1,0,3}, {0,4,0}, {0,3,1}, {0,2,2}, {0,1,3}, {0,0,4}};
 
-
 static inline const lmn_t* cartesian_angular_momentum(int angl) {
 	switch (angl) {
 	case 0: return S_lmn;
@@ -221,8 +228,8 @@ static basis_func_range_t basis_get_atomic_angl_basis_func_range(const basis_set
 typedef struct basis_func_t {
 	int type;
 	int count;
-	const double* exponents;
-	const double* normalization_coefficients;
+	double* exponents;
+	double* normalization_coefficients;
 } basis_func_t;
 
 static basis_func_t get_basis_func(const basis_set_t* basis_set, int basis_func_idx) {
@@ -236,93 +243,30 @@ static basis_func_t get_basis_func(const basis_set_t* basis_set, int basis_func_
 }
 
 typedef struct pgto_t {
-	float alpha, c_coeff, mo_coeff;
-	float Nijk;
-	int i, j, k, l;
-	vec3_t coord;
+	float x, y, z;
 	float cutoff;
+	float alpha;
+	float coeff;
+	uint16_t i, j, k, l;
 } pgto_t;
 
-size_t extract_pgtos(pgto_t* out_pgtos, size_t cap, const vlx_molecule_t* mol, const basis_set_t* basis_set, const double* mo_coeff, size_t num_mo_coeff) {
-
-	size_t count_outer = 0;
-	size_t count_inner = 0;
-
-	for (size_t atom_idx = 0; atom_idx < mol->num_atoms; ++atom_idx) {
-		int atomic_number = mol->atomic_number[atom_idx];
-		basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_number);
-		
-		size_t func_beg = atom_basis->basis_func_offset;
-		size_t func_end = atom_basis->basis_func_offset + atom_basis->basis_func_count;
-		for (size_t func_idx = func_beg; func_idx < func_end; ++func_idx) {
-			basis_func_t basis_func = get_basis_func(basis_set, func_idx);
-
-			int angl = basis_func.type;
-			int nsph = spherical_momentum_num_components(angl);
-			const lmn_t* lmn = cartesian_angular_momentum(angl);
-
-			for (int isph = 0; isph < nsph; isph++) {
-				// prepare Cartesian components (Maximum number of components should be 6 here for the currently supported basis set)
-				double fcarts[8];
-				double lx[8];
-				double ly[8];
-				double lz[8];
-				int			      ncomp = spherical_momentum_num_factors(angl, isph);
-				const double*	factors = spherical_momentum_factors(angl, isph);
-				const uint8_t*	indices = spherical_momentum_indices(angl, isph);
-
-				for (int icomp = 0; icomp < ncomp; icomp++) {
-					fcarts[icomp] = factors[icomp];
-					int cartind = indices[icomp];
-
-					lx[icomp] = lmn[cartind][0];
-					ly[icomp] = lmn[cartind][1];
-					lz[icomp] = lmn[cartind][2];
-				}
-
-				// process primitives
-				int nprims = (int)basis_func.count;
-				const double* exponents = basis_func.exponents;
-				const double* normcoefs = basis_func.normalization_coefficients;
-
-				for (int iprim = 0; iprim < nprims; iprim++) {
-					double expon = exponents[iprim];
-					double coef1 = normcoefs[iprim];
-
-					//if (expon < 1.0e-10) continue;
-					count_outer += 1;
-
-					// transform from Cartesian to spherical harmonics
-					for (int icomp = 0; icomp < ncomp; icomp++) {
-
-						pgto_t pgto;
-						pgto.i = lx[icomp];
-						pgto.j = ly[icomp];
-						pgto.k = lz[icomp];
-						pgto.l = angl;
-
-						pgto.alpha = expon;
-						pgto.c_coeff = coef1;
-						pgto.mo_coeff = 0;
-
-						count_inner += 1;
-						//double coef2 = coef1 * fcarts[icomp];
-						//double powxyz = pow(rx, lx[icomp]) * pow(ry, ly[icomp]) * pow(rz, lz[icomp]);
-						//phiao += coef2 * powxyz * expon;
-					}
-				}
-			}
-		}
-	}
-
-	while(0) {};
-}
+typedef struct pgto_data_t {
+	size_t capacity;
+	float* x;
+	float* y;
+	float* z;
+	float* alpha;
+	float* coeff;
+	int* i;
+	int* j;
+	int* k;
+} pgto_data_t;
 
 static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_molecule_t* molecule,
 	const basis_set_t* basis_set,
-	const double xp,
-	const double yp,
-	const double zp)
+	double xp,
+	double yp,
+	double zp)
 {
 	int natoms = (int)molecule->num_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, molecule->atomic_number, molecule->num_atoms);
@@ -358,9 +302,11 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_m
 
 			for (int atomidx = 0; atomidx < natoms; atomidx++) {
 				// process coordinates
-				double rx = xp - molecule->coord_x[atomidx];
-				double ry = yp - molecule->coord_y[atomidx];
-				double rz = zp - molecule->coord_y[atomidx];
+				// Conversion from Ångström to Bohr
+				const double factor = 1.0 / 0.529177210903;
+				double rx = (xp - molecule->coord_x[atomidx]) * factor;
+				double ry = (yp - molecule->coord_y[atomidx]) * factor;
+				double rz = (zp - molecule->coord_z[atomidx]) * factor;
 				double r2 = rx * rx + ry * ry + rz * rz;
 
 				// process atomic orbitals
@@ -373,15 +319,13 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_m
 					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
 
 					// process primitives
-					int nprims = (int)basis_func.count;
+					int nprims = basis_func.count;
 					const double* exponents = basis_func.exponents;
 					const double* normcoefs = basis_func.normalization_coefficients;
 
 					for (int iprim = 0; iprim < nprims; iprim++) {
 						double expon = exp(-exponents[iprim] * r2);
 						double coef1 = normcoefs[iprim];
-
-						if (expon < 1.0e-10) continue;
 
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
@@ -401,6 +345,218 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_m
 	}
 
 	return count;
+}
+
+static void allocate_pgto_data(pgto_data_t* pgto_data, size_t capacity, md_allocator_i* alloc) {
+	capacity = ROUND_UP(capacity, 16);
+	size_t bytes = capacity * 32;
+	void* mem = md_alloc(alloc, bytes);
+	MEMSET(mem, 0, bytes);
+
+	pgto_data->capacity = capacity;
+	pgto_data->x		= (float*)mem + capacity * 0;
+	pgto_data->y		= (float*)mem + capacity * 1;
+	pgto_data->z		= (float*)mem + capacity * 2;
+	pgto_data->alpha	= (float*)mem + capacity * 3;
+	pgto_data->coeff	= (float*)mem + capacity * 4;
+	pgto_data->i		= (int*)  mem + capacity * 5;
+	pgto_data->j		= (int*)  mem + capacity * 6;
+	pgto_data->k		= (int*)  mem + capacity * 7;
+}
+
+static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* molecule, const basis_set_t* basis_set, const double* mo_coeffs, const float min_ext[3], const float max_ext[3]) {
+	int natoms = (int)molecule->num_atoms;
+	int max_angl = compute_max_angular_momentum(basis_set, molecule->atomic_number, molecule->num_atoms);
+
+	size_t count = 0;
+	size_t mo_coeff_idx = 0;
+
+	// azimuthal quantum number: s,p,d,f,...
+	for (int aoidx = 0, angl = 0; angl <= max_angl; angl++) {
+		//CSphericalMomentum sphmom(angl);
+		int nsph = spherical_momentum_num_components(angl);
+		const lmn_t* lmn = cartesian_angular_momentum(angl);
+		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
+		for (int isph = 0; isph < nsph; isph++) {
+			// prepare Cartesian components (Maximum number of components should be 6 here for the currently supported basis set)
+			double fcarts[8];
+			int lx[8];
+			int ly[8];
+			int lz[8];
+			int			      ncomp = spherical_momentum_num_factors(angl, isph);
+			const double*	factors = spherical_momentum_factors(angl, isph);
+			const uint8_t*	indices = spherical_momentum_indices(angl, isph);
+
+			for (int icomp = 0; icomp < ncomp; icomp++) {
+				fcarts[icomp] = factors[icomp];
+				int cartind = indices[icomp];
+
+				lx[icomp] = lmn[cartind][0];
+				ly[icomp] = lmn[cartind][1];
+				lz[icomp] = lmn[cartind][2];
+			}
+
+			// go through atoms
+			for (int atomidx = 0; atomidx < natoms; atomidx++) {
+				// process coordinates
+				// Conversion from Ångström to Bohr
+				const double factor = 1.0 / 0.529177210903;
+				float x = (float)(molecule->coord_x[atomidx] * factor);
+				float y = (float)(molecule->coord_y[atomidx] * factor);
+				float z = (float)(molecule->coord_z[atomidx] * factor);
+
+				float cx = CLAMP(x, min_ext[0], max_ext[0]);
+				float cy = CLAMP(y, min_ext[1], max_ext[1]);
+				float cz = CLAMP(z, min_ext[2], max_ext[2]);
+
+				float dx = x - cx;
+				float dy = y - cy;
+				float dz = z - cz;
+
+				float d2 = dx * dx + dy * dy + dz * dz;
+
+				// process atomic orbitals
+				int idelem = molecule->atomic_number[atomidx];
+
+				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(basis_set, idelem, angl);
+				for (int funcidx = range.beg; funcidx < range.end; funcidx++, aoidx++) {
+					double phiao = 0.0;
+
+					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
+
+					// process primitives
+					int nprims = basis_func.count;
+					const double* exponents = basis_func.exponents;
+					const double* normcoefs = basis_func.normalization_coefficients;
+					const double mo_coeff = mo_coeffs[mo_coeff_idx++];
+
+					// APPLY CUTOFF HERE BASED ON CONTRIBUTION
+					//if (d2 > 12.0f) continue;
+
+					for (int iprim = 0; iprim < nprims; iprim++) {
+						double alpha = exponents[iprim];
+						double coef1 = normcoefs[iprim];
+
+						// transform from Cartesian to spherical harmonics
+						for (int icomp = 0; icomp < ncomp; icomp++) {
+							double fcart = factors[icomp];
+
+							pgto_data->x[count]		= x;
+							pgto_data->y[count]		= y;
+							pgto_data->z[count]		= z;
+							pgto_data->alpha[count] = -(float)alpha; // Negate alpha here!
+							pgto_data->coeff[count] = (float)(coef1 * fcart * mo_coeff);
+							pgto_data->i[count]		= lx[icomp];
+							pgto_data->j[count]		= ly[icomp];
+							pgto_data->k[count]		= lz[icomp];
+
+							count += 1;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return count;
+}
+
+double compute_overlap(basis_func_t func, size_t i, size_t j) {
+	const double fab = 1.0 / (func.exponents[i] + func.exponents[j]);
+	const double ovl = func.normalization_coefficients[i] * func.normalization_coefficients[j] * pow(PI * fab, 1.5);
+	const double fab2 = fab * fab;
+
+	switch (func.type) {
+	case 0: return ovl;
+	case 1: return 0.5 * fab * ovl;
+	case 2: return 3.0 * fab2 * ovl;
+	case 3: return 7.5 * fab2 * fab * ovl;
+	case 4: return 420.0 * fab2 * fab2 * ovl;
+	case 5: return 1890.0 * fab2 * fab2 * fab * ovl;
+	case 6: return 41580.0 * fab2 * fab2 * fab2 * ovl;
+	default:
+		ASSERT(false);
+		return 0;
+	}
+}
+
+static void rescale_basis_func(basis_func_t func) {
+	const double fpi = 2.0 / PI;
+
+	for (size_t i = 0; i < func.count; i++) {
+		func.normalization_coefficients[i] *= pow(func.exponents[i] * fpi, 0.75);
+	}
+
+	switch (func.type) {
+	case 0: return;
+	case 1:
+		for (size_t i = 0; i < func.count; i++) {
+			func.normalization_coefficients[i] *= 2.0 * sqrt(func.exponents[i]);
+		}
+		return;
+	case 2: {
+		const double f = 2.0 / sqrt(3.0);
+		for (size_t i = 0; i < func.count; i++) {
+			func.normalization_coefficients[i] *= f * func.exponents[i];
+		}
+		return;
+	}
+	case 3: {
+		const double f = 4.0 / sqrt(15.0);
+		for (size_t i = 0; i < func.count; i++) {
+			func.normalization_coefficients[i] *= f * func.exponents[i] * sqrt(func.exponents[i]);
+		}
+		return;
+	}
+	case 4: {
+		const double f = 2.0 / sqrt(105.0);
+		for (size_t i = 0; i < func.count; i++) {
+			func.normalization_coefficients[i] *= f * func.exponents[i] * func.exponents[i];
+		}
+		return;
+	}
+	case 5: {
+		double f = 4.0 / sqrt(945.0);
+		for (size_t i = 0; i < func.count; i++) {
+			func.normalization_coefficients[i] *= f * func.exponents[i] * func.exponents[i] * sqrt(func.exponents[i]);
+		}
+		return;
+	}
+	case 6: {
+		double f = 4.0 / sqrt(10395.0);
+		for (size_t i = 0; i < func.count; i++) {
+			func.normalization_coefficients[i] *= f * func.exponents[i] * func.exponents[i] * func.exponents[i];
+		}
+		return;
+	}
+	default: ASSERT(false);
+	}
+}
+
+static void normalize_basis_set(basis_set_t* basis_set) {
+	for (size_t func_idx = 0; func_idx < basis_set->basis_func.count; ++func_idx) {
+		basis_func_t func = get_basis_func(basis_set, (int)func_idx);
+		// uncontracted basis, set expansion coeficient to 1.0
+		if (func.count == 1) func.normalization_coefficients[0] = 1.0;
+
+		// normalize primitive GBFs
+		rescale_basis_func(func);
+
+		// compute overlap
+		double ovl = 0.0;
+		for (size_t i = 0; i < func.count; i++) {
+			ovl += compute_overlap(func, i, i);
+			for (size_t j = i + 1; j < func.count; j++) {
+				ovl += 2.0 * compute_overlap(func, i, j);
+			}
+		}
+
+		// renormalize primitive BFs
+		ovl = 1.0 / sqrt(ovl);
+		for (size_t i = 0; i < func.count; i++) {
+			func.normalization_coefficients[i] *= ovl;
+		}
+	}
 }
 
 static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader, md_allocator_i* alloc) {
@@ -479,8 +635,11 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 					MD_LOG_ERROR("Unexpected number of parameters in atom basis function coefficients");
 					return false;
 				}
-				float exponent = (float)parse_float(tok[0]);
-				float coeff    = (float)parse_float(tok[1]);
+				char buf[64];
+				str_copy_to_char_buf(buf, sizeof(buf), tok[0]);
+
+				double exponent = parse_float(tok[0]);
+				double coeff    = parse_float(tok[1]);
 				
 				md_array_push(basis_set->param.exponents, exponent, alloc);
 				md_array_push(basis_set->param.normalization_coefficients, coeff, alloc);
@@ -947,6 +1106,182 @@ void md_vlx_data_free(md_vlx_data_t* data) {
 	MEMSET(data, 0, sizeof(md_vlx_data_t));
 }
 
+static inline float fast_pow(float base, int exp) {
+	float val = 1.0f;
+	switch(exp) {
+	case 4: val *= base;
+	case 3: val *= base;
+	case 2: val *= base;
+	case 1: val *= base;
+	case 0: break;
+	}
+	return val;
+}
+
+static inline md_256 md_mm256_fast_pow(md_256 base, md_256i exp) {
+	md_256 base2 = md_mm256_mul_ps(base,  base);
+	md_256 base3 = md_mm256_mul_ps(base2, base);
+	md_256 base4 = md_mm256_mul_ps(base2, base2);
+
+	md_256 mask1 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(1)));
+	md_256 mask2 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(2)));
+	md_256 mask3 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(3)));
+	md_256 mask4 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(4)));
+
+	md_256 res = md_mm256_set1_ps(1.0f);
+	res = md_mm256_blendv_ps(res, base, mask1);
+	res = md_mm256_blendv_ps(res, base2, mask2);
+	res = md_mm256_blendv_ps(res, base3, mask3);
+	res = md_mm256_blendv_ps(res, base4, mask4);
+	return res;
+}
+
+bool md_vlx_get_mo(double* out_psi, const vec3_t* coords, size_t num_coords, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs) {
+	vlx_molecule_t mol = {
+		.num_atoms = geom->num_atoms,
+		.atomic_number = geom->atomic_number,
+		.coord_x = geom->coord_x,
+		.coord_y = geom->coord_y,
+		.coord_z = geom->coord_z,
+	};
+
+	double phi[1024];
+	
+	for (size_t i = 0; i < num_coords; i++) {
+		size_t num_ao = compPhiAtomicOrbitals(phi, 1024, &mol, basis->basis_set, coords[i].x, coords[i].y, coords[i].z);
+
+		for (size_t aoidx = 0; aoidx < num_ao; aoidx++) {
+			out_psi[i] += mo_coeffs[aoidx] * phi[aoidx];
+		}
+	}
+
+	return true;
+}
+
+bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], const int grid_idx_max[3], const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs) {
+	vlx_molecule_t mol = {
+		.num_atoms = geom->num_atoms,
+		.atomic_number = geom->atomic_number,
+		.coord_x = geom->coord_x,
+		.coord_y = geom->coord_y,
+		.coord_z = geom->coord_z,
+	};
+
+	md_allocator_i* arena = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+
+	md_timestamp_t t0 = md_time_current();
+
+	pgto_data_t pgto_data = {0};
+	allocate_pgto_data(&pgto_data, 1024, arena);
+
+	// Conversion from Ångström to Bohr
+	const float factor = 1.0 / 0.529177210903;
+
+	// Compute the extent of the spatial region which is to be evaluated
+	// This will be used to limit the number of pgtos to a set which only has a valid contribution in this region
+	float min_ext[3] = {
+		factor * (grid->origin[0] + grid_idx_min[0] * grid->stepsize[0]),
+		factor * (grid->origin[1] + grid_idx_min[1] * grid->stepsize[1]),
+		factor * (grid->origin[2] + grid_idx_min[2] * grid->stepsize[2]),
+	};
+	float max_ext[3] = {
+		factor * (grid->origin[0] + grid_idx_max[0] * grid->stepsize[0]),
+		factor * (grid->origin[1] + grid_idx_max[1] * grid->stepsize[1]),
+		factor * (grid->origin[2] + grid_idx_max[2] * grid->stepsize[2]),
+	};
+
+	size_t num_pgtos = extract_pgto_data(&pgto_data, &mol, basis->basis_set, mo_coeffs, min_ext, max_ext);
+	num_pgtos = ROUND_UP(num_pgtos, 8);
+	
+	md_timestamp_t t1 = md_time_current();
+
+	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
+		float z = factor * (grid->origin[2] + iz * grid->stepsize[2]);
+		md_256 vz = md_mm256_set1_ps(z);
+		int z_stride = iz * grid->dim[0] * grid->dim[1];
+		for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
+			float y = factor * (grid->origin[1] + iy * grid->stepsize[1]);
+			md_256 vy = md_mm256_set1_ps(y);
+			int y_stride = iy * grid->dim[0];
+			for (int ix = grid_idx_min[0]; ix < grid_idx_max[0]; ++ix) {
+				float x = factor * (grid->origin[0] + ix * grid->stepsize[0]);
+				md_256 vx = md_mm256_set1_ps(x);
+				int x_stride = ix;
+
+				double psi = 0.0;
+
+				md_256 vpsi = md_mm256_setzero_ps();
+				for (size_t i = 0; i < num_pgtos; i += 8) {
+					md_256  px = md_mm256_load_ps(pgto_data.x + i);
+					md_256  py = md_mm256_load_ps(pgto_data.y + i);
+					md_256  pz = md_mm256_load_ps(pgto_data.z + i);
+					md_256  pa = md_mm256_load_ps(pgto_data.alpha + i);
+					md_256  pc = md_mm256_load_ps(pgto_data.coeff + i);
+					md_256i pi = md_mm256_loadu_si256(pgto_data.i + i);
+					md_256i pj = md_mm256_loadu_si256(pgto_data.j + i);
+					md_256i pk = md_mm256_loadu_si256(pgto_data.k + i);
+
+					md_256 dx = md_mm256_sub_ps(px, vx);
+					md_256 dy = md_mm256_sub_ps(py, vy);
+					md_256 dz = md_mm256_sub_ps(pz, vz);
+					md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+					md_256 fx = md_mm256_fast_pow(dx, pi);
+					md_256 fy = md_mm256_fast_pow(dy, pj);
+					md_256 fz = md_mm256_fast_pow(dz, pk);
+					md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
+
+					md_256 prod = md_mm256_mul_ps(md_mm256_mul_ps(md_mm256_mul_ps(pc, fx), md_mm256_mul_ps(fy, fz)), ex);
+
+					vpsi = md_mm256_add_ps(vpsi, prod);
+				}
+
+				
+				/*for (size_t i = 0; i < num_pgtos; ++i) {
+					float px	= pgto_data.x[i];
+					float py	= pgto_data.y[i];
+					float pz	= pgto_data.z[i];
+					float alpha = pgto_data.alpha[i];
+					float coeff = pgto_data.coeff[i];
+					int   pi	= pgto_data.i[i];
+					int   pj	= pgto_data.j[i];
+					int   pk	= pgto_data.k[i];
+
+					float dx = px - x;
+					float dy = py - y;
+					float dz = pz - z;
+					float d2 = dx * dx + dy * dy + dz * dz;
+					float fx = fast_pow(dx, pi);
+					float fy = fast_pow(dy, pj);
+					float fz = fast_pow(dz, pk);
+					float exponentTerm = alpha == 0 ? 1.0f : expf(-alpha * d2);
+					psi += coeff * fx * fy * fz * exponentTerm;
+				}
+				*/
+
+				psi = md_mm256_reduce_add_ps(vpsi);
+
+				int index = x_stride + y_stride + z_stride;
+				grid->data[index] = (float)psi;
+			}
+		}
+	}
+
+	md_timestamp_t t2 = md_time_current();
+	double t_pgto = md_time_as_milliseconds(t1-t0);
+	double t_eval = md_time_as_milliseconds(t2-t1);
+	//MD_LOG_INFO("Time taken to generate %zu pgtos: %.3f", num_pgto, t_pgto);
+	//MD_LOG_INFO("Time taken to compute phi atomic orbitals for grid size [%zu][%zu][%zu]: %.3f", grid->dim, grid->dim, grid->dim, t_eval);
+
+	md_arena_allocator_destroy(arena);
+
+	return true;
+}
+
+bool md_vlx_grid_evaluate(md_vlx_grid_t* grid, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs) {
+	const int grid_idx_min[3] = {0,0,0};
+	return md_vlx_grid_evaluate_sub(grid, grid_idx_min, grid->dim, geom, basis, mo_coeffs, num_mo_coeffs);
+}
+
 static bool vlx_data_parse_str(md_vlx_data_t* vlx, str_t str, md_allocator_i* alloc, uint32_t flags) {
 	MEMSET(vlx, 0, sizeof(md_vlx_data_t));
 	vlx->alloc = md_arena_allocator_create(alloc, MEGABYTES(1));
@@ -989,21 +1324,11 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 					return false;
 				}
 
+				normalize_basis_set(vlx->basis.basis_set);
+
 				md_file_close(basis_file);
 			}
 		}
-
-
-		vlx_molecule_t mol = {
-			.num_atoms = vlx->geom.num_atoms,
-			.atomic_number = vlx->geom.atomic_number,
-			.coord_x = vlx->geom.coord_x,
-			.coord_y = vlx->geom.coord_y,
-			.coord_z = vlx->geom.coord_z,
-		};
-
-		size_t num_pgtos = extract_pgtos(NULL, 0, &mol, vlx->basis.basis_set, 0, 0);
-		
 #if 0
 		size_t phi_cap = vlx->basis.num_contracted_basis_functions;
 		double* phis = md_alloc(md_temp_allocator, phi_cap * sizeof(double));
