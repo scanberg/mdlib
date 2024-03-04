@@ -320,12 +320,12 @@ UTEST(simd, fast_pow) {
     v8i_t exp = { .vec = md_mm256_set_epi32(0, 1, 2, 3, 4, 3, 2, 1) };
     v8_t res = { .vec = md_mm256_fast_pow_ps(md_mm256_set1_ps(2.0f), exp.vec) };
 
-    EXPECT_NEAR(res.val[0], 1.0f,           0.00001f);
-    EXPECT_NEAR(res.val[1], 1.34985880758f, 0.00001f);
-    EXPECT_NEAR(res.val[2], 1.6487212707f,  0.00001f);
-    EXPECT_NEAR(res.val[3], 2.22554092849f, 0.00001f);
-    EXPECT_NEAR(res.val[4], 54.5981500331f, 0.00001f);
-    EXPECT_NEAR(res.val[5], 20.0855369232f, 0.00001f);
-    EXPECT_NEAR(res.val[6], 7.38905609893f, 0.00001f);
-    EXPECT_NEAR(res.val[7], 2.71828182846f, 0.00001f);
+    EXPECT_NEAR(2.0f,  res.val[0], 0.00001f);
+    EXPECT_NEAR(4.0f,  res.val[1], 0.00001f);
+    EXPECT_NEAR(8.0f,  res.val[2], 0.00001f);
+    EXPECT_NEAR(16.0f, res.val[3], 0.00001f);
+    EXPECT_NEAR(8.0f,  res.val[4], 0.00001f);
+    EXPECT_NEAR(4.0f,  res.val[5], 0.00001f);
+    EXPECT_NEAR(2.0f,  res.val[6], 0.00001f);
+    EXPECT_NEAR(1.0f,  res.val[7], 0.00001f);
 }
