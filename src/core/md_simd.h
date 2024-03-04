@@ -1205,6 +1205,53 @@ MD_SIMD_INLINE md_256 md_mm256_exp_ps(md_256 x) {
     return y;
 }
 
+#ifdef __AVX512F__
+MD_SIMD_INLINE __m512 md_mm512_exp_ps(__m512 x) {
+    __m512 tmp = _mm512_setzero_ps(), fx;
+    __m512i emm0;
+    __m512 one = _mm512_set1_ps(1.0f);
+
+    x = _mm512_min_ps(x, _mm512_set1_ps( 88.3762626647949f));
+    x = _mm512_max_ps(x, _mm512_set1_ps(-88.3762626647949f));
+
+    /* express exp(x) as exp(g + n*log(2)) */
+    fx = _mm512_mul_ps(x, _mm512_set1_ps(1.44269504088896341f));
+    fx = _mm512_add_ps(fx, _mm512_set1_ps(0.5f));
+
+    /* floor */
+    emm0 = _mm512_cvttps_epi32(fx);
+    tmp  = _mm512_cvtepi32_ps(emm0);
+
+    /* if greater, substract 1 */
+    __mmask16 mask = _mm512_cmp_ps_mask(tmp, fx, _CMP_GT_OQ);
+    fx = _mm512_sub_ps(tmp, _mm512_maskz_mov_ps(mask, _mm512_set1_ps(1.0f)));
+
+    tmp = _mm512_mul_ps(fx, _mm512_set1_ps(0.693359375f));
+    __m512 z = _mm512_mul_ps(fx, _mm512_set1_ps(-2.12194440e-4f));
+    x = _mm512_sub_ps(x, tmp);
+    x = _mm512_sub_ps(x, z);
+
+    z = _mm512_mul_ps(x,x);
+
+    __m512 y = _mm512_set1_ps(1.9875691500E-4f);
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(1.3981999507E-3f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(8.3334519073E-3f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(4.1665795894E-2f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(1.6666665459E-1f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(5.0000001201E-1f));
+    y = _mm512_fmadd_ps(y, z, _mm512_add_ps(x, one));
+
+    /* build 2^n */
+    emm0 = _mm512_cvttps_epi32(fx);
+    emm0 = _mm512_add_epi32(emm0, _mm512_set1_epi32(0x7f));
+    emm0 = _mm512_slli_epi32(emm0, 23);
+    __m512 pow2n = _mm512_castsi512_ps(emm0);
+
+    y = _mm512_mul_ps(y, pow2n);
+    return y;
+}
+#endif
+
 #if defined(_MSC_VER)
 #pragma float_control(pop)
 #endif

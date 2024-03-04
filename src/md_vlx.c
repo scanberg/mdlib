@@ -1118,6 +1118,24 @@ static inline float fast_pow(float base, int exp) {
 	return val;
 }
 
+static inline md_128 md_mm_fast_pow(md_128 base, md_128i exp) {
+	md_128 base2 = md_mm_mul_ps(base,  base);
+	md_128 base3 = md_mm_mul_ps(base2, base);
+	md_128 base4 = md_mm_mul_ps(base2, base2);
+
+	md_128 mask1 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(1)));
+	md_128 mask2 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(2)));
+	md_128 mask3 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(3)));
+	md_128 mask4 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(4)));
+
+	md_128 res = md_mm_set1_ps(1.0f);
+	res = md_mm_blendv_ps(res, base, mask1);
+	res = md_mm_blendv_ps(res, base2, mask2);
+	res = md_mm_blendv_ps(res, base3, mask3);
+	res = md_mm_blendv_ps(res, base4, mask4);
+	return res;
+}
+
 static inline md_256 md_mm256_fast_pow(md_256 base, md_256i exp) {
 	md_256 base2 = md_mm256_mul_ps(base,  base);
 	md_256 base3 = md_mm256_mul_ps(base2, base);
@@ -1133,6 +1151,24 @@ static inline md_256 md_mm256_fast_pow(md_256 base, md_256i exp) {
 	res = md_mm256_blendv_ps(res, base2, mask2);
 	res = md_mm256_blendv_ps(res, base3, mask3);
 	res = md_mm256_blendv_ps(res, base4, mask4);
+	return res;
+}
+
+static inline __m512 md_mm512_fast_pow(__m512 base, __m512i exp) {
+	__m512 base2 = _mm512_mul_ps(base,  base);
+	__m512 base3 = _mm512_mul_ps(base2, base);
+	__m512 base4 = _mm512_mul_ps(base2, base2);
+
+	__mmask16 mask1 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(1), _MM_CMPINT_EQ);
+	__mmask16 mask2 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(2), _MM_CMPINT_EQ);
+	__mmask16 mask3 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(3), _MM_CMPINT_EQ);
+	__mmask16 mask4 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(4), _MM_CMPINT_EQ);
+
+	__m512 res = _mm512_set1_ps(1.0f);
+	res = _mm512_mask_blend_ps(mask1, res, base);
+	res = _mm512_mask_blend_ps(mask2, res, base2);
+	res = _mm512_mask_blend_ps(mask3, res, base3);
+	res = _mm512_mask_blend_ps(mask4, res, base4);
 	return res;
 }
 
@@ -1158,93 +1194,28 @@ bool md_vlx_get_mo(double* out_psi, const vec3_t* coords, size_t num_coords, con
 	return true;
 }
 
-bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], const int grid_idx_max[3], const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs) {
-	vlx_molecule_t mol = {
-		.num_atoms = geom->num_atoms,
-		.atomic_number = geom->atomic_number,
-		.coord_x = geom->coord_x,
-		.coord_y = geom->coord_y,
-		.coord_z = geom->coord_z,
-	};
-
-	md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
-
-	md_timestamp_t t0 = md_time_current();
-
-	pgto_data_t pgto_data = {0};
-	allocate_pgto_data(&pgto_data, 1024, arena);
-
-	// Conversion from Ångström to Bohr
-	const float factor = 1.0 / 0.529177210903;
-
-	// Compute the extent of the spatial region which is to be evaluated
-	// This will be used to limit the number of pgtos to a set which only has a valid contribution in this region
-	float min_ext[3] = {
-		factor * (grid->origin[0] + grid_idx_min[0] * grid->stepsize[0]),
-		factor * (grid->origin[1] + grid_idx_min[1] * grid->stepsize[1]),
-		factor * (grid->origin[2] + grid_idx_min[2] * grid->stepsize[2]),
-	};
-	float max_ext[3] = {
-		factor * (grid->origin[0] + grid_idx_max[0] * grid->stepsize[0]),
-		factor * (grid->origin[1] + grid_idx_max[1] * grid->stepsize[1]),
-		factor * (grid->origin[2] + grid_idx_max[2] * grid->stepsize[2]),
-	};
-
-	size_t num_pgtos = extract_pgto_data(&pgto_data, &mol, basis->basis_set, mo_coeffs, min_ext, max_ext);
-	num_pgtos = ROUND_UP(num_pgtos, 8);
-	
-	md_timestamp_t t1 = md_time_current();
-
+static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const pgto_data_t* pgto_data, size_t num_pgtos) {
 	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
-		float z = factor * (grid->origin[2] + iz * grid->stepsize[2]);
-		md_256 vz = md_mm256_set1_ps(z);
-		int z_stride = iz * grid->dim[0] * grid->dim[1];
+		float z = grid_origin[2] + iz * grid_stepsize[2];
+		int z_stride = iz * grid_dim[0] * grid_dim[1];
 		for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
-			float y = factor * (grid->origin[1] + iy * grid->stepsize[1]);
-			md_256 vy = md_mm256_set1_ps(y);
-			int y_stride = iy * grid->dim[0];
+			float y = grid_origin[1] + iy * grid_stepsize[1];
+			int y_stride = iy * grid_dim[0];
 			for (int ix = grid_idx_min[0]; ix < grid_idx_max[0]; ++ix) {
-				float x = factor * (grid->origin[0] + ix * grid->stepsize[0]);
-				md_256 vx = md_mm256_set1_ps(x);
+				float x = grid_origin[0] + ix * grid_stepsize[0];
 				int x_stride = ix;
 
 				double psi = 0.0;
 
-				md_256 vpsi = md_mm256_setzero_ps();
-				for (size_t i = 0; i < num_pgtos; i += 8) {
-					md_256  px = md_mm256_load_ps(pgto_data.x + i);
-					md_256  py = md_mm256_load_ps(pgto_data.y + i);
-					md_256  pz = md_mm256_load_ps(pgto_data.z + i);
-					md_256  pa = md_mm256_load_ps(pgto_data.alpha + i);
-					md_256  pc = md_mm256_load_ps(pgto_data.coeff + i);
-					md_256i pi = md_mm256_loadu_si256(pgto_data.i + i);
-					md_256i pj = md_mm256_loadu_si256(pgto_data.j + i);
-					md_256i pk = md_mm256_loadu_si256(pgto_data.k + i);
-
-					md_256 dx = md_mm256_sub_ps(px, vx);
-					md_256 dy = md_mm256_sub_ps(py, vy);
-					md_256 dz = md_mm256_sub_ps(pz, vz);
-					md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
-					md_256 fx = md_mm256_fast_pow(dx, pi);
-					md_256 fy = md_mm256_fast_pow(dy, pj);
-					md_256 fz = md_mm256_fast_pow(dz, pk);
-					md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
-
-					md_256 prod = md_mm256_mul_ps(md_mm256_mul_ps(md_mm256_mul_ps(pc, fx), md_mm256_mul_ps(fy, fz)), ex);
-
-					vpsi = md_mm256_add_ps(vpsi, prod);
-				}
-
-				
-				/*for (size_t i = 0; i < num_pgtos; ++i) {
-					float px	= pgto_data.x[i];
-					float py	= pgto_data.y[i];
-					float pz	= pgto_data.z[i];
-					float alpha = pgto_data.alpha[i];
-					float coeff = pgto_data.coeff[i];
-					int   pi	= pgto_data.i[i];
-					int   pj	= pgto_data.j[i];
-					int   pk	= pgto_data.k[i];
+				for (size_t i = 0; i < num_pgtos; ++i) {
+					float px	= pgto_data->x[i];
+					float py	= pgto_data->y[i];
+					float pz	= pgto_data->z[i];
+					float alpha = pgto_data->alpha[i];
+					float coeff = pgto_data->coeff[i];
+					int   pi	= pgto_data->i[i];
+					int   pj	= pgto_data->j[i];
+					int   pk	= pgto_data->k[i];
 
 					float dx = px - x;
 					float dy = py - y;
@@ -1256,21 +1227,219 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 					float exponentTerm = alpha == 0 ? 1.0f : expf(-alpha * d2);
 					psi += coeff * fx * fy * fz * exponentTerm;
 				}
-				*/
-
-				psi = md_mm256_reduce_add_ps(vpsi);
 
 				int index = x_stride + y_stride + z_stride;
-				grid->data[index] = (float)psi;
+				grid_data[index] = (float)psi;
 			}
 		}
 	}
+}
+
+#ifdef __AVX512F__
+static inline void evaluate_grid_512(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const pgto_data_t* pgto_data, size_t num_pgtos) {
+	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
+		float z = grid_origin[2] + iz * grid_stepsize[2];
+		__m512 vz = _mm512_set1_ps(z);
+		int z_stride = iz * grid_dim[0] * grid_dim[1];
+		for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
+			float y = grid_origin[1] + iy * grid_stepsize[1];
+			__m512 vy = _mm512_set1_ps(y);
+			int y_stride = iy * grid_dim[0];
+			for (int ix = grid_idx_min[0]; ix < grid_idx_max[0]; ++ix) {
+				float x = grid_origin[0] + ix * grid_stepsize[0];
+				__m512 vx = _mm512_set1_ps(x);
+				int x_stride = ix;
+
+				__m512 vpsi = _mm512_setzero_ps();
+				for (size_t i = 0; i < num_pgtos; i += 8) {
+					__m512  px = _mm512_loadu_ps(pgto_data->x + i);
+					__m512  py = _mm512_loadu_ps(pgto_data->y + i);
+					__m512  pz = _mm512_loadu_ps(pgto_data->z + i);
+					__m512  pa = _mm512_loadu_ps(pgto_data->alpha + i);
+					__m512  pc = _mm512_loadu_ps(pgto_data->coeff + i);
+					__m512i pi = _mm512_loadu_si512(pgto_data->i + i);
+					__m512i pj = _mm512_loadu_si512(pgto_data->j + i);
+					__m512i pk = _mm512_loadu_si512(pgto_data->k + i);
+
+					__m512 dx = _mm512_sub_ps(px, vx);
+					__m512 dy = _mm512_sub_ps(py, vy);
+					__m512 dz = _mm512_sub_ps(pz, vz);
+					__m512 d2 = _mm512_fmadd_ps(dx, dx, _mm512_fmadd_ps(dy, dy, _mm512_mul_ps(dz, dz)));
+					__m512 fx = md_mm512_fast_pow(dx, pi);
+					__m512 fy = md_mm512_fast_pow(dy, pj);
+					__m512 fz = md_mm512_fast_pow(dz, pk);
+					__m512 ex = md_mm512_exp_ps(_mm512_mul_ps(pa, d2));
+
+					__m512 prod = _mm512_mul_ps(_mm512_mul_ps(_mm512_mul_ps(pc, fx), _mm512_mul_ps(fy, fz)), ex);
+					vpsi = _mm512_add_ps(vpsi, prod);
+				}
+
+				float psi = _mm512_reduce_add_ps(vpsi);
+				int index = x_stride + y_stride + z_stride;
+				grid_data[index] = psi;
+			}
+		}
+	}
+}
+#endif
+
+static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const pgto_data_t* pgto_data, size_t num_pgtos) {
+	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
+		float z = grid_origin[2] + iz * grid_stepsize[2];
+		md_256 vz = md_mm256_set1_ps(z);
+		int z_stride = iz * grid_dim[0] * grid_dim[1];
+		for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
+			float y = grid_origin[1] + iy * grid_stepsize[1];
+			md_256 vy = md_mm256_set1_ps(y);
+			int y_stride = iy * grid_dim[0];
+			for (int ix = grid_idx_min[0]; ix < grid_idx_max[0]; ++ix) {
+				float x = grid_origin[0] + ix * grid_stepsize[0];
+				md_256 vx = md_mm256_set1_ps(x);
+				int x_stride = ix;
+
+				md_256 vpsi = md_mm256_setzero_ps();
+				for (size_t i = 0; i < num_pgtos; i += 8) {
+					md_256  px = md_mm256_loadu_ps(pgto_data->x + i);
+					md_256  py = md_mm256_loadu_ps(pgto_data->y + i);
+					md_256  pz = md_mm256_loadu_ps(pgto_data->z + i);
+					md_256  pa = md_mm256_loadu_ps(pgto_data->alpha + i);
+					md_256  pc = md_mm256_loadu_ps(pgto_data->coeff + i);
+					md_256i pi = md_mm256_loadu_si256(pgto_data->i + i);
+					md_256i pj = md_mm256_loadu_si256(pgto_data->j + i);
+					md_256i pk = md_mm256_loadu_si256(pgto_data->k + i);
+
+					md_256 dx = md_mm256_sub_ps(px, vx);
+					md_256 dy = md_mm256_sub_ps(py, vy);
+					md_256 dz = md_mm256_sub_ps(pz, vz);
+					md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
+					md_256 fx = md_mm256_fast_pow(dx, pi);
+					md_256 fy = md_mm256_fast_pow(dy, pj);
+					md_256 fz = md_mm256_fast_pow(dz, pk);
+					md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
+
+					md_256 prod = md_mm256_mul_ps(md_mm256_mul_ps(md_mm256_mul_ps(pc, fx), md_mm256_mul_ps(fy, fz)), ex);
+					vpsi = md_mm256_add_ps(vpsi, prod);
+				}
+
+				float psi = md_mm256_reduce_add_ps(vpsi);
+				int index = x_stride + y_stride + z_stride;
+				grid_data[index] = psi;
+			}
+		}
+	}
+}
+
+static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const pgto_data_t* pgto_data, size_t num_pgtos) {
+	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
+		float z = grid_origin[2] + iz * grid_stepsize[2];
+		md_128 vz = md_mm_set1_ps(z);
+		int z_stride = iz * grid_dim[0] * grid_dim[1];
+		for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
+			float y = grid_origin[1] + iy * grid_stepsize[1];
+			md_128 vy = md_mm_set1_ps(y);
+			int y_stride = iy * grid_dim[0];
+			for (int ix = grid_idx_min[0]; ix < grid_idx_max[0]; ++ix) {
+				float x = grid_origin[0] + ix * grid_stepsize[0];
+				md_128 vx = md_mm_set1_ps(x);
+				int x_stride = ix;
+
+				double psi = 0.0;
+
+				md_128 vpsi = md_mm_setzero_ps();
+				for (size_t i = 0; i < num_pgtos; i += 8) {
+					md_128  px = md_mm_loadu_ps(pgto_data->x + i);
+					md_128  py = md_mm_loadu_ps(pgto_data->y + i);
+					md_128  pz = md_mm_loadu_ps(pgto_data->z + i);
+					md_128  pa = md_mm_loadu_ps(pgto_data->alpha + i);
+					md_128  pc = md_mm_loadu_ps(pgto_data->coeff + i);
+					md_128i pi = md_mm_loadu_si128(pgto_data->i + i);
+					md_128i pj = md_mm_loadu_si128(pgto_data->j + i);
+					md_128i pk = md_mm_loadu_si128(pgto_data->k + i);
+
+					md_128 dx = md_mm_sub_ps(px, vx);
+					md_128 dy = md_mm_sub_ps(py, vy);
+					md_128 dz = md_mm_sub_ps(pz, vz);
+					md_128 d2 = md_mm_fmadd_ps(dx, dx, md_mm_fmadd_ps(dy, dy, md_mm_mul_ps(dz, dz)));
+					md_128 fx = md_mm_fast_pow(dx, pi);
+					md_128 fy = md_mm_fast_pow(dy, pj);
+					md_128 fz = md_mm_fast_pow(dz, pk);
+					md_128 ex = md_mm_exp_ps(md_mm_mul_ps(pa, d2));
+
+					md_128 prod = md_mm_mul_ps(md_mm_mul_ps(md_mm_mul_ps(pc, fx), md_mm_mul_ps(fy, fz)), ex);
+
+					vpsi = md_mm_add_ps(vpsi, prod);
+				}
+
+				psi = md_mm_reduce_add_ps(vpsi);
+
+				int index = x_stride + y_stride + z_stride;
+				grid_data[index] = (float)psi;
+			}
+		}
+	}
+}
+
+bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], const int grid_idx_max[3], const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs) {
+	vlx_molecule_t mol = {
+		.num_atoms = geom->num_atoms,
+		.atomic_number = geom->atomic_number,
+		.coord_x = geom->coord_x,
+		.coord_y = geom->coord_y,
+		.coord_z = geom->coord_z,
+	};
+
+	md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
+	pgto_data_t pgto_data = {0};
+	allocate_pgto_data(&pgto_data, 1024, arena);
+
+	// Conversion from Ångström to Bohr
+	const float factor = 1.0 / 0.529177210903;
+
+	float grid_origin[3] = {
+		factor * grid->origin[0],
+		factor * grid->origin[1],
+		factor * grid->origin[2],
+	};
+
+	float grid_stepsize[3] = {
+		factor * grid->stepsize[0],
+		factor * grid->stepsize[1],
+		factor * grid->stepsize[2],
+	};
+
+	// Compute the extent of the spatial region which is to be evaluated
+	// This will be used to limit the number of pgtos to a set which only has a valid contribution in this region
+	float min_ext[3] = {
+		grid_origin[0] + grid_idx_min[0] * grid_stepsize[0],
+		grid_origin[1] + grid_idx_min[1] * grid_stepsize[1],
+		grid_origin[2] + grid_idx_min[2] * grid_stepsize[2],
+	};
+	float max_ext[3] = {
+		grid_origin[0] + grid_idx_max[0] * grid_stepsize[0],
+		grid_origin[1] + grid_idx_max[1] * grid_stepsize[1],
+		grid_origin[2] + grid_idx_max[2] * grid_stepsize[2],
+	};
+
+	md_timestamp_t t0 = md_time_current();
+	size_t num_pgtos = extract_pgto_data(&pgto_data, &mol, basis->basis_set, mo_coeffs, min_ext, max_ext);
+	md_timestamp_t t1 = md_time_current();
+
+#if defined(__AVX512F__)
+	evaluate_grid_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid_origin, grid_stepsize, &pgto_data, num_pgtos);
+#elif defined(__AVX2__)
+	evaluate_grid_256(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid_origin, grid_stepsize, &pgto_data, num_pgtos);
+#elif defined(__SSE2__)
+	evaluate_grid_128(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid_origin, grid_stepsize, &pgto_data, num_pgtos);
+#else
+	evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid_origin, grid_stepsize, &pgto_data, num_pgtos);
+#endif
 
 	md_timestamp_t t2 = md_time_current();
 	double t_pgto = md_time_as_milliseconds(t1-t0);
 	double t_eval = md_time_as_milliseconds(t2-t1);
-	//MD_LOG_INFO("Time taken to generate %zu pgtos: %.3f", num_pgto, t_pgto);
-	//MD_LOG_INFO("Time taken to compute phi atomic orbitals for grid size [%zu][%zu][%zu]: %.3f", grid->dim, grid->dim, grid->dim, t_eval);
+	//MD_LOG_INFO("Time taken to generate %zu pgtos: %.3f ms", num_pgtos, t_pgto);
+	//MD_LOG_INFO("Time taken to evaluate orbitals for grid size [%zu][%zu][%zu]: %.3f ms", grid->dim, grid->dim, grid->dim, t_eval);
 
 	md_arena_allocator_destroy(arena);
 
