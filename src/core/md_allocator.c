@@ -17,8 +17,8 @@ size_t md_temp_allocator_max_allocation_size(void) {
     return MAX_TEMP_ALLOCATION_SIZE;
 }
 
-THREAD_LOCAL void* _ring_buf = 0;
 THREAD_LOCAL md_allocator_i* _ring_alloc = 0;
+THREAD_LOCAL void* _ring_buf = 0;
 
 static void release_ring_buffer(void* data) {
     (void)data;

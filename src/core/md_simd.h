@@ -770,7 +770,7 @@ MD_SIMD_INLINE void md_mm_sincos_ps(md_128 in_x, md_128* out_sin, md_128* out_co
     *out_cos = md_mm_xor_ps(_mm_blendv_ps(sin_res, cos_res, cos_usecos), cos_sign_bit);
 }
 
-// We cannot reserve the name md_mm256_sincos_ps because it is already defined in immintrin.h
+// We cannot reserve the name mm256_sincos_ps because it is already defined in immintrin.h
 MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 in_x, md_256* out_sin, md_256* out_cos) {
     const md_256 two_over_pi = md_mm256_set1_ps(0.6366197466850280761718);
     const md_256 scaled = md_mm256_mul_ps(in_x, two_over_pi);
@@ -1112,6 +1112,98 @@ MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
     *c = _mm512_xor_ps(xmm2, sign_bit_cos);
 }
 #endif
+
+MD_SIMD_INLINE md_128 md_mm_exp_ps(md_128 x) {
+    md_128 tmp = md_mm_setzero_ps(), fx;
+    md_128i emm0;
+    md_128 one = md_mm_set1_ps(1.0f);
+
+    x = md_mm_min_ps(x, md_mm_set1_ps( 88.3762626647949f));
+    x = md_mm_max_ps(x, md_mm_set1_ps(-88.3762626647949f));
+
+    /* express exp(x) as exp(g + n*log(2)) */
+    fx = md_mm_mul_ps(x, md_mm_set1_ps(1.44269504088896341f));
+    fx = md_mm_add_ps(fx, md_mm_set1_ps(0.5f));
+
+    /* floor */
+    emm0 = md_mm_cvttps_epi32(fx);
+    tmp  = md_mm_cvtepi32_ps(emm0);
+
+    /* if greater, substract 1 */
+    md_128 mask = md_mm_cmpgt_ps(tmp, fx);    
+    mask = md_mm_and_ps(mask, one);
+    fx = md_mm_sub_ps(tmp, mask);
+
+    tmp = md_mm_mul_ps(fx, md_mm_set1_ps(0.693359375f));
+    md_128 z = md_mm_mul_ps(fx, md_mm_set1_ps(-2.12194440e-4f));
+    x = md_mm_sub_ps(x, tmp);
+    x = md_mm_sub_ps(x, z);
+
+    z = md_mm_mul_ps(x,x);
+
+    md_128 y = md_mm_set1_ps(1.9875691500E-4f);
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(1.3981999507E-3f));
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(8.3334519073E-3f));
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(4.1665795894E-2f));
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(1.6666665459E-1f));
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(5.0000001201E-1f));
+    y = md_mm_fmadd_ps(y, z, md_mm_add_ps(x, one));
+
+    /* build 2^n */
+    emm0 = md_mm_cvttps_epi32(fx);
+    emm0 = md_mm_add_epi32(emm0, md_mm_set1_epi32(0x7f));
+    emm0 = md_mm_slli_epi32(emm0, 23);
+    md_128 pow2n = md_mm_castsi128_ps(emm0);
+
+    y = md_mm_mul_ps(y, pow2n);
+    return y;
+}
+
+MD_SIMD_INLINE md_256 md_mm256_exp_ps(md_256 x) {
+    md_256 tmp = md_mm256_setzero_ps(), fx;
+    md_256i emm0;
+    md_256 one = md_mm256_set1_ps(1.0f);
+
+    x = md_mm256_min_ps(x, md_mm256_set1_ps( 88.3762626647949f));
+    x = md_mm256_max_ps(x, md_mm256_set1_ps(-88.3762626647949f));
+
+    /* express exp(x) as exp(g + n*log(2)) */
+    fx = md_mm256_mul_ps(x, md_mm256_set1_ps(1.44269504088896341f));
+    fx = md_mm256_add_ps(fx, md_mm256_set1_ps(0.5f));
+
+    /* floor */
+    emm0 = md_mm256_cvttps_epi32(fx);
+    tmp  = md_mm256_cvtepi32_ps(emm0);
+
+    /* if greater, substract 1 */
+    md_256 mask = md_mm256_cmpgt_ps(tmp, fx);    
+    mask = md_mm256_and_ps(mask, one);
+    fx = md_mm256_sub_ps(tmp, mask);
+
+    tmp = md_mm256_mul_ps(fx, md_mm256_set1_ps(0.693359375f));
+    md_256 z = md_mm256_mul_ps(fx, md_mm256_set1_ps(-2.12194440e-4f));
+    x = md_mm256_sub_ps(x, tmp);
+    x = md_mm256_sub_ps(x, z);
+
+    z = md_mm256_mul_ps(x,x);
+
+    md_256 y = md_mm256_set1_ps(1.9875691500E-4f);
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(1.3981999507E-3f));
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(8.3334519073E-3f));
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(4.1665795894E-2f));
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(1.6666665459E-1f));
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(5.0000001201E-1f));
+    y = md_mm256_fmadd_ps(y, z, md_mm256_add_ps(x, one));
+
+    /* build 2^n */
+    emm0 = md_mm256_cvttps_epi32(fx);
+    emm0 = md_mm256_add_epi32(emm0, md_mm256_set1_epi32(0x7f));
+    emm0 = md_mm256_slli_epi32(emm0, 23);
+    md_256 pow2n = md_mm256_castsi256_ps(emm0);
+
+    y = md_mm256_mul_ps(y, pow2n);
+    return y;
+}
 
 #if defined(_MSC_VER)
 #pragma float_control(pop)

@@ -5498,8 +5498,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
             type_info_t type = expr[i]->data.type;
             if (is_variable_length(type)) {
                 if (!finalize_type(&type, expr[i], &ctx)) {
-                    str_t str = expr[i]->token.str;
-                    MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"', failed to finalize its type", STR_ARG(str));
+                    MD_LOG_ERROR("Evaluation error when evaluating the following expression '"STR_FMT"', failed to finalize its type", STR_ARG(expr[i]->token.str));
                     result = false;
                     goto done;
                 }
