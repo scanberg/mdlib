@@ -81,7 +81,7 @@ static const double ref_density_change[] = {
 UTEST(vlx, vlx_parse) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out");
     md_vlx_data_t vlx = {0};
-    bool result = md_vlx_data_parse_file(&vlx, path, md_heap_allocator);
+    bool result = md_vlx_data_parse_file(&vlx, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
 
     EXPECT_EQ(0,  vlx.geom.molecular_charge);
