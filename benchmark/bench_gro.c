@@ -9,7 +9,7 @@
 #include <md_util.h>
 
 UBENCH_EX(gro, load) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
     md_file_o* file = md_file_open(path, MD_FILE_READ);
@@ -31,7 +31,7 @@ UBENCH_EX(gro, load) {
 
 UBENCH_EX(gro, postprocess) {
     size_t capacity = MEGABYTES(16);
-    void* buffer = md_alloc(md_heap_allocator, capacity);
+    void* buffer = md_alloc(md_get_heap_allocator(), capacity);
     md_allocator_i* alloc = md_linear_allocator_create(buffer, capacity);
     str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/centered.gro");
 
@@ -45,5 +45,5 @@ UBENCH_EX(gro, postprocess) {
         md_linear_allocator_set_pos_back(alloc, reset_pos);
     }
 
-    md_free(md_heap_allocator, buffer, capacity);
+    md_free(md_get_heap_allocator(), buffer, capacity);
 }

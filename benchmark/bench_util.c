@@ -299,7 +299,7 @@ typedef struct com_func_entry_t {
 } com_func_entry_t;
 
 void bench_com() {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 
     SETUP_XYZW
 

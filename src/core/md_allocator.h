@@ -47,11 +47,11 @@ extern "C" {
 
 size_t md_temp_allocator_max_allocation_size(void);
 
-// General allocator interface to heap (malloc)
-extern struct md_allocator_i* md_heap_allocator;
+// Get general allocator interface to heap (malloc)
+struct md_allocator_i* md_get_heap_allocator();
 
-// General allocator interface to thread local ring buffer
-extern struct md_allocator_i* md_temp_allocator;
+// Get general allocator interface to thread local ring buffer
+struct md_allocator_i* md_get_temp_allocator();
 
 // Simple interface to the thread local ring buffer
 void*  md_temp_push(size_t bytes);

@@ -583,9 +583,9 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 			md_buffered_reader_skip_line(reader);
-			mass_table = md_array_create(float, data->num_atom_types + 1, md_temp_allocator);
+			mass_table = md_array_create(float, data->num_atom_types + 1, md_get_temp_allocator());
 			MEMSET(mass_table, 0, md_array_bytes(mass_table));
-			if (!parse_masses(&mass_table, data->num_atom_types, reader, md_temp_allocator)) {
+			if (!parse_masses(&mass_table, data->num_atom_types, reader, md_get_temp_allocator())) {
 				return false;
 			}
 		} else if (num_tok == 2 && is_int(tok[0])) {
@@ -665,12 +665,12 @@ bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const cha
 	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
 	if (file) {
 		const size_t cap = MEGABYTES(1);
-		char* buf = md_alloc(md_heap_allocator, cap);
+		char* buf = md_alloc(md_get_heap_allocator(), cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
 		result = md_lammps_data_parse(data, &line_reader, format, alloc);
 
-		md_free(md_heap_allocator, buf, cap);
+		md_free(md_get_heap_allocator(), buf, cap);
 		md_file_close(file);
 	}
 	else {
@@ -755,10 +755,10 @@ static bool lammps_init_from_str(md_molecule_t* mol, str_t str, const void* arg,
 
 	md_lammps_data_t data = { 0 };
 	bool success = false;
-	if (md_lammps_data_parse_str(&data, str, format, md_heap_allocator)) {
+	if (md_lammps_data_parse_str(&data, str, format, md_get_heap_allocator())) {
 		success = md_lammps_molecule_init(mol, &data, alloc);
 	}
-	md_lammps_data_free(&data, md_heap_allocator);
+	md_lammps_data_free(&data, md_get_heap_allocator());
 
 	return success;
 }
@@ -779,10 +779,10 @@ static bool lammps_init_from_file(md_molecule_t* mol, str_t filename, const void
 
 	md_lammps_data_t data = { 0 };
 	bool success = false;
-	if (md_lammps_data_parse_file(&data, filename, format, md_heap_allocator)) {
+	if (md_lammps_data_parse_file(&data, filename, format, md_get_heap_allocator())) {
 		success = md_lammps_molecule_init(mol, &data, alloc);
 	}
-	md_lammps_data_free(&data, md_heap_allocator);
+	md_lammps_data_free(&data, md_get_heap_allocator());
 
 	return success;
 }
@@ -1125,7 +1125,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 		size_t expected_num_tokens = traj_data->coord_mappings.num_coord_tokens;
 
 		// We need to store the coordinates in a temporary buffer since we need to sort them by id
-		id_xyz_t* id_xyz = md_alloc(md_heap_allocator, sizeof(id_xyz_t) * header.num_atoms);
+		id_xyz_t* id_xyz = md_alloc(md_get_heap_allocator(), sizeof(id_xyz_t) * header.num_atoms);
 
 		while (md_buffered_reader_extract_line(&line, &reader) && line_count < header.num_atoms) {
 			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
@@ -1260,12 +1260,12 @@ static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, 
 	md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
 	if (file) {
 		const int64_t cap = MEGABYTES(1);
-		char* buf = md_alloc(md_heap_allocator, cap);
+		char* buf = md_alloc(md_get_heap_allocator(), cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
 		result = lammps_trajectory_parse(cache, &line_reader, alloc);
 
-		md_free(md_heap_allocator, buf, cap);
+		md_free(md_get_heap_allocator(), buf, cap);
 		md_file_close(file);
 	}
 	else {
@@ -1285,7 +1285,7 @@ bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_traje
 	}
 
 	// Should this be exposed?
-	md_allocator_i* alloc = md_temp_allocator;
+	md_allocator_i* alloc = md_get_temp_allocator();
 
 	bool result = true;
 	const int64_t frame_size = lammps_fetch_frame_data(inst, frame_idx, NULL);
@@ -1450,7 +1450,7 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	int64_t filesize = md_file_size(file);
 	md_file_close(file);
 
-	md_strb_t sb = md_strb_create(md_temp_allocator);
+	md_strb_t sb = md_strb_create(md_get_temp_allocator());
 	md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
 	str_t cache_file = md_strb_to_str(sb);
 

@@ -29,7 +29,7 @@ static void release_ring_buffer(void* data) {
     }
 }
 
-md_allocator_i* md_thread_ring_allocator() {
+static inline md_allocator_i* md_thread_ring_allocator() {
     if (!_ring_alloc) {
         ASSERT(!_ring_buf);
         _ring_buf = malloc(MD_TEMP_ALLOC_SIZE);
@@ -58,18 +58,20 @@ static void* ring_realloc_internal(struct md_allocator_o *inst, void *ptr, size_
     return thread_ring->realloc(thread_ring->inst, ptr, old_size, new_size, file, line);
 }
 
-static struct md_allocator_i _default_allocator = {
+static struct md_allocator_i _heap_allocator = {
     NULL,
     realloc_internal,
 };
 
-static struct md_allocator_i _default_temp_allocator = {
-    NULL,
-    ring_realloc_internal,
-};
+// Get general allocator interface to heap (malloc)
+md_allocator_i* md_get_heap_allocator() {
+    return &_heap_allocator;
+}
 
-struct md_allocator_i* md_heap_allocator = &_default_allocator;
-struct md_allocator_i* md_temp_allocator = &_default_temp_allocator;
+// Get general allocator interface to thread local ring buffer
+md_allocator_i* md_get_temp_allocator() {
+    return md_thread_ring_allocator();
+}
 
 void* md_temp_push(size_t bytes) {
     return md_ring_allocator_push(md_thread_ring_allocator(), bytes);

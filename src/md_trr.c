@@ -565,7 +565,7 @@ bool trr_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     bool result = true;
     const size_t frame_size = trr_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_heap_allocator : md_temp_allocator;
+        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_get_heap_allocator() : md_get_temp_allocator();
         void* frame_data = md_alloc(alloc, frame_size);
         const size_t read_size = trr_fetch_frame_data(inst, frame_idx, frame_data);
         (void)read_size;
@@ -686,7 +686,7 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
     // Ensure that the path is zero terminated (not guaranteed by str_t)
-    md_strb_t sb = md_strb_create(md_temp_allocator);
+    md_strb_t sb = md_strb_create(md_get_temp_allocator());
     md_strb_push_str(&sb, filename);
     XDRFILE* file = xdrfile_open(md_strb_to_cstr(sb), "r");
 

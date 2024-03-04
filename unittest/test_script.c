@@ -133,7 +133,7 @@ static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule_t* m
     ASSERT(bitfield);
     ASSERT(mol);
     data_t data = {0};
-    if (eval_expression(&data, expr, mol, md_temp_allocator)) {
+    if (eval_expression(&data, expr, mol, md_get_temp_allocator())) {
         if (data.type.base_type == TYPE_BITFIELD) {
             md_bitfield_t* res = (md_bitfield_t*)data.ptr;
             const int64_t len = type_info_array_len(data.type);
@@ -191,7 +191,7 @@ UTEST(script, type_equal) {
 UTEST(script, basic_expressions) {
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("'this is a string'"), &test_mol, md_temp_allocator);
+        bool result = eval_expression(&data, STR_LIT("'this is a string'"), &test_mol, md_get_temp_allocator());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_STRING);
@@ -202,7 +202,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("2 + 5"), &test_mol, md_temp_allocator);
+        bool result = eval_expression(&data, STR_LIT("2 + 5"), &test_mol, md_get_temp_allocator());
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_INT);
             EXPECT_EQ(as_int(data), 7);
@@ -211,7 +211,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("2 + 5.0"), &test_mol, md_temp_allocator);
+        bool result = eval_expression(&data, STR_LIT("2 + 5.0"), &test_mol, md_get_temp_allocator());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
@@ -221,7 +221,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("{2,1} + {1,8}"), &test_mol, md_temp_allocator);
+        bool result = eval_expression(&data, STR_LIT("{2,1} + {1,8}"), &test_mol, md_get_temp_allocator());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_INT);
@@ -791,7 +791,7 @@ static bool test_selection(const char* expr, const char* ref_bit_str) {
     bool result = false;
     uint64_t ref = make_bits(ref_bit_str);
     md_bitfield_t bf = {0};
-    md_bitfield_init(&bf, md_temp_allocator);
+    md_bitfield_init(&bf, md_get_temp_allocator());
 
     if (!eval_selection(&bf, str_from_cstr(expr), &test_mol)) {
         printf("Failed evaluation of expression: '%s'\n", expr);

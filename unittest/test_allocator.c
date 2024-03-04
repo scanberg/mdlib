@@ -39,17 +39,17 @@ static char buf[KILOBYTES(16)];
 
 // COMMON TESTS
 UTEST(allocator, default) {
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
     COMMON_ALLOCATOR_TEST_BODY
 }
 
 UTEST(allocator, default_temp) {
-    md_allocator_i* alloc = md_temp_allocator;
+    md_allocator_i* alloc = md_get_temp_allocator();
     COMMON_ALLOCATOR_TEST_BODY
 }
 
 UTEST(allocator, arena) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
     COMMON_ALLOCATOR_TEST_BODY
     md_arena_allocator_destroy(alloc);
 }
@@ -66,13 +66,13 @@ UTEST(allocator, ring_generic) {
 
 // @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
 UTEST(allocator, pool) {
-    md_allocator_i* pool = md_pool_allocator_create(md_heap_allocator, sizeof(uint64_t));
+    md_allocator_i* pool = md_pool_allocator_create(md_get_heap_allocator(), sizeof(uint64_t));
 
     uint64_t **items = {0};
 
     for (int j = 0; j < 1000; ++j) {
         for (int i = 0; i < 1000; ++i) {
-            uint64_t *item = *md_array_push(items, md_alloc(pool, sizeof(uint64_t)), md_heap_allocator);
+            uint64_t *item = *md_array_push(items, md_alloc(pool, sizeof(uint64_t)), md_get_heap_allocator());
             *item = i;
         }
 
@@ -94,11 +94,11 @@ UTEST(allocator, pool) {
         }
     }
 
-    md_array_free(items, md_heap_allocator);
+    md_array_free(items, md_get_heap_allocator());
 }
 
 UTEST(allocator, arena_extended) {
-    md_allocator_i* arena = md_arena_allocator_create(md_heap_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
 
     for (int j = 0; j < 1000; ++j) {
         EXPECT_EQ((uint64_t)md_alloc(arena, 16) % 16, 0ULL); // Expect to be aligned to 16 bytes
@@ -193,8 +193,26 @@ UTEST(allocator, linear) {
 UTEST(allocator, ring) {
     md_allocator_i* ring = md_ring_allocator_create(buf, sizeof(buf));
 
+    for (uint32_t i = 0; i < 100000; ++i) {
+        uint32_t size = i % 20 + 1;
+        md_ring_allocator_push(ring, size);
+    }
+
+    for (uint32_t i = 0; i < 500; ++i) {
+        md_ring_allocator_pop(ring, sizeof(uint64_t));
+    }
+
     for (uint32_t i = 0; i < 1000; ++i) {
-        md_ring_allocator_push(ring, sizeof(uint64_t));
+        md_ring_allocator_push_aligned(ring, sizeof(uint64_t), 32);
+    }
+}
+
+UTEST(allocator, temp) {
+    md_allocator_i* ring = md_get_temp_allocator();
+
+    for (uint32_t i = 0; i < 100000; ++i) {
+        uint32_t size = i % 20 + 1;
+        md_ring_allocator_push(ring, size);
     }
 
     for (uint32_t i = 0; i < 500; ++i) {

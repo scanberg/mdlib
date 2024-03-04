@@ -31,7 +31,7 @@ void thread_func(void* user_data) {
     const int64_t frame_stride = num_atoms * 3;
     
     const int64_t mem_size = num_atoms * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_temp_allocator, mem_size);
+    void* mem_ptr = md_alloc(md_get_temp_allocator(), mem_size);
     float *x = (float*)mem_ptr + num_atoms * 0;
     float *y = (float*)mem_ptr + num_atoms * 1;
     float *z = (float*)mem_ptr + num_atoms * 2;
@@ -60,11 +60,11 @@ void thread_func(void* user_data) {
         }
     }
 
-    md_free(md_temp_allocator, mem_ptr, mem_size);
+    md_free(md_get_temp_allocator(), mem_ptr, mem_size);
 }
 
 UTEST(frame_cache, parallel_workload) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     md_molecule_t mol = {0};
     md_gro_data_t gro = {0};

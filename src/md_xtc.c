@@ -310,7 +310,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
 
         if (x && y && z) {
             size_t byte_size = natoms * sizeof(rvec);
-            rvec* pos = md_alloc(md_heap_allocator, byte_size);
+            rvec* pos = md_alloc(md_get_heap_allocator(), byte_size);
             result = xtc_frame_coords(file, natoms, pos);
             if (result) {            
                 // nm -> Ångström
@@ -320,7 +320,7 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
                     z[i] = pos[i][2] * 10.0f;
                 }
             }
-            md_free(md_heap_allocator, pos, byte_size);
+            md_free(md_get_heap_allocator(), pos, byte_size);
         }
     }
 
@@ -339,7 +339,7 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     // Should this be exposed?
-    md_allocator_i* alloc = md_temp_allocator;
+    md_allocator_i* alloc = md_get_temp_allocator();
 
     bool result = true;
     const size_t frame_size = xtc_fetch_frame_data(inst, frame_idx, NULL);
@@ -465,7 +465,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
     // Ensure that the path is zero terminated (not guaranteed by str_t)
-    md_strb_t sb = md_strb_create(md_temp_allocator);
+    md_strb_t sb = md_strb_create(md_get_temp_allocator());
     md_strb_push_str(&sb, filename);
     XDRFILE* file = xdrfile_open(md_strb_to_cstr(sb), "r");
 

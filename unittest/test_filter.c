@@ -16,10 +16,10 @@ UTEST(filter, centered) {
     md_molecule_t mol = {0};
     const str_t gro_file = STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro");
 
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, gro_file, NULL, md_heap_allocator));
-    ASSERT_TRUE(md_util_molecule_postprocess(&mol, md_heap_allocator, MD_UTIL_POSTPROCESS_ALL));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, gro_file, NULL, md_get_heap_allocator()));
+    ASSERT_TRUE(md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL));
     
-    md_bitfield_t bf = md_bitfield_create(md_heap_allocator);
+    md_bitfield_t bf = md_bitfield_create(md_get_heap_allocator());
     char err[256];
     bool is_dynamic = false;
     
@@ -27,5 +27,5 @@ UTEST(filter, centered) {
     EXPECT_TRUE(TEST("within(10, residue(1))"));
 
     md_bitfield_free(&bf);
-    md_molecule_free(&mol, md_heap_allocator);
+    md_molecule_free(&mol, md_get_heap_allocator());
 }

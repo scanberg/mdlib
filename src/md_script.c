@@ -3804,7 +3804,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
    
     if (str_eq_cstr_ignore_case(ext, "edr")) {
         md_edr_energies_t edr = {0};
-        if (md_edr_energies_parse_file(&edr, path_to_file, md_heap_allocator)) {
+        if (md_edr_energies_parse_file(&edr, path_to_file, md_get_heap_allocator())) {
             bool success = true;
             if (traj_has_time) {
                 if (!frame_times_compatible(md_trajectory_frame_times(traj), num_frames, edr.frame_time, edr.num_frames)) {
@@ -3830,7 +3830,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
         md_edr_energies_free(&edr);
     } else if (str_eq_cstr_ignore_case(ext, "xvg")) {
         md_xvg_t xvg = {0};
-        if (md_xvg_parse_file(&xvg, path_to_file, md_heap_allocator)) {
+        if (md_xvg_parse_file(&xvg, path_to_file, md_get_heap_allocator())) {
             bool success = true;
             bool xvg_has_time = str_eq_cstr_n_ignore_case(xvg.header_info.xaxis_label, "time", 4);
             if (traj_has_time && xvg_has_time) {
@@ -3864,11 +3864,11 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                     table_push_field_f(table, name, unit, xvg.fields[i], xvg.num_values, ir->arena);
                 }
             }
-            md_xvg_free(&xvg, md_heap_allocator);
+            md_xvg_free(&xvg, md_get_heap_allocator());
         }
     } else if (str_eq_cstr_ignore_case(ext, "csv")) {
         md_csv_t csv = {0};
-        if (md_csv_parse_file(&csv, path_to_file, md_heap_allocator)) {
+        if (md_csv_parse_file(&csv, path_to_file, md_get_heap_allocator())) {
             bool success = true;
             bool csv_has_time = csv.field_names && str_eq_cstr_n_ignore_case(csv.field_names[0], "time", 4);
 
@@ -3905,7 +3905,7 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 }
             }
 
-            md_csv_free(&csv, md_heap_allocator);
+            md_csv_free(&csv, md_get_heap_allocator());
         }
     } else {
         LOG_ERROR(ir, (token_t){0}, "import: unsupported file extension '"STR_FMT"'", (int)ext.len, ext.ptr);
@@ -5055,7 +5055,7 @@ static bool parse_script(md_script_ir_t* ir) {
         .ir = ir,
         .tokenizer = &tokenizer,
         .node = 0,
-        .temp_alloc = md_temp_allocator,
+        .temp_alloc = md_get_temp_allocator(),
     };
 
     ir->stage = "Parsing";
@@ -5697,7 +5697,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     ASSERT(node->type != AST_UNDEFINED);
 
     md_strb_t sb = {0};
-    md_strb_init(&sb, md_temp_allocator);
+    md_strb_init(&sb, md_get_temp_allocator());
 
     char type_buf[128];
     size_t type_len = print_type_info(type_buf, (int)sizeof(type_buf), node->data.type);
@@ -5723,7 +5723,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
             md_strb_fmt(&sb, "[%i]: \""STR_FMT"\"", (int)(i + 1), STR_ARG(name));
             md_unit_t unit = node->table->field_units[idx];
             if (!md_unit_empty(unit) && !md_unit_unitless(unit)) {
-                str_t unit_str = md_unit_to_string(unit, md_temp_allocator);
+                str_t unit_str = md_unit_to_string(unit, md_get_temp_allocator());
                 if (!str_empty(unit_str)) {
                     md_strb_fmt(&sb, " ("STR_FMT")", STR_ARG(unit_str));
                 }

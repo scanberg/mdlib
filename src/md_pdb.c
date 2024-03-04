@@ -415,12 +415,12 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i*
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         const size_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_heap_allocator, cap);
+        char* buf = md_alloc(md_get_heap_allocator(), cap);
         
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         result = pdb_parse(data, &reader, alloc, false);
         
-        md_free(md_heap_allocator, buf, cap);
+        md_free(md_get_heap_allocator(), buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
@@ -454,7 +454,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     bool result = false;
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     size_t beg_atom_index = 0;
     size_t end_atom_index = data->num_atom_coordinates;
@@ -662,9 +662,9 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
     (void)arg;
     md_pdb_data_t data = {0};
 
-    md_pdb_data_parse_str(&data, str, md_heap_allocator);
+    md_pdb_data_parse_str(&data, str, md_get_heap_allocator());
     bool success = md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
-    md_pdb_data_free(&data, md_heap_allocator);
+    md_pdb_data_free(&data, md_get_heap_allocator());
     
     return success;
 }
@@ -674,16 +674,16 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, const void* a
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         const size_t cap = MEGABYTES(1);
-        char *buf = md_alloc(md_heap_allocator, cap);
+        char *buf = md_alloc(md_get_heap_allocator(), cap);
         ASSERT(buf);
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         
         md_pdb_data_t data = {0};
-        bool parse   = pdb_parse(&data, &reader, md_heap_allocator, true);
+        bool parse   = pdb_parse(&data, &reader, md_get_heap_allocator(), true);
         bool success = parse && md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
         
-        md_pdb_data_free(&data, md_heap_allocator);
-        md_free(md_heap_allocator, buf, cap);
+        md_pdb_data_free(&data, md_get_heap_allocator());
+        md_free(md_get_heap_allocator(), buf, cap);
         
         return success;
     }
@@ -710,7 +710,7 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     // Should this be exposed?
-    md_allocator_i* alloc = md_temp_allocator;
+    md_allocator_i* alloc = md_get_temp_allocator();
 
     bool result = true;
     const size_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
@@ -837,7 +837,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     const size_t filesize = md_file_size(file);
     md_file_close(file);
 
-    md_strb_t sb = md_strb_create(md_temp_allocator);
+    md_strb_t sb = md_strb_create(md_get_temp_allocator());
     md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
     str_t cache_file = md_strb_to_str(sb);
 
@@ -845,7 +845,7 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
 
     pdb_cache_t cache = {0};
     if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
-        md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+        md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
         bool result = false;
         md_pdb_data_t data = {0};

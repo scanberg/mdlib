@@ -16,7 +16,7 @@ UBENCH_EX(str, buffered_reader) {
         return;
     }
     const int64_t cap = MEGABYTES(1);
-    char* buf = md_alloc(md_heap_allocator, cap);
+    char* buf = md_alloc(md_get_heap_allocator(), cap);
     
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 
@@ -30,7 +30,7 @@ UBENCH_EX(str, buffered_reader) {
         }
     }
 
-    md_free(md_heap_allocator, buf, cap);
+    md_free(md_get_heap_allocator(), buf, cap);
     md_file_close(file);
 }
 

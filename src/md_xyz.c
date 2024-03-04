@@ -668,13 +668,13 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_heap_allocator, cap);
+        char* buf = md_alloc(md_get_heap_allocator(), cap);
         ASSERT(buf);
         
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         result = xyz_parse(data, &reader, alloc, false);
         
-        md_free(md_heap_allocator, buf, cap);
+        md_free(md_get_heap_allocator(), buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
@@ -740,9 +740,9 @@ static bool xyz_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
     md_xyz_data_t data = {0};
     
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-    bool result = xyz_parse(&data, &reader, md_heap_allocator, true);
+    bool result = xyz_parse(&data, &reader, md_get_heap_allocator(), true);
     result = result && md_xyz_molecule_init(mol, &data, alloc);
-    md_xyz_data_free(&data, md_heap_allocator);
+    md_xyz_data_free(&data, md_get_heap_allocator());
     
     return result;
 }
@@ -755,15 +755,15 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, const void* a
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_heap_allocator, cap);
+        char* buf = md_alloc(md_get_heap_allocator(), cap);
         ASSERT(buf);
 
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-        result = xyz_parse(&data, &reader, md_heap_allocator, true);
+        result = xyz_parse(&data, &reader, md_get_heap_allocator(), true);
         result = result && md_xyz_molecule_init(mol, &data, alloc);
 
-        md_xyz_data_free(&data, md_heap_allocator);
-        md_free(md_heap_allocator, buf, cap);
+        md_xyz_data_free(&data, md_get_heap_allocator());
+        md_free(md_get_heap_allocator(), buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Init XYZ from file: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
@@ -792,7 +792,7 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     bool result = true;
     const size_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_heap_allocator : md_temp_allocator;
+        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_get_heap_allocator() : md_get_temp_allocator();
         void* frame_data = md_alloc(alloc, frame_size);
         const size_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
@@ -915,7 +915,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_al
 
     xyz_cache_t cache = {0};
     if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
-        md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+        md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
         bool result = false;
         md_xyz_data_t data = {0};

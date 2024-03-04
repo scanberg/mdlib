@@ -8,7 +8,7 @@
 #include <core/md_log.h>
 
 UTEST(lammps, water_ethane_cubic) {
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
 
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
     md_lammps_data_t data = {0};
@@ -121,7 +121,7 @@ UTEST(lammps, water_ethane_cubic) {
 }
 
 UTEST(lammps, water_ethane_triclinic) {
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
 
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
     md_lammps_data_t data = {0};
@@ -236,7 +236,7 @@ UTEST(lammps, water_ethane_triclinic) {
 }
 
 UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/cubic_standardASCII.lammpstrj");
     //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
     md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
@@ -248,7 +248,7 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     EXPECT_EQ(10, num_frames);
     size_t stride = ALIGN_TO(num_atoms, 16);
     const size_t bytes = stride * 3 * sizeof(float);
-    void* mem = md_alloc(md_temp_allocator, bytes);
+    void* mem = md_alloc(md_get_temp_allocator(), bytes);
     float* x = (float*)mem + stride * 0;
     float* y = (float*)mem + stride * 1;
     float* z = (float*)mem + stride * 2;
@@ -271,12 +271,12 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     EXPECT_NEAR(z[0], 0.420586 * 39.121262, 0.0001); //Should be about 0.420586 of cell
     EXPECT_NEAR(header.unit_cell.basis.col[2].z, 39.121262, 0.0001);
 
-    md_free(md_temp_allocator, mem, bytes);
+    md_free(md_get_temp_allocator(), mem, bytes);
     md_lammps_trajectory_free(traj);
 }
 
 UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/triclinic_standardASCII.lammpstrj");
     //md_trajectory_loader_i* traj_load = md_lammps_trajectory_loader();
     md_trajectory_i* traj = md_lammps_trajectory_create(path, alloc, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
@@ -288,7 +288,7 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     EXPECT_EQ(10, num_frames);
     size_t stride = ALIGN_TO(num_atoms, 16);
     const size_t bytes = stride * 3 * sizeof(float);
-    void* mem = md_alloc(md_temp_allocator, bytes);
+    void* mem = md_alloc(md_get_temp_allocator(), bytes);
     float* x = (float*)mem + stride * 0;
     float* y = (float*)mem + stride * 1;
     float* z = (float*)mem + stride * 2;
@@ -311,7 +311,7 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     EXPECT_NEAR(23.6809902, z[0], 0.0001); //Should be about 0.56 of cell
     EXPECT_NEAR(42.3503265, header.unit_cell.basis.elem[2][2], 0.0001);
 
-    md_free(md_temp_allocator, mem, bytes);
+    md_free(md_get_temp_allocator(), mem, bytes);
     md_lammps_trajectory_free(traj);
 
 }

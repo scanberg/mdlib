@@ -1163,7 +1163,7 @@ static bool md_compute_connectivity(md_conn_data_t* conn, md_atom_data_t* atom, 
         md_array_resize(conn->flags, conn->count, alloc);
     }
 
-    md_array(uint32_t) local_offset = md_array_create(uint32_t, bond->count, md_heap_allocator);
+    md_array(uint32_t) local_offset = md_array_create(uint32_t, bond->count, md_get_heap_allocator());
 
     // Two packed 16-bit local offsets for each of the bond idx
     // Use offsets as accumulators for length
@@ -1212,7 +1212,7 @@ static bool md_compute_connectivity(md_conn_data_t* conn, md_atom_data_t* atom, 
         }
     }
 
-    md_array_free(local_offset, md_heap_allocator);
+    md_array_free(local_offset, md_get_heap_allocator());
     return true;
 }
 
@@ -1429,7 +1429,7 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     ASSERT(res);
     ASSERT(alloc);
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     md_bond_data_t bond = {0};
     
     if (!atom->x || !atom->y || !atom->z) {
@@ -1472,13 +1472,13 @@ done:
 
 /*
 md_array(md_hbond_data_t) md_util_compute_hbond_data(const md_molecule_t* mol, md_index_data_t connectivity, md_allocator_i* alloc) {
-    md_array(md_valence_t) atom_valence = md_array_create(md_valence_t, mol->atom.count, md_temp_allocator);
+    md_array(md_valence_t) atom_valence = md_array_create(md_valence_t, mol->atom.count, md_get_temp_allocator());
     memset(atom_valence, 0, md_array_bytes(atom_valence));
 
-    md_array(int8_t) atom_hcount = md_array_create(int8_t, mol->atom.count, md_temp_allocator);
+    md_array(int8_t) atom_hcount = md_array_create(int8_t, mol->atom.count, md_get_temp_allocator());
     memset(atom_hcount, 0, md_array_bytes(atom_hcount));
 
-    md_array(md_order_t) order = md_util_compute_covalent_bond_order(mol->bonds, md_array_size(mol->bonds), mol->atom.name, mol->atom.residue_idx, mol->residue.name, md_temp_allocator);
+    md_array(md_order_t) order = md_util_compute_covalent_bond_order(mol->bonds, md_array_size(mol->bonds), mol->atom.name, mol->atom.residue_idx, mol->residue.name, md_get_temp_allocator());
 
     for (int64_t i = 0; i < md_array_size(mol->bonds); ++i) {
         const md_atom_idx_t *idx = mol->bonds[i].idx;
@@ -1677,7 +1677,7 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
         return true;
     }
 
-    md_array(uint64_t) res_bond_to_prev = make_bitfield(res->count + 1, md_temp_allocator);
+    md_array(uint64_t) res_bond_to_prev = make_bitfield(res->count + 1, md_get_temp_allocator());
     for (size_t i = 0; i < bond->count; ++i) {
         if (bond->flags[i] & MD_FLAG_INTER_BOND) {
             const md_residue_idx_t res_a = atom->res_idx[bond->pairs[i].idx[0]];
@@ -1907,7 +1907,7 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
         return ring_data;
     }
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
         
     int* color = md_alloc(temp_alloc, mol->atom.count * sizeof(int));
     int* depth = md_alloc(temp_alloc, mol->atom.count * sizeof(int));
@@ -2059,7 +2059,7 @@ md_index_data_t md_util_compute_structures(const md_molecule_t* mol, struct md_a
 
     md_index_data_t structures = {0};
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     // Create a bitfield to keep track of which atoms have been visited
     uint64_t* visited = make_bitfield(mol->atom.count, temp_alloc);
@@ -2120,7 +2120,7 @@ void md_util_mask_grow_by_bonds(md_bitfield_t* mask, const md_molecule_t* mol, s
     const size_t mask_size = md_bitfield_popcount(mask);
     if (!mask_size) return;
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     int* indices = md_alloc(temp_alloc, mask_size * sizeof(int));
     const size_t num_indices = md_bitfield_iter_extract_indices(indices, mask_size, md_bitfield_iter_create(mask));
@@ -5386,7 +5386,7 @@ static void md_util_compute_backbone_data(md_backbone_data_t* backbone, const md
 
         static const int64_t MIN_BACKBONE_LENGTH = 3;
         md_backbone_atoms_t* bb_atoms = 0;
-        md_allocator_i* temp_alloc = md_temp_allocator;
+        md_allocator_i* temp_alloc = md_get_temp_allocator();
 
         for (int64_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
             for (int64_t res_idx = mol->chain.residue_range[chain_idx].beg; res_idx < mol->chain.residue_range[chain_idx].end; ++res_idx) {
@@ -5603,7 +5603,7 @@ bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator
                 for (md_residue_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
                     md_backbone_atoms_t atoms;
                     if (md_util_backbone_atoms_extract_from_residue_idx(&atoms, res_idx, mol)) {
-                        md_array_push(backbone, atoms, md_heap_allocator);
+                        md_array_push(backbone, atoms, md_get_heap_allocator());
                     } else {
                         if (md_array_size(backbone) >= MIN_BACKBONE_LENGTH) {
                             // Commit the backbone
@@ -5622,7 +5622,7 @@ bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator
                 md_array_shrink(backbone, 0);
             }
 
-            md_array_free(backbone, md_heap_allocator);
+            md_array_free(backbone, md_get_heap_allocator());
 
             mol->backbone.range.count = md_array_size(mol->backbone.range.offset);
             if (mol->backbone.range.count) {
@@ -5752,7 +5752,7 @@ static void radixPass10(uint32_t* destination, const uint32_t* source, const uin
 void md_util_sort_spatial(uint32_t* source, const float* x, const float* y, const float* z, size_t count) {
     if (!source || !z || !y || !z || count <= 0) return;
 
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
 
     uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
     computeOrder(keys, x, y, z, count, 0);
@@ -5778,7 +5778,7 @@ void md_util_sort_spatial(uint32_t* source, const float* x, const float* y, cons
 void md_util_sort_spatial_vec3(uint32_t* source, const vec3_t* xyz, size_t count) {
     if (!source || !xyz || count <= 0) return;
 
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
 
     uint32_t* keys = md_alloc(alloc, sizeof(uint32_t) * count);
     const float* base = (const float*)xyz;
@@ -5848,7 +5848,7 @@ void radixPass8(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[
 void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count) {
     if (!data || count <= 0) return;
 
-	md_allocator_i* alloc = md_heap_allocator;
+	md_allocator_i* alloc = md_get_heap_allocator();
 	uint32_t* scratch = md_alloc(alloc, sizeof(uint32_t) * count);
 
     uint32_t hist[256][4] = {0};
@@ -6740,7 +6740,7 @@ static size_t find_isomorphisms(md_index_data_t* mappings, const graph_t* needle
 #endif
 
     // The problematic case
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     // Create list of starting candidate pairs
     md_array(pair_t) start_candidates = 0;
@@ -7010,7 +7010,7 @@ md_index_data_t get_structures(const md_molecule_t* mol, md_util_match_level_t l
 }
 
 md_index_data_t match_structure(const int* ref_idx, int64_t ref_len, md_util_match_mode_t mode, md_util_match_level_t level, vertex_type_mapping_t mapping, const md_molecule_t* mol, md_allocator_i* alloc) {
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     graph_t ref_graph = {0};
     md_index_data_t result = {0};
@@ -7157,7 +7157,7 @@ md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_cou
 }
 
 graph_t smiles_to_graph(str_t smiles_str, md_allocator_i* alloc) {
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     typedef struct vertex_t {
         int type;
@@ -7317,7 +7317,7 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
         return result;
     }
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     graph_t ref_graph = smiles_to_graph(smiles, temp_alloc);
 

@@ -23,7 +23,7 @@ UTEST(spatial_hash, small_periodic) {
     float z[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     md_unit_cell_t unit_cell = md_util_unit_cell_from_extent(10, 0, 0);
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, 10, &unit_cell, md_heap_allocator);
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, 10, &unit_cell, md_get_heap_allocator());
     ASSERT_TRUE(spatial_hash);
     
     uint32_t count = 0;
@@ -38,7 +38,7 @@ UTEST(spatial_hash, small_periodic) {
 }
 
 UTEST(spatial_hash, big) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     const str_t pdb_file = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};

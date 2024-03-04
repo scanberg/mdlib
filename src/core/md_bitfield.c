@@ -868,7 +868,7 @@ uint16_t* get_serialization_block_indices(const md_bitfield_t* bf, md_allocator_
 // Returns the maximum serialization size in bytes of a bitfield
 size_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf) {
     size_t size = sizeof(uint16_t);
-    uint16_t* indices = get_serialization_block_indices(bf, md_temp_allocator);
+    uint16_t* indices = get_serialization_block_indices(bf, md_get_temp_allocator());
     for (size_t i = 0; i < md_array_size(indices); ++i) {
         if (indices[i] & BLOCK_IDX_FLAG_ALL_SET) continue;
         size += sizeof(indices[i]) + sizeof(block_t);
@@ -888,7 +888,7 @@ typedef union block_idx_t {
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
 size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
-    md_allocator_i* alloc = md_temp_allocator;
+    md_allocator_i* alloc = md_get_temp_allocator();
 
     uint16_t* indices = get_serialization_block_indices(bf, alloc);
     uint16_t* data = 0;
@@ -929,7 +929,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
     // Temporary buffer to decompress into.
     // The current compression is no where near 100:1 ratio.
     const int64_t mem_bytes = num_bytes * 100;
-    void* mem = md_alloc(md_heap_allocator, mem_bytes);
+    void* mem = md_alloc(md_get_heap_allocator(), mem_bytes);
 
     int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);    
 
@@ -980,7 +980,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
     bf->beg_bit = (uint32_t)(beg_blk_idx * BITS_PER_BLOCK + (beg_bit ? beg_bit - 1 : 0));
     bf->end_bit = (uint32_t)(end_blk_idx * BITS_PER_BLOCK + (end_bit ? end_bit : 0));
 
-    md_free(md_heap_allocator, mem, mem_bytes);
+    md_free(md_get_heap_allocator(), mem, mem_bytes);
 
     return true;
 }

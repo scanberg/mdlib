@@ -1167,7 +1167,7 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 		.coord_z = geom->coord_z,
 	};
 
-	md_allocator_i* arena = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+	md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
 	md_timestamp_t t0 = md_time_current();
 
@@ -1312,7 +1312,7 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 
 	if (flags & VLX_FLAG_BASIS) {
 		if (!str_empty(vlx->basis.ident)) {
-			md_strb_t sb = md_strb_create(md_temp_allocator);
+			md_strb_t sb = md_strb_create(md_get_temp_allocator());
 			md_strb_fmt(&sb, "%s/" STR_FMT, MD_VLX_BASIS_FOLDER, STR_ARG(vlx->basis.ident));
 			str_t basis_path = md_strb_to_str(sb);
 			md_file_o* basis_file = md_file_open(basis_path, MD_FILE_READ | MD_FILE_BINARY);
@@ -1331,7 +1331,7 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 		}
 #if 0
 		size_t phi_cap = vlx->basis.num_contracted_basis_functions;
-		double* phis = md_alloc(md_temp_allocator, phi_cap * sizeof(double));
+		double* phis = md_alloc(md_get_temp_allocator(), phi_cap * sizeof(double));
 		md_timestamp_t t0 = md_time_current();
 		const size_t dim = 80;
 		for (size_t iz = 0; iz < dim; iz++) {
@@ -1353,7 +1353,7 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 	if (flags & VLX_FLAG_SCF) {
 		str_t file_path;
 		if (result == true && extract_file_path_without_ext(&file_path, filename)) {
-			md_strb_t sb = md_strb_create(md_temp_allocator);
+			md_strb_t sb = md_strb_create(md_get_temp_allocator());
 			md_strb_push_str(&sb, file_path);
 			md_strb_push_str(&sb, STR_LIT(".scf.h5"));
 			str_t scf_path = md_strb_to_str(sb);
@@ -1402,7 +1402,7 @@ static bool vlx_mol_init_from_str(md_molecule_t* mol, str_t str, const void* arg
 	(void)arg;
 	md_vlx_data_t vlx = {0};
 	bool success = false;
-	if (vlx_data_parse_str(&vlx, str, md_heap_allocator, VLX_FLAG_GEOM)) {
+	if (vlx_data_parse_str(&vlx, str, md_get_heap_allocator(), VLX_FLAG_GEOM)) {
 		success = md_vlx_molecule_init(mol, &vlx, alloc);
 	}
 	md_vlx_data_free(&vlx);
@@ -1414,7 +1414,7 @@ static bool vlx_mol_init_from_file(md_molecule_t* mol, str_t filename, const voi
 	(void)arg;
 	md_vlx_data_t vlx = {0};
 	bool success = false;
-	if (vlx_data_parse_file(&vlx, filename, md_heap_allocator, VLX_FLAG_GEOM)) {
+	if (vlx_data_parse_file(&vlx, filename, md_get_heap_allocator(), VLX_FLAG_GEOM)) {
 		success = md_vlx_molecule_init(mol, &vlx, alloc);
 	}
 	md_vlx_data_free(&vlx);

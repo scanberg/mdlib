@@ -5,7 +5,7 @@
 
 UTEST(cube, read_benzene) {
 	md_cube_t cube = {0};
-	bool result = md_cube_file_load(&cube, STR_LIT(MD_UNITTEST_DATA_DIR "/benzene-pot.cube"), md_heap_allocator);
+	bool result = md_cube_file_load(&cube, STR_LIT(MD_UNITTEST_DATA_DIR "/benzene-pot.cube"), md_get_heap_allocator());
 	ASSERT_TRUE(result);
 
 	EXPECT_NEAR(-9.053142, cube.origin[0], 1e-5);
@@ -34,12 +34,12 @@ UTEST(cube, read_benzene) {
 	EXPECT_STREQ(" Title Card Required potential", str_ptr(cube.title));
 	EXPECT_STREQ(" Electrostatic potential from Total SCF Density", str_ptr(cube.comment));
 	
-	md_cube_free(&cube, md_heap_allocator);
+	md_cube_free(&cube, md_get_heap_allocator());
 }
 
 UTEST(cube, read_A2B2) {
 	md_cube_t cube = {0};
-	bool result = md_cube_file_load(&cube, STR_LIT(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube"), md_heap_allocator);
+	bool result = md_cube_file_load(&cube, STR_LIT(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube"), md_get_heap_allocator());
 	ASSERT_TRUE(result);
 
 	EXPECT_NEAR(-16.311785, cube.origin[0], 1e-5);
@@ -72,7 +72,7 @@ UTEST(cube, read_A2B2) {
 	EXPECT_STREQ("     comment MO=411 ||   comment MO=412 ||   comment MO=409 ||   comment MO=410",  str_ptr(cube.title));
 	EXPECT_STREQ("     MO coefficients scaled by    0.515986 +   MO coefficien +   MO coefficients", str_ptr(cube.comment));
 
-	md_cube_free(&cube, md_heap_allocator);
+	md_cube_free(&cube, md_get_heap_allocator());
 }
 
 static bool cmp_cube_v3(md_cube_v3 a, md_cube_v3 b) {
@@ -82,13 +82,13 @@ static bool cmp_cube_v3(md_cube_v3 a, md_cube_v3 b) {
 UTEST(cube, serialize_deserialize) {
 	md_cube_t cube_a = {0};
 	str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/A2B2_State2-GS.cube");
-	ASSERT_TRUE(md_cube_file_load(&cube_a, path, md_heap_allocator));
+	ASSERT_TRUE(md_cube_file_load(&cube_a, path, md_get_heap_allocator()));
 	
-	str_t str = md_cube_serialize(&cube_a, md_heap_allocator);
+	str_t str = md_cube_serialize(&cube_a, md_get_heap_allocator());
     ASSERT_FALSE(str_empty(str));
 
 	md_cube_t cube_b = {0};
-	ASSERT_TRUE(md_cube_deserialize(&cube_b, str, md_heap_allocator));
+	ASSERT_TRUE(md_cube_deserialize(&cube_b, str, md_get_heap_allocator()));
 
 	EXPECT_STREQ(cube_a.title.ptr, cube_b.title.ptr);
 	EXPECT_STREQ(cube_a.comment.ptr, cube_b.comment.ptr);
@@ -120,7 +120,7 @@ UTEST(cube, serialize_deserialize) {
         EXPECT_TRUE(cmp_cube_v3(cube_a.atom.coord[i], cube_b.atom.coord[i]));
 	}
 
-	str_free(str, md_heap_allocator);
-	md_cube_free(&cube_a, md_heap_allocator);
-	md_cube_free(&cube_b, md_heap_allocator);
+	str_free(str, md_get_heap_allocator());
+	md_cube_free(&cube_a, md_get_heap_allocator());
+	md_cube_free(&cube_b, md_get_heap_allocator());
 }

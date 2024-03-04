@@ -6,7 +6,7 @@
 UTEST(array, test) {
     uint64_t* arr = 0;
     for (uint64_t i = 0; i < 1000; ++i) {
-        md_array_push(arr, i, md_heap_allocator);
+        md_array_push(arr, i, md_get_heap_allocator());
     }
 
     EXPECT_EQ(md_array_size(arr), 1000);

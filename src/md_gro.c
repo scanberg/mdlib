@@ -137,12 +137,12 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
     md_file_o* file = md_file_open(filename, MD_FILE_READ | MD_FILE_BINARY);
     if (file) {
         const int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_heap_allocator, cap);
+        char* buf = md_alloc(md_get_heap_allocator(), cap);
         
         md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
         result = md_gro_data_parse(data, &line_reader, alloc);
         
-        md_free(md_heap_allocator, buf, cap);
+        md_free(md_get_heap_allocator(), buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
@@ -221,10 +221,10 @@ static bool gro_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
     (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
-    if (md_gro_data_parse_str(&data, str, md_heap_allocator)) {
+    if (md_gro_data_parse_str(&data, str, md_get_heap_allocator())) {
         success = md_gro_molecule_init(mol, &data, alloc);
     }
-    md_gro_data_free(&data, md_heap_allocator);
+    md_gro_data_free(&data, md_get_heap_allocator());
 
     return success;
 }
@@ -233,10 +233,10 @@ static bool gro_init_from_file(md_molecule_t* mol, str_t filename, const void* a
     (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
-    if (md_gro_data_parse_file(&data, filename, md_heap_allocator)) {
+    if (md_gro_data_parse_file(&data, filename, md_get_heap_allocator())) {
         success = md_gro_molecule_init(mol, &data, alloc);
     }
-    md_gro_data_free(&data, md_heap_allocator);
+    md_gro_data_free(&data, md_get_heap_allocator());
 
     return success;
 }

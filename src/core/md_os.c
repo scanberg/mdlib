@@ -103,7 +103,7 @@ static void print_windows_error() {
 #endif
 
 static size_t fullpath(char* buf, size_t cap, str_t path) {
-    str_t zpath = str_copy(path, md_temp_allocator); // Zero terminate
+    str_t zpath = str_copy(path, md_get_temp_allocator()); // Zero terminate
     if (zpath.len == 0) return 0;
     
 #if MD_PLATFORM_WINDOWS
@@ -351,7 +351,7 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
 
 bool md_path_is_valid(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, md_temp_allocator);
+    path = str_copy(path, md_get_temp_allocator());
     bool result = PathFileExists(path.ptr);
 #elif MD_PLATFORM_UNIX
     bool result = (access(path.ptr, F_OK) == 0);
@@ -363,7 +363,7 @@ bool md_path_is_valid(str_t path) {
 
 bool md_path_is_directory(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, md_temp_allocator);
+    path = str_copy(path, md_get_temp_allocator());
     bool result = PathIsDirectory(path.ptr);
 #elif MD_PLATFORM_UNIX
     bool result = false;

@@ -283,13 +283,13 @@ static bool mmcif_init_from_file(md_molecule_t* mol, str_t filename, const void*
 
 	if (file) {
 		const int64_t cap = MEGABYTES(1);
-		void* buf = md_alloc(md_heap_allocator, cap);
+		void* buf = md_alloc(md_get_heap_allocator(), cap);
 
 		md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 		MEMSET(mol, 0, sizeof(md_molecule_t));
 		result = mmcif_parse(mol, &reader, alloc);
 
-		md_free(md_heap_allocator, buf, cap);
+		md_free(md_get_heap_allocator(), buf, cap);
 		md_file_close(file);
 	}
 	return result;
