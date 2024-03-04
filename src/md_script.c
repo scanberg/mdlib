@@ -5046,6 +5046,7 @@ static ast_node_t* prune_expressions(ast_node_t* node) {
 
 static bool parse_script(md_script_ir_t* ir) {
     ASSERT(ir);
+    size_t temp_pos = md_temp_get_pos();
 
     bool result = true;
 
@@ -5084,6 +5085,7 @@ static bool parse_script(md_script_ir_t* ir) {
         }
     }
 
+    md_temp_set_pos_back(temp_pos);
     return result;
 }
 

@@ -1320,18 +1320,22 @@ bool idx_fn(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) 
     return true;
 }
 
-size_t md_spatial_hash_query_idx(int32_t* buf, size_t cap, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius) {
+size_t md_spatial_hash_query_idx(int32_t* buf, size_t cap, const md_spatial_hash_t* spatial_hash, vec3_t coord, float radius) {
+    size_t temp_pos = md_temp_get_pos();
+
     md_bitfield_t bf = md_bitfield_create(md_get_temp_allocator());
     md_bitfield_reserve_range(&bf, 0, spatial_hash->elem_count);
 
-    md_spatial_hash_query_batch(spatial_hash, pos, radius, idx_fn, &bf);
+    md_spatial_hash_query_batch(spatial_hash, coord, radius, idx_fn, &bf);
 #if DEBUG
     if (md_bitfield_popcount(&bf) > cap) {
         MD_LOG_DEBUG("Size exceeds the capacity, some elements will not be written");
     }
 #endif
 
-    return md_bitfield_iter_extract_indices(buf, cap, md_bitfield_iter_create(&bf));
+    size_t count = md_bitfield_iter_extract_indices(buf, cap, md_bitfield_iter_create(&bf));
+    md_temp_set_pos_back(temp_pos);
+    return count;
 }
 
 void md_spatial_hash_query_bits(md_bitfield_t* bf, const md_spatial_hash_t* spatial_hash, vec3_t pos, float radius) {

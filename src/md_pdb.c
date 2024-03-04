@@ -709,25 +709,24 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         return false;
     }
 
-    // Should this be exposed?
-    md_allocator_i* alloc = md_get_temp_allocator();
+    size_t temp_pos = md_temp_get_pos();
 
     bool result = true;
     const size_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
         // This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
-        void* frame_data = md_alloc(alloc, frame_size);
+        void* frame_data = md_temp_push(frame_size);
         const size_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
             MD_LOG_ERROR("Failed to read the expected size");
-            md_free(alloc, frame_data, frame_size);
-            return false;
+            goto done;
         }
 
         result = pdb_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-        md_free(alloc, frame_data, frame_size);
     }
 
+done:
+    md_temp_set_pos_back(temp_pos);
     return result;
 }
 

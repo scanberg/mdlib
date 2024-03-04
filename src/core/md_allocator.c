@@ -36,6 +36,8 @@ static inline md_allocator_i* md_thread_ring_allocator() {
         _ring_alloc = md_ring_allocator_create(_ring_buf, MD_TEMP_ALLOC_SIZE);
         md_thread_on_exit(release_ring_buffer);
     }
+    ASSERT(_ring_alloc);
+    ASSERT(_ring_alloc->inst);
     return _ring_alloc;
 }
 
