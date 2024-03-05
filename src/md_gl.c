@@ -1211,8 +1211,11 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     gl_buffer_set_sub_data(ctx.ubo, 0, sizeof(ubo_data), &ubo_data);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ctx.ubo.id);
 
-    md_gl_draw_op_t const** draw_ops = 0;
-    draw_mol_t* draw_mols = 0;
+    size_t temp_pos = md_temp_get_pos();
+    md_allocator_i* alloc = md_get_temp_allocator();
+
+    md_array(md_gl_draw_op_t const*) draw_ops = 0;
+    md_array(draw_mol_t) draw_mols = 0;
         
     for (uint32_t i = 0; i < args->draw_operations.count; i++) {
         const md_gl_draw_op_t* draw_op = &args->draw_operations.ops[i];
@@ -1235,7 +1238,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
                 }
             }
 
-            md_array_push(draw_ops, draw_op, md_get_temp_allocator());
+            md_array_push(draw_ops, draw_op, alloc);
                 
             int64_t mol_idx = -1;
             for (size_t j = 0; j < md_array_size(draw_mols); j++) {
@@ -1247,7 +1250,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             // Not found
             if (mol_idx == -1) {
                 mol_idx = md_array_size(draw_mols);
-                md_array_push(draw_mols, ((draw_mol_t){ rep->mol, 0 }), md_get_temp_allocator());
+                md_array_push(draw_mols, ((draw_mol_t){ rep->mol, 0 }), alloc);
             }
 
             if (draw_op->type == MD_GL_REP_RIBBONS || draw_op->type == MD_GL_REP_CARTOON) {
@@ -1337,6 +1340,8 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
     POP_GPU_SECTION()
 
     POP_GPU_SECTION()
+
+    md_temp_set_pos_back(temp_pos);
     
     return true;
 }
