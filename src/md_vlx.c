@@ -89,6 +89,72 @@ static int compute_max_angular_momentum(const basis_set_t* basis_set, const md_e
 	return max_angl;
 }
 
+static inline float fast_pow(float base, int exp) {
+	float val = 1.0f;
+	switch(exp) {
+	case 4: val *= base;
+	case 3: val *= base;
+	case 2: val *= base;
+	case 1: val *= base;
+	case 0: break;
+	}
+	return val;
+}
+
+static inline md_128 md_mm_fast_pow(md_128 base, md_128i exp) {
+	md_128 base2 = md_mm_mul_ps(base,  base);
+	md_128 base3 = md_mm_mul_ps(base2, base);
+	md_128 base4 = md_mm_mul_ps(base2, base2);
+
+	md_128 mask1 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(1)));
+	md_128 mask2 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(2)));
+	md_128 mask3 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(3)));
+	md_128 mask4 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(4)));
+
+	md_128 res = md_mm_set1_ps(1.0f);
+	res = md_mm_blendv_ps(res, base, mask1);
+	res = md_mm_blendv_ps(res, base2, mask2);
+	res = md_mm_blendv_ps(res, base3, mask3);
+	res = md_mm_blendv_ps(res, base4, mask4);
+	return res;
+}
+
+static inline md_256 md_mm256_fast_pow(md_256 base, md_256i exp) {
+	md_256 base2 = md_mm256_mul_ps(base,  base);
+	md_256 base3 = md_mm256_mul_ps(base2, base);
+	md_256 base4 = md_mm256_mul_ps(base2, base2);
+
+	md_256 mask1 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(1)));
+	md_256 mask2 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(2)));
+	md_256 mask3 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(3)));
+	md_256 mask4 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(4)));
+
+	md_256 res = md_mm256_set1_ps(1.0f);
+	res = md_mm256_blendv_ps(res, base, mask1);
+	res = md_mm256_blendv_ps(res, base2, mask2);
+	res = md_mm256_blendv_ps(res, base3, mask3);
+	res = md_mm256_blendv_ps(res, base4, mask4);
+	return res;
+}
+
+static inline __m512 md_mm512_fast_pow(__m512 base, __m512i exp) {
+	__m512 base2 = _mm512_mul_ps(base,  base);
+	__m512 base3 = _mm512_mul_ps(base2, base);
+	__m512 base4 = _mm512_mul_ps(base2, base2);
+
+	__mmask16 mask1 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(1), _MM_CMPINT_EQ);
+	__mmask16 mask2 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(2), _MM_CMPINT_EQ);
+	__mmask16 mask3 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(3), _MM_CMPINT_EQ);
+	__mmask16 mask4 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(4), _MM_CMPINT_EQ);
+
+	__m512 res = _mm512_set1_ps(1.0f);
+	res = _mm512_mask_blend_ps(mask1, res, base);
+	res = _mm512_mask_blend_ps(mask2, res, base2);
+	res = _mm512_mask_blend_ps(mask3, res, base3);
+	res = _mm512_mask_blend_ps(mask4, res, base4);
+	return res;
+}
+
 #define d3  3.464101615137754587
 #define f5  1.581138830084189666
 #define f15 7.745966692414833770
@@ -347,6 +413,47 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_m
 	return count;
 }
 
+static float compute_distance_cutoff(float cutoff_value, int i, int j, int k, float alpha, float coeff) {
+	int maxijk = MAX(i, MAX(j,k));
+	float d		= 1.0f;
+	float min_d = 0.0001f;
+	float max_d = 100.0f;
+	float val	= 0.0f;
+	bool decrementing = true;
+	float cutoff_dist = 0.0f;
+
+	while (true) {
+		if (d < min_d){
+			cutoff_dist = min_d;
+			break;
+		}
+		if (d > max_d){
+			cutoff_dist = max_d;
+			break;
+		}
+		float f1 = fast_pow(d, maxijk);
+		float f3 = f1 * f1 * f1;
+		float f = MAX(f1, f3);
+		float exponent = expf(alpha * d * d);
+		val = coeff * f * exponent;
+		val = fabsf(val);
+		if (decrementing) {
+			d = d * 0.5f;
+			if (val > cutoff_value) {
+				decrementing = false;
+			}
+		} else {
+			d = d * 2.0f;
+			if (val < cutoff_value) {
+				cutoff_dist = d * 0.5f;
+				break;
+			}
+		}
+	}
+
+	return cutoff_dist;
+}
+
 static void allocate_pgto_data(pgto_data_t* pgto_data, size_t capacity, md_allocator_i* alloc) {
 	capacity = ROUND_UP(capacity, 16);
 	size_t bytes = capacity * 32;
@@ -364,7 +471,7 @@ static void allocate_pgto_data(pgto_data_t* pgto_data, size_t capacity, md_alloc
 	pgto_data->k		= (int*)  mem + capacity * 7;
 }
 
-static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* molecule, const basis_set_t* basis_set, const double* mo_coeffs, const float min_ext[3], const float max_ext[3]) {
+static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* molecule, const basis_set_t* basis_set, const double* mo_coeffs, const float min_ext[3], const float max_ext[3], float cutoff_val) {
 	int natoms = (int)molecule->num_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, molecule->atomic_number, molecule->num_atoms);
 
@@ -415,36 +522,42 @@ static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* mo
 
 				float d2 = dx * dx + dy * dy + dz * dz;
 
-				// process atomic orbitals
 				int idelem = molecule->atomic_number[atomidx];
 
+				// process atomic orbitals
 				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(basis_set, idelem, angl);
 				for (int funcidx = range.beg; funcidx < range.end; funcidx++, aoidx++) {
-					double phiao = 0.0;
-
-					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
-
-					// process primitives
-					int nprims = basis_func.count;
-					const double* exponents = basis_func.exponents;
-					const double* normcoefs = basis_func.normalization_coefficients;
 					const double mo_coeff = mo_coeffs[mo_coeff_idx++];
 
-					// APPLY CUTOFF HERE BASED ON CONTRIBUTION
-					//if (d2 > 12.0f) continue;
+					// process primitives
+					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
+					const int        nprims = basis_func.count;
+					const double* exponents = basis_func.exponents;
+					const double* normcoefs = basis_func.normalization_coefficients;
 
 					for (int iprim = 0; iprim < nprims; iprim++) {
-						double alpha = exponents[iprim];
+						double alpha = -exponents[iprim]; // Negate alpha here!
 						double coef1 = normcoefs[iprim];
 
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
 							double fcart = factors[icomp];
+							double coeff = coef1 * fcart * mo_coeff;
+							int i = lx[icomp];
+							int j = ly[icomp];
+							int k = lz[icomp];
+
+							// APPLY CUTOFF HERE BASED ON CONTRIBUTION
+							//if (d2 > 12.0f) continue;
+							float cutoff_dist = compute_distance_cutoff(cutoff_val, i, j, k, (float)alpha, (float)coeff);
+							if (d2 > cutoff_dist * cutoff_dist) {
+								continue;
+							}
 
 							pgto_data->x[count]		= x;
 							pgto_data->y[count]		= y;
 							pgto_data->z[count]		= z;
-							pgto_data->alpha[count] = -(float)alpha; // Negate alpha here!
+							pgto_data->alpha[count] = (float)alpha; 
 							pgto_data->coeff[count] = (float)(coef1 * fcart * mo_coeff);
 							pgto_data->i[count]		= lx[icomp];
 							pgto_data->j[count]		= ly[icomp];
@@ -1106,72 +1219,6 @@ void md_vlx_data_free(md_vlx_data_t* data) {
 	MEMSET(data, 0, sizeof(md_vlx_data_t));
 }
 
-static inline float fast_pow(float base, int exp) {
-	float val = 1.0f;
-	switch(exp) {
-	case 4: val *= base;
-	case 3: val *= base;
-	case 2: val *= base;
-	case 1: val *= base;
-	case 0: break;
-	}
-	return val;
-}
-
-static inline md_128 md_mm_fast_pow(md_128 base, md_128i exp) {
-	md_128 base2 = md_mm_mul_ps(base,  base);
-	md_128 base3 = md_mm_mul_ps(base2, base);
-	md_128 base4 = md_mm_mul_ps(base2, base2);
-
-	md_128 mask1 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(1)));
-	md_128 mask2 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(2)));
-	md_128 mask3 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(3)));
-	md_128 mask4 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(4)));
-
-	md_128 res = md_mm_set1_ps(1.0f);
-	res = md_mm_blendv_ps(res, base, mask1);
-	res = md_mm_blendv_ps(res, base2, mask2);
-	res = md_mm_blendv_ps(res, base3, mask3);
-	res = md_mm_blendv_ps(res, base4, mask4);
-	return res;
-}
-
-static inline md_256 md_mm256_fast_pow(md_256 base, md_256i exp) {
-	md_256 base2 = md_mm256_mul_ps(base,  base);
-	md_256 base3 = md_mm256_mul_ps(base2, base);
-	md_256 base4 = md_mm256_mul_ps(base2, base2);
-
-	md_256 mask1 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(1)));
-	md_256 mask2 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(2)));
-	md_256 mask3 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(3)));
-	md_256 mask4 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(4)));
-
-	md_256 res = md_mm256_set1_ps(1.0f);
-	res = md_mm256_blendv_ps(res, base, mask1);
-	res = md_mm256_blendv_ps(res, base2, mask2);
-	res = md_mm256_blendv_ps(res, base3, mask3);
-	res = md_mm256_blendv_ps(res, base4, mask4);
-	return res;
-}
-
-static inline __m512 md_mm512_fast_pow(__m512 base, __m512i exp) {
-	__m512 base2 = _mm512_mul_ps(base,  base);
-	__m512 base3 = _mm512_mul_ps(base2, base);
-	__m512 base4 = _mm512_mul_ps(base2, base2);
-
-	__mmask16 mask1 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(1), _MM_CMPINT_EQ);
-	__mmask16 mask2 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(2), _MM_CMPINT_EQ);
-	__mmask16 mask3 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(3), _MM_CMPINT_EQ);
-	__mmask16 mask4 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(4), _MM_CMPINT_EQ);
-
-	__m512 res = _mm512_set1_ps(1.0f);
-	res = _mm512_mask_blend_ps(mask1, res, base);
-	res = _mm512_mask_blend_ps(mask2, res, base2);
-	res = _mm512_mask_blend_ps(mask3, res, base3);
-	res = _mm512_mask_blend_ps(mask4, res, base4);
-	return res;
-}
-
 bool md_vlx_get_mo(double* out_psi, const vec3_t* coords, size_t num_coords, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs) {
 	vlx_molecule_t mol = {
 		.num_atoms = geom->num_atoms,
@@ -1251,15 +1298,15 @@ static inline void evaluate_grid_512(float grid_data[], const int grid_idx_min[3
 				int x_stride = ix;
 
 				__m512 vpsi = _mm512_setzero_ps();
-				for (size_t i = 0; i < num_pgtos; i += 8) {
-					__m512  px = _mm512_loadu_ps(pgto_data->x + i);
-					__m512  py = _mm512_loadu_ps(pgto_data->y + i);
-					__m512  pz = _mm512_loadu_ps(pgto_data->z + i);
-					__m512  pa = _mm512_loadu_ps(pgto_data->alpha + i);
-					__m512  pc = _mm512_loadu_ps(pgto_data->coeff + i);
-					__m512i pi = _mm512_loadu_si512(pgto_data->i + i);
-					__m512i pj = _mm512_loadu_si512(pgto_data->j + i);
-					__m512i pk = _mm512_loadu_si512(pgto_data->k + i);
+				for (size_t i = 0; i < num_pgtos; i += 16) {
+					__m512  px = _mm512_load_ps(pgto_data->x + i);
+					__m512  py = _mm512_load_ps(pgto_data->y + i);
+					__m512  pz = _mm512_load_ps(pgto_data->z + i);
+					__m512  pa = _mm512_load_ps(pgto_data->alpha + i);
+					__m512  pc = _mm512_load_ps(pgto_data->coeff + i);
+					__m512i pi = _mm512_load_si512(pgto_data->i + i);
+					__m512i pj = _mm512_load_si512(pgto_data->j + i);
+					__m512i pk = _mm512_load_si512(pgto_data->k + i);
 
 					__m512 dx = _mm512_sub_ps(px, vx);
 					__m512 dy = _mm512_sub_ps(py, vy);
@@ -1299,14 +1346,14 @@ static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3
 
 				md_256 vpsi = md_mm256_setzero_ps();
 				for (size_t i = 0; i < num_pgtos; i += 8) {
-					md_256  px = md_mm256_loadu_ps(pgto_data->x + i);
-					md_256  py = md_mm256_loadu_ps(pgto_data->y + i);
-					md_256  pz = md_mm256_loadu_ps(pgto_data->z + i);
-					md_256  pa = md_mm256_loadu_ps(pgto_data->alpha + i);
-					md_256  pc = md_mm256_loadu_ps(pgto_data->coeff + i);
-					md_256i pi = md_mm256_loadu_si256(pgto_data->i + i);
-					md_256i pj = md_mm256_loadu_si256(pgto_data->j + i);
-					md_256i pk = md_mm256_loadu_si256(pgto_data->k + i);
+					md_256  px = md_mm256_load_ps(pgto_data->x + i);
+					md_256  py = md_mm256_load_ps(pgto_data->y + i);
+					md_256  pz = md_mm256_load_ps(pgto_data->z + i);
+					md_256  pa = md_mm256_load_ps(pgto_data->alpha + i);
+					md_256  pc = md_mm256_load_ps(pgto_data->coeff + i);
+					md_256i pi = md_mm256_load_si256((const md_256i*)(pgto_data->i + i));
+					md_256i pj = md_mm256_load_si256((const md_256i*)(pgto_data->j + i));
+					md_256i pk = md_mm256_load_si256((const md_256i*)(pgto_data->k + i));
 
 					md_256 dx = md_mm256_sub_ps(px, vx);
 					md_256 dy = md_mm256_sub_ps(py, vy);
@@ -1346,15 +1393,15 @@ static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3
 				double psi = 0.0;
 
 				md_128 vpsi = md_mm_setzero_ps();
-				for (size_t i = 0; i < num_pgtos; i += 8) {
-					md_128  px = md_mm_loadu_ps(pgto_data->x + i);
-					md_128  py = md_mm_loadu_ps(pgto_data->y + i);
-					md_128  pz = md_mm_loadu_ps(pgto_data->z + i);
-					md_128  pa = md_mm_loadu_ps(pgto_data->alpha + i);
-					md_128  pc = md_mm_loadu_ps(pgto_data->coeff + i);
-					md_128i pi = md_mm_loadu_si128(pgto_data->i + i);
-					md_128i pj = md_mm_loadu_si128(pgto_data->j + i);
-					md_128i pk = md_mm_loadu_si128(pgto_data->k + i);
+				for (size_t i = 0; i < num_pgtos; i += 4) {
+					md_128  px = md_mm_load_ps(pgto_data->x + i);
+					md_128  py = md_mm_load_ps(pgto_data->y + i);
+					md_128  pz = md_mm_load_ps(pgto_data->z + i);
+					md_128  pa = md_mm_load_ps(pgto_data->alpha + i);
+					md_128  pc = md_mm_load_ps(pgto_data->coeff + i);
+					md_128i pi = md_mm_load_si128((const md_128i*)(pgto_data->i + i));
+					md_128i pj = md_mm_load_si128((const md_128i*)(pgto_data->j + i));
+					md_128i pk = md_mm_load_si128((const md_128i*)(pgto_data->k + i));
 
 					md_128 dx = md_mm_sub_ps(px, vx);
 					md_128 dy = md_mm_sub_ps(py, vy);
@@ -1388,10 +1435,21 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 		.coord_z = geom->coord_z,
 	};
 
-	md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+	size_t temp_pos = md_temp_get_pos();
 
-	pgto_data_t pgto_data = {0};
-	allocate_pgto_data(&pgto_data, 1024, arena);
+	const size_t cap = 1024;
+	void* mem = md_temp_push_aligned(sizeof(float) * 5 + sizeof(int) * 3, 64);
+	pgto_data_t pgto_data = {
+		.capacity = cap,
+		.x		= (float*)mem,
+		.y		= (float*)mem + cap * 1,
+		.z		= (float*)mem + cap * 2,
+		.alpha	= (float*)mem + cap * 3,
+		.coeff	= (float*)mem + cap * 4,
+		.i		= (int*)  mem + cap * 5,
+		.j		= (int*)  mem + cap * 6,
+		.k		= (int*)  mem + cap * 7,
+	};
 
 	// Conversion from Ångström to Bohr
 	const float factor = 1.0 / 0.529177210903;
@@ -1421,9 +1479,17 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 		grid_origin[2] + grid_idx_max[2] * grid_stepsize[2],
 	};
 
-	md_timestamp_t t0 = md_time_current();
-	size_t num_pgtos = extract_pgto_data(&pgto_data, &mol, basis->basis_set, mo_coeffs, min_ext, max_ext);
-	md_timestamp_t t1 = md_time_current();
+	//md_timestamp_t t0 = md_time_current();
+	size_t num_pgtos = extract_pgto_data(&pgto_data, &mol, basis->basis_set, mo_coeffs, min_ext, max_ext, 1.0e-6f);
+	// Zero the pgto_data up until the next multiple of 16
+	// This is to allow for zero contributions in the vectorized paths evaluates chunks of 4, 8 or 16 pgtos
+	for (size_t i = num_pgtos; i < ROUND_UP(num_pgtos, 16); ++i) {
+		pgto_data.coeff[i] = 0;
+	}
+
+	//md_timestamp_t t1 = md_time_current();
+
+	//printf("Num pgtos: %zu\n", num_pgtos);
 
 #if defined(__AVX512F__)
 	evaluate_grid_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid_origin, grid_stepsize, &pgto_data, num_pgtos);
@@ -1435,13 +1501,13 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 	evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid_origin, grid_stepsize, &pgto_data, num_pgtos);
 #endif
 
-	md_timestamp_t t2 = md_time_current();
-	double t_pgto = md_time_as_milliseconds(t1-t0);
-	double t_eval = md_time_as_milliseconds(t2-t1);
+	//md_timestamp_t t2 = md_time_current();
+	//double t_pgto = md_time_as_milliseconds(t1-t0);
+	//double t_eval = md_time_as_milliseconds(t2-t1);
 	//MD_LOG_INFO("Time taken to generate %zu pgtos: %.3f ms", num_pgtos, t_pgto);
 	//MD_LOG_INFO("Time taken to evaluate orbitals for grid size [%zu][%zu][%zu]: %.3f ms", grid->dim, grid->dim, grid->dim, t_eval);
 
-	md_arena_allocator_destroy(arena);
+	md_temp_set_pos_back(temp_pos);
 
 	return true;
 }
