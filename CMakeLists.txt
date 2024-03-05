@@ -135,8 +135,8 @@ if (MD_ENABLE_NETCDF)
 endif()
 
 if (MD_ENABLE_HDF5)
-    find_package(hdf5 REQUIRED)
-    set(MD_LIBS ${MD_LIBS} hdf5::hdf5-shared)
+    find_package(HDF5 REQUIRED)
+    set(MD_LIBS ${MD_LIBS} HDF5::HDF5)
 endif()
 
 create_resources("${SHADER_FILES}" "gen/gl_shaders.inl")
