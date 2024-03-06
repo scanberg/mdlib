@@ -437,7 +437,7 @@ static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static constant_t constants[] = {
     {CSTR("PI"),     _PI,  {.base = {.dim.angle = 1 }, .mult = 1.0}},
     {CSTR("TAU"),    _TAU, {.base = {.dim.angle = 1 }, .mult = 1.0}},
-    {CSTR("E"),      _E},
+    {CSTR("E"),      _E,   {.mult = 1.0}},
 };
 
 // IMPLICIT CASTS/CONVERSIONS
@@ -1110,7 +1110,8 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (ctx->backchannel) {
-        ctx->backchannel->unit = md_unit_angstrom();
+        ctx->backchannel->unit[0] = md_unit_none();
+        ctx->backchannel->unit[1] = md_unit_angstrom();
     }
 
     switch (arg.type.base_type) {
@@ -3353,7 +3354,8 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_angstrom();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3401,7 +3403,8 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_angstrom();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3448,7 +3451,8 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_angstrom();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3552,7 +3556,8 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res0 < 0) return res0;
         if (res1 < 0) return res1;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_angstrom();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         int64_t count = (int64_t)res0 * (int64_t)res1;
@@ -3613,7 +3618,8 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (coordinate_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (coordinate_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_radian();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_radian();
             //ctx->backchannel->value_range = (frange_t){0, PI};
         }
     }
@@ -3668,7 +3674,8 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (coordinate_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (coordinate_validate(arg[3], 3, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_radian();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_radian();
             //ctx->backchannel->value_range = (frange_t){-PI, PI};
         }
     }
@@ -4067,13 +4074,42 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             bf = tmp_bf;
         }
 
+        // Reference point
+        vec3_t rc = mat3_mul_vec3(ctx->initial_configuration.header->unit_cell.basis, vec3_set1(0.5f));
+        // Reference extent
+        vec3_t re = mat3_diag(ctx->initial_configuration.header->unit_cell.basis);
+
+        vec4_t ext = vec4_from_vec3(re, 0);
+        if (axis == -1) {
+            // We use the max axis as we cannot output three individual value_ranges
+            ext = vec4_set1(MAX(re.x, MAX(re.y, re.z)));
+            ext.w = 0;
+        }
+
         size_t count = md_bitfield_popcount(&bf);
         vec4_t* xyzw = md_vm_arena_push(ctx->temp_alloc, count * sizeof(vec4_t));
         extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
-        md_util_pbc_vec4(xyzw, count, &ctx->mol->unit_cell);
+        //md_util_pbc_vec4(xyzw, count, &ctx->mol->unit_cell);
+
+        vec4_t mid_point = vec4_from_vec3(rc, 0);
+        vec4_t period = vec4_from_vec3(re, 0);
+        vec4_t inv_ext = {
+            ext.x > 0.0f ? 1.0f / ext.x : 0.0f,
+            ext.y > 0.0f ? 1.0f / ext.y : 0.0f,
+            ext.z > 0.0f ? 1.0f / ext.z : 0.0f,
+            0.0f
+        };
+
+        vec4_t min_point = vec4_sub(mid_point, vec4_mul_f(ext, 0.5f));
+
+        // @TODO: This is conceptually not correct in the periferi of the system as it does not count multiple occurences of atoms
+        // This should be resolved with spatial hashing and counting occurrences within the cells
+        // But the current inplementation of the spatial hash does not facilitate it properly...
+
 
         for (size_t i = 0; i < count; ++i) {
-            vec3_t fc = mat3_mul_vec3(ctx->mol->unit_cell.inv_basis, vec3_from_vec4(xyzw[i]));
+            vec4_t xyzw_dp = vec4_deperiodize(xyzw[i], mid_point, period);
+            vec4_t fc = vec4_mul(vec4_sub(xyzw_dp, min_point), inv_ext);
             float w = xyzw[i].w;
 
             int bin_idx[3] = {
@@ -4091,39 +4127,46 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             }
         }
 
-        const vec3_t vx = ctx->mol->unit_cell.basis.col[0];
-        const vec3_t vy = ctx->mol->unit_cell.basis.col[1];
-        const vec3_t vz = ctx->mol->unit_cell.basis.col[2];
-
-        const double slice_volume[3] = {
-            fabs(vec3_length(vec3_cross(vy, vz)) * vec3_length(vx) / MD_DIST_BINS),
-            fabs(vec3_length(vec3_cross(vx, vz)) * vec3_length(vy) / MD_DIST_BINS),
-            fabs(vec3_length(vec3_cross(vx, vy)) * vec3_length(vz) / MD_DIST_BINS),
-        };
+        const double slice_vol = (ext.x * ext.y * ext.z) / MD_DIST_BINS;
 
         // Convert atomic mass / Ångström^3 to SI units KG/M^3
         // 1660.5390666?
         // divide by bin volume
-        const double factor[3] = {
-            1660.5390666 / slice_volume[0],
-            1660.5390666 / slice_volume[1],
-            1660.5390666 / slice_volume[2],
-        };
+        //const double factor[3] = {
+        //    1660.5390666 / slice_vol,
+        //    1660.5390666 / slice_vol,
+        //    1660.5390666 / slice_vol,
+        //};
+        const double factor = (1660.5390666 / slice_vol);
 
         if (axis == -1) {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[0][i] = (float)(density[0][i] * factor[0]);
-                density[1][i] = (float)(density[1][i] * factor[1]);
-                density[2][i] = (float)(density[2][i] * factor[2]);
+                density[0][i] = (float)(density[0][i] * factor);
+                density[1][i] = (float)(density[1][i] * factor);
+                density[2][i] = (float)(density[2][i] * factor);
             }
         } else {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[axis][i] = (float)(density[axis][i] * factor[axis]);
+                density[axis][i] = (float)(density[axis][i] * factor);
             }
         }
     } else {
+        md_trajectory_frame_header_t frame_header = {0};
+        const md_unit_cell_t* unit_cell = NULL;
+        if (ctx->traj) {
+            md_trajectory_load_frame(ctx->traj, 0, &frame_header, 0, 0, 0);
+            unit_cell = &frame_header.unit_cell;
+        } else {
+            unit_cell = &ctx->mol->unit_cell;
+        }
+
+        if (!unit_cell) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined");
+            return STATIC_VALIDATION_ERROR;
+        }
+
         if (axis == -1) {
-            if (ctx->mol->unit_cell.flags == 0) {
+            if (unit_cell->flags == 0) {
                 LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined");
                 return STATIC_VALIDATION_ERROR;
             }
@@ -4139,8 +4182,20 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             }
         }
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
-            ctx->backchannel->value_range = (frange_t){0, 1};
+            // Reference half extent
+            vec3_t re = vec3_mul_f(mat3_diag(unit_cell->basis), 0.5f);
+
+            // We use the max axis half ext as we cannot output three individual value_ranges
+            float rad = 0;
+            if (axis == -1) {
+                rad  = MAX(re.x, MAX(re.y, re.z));
+            } else {
+                rad = re.elem[axis];
+            }
+
+            ctx->backchannel->unit[0] = md_unit_angstrom();
+            ctx->backchannel->unit[1] = md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
+            ctx->backchannel->value_range = (frange_t){-rad, rad};
         }
     }
     return 0;
@@ -4568,7 +4623,8 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             return STATIC_VALIDATION_ERROR;
         }
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ 0 };
+            ctx->backchannel->unit[0] = md_unit_angstrom();
+            ctx->backchannel->unit[1] = md_unit_none();
             ctx->backchannel->value_range = (frange_t){min_cutoff, max_cutoff};
         }
     }
@@ -4996,7 +5052,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){0};
+            ctx->backchannel->unit[0] = md_unit_angstrom();
+            ctx->backchannel->unit[1] = md_unit_div(md_unit_count(), md_unit_pow(md_unit_angstrom(), 3));
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
     }
@@ -5061,7 +5118,8 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->backchannel) {
-			ctx->backchannel->unit = (md_unit_t){0};
+			ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_none();
 			ctx->backchannel->value_range = (frange_t){0, 1.0};
 		}
         return count;

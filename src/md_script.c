@@ -252,7 +252,7 @@ struct data_t {
     size_t      size;   // Size in bytes of data (This we want to determine during the static check so we can allocate the data when evaluating)
 
     frange_t    value_range;
-    md_unit_t   unit;
+    md_unit_t   unit[2];
 };
 
 // This is data stored directly in the nodes of the AST tree
@@ -283,7 +283,7 @@ struct constant_t {
 // The reason is because we do not pass in data_t during static analysis. which may be a mistake.
 typedef struct static_backchannel_t {
     flags_t   flags;
-    md_unit_t unit;
+    md_unit_t unit[2];
     frange_t  value_range;
 } static_backchannel_t;
 
@@ -341,6 +341,7 @@ typedef struct table_t {
     str_t name;
     size_t num_fields;
     size_t num_values;
+    md_unit_t x_unit;
     
     md_array(str_t) field_names;
     md_array(md_unit_t) field_units;
@@ -356,6 +357,7 @@ void table_push_field_d(table_t* table, str_t name, md_unit_t unit, const double
     MEMCPY(field_data, data, sizeof(double) * table->num_values);
     md_array_push(table->field_values, field_data, alloc);
     table->num_fields = md_array_size(table->field_names);
+    table->x_unit = md_unit_none();
 }
 
 void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float* data, size_t count, md_allocator_i* alloc) {
@@ -369,6 +371,7 @@ void table_push_field_f(table_t* table, str_t name, md_unit_t unit, const float*
     }
     md_array_push(table->field_values, field_data, alloc);
     table->num_fields = md_array_size(table->field_names);
+    table->x_unit = md_unit_none();
 }
 
 struct ast_node_t {
@@ -798,17 +801,15 @@ static bool allocate_data(data_t* data, type_info_t type, md_allocator_i* alloc)
             MD_LOG_ERROR("Failed to allocate data in script!");
             return false;
         }
-        // @NOTE (Robin): This could be a very wasteful operation most times as the memory will be overwritten anyways.
+        // @NOTE (Robin): This can be a VERY wasteful operation most times as the memory will be overwritten anyways.
         MEMSET(data->ptr, 0, bytes);
     }
     data->size = bytes;
     data->type = type;
     data->value_range = (frange_t){0, 0};
 
-    if (data->unit.base.raw_bits == 0 && data->unit.mult == 0) {
-        data->unit.base.raw_bits = 0;
-        data->unit.mult = 1.0;
-    }
+    data->unit[0] = md_unit_none();
+    data->unit[1] = md_unit_none();
 
     if (type.base_type == TYPE_BITFIELD) {
         md_bitfield_t* bf = data->ptr;
@@ -1094,7 +1095,8 @@ static ast_node_t* create_node(md_script_ir_t* ir, ast_type_t type, token_t toke
     MEMSET(node, 0, sizeof(ast_node_t));
     node->type = type;
     node->token = token;
-    node->data.unit = md_unit_none();
+    node->data.unit[0] = md_unit_none();
+    node->data.unit[1] = md_unit_none();
     md_array_push(ir->nodes, node, ir->arena);
     return node;
 }
@@ -1696,8 +1698,8 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
     else {
         PRINT("NULL");
     }
-    if (!md_unit_empty(data.unit)) {
-        len += md_unit_print(buf + len, cap - MIN(len, cap), data.unit);
+    if (!md_unit_empty(data.unit[1])) {
+        len += md_unit_print(buf + len, cap - MIN(len, cap), data.unit[1]);
     }
     return len;
 }
@@ -2045,7 +2047,8 @@ ast_node_t* parse_identifier(parse_context_t* ctx) {
     } else if ((c = find_constant(ident)) != 0) {
         node = create_node(ctx->ir, AST_CONSTANT_VALUE, token);
         node->value._float = c->value;
-        node->data.unit = c->unit;
+        node->data.unit[0] = md_unit_none();
+        node->data.unit[1] = c->unit;
         node->data.ptr = &node->value._float;
         node->data.size = sizeof(float);
         node->data.type = (type_info_t)TI_FLOAT;
@@ -3215,7 +3218,8 @@ static bool evaluate_context(data_t* dst, const ast_node_t* node, eval_context_t
     ASSERT((int)md_array_size(lhs_types) == num_ctx);
 
     data_t data = {0};
-    data.unit = expr_node->data.unit;
+    data.unit[0] = expr_node->data.unit[0];
+    data.unit[1] = expr_node->data.unit[1];
     data.value_range = expr_node->data.value_range;
    
     data_t* sub_dst = dst ? &data : NULL;
@@ -3371,7 +3375,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
             ASSERT(to.dim[0] > -1);
 
             data_t new_data = {0};
-            if (node->type == AST_CONSTANT_VALUE) {
+            if (node->type == AST_CONSTANT_VALUE && to.base_type != TYPE_BITFIELD) {
                 new_data = node->data;
                 ASSERT(is_scalar(to));
                 new_data.type = to;
@@ -3394,7 +3398,8 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
             ast_node_t* node_copy = create_node(ctx->ir, node->type, node->token);
             MEMCPY(node_copy, node, sizeof(ast_node_t));
             node->data = (data_t){0};
-            node->data.unit = node_copy->data.unit;
+            node->data.unit[0] = node_copy->data.unit[0];
+            node->data.unit[1] = node_copy->data.unit[1];
             node->type = AST_PROC_CALL;
             node->children = 0; // node_copy have taken over the children, we need to zero this to trigger a proper allocation in next step
             md_array_push(node->children, node_copy, ctx->ir->arena);
@@ -3672,10 +3677,22 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
             if (num_args == 2) {
                 switch (node->type) {
                 // These are the only operators which potentially modify or conserve units.
-                case AST_ADD: node->data.unit = md_unit_add(arg[0]->data.unit, arg[1]->data.unit); break;
-                case AST_SUB: node->data.unit = md_unit_sub(arg[0]->data.unit, arg[1]->data.unit); break;
-                case AST_MUL: node->data.unit = md_unit_mul(arg[0]->data.unit, arg[1]->data.unit); break;
-                case AST_DIV: node->data.unit = md_unit_div(arg[0]->data.unit, arg[1]->data.unit); break;
+                case AST_ADD:
+                    node->data.unit[0] = md_unit_add(arg[0]->data.unit[0], arg[1]->data.unit[0]);
+                    node->data.unit[1] = md_unit_add(arg[0]->data.unit[1], arg[1]->data.unit[1]);
+                    break;
+                case AST_SUB:
+                    node->data.unit[0] = md_unit_sub(arg[0]->data.unit[0], arg[1]->data.unit[0]);
+                    node->data.unit[1] = md_unit_sub(arg[0]->data.unit[1], arg[1]->data.unit[1]);
+                    break;
+                case AST_MUL:
+                    node->data.unit[0] = md_unit_mul(arg[0]->data.unit[0], arg[1]->data.unit[0]);
+                    node->data.unit[1] = md_unit_mul(arg[0]->data.unit[1], arg[1]->data.unit[1]);
+                    break;
+                case AST_DIV:
+                    node->data.unit[0] = md_unit_div(arg[0]->data.unit[0], arg[1]->data.unit[0]);
+                    node->data.unit[1] = md_unit_div(arg[0]->data.unit[1], arg[1]->data.unit[1]);
+                    break;
                 default: break;
                 }
             }
@@ -4090,19 +4107,20 @@ static bool static_check_import(ast_node_t* node, eval_context_t* ctx) {
         return false;
     }
 
-    md_unit_t unit = table->field_units[field_indices[0]];
+    md_unit_t y_unit = table->field_units[field_indices[0]];
     for (size_t i = 0; i < md_array_size(field_indices); ++i) {
-        if (!md_unit_equal(unit, table->field_units[field_indices[i]])) {
+        if (!md_unit_equal(y_unit, table->field_units[field_indices[i]])) {
             // If we have conflicting units, we make it unitless and let the user know.
             //LOG_WARNING(ctx->ir, node->token, "import: conflicting units, perhaps separate the import into two separate");
-            unit = md_unit_none();
+            y_unit = md_unit_none();
             break;
         }
     }
 
     node->type = AST_TABLE;
     node->data.type = (type_info_t) {TYPE_FLOAT, {(int)md_array_size(field_indices)}};
-    node->data.unit = unit;
+    node->data.unit[0] = table->x_unit;
+    node->data.unit[1] = y_unit;
     node->table = table;
     node->table_field_indices = field_indices;
     node->flags |= FLAG_DYNAMIC; // It is not a constant value, it will change depending on what time we evaluate it.
@@ -4293,7 +4311,8 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
             static_backchannel_t channel = {0};
             ctx->backchannel = &channel;
             result = result && evaluate_proc_call(NULL, node, ctx);
-            node->data.unit = channel.unit;
+            node->data.unit[0] = channel.unit[0];
+            node->data.unit[1] = channel.unit[1];
             node->data.value_range = channel.value_range;
             ctx->backchannel = prev_channel;
         }
@@ -4342,7 +4361,7 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
         int array_len = 0;
         type_info_t array_type = {0};
-        md_unit_t array_unit = md_unit_none();
+        md_unit_t array_unit[2] = {md_unit_none(), md_unit_none()};
         
         // Pass 1: find a suitable base_type for the array
         for (size_t i = 0; i < num_elem; ++i) {
@@ -4427,10 +4446,15 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
 
         // Pass 3: Deduce the unit, if defined and the same.
         if (num_elem > 0) {
-            array_unit = elem[0]->data.unit;
+            array_unit[0] = elem[0]->data.unit[0];
+            array_unit[1] = elem[0]->data.unit[1];
             for (size_t i = 1; i < num_elem; ++i) {
-                if (!md_unit_equal(elem[i]->data.unit, array_unit)) {
-                    array_unit = md_unit_none();
+                if (!md_unit_equal(elem[i]->data.unit[0], array_unit[0])) {
+                    array_unit[0] = md_unit_none();
+                    break;
+                }
+                if (!md_unit_equal(elem[i]->data.unit[1], array_unit[1])) {
+                    array_unit[1] = md_unit_none();
                     break;
                 }
             }
@@ -4439,7 +4463,8 @@ static bool static_check_array(ast_node_t* node, eval_context_t* ctx) {
         // Finalize the type of the array (dimensionality)
         array_type.dim[0] = (int32_t)array_len;
         node->data.type = array_type;
-        node->data.unit = array_unit;
+        node->data.unit[0] = array_unit[0];
+        node->data.unit[1] = array_unit[1];
 
         bool children_constant = true;
         for (size_t i = 0; i < num_elem; ++i) {
@@ -4570,7 +4595,8 @@ static bool static_check_array_subscript(ast_node_t* node, eval_context_t* ctx) 
     node->subscript_dim = num_dim;
     node->flags = (lhs->flags & FLAG_AST_PROPAGATION_MASK);
     node->data.type = result_type;
-    node->data.unit = lhs->data.unit;
+    node->data.unit[0] = lhs->data.unit[0];
+    node->data.unit[1] = lhs->data.unit[1];
     return true;
 }
 
@@ -4745,7 +4771,8 @@ static bool static_check_out(ast_node_t* node, eval_context_t* ctx) {
     if (static_check_node(expr, ctx)) {
         node->flags |= expr->flags & FLAG_AST_PROPAGATION_MASK;
         node->data.type = expr->data.type;
-        node->data.unit = expr->data.unit;
+        node->data.unit[0] = expr->data.unit[0];
+        node->data.unit[1] = expr->data.unit[1];
         node->data.value_range = expr->data.value_range;
         result = true;
     }
@@ -4868,7 +4895,8 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
                     } else {
                         node->data.type.dim[0] = (int)arr_len;
                     }
-                    node->data.unit = lhs->data.unit;
+                    node->data.unit[0] = lhs->data.unit[0];
+                    node->data.unit[1] = lhs->data.unit[1];
                     node->data.value_range = lhs->data.value_range;
 
                     propagate_contexts(lhs, contexts, num_contexts);
@@ -5506,7 +5534,8 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
                 }
             }
             allocate_data(&data[i], type, temp_alloc);
-            data[i].unit = expr[i]->data.unit;
+            data[i].unit[0] = expr[i]->data.unit[0];
+            data[i].unit[1] = expr[i]->data.unit[1];
             data[i].value_range = expr[i]->data.value_range;
             if (data[i].value_range.beg == 0 && data[i].value_range.end == 0) {
                 data[i].value_range.beg = -FLT_MAX;
@@ -5706,7 +5735,7 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
     md_strb_push_cstrl(&sb, type_buf, type_len);
 
     char unit_buf[128];
-    int unit_len = (int)md_unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit);
+    int unit_len = (int)md_unit_print(unit_buf, (int)sizeof(unit_buf), node->data.unit[1]);
     if (unit_len) {
         md_strb_fmt(&sb, " ("STR_FMT")", unit_len, unit_buf);
     }
@@ -5723,14 +5752,14 @@ static void create_vis_tokens(md_script_ir_t* ir, const ast_node_t* node, const 
             }
             str_t name = node->table->field_names[idx];
             md_strb_fmt(&sb, "[%i]: \""STR_FMT"\"", (int)(i + 1), STR_ARG(name));
-            md_unit_t unit = node->table->field_units[idx];
-            if (!md_unit_empty(unit) && !md_unit_unitless(unit)) {
-                str_t unit_str = md_unit_to_string(unit, md_get_temp_allocator());
+            md_unit_t y_unit = node->table->field_units[idx];
+            if (!md_unit_empty(y_unit) && !md_unit_unitless(y_unit)) {
+                str_t unit_str = md_unit_to_string(y_unit, md_get_temp_allocator());
                 if (!str_empty(unit_str)) {
                     md_strb_fmt(&sb, " ("STR_FMT")", STR_ARG(unit_str));
                 }
             }
-            if (!md_unit_equal(node->data.unit, unit)) {
+            if (!md_unit_equal(node->data.unit[1], y_unit)) {
                 matching_units = false;
             }
             md_strb_push_char(&sb, '\n');
@@ -6181,7 +6210,8 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
         md_script_property_data_t* data = md_array_push(eval->property_data, (md_script_property_data_t){0}, eval->arena);
         const ast_node_t* node = ir->property_nodes[i];
         allocate_property_data(data, ir->property_flags[i], node->data.type, num_frames, eval->arena);
-        data->unit = node->data.unit;
+        data->unit[0] = node->data.unit[0];
+        data->unit[1] = node->data.unit[1];
     }
     
     md_array_resize(eval->property_dist_count, num_props, eval->arena);

@@ -4,6 +4,8 @@
 if (NOT DEFINED {CMAKE_TOOLCHAIN_FILE} AND DEFINED ENV{VCPKG_ROOT})
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
     message(STATUS "VCPKG_ROOT is defined, using vcpkg-toolchain: " ${CMAKE_TOOLCHAIN_FILE})
+    set(VCPKG_CRT_LINKAGE static)
+    set(VCPKG_LIBRARY_LINKAGE static)
 endif()
 
 enable_language(C CXX)

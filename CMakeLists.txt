@@ -135,6 +135,7 @@ if (MD_ENABLE_NETCDF)
 endif()
 
 if (MD_ENABLE_HDF5)
+    set(HDF5_USE_STATIC_LIBRARIES TRUE)
     find_package(HDF5 REQUIRED)
     set(MD_LIBS ${MD_LIBS} HDF5::HDF5)
 endif()

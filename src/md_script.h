@@ -85,7 +85,8 @@ typedef struct md_script_property_data_t {
     float   min_range[2];   // min range in each dimension, [0] for temporal, [0]+[1] for distribution
     float   max_range[2];   // max range in each dimension, [0] for temporal, [0]+[1] for distribution
 
-    md_unit_t unit;      // [0] for temporal, [0]+[1] for distribution
+    md_unit_t unit[2];      // [0] is time/frame for temporal, x-value for distributions and 3D.
+                            // [1] is the unit of the data value
 
     uint64_t fingerprint;   // Essentially a checksum of the data to compare against
 } md_script_property_data_t;
