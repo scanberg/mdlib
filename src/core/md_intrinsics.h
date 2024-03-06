@@ -87,13 +87,13 @@ static inline uint64_t find_first_zero_byte64(uint64_t x) {
 }
 
 static inline uint32_t next_power_of_two32(uint32_t x) {
-    if (x < 2) return x;  // avoid clz(0)
-    return 1U << (sizeof(uint32_t) * 8 - clz32(x-1));
+    // avoid clz(0)
+    return (x < 2) ? x : 1U << (sizeof(uint32_t) * 8 - clz32(x-1));
 }
 
 static inline uint64_t next_power_of_two64 (uint64_t x) {
-    if (x < 2) return x;  // avoid clz(0)
-    return 1ULL << (sizeof(uint64_t) * 8 - clz64(x-1));
+    // avoid clz(0)
+    return (x < 2) ? x : 1ULL << (sizeof(uint64_t) * 8 - clz64(x-1));
 }
 
 static inline uint32_t swap_endian32(uint32_t x) {

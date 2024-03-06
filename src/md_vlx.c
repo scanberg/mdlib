@@ -413,7 +413,62 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_m
 	return count;
 }
 
-static float compute_distance_cutoff(float cutoff_value, int i, int j, int k, float alpha, float coeff) {
+static float compute_distance_cutoff2(float cutoff_value, int i, int j, int k, int l, float neg_alpha, float coeff) {
+	int maxijk = MAX(i, MAX(j,k));
+	float min_d = 0.0001f;
+	float max_d = 100.0f;
+	float val	= 0.0f;
+	bool decrementing = true;
+	float cutoff_dist = 0.0f;
+
+	float ii = fast_pow(i,i);
+	float jj = fast_pow(j,j);
+	float kk = fast_pow(k,k);
+	float ll = fast_pow(l,l);
+
+	const float C = (float)sqrtf((ii * jj * kk) / ll);
+
+	// This corresponds to the maxima
+	float d = sqrtf(l / (2.0f * fabsf(neg_alpha)));
+
+	float val = fabsf(coeff * C * fast_pow(d, l) * expf(neg_alpha * d * d));
+	if (val < cutoff_value) {
+		return 0.0f;
+	}
+
+	// Set initial guess for binary search, we want to remain on the rhs of the maxima by some margin
+	d = d * 1.25f;
+
+	while (true) {
+		if (d < min_d){
+			cutoff_dist = min_d;
+			break;
+		}
+		if (d > max_d){
+			cutoff_dist = max_d;
+			break;
+		}
+
+		val = fabsf(coeff * C * fast_pow(d, l) * expf(neg_alpha * d * d));
+
+		if (decrementing) {
+			d = d * 0.5f;
+			if (val > cutoff_value) {
+				decrementing = false;
+			}
+		} else {
+			d = d * 2.0f;
+			if (val < cutoff_value) {
+				cutoff_dist = d * 0.5f;
+				break;
+			}
+		}
+	}
+
+	return cutoff_dist;
+}
+
+static float compute_distance_cutoff(float cutoff_value, int i, int j, int k, float neg_alpha, float coeff) {
 	int maxijk = MAX(i, MAX(j,k));
 	float d		= 1.0f;
 	float min_d = 0.0001f;
@@ -434,7 +489,7 @@ static float compute_distance_cutoff(float cutoff_value, int i, int j, int k, fl
 		float f1 = fast_pow(d, maxijk);
 		float f3 = f1 * f1 * f1;
 		float f = MAX(f1, f3);
-		float exponent = expf(alpha * d * d);
+		float exponent = expf(neg_alpha * d * d);
 		val = coeff * f * exponent;
 		val = fabsf(val);
 		if (decrementing) {
@@ -536,7 +591,7 @@ static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* mo
 					const double* normcoefs = basis_func.normalization_coefficients;
 
 					for (int iprim = 0; iprim < nprims; iprim++) {
-						double alpha = -exponents[iprim]; // Negate alpha here!
+						double neg_alpha = -exponents[iprim]; // Negate alpha here!
 						double coef1 = normcoefs[iprim];
 
 						// transform from Cartesian to spherical harmonics
@@ -549,7 +604,7 @@ static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* mo
 
 							// APPLY CUTOFF HERE BASED ON CONTRIBUTION
 							//if (d2 > 12.0f) continue;
-							float cutoff_dist = compute_distance_cutoff(cutoff_val, i, j, k, (float)alpha, (float)coeff);
+							float cutoff_dist = compute_distance_cutoff(cutoff_val, i, j, k, (float)neg_alpha, (float)coeff);
 							if (d2 > cutoff_dist * cutoff_dist) {
 								continue;
 							}
@@ -557,7 +612,7 @@ static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* mo
 							pgto_data->x[count]		= x;
 							pgto_data->y[count]		= y;
 							pgto_data->z[count]		= z;
-							pgto_data->alpha[count] = (float)alpha; 
+							pgto_data->alpha[count] = (float)neg_alpha; 
 							pgto_data->coeff[count] = (float)(coef1 * fcart * mo_coeff);
 							pgto_data->i[count]		= lx[icomp];
 							pgto_data->j[count]		= ly[icomp];
@@ -1437,7 +1492,10 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 
 	size_t temp_pos = md_temp_get_pos();
 
-	const size_t cap = 1024;
+	// We use the number of mo coefficients as an estimate for the upper limit on how many PGTOS we need
+	// This will be a gross overestimation in most cases. But for systems where there are many atoms in packed configurations
+	// There will be alot of PGTOs to evaluate
+	const size_t cap = next_power_of_two64(num_mo_coeffs * 2);
 	void* mem = md_temp_push_aligned(sizeof(float) * 5 + sizeof(int) * 3, 64);
 	pgto_data_t pgto_data = {
 		.capacity = cap,
@@ -1489,7 +1547,7 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 
 	//md_timestamp_t t1 = md_time_current();
 
-	//printf("Num pgtos: %zu\n", num_pgtos);
+	printf("Num pgtos: %zu\n", num_pgtos);
 
 #if defined(__AVX512F__)
 	evaluate_grid_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid_origin, grid_stepsize, &pgto_data, num_pgtos);
