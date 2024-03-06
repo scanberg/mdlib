@@ -8,6 +8,7 @@
 #include <core/md_simd.h>
 #include <md_util.h>
 #include <md_molecule.h>
+#include <md_gto.h>
 
 #include <hdf5.h>
 #include <hdf5_hl.h>
@@ -87,72 +88,6 @@ static int compute_max_angular_momentum(const basis_set_t* basis_set, const md_e
 		max_angl = MAX(max_angl, (int)atom_basis->max_type);
 	}
 	return max_angl;
-}
-
-static inline float fast_pow(float base, int exp) {
-	float val = 1.0f;
-	switch(exp) {
-	case 4: val *= base;
-	case 3: val *= base;
-	case 2: val *= base;
-	case 1: val *= base;
-	case 0: break;
-	}
-	return val;
-}
-
-static inline md_128 md_mm_fast_pow(md_128 base, md_128i exp) {
-	md_128 base2 = md_mm_mul_ps(base,  base);
-	md_128 base3 = md_mm_mul_ps(base2, base);
-	md_128 base4 = md_mm_mul_ps(base2, base2);
-
-	md_128 mask1 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(1)));
-	md_128 mask2 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(2)));
-	md_128 mask3 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(3)));
-	md_128 mask4 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(4)));
-
-	md_128 res = md_mm_set1_ps(1.0f);
-	res = md_mm_blendv_ps(res, base, mask1);
-	res = md_mm_blendv_ps(res, base2, mask2);
-	res = md_mm_blendv_ps(res, base3, mask3);
-	res = md_mm_blendv_ps(res, base4, mask4);
-	return res;
-}
-
-static inline md_256 md_mm256_fast_pow(md_256 base, md_256i exp) {
-	md_256 base2 = md_mm256_mul_ps(base,  base);
-	md_256 base3 = md_mm256_mul_ps(base2, base);
-	md_256 base4 = md_mm256_mul_ps(base2, base2);
-
-	md_256 mask1 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(1)));
-	md_256 mask2 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(2)));
-	md_256 mask3 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(3)));
-	md_256 mask4 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(4)));
-
-	md_256 res = md_mm256_set1_ps(1.0f);
-	res = md_mm256_blendv_ps(res, base, mask1);
-	res = md_mm256_blendv_ps(res, base2, mask2);
-	res = md_mm256_blendv_ps(res, base3, mask3);
-	res = md_mm256_blendv_ps(res, base4, mask4);
-	return res;
-}
-
-static inline __m512 md_mm512_fast_pow(__m512 base, __m512i exp) {
-	__m512 base2 = _mm512_mul_ps(base,  base);
-	__m512 base3 = _mm512_mul_ps(base2, base);
-	__m512 base4 = _mm512_mul_ps(base2, base2);
-
-	__mmask16 mask1 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(1), _MM_CMPINT_EQ);
-	__mmask16 mask2 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(2), _MM_CMPINT_EQ);
-	__mmask16 mask3 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(3), _MM_CMPINT_EQ);
-	__mmask16 mask4 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(4), _MM_CMPINT_EQ);
-
-	__m512 res = _mm512_set1_ps(1.0f);
-	res = _mm512_mask_blend_ps(mask1, res, base);
-	res = _mm512_mask_blend_ps(mask2, res, base2);
-	res = _mm512_mask_blend_ps(mask3, res, base3);
-	res = _mm512_mask_blend_ps(mask4, res, base4);
-	return res;
 }
 
 #define d3  3.464101615137754587
@@ -308,26 +243,6 @@ static basis_func_t get_basis_func(const basis_set_t* basis_set, int basis_func_
 	};
 }
 
-typedef struct pgto_t {
-	float x, y, z;
-	float cutoff;
-	float alpha;
-	float coeff;
-	uint16_t i, j, k, l;
-} pgto_t;
-
-typedef struct pgto_data_t {
-	size_t capacity;
-	float* x;
-	float* y;
-	float* z;
-	float* alpha;
-	float* coeff;
-	int* i;
-	int* j;
-	int* k;
-} pgto_data_t;
-
 static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_molecule_t* molecule,
 	const basis_set_t* basis_set,
 	double xp,
@@ -413,120 +328,39 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_m
 	return count;
 }
 
-static float compute_distance_cutoff2(float cutoff_value, int i, int j, int k, int l, float neg_alpha, float coeff) {
-	int maxijk = MAX(i, MAX(j,k));
-	float min_d = 0.0001f;
-	float max_d = 100.0f;
-	float val	= 0.0f;
-	bool decrementing = true;
-	float cutoff_dist = 0.0f;
+size_t md_vlx_pgto_count(const md_vlx_data_t* vlx_data) {
+	int natoms = (int)vlx_data->geom.num_atoms;
+	int max_angl = compute_max_angular_momentum(vlx_data->basis.basis_set, vlx_data->geom.atomic_number, vlx_data->geom.num_atoms);
 
-	float ii = fast_pow(i,i);
-	float jj = fast_pow(j,j);
-	float kk = fast_pow(k,k);
-	float ll = fast_pow(l,l);
+	size_t count = 0;
 
-	const float C = (float)sqrtf((ii * jj * kk) / ll);
+	// azimuthal quantum number: s,p,d,f,...
+	for (int aoidx = 0, angl = 0; angl <= max_angl; angl++) {
+		//CSphericalMomentum sphmom(angl);
+		int nsph = spherical_momentum_num_components(angl);
+		const lmn_t* lmn = cartesian_angular_momentum(angl);
+		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
+		for (int isph = 0; isph < nsph; isph++) {
+			int	ncomp = spherical_momentum_num_factors(angl, isph);
+			// go through atoms
+			for (int atomidx = 0; atomidx < natoms; atomidx++) {
+				int idelem = vlx_data->geom.atomic_number[atomidx];
 
-	// This corresponds to the maxima
-	float d = sqrtf(l / (2.0f * fabsf(neg_alpha)));
-
-	float val = fabsf(coeff * C * fast_pow(d, l) * expf(neg_alpha * d * d));
-	if (val < cutoff_value) {
-		return 0.0f;
-	}
-
-	// Set initial guess for binary search, we want to remain on the rhs of the maxima by some margin
-	d = d * 1.25f;
-
-	while (true) {
-		if (d < min_d){
-			cutoff_dist = min_d;
-			break;
-		}
-		if (d > max_d){
-			cutoff_dist = max_d;
-			break;
-		}
-
-		val = fabsf(coeff * C * fast_pow(d, l) * expf(neg_alpha * d * d));
-
-		if (decrementing) {
-			d = d * 0.5f;
-			if (val > cutoff_value) {
-				decrementing = false;
-			}
-		} else {
-			d = d * 2.0f;
-			if (val < cutoff_value) {
-				cutoff_dist = d * 0.5f;
-				break;
+				// process atomic orbitals
+				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(vlx_data->basis.basis_set, idelem, angl);
+				for (int funcidx = range.beg; funcidx < range.end; funcidx++, aoidx++) {
+					// process primitives
+					basis_func_t basis_func = get_basis_func(vlx_data->basis.basis_set, funcidx);
+					count += basis_func.count * ncomp;
+				}
 			}
 		}
 	}
 
-	return cutoff_dist;
+	return count;
 }
 
-static float compute_distance_cutoff(float cutoff_value, int i, int j, int k, float neg_alpha, float coeff) {
-	int maxijk = MAX(i, MAX(j,k));
-	float d		= 1.0f;
-	float min_d = 0.0001f;
-	float max_d = 100.0f;
-	float val	= 0.0f;
-	bool decrementing = true;
-	float cutoff_dist = 0.0f;
-
-	while (true) {
-		if (d < min_d){
-			cutoff_dist = min_d;
-			break;
-		}
-		if (d > max_d){
-			cutoff_dist = max_d;
-			break;
-		}
-		float f1 = fast_pow(d, maxijk);
-		float f3 = f1 * f1 * f1;
-		float f = MAX(f1, f3);
-		float exponent = expf(neg_alpha * d * d);
-		val = coeff * f * exponent;
-		val = fabsf(val);
-		if (decrementing) {
-			d = d * 0.5f;
-			if (val > cutoff_value) {
-				decrementing = false;
-			}
-		} else {
-			d = d * 2.0f;
-			if (val < cutoff_value) {
-				cutoff_dist = d * 0.5f;
-				break;
-			}
-		}
-	}
-
-	return cutoff_dist;
-}
-
-static void allocate_pgto_data(pgto_data_t* pgto_data, size_t capacity, md_allocator_i* alloc) {
-	capacity = ROUND_UP(capacity, 16);
-	size_t bytes = capacity * 32;
-	void* mem = md_alloc(alloc, bytes);
-	MEMSET(mem, 0, bytes);
-
-	pgto_data->capacity = capacity;
-	pgto_data->x		= (float*)mem + capacity * 0;
-	pgto_data->y		= (float*)mem + capacity * 1;
-	pgto_data->z		= (float*)mem + capacity * 2;
-	pgto_data->alpha	= (float*)mem + capacity * 3;
-	pgto_data->coeff	= (float*)mem + capacity * 4;
-	pgto_data->i		= (int*)  mem + capacity * 5;
-	pgto_data->j		= (int*)  mem + capacity * 6;
-	pgto_data->k		= (int*)  mem + capacity * 7;
-}
-
-static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* molecule, const basis_set_t* basis_set, const double* mo_coeffs, const float min_ext[3], const float max_ext[3], float cutoff_val) {
+static size_t extract_pgto_data(md_gto_data_t* pgto_data, const vlx_molecule_t* molecule, const basis_set_t* basis_set, const double* mo_coeffs) {
 	int natoms = (int)molecule->num_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, molecule->atomic_number, molecule->num_atoms);
 
@@ -567,16 +401,6 @@ static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* mo
 				float y = (float)(molecule->coord_y[atomidx] * factor);
 				float z = (float)(molecule->coord_z[atomidx] * factor);
 
-				float cx = CLAMP(x, min_ext[0], max_ext[0]);
-				float cy = CLAMP(y, min_ext[1], max_ext[1]);
-				float cz = CLAMP(z, min_ext[2], max_ext[2]);
-
-				float dx = x - cx;
-				float dy = y - cy;
-				float dz = z - cz;
-
-				float d2 = dx * dx + dy * dy + dz * dz;
-
 				int idelem = molecule->atomic_number[atomidx];
 
 				// process atomic orbitals
@@ -597,26 +421,17 @@ static size_t extract_pgto_data(pgto_data_t* pgto_data, const vlx_molecule_t* mo
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
 							double fcart = factors[icomp];
-							double coeff = coef1 * fcart * mo_coeff;
-							int i = lx[icomp];
-							int j = ly[icomp];
-							int k = lz[icomp];
-
-							// APPLY CUTOFF HERE BASED ON CONTRIBUTION
-							//if (d2 > 12.0f) continue;
-							float cutoff_dist = compute_distance_cutoff(cutoff_val, i, j, k, (float)neg_alpha, (float)coeff);
-							if (d2 > cutoff_dist * cutoff_dist) {
-								continue;
-							}
 
 							pgto_data->x[count]		= x;
 							pgto_data->y[count]		= y;
 							pgto_data->z[count]		= z;
-							pgto_data->alpha[count] = (float)neg_alpha; 
+							pgto_data->neg_alpha[count] = (float)neg_alpha; 
 							pgto_data->coeff[count] = (float)(coef1 * fcart * mo_coeff);
+							pgto_data->cutoff[count] = 0.0f;
 							pgto_data->i[count]		= lx[icomp];
 							pgto_data->j[count]		= ly[icomp];
 							pgto_data->k[count]		= lz[icomp];
+							pgto_data->l[count]		= angl;
 
 							count += 1;
 						}
@@ -1296,6 +1111,7 @@ bool md_vlx_get_mo(double* out_psi, const vec3_t* coords, size_t num_coords, con
 	return true;
 }
 
+#if 0
 static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const pgto_data_t* pgto_data, size_t num_pgtos) {
 	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
 		float z = grid_origin[2] + iz * grid_stepsize[2];
@@ -1310,14 +1126,14 @@ static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3
 				double psi = 0.0;
 
 				for (size_t i = 0; i < num_pgtos; ++i) {
-					float px	= pgto_data->x[i];
-					float py	= pgto_data->y[i];
-					float pz	= pgto_data->z[i];
-					float alpha = pgto_data->alpha[i];
-					float coeff = pgto_data->coeff[i];
-					int   pi	= pgto_data->i[i];
-					int   pj	= pgto_data->j[i];
-					int   pk	= pgto_data->k[i];
+					float px	    = pgto_data->x[i];
+					float py	    = pgto_data->y[i];
+					float pz	    = pgto_data->z[i];
+					float neg_alpha = pgto_data->neg_alpha[i];
+					float coeff    = pgto_data->coeff[i];
+					int   pi	   = pgto_data->i[i];
+					int   pj	   = pgto_data->j[i];
+					int   pk	   = pgto_data->k[i];
 
 					float dx = px - x;
 					float dy = py - y;
@@ -1326,7 +1142,7 @@ static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3
 					float fx = fast_pow(dx, pi);
 					float fy = fast_pow(dy, pj);
 					float fz = fast_pow(dz, pk);
-					float exponentTerm = alpha == 0 ? 1.0f : expf(-alpha * d2);
+					float exponentTerm = neg_alpha == 0 ? 1.0f : expf(neg_alpha * d2);
 					psi += coeff * fx * fy * fz * exponentTerm;
 				}
 
@@ -1404,7 +1220,7 @@ static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3
 					md_256  px = md_mm256_load_ps(pgto_data->x + i);
 					md_256  py = md_mm256_load_ps(pgto_data->y + i);
 					md_256  pz = md_mm256_load_ps(pgto_data->z + i);
-					md_256  pa = md_mm256_load_ps(pgto_data->alpha + i);
+					md_256  pa = md_mm256_load_ps(pgto_data->neg_alpha + i);
 					md_256  pc = md_mm256_load_ps(pgto_data->coeff + i);
 					md_256i pi = md_mm256_load_si256((const md_256i*)(pgto_data->i + i));
 					md_256i pj = md_mm256_load_si256((const md_256i*)(pgto_data->j + i));
@@ -1452,7 +1268,7 @@ static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3
 					md_128  px = md_mm_load_ps(pgto_data->x + i);
 					md_128  py = md_mm_load_ps(pgto_data->y + i);
 					md_128  pz = md_mm_load_ps(pgto_data->z + i);
-					md_128  pa = md_mm_load_ps(pgto_data->alpha + i);
+					md_128  pa = md_mm_load_ps(pgto_data->neg_alpha + i);
 					md_128  pc = md_mm_load_ps(pgto_data->coeff + i);
 					md_128i pi = md_mm_load_si128((const md_128i*)(pgto_data->i + i));
 					md_128i pj = md_mm_load_si128((const md_128i*)(pgto_data->j + i));
@@ -1547,7 +1363,7 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 
 	//md_timestamp_t t1 = md_time_current();
 
-	printf("Num pgtos: %zu\n", num_pgtos);
+	//printf("Num pgtos: %zu\n", num_pgtos);
 
 #if defined(__AVX512F__)
 	evaluate_grid_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid_origin, grid_stepsize, &pgto_data, num_pgtos);
@@ -1570,9 +1386,44 @@ bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], co
 	return true;
 }
 
-bool md_vlx_grid_evaluate(md_vlx_grid_t* grid, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs) {
+bool md_vlx_grid_evaluate(md_grid_t* grid, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs) {
 	const int grid_idx_min[3] = {0,0,0};
 	return md_vlx_grid_evaluate_sub(grid, grid_idx_min, grid->dim, geom, basis, mo_coeffs, num_mo_coeffs);
+}
+#endif
+
+bool md_vlx_extract_alpha_mo_pgtos(md_gto_data_t* pgto_data, const md_vlx_data_t* vlx, size_t mo_idx) {
+	ASSERT(pgto_data);
+	ASSERT(vlx);
+	vlx_molecule_t mol = {
+		.num_atoms = vlx->geom.num_atoms,
+		.atomic_number = vlx->geom.atomic_number,
+		.coord_x = vlx->geom.coord_x,
+		.coord_y = vlx->geom.coord_y,
+		.coord_z = vlx->geom.coord_z,
+	};
+
+	size_t num_rows = vlx->scf.alpha.orbitals.dim[0];
+	size_t num_cols = vlx->scf.alpha.orbitals.dim[1];
+
+	if (mo_idx >= num_rows) {
+		MD_LOG_ERROR("Invalid mo index!");
+		return false;
+	}
+
+	size_t temp_pos = md_temp_get_pos();
+	size_t num_mo_coeffs = vlx->scf.alpha.orbitals.dim[1];
+	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
+
+	for (size_t i = 0; i < num_mo_coeffs; ++i) {
+		mo_coeffs[i] = vlx->scf.alpha.orbitals.data[i * num_cols + mo_idx];
+	}
+
+	extract_pgto_data(pgto_data, &mol, vlx->basis.basis_set, mo_coeffs);
+	md_gto_compute_cutoff(pgto_data, 1.0e-6f);
+
+	md_temp_set_pos_back(temp_pos);
+	return true;
 }
 
 static bool vlx_data_parse_str(md_vlx_data_t* vlx, str_t str, md_allocator_i* alloc, uint32_t flags) {

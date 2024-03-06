@@ -4,8 +4,9 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#include <core/md_str.h>
 #include <md_types.h>
+#include <md_gto.h>
+#include <core/md_str.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -102,22 +103,17 @@ typedef struct md_vlx_data_t {
 	md_allocator_i* alloc;
 } md_vlx_data_t;
 
-
-typedef struct md_vlx_grid_t {
-	float* data;
-	int   dim[3];
-	float origin[3];
-	float stepsize[3];
-} md_vlx_grid_t;
-
 // RAW FUNCTIONS
 bool md_vlx_data_parse_str(md_vlx_data_t* data, str_t string, struct md_allocator_i* alloc);
 bool md_vlx_data_parse_file(md_vlx_data_t* data, str_t filename, struct md_allocator_i* alloc);
 void md_vlx_data_free(md_vlx_data_t* data);
 
-bool md_vlx_grid_evaluate(md_vlx_grid_t* grid, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
-bool md_vlx_grid_evaluate_sub(md_vlx_grid_t* grid, const int grid_idx_min[3], const int grid_idx_max[3], const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
-bool md_vlx_get_mo(double* out_values, const vec3_t* coords, size_t num_coords, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
+size_t md_vlx_pgto_count(const md_vlx_data_t* vlx_data);
+bool md_vlx_extract_alpha_mo_pgtos(md_gto_data_t* pgtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
+
+//bool md_vlx_grid_evaluate(md_grid_t* grid, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
+//bool md_vlx_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_min[3], const int grid_idx_max[3], const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
+//bool md_vlx_get_mo(double* out_values, const vec3_t* coords, size_t num_coords, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
 
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_data_t* data, struct md_allocator_i* alloc);
