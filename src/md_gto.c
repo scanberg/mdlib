@@ -3,6 +3,7 @@
 #include <core/md_simd.h>
 #include <core/md_allocator.h>
 #include <stdbool.h>
+#include <float.h>
 
 static inline float fast_pow(float base, int exp) {
 	float val = 1.0f;
