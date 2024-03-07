@@ -31,7 +31,7 @@ void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_min[3], const 
 
 // Compute the cutoff parameter within the gto data based on the given value
 // Typically this could be somewhere around 1.0e-6
-void md_gto_compute_cutoff(md_gto_data_t* gto, float value);
+void md_gto_compute_cutoff(md_gto_data_t* gto, double value);
 
 #ifdef __cplusplus
 }

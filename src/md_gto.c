@@ -301,20 +301,18 @@ void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_min[3], const 
 		float z  = in_gto->z[i];
 		float cutoff = in_gto->cutoff[i];
 
-		if (cutoff > 0.0f) {
-			float cx = CLAMP(x, min_box[0], max_box[0]);
-			float cy = CLAMP(y, min_box[1], max_box[1]);
-			float cz = CLAMP(z, min_box[2], max_box[2]);
+		float cx = CLAMP(x, min_box[0], max_box[0]);
+		float cy = CLAMP(y, min_box[1], max_box[1]);
+		float cz = CLAMP(z, min_box[2], max_box[2]);
 
-			float dx = x - cx;
-			float dy = y - cy;
-			float dz = z - cz;
+		float dx = x - cx;
+		float dy = y - cy;
+		float dz = z - cz;
 
-			float d2 = dx * dx + dy * dy + dz * dz;
+		float d2 = dx * dx + dy * dy + dz * dz;
 			
-			if (d2 > cutoff * cutoff) {
-				continue;
-			}
+		if (d2 > cutoff * cutoff) {
+			continue;
 		}
 
 		size_t idx = gto.count;
@@ -334,6 +332,8 @@ void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_min[3], const 
 	for (size_t i = gto.count; i < ROUND_UP(gto.count, 16); ++i) {
 		gto.coeff[i] = 0;
 	}
+
+	//printf("Number of pgtos in volume region: %zu\n", gto.count);
 
 #if defined(__AVX512F__)
 	evaluate_grid_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
@@ -362,59 +362,92 @@ void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_data_t* gto) {
 #endif
 }
 
-static float compute_distance_cutoff2(float cutoff_value, int i, int j, int k, int l, float neg_alpha, float coeff) {
-	int maxijk = MAX(i, MAX(j,k));
-	float min_d = 0.0001f;
-	float max_d = 100.0f;
-	float val	= 0.0f;
-	bool decrementing = true;
-	float cutoff_dist = 0.0f;
+static inline double eval_G(double d, double C, int l, double neg_alpha) {
+	return C * fast_pow(d, l) * exp(neg_alpha * d * d);
+}
 
-	float ii = fast_pow(i,i);
-	float jj = fast_pow(j,j);
-	float kk = fast_pow(k,k);
-	float ll = fast_pow(l,l);
+static inline void eval_G_and_G_prime(double* out_G, double* out_G_prime, double d, double C, int l, double neg_alpha) {
+	double exp_term = exp(neg_alpha * d * d);
+	*out_G		 = C * fast_pow(d, l) * exp_term;
+	*out_G_prime = C * fast_pow(d, l-1) * (l + 2 * neg_alpha * d * d) * exp_term;
+}
 
-	const float C = (float)sqrtf((ii * jj * kk) / ll);
+static double compute_distance_cutoff2(double cutoff_value, int i, int j, int k, int l, double neg_alpha, double coeff) {
+	double d = 0.0;
 
-	// This corresponds to the maxima
-	float d = sqrtf(l / (2.0f * fabsf(neg_alpha)));
+	// Bake into single constant C
+	const double C = fabs(coeff * sqrt((fast_pow(i,i) * fast_pow(j,j) * fast_pow(k,k)) / fast_pow(l,l)));
 
-	val = fabsf(coeff * C * fast_pow(d, l) * expf(neg_alpha * d * d));
-	if (val < cutoff_value) {
-		return 0.0f;
+	// Compute maxima
+	const double d_maxima = sqrt(l / (2.0 * fabs(neg_alpha)));
+
+	// Check the contribution at the maxima
+	if (eval_G(d_maxima, C, l, neg_alpha) < cutoff_value) {
+		d = 0.0;
+		goto done;
 	}
 
-	// Set initial guess for binary search, we want to remain on the rhs of the maxima by some margin
-	d = d * 1.25f;
-
-	while (true) {
-		if (d < min_d){
-			cutoff_dist = min_d;
-			break;
-		}
-		if (d > max_d){
-			cutoff_dist = max_d;
-			break;
-		}
-
-		val = fabsf(coeff * C * fast_pow(d, l) * expf(neg_alpha * d * d));
-
-		if (decrementing) {
-			d = d * 0.5f;
-			if (val > cutoff_value) {
-				decrementing = false;
-			}
-		} else {
-			d = d * 2.0f;
-			if (val < cutoff_value) {
-				cutoff_dist = d * 0.5f;
-				break;
-			}
-		}
+	// If we have an S-type orbital (l == 0) the expression collapses into an expression we can invert and evaluate
+	if (l == 0) {
+		double y = cutoff_value;
+		double a = fabs(coeff) / y;
+		double la = log(a);
+		d = sqrt(fabs(la) / fabs(neg_alpha));
+		goto done;
 	}
 
-	return cutoff_dist;
+	// If we end up here we need to perform a numerical search for a d value where the value G(d) < cutoff_value
+	// We do not want to overestimate d which will result in a too large radius of influence for the PGTO.
+	// And will directly negatively impact performance when evaluating on the grid.
+	// Therefore we want to find d where G(d) < cutoff_value but within a tolerance of cutoff_value
+
+	// Search parameters
+	const double d_min = d_maxima + 0.001;
+	const double d_max = d_maxima + 100.0;
+	const double y_tol = cutoff_value * 0.001;
+	const double d_tol = 1.0e-9;
+
+	// Initial guess
+	// This is the analytical solution for d^2/dx^2 G(d) = 0
+	// Which should give us a value which corresponds to the point where we have the maximum negative slope
+	d = 0.5 * sqrt(sqrt(neg_alpha*neg_alpha * (8*l + 1)) / (neg_alpha*neg_alpha) + (2*l + 1) / fabs(neg_alpha));
+
+	// Newton-Rhapson iterative search
+	for (int iter = 0; iter < 100; ++iter) {
+		double y, yp;
+		eval_G_and_G_prime(&y, &yp, d, C, l, neg_alpha);
+
+		// Shift function so it intersects the x axis at the point we seek (with a bias towards values less than cutoff value)
+		y = y - cutoff_value + y_tol;
+
+		//printf ("d: %.10f, y: %.10f, yp: %.10f\n", d, y, yp);
+
+		if (y < 0 && fabs(y) < y_tol) {
+			//printf ("y tolerance met after %i iterations\n", iter);
+			break;
+		}
+
+		if (fabs(yp) < DBL_EPSILON) {
+			// Denominator is too small
+			//printf ("Denominator is too small!\n");
+			break;
+		}
+
+		double dn = d - y / yp;
+		dn = CLAMP(dn, d_min, d_max);
+
+		if (fabs(dn - d) < d_tol) {
+			// Within d tolerance
+			//printf ("d tolerance met after %i iterations\n", iter);
+			break;
+		}
+
+		d = dn;
+	}
+
+done:
+	//printf("Cutoff dist and value: %.5f, %.12f\n", d, eval_G(d, C, l, neg_alpha));
+	return d;
 }
 
 static float compute_distance_cutoff(float cutoff_value, int i, int j, int k, int l, float neg_alpha, float coeff) {
@@ -459,9 +492,9 @@ static float compute_distance_cutoff(float cutoff_value, int i, int j, int k, in
 	return cutoff_dist;
 }
 
-void md_gto_compute_cutoff(md_gto_data_t* gto, float value) {
+void md_gto_compute_cutoff(md_gto_data_t* gto, double value) {
 	for (size_t i = 0; i < gto->count; ++i) {
-		gto->cutoff[i] = compute_distance_cutoff(value, gto->i[i], gto->j[i], gto->k[i], gto->l[i], gto->neg_alpha[i], gto->coeff[i]);
+		gto->cutoff[i] = compute_distance_cutoff2(value, gto->i[i], gto->j[i], gto->k[i], gto->l[i], gto->neg_alpha[i], gto->coeff[i]);
 	}
 }
 

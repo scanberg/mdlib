@@ -1420,7 +1420,7 @@ bool md_vlx_extract_alpha_mo_pgtos(md_gto_data_t* pgto_data, const md_vlx_data_t
 	}
 
 	extract_pgto_data(pgto_data, &mol, vlx->basis.basis_set, mo_coeffs);
-	md_gto_compute_cutoff(pgto_data, 1.0e-6f);
+	md_gto_compute_cutoff(pgto_data, 1.0e-6);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
