@@ -697,6 +697,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	MEMSET(mol, 0, sizeof(md_molecule_t));
 	const size_t num_atoms = data->num_atoms;
 
+	md_array_resize(mol->atom.type,  num_atoms, alloc);
 	md_array_resize(mol->atom.x,	 num_atoms, alloc);
 	md_array_resize(mol->atom.y,	 num_atoms, alloc);
 	md_array_resize(mol->atom.z,	 num_atoms, alloc);
@@ -709,6 +710,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	}
 
 	for (size_t i = 0; i < num_atoms; ++i) {
+		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, 6, "%i", data->atoms[i].type);
 		mol->atom.x[i] = data->atoms[i].x - data->cell.xlo;
 		mol->atom.y[i] = data->atoms[i].y - data->cell.ylo;
 		mol->atom.z[i] = data->atoms[i].z - data->cell.zlo;
