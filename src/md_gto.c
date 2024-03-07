@@ -5,8 +5,20 @@
 #include <stdbool.h>
 #include <float.h>
 
-static inline float fast_pow(float base, int exp) {
+static inline float fast_powf(float base, int exp) {
 	float val = 1.0f;
+	switch(exp) {
+	case 4: val *= base;
+	case 3: val *= base;
+	case 2: val *= base;
+	case 1: val *= base;
+	case 0: break;
+	}
+	return val;
+}
+
+static inline double fast_pow(double base, int exp){
+	double val = 1.0;
 	switch(exp) {
 	case 4: val *= base;
 	case 3: val *= base;
@@ -99,9 +111,9 @@ static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3
 					float dy = py - y;
 					float dz = pz - z;
 					float d2 = dx * dx + dy * dy + dz * dz;
-					float fx = fast_pow(dx, pi);
-					float fy = fast_pow(dy, pj);
-					float fz = fast_pow(dz, pk);
+					float fx = fast_powf(dx, pi);
+					float fy = fast_powf(dy, pj);
+					float fz = fast_powf(dz, pk);
 					float exponentTerm = neg_alpha == 0 ? 1.0f : expf(neg_alpha * d2);
 					psi += coeff * fx * fy * fz * exponentTerm;
 				}
@@ -571,7 +583,7 @@ done:
 
 void md_gto_compute_cutoff(md_gto_data_t* gto, double value) {
 	for (size_t i = 0; i < gto->count; ++i) {
-		gto->cutoff[i] = compute_distance_cutoff(value, gto->i[i], gto->j[i], gto->k[i], gto->l[i], gto->neg_alpha[i], gto->coeff[i]);
+		gto->cutoff[i] = (float)compute_distance_cutoff(value, gto->i[i], gto->j[i], gto->k[i], gto->l[i], gto->neg_alpha[i], gto->coeff[i]);
 	}
 }
 

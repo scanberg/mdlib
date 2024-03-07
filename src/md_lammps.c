@@ -1377,7 +1377,6 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 			md_free(alloc, cache->frame_times, times_bytes);
 			goto done;
 		}
-		//Only overwrite if all tests passed
 
 		result = true;
 	done:
