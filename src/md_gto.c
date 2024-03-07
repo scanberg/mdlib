@@ -373,7 +373,9 @@ static inline void eval_G_and_G_prime(double* out_G, double* out_G_prime, double
 	*out_G_prime = C * fast_pow(d, l-1) * (l + 2 * neg_alpha * d * d) * exp_term;
 }
 
-static double compute_distance_cutoff2(double cutoff_value, int i, int j, int k, int l, double neg_alpha, double coeff) {
+#define PRINT_RESULT 0
+
+static double compute_distance_cutoff(double cutoff_value, int i, int j, int k, int l, double neg_alpha, double coeff) {
 	double d = 0.0;
 
 	// Bake into single constant C
@@ -429,7 +431,6 @@ static double compute_distance_cutoff2(double cutoff_value, int i, int j, int k,
 		}
 
 		if (fabs(yp) < DBL_EPSILON) {
-			// Denominator is too small
 			//printf ("Denominator is too small!\n");
 			break;
 		}
@@ -438,7 +439,6 @@ static double compute_distance_cutoff2(double cutoff_value, int i, int j, int k,
 		dn = CLAMP(dn, d_min, d_max);
 
 		if (fabs(dn - d) < d_tol) {
-			// Within d tolerance
 			//printf ("d tolerance met after %i iterations\n", iter);
 			break;
 		}
@@ -447,55 +447,131 @@ static double compute_distance_cutoff2(double cutoff_value, int i, int j, int k,
 	}
 
 done:
-	//printf("Cutoff dist and value: %.5f, %.12f\n", d, eval_G(d, C, l, neg_alpha));
+#if PRINT_RESULT
+	if (d > 0.0) {
+		printf("Cutoff dist and value: %15.5f, %15.12f\n", d, eval_G(d, C, l, neg_alpha));
+	}
+#endif
 	return d;
 }
 
-static float compute_distance_cutoff(float cutoff_value, int i, int j, int k, int l, float neg_alpha, float coeff) {
-	(void)l;
-	int maxijk = MAX(i, MAX(j,k));
-	float d		= 1.0f;
-	float min_d = 0.0001f;
-	float max_d = 100.0f;
-	float val	= 0.0f;
+static double compute_distance_cutoff_v2(double cutoff_value, int i, int j, int k, int l, double neg_alpha, double coeff) {
+	double min_d = 0.0001;
+	double max_d = 100.0;
+	double val	 = 0.0;
 	bool decrementing = true;
-	float cutoff_dist = 0.0f;
+
+	// Bake into single constant C
+	const double C = fabs(coeff * sqrt((fast_pow(i,i) * fast_pow(j,j) * fast_pow(k,k)) / fast_pow(l,l)));
+
+	// Compute maxima
+	const double d_maxima = sqrt(l / (2.0 * fabs(neg_alpha)));
+
+	double d = 0.0;
+	if (eval_G(d_maxima, C, l, neg_alpha) < cutoff_value) {
+		goto done;
+	}
+
+	// Initial guess
+	d = d_maxima + 0.5;
 
 	while (true) {
 		if (d < min_d){
-			cutoff_dist = min_d;
+			d = min_d;
 			break;
 		}
 		if (d > max_d){
-			cutoff_dist = max_d;
+			d = max_d;
 			break;
 		}
-		float f1 = fast_pow(d, maxijk);
-		float f3 = f1 * f1 * f1;
-		float f = MAX(f1, f3);
-		float exponent = expf(neg_alpha * d * d);
-		val = coeff * f * exponent;
-		val = fabsf(val);
+		val = eval_G(d, C, l, neg_alpha);
 		if (decrementing) {
-			d = d * 0.5f;
+			d = d * 0.5;
 			if (val > cutoff_value) {
 				decrementing = false;
 			}
 		} else {
-			d = d * 2.0f;
+			d = d * 2.0;
 			if (val < cutoff_value) {
-				cutoff_dist = d * 0.5f;
+				d = d * 0.5;
 				break;
 			}
 		}
 	}
 
-	return cutoff_dist;
+done:
+#if PRINT_RESULT
+	if (d > 0.0) {
+		printf("Cutoff dist and value: %15.5f, %15.12f\n", d, eval_G(d, C, l, neg_alpha));
+	}
+#endif
+	return d;
+}
+
+static double compute_distance_cutoff_v1(double cutoff_value, int i, int j, int k, int l, double neg_alpha, double coeff) {
+	(void)l;
+	int maxijk = MAX(i, MAX(j,k));
+	double d	 = 1.0;
+	double min_d = 0.0001;
+	double max_d = 100.0;
+	double val	 = 0.0;
+	bool decrementing = true;
+
+	double f1 = fast_pow(d, maxijk);
+	double f3 = f1 * f1 * f1;
+	double f  = MAX(f1, f3);
+	val = fabs(coeff * f * exp(neg_alpha * d * d));
+
+	if (val < cutoff_value) {
+		d = 0.0;
+		goto done;
+	}
+
+	while (true) {
+		if (d < min_d){
+			d = min_d;
+			break;
+		}
+		if (d > max_d){
+			d = max_d;
+			break;
+		}
+		f1 = fast_pow(d, maxijk);
+		f3 = f1 * f1 * f1;
+		f  = MAX(f1, f3);
+		val = fabs(coeff * f * exp(neg_alpha * d * d));
+		if (decrementing) {
+			d = d * 0.5;
+			if (val > cutoff_value) {
+				decrementing = false;
+			}
+		} else {
+			d = d * 2.0;
+			if (val < cutoff_value) {
+				d = d * 0.5;
+				break;
+			}
+		}
+	}
+
+done:
+
+#if PRINT_RESULT
+	if (d > 0.0) {
+		f1 = fast_pow(d, maxijk);
+		f3 = f1 * f1 * f1;
+		f  = MAX(f1, f3);
+		val = fabs(coeff * f * exp(neg_alpha * d * d));
+		printf("Cutoff dist and value: %15.5f, %15.12f\n", d, val);
+	}
+#endif
+
+	return d;
 }
 
 void md_gto_compute_cutoff(md_gto_data_t* gto, double value) {
 	for (size_t i = 0; i < gto->count; ++i) {
-		gto->cutoff[i] = compute_distance_cutoff2(value, gto->i[i], gto->j[i], gto->k[i], gto->l[i], gto->neg_alpha[i], gto->coeff[i]);
+		gto->cutoff[i] = compute_distance_cutoff(value, gto->i[i], gto->j[i], gto->k[i], gto->l[i], gto->neg_alpha[i], gto->coeff[i]);
 	}
 }
 
