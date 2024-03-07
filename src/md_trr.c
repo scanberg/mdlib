@@ -562,17 +562,21 @@ bool trr_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         return false;
     }
 
-    bool result = true;
+    bool result = false;
     const size_t frame_size = trr_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_get_heap_allocator() : md_get_temp_allocator();
+        md_allocator_i* alloc = md_get_heap_allocator();
         void* frame_data = md_alloc(alloc, frame_size);
+        ASSERT(frame_data);
+
         const size_t read_size = trr_fetch_frame_data(inst, frame_idx, frame_data);
-        (void)read_size;
-        ASSERT(read_size == frame_size);
+        if (read_size != frame_size) {
+            MD_LOG_ERROR("TRR: Failed to read the expected size");
+            goto done;
+        }
 
         result = trr_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-
+    done:
         md_free(alloc, frame_data, frame_size);
     }
 

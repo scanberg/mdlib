@@ -1286,15 +1286,15 @@ bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_traje
 		return false;
 	}
 
-	// Should this be exposed?
-	size_t temp_pos = md_temp_get_pos();
-
 	bool result = true;
-	const int64_t frame_size = lammps_fetch_frame_data(inst, frame_idx, NULL);
+	const size_t frame_size = lammps_fetch_frame_data(inst, frame_idx, NULL);
 	if (frame_size > 0) { //This check first that there actually is data to be read, before writing to frame_data
-		// This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
-		void* frame_data = md_temp_push(frame_size);
-		const int64_t read_size = lammps_fetch_frame_data(inst, frame_idx, frame_data);
+		md_allocator_i* alloc = md_get_heap_allocator();
+
+		void* frame_data = md_alloc(alloc, frame_size);
+		ASSERT(frame_data);
+
+		const size_t read_size = lammps_fetch_frame_data(inst, frame_idx, frame_data);
 		if (read_size != frame_size) {
 			MD_LOG_ERROR("Failed to read the expected size");
 			goto done;
@@ -1302,10 +1302,10 @@ bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_traje
 
 		//Decode is what actually writes the data to x, y and z which are float pointers
 		result = lammps_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
+done:
+		md_free(alloc, frame_data, frame_size);
 	}
 
-done:
-	md_temp_set_pos_back(temp_pos);
 	return result;
 }
 

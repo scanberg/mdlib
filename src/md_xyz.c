@@ -789,19 +789,19 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         return false;
     }
 
-    bool result = true;
-    const size_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
+    bool result = false;
+    size_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_get_heap_allocator() : md_get_temp_allocator();
+        md_allocator_i* alloc = md_get_heap_allocator();
         void* frame_data = md_alloc(alloc, frame_size);
-        const size_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
+        size_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
             MD_LOG_ERROR("Failed to read the expected size");
-            md_free(alloc, frame_data, frame_size);
-            return false;
+            goto done;
         }
 
         result = xyz_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
+    done:
         md_free(alloc, frame_data, frame_size);
     }
 
