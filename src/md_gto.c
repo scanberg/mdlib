@@ -65,6 +65,7 @@ static inline md_256 md_mm256_fast_pow(md_256 base, md_256i exp) {
 	return res;
 }
 
+#ifdef __AVX512F__
 static inline __m512 md_mm512_fast_pow(__m512 base, __m512i exp) {
 	__m512 base2 = _mm512_mul_ps(base,  base);
 	__m512 base3 = _mm512_mul_ps(base2, base);
@@ -82,7 +83,7 @@ static inline __m512 md_mm512_fast_pow(__m512 base, __m512i exp) {
 	res = _mm512_mask_blend_ps(mask4, res, base4);
 	return res;
 }
-
+#endif
 
 static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto) {
 	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
