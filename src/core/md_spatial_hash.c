@@ -1324,7 +1324,6 @@ size_t md_spatial_hash_query_idx(int32_t* buf, size_t cap, const md_spatial_hash
     size_t temp_pos = md_temp_get_pos();
 
     md_bitfield_t bf = md_bitfield_create(md_get_temp_allocator());
-    md_bitfield_reserve_range(&bf, 0, spatial_hash->elem_count);
 
     md_spatial_hash_query_batch(spatial_hash, coord, radius, idx_fn, &bf);
 #if DEBUG
