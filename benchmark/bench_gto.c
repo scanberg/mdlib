@@ -65,10 +65,10 @@ UBENCH_EX(gto, evaluate_grid) {
             int blk_y = (i / num_blk) & (num_blk - 1);
             int blk_x = i / (num_blk * num_blk);
 
-            const int beg_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
-            const int end_idx[3] = {blk_x * BLK_DIM + BLK_DIM, blk_y * BLK_DIM + BLK_DIM, blk_z * BLK_DIM + BLK_DIM};
+            const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
+            const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
-            md_gto_grid_evaluate_sub(&grid, beg_idx, end_idx, &gto);
+            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, &gto);
         }
     }
 
