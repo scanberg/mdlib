@@ -111,10 +111,6 @@ void md_vlx_data_free(md_vlx_data_t* data);
 size_t md_vlx_pgto_count(const md_vlx_data_t* vlx_data);
 bool md_vlx_extract_alpha_mo_pgtos(md_gto_data_t* pgtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
 
-//bool md_vlx_grid_evaluate(md_grid_t* grid, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
-//bool md_vlx_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_min[3], const int grid_idx_max[3], const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
-//bool md_vlx_get_mo(double* out_values, const vec3_t* coords, size_t num_coords, const md_vlx_geom_t* geom, const md_vlx_basis_t* basis, const double* mo_coeffs, size_t num_mo_coeffs);
-
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_data_t* data, struct md_allocator_i* alloc);
 

@@ -762,15 +762,18 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], size_
 
     size_t failed_matches = 0;
 
-    const float eps = 1.0e-2f;
+    const float eps = 1.0e-3f;
     for (size_t i = 0; i < count; ++i) {
         md_element_t elem = 0;
         const float m = mass[i];
-        //Loop through the mass options, break when match is found
-        for (uint8_t j = 1; j < (uint8_t)ARRAY_SIZE(element_atomic_mass); ++j) {
-            if (fabs(m - element_atomic_mass[j]) < eps) {
-                elem = j;
-                break;
+
+        if (m != 0.0f || m != 1.0f) {
+            // Linear search for matching atomic mass
+            for (uint8_t j = 1; j < (uint8_t)ARRAY_SIZE(element_atomic_mass); ++j) {
+                if (fabs(m - element_atomic_mass[j]) < eps) {
+                    elem = j;
+                    break;
+                }
             }
         }
 
@@ -1337,16 +1340,18 @@ static inline bool covalent_bond_heuristic(float d2, md_element_t elem_a, md_ele
     return (r_min * r_min) < d2 && d2 < (r_max * r_max);
 }
 
-static float distance_squared(vec4_t pos_a, vec4_t pos_b, const md_unit_cell_t* cell) {
+static inline float distance_squared(vec3_t pos_a, vec3_t pos_b, const md_unit_cell_t* cell) {
+    vec4_t pa = vec4_from_vec3(pos_a, 0);
+    vec4_t pb = vec4_from_vec3(pos_b, 0);
     if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
         const vec4_t pbc_ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
-        return vec4_periodic_distance_squared(pos_a, pos_b, pbc_ext);
+        return vec4_periodic_distance_squared(pa, pb, pbc_ext);
     } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        vec4_t dx = vec4_sub(pos_a, pos_b);
+        vec4_t dx = vec4_sub(pa, pb);
         minimum_image_triclinic(dx.elem, cell->basis.elem);
         return vec4_length_squared(dx);
     } else {
-		return vec4_distance_squared(pos_a, pos_b);
+		return vec4_distance_squared(pa, pb);
 	}
 }
 
@@ -1357,7 +1362,7 @@ static void push_bond(md_bond_data_t* bond, int i, int j, md_order_t order, md_f
 	bond->count += 1;
 }
 
-static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom, const md_unit_cell_t* cell, md_range_t range_a, md_range_t range_b, md_flags_t bond_flags, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
+static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom, const md_unit_cell_t* cell, md_range_t range_a, md_range_t range_b, md_flags_t bond_flags, md_allocator_i* alloc, md_allocator_i* temp_arena) {
     ASSERT(bond);
     ASSERT(atom);
     ASSERT(cell);
@@ -1373,9 +1378,9 @@ static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* ato
         // Brute force
         if (range_a.beg == range_b.beg && range_a.end == range_b.end) {
             for (int i = range_a.beg; i < range_a.end - 1; ++i) {
-                const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
+                const vec3_t a = {atom->x[i], atom->y[i], atom->z[i]};
                 for (int j = i + 1; j < range_a.end; ++j) {
-                    const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
+                    const vec3_t b = {atom->x[j], atom->y[j], atom->z[j]};
                     const float d2 = distance_squared(a, b, cell);
                     if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
 						push_bond(bond, i, j, 1, bond_flags, alloc);
@@ -1384,10 +1389,10 @@ static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* ato
             }
         } else {
             for (int i = range_a.beg; i < range_a.end; ++i) {
-                const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
+                const vec3_t a = {atom->x[i], atom->y[i], atom->z[i]};
                 // @NOTE: Only store monotonic bond connections
                 for (int j = MAX(i+1, range_b.beg); j < range_b.end; ++j) {
-                    const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
+                    const vec3_t b = {atom->x[j], atom->y[j], atom->z[j]};
                     const float d2 = distance_squared(a, b, cell);
                     if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
                         push_bond(bond, i, j, 1, bond_flags, alloc);
@@ -1397,30 +1402,41 @@ static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* ato
         }
     }
     else {
+        size_t temp_pos = md_vm_arena_get_pos(temp_arena);
+        int capacity = range_b.end - range_b.beg;
+        int* indices = md_vm_arena_push(temp_arena, sizeof(int) * capacity);
+
+        int size = 0;
+        for (int i = range_b.beg; i < range_b.end; ++i) {
+            if (atom->element[i] != 0) {
+                indices[size++] = i;
+            }
+        }
+
         // Spatial acceleration structure
-        int count_b = range_b.end - range_b.beg;
-        md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x + range_b.beg, atom->y + range_b.beg, atom->z + range_b.beg, NULL, count_b, cell, temp_alloc);
+        md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x, atom->y, atom->z, indices, size, cell, temp_arena);
 
         const float cutoff = 3.0f;
-        int indices[128];
 
         for (int i = range_a.beg; i < range_a.end; ++i) {
-            const vec4_t a = {atom->x[i], atom->y[i], atom->z[i], 0};
-            const int64_t num_indices = md_spatial_hash_query_idx(indices, ARRAY_SIZE(indices), sh, vec3_from_vec4(a), cutoff);
-            for (int64_t iter = 0; iter < num_indices; ++iter) {
-                const int j = range_b.beg + indices[iter];
-                // Only store monotonic bond connections
-                if (j < i) continue;
+            if (atom->element[i] != 0) {
+                const vec3_t a = {atom->x[i], atom->y[i], atom->z[i]};
+                const size_t num_indices = md_spatial_hash_query_idx(indices, capacity, sh, a, cutoff);
+                for (size_t idx = 0; idx < num_indices; ++idx) {
+                    const int j = indices[idx];
+                    // Only store monotonic bond connections
+                    if (j < i) continue;
 
-                const vec4_t b = {atom->x[j], atom->y[j], atom->z[j], 0};
-                const float d2 = distance_squared(a, b, cell);
-                if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
-                    push_bond(bond, i, j, 1, bond_flags, alloc);
+                    const vec3_t b = {atom->x[j], atom->y[j], atom->z[j]};
+                    const float d2 = distance_squared(a, b, cell);
+                    if (covalent_bond_heuristic(d2, atom->element[i], atom->element[j])) {
+                        push_bond(bond, i, j, 1, bond_flags, alloc);
+                    }
                 }
             }
         }
 
-        md_spatial_hash_free(sh);
+        md_vm_arena_set_pos(temp_arena, temp_pos);
     }
 }
 
@@ -1429,7 +1445,7 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     ASSERT(res);
     ASSERT(alloc);
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
     md_bond_data_t bond = {0};
     
     if (!atom->x || !atom->y || !atom->z) {
@@ -1446,23 +1462,23 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
        
     if (res->count > 0) {
         md_range_t prev_range = md_residue_atom_range(*res, 0);
-        find_bonds_in_ranges(&bond, atom, cell, prev_range, prev_range, 0, alloc, temp_alloc);
+        find_bonds_in_ranges(&bond, atom, cell, prev_range, prev_range, 0, alloc, temp_arena);
         for (int64_t i = 1; i < (int64_t)res->count; ++i) {
             md_range_t curr_range = md_residue_atom_range(*res, i);
-			find_bonds_in_ranges(&bond, atom, cell, prev_range, curr_range, MD_FLAG_INTER_BOND, alloc, temp_alloc);
-            find_bonds_in_ranges(&bond, atom, cell, curr_range, curr_range, 0,                  alloc, temp_alloc);
+			find_bonds_in_ranges(&bond, atom, cell, prev_range, curr_range, MD_FLAG_INTER_BOND, alloc, temp_arena);
+            find_bonds_in_ranges(&bond, atom, cell, curr_range, curr_range, 0,                  alloc, temp_arena);
             prev_range = curr_range;
         }
     }
     else {
         md_range_t range = {0, atom_count};
-        find_bonds_in_ranges(&bond, atom, cell, range, range, 0, alloc, temp_alloc);
+        find_bonds_in_ranges(&bond, atom, cell, range, range, 0, alloc, temp_arena);
     }
 
     md_util_compute_covalent_bond_order(bond.order, bond.pairs, bond.count, atom->type, atom->resname);
 
 done:
-    md_arena_allocator_destroy(temp_alloc);
+    md_vm_arena_destroy(temp_arena);
     return bond;
 }
 
