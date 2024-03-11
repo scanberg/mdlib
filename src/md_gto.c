@@ -309,7 +309,7 @@ static inline void evaluate_grid_x8_512(float grid_data[], const int grid_idx_mi
 				__m512 fx = md_mm512_fast_pow(dx, pi);
 				__m512 fy = md_mm512_fast_pow(dy, pj);
 				__m512 fz = md_mm512_fast_pow(dz, pk);
-				__m512 ex = md_mm512_exp_ps(md_mm512_mul_ps(pa, d2));
+				__m512 ex = md_mm512_exp_ps(_mm512_mul_ps(pa, d2));
 				__m512 prod = _mm512_mul_ps(_mm512_mul_ps(_mm512_mul_ps(pc, fx), _mm512_mul_ps(fy, fz)), ex);
 
 				__m256 prod_lo = _mm512_castps512_ps256(prod);
