@@ -8,6 +8,8 @@
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 
+#include <float.h>
+
 #define BLK_DIM 8
 
 UBENCH_EX(gto, evaluate_grid) {
@@ -34,7 +36,7 @@ UBENCH_EX(gto, evaluate_grid) {
     min_box = vec3_mul_f(min_box, factor);
     max_box = vec3_mul_f(max_box, factor);
 
-    size_t vol_dim = 256;
+    size_t vol_dim = 128;
     size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
     float* vol_data = md_arena_allocator_push(arena, bytes);
     MEMSET(vol_data, 0, bytes);
