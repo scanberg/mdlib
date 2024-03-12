@@ -138,11 +138,15 @@ UTEST_F(util, rmsd) {
     fast_rmsd((double(*)[3])xyz0, (double(*)[3])xyz1, (int)mol->atom.count, &ref_rmsd);
 
     // Our implementation
+    const float* const cx[2] = { x[0], x[1] };
+    const float* const cy[2] = { y[0], y[1] };
+    const float* const cz[2] = { z[0], z[1] };
+
     vec3_t com[2] = {
         md_util_com_compute(x[0], y[0], z[0], w, 0, mol->atom.count, 0),
         md_util_com_compute(x[1], y[1], z[1], w, 0, mol->atom.count, 0),
     };
-    double rmsd = md_util_rmsd_compute(x, y, z, w, 0, mol->atom.count, com);
+    double rmsd = md_util_rmsd_compute(cx, cy, cz, w, 0, mol->atom.count, com);
     
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
