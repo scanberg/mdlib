@@ -128,7 +128,7 @@ static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3
 }
 
 #ifdef __AVX512F__
-static inline void evaluate_grid_512(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto) {
+static inline void evaluate_grid_512(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
 	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
 		float z = grid_origin[2] + iz * grid_stepsize[2];
 		__m512 vz = _mm512_set1_ps(z);
@@ -163,6 +163,11 @@ static inline void evaluate_grid_512(float grid_data[], const int grid_idx_min[3
 					__m512 ex = md_mm512_exp_ps(_mm512_mul_ps(pa, d2));
 
 					__m512 prod = _mm512_mul_ps(_mm512_mul_ps(_mm512_mul_ps(pc, fx), _mm512_mul_ps(fy, fz)), ex);
+
+					if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+						prod = _mm512_mul_ps(prod, prod);
+					}
+
 					vpsi = _mm512_add_ps(vpsi, prod);
 				}
 
@@ -175,7 +180,7 @@ static inline void evaluate_grid_512(float grid_data[], const int grid_idx_min[3
 }
 #endif
 
-static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto) {
+static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
 	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
 		float z = grid_origin[2] + iz * grid_stepsize[2];
 		md_256 vz = md_mm256_set1_ps(z);
@@ -210,6 +215,10 @@ static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3
 					md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
 
 					md_256 prod = md_mm256_mul_ps(md_mm256_mul_ps(md_mm256_mul_ps(pc, fx), md_mm256_mul_ps(fy, fz)), ex);
+					if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+						prod = _mm256_mul_ps(prod, prod);
+					}
+
 					vpsi = md_mm256_add_ps(vpsi, prod);
 				}
 
@@ -221,7 +230,7 @@ static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3
 	}
 }
 
-static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto) {
+static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
 	for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
 		float z = grid_origin[2] + iz * grid_stepsize[2];
 		md_128 vz = md_mm_set1_ps(z);
@@ -256,6 +265,9 @@ static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3
 					md_128 ex = md_mm_exp_ps(md_mm_mul_ps(pa, d2));
 
 					md_128 prod = md_mm_mul_ps(md_mm_mul_ps(md_mm_mul_ps(pc, fx), md_mm_mul_ps(fy, fz)), ex);
+					if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+						prod = _mm_mul_ps(prod, prod);
+					}
 
 					vpsi = md_mm_add_ps(vpsi, prod);
 				}
@@ -271,11 +283,13 @@ static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3
 #if defined(__AVX512F__) && defined(__AVX512DQ__)
 
 // Evaluate 8 voxels per gto
-static inline void evaluate_grid_x8_512(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto) {
+static inline void evaluate_grid_8x8x8_512(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
 	const md_256i vix = md_mm256_add_epi32(md_mm256_set1_epi32(grid_idx_min[0]), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
 	const md_256  vxh = md_mm256_fmadd_ps(md_mm256_cvtepi32_ps(vix), md_mm256_set1_ps(grid_stepsize[0]), md_mm256_set1_ps(grid_origin[0]));
 	const __m512  vx  = _mm512_insertf32x8(_mm512_castps256_ps512(vxh), vxh, 1);
 	const int x_stride = grid_idx_min[0];
+
+	__m512 vpsi[8][4] = {0};
 
 	for (size_t i = 0; i < gto->count; ++i) {
 		__m512  px = _mm512_set1_ps(gto->x[i]);
@@ -287,20 +301,15 @@ static inline void evaluate_grid_x8_512(float grid_data[], const int grid_idx_mi
 		__m512i pj = _mm512_set1_epi32(gto->j[i]);
 		__m512i pk = _mm512_set1_epi32(gto->k[i]);
 
-		for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
-			float z = grid_origin[2] + iz * grid_stepsize[2];
+		for (int iz = 0; iz < 8; ++iz) {
+			float z = grid_origin[2] + (grid_idx_min[2] + iz) * grid_stepsize[2];
 			__m512 vz = _mm512_set1_ps(z);
-			int z_stride = iz * grid_dim[0] * grid_dim[1];
-			for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; iy += 2) {
+			for (int iy = 0; iy < 4; ++iy) {
 				float y[2] = {
-					grid_origin[1] + (iy + 0) * grid_stepsize[1],
-					grid_origin[1] + (iy + 1) * grid_stepsize[1],
+					grid_origin[1] + (grid_idx_min[1] + iy * 2 + 0) * grid_stepsize[1],
+					grid_origin[1] + (grid_idx_min[1] + iy * 2 + 1) * grid_stepsize[1],
 				};
-				__m512 vy = _mm512_set_ps(y[1], y[1], y[1], y[1], y[1], y[1], y[1], y[1], y[0], y[0], y[0], y[0], y[0], y[0], y[0], y[0]);
-				int y_stride[2] = {
-					(iy + 0) * grid_dim[0],
-					(iy + 1) * grid_dim[0],
-				};
+				__m512 vy = _mm512_insertf32x8(_mm512_set1_ps(y[0]), _mm256_set1_ps(y[1]), 1);
 
 				__m512 dx = _mm512_sub_ps(px, vx);
 				__m512 dy = _mm512_sub_ps(py, vy);
@@ -312,23 +321,34 @@ static inline void evaluate_grid_x8_512(float grid_data[], const int grid_idx_mi
 				__m512 ex = md_mm512_exp_ps(_mm512_mul_ps(pa, d2));
 				__m512 prod = _mm512_mul_ps(_mm512_mul_ps(_mm512_mul_ps(pc, fx), _mm512_mul_ps(fy, fz)), ex);
 
-				__m256 prod_lo = _mm512_castps512_ps256(prod);
-				__m256 prod_hi = _mm512_extractf32x8_ps(prod, 1);
+				if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+					prod = _mm512_mul_ps(prod, prod);
+				}
 
-				int index[2] = {
-					x_stride + y_stride[0] + z_stride,
-					x_stride + y_stride[1] + z_stride,
-				};
-				md_256 vpsi[2] = {
-					md_mm256_loadu_ps(grid_data + index[0]),
-					md_mm256_loadu_ps(grid_data + index[1]),
-				};
-				vpsi[0] = md_mm256_add_ps(vpsi[0], prod_lo);
-				vpsi[1] = md_mm256_add_ps(vpsi[1], prod_hi);
-
-				md_mm256_storeu_ps(grid_data + index[0], vpsi[0]);
-				md_mm256_storeu_ps(grid_data + index[1], vpsi[1]);
+				vpsi[iz][iy] = _mm512_add_ps(vpsi[iz][iy], prod);
 			}
+		}
+	}
+
+	// Write result block to memory
+	for (int iz = 0; iz < 8; ++iz) {
+		int z_stride = (grid_idx_min[2] + iz) * grid_dim[0] * grid_dim[1];
+		for (int iy = 0; iy < 4; ++iy) {
+			int y_stride[2] = {
+				(grid_idx_min[1] + iy * 2 + 0) * grid_dim[0],
+				(grid_idx_min[1] + iy * 2 + 1) * grid_dim[0],
+			};
+			int index[2] = {
+				x_stride + y_stride[0] + z_stride,
+				x_stride + y_stride[1] + z_stride,
+			};
+			md_256 psi[2] = {
+				_mm512_castps512_ps256(vpsi[iz][iy]),
+				_mm512_extractf32x8_ps(vpsi[iz][iy], 1),
+			};
+
+			md_mm256_storeu_ps(grid_data + index[0], psi[0]);
+			md_mm256_storeu_ps(grid_data + index[1], psi[1]);
 		}
 	}
 }
@@ -336,10 +356,13 @@ static inline void evaluate_grid_x8_512(float grid_data[], const int grid_idx_mi
 #endif
 
 // Evaluate 8 voxels per gto
-static inline void evaluate_grid_x8_256(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto) {
+static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
 	const md_256i vix = md_mm256_add_epi32(md_mm256_set1_epi32(grid_idx_min[0]), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
 	const md_256   vx = md_mm256_fmadd_ps(md_mm256_cvtepi32_ps(vix), md_mm256_set1_ps(grid_stepsize[0]), md_mm256_set1_ps(grid_origin[0]));
 	const int x_stride = grid_idx_min[0];
+
+	// Operate on local block to avoid cache-line invalidation across threads
+	md_256 vpsi[8][8] = {0};
 
 	for (size_t i = 0; i < gto->count; ++i) {
 		md_256  px = md_mm256_set1_ps(gto->x[i]);
@@ -351,14 +374,12 @@ static inline void evaluate_grid_x8_256(float grid_data[], const int grid_idx_mi
 		md_256i pj = md_mm256_set1_epi32(gto->j[i]);
 		md_256i pk = md_mm256_set1_epi32(gto->k[i]);
 	
-		for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
-			float z = grid_origin[2] + iz * grid_stepsize[2];
+		for (int iz = 0; iz < 8; ++iz) {
+			float z = grid_origin[2] + (grid_idx_min[2] + iz) * grid_stepsize[2];
 			md_256 vz = md_mm256_set1_ps(z);
-			int z_stride = iz * grid_dim[0] * grid_dim[1];
-			for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
-				float y = grid_origin[1] + iy * grid_stepsize[1];
+			for (int iy = 0; iy < 8; ++iy) {
+				float y = grid_origin[1] + (grid_idx_min[1] + iy) * grid_stepsize[1];
 				md_256 vy = md_mm256_set1_ps(y);
-				int y_stride = iy * grid_dim[0];
 
 				md_256 dx = md_mm256_sub_ps(px, vx);
 				md_256 dy = md_mm256_sub_ps(py, vy);
@@ -369,18 +390,28 @@ static inline void evaluate_grid_x8_256(float grid_data[], const int grid_idx_mi
 				md_256 fz = md_mm256_fast_pow(dz, pk);
 				md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
 				md_256 prod = md_mm256_mul_ps(md_mm256_mul_ps(md_mm256_mul_ps(pc, fx), md_mm256_mul_ps(fy, fz)), ex);
+				if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+					prod = _mm256_mul_ps(prod, prod);
+				}
 
-				int index = x_stride + y_stride + z_stride;
-				md_256 vpsi = md_mm256_loadu_ps(grid_data + index);
-				vpsi = md_mm256_add_ps(vpsi, prod);
-				md_mm256_storeu_ps(grid_data + index, vpsi);
+				vpsi[iz][iy] = md_mm256_add_ps(vpsi[iz][iy], prod);
 			}
+		}
+	}
+
+	// Write result block to memory
+	for (int iz = 0; iz < 8; ++iz) {
+		int z_stride = (grid_idx_min[2] + iz) * grid_dim[0] * grid_dim[1];
+		for (int iy = 0; iy < 8; ++iy) {
+			int y_stride = (grid_idx_min[1] + iy) * grid_dim[0];
+			int index = x_stride + y_stride + z_stride;
+			md_mm256_storeu_ps(grid_data + index, vpsi[iz][iy]);
 		}
 	}
 }
 
 // Evaluate 8 voxels per gto
-static inline void evaluate_grid_x8_128(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto) {
+static inline void evaluate_grid_8x8x8_128(float grid_data[], const int grid_idx_min[3], const int grid_idx_max[3], const int grid_dim[3], const float grid_origin[3], const float grid_stepsize[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
 	const md_128i vix[2] = {
 		md_mm_add_epi32(md_mm_set1_epi32(grid_idx_min[0] + 0), md_mm_set_epi32(3,2,1,0)),
 		md_mm_add_epi32(md_mm_set1_epi32(grid_idx_min[0] + 4), md_mm_set_epi32(3,2,1,0)),
@@ -394,6 +425,9 @@ static inline void evaluate_grid_x8_128(float grid_data[], const int grid_idx_mi
 		grid_idx_min[0] + 4,
 	};
 
+	// Operate on local block to avoid cache-line invalidation across threads
+	md_128 vpsi[8][8][2] = {0};
+
 	for (size_t i = 0; i < gto->count; ++i) {
 		md_128  px = md_mm_set1_ps(gto->x[i]);
 		md_128  py = md_mm_set1_ps(gto->y[i]);
@@ -404,14 +438,12 @@ static inline void evaluate_grid_x8_128(float grid_data[], const int grid_idx_mi
 		md_128i pj = md_mm_set1_epi32(gto->j[i]);
 		md_128i pk = md_mm_set1_epi32(gto->k[i]);
 
-		for (int iz = grid_idx_min[2]; iz < grid_idx_max[2]; iz++) {
-			float z = grid_origin[2] + iz * grid_stepsize[2];
+		for (int iz = 0; iz < 8; ++iz) {
+			float z = grid_origin[2] + (grid_idx_min[2] + iz) * grid_stepsize[2];
 			md_128 vz = md_mm_set1_ps(z);
-			int z_stride = iz * grid_dim[0] * grid_dim[1];
-			for (int iy = grid_idx_min[1]; iy < grid_idx_max[1]; ++iy) {
-				float y = grid_origin[1] + iy * grid_stepsize[1];
+			for (int iy = 0; iy < 8; ++iy) {
+				float y = grid_origin[1] + (grid_idx_min[1] + iy) * grid_stepsize[1];
 				md_128 vy = md_mm_set1_ps(y);
-				int y_stride = iy * grid_dim[0];
 
 				for (int ix = 0; ix < 2; ++ix) {
 					md_128 dx = md_mm_sub_ps(px, vx[ix]);
@@ -423,18 +455,32 @@ static inline void evaluate_grid_x8_128(float grid_data[], const int grid_idx_mi
 					md_128 fz = md_mm_fast_pow(dz, pk);
 					md_128 ex = md_mm_exp_ps(md_mm_mul_ps(pa, d2));
 					md_128 prod = md_mm_mul_ps(md_mm_mul_ps(md_mm_mul_ps(pc, fx), md_mm_mul_ps(fy, fz)), ex);
+					if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+						prod = _mm_mul_ps(prod, prod);
+					}
 
-					int index = x_stride[ix] + y_stride + z_stride;
-					md_128 vpsi = md_mm_loadu_ps(grid_data + index);
-					vpsi = md_mm_add_ps(vpsi, prod);
-					md_mm_storeu_ps(grid_data + index, vpsi);
+					vpsi[iz][iy][ix] = md_mm_add_ps(vpsi[iz][iy][ix], prod);
 				}
 			}
 		}
 	}
+
+	// Write result block to memory
+	for (int iz = 0; iz < 8; ++iz) {
+		int z_stride = (grid_idx_min[2] + iz) * grid_dim[0] * grid_dim[1];
+		for (int iy = 0; iy < 8; ++iy) {
+			int y_stride = (grid_idx_min[1] + iy) * grid_dim[0];
+			int index[2] = {
+				x_stride[0] + y_stride + z_stride,
+				x_stride[1] + y_stride + z_stride,
+			};
+			md_mm_storeu_ps(grid_data + index[0], vpsi[iz][iy][0]);
+			md_mm_storeu_ps(grid_data + index[1], vpsi[iz][iy][1]);
+		}
+	}
 }
 
-void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_data_t* in_gto) {
+void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_data_t* in_gto, md_gto_eval_mode_t mode) {
 	ASSERT(grid);
 	ASSERT(in_gto);
 
@@ -524,28 +570,30 @@ void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const 
 
 	//printf("Number of pgtos in volume region: %zu\n", gto.count);
 
-	// There are specialized versions for evaluating grids where the x-lengths are 8
+	// There are specialized versions for evaluating 8x8x8 subgrids
 	// Then we vectorize over the spatial domain rather than the GTOs to get better register occupation
-	if (grid_idx_len[0] == 8 && grid_idx_len[1] == 8) {
+	if (grid_idx_len[0] == 8 && grid_idx_len[1] == 8 && grid_idx_len[2] == 8) {
+		// Fastpath
 #if defined(__AVX512F__) && defined(__AVX512DQ__)
-		evaluate_grid_x8_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
+		evaluate_grid_8x8x8_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto, mode);
 #elif defined(__AVX2__)
-		evaluate_grid_x8_256(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
+		evaluate_grid_8x8x8_256(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto, mode);
 #elif defined(__SSE2__)
-		evaluate_grid_x8_128(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
+		evaluate_grid_8x8x8_128(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto, mode);
 #else
-		evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
+		evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto, mode);
 #endif
 	} else {
+		// Slowpath
 		// Vectorize over GTOs
 #if defined(__AVX512F__)
-		evaluate_grid_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
+		evaluate_grid_512(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto, mode);
 #elif defined(__AVX2__)
-		evaluate_grid_256(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
+		evaluate_grid_256(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto, mode);
 #elif defined(__SSE2__)
-		evaluate_grid_128(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
+		evaluate_grid_128(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto, mode);
 #else
-		evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto);
+		evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->stepsize, &gto, mode);
 #endif
 	}
 
@@ -553,22 +601,22 @@ done:
 	md_temp_set_pos_back(temp_pos);
 }
 
-void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_data_t* gto) {
+void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
 	int grid_idx_min[3] = {0,0,0};
 
 #if defined(__AVX512F__)
-	evaluate_grid_512(grid->data, grid_idx_min, grid->dim, grid->dim, grid->origin, grid->stepsize, gto);
+	evaluate_grid_512(grid->data, grid_idx_min, grid->dim, grid->dim, grid->origin, grid->stepsize, gto, mode);
 #elif defined(__AVX2__)
-	evaluate_grid_256(grid->data, grid_idx_min, grid->dim, grid->dim, grid->origin, grid->stepsize, gto);
+	evaluate_grid_256(grid->data, grid_idx_min, grid->dim, grid->dim, grid->origin, grid->stepsize, gto, mode);
 #elif defined(__SSE2__)
-	evaluate_grid_128(grid->data, grid_idx_min, grid->dim, grid->dim, grid->origin, grid->stepsize, gto);
+	evaluate_grid_128(grid->data, grid_idx_min, grid->dim, grid->dim, grid->origin, grid->stepsize, gto, mode);
 #else
-	evaluate_grid_ref(grid->data, grid_idx_min, grid->dim, grid->dim, grid->origin, grid->stepsize, gto);
+	evaluate_grid_ref(grid->data, grid_idx_min, grid->dim, grid->dim, grid->origin, grid->stepsize, gto, mode);
 #endif
 }
 
 // Evaluate GTOs over a set of passed in packed XYZ coordinates with a bytestride
-static void evaluate_gtos(float* out_psi, const float* in_xyz, size_t count, size_t stride, const md_gto_data_t* in_gto) {
+static void evaluate_gtos(float* out_psi, const float* in_xyz, size_t count, size_t stride, const md_gto_data_t* in_gto, md_gto_eval_mode_t mode) {
 	for (size_t j = 0; j < count; ++j) {
 		const float* xyz = (const float*)((const char*)in_xyz + j * stride);
 		float x = xyz[0];
@@ -596,13 +644,17 @@ static void evaluate_gtos(float* out_psi, const float* in_xyz, size_t count, siz
 			float fy = fast_powf(dy, pj);
 			float fz = fast_powf(dz, pk);
 			float exp_term = neg_alpha == 0 ? 1.0f : expf(neg_alpha * d2);
-			psi += coeff * fx * fy * fz * exp_term;
+			float prod = coeff * fx * fy * fz * exp_term;
+			if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+				prod = prod * prod;
+			}
+			psi += prod;
 		}
 		out_psi[j] = (float)psi;
 	}
 }
 
-void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t count, size_t stride, const md_gto_data_t* gto) {
+void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t count, size_t stride, const md_gto_data_t* gto, md_gto_eval_mode_t mode) {
 	if (!out_psi) {
 		MD_LOG_ERROR("out_psi array is NULL!");
 		return;
@@ -616,7 +668,7 @@ void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t count, size_t 
 		return;
 	}
 	stride = MAX(stride, sizeof(float) * 3);
-	evaluate_gtos(out_psi, xyz, count, stride, gto);
+	evaluate_gtos(out_psi, xyz, count, stride, gto, mode);
 }
 
 static inline double eval_G(double d, double C, int l, double neg_alpha) {

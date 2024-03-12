@@ -36,7 +36,7 @@ UBENCH_EX(gto, evaluate_grid) {
     min_box = vec3_mul_f(min_box, factor);
     max_box = vec3_mul_f(max_box, factor);
 
-    size_t vol_dim = 128;
+    size_t vol_dim = 256;
     size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
     float* vol_data = md_arena_allocator_push(arena, bytes);
     MEMSET(vol_data, 0, bytes);
@@ -68,7 +68,7 @@ UBENCH_EX(gto, evaluate_grid) {
             const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
             const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
-            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, &gto);
+            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, &gto, MD_GTO_EVAL_MODE_PSI);
         }
     }
 

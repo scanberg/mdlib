@@ -92,6 +92,10 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
 
     // Realloc or Free
     if (ptr && old_size) {
+        if (new_size == 0) {
+            // Free
+            return NULL;
+        }
         if ((char*)ptr + old_size == (char*)arena->curr_page->mem + arena->curr_page->curr) {
             // This is the last allocation that occured, then we can shrink or grow that sucker
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
@@ -101,10 +105,6 @@ static void* arena_realloc(struct md_allocator_o *inst, void *ptr, size_t old_si
                 arena->curr_page->curr = new_curr;
                 return ptr;
             }
-        }
-        if (new_size == 0) {
-            // Free
-            return NULL;
         }
         size_t alignment = new_size <= 2 ? new_size : DEFAULT_ALIGNMENT;
         // ptr is not the last allocation or the new size did not fit into the existing page.
