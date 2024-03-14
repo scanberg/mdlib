@@ -297,7 +297,7 @@ static inline void evaluate_grid_8x8x8_512(float grid_data[], const int grid_idx
 
 	__m512 vpsi[8][4] = {0};
 
-	for (size_t i = 0; i < gto->count; ++i) {
+	for (size_t i = 0; i < num_gtos; ++i) {
 		__m512  px = _mm512_set1_ps(gtos[i].x);
 		__m512  py = _mm512_set1_ps(gtos[i].y);
 		__m512  pz = _mm512_set1_ps(gtos[i].z);
