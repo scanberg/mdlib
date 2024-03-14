@@ -22,7 +22,7 @@ UBENCH_EX(gto, evaluate_grid) {
     vec3_t max_box = vec3_set1(-FLT_MAX);
 
     for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-        vec3_t c = {vlx.geom.coord_x[i], vlx.geom.coord_y[i], vlx.geom.coord_z[i]};
+        vec3_t c = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]};
         min_box = vec3_min(min_box, c);
         max_box = vec3_max(max_box, c);
     }
@@ -36,7 +36,7 @@ UBENCH_EX(gto, evaluate_grid) {
     min_box = vec3_mul_f(min_box, factor);
     max_box = vec3_mul_f(max_box, factor);
 
-    size_t vol_dim = 256;
+    int vol_dim = 256;
     size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
     float* vol_data = md_arena_allocator_push(arena, bytes);
     MEMSET(vol_data, 0, bytes);
@@ -50,10 +50,10 @@ UBENCH_EX(gto, evaluate_grid) {
         .stepsize = {step.x, step.y, step.z},
     };
 
-    md_gto_data_t gto = {0};
-    md_gto_data_init(&gto, md_vlx_pgto_count(&vlx), arena);
-
-    md_vlx_extract_alpha_mo_pgtos(&gto, &vlx, 120);
+    size_t num_pgtos = md_vlx_pgto_count(&vlx);
+    md_array(md_gto_t) pgtos = md_array_create(md_gto_t, num_pgtos, arena);
+    md_vlx_extract_alpha_mo_pgtos(pgtos, &vlx, 120);
+    md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
 
     int num_blk = vol_dim / BLK_DIM;
     int num_tot_blk = num_blk * num_blk * num_blk;
@@ -68,7 +68,7 @@ UBENCH_EX(gto, evaluate_grid) {
             const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
             const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
-            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, &gto, MD_GTO_EVAL_MODE_PSI);
+            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, pgtos, num_pgtos, MD_GTO_EVAL_MODE_PSI);
         }
     }
 

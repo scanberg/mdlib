@@ -46,6 +46,23 @@ typedef struct md_vlx_basis_t {
 	struct basis_set_t* basis_set;
 } md_vlx_basis_t;
 
+typedef struct md_vlx_orbitals_t {
+	struct {
+		size_t count;
+		double* data;
+	} energies;
+
+	struct {
+		size_t count;
+		double* data;
+	} occupations;
+
+	struct {
+		size_t dim[2];
+		double* data;
+	} orbitals;
+} md_vlx_orbitals_t;
+
 // Self Consistent Field
 typedef struct md_vlx_scf_t {
 	struct {
@@ -64,28 +81,16 @@ typedef struct md_vlx_scf_t {
 	double nuclear_repulsion_energy;
 	double gradient_norm;
 
-	struct {
-		struct {
-			size_t count;
-			double* data;
-		} energies;
-
-		struct {
-			size_t count;
-			double* data;
-		} occupations;
-
-		struct {
-			size_t dim[2];
-			double* data;
-		} orbitals;
-	} alpha;
+	md_vlx_orbitals_t alpha;
+	md_vlx_orbitals_t beta;
 
 	md_vlx_dipole_moment_t ground_state_dipole_moment;
 } md_vlx_scf_t;
 
 typedef struct md_vlx_rsp_t {
 	size_t num_excited_states;
+
+	// All entries are arrays of length num_excited_states if not NULL
 	str_t* ident;
 	md_vlx_dipole_moment_t* electronic_transition_length;
 	md_vlx_dipole_moment_t* electronic_transition_velocity;
@@ -93,6 +98,7 @@ typedef struct md_vlx_rsp_t {
 	double* absorption_ev;
 	double* absorption_osc_str;
 	double* electronic_circular_dichroism_cgs;
+	md_vlx_orbitals_t* orbital;
 } md_vlx_rsp_t;
 
 typedef struct md_vlx_data_t {
@@ -109,7 +115,7 @@ bool md_vlx_data_parse_file(md_vlx_data_t* data, str_t filename, struct md_alloc
 void md_vlx_data_free(md_vlx_data_t* data);
 
 size_t md_vlx_pgto_count(const md_vlx_data_t* vlx_data);
-bool md_vlx_extract_alpha_mo_pgtos(md_gto_data_t* pgtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
+bool md_vlx_extract_alpha_mo_pgtos(md_gto_t* pgtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
 
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_data_t* data, struct md_allocator_i* alloc);

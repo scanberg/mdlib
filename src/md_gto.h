@@ -1,22 +1,23 @@
 #pragma once
+#include <stdint.h>
 #include <stddef.h>
 
-struct md_allocator_i;
+// Gaussian Type Orbital
+// Are evaluated as f(x',y',z') = (x'-x)^i (y'-y)^j (z'-z)^k c exp(-a ((x'-x)^2 + (y'-y)^2 + (z'-z)^2))
+// Where x' y' and z' are the observer coordinates we evaluate the function at
+typedef struct md_gto_t {
+	float x;
+	float y;
+	float z;
+	float coeff;		// Baked coefficient (should include normalization factors)
+	float alpha;		// Exponent alpha
+	float cutoff;		// Radial cutoff
+	// The integer type here is arbitrary as we only need to store values 0-4 in reality.
+	// uint16_t was chosen to pad the struct to 32 bytes in size
+	uint16_t i, j, k, l;
+} md_gto_t;
 
-typedef struct md_gto_data_t {
-	size_t count;
-	float* x;
-	float* y;
-	float* z;
-	float* neg_alpha;	// Negated Alpha term
-	float* coeff;		// Coefficient: Should include normalization factors
-	float* cutoff;		// Cutoff radial distance of the gto
-	int* i;
-	int* j;
-	int* k;
-	int* l;
-} md_gto_data_t;
-
+// The grid data is assumed to be given in Z,Y,X order (e.g. data[Z][Y][X])
 typedef struct md_grid_t {
 	float* data;
 	int   dim[3];
@@ -33,33 +34,36 @@ typedef enum {
 extern "C" {
 #endif
 
-// Allocates gto data for given count
-void md_gto_data_init(md_gto_data_t* gto, size_t count, struct md_allocator_i* alloc);
-void md_gto_data_free(md_gto_data_t* gto, struct md_allocator_i* alloc);
+// Evaluates GTOs over a grid
+// - grid: The grid to evaluate a subportion of
+// - gtos: The gtos to evaluate
+// - num_gtos: Number of supplied gtos
+// - eval_mode: GTO evaluation mode
+void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
-// Evaluates a GTOs over a grid
-// The grid data is assumed to be given in Z,Y,X order (e.g. data[Z][Y][X])
-void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_data_t* gto, md_gto_eval_mode_t mode);
-
-// Evaluate over subportion of a grid
+// Evaluate GTOs over subportion of a grid
 // - grid: The grid to evaluate a subportion of
 // - grid_idx_off: Index offset for x,y,z
 // - grid_idx_len: Index length for x,y,z
-// - gto: The gto data to evaluate
-void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_data_t* gto, md_gto_eval_mode_t mode);
+// - gtos: The gtos to evaluate
+// - num_gtos: Number of supplied gtos
+// - eval_mode: GTO evaluation mode
+// @NOTE: It is strongly recommended that the evaluation occurs over a 8x8x8 blocks as this will get the fastpath
+void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
 
 // Evaluates GTOs over a set of given XYZ coordinates
-// 
-// - out_psi: Array of values to write evaluated values to, should have length 'count'
-// - xyz: Pointer to base addr of xyz packed coordinates to be evaluated, should have length 'count'
-// - count: Number of coordinates to evaluate
-// - stride: Stride in bytes between the given xyz coordinates. [OPTIONAL], a value of zero implies fully packed XYZXYZ... -> (12 bytes)
-// - gto: input gtos to be evaluated for the supplied coordinates
-void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t count, size_t stride, const md_gto_data_t* gto, md_gto_eval_mode_t mode);
+// - out_psi: Array of values to write evaluated values to, should have length 'num_xyz'
+// - xyz: Pointer to base addr of xyz packed coordinates to be evaluated, should have length 'num_xyz'
+// - num_xyz: Number of coordinates to evaluate
+// - stride_xyz [OPTIONAL]: Stride in bytes between the given xyz coordinates. A value of zero implies fully packed XYZXYZ... -> (12 bytes)
+// - gtos: input gtos to be evaluated for the supplied coordinates
+// - num_gtos: Number of gtos
+// - eval_mode: GTO evaluation mode
+void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
 
-// Compute the cutoff parameter within the gto data based on the given value
+// Compute the cutoff parameter within the supplied GTOs based on the given value
 // Typically this could be somewhere around 1.0e-6
-void md_gto_cutoff_compute(md_gto_data_t* gto, double value);
+void md_gto_cutoff_compute(md_gto_t* gtos, size_t num_gtos, double value);
 
 #ifdef __cplusplus
 }

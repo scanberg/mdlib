@@ -359,7 +359,7 @@ size_t md_vlx_pgto_count(const md_vlx_data_t* vlx_data) {
 	return count;
 }
 
-static size_t extract_pgto_data(md_gto_data_t* pgto_data, const vlx_molecule_t* molecule, const basis_set_t* basis_set, const double* mo_coeffs) {
+static size_t extract_pgto_data(md_gto_t* pgtos, const vlx_molecule_t* molecule, const basis_set_t* basis_set, const double* mo_coeffs) {
 	int natoms = (int)molecule->num_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, molecule->atomic_number, molecule->num_atoms);
 
@@ -414,23 +414,23 @@ static size_t extract_pgto_data(md_gto_data_t* pgto_data, const vlx_molecule_t* 
 					const double* normcoefs = basis_func.normalization_coefficients;
 
 					for (int iprim = 0; iprim < nprims; iprim++) {
-						double neg_alpha = -exponents[iprim]; // Negate alpha here!
+						double alpha = exponents[iprim];
 						double coef1 = normcoefs[iprim];
 
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
 							double fcart = factors[icomp];
 
-							pgto_data->x[count]		= x;
-							pgto_data->y[count]		= y;
-							pgto_data->z[count]		= z;
-							pgto_data->neg_alpha[count] = (float)neg_alpha; 
-							pgto_data->coeff[count] = (float)(coef1 * fcart * mo_coeff);
-							pgto_data->cutoff[count] = 0.0f;
-							pgto_data->i[count]		= lx[icomp];
-							pgto_data->j[count]		= ly[icomp];
-							pgto_data->k[count]		= lz[icomp];
-							pgto_data->l[count]		= angl;
+							pgtos[count].x		= x;
+							pgtos[count].y		= y;
+							pgtos[count].z		= z;
+							pgtos[count].coeff  = (float)(coef1 * fcart * mo_coeff);
+							pgtos[count].alpha  = (float)alpha; 
+							pgtos[count].cutoff = 0.0f;
+							pgtos[count].i		= (uint16_t)lx[icomp];
+							pgtos[count].j		= (uint16_t)ly[icomp];
+							pgtos[count].k		= (uint16_t)lz[icomp];
+							pgtos[count].l		= (uint16_t)angl;
 
 							count += 1;
 						}
@@ -914,7 +914,7 @@ static bool parse_vlx_rsp(md_vlx_rsp_t* rsp, md_buffered_reader_t* reader, md_al
 					MD_LOG_ERROR("Unexpected number of tokens in entry when parsing Electronic Circular Dichroism");
 					return false;
 				}
-				rsp->electronic_circular_dichroism_cgs[i] = parse_float(tok[7]);
+				rsp->electronic_circular_dichroism_cgs[i] = parse_float(tok[6]);
 			}
 			mask |= 32;
 		} else if (str_begins_with(line, STR_LIT("===="))) {
@@ -1088,8 +1088,8 @@ void md_vlx_data_free(md_vlx_data_t* data) {
 	MEMSET(data, 0, sizeof(md_vlx_data_t));
 }
 
-bool md_vlx_extract_alpha_mo_pgtos(md_gto_data_t* pgto_data, const md_vlx_data_t* vlx, size_t mo_idx) {
-	ASSERT(pgto_data);
+bool md_vlx_extract_alpha_mo_pgtos(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t mo_idx) {
+	ASSERT(pgtos);
 	ASSERT(vlx);
 	vlx_molecule_t mol = {
 		.num_atoms = vlx->geom.num_atoms,
@@ -1115,8 +1115,7 @@ bool md_vlx_extract_alpha_mo_pgtos(md_gto_data_t* pgto_data, const md_vlx_data_t
 		mo_coeffs[i] = vlx->scf.alpha.orbitals.data[i * num_cols + mo_idx];
 	}
 
-	extract_pgto_data(pgto_data, &mol, vlx->basis.basis_set, mo_coeffs);
-	md_gto_cutoff_compute(pgto_data, 1.0e-6);
+	extract_pgto_data(pgtos, &mol, vlx->basis.basis_set, mo_coeffs);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
@@ -1172,6 +1171,22 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 	}
 
 	if (flags & VLX_FLAG_SCF) {
+		str_t file_path;
+		if (result == true && extract_file_path_without_ext(&file_path, filename)) {
+			md_strb_t sb = md_strb_create(md_get_temp_allocator());
+			md_strb_push_str(&sb, file_path);
+			md_strb_push_str(&sb, STR_LIT(".scf.h5"));
+			str_t scf_path = md_strb_to_str(sb);
+			if (md_path_is_valid(scf_path)) {
+				if (!vlx_load_scf_h5_data(vlx, scf_path)) {
+					MD_LOG_ERROR("Failed to load scf h5 parameters from file '" STR_FMT "'", STR_ARG(scf_path));
+					return false;
+				}
+			}
+		}
+	}
+
+	if (flags & VLX_FLAG_RSP) {
 		str_t file_path;
 		if (result == true && extract_file_path_without_ext(&file_path, filename)) {
 			md_strb_t sb = md_strb_create(md_get_temp_allocator());
