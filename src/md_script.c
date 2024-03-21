@@ -5520,7 +5520,7 @@ static bool eval_properties(md_script_eval_t* eval, const md_molecule_t* mol, co
 
         MEMCPY(&mutable_mol.unit_cell, &curr_header.unit_cell, sizeof(md_unit_cell_t));
         
-        md_vm_arena_set_pos(temp_alloc, STACK_RESET_POINT);
+        md_vm_arena_set_pos_back(temp_alloc, STACK_RESET_POINT);
         ctx.identifiers = 0;
         ctx.spatial_hash = 0;
 

@@ -1436,7 +1436,7 @@ static void find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* ato
             }
         }
 
-        md_vm_arena_set_pos(temp_arena, temp_pos);
+        md_vm_arena_set_pos_back(temp_arena, temp_pos);
     }
 }
 

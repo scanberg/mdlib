@@ -345,7 +345,7 @@ void md_vm_arena_reset(struct md_allocator_i* alloc) {
     vm_set_pos(arena, sizeof(vm_arena_t) + sizeof(md_allocator_i));
 }
 
-void md_vm_arena_set_pos(struct md_allocator_i* alloc, size_t pos) {
+void md_vm_arena_set_pos_back(struct md_allocator_i* alloc, size_t pos) {
     VALIDATE_AND_EXTRACT_VM_ARENA(alloc)
     vm_set_pos(arena, pos);
 }
@@ -361,5 +361,5 @@ md_vm_arena_temp_t md_vm_arena_temp_begin(struct md_allocator_i* alloc) {
 }
 
 void md_vm_arena_temp_end(md_vm_arena_temp_t temp) {
-    md_vm_arena_set_pos(temp.vm_arena, temp.pos);
+    md_vm_arena_set_pos_back(temp.vm_arena, temp.pos);
 }

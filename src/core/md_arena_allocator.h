@@ -51,7 +51,7 @@ void  md_vm_arena_pop(struct md_allocator_i* vm_arena, size_t size);
 
 void  md_vm_arena_reset(struct md_allocator_i* vm_arena);
 
-void   md_vm_arena_set_pos(struct md_allocator_i* vm_arena, size_t pos);
+void   md_vm_arena_set_pos_back(struct md_allocator_i* vm_arena, size_t pos);
 size_t md_vm_arena_get_pos(struct md_allocator_i* vm_arena);
 
 //struct md_allocator_i md_vm_arena_create_interface(md_vm_arena_t* arena);
