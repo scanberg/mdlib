@@ -98,7 +98,7 @@ typedef struct md_vlx_rsp_t {
 	double* absorption_ev;
 	double* absorption_osc_str;
 	double* electronic_circular_dichroism_cgs;
-	md_vlx_orbitals_t* orbital;
+	md_vlx_orbitals_t* nto_orbitals;
 } md_vlx_rsp_t;
 
 typedef struct md_vlx_data_t {
@@ -115,6 +115,7 @@ bool md_vlx_data_parse_file(md_vlx_data_t* data, str_t filename, struct md_alloc
 void md_vlx_data_free(md_vlx_data_t* data);
 
 size_t md_vlx_pgto_count(const md_vlx_data_t* vlx_data);
+
 bool md_vlx_extract_alpha_mo_pgtos(md_gto_t* pgtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
 
 // MOLECULE

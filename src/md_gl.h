@@ -179,11 +179,11 @@ typedef struct md_gl_draw_args_t {
     struct {
         // @NOTE: Matrices are column major float[4][4]
         const float* view_matrix;
-        const float* projection_matrix;
+        const float* proj_matrix;
 
         // [Optional] These fields are only used to compute screen space velocity
         const float* prev_view_matrix; 
-        const float* prev_projection_matrix;
+        const float* prev_proj_matrix;
     } view_transform;
 
     uint32_t atom_mask;

@@ -963,7 +963,9 @@ bool vlx_parse(md_vlx_data_t* vlx, md_buffered_reader_t* reader, uint32_t flags)
 	return true;
 }
 
-bool vlx_load_scf_h5_data(md_vlx_data_t* vlx, str_t filename) {
+bool vlx_load_orbital_h5_data(md_vlx_orbitals_t* orb, str_t filename, str_t ident, md_allocator_i* alloc) {
+	ASSERT(orb);
+
 	hid_t  file_id = 0, dataset_id = 0, space_id = 0; /* identifiers */
 	herr_t status = 0;
 
@@ -972,34 +974,38 @@ bool vlx_load_scf_h5_data(md_vlx_data_t* vlx, str_t filename) {
 	/* Open an existing file. */
 	file_id = H5Fopen(str_beg(filename), H5F_ACC_RDONLY, H5P_DEFAULT);
 	if (file_id > 0) {
-		dataset_id = H5Dopen(file_id, "/alpha_orbitals", H5P_DEFAULT);
+
+		char lbl[128];
+		snprintf(lbl, sizeof(lbl), "/" STR_FMT "_orbitals", STR_ARG(ident));
+
+		dataset_id = H5Dopen(file_id, lbl, H5P_DEFAULT);
 		if (dataset_id > 0) {
 			space_id = H5Dget_space(dataset_id);
 			if (space_id > 0) {
 				int ndim = H5Sget_simple_extent_ndims(space_id);
 				if (ndim != 2) {
-					MD_LOG_ERROR("Unexpected number of dimensions in scf orbitals");
+					MD_LOG_ERROR("Unexpected number of dimensions when reading h5 orbitals");
 					goto done_orb;
 				}
 
 				hsize_t dims[2];
 				ndim = H5Sget_simple_extent_dims(space_id, dims, 0);
 				if (ndim != 2) {
-					MD_LOG_ERROR("Unexpected number of dimensions in scf orbitals");
+					MD_LOG_ERROR("Unexpected number of dimensions when reading h5 orbitals");
 					goto done_orb;
 				}		
 
-				double* data = md_alloc(vlx->alloc, sizeof(double) * dims[0] * dims[1]);
+				double* data = md_alloc(alloc, sizeof(double) * dims[0] * dims[1]);
 				status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
 
 				if (status != 0) {
-					MD_LOG_ERROR("Could not read scf orbitals");
+					MD_LOG_ERROR("An error occured when reading h5 orbital");
 					goto done_orb;
 				}
 
-				vlx->scf.alpha.orbitals.dim[0] = dims[0];
-				vlx->scf.alpha.orbitals.dim[1] = dims[1];
-				vlx->scf.alpha.orbitals.data = data;
+				orb->orbitals.dim[0] = dims[0];
+				orb->orbitals.dim[1] = dims[1];
+				orb->orbitals.data   = data;
 
 			done_orb:
 				H5Sclose(space_id);
@@ -1007,33 +1013,35 @@ bool vlx_load_scf_h5_data(md_vlx_data_t* vlx, str_t filename) {
 			H5Dclose(dataset_id);
 		}
 
-		dataset_id = H5Dopen(file_id, "/alpha_energies", H5P_DEFAULT);
+		snprintf(lbl, sizeof(lbl), "/" STR_FMT "_energies", STR_ARG(ident));
+
+		dataset_id = H5Dopen(file_id, lbl, H5P_DEFAULT);
 		if (dataset_id > 0) {
 			space_id = H5Dget_space(dataset_id);
 			if (space_id > 0) {
 				int ndim = H5Sget_simple_extent_ndims(space_id);
 				if (ndim != 1) {
-					MD_LOG_ERROR("Unexpected number of dimensions in scf energies");
+					MD_LOG_ERROR("Unexpected number of dimensions in h5 energies");
 					goto done_ener;
 				}
 
 				hsize_t dim;
 				ndim = H5Sget_simple_extent_dims(space_id, &dim, 0);
 				if (ndim != 1) {
-					MD_LOG_ERROR("Unexpected number of dimensions in scf energies");
+					MD_LOG_ERROR("Unexpected number of dimensions in h5 energies");
 					goto done_ener;
 				}		
 
-				double* data = md_alloc(vlx->alloc, sizeof(double) * dim);
+				double* data = md_alloc(alloc, sizeof(double) * dim);
 				status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
 
 				if (status != 0) {
-					MD_LOG_ERROR("Could not read scf energies");
+					MD_LOG_ERROR("Could not read h5 energies");
 					goto done_ener;
 				}
 
-				vlx->scf.alpha.energies.count = dim;
-				vlx->scf.alpha.energies.data = data;
+				orb->energies.count = dim;
+				orb->energies.data = data;
 
 				done_ener:
 				H5Sclose(space_id);
@@ -1041,33 +1049,35 @@ bool vlx_load_scf_h5_data(md_vlx_data_t* vlx, str_t filename) {
 			H5Dclose(dataset_id);
 		}
 
-		dataset_id = H5Dopen(file_id, "/alpha_occupations", H5P_DEFAULT);
+		snprintf(lbl, sizeof(lbl), "/" STR_FMT "_occupations", STR_ARG(ident));
+
+		dataset_id = H5Dopen(file_id, lbl, H5P_DEFAULT);
 		if (dataset_id > 0) {
 			space_id = H5Dget_space(dataset_id);
 			if (space_id > 0) {
 				int ndim = H5Sget_simple_extent_ndims(space_id);
 				if (ndim != 1) {
-					MD_LOG_ERROR("Unexpected number of dimensions in scf occupations");
+					MD_LOG_ERROR("Unexpected number of dimensions in h5 occupations");
 					goto done_occ;
 				}
 
 				hsize_t dim;
 				ndim = H5Sget_simple_extent_dims(space_id, &dim, 0);
 				if (ndim != 1) {
-					MD_LOG_ERROR("Unexpected number of dimensions in scf occupations");
-					goto done_occ;
-				}		
-
-				double* data = md_alloc(vlx->alloc, sizeof(double) * dim);
-				status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
-
-				if (status != 0) {
-					MD_LOG_ERROR("Could not read scf occupations");
+					MD_LOG_ERROR("Unexpected number of dimensions in h5 occupations");
 					goto done_occ;
 				}
 
-				vlx->scf.alpha.occupations.count = dim;
-				vlx->scf.alpha.occupations.data = data;
+				double* data = md_alloc(alloc, sizeof(double) * dim);
+				status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
+
+				if (status != 0) {
+					MD_LOG_ERROR("Could not read h5 occupations");
+					goto done_occ;
+				}
+
+				orb->occupations.count = dim;
+				orb->occupations.data = data;
 			done_occ:
 				H5Sclose(space_id);
 			}
@@ -1075,7 +1085,7 @@ bool vlx_load_scf_h5_data(md_vlx_data_t* vlx, str_t filename) {
 		status = H5Fclose(file_id);
 	}
 
-	result = vlx->scf.alpha.orbitals.dim[0] != 0 && vlx->scf.alpha.energies.count != 0 && vlx->scf.alpha.occupations.count != 0;
+	result = orb->orbitals.dim[0] != 0 && orb->energies.count != 0 && orb->occupations.count != 0;
 
 	return result;
 }
@@ -1149,6 +1159,8 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 	bool result = vlx_parse(vlx, &reader, flags);
 	md_file_close(file);
 
+	if (!result) return false;
+
 	if (flags & VLX_FLAG_BASIS) {
 		if (!str_empty(vlx->basis.ident)) {
 			md_strb_t sb = md_strb_create(md_get_temp_allocator());
@@ -1170,39 +1182,41 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 		}
 	}
 
+	str_t base_file = {0};
+	if (!extract_file_path_without_ext(&base_file, filename)) {
+		MD_LOG_ERROR("Failed to extract base file path");
+		return false;
+	}
+	md_strb_t sb = md_strb_create(md_get_temp_allocator());
+
 	if (flags & VLX_FLAG_SCF) {
-		str_t file_path;
-		if (result == true && extract_file_path_without_ext(&file_path, filename)) {
-			md_strb_t sb = md_strb_create(md_get_temp_allocator());
-			md_strb_push_str(&sb, file_path);
-			md_strb_push_str(&sb, STR_LIT(".scf.h5"));
-			str_t scf_path = md_strb_to_str(sb);
-			if (md_path_is_valid(scf_path)) {
-				if (!vlx_load_scf_h5_data(vlx, scf_path)) {
-					MD_LOG_ERROR("Failed to load scf h5 parameters from file '" STR_FMT "'", STR_ARG(scf_path));
-					return false;
-				}
+		md_strb_fmt(&sb, STR_FMT ".scf.h5", STR_ARG(base_file));
+		str_t scf_path = md_strb_to_str(sb);
+		if (md_path_is_valid(scf_path)) {
+			if (!vlx_load_orbital_h5_data(&vlx->scf.alpha, scf_path, STR_LIT("alpha"), vlx->alloc)) {
+				MD_LOG_ERROR("Failed to load orbital h5 parameters from file '" STR_FMT "'", STR_ARG(scf_path));
+				return false;
 			}
 		}
 	}
 
 	if (flags & VLX_FLAG_RSP) {
-		str_t file_path;
-		if (result == true && extract_file_path_without_ext(&file_path, filename)) {
-			md_strb_t sb = md_strb_create(md_get_temp_allocator());
-			md_strb_push_str(&sb, file_path);
-			md_strb_push_str(&sb, STR_LIT(".scf.h5"));
-			str_t scf_path = md_strb_to_str(sb);
-			if (md_path_is_valid(scf_path)) {
-				if (!vlx_load_scf_h5_data(vlx, scf_path)) {
-					MD_LOG_ERROR("Failed to load scf h5 parameters from file '" STR_FMT "'", STR_ARG(scf_path));
+		for (int i = 1; i <= (int)vlx->rsp.num_excited_states; ++i) {
+			md_strb_reset(&sb);
+			md_strb_fmt(&sb, STR_FMT "_S%i_NTO.h5", STR_ARG(base_file), i);
+			str_t nto_path = md_strb_to_str(sb);
+			if (md_path_is_valid(nto_path)) {
+				md_vlx_orbitals_t nto = {0};
+				if (!vlx_load_orbital_h5_data(&nto, nto_path, STR_LIT("alpha"), vlx->alloc)) {
+					MD_LOG_ERROR("Failed to load NTO h5 parameters from file '" STR_FMT "'", STR_ARG(nto_path));
 					return false;
 				}
+				md_array_push(vlx->rsp.nto_orbitals, nto, vlx->alloc);
 			}
 		}
 	}
 
-	return result;
+	return true;
 }
 
 bool md_vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator_i* alloc) {
