@@ -18,6 +18,13 @@ struct md_molecule_loader_i;
 struct basis_set_t;
 struct vec3_t;
 
+enum {
+	MD_VLX_NTO_TYPE_PARTICLE = 0,
+	MD_VLX_NTO_TYPE_HOLE = 1,
+};
+
+typedef uint32_t md_vlx_nto_type_t;
+
 typedef struct md_vlx_geom_t {
 	size_t num_atoms;
 	md_label_t* atom_symbol;
@@ -81,6 +88,9 @@ typedef struct md_vlx_scf_t {
 	double nuclear_repulsion_energy;
 	double gradient_norm;
 
+	size_t homo_idx;
+	size_t lumo_idx;
+
 	md_vlx_orbitals_t alpha;
 	md_vlx_orbitals_t beta;
 
@@ -98,7 +108,7 @@ typedef struct md_vlx_rsp_t {
 	double* absorption_ev;
 	double* absorption_osc_str;
 	double* electronic_circular_dichroism_cgs;
-	md_vlx_orbitals_t* nto_orbitals;
+	md_vlx_orbitals_t* nto;
 } md_vlx_rsp_t;
 
 typedef struct md_vlx_data_t {
@@ -114,9 +124,16 @@ bool md_vlx_data_parse_str(md_vlx_data_t* data, str_t string, struct md_allocato
 bool md_vlx_data_parse_file(md_vlx_data_t* data, str_t filename, struct md_allocator_i* alloc);
 void md_vlx_data_free(md_vlx_data_t* data);
 
-size_t md_vlx_pgto_count(const md_vlx_data_t* vlx_data);
+// Extract Natural Transition Orbitals PGTOs
+size_t md_vlx_nto_pgto_count(const md_vlx_data_t* vlx_data);
 
-bool md_vlx_extract_alpha_mo_pgtos(md_gto_t* pgtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
+// nto_idx: The index of the excited state (0-based indexing)
+// lambda_idx: The lambda component to extract (0-based indexing), 0 corresponds to the most significant index
+bool   md_vlx_nto_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx_data, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
+
+// Extract Molecular Orbital PGTOs
+size_t md_vlx_mol_pgto_count(const md_vlx_data_t* vlx_data);
+bool   md_vlx_mol_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
 
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_data_t* data, struct md_allocator_i* alloc);

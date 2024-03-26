@@ -50,9 +50,9 @@ UBENCH_EX(gto, evaluate_grid) {
         .stepsize = {step.x, step.y, step.z},
     };
 
-    size_t num_pgtos = md_vlx_pgto_count(&vlx);
+    size_t num_pgtos = md_vlx_mol_pgto_count(&vlx);
     md_array(md_gto_t) pgtos = md_array_create(md_gto_t, num_pgtos, arena);
-    md_vlx_extract_alpha_mo_pgtos(pgtos, &vlx, 120);
+    md_vlx_mol_pgto_extract(pgtos, &vlx, 120);
     md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
 
     int num_blk = vol_dim / BLK_DIM;

@@ -328,7 +328,7 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_m
 	return count;
 }
 
-size_t md_vlx_pgto_count(const md_vlx_data_t* vlx_data) {
+static size_t vlx_pgto_count(const md_vlx_data_t* vlx_data) {
 	int natoms = (int)vlx_data->geom.num_atoms;
 	int max_angl = compute_max_angular_momentum(vlx_data->basis.basis_set, vlx_data->geom.atomic_number, vlx_data->geom.num_atoms);
 
@@ -443,7 +443,7 @@ static size_t extract_pgto_data(md_gto_t* pgtos, const vlx_molecule_t* molecule,
 	return count;
 }
 
-double compute_overlap(basis_func_t func, size_t i, size_t j) {
+static double compute_overlap(basis_func_t func, size_t i, size_t j) {
 	const double fab = 1.0 / (func.exponents[i] + func.exponents[j]);
 	const double ovl = func.normalization_coefficients[i] * func.normalization_coefficients[j] * pow(PI * fab, 1.5);
 	const double fab2 = fab * fab;
@@ -1098,9 +1098,59 @@ void md_vlx_data_free(md_vlx_data_t* data) {
 	MEMSET(data, 0, sizeof(md_vlx_data_t));
 }
 
-bool md_vlx_extract_alpha_mo_pgtos(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t mo_idx) {
+// Extract Natural Transition Orbitals PGTOs
+size_t md_vlx_nto_pgto_count(const md_vlx_data_t* vlx) {
+	return vlx_pgto_count(vlx);
+}
+
+bool md_vlx_nto_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
 	ASSERT(pgtos);
 	ASSERT(vlx);
+
+	if (nto_idx >= vlx->rsp.num_excited_states) {
+		MD_LOG_ERROR("Invalid nto index!");
+		return false;
+	}
+
+	if (!vlx->rsp.nto) {
+		MD_LOG_ERROR("Veloxchem data is missing NTO data");
+		return false;
+	}
+
+	// The lambda values are stored symmetrically around homo/lumo
+	size_t max_lambda_idx = vlx->scf.homo_idx;
+
+	if (max_lambda_idx == 0) {
+		MD_LOG_ERROR("Internal error: Incorrect max lambda");
+		return false;
+	}
+
+	if (lambda_idx >= max_lambda_idx) {
+		MD_LOG_ERROR("Invalid lambda index!");
+		return false;
+	}
+
+	int64_t mo_idx = 0;
+	if (type == MD_VLX_NTO_TYPE_PARTICLE) {
+		mo_idx = (int64_t)vlx->scf.homo_idx - (int64_t)lambda_idx;
+	} else if (type == MD_VLX_NTO_TYPE_HOLE) {
+		mo_idx = (int64_t)vlx->scf.lumo_idx + (int64_t)lambda_idx;
+	} else {
+		MD_LOG_ERROR("Invalid NTO type!");
+		return false;
+	}
+
+	size_t num_rows = vlx->rsp.nto[nto_idx].orbitals.dim[0];
+	size_t num_cols = vlx->rsp.nto[nto_idx].orbitals.dim[1];
+
+	size_t temp_pos = md_temp_get_pos();
+	size_t num_mo_coeffs = num_cols;
+	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
+
+	for (size_t i = 0; i < num_mo_coeffs; ++i) {
+		mo_coeffs[i] = vlx->rsp.nto[nto_idx].orbitals.data[i * num_cols + mo_idx];
+	}
+
 	vlx_molecule_t mol = {
 		.num_atoms = vlx->geom.num_atoms,
 		.atomic_number = vlx->geom.atomic_number,
@@ -1108,6 +1158,23 @@ bool md_vlx_extract_alpha_mo_pgtos(md_gto_t* pgtos, const md_vlx_data_t* vlx, si
 		.coord_y = vlx->geom.coord_y,
 		.coord_z = vlx->geom.coord_z,
 	};
+
+	extract_pgto_data(pgtos, &mol, vlx->basis.basis_set, mo_coeffs);
+
+	md_temp_set_pos_back(temp_pos);
+	return true;
+}
+
+size_t md_vlx_mol_pgto_count(const md_vlx_data_t* vlx) {
+	ASSERT(vlx);
+	// @NOTE: This needs to be modified in the case of Unrestricted Open Shell type.
+	// In such case, we need to expand the pgtos with the contribution of Beta electrons
+	return vlx_pgto_count(vlx);
+}
+
+bool md_vlx_mol_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t mo_idx) {
+	ASSERT(pgtos);
+	ASSERT(vlx);
 
 	size_t num_rows = vlx->scf.alpha.orbitals.dim[0];
 	size_t num_cols = vlx->scf.alpha.orbitals.dim[1];
@@ -1124,6 +1191,14 @@ bool md_vlx_extract_alpha_mo_pgtos(md_gto_t* pgtos, const md_vlx_data_t* vlx, si
 	for (size_t i = 0; i < num_mo_coeffs; ++i) {
 		mo_coeffs[i] = vlx->scf.alpha.orbitals.data[i * num_cols + mo_idx];
 	}
+
+	vlx_molecule_t mol = {
+		.num_atoms = vlx->geom.num_atoms,
+		.atomic_number = vlx->geom.atomic_number,
+		.coord_x = vlx->geom.coord_x,
+		.coord_y = vlx->geom.coord_y,
+		.coord_z = vlx->geom.coord_z,
+	};
 
 	extract_pgto_data(pgtos, &mol, vlx->basis.basis_set, mo_coeffs);
 
@@ -1197,6 +1272,13 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 				MD_LOG_ERROR("Failed to load orbital h5 parameters from file '" STR_FMT "'", STR_ARG(scf_path));
 				return false;
 			}
+			for (size_t i = 0; i < vlx->scf.alpha.occupations.count; ++i) {
+				if (vlx->scf.alpha.occupations.data[i] == 0.0) {
+					vlx->scf.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
+					vlx->scf.lumo_idx = i;
+					break;
+				}
+			}
 		}
 	}
 
@@ -1211,7 +1293,7 @@ static bool vlx_data_parse_file(md_vlx_data_t* vlx, str_t filename, md_allocator
 					MD_LOG_ERROR("Failed to load NTO h5 parameters from file '" STR_FMT "'", STR_ARG(nto_path));
 					return false;
 				}
-				md_array_push(vlx->rsp.nto_orbitals, nto, vlx->alloc);
+				md_array_push(vlx->rsp.nto, nto, vlx->alloc);
 			}
 		}
 	}
