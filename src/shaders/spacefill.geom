@@ -59,21 +59,21 @@ void emit_vertex_persp(vec4 clip_coord) {
 // 2D Polyhedral Bounds of a Clipped, Perspective-Projected 3D Sphere. Michael Mara, Morgan McGuire. 2013
 // Should work for asymmetric projection matrices
 vec4 project_sphere(vec4 S, mat4 P) {
-    vec2 cx = vec2(S.x, S.z);
+    vec2 cx = vec2(S.x, -S.z);
     vec2 vx = vec2(sqrt(dot(cx, cx) - S.w * S.w), S.w);
     vec2 minx = mat2(vx.x, -vx.y, vx.y, vx.x) * cx;
     vec2 maxx = mat2(vx.x, vx.y, -vx.y, vx.x) * cx;
 
-    vec2 cy = vec2(S.y, S.z);
+    vec2 cy = vec2(S.y, -S.z);
     vec2 vy = vec2(sqrt(dot(cy, cy) - S.w * S.w), S.w);
     vec2 miny = mat2(vy.x, -vy.y, vy.y, vy.x) * cy;
     vec2 maxy = mat2(vy.x, vy.y, -vy.y, vy.x) * cy;
     
     return vec4(
-        -minx.x / minx.y * P[0][0] - P[2][0],
-        -maxx.x / maxx.y * P[0][0] - P[2][0],
-        -miny.x / miny.y * P[1][1] - P[2][1],
-        -maxy.x / maxy.y * P[1][1] - P[2][1]);
+        minx.x / minx.y * P[0][0] - P[2][0],
+        maxx.x / maxx.y * P[0][0] - P[2][0],
+        miny.x / miny.y * P[1][1] - P[2][1],
+        maxy.x / maxy.y * P[1][1] - P[2][1]);
 }
 
 void main()
