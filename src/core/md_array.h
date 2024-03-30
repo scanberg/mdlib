@@ -54,7 +54,7 @@ typedef struct md_array_header_t {
     ((n) ? ((md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)), 0) : 0)
 
 #else
-#define md_array_push(a, item, alloc)   (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = (item), (a) + md_array_header(a)->size - 1)
+#define md_array_push(a, item, alloc)   (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = item, (a) + md_array_header(a)->size - 1)
 #define md_array_push_array(a, items, n, alloc) ((n) ? ((md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)), 0) : 0)
 #endif
 #define md_array_free(a, alloc)         ((*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__))
