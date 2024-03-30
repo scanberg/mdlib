@@ -61,9 +61,15 @@ void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const 
 // - eval_mode: GTO evaluation mode
 void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
 
+// Evaluates GTOs over space 
+//void md_gto_xyz_voronoi_evaluate(float* out_val, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t)
+
 // Compute the cutoff parameter within the supplied GTOs based on the given value
 // Typically this could be somewhere around 1.0e-6
 void md_gto_cutoff_compute(md_gto_t* gtos, size_t num_gtos, double value);
+
+// Extracts a subset of gtos from an input array which overlap a given aabb with its radii of influence
+size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float aabb_max[3], const md_gto_t* in_gtos, size_t num_gtos);
 
 #ifdef __cplusplus
 }

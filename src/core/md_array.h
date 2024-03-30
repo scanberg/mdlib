@@ -43,7 +43,7 @@ typedef struct md_array_header_t {
 // Suppress incorrect warnings for macros in MSVC
 #define md_array_push(a, item, alloc) \
     __pragma(warning(suppress:6011 6387 6269)) \
-    (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = (item), (a) + md_array_header(a)->size - 1)
+    (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = item, (a) + md_array_header(a)->size - 1)
 
 #define md_array_push_no_grow(a, item) \
     __pragma(warning(suppress:6011 6387 6269)) \

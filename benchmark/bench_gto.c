@@ -51,9 +51,11 @@ UBENCH_EX(gto, evaluate_grid) {
     };
 
     size_t num_pgtos = md_vlx_mol_pgto_count(&vlx);
-    md_array(md_gto_t) pgtos = md_array_create(md_gto_t, num_pgtos, arena);
+    md_gto_t* pgtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_pgtos);
     md_vlx_mol_pgto_extract(pgtos, &vlx, 120);
     md_gto_cutoff_compute(pgtos, num_pgtos, 1.0e-6);
+
+    md_gto_t* sub_pgtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_pgtos);
 
     int num_blk = vol_dim / BLK_DIM;
     int num_tot_blk = num_blk * num_blk * num_blk;
@@ -68,7 +70,19 @@ UBENCH_EX(gto, evaluate_grid) {
             const int off_idx[3] = {blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM};
             const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
-            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, pgtos, num_pgtos, MD_GTO_EVAL_MODE_PSI);
+            float aabb_min[3] = {
+                grid.origin[0] + off_idx[0] * grid.stepsize[0],
+                grid.origin[1] + off_idx[1] * grid.stepsize[1],
+                grid.origin[2] + off_idx[2] * grid.stepsize[2],
+            };
+            float aabb_max[3] = {
+                grid.origin[0] + (off_idx[0] + len_idx[0]) * grid.stepsize[0],
+                grid.origin[1] + (off_idx[1] + len_idx[1]) * grid.stepsize[1],
+                grid.origin[2] + (off_idx[2] + len_idx[2]) * grid.stepsize[2],
+            };
+
+            size_t num_sub_pgtos = md_gto_aabb_test(sub_pgtos, aabb_min, aabb_max, pgtos, num_pgtos);
+            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, sub_pgtos, num_sub_pgtos, MD_GTO_EVAL_MODE_PSI);
         }
     }
 
