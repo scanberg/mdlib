@@ -65,7 +65,7 @@ void* ring_realloc(struct md_allocator_o* inst, void* ptr, size_t old_size, size
         if ((char*)ring->ptr + ring->pos == (char*)ptr + old_size) {
             const int64_t diff = (int64_t)new_size - (int64_t)old_size;
             int64_t new_pos = ring->pos + diff;
-            if (new_pos < ring->cap) {
+            if (new_pos < (int64_t)ring->cap) {
                 ring->pos = new_pos;
                 return ptr;
             }

@@ -989,7 +989,7 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
 
 uint64_t md_bitfield_hash64(const md_bitfield_t* bf, uint64_t seed) {
     ASSERT(bf);
-    if (bf->beg_bit == bf->end_bit) return 0;
+    if (bf->beg_bit == bf->end_bit) return seed;
     const block_t* ptr = (const block_t*)bf->bits;
     const size_t num_blk = num_blocks(bf->beg_bit, bf->end_bit);
     return md_hash64(ptr, sizeof(block_t) * num_blk, seed);
