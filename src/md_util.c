@@ -275,6 +275,9 @@ static const char* amino_acids[] = {
 
     // Amber
     "HID", "HIE", "HIP", "LYN", "ASH", "GLH",
+
+    // Unknown
+    "HSE",
 };
 
 /*static const char* peptides[] = {"APN", "CPN", "TPN", "GPN"};*/
@@ -4587,7 +4590,7 @@ vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in
     return xyz;
 }
 
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, size_t count, const md_unit_cell_t* unit_cell) {
+vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
     ASSERT(in_xyzw);
 
     if (count == 0) {
@@ -4596,9 +4599,9 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, size_t count, const md_un
 
     vec3_t xyz = {0};
     if (unit_cell && (unit_cell->flags & (MD_UNIT_CELL_FLAG_ORTHO | MD_UNIT_CELL_FLAG_TRICLINIC))) {
-        com_pbc_vec4(xyz.elem, in_xyzw, 0, count, unit_cell);
+        com_pbc_vec4(xyz.elem, in_xyzw, in_idx, count, unit_cell);
     } else {
-        com_vec4(xyz.elem, in_xyzw, 0, count);
+        com_vec4(xyz.elem, in_xyzw, in_idx, count);
     }
 
     return xyz;
@@ -5906,7 +5909,7 @@ typedef struct graph_t {
     size_t    vertex_count;
 	uint8_t*  vertex_type;
     uint32_t* edge_offset;  // offset, length is implicitly encoded by the next offset, last offset is the total number of edges and therefore length is count + 1
-    uint32_t* edge_data;    // packed 32-bit data consiting of (from hi to low) grow : 1, type : 7, index : 24      
+    uint32_t* edge_data;    // packed 32-bit data consiting of (from hi to low) type : 8, index : 24      
 } graph_t;
 
 static size_t graph_vertex_count(const graph_t* g) {
@@ -5944,10 +5947,6 @@ static inline bool graph_edge_iter_valid(graph_edge_iter_t it) {
 
 static inline void graph_edge_iter_next(graph_edge_iter_t* it) {
 	++it->cur;
-}
-
-static inline bool graph_edge_iter_grow(graph_edge_iter_t it) {
-    return (*it.cur) >> 31;
 }
 
 static inline int graph_edge_iter_type(graph_edge_iter_t it) {
@@ -7337,6 +7336,7 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
 
     graph_t ref_graph = smiles_to_graph(smiles, temp_alloc);
 
+    // Histogram of types present in reference structure
     int ref_type_count[256] = {0};
     for (size_t i = 0; i < ref_graph.vertex_count; ++i) {
 		uint8_t type = ref_graph.vertex_type[i];
@@ -7352,6 +7352,7 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
         return result;
     }
 
+    // Find most uncommon type in dataset. This will be our starting point(s)
     int starting_type = -1;
 	int min_freq = INT_MAX;
     // Exclude hydrogen

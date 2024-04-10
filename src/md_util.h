@@ -161,7 +161,7 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
 // count:       Length of all arrays
 // unit_cell:   The unit_cell of the system [Optional]
 vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, size_t count, const md_unit_cell_t* unit_cell);
+vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
@@ -214,8 +214,6 @@ void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count);
 // Structure matching operations
 // In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.
 // This is due to the symmetry of extremities found in molecules.
-// To filter the result into 1 permutation per matched set of indices, the user can pass a parameter to filter permutations by RMSD
-// Which only selects the best matching permutation based on RMSD.
 
 typedef enum {
     MD_UTIL_MATCH_LEVEL_STRUCTURE = 0,  // Match within complete structures
@@ -225,12 +223,12 @@ typedef enum {
 
 typedef enum {
     MD_UTIL_MATCH_MODE_UNIQUE = 0,      // Store only unique matches
-    MD_UTIL_MATCH_MODE_FIRST = 1,       // Store the first match
-    MD_UTIL_MATCH_MODE_ALL = 2,		    // Store all matches
+    MD_UTIL_MATCH_MODE_FIRST,           // Store the first match
+    MD_UTIL_MATCH_MODE_ALL,		        // Store all matches
 } md_util_match_mode_t;
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure.
-md_index_data_t md_util_match_by_type(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_type   (const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
@@ -240,8 +238,8 @@ md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md
 // The indices which maps from the source structure to the target structure is written to dst_idx_map
 // The returned value is the number of common atoms
 // It is assumed that the dst_idx_map has the same length as src_count
-int64_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
-int64_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+size_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+size_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

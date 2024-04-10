@@ -41,7 +41,7 @@ vec4 view_vertices[8];
 vec4 proj_vertices[8];
 
 void emit_vertex(int i) {
-    out_frag.view_vel = in_vert[i/4].view_vel;
+    out_frag.view_vel = in_vert[i>>2].view_vel;
     out_frag.view_pos = view_vertices[i].xyz;
     gl_Position = proj_vertices[i];
     EmitVertex();

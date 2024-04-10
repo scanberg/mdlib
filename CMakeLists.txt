@@ -258,7 +258,7 @@ if (MD_BENCHMARK)
 endif()
 
 source_group("src"      FILES ${SRC_FILES}) 
-source_group("core"     FILES ${CORE_FILES})
+source_group("src/core" FILES ${CORE_FILES})
 source_group("ext"      FILES ${EXT_FILES})
 source_group("shaders"  FILES ${SHADER_FILES})
 source_group("proj"     FILES ${PROJ_FILES})

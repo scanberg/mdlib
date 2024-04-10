@@ -656,10 +656,16 @@ MD_VEC_INLINE float vec4_length(vec4_t v) {
     return sqrtf(vec4_dot(v,v));
 }
 
+MD_VEC_INLINE vec4_t vec4_normalize(vec4_t v) {
+    float mag2 = vec4_dot(v,v);
+    if (mag2 > 1.0e-5f) {
+        v = vec4_mul_f(v, 1.0f / sqrtf(mag2));
+    }
+    return v;
+}
+
 MD_VEC_INLINE vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
-    t = CLAMP(t, 0.0f, 1.0f);
-    vec4_t r = vec4_add(vec4_mul_f(a, 1.0f - t), vec4_mul_f(b, t));
-    return r;
+    return vec4_add(vec4_mul_f(a, 1.0f - t), vec4_mul_f(b, t));
 }
 
 MD_VEC_INLINE vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p3, float t, float s) {
@@ -970,29 +976,47 @@ MD_VEC_INLINE quat_t quat_ident() {
 
 // quat
 MD_VEC_INLINE float quat_dot(quat_t a, quat_t b) {
-    const float x = a.x * b.x + a.y * b.y;
-    const float y = a.z * b.z + a.w * b.w;
-    return x + y;
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_reduce_add_ps(md_mm_mul_ps(a.m128, b.m128));
+#else
+    return (a.x * b.x + a.y * b.y) + (a.z * b.z + a.w * b.w);
+#endif
 }
 
 MD_VEC_INLINE quat_t quat_mul(quat_t a, quat_t b) {
-    quat_t c = {
-        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-        a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z,
-        a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x,
-        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
-    };
+    quat_t c;
+#if MD_VEC_MATH_USE_SIMD
+    // @NOTE: Reversed notation used here for ijkl, because it makes more sense in my reptile brain
+    // shuffle from left to right (xyzw) x:0 y:1 z:2 w:3
+#define MD_SHUFFLE(v,i,j,k,l) md_mm_shuffle_ps(v,v,_MM_SHUFFLE(l,k,j,i))
+    __m128 t1 = _mm_mul_ps(MD_SHUFFLE(a.m128, 3,3,3,3), b.m128);
+    __m128 t2 = _mm_mul_ps(MD_SHUFFLE(a.m128, 0,1,2,0), MD_SHUFFLE(b.m128, 3,3,3,0));
+    __m128 t3 = _mm_mul_ps(MD_SHUFFLE(a.m128, 1,2,0,1), MD_SHUFFLE(b.m128, 2,0,1,1));
+    __m128 t4 = _mm_mul_ps(MD_SHUFFLE(a.m128, 2,0,1,2), MD_SHUFFLE(b.m128, 1,2,0,2));
+#undef MD_SHUFFLE
+    t2 = _mm_mul_ps(t2, _mm_set_ps(-1,1,1,1));
+    t3 = _mm_mul_ps(t3, _mm_set_ps(-1,1,1,1));
+    c.m128 = _mm_add_ps(_mm_add_ps(t1, t2), _mm_sub_ps(t3, t4));
+#else
+    c.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+    c.y = a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z;
+    c.z = a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x;
+    c.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+#endif
     return c;
 }
 
 MD_VEC_INLINE quat_t quat_mul_f(quat_t q, float s) {
-    quat_t c = {
-        q.x * s,
-        q.y * s,
-        q.z * s,
-        q.w * s
-    };
-    return c;
+    quat_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_mul_ps(q.m128, md_mm_set1_ps(s));
+#else
+    r.x = q.x * s,
+    r.y = q.y * s,
+    r.z = q.z * s,
+    r.w = q.w * s,
+#endif
+    return r;
 }
 
 MD_VEC_INLINE vec3_t quat_mul_vec3(quat_t q, vec3_t v) {
@@ -1003,6 +1027,7 @@ MD_VEC_INLINE vec3_t quat_mul_vec3(quat_t q, vec3_t v) {
 }
 
 MD_VEC_INLINE quat_t quat_conj(quat_t q) {
+
     quat_t r = {
         -q.x,
         -q.y,
@@ -1012,7 +1037,7 @@ MD_VEC_INLINE quat_t quat_conj(quat_t q) {
     return r;
 }
 
-MD_VEC_INLINE quat_t quat_angle_axis(float angle, vec3_t axis) {
+MD_VEC_INLINE quat_t quat_axis_angle(vec3_t axis, float angle) {
     float half_angle = angle * 0.5f;
     float sin_angle = sinf(half_angle);
 
@@ -1025,18 +1050,28 @@ MD_VEC_INLINE quat_t quat_angle_axis(float angle, vec3_t axis) {
 }
 
 MD_VEC_INLINE quat_t quat_normalize(quat_t q) {
-    quat_t r = q;
-
-    float mag2 = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
-    if (mag2 != 0.0f && (fabsf(mag2 - 1.0f) > 0.000001)) {
-        float mag = 1.0f / sqrtf(mag2);
-        r.x = q.x * mag;
-        r.y = q.y * mag;
-        r.z = q.z * mag;
-        r.w = q.w * mag;
+    float mag2 = quat_dot(q,q);
+    if (mag2 > 0.000001f) {
+        q = quat_mul_f(q, 1.0f / sqrtf(mag2));
     }
+    return q;
+}
 
-    return r;
+static inline quat_t quat_nlerp(quat_t qa, quat_t qb, float t) {
+    quat_t res;
+
+    if (quat_dot(qa, qb) < 0.0f) {
+        qb = quat_conj(qb);
+    }
+#if MD_VEC_MATH_USE_SIMD
+    res.m128 = md_mm_lerp_ps(qa.m128, qb.m128, t);
+#else
+    res.x = lerpf(qa.x, qb.x, t);
+    res.y = lerpf(qa.y, qb.y, t);
+    res.z = lerpf(qa.z, qb.z, t);
+    res.w = lerpf(qa.w, qb.w, t);
+#endif
+    return quat_normalize(res);
 }
 
 // https://www.euclideanspace.com/maths/algebra/realNormedAlgebra/quaternions/slerp/index.htm

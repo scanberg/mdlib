@@ -46,22 +46,21 @@ out Fragment {
     flat   uint picking_idx;
 } out_frag;
 
-void emit_vertex(in vec4 clip_coord, in vec4 normal, in int idx) {
+void emit_vertex(in vec3 view_coord, in vec3 view_normal, in int idx) {
     out_frag.color = in_vert[idx].color;
     //out_frag.color = mix(vec4(1,1,1,1), vec4(1,0,0,1), fract(in_vert[0].segment_t));
-    vec4 view_coord = u_clip_to_view * clip_coord;
-    out_frag.view_coord     = view_coord.xyz / view_coord.w;
+    out_frag.view_coord     = view_coord;
     out_frag.view_velocity  = in_vert[idx].view_velocity;
-    out_frag.view_normal = normal.xyz;
-    out_frag.picking_idx = in_vert[0].picking_idx;
-    gl_Position = clip_coord;
+    out_frag.view_normal    = normal;
+    out_frag.picking_idx    = in_vert[0].picking_idx;
+    gl_Position = u_view_to_clip * vec4(view_coord, 1);
     EmitVertex();
 }
 
 void main() {
     // We consider the rendered segment to fully belong to index 0
     if ((in_vert[0].atom_flags & u_atom_mask) != u_atom_mask) return;
-    if (in_vert[0].color.a == 0.0f) return;
+    if (in_vert[0].color.a == 0.0) return;
 
     vec4 x[2];
     vec4 y[2];
@@ -71,10 +70,10 @@ void main() {
     mat4 N[2];
     vec3 ss[2];
     vec2 s[2];
-    vec4 v0[RES];
-    vec4 v1[RES];
-    vec4 n0[RES];
-    vec4 n1[RES];
+    vec3 v0[RES];
+    vec3 v1[RES];
+    vec3 n0[RES];
+    vec3 n1[RES];
     
     float flip = sign(dot(in_vert[0].support_vector, in_vert[1].support_vector));
     x[0] = vec4(in_vert[0].support_vector, 0);
@@ -86,8 +85,17 @@ void main() {
     w[0] = vec4(in_vert[0].control_point, 1);
     w[1] = vec4(in_vert[1].control_point, 1);
 
-    M[0] = u_world_to_clip * mat4(x[0], y[0], z[0], w[0]);
-    M[1] = u_world_to_clip * mat4(x[1], y[1], z[1], w[1]);
+    float incr = TWO_PI / float(RES);
+    int j = 0;
+    int k = 1;
+    if (dot(x[1], y[0]) > 0.0) {
+        incr = -incr;
+        j = 1;
+        k = 0;
+    }
+
+    M[0] = u_world_to_view * mat4(x[0], y[0], z[0], w[0]);
+    M[1] = u_world_to_view * mat4(x[1], y[1], z[1], w[1]);
 
     N[0] = u_world_to_view_normal * mat4(x[0], y[0], z[0], w[0]);
     N[1] = u_world_to_view_normal * mat4(x[1], y[1], z[1], w[1]);
@@ -103,14 +111,15 @@ void main() {
     s[0] = ss[0].x * coil_scale + ss[0].y * helix_scale + ss[0].z * sheet_scale;
     s[1] = ss[1].x * coil_scale + ss[1].y * helix_scale + ss[1].z * sheet_scale;
 
+    float t = 0.0;
     for (int i = 0; i < RES; ++i) {
-        float t = float(i) / float(RES) * TWO_PI;
         vec2 x = vec2(cos(t), sin(t));
-        v0[i] = M[0] * vec4(x * s[0],0,1);
-        v1[i] = M[1] * vec4(x * s[1],0,1);
+        v0[i] = vec3(M[j] * vec4(x * s[j], 0, 1));
+        v1[i] = vec3(M[k] * vec4(x * s[k], 0, 1));
 
-        n0[i] = N[0] * vec4(x / s[0],0,0);
-        n1[i] = N[1] * vec4(x / s[1],0,0);
+        n0[i] = vec3(N[j] * vec4(x / s[j], 0, 0));
+        n1[i] = vec3(N[k] * vec4(x / s[k], 0, 0));
+        t += incr;
     }
     
     for (int i = 0; i < RES; ++i) {
@@ -122,9 +131,9 @@ void main() {
     EndPrimitive();
 
     // MAKE CAP
-    if ((in_vert[0].spline_flags & 1U) != 0U) { // BEG_CHAIN
-        vec4 cc = M[0][3];
-        vec4 cn = N[0] * vec4(0,0,-1,0);
+    if ((in_vert[j].spline_flags & 1U) != 0U) { // BEG_CHAIN
+        vec4 cc = M[j][3];
+        vec4 cn = N[j] * vec4(0,0,-1,0);
         for (int i = 0; i < RES-1; i += 2) {
             emit_vertex(v0[i], cn, 0);
             emit_vertex(cc, cn, 0);
@@ -133,9 +142,9 @@ void main() {
         }
         EndPrimitive();
     } 
-    if ((in_vert[1].spline_flags & 2U) != 0U) { // END_CHAIN
-        vec4 cc = M[1][3];
-        vec4 cn = N[1] * vec4(0,0,1,0);
+    if ((in_vert[k].spline_flags & 2U) != 0U) { // END_CHAIN
+        vec4 cc = M[k][3];
+        vec4 cn = N[k] * vec4(0,0,1,0);
         for (int i = 0; i < RES-1; i += 2) {
             emit_vertex(v1[i], cn, 0);
             emit_vertex(v1[i+1], cn, 0);

@@ -1551,7 +1551,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         for (size_t i = 0; i < len; ++i) {
             xyzw[i] = vec4_from_vec3(in_pos[i], 1.0f);
         }
-        com = md_util_com_compute_vec4(xyzw, len, &ctx->mol->unit_cell);
+        com = md_util_com_compute_vec4(xyzw, 0, len, &ctx->mol->unit_cell);
         break;
     }
     case TYPE_INT: {
@@ -1598,7 +1598,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             }
         }
 
-        com = md_util_com_compute_vec4(xyzw_arr, num_ranges, &ctx->mol->unit_cell);
+        com = md_util_com_compute_vec4(xyzw_arr, 0, num_ranges, &ctx->mol->unit_cell);
         break;
     }
     case TYPE_BITFIELD: {
@@ -1639,7 +1639,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
                 xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
             }
-            com = md_util_com_compute_vec4(xyzw_arr, num_bf, &ctx->mol->unit_cell);
+            com = md_util_com_compute_vec4(xyzw_arr, 0, num_bf, &ctx->mol->unit_cell);
         }
         break;
     }
@@ -3723,8 +3723,8 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 md_util_unwrap_vec4(xyzw[1], count, &ctx->mol->unit_cell);
 
                 const vec3_t com[2] = {
-                    md_util_com_compute_vec4(xyzw[0], count, NULL),
-                    md_util_com_compute_vec4(xyzw[1], count, NULL),
+                    md_util_com_compute_vec4(xyzw[0], 0, count, NULL),
+                    md_util_com_compute_vec4(xyzw[1], 0, count, NULL),
                 };
 
                 as_float(*dst) = (float)md_util_rmsd_compute_vec4((const vec4_t* const*)xyzw, 0, count, com);
@@ -3976,7 +3976,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         // Place structure within the same period
         md_util_unwrap_vec4(xyzw, count, &ctx->mol->unit_cell);
-        vec3_t com = md_util_com_compute_vec4(xyzw, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
         mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
         mat3_eigen_t eigen = mat3_eigen(M);
 
@@ -4961,7 +4961,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec3_t* trg_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_bf, ctx->temp_alloc);
 
         md_util_unwrap_vec4(ref_xyzw[0], ref_size, &ctx->mol->unit_cell);
-        ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], ref_size, 0);
+        ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0);
 
         // @TODO(Robin): This should be measured
         const bool brute_force = trg_size < 5000;
@@ -4990,7 +4990,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             extract_xyzw_vec4(ref_xyzw[1], ref_x[1], ref_y[1], ref_z[1], ref_w, bf);
             md_util_unwrap_vec4(ref_xyzw[1], ref_size, &ctx->mol->unit_cell);
-            ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
+            ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], 0, ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
             mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
 
             if (ctx->frame_header->index == 0) {
@@ -5091,7 +5091,7 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 if (count > 0) {
                     md_array_resize(xyzw, count, ctx->temp_alloc);
                     extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
-                    vec3_t com = md_util_com_compute_vec4(xyzw, count, &ctx->mol->unit_cell);
+                    vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unit_cell);
                     md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unit_cell);
                     const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                     out_weights[i] = md_util_shape_weights(&M);
@@ -5100,7 +5100,7 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             xyzw = coordinate_extract_xyzw(arg[0], 1.0f, ctx);
             const size_t count = md_array_size(xyzw);
-            vec3_t com = md_util_com_compute_vec4(xyzw, count, &ctx->mol->unit_cell);
+            vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unit_cell);
             md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unit_cell);
             const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
             out_weights[0] = md_util_shape_weights(&M);

@@ -9,7 +9,6 @@
 #define md_alloc_at(a, sz, file, line) (a)->realloc((a)->inst, 0, 0, sz, file, line)
 #define md_free(a, p, sz) (a)->realloc((a)->inst, p, sz, 0, __FILE__, __LINE__)
 
-struct md_ring_allocator_t;
 typedef struct md_allocator_o md_allocator_o;
 
 typedef struct md_allocator_i {
