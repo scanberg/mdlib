@@ -82,7 +82,6 @@ set(SHADER_FILES
     src/shaders/compute_spline.vert
     src/shaders/compute_spline.geom
     src/shaders/compute_velocity.vert
-    src/shaders/extract_control_points.vert
     src/shaders/cartoon.vert
     src/shaders/cartoon.geom
     src/shaders/cartoon.frag
