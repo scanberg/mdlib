@@ -2075,7 +2075,6 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                                 if (stbds_hmgeti(hm, key) == -1) {
                                     stbds_hmputs(hm, (T){key});
                                     md_index_data_push_arr(&ring_data, ring, len, alloc);
-                                    goto next;
                                 }
                             }
                         }
@@ -2093,7 +2092,6 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
                 }
             }
         }
-        next:;
     }
     stbds_hmfree(hm);
     
