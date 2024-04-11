@@ -759,7 +759,7 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], size_
         md_element_t elem = 0;
         const float m = mass[i];
 
-        if (m < 0.0f && m != 1.0f) {
+        if (0.0f < m && m != 1.0f) {
             // Linear search for matching atomic mass
             for (uint8_t j = 1; j < (uint8_t)ARRAY_SIZE(element_atomic_mass); ++j) {
                 if (fabs(m - element_atomic_mass[j]) < eps) {
@@ -781,7 +781,7 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], size_
         return true;
     }
     else {
-        MD_LOG_ERROR("%i masses had no matching element", (int)failed_matches);
+        MD_LOG_ERROR("%zu masses had no matching element", failed_matches);
         return false;
     }
 }
