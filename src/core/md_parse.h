@@ -400,7 +400,7 @@ static inline uint64_t parse_u64(const char* ptr, int64_t len) {
 
 static inline uint64_t load_u64(const char* ptr) {
     uint64_t val;
-    memcpy(&val, ptr, sizeof(val));
+    MEMCPY(&val, ptr, sizeof(val));
     return val;
 }
 

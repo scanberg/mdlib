@@ -51,7 +51,8 @@ static inline int32_t extract_int(str_t line, size_t beg, size_t end) {
 
 static inline float extract_float(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0.0f;
-    return (float)parse_float(str_substr(line, beg - 1, end-beg + 1));
+    str_t str = str_trim(str_substr(line, beg - 1, end-beg + 1));
+    return (float)parse_float_wide(str.ptr, str.len);
 }
 
 static inline char extract_char(str_t line, size_t idx) {

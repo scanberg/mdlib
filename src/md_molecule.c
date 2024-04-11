@@ -34,12 +34,12 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->chain.atom_offset) md_array_free(mol->chain.atom_offset, alloc);
 
     // Backbone
-    if (mol->backbone.range.offset) md_array_free(mol->backbone.range.offset, alloc);
-    if (mol->backbone.atoms) md_array_free(mol->backbone.atoms, alloc);
-    if (mol->backbone.angle) md_array_free(mol->backbone.angle, alloc);
-    if (mol->backbone.secondary_structure) md_array_free(mol->backbone.secondary_structure, alloc);
-    if (mol->backbone.ramachandran_type) md_array_free(mol->backbone.ramachandran_type, alloc);
-    if (mol->backbone.residue_idx) md_array_free(mol->backbone.residue_idx, alloc);
+    if (mol->protein_backbone.range.offset) md_array_free(mol->protein_backbone.range.offset, alloc);
+    if (mol->protein_backbone.atoms) md_array_free(mol->protein_backbone.atoms, alloc);
+    if (mol->protein_backbone.angle) md_array_free(mol->protein_backbone.angle, alloc);
+    if (mol->protein_backbone.secondary_structure) md_array_free(mol->protein_backbone.secondary_structure, alloc);
+    if (mol->protein_backbone.ramachandran_type) md_array_free(mol->protein_backbone.ramachandran_type, alloc);
+    if (mol->protein_backbone.residue_idx) md_array_free(mol->protein_backbone.residue_idx, alloc);
 
     // Bonds
     if (mol->bond.pairs) md_array_free(mol->bond.pairs, alloc);
@@ -94,13 +94,13 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(atom, resname);
     ARRAY_PUSH(atom, chainid);
 
-    ARRAY_PUSH(backbone, atoms);
-    ARRAY_PUSH(backbone, angle);
-    ARRAY_PUSH(backbone, secondary_structure);
-    ARRAY_PUSH(backbone, ramachandran_type);
-    ARRAY_PUSH(backbone, residue_idx);
+    ARRAY_PUSH(protein_backbone, atoms);
+    ARRAY_PUSH(protein_backbone, angle);
+    ARRAY_PUSH(protein_backbone, secondary_structure);
+    ARRAY_PUSH(protein_backbone, ramachandran_type);
+    ARRAY_PUSH(protein_backbone, residue_idx);
 
-    md_array_push_array(dst->backbone.range.offset, src->backbone.range.offset, src->backbone.range.count, alloc);
+    md_array_push_array(dst->protein_backbone.range.offset, src->protein_backbone.range.offset, src->protein_backbone.range.count, alloc);
 
     ARRAY_PUSH(chain, id);
     ARRAY_PUSH(chain, res_offset);
@@ -114,8 +114,8 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(residue, atom_offset);
 
     dst->atom.count           = src->atom.count;
-    dst->backbone.count       = src->backbone.count;
-    dst->backbone.range.count = src->backbone.range.count;
+    dst->protein_backbone.count       = src->protein_backbone.count;
+    dst->protein_backbone.range.count = src->protein_backbone.range.count;
     dst->chain.count          = src->chain.count;
     dst->residue.count        = src->residue.count;
 }

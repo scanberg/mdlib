@@ -51,24 +51,36 @@ typedef struct md_chain_data_t {
 
 // @TODO: Split this into two or more structures,
 // One for nucleic backbone and one for protein backbone
-typedef struct md_backbone_data_t {
+typedef struct md_protein_backbone_data_t {
     // This holds the consecutive ranges which form the backbones
     struct {
         size_t count;
         uint32_t* offset; // Offsets into the backbone fields stored bellow
         md_chain_idx_t* chain_idx; // Reference to the chain in which the backbone is located
     } range;
-    //size_t range_count;
-    //md_range_t* range;
 
     // These fields share the same length 'count'
     size_t count;
-    md_backbone_atoms_t* atoms;
+    md_protein_backbone_atoms_t* atoms;
     md_backbone_angles_t* angle;
     md_secondary_structure_t* secondary_structure;
     md_ramachandran_type_t* ramachandran_type;
-    md_residue_idx_t* residue_idx;            // Index to the residue which contains the backbone
-} md_backbone_data_t;
+    md_residue_idx_t* residue_idx;                  // Index to the residue which contains the backbone
+} md_protein_backbone_data_t;
+
+typedef struct md_nucleic_backbone_data_t {
+    // This holds the consecutive ranges which form the backbones
+    struct {
+        size_t count;
+        uint32_t* offset; // Offsets into the backbone fields stored bellow
+        md_chain_idx_t* chain_idx; // Reference to the chain in which the backbone is located
+    } range;
+
+    // These fields share the same length 'count'
+    size_t count;
+    md_nucleic_backbone_atoms_t* atoms;
+    md_residue_idx_t* residue_idx;                  // Index to the residue which contains the backbone
+} md_nucleic_backbone_data_t;
 
 // This represents symmetries which are instanced, commonly found
 // in PDB data. It is up to the renderer to properly render this instanced data.
@@ -110,27 +122,28 @@ typedef struct md_conn_iter_t {
 } md_conn_iter_t;
 
 typedef struct md_molecule_t {
-    md_unit_cell_t          unit_cell;
-    md_atom_data_t          atom;
-    md_residue_data_t       residue;
-    md_chain_data_t         chain;
-    md_backbone_data_t      backbone;
+    md_unit_cell_t              unit_cell;
+    md_atom_data_t              atom;
+    md_residue_data_t           residue;
+    md_chain_data_t             chain;
+    md_protein_backbone_data_t  protein_backbone;
+    md_nucleic_backbone_data_t  nucleic_backbone;
     
-    md_bond_data_t          bond;       // Bond centric data of (strong persistent bonds)
-    md_conn_data_t          conn;       // Atom centric representation of the bond data
+    md_bond_data_t              bond;       // Bond centric data of (strong persistent bonds)
+    md_conn_data_t              conn;       // Atom centric representation of the bond data
     
     // @TODO: move this into some containing structure
     //md_array(md_hbond_data_t)  hbond_data;     
 
-    md_index_data_t         rings;              // Ring structures formed by persistent bonds
-    md_index_data_t         structures;         // Isolated structures connected by persistent bonds
+    md_index_data_t             rings;              // Ring structures formed by persistent bonds
+    md_index_data_t             structures;         // Isolated structures connected by persistent bonds
 
-    md_instance_data_t      instance;           // Symmetry instances of the molecule (duplications of ranges with new transforms)
+    md_instance_data_t          instance;           // Symmetry instances of the molecule (duplications of ranges with new transforms)
     
     // @NOTE(Robin): This should probably move elsewhere.
     // Hydrogen bonds are of interest to be evaluated and analyzed over the trajectory
     // So this should be computed over all frames in the preload
-    md_array(md_bond_pair_t)     hydrogen_bonds;
+    md_array(md_bond_pair_t)    hydrogen_bonds;
 } md_molecule_t;
 
 #ifdef __cplusplus

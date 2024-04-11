@@ -54,7 +54,7 @@ bool md_util_resname_water(str_t str);
 bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
 
-static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
+static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot) {
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);
 }
 
@@ -64,9 +64,6 @@ static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
 bool md_util_element_guess(md_element_t element[], size_t capacity, const struct md_molecule_t* mol);
 
 bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
-
-// Extracts the atom indices which are central for a segment within the backbone for a single residue
-bool md_util_backbone_atoms_extract_from_residue_idx(md_backbone_atoms_t* backbone_atoms, md_residue_idx_t res_idx, const md_molecule_t* mol);
 
 // Computes secondary structures from backbone atoms
 // Does not allocate any data, it assumes that secondary_structures has the same length as args->backbone.count

@@ -64,11 +64,39 @@ static inline const char* str_end(str_t str) { return str.ptr + str.len; }
 static inline size_t      str_len(str_t str) { return str.len; }
 static inline const char* str_ptr(str_t str) { return str.ptr; }
 
-void str_swap(str_t a, str_t b);
+static inline void str_swap(str_t a, str_t b) {
+    str_t tmp = a;
+    a = b;
+    b = tmp;
+}
 
-str_t str_trim(str_t str);
-str_t str_trim_beg(str_t str);
-str_t str_trim_end(str_t str);
+static inline str_t str_trim_beg(str_t str) {
+    const char* beg = str_beg(str);
+    const char* end = str_end(str);
+    while (beg < end && is_whitespace(*beg)) ++beg;
+    str.ptr = beg;
+    str.len = end - beg;
+    return str;
+}
+
+static inline str_t str_trim_end(str_t str) {
+    const char* beg = str_beg(str);
+    const char* end = str_end(str);
+    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
+    str.ptr = beg;
+    str.len = end - beg;
+    return str;
+}
+
+static inline str_t str_trim(str_t str) {
+    const char* beg = str_beg(str);
+    const char* end = str_end(str);
+    while (beg < end && is_whitespace(*beg)) ++beg;
+    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
+    str.ptr = beg;
+    str.len = end - beg;
+    return str;
+}
 
 bool str_eq(str_t str_a, str_t str_b);
 bool str_eq_ignore_case(const str_t str_a, const str_t str_b);
@@ -86,7 +114,16 @@ bool str_eq_cstr_n_ignore_case(str_t str, const char* cstr, size_t n);
 size_t str_count_equal_chars(str_t a, str_t b);
 size_t str_count_occur_char(str_t str, char character);
 
-str_t str_substr(str_t str, size_t offset, size_t length DEF_VAL(SIZE_MAX));
+static inline str_t str_substr(str_t str, size_t offset, size_t length DEF_VAL(SIZE_MAX)) {
+    str_t res = {0,0};
+    if (offset > str.len) {
+        return res;
+    }
+    const size_t max_len = str.len - offset;
+    res.ptr = str.ptr + offset;
+    res.len = length = MIN(length, max_len);
+    return res;
+}
 
 // Joins two strings by taking the beginning of the first and the end of the last
 // @WARNING:

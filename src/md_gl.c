@@ -1004,20 +1004,20 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
         //if (mol->residue.atom_offset)           gl_buffer_set_sub_data(gl_mol->buffer[GL_BUFFER_RESIDUE_ATOM_RANGE], 0, gl_mol->residue_count * sizeof(uint32_t) * 2, mol->residue.atom_range);
         //if (desc->residue.backbone_atoms)       gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_RESIDUE_BACKBONE_ATOMS], 0, mol->residue_count * sizeof(uint8_t) * 4, desc->residue.backbone_atoms);
 
-        if (mol->backbone.range.count > 0 && mol->backbone.range.offset && mol->backbone.atoms && mol->backbone.secondary_structure) {
+        if (mol->protein_backbone.range.count > 0 && mol->protein_backbone.range.offset && mol->protein_backbone.atoms && mol->protein_backbone.secondary_structure) {
             uint32_t backbone_residue_count = 0;
             uint32_t backbone_spline_count = 0;
-            for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
-                uint32_t res_count = mol->backbone.range.offset[i+1] - mol->backbone.range.offset[i];
+            for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
+                uint32_t res_count = mol->protein_backbone.range.offset[i+1] - mol->protein_backbone.range.offset[i];
                 backbone_residue_count += res_count;
                 backbone_spline_count += (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; // +1 For the last point
             }
 
             const uint32_t backbone_count                     = backbone_residue_count;
             const uint32_t backbone_control_point_data_count  = backbone_residue_count;
-            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->backbone.range.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
+            const uint32_t backbone_control_point_index_count = backbone_residue_count + (uint32_t)mol->protein_backbone.range.count * (2 + 1); // Duplicate pair first and last in each chain for adjacency + primitive restart between
             const uint32_t backbone_spline_data_count         = backbone_spline_count;
-            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->backbone.range.count * (1); // Primitive restart between chains
+            const uint32_t backbone_spline_index_count        = backbone_spline_count + (uint32_t)mol->protein_backbone.range.count * (1); // Primitive restart between chains
 
             gl_mol->buffer[GL_BUFFER_BACKBONE_DATA]                = gl_buffer_create(backbone_count                     * sizeof(gl_backbone_data_t),         NULL, GL_STATIC_DRAW);
             gl_mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE] = gl_buffer_create(backbone_count                     * sizeof(md_secondary_structure_t),   NULL, GL_DYNAMIC_DRAW);
@@ -1032,18 +1032,18 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
-                for (size_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
-                    uint32_t beg = (uint32_t)mol->backbone.range.offset[i];
-                    uint32_t end = (uint32_t)mol->backbone.range.offset[i+1];
+                for (size_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
+                    uint32_t beg = (uint32_t)mol->protein_backbone.range.offset[i];
+                    uint32_t end = (uint32_t)mol->protein_backbone.range.offset[i+1];
                     for (uint32_t j = beg; j < end; ++j) {
-                        md_residue_idx_t res_idx = mol->backbone.residue_idx[j];
+                        md_residue_idx_t res_idx = mol->protein_backbone.residue_idx[j];
                         uint32_t res_atom_offset = mol->residue.atom_offset[res_idx];
 
                         backbone_data[idx].bb_seg_idx = j;
                         backbone_data[idx].atom_base_idx = res_atom_offset;
-                        backbone_data[idx].ca_idx = (uint8_t)(mol->backbone.atoms[j].ca - res_atom_offset);
-                        backbone_data[idx].c_idx  = (uint8_t)(mol->backbone.atoms[j].c  - res_atom_offset);
-                        backbone_data[idx].o_idx  = (uint8_t)(mol->backbone.atoms[j].o  - res_atom_offset);
+                        backbone_data[idx].ca_idx = (uint8_t)(mol->protein_backbone.atoms[j].ca - res_atom_offset);
+                        backbone_data[idx].c_idx  = (uint8_t)(mol->protein_backbone.atoms[j].c  - res_atom_offset);
+                        backbone_data[idx].o_idx  = (uint8_t)(mol->protein_backbone.atoms[j].o  - res_atom_offset);
                         backbone_data[idx].flags  = (uint8_t)((j == beg ? 1 : 0) | (j == end - 1 ? 2 : 0));
                         ++idx;
                     }
@@ -1057,9 +1057,9 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             uint32_t* secondary_structure = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (secondary_structure) {
                 uint32_t idx = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
-                    for (uint32_t j = mol->backbone.range.offset[i]; j < mol->backbone.range.offset[i+1]; ++j) {
-                        secondary_structure[idx++] = mol->backbone.secondary_structure[j];
+                for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
+                    for (uint32_t j = mol->protein_backbone.range.offset[i]; j < mol->protein_backbone.range.offset[i+1]; ++j) {
+                        secondary_structure[idx++] = mol->protein_backbone.secondary_structure[j];
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -1071,9 +1071,9 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             uint32_t* control_point_index = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (control_point_index) {
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->backbone.range.count; ++i) {
-                    uint32_t bb_beg = mol->backbone.range.offset[i];
-                    uint32_t bb_end = mol->backbone.range.offset[i+1];
+                for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
+                    uint32_t bb_beg = mol->protein_backbone.range.offset[i];
+                    uint32_t bb_end = mol->protein_backbone.range.offset[i+1];
                     control_point_index[len++] = bb_beg;
                     for (uint32_t j = bb_beg; j < bb_end; ++j) {
                         control_point_index[len++] = j;
@@ -1092,9 +1092,9 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             if (spline_index) {
                 uint32_t idx = 0;
                 uint32_t len = 0;
-                uint32_t range_count = (uint32_t)mol->backbone.range.count;
+                uint32_t range_count = (uint32_t)mol->protein_backbone.range.count;
                 for (uint32_t i = 0; i < range_count; ++i) {
-                    uint32_t res_count = mol->backbone.range.offset[i+1] - mol->backbone.range.offset[i];
+                    uint32_t res_count = mol->protein_backbone.range.offset[i+1] - mol->protein_backbone.range.offset[i];
                     if (res_count > 0) {
                         for (uint32_t j = 0; j < (res_count - 1) * MD_GL_SPLINE_SUBDIVISION_COUNT + 1; ++j) {
                             spline_index[len++] = idx++;
@@ -1305,7 +1305,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
         bool bb_rep = is_backbone_representation_type(draw_op->type);
         
         if (bb_rep && !(mol->flags & MOL_FLAG_HAS_BACKBONE)) {
-            MD_LOG_ERROR("Incompatible representation type for molecule: Molecule is missing a backbone");
+            MD_LOG_ERROR("Incompatible representation type for molecule: Molecule is missing a protein_backbone");
             continue;
         }
 
@@ -1684,7 +1684,7 @@ static bool compute_spline(const molecule_t* mol) {
     ASSERT(mol->buffer[GL_BUFFER_BACKBONE_SPLINE_DATA].id);
 
     if (mol->buffer[GL_BUFFER_BACKBONE_DATA].id == 0) {
-        MD_LOG_ERROR("Backbone data buffer is zero, which is required to compute the backbone. Is the molecule missing a backbone?");
+        MD_LOG_ERROR("Backbone data buffer is zero, which is required to compute the protein_backbone. Is the molecule missing a protein_backbone?");
         return false;
     }
 

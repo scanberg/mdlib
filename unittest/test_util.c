@@ -73,12 +73,12 @@ UTEST_F(util, chain) {
 }
 
 UTEST_F(util, backbone) {
-	EXPECT_EQ(0,   utest_fixture->mol_pftaa.backbone.range.count);
-	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.backbone.range.count);
-    EXPECT_EQ(1,   utest_fixture->mol_ala.backbone.range.count);
-    EXPECT_EQ(15,  utest_fixture->mol_ala.backbone.count);
-	EXPECT_EQ(253, utest_fixture->mol_centered.backbone.range.count);
-    EXPECT_EQ(10626, utest_fixture->mol_centered.backbone.count); // Should be equal to the total count of residues in chains
+	EXPECT_EQ(0,        utest_fixture->mol_pftaa.protein_backbone.range.count);
+	EXPECT_EQ(0,        utest_fixture->mol_nucleotides.protein_backbone.range.count);
+    EXPECT_EQ(1,        utest_fixture->mol_ala.protein_backbone.range.count);
+    EXPECT_EQ(15,       utest_fixture->mol_ala.protein_backbone.count);
+	EXPECT_EQ(253,      utest_fixture->mol_centered.protein_backbone.range.count);
+    EXPECT_EQ(10626,    utest_fixture->mol_centered.protein_backbone.count); // Should be equal to the total count of residues in chains
 }
 
 UTEST_F(util, structure) {

@@ -37,19 +37,21 @@ enum {
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
-    MD_FLAG_RES_BEG 		    = 1,
-    MD_FLAG_RES_END 		    = 2,
-    MD_FLAG_CHAIN_BEG 		    = 4,
-    MD_FLAG_CHAIN_END 		    = 8,
-    MD_FLAG_HETATM              = 16,
-    MD_FLAG_AMINO_ACID		    = 32,
-    MD_FLAG_NUCLEOBASE          = 64,
-    MD_FLAG_NUCLEOTIDE	        = 128,
-    MD_FLAG_WATER			    = 256,
-    MD_FLAG_ION			        = 512,
+    MD_FLAG_RES_BEG 		    = 0x1,
+    MD_FLAG_RES_END 		    = 0x2,
+    MD_FLAG_CHAIN_BEG 		    = 0x4,
+    MD_FLAG_CHAIN_END 		    = 0x8,
+    MD_FLAG_HETATM              = 0x10,
+    MD_FLAG_AMINO_ACID		    = 0x20,
+    MD_FLAG_NUCLEOTIDE	        = 0x40,
+    MD_FLAG_NUCLEOBASE          = 0x80,
+    MD_FLAG_WATER			    = 0x100,
+    MD_FLAG_ION			        = 0x200,
+    MD_FLAG_PROTEIN_BACKBONE    = 0x400,
+    MD_FLAG_NUCLEIC_BACKBONE    = 0x800,
 
-    MD_FLAG_AROMATIC            = 1024,
-    MD_FLAG_INTER_BOND          = 2048, // Bond that exists between components/residues
+    MD_FLAG_AROMATIC            = 0x1000,
+    MD_FLAG_INTER_BOND          = 0x2000, // Bond that exists between components/residues
 };
 
 typedef int32_t     md_atom_idx_t;
@@ -90,12 +92,12 @@ typedef struct md_bond_pair_t {
     md_atom_idx_t idx[2];
 } md_bond_pair_t;
 
-typedef struct md_backbone_atoms_t {
+typedef struct md_protein_backbone_atoms_t {
     md_atom_idx_t n;
     md_atom_idx_t ca;
     md_atom_idx_t c;
     md_atom_idx_t o;
-} md_backbone_atoms_t;
+} md_protein_backbone_atoms_t;
 
 // Backbone angles
 // φ (phi) is the angle in the chain C' − N − Cα − C'
@@ -105,6 +107,15 @@ typedef struct md_backbone_angles_t {
     float phi;
     float psi;
 } md_backbone_angles_t;
+
+typedef struct md_nucleic_backbone_atoms_t {
+    md_atom_idx_t c5;
+    md_atom_idx_t c4;
+    md_atom_idx_t c3;
+    md_atom_idx_t o3;
+    md_atom_idx_t p;
+    md_atom_idx_t o5;
+} md_nucleic_backbone_atoms_t;
 
 // Miniature string buffer with explicit length
 // It can store up to 6 characters + null terminator which makes it compatible as a C-string

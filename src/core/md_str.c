@@ -18,55 +18,13 @@ str_t str_from_cstr(const char* cstr) {
     return (str_t){0};
 }
 
-void str_swap(str_t a, str_t b) {
-    str_t tmp = a;
-    a = b;
-    b = tmp;
-}
 
-static inline const char* _trim_beg(const char* beg, const char* end) {
-    while (beg < end && is_whitespace(*beg)) ++beg;
-	return beg;
-}
-
-static inline const char* _trim_end(const char* beg, const char* end) {
-    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
-	return end;
-}
-
-str_t str_trim(str_t str) {
-    const char* beg = str_beg(str);
-    const char* end = str_end(str);
-    beg = _trim_beg(beg, end);
-	end = _trim_end(beg, end);
-    str.ptr = beg;
-    str.len = end - beg;
-    return str;
-}
-
-str_t str_trim_beg(str_t str) {
-    const char* beg = str_beg(str);
-	const char* end = str_end(str);
-	beg = _trim_beg(beg, end);
-	str.ptr = beg;
-	str.len = end - beg;
-	return str;
-}
-
-str_t str_trim_end(str_t str) {
-    const char* beg = str_beg(str);
-	const char* end = str_end(str);
-	end = _trim_end(beg, end);
-	str.ptr = beg;
-	str.len = end - beg;
-	return str;
-}
 
 bool str_eq(str_t str_a, str_t str_b) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if (str_a.len != str_b.len) return false;
     if (str_a.ptr[0] != str_b.ptr[0]) return false;
-    return memcmp(str_a.ptr, str_b.ptr, MIN(str_a.len, str_b.len)) == 0;
+    return MEMCMP(str_a.ptr, str_b.ptr, MIN(str_a.len, str_b.len)) == 0;
 
 }
 
@@ -76,7 +34,7 @@ bool str_eq_n(str_t str_a, str_t str_b, size_t n) {
     if (str_a.ptr[0] != str_b.ptr[0]) return false;
     // str_a & str_b have equal len at this point
     n = n < str_a.len ? n : str_a.len;
-    return memcmp(str_a.ptr, str_b.ptr, n) == 0;
+    return MEMCMP(str_a.ptr, str_b.ptr, n) == 0;
 }
 
 
@@ -151,17 +109,6 @@ size_t str_count_occur_char(str_t str, char c) {
         if (str.ptr[i] == c) count += 1;
     }
     return count;
-}
-
-str_t str_substr(str_t str, size_t offset, size_t length) {
-    if (offset > str.len) {
-        return (str_t){0};
-    }
-    const size_t max_len = str.len - offset;
-    length = MIN(length, max_len);
-
-    str_t res = { str.ptr + offset, length};
-    return res;
 }
 
 str_t str_join(str_t first, str_t last) {
@@ -537,8 +484,7 @@ void convert_to_upper(char* str, size_t len) {
 
 size_t str_copy_to_char_buf(char* buf, size_t cap, str_t str) {
     ASSERT(buf);
-    if (cap == 0) return 0;
-    if (str_empty(str)) return 0;
+    if (cap == 0 || str_empty(str)) return 0;
     const size_t len = CLAMP(str.len, 0, cap - 1);
     MEMCPY(buf, str.ptr, len);
     buf[len] = '\0';
