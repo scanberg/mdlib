@@ -284,7 +284,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
         if (line.len < 6) continue;
         if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
-            coord.flags |= MD_PDB_COORD_FLAG_HETATM;
+            coord.flags |= line.ptr[0] == 'H' ? MD_PDB_COORD_FLAG_HETATM : 0;
             md_array_push(data->atom_coordinates, coord, alloc);
         }
         else if (str_eq_cstr_n(line, "TER", 3)) {

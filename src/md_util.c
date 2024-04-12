@@ -16,6 +16,7 @@
 #include <core/md_bitfield.h>
 #include <core/md_str_builder.h>
 #include <core/md_os.h>
+#include <core/md_hash.h>
 
 #include <math.h>
 #include <string.h>
@@ -654,6 +655,21 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
     ASSERT(mol);
     ASSERT(mol->atom.count >= 0);
 
+    typedef struct entry_t {
+        uint64_t key;
+        uint64_t value;
+    } entry_t;
+
+    entry_t* hm = 0;
+    stbds_hmdefault(hm, 0);
+
+    // Prime the hashtable with element symbols
+    for (size_t i = 1; i < ARRAY_SIZE(element_symbols); ++i) {
+        str_t sym = element_symbols[i];
+        uint64_t key = md_hash64(sym.ptr, sym.len, 0);
+        stbds_hmput(hm, key, i);
+    }
+
     const size_t count = MIN(capacity, mol->atom.count);
     for (size_t i = 0; i < count; ++i) {
         if (element[i] != 0) continue;
@@ -664,14 +680,20 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
         str_t name = trim_label(original);
 
         if (name.len > 0) {
+            uint64_t key = md_hash64(name.ptr, name.len, 0);
+            uint64_t val = stbds_hmget(hm, key);
+
+            if (val > 0) {
+                element[i] = (md_element_t)val;
+                continue;
+            }
 
             md_element_t elem = 0;
             if ((elem = md_util_element_lookup(name)) != 0) goto done;
 
             // If amino acid, try to deduce the element from that
             if (mol->atom.flags) {
-                const md_flags_t flags = mol->atom.flags[i];
-                if (flags & MD_FLAG_AMINO_ACID || flags & MD_FLAG_NUCLEOTIDE) {
+                if (mol->atom.flags[i] & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE)) {
                     // Try to match against the first character
                     name.len = 1;
                     elem = md_util_element_lookup_ignore_case(name);
@@ -717,7 +739,8 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
 
             // 2-3 letters + 1-2 digit (e.g. HO(H)[0-99]) usually means just look at the first letter
             if ((num_alpha == 2 || num_alpha == 3) && (num_digits == 1 || num_digits == 2)) {
-                elem = md_util_element_lookup_ignore_case(str_substr(original, 0, 1));
+                name.len = 1;
+                elem = md_util_element_lookup_ignore_case(name);
                 goto done;
             }
 
@@ -735,8 +758,11 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
 
         done:
             element[i] = elem;
+            stbds_hmput(hm, key, elem);
         }
     }
+
+    stbds_hmfree(hm);
 
     return true;
 }
@@ -1473,19 +1499,25 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
         const float aabb_pad = 1.5f;
         int64_t prev_idx = 0;
         md_range_t prev_range = md_residue_atom_range(*res, prev_idx);
-        aabb_t prev_aabb;
+
+        aabb_t prev_aabb = {0};
         md_util_aabb_compute(prev_aabb.min_box.elem, prev_aabb.max_box.elem, atom->x + prev_range.beg, atom->y + prev_range.beg, atom->z + prev_range.beg, 0, 0, prev_range.end - prev_range.beg);
         prev_aabb.min_box = vec3_sub_f(prev_aabb.min_box, aabb_pad);
         prev_aabb.max_box = vec3_add_f(prev_aabb.max_box, aabb_pad);
+
         find_bonds_in_ranges(&bond, atom, cell, prev_range, prev_range, 0, alloc, temp_arena);
         for (int64_t curr_idx = 1; curr_idx < (int64_t)res->count; ++curr_idx) {
             md_range_t curr_range = md_residue_atom_range(*res, curr_idx);
-            aabb_t curr_aabb;
-            md_util_aabb_compute(curr_aabb.min_box.elem, curr_aabb.max_box.elem, atom->x + curr_range.beg, atom->y + curr_range.beg, atom->z + curr_range.beg, 0, 0, curr_range.end - curr_range.beg);
-            curr_aabb.min_box = vec3_sub_f(curr_aabb.min_box, aabb_pad);
-            curr_aabb.max_box = vec3_add_f(curr_aabb.max_box, aabb_pad);
-            if (aabb_overlap(prev_aabb, curr_aabb)) {
-			    find_bonds_in_ranges(&bond, atom, cell, prev_range, curr_range, MD_FLAG_INTER_BOND, alloc, temp_arena);
+
+            aabb_t curr_aabb = {0};
+            if ((res->flags[curr_idx] & (MD_FLAG_WATER | MD_FLAG_ION)) == 0) {
+                md_util_aabb_compute(curr_aabb.min_box.elem, curr_aabb.max_box.elem, atom->x + curr_range.beg, atom->y + curr_range.beg, atom->z + curr_range.beg, 0, 0, curr_range.end - curr_range.beg);
+                curr_aabb.min_box = vec3_sub_f(curr_aabb.min_box, aabb_pad);
+                curr_aabb.max_box = vec3_add_f(curr_aabb.max_box, aabb_pad);
+
+                if (aabb_overlap(prev_aabb, curr_aabb)) {
+			        find_bonds_in_ranges(&bond, atom, cell, prev_range, curr_range, MD_FLAG_INTER_BOND, alloc, temp_arena);
+                }
             }
             find_bonds_in_ranges(&bond, atom, cell, curr_range, curr_range, 0, alloc, temp_arena);
             prev_range = curr_range;
@@ -1691,6 +1723,7 @@ bool md_util_identify_ions(md_atom_data_t* atom) {
         return false;
     }
     for (size_t i = 0; i < atom->count; ++i) {
+        // Check if it has no bonds
         if (atom->conn_offset[i] == atom->conn_offset[i+1]) {
             if (monatomic_ion_element(atom->element[i]) && !(atom->flags[i] & MD_FLAG_WATER)) {
 			    atom->flags[i] |= MD_FLAG_ION;
@@ -1989,11 +2022,13 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
     int current_color = 1;
     int current_mark  = 1;
 
-#ifdef DEBUG
+#if DEBUG
     uint64_t processed_ring_elements = 0;
 #endif
 
     for (int i = 0; i < (int)mol->atom.count; ++i) {
+        if (mol->atom.flags[i] & (MD_FLAG_WATER | MD_FLAG_ION)) continue;
+
         // Skip any atom that has already been colored in the previous search
         if (color[i] == current_color) continue;
 
@@ -2009,7 +2044,7 @@ md_index_data_t md_util_compute_rings(const md_molecule_t* mol, md_allocator_i* 
         while (!fifo_empty(&queue)) {
             int idx = fifo_pop(&queue);
 
-#ifdef DEBUG
+#if DEBUG
             processed_ring_elements += 1;
 #endif
 
@@ -5504,7 +5539,7 @@ static void md_util_compute_backbone_data(md_protein_backbone_data_t* protein_ba
 // (Coordinates & Elements) -> Covalent Bonds
 // (resid & Bonds)          -> Chains
 // (resname & types)        -> Backbone
-bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags) {
+bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_util_postprocess_flags_t flags) {
     ASSERT(mol);
     ASSERT(alloc);
 

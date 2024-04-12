@@ -98,7 +98,12 @@ static inline str_t str_trim(str_t str) {
     return str;
 }
 
-bool str_eq(str_t str_a, str_t str_b);
+static inline bool str_eq(str_t str_a, str_t str_b) {
+    if (!str_a.ptr || !str_b.ptr) return false;
+    if (str_a.len  !=  str_b.len) return false;
+    if (str_a.ptr[0] != str_b.ptr[0]) return false;
+    return MEMCMP(str_a.ptr, str_b.ptr, MIN(str_a.len, str_b.len)) == 0;
+}
 bool str_eq_ignore_case(const str_t str_a, const str_t str_b);
 bool str_eq_n(str_t str_a, str_t str_b, size_t n);
 bool str_eq_n_ignore_case(const str_t str_a, const str_t str_b, size_t n);
