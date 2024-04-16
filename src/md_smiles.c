@@ -80,15 +80,14 @@ static char consume_char(state_t* s) {
 }
 
 static bool parse_integer(int* result, state_t* s) {
-    if (!is_digit(peek_char(s))) return false;
-    char c;
+    char c = peek_char(s);
+    if (!is_digit(c)) return false;
 
-    int val = 0;
+    int val = (int)c - '0';
     while (c = peek_char(s), is_digit(c)) {
         val = val * 10 + ((int)c - '0');
         consume_char(s);
     }
-
     *result = val;
 
     return true;
