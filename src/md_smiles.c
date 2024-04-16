@@ -84,8 +84,8 @@ static bool parse_integer(int* result, state_t* s) {
     char c;
 
     int val = 0;
-    while ((c = peek_char(s)) && is_digit(c)) {
-        val = val * 10 + (*s->c - '0');
+    while (c = peek_char(s), is_digit(c)) {
+        val = val * 10 + ((int)c - '0');
         consume_char(s);
     }
 
