@@ -957,6 +957,7 @@ void md_gl_shaders_destroy(md_gl_shaders_t handle) {
             if (glIsProgram(shaders->ribbons[i].id))    glDeleteProgram(shaders->ribbons[i].id);
             if (glIsProgram(shaders->cartoon[i].id))    glDeleteProgram(shaders->cartoon[i].id);
         }
+        md_handle_pool_free_slot(&ctx.shader_pool, handle.id);
     }
 }
 
@@ -1134,6 +1135,7 @@ void md_gl_mol_destroy(md_gl_mol_t handle) {
             gl_buffer_conditional_delete(&mol->buffer[i]);
         }
         MEMSET(mol, 0, sizeof(molecule_t));
+        md_handle_pool_free_slot(&ctx.molecule_pool, handle.id);
     }
 }
 
@@ -1183,6 +1185,7 @@ void md_gl_rep_destroy(md_gl_rep_t handle) {
     if (rep) {
         gl_buffer_conditional_delete(&rep->atom_color);
         MEMSET(rep, 0, sizeof(representation_t));
+        md_handle_pool_free_slot(&ctx.representation_pool, handle.id);
     }
 }
 
