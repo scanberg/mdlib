@@ -5708,6 +5708,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
             {
                 md_protein_backbone_atoms_t* backbone_atoms = md_temp_push(MAX_BACKBONE_LENGTH * sizeof(md_protein_backbone_atoms_t));
                 size_t backbone_length = 0;
+                md_residue_idx_t res_base = -1;
         
                 for (size_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
                     md_range_t range = md_chain_residue_range(mol->chain, chain_idx);
@@ -5716,20 +5717,24 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                         md_range_t atom_range = md_residue_atom_range(mol->residue, res_idx);
                         if (md_util_protein_backbone_atoms_extract(&atoms, mol->atom.type + atom_range.beg, atom_range.end - atom_range.beg, atom_range.beg)) {
                             backbone_atoms[backbone_length++] = atoms;
+                            if (res_base == -1) {
+                                res_base = res_idx;
+                            }
                         } else {
-                            if (backbone_length >= MIN_BACKBONE_LENGTH) {
+                            if (backbone_length >= MIN_BACKBONE_LENGTH && res_base != -1) {
                                 // Commit the backbone
-                                commit_protein_backbone(backbone_atoms, backbone_length, res_idx, (md_chain_idx_t)chain_idx, mol, alloc);
+                                commit_protein_backbone(backbone_atoms, backbone_length, res_base, (md_chain_idx_t)chain_idx, mol, alloc);
                             }
                             backbone_length = 0;
+                            res_base = -1;
                         }
                     }
                     // Possibly commit remainder of the chain
-                    if (backbone_length >= MIN_BACKBONE_LENGTH) {
-                        int32_t res_idx = mol->chain.res_offset[chain_idx + 1] - (int32_t)backbone_length;
-                        commit_protein_backbone(backbone_atoms, backbone_length, res_idx, (md_chain_idx_t)chain_idx, mol, alloc);
+                    if (backbone_length >= MIN_BACKBONE_LENGTH && res_base != -1) {
+                        commit_protein_backbone(backbone_atoms, backbone_length, res_base, (md_chain_idx_t)chain_idx, mol, alloc);
                     }
                     backbone_length = 0;
+                    res_base = -1;
                 }
 
                 mol->protein_backbone.range.count = md_array_size(mol->protein_backbone.range.offset);
@@ -5755,6 +5760,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
             {
                 md_nucleic_backbone_atoms_t* backbone_atoms = md_temp_push(MAX_BACKBONE_LENGTH * sizeof(md_nucleic_backbone_atoms_t));
                 size_t backbone_length = 0;
+                md_residue_idx_t res_base = -1;
 
                 for (size_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
                     md_range_t range = md_chain_residue_range(mol->chain, chain_idx);
@@ -5764,20 +5770,25 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                         const md_label_t* atom_labels = mol->atom.type + atom_range.beg;
                         if (md_util_nucleic_backbone_atoms_extract(&atoms, atom_labels, atom_range.end - atom_range.beg, atom_range.beg)) {
                             backbone_atoms[backbone_length++] = atoms;
+                            if (res_base == -1) {
+                                res_base = res_idx;
+                            }
                         } else {
-                            if (backbone_length >= MIN_BACKBONE_LENGTH) {
+                            if (backbone_length >= MIN_BACKBONE_LENGTH && res_base != -1) {
                                 // Commit the backbone
-                                commit_nucleic_backbone(backbone_atoms, backbone_length, res_idx, (md_chain_idx_t)chain_idx, mol, alloc);
+                                commit_nucleic_backbone(backbone_atoms, backbone_length, res_base, (md_chain_idx_t)chain_idx, mol, alloc);
                             }
                             backbone_length = 0;
+                            res_base = -1;
                         }
                     }
                     // Possibly commit remainder of the chain
-                    if (backbone_length >= MIN_BACKBONE_LENGTH) {
+                    if (backbone_length >= MIN_BACKBONE_LENGTH && res_base != -1) {
                         int32_t res_idx = mol->chain.res_offset[chain_idx + 1] - (int32_t)backbone_length;
-                        commit_nucleic_backbone(backbone_atoms, backbone_length, res_idx, (md_chain_idx_t)chain_idx, mol, alloc);
+                        commit_nucleic_backbone(backbone_atoms, backbone_length, res_base, (md_chain_idx_t)chain_idx, mol, alloc);
                     }
                     backbone_length = 0;
+                    res_base = -1;
                 }
 
                 mol->nucleic_backbone.range.count = md_array_size(mol->protein_backbone.range.offset);

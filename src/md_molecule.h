@@ -13,7 +13,7 @@ typedef struct md_atom_data_t {
     float* y;
     float* z;
 
-    // Misc
+    // Atom Type Specific (@TODO: Compress this into a smaller set)
     float* radius;
     float* mass;
     md_element_t* element;

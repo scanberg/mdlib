@@ -1032,9 +1032,9 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             gl_backbone_data_t* backbone_data = (gl_backbone_data_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (backbone_data) {
                 uint32_t idx = 0;
-                for (size_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
-                    uint32_t beg = (uint32_t)mol->protein_backbone.range.offset[i];
-                    uint32_t end = (uint32_t)mol->protein_backbone.range.offset[i+1];
+                for (size_t i = 0; i < mol->protein_backbone.range.count; ++i) {
+                    uint32_t beg = mol->protein_backbone.range.offset[i];
+                    uint32_t end = mol->protein_backbone.range.offset[i+1];
                     for (uint32_t j = beg; j < end; ++j) {
                         md_residue_idx_t res_idx = mol->protein_backbone.residue_idx[j];
                         uint32_t res_atom_offset = mol->residue.atom_offset[res_idx];
@@ -1071,7 +1071,7 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
             uint32_t* control_point_index = (uint32_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             if (control_point_index) {
                 uint32_t len = 0;
-                for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
+                for (size_t i = 0; i < mol->protein_backbone.range.count; ++i) {
                     uint32_t bb_beg = mol->protein_backbone.range.offset[i];
                     uint32_t bb_end = mol->protein_backbone.range.offset[i+1];
                     control_point_index[len++] = bb_beg;
