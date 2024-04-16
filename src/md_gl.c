@@ -105,7 +105,7 @@ enum {
 #define MAX_SHADERS 32
 #define MAX_MOLECULES 32
 #define MAX_PALETTES 32
-#define MAX_REPRESENTATIONS 64
+#define MAX_REPRESENTATIONS 256
 #define MAX_SHADER_PERMUTATIONS 2
 
 static inline bool is_ortho_proj_matrix(const mat4_t M) { return M.elem[2][3] == 0.0f; }
