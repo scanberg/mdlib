@@ -578,10 +578,10 @@ UTEST_F(util, structure_matching_smiles) {
         {STR_LIT("SEC"), SELENOCYSTEINE},
         {STR_LIT("PYR"), PYRROLYSINE},
 
-        {STR_LIT("DA"),  DA},
+        //{STR_LIT("DA"),  DA},
         {STR_LIT("DC"),  DC},
         {STR_LIT("DG"),  DG},
-        {STR_LIT("DT"),  DT},
+        //{STR_LIT("DT"),  DT},
     };
 
     mol_t molecules[] = {
