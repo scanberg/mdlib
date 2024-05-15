@@ -11,13 +11,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-str_t str_from_cstr(const char* cstr) {
-    if (cstr) {
-		return (str_t){cstr, strlen(cstr)};
-	}
-    return (str_t){0};
-}
-
 bool str_eq_n(str_t str_a, str_t str_b, size_t n) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;

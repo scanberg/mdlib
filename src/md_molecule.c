@@ -44,16 +44,12 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     // Bonds
     if (mol->bond.pairs) md_array_free(mol->bond.pairs, alloc);
     if (mol->bond.order) md_array_free(mol->bond.order, alloc);
-    if (mol->bond.flags) md_array_free(mol->bond.flags, alloc);
 
-    if (mol->conn.index) md_array_free(mol->conn.index, alloc);
-    if (mol->conn.flags) md_array_free(mol->conn.flags, alloc);
-    if (mol->conn.order) md_array_free(mol->conn.order, alloc);
+    if (mol->bond.conn.atom_idx) md_array_free(mol->bond.conn.atom_idx, alloc);
+    if (mol->bond.conn.bond_idx) md_array_free(mol->bond.conn.bond_idx, alloc);
 
-    md_index_data_free(&mol->structures, alloc);
-    md_index_data_free(&mol->rings, alloc);
-    
-    if (mol->hydrogen_bonds) md_array_free(mol->hydrogen_bonds, alloc);
+    md_index_data_free(&mol->structure, alloc);
+    md_index_data_free(&mol->ring, alloc);
 
     // Instance
     if (mol->instance.atom_range) md_array_free(mol->instance.atom_range, alloc);
@@ -106,7 +102,6 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(chain, res_offset);
     ARRAY_PUSH(chain, atom_offset);
 
-    md_array_push_array(dst->hydrogen_bonds, src->hydrogen_bonds, md_array_size(src->hydrogen_bonds), alloc);
     md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
 
     ARRAY_PUSH(residue, name);

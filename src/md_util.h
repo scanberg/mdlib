@@ -18,12 +18,12 @@ enum {
     MD_UTIL_POSTPROCESS_RADIUS_BIT          = 0x0002,
     MD_UTIL_POSTPROCESS_MASS_BIT            = 0x0004,
     MD_UTIL_POSTPROCESS_BOND_BIT            = 0x0008,
-    MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT    = 0x0010,
-    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0020,
-    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0040,
-    MD_UTIL_POSTPROCESS_RESIDUE_BIT         = 0x0080,
-    MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 0x0100,
-    MD_UTIL_POSTPROCESS_ION_BIT             = 0x0200,
+    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0010,
+    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0020,
+    MD_UTIL_POSTPROCESS_RESIDUE_BIT         = 0x0040,
+    MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 0x0080,
+    MD_UTIL_POSTPROCESS_ION_BIT             = 0x0100,
+    MD_UTIL_POSTPROCESS_ORDER_BIT           = 0x0200,
 
     MD_UTIL_POSTPROCESS_ALL                 = -1,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT
@@ -36,6 +36,11 @@ typedef uint32_t md_util_postprocess_flags_t;
 // E.g. H, He, Fe, Na, C
 md_element_t md_util_element_lookup(str_t element_str);
 md_element_t md_util_element_lookup_ignore_case(str_t element_str);
+
+// Access to the static arrays
+const str_t* md_util_element_symbols();
+const str_t* md_util_element_names();
+const float* md_util_element_vdw_radii();
 
 str_t md_util_element_symbol(md_element_t element);
 str_t md_util_element_name(md_element_t element);

@@ -60,6 +60,9 @@ size_t md_vm_arena_get_pos(struct md_allocator_i* vm_arena);
 md_vm_arena_temp_t md_vm_arena_temp_begin(struct md_allocator_i* vm_arena);
 void md_vm_arena_temp_end(md_vm_arena_temp_t temp);
 
+#define md_vm_arena_push_array(arena, type, count) (md_vm_arena_push(arena, sizeof(type) * count));
+#define md_vm_arena_push_zero_array(arena, type, count) (md_vm_arena_push_zero(arena, sizeof(type) * count));
+
 #ifdef __cplusplus
 }
 #endif

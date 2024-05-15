@@ -21,7 +21,7 @@ typedef struct md_allocator_i {
     void *(*realloc)(struct md_allocator_o *inst, void *ptr, size_t old_size, size_t new_size, const char* file, size_t line);
 } md_allocator_i;
 
-static inline void* md_aligned_alloc(struct md_allocator_i* alloc, size_t size, size_t align) {
+static inline void* md_aligned_alloc(md_allocator_i* alloc, size_t size, size_t align) {
     size_t offset = align - 1 + sizeof(void*) + sizeof(size_t);
     void* p1 = md_alloc(alloc, size + offset);
     if (!p1) return 0;
@@ -32,7 +32,7 @@ static inline void* md_aligned_alloc(struct md_allocator_i* alloc, size_t size, 
     return p2;
 }
 
-static inline void md_aligned_free(struct md_allocator_i* alloc, void* ptr, size_t size) {
+static inline void md_aligned_free(md_allocator_i* alloc, void* ptr, size_t size) {
     (void)size;
     void** p2 = (void**)ptr;
     void* p1 = p2[-1];

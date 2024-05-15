@@ -336,10 +336,10 @@ static inline void gl_buffer_set_sub_data(gl_buffer_t buf, uint32_t byte_offset,
 
 static inline void gl_buffer_clear(gl_buffer_t buf) {
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
-    if (ctx.version >= 430) {
-        uint8_t data = 0;
-        glClearBufferSubData(GL_ARRAY_BUFFER, GL_R8UI, 0, buf.size, GL_RED, GL_UNSIGNED_BYTE, &data);
-    } else {
+//    if (ctx.version >= 430) {
+//        uint8_t data = 0;
+//        glClearBufferSubData(GL_ARRAY_BUFFER, GL_R8UI, 0, buf.size, GL_RED, GL_UNSIGNED_BYTE, &data);
+//    } else {
         char* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
         if (!ptr) {
             MD_LOG_ERROR("Failed to map buffer");
@@ -347,7 +347,7 @@ static inline void gl_buffer_clear(gl_buffer_t buf) {
         }
         MEMSET(ptr, 0, buf.size);
         glUnmapBuffer(GL_ARRAY_BUFFER);
-    }
+//    }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 

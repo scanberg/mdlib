@@ -56,6 +56,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_i32gather_ps simde_mm256_i32gather_ps
 #define md_mm256_i32gather_pd simde_mm256_i32gather_pd
 
+#define md_mm_mask_i32gather_ps simde_mm_mask_i32gather_ps
+#define md_mm_mask_i32gather_pd simde_mm_mask_i32gather_pd
+#define md_mm256_mask_i32gather_ps simde_mm256_mask_i32gather_ps
+#define md_mm256_mask_i32gather_pd simde_mm256_mask_i32gather_pd
+
 #define md_mm_storeu_ps simde_mm_storeu_ps
 #define md_mm_storeu_pd simde_mm_storeu_pd
 #define md_mm256_storeu_ps simde_mm256_storeu_ps
@@ -352,6 +357,7 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_cvttps_epi32 simde_mm_cvttps_epi32
 #define md_mm256_cvtps_epi32 simde_mm256_cvtps_epi32
 #define md_mm256_cvttps_epi32 simde_mm256_cvttps_epi32
+#define md_mm256_cvtepu8_epi32 simde_mm256_cvtepu8_epi32
 
 #define md_mm_cvtss_f32 simde_mm_cvtss_f32
 #define md_mm_cvtsd_f64 simde_mm_cvtsd_f64

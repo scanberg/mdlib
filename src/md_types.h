@@ -39,19 +39,30 @@ enum {
 enum {
     MD_FLAG_RES_BEG 		    = 0x1,
     MD_FLAG_RES_END 		    = 0x2,
-    MD_FLAG_CHAIN_BEG 		    = 0x4,
-    MD_FLAG_CHAIN_END 		    = 0x8,
-    MD_FLAG_HETATM              = 0x10,
-    MD_FLAG_AMINO_ACID		    = 0x20,
-    MD_FLAG_NUCLEOTIDE	        = 0x40,
-    MD_FLAG_NUCLEOBASE          = 0x80,
-    MD_FLAG_WATER			    = 0x100,
-    MD_FLAG_ION			        = 0x200,
-    MD_FLAG_PROTEIN_BACKBONE    = 0x400,
-    MD_FLAG_NUCLEIC_BACKBONE    = 0x800,
+    MD_FLAG_RES                 = 0x4,
+    MD_FLAG_CHAIN_BEG 		    = 0x8,
+    MD_FLAG_CHAIN_END 		    = 0x10,
+    MD_FLAG_CHAIN 		        = 0x20,
+    MD_FLAG_HETATM              = 0x40,
+    MD_FLAG_AMINO_ACID		    = 0x80,
+    MD_FLAG_NUCLEOTIDE	        = 0x100,
+    MD_FLAG_NUCLEOBASE          = 0x200,
+    MD_FLAG_WATER			    = 0x400,
+    MD_FLAG_ION			        = 0x800,
+    MD_FLAG_PROTEIN_BACKBONE    = 0x1000,
+    MD_FLAG_NUCLEIC_BACKBONE    = 0x2000,
 
-    MD_FLAG_AROMATIC            = 0x1000,
-    MD_FLAG_INTER_BOND          = 0x2000, // Bond that exists between components/residues
+    // Experimental
+    MD_FLAG_SP                  = 0x10000,
+    MD_FLAG_SP2                 = 0x20000,
+    MD_FLAG_SP3                 = 0x40000,
+    MD_FLAG_AROMATIC            = 0x80000,
+};
+
+// In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
+enum {
+    MD_BOND_FLAG_AROMATIC       = 0x10,
+    MD_BOND_FLAG_INTER          = 0x20,
 };
 
 typedef int32_t     md_atom_idx_t;

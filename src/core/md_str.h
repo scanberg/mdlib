@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include <core/md_common.h>  // ASSERT, MIN, MAX
 
@@ -42,8 +43,6 @@ typedef struct str_t {
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-str_t str_from_cstr(const char* cstr);
 
 // Only for ASCII character set
 static inline int  char_to_digit(int c) { return c - '0'; }
@@ -101,6 +100,7 @@ static inline str_t str_trim(str_t str) {
 static inline bool str_eq(str_t str_a, str_t str_b) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if (str_a.len  !=  str_b.len) return false;
+    if (str_a.len == 0) return true;
     if (str_a.ptr[0] != str_b.ptr[0]) return false;
     return MEMCMP(str_a.ptr, str_b.ptr, MIN(str_a.len, str_b.len)) == 0;
 }
@@ -128,6 +128,24 @@ static inline str_t str_substr(str_t str, size_t offset, size_t length DEF_VAL(S
     res.ptr = str.ptr + offset;
     res.len = length = MIN(length, max_len);
     return res;
+}
+
+static inline str_t str_from_cstr(const char* cstr) {
+    str_t str = {0,0};
+    if (cstr) {
+        str.ptr = cstr;
+        str.len = strlen(cstr);
+    }
+    return str;
+}
+
+static inline str_t str_from_cstrn(const char* cstr, size_t n) {
+    str_t str = {0,0};
+    if (cstr) {
+        str.ptr = cstr;
+        str.len = strnlen(cstr, n);
+    }
+    return str;
 }
 
 // Joins two strings by taking the beginning of the first and the end of the last

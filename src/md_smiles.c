@@ -5,10 +5,9 @@
 #endif
 
 #include <core/md_log.h>
-
 #include <stdbool.h>
 
-typedef struct state_t {
+typedef struct parse_state_t {
     const char* c;
     const char* end;
     md_smiles_node_t* nodes;
@@ -16,7 +15,7 @@ typedef struct state_t {
     size_t node_cap;
     bool dot;
     bool abort;
-} state_t;
+} parse_state_t;
 
 typedef struct symbol_t {
     char symbol[2];
@@ -62,28 +61,28 @@ static inline bool is_lower(int c) { return 'a' <= c && c <= 'z'; }
 static inline bool is_upper(int c) { return 'A' <= c && c <= 'Z'; }
 static inline bool is_whitespace(int c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
 
-static bool is_valid(state_t* s) {
+static bool is_valid(parse_state_t* s) {
     return s->c != s->end;
 }
 
-static void terminate(state_t* s) {
+static void terminate(parse_state_t* s) {
     s->abort = true;
     s->c = s->end;
 }
 
-static char peek_char(state_t* s) {
+static char peek_char(parse_state_t* s) {
     return s->c != s->end ? *s->c : 0;
 }
 
-static char consume_char(state_t* s) {
+static char consume_char(parse_state_t* s) {
     return s->c != s->end ? *s->c++ : 0;
 }
 
-static bool parse_integer(int* result, state_t* s) {
+static bool parse_integer(int* result, parse_state_t* s) {
     char c = peek_char(s);
     if (!is_digit(c)) return false;
 
-    int val = (int)c - '0';
+    int val = 0;
     while (c = peek_char(s), is_digit(c)) {
         val = val * 10 + ((int)c - '0');
         consume_char(s);
@@ -93,7 +92,7 @@ static bool parse_integer(int* result, state_t* s) {
     return true;
 }
 
-static const symbol_t* match_symbol(bool shortcut, state_t* s) {
+static const symbol_t* match_symbol(bool shortcut, parse_state_t* s) {
     if (!is_alpha(peek_char(s))) {
         return false;
     }
@@ -121,7 +120,7 @@ static const symbol_t* match_symbol(bool shortcut, state_t* s) {
 	return match1;
 }
 
-static bool parse_shortcut(md_smiles_node_t* node, state_t* s) {
+static bool parse_shortcut(md_smiles_node_t* node, parse_state_t* s) {
     const symbol_t* sym = match_symbol(true, s);
     if (!sym) {
 		return false;
@@ -132,7 +131,7 @@ static bool parse_shortcut(md_smiles_node_t* node, state_t* s) {
 	return true;
 }
 
-static bool parse_bracket(md_smiles_node_t* node, state_t* s) {
+static bool parse_bracket(md_smiles_node_t* node, parse_state_t* s) {
     if (peek_char(s) != '[') {
         return false;
     }
@@ -210,7 +209,7 @@ static bool parse_bracket(md_smiles_node_t* node, state_t* s) {
     return true;
 }
 
-static bool push_node(state_t* s, md_smiles_node_t node) {
+static bool push_node(parse_state_t* s, md_smiles_node_t node) {
     if (s->node_len < s->node_cap) {
 		s->nodes[s->node_len++] = node;
 		return true;
@@ -218,7 +217,7 @@ static bool push_node(state_t* s, md_smiles_node_t node) {
 	return false;
 }
 
-static bool parse_bond(state_t* s) {
+static bool parse_bond(parse_state_t* s) {
     char c = peek_char(s);
 
     const char bond_symbol[] = "-=:#$/\\";
@@ -237,7 +236,7 @@ static bool parse_bond(state_t* s) {
     return false;
 }
 
-static bool parse_dot(state_t* s) {
+static bool parse_dot(parse_state_t* s) {
     char c = peek_char(s);
 
     if (c == '.') {
@@ -250,7 +249,7 @@ static bool parse_dot(state_t* s) {
     return false;
 }
 
-static bool parse_rnum(state_t* s) {
+static bool parse_rnum(parse_state_t* s) {
     if (is_digit(peek_char(s))) {
         char c = consume_char(s);
         int num = c - '0';
@@ -276,9 +275,9 @@ static bool parse_rnum(state_t* s) {
     return false;
 }
 
-static bool parse_line(state_t*);
+static bool parse_line(parse_state_t*);
 
-static bool parse_branch(state_t* s) {
+static bool parse_branch(parse_state_t* s) {
     if (peek_char(s) != '(') {
         return false;
     }
@@ -317,7 +316,7 @@ static bool parse_branch(state_t* s) {
     return push_node(s, node);
 }
 
-static bool parse_star(md_smiles_node_t* node, state_t* s) {
+static bool parse_star(md_smiles_node_t* node, parse_state_t* s) {
     if (peek_char(s) != '*') {
         return false;
     }
@@ -326,7 +325,7 @@ static bool parse_star(md_smiles_node_t* node, state_t* s) {
     return true;
 }
 
-static bool parse_atom(state_t* s) {
+static bool parse_atom(parse_state_t* s) {
     md_smiles_node_t node = { .type = MD_SMILES_NODE_ATOM };
     if (parse_star(&node, s) || parse_shortcut(&node, s) || parse_bracket(&node, s)) {
         s->dot = false;
@@ -335,7 +334,7 @@ static bool parse_atom(state_t* s) {
     return false;
 }
 
-static bool parse_chain(state_t* s) {
+static bool parse_chain(parse_state_t* s) {
     int num = 0;
     while (is_valid(s)) {
         if (parse_dot(s) && parse_atom(s)) {
@@ -355,7 +354,7 @@ static bool parse_chain(state_t* s) {
     return true;
 }
 
-static bool parse_line(state_t* s) {
+static bool parse_line(parse_state_t* s) {
     if (!parse_atom(s)) {
         return false;
     }
@@ -381,7 +380,7 @@ size_t md_smiles_parse(md_smiles_node_t* out_nodes, size_t in_cap, const char* i
 		end--;
 	}
 
-    state_t state = {
+    parse_state_t state = {
         .c = beg,
         .end = end,
         .nodes = out_nodes,

@@ -195,17 +195,18 @@ static inline void set_block(md_bitfield_t* bf, uint64_t idx, block_t blk) {
 static inline block_t get_block(const md_bitfield_t* bf, uint64_t blk_idx) {
     const uint64_t beg_blk = block_idx(bf->beg_bit);
     const uint64_t end_blk = block_idx(bf->end_bit);
-    if (bf->bits && beg_blk <= blk_idx && blk_idx <= end_blk)
+    if (bf->bits && beg_blk <= blk_idx && blk_idx <= end_blk) {
         return ((block_t*)bf->bits)[blk_idx - beg_blk];
-    return (block_t) {0};
+    }
+    return (block_t){0};
 }
 
-#define get_blk_ptr(bf, idx) ((block_t*)bf->bits + (idx - block_idx(bf->beg_bit)))
+#define get_blk_ptr(bf, bit_idx) ((block_t*)bf->bits + (bit_idx - block_idx(bf->beg_bit)))
 
 static inline void free_blocks(md_bitfield_t* bf) {
     ASSERT(bf);
     ASSERT(bf->bits != NULL);
-    md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    md_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
     bf->bits = NULL;
 }
 
@@ -214,7 +215,7 @@ static inline void allocate_blocks(md_bitfield_t* bf, uint64_t num_blocks) {
     ASSERT(bf->bits == NULL);
     ASSERT(bf->alloc);
     if (num_blocks > 0) {
-        bf->bits = md_aligned_alloc(bf->alloc, num_blocks * sizeof(block_t), ALIGNMENT);
+        bf->bits = md_alloc(bf->alloc, num_blocks * sizeof(block_t));
     }
 }
 
@@ -278,18 +279,29 @@ static inline void ensure_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
 
     if (new_beg_blk < cur_beg_blk || cur_end_blk < new_end_blk) {
         // Grow!
+        const uint64_t cur_num_blk = num_blocks(bf->beg_bit, bf->end_bit);
         const uint64_t new_num_blk = num_blocks(new_beg_bit, new_end_bit);
-        block_t* new_bits = md_aligned_alloc(bf->alloc, new_num_blk * sizeof(block_t), ALIGNMENT);
-        ASSERT(new_bits);
-        MEMSET(new_bits, 0, new_num_blk * sizeof(block_t));
+        block_t* new_bits = 0;
 
-        if (bf->bits) {
-            // Copy old data blocks
-            const uint64_t cur_num_blk = num_blocks(bf->beg_bit, bf->end_bit);
-            const uint64_t offset_old_in_new = cur_beg_blk - new_beg_blk;
-            MEMCPY(new_bits + offset_old_in_new, bf->bits, cur_num_blk * sizeof(block_t));
-            md_aligned_free(bf->alloc, bf->bits, cur_num_blk * sizeof(block_t));
+#if 1
+        if (new_beg_blk < cur_beg_blk) {
+            new_bits = md_alloc(bf->alloc, new_num_blk * sizeof(block_t));
+            size_t blk_diff = cur_beg_blk - new_beg_blk;
+            MEMSET(new_bits, 0, blk_diff * sizeof(block_t));
+            if (bf->bits) {
+                MEMCPY(new_bits + blk_diff, bf->bits, cur_num_blk * sizeof(block_t));
+                md_free(bf->alloc, bf->bits, cur_num_blk * sizeof(block_t));
+            }
+        } else {
+            new_bits = md_realloc(bf->alloc, bf->bits, cur_num_blk * sizeof(block_t), new_num_blk * sizeof(block_t));
         }
+
+        if (new_end_blk > cur_end_blk) {
+            // Clear the new end portion of blocks
+            size_t blk_diff = new_end_blk - cur_end_blk;
+            MEMSET(new_bits + cur_num_blk, 0, blk_diff * sizeof(block_t));
+        }
+#endif
 
         bf->bits = new_bits;
     }
@@ -319,7 +331,7 @@ void md_bitfield_init(md_bitfield_t* bf, md_allocator_i* alloc) {
 bool md_bitfield_free(md_bitfield_t* bf) {
     ASSERT(md_bitfield_validate(bf));
 
-    if (bf->bits) md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    if (bf->bits) md_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
     MEMSET(bf, 0, sizeof(md_bitfield_t));
     return true;
 }

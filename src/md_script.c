@@ -3349,7 +3349,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
         // We need to update the return type here
         to = res.procedure->return_type;
 
-        if (node->flags & FLAG_CONSTANT) {
+        if (node->flags & FLAG_CONSTANT && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
             if (to.dim[0] == -1) {
                 if (res.procedure->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
                     to.dim[0] = from.dim[0];
@@ -3405,6 +3405,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
             md_array_push(node->children, node_copy, ctx->ir->arena);
             node->proc = res.procedure;
             node->proc_flags = res.flags;
+            node->flags &= ~FLAG_CONSTANT;
 
             return finalize_proc_call(node, ctx);
         }
