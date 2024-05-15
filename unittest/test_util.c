@@ -75,10 +75,6 @@ UTEST_F(util, chain) {
 	EXPECT_EQ(0,   utest_fixture->mol_nucleotides.chain.count);
 	EXPECT_EQ(253, utest_fixture->mol_centered.chain.count);
 
-    md_molecule_t pdb_mol;
-    md_pdb_molecule_api()->init_from_file(&pdb_mol, STR_LIT(MD_UNITTEST_DATA_DIR "/dppc64_chain_test.pdb"), NULL, utest_fixture->alloc);
-    md_util_molecule_postprocess(&pdb_mol, utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
-
     const md_molecule_t* mol = &utest_fixture->mol_centered;
     if (mol->chain.count == 0) return;
 
