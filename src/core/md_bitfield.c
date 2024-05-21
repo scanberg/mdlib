@@ -282,29 +282,20 @@ static inline void ensure_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
 
     if (new_beg_blk < cur_beg_blk || cur_end_blk < new_end_blk) {
         // Grow!
+        // @NOTE: This is not great. Its not even good...
+        // The entire internal workings of the bitfield should change
+        // To a sparse layout of blocks that are indexed by a hashmap
+
         const uint64_t cur_num_blk = num_blocks(bf->beg_bit, bf->end_bit);
         const uint64_t new_num_blk = num_blocks(new_beg_bit, new_end_bit);
-        block_t* new_bits = 0;
+        block_t* new_bits = alloc_blocks(bf->alloc, new_num_blk * sizeof(block_t));
+        MEMSET(new_bits, 0, new_num_blk * sizeof(block_t));
 
-#if 1
-        if (new_beg_blk < cur_beg_blk) {
-            new_bits = alloc_blocks(bf->alloc, new_num_blk * sizeof(block_t));
+        if (bf->bits) {
             size_t blk_diff = cur_beg_blk - new_beg_blk;
-            MEMSET(new_bits, 0, blk_diff * sizeof(block_t));
-            if (bf->bits) {
-                MEMCPY(new_bits + blk_diff, bf->bits, cur_num_blk * sizeof(block_t));
-                free_blocks(bf->alloc, bf->bits);
-            }
-        } else {
-            new_bits = realloc_blocks(bf->alloc, bf->bits, new_num_blk);
+            MEMCPY(new_bits + blk_diff, bf->bits, cur_num_blk * sizeof(block_t));
+            free_blocks(bf->alloc, bf->bits);
         }
-
-        if (new_end_blk > cur_end_blk) {
-            // Clear the new end portion of blocks
-            size_t blk_diff = new_end_blk - cur_end_blk;
-            MEMSET(new_bits + cur_num_blk, 0, blk_diff * sizeof(block_t));
-        }
-#endif
 
         bf->bits = new_bits;
     }

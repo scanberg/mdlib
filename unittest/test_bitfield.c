@@ -284,6 +284,9 @@ UTEST(bitfield, iterator) {
     md_bitfield_set_bit(&bf, 1000);
     
     md_bitfield_iter_t it = md_bitfield_iter_create(&bf);
+
+    size_t pop = md_bitfield_popcount(&bf);
+    EXPECT_EQ(3, pop);
     
     EXPECT_TRUE(md_bitfield_iter_next(&it));
     EXPECT_EQ(md_bitfield_iter_idx(&it), 60);
