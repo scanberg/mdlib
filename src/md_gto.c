@@ -370,7 +370,7 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
 	const md_256   vx = md_mm256_fmadd_ps(md_mm256_cvtepi32_ps(vix), md_mm256_set1_ps(grid_stepsize[0]), md_mm256_set1_ps(grid_origin[0]));
 	const int x_stride = grid_idx_min[0];
 
-	// Operate on local block to avoid cache-line invalidation across threads
+	// Operate on local block to avoid cache-line contention across threads
 	md_256 vpsi[8][8] = {0};
 
 	for (size_t i = 0; i < num_gtos; ++i) {
@@ -400,7 +400,7 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
 				md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
 				md_256 prod = md_mm256_mul_ps(md_mm256_mul_ps(md_mm256_mul_ps(pc, fx), md_mm256_mul_ps(fy, fz)), ex);
 				if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-					prod = _mm256_mul_ps(prod, prod);
+					prod = md_mm256_mul_ps(prod, prod);
 				}
 
 				vpsi[iz][iy] = md_mm256_add_ps(vpsi[iz][iy], prod);
@@ -434,7 +434,7 @@ static inline void evaluate_grid_8x8x8_128(float grid_data[], const int grid_idx
 		grid_idx_min[0] + 4,
 	};
 
-	// Operate on local block to avoid cache-line invalidation across threads
+	// Operate on local block to avoid cache-line contention across threads
 	md_128 vpsi[8][8][2] = {0};
 
 	for (size_t i = 0; i < num_gtos; ++i) {
@@ -465,7 +465,7 @@ static inline void evaluate_grid_8x8x8_128(float grid_data[], const int grid_idx
 					md_128 ex = md_mm_exp_ps(md_mm_mul_ps(pa, d2));
 					md_128 prod = md_mm_mul_ps(md_mm_mul_ps(md_mm_mul_ps(pc, fx), md_mm_mul_ps(fy, fz)), ex);
 					if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-						prod = _mm_mul_ps(prod, prod);
+						prod = md_mm_mul_ps(prod, prod);
 					}
 
 					vpsi[iz][iy][ix] = md_mm_add_ps(vpsi[iz][iy][ix], prod);
