@@ -140,7 +140,12 @@ typedef struct {
 #define md_hashset_get(h, key) md_hashmap__get((h)->keys,   sizeof(*(h)->keys),   (h)->keys, (h)->num_buckets, key)
 
 // Adds the pair `(key, value)` to the hash table.
-#define md_hashmap_add(h, key, value) ((h)->values[md_hashmap__add(&(h)->keys, &(h)->num_used, &(h)->num_buckets, key, (void **)&(h)->values, sizeof(*(h)->values), (h)->allocator, __FILE__, __LINE__)] = value)
+#define md_hashmap_add(h, key, value)                                                                                                                                           \
+do {                                                                                                                                                                            \
+    uint32_t _slot_idx = md_hashmap__add(&(h)->keys, &(h)->num_used, &(h)->num_buckets, key, (void **)&(h)->values, sizeof(*(h)->values), (h)->allocator, __FILE__, __LINE__);  \
+    ASSERT(_slot_idx < (h)->num_buckets);                                                                                                                                       \
+    (h)->values[_slot_idx] = value;                                                                                                                                             \
+} while(0);
 
 // Adds the pair `(key, value)` to the hash set.
 #define md_hashset_add(h, key) md_hashmap__add(&(h)->keys, &(h)->num_used, &(h)->num_buckets, key, NULL, 0, (h)->allocator, __FILE__, __LINE__)
@@ -322,7 +327,9 @@ static inline void md_hashmap__grow_to(uint64_t **keys_ptr, uint32_t *num_used_p
             ++new_elements;
         }
     }
-    md_hashmap__free(keys_ptr, num_used_ptr, num_buckets_ptr, values_ptr, value_bytes, allocator, file, line);
+    if (num_buckets)
+        md_hashmap__free(keys_ptr, num_used_ptr, num_buckets_ptr, values_ptr, value_bytes, allocator, file, line);
+
     *num_used_ptr = new_elements;
     *num_buckets_ptr = new_buckets;
     *keys_ptr = new_keys;

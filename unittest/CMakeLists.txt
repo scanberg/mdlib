@@ -15,6 +15,7 @@ set (SRC_FILES
     test_bitop.c
     test_bitfield.c
     test_str.c
+    test_hash.c
     test_edr.c
     test_cube.c
     test_intrinsics.c
