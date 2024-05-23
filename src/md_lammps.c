@@ -720,13 +720,13 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		}
 	}
 
-	mol->atom.count = capacity;
-
 	//Set elements
 	md_array_resize(mol->atom.element, capacity, alloc);
 	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, data->num_atoms)) {
 		MD_LOG_ERROR("One or more masses are missing matching element");
 	}
+
+	mol->atom.count = data->num_atoms;
 
 	//Create unit cell
 	float M[3][3] = {0};
