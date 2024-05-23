@@ -213,6 +213,19 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
         }
     }
 
+    if (num_atoms > 0) {
+        size_t capacity = ROUND_UP(num_atoms, 16);
+        md_array_ensure(atom->element,  capacity, alloc);
+        md_array_ensure(atom->type,     capacity, alloc);
+        md_array_ensure(atom->x,        capacity, alloc);
+        md_array_ensure(atom->y,        capacity, alloc);
+        md_array_ensure(atom->z,        capacity, alloc);
+        md_array_ensure(atom->flags,    capacity, alloc);
+        md_array_ensure(atom->resid,    capacity, alloc);
+        md_array_ensure(atom->resname,  capacity, alloc);
+        md_array_ensure(atom->chainid,  capacity, alloc);
+    }
+
     atom->count = num_atoms;
 done:
     md_temp_set_pos_back(temp_pos);
@@ -273,7 +286,7 @@ static bool mmcif_parse_cell(md_unit_cell_t* cell, md_buffered_reader_t* reader)
 }
 
 static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_allocator_i* alloc) {
-    bool atom_site = false;
+    bool atom_site_found = false;
 
     str_t line;
     while (md_buffered_reader_peek_line(&line, reader)) {
@@ -285,7 +298,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                     MD_LOG_ERROR("Failed to parse _atom_site");
                     return false;
                 }
-                atom_site = true;
+                atom_site_found = true;
             } else if (str_eq_cstr_n(line, "_cell.", 6)) {
                 if (!mmcif_parse_cell(&mol->unit_cell, reader)) {
                     MD_LOG_ERROR("Failed to parse _cell");
@@ -293,11 +306,10 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                 }
             }
         }
-
         md_buffered_reader_skip_line(reader);
     }
 
-    return atom_site;
+    return atom_site_found;
 }
 
 static bool mmcif_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {

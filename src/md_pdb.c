@@ -469,21 +469,19 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
 
-    size_t num_atoms = end_atom_index - beg_atom_index;
+    size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
     md_array(md_label_t) chain_ids = 0;
     md_array(md_range_t) chain_ranges = 0;
 
-    md_array_ensure(mol->atom.x,       num_atoms, alloc);
-    md_array_ensure(mol->atom.y,       num_atoms, alloc);
-    md_array_ensure(mol->atom.z,       num_atoms, alloc);
-    md_array_ensure(mol->atom.element, num_atoms, alloc);
-    md_array_ensure(mol->atom.type,    num_atoms, alloc);
-
-    md_array_ensure(mol->atom.resid,   num_atoms, alloc);
-    md_array_ensure(mol->atom.resname, num_atoms, alloc);
-
-    md_array_ensure(mol->atom.flags,   num_atoms, alloc);
+    md_array_ensure(mol->atom.x,       capacity, alloc);
+    md_array_ensure(mol->atom.y,       capacity, alloc);
+    md_array_ensure(mol->atom.z,       capacity, alloc);
+    md_array_ensure(mol->atom.element, capacity, alloc);
+    md_array_ensure(mol->atom.type,    capacity, alloc);
+    md_array_ensure(mol->atom.resid,   capacity, alloc);
+    md_array_ensure(mol->atom.resname, capacity, alloc);
+    md_array_ensure(mol->atom.flags,   capacity, alloc);
 
     int32_t prev_res_id = -1;
     char prev_chain_id = -1;

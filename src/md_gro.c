@@ -163,19 +163,19 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
 
-    const int64_t num_atoms = data->num_atoms;
+    const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-    mol->atom.x = md_array_create(float, num_atoms, alloc);
-    mol->atom.y = md_array_create(float, num_atoms, alloc);
-    mol->atom.z = md_array_create(float, num_atoms, alloc);
-    mol->atom.type = md_array_create(md_label_t, num_atoms, alloc);
+    mol->atom.x       = md_array_create(float, capacity, alloc);
+    mol->atom.y       = md_array_create(float, capacity, alloc);
+    mol->atom.z       = md_array_create(float, capacity, alloc);
+    mol->atom.type    = md_array_create(md_label_t, capacity, alloc);
 
-    mol->atom.resid = md_array_create(md_residue_id_t, num_atoms, alloc);
-    mol->atom.resname = md_array_create(md_label_t, num_atoms, alloc);
-    mol->atom.flags = md_array_create(md_flags_t, num_atoms, alloc);
+    mol->atom.resid   = md_array_create(md_residue_id_t, capacity, alloc);
+    mol->atom.resname = md_array_create(md_label_t, capacity, alloc);
+    mol->atom.flags   = md_array_create(md_flags_t, capacity, alloc);
 
     int32_t prev_res_id = -1;
-    for (int64_t i = 0; i < num_atoms; ++i) {
+    for (size_t i = 0; i < data->num_atoms; ++i) {
         const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
         const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
         const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström

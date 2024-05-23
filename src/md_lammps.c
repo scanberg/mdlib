@@ -695,21 +695,21 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	ASSERT(alloc);
 
 	MEMSET(mol, 0, sizeof(md_molecule_t));
-	const size_t num_atoms = data->num_atoms;
+	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_resize(mol->atom.type,  num_atoms, alloc);
-	md_array_resize(mol->atom.x,	 num_atoms, alloc);
-	md_array_resize(mol->atom.y,	 num_atoms, alloc);
-	md_array_resize(mol->atom.z,	 num_atoms, alloc);
-	md_array_resize(mol->atom.mass,  num_atoms, alloc);
+	md_array_resize(mol->atom.type,  capacity, alloc);
+	md_array_resize(mol->atom.x,	 capacity, alloc);
+	md_array_resize(mol->atom.y,	 capacity, alloc);
+	md_array_resize(mol->atom.z,	 capacity, alloc);
+	md_array_resize(mol->atom.mass,  capacity, alloc);
 
 	bool has_resid = false;
-	if (num_atoms > 0 && data->atoms[0].resid != -1) {
-		md_array_resize(mol->atom.resid, num_atoms, alloc);
+	if (data->num_atoms > 0 && data->atoms[0].resid != -1) {
+		md_array_resize(mol->atom.resid, capacity, alloc);
 		has_resid = true;
 	}
 
-	for (size_t i = 0; i < num_atoms; ++i) {
+	for (size_t i = 0; i < capacity; ++i) {
 		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, 6, "%i", data->atoms[i].type);
 		mol->atom.x[i] = data->atoms[i].x - data->cell.xlo;
 		mol->atom.y[i] = data->atoms[i].y - data->cell.ylo;
@@ -720,11 +720,11 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		}
 	}
 
-	mol->atom.count = num_atoms;
+	mol->atom.count = capacity;
 
 	//Set elements
-	md_array_resize(mol->atom.element, num_atoms, alloc);
-	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, num_atoms)) {
+	md_array_resize(mol->atom.element, capacity, alloc);
+	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, data->num_atoms)) {
 		MD_LOG_ERROR("One or more masses are missing matching element");
 	}
 
