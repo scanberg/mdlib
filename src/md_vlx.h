@@ -108,11 +108,6 @@ typedef struct md_vlx_rsp_t {
 	double* absorption_ev;
 	double* absorption_osc_str;
 	double* electronic_circular_dichroism_cgs;
-	double* x_ev_samples;
-	double* x_unit_samples;
-	double* x_unit_peaks;
-	double* eps;
-	double* ecd;
 	md_vlx_orbitals_t* nto;
 } md_vlx_rsp_t;
 
