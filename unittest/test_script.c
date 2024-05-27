@@ -168,6 +168,47 @@ static void print_bits(uint64_t* bits, uint64_t num_bits) {
     }
 }
 
+#define SETUP_EVAL_CTX(ir, mol, arena) \
+	md_allocator_i temp_alloc = md_vm_arena_create_interface(&arena); \
+	eval_context_t ctx = { \
+		.ir = ir, \
+		.mol = mol, \
+		.temp_arena = &temp_arena, \
+		.temp_alloc = &temp_alloc, \
+		.alloc = &temp_alloc, \
+	}
+
+ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_molecule_t* mol, md_allocator_i* arena) {
+    // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
+    // Which means that the actual string data is contained within the ir->arena => temp_alloc
+    ir->str = str_copy(expr, ir->arena);
+
+    tokenizer_t tokenizer = tokenizer_init(ir->str);
+    bool result = false;
+
+    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = arena});
+    node = prune_expressions(node);
+    if (node) {
+        eval_context_t ctx = {
+            .ir = ir,
+            .mol = mol,
+            .temp_alloc = arena,
+            .alloc = arena,
+        };
+
+        if (static_check_node(node, &ctx)) {
+            return node;
+        }
+    }
+
+    if (ir->errors) {
+        for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
+            MD_LOG_ERROR("%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
+        }
+    }
+    return NULL;
+}
+
 UTEST(script, type_equal) {
     {
         type_info_t a = {.base_type = TYPE_INT, .dim = {1}};
@@ -230,48 +271,66 @@ UTEST(script, basic_expressions) {
             EXPECT_EQ(as_int_arr(data)[1], 9);
         }
     }
-}
 
-#define SETUP_EVAL_CTX(ir, mol, arena) \
-	md_allocator_i temp_alloc = md_vm_arena_create_interface(&arena); \
-	eval_context_t ctx = { \
-		.ir = ir, \
-		.mol = mol, \
-		.temp_arena = &temp_arena, \
-		.temp_alloc = &temp_alloc, \
-		.alloc = &temp_alloc, \
-	}
-
-ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_molecule_t* mol, md_allocator_i* arena) {
-    // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
-    // Which means that the actual string data is contained within the ir->arena => temp_alloc
-    ir->str = str_copy(expr, ir->arena);
-
-    tokenizer_t tokenizer = tokenizer_init(ir->str);
-    bool result = false;
-
-    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = arena});
-    node = prune_expressions(node);
-    if (node) {
-        eval_context_t ctx = {
-            .ir = ir,
-            .mol = mol,
-            .temp_alloc = arena,
-            .alloc = arena,
-        };
-
-        if (static_check_node(node, &ctx)) {
-            return node;
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("{2.5,1.5} + {1.0,8.0}"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 2);
+            EXPECT_EQ(as_float_arr(data)[0], 3.5f);
+            EXPECT_EQ(as_float_arr(data)[1], 9.5f);
         }
     }
+}
 
-    if (ir->errors) {
-        for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
-            MD_LOG_ERROR("%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
+UTEST(script, type_compatability) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
+
+    {
+        md_script_ir_clear(ir);
+
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("v = normalize(coord(4));"), ir, &test_mol, arena);
+        EXPECT_TRUE(node != NULL);
+        if (node) {
+            identifier_t* v = get_identifier(ir, STR_LIT("v"));
+            ASSERT_NE(NULL, v);
+            ASSERT_NE(NULL, v->data);
+            EXPECT_EQ(TYPE_FLOAT, v->data->type.base_type);
         }
     }
-    return NULL;
 }
+
+#if 0
+UTEST(script, vector_operations) {
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("vec3(2.5, 1.5, 1.0) + vec3(1.0, 8.0, 2.0)"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 3);
+            EXPECT_EQ(as_float_arr(data)[0], 3.5f);
+            EXPECT_EQ(as_float_arr(data)[1], 9.5f);
+            EXPECT_EQ(as_float_arr(data)[2], 3.0f);
+        }
+    }
+}
+
+UTEST(script, array_type_compatability) {
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("coord(1) + coord(4)"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 3);
+        }
+    }
+}
+#endif
 
 UTEST(script, assignment) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));

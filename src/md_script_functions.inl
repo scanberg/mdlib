@@ -18,13 +18,13 @@
 #define TI_BOOL_ARR     {TYPE_BOOL,  {ANY_LENGTH}}
 #define TI_FLOAT        {TYPE_FLOAT, {1}}
 #define TI_FLOAT_ARR    {TYPE_FLOAT, {ANY_LENGTH}}
-#define TI_FLOAT2       {TYPE_FLOAT, {1,2}}
+#define TI_FLOAT2       {TYPE_FLOAT, {2}}
 #define TI_FLOAT2_ARR   {TYPE_FLOAT, {ANY_LENGTH,2}}
-#define TI_FLOAT3       {TYPE_FLOAT, {1,3}}
+#define TI_FLOAT3       {TYPE_FLOAT, {3}}
 #define TI_FLOAT3_ARR   {TYPE_FLOAT, {ANY_LENGTH,3}}
-#define TI_FLOAT4       {TYPE_FLOAT, {1,4}}
+#define TI_FLOAT4       {TYPE_FLOAT, {4}}
 #define TI_FLOAT4_ARR   {TYPE_FLOAT, {ANY_LENGTH,4}}
-#define TI_FLOAT44      {TYPE_FLOAT, {1,4,4}}
+#define TI_FLOAT44      {TYPE_FLOAT, {4,4}}
 #define TI_FLOAT44_ARR  {TYPE_FLOAT, {ANY_LENGTH,4,4}}
 
 // The second dimension in the distribution encodes weights for each bin
@@ -147,7 +147,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
         if (!dst) return 0; \
-        for (size_t i = 0; i < element_count(*dst); ++i) { \
+        for (size_t i = 0; i < (size_t)type_info_dim_size(dst->type); ++i) { \
             ((base_type*)dst->ptr)[i] = op ((base_type*)arg[0].ptr)[i]; \
         } \
         return 0; \
@@ -165,7 +165,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
         if (!dst) return 0; \
-        for (size_t i = 0; i < element_count(*dst); ++i) { \
+        for (size_t i = 0; i < (size_t)type_info_dim_size(dst->type); ++i) { \
             ((base_type*)dst->ptr)[i] = ((base_type*)arg[0].ptr)[i] op *((base_type*)arg[1].ptr); \
         } \
         return 0; \
@@ -175,7 +175,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
         if (!dst) return 0; \
-        for (size_t i = 0; i < element_count(*dst); ++i) { \
+        for (size_t i = 0; i < (size_t)type_info_dim_size(dst->type); ++i) { \
             ((base_type*)dst->ptr)[i] = ((base_type*)arg[0].ptr)[i] op ((base_type*)arg[1].ptr)[i]; \
         } \
         return 0; \
@@ -188,8 +188,9 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
-        const size_t count = type_info_element_stride_count(arg[0].type); \
-        ASSERT(count == type_info_element_stride_count(arg[1].type)); \
+        const size_t count = (size_t)type_info_dim_size(dst->type); \
+        ASSERT(count == type_info_dim_size(arg[0].type)); \
+        ASSERT(count == type_info_dim_size(arg[1].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_a = as_float_arr(arg[0]); \
         const float* src_b = as_float_arr(arg[1]); \
@@ -209,7 +210,8 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT)); \
-        const size_t count = type_info_element_stride_count(arg[0].type); \
+        const size_t count = (size_t)type_info_dim_size(dst->type); \
+        ASSERT(count == type_info_dim_size(arg[0].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
@@ -226,7 +228,8 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst); \
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
-        const size_t count = type_info_element_stride_count(arg[0].type); \
+        const size_t count = (size_t)type_info_dim_size(dst->type); \
+        ASSERT(count == type_info_dim_size(arg[0].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
@@ -395,6 +398,7 @@ static int _shape_weights(data_t*, data_t[], eval_context_t*); // (position[]) -
 
 // Linear algebra
 static int _dot           (data_t*, data_t[], eval_context_t*); // (float[], float[]) -> float
+static int _normalize     (data_t*, data_t[], eval_context_t*); // (float[]) -> float[]
 static int _cross         (data_t*, data_t[], eval_context_t*); // (float[3], float[3]) -> float[3]
 static int _length        (data_t*, data_t[], eval_context_t*); // (float[]) -> float
 static int _mat4_mul_mat4 (data_t*, data_t[], eval_context_t*); // (float[4][4], float[4][4]) -> float[4][4]
@@ -575,11 +579,12 @@ static procedure_t procedures[] = {
     {CSTR("max"),    TI_VOLUME, 2,  {TI_VOLUME, TI_VOLUME}, _op_simd_max_farr_farr},
 
     // LINEAR ALGEBRA
-    {CSTR("dot"),    TI_FLOAT,   2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
-    {CSTR("cross"),  TI_FLOAT3,  2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
-    {CSTR("length"), TI_FLOAT,   1, {TI_FLOAT_ARR},                  _length},
-    {CSTR("mul"),    TI_FLOAT44, 2, {TI_FLOAT44,     TI_FLOAT44},    _mat4_mul_mat4},
-    {CSTR("mul"),    TI_FLOAT4,  2, {TI_FLOAT44,     TI_FLOAT4},     _mat4_mul_vec4},
+    {CSTR("dot"),       TI_FLOAT,       2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
+    {CSTR("cross"),     TI_FLOAT3,      2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
+    {CSTR("length"),    TI_FLOAT,       1, {TI_FLOAT_ARR},                  _length},
+    {CSTR("normalize"), TI_FLOAT_ARR,   1, {TI_FLOAT_ARR},                  _normalize, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("mul"),       TI_FLOAT44,     2, {TI_FLOAT44,     TI_FLOAT44},    _mat4_mul_mat4},
+    {CSTR("mul"),       TI_FLOAT4,      2, {TI_FLOAT44,     TI_FLOAT4},     _mat4_mul_vec4},
 
     // CONSTRUCTORS
     {CSTR("vec2"),   TI_FLOAT2,  2, {TI_FLOAT, TI_FLOAT},                       _vec2},
@@ -1921,16 +1926,41 @@ static int _length(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst) {
         float* a = (float*)arg[0].ptr;
-        double res = 0; // Accumulate in double, then cast to float
-        for (size_t i = 0; i < element_count(arg[0]); ++i) {
-            res += (double)a[i] * (double)a[i];
+        double len2 = 0; // Accumulate in double, then cast to float
+        for (size_t i = 0; i < type_info_dim_size(arg[0].type); ++i) {
+            len2 += (double)a[i] * (double)a[i];
         }
-        as_float(*dst) = (float)sqrt(res);
+        as_float(*dst) = (float)sqrt(len2);
     }
 
     return 0;
 }
 
+static int _normalize(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    (void)ctx;
+
+    if (dst) {
+        float* val = (float*)arg[0].ptr;
+        double len2 = 0;
+        size_t count = type_info_dim_size(dst->type);
+        ASSERT(type_info_dim_size(arg[0].type) == count);
+        for (size_t i = 0; i < count; ++i) {
+            len2 += (double)val[i] * (double)val[i];
+        }
+        if (len2 < DBL_EPSILON) {
+            MEMSET(dst->ptr, 0, dst->size);
+            return 0;
+        }
+        double scl = 1.0 / sqrt(len2);
+        for (size_t i = 0; i < count; ++i) {
+            as_float_arr(*dst)[i] = val[i] * scl;
+        }
+    }
+
+    return 0;
+}
 
 static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT44));
