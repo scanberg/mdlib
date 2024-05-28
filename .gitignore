@@ -31,6 +31,9 @@
 *.out
 *.app
 
+# Misc
+.DS_Store
+
 .ccls-cache/
 build*/
 .vscode/
