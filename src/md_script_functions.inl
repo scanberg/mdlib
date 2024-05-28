@@ -535,9 +535,9 @@ static procedure_t operators[] = {
     {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
     {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("/"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
-    {CSTR("/"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("/"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("//"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
+    {CSTR("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
 };
 
 static procedure_t procedures[] = {

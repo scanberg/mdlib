@@ -125,7 +125,8 @@ typedef enum token_type_t {
     TOKEN_OR,
     TOKEN_XOR,
     TOKEN_NOT,
-    TOKEN_OF,     // Reserved
+    TOKEN_INT_DIV, // '//'
+    TOKEN_OF,     // Reserved keyword
     TOKEN_IN,     // Operator for setting the evaluation context.
     TOKEN_OUT,
     TOKEN_FLOAT,  // Floating point number
@@ -148,6 +149,7 @@ typedef enum ast_type_t {
     AST_NOT,
     AST_MUL,
     AST_DIV,
+    AST_INT_DIV,
     AST_ADD,
     AST_SUB,
     AST_LT,
@@ -504,6 +506,7 @@ static uint32_t operator_precedence(ast_type_t type) {
         return 2;
     case AST_MUL:
     case AST_DIV:
+    case AST_INT_DIV:
         return 3;
     case AST_ADD:
     case AST_SUB:
@@ -876,7 +879,7 @@ static void copy_data(data_t* dst, const data_t* src) {
 
 
 static bool is_operator(ast_type_t type) {
-    return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV || type == AST_UNARY_NEG ||
+    return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV || type == AST_INT_DIV || type == AST_UNARY_NEG ||
             type == AST_AND || type == AST_OR || type == AST_XOR || type == AST_NOT ||
             type == AST_EQ || type == AST_NE || type == AST_LE || type == AST_GE || type == AST_LT || type == AST_GT);
 }
@@ -1288,6 +1291,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     case AST_SUB: name = STR_LIT("-");   break;
     case AST_MUL: name = STR_LIT("*");   break;
     case AST_DIV: name = STR_LIT("/");   break;
+    case AST_INT_DIV: name = STR_LIT("//"); break;
     case AST_AND: name = STR_LIT("and"); break;
     case AST_OR:  name = STR_LIT("or");  break;
     case AST_XOR: name = STR_LIT("xor");  break;
@@ -1481,7 +1485,8 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             static const symbol_t symbols_2[] = {
                 {"<=", TOKEN_LE},
                 {">=", TOKEN_GE},
-                {"==", TOKEN_EQ}
+                {"==", TOKEN_EQ},
+                {"//", TOKEN_INT_DIV},
             };
             
             static const char symbols_1[] = {
@@ -2207,7 +2212,7 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
 
 ast_node_t* parse_arithmetic(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
-    ASSERT(token.type == '-' || token.type == '+' || token.type == '*' || token.type == '/');
+    ASSERT(token.type == '-' || token.type == '+' || token.type == '*' || token.type == '/' || token.type == TOKEN_INT_DIV);
 
     ast_node_t* lhs = ctx->node;
     ctx->node = 0;
@@ -2222,6 +2227,7 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
             case '-': type = lhs ? AST_SUB : AST_UNARY_NEG; break;
             case '*': type = AST_MUL; break;
             case '/': type = AST_DIV; break;
+            case TOKEN_INT_DIV: type = AST_INT_DIV; break;
             default: ASSERT(false);
         }
         ast_node_t* node = create_node(ctx->ir, type, token);
@@ -2520,6 +2526,7 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
             case '+':
             case '*':
             case '/':
+            case TOKEN_INT_DIV:
             ctx->node = parse_arithmetic(ctx);
             fix_precedence(&ctx->node);
             break;
@@ -3709,6 +3716,7 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
                     node->data.unit[1] = md_unit_mul(arg[0]->data.unit[1], arg[1]->data.unit[1]);
                     break;
                 case AST_DIV:
+                case AST_INT_DIV:
                     node->data.unit[0] = md_unit_div(arg[0]->data.unit[0], arg[1]->data.unit[0]);
                     node->data.unit[1] = md_unit_div(arg[0]->data.unit[1], arg[1]->data.unit[1]);
                     break;
@@ -4992,6 +5000,7 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     case AST_SUB:
     case AST_MUL:
     case AST_DIV:
+    case AST_INT_DIV:
     case AST_AND:
     case AST_XOR:
     case AST_OR:
