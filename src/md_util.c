@@ -3513,7 +3513,7 @@ md_index_data_t md_util_compute_rings(const md_atom_data_t* atom, const md_bond_
                 //if (next > idx) continue;
                 if (next == pred[idx]) continue;  // avoid adding parent to search queue
 
-                if (mark[next] == current_mark) {
+                if (mark[next] == current_mark && depth[idx] >= MIN_RING_SIZE) {
                     // We found a junction point where the graph connects
                     // Now we need to traverse both branches of this graph back up
                     // In order to find the other junction where the graph branches

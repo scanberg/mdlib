@@ -125,7 +125,8 @@ typedef enum token_type_t {
     TOKEN_OR,
     TOKEN_XOR,
     TOKEN_NOT,
-    TOKEN_OF,     // Reserved
+    TOKEN_INT_DIV, // '//'
+    TOKEN_OF,     // Reserved keyword
     TOKEN_IN,     // Operator for setting the evaluation context.
     TOKEN_OUT,
     TOKEN_FLOAT,  // Floating point number
@@ -148,6 +149,7 @@ typedef enum ast_type_t {
     AST_NOT,
     AST_MUL,
     AST_DIV,
+    AST_INT_DIV,
     AST_ADD,
     AST_SUB,
     AST_LT,
@@ -504,6 +506,7 @@ static uint32_t operator_precedence(ast_type_t type) {
         return 2;
     case AST_MUL:
     case AST_DIV:
+    case AST_INT_DIV:
         return 3;
     case AST_ADD:
     case AST_SUB:
@@ -610,6 +613,10 @@ static int type_info_array_len(type_info_t ti) {
     return ti.dim[0];
 }
 
+static int type_info_dim_size(type_info_t ti) {
+    return dim_size(ti.dim);
+}
+
 static size_t element_count(data_t arg) {
     return arg.type.dim[0];
 }
@@ -701,6 +708,15 @@ static bool is_type_directly_compatible(type_info_t from, type_info_t to) {
         }
     }
 
+    if (type_info_equal(from, to)) return true;
+
+    if (from.base_type != to.base_type) {
+        return false;
+    }
+
+    dim_prune_leading_ones(from.dim);
+    dim_prune_leading_ones(to.dim);
+
     int from_ndim = dim_ndims(from.dim);
     int to_ndim   = dim_ndims(to.dim);
     int max_ndim  = MAX(from_ndim, to_ndim);
@@ -723,11 +739,9 @@ static bool is_type_directly_compatible(type_info_t from, type_info_t to) {
 
     if (type_info_equal(from, to)) return true;
 
-    if (from.base_type == to.base_type) {
-        // This is essentially a logical XOR, we only want to support this operation if we have one unspecified array dimension.
-        if (!is_variable_length(from) && is_variable_length(to)) {
-            return is_type_dim_compatible(from, to);
-        }
+    // This is essentially a logical XOR, we only want to support this operation if we have one unspecified array dimension.
+    if (!is_variable_length(from) && is_variable_length(to)) {
+        return is_type_dim_compatible(from, to);
     }
 
     return false;
@@ -865,7 +879,7 @@ static void copy_data(data_t* dst, const data_t* src) {
 
 
 static bool is_operator(ast_type_t type) {
-    return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV || type == AST_UNARY_NEG ||
+    return (type == AST_ADD || type == AST_SUB || type == AST_MUL || type == AST_DIV || type == AST_INT_DIV || type == AST_UNARY_NEG ||
             type == AST_AND || type == AST_OR || type == AST_XOR || type == AST_NOT ||
             type == AST_EQ || type == AST_NE || type == AST_LE || type == AST_GE || type == AST_LT || type == AST_GT);
 }
@@ -1190,7 +1204,7 @@ static uint32_t compute_cost(const procedure_t* proc, const type_info_t arg_type
     return cost;
 }
 
-static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], size_t num_arg_types, procedure_t* candidates, size_t num_cantidates, bool allow_implicit_conversions) {
+static procedure_match_result_t find_procedure_supporting_arg_types_in_candidates(str_t name, const type_info_t arg_types[], size_t num_arg_types, procedure_t candidates[], size_t num_cantidates, bool allow_implicit_conversions) {
     procedure_match_result_t res = {0};
 
     for (size_t i = 0; i < num_cantidates; ++i) {
@@ -1277,6 +1291,7 @@ static procedure_match_result_t find_operator_supporting_arg_types(ast_type_t op
     case AST_SUB: name = STR_LIT("-");   break;
     case AST_MUL: name = STR_LIT("*");   break;
     case AST_DIV: name = STR_LIT("/");   break;
+    case AST_INT_DIV: name = STR_LIT("//"); break;
     case AST_AND: name = STR_LIT("and"); break;
     case AST_OR:  name = STR_LIT("or");  break;
     case AST_XOR: name = STR_LIT("xor");  break;
@@ -1470,7 +1485,8 @@ static token_t tokenizer_get_next_from_buffer(tokenizer_t* tokenizer) {
             static const symbol_t symbols_2[] = {
                 {"<=", TOKEN_LE},
                 {">=", TOKEN_GE},
-                {"==", TOKEN_EQ}
+                {"==", TOKEN_EQ},
+                {"//", TOKEN_INT_DIV},
             };
             
             static const char symbols_1[] = {
@@ -2196,7 +2212,7 @@ ast_node_t* parse_comparison(parse_context_t* ctx) {
 
 ast_node_t* parse_arithmetic(parse_context_t* ctx) {
     token_t token = tokenizer_consume_next(ctx->tokenizer);
-    ASSERT(token.type == '-' || token.type == '+' || token.type == '*' || token.type == '/');
+    ASSERT(token.type == '-' || token.type == '+' || token.type == '*' || token.type == '/' || token.type == TOKEN_INT_DIV);
 
     ast_node_t* lhs = ctx->node;
     ctx->node = 0;
@@ -2211,6 +2227,7 @@ ast_node_t* parse_arithmetic(parse_context_t* ctx) {
             case '-': type = lhs ? AST_SUB : AST_UNARY_NEG; break;
             case '*': type = AST_MUL; break;
             case '/': type = AST_DIV; break;
+            case TOKEN_INT_DIV: type = AST_INT_DIV; break;
             default: ASSERT(false);
         }
         ast_node_t* node = create_node(ctx->ir, type, token);
@@ -2509,6 +2526,7 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
             case '+':
             case '*':
             case '/':
+            case TOKEN_INT_DIV:
             ctx->node = parse_arithmetic(ctx);
             fix_precedence(&ctx->node);
             break;
@@ -3628,7 +3646,14 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
             // We can deduce the length of the array by using the type of the first argument
             ASSERT(num_args > 0);
             ASSERT(node->proc->arg_type[0].base_type == args[0]->data.type.base_type);
-            node->data.type.dim[0] = type_info_array_len(args[0]->data.type);
+
+            // If the argument has leading ones in its type, we want to replicate that
+            if (dim_ndims(args[0]->data.type.dim) > 1 && args[0]->data.type.dim[0] == 1) {
+                dim_shift_right(node->data.type.dim);
+                node->data.type.dim[1] = args[0]->data.type.dim[1];
+            } else {
+                node->data.type.dim[0] = type_info_array_len(args[0]->data.type);
+            }
             return true;
         } else {
             LOG_ERROR(ctx->ir, node->token, "Procedure returns variable length, but its length cannot be determined.");
@@ -3691,6 +3716,7 @@ static bool static_check_operator(ast_node_t* node, eval_context_t* ctx) {
                     node->data.unit[1] = md_unit_mul(arg[0]->data.unit[1], arg[1]->data.unit[1]);
                     break;
                 case AST_DIV:
+                case AST_INT_DIV:
                     node->data.unit[0] = md_unit_div(arg[0]->data.unit[0], arg[1]->data.unit[0]);
                     node->data.unit[1] = md_unit_div(arg[0]->data.unit[1], arg[1]->data.unit[1]);
                     break;
@@ -3725,6 +3751,7 @@ static size_t extract_argument_types(type_info_t arg_type[], size_t cap, const a
     for (size_t i = 0; i < num_args; ++i) {
         arg_type[i] = node->children[i]->data.type;
     }
+
     return num_args;
 }
 
@@ -4236,7 +4263,7 @@ static bool static_check_proc_call(ast_node_t* node, eval_context_t* ctx) {
         // No point in letting expressions statically evaluate and store its data within the tree at this point
         // Conversions and other stuff may occur later
         uint32_t flags = ctx->eval_flags;
-        ctx->eval_flags |= EVAL_FLAG_NO_STATIC_EVAL | EVAL_FLAG_NO_LENGTH_CHECK;
+        ctx->eval_flags |= EVAL_FLAG_NO_STATIC_EVAL | 0;
         result = static_check_children(node, ctx);
         ctx->eval_flags = flags;
         if (result) {
@@ -4973,6 +5000,7 @@ static bool static_check_node(ast_node_t* node, eval_context_t* ctx) {
     case AST_SUB:
     case AST_MUL:
     case AST_DIV:
+    case AST_INT_DIV:
     case AST_AND:
     case AST_XOR:
     case AST_OR:
