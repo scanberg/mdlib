@@ -189,8 +189,8 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
         const size_t count = (size_t)type_info_dim_size(dst->type); \
-        ASSERT(count == type_info_dim_size(arg[0].type)); \
-        ASSERT(count == type_info_dim_size(arg[1].type)); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[1].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_a = as_float_arr(arg[0]); \
         const float* src_b = as_float_arr(arg[1]); \
@@ -211,7 +211,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT)); \
         const size_t count = (size_t)type_info_dim_size(dst->type); \
-        ASSERT(count == type_info_dim_size(arg[0].type)); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
@@ -229,7 +229,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         const size_t count = (size_t)type_info_dim_size(dst->type); \
-        ASSERT(count == type_info_dim_size(arg[0].type)); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
@@ -1927,7 +1927,7 @@ static int _length(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (dst) {
         float* a = (float*)arg[0].ptr;
         double len2 = 0; // Accumulate in double, then cast to float
-        for (size_t i = 0; i < type_info_dim_size(arg[0].type); ++i) {
+        for (size_t i = 0; i < (size_t)type_info_dim_size(arg[0].type); ++i) {
             len2 += (double)a[i] * (double)a[i];
         }
         as_float(*dst) = (float)sqrt(len2);
@@ -1945,7 +1945,7 @@ static int _normalize(data_t* dst, data_t arg[], eval_context_t* ctx) {
         float* val = (float*)arg[0].ptr;
         double len2 = 0;
         size_t count = type_info_dim_size(dst->type);
-        ASSERT(type_info_dim_size(arg[0].type) == count);
+        ASSERT((size_t)type_info_dim_size(arg[0].type) == count);
         for (size_t i = 0; i < count; ++i) {
             len2 += (double)val[i] * (double)val[i];
         }
