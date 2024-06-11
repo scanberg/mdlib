@@ -77,7 +77,7 @@ static const uint8_t element_covalent_radii_u8[] = {
       0,  31,  28, 128,  96,  84,  76,  71,  66,  57,  58, 166, 141, 121, 111, 107, 105, 102, 106, 203, 176, 170, 160, 153,
     139, 139, 132, 126, 124, 132, 122, 122, 120, 119, 120, 120, 116, 220, 195, 190, 175, 164, 154, 147, 146, 142, 139, 145,
     144, 142, 139, 139, 138, 139, 140, 244, 215, 207, 204, 203, 201, 199, 198, 198, 196, 194, 192, 192, 189, 190, 187, 187,
-    175, 170, 162, 151, 144, 141, 136, 136, 132, 145, 146, 148, 140, 150, 150, 260, 221, 215, 206, 200, 196, 190, 187, 180,
+    175, 170, 162, 151, 144, 141, 136, 136, 132, 145, 146, 148, 140, 150, 150, 255, 221, 215, 206, 200, 196, 190, 187, 180,
     169, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160, 160
 };
 
@@ -1017,7 +1017,7 @@ static inline bool aromatic_ring_element(md_element_t elem) {
     default:
         return false;
     }
-};
+}
 
 static inline bool metal_element(md_element_t elem) {
     switch(elem) {
@@ -2044,7 +2044,7 @@ static bool pattern_match_callback(const int map[], size_t length, void* user) {
     uint32_t p_edge_beg = data->pattern->edge_offset[0];
     uint32_t p_edge_end = data->pattern->edge_offset[1];
 
-    md_atom_idx_t na = map[0];
+    //md_atom_idx_t na = map[0];
     for (uint32_t i = p_edge_beg; i < p_edge_end; ++i) {
         md_order_t order = (md_order_t)graph_edge_type(data->pattern, i);
         if (order > 1) {
