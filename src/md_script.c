@@ -5038,7 +5038,7 @@ static uint64_t hash_node(const ast_node_t*, uint64_t);
 static uint64_t hash_children(const ast_node_t* node, uint64_t seed) {
     uint64_t hash = seed;
     for (size_t i = 0; i < md_array_size(node->children); ++i) {
-        hash = hash_node(node->children[i], seed);
+        hash = hash_node(node->children[i], hash);
     }
     return hash;
 }

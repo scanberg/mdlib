@@ -209,6 +209,28 @@ ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_m
     return NULL;
 }
 
+UTEST_F(script, common_subexpression_elimination) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
+    str_t src = STR_LIT(
+        "x = element('H') in resname('ALA');\n"
+        "y = element('O') in resname('ALA');\n"
+    );
+
+    bool result = md_script_ir_compile_from_source(ir, src, &utest_fixture->ala, NULL, NULL);
+    ASSERT_TRUE(result);
+
+    identifier_t* x = get_identifier(ir, STR_LIT("x"));
+    identifier_t* y = get_identifier(ir, STR_LIT("y"));
+
+    uint64_t hx = hash_node(x->node, 0);
+    uint64_t hy = hash_node(y->node, 0);
+
+    EXPECT_NE(hx, hy);
+
+    md_vm_arena_destroy(arena);
+}
+
 UTEST(script, type_equal) {
     {
         type_info_t a = {.base_type = TYPE_INT, .dim = {1}};
@@ -301,6 +323,7 @@ UTEST(script, type_compatability) {
             EXPECT_EQ(TYPE_FLOAT, v->data->type.base_type);
         }
     }
+    md_vm_arena_destroy(arena);
 }
 
 #if 0
