@@ -13,7 +13,12 @@ UTEST(lammps, water_ethane_cubic) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Cubic_Init.data");
     md_lammps_data_t data = {0};
 
-    const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
+    const char** atom_formats = md_lammps_atom_format_strings();
+    ASSERT_TRUE(atom_formats);
+
+    const char* atom_format = atom_formats[MD_LAMMPS_ATOM_FORMAT_FULL];
+    ASSERT_TRUE(atom_format);
+
     bool result = md_lammps_data_parse_file(&data, path, atom_format, alloc);
 
     ASSERT_TRUE(result);
@@ -107,7 +112,7 @@ UTEST(lammps, water_ethane_cubic) {
     md_molecule_t mol = {0};
 
     md_lammps_molecule_init(&mol, &data, alloc);
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
+    for (size_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], data.atoms[i].x);
         EXPECT_EQ(mol.atom.y[i], data.atoms[i].y);
         EXPECT_EQ(mol.atom.z[i], data.atoms[i].z);
@@ -126,7 +131,12 @@ UTEST(lammps, water_ethane_triclinic) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/Water_Ethane_Triclinic_Init.data");
     md_lammps_data_t data = {0};
 
-    const char* atom_format = md_lammps_atom_format_strings()[MD_LAMMPS_ATOM_FORMAT_FULL];
+    const char** atom_formats = md_lammps_atom_format_strings();
+    ASSERT_TRUE(atom_formats);
+
+    const char* atom_format = atom_formats[MD_LAMMPS_ATOM_FORMAT_FULL];
+    ASSERT_TRUE(atom_format);
+
     bool result = md_lammps_data_parse_file(&data, path, atom_format, alloc);
 
     ASSERT_TRUE(result);
@@ -221,7 +231,7 @@ UTEST(lammps, water_ethane_triclinic) {
     md_molecule_t mol = {0};
 
     md_lammps_molecule_init(&mol, &data, alloc);
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
+    for (size_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], data.atoms[i].x);
         EXPECT_EQ(mol.atom.y[i], data.atoms[i].y);
         EXPECT_EQ(mol.atom.z[i], data.atoms[i].z);
