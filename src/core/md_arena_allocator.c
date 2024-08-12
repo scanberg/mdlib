@@ -233,8 +233,8 @@ static inline void vm_set_pos(vm_arena_t* arena, size_t pos) {
 static inline void vm_pop(vm_arena_t* arena, size_t size) {
     // Ensure that the new position is not within the meta information of the allocator
     // That would be very bad...
-    int64_t new_pos = arena->pos - size;
-    ASSERT(new_pos >= MIN_VM_POS);
+    int64_t new_pos = (int64_t)arena->pos - (int64_t)size;
+    ASSERT(new_pos >= (int64_t)MIN_VM_POS);
     vm_set_pos(arena, (size_t)new_pos);
 }
 

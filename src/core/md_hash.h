@@ -205,7 +205,7 @@ typedef struct MD_HASHMAP_T(uint32_t) md_hashmap32_t;
 // any bad patterns in the bits, but this function gets called a lot, so we don't want to add too
 // many steps here or performance will suffer.
 // This is currently not properly tested and evaluated on real data
-// The idéa is to increase the entropy by mising in some of the seed
+// The idea is to increase the entropy by mising in some of the seed
 static inline uint32_t md_hashmap__first_index(uint64_t key, uint32_t num_buckets, uint64_t seed) {
     (void)seed;
     uint32_t *v = (uint32_t *)&key;
