@@ -6453,6 +6453,7 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
     return result;
 }
 
+#if DEBUG
 static void parse_type_check_and_print_expression_to_json(str_t expr, const md_molecule_t* mol, str_t filename) {
     SETUP_TEMP_ALLOC(GIGABYTES(4));
     md_script_ir_t* ir = create_ir(temp_alloc);
@@ -6481,6 +6482,7 @@ static void parse_type_check_and_print_expression_to_json(str_t expr, const md_m
 
     FREE_TEMP_ALLOC;
 }
+#endif
 
 bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_molecule_t* mol, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {
     ASSERT(bitfields);
