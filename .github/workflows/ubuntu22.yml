@@ -45,15 +45,13 @@ jobs:
           shell: bash
           # Execute tests defined by the CMake configuration.  
           # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-          run: |
-            ulimit -c unlimited
-            sudo ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
-        - name: Chmod cores
-          if: always()
-          run: sudo chmod -R +rwx /cores
-        - name: Upload coredump
-          if: always()  # This should be on failed for the previous task
-          uses: actions/upload-artifact@v3
-          with:
-            name: crashes
-            path: /cores/*
+          run: ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
+          
+        - name: Setup upterm session
+          uses: lhotari/action-upterm@v1
+          if: ${{ failure() }}
+          with: 
+            ## limits ssh access and adds the ssh public key for the user which triggered the workflow
+            limit-access-to-actor: true
+            ## If no one connects after 5 minutes, shut down server.
+            wait-timeout-minutes: 5
