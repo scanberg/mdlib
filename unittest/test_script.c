@@ -305,6 +305,30 @@ UTEST(script, basic_expressions) {
             EXPECT_EQ(as_float_arr(data)[1], 9.5f);
         }
     }
+
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("2.5 + 1.0 - 2.5 - 1.0"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 1);
+            float val = as_float(data);
+            EXPECT_EQ(val, 0.0f);
+        }
+    }
+
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("2.5 + 1.0 - 2.5 + 1.0"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 1);
+            float val = as_float(data);
+            EXPECT_EQ(val, 2.0f);
+        }
+    }
 }
 
 UTEST(script, type_compatability) {

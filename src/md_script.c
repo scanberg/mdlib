@@ -168,6 +168,11 @@ typedef enum ast_type_t {
     AST_TRANSPOSE,
 } ast_type_t;
 
+typedef enum associativity_t {
+    ASSOCIATIVITY_LEFT_TO_RIGHT,
+    ASSOCIATIVITY_RIGHT_TO_LEFT,
+} associativity_t;
+
 typedef enum base_type_t {
     TYPE_UNDEFINED = 0,
     TYPE_FLOAT,
@@ -488,7 +493,7 @@ static uint64_t generate_fingerprint() {
     return md_time_current();
 }
 
-static uint32_t operator_precedence(ast_type_t type) {
+static int operator_precedence(ast_type_t type) {
     switch(type) {
     case AST_EXPRESSION:
     case AST_PROC_CALL:
@@ -531,6 +536,45 @@ static uint32_t operator_precedence(ast_type_t type) {
         return 11;
     case AST_ASSIGNMENT:
         return 12;
+    default:
+        ASSERT(false);
+    }
+    return 0;
+}
+
+static associativity_t operator_associativity(ast_type_t type) {
+    switch(type) {
+    case AST_EXPRESSION:
+    case AST_PROC_CALL:
+    case AST_CONSTANT_VALUE:
+    case AST_TABLE:
+    case AST_IDENTIFIER:
+    case AST_ARRAY:
+    case AST_ARRAY_SUBSCRIPT:
+    case AST_FLATTEN:
+    case AST_MUL:
+    case AST_DIV:
+    case AST_INT_DIV:
+    case AST_ADD:
+    case AST_SUB:
+    case AST_LT:
+    case AST_GT:
+    case AST_LE:
+    case AST_GE:
+    case AST_NE:
+    case AST_EQ:
+    case AST_AND:
+    case AST_XOR:
+    case AST_OR:
+        return ASSOCIATIVITY_LEFT_TO_RIGHT;
+    case AST_CAST:
+    case AST_UNARY_NEG:
+    case AST_NOT:
+    case AST_OUT:
+    case AST_CONTEXT:
+    case AST_ASSIGNMENT:
+    case AST_TRANSPOSE:
+        return ASSOCIATIVITY_RIGHT_TO_LEFT;
     default:
         ASSERT(false);
     }
@@ -1125,13 +1169,17 @@ static void fix_precedence(ast_node_t** node) {
     ast_node_t* parent = *node;
     if (!parent) return;
 
-    const uint64_t num_children = md_array_size(parent->children);
-    for (uint64_t i = 0; i < num_children; ++i) {
+    const size_t num_children = md_array_size(parent->children);
+    for (size_t i = 0; i < num_children; ++i) {
         ast_node_t* child = parent->children[i];
         if (!child || md_array_size(child->children) == 0) continue;
-        ast_node_t* grand_child = child->children[0];
 
-        if (operator_precedence(child->type) > operator_precedence(parent->type)) {
+        int prec_lhs             = operator_precedence(parent->type);
+        int prec_rhs             = operator_precedence(child->type);
+        associativity_t asso_rhs = operator_associativity(child->type);
+
+        if (prec_rhs > prec_lhs || (prec_lhs == prec_rhs && asso_rhs != ASSOCIATIVITY_RIGHT_TO_LEFT)) {
+            ast_node_t* grand_child = child->children[0];
             child->children[0] = parent;
             parent->children[i] = grand_child;
             *node = child;
@@ -1722,7 +1770,7 @@ static size_t print_data_value(char* buf, size_t cap, data_t data) {
 
 #undef PRINT
 
-#if MD_DEBUG
+#if DEBUG
 
 /*
 static void print_data_value(FILE* file, data_t data) {
@@ -1810,143 +1858,138 @@ static void print_data_value(FILE* file, data_t data) {
 }
 */
 
-static void print_label(FILE* file, const ast_node_t* node) {
+static void print_label(md_file_o* file, const ast_node_t* node) {
     char buf[1024];
     switch(node->type) {
     case AST_CONSTANT_VALUE:
         print_data_value(buf, sizeof(buf), node->data);
-        fprintf(file, "%s", buf);
+        md_file_printf(file, "%s", buf);
         break;
     case AST_PROC_CALL:
         if (node->proc) {
-            fprintf(file, ""STR_FMT"", (int)node->proc->name.len, node->proc->name.ptr);
+            md_file_printf(file, ""STR_FMT"", (int)node->proc->name.len, node->proc->name.ptr);
         }
         else {
-            fprintf(file, "NULL");
+            md_file_printf(file, "NULL");
         }
-        fprintf(file, "(proc call)");
+        md_file_printf(file, "(proc call)");
         break;
     case AST_ASSIGNMENT:
-        fprintf(file, "assignment =");
+        md_file_printf(file, "assignment =");
         break;
     case AST_CAST:
         ASSERT(node->children);
         print_type_info(buf, ARRAY_SIZE(buf), node->children[0]->data.type);
-        fprintf(file, "cast (%s) ->", buf);
+        md_file_printf(file, "cast (%s) ->", buf);
         break;
     case AST_IDENTIFIER:
-        fprintf(file, ""STR_FMT"", (int)node->ident.len, node->ident.ptr);
-        fprintf(file, " (identifier)");
+        md_file_printf(file, ""STR_FMT"", (int)node->ident.len, node->ident.ptr);
+        md_file_printf(file, " (identifier)");
         break;
     case AST_ARRAY:
-        fprintf(file, "array");
+        md_file_printf(file, "array");
         break;
     case AST_ARRAY_SUBSCRIPT:
-        fprintf(file, "array subscript");
+        md_file_printf(file, "array subscript");
         break;
     case AST_AND:
     case AST_OR:
     case AST_NOT:
-        fprintf(file, "logical op %s", get_token_type_str(node->marker.type));
+        md_file_printf(file, "logical op %s", get_token_type_str(node->token.type));
         break;
     case AST_ADD:
     case AST_SUB:
     case AST_MUL:
     case AST_DIV:
-        fprintf(file, "binary op %s", get_token_type_str(node->marker.type));
+        md_file_printf(file, "binary op %s", get_token_type_str(node->token.type));
         break;
     default:
-        fprintf(file, "%s", get_token_type_str(node->marker.type));
+        md_file_printf(file, "%s", get_token_type_str(node->token.type));
         break;
     }
 
     print_type_info(buf, sizeof(buf), node->data.type);
-    fprintf(file, " -> %s", buf);
+    md_file_printf(file, " -> %s", buf);
 
     if (node->flags) {
-        fprintf(file, " {");
-        if (node->flags & FLAG_DYNAMIC) fprintf(file, "D");
-        fprintf(file, "}");
+        md_file_printf(file, " {");
+        if (node->flags & FLAG_DYNAMIC) md_file_printf(file, "D");
+        md_file_printf(file, "}");
     }
 
     if (node->type != AST_ASSIGNMENT) {
         if (node->data.ptr) {
-            fprintf(file, " = ");
+            md_file_printf(file, " = ");
             print_data_value(buf, sizeof(buf), node->data);
-            fprintf(file, "%s", buf);
+            md_file_printf(file, "%s", buf);
         }
     }
 }
 
 
-static inline void indent(FILE* file, int amount) {
+static inline void indent(md_file_o* file, int amount) {
     for (int i = 0; i < amount; ++i) {
-        fprintf(file, "\t");
+        md_file_printf(file, "\t");
     }
 }
 
-static void print_node(FILE* file, const ast_node_t* node, int depth) {
+static void print_node(md_file_o* file, const ast_node_t* node, int depth) {
     if (!node || !file) return;
 
     indent(file, depth);
-    fprintf(file, "{\"name\": \"");
+    md_file_printf(file, "{\"name\": \"");
     print_label(file, node);
-    fprintf(file, "\",\n");
+    md_file_printf(file, "\",\n");
 
-    const uint64_t num_children = md_array_size(node->children);
+    const size_t num_children = md_array_size(node->children);
     if (num_children) {
         indent(file, depth);
-        fprintf(file, "\"children\": [\n");
-        for (uint64_t i = 0; i < num_children; ++i) {
+        md_file_printf(file, "\"children\": [\n");
+        for (size_t i = 0; i < num_children; ++i) {
             print_node(file, node->children[i], depth + 1);
         }
         indent(file, depth);
-        fprintf(file, "]\n");
+        md_file_printf(file, "]\n");
     }
 
     indent(file, depth);
-    fprintf(file, "},\n");
+    md_file_printf(file, "},\n");
 }
 
-static void print_expr(FILE* file, str_t str) {
-
+static void print_expr(md_file_o* file, str_t str) {
     // We need to add escape character to quotation marks, since they are not representable within a json string...
     char buf[1024] = {0};
-    uint64_t at = 0;
+    int len = 0;
     for (const char* c = str.ptr; c != str.ptr + str.len; ++c) {
         if (*c == '\"') {
-            buf[at++] = '\\';
-            buf[at++] = *c;
+            buf[len++] = '\\';
+            buf[len++] = *c;
         }
         else if (*c == '\r') {
 
         }
         else if (*c == '\n') {
-            buf[at++] = '\\';
-            buf[at++] = 'n';
+            buf[len++] = '\\';
+            buf[len++] = 'n';
         }
         else {
-            buf[at++] = *c;
+            buf[len++] = *c;
         }
     }
-
-    fprintf(file, "\""STR_FMT"\"\n", (int)at, buf);
+    md_file_printf(file, "\""STR_FMT"\"\n", len, buf);
 }
 
-static void save_expressions_to_json(expression_t** expr, uint64_t num_expr, str_t filename) {
+static void ast_to_json(const ast_node_t* node, str_t filename) {
     md_file_o* file = md_file_open(filename, MD_FILE_WRITE);
 
-    if (file) {
+    if (file && node) {
         md_file_printf(file, "var treeData = [\n");
-        for (uint64_t i = 0; i < num_expr; ++i) {
-            md_file_printf(file, "{\n\"node\" :\n");
-            print_node(file, expr[i]->node, 1);
-            md_file_printf(file, "\"flags\" : %u,\n", expr[i]->node->flags);
-            md_file_printf(file, "\"expr\" : ");
-            print_expr(file, expr[i]->str);
-            md_file_printf(file, "},\n");
-
-        }
+        md_file_printf(file, "{\n\"node\" :\n");
+        print_node(file, node, 1);
+        md_file_printf(file, "\"flags\" : %u,\n", node->flags);
+        md_file_printf(file, "\"expr\" : ");
+        print_expr(file, node->token.str);
+        md_file_printf(file, "},\n");
         md_file_printf(file, "];");
         md_file_close((md_file_o*)file);
     }
@@ -5953,7 +5996,7 @@ bool md_script_ir_compile_from_source(md_script_ir_t* ir, str_t src, const md_mo
 
     extract_vis_tokens(ir);
 
-#if MD_DEBUG
+#if DEBUG
     //save_expressions_to_json(ir->expressions, md_array_size(ir->expressions), make_cstr("tree.json"));
 #endif
 
@@ -6408,6 +6451,35 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
     FREE_TEMP_ALLOC;
 
     return result;
+}
+
+static void parse_type_check_and_print_expression_to_json(str_t expr, const md_molecule_t* mol, str_t filename) {
+    SETUP_TEMP_ALLOC(GIGABYTES(4));
+    md_script_ir_t* ir = create_ir(temp_alloc);
+    ir->str = str_copy(expr, ir->arena);
+
+    tokenizer_t tokenizer = tokenizer_init(ir->str);
+    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = temp_alloc});
+    if (node) {
+        eval_context_t ctx = {
+            .ir = ir,
+            .mol = mol,
+            .temp_alloc = temp_alloc,
+            .alloc = temp_alloc,
+            .initial_configuration = {
+                .x = mol->atom.x,
+                .y = mol->atom.y,
+                .z = mol->atom.z,
+            },
+            .eval_flags = EVAL_FLAG_NO_STATIC_EVAL,
+        };
+
+        if (static_check_node(node, &ctx)) {
+            ast_to_json(node, filename);
+        }
+    }
+
+    FREE_TEMP_ALLOC;
 }
 
 bool md_filter_evaluate(md_array(md_bitfield_t)* bitfields, str_t expr, const md_molecule_t* mol, const md_script_ir_t* ctx_ir, bool* is_dynamic, char* err_buf, size_t err_cap, md_allocator_i* alloc) {

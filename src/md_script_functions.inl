@@ -1955,7 +1955,7 @@ static int _normalize(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
         double scl = 1.0 / sqrt(len2);
         for (size_t i = 0; i < count; ++i) {
-            as_float_arr(*dst)[i] = val[i] * scl;
+            as_float_arr(*dst)[i] = (float)(val[i] * scl);
         }
     }
 
