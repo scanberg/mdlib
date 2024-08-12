@@ -1363,15 +1363,15 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], size_
     }
 }
 
-const str_t* md_util_element_symbols() {
+const str_t* md_util_element_symbols(void) {
     return element_symbols;
 }
 
-const str_t* md_util_element_names() {
+const str_t* md_util_element_names(void) {
     return element_names;
 }
 
-const float* md_util_element_vdw_radii() {
+const float* md_util_element_vdw_radii(void) {
     return element_vdw_radii;
 }
 

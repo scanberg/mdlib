@@ -489,7 +489,7 @@ struct parse_context_t {
 // ###   CORE FUNCTIONS   ###
 // ##########################
 
-static uint64_t generate_fingerprint() {
+static uint64_t generate_fingerprint(void) {
     return md_time_current();
 }
 

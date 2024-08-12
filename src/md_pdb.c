@@ -710,7 +710,7 @@ static md_molecule_loader_i pdb_molecule_api = {
     pdb_init_from_file,
 };
 
-md_molecule_loader_i* md_pdb_molecule_api() {
+md_molecule_loader_i* md_pdb_molecule_api(void) {
     return &pdb_molecule_api;
 }
 
@@ -982,7 +982,7 @@ static md_trajectory_loader_i pdb_traj_loader = {
     md_pdb_trajectory_free,
 };
 
-md_trajectory_loader_i* md_pdb_trajectory_loader() {
+md_trajectory_loader_i* md_pdb_trajectory_loader(void) {
     return &pdb_traj_loader;
 }
 

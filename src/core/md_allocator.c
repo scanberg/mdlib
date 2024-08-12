@@ -29,7 +29,7 @@ static void release_ring_buffer(void* data) {
     }
 }
 
-static inline md_allocator_i* md_thread_ring_allocator() {
+static inline md_allocator_i* md_thread_ring_allocator(void) {
     if (!_ring_alloc) {
         ASSERT(!_ring_buf);
         _ring_buf = malloc(MD_TEMP_ALLOC_SIZE);
@@ -66,12 +66,12 @@ static struct md_allocator_i _heap_allocator = {
 };
 
 // Get general allocator interface to heap (malloc)
-md_allocator_i* md_get_heap_allocator() {
+md_allocator_i* md_get_heap_allocator(void) {
     return &_heap_allocator;
 }
 
 // Get general allocator interface to thread local ring buffer
-md_allocator_i* md_get_temp_allocator() {
+md_allocator_i* md_get_temp_allocator(void) {
     return md_thread_ring_allocator();
 }
 
@@ -87,7 +87,7 @@ void md_temp_pop (size_t bytes) {
     md_ring_allocator_pop(md_thread_ring_allocator(), bytes);
 }
 
-size_t md_temp_get_pos() {
+size_t md_temp_get_pos(void) {
     return md_ring_allocator_get_pos(md_thread_ring_allocator());
 }
 

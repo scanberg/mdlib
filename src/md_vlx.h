@@ -138,7 +138,7 @@ bool   md_vlx_mol_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx_data, s
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_data_t* data, struct md_allocator_i* alloc);
 
-struct md_molecule_loader_i* md_vlx_molecule_api();
+struct md_molecule_loader_i* md_vlx_molecule_api(void);
 
 #ifdef __cplusplus
 }

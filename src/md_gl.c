@@ -468,7 +468,7 @@ static bool link_program_transform_feedback(GLuint program, const GLuint shader[
     return true;
 }
 
-static inline bool validate_context() {
+static inline bool validate_context(void) {
     if (ctx.version == 0) {
         MD_LOG_ERROR("MD GL module has not been initialized");
         return false;
@@ -828,7 +828,7 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
     return true;
 }
 
-void md_gl_initialize() {
+void md_gl_initialize(void) {
     if (gl3wInit() != GL3W_OK) {
         MD_LOG_ERROR("Could not load OpenGL extensions");
         return;
@@ -908,7 +908,7 @@ void md_gl_initialize() {
     md_handle_pool_init(&ctx.representation_pool,   MAX_REPRESENTATIONS,    ctx.arena);
 }
 
-void md_gl_shutdown() {
+void md_gl_shutdown(void) {
     if (ctx.vao) glDeleteVertexArrays(1, &ctx.vao);
     if (ctx.fbo) glDeleteFramebuffers(1, &ctx.fbo);
     if (ctx.ubo.id) glDeleteBuffers(1, &ctx.ubo.id);

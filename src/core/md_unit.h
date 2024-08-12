@@ -87,33 +87,33 @@ str_t md_unit_to_string(md_unit_t unit, struct md_allocator_i* alloc);
 md_unit_t md_unit_from_string(str_t str);
 
 // Some defined helper
-md_unit_t md_unit_none();  // Unitless quantity
+md_unit_t md_unit_none(void);  // Unitless quantity
  
 // Base units
-md_unit_t md_unit_meter();
-md_unit_t md_unit_nanometer();
-md_unit_t md_unit_angstrom();
+md_unit_t md_unit_meter(void);
+md_unit_t md_unit_nanometer(void);
+md_unit_t md_unit_angstrom(void);
 
-md_unit_t md_unit_kilogram();
+md_unit_t md_unit_kilogram(void);
 
-md_unit_t md_unit_second();
-md_unit_t md_unit_nanosecond();
-md_unit_t md_unit_pikosecond();
-md_unit_t md_unit_femtosecond();
+md_unit_t md_unit_second(void);
+md_unit_t md_unit_nanosecond(void);
+md_unit_t md_unit_pikosecond(void);
+md_unit_t md_unit_femtosecond(void);
 
-md_unit_t md_unit_ampere();
-md_unit_t md_unit_mole();
-md_unit_t md_unit_kelvin();
+md_unit_t md_unit_ampere(void);
+md_unit_t md_unit_mole(void);
+md_unit_t md_unit_kelvin(void);
 
 // Not real base units, but required to represent some quantities
-md_unit_t md_unit_radian();
-md_unit_t md_unit_degree();
-md_unit_t md_unit_count();
+md_unit_t md_unit_radian(void);
+md_unit_t md_unit_degree(void);
+md_unit_t md_unit_count(void);
 
 // Common units
-md_unit_t md_unit_joule();
-md_unit_t md_unit_pascal();
-md_unit_t md_unit_bar();
+md_unit_t md_unit_joule(void);
+md_unit_t md_unit_pascal(void);
+md_unit_t md_unit_bar(void);
 
 #ifdef __cplusplus
 }

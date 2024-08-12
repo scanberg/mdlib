@@ -458,15 +458,15 @@ static bool parse_masses(md_array(float)* mass_type_table, size_t num_atom_types
 	return true;
 }
 
-size_t md_lammps_atom_format_count() {
+size_t md_lammps_atom_format_count(void) {
 	return MD_LAMMPS_ATOM_FORMAT_COUNT;
 }
 
-const char** md_lammps_atom_format_names() {
+const char** md_lammps_atom_format_names(void) {
 	return atom_format_name;
 }
 
-const char** md_lammps_atom_format_strings() {
+const char** md_lammps_atom_format_strings(void) {
 	return atom_format_string;
 }
 
@@ -801,7 +801,7 @@ static md_molecule_loader_i lammps_api = {
 	lammps_init_from_file,
 };
 
-md_molecule_loader_i* md_lammps_molecule_api() {
+md_molecule_loader_i* md_lammps_molecule_api(void) {
 	return &lammps_api;
 }
 
@@ -1543,6 +1543,6 @@ static md_trajectory_loader_i lammps_traj_loader = {
 	md_lammps_trajectory_free,
 };
 
-md_trajectory_loader_i* md_lammps_trajectory_loader() {
+md_trajectory_loader_i* md_lammps_trajectory_loader(void) {
 	return &lammps_traj_loader;
 }

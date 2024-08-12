@@ -776,7 +776,7 @@ static md_molecule_loader_i xyz_molecule_api = {
     xyz_init_from_file,
 };
 
-md_molecule_loader_i* md_xyz_molecule_api() {
+md_molecule_loader_i* md_xyz_molecule_api(void) {
     return &xyz_molecule_api;
 }
 
@@ -1027,7 +1027,7 @@ static md_trajectory_loader_i xyz_traj_loader = {
     md_xyz_trajectory_free,
 };
 
-md_trajectory_loader_i* md_xyz_trajectory_loader() {
+md_trajectory_loader_i* md_xyz_trajectory_loader(void) {
     return &xyz_traj_loader;
 }
 

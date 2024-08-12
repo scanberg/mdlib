@@ -1359,6 +1359,6 @@ static md_molecule_loader_i vlx_loader = {
 	vlx_mol_init_from_file
 };
 
-md_molecule_loader_i* md_vlx_molecule_api() {
+md_molecule_loader_i* md_vlx_molecule_api(void) {
 	return &vlx_loader;
 }

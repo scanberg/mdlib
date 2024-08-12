@@ -11,7 +11,7 @@ struct md_molecule_loader_i;
 extern "C" {
 #endif
 
-struct md_molecule_loader_i* md_mmcif_molecule_api();
+struct md_molecule_loader_i* md_mmcif_molecule_api(void);
 
 #ifdef __cplusplus
 }

@@ -291,7 +291,7 @@ MD_VEC_INLINE vec2_t vec2_fract(vec2_t v) {
 }
 
 // VEC3 OPERATIONS
-MD_VEC_INLINE vec3_t vec3_zero() {
+MD_VEC_INLINE vec3_t vec3_zero(void) {
     vec3_t res = {0};
     return res;
 }
@@ -462,7 +462,7 @@ MD_VEC_INLINE vec3_t vec3_max(vec3_t a, vec3_t b) {
 }
 
 // VEC4 OPERATIONS
-MD_VEC_INLINE vec4_t vec4_zero() {
+MD_VEC_INLINE vec4_t vec4_zero(void) {
 #if MD_VEC_MATH_USE_SIMD
     vec4_t res;
     res.m128 = md_mm_setzero_ps();
@@ -969,7 +969,7 @@ MD_VEC_INLINE void vec4_sincos(vec4_t x, vec4_t* s, vec4_t* c) {
 #endif
 }
 
-MD_VEC_INLINE quat_t quat_ident() {
+MD_VEC_INLINE quat_t quat_ident(void) {
 	quat_t q = {0, 0, 0, 1};
 	return q;
 }
@@ -1155,7 +1155,7 @@ MD_VEC_INLINE md_128 linear_combine_3(md_128 a, md_128 B[3]) {
 #endif
 
 // MAT2
-MD_VEC_INLINE mat2_t mat2_ident() {
+MD_VEC_INLINE mat2_t mat2_ident(void) {
     mat2_t M = {
         1,0,
         0,1,
@@ -1164,7 +1164,7 @@ MD_VEC_INLINE mat2_t mat2_ident() {
 }
 
 // MAT3
-MD_VEC_INLINE mat3_t mat3_ident() {
+MD_VEC_INLINE mat3_t mat3_ident(void) {
     mat3_t M = {
         1,0,0,
         0,1,0,
@@ -1398,7 +1398,7 @@ mat3_t mat3_optimal_rotation(const float* const x[2], const float* const y[2], c
 mat3_t mat3_optimal_rotation_vec4(const vec4_t* const xyzw[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
 
 // MAT4
-MD_VEC_INLINE mat4_t mat4_ident() {
+MD_VEC_INLINE mat4_t mat4_ident(void) {
     mat4_t M = {
         {
             1,0,0,0,

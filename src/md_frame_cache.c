@@ -135,9 +135,6 @@ bool md_frame_cache_find(md_frame_cache_t* cache, int64_t frame_idx, md_frame_da
 
     const int64_t start_slot = ((frame_idx % cache->slot.count) / CACHE_ASSOCIATIVITY) * CACHE_ASSOCIATIVITY;
 
-    int64_t max_count_idx = -1;
-    int64_t max_count = -1;
-
     // If the frame is already in cache -> return data
     for (int64_t i = start_slot; i < start_slot + CACHE_ASSOCIATIVITY; ++i) {
         md_frame_cache_frame_lock_aquire((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);

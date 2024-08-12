@@ -685,74 +685,74 @@ md_unit_t md_unit_from_string(str_t str) {
     return (md_unit_t) {0};
 }
 
-md_unit_t md_unit_none() {
+md_unit_t md_unit_none(void) {
     return (md_unit_t)UNIT_NONE;
 }
 
-md_unit_t md_unit_meter() {
+md_unit_t md_unit_meter(void) {
     return (md_unit_t)UNIT_METER;
 }
 
-md_unit_t md_unit_nanometer() {
+md_unit_t md_unit_nanometer(void) {
     return (md_unit_t)UNIT_NANOMETER;
 }
 
-md_unit_t md_unit_angstrom() {
+md_unit_t md_unit_angstrom(void) {
     return (md_unit_t)UNIT_ANGSTROM;
 }
 
-md_unit_t md_unit_kilogram() {
+md_unit_t md_unit_kilogram(void) {
     return (md_unit_t)UNIT_KILOGRAM;
 }
 
-md_unit_t md_unit_second() {
+md_unit_t md_unit_second(void) {
     return (md_unit_t)UNIT_SECOND;
 }
 
-md_unit_t md_unit_nanosecond() {
+md_unit_t md_unit_nanosecond(void) {
     return (md_unit_t)UNIT_NANOSECOND;
 }
 
-md_unit_t md_unit_pikosecond() {
+md_unit_t md_unit_pikosecond(void) {
     return (md_unit_t)UNIT_PIKOSECOND;
 }
 
-md_unit_t md_unit_femtosecond() {
+md_unit_t md_unit_femtosecond(void) {
 	return (md_unit_t)UNIT_FEMTOSECOND;
 }
 
-md_unit_t md_unit_ampere() {
+md_unit_t md_unit_ampere(void) {
     return (md_unit_t)UNIT_AMPERE;
 }
 
-md_unit_t md_unit_mole() {
+md_unit_t md_unit_mole(void) {
     return (md_unit_t)UNIT_MOLE;
 }
 
-md_unit_t md_unit_kelvin() {
+md_unit_t md_unit_kelvin(void) {
     return (md_unit_t)UNIT_KELVIN;
 }
 
-md_unit_t md_unit_radian() {
+md_unit_t md_unit_radian(void) {
     return (md_unit_t)UNIT_RADIAN;
 }
 
-md_unit_t md_unit_degree() {
+md_unit_t md_unit_degree(void) {
     return (md_unit_t)UNIT_DEGREE;
 }
 
-md_unit_t md_unit_count() {
+md_unit_t md_unit_count(void) {
     return (md_unit_t)UNIT_COUNT;
 }
 
-md_unit_t md_unit_joule() {
+md_unit_t md_unit_joule(void) {
     return (md_unit_t)UNIT_JOULE;
 }
 
-md_unit_t md_unit_pascal() {
+md_unit_t md_unit_pascal(void) {
     return (md_unit_t)UNIT_PASCAL;
 }
 
-md_unit_t md_unit_bar() {
+md_unit_t md_unit_bar(void) {
     return (md_unit_t)UNIT_BAR;
 }

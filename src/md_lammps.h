@@ -108,8 +108,8 @@ extern "C" {
 #endif
 
 // Get name or string representation of a atom format
-const char** md_lammps_atom_format_names();
-const char** md_lammps_atom_format_strings();
+const char** md_lammps_atom_format_names(void);
+const char** md_lammps_atom_format_strings(void);
 
 // Try to find a predefined atom format from input
 md_lammps_atom_format_t md_lammps_atom_format_from_str(str_t str);
@@ -137,13 +137,13 @@ typedef struct md_lammps_molecule_loader_arg_t {
 // Use this to create a valid arg object which can be passed to the loader api
 md_lammps_molecule_loader_arg_t md_lammps_molecule_loader_arg(const char* atom_format_str);
 
-struct md_molecule_loader_i* md_lammps_molecule_api();
+struct md_molecule_loader_i* md_lammps_molecule_api(void);
 
 //Trajectory
 struct md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
 void md_lammps_trajectory_free(struct md_trajectory_i* traj);
 
-struct md_trajectory_loader_i* md_lammps_trajectory_loader();
+struct md_trajectory_loader_i* md_lammps_trajectory_loader(void);
 
 #ifdef __cplusplus
 }

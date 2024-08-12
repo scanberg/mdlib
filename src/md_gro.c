@@ -246,6 +246,6 @@ static md_molecule_loader_i gro_api = {
     gro_init_from_file,
 };
 
-md_molecule_loader_i* md_gro_molecule_api() {
+md_molecule_loader_i* md_gro_molecule_api(void) {
     return &gro_api;
 }

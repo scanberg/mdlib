@@ -83,7 +83,7 @@ STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t 
 
 #if MD_PLATFORM_WINDOWS
 // https://docs.microsoft.com/en-us/windows/win32/debug/retrieving-the-last-error-code
-static void print_windows_error() {
+static void print_windows_error(void) {
     LPVOID msg_buf = 0;
     DWORD err_code = GetLastError();
 
@@ -563,7 +563,7 @@ size_t md_file_printf(md_file_o* file, const char* format, ...) {
 
 // ### TIME ###
 
-md_timestamp_t md_time_current() {
+md_timestamp_t md_time_current(void) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
@@ -838,7 +838,7 @@ bool md_mutex_init(md_mutex_t* mutex) {
 #endif
 }
 
-md_mutex_t md_mutex_create() {
+md_mutex_t md_mutex_create(void) {
 #if MD_PLATFORM_WINDOWS
     md_mutex_t mutex;
     md_mutex_init(&mutex);

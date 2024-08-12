@@ -576,7 +576,7 @@ static gl_program_t gl_program_create_from_files(const char* shader_files[], uin
 
 static gl_context_t ctx = {0};
 
-static inline bool validate_context() {
+static inline bool validate_context(void) {
     if (ctx.version == 0) {
         MD_LOG_ERROR("gfx context has not been initialized");
         return false;
@@ -584,7 +584,7 @@ static inline bool validate_context() {
     return true;
 }
 
-void init_handles() {
+void init_handles(void) {
     for (uint32_t i = 0; i < ARRAY_SIZE(ctx.handles); ++i) {
         ctx.handles[i].idx = (uint16_t)(i + 1);
         // Scramble generations a bit
@@ -599,7 +599,7 @@ static inline void free_handle(uint16_t idx) {
     ctx.handle_next_idx = idx;
 }
 
-static inline uint16_t alloc_handle() {
+static inline uint16_t alloc_handle(void) {
     if (ctx.handle_next_idx >= ARRAY_SIZE(ctx.handles)) {
         ASSERT(false);
     }
@@ -862,7 +862,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
     return true;
 }
 
-void md_gfx_shutdown() {
+void md_gfx_shutdown(void) {
     if (ctx.fbo_id) glDeleteFramebuffers(1, &ctx.fbo_id);
     gl_texture_destroy(&ctx.color_tex);
     gl_texture_destroy(&ctx.normal_tex);
@@ -2046,13 +2046,13 @@ GL_POP_GPU_SECTION();
     return true;
 }
 
-uint32_t md_gfx_get_picking_idx() {
+uint32_t md_gfx_get_picking_idx(void) {
     if (!validate_context()) return INVALID_INDEX;
     uint32_t idx = ctx.debug_data->pick_index;
     return idx == 0 ? INVALID_INDEX : idx - 1;
 }
 
-float md_gfx_get_picking_depth() {
+float md_gfx_get_picking_depth(void) {
     if (!validate_context()) return 1.0f;
     return ctx.debug_data->pick_depth;
 }

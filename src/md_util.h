@@ -38,9 +38,9 @@ md_element_t md_util_element_lookup(str_t element_str);
 md_element_t md_util_element_lookup_ignore_case(str_t element_str);
 
 // Access to the static arrays
-const str_t* md_util_element_symbols();
-const str_t* md_util_element_names();
-const float* md_util_element_vdw_radii();
+const str_t* md_util_element_symbols(void);
+const str_t* md_util_element_names(void);
+const float* md_util_element_vdw_radii(void);
 
 str_t md_util_element_symbol(md_element_t element);
 str_t md_util_element_name(md_element_t element);

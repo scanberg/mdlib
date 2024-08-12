@@ -344,6 +344,6 @@ static md_molecule_loader_i api = {
     .init_from_file = mmcif_init_from_file,
 };
 
-struct md_molecule_loader_i* md_mmcif_molecule_api() {
+struct md_molecule_loader_i* md_mmcif_molecule_api(void) {
     return &api;
 }

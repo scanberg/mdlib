@@ -102,7 +102,7 @@ extern "C" {
 
 // SYSTEM
 bool md_gfx_initialize(const char* shader_base_dir, uint32_t fbo_width, uint32_t fbo_height, md_gfx_config_flags_t flags);
-void md_gfx_shutdown();
+void md_gfx_shutdown(void);
 
 // STRUCTURE
 md_gfx_handle_t md_gfx_structure_create_from_mol(const struct md_molecule_t* mol);
@@ -153,16 +153,16 @@ bool md_gfx_draw_begin(const struct mat4_t* proj_mat, const struct mat4_t* view_
 bool md_gfx_draw_submit(md_gfx_handle_t struct_id, md_gfx_handle_t rep_id, const struct mat4_t* model_mat, uint32_t atom_mask);
 
 // Call after draw commands have been submitted for the render pass
-bool md_gfx_draw_end();
+bool md_gfx_draw_end(void);
 
 // Call after all render passes are done
-bool md_gfx_compose_to_fbo();
+bool md_gfx_compose_to_fbo(void);
 
 // Perform this after the draw operation
 bool md_gfx_query_picking(uint32_t mouse_x, uint32_t mouse_y);
 
-uint32_t md_gfx_get_picking_idx();
-float    md_gfx_get_picking_depth();
+uint32_t md_gfx_get_picking_idx(void);
+float    md_gfx_get_picking_depth(void);
 
 #ifdef __cplusplus
 }

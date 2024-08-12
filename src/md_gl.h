@@ -32,8 +32,8 @@ extern "C" {
 // ### MD GL ###
 // Initialize the GL module and its resources
 
-void md_gl_initialize();
-void md_gl_shutdown();
+void md_gl_initialize(void);
+void md_gl_shutdown(void);
 
 /*
 

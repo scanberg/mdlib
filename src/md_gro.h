@@ -40,7 +40,7 @@ void md_gro_data_free(md_gro_data_t* data, struct md_allocator_i* alloc);
 // Molecule
 bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* gro_data, struct md_allocator_i* alloc);
 
-struct md_molecule_loader_i* md_gro_molecule_api();
+struct md_molecule_loader_i* md_gro_molecule_api(void);
 
 #ifdef __cplusplus
 }

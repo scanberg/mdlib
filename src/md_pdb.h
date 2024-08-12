@@ -175,13 +175,13 @@ void md_pdb_data_free(md_pdb_data_t* data, struct md_allocator_i* alloc);
 
 // MOLECULE
 bool md_pdb_molecule_init(struct md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_options_t options, struct md_allocator_i* alloc);
-struct md_molecule_loader_i* md_pdb_molecule_api();
+struct md_molecule_loader_i* md_pdb_molecule_api(void);
 
 // TRAJECTORY
 struct md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* alloc, uint32_t flags);
 void md_pdb_trajectory_free(struct md_trajectory_i* traj);
 
-struct md_trajectory_loader_i* md_pdb_trajectory_loader();
+struct md_trajectory_loader_i* md_pdb_trajectory_loader(void);
 
 #ifdef __cplusplus
 }

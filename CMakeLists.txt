@@ -227,6 +227,7 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
       "/wd4305"
       "/wd4324"
       "/wd26451"
+      "/w44255"
       "/MP"
       "/GR-"
       "/Oi"
