@@ -308,13 +308,13 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("2.5 + 1.0 - 2.5 - 1.0"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("7-4+2-3"), &test_mol, md_get_temp_allocator());
         EXPECT_TRUE(result);
         if (result) {
-            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.base_type, TYPE_INT);
             EXPECT_EQ(data.type.dim[0], 1);
-            float val = as_float(data);
-            EXPECT_EQ(val, 0.0f);
+            int val = as_int(data);
+            EXPECT_EQ(val, (7-4+2-3));
         }
     }
 
@@ -326,7 +326,7 @@ UTEST(script, basic_expressions) {
             EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
             EXPECT_EQ(data.type.dim[0], 1);
             float val = as_float(data);
-            EXPECT_EQ(val, 2.0f);
+            EXPECT_EQ(val, (2.5f + 1.0f - 2.5f + 1.0f));
         }
     }
 }
@@ -956,8 +956,14 @@ UTEST_F(script, semantic) {
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "dih1_pft = dihedral(22, 20, 1, 2) in resname('PFT');"
+    ), mol, NULL, NULL));
+
+    md_script_ir_clear(ir);
     EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("p1 = resname('ALA') resname('GLY');"), mol, NULL, NULL));
     
+    md_script_ir_clear(ir);
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
         "ads = residue({10629,10633,10635,10637,10653,10659,10661,10665,10678:10679,10684,10686});"
         "ads_end = residue({10628:10629,10633,10635:10638,10643,10647,10650,10653:10654,10656,10659,10661,10663:10665,10669:10671,10678:10679,10682,10684,10686});"

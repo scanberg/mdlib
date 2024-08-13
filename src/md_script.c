@@ -542,6 +542,45 @@ static int operator_precedence(ast_type_t type) {
     return 0;
 }
 
+static bool operator_binary(ast_type_t type) {
+    switch(type) {
+    case AST_MUL:
+    case AST_DIV:
+    case AST_INT_DIV:
+    case AST_ADD:
+    case AST_SUB:
+    case AST_LT:
+    case AST_GT:
+    case AST_LE:
+    case AST_GE:
+    case AST_NE:
+    case AST_EQ:
+    case AST_AND:
+    case AST_XOR:
+    case AST_OR:
+        return true;
+    case AST_EXPRESSION:
+    case AST_PROC_CALL:
+    case AST_CONSTANT_VALUE:
+    case AST_TABLE:
+    case AST_IDENTIFIER:
+    case AST_ARRAY:
+    case AST_ARRAY_SUBSCRIPT:
+    case AST_FLATTEN:
+    case AST_CAST:
+    case AST_UNARY_NEG:
+    case AST_NOT:
+    case AST_OUT:
+    case AST_CONTEXT:
+    case AST_ASSIGNMENT:
+    case AST_TRANSPOSE:
+        return false;
+    default:
+        ASSERT(false);
+    }
+    return false;
+}
+
 static associativity_t operator_associativity(ast_type_t type) {
     switch(type) {
     case AST_EXPRESSION:
@@ -1168,21 +1207,39 @@ static void fix_precedence(ast_node_t** node) {
     if (!node) return;
     ast_node_t* parent = *node;
     if (!parent) return;
+    
+    ast_node_t** op  = node;
 
-    const size_t num_children = md_array_size(parent->children);
-    for (size_t i = 0; i < num_children; ++i) {
-        ast_node_t* child = parent->children[i];
-        if (!child || md_array_size(child->children) == 0) continue;
+    if (operator_binary((*node)->type)) {
+        if (md_array_size((*node)->children) != 2) {
+            MD_LOG_ERROR("Invalid number of children in binary node");
+            return;
+        }
 
-        int prec_lhs             = operator_precedence(parent->type);
-        int prec_rhs             = operator_precedence(child->type);
-        associativity_t asso_rhs = operator_associativity(child->type);
+        ast_node_t* child = parent->children[1];
+        if (md_array_size(child->children) == 0) return;
 
-        if (prec_rhs > prec_lhs || (prec_lhs == prec_rhs && asso_rhs != ASSOCIATIVITY_RIGHT_TO_LEFT)) {
+        int prec_parent   = operator_precedence(parent->type);
+        int prec_child    = operator_precedence(child->type);
+
+        if (prec_child > prec_parent || (prec_child == prec_parent && operator_associativity(child->type) == ASSOCIATIVITY_LEFT_TO_RIGHT)) {
             ast_node_t* grand_child = child->children[0];
-            child->children[0] = parent;
-            parent->children[i] = grand_child;
+            child->children[0]  = parent;
+            parent->children[1] = grand_child;
             *node = child;
+            fix_precedence(&((*node)->children[0]));
+        }
+    } else {
+        const size_t num_children = md_array_size(parent->children);
+        for (size_t i = 0; i < num_children; ++i) {
+            ast_node_t* child = parent->children[i];
+            if (!child || md_array_size(child->children) == 0) continue;
+            if (operator_precedence(child->type) > operator_precedence(parent->type)) {
+                ast_node_t* grand_child = child->children[0];
+                child->children[0]  = parent;
+                parent->children[i] = grand_child;
+                *node = child;
+            }
         }
     }
 }
@@ -2523,67 +2580,67 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
     token_t token = {0};
     while (token = tokenizer_peek_next(ctx->tokenizer), token.type != TOKEN_END) {
         switch (token.type) {
-            case TOKEN_AND:
-            case TOKEN_OR:
-            case TOKEN_XOR:
-            case TOKEN_NOT:
+        case TOKEN_AND:
+        case TOKEN_OR:
+        case TOKEN_XOR:
+        case TOKEN_NOT:
             ctx->node = parse_logical(ctx);
             fix_precedence(&ctx->node);
             break;
-            case '=':
+        case '=':
             ctx->node = parse_assignment(ctx);
+            break;
+        case TOKEN_GE:
+        case TOKEN_LE:
+        case TOKEN_EQ:
+            ctx->node = parse_comparison(ctx);
             fix_precedence(&ctx->node);
             break;
-            case TOKEN_GE:
-            case TOKEN_LE:
-            case TOKEN_EQ:
-            ctx->node = parse_comparison(ctx);
-            break;
-            case TOKEN_IDENT:
+        case TOKEN_IDENT:
             ctx->node = parse_identifier(ctx);
             break;
-            case TOKEN_IN:
+        case TOKEN_IN:
             ctx->node = parse_in(ctx);
             fix_precedence(&ctx->node);
             break;
-            case TOKEN_OUT:
+        case TOKEN_OUT:
             ctx->node = parse_out(ctx);
             fix_precedence(&ctx->node);
             break;
-            case TOKEN_FLOAT:
-            case TOKEN_INT:
-            case TOKEN_STRING:
-            case ':':
+        case TOKEN_FLOAT:
+        case TOKEN_INT:
+        case TOKEN_STRING:
+        case ':':
             ctx->node = parse_value(ctx);
             break;
-            case '(':
+        case '(':
             ctx->node = parse_parentheses(ctx);
             break;
-            case '[':
+        case '[':
             ctx->node = parse_array_subscript(ctx);
             break;
-            case '{':
+        case '{':
             ctx->node = parse_array(ctx);
             break;
-            case '-':
-            case '+':
-            case '*':
-            case '/':
-            case TOKEN_INT_DIV:
+        case '-':
+        case '+':
+        case '*':
+        case '/':
+        case TOKEN_INT_DIV:
             ctx->node = parse_arithmetic(ctx);
             fix_precedence(&ctx->node);
             break;
-            case ')':
-            case ']':
-            case '}':
-            case ',':
-            case ';':
+        case ')':
+        case ']':
+        case '}':
+        case ',':
+        case ';':
             goto done;
-            case TOKEN_UNDEF:
+        case TOKEN_UNDEF:
             LOG_ERROR(ctx->ir, token, "Invalid token!");
             tokenizer_consume_next(ctx->tokenizer);
             return NULL;
-            default:
+        default:
             LOG_ERROR(ctx->ir, token, "Unexpected token: '"STR_FMT"'", token.str.len, token.str.ptr);
             return NULL;
         }
@@ -6431,9 +6488,9 @@ static bool eval_expression(data_t* dst, str_t expr, md_molecule_t* mol, md_allo
                 if (dst->type.base_type == TYPE_STRING) {
                     // @HACK: We reallocate strings here here: If the data type is a str_t, then it gets a shallow copy
                     // Which means that the actual string data is contained within the ir->arena => temp_alloc
-                    const uint64_t num_elem = element_count(*dst);
+                    const size_t num_elem = element_count(*dst);
                     str_t* dst_str = dst->ptr;
-                    for (uint64_t i = 0; i < num_elem; ++i) {
+                    for (size_t i = 0; i < num_elem; ++i) {
                         dst_str[i] = str_copy(dst_str[i], alloc);
                     }
                 }
