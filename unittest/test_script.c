@@ -308,7 +308,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("7-4+2-3"), &test_mol, md_get_temp_allocator());
+        bool result = eval_expression(&data, STR_LIT("7 - 4 + 2 - 3"), &test_mol, md_get_temp_allocator());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_INT);
