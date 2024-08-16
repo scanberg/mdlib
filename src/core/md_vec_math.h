@@ -1765,6 +1765,16 @@ static inline vec3_t operator - (const vec3_t &a) {
     return c;
 }
 
+static inline vec3_t operator -= (vec3_t& a, vec3_t b) {
+    a = vec3_sub(a, b);
+    return a;
+}
+
+static inline vec3_t operator -= (vec3_t& v, float s) {
+    v = vec3_sub_f(v, s);
+    return v;
+}
+
 static inline vec3_t operator * (vec3_t a, vec3_t b) {
     vec3_t c = {a.x * b.x, a.y * b.y, a.z * b.z};
     return c;
@@ -1780,6 +1790,16 @@ static inline vec3_t operator * (float s, vec3_t a) {
     return c;
 }
 
+static inline vec3_t operator *= (vec3_t& a, vec3_t b) {
+    a = vec3_mul(a, b);
+    return a;
+}
+
+static inline vec3_t operator *= (vec3_t& v, float s) {
+    v = vec3_mul_f(v, s);
+    return v;
+}
+
 static inline vec3_t operator / (vec3_t a, vec3_t b) {
     vec3_t c = {a.x / b.x, a.y / b.y, a.z / b.z};
     return c;
@@ -1793,6 +1813,16 @@ static inline vec3_t operator / (vec3_t a, float s) {
 static inline vec3_t operator / (float s, vec3_t a) {
     vec3_t c = {s / a.x, s / a.y, s / a.z};
     return c;
+}
+
+static inline vec3_t operator /= (vec3_t& a, vec3_t b) {
+    a = vec3_div(a, b);
+    return a;
+}
+
+static inline vec3_t operator /= (vec3_t& v, float s) {
+    v = vec3_div_f(v, s);
+    return v;
 }
 
 // vec4_t
