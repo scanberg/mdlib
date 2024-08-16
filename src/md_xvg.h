@@ -41,7 +41,7 @@ str_t	md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, si
 str_t	md_xvg_format		(str_t header, size_t num_fields, size_t num_values, const float* const field_values[], struct md_allocator_i* str_alloc);
 
 str_t	md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* str_alloc);
-
+bool	md_xvg_write_to_file(str_t xvg, struct md_allocator_i* str_alloc, str_t path_to_file);
 #ifdef __cplusplus
 }
 #endif

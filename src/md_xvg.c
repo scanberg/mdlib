@@ -110,6 +110,24 @@ str_t md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* alloc) {
 	return result;
 }
 
+bool md_xvg_write_to_file(str_t xvg, md_allocator_i* str_alloc, str_t path_to_file)
+{
+	md_file_o* file = md_file_open(path_to_file, MD_FILE_WRITE | MD_FILE_BINARY);
+	if (file) {
+		const size_t written_bytes = md_file_write(file, xvg.ptr, xvg.len);
+		if (written_bytes == xvg.len) {
+			return true;
+		}
+		else {
+			MD_LOG_ERROR("CSV: Unexpected error, some bytes were not written");
+		}
+	}
+	else {
+		MD_LOG_ERROR("CSV: File could not be opened for writing: '%.*s'", (int)path_to_file.len, path_to_file.ptr);
+	}
+	return false;
+}
+
 str_t remove_quotes(str_t str) {
 	const char* c = str.ptr;
 	const char* beg = str.ptr;
