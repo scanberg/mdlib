@@ -281,6 +281,7 @@ target_include_directories(mdlib
   src/
   ext/gl3w/
   ext/simde/
+  ext/xxhash/
 
   PRIVATE
   gen/
@@ -289,7 +290,6 @@ target_include_directories(mdlib
   ext/xtc/
   ext/svd3/
   ext/stb/
-  ext/xxhash/
 )
 
 set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})

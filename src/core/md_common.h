@@ -62,6 +62,10 @@
 #endif
 #endif
 
+#ifndef TYPEOF
+#define TYPEOF(x) __typeof__(x)
+#endif
+
 // Really GCC? REALLY? DO WE REALLY NEED TO INCLUDE stddef.h for this??????
 #ifndef NULL
 #define NULL 0

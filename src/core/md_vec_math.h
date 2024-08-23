@@ -1032,7 +1032,7 @@ MD_VEC_INLINE quat_t quat_conj(quat_t q) {
         -q.x,
         -q.y,
         -q.z,
-         q.w
+         q.w,
     };
     return r;
 }
@@ -1040,12 +1040,12 @@ MD_VEC_INLINE quat_t quat_conj(quat_t q) {
 MD_VEC_INLINE quat_t quat_axis_angle(vec3_t axis, float angle) {
     float half_angle = angle * 0.5f;
     float sin_angle = sinf(half_angle);
-
-    quat_t q;
-    q.x = axis.x * sin_angle;
-    q.y = axis.y * sin_angle;
-    q.z = axis.z * sin_angle;
-    q.w = cosf(half_angle);
+    quat_t q = {
+        axis.x * sin_angle,
+        axis.y * sin_angle,
+        axis.z * sin_angle,
+        cosf(half_angle),
+    };
     return q;
 }
 

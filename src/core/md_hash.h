@@ -1,13 +1,18 @@
 #pragma once
 
-#include <stddef.h>
-#include <stdint.h>
 #include <core/md_compiler.h>
 #include <core/md_intrinsics.h>
 #include <core/md_allocator.h>
 
+#define XXH_INLINE_ALL
+#include <xxhash.h>
+
+#include <stdint.h>
+#include <stddef.h>
+
+
 #if 0
-// This does not seem to work on MSVC
+// @NOTE(Robin): This does not seem to work on MSVC
 // https://stackoverflow.com/questions/2826559/compile-time-preprocessor-hashing-of-string
 // http://lolengine.net/blog/2011/12/20/cpp-constant-string-hash
 #define HASH_H1(s,i,x)   (x*65599u+(uint8_t)s[(i)<sizeof(s)?sizeof(s)-1-(i):sizeof(s)])
@@ -85,8 +90,14 @@ static inline float md_halton(int index, int base) {
 }
 
 
-uint32_t md_hash32(const void* input, size_t len, uint32_t seed);
-uint64_t md_hash64(const void* input, size_t len, uint64_t seed);
+static inline uint32_t md_hash32(const void* input, size_t len, uint32_t seed) {
+    return XXH32(input, len, seed);
+}
+
+static inline uint64_t md_hash64(const void* input, size_t len, uint64_t seed) {
+    return XXH64(input, len, seed);
+}
+
 
 // This is very inspired by the Ourmachinery hash API
 
@@ -98,14 +109,14 @@ uint64_t md_hash64(const void* input, size_t len, uint64_t seed);
 // actual key, or there will be trouble.
 #define MD_HASH_UNUSED    0xffffffffffffffffULL
 
-#define MD_HASHMAP_T(V)                   \
-    {                                     \
-        uint32_t num_buckets;             \
-        uint32_t num_used;                \
-        uint64_t *keys;                   \
-        V *values;                        \
-        struct md_allocator_i *allocator; \
-    }
+#define MD_HASHMAP_T(V)               \
+{                                     \
+    uint32_t num_buckets;             \
+    uint32_t num_used;                \
+    uint64_t *keys;                   \
+    V *values;                        \
+    struct md_allocator_i *allocator; \
+}
 
 typedef struct {
     uint32_t num_buckets;
@@ -197,7 +208,6 @@ typedef struct MD_HASHMAP_T(uint64_t) md_hashmap64_t;
 
 // Maps from an `uint64_t` key to a `uint32_t` value.
 typedef struct MD_HASHMAP_T(uint32_t) md_hashmap32_t;
-
 
 // Maps a key to a hash table index.
 //
