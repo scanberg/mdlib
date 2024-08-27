@@ -47,7 +47,9 @@ UBENCH_EX(gto, evaluate_grid) {
         .data = vol_data,
         .dim = {vol_dim, vol_dim, vol_dim},
         .origin = {min_box.x, min_box.y, min_box.z},
-        .stepsize = {step.x, step.y, step.z},
+        .step_x = {step.x, 0, 0},
+        .step_y = {0, step.y, 0},
+        .step_z = {0, 0, step.z},
     };
 
     size_t num_pgtos = md_vlx_mol_pgto_count(&vlx);
@@ -71,14 +73,14 @@ UBENCH_EX(gto, evaluate_grid) {
             const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
             float aabb_min[3] = {
-                grid.origin[0] + off_idx[0] * grid.stepsize[0],
-                grid.origin[1] + off_idx[1] * grid.stepsize[1],
-                grid.origin[2] + off_idx[2] * grid.stepsize[2],
+                grid.origin[0] + off_idx[0] * grid.step_x[0],
+                grid.origin[1] + off_idx[1] * grid.step_y[1],
+                grid.origin[2] + off_idx[2] * grid.step_z[2],
             };
             float aabb_max[3] = {
-                grid.origin[0] + (off_idx[0] + len_idx[0]) * grid.stepsize[0],
-                grid.origin[1] + (off_idx[1] + len_idx[1]) * grid.stepsize[1],
-                grid.origin[2] + (off_idx[2] + len_idx[2]) * grid.stepsize[2],
+                grid.origin[0] + (off_idx[0] + len_idx[0]) * grid.step_x[0],
+                grid.origin[1] + (off_idx[1] + len_idx[1]) * grid.step_y[1],
+                grid.origin[2] + (off_idx[2] + len_idx[2]) * grid.step_z[2],
             };
 
             size_t num_sub_pgtos = md_gto_aabb_test(sub_pgtos, aabb_min, aabb_max, pgtos, num_pgtos);

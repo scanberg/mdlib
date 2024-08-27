@@ -22,7 +22,9 @@ typedef struct md_grid_t {
 	float* data;
 	int   dim[3];
 	float origin[3];
-	float stepsize[3];
+	float step_x[3];
+	float step_y[3];
+	float step_z[3];
 } md_grid_t;
 
 typedef enum {
