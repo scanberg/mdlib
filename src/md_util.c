@@ -1694,10 +1694,10 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 }
 
 static md_conn_data_t compute_connectivity(const md_bond_pair_t* bond_pairs, size_t bond_count, size_t atom_count, md_allocator_i* alloc, md_allocator_i* temp_arena) {    
-    ASSERT(bond_pairs);
     ASSERT(alloc);
 
     md_conn_data_t conn = {0};
+    if (bond_pairs == NULL) return conn;
     if (bond_count == 0) return conn;
     if (atom_count == 0) return conn;
 
@@ -2979,6 +2979,10 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     // This is allocated in temp until we know that all connections are final
     md_conn_data_t conn = compute_connectivity(bond.pairs, bond.count, atom->count, temp_arena, temp_arena);
 
+    if (conn.count == 0) {
+        goto done;
+    }
+
     // We cannot remove bonds inplace as they will mess up the indexing
     md_array(uint32_t) bond_indices_to_remove = 0;
 
@@ -2988,7 +2992,6 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     } bond_t;
 
     md_array(bond_t) bond_buf = 0;
-
     md_array(uint64_t) checked_bonds = make_bitfield(bond.count, temp_arena);
 
     // Prune over-connected atoms by removing longest bonds
