@@ -1464,6 +1464,32 @@ MD_VEC_INLINE mat4_t mat4_scale(float x, float y, float z) {
     return M;
 }
 
+// Create mat4 scaling matrix from scalar s which dictates the corresponding scaling factor for all axes
+MD_VEC_INLINE mat4_t mat4_scale_f(float s) {
+    mat4_t M = {
+        {
+            s,0,0,0,
+            0,s,0,0,
+            0,0,s,0,
+            0,0,0,1
+        }
+    };
+    return M;
+}
+
+// Create mat4 scaling matrix from scalar s which dictates the corresponding scaling factor for all axes
+MD_VEC_INLINE mat4_t mat4_scale_vec3(vec3_t v) {
+    mat4_t M = {
+        {
+            v.x,0,0,0,
+            0,v.y,0,0,
+            0,0,v.z,0,
+            0,0,0,1
+        }
+    };
+    return M;
+}
+
 // Create mat4 translation matrix from scalars x, y, z which dictates the corresponding translation for each axis
 MD_VEC_INLINE mat4_t mat4_translate(float x, float y, float z) {
     mat4_t M = {
@@ -1472,6 +1498,19 @@ MD_VEC_INLINE mat4_t mat4_translate(float x, float y, float z) {
             0,1,0,0,
             0,0,1,0,
             x,y,z,1
+        }
+    };
+    return M;
+}
+
+// Create mat4 translation matrix from scalars x, y, z which dictates the corresponding translation for each axis
+MD_VEC_INLINE mat4_t mat4_translate_vec3(vec3_t t) {
+    mat4_t M = {
+        {
+            1,0,0,0,
+            0,1,0,0,
+            0,0,1,0,
+            t.x,t.y,t.z,1
         }
     };
     return M;
