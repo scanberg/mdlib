@@ -24,7 +24,6 @@ set (SRC_FILES
     test_os.c
     test_pdb.c
     test_gro.c
-    test_gto.c
     test_trr.c
     test_mmcif.c
     test_util.c
@@ -43,7 +42,7 @@ set (SRC_FILES
 )
 
 if (${MD_ENABLE_VLX})
-    set (SRC_FILES ${SRC_FILES} test_vlx.c)
+    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c)
 endif()
 
 target_sources(md_unittest PRIVATE ${SRC_FILES})
