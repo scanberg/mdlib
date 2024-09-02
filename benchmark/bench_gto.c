@@ -1,12 +1,13 @@
 #include "ubench.h"
 
 #include <md_vlx.h>
-#include <md_gto.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
+
+#include <md_gto.c>
 
 #include <float.h>
 
@@ -84,7 +85,10 @@ UBENCH_EX(gto, evaluate_grid) {
             };
 
             size_t num_sub_pgtos = md_gto_aabb_test(sub_pgtos, aabb_min, aabb_max, pgtos, num_pgtos);
-            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, sub_pgtos, num_sub_pgtos, MD_GTO_EVAL_MODE_PSI);
+            
+            //md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, sub_pgtos, num_sub_pgtos, MD_GTO_EVAL_MODE_PSI);
+            //evaluate_grid_ortho_8x8x8_256(grid.data, off_idx, len_idx, grid.origin, step.elem, sub_pgtos, num_sub_pgtos, MD_GTO_EVAL_MODE_PSI);
+            evaluate_grid_8x8x8_256(grid.data, off_idx, len_idx, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_pgtos, num_sub_pgtos, MD_GTO_EVAL_MODE_PSI);
         }
     }
 

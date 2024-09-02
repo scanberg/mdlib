@@ -24,6 +24,7 @@ set (SRC_FILES
     test_os.c
     test_pdb.c
     test_gro.c
+    test_gto.c
     test_trr.c
     test_mmcif.c
     test_util.c
