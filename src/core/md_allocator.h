@@ -83,7 +83,15 @@ void   md_temp_set_pos_back(size_t pos);
 
 #ifdef __cplusplus
 }
+
+struct ScopedTemp {
+    size_t pos;
+    ScopedTemp() {
+        pos = md_temp_get_pos();
+    }
+    ~ScopedTemp() {
+        md_temp_set_pos_back(pos);
+    }
+};
+
 #endif
-
-
-
