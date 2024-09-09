@@ -141,11 +141,21 @@ static inline int spherical_momentum_num_components(int angl) {
 
 static inline int spherical_momentum_num_factors(int angl, int isph) {
 	switch(angl) {
-	case 0:	return S_num_fac[isph];
-	case 1:	return P_num_fac[isph];
-	case 2: return D_num_fac[isph];
-	case 3:	return F_num_fac[isph];
-	case 4: return G_num_fac[isph];
+	case 0:
+		ASSERT(isph < ARRAY_SIZE(S_num_fac));
+		return S_num_fac[isph];
+	case 1:
+		ASSERT(isph < ARRAY_SIZE(P_num_fac));
+		return P_num_fac[isph];
+	case 2:
+		ASSERT(isph < ARRAY_SIZE(D_num_fac));
+		return D_num_fac[isph];
+	case 3:
+		ASSERT(isph < ARRAY_SIZE(F_num_fac));
+		return F_num_fac[isph];
+	case 4:
+		ASSERT(isph < ARRAY_SIZE(G_num_fac));
+		return G_num_fac[isph];
 	default:
 		ASSERT(false);
 		return 0;
@@ -154,11 +164,21 @@ static inline int spherical_momentum_num_factors(int angl, int isph) {
 
 static inline const double* spherical_momentum_factors(int angl, int isph) {
 	switch(angl) {
-	case 0:	return S_factors;
-	case 1:	return P_factors + P_offsets[isph];
-	case 2: return D_factors + D_offsets[isph];
-	case 3:	return F_factors + F_offsets[isph];
-	case 4: return G_factors + G_offsets[isph];
+	case 0:
+		ASSERT(isph == 0);
+		return S_factors;
+	case 1:
+		ASSERT(isph < ARRAY_SIZE(P_offsets));
+		return P_factors + P_offsets[isph];
+	case 2:
+		ASSERT(isph < ARRAY_SIZE(D_offsets));
+		return D_factors + D_offsets[isph];
+	case 3:
+		ASSERT(isph < ARRAY_SIZE(F_offsets));
+		return F_factors + F_offsets[isph];
+	case 4:
+		ASSERT(isph < ARRAY_SIZE(G_offsets));
+		return G_factors + G_offsets[isph];
 	default:
 		ASSERT(false);
 		return NULL;
@@ -167,11 +187,21 @@ static inline const double* spherical_momentum_factors(int angl, int isph) {
 
 static inline const uint8_t* spherical_momentum_indices(int angl, int isph) {
 	switch(angl) {
-	case 0: return S_indices;
-	case 1:	return P_indices + P_offsets[isph];
-	case 2: return D_indices + D_offsets[isph];
-	case 3:	return F_indices + F_offsets[isph];
-	case 4: return G_indices + G_offsets[isph];
+	case 0:
+		ASSERT(isph == 0);
+		return S_indices;
+	case 1:
+		ASSERT(isph < ARRAY_SIZE(P_offsets));
+		return P_indices + P_offsets[isph];
+	case 2:
+		ASSERT(isph < ARRAY_SIZE(D_offsets));
+		return D_indices + D_offsets[isph];
+	case 3:
+		ASSERT(isph < ARRAY_SIZE(F_offsets));
+		return F_indices + F_offsets[isph];
+	case 4:
+		ASSERT(isph < ARRAY_SIZE(G_offsets));
+		return G_indices + G_offsets[isph];
 	default:
 		ASSERT(false);
 		return NULL;
@@ -216,8 +246,8 @@ static basis_func_range_t basis_get_atomic_angl_basis_func_range(const basis_set
 	int beg = atom_basis->basis_func_offset;
 	int end = atom_basis->basis_func_offset + atom_basis->basis_func_count;
 	for (int i = beg; i < end; ++i) {
-		basis_set_func_t basis_func = basis_set->basis_func.data[i];
-		if (basis_func.type == angl) {
+		int type = basis_set->basis_func.data[i].type;
+		if (type == angl) {
 			range.beg = (range.end == 0) ? i : range.beg;
 			range.end = i + 1;
 		}
@@ -262,16 +292,14 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap, const vlx_m
 		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
 		for (int isph = 0; isph < nsph; isph++) {
 			// prepare Cartesian components (Maximum number of components should be 6 here for the currently supported basis set)
-			double fcarts[8];
 			double lx[8];
 			double ly[8];
 			double lz[8];
 			int			      ncomp = spherical_momentum_num_factors(angl, isph);
-			const double*	factors = spherical_momentum_factors(angl, isph);
+			const double*	fcarts  = spherical_momentum_factors(angl, isph);
 			const uint8_t*	indices = spherical_momentum_indices(angl, isph);
 
 			for (int icomp = 0; icomp < ncomp; icomp++) {
-				fcarts[icomp] = factors[icomp];
 				int cartind = indices[icomp];
 
 				lx[icomp] = lmn[cartind][0];
@@ -367,23 +395,21 @@ static size_t extract_pgto_data(md_gto_t* pgtos, const vlx_molecule_t* molecule,
 	size_t mo_coeff_idx = 0;
 
 	// azimuthal quantum number: s,p,d,f,...
-	for (int aoidx = 0, angl = 0; angl <= max_angl; angl++) {
+	for (int angl = 0; angl <= max_angl; angl++) {
 		//CSphericalMomentum sphmom(angl);
 		int nsph = spherical_momentum_num_components(angl);
 		const lmn_t* lmn = cartesian_angular_momentum(angl);
 		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
 		for (int isph = 0; isph < nsph; isph++) {
-			// prepare Cartesian components (Maximum number of components should be 6 here for the currently supported basis set)
-			double fcarts[8];
+			// prepare Cartesian components (Maximum number of components should be 6 here for the currently supported basis sets)
 			int lx[8];
 			int ly[8];
 			int lz[8];
-			int			      ncomp = spherical_momentum_num_factors(angl, isph);
-			const double*	factors = spherical_momentum_factors(angl, isph);
+			int			      ncomp	= spherical_momentum_num_factors(angl, isph);
+			const double*	fcarts  = spherical_momentum_factors(angl, isph);
 			const uint8_t*	indices = spherical_momentum_indices(angl, isph);
 
 			for (int icomp = 0; icomp < ncomp; icomp++) {
-				fcarts[icomp] = factors[icomp];
 				int cartind = indices[icomp];
 
 				lx[icomp] = lmn[cartind][0];
@@ -404,11 +430,12 @@ static size_t extract_pgto_data(md_gto_t* pgtos, const vlx_molecule_t* molecule,
 
 				// process atomic orbitals
 				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(basis_set, idelem, angl);
-				for (int funcidx = range.beg; funcidx < range.end; funcidx++, aoidx++) {
+				for (int funcidx = range.beg; funcidx < range.end; funcidx++) {
 					const double mo_coeff = mo_coeffs[mo_coeff_idx++];
 
 					// process primitives
 					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
+					ASSERT(basis_func.type == angl);
 					const int        nprims = basis_func.count;
 					const double* exponents = basis_func.exponents;
 					const double* normcoefs = basis_func.normalization_coefficients;
@@ -419,14 +446,16 @@ static size_t extract_pgto_data(md_gto_t* pgtos, const vlx_molecule_t* molecule,
 
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
-							double fcart = factors[icomp];
+							double fcart = fcarts[icomp];
+							double coeff = coef1 * fcart * mo_coeff;
+
 
 							pgtos[count].x		= x;
 							pgtos[count].y		= y;
 							pgtos[count].z		= z;
-							pgtos[count].coeff  = (float)(coef1 * fcart * mo_coeff);
+							pgtos[count].coeff  = (float)coeff;
 							pgtos[count].alpha  = (float)alpha; 
-							pgtos[count].cutoff = 0.0f;
+							pgtos[count].cutoff = FLT_MAX;
 							pgtos[count].i		= (uint16_t)lx[icomp];
 							pgtos[count].j		= (uint16_t)ly[icomp];
 							pgtos[count].k		= (uint16_t)lz[icomp];
@@ -471,11 +500,13 @@ static void rescale_basis_func(basis_func_t func) {
 
 	switch (func.type) {
 	case 0: return;
-	case 1:
+	case 1: {
+		const double f = 2.0;
 		for (size_t i = 0; i < func.count; i++) {
-			func.normalization_coefficients[i] *= 2.0 * sqrt(func.exponents[i]);
+			func.normalization_coefficients[i] *= f * sqrt(func.exponents[i]);
 		}
 		return;
+	}
 	case 2: {
 		const double f = 2.0 / sqrt(3.0);
 		for (size_t i = 0; i < func.count; i++) {
@@ -996,10 +1027,16 @@ bool vlx_load_orbital_h5_data(md_vlx_orbitals_t* orb, str_t filename, str_t iden
 				}		
 
 				double* data = md_alloc(alloc, sizeof(double) * dims[0] * dims[1]);
+				if (!data) {
+					MD_LOG_ERROR("An error occured when allocating data for h5 orbital");
+					goto done_orb;
+				}
+
 				status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, H5S_ALL, H5P_DEFAULT, data);
 
 				if (status != 0) {
 					MD_LOG_ERROR("An error occured when reading h5 orbital");
+					md_free(alloc, data, sizeof(double) * dims[0] * dims[1]);
 					goto done_orb;
 				}
 

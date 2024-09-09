@@ -4,6 +4,8 @@
 #include <core/md_allocator.h>
 #include <core/md_str.h>
 
+#include <md_vlx.c>
+
 static const int ref_iter[] = {
     1,2,3,4,5,6,7,8,9,10,11,12
 };
@@ -116,4 +118,88 @@ UTEST(vlx, vlx_parse) {
     // @TODO: Test RSP
 
     md_vlx_data_free(&vlx);
+}
+
+UTEST(vlx, correctness) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
+    md_vlx_data_t vlx = {0};
+    ASSERT_TRUE(md_vlx_data_parse_file(&vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out"), arena));
+
+    const int vol_dim = 80;
+
+    size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
+    float* vol_data = md_arena_allocator_push(arena, bytes);
+    MEMSET(vol_data, 0, bytes);
+
+    float* ref_data = md_arena_allocator_push(arena, bytes);
+    MEMSET(ref_data, 0, bytes);
+
+    md_grid_t grid = (md_grid_t) {
+        .data = vol_data,
+        .dim = {vol_dim, vol_dim, vol_dim},
+        .origin = {-5.744767, -5.744767, -5.522177},
+        .step_x = {0.143619, 0, 0},
+        .step_y = {0, 0.143619, 0},
+        .step_z = {0, 0, 0.143619},
+    };
+
+    size_t mo_idx = vlx.scf.homo_idx;
+
+    size_t num_gtos = md_vlx_mol_pgto_count(&vlx);
+    md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
+    md_vlx_mol_pgto_extract(gtos, &vlx, vlx.scf.homo_idx);
+
+    size_t cap_phi = num_gtos;
+    double* phi = (double*)md_arena_allocator_push(arena, sizeof(double) * cap_phi);
+
+    vlx_molecule_t mol = {
+        .num_atoms = vlx.geom.num_atoms,
+        .atomic_number = vlx.geom.atomic_number,
+        .coord_x = vlx.geom.coord_x,
+        .coord_y = vlx.geom.coord_y,
+        .coord_z = vlx.geom.coord_z,
+    };
+
+    size_t num_cols = vlx.scf.alpha.orbitals.dim[1];
+    size_t num_mo_coeffs = vlx.scf.alpha.orbitals.dim[1];
+
+    double* mo_coeffs = md_arena_allocator_push(arena, sizeof(double) * num_mo_coeffs);
+    for (size_t i = 0; i < num_mo_coeffs; ++i) {
+        mo_coeffs[i] = vlx.scf.alpha.orbitals.data[i * num_cols + mo_idx];
+    }
+
+    int beg_idx[3] = {0, 0, 0};
+    int end_idx[3] = {grid.dim[0], grid.dim[1], grid.dim[2]};
+
+    md_gto_grid_evaluate(&grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+
+    for (int iz = 0; iz < grid.dim[2]; ++iz) {
+        double z = grid.origin[2] + grid.step_z[2] * iz;
+        z *= 0.529177210903;
+        for (int iy = 0; iy < grid.dim[1]; ++iy) {
+            double y = grid.origin[1] + grid.step_y[1] * iy;
+            y *= 0.529177210903;
+            for (int ix = 0; ix < grid.dim[0]; ++ix) {
+                double x = grid.origin[0] + grid.step_x[0] * ix;
+                x *= 0.529177210903;
+
+                size_t num_phi = compPhiAtomicOrbitals(phi, cap_phi, &mol, vlx.basis.basis_set, x, y, z);
+
+                ASSERT(num_phi == num_mo_coeffs);
+                double psi = 0.0;
+                for (size_t i = 0; i < num_mo_coeffs; ++i) {
+                    psi += mo_coeffs[i] * phi[i]; 
+                }
+
+                int idx = iz * grid.dim[1] * grid.dim[0] + iy * grid.dim[0] + ix;
+                float grid_psi = grid.data[idx];
+                ref_data[idx] = (float)psi;
+            }
+        }
+    }
+
+    
+
+    md_arena_allocator_destroy(arena);
 }

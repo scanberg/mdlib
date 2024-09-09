@@ -109,15 +109,16 @@ static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3
 					int   pj	= gtos[i].j;
 					int   pk	= gtos[i].k;
 
-					float dx = px - x;
-					float dy = py - y;
-					float dz = pz - z;
+					float dx = x - px;
+					float dy = y - py;
+					float dz = z - pz;
 					float d2 = dx * dx + dy * dy + dz * dz;
-					float fx = fast_powf(dx, pi);
-					float fy = fast_powf(dy, pj);
-					float fz = fast_powf(dz, pk);
-					float exp_term = alpha == 0 ? 1.0f : expf(-alpha * d2);
-					float prod = coeff * fx * fy * fz * exp_term;
+					float fx = powf(dx, (float)pi);
+					float fy = powf(dy, (float)pj);
+					float fz = powf(dz, (float)pk);
+					float exp_term = (alpha == 0.0f) ? 1.0f : expf(-alpha * d2);
+					float powxyz = fx * fy * fz;
+					float prod = coeff * powxyz * exp_term;
 					psi += prod;
 				}
 
@@ -163,9 +164,9 @@ static inline void evaluate_grid_512(float grid_data[], const int grid_idx_min[3
 					__m512i pj = _mm512_loadu_si512(gto->j + i);
 					__m512i pk = _mm512_loadu_si512(gto->k + i);
 
-					__m512 dx = _mm512_sub_ps(px, vx);
-					__m512 dy = _mm512_sub_ps(py, vy);
-					__m512 dz = _mm512_sub_ps(pz, vz);
+					__m512 dx = _mm512_sub_ps(vx, px);
+					__m512 dy = _mm512_sub_ps(vy, py);
+					__m512 dz = _mm512_sub_ps(vz, pz);
 					__m512 d2 = _mm512_fmadd_ps(dx, dx, _mm512_fmadd_ps(dy, dy, _mm512_mul_ps(dz, dz)));
 					__m512 fx = md_mm512_fast_pow(dx, pi);
 					__m512 fy = md_mm512_fast_pow(dy, pj);
@@ -215,9 +216,9 @@ static inline void evaluate_grid_256(float grid_data[], const int grid_idx_min[3
 					md_256i pj = md_mm256_loadu_si256((const md_256i*)(gto->j + i));
 					md_256i pk = md_mm256_loadu_si256((const md_256i*)(gto->k + i));
 
-					md_256 dx = md_mm256_sub_ps(px, vx);
-					md_256 dy = md_mm256_sub_ps(py, vy);
-					md_256 dz = md_mm256_sub_ps(pz, vz);
+					md_256 dx = md_mm256_sub_ps(vx, px);
+					md_256 dy = md_mm256_sub_ps(vy, py);
+					md_256 dz = md_mm256_sub_ps(vz, pz);
 					md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
 					md_256 fx = md_mm256_fast_pow(dx, pi);
 					md_256 fy = md_mm256_fast_pow(dy, pj);
@@ -265,9 +266,9 @@ static inline void evaluate_grid_128(float grid_data[], const int grid_idx_min[3
 					md_128i pj = md_mm_loadu_si128((const md_128i*)(gto->j + i));
 					md_128i pk = md_mm_loadu_si128((const md_128i*)(gto->k + i));
 
-					md_128 dx = md_mm_sub_ps(px, vx);
-					md_128 dy = md_mm_sub_ps(py, vy);
-					md_128 dz = md_mm_sub_ps(pz, vz);
+					md_128 dx = md_mm_sub_ps(vx, px);
+					md_128 dy = md_mm_sub_ps(vy, py);
+					md_128 dz = md_mm_sub_ps(vz, pz);
 					md_128 d2 = md_mm_fmadd_ps(dx, dx, md_mm_fmadd_ps(dy, dy, md_mm_mul_ps(dz, dz)));
 					md_128 fx = md_mm_fast_pow(dx, pi);
 					md_128 fy = md_mm_fast_pow(dy, pj);
@@ -322,9 +323,9 @@ static inline void evaluate_grid_ortho_8x8x8_512(float grid_data[], const int gr
 				};
 				__m512 vy = _mm512_insertf32x8(_mm512_set1_ps(y[0]), _mm256_set1_ps(y[1]), 1);
 
-				__m512 dx = _mm512_sub_ps(px, vx);
-				__m512 dy = _mm512_sub_ps(py, vy);
-				__m512 dz = _mm512_sub_ps(pz, vz);
+				__m512 dx = _mm512_sub_ps(vx, px);
+				__m512 dy = _mm512_sub_ps(vy, py);
+				__m512 dz = _mm512_sub_ps(vz, pz);
 				__m512 d2 = _mm512_fmadd_ps(dx, dx, _mm512_fmadd_ps(dy, dy, _mm512_mul_ps(dz, dz)));
 				__m512 fx = md_mm512_fast_pow(dx, pi);
 				__m512 fy = md_mm512_fast_pow(dy, pj);
@@ -395,9 +396,9 @@ static inline void evaluate_grid_ortho_8x8x8_256(float grid_data[], const int gr
 				float y = grid_origin[1] + (grid_idx_min[1] + iy) * grid_step[1];
 				md_256 vy = md_mm256_set1_ps(y);
 
-				md_256 dx = md_mm256_sub_ps(px, vx);
-				md_256 dy = md_mm256_sub_ps(py, vy);
-				md_256 dz = md_mm256_sub_ps(pz, vz);
+				md_256 dx = md_mm256_sub_ps(vx, px);
+				md_256 dy = md_mm256_sub_ps(vy, py);
+				md_256 dz = md_mm256_sub_ps(vz, pz);
 				md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
 				md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
 				md_256 fx = md_mm256_fast_pow(dx, pi);
@@ -480,9 +481,9 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
 				md_256 vy = md_mm256_fmadd_ps(ty, gsy[1], xz[1]);
 				md_256 vz = md_mm256_fmadd_ps(ty, gsy[2], xz[2]);
 
-				md_256 dx = md_mm256_sub_ps(px, vx);
-				md_256 dy = md_mm256_sub_ps(py, vy);
-				md_256 dz = md_mm256_sub_ps(pz, vz);
+				md_256 dx = md_mm256_sub_ps(vx, px);
+				md_256 dy = md_mm256_sub_ps(vy, py);
+				md_256 dz = md_mm256_sub_ps(vz, pz);
 				md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
 				md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
 				md_256 fx = md_mm256_fast_pow(dx, pi);
@@ -547,9 +548,9 @@ static inline void evaluate_grid_ortho_8x8x8_128(float grid_data[], const int gr
 				md_128 vy = md_mm_set1_ps(grid_origin[1] + (grid_idx_min[1] + iy) * grid_step[1]);
 
 				for (int ix = 0; ix < 2; ++ix) {
-					md_128 dx = md_mm_sub_ps(px, vx[ix]);
-					md_128 dy = md_mm_sub_ps(py, vy);
-					md_128 dz = md_mm_sub_ps(pz, vz);
+					md_128 dx = md_mm_sub_ps(vx[ix], px);
+					md_128 dy = md_mm_sub_ps(vy,	 py);	 
+					md_128 dz = md_mm_sub_ps(vz,	 pz);	 
 					md_128 d2 = md_mm_fmadd_ps(dx, dx, md_mm_fmadd_ps(dy, dy, md_mm_mul_ps(dz, dz)));
 					md_128 fx = md_mm_fast_pow(dx, pi);
 					md_128 fy = md_mm_fast_pow(dy, pj);
@@ -670,9 +671,9 @@ static inline void evaluate_grid_8x8x8_128(float grid_data[], const int grid_idx
 				};
 
 				for (int ix = 0; ix < 2; ++ix) {
-					md_128 dx = md_mm_sub_ps(px, vx[ix]);
-					md_128 dy = md_mm_sub_ps(py, vy[ix]);
-					md_128 dz = md_mm_sub_ps(pz, vz[ix]);
+					md_128 dx = md_mm_sub_ps(vx[ix], px);
+					md_128 dy = md_mm_sub_ps(vy[ix], py);
+					md_128 dz = md_mm_sub_ps(vz[ix], pz);
 					md_128 d2 = md_mm_fmadd_ps(dx, dx, md_mm_fmadd_ps(dy, dy, md_mm_mul_ps(dz, dz)));
 					md_128 fx = md_mm_fast_pow(dx, pi);
 					md_128 fy = md_mm_fast_pow(dy, pj);
@@ -800,37 +801,41 @@ void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos
 static void evaluate_gtos(float* out_psi, const float* in_xyz, size_t num_xyz, size_t xyz_stride, const md_gto_t* in_gto, size_t num_gtos, md_gto_eval_mode_t mode) {
 	for (size_t j = 0; j < num_xyz; ++j) {
 		const float* xyz = (const float*)((const char*)in_xyz + j * xyz_stride);
-		float x = xyz[0];
-		float y = xyz[1];
-		float z = xyz[2];
+		double x = xyz[0];
+		double y = xyz[1];
+		double z = xyz[2];
 
 		double psi = 0.0;
 		for (size_t i = 0; i < num_gtos; ++i) {
-			float cutoff	= in_gto[i].cutoff;
-			float dx		= x - in_gto[i].x;
-			float dy		= y - in_gto[i].y;
-			float dz		= z - in_gto[i].z;
-			float d2		= dx * dx + dy * dy + dz * dz;
-			if (d2 > cutoff * cutoff) {
+			double cutoff	= in_gto[i].cutoff;
+			double rx		= x - in_gto[i].x;
+			double ry		= y - in_gto[i].y;
+			double rz		= z - in_gto[i].z;
+			double r2		= rx * rx + ry * ry + rz * rz;
+			if (r2 > cutoff * cutoff) {
 				continue;
 			}
 
-			float alpha		= in_gto[i].alpha;
-			float coeff		= in_gto[i].coeff;
+			double alpha	= in_gto[i].alpha;
+			double coeff	= in_gto[i].coeff;
 			int   pi		= in_gto[i].i;
 			int   pj		= in_gto[i].j;
 			int   pk		= in_gto[i].k;
 
-			float fx = fast_powf(dx, pi);
-			float fy = fast_powf(dy, pj);
-			float fz = fast_powf(dz, pk);
-			float exp_term = alpha == 0 ? 1.0f : expf(-alpha * d2);
-			float prod = coeff * fx * fy * fz * exp_term;
-			if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-				prod = prod * prod;
-			}
+			double fx = pow(rx, pi);
+			double fy = pow(ry, pj);
+			double fz = pow(rz, pk);
+			double powxyz = fx * fy * fz;
+			double exp_term = alpha == 0 ? 1.0 : exp(-alpha * r2);
+
+			double prod = coeff * powxyz * exp_term;
 			psi += prod;
 		}
+
+		if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+			psi = psi * psi;
+		}
+
 		out_psi[j] = (float)psi;
 	}
 }
@@ -952,8 +957,14 @@ done:
 }
 
 void md_gto_cutoff_compute(md_gto_t* gtos, size_t count, double value) {
-	for (size_t i = 0; i < count; ++i) {
-		gtos[i].cutoff = (float)compute_distance_cutoff(value, gtos[i].i, gtos[i].j, gtos[i].k, gtos[i].l, gtos[i].coeff, gtos[i].alpha);
+	if (value == 0) {
+		for (size_t i = 0; i < count; ++i) {
+			gtos[i].cutoff = FLT_MAX;
+		}
+	} else {
+		for (size_t i = 0; i < count; ++i) {
+			gtos[i].cutoff = (float)compute_distance_cutoff(value, gtos[i].i, gtos[i].j, gtos[i].k, gtos[i].l, gtos[i].coeff, gtos[i].alpha);
+		}
 	}
 }
 
