@@ -124,16 +124,15 @@ bool md_vlx_data_parse_str(md_vlx_data_t* data, str_t string, struct md_allocato
 bool md_vlx_data_parse_file(md_vlx_data_t* data, str_t filename, struct md_allocator_i* alloc);
 void md_vlx_data_free(md_vlx_data_t* data);
 
-// Extract Natural Transition Orbitals PGTOs
-size_t md_vlx_nto_pgto_count(const md_vlx_data_t* vlx_data);
-
+// Extract Natural Transition Orbitals GTOs
 // nto_idx: The index of the excited state (0-based indexing)
 // lambda_idx: The lambda component to extract (0-based indexing), 0 corresponds to the most significant index
-bool   md_vlx_nto_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx_data, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
+size_t md_vlx_nto_gto_count(const md_vlx_data_t* vlx_data);
+bool   md_vlx_nto_gto_extract(md_gto_t* gtos, const md_vlx_data_t* vlx_data, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
 
 // Extract Molecular Orbital PGTOs
-size_t md_vlx_mol_pgto_count(const md_vlx_data_t* vlx_data);
-bool   md_vlx_mol_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
+size_t md_vlx_mol_gto_count(const md_vlx_data_t* vlx_data);
+bool   md_vlx_mol_gto_extract(md_gto_t* gtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
 
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_data_t* data, struct md_allocator_i* alloc);

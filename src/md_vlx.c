@@ -13,6 +13,8 @@
 #include <hdf5.h>
 #include <hdf5_hl.h>
 
+#include <float.h>
+
 enum {
 	VLX_FLAG_GEOM  = 1,
 	VLX_FLAG_BASIS = 2,
@@ -1136,11 +1138,11 @@ void md_vlx_data_free(md_vlx_data_t* data) {
 }
 
 // Extract Natural Transition Orbitals PGTOs
-size_t md_vlx_nto_pgto_count(const md_vlx_data_t* vlx) {
+size_t md_vlx_nto_gto_count(const md_vlx_data_t* vlx) {
 	return vlx_pgto_count(vlx);
 }
 
-bool md_vlx_nto_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
+bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
 	ASSERT(pgtos);
 	ASSERT(vlx);
 
@@ -1202,14 +1204,14 @@ bool md_vlx_nto_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t n
 	return true;
 }
 
-size_t md_vlx_mol_pgto_count(const md_vlx_data_t* vlx) {
+size_t md_vlx_mol_gto_count(const md_vlx_data_t* vlx) {
 	ASSERT(vlx);
 	// @NOTE: This needs to be modified in the case of Unrestricted Open Shell type.
 	// In such case, we need to expand the pgtos with the contribution of Beta electrons
 	return vlx_pgto_count(vlx);
 }
 
-bool md_vlx_mol_pgto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t mo_idx) {
+bool md_vlx_mol_gto_extract(md_gto_t* pgtos, const md_vlx_data_t* vlx, size_t mo_idx) {
 	ASSERT(pgtos);
 	ASSERT(vlx);
 

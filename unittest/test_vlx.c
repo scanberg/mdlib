@@ -146,9 +146,9 @@ UTEST(vlx, correctness) {
 
     size_t mo_idx = vlx.scf.homo_idx;
 
-    size_t num_gtos = md_vlx_mol_pgto_count(&vlx);
+    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_pgto_extract(gtos, &vlx, vlx.scf.homo_idx);
+    md_vlx_mol_gto_extract(gtos, &vlx, vlx.scf.homo_idx);
 
     size_t cap_phi = num_gtos;
     double* phi = (double*)md_arena_allocator_push(arena, sizeof(double) * cap_phi);

@@ -45,9 +45,9 @@ static void init(md_grid_t* grid, md_gto_t** gtos, size_t* num_gtos, int vol_dim
         .step_z = {0, 0, step.z},
     };
 
-    *num_gtos = md_vlx_mol_pgto_count(&vlx);
+    *num_gtos = md_vlx_mol_gto_count(&vlx);
     *gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * *num_gtos);
-    md_vlx_mol_pgto_extract(*gtos, &vlx, 120);
+    md_vlx_mol_gto_extract(*gtos, &vlx, 120);
     md_gto_cutoff_compute(*gtos, *num_gtos, 1.0e-6);
 }
 
@@ -179,9 +179,9 @@ UTEST(gto, amide) {
 
     size_t mo_idx = vlx.scf.lumo_idx;
 
-    size_t num_gtos = md_vlx_nto_pgto_count(&vlx);
+    size_t num_gtos = md_vlx_nto_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_pgto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mol_gto_extract(gtos, &vlx, mo_idx);
     md_gto_cutoff_compute(gtos, num_gtos, 0);
 
     md_grid_t ref_grid = grid;
@@ -238,9 +238,9 @@ UTEST(gto, h2o) {
         .step_z = {cube.zaxis[0] * scl, cube.zaxis[1] * scl, cube.zaxis[2] * scl},
     };
 
-    size_t num_gtos = md_vlx_mol_pgto_count(&vlx);
+    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_pgto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mol_gto_extract(gtos, &vlx, mo_idx);
     md_gto_cutoff_compute(gtos, num_gtos, 0);
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
@@ -457,9 +457,9 @@ UTEST(gto, co_lumo) {
         .step_z = {cube.zaxis[0] * scl, cube.zaxis[1] * scl, cube.zaxis[2] * scl},
     };
 
-    size_t num_gtos = md_vlx_mol_pgto_count(&vlx);
+    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_pgto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mol_gto_extract(gtos, &vlx, mo_idx);
 
     MEMSET(grid.data,     0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
 
@@ -500,6 +500,81 @@ UTEST(gto, co_lumo) {
             }
         }
     }
+
+    md_arena_allocator_destroy(arena);
+}
+
+UTEST(gto, amide_nto) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+
+    md_cube_t cube_h = {0};
+    ASSERT_TRUE(md_cube_file_load(&cube_h,   STR_LIT("e:/data/veloxchem/system/tq-mod/tq_S2_NTO_H1.cube"), arena));
+
+    md_cube_t cube_p = {0};
+    ASSERT_TRUE(md_cube_file_load(&cube_p,   STR_LIT("e:/data/veloxchem/system/tq-mod/tq_S2_NTO_P1.cube"), arena));
+
+    md_vlx_data_t vlx = {0};
+    ASSERT_TRUE(md_vlx_data_parse_file(&vlx, STR_LIT("e:/data/veloxchem/system/tq-mod/tq.out"), arena));
+
+    size_t num_rows = vlx.scf.alpha.orbitals.dim[0];
+    size_t num_cols = vlx.scf.alpha.orbitals.dim[1];
+
+    md_grid_t grid_h = {
+        .data = md_arena_allocator_push(arena, sizeof(float) * cube_h.data.num_x * cube_h.data.num_y * cube_h.data.num_z),
+        .dim = {cube_h.data.num_x, cube_h.data.num_y, cube_h.data.num_z},
+        .origin = {cube_h.origin[0], cube_h.origin[1], cube_h.origin[2]},
+        .step_x = {cube_h.xaxis[0] , cube_h.xaxis[1] , cube_h.xaxis[2] },
+        .step_y = {cube_h.yaxis[0] , cube_h.yaxis[1] , cube_h.yaxis[2] },
+        .step_z = {cube_h.zaxis[0] , cube_h.zaxis[1] , cube_h.zaxis[2] },
+    };
+
+    md_grid_t grid_p = {
+        .data = md_arena_allocator_push(arena, sizeof(float) * cube_p.data.num_x * cube_p.data.num_y * cube_p.data.num_z),
+        .dim    = {cube_p.data.num_x, cube_p.data.num_y, cube_p.data.num_z},
+        .origin = {cube_p.origin[0] , cube_p.origin[1] , cube_p.origin[2]},
+        .step_x = {cube_p.xaxis[0]  , cube_p.xaxis[1]  , cube_p.xaxis[2] },
+        .step_y = {cube_p.yaxis[0]  , cube_p.yaxis[1]  , cube_p.yaxis[2] },
+        .step_z = {cube_p.zaxis[0]  , cube_p.zaxis[1]  , cube_p.zaxis[2] },
+    };
+
+    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+    md_gto_t* gtos_h = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
+    md_vlx_nto_gto_extract(gtos_h, &vlx, 0, 0, MD_VLX_NTO_TYPE_HOLE);
+
+    md_gto_t* gtos_p = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
+    md_vlx_nto_gto_extract(gtos_p, &vlx, 0, 0, MD_VLX_NTO_TYPE_PARTICLE);
+
+    MEMSET(grid_h.data,     0, sizeof(float) * grid_h.dim[0] * grid_h.dim[1] * grid_h.dim[2]);
+    MEMSET(grid_p.data,     0, sizeof(float) * grid_p.dim[0] * grid_p.dim[1] * grid_p.dim[2]);
+
+    int beg_idx[3] = {0, 0, 0};
+
+    evaluate_grid_ref(grid_h.data, beg_idx, grid_h.dim, grid_h.dim, grid_h.origin, grid_h.step_x, grid_h.step_y, grid_h.step_z, gtos_h, num_gtos, MD_GTO_EVAL_MODE_PSI);
+    evaluate_grid_ref(grid_p.data, beg_idx, grid_p.dim, grid_p.dim, grid_p.origin, grid_p.step_x, grid_p.step_y, grid_p.step_z, gtos_p, num_gtos, MD_GTO_EVAL_MODE_PSI);
+
+    size_t count = grid_h.dim[0] * grid_h.dim[1] * grid_h.dim[2];
+
+    double grid_sum_h = 0.0;
+    double grid_sum_p = 0.0;
+    double cube_sum_h = 0.0;
+    double cube_sum_p = 0.0;
+
+    for (size_t i = 0; i < count; ++i) {
+        grid_sum_p += grid_p.data[i] * grid_p.data[i];
+        grid_sum_h += grid_h.data[i] * grid_h.data[i];
+        cube_sum_p += cube_p.data.val[i] * cube_p.data.val[i];
+        cube_sum_h += cube_h.data.val[i] * cube_h.data.val[i];
+    }
+
+    printf("GRID SUM H: %g\n", grid_sum_h);
+    printf("CUBE SUM H: %g\n", cube_sum_h);
+    printf("GRID SUM P: %g\n", grid_sum_p);
+    printf("CUBE SUM P: %g\n", cube_sum_p);
+
+    ASSERT_EQ(grid_h.dim[0], cube_h.data.num_x);
+    ASSERT_EQ(grid_h.dim[1], cube_h.data.num_y);
+    ASSERT_EQ(grid_h.dim[2], cube_h.data.num_z);
+    ASSERT_EQ(1, cube_h.data.num_m);
 
     md_arena_allocator_destroy(arena);
 }
