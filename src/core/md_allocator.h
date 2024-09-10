@@ -75,7 +75,10 @@ struct md_allocator_i* md_get_temp_allocator(void);
 
 // Simple interface to the thread local ring buffer
 void*  md_temp_push(size_t bytes);
+void*  md_temp_push_zero(size_t bytes);
 void*  md_temp_push_aligned(size_t bytes, size_t alignment);
+void*  md_temp_push_zero_aligned(size_t bytes, size_t alignment);
+
 void   md_temp_pop (size_t bytes);
 
 size_t md_temp_get_pos(void);

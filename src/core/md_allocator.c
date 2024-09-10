@@ -79,8 +79,20 @@ void* md_temp_push(size_t bytes) {
     return md_ring_allocator_push(md_thread_ring_allocator(), bytes);
 }
 
+void* md_temp_push_zero(size_t bytes) {
+    void* mem = md_ring_allocator_push(md_thread_ring_allocator(), bytes);
+    MEMSET(mem, 0, bytes);
+    return mem;
+}
+
 void* md_temp_push_aligned(size_t bytes, size_t alignment) {
     return md_ring_allocator_push_aligned(md_thread_ring_allocator(), bytes, alignment);
+}
+
+void* md_temp_push_zero_aligned(size_t bytes, size_t alignment) {
+    void* mem = md_ring_allocator_push_aligned(md_thread_ring_allocator(), bytes, alignment);
+    MEMSET(mem, 0, bytes);
+    return mem;
 }
 
 void md_temp_pop (size_t bytes) {
