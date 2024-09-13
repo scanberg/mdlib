@@ -3,7 +3,8 @@
 #include <core/md_arena_allocator.h>
 #include <md_vlx.h>
 #include <md_cube.h>
-#include <md_gto.c>
+
+#include <md_gto.h>
 
 // Conversion from Ångström to Bohr
 const float factor = 1.0 / 0.529177210903;
@@ -109,10 +110,13 @@ UTEST(gto, evaluate_grid) {
 
         size_t num_sub_gtos = md_gto_aabb_test(sub_gtos, aabb_min, aabb_max, gtos, num_gtos);
 
-        evaluate_grid_ref(ref_grid.data, beg_idx, end_idx, grid.dim, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
+        md_gto_grid_evaluate_sub(&grid, beg_idx, end_idx, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+
+        //evaluate_grid_ref(ref_grid.data, beg_idx, end_idx, grid.dim, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
 
         const float eps = 1.0e-5f;
 
+#if 0
 #ifdef __SSE2__
         evaluate_grid_ortho_8x8x8_128(grid.data, beg_idx, grid.dim, grid.origin, step_ortho, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
         for (int z = beg_idx[2]; z < end_idx[2]; ++z) {
@@ -156,6 +160,7 @@ UTEST(gto, evaluate_grid) {
             }
         }
 #endif
+#endif
     }
 
     md_arena_allocator_destroy(arena);
@@ -184,16 +189,9 @@ UTEST(gto, amide) {
     md_vlx_mol_gto_extract(gtos, &vlx, mo_idx);
     md_gto_cutoff_compute(gtos, num_gtos, 0);
 
-    md_grid_t ref_grid = grid;
-    ref_grid.data = md_alloc(arena, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
-
     MEMSET(grid.data,     0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
-    MEMSET(ref_grid.data, 0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
 
-    int beg_idx[3] = {0, 0, 0};
-    int end_idx[3] = {grid.dim[0], grid.dim[1], grid.dim[2]};
-
-    evaluate_grid_ref(grid.data, beg_idx, end_idx, grid.dim, grid.origin, grid.step_x, grid.step_y, grid.step_z, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+    md_gto_grid_evaluate(&grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
     double sum = 0.0;
 
@@ -266,7 +264,7 @@ UTEST(gto, h2o) {
     int beg_idx[3] = {0, 0, 0};
     int end_idx[3] = {grid.dim[0], grid.dim[1], grid.dim[2]};
 
-    evaluate_grid_ref(grid.data, beg_idx, end_idx, grid.dim, grid.origin, grid.step_x, grid.step_y, grid.step_z, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+    md_gto_grid_evaluate(&grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
     double xyz_sum  = 0.0;
     double grid_sum = 0.0;

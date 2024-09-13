@@ -7,7 +7,8 @@
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 
-#include <md_gto.c>
+#include <md_gto.h>
+//#include <md_gto.c>
 
 #include <float.h>
 
@@ -86,9 +87,9 @@ UBENCH_EX(gto, evaluate_grid) {
 
             size_t num_sub_gtos = md_gto_aabb_test(sub_gtos, aabb_min, aabb_max, gtos, num_gtos);
             
-            //md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, sub_pgtos, num_sub_pgtos, MD_GTO_EVAL_MODE_PSI);
+            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
             //evaluate_grid_ortho_8x8x8_256(grid.data, off_idx, len_idx, grid.origin, step.elem, sub_pgtos, num_sub_pgtos, MD_GTO_EVAL_MODE_PSI);
-            evaluate_grid_8x8x8_256(grid.data, off_idx, len_idx, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
+            //evaluate_grid_8x8x8_256(grid.data, off_idx, len_idx, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
         }
     }
 
