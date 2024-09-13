@@ -14,7 +14,8 @@ typedef struct md_gto_t {
 	float cutoff;		// Radial cutoff
 	// The integer type here is arbitrary as we only need to store values 0-4 in reality.
 	// uint16_t was chosen to pad the struct to 32 bytes in size
-	uint16_t i, j, k, l;
+	uint8_t i, j, k, l;
+	uint32_t _pad;
 } md_gto_t;
 
 // The grid data is assumed to be given in Z,Y,X order (e.g. data[Z][Y][X])
@@ -42,6 +43,9 @@ extern "C" {
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
 void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
+
+
+void md_gto_grid_evaluate_GPU(uint32_t out_vol, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
 // Evaluate GTOs over subportion of a grid
 // - grid: The grid to evaluate a subportion of

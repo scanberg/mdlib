@@ -147,6 +147,7 @@ if (MD_ENABLE_HDF5)
 endif()
 
 create_resources("${SHADER_FILES}" "gen/gl_shaders.inl")
+create_resources("src/shaders/eval_gto.comp" "gen/gto_shaders.inl")
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")

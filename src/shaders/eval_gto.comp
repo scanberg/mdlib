@@ -1,0 +1,107 @@
+#version 430 core
+
+struct GTO {
+    vec3  coord;
+    float coeff;
+    float alpha;
+    float cutoff;
+    uint  packed_ijkl;
+    uint  _pad;
+};
+
+layout(r16f, binding = 0) uniform image3D out_vol;
+
+layout (binding = 0, std430) readonly buffer GTOBuffer {
+    GTO in_gtos[];
+};
+
+layout(location = 0) uniform mat4 in_world_to_model;
+layout(location = 1) uniform mat4 in_index_to_world;
+layout(location = 2) uniform vec3 in_step;
+layout(location = 3) uniform uint in_num_gtos;
+layout(location = 4) uniform int  in_mode;
+
+float safe_pow(float base, uint exp) {
+    switch(exp) {
+    case 4: return base * base * base * base;
+    case 3: return base * base * base;
+    case 2: return base * base;
+    case 1: return base;
+    case 0: return 1.0;
+    }
+}
+
+uvec4 unpack_ijkl(in uint packed_ijkl) {
+    return uvec4(
+        packed_ijkl >> 0  & 0xFFu,
+        packed_ijkl >> 8  & 0xFFu,
+        packed_ijkl >> 16 & 0xFFu,
+        packed_ijkl >> 24 & 0xFFu
+    );
+}
+
+shared uint num_gtos;
+shared GTO  gtos[512];
+
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+void main() {
+    if (gl_LocalInvocationIndex == 0) {
+        num_gtos = 0;
+    }
+
+    barrier();
+
+    // Step 1: Load and test gtos against current block
+    vec3 aabb_min = vec3( gl_WorkGroupID.xyz                 * gl_WorkGroupSize.xyz) * in_step;
+    vec3 aabb_max = vec3((gl_WorkGroupID.xyz + uvec3(1,1,1)) * gl_WorkGroupSize.xyz) * in_step;
+
+    uint wg_size  = gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z;
+    uint num_iter = (in_num_gtos + wg_size - 1) / wg_size;
+
+    for (uint iter = 0; iter < num_iter; ++iter) {
+        uint i = iter * wg_size + gl_LocalInvocationIndex;
+        if (i < in_num_gtos) {
+            float cutoff = in_gtos[i].cutoff;
+            if (cutoff == 0.0) continue;
+
+            vec3 coord   = vec3(in_world_to_model * vec4(in_gtos[i].coord, 1.0));
+            vec3 clamped = clamp(coord, aabb_min, aabb_max);
+            vec3 delta = clamped - coord;
+            float r2 = dot(delta, delta);
+
+            if (r2 < cutoff * cutoff) {
+                // Push to workgroup GTOs
+                uint idx = atomicAdd(num_gtos, 1);
+                gtos[idx] = in_gtos[i];
+            }
+        }
+    }
+
+    // Wait for all threads to add group shared GTOs
+    barrier();
+    
+    // Step 2: Evaluate GTOs for current coord
+    float psi = 0;
+
+    ivec3 vol_idx = ivec3(gl_GlobalInvocationID.xyz);
+    vec3 coord    = vec3(in_index_to_world * vec4(vec3(vol_idx), 1.0));
+
+    for (uint i = 0; i < num_gtos; ++i) {
+        uvec4 ijkl = unpack_ijkl(gtos[i].packed_ijkl);
+        vec3  d  = coord - gtos[i].coord;
+        float r2 = dot(d, d);
+        float fx = safe_pow(d.x, ijkl.x);
+        float fy = safe_pow(d.y, ijkl.y);
+        float fz = safe_pow(d.z, ijkl.z);
+        psi += gtos[i].coeff * fx * fy * fz * exp(-gtos[i].alpha * r2);
+    }
+
+    if (in_mode == 1) {
+        psi = psi*psi;
+    }
+    
+    // Step 3: Write result
+    if (all(lessThan(vol_idx, imageSize(out_vol)))) {
+        imageStore(out_vol, vol_idx, vec4(psi));
+    }
+}

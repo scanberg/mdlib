@@ -458,10 +458,10 @@ static size_t extract_pgto_data(md_gto_t* pgtos, const vlx_molecule_t* molecule,
 							pgtos[count].coeff  = (float)coeff;
 							pgtos[count].alpha  = (float)alpha; 
 							pgtos[count].cutoff = FLT_MAX;
-							pgtos[count].i		= (uint16_t)lx[icomp];
-							pgtos[count].j		= (uint16_t)ly[icomp];
-							pgtos[count].k		= (uint16_t)lz[icomp];
-							pgtos[count].l		= (uint16_t)angl;
+							pgtos[count].i		= (uint8_t)lx[icomp];
+							pgtos[count].j		= (uint8_t)ly[icomp];
+							pgtos[count].k		= (uint8_t)lz[icomp];
+							pgtos[count].l		= (uint8_t)angl;
 
 							count += 1;
 						}

@@ -3,8 +3,110 @@
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_allocator.h>
+#include <core/md_str.h>
+
 #include <stdbool.h>
 #include <float.h>
+
+#include <gto_shaders.inl>
+
+#include <GL/gl3w.h>
+
+#define PUSH_GPU_SECTION(lbl)                                                                       \
+    {                                                                                               \
+        if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, GL_KHR_debug, -1, lbl); \
+    }
+#define POP_GPU_SECTION()                       \
+    {                                           \
+        if (glPopDebugGroup) glPopDebugGroup(); \
+    }
+
+static GLuint get_gto_eval_program(void) {
+	static GLuint eval_gto_program = 0;
+	if (!eval_gto_program) {
+		char buf[1024];
+		GLint success;
+		const char* c_src[] = {(const char*)eval_gto_comp};
+
+		GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+		glShaderSource(shader, ARRAY_SIZE(c_src), c_src, 0);
+		glCompileShader(shader);
+		glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+		if (!success) {
+			int len = 0;
+			glGetShaderInfoLog(shader, ARRAY_SIZE(buf), &len, buf);
+			MD_LOG_ERROR("Shader compile error:\n%.*s\n", len, buf);
+			return 0;
+		}
+
+		GLuint program = glCreateProgram();
+		glAttachShader(program, shader);
+		glLinkProgram(program);
+		glGetProgramiv(program, GL_LINK_STATUS, &success);
+		if (!success) {
+			int len = 0;
+			glGetProgramInfoLog(program, ARRAY_SIZE(buf), &len, buf);
+			MD_LOG_ERROR("Program link error:\n%.*s\n", len, buf);
+			return 0;
+		}
+
+		glDeleteShader(shader);
+		eval_gto_program = program;
+	}
+	return eval_gto_program;
+}
+
+static GLuint get_gto_eval_ssbo(void) {
+	static GLuint ssbo = 0;
+	if (!ssbo) {
+		glCreateBuffers(1, &ssbo);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+		glBufferData(GL_SHADER_STORAGE_BUFFER, MEGABYTES(4), 0, GL_DYNAMIC_DRAW);
+		glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+	}
+	return ssbo;
+}
+
+void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
+	ASSERT(world_to_model);
+	ASSERT(index_to_world);
+	ASSERT(vol_dim);
+	ASSERT(vol_step);
+
+	PUSH_GPU_SECTION("EVAL GTO")
+
+	GLuint ssbo = get_gto_eval_ssbo();
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(md_gto_t) * num_gtos, gtos);
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+
+	glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+	GLuint program = get_gto_eval_program();
+	glUseProgram(program);
+
+	glUniformMatrix4fv(0, 1, GL_FALSE, world_to_model);
+	glUniformMatrix4fv(1, 1, GL_FALSE, index_to_world);
+	glUniform3fv(2, 1, (const float*)vol_step);
+	glUniform1ui(3, (GLuint)num_gtos);
+	glUniform1i(4, (GLint)mode);
+
+	glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_R16F);
+
+	int num_groups[3] = {
+		DIV_UP(vol_dim[0], 8),
+		DIV_UP(vol_dim[1], 8),
+		DIV_UP(vol_dim[2], 8),
+	};
+
+	glDispatchCompute(num_groups[0], num_groups[1], num_groups[2]);
+	glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+
+	glUseProgram(0);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+	POP_GPU_SECTION()
+}
 
 static inline float fast_powf(float base, int exp) {
 	float val = 1.0f;
@@ -886,7 +988,8 @@ static double compute_distance_cutoff(double cutoff_value, int i, int j, int k, 
 	const double d_maxima = sqrt(l / (2.0 * fabs(neg_alpha)));
 
 	// Check the contribution at the maxima
-	if (eval_G(d_maxima, C, l, neg_alpha) < cutoff_value) {
+	const double y_max = eval_G(d_maxima, C, l, neg_alpha);
+	if (y_max < cutoff_value) {
 		d = 0.0;
 		goto done;
 	}
