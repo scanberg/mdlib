@@ -709,6 +709,19 @@ MD_VEC_INLINE vec4_t vec4_max(vec4_t a, vec4_t b) {
     return r;
 }
 
+MD_VEC_INLINE vec4_t vec4_clamp(vec4_t v, vec4_t min, vec4_t max) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = _mm_max_ps(_mm_min_ps(v.m128, max.m128), min.m128);
+#else
+    r.x = CLAMP(v.x, min.x, max.x);
+    r.y = CLAMP(v.y, min.y, max.y);
+    r.z = CLAMP(v.z, min.z, max.z);
+    r.w = CLAMP(v.w, min.w, max.w);
+#endif
+    return r;
+}
+
 MD_VEC_INLINE vec4_t vec4_abs(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
@@ -1355,6 +1368,7 @@ typedef struct mat3_svd_t {
 mat3_eigen_t mat3_eigen(mat3_t M);
 mat3_svd_t   mat3_svd(mat3_t M);
 mat3_t       mat3_extract_rotation(mat3_t M);
+mat3_t       mat3_orthonormalize(mat3_t M);
 
 // Computes the covariance matrix for a set of coordinates with a given center of mass.
 // x,y,z / xyz: coordinates
