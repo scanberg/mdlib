@@ -6,6 +6,8 @@
 
 #include <md_gto.h>
 
+#include <float.h>
+
 // Conversion from Ångström to Bohr
 const float factor = 1.0 / 0.529177210903;
 #define BLK_DIM 8
