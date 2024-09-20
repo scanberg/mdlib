@@ -1,7 +1,6 @@
 #include <md_gl.h>
 #include <md_util.h>
 
-
 #include <core/md_common.h>
 #include <core/md_compiler.h>
 #include <core/md_log.h>
@@ -9,8 +8,9 @@
 #include <core/md_os.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
-#include <core/md_str_builder.h>
 #include <core/md_handle.h>
+#include <core/md_gl_util.h>
+
 #include <md_molecule.h>
 
 #include <stdbool.h>
@@ -301,6 +301,15 @@ static inline representation_t* rep_lookup(uint32_t id) {
     return ctx.representations + index;
 }
 
+static inline bool validate_context(void) {
+    if (ctx.version == 0) {
+        MD_LOG_ERROR("MD GL module has not been initialized");
+        return false;
+    }
+    return true;
+}
+
+
 static inline gl_buffer_t gl_buffer_create(uint32_t num_bytes, const void* data, GLenum usage_hint) {
     gl_buffer_t buf = {0};
     glGenBuffers(1, &buf.id);
@@ -336,146 +345,20 @@ static inline void gl_buffer_set_sub_data(gl_buffer_t buf, uint32_t byte_offset,
 
 static inline void gl_buffer_clear(gl_buffer_t buf) {
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
-//    if (ctx.version >= 430) {
-//        uint8_t data = 0;
-//        glClearBufferSubData(GL_ARRAY_BUFFER, GL_R8UI, 0, buf.size, GL_RED, GL_UNSIGNED_BYTE, &data);
-//    } else {
-        char* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-        if (!ptr) {
-            MD_LOG_ERROR("Failed to map buffer");
-            return;
-        }
-        MEMSET(ptr, 0, buf.size);
-        glUnmapBuffer(GL_ARRAY_BUFFER);
-//    }
+    //    if (ctx.version >= 430) {
+    //        uint8_t data = 0;
+    //        glClearBufferSubData(GL_ARRAY_BUFFER, GL_R8UI, 0, buf.size, GL_RED, GL_UNSIGNED_BYTE, &data);
+    //    } else {
+    char* ptr = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    if (!ptr) {
+        MD_LOG_ERROR("Failed to map buffer");
+        return;
+    }
+    MEMSET(ptr, 0, buf.size);
+    glUnmapBuffer(GL_ARRAY_BUFFER);
+    //    }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
-
-static bool compile_shader_from_source(GLuint shader, str_t src, str_t defines, str_t extra_src) {
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
-    
-    if (!str_eq_cstr_n(src, "#version ", 9)) {
-        MD_LOG_ERROR("Missing version string as first line in shader!");
-        return false;
-    }
-    
-    if (!str_empty(defines)) {
-        str_t version_line;
-        str_extract_line(&version_line, &src);
-        md_strb_push_str(&sb, version_line);
-        md_strb_push_char(&sb, '\n');
-        md_strb_push_str(&sb, defines);
-        md_strb_push_char(&sb, '\n');
-    }
-
-    if (!str_empty(extra_src)) {
-        str_t line;
-        while (str_extract_line(&line, &src)) {
-            if (!str_eq_cstr_n(line, "#pragma EXTRA_SRC", 17)) {
-                md_strb_push_str(&sb, line);
-                md_strb_push_char(&sb, '\n');
-            } else {
-                md_strb_push_str(&sb, extra_src);
-                md_strb_push_char(&sb, '\n');
-            }
-        }
-    } else {
-        md_strb_push_str(&sb, src);
-    }
-
-    const char* csrc = md_strb_to_cstr(sb);
-    
-    glShaderSource(shader, 1, &csrc, 0);
-    glCompileShader(shader);
-    
-    GLint success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-
-    md_strb_free(&sb);
-
-    if (!success) {
-        char err_buf[1024];
-        glGetShaderInfoLog(shader, ARRAY_SIZE(err_buf), NULL, err_buf);
-        MD_LOG_ERROR("Shader compile error:\n%s\n", err_buf);
-        return false;
-    }
-    
-    return true;
-}
-
-static bool link_program(GLuint program, const GLuint shaders[], size_t count) {
-    ASSERT(program);
-     
-    for (size_t i = 0; i < count; i++) {
-        GLint compile_status;
-        glGetShaderiv(shaders[i], GL_COMPILE_STATUS, &compile_status);
-        if (glIsShader(shaders[i]) && compile_status) {
-            glAttachShader(program, shaders[i]);
-        } else {
-            MD_LOG_ERROR("Program link error: One or more shaders are invalid\n");
-            return false;
-        }
-    }
-    
-    GLint success;
-    glLinkProgram(program);
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success) {
-        char err_buf[256];
-        glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
-        MD_LOG_ERROR("Program link error:\n%s\n", err_buf);
-        return false;
-    }
-    
-    for (size_t i = 0; i < count; i++) {
-        glDetachShader(program, shaders[i]);
-    }
-    
-    return true;
-}
-
-static bool link_program_transform_feedback(GLuint program, const GLuint shader[], size_t shader_count, const char* varying[],
-    size_t varying_count, GLenum capture_mode) {
-    ASSERT(program);
-    ASSERT(capture_mode == GL_INTERLEAVED_ATTRIBS || capture_mode == GL_SEPARATE_ATTRIBS);
-    
-    for (size_t i = 0; i < shader_count; i++) {
-        GLint compile_status;
-        glGetShaderiv(shader[i], GL_COMPILE_STATUS, &compile_status);
-        if (glIsShader(shader[i]) && compile_status) {
-            glAttachShader(program, shader[i]);
-        } else {
-            MD_LOG_ERROR("One or more shaders are invalid");
-            return false;
-        }
-    }
-    
-    GLint link_status;
-    glTransformFeedbackVaryings(program, (GLsizei)varying_count, varying, capture_mode);
-    glLinkProgram(program);
-    glGetProgramiv(program, GL_LINK_STATUS, &link_status);
-    if (!link_status) {
-        char err_buf[256];
-        glGetProgramInfoLog(program, ARRAY_SIZE(err_buf), NULL, err_buf);
-        MD_LOG_ERROR("Program link error:\n%s\n", err_buf);
-        return false;
-    }
-    
-    for (uint32_t i = 0; i < shader_count; i++) {
-        glDetachShader(program, shader[i]);
-    }
-    
-    return true;
-}
-
-static inline bool validate_context(void) {
-    if (ctx.version == 0) {
-        MD_LOG_ERROR("MD GL module has not been initialized");
-        return false;
-    }
-    return true;
-}
-
 
 void md_gl_mol_set_index_base(md_gl_mol_t handle, uint32_t atom_index_base, uint32_t bond_index_base) {
     molecule_t* mol = mol_lookup(handle.id);
@@ -800,25 +683,25 @@ bool create_permuted_program(str_t identifier, gl_program_t* program_permutation
     ASSERT(ARRAY_SIZE(perm_str) <= MAX_SHADER_PERMUTATIONS);
 
     for (uint32_t perm = 0; perm < MAX_SHADER_PERMUTATIONS; ++perm) {
-        const str_t defines = perm_str[perm];
+        md_gl_shader_src_injection_t injections[] = { {perm_str[perm], {0}}, {frag_output_src, STR_LIT("EXTRA_SRC")} };
 
-        if (!str_empty(vert_src) && !compile_shader_from_source(vert_shader, vert_src, defines, (str_t){0})) {
+        if (!str_empty(vert_src) && !md_gl_shader_compile(vert_shader, vert_src, injections, 1)) {
             MD_LOG_ERROR("Error occured when compiling vertex shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
             
-        if (!str_empty(geom_src) && !compile_shader_from_source(geom_shader, geom_src, defines, (str_t){0})) {
+        if (!str_empty(geom_src) && !md_gl_shader_compile(geom_shader, geom_src, injections, 1)) {
             MD_LOG_ERROR("Error occured when compiling geometry shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
-        if (!str_empty(frag_src) && !compile_shader_from_source(frag_shader, frag_src, defines, frag_output_src)) {
+        if (!str_empty(frag_src) && !md_gl_shader_compile(frag_shader, frag_src, injections, 2)) {
             MD_LOG_ERROR("Error occured when compiling fragment shader for: '%.*s'", STR_ARG(identifier));
             return false;
         }
 
         program_permutations[perm].id = glCreateProgram();
         const GLuint shaders[] = {vert_shader, geom_shader, frag_shader};
-        if (!link_program(program_permutations[perm].id, shaders, ARRAY_SIZE(shaders))) return false;
+        if (!md_gl_program_attach_and_link(program_permutations[perm].id, shaders, ARRAY_SIZE(shaders))) return false;
     }
 
     glDeleteShader(vert_shader);
@@ -855,19 +738,17 @@ void md_gl_initialize(void) {
     for (uint32_t i = 0; i < GL_TEXTURE_COUNT; ++i) {
         glGenTextures(1, &ctx.texture[i].id);
     }
-    
-    const str_t empty_str = {0};
 
     {
         GLuint vert_shader = glCreateShader(GL_VERTEX_SHADER);
 
-        if (!compile_shader_from_source(vert_shader, (str_t){(const char*)compute_velocity_vert, compute_velocity_vert_size}, empty_str, empty_str)) {
+        if (!md_gl_shader_compile(vert_shader, (str_t){(const char*)compute_velocity_vert, compute_velocity_vert_size}, 0, 0)) {
             return;
         }
         ctx.program[GL_PROGRAM_COMPUTE_VELOCITY].id = glCreateProgram();
         const GLuint shaders[] = { vert_shader };
         const GLchar* varyings[] = { "out_velocity" };
-        if (!link_program_transform_feedback(ctx.program[GL_PROGRAM_COMPUTE_VELOCITY].id, shaders, ARRAY_SIZE(shaders), varyings, ARRAY_SIZE(varyings), GL_INTERLEAVED_ATTRIBS)) {
+        if (!md_gl_program_attach_and_link_transform_feedback(ctx.program[GL_PROGRAM_COMPUTE_VELOCITY].id, shaders, ARRAY_SIZE(shaders), varyings, ARRAY_SIZE(varyings), GL_INTERLEAVED_ATTRIBS)) {
             return;
         }
 
@@ -879,18 +760,18 @@ void md_gl_initialize(void) {
         GLuint geom_shader = glCreateShader(GL_GEOMETRY_SHADER);
 
         char def_buf[256];
-        snprintf(def_buf, ARRAY_SIZE(def_buf), "#define NUM_SUBDIVISIONS %i\n#define MAX_VERTICES %i\n", MD_GL_SPLINE_SUBDIVISION_COUNT, MD_GL_SPLINE_SUBDIVISION_COUNT+1);
-        str_t defines = {def_buf, strlen(def_buf)};
+        size_t def_len = snprintf(def_buf, ARRAY_SIZE(def_buf), "#define NUM_SUBDIVISIONS %i\n#define MAX_VERTICES %i\n", MD_GL_SPLINE_SUBDIVISION_COUNT, MD_GL_SPLINE_SUBDIVISION_COUNT+1);
+        md_gl_shader_src_injection_t injections[] = { {(str_t){def_buf, def_len}, {0}} };
 
         bool err;
-        if ((err = compile_shader_from_source(vert_shader, (str_t){(const char*)compute_spline_vert, compute_spline_vert_size}, defines, empty_str)) != true ||
-            (err = compile_shader_from_source(geom_shader, (str_t){(const char*)compute_spline_geom, compute_spline_geom_size}, defines, empty_str)) != true) {
+        if ((err = md_gl_shader_compile(vert_shader, (str_t){(const char*)compute_spline_vert, compute_spline_vert_size}, injections, ARRAY_SIZE(injections))) != true ||
+            (err = md_gl_shader_compile(geom_shader, (str_t){(const char*)compute_spline_geom, compute_spline_geom_size}, injections, ARRAY_SIZE(injections))) != true) {
             return;
         }
         ctx.program[GL_PROGRAM_COMPUTE_SPLINE].id = glCreateProgram();
         const GLuint shaders[] = { vert_shader, geom_shader };
         const GLchar* varyings[] = { "out_position", "out_atom_idx", "out_velocity", "out_segment_t", "out_secondary_structure_and_flags", "out_support_and_tangent_vector" };
-        if ((err = link_program_transform_feedback(ctx.program[GL_PROGRAM_COMPUTE_SPLINE].id, shaders, ARRAY_SIZE(shaders), varyings, ARRAY_SIZE(varyings), GL_INTERLEAVED_ATTRIBS)) != true) {
+        if ((err = md_gl_program_attach_and_link_transform_feedback(ctx.program[GL_PROGRAM_COMPUTE_SPLINE].id, shaders, ARRAY_SIZE(shaders), varyings, ARRAY_SIZE(varyings), GL_INTERLEAVED_ATTRIBS)) != true) {
             return;
         }
 

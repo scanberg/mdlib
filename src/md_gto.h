@@ -9,11 +9,9 @@ typedef struct md_gto_t {
 	float x;
 	float y;
 	float z;
-	float coeff;		// Baked coefficient (should include normalization factors)
+	float coeff;		// Baked coefficient (should include cartesian normalization factors)
 	float alpha;		// Exponent alpha
 	float cutoff;		// Radial cutoff
-	// The integer type here is arbitrary as we only need to store values 0-4 in reality.
-	// uint16_t was chosen to pad the struct to 32 bytes in size
 	uint8_t i, j, k, l;
 	uint32_t _pad;
 } md_gto_t;
@@ -44,8 +42,27 @@ extern "C" {
 // - eval_mode: GTO evaluation mode
 void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
+// Evaluates GTOs over a grid on the GPU and stores the result into a supplied volume
+// - vol_tex: The texture handle to the volume
+// - vol_dim: The dimensions of the volume
+// - vol_step: The voxel spacing in world space length units
+// - world_to_model: float[4][4] (col-major) transformation matrix to transform a point in world_space coordinates into the volumes model space (note not texture space, but a space which is rotated and translated such that the axes align with the volume and its origin is placed at (0,0,0))
+// - index_to_world: float[4][4] (col-major) transformation matrix to transform a point in the volumes index coordinates [0, dim[ into world space coordinates
+// - gtos: The gtos to evaluate
+// - num_gtos: Number of supplied gtos
+// - eval_mode: GTO evaluation mode
+void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
-void md_gto_grid_evaluate_GPU(uint32_t out_vol, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
+// This is malplaced at the moment, but this is for the moment, the best match in where to place the functionality
+// Performs voronoi segmentation of the supplied volume to points with a supplied radius and accumulates the value of each voxel into the corresponding group of the closest point
+// - out_group_values: Destination array holding the group values that are written to
+// - cap_groups: Capacity of group array
+// - vol_tex: The texture handle to the volume
+// - vol_dim: The dimensions of the volume
+// - vol_step: The voxel spacing in world space length units
+// - point_xyzr: Point coordinates + radius, packed xyzrxyzrxyzr
+// - point_group_idx: Point group index [0, num_groups-1]
+void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points);
 
 // Evaluate GTOs over subportion of a grid
 // - grid: The grid to evaluate a subportion of

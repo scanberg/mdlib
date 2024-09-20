@@ -9,9 +9,17 @@ struct GTO {
     uint  _pad;
 };
 
-layout(r16f, binding = 0) uniform image3D out_vol;
+// Compact representation of GTO to minimize the footprint in group shared memory
+struct CompGTO {
+    vec3  coord;
+    float coeff;
+    float alpha;
+    uint  packed_ijkl;
+};
 
-layout (binding = 0, std430) readonly buffer GTOBuffer {
+layout(binding = 0) writeonly restrict uniform image3D out_vol;
+
+layout (binding = 0, std430) readonly restrict buffer GTOBuffer {
     GTO in_gtos[];
 };
 
@@ -40,8 +48,8 @@ uvec4 unpack_ijkl(in uint packed_ijkl) {
     );
 }
 
-shared uint num_gtos;
-shared GTO  gtos[512];
+shared uint     num_gtos;
+shared CompGTO  gtos[1024];
 
 layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
 void main() {
@@ -72,7 +80,10 @@ void main() {
             if (r2 < cutoff * cutoff) {
                 // Push to workgroup GTOs
                 uint idx = atomicAdd(num_gtos, 1);
-                gtos[idx] = in_gtos[i];
+                gtos[idx].coord = in_gtos[i].coord;
+                gtos[idx].coeff = in_gtos[i].coeff;
+                gtos[idx].alpha = in_gtos[i].alpha;
+                gtos[idx].packed_ijkl = in_gtos[i].packed_ijkl;
             }
         }
     }
@@ -97,7 +108,7 @@ void main() {
     }
 
     if (in_mode == 1) {
-        psi = psi*psi;
+        psi = psi * psi;
     }
     
     // Step 3: Write result

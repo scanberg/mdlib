@@ -83,7 +83,7 @@ set(SRC_FILES
     src/md_xyz.h
 )
 
-set(SHADER_FILES 
+set(GL_SHADER_FILES 
     src/shaders/compute_spline.vert
     src/shaders/compute_spline.geom
     src/shaders/compute_velocity.vert
@@ -99,6 +99,11 @@ set(SHADER_FILES
     src/shaders/spacefill.vert
     src/shaders/spacefill.geom
     src/shaders/spacefill.frag
+)
+
+set(GTO_SHADER_FILES 
+    src/shaders/eval_gto.comp
+    src/shaders/segment_and_attribute_to_group.comp
 )
 
 set(MD_DEFINES MD_GL_SPLINE_SUBDIVISION_COUNT=${MD_GL_SPLINE_SUBDIVISION_COUNT})
@@ -146,8 +151,8 @@ if (MD_ENABLE_HDF5)
     set(MD_LIBS ${MD_LIBS} HDF5::HDF5)
 endif()
 
-create_resources("${SHADER_FILES}" "gen/gl_shaders.inl")
-create_resources("src/shaders/eval_gto.comp" "gen/gto_shaders.inl")
+create_resources("${GL_SHADER_FILES}"  "gen/gl_shaders.inl")
+create_resources("${GTO_SHADER_FILES}" "gen/gto_shaders.inl")
 
 if (CMAKE_C_COMPILER_ID MATCHES "Clang")
   set(MD_FLAGS_EXT ${MD_FLAGS_EXT} "-w")
