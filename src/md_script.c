@@ -4870,6 +4870,12 @@ static bool static_check_assignment(ast_node_t* node, eval_context_t* ctx) {
         }
         lhs->data    = rhs->data;
         lhs->flags   = rhs->flags;
+
+        // Mark identifier within assignment and rhs
+        if (num_idents == 1) {
+            node->ident = lhs->ident;
+            rhs->ident  = lhs->ident;
+        }
         return true;
     }
 
@@ -6291,6 +6297,14 @@ const md_script_vis_payload_o* md_script_ir_property_vis_payload(const md_script
     }
 
     return NULL;
+}
+
+str_t md_script_payload_ident(const md_script_vis_payload_o* payload) {
+    if (payload) {
+        const ast_node_t* node = (const ast_node_t*)payload;
+        return node->ident;
+    }
+    return (str_t){0};
 }
 
 static md_script_eval_t* create_eval(md_allocator_i* alloc) {

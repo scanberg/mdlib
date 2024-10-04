@@ -172,8 +172,8 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
 // com:     Center of mass [2] (xyz0), (xyz1)
 // w:       Array of weights (optional): set as NULL to use equal weights
 // count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
-double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, const int32_t* in_idx, size_t count, const vec3_t in_com[2]);
-double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* in_idx, size_t count, const vec3_t in_com[2]);
+double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
+double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
 
 // Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
 vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);

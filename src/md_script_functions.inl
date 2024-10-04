@@ -340,13 +340,14 @@ static int _atom_irng       (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _atom_int        (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ion             (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _backbone        (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 
 // Residue level selectors
 static int _water   (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _protein   (data_t*, data_t[], eval_context_t*); // -> bitfield[]
-static int _nucleic   (data_t*, data_t[], eval_context_t*); // -> bitfield[]
+static int _protein (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _nucleic (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _resname (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
 static int _resid   (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
 static int _residue (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
@@ -596,6 +597,8 @@ static procedure_t procedures[] = {
     // Atom level
     {CSTR("all"),       TI_BITFIELD, 0, {0},                _all},
     {CSTR("ion"),       TI_BITFIELD, 0, {0},                _ion},
+    {CSTR("backbone"),  TI_BITFIELD, 0, {0},                _backbone},
+
     {CSTR("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
     {CSTR("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
     {CSTR("label"),     TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
@@ -2850,7 +2853,7 @@ static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, int flags) {
     ASSERT(ctx && ctx->mol);
     (void)arg;
 
@@ -2864,13 +2867,13 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
             while (md_bitfield_iter_next(&it)) {
                 uint64_t idx = md_bitfield_iter_idx(&it);
-				if (ctx->mol->atom.flags[idx] & MD_FLAG_ION) {
-					md_bitfield_set_bit(bf, idx);
-				}
-			}
+                if (ctx->mol->atom.flags[idx] & flags) {
+                    md_bitfield_set_bit(bf, idx);
+                }
+            }
         } else {
             for (size_t i = 0; i < ctx->mol->atom.count; ++i) {
-                if (ctx->mol->atom.flags[i] & MD_FLAG_ION) {
+                if (ctx->mol->atom.flags[i] & flags) {
                     md_bitfield_set_bit(bf, i);
                 }
             }
@@ -2880,7 +2883,13 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
+static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_ION);
+}
 
+static int _backbone(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_BACKBONE);
+}
 
 static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);

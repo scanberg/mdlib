@@ -14,7 +14,6 @@
 #include <string.h>
 #include <stdint.h>
 
-#define MD_SPATIAL_HASH_MAGIC 0xF67cbab6
 #define CELL_EXT (6.0f)
 #define INV_CELL_EXT (1.0f / CELL_EXT)
 #define SQRT_CELL_EXT (8.4852813742385702f)

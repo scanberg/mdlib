@@ -1139,14 +1139,15 @@ static inline bool cmp3(const char* str, const char* ref) {
 static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* backbone_atoms, const md_label_t* atom_types, size_t count, int32_t atom_offset) {
     if (count == 0) return false;
 
-    const uint32_t all_bits = 1 | 2 | 4 | 8;
+    const uint32_t all_bits = 1 | 2 | 4 | 8 | 16;
     uint32_t bits = 0;
     md_protein_backbone_atoms_t bb = {0};
     for (int i = 0; i < (int)count; ++i) {
-        if (!(bits & 1) && cmp1(atom_types[i].buf, "N"))  { bb.n  = atom_offset + i; bits |= 1;  continue; }
-        if (!(bits & 2) && cmp2(atom_types[i].buf, "CA")) { bb.ca = atom_offset + i; bits |= 2;  continue; }
-        if (!(bits & 4) && cmp1(atom_types[i].buf, "C"))  { bb.c  = atom_offset + i; bits |= 4;  continue; }
-        if (!(bits & 8) && cmp1(atom_types[i].buf, "O"))  { bb.o  = atom_offset + i; bits |= 8;  continue; }
+        if (!(bits & 1)  && cmp1(atom_types[i].buf, "N"))  { bb.n  = atom_offset + i; bits |= 1;  continue; }
+        if (!(bits & 2)  && cmp2(atom_types[i].buf, "CA")) { bb.ca = atom_offset + i; bits |= 2;  continue; }
+        if (!(bits & 4)  && cmp1(atom_types[i].buf, "C"))  { bb.c  = atom_offset + i; bits |= 4;  continue; }
+        if (!(bits & 8)  && cmp1(atom_types[i].buf, "O"))  { bb.o  = atom_offset + i; bits |= 8;  continue; }
+        if (!(bits & 16) && cmp2(atom_types[i].buf, "CB")) { bb.cb = atom_offset + i; bits |= 16; continue; }
 
         // Check if done
         if (bits == all_bits) break;
@@ -1157,7 +1158,9 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
         bits |= 8;
     }
 
-    if (bits == all_bits) {
+    // CB is not required since it is not present for example in Glycine
+    const uint32_t req_bits = 1 | 2 | 4 | 8;
+    if (bits == req_bits) {
         if (backbone_atoms) *backbone_atoms = bb;
         return true;
     }
@@ -3165,20 +3168,20 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
         size_t len = (size_t)(range.end - range.beg);
         md_protein_backbone_atoms_t prot_atoms = {0};
         md_nucleic_backbone_atoms_t nucl_atoms = {0};
-        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && (md_util_resname_amino_acid(resname) || (atom->type && md_util_protein_backbone_atoms_extract(&prot_atoms, atom->type + range.beg, len, range.beg)))) {
+        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && (atom->type && md_util_protein_backbone_atoms_extract(&prot_atoms, atom->type + range.beg, len, range.beg))) {
             res->flags[i] |= MD_FLAG_AMINO_ACID;
-            atom->flags[prot_atoms.n]  |= MD_FLAG_PROTEIN_BACKBONE;
-            atom->flags[prot_atoms.ca] |= MD_FLAG_PROTEIN_BACKBONE;
-            atom->flags[prot_atoms.c]  |= MD_FLAG_PROTEIN_BACKBONE;
-            atom->flags[prot_atoms.o]  |= MD_FLAG_PROTEIN_BACKBONE;
-        } else if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && (md_util_resname_nucleic_acid(resname) || (atom->type && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, atom->type + range.beg, len, range.beg)))) {
+            atom->flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
+            atom->flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
+            atom->flags[prot_atoms.c]  |= MD_FLAG_BACKBONE;
+            //atom->flags[prot_atoms.o]  |= MD_FLAG_BACKBONE;
+        } else if (MIN_NUC_LEN <= len && len <= MAX_NUC_LEN && (atom->type && md_util_nucleic_backbone_atoms_extract(&nucl_atoms, atom->type + range.beg, len, range.beg))) {
             res->flags[i] |= MD_FLAG_NUCLEOTIDE;
-            atom->flags[nucl_atoms.c5] |= MD_FLAG_NUCLEIC_BACKBONE;
-            atom->flags[nucl_atoms.c4] |= MD_FLAG_NUCLEIC_BACKBONE;
-            atom->flags[nucl_atoms.c3] |= MD_FLAG_NUCLEIC_BACKBONE;
-            atom->flags[nucl_atoms.o3] |= MD_FLAG_NUCLEIC_BACKBONE;
-            atom->flags[nucl_atoms.p]  |= MD_FLAG_NUCLEIC_BACKBONE;
-            atom->flags[nucl_atoms.o5] |= MD_FLAG_NUCLEIC_BACKBONE;
+            atom->flags[nucl_atoms.c5] |= MD_FLAG_BACKBONE;
+            atom->flags[nucl_atoms.c4] |= MD_FLAG_BACKBONE;
+            atom->flags[nucl_atoms.c3] |= MD_FLAG_BACKBONE;
+            atom->flags[nucl_atoms.o3] |= MD_FLAG_BACKBONE;
+            atom->flags[nucl_atoms.p]  |= MD_FLAG_BACKBONE;
+            atom->flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
         } else if ((len == 1 || len == 3) && (md_util_resname_water(resname) || (atom->type && len == 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg]))))) {
             res->flags[i] |= MD_FLAG_WATER;
         } else if (len == 1) {
@@ -6727,21 +6730,19 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
     return false;
 }
 
-double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, const int32_t* in_idx, const size_t count, const vec3_t in_com[2]) {
-    const float*     w2[2] = {in_w, in_w};
-    const int32_t* idx2[2] = {in_idx, in_idx};
-    
-    const mat3_t R = mat3_optimal_rotation(in_x, in_y, in_z, in_w ? w2 : NULL, in_idx ? idx2 : NULL, count, in_com);
+double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], const size_t count, const vec3_t in_com[2]) {
+    const mat3_t R = mat3_optimal_rotation(in_x, in_y, in_z, in_w, in_idx, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
     if (in_idx) {
         for (size_t i = 0; i < count; ++i) {
-            int32_t idx = in_idx[i];
-            vec3_t u = {in_x[0][idx] - in_com[0].x, in_y[0][idx] - in_com[0].y, in_z[0][idx] - in_com[0].z};
-            vec3_t v = {in_x[1][idx] - in_com[1].x, in_y[1][idx] - in_com[1].y, in_z[1][idx] - in_com[1].z};
+            int32_t idx0 = in_idx[0][i];
+            int32_t idx1 = in_idx[1][i];
+            vec3_t u = {in_x[0][idx0] - in_com[0].x, in_y[0][idx0] - in_com[0].y, in_z[0][idx0] - in_com[0].z};
+            vec3_t v = {in_x[1][idx1] - in_com[1].x, in_y[1][idx1] - in_com[1].y, in_z[1][idx1] - in_com[1].z};
             vec3_t vp = mat3_mul_vec3(R, v);
             vec3_t d = vec3_sub(u, vp);
-            float weight = in_w ? in_w[idx] : 1.0f;
+            float weight = in_w ? (in_w[0][idx0] + in_w[1][idx1]) * 0.5f : 1.0f;
             d_sum += weight * vec3_dot(d, d);
             w_sum += weight;
         }
@@ -6751,7 +6752,7 @@ double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[
             vec3_t v = {in_x[1][i] - in_com[1].x, in_y[1][i] - in_com[1].y, in_z[1][i] - in_com[1].z};
             vec3_t vp = mat3_mul_vec3(R, v);
             vec3_t d = vec3_sub(u, vp);
-            float weight = in_w ? in_w[i] : 1.0f;
+            float weight = in_w ? (in_w[0][i] + in_w[1][i]) * 0.5f : 1.0f;
             d_sum += weight * vec3_dot(d, d);
             w_sum += weight;
         }
@@ -6760,19 +6761,19 @@ double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[
     return sqrt(d_sum / w_sum);
 }
 
-double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* in_idx, size_t count, const vec3_t in_com[2]) {
-    const int32_t* idx2[2] = {in_idx, in_idx};
-    const mat3_t R = mat3_optimal_rotation_vec4(in_xyzw, in_idx ? idx2 : NULL, count, in_com);
+double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]) {
+    const mat3_t R = mat3_optimal_rotation_vec4(in_xyzw, in_idx, count, in_com);
     double d_sum = 0;
     double w_sum = 0;
     if (in_idx) {
         for (size_t i = 0; i < count; ++i) {
-            int32_t idx = in_idx[i];
-            vec3_t u = {in_xyzw[0][idx].x - in_com[0].x, in_xyzw[0][idx].y - in_com[0].y, in_xyzw[0][idx].z - in_com[0].z};
-            vec3_t v = {in_xyzw[1][idx].x - in_com[1].x, in_xyzw[1][idx].y - in_com[1].y, in_xyzw[1][idx].z - in_com[1].z};
+            int32_t idx0 = in_idx[0][i];
+            int32_t idx1 = in_idx[1][i];
+            vec3_t u = {in_xyzw[0][idx0].x - in_com[0].x, in_xyzw[0][idx0].y - in_com[0].y, in_xyzw[0][idx0].z - in_com[0].z};
+            vec3_t v = {in_xyzw[1][idx1].x - in_com[1].x, in_xyzw[1][idx1].y - in_com[1].y, in_xyzw[1][idx1].z - in_com[1].z};
             vec3_t vp = mat3_mul_vec3(R, v);
             vec3_t d = vec3_sub(u, vp);
-            float w = (in_xyzw[0][idx].w + in_xyzw[1][idx].w) * 0.5f;
+            float w = (in_xyzw[0][idx0].w + in_xyzw[1][idx1].w) * 0.5f;
             d_sum += w * vec3_dot(d, d);
             w_sum += w;
         }
@@ -7034,26 +7035,26 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
             md_array_resize(mol->atom.type, mol->atom.count, alloc);
             MEMSET(mol->atom.type, 0, md_array_bytes(mol->atom.type));
         }
-        md_flags_t flags = 0;
+        md_flags_t atom_flags = 0;
         for (size_t i = 0; i < mol->atom.count; ++i) {
             if (mol->atom.flags[i] == MD_FLAG_CHAIN_BEG) {
-                flags |= MD_FLAG_CHAIN;
+                atom_flags |= MD_FLAG_CHAIN;
             }
             if (mol->atom.flags[i] == MD_FLAG_CHAIN_END) {
-                flags &= ~MD_FLAG_CHAIN;
+                atom_flags &= ~MD_FLAG_CHAIN;
             }
             if (mol->atom.flags[i] == MD_FLAG_RES_BEG) {
-                flags |= MD_FLAG_RES;
+                atom_flags |= MD_FLAG_RES;
             }
             if (mol->atom.flags[i] == MD_FLAG_RES_END) {
-                flags &= ~MD_FLAG_RES;
+                atom_flags &= ~MD_FLAG_RES;
             }
-            mol->atom.flags[i] |= flags;
+            mol->atom.flags[i] |= atom_flags;
         }
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();
         MD_LOG_DEBUG("Postprocess: allocate missing fields %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif
+#endif;
     }
 
     if (flags & MD_UTIL_POSTPROCESS_RESIDUE_BIT) {

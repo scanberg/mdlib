@@ -23,7 +23,7 @@ in order to make it work within VIAMD
 
 */
 
-// This is represents an opaque marker of something which can be visualized
+// This is represents an opaque marker of a portion of the AST-tree that can be used to invoke visualizations
 typedef struct md_script_vis_payload_o md_script_vis_payload_o;
 
 typedef enum md_script_property_flags_t {
@@ -199,6 +199,9 @@ const str_t* md_script_ir_property_names(const md_script_ir_t* ir);
 md_script_property_flags_t      md_script_ir_property_flags(const md_script_ir_t* ir, str_t name);
 const md_script_vis_payload_o*  md_script_ir_property_vis_payload(const md_script_ir_t* ir, str_t name);
 
+// Returns the identifier of the payload
+// May return an empty string if there is no identifier for the payload
+str_t md_script_payload_ident(const md_script_vis_payload_o* payload);
 
 // ### EVALUATE ###
 // This API is a dumpster-fire currently and should REALLY be simplified.

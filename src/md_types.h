@@ -45,12 +45,13 @@ enum {
     MD_FLAG_CHAIN 		        = 0x20,
     MD_FLAG_HETATM              = 0x40,
     MD_FLAG_AMINO_ACID		    = 0x80,
-    MD_FLAG_NUCLEOTIDE	        = 0x100,
-    MD_FLAG_NUCLEOBASE          = 0x200,
-    MD_FLAG_WATER			    = 0x400,
-    MD_FLAG_ION			        = 0x800,
-    MD_FLAG_PROTEIN_BACKBONE    = 0x1000,
-    MD_FLAG_NUCLEIC_BACKBONE    = 0x2000,
+    MD_FLAG_SIDE_CHAIN          = 0x100,
+    MD_FLAG_NUCLEOTIDE	        = 0x200,
+    MD_FLAG_NUCLEOBASE          = 0x400,
+    MD_FLAG_NUCLEOSIDE          = 0x800,
+    MD_FLAG_WATER			    = 0x1000,
+    MD_FLAG_ION			        = 0x2000,
+    MD_FLAG_BACKBONE            = 0x4000,
 
     // Experimental
     MD_FLAG_SP                  = 0x10000,
@@ -108,6 +109,7 @@ typedef struct md_protein_backbone_atoms_t {
     md_atom_idx_t ca;
     md_atom_idx_t c;
     md_atom_idx_t o;
+    md_atom_idx_t cb;
 } md_protein_backbone_atoms_t;
 
 // Backbone angles
@@ -193,7 +195,7 @@ static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* al
     MEMSET(data, 0, sizeof(md_index_data_t));
 }
 
-static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count, md_allocator_i* alloc) {
+static inline size_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count, md_allocator_i* alloc) {
     ASSERT(data);
     ASSERT(alloc);
     ASSERT(index_count >= 0);
@@ -202,11 +204,15 @@ static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32
         md_array_push(data->offsets, 0, alloc);
     }
 
-    int64_t offset = *md_array_last(data->offsets);
+    size_t offset = *md_array_last(data->offsets);
     if (index_count > 0) {
-        ASSERT(index_data);
-        md_array_push_array(data->indices, index_data, index_count, alloc);
-        md_array_push(data->offsets, (int32_t)md_array_size(data->indices), alloc);
+        if (index_data) {
+            md_array_push_array(data->indices, index_data, index_count, alloc);
+        } else {
+            md_array_grow(data->indices, md_array_size(data->indices) + index_count, alloc);
+        }
+        offset = md_array_size(data->indices);
+        md_array_push(data->offsets, (uint32_t)offset, alloc);
     }
 
     return offset;
@@ -214,7 +220,7 @@ static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32
 
 static inline void md_index_data_data_clear(md_index_data_t* data) {
     ASSERT(data);
-    md_array_shrink(data->offsets,  0);
+    md_array_shrink(data->offsets, 0);
     md_array_shrink(data->indices, 0);
 }
 

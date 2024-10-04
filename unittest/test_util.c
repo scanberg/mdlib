@@ -154,12 +154,13 @@ UTEST_F(util, rmsd) {
     const float* const cx[2] = { x[0], x[1] };
     const float* const cy[2] = { y[0], y[1] };
     const float* const cz[2] = { z[0], z[1] };
+    const float* const cw[2] = { w, w };
 
     vec3_t com[2] = {
         md_util_com_compute(x[0], y[0], z[0], w, 0, mol->atom.count, 0),
         md_util_com_compute(x[1], y[1], z[1], w, 0, mol->atom.count, 0),
     };
-    double rmsd = md_util_rmsd_compute(cx, cy, cz, w, 0, mol->atom.count, com);
+    double rmsd = md_util_rmsd_compute(cx, cy, cz, cw, 0, mol->atom.count, com);
     
     EXPECT_LE(fabs(ref_rmsd - rmsd), 0.1);
 
@@ -411,14 +412,14 @@ UTEST_F(util, structure_matching_amyloid_chain) {
     {
         // Test for the chains
         const int ref_structure_idx = 0;
-        int* ref_idx = md_index_range_beg(mol->structure, ref_structure_idx);
+        int*   ref_idx = md_index_range_beg(mol->structure,  ref_structure_idx);
         size_t ref_len = md_index_range_size(mol->structure, ref_structure_idx);
 
         // Prune Hydrogen
         if (true) {
             md_array(int) new_idx = 0;
             for (size_t i = 0; i < ref_len; ++i) {
-                if (mol->atom.element[i] != 1) {
+                if (mol->atom.element[i] > 1) {
                     md_array_push(new_idx, ref_idx[i], alloc);
                 }
             }
@@ -429,7 +430,7 @@ UTEST_F(util, structure_matching_amyloid_chain) {
         md_timestamp_t t0 = md_time_current();
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_len, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_CHAIN, mol, alloc);
         md_timestamp_t t1 = md_time_current();
-        printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
+        printf("time: %f ms\n", md_time_as_milliseconds(t1 - t0));
         size_t result_count = md_index_data_count(result);
         printf("result count: %zu\n", result_count);
         EXPECT_EQ(result_count, 253);
@@ -445,13 +446,13 @@ UTEST_F(util, structure_matching_PFTAA) {
     {
         // Test for the PFTAAs
         const int ref_structure_idx = 253;
-        const int* ref_idx = md_index_range_beg(mol->structure, ref_structure_idx);
+        const int*   ref_idx  = md_index_range_beg (mol->structure, ref_structure_idx);
         const size_t ref_size = md_index_range_size(mol->structure, ref_structure_idx);
 
         md_timestamp_t t0 = md_time_current();
         md_index_data_t result = md_util_match_by_element(ref_idx, ref_size, MD_UTIL_MATCH_MODE_FIRST, MD_UTIL_MATCH_LEVEL_RESIDUE, mol, alloc);
         md_timestamp_t t1 = md_time_current();
-        printf("time: %f ms\n", md_time_as_milliseconds(t1-t0));
+        printf("time: %f ms\n", md_time_as_milliseconds(t1 - t0));
         size_t result_count = md_index_data_count(result);
         printf("result count: %zu\n", result_count);
         EXPECT_EQ(result_count, 61);
