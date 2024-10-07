@@ -229,12 +229,21 @@ typedef enum {
     MD_UTIL_MATCH_MODE_ALL,		        // Store all matches
 } md_util_match_mode_t;
 
+typedef enum {
+    MD_UTIL_MATCH_FLAGS_NO_H  = 1,              // Disregard hydrogen
+    MD_UTIL_MATCH_FLAGS_NO_CH = 2,              // Disregard hydrogen connected to carbon
+    MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT = 4,  // Enforce a strict edge count for each matched atom pair
+    MD_UTIL_MATCH_FLAGS_STRICT_EDGE_TYPE  = 8,  // Enforce a matching edge type between matches
+} md_util_match_flags_t;
+
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure.
 md_index_data_t md_util_match_by_type   (const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
-md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+// The matcing results are stored into supplied idx_data
+// The returned value is the number of matches found
+size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Computes the maximum common subgraph between two structures
 // The indices which maps from the source structure to the target structure is written to dst_idx_map

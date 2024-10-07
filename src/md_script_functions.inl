@@ -2623,7 +2623,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
             md_bitfield_t* bf_arr = as_bitfield(*dst);
         
-            const size_t num_rings = md_index_data_count(ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
             int64_t dst_idx = 0;
             for (size_t i = 0; i < num_rings; ++i) {
                 md_bitfield_t* bf = &bf_arr[dst_idx];
@@ -2650,7 +2650,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         } else {
             ASSERT(ctx->vis);
-            const size_t num_rings = md_index_data_count(ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
             for (size_t i = 0; i < num_rings; ++i) {
                 // Only visualize the ring if it is fully within the given context
                 const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->ring, i);
@@ -2681,7 +2681,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We need to check if the ring is within the given context
         if (ctx->mol_ctx) {
             int count = 0;
-            const size_t num_rings = md_index_data_count(ctx->mol->ring);
+            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
             for (size_t i = 0; i < num_rings; ++i) {
                 bool discard = false;
                 const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->ring, i);
@@ -2698,7 +2698,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             result = count;
         } else {
-            return (int)md_index_data_count(ctx->mol->ring);
+            return (int)md_index_data_num_ranges(ctx->mol->ring);
         }
     }
 
@@ -4753,7 +4753,7 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
             break;
 		}
 		case COUNT_TYPE_STRUCTURE: {
-            size_t num_structures = md_index_data_count(ctx->mol->structure);
+            size_t num_structures = md_index_data_num_ranges(ctx->mol->structure);
             md_bitfield_t tmp2 = md_bitfield_create(ctx->temp_alloc);
 			for (size_t i = 0; i < num_structures; ++i) {
                 const int32_t* idx = md_index_range_beg(ctx->mol->structure, i);

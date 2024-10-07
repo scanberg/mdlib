@@ -158,7 +158,7 @@ do {                                                                            
     (h)->values[_slot_idx] = value;                                                                                                                                             \
 } while(0);
 
-// Adds the pair `(key, value)` to the hash set.
+// Adds the key to the hash set.
 #define md_hashset_add(h, key) md_hashmap__add(&(h)->keys, &(h)->num_used, &(h)->num_buckets, key, NULL, 0, (h)->allocator, __FILE__, __LINE__)
 
 // Removes the value with the specified `key`. Removing a value never reallocates the hash table.

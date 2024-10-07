@@ -542,14 +542,14 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         }
 
         mol->atom.count += 1;
-        md_array_push(mol->atom.x, x, alloc);
-        md_array_push(mol->atom.y, y, alloc);
-        md_array_push(mol->atom.z, z, alloc);
-        md_array_push(mol->atom.element, element, alloc);
-        md_array_push(mol->atom.type, make_label(atom_type), alloc);
-        md_array_push(mol->atom.flags, flags, alloc);
-        md_array_push(mol->atom.resname, make_label(res_name), alloc);
-        md_array_push(mol->atom.resid, res_id, alloc);
+        md_array_push_no_grow(mol->atom.x, x);
+        md_array_push_no_grow(mol->atom.y, y);
+        md_array_push_no_grow(mol->atom.z, z);
+        md_array_push_no_grow(mol->atom.element, element);
+        md_array_push_no_grow(mol->atom.type, make_label(atom_type));
+        md_array_push_no_grow(mol->atom.flags, flags);
+        md_array_push_no_grow(mol->atom.resname, make_label(res_name));
+        md_array_push_no_grow(mol->atom.resid, res_id);
     }
 
     if (chain_ids) {

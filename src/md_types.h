@@ -150,6 +150,7 @@ typedef struct md_label_t {
 // It is used to represent connected structures, rings and atom connectivity etc.
 
 typedef struct md_index_data_t {
+    struct md_allocator_i* alloc;
     md_array(uint32_t) offsets;
     md_array(int32_t)  indices;
 } md_index_data_t;
@@ -187,32 +188,34 @@ static inline md_label_t make_label(str_t str) {
 }
 
 // Access to substructure data
-static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* alloc) {
+static inline void md_index_data_free (md_index_data_t* data) {
     ASSERT(data);
-    ASSERT(alloc);
-    if (data->offsets) md_array_free(data->offsets,  alloc);
-    if (data->indices) md_array_free(data->indices, alloc);
+    ASSERT(data->alloc);
+    if (data->offsets) md_array_free(data->offsets,  data->alloc);
+    if (data->indices) md_array_free(data->indices,  data->alloc);
+#if DEBUG
     MEMSET(data, 0, sizeof(md_index_data_t));
+#endif
 }
 
-static inline size_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count, md_allocator_i* alloc) {
+static inline size_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count) {
     ASSERT(data);
-    ASSERT(alloc);
+    ASSERT(data->alloc);
     ASSERT(index_count >= 0);
 
     if (md_array_size(data->offsets) == 0) {
-        md_array_push(data->offsets, 0, alloc);
+        md_array_push(data->offsets, 0, data->alloc);
     }
 
     size_t offset = *md_array_last(data->offsets);
     if (index_count > 0) {
         if (index_data) {
-            md_array_push_array(data->indices, index_data, index_count, alloc);
+            md_array_push_array(data->indices, index_data, index_count, data->alloc);
         } else {
-            md_array_grow(data->indices, md_array_size(data->indices) + index_count, alloc);
+            md_array_grow(data->indices, md_array_size(data->indices) + index_count, data->alloc);
         }
         offset = md_array_size(data->indices);
-        md_array_push(data->offsets, (uint32_t)offset, alloc);
+        md_array_push(data->offsets, (uint32_t)offset, data->alloc);
     }
 
     return offset;
@@ -224,22 +227,22 @@ static inline void md_index_data_data_clear(md_index_data_t* data) {
     md_array_shrink(data->indices, 0);
 }
 
-static inline size_t md_index_data_count(md_index_data_t data) {
+static inline size_t md_index_data_num_ranges(md_index_data_t data) {
     return data.offsets ? md_array_size(data.offsets) - 1 : 0;
 }
 
 // Access to individual substructures
-static inline int32_t* md_index_range_beg(md_index_data_t data, size_t idx) {
-    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
-    return data.indices + data.offsets[idx];
+static inline int32_t* md_index_range_beg(md_index_data_t data, size_t range_idx) {
+    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
+    return data.indices + data.offsets[range_idx];
 }
 
-static inline int32_t* md_index_range_end(md_index_data_t data, size_t idx) {
-    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
-    return data.indices + data.offsets[idx+1];
+static inline int32_t* md_index_range_end(md_index_data_t data, size_t range_idx) {
+    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
+    return data.indices + data.offsets[range_idx+1];
 }
 
-static inline size_t md_index_range_size(md_index_data_t data, size_t idx) {
-    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
-    return data.offsets[idx+1] - data.offsets[idx];
+static inline size_t md_index_range_size(md_index_data_t data, size_t range_idx) {
+    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
+    return data.offsets[range_idx+1] - data.offsets[range_idx];
 }

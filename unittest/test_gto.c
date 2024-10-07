@@ -87,82 +87,33 @@ UTEST(gto, evaluate_grid) {
         grid.step_z[2],
     };
 
-    for (int i = 0; i < num_tot_blk; ++i) {
-        // Determine block index from linear input index i
-        int blk_x = i % num_blk[0];
-        int blk_y = (i / num_blk[0]) % num_blk[1];
-        int blk_z = i / (num_blk[0] * num_blk[1]);
+    int bi[3] = {0};
 
-        int off_idx[3] = { blk_x * BLK_DIM, blk_y * BLK_DIM, blk_z * BLK_DIM };
-        int len_idx[3] = { BLK_DIM, BLK_DIM, BLK_DIM };
+    for (; bi[2] < num_blk[2]; ++bi[2]) {
+        for (; bi[1] < num_blk[1]; ++bi[1]) {
+            for (; bi[0] < num_blk[0]; ++bi[0]) {
+                int off_idx[3] = { bi[0] * BLK_DIM, bi[1] * BLK_DIM, bi[2] * BLK_DIM };
+                int len_idx[3] = { BLK_DIM, BLK_DIM, BLK_DIM };
 
-        int beg_idx[3] = {off_idx[0], off_idx[1], off_idx[2]};
-        int end_idx[3] = {off_idx[0] + len_idx[0], off_idx[1] + len_idx[1], off_idx[2] + len_idx[2]};
+                int beg_idx[3] = {off_idx[0], off_idx[1], off_idx[2]};
+                int end_idx[3] = {off_idx[0] + len_idx[0], off_idx[1] + len_idx[1], off_idx[2] + len_idx[2]};
 
-        float aabb_min[3] = {
-            grid.origin[0] + beg_idx[0] * grid.step_x[0],
-            grid.origin[1] + beg_idx[1] * grid.step_y[1],
-            grid.origin[2] + beg_idx[2] * grid.step_z[2],
-        };
-        float aabb_max[3] = {
-            grid.origin[0] + end_idx[0] * grid.step_x[0],
-            grid.origin[1] + end_idx[1] * grid.step_y[1],
-            grid.origin[2] + end_idx[2] * grid.step_z[2],
-        };
+                float aabb_min[3] = {
+                    grid.origin[0] + beg_idx[0] * grid.step_x[0],
+                    grid.origin[1] + beg_idx[1] * grid.step_y[1],
+                    grid.origin[2] + beg_idx[2] * grid.step_z[2],
+                };
+                float aabb_max[3] = {
+                    grid.origin[0] + end_idx[0] * grid.step_x[0],
+                    grid.origin[1] + end_idx[1] * grid.step_y[1],
+                    grid.origin[2] + end_idx[2] * grid.step_z[2],
+                };
 
-        size_t num_sub_gtos = md_gto_aabb_test(sub_gtos, aabb_min, aabb_max, gtos, num_gtos);
+                size_t num_sub_gtos = md_gto_aabb_test(sub_gtos, aabb_min, aabb_max, gtos, num_gtos);
 
-        md_gto_grid_evaluate_sub(&grid, beg_idx, end_idx, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
-
-        //evaluate_grid_ref(ref_grid.data, beg_idx, end_idx, grid.dim, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
-
-        const float eps = 1.0e-5f;
-
-#if 0
-#ifdef __SSE2__
-        evaluate_grid_ortho_8x8x8_128(grid.data, beg_idx, grid.dim, grid.origin, step_ortho, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
-        for (int z = beg_idx[2]; z < end_idx[2]; ++z) {
-            for (int y = beg_idx[1]; y < end_idx[1]; ++y) {
-                for (int x = beg_idx[0]; x < end_idx[0]; ++x) {
-                    int idx = z * grid.dim[0] * grid.dim[1] + y * grid.dim[0] + x;
-                    ASSERT_NEAR(ref_grid.data[idx], grid.data[idx], eps);
-                }
+                md_gto_grid_evaluate_sub(&grid, beg_idx, end_idx, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
             }
         }
-
-        evaluate_grid_8x8x8_128(grid.data, beg_idx, grid.dim, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
-        for (int z = beg_idx[2]; z < end_idx[2]; ++z) {
-            for (int y = beg_idx[1]; y < end_idx[1]; ++y) {
-                for (int x = beg_idx[0]; x < end_idx[0]; ++x) {
-                    int idx = z * grid.dim[0] * grid.dim[1] + y * grid.dim[0] + x;
-                    ASSERT_NEAR(ref_grid.data[idx], grid.data[idx], eps);
-                }
-            }
-        }
-#endif
-
-#ifdef __AVX2__
-        evaluate_grid_ortho_8x8x8_256(grid.data, beg_idx, grid.dim, grid.origin, step_ortho, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
-        for (int z = beg_idx[2]; z < end_idx[2]; ++z) {
-            for (int y = beg_idx[1]; y < end_idx[1]; ++y) {
-                for (int x = beg_idx[0]; x < end_idx[0]; ++x) {
-                    int idx = z * grid.dim[0] * grid.dim[1] + y * grid.dim[0] + x;
-                    ASSERT_NEAR(ref_grid.data[idx], grid.data[idx], eps);
-                }
-            }
-        }
-
-        evaluate_grid_8x8x8_256(grid.data, beg_idx, grid.dim, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
-        for (int z = beg_idx[2]; z < end_idx[2]; ++z) {
-            for (int y = beg_idx[1]; y < end_idx[1]; ++y) {
-                for (int x = beg_idx[0]; x < end_idx[0]; ++x) {
-                    int idx = z * grid.dim[0] * grid.dim[1] + y * grid.dim[0] + x;
-                    ASSERT_NEAR(ref_grid.data[idx], grid.data[idx], eps);
-                }
-            }
-        }
-#endif
-#endif
     }
 
     md_arena_allocator_destroy(arena);
