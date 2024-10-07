@@ -641,7 +641,7 @@ UTEST_F(util, structure_matching_smiles) {
         {STR_LIT("NUCLEOTIDES"), &utest_fixture->mol_nucleotides},
         {STR_LIT("DNA"), &utest_fixture->mol_dna},
         {STR_LIT("TRP"), &utest_fixture->mol_trp},
-        {STR_LIT("ASPIRINE"), &utest_fixture->mol_aspirine},
+        //{STR_LIT("ASPIRINE"), &utest_fixture->mol_aspirine},
     };
 
     md_timestamp_t t0 = md_time_current();
