@@ -48,8 +48,8 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->bond.conn.atom_idx) md_array_free(mol->bond.conn.atom_idx, alloc);
     if (mol->bond.conn.bond_idx) md_array_free(mol->bond.conn.bond_idx, alloc);
 
-    md_index_data_free(&mol->structure, alloc);
-    md_index_data_free(&mol->ring, alloc);
+    md_index_data_free(&mol->structure);
+    md_index_data_free(&mol->ring);
 
     // Instance
     if (mol->instance.atom_range) md_array_free(mol->instance.atom_range, alloc);
