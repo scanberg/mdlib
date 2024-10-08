@@ -190,9 +190,14 @@ static inline md_label_t make_label(str_t str) {
 // Access to substructure data
 static inline void md_index_data_free (md_index_data_t* data) {
     ASSERT(data);
-    ASSERT(data->alloc);
-    if (data->offsets) md_array_free(data->offsets,  data->alloc);
-    if (data->indices) md_array_free(data->indices,  data->alloc);
+    if (data->offsets) {
+        ASSERT(data->alloc);
+        md_array_free(data->offsets,  data->alloc);
+    }
+    if (data->indices) {
+        ASSERT(data->alloc);
+        md_array_free(data->indices,  data->alloc);
+    }
 #if DEBUG
     MEMSET(data, 0, sizeof(md_index_data_t));
 #endif

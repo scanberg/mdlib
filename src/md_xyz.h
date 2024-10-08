@@ -32,7 +32,7 @@ typedef struct md_xyz_model_t {
 	uint32_t beg_coord_index;
 	uint32_t end_coord_index;
 	float cell[3][3];
-	char comment[72];		// This is dimwitted
+	str_t comment;
 } md_xyz_model_t;
 
 typedef struct md_xyz_data_t {

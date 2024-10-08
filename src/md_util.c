@@ -2916,7 +2916,6 @@ static inline bool aabb_overlap(aabb_t a, aabb_t b) {
 
 md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
     ASSERT(atom);
-    ASSERT(res);
     ASSERT(alloc);
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
@@ -2941,7 +2940,7 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
 
     const int atom_count = (int)atom->count;
        
-    if (res->count > 0) {
+    if (res && res->count > 0) {
         // The padding applied to residue AABBs in order to determine potential overlap
         const float aabb_pad = 1.5f;
         int64_t prev_idx = 0;
@@ -2964,8 +2963,10 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
                 curr_aabb.min_box = vec3_sub_f(curr_aabb.min_box, aabb_pad);
                 curr_aabb.max_box = vec3_add_f(curr_aabb.max_box, aabb_pad);
 
+                // @NOTE: Interresidual bonds
                 if (!(prev_flags & MD_FLAG_CHAIN_END) && aabb_overlap(prev_aabb, curr_aabb)) {
-                    find_bonds_in_ranges(&bond, atom, cell, cov_radii, prev_range, curr_range, alloc, temp_arena);
+                    size_t count = find_bonds_in_ranges(&bond, atom, cell, cov_radii, prev_range, curr_range, alloc, temp_arena);
+                    // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
                 }
             }
             find_bonds_in_ranges(&bond, atom, cell, cov_radii, curr_range, curr_range, alloc, temp_arena);
@@ -3063,7 +3064,19 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     }
 
     md_array_resize(bond.order, bond.count, alloc);
-    MEMSET(bond.order, 1, md_array_bytes(bond.order));
+
+    if (res && res->count > 0) {
+        // Mark interresidual bonds
+        for (size_t i = 0; i < bond.count; ++i) {
+            md_residue_idx_t res_idx[2] = {
+                atom->res_idx[bond.pairs[i].idx[0]],
+                atom->res_idx[bond.pairs[i].idx[1]],
+            };
+            bond.order[i] = (res_idx[0] == res_idx[1]) ? 1 : MD_BOND_FLAG_INTER;
+        }
+    } else {
+        MEMSET(bond.order, 1, md_array_bytes(bond.order));
+    }
     
 done:
     md_vm_arena_destroy(temp_arena);
@@ -7094,8 +7107,8 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
         if (!mol->atom.element) {
             md_array_resize(mol->atom.element, mol->atom.count, alloc);
             MEMSET(mol->atom.element, 0, md_array_bytes(mol->atom.element));
-            md_util_element_guess(mol->atom.element, mol->atom.count, mol);
         }
+        md_util_element_guess(mol->atom.element, mol->atom.count, mol);
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();
         MD_LOG_DEBUG("Postprocess: guess elements %.3f ms\n", md_time_as_milliseconds(t1-t0));

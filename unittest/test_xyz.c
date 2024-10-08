@@ -23,7 +23,7 @@ UTEST(xyz, xyz_standard) {
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_TRUE(file);
-    for (int64_t i = 0; i < data.num_models; ++i) {
+    for (size_t i = 0; i < data.num_models; ++i) {
         char str[8] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
@@ -65,7 +65,7 @@ UTEST(xyz, xyz_xmol) {
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_TRUE(file);
-    for (int64_t i = 0; i < data.num_models; ++i) {
+    for (size_t i = 0; i < data.num_models; ++i) {
         char str[8] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
@@ -96,7 +96,7 @@ UTEST(xyz, xyz_tinker) {
     
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_TRUE(file);
-    for (int64_t i = 0; i < data.num_models; ++i) {
+    for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
@@ -127,7 +127,7 @@ UTEST(xyz, xyz_tinker_arc) {
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_TRUE(file);
-    for (int64_t i = 0; i < data.num_models; ++i) {
+    for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
@@ -155,7 +155,7 @@ UTEST(xyz, o2_arc) {
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_TRUE(file);
-    for (int64_t i = 0; i < data.num_models; ++i) {
+    for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
@@ -176,7 +176,7 @@ UTEST(xyz, h2o_arc) {
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_TRUE(file);
-    for (int64_t i = 0; i < data.num_models; ++i) {
+    for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
@@ -197,7 +197,7 @@ UTEST(xyz, ch4_arc) {
 
     md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
     ASSERT_TRUE(file);
-    for (int64_t i = 0; i < data.num_models; ++i) {
+    for (size_t i = 0; i < data.num_models; ++i) {
         char str[64] = {0};
         md_file_seek(file, data.models[i].byte_offset, MD_FILE_BEG);
         EXPECT_NE(md_file_read(file, str, sizeof(str)), 0);
@@ -412,7 +412,7 @@ UTEST(xyz, create_molecule) {
     ASSERT_GT(data.num_models, 0);
     ASSERT_EQ(mol.atom.count, data.models[0].end_coord_index - data.models[0].beg_coord_index);
 
-    for (int64_t i = 0; i < mol.atom.count; ++i) {
+    for (size_t i = 0; i < mol.atom.count; ++i) {
         EXPECT_EQ(mol.atom.x[i], data.coordinates[i].x);
         EXPECT_EQ(mol.atom.y[i], data.coordinates[i].y);
         EXPECT_EQ(mol.atom.z[i], data.coordinates[i].z);
@@ -431,7 +431,7 @@ UTEST(xyz, trajectory_i) {
     EXPECT_EQ(2280, md_trajectory_num_atoms(traj));
     EXPECT_EQ(10, md_trajectory_num_frames(traj));
 
-    const int64_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
+    const size_t mem_size = md_trajectory_num_atoms(traj) * 3 * sizeof(float);
     void* mem_ptr = md_alloc(md_get_temp_allocator(), mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + md_trajectory_num_atoms(traj) * 1;
@@ -439,7 +439,7 @@ UTEST(xyz, trajectory_i) {
 
     md_trajectory_frame_header_t header;
 
-    for (int64_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
+    for (size_t i = 0; i < md_trajectory_num_frames(traj); ++i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
         EXPECT_EQ(2280, header.num_atoms);
     }
