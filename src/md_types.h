@@ -7,13 +7,11 @@
 
 #include <stdint.h>
 
-// We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
-// This allows us later on to interpolate between them
 enum {
     MD_SECONDARY_STRUCTURE_UNKNOWN  = 0,
     MD_SECONDARY_STRUCTURE_COIL     = 0x000000FF,
     MD_SECONDARY_STRUCTURE_HELIX    = 0x0000FF00,
-    MD_SECONDARY_STRUCTURE_SHEET    = 0x00FF0000
+    MD_SECONDARY_STRUCTURE_SHEET    = 0x00FF0000,
 };
 
 enum {
@@ -109,7 +107,7 @@ typedef struct md_protein_backbone_atoms_t {
     md_atom_idx_t ca;
     md_atom_idx_t c;
     md_atom_idx_t o;
-    md_atom_idx_t cb;
+    md_atom_idx_t hn;
 } md_protein_backbone_atoms_t;
 
 // Backbone angles

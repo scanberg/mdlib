@@ -1139,10 +1139,10 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
     md_protein_backbone_atoms_t bb = {0};
     for (int i = 0; i < (int)count; ++i) {
         if (!(bits & 1)  && cmp1(atom_types[i].buf, "N"))  { bb.n  = atom_offset + i; bits |= 1;  continue; }
+        if (!(bits & 16) && cmp2(atom_types[i].buf, "HN")) { bb.hn = atom_offset + i; bits |= 16; continue; }
         if (!(bits & 2)  && cmp2(atom_types[i].buf, "CA")) { bb.ca = atom_offset + i; bits |= 2;  continue; }
         if (!(bits & 4)  && cmp1(atom_types[i].buf, "C"))  { bb.c  = atom_offset + i; bits |= 4;  continue; }
         if (!(bits & 8)  && cmp1(atom_types[i].buf, "O"))  { bb.o  = atom_offset + i; bits |= 8;  continue; }
-        if (!(bits & 16) && cmp2(atom_types[i].buf, "CB")) { bb.cb = atom_offset + i; bits |= 16; continue; }
 
         // Check if done
         if (bits == all_bits) break;
@@ -1153,7 +1153,7 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
         bits |= 8;
     }
 
-    // CB is not required since it is not present for example in Glycine
+    // HN is not
     const uint32_t req_bits = 1 | 2 | 4 | 8;
     if (bits & req_bits) {
         if (backbone_atoms) *backbone_atoms = bb;
@@ -1521,6 +1521,15 @@ static void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], const fl
     x[2] = md_mm256_add_ps(rx[2], dx[2]);
 }
 
+static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
+    const vec3_t b1 = vec3_normalize(vec3_sub(p1, p0));
+    const vec3_t b2 = vec3_normalize(vec3_sub(p2, p1));
+    const vec3_t b3 = vec3_normalize(vec3_sub(p3, p2));
+    const vec3_t c1 = vec3_cross(b1, b2);
+    const vec3_t c2 = vec3_cross(b2, b3);
+    return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
+}
+
 static inline bool zhang_skolnick_ss(const md_molecule_t* mol, md_range_t bb_range, int i, const float distances[3], float delta) {
     ASSERT(mol);
     ASSERT(mol->atom.x);
@@ -1557,7 +1566,8 @@ static inline bool is_sheet(const md_molecule_t* mol, md_range_t bb_range, int i
 
 // TM-align: a protein structure alignment algorithm based on the Tm-score
 // doi:10.1093/nar/gki524
-bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structure[], size_t capacity, const struct md_molecule_t* mol) {
+
+bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, const md_molecule_t* mol) {
     if (!secondary_structure) return false;
     if (capacity == 0) return false;
 
@@ -1617,13 +1627,191 @@ bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secon
     return true;
 }
 
-static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
-    const vec3_t b1 = vec3_normalize(vec3_sub(p1, p0));
-    const vec3_t b2 = vec3_normalize(vec3_sub(p2, p1));
-    const vec3_t b3 = vec3_normalize(vec3_sub(p3, p2));
-    const vec3_t c1 = vec3_cross(b1, b2);
-    const vec3_t c2 = vec3_cross(b2, b3);
-    return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
+typedef struct dssp_res_t {
+    vec3_t N;
+    vec3_t O;
+    vec3_t C;
+    vec3_t H;
+    vec3_t CA;
+    float phi;
+    float psi;
+} dssp_res_t;
+
+static inline double calc_hbond_energy(const dssp_res_t* donor, const dssp_res_t* acceptor) {
+    /*
+    float d_NO = vec3_distance(donor->N, acceptor->O);
+    float d_HC = vec3_distance(donor->H, acceptor->C);
+    float d_NC = vec3_distance(donor->N, acceptor->C);
+    float d_OH = vec3_distance(donor->O, acceptor->H);
+    double e_ref = 0.084 * (1.0 / d_NO + 1.0 / d_HC - 1.0 / d_NC - 1.0 / d_OH) * 332.0;
+    */
+
+    vec4_t v = vec4_rsqrt(vec4_set(
+        vec3_distance_squared(donor->N, acceptor->O),
+        vec3_distance_squared(donor->H, acceptor->C),
+        vec3_distance_squared(donor->N, acceptor->C),
+        vec3_distance_squared(donor->O, acceptor->H)
+    ));
+
+    double e = (0.084 * 332.0) * vec4_reduce_add(vec4_mul(v, vec4_set(1.0f, 1.0f, -1.0f, -1.0f)));
+    return e;
+}
+
+static inline bool has_hbond(const dssp_res_t* donor, const dssp_res_t* acceptor) {
+    double energy = calc_hbond_energy(donor, acceptor);
+    return (energy < -0.5);
+}
+
+static inline vec3_t estimate_HN(vec3_t N, vec3_t CA, vec3_t C_prev) {
+    const float NH_dist = 1.01f;
+    vec3_t U = vec3_normalize(vec3_sub(N, CA));
+    vec3_t V = vec3_normalize(vec3_sub(N, C_prev));
+    return vec3_add(N, vec3_mul_f(vec3_normalize(vec3_add(U, V)), NH_dist));
+}
+
+typedef enum {
+    SECONDARY_STRUCTURE_ALPHA_HELIX = 1,
+    SECONDARY_STRUCTURE_BETA_SHEET,
+    SECONDARY_STRUCTURE_BETA_BRIDGE,
+    SECONDARY_STRUCTURE_TURN,
+    SECONDARY_STRUCTURE_COIL,
+    SECONDARY_STRUCTURE_BEND,
+    SECONDARY_STRUCTURE_HELIX_310,
+    SECONDARY_STRUCTURE_PI_HELIX,
+} dssp_secondary_structure_t;
+
+static inline dssp_secondary_structure_t dssp_classify(dssp_res_t residues[], int n) {
+    // Check phi and psi angles for α-helix (range: φ ≈ -60°, ψ ≈ -45°)
+    if (residues[0].phi < -50 && residues[0].phi > -70 && residues[0].psi < -30 && residues[0].psi > -60) {
+        if (4 < n && has_hbond(&residues[0], &residues[4])) {
+            return SECONDARY_STRUCTURE_ALPHA_HELIX;
+        }
+    }
+    // Detect 310 helix: hydrogen bond between i and i+3
+    else if (3 < n && has_hbond(&residues[0], &residues[3])) {
+        return SECONDARY_STRUCTURE_HELIX_310;
+    }
+    // Detect π-helix: hydrogen bond between i and i+5
+    else if (5 < n && has_hbond(&residues[0], &residues[5])) {
+        return SECONDARY_STRUCTURE_PI_HELIX;
+    }
+    // Detect β-sheet based on H-bonds and torsion angles for sheets (φ ≈ -120°, ψ ≈ 120°)
+    else if (2 < n && has_hbond(&residues[0], &residues[2])) {
+        if (residues[0].phi < -110 && residues[0].psi > 100) {
+            return SECONDARY_STRUCTURE_BETA_SHEET;
+        } else {
+            return SECONDARY_STRUCTURE_BETA_BRIDGE;
+        }
+    }
+    // Detect turns (specific torsion angles between φ ≈ -60° and ψ ≈ -90°)
+    else if (residues[0].phi < -40 && residues[0].phi > -80 && residues[0].psi < -70 && residues[0].psi > -110) {
+        return SECONDARY_STRUCTURE_TURN;
+    }
+    // Detect bends (sharp changes in φ/ψ angles)
+    else if (fabs(residues[0].phi - residues[-1].phi) > 70 || fabs(residues[0].psi - residues[-1].psi) > 70) {
+        return SECONDARY_STRUCTURE_BEND;
+    }
+    return SECONDARY_STRUCTURE_COIL;
+}
+
+bool dssp(md_secondary_structure_t secondary_structure[], size_t capacity, const struct md_molecule_t* mol) {
+    for (size_t chain_idx = 0; chain_idx < mol->protein_backbone.range.count; ++chain_idx) {
+        const md_range_t range = {mol->protein_backbone.range.offset[chain_idx], mol->protein_backbone.range.offset[chain_idx + 1]};
+        ASSERT(range.end <= (int)capacity);
+
+        const int bb_len = range.end - range.beg;
+
+        if (bb_len < 4) {
+            MEMSET(secondary_structure + range.beg, MD_SECONDARY_STRUCTURE_COIL, bb_len * sizeof(md_secondary_structure_t));
+            continue;
+        }
+
+        // The residues represent a sliding window of residues over the backbone range, where residue 1 is the evaluated residue within dssp classify
+        dssp_res_t residues[8] = {0};
+        const int win_size = ARRAY_SIZE(residues);
+
+        for (int i = 0; i < MIN(bb_len, win_size); ++i) {
+            md_atom_idx_t ca_idx = mol->protein_backbone.atoms[range.beg + i].ca;
+            md_atom_idx_t n_idx  = mol->protein_backbone.atoms[range.beg + i].n;
+            md_atom_idx_t c_idx  = mol->protein_backbone.atoms[range.beg + i].c;
+            md_atom_idx_t o_idx  = mol->protein_backbone.atoms[range.beg + i].o;
+            md_atom_idx_t hn_idx = mol->protein_backbone.atoms[range.beg + i].hn;
+
+            residues[i].CA = vec3_set(mol->atom.x[ca_idx], mol->atom.y[ca_idx], mol->atom.z[ca_idx]);
+            residues[i].N  = vec3_set(mol->atom.x[n_idx],  mol->atom.y[n_idx],  mol->atom.z[n_idx]);
+            residues[i].C  = vec3_set(mol->atom.x[c_idx],  mol->atom.y[c_idx],  mol->atom.z[c_idx]);
+            residues[i].O  = vec3_set(mol->atom.x[o_idx],  mol->atom.y[o_idx],  mol->atom.z[o_idx]);
+
+            if (hn_idx > 0) {
+                residues[i].H = vec3_set(mol->atom.x[hn_idx], mol->atom.y[hn_idx], mol->atom.z[hn_idx]);
+            } else if (i > 0) {
+                residues[i].H = estimate_HN(residues[i].N, residues[i].CA, residues[i-1].C);
+            }
+
+            if (i > 0) {
+                residues[i].phi = RAD_TO_DEG(dihedral_angle(residues[i-1].C, residues[i].N, residues[i].CA, residues[i].C));
+            }
+        }
+
+        for (int i = 0; i < MIN(bb_len, win_size) - 1; ++i) {
+            residues[i].psi = RAD_TO_DEG(dihedral_angle(residues[i].N, residues[i].CA, residues[i].C, residues[i+1].N));
+        }
+
+        secondary_structure[range.beg] = MD_SECONDARY_STRUCTURE_COIL;
+        for (int i = range.beg + 1; i < range.end; ++i) {
+            int n = MIN(range.end - i, win_size);
+            dssp_secondary_structure_t ss = dssp_classify(residues + 1, n);
+
+            switch (ss) {
+            case SECONDARY_STRUCTURE_ALPHA_HELIX:
+            case SECONDARY_STRUCTURE_HELIX_310:
+            case SECONDARY_STRUCTURE_PI_HELIX:
+                secondary_structure[i] = MD_SECONDARY_STRUCTURE_HELIX;
+                break;
+            case SECONDARY_STRUCTURE_BETA_SHEET:
+            case SECONDARY_STRUCTURE_BETA_BRIDGE:
+                secondary_structure[i] = MD_SECONDARY_STRUCTURE_SHEET;
+                break;
+            default:
+                secondary_structure[i] = MD_SECONDARY_STRUCTURE_COIL;
+                break;
+            }
+
+            MEMMOVE(residues, residues + 1, sizeof(dssp_res_t) * (win_size - 1));
+
+            if (n == win_size) {
+                const int last = win_size - 1;
+                const int j = range.beg + i + last;
+
+                md_atom_idx_t ca_idx = mol->protein_backbone.atoms[j].ca;
+                md_atom_idx_t n_idx  = mol->protein_backbone.atoms[j].n;
+                md_atom_idx_t c_idx  = mol->protein_backbone.atoms[j].c;
+                md_atom_idx_t o_idx  = mol->protein_backbone.atoms[j].o;
+                md_atom_idx_t hn_idx = mol->protein_backbone.atoms[j].hn;
+
+                residues[last].CA = vec3_set(mol->atom.x[ca_idx], mol->atom.y[ca_idx], mol->atom.z[ca_idx]);
+                residues[last].N  = vec3_set(mol->atom.x[n_idx],  mol->atom.y[n_idx],  mol->atom.z[n_idx]);
+                residues[last].C  = vec3_set(mol->atom.x[c_idx],  mol->atom.y[c_idx],  mol->atom.z[c_idx]);
+                residues[last].O  = vec3_set(mol->atom.x[o_idx],  mol->atom.y[o_idx],  mol->atom.z[o_idx]);
+
+                if (hn_idx > 0) {
+                    residues[last].H = vec3_set(mol->atom.x[hn_idx], mol->atom.y[hn_idx], mol->atom.z[hn_idx]);
+                } else if (i > 0) {
+                    residues[last].H = estimate_HN(residues[last].N, residues[last].CA, residues[last-1].C);
+                }
+
+                residues[last-1].phi = RAD_TO_DEG(dihedral_angle(residues[last-2].C, residues[last-1].N, residues[last-1].CA, residues[last-1].C));
+                residues[last-1].psi = RAD_TO_DEG(dihedral_angle(residues[last-1].N, residues[last-1].CA, residues[last-1].C, residues[last].N));
+            }
+        }
+    }
+
+    return true;
+}
+
+bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structure[], size_t capacity, const struct md_molecule_t* mol) {
+    return tm_align(secondary_structure, capacity, mol);
+    //return dssp(secondary_structure, capacity, mol);
 }
 
 bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], size_t capacity, const md_molecule_t* mol) {
@@ -7032,7 +7220,7 @@ static void md_util_compute_backbone_data(md_protein_backbone_data_t* protein_ba
 
         if (mol->protein_backbone.count > 0) {
             md_util_backbone_angles_compute(protein_backbone->angle, protein_backbone->count, mol);
-            md_util_backbone_secondary_structure_compute(protein_backbone->secondary_structure, protein_backbone->count, mol);
+            md_util_secondary_structure_compute(protein_backbone->secondary_structure, protein_backbone->count, mol);
             md_util_backbone_ramachandran_classify(protein_backbone->ramachandran_type, protein_backbone->count, mol);
         }
     }

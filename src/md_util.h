@@ -71,7 +71,7 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
 bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
 // Computes secondary structures from backbone atoms
-// Does not allocate any data, it assumes that secondary_structures has the same length as args->backbone.count
+// Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
 bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structures[], size_t capacity, const struct md_molecule_t* mol);
 
 // Computes backbone angles from backbone atoms
