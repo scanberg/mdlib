@@ -186,6 +186,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_fmadd_ps simde_mm256_fmadd_ps
 #define md_mm256_fmadd_pd simde_mm256_fmadd_pd
 
+#define md_mm_fmsub_ps simde_mm_fmsub_ps
+#define md_mm_fmsub_pd simde_mm_fmsub_pd
+#define md_mm256_fmsub_ps simde_mm256_fmsub_ps
+#define md_mm256_fmsub_pd simde_mm256_fmsub_pd
+
 #define md_mm_blendv_ps simde_mm_blendv_ps
 #define md_mm_blendv_pd simde_mm_blendv_pd
 #define md_mm256_blendv_ps simde_mm256_blendv_ps
@@ -202,6 +207,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_sqrt_pd simde_mm_sqrt_pd
 #define md_mm256_sqrt_ps simde_mm256_sqrt_ps
 #define md_mm256_sqrt_pd simde_mm256_sqrt_pd
+
+#define md_mm_rsqrt_ps simde_mm_rsqrt_ps
+#define md_mm_rsqrt_pd simde_mm_rsqrt_pd
+#define md_mm256_rsqrt_ps simde_mm256_rsqrt_ps
+#define md_mm256_rsqrt_pd simde_mm256_rsqrt_pd
 
 #define md_mm_min_ps simde_mm_min_ps   
 #define md_mm_min_pd simde_mm_min_pd   

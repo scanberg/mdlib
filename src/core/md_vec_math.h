@@ -622,10 +622,51 @@ MD_VEC_INLINE vec4_t vec4_fmadd(vec4_t a, vec4_t b, vec4_t c) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_fmadd_ps(a.m128, b.m128, c.m128);
 #else
-    r.x = a.x - s;
-    r.y = a.y - s;
-    r.z = a.z - s;
-    r.w = a.w - s;
+    r.x = a.x * b.x + c.x;
+    r.y = a.y * b.y + c.y;
+    r.z = a.z * b.z + c.z;
+    r.w = a.w * b.w + c.w;
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_fmsub(vec4_t a, vec4_t b, vec4_t c) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_fmsub_ps(a.m128, b.m128, c.m128);
+#else
+    r.x = a.x * b.x - c.x;
+    r.y = a.y * b.y - c.y;
+    r.z = a.z * b.z - c.z;
+    r.w = a.w * b.w - c.w;
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_sqrt(vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_sqrt_ps(v.m128);
+#else
+    r.x = sqrtf(v.x);
+    r.y = sqrtf(v.y);
+    r.z = sqrtf(v.z);
+    r.w = sqrtf(v.w);
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_rsqrt(vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_rsqrt_ps(v.m128);
+    vec4_t mul = vec4_mul(vec4_mul(v, r), r);
+    r = vec4_mul(vec4_mul(vec4_set1(0.5f), r), vec4_sub(vec4_set1(3.0f), mul));
+#else
+    r.x = 1.0f / sqrtf(v.x);
+    r.y = 1.0f / sqrtf(v.y);
+    r.z = 1.0f / sqrtf(v.z);
+    r.w = 1.0f / sqrtf(v.w);
 #endif
     return r;
 }
@@ -707,6 +748,30 @@ MD_VEC_INLINE vec4_t vec4_max(vec4_t a, vec4_t b) {
     r.w = MAX(a.w, b.w);
 #endif
     return r;
+}
+
+MD_VEC_INLINE float vec4_reduce_min(vec4_t v) {
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_reduce_min_ps(v.m128);
+#else
+    return MIN(MIN(v.x, v.y), MIN(v.z, v.w));
+#endif
+}
+
+MD_VEC_INLINE float vec4_reduce_max(vec4_t v) {
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_reduce_max_ps(v.m128);
+#else
+    return MAX(MAX(v.x, v.y), MAX(v.z, v.w));
+#endif
+}
+
+MD_VEC_INLINE float vec4_reduce_add(vec4_t v) {
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_reduce_add_ps(v.m128);
+#else
+    return (v.x + v.y) + (v.z + v.w);
+#endif
 }
 
 MD_VEC_INLINE vec4_t vec4_clamp(vec4_t v, vec4_t min, vec4_t max) {
