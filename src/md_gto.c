@@ -160,7 +160,7 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
     GLsizeiptr ssbo_point_group_size   = sizeof(uint32_t) * num_points;
 
     // Clear first 16 bytes which represents the result (group_values)
-    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, ssbo_group_value_offset, ssbo_group_value_size, GL_RED, GL_UNSIGNED_INT, NULL);
+    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32F, ssbo_group_value_offset, ssbo_group_value_size, GL_RED, GL_FLOAT, NULL);
     // Fill next portion of buffer with point xyzr
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_point_xyzr_offset,  ssbo_point_xyzr_size,  point_xyzr);
     // Fill last portion of buffer with point indices
