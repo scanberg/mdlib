@@ -20,7 +20,7 @@ enum {
 	VLX_FLAG_BASIS = 2,
 	VLX_FLAG_SCF   = 4,
 	VLX_FLAG_RSP   = 8,
-	VLX_FLAG_ALL   = (1+2+4+8),
+	VLX_FLAG_ALL   = -1,
 };
 
 // Single contracted basis function
@@ -76,14 +76,14 @@ typedef struct vlx_molecule_t {
 	double* coord_z;
 } vlx_molecule_t;
 
-static basis_set_basis_t* basis_set_get_atom_basis(const basis_set_t* basis_set, int atomic_number) {
+static inline basis_set_basis_t* basis_set_get_atom_basis(const basis_set_t* basis_set, int atomic_number) {
 	if (atomic_number < basis_set->atom_basis.count) {
 		return basis_set->atom_basis.data + atomic_number;
 	}
 	return NULL;
 }
 
-static int compute_max_angular_momentum(const basis_set_t* basis_set, const md_element_t* atomic_numbers, size_t count) {
+static inline int compute_max_angular_momentum(const basis_set_t* basis_set, const md_element_t* atomic_numbers, size_t count) {
 	int max_angl = 0;
 	for (size_t i = 0; i < count; ++i) {
 		const basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_numbers[i]);
@@ -241,17 +241,17 @@ typedef struct basis_func_range_t {
 
 static basis_func_range_t basis_get_atomic_angl_basis_func_range(const basis_set_t* basis_set, int atomic_number, int angl) {
 	basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_number);
-	ASSERT(atom_basis);
-
 	basis_func_range_t range = {0};
 
-	int beg = atom_basis->basis_func_offset;
-	int end = atom_basis->basis_func_offset + atom_basis->basis_func_count;
-	for (int i = beg; i < end; ++i) {
-		int type = basis_set->basis_func.data[i].type;
-		if (type == angl) {
-			range.beg = (range.end == 0) ? i : range.beg;
-			range.end = i + 1;
+	if (atom_basis) {
+		int beg = atom_basis->basis_func_offset;
+		int end = atom_basis->basis_func_offset + atom_basis->basis_func_count;
+		for (int i = beg; i < end; ++i) {
+			int type = basis_set->basis_func.data[i].type;
+			if (type == angl) {
+				range.beg = (range.end == 0) ? i : range.beg;
+				range.end = i + 1;
+			}
 		}
 	}
 
