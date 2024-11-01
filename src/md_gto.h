@@ -60,8 +60,11 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const floa
 // - vol_tex: The texture handle to the volume
 // - vol_dim: The dimensions of the volume
 // - vol_step: The voxel spacing in world space length units
+// - world_to_model: float[4][4] (col-major) transformation matrix to transform a point in world_space coordinates into the volumes model space (note not texture space, but a space which is rotated and translated such that the axes align with the volume and its origin is placed at (0,0,0))
+// - index_to_world: float[4][4] (col-major) transformation matrix to transform a point in the volumes index coordinates [0, dim[ into world space coordinates
 // - point_xyzr: Point coordinates + radius, packed xyzrxyzrxyzr
 // - point_group_idx: Point group index [0, num_groups-1]
+// - num_points: Number of points
 void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points);
 
 // Evaluate GTOs over subportion of a grid
