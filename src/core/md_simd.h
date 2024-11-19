@@ -186,17 +186,27 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_fmadd_ps simde_mm256_fmadd_ps
 #define md_mm256_fmadd_pd simde_mm256_fmadd_pd
 
+#define md_mm_fnmadd_ps simde_mm_fnmadd_ps
+#define md_mm_fnmadd_pd simde_mm_fnmadd_pd
+#define md_mm256_fnmadd_ps simde_mm256_fnmadd_ps
+#define md_mm256_fnmadd_pd simde_mm256_fnmadd_pd
+
 #define md_mm_fmsub_ps simde_mm_fmsub_ps
 #define md_mm_fmsub_pd simde_mm_fmsub_pd
 #define md_mm256_fmsub_ps simde_mm256_fmsub_ps
 #define md_mm256_fmsub_pd simde_mm256_fmsub_pd
+
+#define md_mm_fnmsub_ps simde_mm_fnmsub_ps
+#define md_mm_fnmsub_pd simde_mm_fnmsub_pd
+#define md_mm256_fnmsub_ps simde_mm256_fnmsub_ps
+#define md_mm256_fnmsub_pd simde_mm256_fnmsub_pd
 
 #define md_mm_blendv_ps simde_mm_blendv_ps
 #define md_mm_blendv_pd simde_mm_blendv_pd
 #define md_mm256_blendv_ps simde_mm256_blendv_ps
 #define md_mm256_blendv_pd simde_mm256_blendv_pd
 
-#define MD_SIMD_BLEND_MASK(x,y,z,w) (((x) << 3) | ((y) << 2) | ((z) << 1) | (w))
+#define MD_SIMD_BLEND_MASK(x,y,z,w) (((w) << 3) | ((z) << 2) | ((y) << 1) | (x))
 
 #define md_mm_blend_ps simde_mm_blend_ps
 #define md_mm_blend_pd simde_mm_blend_pd
@@ -230,7 +240,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #define md_mm_movehl_ps simde_mm_movehl_ps
 #define md_mm_movemask_ps simde_mm_movemask_ps
+#define md_mm_movemask_pd simde_mm_movemask_pd
 #define md_mm256_movemask_ps simde_mm256_movemask_ps
+#define md_mm256_movemask_pd simde_mm256_movemask_pd
 
 // BASE INT OPERATIONS
 
@@ -247,6 +259,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_load_si256 simde_mm256_load_si256
 #define md_mm256_load_epi32 simde_mm256_load_si256
 #define md_mm256_load_epi64 simde_mm256_load_si256
+
+#define md_mm_i32gather_epi32 simde_mm_i32gather_epi32
+#define md_mm_i32gather_epi64 simde_mm_i32gather_epi64
+#define md_mm256_i32gather_epi32 simde_mm256_i32gather_epi32
+#define md_mm256_i32gather_epi64 simde_mm256_i32gather_epi64
 
 #define md_mm_storeu_si128 simde_mm_storeu_si128
 #define md_mm_storeu_epi32 simde_mm_storeu_si128
@@ -338,6 +355,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #define md_mm_cmplt_epi32 simde_mm_cmplt_epi32
 
+#define md_mm_movemask_epi8 simde_mm_movemask_epi8
+#define md_mm256_movemask_epi8 simde_mm256_movemask_epi8
+
 // CASTS AND CONVERSIONS
 
 #define md_mm_castps_si128 simde_mm_castps_si128
@@ -387,10 +407,10 @@ MD_SIMD_INLINE void md_mm_unpack_xyz_ps(md_128* out_x, md_128* out_y, md_128* ou
     r2 = MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes);
     r3 = MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes);
 
-    t0 = simde_mm_unpacklo_ps(r0,r1); // xxyy xxyy
-    t1 = simde_mm_unpackhi_ps(r0,r1); // zzww zzww
-    t2 = simde_mm_unpacklo_ps(r2,r3); // xxyy xxyy
-    t3 = simde_mm_unpackhi_ps(r2,r3); // zzww zzww
+    t0 = simde_mm_unpacklo_ps(r0, r1); // xxyy xxyy
+    t1 = simde_mm_unpackhi_ps(r0, r1); // zzww zzww
+    t2 = simde_mm_unpacklo_ps(r2, r3); // xxyy xxyy
+    t3 = simde_mm_unpackhi_ps(r2, r3); // zzww zzww
 
     *out_x = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
     *out_y = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
@@ -408,10 +428,10 @@ MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256*
     r2 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
     r3 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
 
-    t0 = simde_mm256_unpacklo_ps(r0,r1); // xxyy xxyy
-    t1 = simde_mm256_unpackhi_ps(r0,r1); // zzww zzww
-    t2 = simde_mm256_unpacklo_ps(r2,r3); // xxyy xxyy
-    t3 = simde_mm256_unpackhi_ps(r2,r3); // zzww zzww
+    t0 = simde_mm256_unpacklo_ps(r0, r1); // xxyy xxyy
+    t1 = simde_mm256_unpackhi_ps(r0, r1); // zzww zzww
+    t2 = simde_mm256_unpacklo_ps(r2, r3); // xxyy xxyy
+    t3 = simde_mm256_unpackhi_ps(r2, r3); // zzww zzww
 
     *out_x = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
     *out_y = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
