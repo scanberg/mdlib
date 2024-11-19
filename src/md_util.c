@@ -269,6 +269,54 @@ static const uint32_t element_cpk_colors[] = {
     0xFF2E00E6, 0xFF2600EB, 0xFF2200F0, 0xFF2000F6, 0xFF1E00F8, 0xFF1C00FA, 0xFF1A00FC, 0xFF1800FD, 0xFF1600FE, 0xFF1400FF, 0xFF1200FF
 };
 
+// This is bitmasks expressed as combinations of two uint64_t that encodes properties of atomic elements
+static const uint64_t element_metal_mask[2] = {
+    0xff87ffe0fff83818,
+    0x00001fffff9fffff,
+};
+
+static const uint64_t element_halogen_mask[2] = {
+    0x0020000800020200,
+    0x0000000000200000,
+};
+
+static const uint64_t element_alkali_mask[2] = {
+    0x0080002000080808,
+    0x0000000000800000,
+};
+
+static const uint64_t element_alkaline_earth[2] = {
+    0x0100004000101010,
+    0x0000000001000000,
+};
+
+static const uint64_t element_aromatic_ring[2] = {
+    0x000c00030001c1e0,
+    0x0000000000080000,
+};
+
+// This is a macro to generate test functions of the bitmasks above
+// This seems to generate decent assembly across Clang, GCC and MSVC
+// If this is a static inline function, it fails to represent the raw values of the mask in assembly
+#define GENERATE_MASK_FUNC(name, mask) \
+static inline bool name(uint32_t elem) { \
+    uint64_t off = 0; \
+    uint64_t pat = mask[0]; \
+    if (elem >= 64) { \
+        off = 64; \
+        pat = mask[1]; \
+    } \
+    uint64_t msk = (elem < 119) ? 0xFFFFFFFFULL : 0; \
+    uint64_t idx = (elem - off) & msk; \
+    return pat & (1ULL << idx); \
+}
+
+GENERATE_MASK_FUNC(is_metal, element_metal_mask)
+
+GENERATE_MASK_FUNC(is_halogen, element_halogen_mask)
+
+GENERATE_MASK_FUNC(is_aromatic, element_aromatic_ring)
+
 // Some from here https://daylight.com/meetings/mug01/Sayle/m4xbondage.html
 // Some from molstar (github.com/molstar)
 static const char* amino_acids[] = {
@@ -1155,7 +1203,7 @@ static bool md_util_protein_backbone_atoms_extract(md_protein_backbone_atoms_t* 
 
     // HN is not
     const uint32_t req_bits = 1 | 2 | 4 | 8;
-    if (bits & req_bits) {
+    if ((bits & req_bits) == req_bits) {
         if (backbone_atoms) *backbone_atoms = bb;
         return true;
     }
@@ -1197,14 +1245,7 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
     ASSERT(mol->atom.count >= 0);
 
     md_hashmap32_t map = { .allocator = md_get_temp_allocator() };
-    md_hashmap_reserve(&map, Num_Elements);
-
-    // Prime the hashtable with element symbols
-    for (size_t i = 1; i < ARRAY_SIZE(element_symbols); ++i) {
-        str_t sym = element_symbols[i];
-        uint64_t key = md_hash64(sym.ptr, sym.len, 0);
-        md_hashmap_add(&map, key, (uint32_t)i);
-    }
+    md_hashmap_reserve(&map, 256);
 
     typedef struct {
         str_t name;
@@ -1214,6 +1255,8 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
     // Extra table for predefined atom types
     entry_t entries[] = {
         {STR_LIT("SOD"), Na},
+        {STR_LIT("OW"),  O},
+        {STR_LIT("HW"),  H},
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
@@ -1230,7 +1273,11 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
         str_t name = trim_label(original);
 
         if (name.len > 0) {
-            uint64_t key = md_hash64(name.ptr, name.len, 0);
+            str_t resname = STR_LIT("");
+            if (mol->atom.resname) {
+                resname = LBL_TO_STR(mol->atom.resname[i]);
+            }
+            uint64_t key = md_hash64(name.ptr, name.len, md_hash64(resname.ptr, resname.len, 0));
             uint32_t* ptr = md_hashmap_get(&map, key);
             if (ptr) {
                 element[i] = (md_element_t)*ptr;
@@ -1269,13 +1316,6 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
 
             // Heuristic cases
 
-            size_t num_alpha = 0;
-            while (num_alpha < original.len && is_alpha(original.ptr[num_alpha])) ++num_alpha;
-            
-            size_t num_digits = 0;
-            str_t digits = str_substr(original, num_alpha, SIZE_MAX);
-            while (num_digits < digits.len && is_digit(digits.ptr[num_digits])) ++num_digits;
-
             // This can be fishy...
             if (str_eq_cstr(name, "HOH")) {
                 elem = H;
@@ -1285,6 +1325,13 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
                 elem = H;
                 goto done;
             }
+
+            size_t num_alpha = 0;
+            while (num_alpha < original.len && is_alpha(original.ptr[num_alpha])) ++num_alpha;
+            
+            size_t num_digits = 0;
+            str_t digits = str_substr(original, num_alpha, SIZE_MAX);
+            while (num_digits < digits.len && is_digit(digits.ptr[num_digits])) ++num_digits;
 
             // 2-3 letters + 1-2 digit (e.g. HO(H)[0-99]) usually means just look at the first letter
             if ((num_alpha == 2 || num_alpha == 3) && (num_digits == 1 || num_digits == 2)) {
@@ -1307,7 +1354,9 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
 
         done:
             element[i] = elem;
-            md_hashmap_add(&map, key, elem);
+            if (elem != 0) {
+                md_hashmap_add(&map, key, elem);
+            }
         }
     }
 
@@ -1416,7 +1465,7 @@ uint32_t md_util_element_cpk_color(md_element_t element) {
 // Copyright (c) 2006-2017 The MDAnalysis Development Team and contributors
 // https://github.com/MDAnalysis/mdanalysis/blob/develop/package/MDAnalysis/lib/include/calc_distances.h
 
-static void minimum_image_triclinic(float dx[3], const float box[3][3]) {
+static inline void minimum_image_triclinic(float dx[3], const float box[3][3]) {
     /*
     * Minimum image convention for triclinic systems, modelled after domain.cpp
     * in LAMMPS.
@@ -1459,7 +1508,7 @@ static void minimum_image_triclinic(float dx[3], const float box[3][3]) {
     dx[2] = (float)dx_min[2];
 }
 
-static void simd_minimum_image_triclinic(md_256 dx[3], const float box[3][3]) {
+static inline void simd_minimum_image_triclinic(md_256 dx[3], const float box[3][3]) {
     md_256 dx_min[3] = {md_mm256_set1_ps(0), md_mm256_set1_ps(0), md_mm256_set1_ps(0)};
     md_256 dsq_min   = md_mm256_set1_ps(FLT_MAX);
     md_256 dsq;
@@ -1493,7 +1542,7 @@ static void simd_minimum_image_triclinic(md_256 dx[3], const float box[3][3]) {
     dx[2] = dx_min[2];
 }
 
-static void deperiodize_triclinic(float x[3], const float rx[3], const float box[3][3]) {
+static inline void deperiodize_triclinic(float x[3], const float rx[3], const float box[3][3]) {
     float dx[3];
 
     dx[0] = x[0] - rx[0];
@@ -1507,7 +1556,7 @@ static void deperiodize_triclinic(float x[3], const float rx[3], const float box
     x[2] = rx[2] + dx[2];
 }
 
-static void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], const float box[3][3]) {
+static inline void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], const float box[3][3]) {
     md_256 dx[3];
 
     dx[0] = md_mm256_sub_ps(x[0], rx[0]);
@@ -1519,15 +1568,6 @@ static void simd_deperiodize_triclinic(md_256 x[3], const md_256 rx[3], const fl
     x[0] = md_mm256_add_ps(rx[0], dx[0]);
     x[1] = md_mm256_add_ps(rx[1], dx[1]);
     x[2] = md_mm256_add_ps(rx[2], dx[2]);
-}
-
-static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
-    const vec3_t b1 = vec3_normalize(vec3_sub(p1, p0));
-    const vec3_t b2 = vec3_normalize(vec3_sub(p2, p1));
-    const vec3_t b3 = vec3_normalize(vec3_sub(p3, p2));
-    const vec3_t c1 = vec3_cross(b1, b2);
-    const vec3_t c2 = vec3_cross(b2, b3);
-    return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
 }
 
 static inline bool zhang_skolnick_ss(const md_molecule_t* mol, md_range_t bb_range, int i, const float distances[3], float delta) {
@@ -1627,17 +1667,26 @@ bool tm_align(md_secondary_structure_t secondary_structure[], size_t capacity, c
     return true;
 }
 
-typedef struct dssp_res_t {
+typedef struct dssp_hbond_t {
+    float energy;
+    uint32_t res_idx;
+} dssp_hbond_t;
+
+typedef struct dssp_res_coords_t {
     vec3_t N;
     vec3_t O;
     vec3_t C;
     vec3_t H;
     vec3_t CA;
-    float phi;
-    float psi;
-} dssp_res_t;
+    float _pad;
+} dssp_res_coords_t;
 
-static inline double calc_hbond_energy(const dssp_res_t* donor, const dssp_res_t* acceptor) {
+typedef struct dssp_res_hbonds_t {
+    dssp_hbond_t acceptor[2];
+    dssp_hbond_t donor[2];
+} dssp_res_hbonds_t;
+
+static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], uint32_t don_idx, uint32_t acc_idx) {
     /*
     float d_NO = vec3_distance(donor->N, acceptor->O);
     float d_HC = vec3_distance(donor->H, acceptor->C);
@@ -1646,20 +1695,71 @@ static inline double calc_hbond_energy(const dssp_res_t* donor, const dssp_res_t
     double e_ref = 0.084 * (1.0 / d_NO + 1.0 / d_HC - 1.0 / d_NC - 1.0 / d_OH) * 332.0;
     */
 
-    vec4_t v = vec4_rsqrt(vec4_set(
-        vec3_distance_squared(donor->N, acceptor->O),
-        vec3_distance_squared(donor->H, acceptor->C),
-        vec3_distance_squared(donor->N, acceptor->C),
-        vec3_distance_squared(donor->O, acceptor->H)
-    ));
+    dssp_res_coords_t* don = &res_coords[don_idx];
+    dssp_res_coords_t* acc = &res_coords[acc_idx];
 
-    double e = (0.084 * 332.0) * vec4_reduce_add(vec4_mul(v, vec4_set(1.0f, 1.0f, -1.0f, -1.0f)));
-    return e;
+    float result = 0.0f;
+
+    const float min_distance_sq = 0.5f * 0.5f;
+    const float min_bond_energy = -9.9f;
+
+    const vec4_t d2 = {
+        vec3_distance_squared(don->N, acc->O),
+        vec3_distance_squared(don->H, acc->C),
+        vec3_distance_squared(don->N, acc->C),
+        vec3_distance_squared(don->O, acc->H),
+    };
+    
+    const int mask_min = vec4_move_mask(vec4_cmp_lt(d2, vec4_set1(min_distance_sq)));
+    if (mask_min > 0) {
+        result = min_bond_energy;
+    } else {
+        const vec4_t v = vec4_rsqrt(d2);
+        result = (0.084f * 332.0f) * vec4_reduce_add(vec4_mul(v, vec4_set(1.0f, 1.0f, -1.0f, -1.0f)));
+    }
+
+    result = MAX(result, min_bond_energy);
+
+    dssp_res_hbonds_t* don_hbonds = &res_hbonds[don_idx];
+    dssp_res_hbonds_t* acc_hbonds = &res_hbonds[acc_idx];
+
+    if (result < don_hbonds->acceptor[0].energy) {
+        don_hbonds->acceptor[1] = don_hbonds->acceptor[0];
+        don_hbonds->acceptor[0].res_idx = acc_idx;
+        don_hbonds->acceptor[0].energy  = result;
+    } else if (result < don_hbonds->acceptor[1].energy) {
+        don_hbonds->acceptor[1].res_idx = acc_idx;
+        don_hbonds->acceptor[1].energy  = result;
+    }
+
+    if (result < acc_hbonds->donor[0].energy) {
+        acc_hbonds->donor[1] = acc_hbonds->donor[0];
+        acc_hbonds->donor[0].res_idx = don_idx;
+        acc_hbonds->donor[0].energy  = result;
+    } else if (result < acc_hbonds->donor[1].energy) {
+        acc_hbonds->donor[1].res_idx = don_idx;
+        acc_hbonds->donor[1].energy  = result;
+    }
+
+    return result;
 }
 
-static inline bool has_hbond(const dssp_res_t* donor, const dssp_res_t* acceptor) {
-    double energy = calc_hbond_energy(donor, acceptor);
-    return (energy < -0.5);
+void assign_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp_res_coords_t res_coords[], size_t count) {
+    if (count == 0) return;
+
+    const float min_ca_dist_sq = (9.0f * 9.0f);
+    for (uint32_t i = 0; i < (uint32_t)count - 1; ++i) {
+        for (uint32_t j = i + 1; j < (uint32_t)count; ++j) {
+            if (vec3_distance_squared(res_coords[i].CA, res_coords[j].CA) > min_ca_dist_sq) {
+                continue;
+            }
+
+            calc_hbond_energy(res_hbonds, res_coords, i, j);
+            if (j != i + 1) {
+                calc_hbond_energy(res_hbonds, res_coords, j, i);
+            } 
+        }
+    }
 }
 
 static inline vec3_t estimate_HN(vec3_t N, vec3_t CA, vec3_t C_prev) {
@@ -1669,18 +1769,33 @@ static inline vec3_t estimate_HN(vec3_t N, vec3_t CA, vec3_t C_prev) {
     return vec3_add(N, vec3_mul_f(vec3_normalize(vec3_add(U, V)), NH_dist));
 }
 
+static inline bool dssp_test_bond(const dssp_res_hbonds_t res_hbonds[], uint32_t res_a, uint32_t res_b) {
+    const float max_hbond_energy = -0.5f;
+    return (res_hbonds[res_a].acceptor[0].res_idx == res_b && res_hbonds[res_a].acceptor[0].energy < max_hbond_energy) ||
+           (res_hbonds[res_a].acceptor[1].res_idx == res_b && res_hbonds[res_a].acceptor[1].energy < max_hbond_energy);
+}
+
 typedef enum {
-    SECONDARY_STRUCTURE_ALPHA_HELIX = 1,
+    SECONDARY_STRUCTURE_COIL = 0,
+    SECONDARY_STRUCTURE_ALPHA_HELIX,
     SECONDARY_STRUCTURE_BETA_SHEET,
     SECONDARY_STRUCTURE_BETA_BRIDGE,
     SECONDARY_STRUCTURE_TURN,
-    SECONDARY_STRUCTURE_COIL,
     SECONDARY_STRUCTURE_BEND,
     SECONDARY_STRUCTURE_HELIX_310,
     SECONDARY_STRUCTURE_PI_HELIX,
-} dssp_secondary_structure_t;
+} dssp_secondary_structure_type_t;
 
-static inline dssp_secondary_structure_t dssp_classify(dssp_res_t residues[], int n) {
+static inline void dssp_classify_beta_sheet(md_secondary_structure_t out_ss[], const dssp_res_hbonds_t res_hbonds[], size_t count) {
+
+}
+
+static inline void dssp_classify_helix(md_secondary_structure_t out_ss[], const dssp_res_hbonds_t res_hbonds[], size_t count) {
+
+}
+
+#if 0
+static inline dssp_secondary_structure_type_t dssp_classify(md_backbone_angles_t res_bb_angles[], int n) {
     // Check phi and psi angles for α-helix (range: φ ≈ -60°, ψ ≈ -45°)
     if (residues[0].phi < -50 && residues[0].phi > -70 && residues[0].psi < -30 && residues[0].psi > -60) {
         if (4 < n && has_hbond(&residues[0], &residues[4])) {
@@ -1714,7 +1829,18 @@ static inline dssp_secondary_structure_t dssp_classify(dssp_res_t residues[], in
     return SECONDARY_STRUCTURE_COIL;
 }
 
-bool dssp(md_secondary_structure_t secondary_structure[], size_t capacity, const struct md_molecule_t* mol) {
+bool dssp(md_secondary_structure_t secondary_structure[], md_backbone_angles_t opt_bb_angles[], size_t capacity, const struct md_protein_backbone_data_t* backbone) {
+    ASSERT(secondary_structure);
+    ASSERT(backbone);
+
+    if (capacity < backbone->count) {
+        MD_LOG_ERROR("Insufficient capacity in secondary structures passed to DSSP");
+        return false;
+    }
+
+    md_backbone_angles_t* bb_angles = opt_bb_angles ? opt_bb_angles : md_temp_push(backbone->count * sizeof(md_backbone_angles_t));
+    mol->p
+
     for (size_t chain_idx = 0; chain_idx < mol->protein_backbone.range.count; ++chain_idx) {
         const md_range_t range = {mol->protein_backbone.range.offset[chain_idx], mol->protein_backbone.range.offset[chain_idx + 1]};
         ASSERT(range.end <= (int)capacity);
@@ -1731,11 +1857,11 @@ bool dssp(md_secondary_structure_t secondary_structure[], size_t capacity, const
         const int win_size = ARRAY_SIZE(residues);
 
         for (int i = 0; i < MIN(bb_len, win_size); ++i) {
-            md_atom_idx_t ca_idx = mol->protein_backbone.atoms[range.beg + i].ca;
-            md_atom_idx_t n_idx  = mol->protein_backbone.atoms[range.beg + i].n;
-            md_atom_idx_t c_idx  = mol->protein_backbone.atoms[range.beg + i].c;
-            md_atom_idx_t o_idx  = mol->protein_backbone.atoms[range.beg + i].o;
-            md_atom_idx_t hn_idx = mol->protein_backbone.atoms[range.beg + i].hn;
+            md_atom_idx_t ca_idx = backbone->atoms[range.beg + i].ca;
+            md_atom_idx_t n_idx  = backbone->atoms[range.beg + i].n;
+            md_atom_idx_t c_idx  = backbone->atoms[range.beg + i].c;
+            md_atom_idx_t o_idx  = backbone->atoms[range.beg + i].o;
+            md_atom_idx_t hn_idx = backbone->atoms[range.beg + i].hn;
 
             residues[i].CA = vec3_set(mol->atom.x[ca_idx], mol->atom.y[ca_idx], mol->atom.z[ca_idx]);
             residues[i].N  = vec3_set(mol->atom.x[n_idx],  mol->atom.y[n_idx],  mol->atom.z[n_idx]);
@@ -1808,6 +1934,7 @@ bool dssp(md_secondary_structure_t secondary_structure[], size_t capacity, const
 
     return true;
 }
+#endif
 
 bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structure[], size_t capacity, const struct md_molecule_t* mol) {
     return tm_align(secondary_structure, capacity, mol);
@@ -1968,13 +2095,17 @@ static inline int build_key(char* buf, str_t res, str_t a, str_t b) {
 
 static inline int max_neighbors_element(md_element_t elem) {
     switch (elem) {
-    case Unknown: return 0;
-    case H:  return 1;
-    case B:  return 3;
-    case O:  return 2;
-    case F:  return 1;
-    case Br: return 1;
-    case I:  return 3;
+    case Unknown:
+        return 0;
+    case B:
+    case I:
+        return 3;
+    case O:
+        return 2;
+    case H:
+    case F:
+    case Br:
+        return 1;
     default:
         return 4;
     };
@@ -1983,13 +2114,12 @@ static inline int max_neighbors_element(md_element_t elem) {
 static inline float angle(vec3_t a, vec3_t b, vec3_t c) {
     vec3_t v0 = vec3_normalize(vec3_sub(a, b));
     vec3_t v1 = vec3_normalize(vec3_sub(c, b));
-    return (float)RAD_TO_DEG(acosf(vec3_dot(v0,v1)));
+    return (float)RAD_TO_DEG(acosf(vec3_dot(v0, v1)));
 }
 
 static inline size_t extract_neighborhood(md_atom_idx_t out_idx[], size_t out_cap, const md_bond_data_t* bond, size_t atom_idx, size_t depth) {
     ASSERT(out_idx);
     ASSERT(out_cap > 0);
-
 
 #if DEBUG
     MEMSET(out_idx, -1, sizeof(md_atom_idx_t) * out_cap);
@@ -2655,7 +2785,7 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
 
             // First iterate to see that all atoms are sp2 and of correct element
             for (md_atom_idx_t *it = atom_beg; it != atom_end; ++it) {
-                if (type[*it] != 2 || !aromatic_ring_element(atom->element[*it])) {
+                if (type[*it] != 2 || !is_aromatic(atom->element[*it])) {
                     goto next_ring;
                 }
             }
@@ -2922,7 +3052,7 @@ static inline md_256 simd_distance_squared(const md_256 dx[3], const md_unit_cel
     return md_mm256_fmadd_ps(d[0], d[0], md_mm256_fmadd_ps(d[1], d[1], md_mm256_mul_ps(d[2], d[2])));
 }
 
-static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom, const md_unit_cell_t* cell, const float* elem_cov_radii, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
+static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom, const md_unit_cell_t* cell, const float* elem_cov_radii, const int* elem_metal_mask, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
     ASSERT(bond);
     ASSERT(atom);
     ASSERT(cell);
@@ -2942,10 +3072,16 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
 #if 0
             for (int i = range_a.beg; i < range_a.end - 1; ++i) {
                 const vec4_t ci = {atom->x[i], atom->y[i], atom->z[i], 0};
-                const float  ri = element_covalent_radius(atom->element[i]);
+                const float  ri = elem_cov_radii[atom->element[i]];
+                const bool   mi = is_metal(atom->element[i]);
                 for (int j = i + 1; j < range_a.end; ++j) {
                     const vec4_t cj = {atom->x[j], atom->y[j], atom->z[j], 0};
-                    const float  rj = element_covalent_radius(atom->element[j]);
+                    const float  rj = elem_cov_radii[atom->element[j]];
+                    const bool   mj = is_metal(atom->element[j]);
+
+                    // Do not consider potential metal - metal as covalent bonds
+                    if (mi && mj) continue;
+
                     const vec4_t dx = vec4_sub(ci, cj);
                     const float  d2 = distance_squared(dx, cell);
                     if (covalent_bond_heuristic(d2, ri, rj)) {
@@ -2963,6 +3099,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
                     md_mm256_set1_ps(atom->z[i]),
                 };
                 const md_256  ri = md_mm256_set1_ps(elem_cov_radii[atom->element[i]]);
+                const int mi = elem_metal_mask[atom->element[i]] ? -1 : 0;
                 for (int j = i + 1; j < range_a.end; j += 8) {
                     const md_256  cj[3] = {
                         md_mm256_loadu_ps(atom->x + j),
@@ -2970,9 +3107,10 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
                         md_mm256_loadu_ps(atom->z + j),
                     };
                     const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
-                    const md_256i mj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(atom->element + j)), mj);
+                    const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
+                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(atom->element + j)), nj);
                     const md_256  rj = md_mm256_i32gather_ps(elem_cov_radii, ej, 4);
+                    const int mj = md_mm256_movemask_ps(md_mm256_cvtepi32_ps(md_mm256_i32gather_epi32(elem_metal_mask, ej, 4)));
 
                     const md_256 dx[3] = {
                         md_mm256_sub_ps(ci[0], cj[0]),
@@ -2980,7 +3118,14 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
                         md_mm256_sub_ps(ci[2], cj[2]),
                     };
                     const md_256 d2 = simd_distance_squared(dx, cell);
-                    int mask = simd_covalent_bond_heuristic(d2, ri, rj);
+                    int bond_mask = simd_covalent_bond_heuristic(d2, ri, rj);
+
+                    // The metal mask is combined using logic NAND, meaning it is ok for
+                    // two atoms to form a bond if only one of them is a metal,
+                    int metal_mask = ~(mi & mj);
+
+                    int mask = bond_mask & metal_mask;
+
                     md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
                     while (mask) {
                         const int idx = ctz32(mask);
@@ -2995,15 +3140,15 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
 #if 0
             for (int i = range_a.beg; i < range_a.end; ++i) {
                 const vec4_t ci = {atom->x[i], atom->y[i], atom->z[i], 0};
-                const float  ri = element_covalent_radius(atom->element[i]);
+                const float  ri = elem_cov_radii[atom->element[i]];
+                const bool   mi = is_metal(atom->element[i]);
                 // @NOTE: Only store monotonic bond connections
                 for (int j = MAX(i+1, range_b.beg); j < range_b.end; ++j) {
                     const vec4_t cj = {atom->x[j], atom->y[j], atom->z[j], 0};
-                    const float  rj = element_covalent_radius(atom->element[j]);
+                    const float  rj = elem_cov_radii[atom->element[j]];
                     const vec4_t dx = vec4_sub(ci, cj);
                     if (covalent_bond_heuristic(distance_squared(dx, cell), ri, rj)) {
                         md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                        md_array_push(bond->order, bond_order, alloc);
                         bond->count += 1;
                     }
                 }
@@ -3015,7 +3160,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
                     md_mm256_set1_ps(atom->y[i]),
                     md_mm256_set1_ps(atom->z[i]),
                 };
-                const md_256  ri = md_mm256_set1_ps(element_covalent_radius(atom->element[i]));
+                const md_256  ri = md_mm256_set1_ps(elem_cov_radii[atom->element[i]]);
                 for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
                     const md_256  cj[3] = {
                         md_mm256_loadu_ps(atom->x + j),
@@ -3037,9 +3182,9 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
                     md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
                     while (mask) {
                         const int idx = ctz32(mask);
+                        mask = mask & ~(1 << idx);
                         md_array_push_no_grow(bond->pairs, ((md_bond_pair_t){i, j + idx}));
                         bond->count += 1;
-                        mask = mask & ~(1 << idx);
                     }
                 }
             }
@@ -3067,6 +3212,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
             if (atom->element[i] != 0) {
                 const vec4_t ci = {atom->x[i], atom->y[i], atom->z[i], 0};
                 const float  ri = elem_cov_radii[atom->element[i]];
+                const bool   mi = is_metal(atom->element[i]);
                 const size_t num_indices = md_spatial_hash_query_idx(indices, capacity, sh, vec3_from_vec4(ci), cutoff);
                 for (size_t idx = 0; idx < num_indices; ++idx) {
                     const int j = indices[idx];
@@ -3075,6 +3221,11 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
 
                     const vec4_t cj = {atom->x[j], atom->y[j], atom->z[j], 0};
                     const float  rj = elem_cov_radii[atom->element[j]];
+                    const bool   mj = is_metal(atom->element[j]);
+
+                    // Do not consider potential metal - metal bonds as covalent
+                    if (mi && mj) continue;
+
                     const vec4_t dx = vec4_sub(ci, cj);
                     if (covalent_bond_heuristic(distance_squared(dx, cell), ri, rj)) {
                         md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
@@ -3119,11 +3270,15 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
         goto done;
     }
 
-    // Create a covalent bond table with masked out metals
-    float cov_radii[119];
+    const float* cov_radii = element_covalent_radii_f32;
+    int metal_mask[119];
+
     for (md_element_t i = 0; i < 119; ++i) {
+#if 0
         float not_metal = metal_element(i) ? 0.0f : 1.0f;
         cov_radii[i] = element_covalent_radii_f32[i] * not_metal;
+#endif
+        metal_mask[i] = is_metal(i) ? 0xFFFFFFFFU : 0;
     }
 
     const int atom_count = (int)atom->count;
@@ -3140,7 +3295,7 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
         prev_aabb.min_box = vec3_sub_f(prev_aabb.min_box, aabb_pad);
         prev_aabb.max_box = vec3_add_f(prev_aabb.max_box, aabb_pad);
 
-        find_bonds_in_ranges(&bond, atom, cell, cov_radii, prev_range, prev_range, alloc, temp_arena);
+        find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, prev_range, prev_range, alloc, temp_arena);
         for (int64_t curr_idx = 1; curr_idx < (int64_t)res->count; ++curr_idx) {
             md_range_t curr_range = md_residue_atom_range(*res, curr_idx);
             md_flags_t curr_flags = res->flags[curr_idx];
@@ -3153,11 +3308,11 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
 
                 // @NOTE: Interresidual bonds
                 if (!(prev_flags & MD_FLAG_CHAIN_END) && aabb_overlap(prev_aabb, curr_aabb)) {
-                    size_t count = find_bonds_in_ranges(&bond, atom, cell, cov_radii, prev_range, curr_range, alloc, temp_arena);
+                    size_t count = find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, prev_range, curr_range, alloc, temp_arena);
                     // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
                 }
             }
-            find_bonds_in_ranges(&bond, atom, cell, cov_radii, curr_range, curr_range, alloc, temp_arena);
+            find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, curr_range, curr_range, alloc, temp_arena);
             prev_range = curr_range;
             prev_flags = curr_flags;
             prev_idx   = curr_idx;
@@ -3166,7 +3321,7 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     }
     else {
         md_range_t range = {0, atom_count};
-        find_bonds_in_ranges(&bond, atom, cell, cov_radii, range, range, alloc, temp_arena);
+        find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, range, range, alloc, temp_arena);
     }
 
     // Compute connectivity count
@@ -3377,9 +3532,15 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
         str_t resname = LBL_TO_STR(res->name[i]);
         md_range_t range = md_residue_atom_range(*res, i);
         size_t len = (size_t)(range.end - range.beg);
+
+        if (i == 130) {
+            while(0) {};
+        }
+
         md_protein_backbone_atoms_t prot_atoms = {0};
         md_nucleic_backbone_atoms_t nucl_atoms = {0};
-        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && (atom->type && md_util_protein_backbone_atoms_extract(&prot_atoms, atom->type + range.beg, len, range.beg))) {
+        if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && (atom->type && md_util_protein_backbone_atoms_extract(&prot_atoms, atom->type + range.beg, len, range.beg)))
+        {
             res->flags[i] |= MD_FLAG_AMINO_ACID;
             atom->flags[prot_atoms.n]  |= MD_FLAG_BACKBONE;
             atom->flags[prot_atoms.ca] |= MD_FLAG_BACKBONE;
@@ -3395,9 +3556,14 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
             atom->flags[nucl_atoms.o5] |= MD_FLAG_BACKBONE;
         } else if ((len == 1 || len == 3) && (md_util_resname_water(resname) || (atom->type && len == 1 && md_util_resname_water(LBL_TO_STR(atom->type[range.beg]))))) {
             res->flags[i] |= MD_FLAG_WATER;
-        } else if (len == 1) {
+        } else if (md_util_resname_amino_acid(resname) && atom->flags[range.beg] & MD_FLAG_CHAIN) {
+            res->flags[i] |= MD_FLAG_AMINO_ACID;
+        }
+#if 0
+        else if (len == 1) {
             res->flags[i] |= MD_FLAG_ION;
         }
+#endif
 
         for (int j = range.beg; j < range.end; ++j) {
             atom->res_idx[j] = (md_residue_idx_t)i;
@@ -6233,7 +6399,7 @@ static void com_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_id
     for (size_t i = 0; i < count; ++i) {
         int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
         vec4_t xyzw = in_xyzw[idx];
-        vec4_t www1 = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
+        vec4_t www1 = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
         acc = vec4_add(acc, vec4_mul(xyzw, www1));
     }
 
@@ -6258,7 +6424,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             for (size_t i = 0; i < count; ++i) {
                 int32_t idx  = in_idx[i];
                 vec4_t xyzw  = in_xyzw[idx];
-                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
+                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
                 vec4_t theta = vec4_mul(xyzw, scl);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
@@ -6269,7 +6435,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
         } else {
             for (size_t i = 0; i < count; ++i) {
                 vec4_t xyzw  = in_xyzw[i];
-                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
+                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
                 vec4_t theta = vec4_mul(xyzw, scl);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
@@ -6299,7 +6465,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             for (size_t i = 0; i < count; ++i) {
                 int32_t idx  = in_idx[i];
                 vec4_t xyzw  = in_xyzw[idx];
-                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
+                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
                 vec4_t theta = mat4_mul_vec4(M, xyzw);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
@@ -6310,7 +6476,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
         } else {
             for (size_t i = 0; i < count; ++i) {
                 vec4_t xyzw  = in_xyzw[i];
-                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(1,0,0,0));
+                vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
                 vec4_t theta = mat4_mul_vec4(I, xyzw);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
@@ -6696,49 +6862,49 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
     ASSERT(y);
     ASSERT(z);
 
+    const vec4_t mask = vec4_set((cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? 1.0f : 0, (cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? 1.0f : 0, (cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? 1.0f : 0, 0);
+    mat4x3_t I = mat4x3_from_mat3(cell->inv_basis);
+    mat4x3_t M = mat4x3_from_mat3(cell->basis);
+
     if (indices) {
         for (size_t i = 0; i < count; ++i) {
             int32_t idx = indices[i];
-            vec3_t coord = {x[idx], y[idx], z[idx]};
-            coord = mat3_mul_vec3(cell->inv_basis, coord);
-            coord = vec3_fract(coord);
-            coord = mat3_mul_vec3(cell->basis, coord);
-            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_X) {
-                x[idx] = coord.x;
-            }
-            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) {
-                y[idx] = coord.y;
-            }
-            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) {
-                z[idx] = coord.z;
-            }
+            vec4_t original = {x[idx], y[idx], z[idx], 0};
+            vec4_t coord = mat4x3_mul_vec4(I, original);
+            coord = vec4_fract(coord);
+            coord = mat4x3_mul_vec4(M, coord);
+            coord = vec4_blend(original, coord, mask);
+
+            x[idx] = coord.x;
+            y[idx] = coord.y;
+            z[idx] = coord.z;
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
-            vec3_t coord = {x[i], y[i], z[i]};
-            coord = mat3_mul_vec3(cell->inv_basis, coord);
-            coord = vec3_fract(coord);
-            coord = mat3_mul_vec3(cell->basis, coord);
-            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_X) {
-                x[i] = coord.x;
-            }
-            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) {
-                y[i] = coord.y;
-            }
-            if (cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) {
-                z[i] = coord.z;
-            }
+            vec4_t original = {x[i], y[i], z[i], 0};
+            vec4_t coord = mat4x3_mul_vec4(I, original);
+            coord = vec4_fract(coord);
+            coord = mat4x3_mul_vec4(M, coord);
+            coord = vec4_blend(original, coord, mask);
+
+            x[i] = coord.x;
+            y[i] = coord.y;
+            z[i] = coord.z;
         }
     }
 }
 
 static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
+    const vec4_t mask = vec4_set(cell->flags & MD_UNIT_CELL_FLAG_PBC_X, cell->flags & MD_UNIT_CELL_FLAG_PBC_Y, cell->flags & MD_UNIT_CELL_FLAG_PBC_Z, 0);
+    mat4x3_t I = mat4x3_from_mat3(cell->inv_basis);
+    mat4x3_t M = mat4x3_from_mat3(cell->basis);
+
     for (size_t i = 0; i < count; ++i) {
         vec4_t c = xyzw[i];
-        c = mat4_mul_vec4(mat4_from_mat3(cell->inv_basis), c);
+        c = mat4x3_mul_vec4(I, c);
         c = vec4_fract(c);
-        c = mat4_mul_vec4(mat4_from_mat3(cell->basis), c);
-        xyzw[i] = c;
+        c = mat4x3_mul_vec4(M, c);
+        xyzw[i] = vec4_blend(xyzw[i], c, mask);
     }
 }
 
@@ -7254,19 +7420,27 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
         }
         md_flags_t atom_flags = 0;
         for (size_t i = 0; i < mol->atom.count; ++i) {
-            if (mol->atom.flags[i] == MD_FLAG_CHAIN_BEG) {
+            if (i == 977) {
+                while(0) {};
+            }
+
+            if (mol->atom.flags[i] & MD_FLAG_CHAIN_BEG) {
                 atom_flags |= MD_FLAG_CHAIN;
             }
-            if (mol->atom.flags[i] == MD_FLAG_CHAIN_END) {
-                atom_flags &= ~MD_FLAG_CHAIN;
-            }
-            if (mol->atom.flags[i] == MD_FLAG_RES_BEG) {
+            if (mol->atom.flags[i] & MD_FLAG_RES_BEG) {
                 atom_flags |= MD_FLAG_RES;
             }
-            if (mol->atom.flags[i] == MD_FLAG_RES_END) {
+
+
+
+            mol->atom.flags[i] |= atom_flags;
+
+            if (mol->atom.flags[i] & MD_FLAG_RES_END) {
                 atom_flags &= ~MD_FLAG_RES;
             }
-            mol->atom.flags[i] |= atom_flags;
+            if (mol->atom.flags[i] & MD_FLAG_CHAIN_END) {
+                atom_flags &= ~MD_FLAG_CHAIN;
+            }
         }
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();
@@ -7426,6 +7600,11 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                 for (size_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
                     md_range_t range = md_chain_residue_range(mol->chain, chain_idx);
                     for (md_residue_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
+
+                        if (res_idx == 130) {
+                            while(0) {};
+                        }
+
                         md_protein_backbone_atoms_t atoms;
                         md_range_t atom_range = md_residue_atom_range(mol->residue, res_idx);
                         if (md_util_protein_backbone_atoms_extract(&atoms, mol->atom.type + atom_range.beg, atom_range.end - atom_range.beg, atom_range.beg)) {

@@ -715,6 +715,114 @@ static inline void visualize_atom_index(int64_t index, eval_context_t* ctx) {
     }
 }
 
+// Blatantly stolen from MDAnalysis project
+// MDAnalysis --- https://www.mdanalysis.org
+// Copyright (c) 2006-2017 The MDAnalysis Development Team and contributors
+// https://github.com/MDAnalysis/mdanalysis/blob/develop/package/MDAnalysis/lib/include/calc_distances.h
+
+static inline void min_image_triclinic(float dx[3], const float box[3][3], const float half_diag[3]) {
+    /*
+    * Minimum image convention for triclinic systems, modelled after domain.cpp
+    * in LAMMPS.
+    * Assumes that there is a maximum separation of 1 box length (enforced in
+    * dist functions by moving all particles to inside the box before
+    * calculating separations).
+    * Assumes box having zero values for box[1], box[2] and box[5]:
+    *   /  a_x   0    0   \                 /  0    1    2  \
+    *   |  b_x  b_y   0   |       indices:  |  3    4    5  |
+    *   \  c_x  c_y  c_z  /                 \  6    7    8  /
+    */
+
+    // Ensure that dx is within the required "zone"
+    for (int i = 2; i >= 0; i--) {
+        while (dx[i] > half_diag[i]) {
+            for (int j = i; j >= 0; j--) {
+                dx[j] -= box[i][j];
+            }
+        }
+        while (dx[i] <= -half_diag[i]) {
+            for (int j = i; j >= 0; j--) {
+                dx[j] += box[i][j];
+            }
+        }
+    }
+
+    double dx_min[3] = {0.0, 0.0, 0.0};
+    double dsq_min = FLT_MAX;
+    double dsq;
+    double rx;
+    double ry[2];
+    double rz[3];
+    int ix, iy, iz;
+    for (ix = -1; ix < 2; ++ix) {
+        rx = dx[0] + box[0][0] * ix;
+        for (iy = -1; iy < 2; ++iy) {
+            ry[0] = rx + box[1][0] * iy;
+            ry[1] = dx[1] + box[1][1] * iy;
+            for (iz = -1; iz < 2; ++iz) {
+                rz[0] = ry[0] + box[2][0] * iz;
+                rz[1] = ry[1] + box[2][1] * iz;
+                rz[2] = dx[2] + box[2][2] * iz;
+                dsq = rz[0] * rz[0] + rz[1] * rz[1] + rz[2] * rz[2];
+                if (dsq < dsq_min) {
+                    dsq_min = dsq;
+                    dx_min[0] = rz[0];
+                    dx_min[1] = rz[1];
+                    dx_min[2] = rz[2];
+                }
+            }
+        }
+    }
+    dx[0] = (float)dx_min[0];
+    dx[1] = (float)dx_min[1];
+    dx[2] = (float)dx_min[2];
+}
+
+static inline void min_image_ortho(float dx[3], float ext[3], float half_ext[3]) {
+    for (int i = 0; i < 3; i++) {
+        while (dx[i] > half_ext[i])
+        {
+            dx[i] -= ext[i];
+        }
+        while (dx[i] <= -half_ext[i])
+        {
+            dx[i] += ext[i];
+        }
+    }
+}
+
+static inline void min_image_v4(vec4_t dx[], size_t count, const md_unit_cell_t* unit_cell) {
+    if (unit_cell) {
+        vec3_t diag = mat3_diag(unit_cell->basis);
+        vec3_t half_diag = vec3_mul_f(diag, 0.5f);
+        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+            for (size_t i = 0; i < count; ++i) {
+                min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
+            }
+        } else {
+            for (size_t i = 0; i < count; ++i) {
+                min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
+            }
+        }
+    }
+}
+
+static inline void min_image_v3(vec3_t dx[], size_t count, const md_unit_cell_t* unit_cell) {
+    if (unit_cell) {
+        vec3_t diag = mat3_diag(unit_cell->basis);
+        vec3_t half_diag = vec3_mul_f(diag, 0.5f);
+        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+            for (size_t i = 0; i < count; ++i) {
+                min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
+            }
+        } else {
+            for (size_t i = 0; i < count; ++i) {
+                min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
+            }
+        }
+    }
+}
+
 /*
 static inline void visualize_atom_indices32(const int32_t* indices, int64_t num_indices, eval_context_t* ctx) {
     ASSERT(ctx->vis);
@@ -1658,15 +1766,6 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
     md_vm_arena_temp_end(tmp_pos);
 
     return com;
-}
-
-static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
-    const vec3_t b1 = vec3_normalize(vec3_sub(p1, p0));
-    const vec3_t b2 = vec3_normalize(vec3_sub(p2, p1));
-    const vec3_t b3 = vec3_normalize(vec3_sub(p3, p2));
-    const vec3_t c1 = vec3_cross(b1, b2);
-    const vec3_t c2 = vec3_cross(b2, b3);
-    return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
 }
 
 // This should ideally be some light weight regular expression matching.
@@ -3673,14 +3772,22 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        vec3_t a = coordinate_extract_com(arg[0], ctx);
-        vec3_t b = coordinate_extract_com(arg[1], ctx);
-        vec3_t c = coordinate_extract_com(arg[2], ctx);
-        vec3_t d = coordinate_extract_com(arg[3], ctx);
+        vec3_t x[4] = {
+            coordinate_extract_com(arg[0], ctx),
+            coordinate_extract_com(arg[1], ctx),
+            coordinate_extract_com(arg[2], ctx),
+            coordinate_extract_com(arg[3], ctx),
+        };
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = (float)dihedral_angle(a,b,c,d);
+            vec3_t dx[3] = {
+                vec3_sub(x[1], x[0]),
+                vec3_sub(x[2], x[1]),
+                vec3_sub(x[3], x[2]),
+            };
+            min_image_v3(dx, ARRAY_SIZE(dx), &ctx->mol->unit_cell);
+            as_float(*dst) = (float)vec3_dihedral_angle(dx[0], dx[1], dx[2]);
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
@@ -3689,10 +3796,10 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             coordinate_visualize(arg[3], ctx);
 
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                md_script_vis_vertex_t va = vertex(a, COLOR_WHITE);
-                md_script_vis_vertex_t vb = vertex(b, COLOR_WHITE);
-                md_script_vis_vertex_t vc = vertex(c, COLOR_WHITE);
-                md_script_vis_vertex_t vd = vertex(d, COLOR_WHITE);
+                md_script_vis_vertex_t va = vertex(x[0], COLOR_WHITE);
+                md_script_vis_vertex_t vb = vertex(x[1], COLOR_WHITE);
+                md_script_vis_vertex_t vc = vertex(x[2], COLOR_WHITE);
+                md_script_vis_vertex_t vd = vertex(x[3], COLOR_WHITE);
 
                 push_point(va, ctx->vis);
                 push_point(vb, ctx->vis);
@@ -4505,7 +4612,7 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const data_t 
     md_array(vec3_t) ref_pos = 0;
 
     const bool use_exclusion_masks = (arg[0].type.base_type == TYPE_BITFIELD) && (element_count(arg[0]) > 1);
-    const bool use_exclusion_indices = (ref_idx != 0);
+    const bool use_exclusion_indices = (ref_idx != NULL);
 
     if (ref_idx) {
         md_array_resize(ref_pos, md_array_size(ref_idx), ctx->temp_alloc);
