@@ -111,10 +111,10 @@ UTEST_F(spatial_hash, test_correctness_centered) {
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
         vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), pbc_ext);
-        float rad = rnd() * 20;
+        float radius = rnd() * 20;
 
         int ref_count = 0;
-        const float rad2 = rad * rad;
+        const float rad2 = radius * radius;
         for (int64_t i = 0; i < mol->atom.count; ++i) {
             vec4_t c = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
 
@@ -123,17 +123,20 @@ UTEST_F(spatial_hash, test_correctness_centered) {
             }
         }
 
-        
         int count = 0;
-        md_spatial_hash_query(spatial_hash, pos, rad, iter_fn, &count);
+        md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
-        md_spatial_hash_query_batch(spatial_hash, pos, rad, iter_batch_fn, &batch_count);
+        md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
-        if (ref_count != batch_count) {
-            int new_count = 0;
-            md_spatial_hash_query_batch(spatial_hash, pos, rad, iter_batch_fn, &new_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
         }
     }
 
@@ -157,11 +160,11 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
         vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), vec3_from_vec4(pbc_ext));
-        float radius = rnd() * 20;
+        float radius = rnd() * 20.f;
+        const float rad2 = radius * radius;
 
         int ref_count = 0;
-        const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        for (size_t i = 0; i < mol.atom.count; ++i) {
             const vec4_t c = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
             if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
                 ref_count += 1;
@@ -172,9 +175,17 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
@@ -197,7 +208,7 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
 
     const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(mol.unit_cell.basis, vec3_set1(1)), 0);
 
-    //srand(31);
+    srand(31);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -206,7 +217,7 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
 
         int ref_count = 0;
         const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        for (size_t i = 0; i < mol.atom.count; ++i) {
             const vec4_t c = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
             if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
                 ref_count += 1;
@@ -217,9 +228,17 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
@@ -246,7 +265,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
 
         int ref_count = 0;
         const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        for (size_t i = 0; i < mol.atom.count; ++i) {
             const vec4_t c = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
             if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
                 ref_count += 1;
@@ -257,9 +276,17 @@ UTEST_F(spatial_hash, test_correctness_water) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
@@ -285,7 +312,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_centered) {
 
         int ref_count = 0;
         const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol->atom.count; ++i) {
+        for (size_t i = 0; i < mol->atom.count; ++i) {
             vec4_t c = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
 
             if (vec4_periodic_distance_squared(vec4_from_vec3(pos, 0), c, period) < rad2) {
@@ -298,12 +325,16 @@ UTEST_F(spatial_hash, test_correctness_periodic_centered) {
         EXPECT_EQ(ref_count, count);
 
         if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f\n", iter, pos.x, pos.y, pos.z, radius);
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
         }
 
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
@@ -330,7 +361,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
 
         int ref_count = 0;
         const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        for (size_t i = 0; i < mol.atom.count; ++i) {
             const vec4_t c = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
             if (vec4_periodic_distance_squared(vec4_from_vec3(pos, 0), c, pbc_ext) < rad2) {
                 ref_count += 1;
@@ -341,9 +372,17 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
