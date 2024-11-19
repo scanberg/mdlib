@@ -7,6 +7,10 @@
 
 #include <stdint.h>
 
+#if DEBUG
+#include <core/md_log.h>
+#endif
+
 enum {
     MD_SECONDARY_STRUCTURE_UNKNOWN  = 0,
     MD_SECONDARY_STRUCTURE_COIL     = 0x000000FF,
@@ -30,6 +34,7 @@ enum {
     MD_UNIT_CELL_FLAG_PBC_X         = 4,
     MD_UNIT_CELL_FLAG_PBC_Y         = 8,
     MD_UNIT_CELL_FLAG_PBC_Z         = 16,
+    MD_UNIT_CELL_FLAG_PBC_ANY       = 4 | 8 | 16,
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
@@ -248,4 +253,20 @@ static inline int32_t* md_index_range_end(md_index_data_t data, size_t range_idx
 static inline size_t md_index_range_size(md_index_data_t data, size_t range_idx) {
     ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
     return data.offsets[range_idx+1] - data.offsets[range_idx];
+}
+
+// Create a vec4 mask which represents the periodic dimensions from a unit cell.
+// I.e. [0,1,1,0] -> periodic in y and z, but not x
+static inline vec4_t md_unit_cell_pbc_mask(const md_unit_cell_t* unit_cell) {
+    return vec4_set((unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? 1.0f : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? 1.0f : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? 1.0f : 0, 0);
+}
+
+static inline vec4_t md_unit_cell_box_ext(const md_unit_cell_t* unit_cell) {
+#if DEBUG
+    ASSERT(unit_cell);
+    if (!(unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO)) {
+        MD_LOG_DEBUG("Attempting to extract box extent from non orthogonal box");
+    }
+#endif
+    return vec4_mul(md_unit_cell_pbc_mask(unit_cell), vec4_set(unit_cell->basis.elem[0][0], unit_cell->basis.elem[1][1], unit_cell->basis.elem[2][2], 0));
 }
