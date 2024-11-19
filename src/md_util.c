@@ -2538,13 +2538,23 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
                 for (size_t i = 0; i < 5; ++i) {
                     c[i] = md_atom_coord(*atom, atom_idx[i]);
                 }
+
+                vec3_t d[5] = {
+                    vec3_sub(c[1], c[0]),
+                    vec3_sub(c[2], c[1]),
+                    vec3_sub(c[3], c[2]),
+                    vec3_sub(c[4], c[3]),
+                    vec3_sub(c[0], c[4]),
+                };
+
+                // @TODO: Perform min image on d
                 
                 double avg_angle = 0;
-                avg_angle += fabs(dihedral_angle(c[0], c[1], c[2], c[3]));
-                avg_angle += fabs(dihedral_angle(c[1], c[2], c[3], c[4]));
-                avg_angle += fabs(dihedral_angle(c[2], c[3], c[4], c[0]));
-                avg_angle += fabs(dihedral_angle(c[3], c[4], c[0], c[1]));
-                avg_angle += fabs(dihedral_angle(c[4], c[0], c[1], c[2]));
+                avg_angle += fabs(vec3_dihedral_angle(d[0], d[1], d[2]));
+                avg_angle += fabs(vec3_dihedral_angle(d[1], d[2], d[3]));
+                avg_angle += fabs(vec3_dihedral_angle(d[2], d[3], d[4]));
+                avg_angle += fabs(vec3_dihedral_angle(d[3], d[4], d[0]));
+                avg_angle += fabs(vec3_dihedral_angle(d[4], d[0], d[1]));
                 avg_angle = RAD_TO_DEG(avg_angle) / 5.0;
 
                 set_c2_to_sp2 = (avg_angle < 7.5);
@@ -2554,13 +2564,23 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
                     c[i] = md_atom_coord(*atom, atom_idx[i]);
                 }
 
+                vec3_t d[6] = {
+                    vec3_sub(c[1], c[0]),
+                    vec3_sub(c[2], c[1]),
+                    vec3_sub(c[3], c[2]),
+                    vec3_sub(c[4], c[3]),
+                    vec3_sub(c[0], c[4]),
+                };
+
+                // @TODO: Perform min image on d
+
                 double avg_angle = 0;
-                avg_angle += fabs(dihedral_angle(c[0], c[1], c[2], c[3]));
-                avg_angle += fabs(dihedral_angle(c[1], c[2], c[3], c[4]));
-                avg_angle += fabs(dihedral_angle(c[2], c[3], c[4], c[5]));
-                avg_angle += fabs(dihedral_angle(c[3], c[4], c[5], c[0]));
-                avg_angle += fabs(dihedral_angle(c[4], c[5], c[0], c[1]));
-                avg_angle += fabs(dihedral_angle(c[5], c[0], c[1], c[2]));
+                avg_angle += fabs(vec3_dihedral_angle(d[0], d[1], d[2]));
+                avg_angle += fabs(vec3_dihedral_angle(d[1], d[2], d[3]));
+                avg_angle += fabs(vec3_dihedral_angle(d[2], d[3], d[4]));
+                avg_angle += fabs(vec3_dihedral_angle(d[3], d[4], d[5]));
+                avg_angle += fabs(vec3_dihedral_angle(d[4], d[5], d[0]));
+                avg_angle += fabs(vec3_dihedral_angle(d[5], d[0], d[1]));
                 avg_angle = RAD_TO_DEG(avg_angle) / 6.0;
 
                 set_c2_to_sp2 = (avg_angle < 12.0);
