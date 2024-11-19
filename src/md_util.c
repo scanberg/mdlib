@@ -1967,8 +1967,18 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
             const vec3_t ca     = { mol->atom.x[mol->protein_backbone.atoms[i].ca] , mol->atom.y[mol->protein_backbone.atoms[i].ca] , mol->atom.z[mol->protein_backbone.atoms[i].ca]  };
             const vec3_t c      = { mol->atom.x[mol->protein_backbone.atoms[i].c]  , mol->atom.y[mol->protein_backbone.atoms[i].c]  , mol->atom.z[mol->protein_backbone.atoms[i].c]   };
             const vec3_t n_next = { mol->atom.x[mol->protein_backbone.atoms[i+1].n], mol->atom.y[mol->protein_backbone.atoms[i+1].n], mol->atom.z[mol->protein_backbone.atoms[i+1].n] };
-            backbone_angles[i].phi = dihedral_angle(c_prev, n, ca, c);
-            backbone_angles[i].psi = dihedral_angle(n, ca, c, n_next);
+
+            vec3_t d[4] = {
+                vec3_sub(n, c_prev),
+                vec3_sub(ca, n),
+                vec3_sub(c, ca),
+                vec3_sub(n_next, c),
+            };
+
+            md_util_min_image_vec3(d, ARRAY_SIZE(d), &mol->unit_cell);
+
+            backbone_angles[i].phi = vec3_dihedral_angle(d[0], d[1], d[2]);
+            backbone_angles[i].psi = vec3_dihedral_angle(d[1], d[2], d[3]);
         }
     }
 
@@ -6820,6 +6830,114 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
 #if MD_COMPILER_MSVC
 #   pragma warning( pop )
 #endif
+
+// Blatantly stolen from MDAnalysis project
+// MDAnalysis --- https://www.mdanalysis.org
+// Copyright (c) 2006-2017 The MDAnalysis Development Team and contributors
+// https://github.com/MDAnalysis/mdanalysis/blob/develop/package/MDAnalysis/lib/include/calc_distances.h
+
+static inline void min_image_triclinic(float dx[3], const float box[3][3], const float half_diag[3]) {
+    /*
+    * Minimum image convention for triclinic systems, modelled after domain.cpp
+    * in LAMMPS.
+    * Assumes that there is a maximum separation of 1 box length (enforced in
+    * dist functions by moving all particles to inside the box before
+    * calculating separations).
+    * Assumes box having zero values for box[1], box[2] and box[5]:
+    *   /  a_x   0    0   \                 /  0    1    2  \
+    *   |  b_x  b_y   0   |       indices:  |  3    4    5  |
+    *   \  c_x  c_y  c_z  /                 \  6    7    8  /
+    */
+
+    // Ensure that dx is within the required "zone"
+    for (int i = 2; i >= 0; i--) {
+        while (dx[i] > half_diag[i]) {
+            for (int j = i; j >= 0; j--) {
+                dx[j] -= box[i][j];
+            }
+        }
+        while (dx[i] <= -half_diag[i]) {
+            for (int j = i; j >= 0; j--) {
+                dx[j] += box[i][j];
+            }
+        }
+    }
+
+    double dx_min[3] = {0.0, 0.0, 0.0};
+    double dsq_min = FLT_MAX;
+    double dsq;
+    double rx;
+    double ry[2];
+    double rz[3];
+    int ix, iy, iz;
+    for (ix = -1; ix < 2; ++ix) {
+        rx = dx[0] + box[0][0] * ix;
+        for (iy = -1; iy < 2; ++iy) {
+            ry[0] = rx + box[1][0] * iy;
+            ry[1] = dx[1] + box[1][1] * iy;
+            for (iz = -1; iz < 2; ++iz) {
+                rz[0] = ry[0] + box[2][0] * iz;
+                rz[1] = ry[1] + box[2][1] * iz;
+                rz[2] = dx[2] + box[2][2] * iz;
+                dsq = rz[0] * rz[0] + rz[1] * rz[1] + rz[2] * rz[2];
+                if (dsq < dsq_min) {
+                    dsq_min = dsq;
+                    dx_min[0] = rz[0];
+                    dx_min[1] = rz[1];
+                    dx_min[2] = rz[2];
+                }
+            }
+        }
+    }
+    dx[0] = (float)dx_min[0];
+    dx[1] = (float)dx_min[1];
+    dx[2] = (float)dx_min[2];
+}
+
+static inline void min_image_ortho(float dx[3], float ext[3], float half_ext[3]) {
+    for (int i = 0; i < 3; i++) {
+        while (dx[i] > half_ext[i]) {
+            dx[i] -= ext[i];
+        }
+        while (dx[i] <= -half_ext[i]) {
+            dx[i] += ext[i];
+        }
+    }
+}
+
+void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unit_cell_t* unit_cell) {
+    if (unit_cell) {
+        vec3_t diag = mat3_diag(unit_cell->basis);
+        vec3_t half_diag = vec3_mul_f(diag, 0.5f);
+        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+            for (size_t i = 0; i < count; ++i) {
+                min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
+            }
+        } else {
+            for (size_t i = 0; i < count; ++i) {
+                min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
+            }
+        }
+    }
+}
+
+void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unit_cell_t* unit_cell) {
+    if (unit_cell) {
+        vec3_t diag = mat3_diag(unit_cell->basis);
+        vec3_t half_diag = vec3_mul_f(diag, 0.5f);
+        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+            for (size_t i = 0; i < count; ++i) {
+                min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
+            }
+        } else {
+            for (size_t i = 0; i < count; ++i) {
+                min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
+            }
+        }
+    }
+}
+
+
 
 static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size_t count, vec3_t box_ext) {
     ASSERT(x);

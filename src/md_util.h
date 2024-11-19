@@ -139,6 +139,9 @@ void md_util_unit_cell_distance_array(float* out_dist_arr, const vec3_t* coord_a
 float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell);
 float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell);
 
+void md_util_min_image_vec3(vec3_t* in_out_dx, size_t count, const md_unit_cell_t* unit_cell);
+void md_util_min_image_vec4(vec4_t* in_out_dx, size_t count, const md_unit_cell_t* unit_cell);
+
 // Applies periodic boundary conditions to coordinates
 bool md_util_pbc(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
