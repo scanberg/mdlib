@@ -357,11 +357,6 @@ static inline __m128i mask(size_t n) {
     return _mm_cmpgt_epi8(_mm_set1_epi8((char)n), _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
 }
 
-static inline int find_first_char(__m128i v, char c) {
-    __m128i m = _mm_cmpeq_epi8(v, _mm_set1_epi8(c));
-    return ctz32(_mm_movemask_epi8(m));
-}
-
 static inline uint64_t
 #if MD_COMPILER_GCC || MD_COMPILER_CLANG
 __attribute__((target("sse4.1")))
@@ -476,6 +471,11 @@ struct float_token_t {
     uint8_t flags;
     uint8_t _unused;
 };
+
+static inline int find_first_char(__m128i v, char c) {
+    __m128i m = _mm_cmpeq_epi8(v, _mm_set1_epi8(c));
+    return ctz32(_mm_movemask_epi8(m));
+}
 
 // Specialized version where the the integer and fractional part each
 // are expected to fit into 8 characters.
