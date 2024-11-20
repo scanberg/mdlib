@@ -258,7 +258,9 @@ static inline size_t md_index_range_size(md_index_data_t data, size_t range_idx)
 // Create a vec4 mask which represents the periodic dimensions from a unit cell.
 // I.e. [0,1,1,0] -> periodic in y and z, but not x
 static inline vec4_t md_unit_cell_pbc_mask(const md_unit_cell_t* unit_cell) {
-    return vec4_set((unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? 1.0f : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? 1.0f : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? 1.0f : 0, 0);
+    float val;
+    MEMSET(&val, 0xFF, sizeof(val));
+    return vec4_set((unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? val : 0, 0);
 }
 
 static inline vec4_t md_unit_cell_box_ext(const md_unit_cell_t* unit_cell) {

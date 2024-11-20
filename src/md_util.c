@@ -6961,8 +6961,6 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unit_cell_t* uni
     }
 }
 
-
-
 static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size_t count, vec3_t box_ext) {
     ASSERT(x);
     ASSERT(y);
@@ -7004,7 +7002,7 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
     ASSERT(y);
     ASSERT(z);
 
-    const vec4_t mask = vec4_set((cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? 1.0f : 0, (cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? 1.0f : 0, (cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? 1.0f : 0, 0);
+    const vec4_t mask = md_unit_cell_pbc_mask(cell);
     mat4x3_t I = mat4x3_from_mat3(cell->inv_basis);
     mat4x3_t M = mat4x3_from_mat3(cell->basis);
 
@@ -7037,7 +7035,7 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
 }
 
 static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
-    const vec4_t mask = vec4_set(cell->flags & MD_UNIT_CELL_FLAG_PBC_X, cell->flags & MD_UNIT_CELL_FLAG_PBC_Y, cell->flags & MD_UNIT_CELL_FLAG_PBC_Z, 0);
+    const vec4_t mask = md_unit_cell_pbc_mask(cell);
     mat4x3_t I = mat4x3_from_mat3(cell->inv_basis);
     mat4x3_t M = mat4x3_from_mat3(cell->basis);
 
@@ -7071,6 +7069,7 @@ bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t co
     }
 
     // The unit cell is not initialized or is simply not periodic
+    MD_LOG_ERROR("Unrecognized unit_cell type");
     return false;
 }
 
@@ -7095,6 +7094,7 @@ bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* u
     }
 
     // The unit cell is not initialized or is simply not periodic
+    MD_LOG_ERROR("Unrecognized unit_cell type");
     return false;
 }
 
