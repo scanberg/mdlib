@@ -461,6 +461,14 @@ MD_VEC_INLINE vec3_t vec3_max(vec3_t a, vec3_t b) {
     return res;
 }
 
+MD_VEC_INLINE float vec3_reduce_min(vec3_t v) {
+    return MIN(v.x, MIN(v.y, v.z));
+}
+
+MD_VEC_INLINE float vec3_reduce_max(vec3_t v) {
+    return MAX(v.x, MAX(v.y, v.z));
+}
+
 // VEC4 OPERATIONS
 MD_VEC_INLINE vec4_t vec4_zero(void) {
 #if MD_VEC_MATH_USE_SIMD
