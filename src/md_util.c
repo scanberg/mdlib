@@ -6871,14 +6871,16 @@ static inline void min_image_triclinic(float dx[3], const float box[3][3], const
 
     // Ensure that dx is within the required "zone"
     for (int i = 2; i >= 0; i--) {
-        while (dx[i] > half_diag[i]) {
-            for (int j = i; j >= 0; j--) {
-                dx[j] -= box[i][j];
+        if (half_diag[i] > 0.0f) {
+            while (dx[i] > half_diag[i]) {
+                for (int j = i; j >= 0; j--) {
+                    dx[j] -= box[i][j];
+                }
             }
-        }
-        while (dx[i] <= -half_diag[i]) {
-            for (int j = i; j >= 0; j--) {
-                dx[j] += box[i][j];
+            while (dx[i] <= -half_diag[i]) {
+                for (int j = i; j >= 0; j--) {
+                    dx[j] += box[i][j];
+                }
             }
         }
     }
@@ -6916,11 +6918,13 @@ static inline void min_image_triclinic(float dx[3], const float box[3][3], const
 
 static inline void min_image_ortho(float dx[3], float ext[3], float half_ext[3]) {
     for (int i = 0; i < 3; i++) {
-        while (dx[i] > half_ext[i]) {
-            dx[i] -= ext[i];
-        }
-        while (dx[i] <= -half_ext[i]) {
-            dx[i] += ext[i];
+        if (ext[i] > 0.0f) {
+            while (dx[i] > half_ext[i]) {
+                dx[i] -= ext[i];
+            }
+            while (dx[i] <= -half_ext[i]) {
+                dx[i] += ext[i];
+            }
         }
     }
 }
@@ -6933,7 +6937,7 @@ void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unit_cell_t* uni
             for (size_t i = 0; i < count; ++i) {
                 min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
             }
-        } else {
+        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
             for (size_t i = 0; i < count; ++i) {
                 min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
             }
@@ -6949,7 +6953,7 @@ void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unit_cell_t* uni
             for (size_t i = 0; i < count; ++i) {
                 min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
             }
-        } else {
+        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
             for (size_t i = 0; i < count; ++i) {
                 min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
             }
