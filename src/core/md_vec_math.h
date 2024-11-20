@@ -461,6 +461,14 @@ MD_VEC_INLINE vec3_t vec3_max(vec3_t a, vec3_t b) {
     return res;
 }
 
+MD_VEC_INLINE float vec3_reduce_min(vec3_t v) {
+    return MIN(v.x, MIN(v.y, v.z));
+}
+
+MD_VEC_INLINE float vec3_reduce_max(vec3_t v) {
+    return MAX(v.x, MAX(v.y, v.z));
+}
+
 MD_VEC_INLINE float vec3_angle(vec3_t v1, vec3_t v2) {
     vec3_t w = vec3_cross(v1, v2);
     float wl = vec3_length(w);
