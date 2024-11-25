@@ -3702,7 +3702,44 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 push_line(vb, vc, ctx->vis);
                 push_line(vc, vd, ctx->vis);
 
-                // @TODO: Draw planes and the angle between them
+                vec3_t b = x[1];
+                vec3_t c = x[2];
+
+                vec3_t ba = vec3_sub(x[0], x[1]);
+                vec3_t bc = vec3_sub(x[2], x[1]);
+                vec3_t cd = vec3_sub(x[3], x[2]);
+
+                vec3_t u  = vec3_normalize(bc);
+                vec3_t vp = vec3_mul_f(u, vec3_dot(ba, u));
+                vec3_t vo = vec3_sub(ba, vp);
+                vec3_t wp = vec3_mul_f(u, vec3_dot(cd, u));
+                vec3_t wo = vec3_sub(cd, wp);
+
+                // Plane 1
+                {
+                    md_script_vis_vertex_t v[4] = {
+                        vb,
+                        vc,
+                        vertex(vec3_add(vec3_add(c, wp), vo), COLOR_WHITE),
+                        va,
+                    };
+
+                    push_triangle(v[0], v[1], v[2], ctx->vis);
+                    push_triangle(v[0], v[2], v[3], ctx->vis);
+                }
+
+                // Plane 2
+                {
+                    md_script_vis_vertex_t v[4] = {
+                        vc,
+                        vb,
+                        vertex(vec3_add(vec3_add(b, vp), wo), COLOR_WHITE),
+                        vd,
+                    };
+
+                    push_triangle(v[0], v[1], v[2], ctx->vis);
+                    push_triangle(v[0], v[2], v[3], ctx->vis);
+                }
             }
         }
     } else {
