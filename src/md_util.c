@@ -1247,6 +1247,10 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
     md_hashmap32_t map = { .allocator = md_get_temp_allocator() };
     md_hashmap_reserve(&map, 256);
 
+    // Just for pure elements which have not been salted with resname
+    md_hashmap32_t elem_map = { .allocator = md_get_temp_allocator() };
+    md_hashmap_reserve(&elem_map, 256);
+
     typedef struct {
         str_t name;
         md_element_t elem;
@@ -1260,7 +1264,7 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
-        md_hashmap_add(&map, md_hash64(entries[i].name.ptr, entries[i].name.len, 0), entries[i].elem);
+        md_hashmap_add(&elem_map, md_hash64(entries[i].name.ptr, entries[i].name.len, 0), entries[i].elem);
     }
 
     const size_t count = MIN(capacity, mol->atom.count);
@@ -1273,18 +1277,28 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
         str_t name = trim_label(original);
 
         if (name.len > 0) {
+            md_element_t elem = 0;
+
             str_t resname = STR_LIT("");
+            uint64_t res_key = 0;
             if (mol->atom.resname) {
                 resname = LBL_TO_STR(mol->atom.resname[i]);
+                res_key = md_hash64(resname.ptr, resname.len, 0);
             }
-            uint64_t key = md_hash64(name.ptr, name.len, md_hash64(resname.ptr, resname.len, 0));
+            uint64_t key = md_hash64(name.ptr, name.len, res_key);
             uint32_t* ptr = md_hashmap_get(&map, key);
             if (ptr) {
                 element[i] = (md_element_t)*ptr;
                 continue;
+            } else {
+                uint64_t elem_key = md_hash64(name.ptr, name.len, 0);
+                ptr = md_hashmap_get(&elem_map, elem_key);
+                if (ptr) {
+                    elem = (md_element_t)*ptr;
+                    goto done;
+                }
             }
 
-            md_element_t elem = 0;
             if ((elem = md_util_element_lookup(name)) != 0) goto done;
 
             // If amino acid, try to deduce the element from that
