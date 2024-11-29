@@ -437,25 +437,31 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedra
 	return true;
 }
 
-static bool parse_masses(md_array(float)* mass_type_table, size_t num_atom_types, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static size_t parse_masses(float* mass_type_table, size_t mass_type_capacity, size_t expected_count, md_buffered_reader_t* reader) {
 	str_t tok[4];
 	str_t line;
-	size_t num_mass = 0;
-	while (num_mass < num_atom_types && md_buffered_reader_extract_line(&line, reader)) {
+	size_t extracted_count = 0;
+	for (size_t i = 0; i < expected_count; ++i) {
+		if (!md_buffered_reader_extract_line(&line, reader)) {
+			MD_LOG_ERROR("Failed to extract mass line");
+			return 0;
+		}
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 2) {
 			MD_LOG_ERROR("Failed to parse mass line, expected 2 tokens, got %i", (int)num_tok);
-			return false;
+			return 0;
 		}
 		int   type = (int)parse_int(tok[0]);
 		float mass = (float)parse_float(tok[1]);
-		if (type >= (int)md_array_size(*mass_type_table)) {
-			md_array_resize(*mass_type_table, (size_t)type, alloc);
+		if (type >= (int)mass_type_capacity) {
+			MD_LOG_ERROR("Invalid atom type: %i", (int)num_tok);
+			return 0;
 		}
-		(*mass_type_table)[type] = mass;
-		num_mass += 1;
+		mass_type_table[type] = mass;
+		extracted_count += 1;
 	}
-	return true;
+
+	return extracted_count;
 }
 
 size_t md_lammps_atom_format_count(void) {
@@ -521,7 +527,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 
-	md_array(float) mass_table = 0;
+	float mass_table[256] = {0};
 
 	str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
@@ -544,7 +550,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (mass_table) {
 				for (size_t i = 0; i < data->num_atoms; ++i) {
 					int32_t type = data->atoms[i].type;
-					data->atoms[i].mass = type < (int)md_array_size(mass_table) ? mass_table[data->atoms[i].type] : 0.0f;
+					data->atoms[i].mass = type < (int)ARRAY_SIZE(mass_table) ? mass_table[type] : 0.0f;
 				}
 			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Bonds"))) {
@@ -583,9 +589,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 			md_buffered_reader_skip_line(reader);
-			mass_table = md_array_create(float, data->num_atom_types + 1, md_get_temp_allocator());
-			MEMSET(mass_table, 0, md_array_bytes(mass_table));
-			if (!parse_masses(&mass_table, data->num_atom_types, reader, md_get_temp_allocator())) {
+			if (parse_masses(mass_table, ARRAY_SIZE(mass_table), data->num_atom_types, reader) != data->num_atom_types) {
+				MD_LOG_ERROR("Number of masses in table did not match the number of atom types");
 				return false;
 			}
 		} else if (num_tok == 2 && is_int(tok[0])) {

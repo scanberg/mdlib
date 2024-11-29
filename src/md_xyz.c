@@ -371,32 +371,25 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
     ASSERT(reader);
     ASSERT(coord_count);
 
-    str_t line[2] = {0};
+    str_t line = {0};
     str_t tokens[8];
-    str_t comment = {0};
     int64_t count = 0;
 
-    if (!md_buffered_reader_extract_line(&line[0], reader)) {
+    if (model->byte_offset == 261828) {
+        while(0);
+    }
+
+    if (!md_buffered_reader_extract_line(&line, reader)) {
         return false;
     }
 
-    str_t trimmed = str_trim(line[0]);
-    if (trimmed.len == 0) {
+    line = str_trim(line);
+    if (str_empty(line)) {
         return false;
-    }
-
-    // Arc files are also flagged as tinker, but only pure tinker files uses 1 line for its header.
-    bool pure_tinker = (flags & XYZ_TINKER) && !(flags & XYZ_ARC);
-    if (!pure_tinker) {
-        // Tinker is the only format that only uses 1 line for the header
-        // The others uses 2 lines
-        if (!md_buffered_reader_extract_line(&line[1], reader)) {
-            MD_LOG_ERROR("Failed to extract extra line");
-        }
     }
 
     // Parse data from first line, we only need the first two tokens even though more may exist
-    const size_t num_tok = extract_tokens(tokens, 2, &line[0]);
+    const size_t num_tok = extract_tokens(tokens, 2, &line);
     if (num_tok) {
         count = parse_int(tokens[0]);
     }
@@ -406,20 +399,35 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
         return false;
     }
 
-    if (flags & XYZ_TINKER) {
+
+    if ((flags & XYZ_TINKER)) {
         // Comment encoded after the first token
-        comment = str_substr(line[0], (int64_t)(tokens[1].ptr - line[0].ptr), SIZE_MAX);
-    } else {
-        // Second line is the comment
-        comment = line[1];
+        str_t comment = str_substr(line, (ptrdiff_t)(tokens[1].ptr - line.ptr), SIZE_MAX);
+
+        if ((flags & XYZ_STORE_COMMENT) && !str_empty(comment)) {
+            ASSERT(alloc);
+            model->comment = str_copy(comment, alloc);
+        }
     }
 
-    if ((flags & XYZ_STORE_COMMENT) && !str_empty(comment) && alloc) {
-        model->comment = str_copy(comment, alloc);
+    // Arc files are also flagged as tinker, but only pure tinker files uses 1 line for its header.
+    bool pure_tinker = (flags & XYZ_TINKER) && !(flags & XYZ_ARC);
+    if (!pure_tinker) {
+        // Tinker is the only format that only uses 1 line for the header
+        // The others uses 2 lines
+        if (!md_buffered_reader_extract_line(&line, reader)) {
+            MD_LOG_ERROR("Failed to extract extra line");
+        }
+
+        str_t comment = line;
+        if ((flags & XYZ_STORE_COMMENT) && !str_empty(comment)) {
+            ASSERT(alloc);
+            model->comment = str_copy(comment, alloc);
+        }
     }
 
     if (flags & XYZ_ARC) {
-        const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line[1]);
+        const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
         
         if (num_tokens != 6) {
             MD_LOG_ERROR("Unexpected number of tokens (%zu) when parsing XYZ Arc Cell data", num_tokens);
@@ -440,9 +448,9 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
         md_unit_cell_t cell = md_util_unit_cell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
         MEMCPY(model->cell, cell.basis.elem, sizeof(model->cell));
     } else if (flags & XYZ_EXTENDED) {
-        // Extract cell data from comment
-        if (!extract_extxyz_cell(model->cell, comment)) {
-            MD_LOG_ERROR("Failed to extract cell data from comment");
+        // Extract cell data from line
+        if (!extract_extxyz_cell(model->cell, line)) {
+            MD_LOG_ERROR("Failed to extract cell data from line");
             return false;
         }
     }
@@ -617,7 +625,15 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
     md_xyz_model_t mdl = {0};
     size_t byte_offset = 0;
 
+    size_t model_count = 0;
+
     while (xyz_parse_model_header(&mdl, reader, flags | XYZ_STORE_COMMENT, &expected_count, alloc)) {
+        if (md_array_size(data->models) == 16126) {
+            while(0) {};
+        }
+
+        model_count = md_array_size(data->models);
+
         md_array_ensure(data->coordinates, md_array_size(data->coordinates) + expected_count, alloc);
         
         mdl.byte_offset = byte_offset;
@@ -634,6 +650,7 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
                 return false;
             }
         }
+
         mdl.end_coord_index = (uint32_t)md_array_size(data->coordinates);
         md_array_push(data->models, mdl, alloc);
 
