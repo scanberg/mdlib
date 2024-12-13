@@ -740,6 +740,11 @@ bool md_bitfield_iter_next(md_bitfield_iter_t* it) {
     return false;
 }
 
+void md_bitfield_iter_skip_to_idx(md_bitfield_iter_t* it, uint64_t idx) {
+    ASSERT(it);
+    it->idx = idx;
+}
+
 bool md_bitfield_get_range(uint64_t* first_idx, uint64_t* last_idx, const md_bitfield_t* bf) {
     ASSERT(first_idx);
     ASSERT(last_idx);

@@ -104,6 +104,8 @@ md_bitfield_iter_t md_bitfield_iter_range_create(const md_bitfield_t* bf, uint64
 // Go to the next bit set in the bitfield, returns true if found, false if not found
 bool md_bitfield_iter_next(md_bitfield_iter_t* iter);
 
+void md_bitfield_iter_skip_to_idx(md_bitfield_iter_t* iter, uint64_t idx);
+
 // Extract the indices which are represented by the iterator
 // Writes the indices of bits set to the given buffer.
 // cap is the capacity (num elements) of the buffer.
