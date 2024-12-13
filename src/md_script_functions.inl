@@ -49,6 +49,9 @@
 #define TI_COORDINATE     {TYPE_COORDINATE, {1}}
 #define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}}
 
+#define as_bool(arg) (*((bool*)((arg).ptr)))
+#define as_bool_arr(arg) ((bool*)((arg).ptr))
+
 #define as_float(arg) (*((float*)((arg).ptr)))
 #define as_float_arr(arg) ((float*)((arg).ptr))
 
@@ -310,7 +313,8 @@ static int _cast_int_arr_to_flt_arr     (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
-static int _join_bf_arr              (data_t*, data_t[], eval_context_t*);
+static int _join_bf_arr                 (data_t*, data_t[], eval_context_t*);
+static int _split_bf                    (data_t*, data_t[], eval_context_t*);
 
 // Basic operations
 static int _min_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
@@ -321,6 +325,10 @@ static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _and  (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _or   (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _xor  (data_t*, data_t[], eval_context_t*); // -> bitfield
+
+// Boolean operators
+static int _cmp_lt  (data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_gt  (data_t*, data_t[], eval_context_t*); // -> bool
 
 // Selectors
 // Atom level selectors
@@ -450,9 +458,9 @@ static procedure_t casts[] = {
     {CSTR("cast"),    TI_FLOAT,         1,  {TI_INT},           _cast_int_to_flt},
     {CSTR("cast"),    TI_IRANGE,        1,  {TI_INT},           _cast_int_to_irng},
     {CSTR("cast"),    TI_FRANGE,        1,  {TI_IRANGE},        _cast_irng_to_frng},
-    {CSTR("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_DEDUCE_LENGTH_FROM_ARG},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _join_bf_arr},
@@ -472,73 +480,82 @@ static procedure_t operators[] = {
     {CSTR("or"),     TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _or,    FLAG_FLATTEN},
     {CSTR("xor"),    TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _xor,   FLAG_FLATTEN},
 
+    // Boolean
+    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_lt,   FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+
+    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_gt,   FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+
     // Binary add
     {CSTR("+"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_add_f_f},
-    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_add_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_add_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_add_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_add_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("+"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_add_i_i},
-    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_add_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_add_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_add_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_add_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Unary negation
     {CSTR("-"),      TI_FLOAT,          1,  {TI_FLOAT},                             _op_neg_f},
-    {CSTR("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
     {CSTR("-"),      TI_INT,            1,  {TI_INT},                               _op_neg_i},
-    {CSTR("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("-"),      TI_DISTRIBUTION,   1,  {TI_DISTRIBUTION},                      _op_simd_neg_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("-"),      TI_DISTRIBUTION,   1,  {TI_DISTRIBUTION},                      _op_simd_neg_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG},
 
     // Binary sub
     {CSTR("-"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_sub_f_f},
-    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_sub_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_sub_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("-"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_sub_i_i},
-    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary mul
     {CSTR("*"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_mul_f_f},
-    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("*"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_mul_i_i},
-    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_mul_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_mul_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary div
     {CSTR("/"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_div_f_f},
-    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
     
-    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("//"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
-    {CSTR("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 };
 
 static procedure_t procedures[] = {
@@ -566,9 +583,9 @@ static procedure_t procedures[] = {
     {CSTR("max"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _fmaxf},
 
     // ARRAY VERSIONS OF NATIVE FUNCS
-    {CSTR("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
     {CSTR("min"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _min_farr},
     {CSTR("max"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _max_farr},
 
@@ -583,7 +600,7 @@ static procedure_t procedures[] = {
     {CSTR("dot"),       TI_FLOAT,       2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
     {CSTR("cross"),     TI_FLOAT3,      2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
     {CSTR("length"),    TI_FLOAT,       1, {TI_FLOAT_ARR},                  _length},
-    {CSTR("normalize"), TI_FLOAT_ARR,   1, {TI_FLOAT_ARR},                  _normalize, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("normalize"), TI_FLOAT_ARR,   1, {TI_FLOAT_ARR},                  _normalize, FLAG_DEDUCE_LENGTH_FROM_ARG},
     {CSTR("mul"),       TI_FLOAT44,     2, {TI_FLOAT44,     TI_FLOAT44},    _mat4_mul_mat4},
     {CSTR("mul"),       TI_FLOAT4,      2, {TI_FLOAT44,     TI_FLOAT4},     _mat4_mul_vec4},
 
@@ -677,6 +694,7 @@ static procedure_t procedures[] = {
     // --- MISC ---
     {CSTR("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
     {CSTR("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
+    {CSTR("split"),     TI_BITFIELD,     1,  {TI_BITFIELD, TI_STRING},  _split_bf},
 
     {CSTR("residue"),   TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
     {CSTR("chain"),     TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
@@ -736,6 +754,9 @@ static inline void visualize_atom_indices64(const int64_t* indices, int64_t num_
 */
 
 #define COLOR_WHITE 0xFFFFFFFFU
+#define COLOR_GRAY  0x88888888U
+
+#define COLOR_U32(R,G,B,A) (((uint32_t)A << 24) | ((uint32_t)B << 16) | ((uint32_t)G << 8) | ((uint32_t)R))
 
 static inline md_script_vis_vertex_t vertex(vec3_t p, uint32_t color) {
     return (md_script_vis_vertex_t){p, color};
@@ -3601,6 +3622,30 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
+static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_t color, md_script_vis_ctx_t* vis) {
+    ASSERT(vis);
+    const float len = 0.5f;
+    /*if (angle < 0.0f) {
+        axis = vec3_mul_f(axis, -1.0f);
+        angle = -angle;
+    }*/
+    const size_t num_segments = fabs(angle) / DEG_TO_RAD(10);
+    const float scl = 1.0 / num_segments;
+    md_script_vis_vertex_t vb = vertex(c, color);
+    md_script_vis_vertex_t vp = vertex(vec3_add(c, vec3_mul_f(v, len)), color);
+    push_line(vb, vp, vis);
+    for (size_t i = 1; i <= num_segments; ++i) {
+        const float t = i * scl;
+        quat_t q = quat_axis_angle(axis, angle * t);
+        vec3_t n = quat_mul_vec3(q, v);
+        md_script_vis_vertex_t vn = vertex(vec3_add(c, vec3_mul_f(n, len)), color);
+        push_triangle(vb, vp, vn, vis);
+        push_line(vp, vn, vis);
+        vp = vn;
+    }
+    push_line(vb, vp, vis);
+}
+
 static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
@@ -3635,11 +3680,27 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 push_line(vb, vc, ctx->vis);
 
                 // This is the angle arc
-                // @TODO: Insert more vertices here and make it a bit smoother
-                md_script_vis_vertex_t vd = vertex(vec3_add(b, vec3_mul_f(v0, 0.5f)), COLOR_WHITE);
-                md_script_vis_vertex_t ve = vertex(vec3_add(b, vec3_mul_f(v1, 0.5f)), COLOR_WHITE);
+                const vec3_t axis = vec3_normalize(vec3_cross(v0, v1));
+                const float angle = acosf(vec3_dot(v0, v1));
 
-                push_triangle(vb, vd, ve, ctx->vis);
+                draw_angle_arc(b, v0, axis, angle, COLOR_WHITE, ctx->vis);
+
+                /*
+                const size_t num_segments = 10;
+                const float scl = 1.0 / num_segments;
+                md_script_vis_vertex_t vp = vertex(vec3_add(b, vec3_mul_f(v0, 0.5f)), COLOR_WHITE);
+                push_line(vb, vp, ctx->vis);
+                for (size_t i = 1; i <= num_segments; ++i) {
+                    const float t = i * scl;
+                    quat_t q = quat_axis_angle(axis, angle * t);
+                    vec3_t n = quat_mul_vec3(q, v0);
+                    md_script_vis_vertex_t v = vertex(vec3_add(b, vec3_mul_f(n, 0.5f)), COLOR_WHITE);
+                    push_triangle(vb, vp, v, ctx->vis);
+                    push_line(vp, v, ctx->vis);
+                    vp = v;
+                }
+                push_line(vb, vp, ctx->vis);
+                */
             }
         }
     } else {
@@ -3671,15 +3732,17 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             coordinate_extract_com(arg[3], ctx),
         };
 
+        vec3_t dx[3] = {
+            vec3_sub(x[1], x[0]),
+            vec3_sub(x[2], x[1]),
+            vec3_sub(x[3], x[2]),
+        };
+        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->mol->unit_cell);
+        float angle = (float)vec3_dihedral_angle(dx[0], dx[1], dx[2]);
+
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            vec3_t dx[3] = {
-                vec3_sub(x[1], x[0]),
-                vec3_sub(x[2], x[1]),
-                vec3_sub(x[3], x[2]),
-            };
-            md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->mol->unit_cell);
-            as_float(*dst) = (float)vec3_dihedral_angle(dx[0], dx[1], dx[2]);
+            as_float(*dst) = angle;
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
@@ -3702,6 +3765,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 push_line(vb, vc, ctx->vis);
                 push_line(vc, vd, ctx->vis);
 
+#if 1
                 vec3_t b = x[1];
                 vec3_t c = x[2];
 
@@ -3709,7 +3773,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 vec3_t bc = vec3_sub(x[2], x[1]);
                 vec3_t cd = vec3_sub(x[3], x[2]);
 
-                vec3_t u  = vec3_normalize(bc);
+                vec3_t u  = vec3_normalize(bc); // Axis
                 vec3_t vp = vec3_mul_f(u, vec3_dot(ba, u));
                 vec3_t vo = vec3_sub(ba, vp);
                 vec3_t wp = vec3_mul_f(u, vec3_dot(cd, u));
@@ -3717,29 +3781,41 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
                 // Plane 1
                 {
+                    vec3_t d = vec3_mul_f(vec3_normalize(vo), 1.0f);
                     md_script_vis_vertex_t v[4] = {
                         vb,
                         vc,
-                        vertex(vec3_add(vec3_add(c, wp), vo), COLOR_WHITE),
-                        va,
+                        vertex(vec3_add(c, d), COLOR_WHITE),
+                        vertex(vec3_add(b, d), COLOR_WHITE),
                     };
 
-                    push_triangle(v[0], v[1], v[2], ctx->vis);
-                    push_triangle(v[0], v[2], v[3], ctx->vis);
+                    push_line(v[0], v[1], ctx->vis);
+                    push_line(v[1], v[2], ctx->vis);
+                    push_line(v[2], v[3], ctx->vis);
+                    push_line(v[3], v[0], ctx->vis);
                 }
 
                 // Plane 2
                 {
+                    vec3_t d = vec3_mul_f(vec3_normalize(wo), 1.0f);
                     md_script_vis_vertex_t v[4] = {
                         vc,
                         vb,
-                        vertex(vec3_add(vec3_add(b, vp), wo), COLOR_WHITE),
-                        vd,
+                        vertex(vec3_add(b, d), COLOR_WHITE),
+                        vertex(vec3_add(c, d), COLOR_WHITE),
                     };
 
-                    push_triangle(v[0], v[1], v[2], ctx->vis);
-                    push_triangle(v[0], v[2], v[3], ctx->vis);
+                    push_line(v[0], v[1], ctx->vis);
+                    push_line(v[1], v[2], ctx->vis);
+                    push_line(v[2], v[3], ctx->vis);
+                    push_line(v[3], v[0], ctx->vis);
                 }
+                // Angle
+                {
+                    vec3_t p0 = vec3_lerp(b, c, 0.5f);
+                    draw_angle_arc(p0, vo, u, angle, COLOR_WHITE, ctx->vis);
+                }
+#endif
             }
         }
     } else {
@@ -3999,6 +4075,130 @@ static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     for (int64_t i = 0; i < count; ++i) {
         md_bitfield_or_inplace(dst_bf, &src_bf_arr[i]);
+    }
+
+    return 0;
+}
+
+static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    if (!dst) return 0;
+
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING));    
+
+    str_t str_arg = as_string(arg[1]);
+
+    enum split_t {
+        UNKNOWN,
+        RES,
+        CHAIN,
+        STRUCT,
+    };
+    enum split_t split = UNKNOWN;
+
+    struct entry_t {
+        str_t str;
+        enum split_t split;
+    };
+    struct entry_t entries[] = {
+        {STR_LIT("res"),        RES},
+        {STR_LIT("residue"),    RES},
+        {STR_LIT("comp"),       RES},
+        {STR_LIT("component"),  RES},
+        {STR_LIT("chain"),      CHAIN},
+        {STR_LIT("struct"),     STRUCT},
+        {STR_LIT("structure"),  STRUCT},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
+        if (str_eq(str_arg, entries[i].str)) {
+            split = entries[i].split;
+        }
+    }
+
+    if (split == UNKNOWN) {
+        md_strb_t sb = md_strb_create(ctx->temp_alloc);
+        md_strb_fmt(&sb, "Invalid argument ('" STR_FMT "'), valid arguments are: ", STR_ARG(str_arg));
+
+        for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
+            md_strb_push_str(&sb, entries[i].str);
+            if (i < ARRAY_SIZE(entries) - 1) {
+                md_strb_push_str(&sb, STR_LIT(", "));
+            }
+        }
+
+        LOG_ERROR_STR(ctx->ir, ctx->arg_tokens[1], md_strb_to_str(sb));
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    if (split == RES) {
+        if (ctx->mol->residue.count == 0 || !ctx->mol->atom.res_idx) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "Missing residue information, cannot perform split");
+            return STATIC_VALIDATION_ERROR;
+        }
+    } else if (split == CHAIN) {
+        if (ctx->mol->chain.count == 0 || !ctx->mol->atom.chain_idx) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "Missing chain information, cannot perform split");
+            return STATIC_VALIDATION_ERROR;
+        }
+    } else if (split == STRUCT) {
+        if (md_index_data_num_ranges(ctx->mol->structure) == 0) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "Missing struct information, cannot perform split");
+            return STATIC_VALIDATION_ERROR;
+        }
+    }
+
+    md_bitfield_t tmp_bf = {0};
+
+    md_bitfield_t* dst_bf_arr = as_bitfield(*dst);
+    const md_bitfield_t* src_bf = (md_bitfield_t*)arg[0].ptr;
+
+    // Modify bitfield if we have a context
+    if (ctx->mol_ctx) {
+        tmp_bf = md_bitfield_create(ctx->temp_alloc);
+        md_bitfield_or(&tmp_bf, src_bf, ctx->mol_ctx);
+        src_bf = &tmp_bf;
+    }
+
+    int prev_idx = -1;
+    int count = 0;
+
+    uint32_t* atom_struct_idx = 0;
+    if (split == STRUCT) {
+        atom_struct_idx = md_vm_arena_push(ctx->temp_alloc, ctx->mol->atom.count * sizeof(uint32_t));
+        for (size_t i = 0; i < md_index_data_num_ranges(ctx->mol->structure); ++i) {
+            uint32_t structure_idx = i + 1;
+            for (size_t j = md_index_range_beg(ctx->mol->structure, i); j < md_index_range_end(ctx->mol->structure, i); ++j) {
+                atom_struct_idx[j] = structure_idx;
+            }
+        }
+    }
+
+    md_bitfield_iter_t it = md_bitfield_iter_create(src_bf);
+
+    while (md_bitfield_iter_next(&it)) {
+        size_t atom_idx = md_bitfield_iter_idx(&it);
+        int idx = -1;
+        switch (split) {
+        case RES:
+            idx = ctx->mol->atom.res_idx[atom_idx];
+            md_bitfield_iter_skip_to_idx(&it, md_residue_atom_range(ctx->mol->residue, idx).end);
+            break;
+        case CHAIN:
+            idx = ctx->mol->atom.chain_idx[atom_idx];
+            md_bitfield_iter_skip_to_idx(&it, md_chain_atom_range(ctx->mol->chain, idx).end);
+            break;
+        case STRUCT:
+            idx = atom_struct_idx[atom_idx];
+        default:
+            ASSERT(false);
+        }
+    }
+
+    if (atom_struct_idx) {
+        // pop memory
     }
 
     return 0;
@@ -5202,6 +5402,83 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     return 0;
 }
+
+static int _cmp_lt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
+
+    const float* a = as_float_arr(arg[0]);
+    const float* b = as_float_arr(arg[1]);
+    int a_len = type_info_array_len(arg[0].type);
+    int b_len = type_info_array_len(arg[1].type);
+
+    int result = 0;
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR));
+        int out_len = type_info_array_len(dst->type);
+        bool* out = as_bool_arr(*dst);
+
+        if (a_len < b_len) {
+            ASSERT(a_len == 1);
+            for (int i = 0; i < out_len; ++i) {
+                out[i] = a[0] < b[i];
+            }
+        } else if (a_len > b_len) {
+            ASSERT(b_len == 1);
+            ASSERT(out_len == a_len);
+            for (int i = 0; i < out_len; ++i) {
+                out[i] = a[i] < b[0];
+            }
+        } else {
+            ASSERT(a_len == out_len && b_len == out_len);
+            for (int i = 0; i < a_len; ++i) {
+                out[i] = a[i] < b[i];
+            }
+        }
+    } else {
+        result = MAX(a_len, b_len);
+    }
+    return result;
+}
+
+static int _cmp_gt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
+
+    const float* a = as_float_arr(arg[0]);
+    const float* b = as_float_arr(arg[1]);
+    int a_len = type_info_array_len(arg[0].type);
+    int b_len = type_info_array_len(arg[1].type);
+
+    int result = 0;
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR));
+        int out_len = type_info_array_len(dst->type);
+        bool* out = as_bool_arr(*dst);
+
+        if (a_len < b_len) {
+            ASSERT(a_len == 1);
+            for (int i = 0; i < out_len; ++i) {
+                out[i] = a[0] > b[i];
+            }
+        } else if (a_len > b_len) {
+            ASSERT(b_len == 1);
+            ASSERT(out_len == a_len);
+            for (int i = 0; i < out_len; ++i) {
+                out[i] = a[i] > b[0];
+            }
+        } else {
+            ASSERT(a_len == out_len && b_len == out_len);
+            for (int i = 0; i < a_len; ++i) {
+                out[i] = a[i] > b[i];
+            }
+        }
+    } else {
+        result = MAX(a_len, b_len);
+    }
+    return result;
+}
+
 /*
 // This is some experimental future work, for matching structures using maximum common subgraph
 

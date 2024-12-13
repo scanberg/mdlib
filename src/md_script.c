@@ -189,7 +189,7 @@ typedef enum flags_t {
     // Procedure Flags
     FLAG_SYMMETRIC_ARGS             = 0x00001, // Indicates that the first two arguments are symmetric, meaning they can be swapped
     FLAG_ARGS_EQUAL_LENGTH          = 0x00002, // Arguments should have the same array length
-    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH   = 0x00004, // Return type array length matches argument arrays' length
+    FLAG_DEDUCE_LENGTH_FROM_ARG     = 0x00004, // Return type array length matches argument arrays' length
     FLAG_DYNAMIC_LENGTH             = 0x00008, // Return type has a varying length which is not constant over frames
     FLAG_QUERYABLE_LENGTH           = 0x00010, // Marks a procedure as queryable, meaning it can be called with NULL as dst to query the length of the resulting array
     FLAG_STATIC_VALIDATION          = 0x00020, // Marks a procedure as validatable, meaning it can be called with NULL as dst to validate it in a static context during compilation
@@ -621,6 +621,9 @@ static associativity_t operator_associativity(ast_type_t type) {
 }
 
 // This is used to get the dim of an element in an array for example
+// shifting left by shifting in zeroes
+// before [1,3,0,0]
+// after  [3,0,0,0]
 static void dim_shift_left(int dim[MAX_NUM_DIMS]) {
     for (int i = 0; i < MAX_NUM_DIMS - 1; ++i) {
         dim[i] = dim[i+1];
@@ -628,8 +631,10 @@ static void dim_shift_left(int dim[MAX_NUM_DIMS]) {
     dim[MAX_NUM_DIMS-1] = 0;
 }
 
-// The semantics are a bit weird, but the idea is that if we shift right,
+// The semantics are a bit weird, but the idea is that if we shift right, i.e. shifting in dimensions of 1
 // that means we are creating an array of length 1, which is the same as a scalar
+// before [3,0,0,0]
+// after  [1,3,0,0]
 static void dim_shift_right(int dim[MAX_NUM_DIMS]) {
     for (int i = MAX_NUM_DIMS - 1; i > 0; --i) {
         dim[i] = dim[i-1];
@@ -729,20 +734,13 @@ static bool is_type_dim_compatible(type_info_t from, type_info_t to) {
     // Some examples of matching, ^ shows len_dim
     // float[4][0][0][0] should match     float[-1][0][0][0]
     //       ^                                   ^
-    // float[4][4][0][0] should match     float[4][-1][0][0]
-    //          ^                                   ^
-    // float[4][4][0][0] should not match float[4][-1][0][0]
-    //             ^                                ^
-    // 
-    // This case should be nice to have, but is perhaps more confusing and too loose to support
-    // float[4][4][1][0] should     match float[4][-1][0][0]
-    //             ^                        
-    // 
-    // float[3][1] should match float[3][0]
-
-
-    // Is this always the case??? (Not if we want to support the last special case
-    //if (from.len_dim != to.len_dim) return false;
+    // float[4][4][0][0] should match     float[-1][4][0][0]
+    //       ^                                   ^
+    // float[4][4][0][0] should not match float[-1][3][0][0]
+    //       ^                                   ^
+    //
+    // float[1][3][0][0] should match float[3][0][0][0]
+    // i.e. an array of size 1 with type float3 should be compatible with float3
 
     for (int i = 0; i < MAX_NUM_DIMS; ++i) {
         if (i == 0) {
@@ -1094,10 +1092,13 @@ static const char* get_value_type_str(base_type_t type) {
     }
 }
 
-#define LOG_WARNING(ir, tok, fmt, ...)  create_log_token(LOG_LEVEL_WARNING, ir, tok, fmt, ##__VA_ARGS__)
-#define LOG_ERROR(ir, tok, fmt, ...)    create_log_token(LOG_LEVEL_ERROR, ir, tok, fmt, ##__VA_ARGS__)
+#define LOG_WARNING(ir, tok, fmt, ...)  create_log_token_fmt(LOG_LEVEL_WARNING, ir, tok, fmt, ##__VA_ARGS__)
+#define LOG_ERROR(ir, tok, fmt, ...)    create_log_token_fmt(LOG_LEVEL_ERROR, ir, tok, fmt, ##__VA_ARGS__)
 
-static void create_log_token(log_level_t level, md_script_ir_t* ir, token_t token, const char* format, ...) {
+#define LOG_WARNING_STR(ir, tok, str)   create_log_token_str(LOG_LEVEL_WARNING, ir, tok, str)
+#define LOG_ERROR_STR(ir, tok, str)     create_log_token_str(LOG_LEVEL_ERROR, ir, tok, str)
+
+static void create_log_token_str(log_level_t level, md_script_ir_t* ir, token_t token, str_t str) {
     ASSERT(ir);
     if (!ir->record_log) return;
 
@@ -1106,18 +1107,12 @@ static void create_log_token(log_level_t level, md_script_ir_t* ir, token_t toke
         ir->record_log = false;
     }
     
-    char buf[1024];
-    va_list args;
-    va_start(args, format);
-    int len = vsnprintf(buf, ARRAY_SIZE(buf), format, args);
-    va_end(args);
-
     md_log_token_t log_tok = {
         .range = {
             .beg = token.beg,
             .end = token.end,
         },
-        .text = str_copy_cstrn(buf, len, ir->arena),
+        .text = str_copy(str, ir->arena),
     };
 
     switch (level) {
@@ -1130,30 +1125,19 @@ static void create_log_token(log_level_t level, md_script_ir_t* ir, token_t toke
     default:
         break;
     }
+}
 
-    /*
-    md_logf(MD_LOG_TYPE_DEBUG, "%s line %i: %s", ir->stage, token.line_beg, buffer);
+static void create_log_token_fmt(log_level_t level, md_script_ir_t* ir, token_t token, const char* format, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, format);
+    int len = vsnprintf(buf, ARRAY_SIZE(buf), format, args);
+    va_end(args);
 
-    if (token.str.ptr && token.str.len) {
-        MEMSET(buffer, 0, ARRAY_SIZE(buffer));
-        const char* src_beg = ir->str.ptr;
-        const char* src_end = ir->str.ptr + ir->str.len;
-        const char* beg = token.str.ptr;
-        const char* end = token.str.ptr + token.str.len;
+    len = MAX(len, 0);
 
-        for (int i = 0; i < 50; ++i) {
-            if (beg - 1 <= src_beg || beg[-1] == '\n') break;
-            --beg;
-        }
-        for (int i = 0; i < 50; ++i) {
-            if (end + 1 >= src_end || end[1] == '\n') break;
-            ++end;
-        }
-        static const char long_ass_carret[] = "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~";
-        md_logf(MD_LOG_TYPE_DEBUG, ""STR_FMT"", (end-beg), beg);
-        md_logf(MD_LOG_TYPE_DEBUG, "%*s^"STR_FMT"", (token.str.ptr - beg), "", token.str.len-1, long_ass_carret);
-    }
-    */
+    str_t str = {buf, len};
+    create_log_token_str(level, ir, token, str);
 }
 
 // Include all procedures, operators and defines
@@ -2590,6 +2574,8 @@ ast_node_t* parse_expression(parse_context_t* ctx) {
         case '=':
             ctx->node = parse_assignment(ctx);
             break;
+        case '<':
+        case '>':
         case TOKEN_GE:
         case TOKEN_LE:
         case TOKEN_EQ:
@@ -3469,7 +3455,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
 
         if (node->flags & FLAG_CONSTANT && !(ctx->eval_flags & EVAL_FLAG_NO_STATIC_EVAL)) {
             if (to.dim[0] == -1) {
-                if (res.procedure->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
+                if (res.procedure->flags & FLAG_DEDUCE_LENGTH_FROM_ARG) {
                     to.dim[0] = from.dim[0];
                 } else {
                     ASSERT(res.procedure->flags & FLAG_QUERYABLE_LENGTH);
@@ -3533,6 +3519,37 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
     return false;
 }
 
+static bool deduce_type_dim_from_args(type_info_t* type, const ast_node_t** const args, size_t num_args, token_t token, eval_context_t* ctx) {
+    ASSERT(ctx);
+
+    int max_dim = 0;
+    int max_len = 0;
+
+    for (size_t i = 0; i < num_args; ++i) {
+    // If the argument has leading ones in its type, we want to replicate that
+        if (dim_ndims(args[i]->data.type.dim) > 1 && args[i]->data.type.dim[i] == 1) {
+            dim_shift_right(type->dim);
+            type->dim[1] = args[i]->data.type.dim[1];
+        } else {
+            type->dim[0] = MAX(type->dim[0], args[i]->data.type.dim[0]);
+        }
+
+        /*
+        if (dim > 1 && args[i]->data.type.dim[0] == 1) {
+            dim_shift_right
+        }
+        if (len > max_len) {
+            max_len = len;
+        }
+        if (len > 1 && len != max_len) {
+            return -2;
+        }
+        */
+    }
+
+    return true;
+}
+
 static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_context_t* ctx) {
     ASSERT(type);
     ASSERT(node);
@@ -3540,18 +3557,16 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
 
     *type = node->data.type;
 
-    ast_node_t** const args = node->children;
+    const ast_node_t** const args = node->children;
     const size_t num_args = md_array_size(node->children);
 
-    if (node->proc->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
+    if (node->proc->flags & FLAG_DEDUCE_LENGTH_FROM_ARG) {
         if (!args || num_args == 0) {
             LOG_ERROR(ctx->ir, node->token, "Unexpected number of arguments (0), but procedure is marked to extract length from first argument");
             return false;
         }
-        // We can deduce the length of the array from the input type (first argument)
-        type->dim[0] = type_info_array_len(args[0]->data.type);
-        if (type->dim[0] == -1) {
-            LOG_ERROR(ctx->ir, node->token, "Procedure is marked to extract length from first argument, but the provided length was not set!");
+        // We can deduce the dimensions from the input argument types
+        if (!deduce_type_dim_from_args(type, args, num_args, node->token, ctx)) {
             return false;
         }
     } else {
@@ -3742,19 +3757,12 @@ static bool finalize_proc_call(ast_node_t* node, eval_context_t* ctx) {
                 LOG_ERROR(ctx->ir, node->token, "Failed to determine length of procedure return type!");
                 return false;
             }
-        } else if (node->proc->flags & FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH) {
+        } else if (node->proc->flags & FLAG_DEDUCE_LENGTH_FROM_ARG) {
             // We can deduce the length of the array by using the type of the first argument
             ASSERT(num_args > 0);
             ASSERT(node->proc->arg_type[0].base_type == args[0]->data.type.base_type);
 
-            // If the argument has leading ones in its type, we want to replicate that
-            if (dim_ndims(args[0]->data.type.dim) > 1 && args[0]->data.type.dim[0] == 1) {
-                dim_shift_right(node->data.type.dim);
-                node->data.type.dim[1] = args[0]->data.type.dim[1];
-            } else {
-                node->data.type.dim[0] = type_info_array_len(args[0]->data.type);
-            }
-            return true;
+            return deduce_type_dim_from_args(&node->data.type, args, num_args, node->token, ctx);
         } else {
             LOG_ERROR(ctx->ir, node->token, "Procedure returns variable length, but its length cannot be determined.");
             return false;
