@@ -4150,6 +4150,8 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
 
+    md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(ctx->temp_alloc);
+
     md_bitfield_t tmp_bf = {0};
 
     md_bitfield_t* dst_bf_arr = as_bitfield(*dst);
@@ -4170,8 +4172,10 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         atom_struct_idx = md_vm_arena_push(ctx->temp_alloc, ctx->mol->atom.count * sizeof(uint32_t));
         for (size_t i = 0; i < md_index_data_num_ranges(ctx->mol->structure); ++i) {
             uint32_t structure_idx = i + 1;
-            for (size_t j = md_index_range_beg(ctx->mol->structure, i); j < md_index_range_end(ctx->mol->structure, i); ++j) {
-                atom_struct_idx[j] = structure_idx;
+            const int32_t* s_beg_idx = md_index_range_beg(ctx->mol->structure, i);
+            const int32_t* s_end_idx = md_index_range_end(ctx->mol->structure, i);
+            for (int32_t* it = s_beg_idx; it != s_end_idx; ++it) {
+                atom_struct_idx[*it] = structure_idx;
             }
         }
     }
@@ -4197,9 +4201,7 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
 
-    if (atom_struct_idx) {
-        // pop memory
-    }
+    md_vm_arena_temp_end(temp_pos);
 
     return 0;
 }
