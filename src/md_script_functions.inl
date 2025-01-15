@@ -3622,15 +3622,15 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_t color, md_script_vis_ctx_t* vis) {
+static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_t color, md_script_vis_t* vis) {
     ASSERT(vis);
     const float len = 0.5f;
     /*if (angle < 0.0f) {
         axis = vec3_mul_f(axis, -1.0f);
         angle = -angle;
     }*/
-    const size_t num_segments = fabs(angle) / DEG_TO_RAD(10);
-    const float scl = 1.0 / num_segments;
+    const size_t num_segments = MAX(1, (size_t)(fabs(angle) / DEG_TO_RAD(10)));
+    const float scl = 1.0f / (float)num_segments;
     md_script_vis_vertex_t vb = vertex(c, color);
     md_script_vis_vertex_t vp = vertex(vec3_add(c, vec3_mul_f(v, len)), color);
     push_line(vb, vp, vis);
@@ -4171,10 +4171,10 @@ static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     if (split == STRUCT) {
         atom_struct_idx = md_vm_arena_push(ctx->temp_alloc, ctx->mol->atom.count * sizeof(uint32_t));
         for (size_t i = 0; i < md_index_data_num_ranges(ctx->mol->structure); ++i) {
-            uint32_t structure_idx = i + 1;
+            uint32_t structure_idx = (uint32_t)i + 1;
             const int32_t* s_beg_idx = md_index_range_beg(ctx->mol->structure, i);
             const int32_t* s_end_idx = md_index_range_end(ctx->mol->structure, i);
-            for (int32_t* it = s_beg_idx; it != s_end_idx; ++it) {
+            for (const int32_t* it = s_beg_idx; it != s_end_idx; ++it) {
                 atom_struct_idx[*it] = structure_idx;
             }
         }
