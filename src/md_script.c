@@ -5061,6 +5061,7 @@ static bool static_check_context(ast_node_t* node, eval_context_t* ctx) {
         char buf[128];
         print_type_info(buf, ARRAY_SIZE(buf), rhs->data.type);
         LOG_ERROR(ctx->ir, node->token, "Right hand side of keyword 'in' has an incompatible type: Expected bitfield, got '%s'.", buf);
+        result = false;
     }
 
     return result;
