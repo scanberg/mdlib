@@ -137,6 +137,46 @@ typedef struct mat4x3_t {
     #endif
 } mat4x3_t;
 
+typedef struct dvec2_t {
+    union {
+        struct {
+            double x, y;  
+        };
+        double elem[2];
+    };
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec2_t;
+
+typedef struct dvec3_t {
+    union {
+        struct {
+            double x, y, z;  
+        };
+        double elem[3];
+    };
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec3_t;
+
+typedef struct dvec4_t {
+    union {
+        struct {
+            double x, y, z, w;  
+        };
+        double elem[4];
+};
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec4_t;
+
+
 #if MD_COMPILER_CLANG
 #	pragma clang diagnostic pop
 #elif MD_COMPILER_GCC

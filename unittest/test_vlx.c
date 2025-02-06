@@ -146,9 +146,9 @@ UTEST(vlx, correctness) {
 
     size_t mo_idx = vlx.scf.homo_idx;
 
-    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_gto_extract(gtos, &vlx, vlx.scf.homo_idx);
+    md_vlx_mo_gto_extract(gtos, &vlx, vlx.scf.homo_idx);
 
     size_t cap_phi = num_gtos;
     double* phi = (double*)md_arena_allocator_push(arena, sizeof(double) * cap_phi);
@@ -199,7 +199,137 @@ UTEST(vlx, correctness) {
         }
     }
 
-    
+    md_arena_allocator_destroy(arena);
+}
+
+UTEST(vlx, minimal_example) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out");
+
+    md_vlx_data_t vlx = {0};
+    if (!md_vlx_data_parse_file(&vlx, path, arena)) {
+        MD_LOG_ERROR("Could not parse VLX file");
+        return;
+    }
+
+    // The volume dimensions which we aim to sample molecular orbital over
+    const int vol_dim = 80;
+
+    // The molecular orbital index we aim to sample
+    size_t mo_idx = vlx.scf.homo_idx;
+
+    // Extract GTOs
+    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
+    md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
+    md_vlx_mo_gto_extract(gtos, &vlx, mo_idx);
+
+    // Compute radial cutoffs for the GTOs
+    md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+
+    // Calculate bounding box (AABB)
+    vec3_t min_aabb = vec3_set1( FLT_MAX);
+    vec3_t max_aabb = vec3_set1(-FLT_MAX);
+
+    for (size_t i = 0; i < num_gtos; ++i) {
+        vec3_t coord = vec3_set(gtos[i].x, gtos[i].y, gtos[i].z);
+        min_aabb = vec3_min(min_aabb, coord);
+        max_aabb = vec3_max(max_aabb, coord);
+    }
+
+    // Add some padding
+    const float pad = 6.0f;
+    min_aabb = vec3_sub_f(min_aabb, pad);
+    max_aabb = vec3_add_f(max_aabb, pad);
+
+    printf("min_box: %g %g %g \n", min_aabb.x, min_aabb.y, min_aabb.z);
+    printf("max_box: %g %g %g \n", max_aabb.x, max_aabb.y, max_aabb.z);
+
+    vec3_t ext_aabb = vec3_sub(max_aabb, min_aabb);
+    vec3_t step_size = vec3_div_f(ext_aabb, (float)vol_dim);
+
+    // Shift origin by half a voxel such that the samples are constructed from the center of each voxel
+    vec3_t origin = vec3_add(min_aabb, vec3_mul_f(step_size, 0.5f));
+
+    // Allocate data for storing the result
+    size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
+    float* vol_data = md_arena_allocator_push(arena, bytes);
+    MEMSET(vol_data, 0, bytes);
+
+    // Setup the grid structure that control how we aim to sample over space
+    md_grid_t grid = (md_grid_t) {
+        .data = vol_data,
+        .dim = {vol_dim, vol_dim, vol_dim},
+        .origin = {origin.x, origin.y, origin.z},
+        .step_x = {step_size.x, 0, 0},
+        .step_y = {0, step_size.y, 0},
+        .step_z = {0, 0, step_size.z},
+    };
+
+    // Evaluate the GTOs over the supplied grid
+    md_gto_grid_evaluate(&grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+
+    // Define a subrange over the center of the volume
+    int range_min = vol_dim / 2 - vol_dim / 8;
+    int range_max = vol_dim / 2 + vol_dim / 8;
+
+    // Print out the values over a subrange of the volume
+    for (int iz = range_min; iz < range_max; ++iz) {
+        for (int iy = range_min; iy < range_max; ++iy) {
+            for (int ix = range_min; ix < range_max; ++ix) {
+                int idx = iz * grid.dim[1] * grid.dim[0] + iy * grid.dim[0] + ix;
+                //printf("%g ", grid.data[idx]);
+            }
+        }
+    }
 
     md_arena_allocator_destroy(arena);
+}
+
+#if 0
+UTEST(vlx, scf_results_h2o) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    md_vlx_scf_results_t scf = {0};
+    bool result = md_vlx_read_scf_results(&scf, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o-rcs.scf.results.h5"), arena);
+    EXPECT_TRUE(result);
+
+    ASSERT_EQ(3, scf.atom.number_of_atoms);
+    EXPECT_EQ(8, scf.atom.nuclear_charges[0]);
+    EXPECT_EQ(1, scf.atom.nuclear_charges[1]);
+    EXPECT_EQ(1, scf.atom.nuclear_charges[2]);
+
+    EXPECT_EQ(0.0, scf.atom.coordinates[0].x);
+    EXPECT_EQ(0.0, scf.atom.coordinates[0].y);
+    EXPECT_EQ(0.0, scf.atom.coordinates[0].z);
+
+    EXPECT_EQ(0.0, scf.atom.coordinates[1].x);
+    EXPECT_EQ(0.0, scf.atom.coordinates[1].y);
+    EXPECT_EQ(3.3925119279731675, scf.atom.coordinates[1].z);
+
+    EXPECT_EQ(0.0, scf.molecular_charge);
+
+    bool empty = str_empty(scf.potfile_text);
+
+    md_arena_allocator_destroy(arena);
+}
+
+UTEST(vlx, scf_results_meth) {
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    md_vlx_scf_results_t scf = {0};
+    bool result = md_vlx_read_scf_results(&scf, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/meth.scf.results.h5"), arena);
+    EXPECT_TRUE(result);
+
+    md_arena_allocator_destroy(arena);
+}
+#endif
+
+UTEST(vlx, new) {
+    md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+
+    bool result = md_vlx_parse_out_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"));
+    EXPECT_TRUE(result);
+
+    md_vlx_destroy(vlx);
 }

@@ -54,9 +54,9 @@ UBENCH_EX(gto, evaluate_grid) {
         .step_z = {0, 0, step.z},
     };
 
-    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_gto_extract(gtos, &vlx, 120);
+    md_vlx_mo_gto_extract(gtos, &vlx, 120);
     md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
     md_gto_t* sub_gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);

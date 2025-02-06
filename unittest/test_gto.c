@@ -48,9 +48,9 @@ static void init(md_grid_t* grid, md_gto_t** gtos, size_t* num_gtos, int vol_dim
         .step_z = {0, 0, step.z},
     };
 
-    *num_gtos = md_vlx_mol_gto_count(&vlx);
+    *num_gtos = md_vlx_mo_gto_count(&vlx);
     *gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * *num_gtos);
-    md_vlx_mol_gto_extract(*gtos, &vlx, 120);
+    md_vlx_mo_gto_extract(*gtos, &vlx, 120);
     md_gto_cutoff_compute(*gtos, *num_gtos, 1.0e-6);
 }
 
@@ -139,7 +139,7 @@ UTEST(gto, amide) {
 
     size_t num_gtos = md_vlx_nto_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_gto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mo_gto_extract(gtos, &vlx, mo_idx);
     md_gto_cutoff_compute(gtos, num_gtos, 0);
 
     MEMSET(grid.data,     0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
@@ -189,9 +189,9 @@ UTEST(gto, h2o) {
         .step_z = {cube.zaxis[0] * scl, cube.zaxis[1] * scl, cube.zaxis[2] * scl},
     };
 
-    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_gto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mo_gto_extract(gtos, &vlx, mo_idx);
     md_gto_cutoff_compute(gtos, num_gtos, 0);
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
@@ -408,9 +408,9 @@ UTEST(gto, co_lumo) {
         .step_z = {cube.zaxis[0] * scl, cube.zaxis[1] * scl, cube.zaxis[2] * scl},
     };
 
-    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_gto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mo_gto_extract(gtos, &vlx, mo_idx);
 
     MEMSET(grid.data,     0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
 
@@ -488,7 +488,7 @@ UTEST(gto, amide_nto) {
         .step_z = {cube_p.zaxis[0]  , cube_p.zaxis[1]  , cube_p.zaxis[2] },
     };
 
-    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
     md_gto_t* gtos_h = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
     md_vlx_nto_gto_extract(gtos_h, &vlx, 0, 0, MD_VLX_NTO_TYPE_HOLE);
 

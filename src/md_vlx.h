@@ -23,7 +23,13 @@ enum {
 	MD_VLX_NTO_TYPE_HOLE = 1,
 };
 
+enum {
+	MD_VLX_MO_TYPE_ALPHA = 0,
+	MD_VLX_MO_TYPE_BETA = 1,
+};
+
 typedef uint32_t md_vlx_nto_type_t;
+typedef uint32_t md_vlx_mo_type_t;
 
 typedef struct md_vlx_geom_t {
 	size_t num_atoms;
@@ -119,8 +125,43 @@ typedef struct md_vlx_data_t {
 	md_allocator_i* alloc;
 } md_vlx_data_t;
 
+struct md_vlx_t;
+
+size_t md_vlx_number_of_atoms(const struct md_vlx_t* vlx);
+size_t md_vlx_number_of_alpha_electrons(const struct md_vlx_t* vlx);
+size_t md_vlx_number_of_beta_electrons(const struct md_vlx_t* vlx);
+
+double md_vlx_molecular_charge(const struct md_vlx_t* vlx);
+double md_vlx_nuclear_repulsion(const struct md_vlx_t* vlx);
+size_t md_vlx_spin_multilicity(const struct md_vlx_t* vlx);
+
+str_t  md_vlx_basis_set_ident(const struct md_vlx_t* vlx);
+str_t  md_vlx_dft_func_label(const struct md_vlx_t* vlx);
+str_t  md_vlx_potfile(const struct md_vlx_t* vlx);
+
+const dvec3_t* md_vlx_atom_coordinates(const struct md_vlx_t* vlx);
+const uint8_t* md_vlx_atomic_numbers(const struct md_vlx_t* vlx);
+
+// SCF
+str_t   md_vlx_scf_type(const struct md_vlx_t* vlx);
+dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
+
+// SCF History
+size_t		  md_vlx_scf_history_size(const struct md_vlx_t* vlx);
+const double* md_vlx_scf_history_energy(const struct md_vlx_t* vlx);
+const double* md_vlx_scf_history_energy_diff(const struct md_vlx_t* vlx);
+const double* md_vlx_scf_history_density_diff(const struct md_vlx_t* vlx);
+const double* md_vlx_scf_history_gradient_norm(const struct md_vlx_t* vlx);
+const double* md_vlx_scf_history_max_gradient(const struct md_vlx_t* vlx);
+
+struct md_vlx_t* md_vlx_create(struct md_allocator_i* backing);
+void md_vlx_destroy(struct md_vlx_t* vlx);
+
+// Will parse data from .h5 files or .out which are produced by veloxchem
+bool md_vlx_parse_file(struct md_vlx_t* vlx, str_t filename);
+
 // RAW FUNCTIONS
-bool md_vlx_data_parse_str(md_vlx_data_t* data, str_t string, struct md_allocator_i* alloc);
+bool md_vlx_data_parse_str (md_vlx_data_t* data,  str_t string,  struct md_allocator_i* alloc);
 bool md_vlx_data_parse_file(md_vlx_data_t* data, str_t filename, struct md_allocator_i* alloc);
 void md_vlx_data_free(md_vlx_data_t* data);
 
@@ -131,8 +172,8 @@ size_t md_vlx_nto_gto_count(const md_vlx_data_t* vlx_data);
 bool   md_vlx_nto_gto_extract(md_gto_t* gtos, const md_vlx_data_t* vlx_data, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
 
 // Extract Molecular Orbital PGTOs
-size_t md_vlx_mol_gto_count(const md_vlx_data_t* vlx_data);
-bool   md_vlx_mol_gto_extract(md_gto_t* gtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
+size_t md_vlx_mo_gto_count(const md_vlx_data_t* vlx_data);
+bool   md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_data_t* vlx_data, size_t mo_idx);
 
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_data_t* data, struct md_allocator_i* alloc);
