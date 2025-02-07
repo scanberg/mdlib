@@ -9,20 +9,20 @@
 #include <float.h>
 
 // Conversion from Ångström to Bohr
-const float factor = 1.0 / 0.529177210903;
 #define BLK_DIM 8
 #define ANGSTROM_TO_BOHR 1.8897261246257702
 #define BOHR_TO_ANGSTROM 0.529177210903
 
 static void init(md_grid_t* grid, md_gto_t** gtos, size_t* num_gtos, int vol_dim, str_t filename, md_allocator_i* arena) {
-    md_vlx_data_t vlx = {0};
-    md_vlx_data_parse_file(&vlx, filename, arena);
+    md_vlx_t* vlx = md_vlx_create(arena);
+    md_vlx_parse_file(vlx, filename);
 
     vec3_t min_box = vec3_set1(FLT_MAX);
     vec3_t max_box = vec3_set1(-FLT_MAX);
 
-    for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-        vec3_t c = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]};
+	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+    for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
+        vec3_t c = {(float)coords[i].x, (float)coords[i].y, (float)coords[i].z};
         min_box = vec3_min(min_box, c);
         max_box = vec3_max(max_box, c);
     }
@@ -30,8 +30,8 @@ static void init(md_grid_t* grid, md_gto_t** gtos, size_t* num_gtos, int vol_dim
     min_box = vec3_sub_f(min_box, 2.0f);
     max_box = vec3_add_f(max_box, 2.0f);
 
-    min_box = vec3_mul_f(min_box, factor);
-    max_box = vec3_mul_f(max_box, factor);
+    min_box = vec3_mul_f(min_box, ANGSTROM_TO_BOHR);
+    max_box = vec3_mul_f(max_box, ANGSTROM_TO_BOHR);
 
     size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
     float* vol_data = md_arena_allocator_push(arena, bytes);
@@ -48,9 +48,9 @@ static void init(md_grid_t* grid, md_gto_t** gtos, size_t* num_gtos, int vol_dim
         .step_z = {0, 0, step.z},
     };
 
-    *num_gtos = md_vlx_mo_gto_count(&vlx);
+    *num_gtos = md_vlx_mo_gto_count(vlx);
     *gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * *num_gtos);
-    md_vlx_mo_gto_extract(*gtos, &vlx, 120);
+    md_vlx_mo_gto_extract(*gtos, vlx, 120, MD_VLX_MO_TYPE_ALPHA);
     md_gto_cutoff_compute(*gtos, *num_gtos, 1.0e-6);
 }
 
@@ -123,8 +123,8 @@ UTEST(gto, amide) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
     int vol_dim = 80;
-    md_vlx_data_t vlx = {0};
-    md_vlx_data_parse_file(&vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.out"), arena);
+    md_vlx_t* vlx = md_vlx_create(arena);
+    md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/amide.out"));
 
     md_grid_t grid = {
         .data = md_arena_allocator_push(arena, sizeof(float) * vol_dim * vol_dim * vol_dim),
@@ -135,11 +135,11 @@ UTEST(gto, amide) {
         .step_z = {0, 0, 0.178142f},
     };
 
-    size_t mo_idx = vlx.scf.lumo_idx;
+    size_t mo_idx = md_vlx_scf_lumo_idx(vlx);
 
-    size_t num_gtos = md_vlx_nto_gto_count(&vlx);
+    size_t num_gtos = md_vlx_nto_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mo_gto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
     md_gto_cutoff_compute(gtos, num_gtos, 0);
 
     MEMSET(grid.data,     0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
@@ -164,12 +164,12 @@ UTEST(gto, h2o) {
     md_cube_t cube = {0};
     ASSERT_TRUE(md_cube_file_load(&cube, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o_lumo.cube"), arena));
 
-    md_vlx_data_t vlx = {0};
-    ASSERT_TRUE(md_vlx_data_parse_file(&vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out"), arena));
+    md_vlx_t* vlx = md_vlx_create(arena);
+    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out")));
 
     const float scl = 1.0f;
 
-    size_t mo_idx = vlx.scf.lumo_idx;
+    size_t mo_idx = md_vlx_scf_lumo_idx(vlx);
 
     /*
     size_t num_rows = vlx.scf.alpha.orbitals.dim[0];
@@ -189,14 +189,14 @@ UTEST(gto, h2o) {
         .step_z = {cube.zaxis[0] * scl, cube.zaxis[1] * scl, cube.zaxis[2] * scl},
     };
 
-    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mo_gto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
     md_gto_cutoff_compute(gtos, num_gtos, 0);
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
 
-    float* psi = md_arena_allocator_push(arena, sizeof(float) * count);
+    float* psi  = md_arena_allocator_push(arena, sizeof(float)  * count);
     vec3_t* xyz = md_arena_allocator_push(arena, sizeof(vec3_t) * count);
     for (int z = 0; z < grid.dim[2]; ++z) {
         for (int y = 0; y < grid.dim[1]; ++y) {

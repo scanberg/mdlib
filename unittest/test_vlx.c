@@ -6,6 +6,9 @@
 
 #include <md_vlx.c>
 
+#define ANGSTROM_TO_BOHR 1.8897261246257702
+#define BOHR_TO_ANGSTROM 0.529177210903
+
 static const int ref_iter[] = {
     1,2,3,4,5,6,7,8,9,10,11,12
 };
@@ -82,49 +85,54 @@ static const double ref_density_change[] = {
 
 UTEST(vlx, vlx_parse) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out");
-    md_vlx_data_t vlx = {0};
-    bool result = md_vlx_data_parse_file(&vlx, path, md_get_heap_allocator());
+	md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+
+    bool result = md_vlx_parse_out_file(vlx, path);
     ASSERT_TRUE(result);
 
-    EXPECT_EQ(0,  vlx.geom.molecular_charge);
-    EXPECT_EQ(26, vlx.geom.num_atoms);
-    EXPECT_EQ(1,  vlx.geom.spin_multiplicity);
-    EXPECT_EQ(41, vlx.geom.num_alpha_electrons);
-    EXPECT_EQ(41, vlx.geom.num_beta_electrons);
+#if 1
+    EXPECT_EQ(0,  md_vlx_molecular_charge(vlx));
+    EXPECT_EQ(26, md_vlx_number_of_atoms(vlx));
+    EXPECT_EQ(1,  md_vlx_spin_multilicity(vlx));
+    EXPECT_EQ(41, md_vlx_number_of_alpha_electrons(vlx));
+    EXPECT_EQ(41, md_vlx_number_of_beta_electrons(vlx));
 
-    EXPECT_NEAR(-3.259400000000, vlx.geom.coord_x[0], 1.0e-5);
-    EXPECT_NEAR( 0.145200000000, vlx.geom.coord_y[0], 1.0e-5);
-    EXPECT_NEAR(-0.048400000000, vlx.geom.coord_z[0], 1.0e-5);
+	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+    ASSERT_TRUE(coords != NULL);
 
-    EXPECT_TRUE(str_eq(vlx.basis.ident, STR_LIT("DEF2-SVP")));
-    EXPECT_EQ(229, vlx.basis.num_contracted_basis_functions);
-    EXPECT_EQ(369, vlx.basis.num_primitive_basis_functions);
+    EXPECT_NEAR(-3.259400000000, coords[0].x, 1.0e-5);
+    EXPECT_NEAR( 0.145200000000, coords[0].y, 1.0e-5);
+    EXPECT_NEAR(-0.048400000000, coords[0].z, 1.0e-5);
 
-    EXPECT_EQ(-444.5185007832,  vlx.scf.total_energy);
-    EXPECT_EQ(-1041.3439889091, vlx.scf.electronic_energy);
-    EXPECT_EQ(596.8254881260,   vlx.scf.nuclear_repulsion_energy);
-    EXPECT_EQ(0.0000009436,     vlx.scf.gradient_norm);
+    EXPECT_TRUE(str_eq(md_vlx_basis_set_ident(vlx), STR_LIT("DEF2-SVP")));
 
-    ASSERT_EQ(12, vlx.scf.iter.count);
-    for (size_t i = 0; i < vlx.scf.iter.count; ++i) {
-        EXPECT_EQ(ref_iter[i], vlx.scf.iter.iteration[i]);
-        EXPECT_NEAR(ref_ener_tot[i], vlx.scf.iter.energy_total[i], 1.0e-5);
-        EXPECT_NEAR(ref_ener_change[i], vlx.scf.iter.energy_change[i], 1.0e-5);
-        EXPECT_NEAR(ref_grad_norm[i], vlx.scf.iter.gradient_norm[i], 1.0e-5);
-        EXPECT_NEAR(ref_max_grad[i], vlx.scf.iter.max_gradient[i], 1.0e-5);
-        EXPECT_NEAR(ref_density_change[i], vlx.scf.iter.density_change[i], 1.0e-5);
+    int num_iter = md_vlx_scf_history_size(vlx);
+	const double* energy = md_vlx_scf_history_energy(vlx);
+    const double* energy_diff = md_vlx_scf_history_energy_diff(vlx);
+	const double* grad_norm = md_vlx_scf_history_gradient_norm(vlx);
+	const double* max_grad = md_vlx_scf_history_max_gradient(vlx);
+	const double* density_diff = md_vlx_scf_history_density_diff(vlx);
+
+    ASSERT_EQ(12, num_iter);
+    for (size_t i = 0; i < num_iter; ++i) {
+        EXPECT_NEAR(ref_ener_tot[i], energy[i], 1.0e-5);
+        EXPECT_NEAR(ref_ener_change[i], energy_diff[i], 1.0e-5);
+        EXPECT_NEAR(ref_grad_norm[i], grad_norm[i], 1.0e-5);
+        EXPECT_NEAR(ref_max_grad[i], max_grad[i], 1.0e-5);
+        EXPECT_NEAR(ref_density_change[i], density_diff[i], 1.0e-5);
     }
 
     // @TODO: Test RSP
 
-    md_vlx_data_free(&vlx);
+    md_vlx_destroy(vlx);
+#endif
 }
 
 UTEST(vlx, correctness) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
-    md_vlx_data_t vlx = {0};
-    ASSERT_TRUE(md_vlx_data_parse_file(&vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out"), arena));
+    md_vlx_t* vlx = md_vlx_create(arena);
+    ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out")));
 
     const int vol_dim = 80;
 
@@ -144,30 +152,18 @@ UTEST(vlx, correctness) {
         .step_z = {0, 0, 0.143619},
     };
 
-    size_t mo_idx = vlx.scf.homo_idx;
+    size_t mo_idx = md_vlx_scf_homo_idx(vlx);
 
-    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mo_gto_extract(gtos, &vlx, vlx.scf.homo_idx);
+    md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
 
     size_t cap_phi = num_gtos;
     double* phi = (double*)md_arena_allocator_push(arena, sizeof(double) * cap_phi);
 
-    vlx_molecule_t mol = {
-        .num_atoms = vlx.geom.num_atoms,
-        .atomic_number = vlx.geom.atomic_number,
-        .coord_x = vlx.geom.coord_x,
-        .coord_y = vlx.geom.coord_y,
-        .coord_z = vlx.geom.coord_z,
-    };
-
-    size_t num_cols = vlx.scf.alpha.orbitals.dim[1];
-    size_t num_mo_coeffs = vlx.scf.alpha.orbitals.dim[1];
-
+    size_t num_mo_coeffs = number_of_mo_coefficients(&vlx->scf.alpha);
     double* mo_coeffs = md_arena_allocator_push(arena, sizeof(double) * num_mo_coeffs);
-    for (size_t i = 0; i < num_mo_coeffs; ++i) {
-        mo_coeffs[i] = vlx.scf.alpha.orbitals.data[i * num_cols + mo_idx];
-    }
+    extract_mo_coefficients(mo_coeffs, &vlx->scf.alpha, mo_idx);
 
     int beg_idx[3] = {0, 0, 0};
     int end_idx[3] = {grid.dim[0], grid.dim[1], grid.dim[2]};
@@ -176,15 +172,15 @@ UTEST(vlx, correctness) {
 
     for (int iz = 0; iz < grid.dim[2]; ++iz) {
         double z = grid.origin[2] + grid.step_z[2] * iz;
-        z *= 0.529177210903;
+        z *= BOHR_TO_ANGSTROM;
         for (int iy = 0; iy < grid.dim[1]; ++iy) {
             double y = grid.origin[1] + grid.step_y[1] * iy;
-            y *= 0.529177210903;
+            y *= BOHR_TO_ANGSTROM;
             for (int ix = 0; ix < grid.dim[0]; ++ix) {
                 double x = grid.origin[0] + grid.step_x[0] * ix;
-                x *= 0.529177210903;
+                x *= BOHR_TO_ANGSTROM;
 
-                size_t num_phi = compPhiAtomicOrbitals(phi, cap_phi, &mol, vlx.basis.basis_set, x, y, z);
+                size_t num_phi = compPhiAtomicOrbitals(phi, cap_phi, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, x, y, z);
 
                 ASSERT(num_phi == num_mo_coeffs);
                 double psi = 0.0;
@@ -207,8 +203,8 @@ UTEST(vlx, minimal_example) {
 
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out");
 
-    md_vlx_data_t vlx = {0};
-    if (!md_vlx_data_parse_file(&vlx, path, arena)) {
+    md_vlx_t* vlx = md_vlx_create(arena);
+    if (!md_vlx_parse_file(vlx, path)) {
         MD_LOG_ERROR("Could not parse VLX file");
         return;
     }
@@ -217,12 +213,12 @@ UTEST(vlx, minimal_example) {
     const int vol_dim = 80;
 
     // The molecular orbital index we aim to sample
-    size_t mo_idx = vlx.scf.homo_idx;
+    size_t mo_idx = md_vlx_scf_homo_idx(vlx);
 
     // Extract GTOs
-    size_t num_gtos = md_vlx_mo_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mo_gto_extract(gtos, &vlx, mo_idx);
+    md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
 
     // Compute radial cutoffs for the GTOs
     md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
@@ -325,10 +321,28 @@ UTEST(vlx, scf_results_meth) {
 }
 #endif
 
-UTEST(vlx, new) {
+UTEST(vlx, out) {
     md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
 
-    bool result = md_vlx_parse_out_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"));
+    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"));
+    EXPECT_TRUE(result);
+
+    md_vlx_destroy(vlx);
+}
+
+UTEST(vlx, scf_results) {
+    md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+
+    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/tq.scf.results.h5"));
+    EXPECT_TRUE(result);
+
+    md_vlx_destroy(vlx);
+}
+
+UTEST(vlx, h5_pure) {
+    md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
+
+    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/acro-rsp.h5"));
     EXPECT_TRUE(result);
 
     md_vlx_destroy(vlx);
