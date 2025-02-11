@@ -15,8 +15,6 @@ extern "C" {
 struct md_allocator_i;
 struct md_molecule_t;
 struct md_molecule_loader_i;
-//struct basis_set_t;
-struct vec3_t;
 
 enum {
 	MD_VLX_MO_TYPE_ALPHA = 0,
@@ -125,7 +123,7 @@ size_t md_vlx_number_of_beta_electrons(const struct md_vlx_t* vlx);
 
 double md_vlx_molecular_charge(const struct md_vlx_t* vlx);
 double md_vlx_nuclear_repulsion(const struct md_vlx_t* vlx);
-size_t md_vlx_spin_multilicity(const struct md_vlx_t* vlx);
+size_t md_vlx_spin_multiplicity(const struct md_vlx_t* vlx);
 
 str_t  md_vlx_basis_set_ident(const struct md_vlx_t* vlx);
 str_t  md_vlx_dft_func_label(const struct md_vlx_t* vlx);
@@ -140,6 +138,11 @@ dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx);
 
+size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
+
+const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+
 // SCF History
 size_t		  md_vlx_scf_history_size(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_history_energy(const struct md_vlx_t* vlx);
@@ -149,7 +152,19 @@ const double* md_vlx_scf_history_gradient_norm(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_history_max_gradient(const struct md_vlx_t* vlx);
 
 // RSP
-size_t md_vlx_rsp_num_excited_states(const struct md_vlx_t* vlx);
+size_t md_vlx_rsp_number_of_excited_states(const struct md_vlx_t* vlx);
+
+// RSP arrays with length of num excited states
+const dvec3_t* md_vlx_rsp_electric_transition_dipole_moments(const struct md_vlx_t* vlx);
+const dvec3_t* md_vlx_rsp_magnetic_transition_dipole_moments(const struct md_vlx_t* vlx);
+const dvec3_t* md_vlx_rsp_velocity_transition_dipole_moments(const struct md_vlx_t* vlx);
+const double*  md_vlx_rsp_rotatory_strengths(const struct md_vlx_t* vlx);
+const double*  md_vlx_rsp_oscillator_strengths(const struct md_vlx_t* vlx);
+const double*  md_vlx_rsp_absorption_ev(const struct md_vlx_t* vlx);
+
+const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_idx);
+const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
+
 
 struct md_vlx_t* md_vlx_create(struct md_allocator_i* backing);
 void md_vlx_destroy(struct md_vlx_t* vlx);

@@ -6,9 +6,6 @@
 
 #include <md_vlx.c>
 
-#define ANGSTROM_TO_BOHR 1.8897261246257702
-#define BOHR_TO_ANGSTROM 0.529177210903
-
 static const int ref_iter[] = {
     1,2,3,4,5,6,7,8,9,10,11,12
 };
@@ -93,7 +90,7 @@ UTEST(vlx, vlx_parse) {
 #if 1
     EXPECT_EQ(0,  md_vlx_molecular_charge(vlx));
     EXPECT_EQ(26, md_vlx_number_of_atoms(vlx));
-    EXPECT_EQ(1,  md_vlx_spin_multilicity(vlx));
+    EXPECT_EQ(1,  md_vlx_spin_multiplicity(vlx));
     EXPECT_EQ(41, md_vlx_number_of_alpha_electrons(vlx));
     EXPECT_EQ(41, md_vlx_number_of_beta_electrons(vlx));
 

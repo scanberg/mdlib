@@ -16,7 +16,7 @@
 #include <float.h>
 
 #define ANGSTROM_TO_BOHR 1.8897261246257702
-#define BOHR_TO_ANGSTROM 0.529177210903
+#define BOHR_TO_ANGSTROM 0.5291772109029999
 
 /*
 
@@ -101,7 +101,7 @@ typedef struct md_vlx_scf_history_t {
 } md_vlx_scf_history_t;
 
 // Self Consistent Field
-typedef struct md_vlx_scf2_t {
+typedef struct md_vlx_scf_t {
 	str_t type;
 	uint32_t homo_idx;
 	uint32_t lumo_idx;
@@ -114,17 +114,18 @@ typedef struct md_vlx_scf2_t {
 
 	md_vlx_2d_data_t S;
 	md_vlx_scf_history_t history;
-} md_vlx_scf2_t;
+} md_vlx_scf_t;
 
-typedef struct md_vlx_rsp2_t {
+typedef struct md_vlx_rsp_t {
 	size_t   number_of_excited_states;
 	dvec3_t* electric_transition_dipoles;
 	dvec3_t* magnetic_transition_dipoles;
 	dvec3_t* velocity_transition_dipoles;
 	double* rotatory_strengths;		// unit = 10^-40 cgs
 	double* oscillator_strengths;
+	double* absorption_ev;
 	md_vlx_orbital_t* nto;
-} md_vlx_rsp2_t;
+} md_vlx_rsp_t;
 
 typedef struct md_vlx_t {
 	str_t  basis_set_ident;
@@ -144,8 +145,8 @@ typedef struct md_vlx_t {
 	md_element_t* atomic_numbers;
 
 	// Data blocks
-	md_vlx_scf2_t scf;
-	md_vlx_rsp2_t rsp;
+	md_vlx_scf_t scf;
+	md_vlx_rsp_t rsp;
 	basis_set_t basis_set;
 
 	struct md_allocator_i* arena;
@@ -984,11 +985,13 @@ static bool parse_vlx_rsp(md_vlx_t* vlx, md_buffered_reader_t* reader, md_alloca
 		else if (str_eq(line, STR_LIT("One-Photon Absorption"))) {
 			md_buffered_reader_skip_line(reader); // -----
 			md_array_resize(vlx->rsp.oscillator_strengths, vlx->rsp.number_of_excited_states, alloc);
+			md_array_resize(vlx->rsp.absorption_ev, vlx->rsp.number_of_excited_states, alloc);
 			for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
 				if (!md_buffered_reader_extract_line(&line, reader) || extract_tokens(tok, ARRAY_SIZE(tok), &line) != 9) {
 					MD_LOG_ERROR("Unexpected number of tokens in entry when parsing One-Photon Absorption");
 					return false;
 				}
+				vlx->rsp.absorption_ev[i] = parse_float(tok[5]);
 				vlx->rsp.oscillator_strengths[i] = parse_float(tok[8]);
 			}
 			mask |= 16;
@@ -1193,7 +1196,7 @@ size_t md_vlx_nto_gto_count(const md_vlx_t* vlx) {
 	return vlx_pgto_count(vlx);
 }
 
-void extract_row(double* dst, const md_vlx_2d_data_t* data, size_t row_idx) {
+static inline void extract_row(double* dst, const md_vlx_2d_data_t* data, size_t row_idx) {
 	ASSERT(dst);
 	ASSERT(data);
 	ASSERT(row_idx < data->size[0]);
@@ -1204,7 +1207,7 @@ void extract_row(double* dst, const md_vlx_2d_data_t* data, size_t row_idx) {
 	}
 }
 
-void extract_col(double* dst, const md_vlx_2d_data_t* data, size_t col_idx) {
+static inline void extract_col(double* dst, const md_vlx_2d_data_t* data, size_t col_idx) {
 	ASSERT(dst);
 	ASSERT(data);
 	ASSERT(col_idx < data->size[1]);
@@ -1214,17 +1217,17 @@ void extract_col(double* dst, const md_vlx_2d_data_t* data, size_t col_idx) {
 	}
 }
 
-size_t number_of_molecular_orbitals(const md_vlx_orbital_t* orb) {
+static inline size_t number_of_molecular_orbitals(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
 	return orb->coefficients.size[1];
 }
 
-size_t number_of_mo_coefficients(const md_vlx_orbital_t* orb) {
+static inline size_t number_of_mo_coefficients(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
 	return orb->coefficients.size[1];
 }
 
-void extract_mo_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t mo_idx) {
+static inline void extract_mo_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t mo_idx) {
 	ASSERT(out_coeff);
 	ASSERT(orb);
 
@@ -1234,17 +1237,17 @@ void extract_mo_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, siz
 	extract_col(out_coeff, &orb->coefficients, mo_idx);
 }
 
-size_t number_of_atomic_orbitals(const md_vlx_orbital_t* orb) {
+static inline size_t number_of_atomic_orbitals(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
 	return orb->coefficients.size[0];
 }
 
-size_t number_of_ao_coefficients(const md_vlx_orbital_t* orb) {
+static inline size_t number_of_ao_coefficients(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
 	return orb->coefficients.size[0];
 }
 
-void extract_ao_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t ao_idx) {
+static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t ao_idx) {
 	ASSERT(out_coeff);
 	ASSERT(orb);
 	ASSERT(ao_idx < orb->coefficients.size[0]);
@@ -1353,11 +1356,71 @@ static bool vlx_data_parse_str(md_vlx_t* vlx, str_t str, md_allocator_i* alloc) 
 }
 #endif
 
-size_t md_vlx_rsp_num_excited_states(const md_vlx_t* vlx) {
+size_t md_vlx_rsp_number_of_excited_states(const md_vlx_t* vlx) {
 	if (vlx) {
 		return vlx->rsp.number_of_excited_states;
 	}
 	return 0;
+}
+
+const dvec3_t* md_vlx_rsp_electric_transition_dipole_moments(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.electric_transition_dipoles;
+	}
+	return NULL;
+}
+
+const dvec3_t* md_vlx_rsp_magnetic_transition_dipole_moments(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.magnetic_transition_dipoles;
+	}
+	return NULL;
+}
+
+const dvec3_t* md_vlx_rsp_velocity_transition_dipole_moments(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.velocity_transition_dipoles;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_rotatory_strengths(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.rotatory_strengths;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_oscillator_strengths(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.oscillator_strengths;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_absorption_ev(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->rsp.absorption_ev;
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_nto_occupancy(const md_vlx_t* vlx, size_t nto_idx) {
+	if (vlx) {
+		if (nto_idx < vlx->rsp.number_of_excited_states) {
+			return vlx->rsp.nto[nto_idx].occupancy.data;
+		}
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_nto_energy(const md_vlx_t* vlx, size_t nto_idx) {
+	if (vlx) {
+		if (nto_idx < vlx->rsp.number_of_excited_states) {
+			return vlx->rsp.nto[nto_idx].energy.data;
+		}
+	}
+	return NULL;
 }
 
 md_vlx_t* md_vlx_create(md_allocator_i* backing) {
@@ -1485,6 +1548,7 @@ bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_t* vlx, md_allocator_
 	}
 
 	mol->atom.count = vlx->number_of_atoms;
+	md_array_resize(mol->atom.element, mol->atom.count, alloc);
 	md_array_resize(mol->atom.type, mol->atom.count, alloc);
 	md_array_resize(mol->atom.x, mol->atom.count, alloc);
 	md_array_resize(mol->atom.y, mol->atom.count, alloc);
@@ -1502,6 +1566,10 @@ bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_t* vlx, md_allocator_
 }
 
 static bool vlx_mol_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md_allocator_i* alloc) {
+	(void)mol;
+	(void)str;
+	(void)arg;
+	(void)alloc;
 	MD_LOG_ERROR("This is not implemented yeti");
 	return false;
 }
@@ -1553,7 +1621,7 @@ double md_vlx_nuclear_repulsion(const md_vlx_t* vlx) {
 	return 0;
 }
 
-size_t md_vlx_spin_multilicity(const md_vlx_t* vlx) {
+size_t md_vlx_spin_multiplicity(const md_vlx_t* vlx) {
 	if (vlx) return vlx->spin_multiplicity;
 	return 0;
 }
@@ -1607,6 +1675,37 @@ size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx) {
 	return 0;
 }
 
+size_t md_vlx_scf_number_of_molecular_orbitals(const md_vlx_t* vlx) {
+	if (vlx) {
+		return number_of_molecular_orbitals(&vlx->scf.alpha);
+	}
+	return 0;
+}
+
+const double* md_vlx_scf_mo_occupancy(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+	if (vlx) {
+		if (type == MD_VLX_MO_TYPE_ALPHA) {
+			return vlx->scf.alpha.occupancy.data;
+		} 
+		else if (type == MD_VLX_MO_TYPE_BETA) {
+			return vlx->scf.beta.occupancy.data;
+		}
+	}
+	return NULL;
+}
+
+const double* md_vlx_scf_mo_energy(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+	if (vlx) {
+		if (type == MD_VLX_MO_TYPE_ALPHA) {
+			return vlx->scf.alpha.energy.data;
+		}
+		else if (type == MD_VLX_MO_TYPE_BETA) {
+			return vlx->scf.beta.energy.data;
+		}
+	}
+	return NULL;
+}
+
 // SCF History
 size_t md_vlx_scf_history_size(const md_vlx_t* vlx) {
 	if (vlx) return vlx->scf.history.number_of_iterations;
@@ -1642,6 +1741,11 @@ const double* md_vlx_scf_history_max_gradient(const md_vlx_t* vlx) {
 
 
 static bool h5_read_scalar(void* buf, hid_t file_id, hid_t mem_type_id, const char* field_name) {
+	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+	if (exists == 0) {
+		return false;
+	}
+
 	// Open the dataset containing the double value
 	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
 	if (dataset_id == H5I_INVALID_HID) {
@@ -1667,6 +1771,11 @@ done:
 
 static bool h5_read_str(str_t* str, hid_t file_id, const char* field_name, md_allocator_i* alloc) {
 	bool result = false;
+
+	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+	if (exists == 0) {
+		return false;
+	}
 
 	// Open the dataset
 	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
@@ -1702,6 +1811,11 @@ done:
 }
 
 static int h5_read_dataset_dims(size_t* dims, int max_dims, hid_t file_id, const char* field_name) {
+	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+	if (exists == 0) {
+		return false;
+	}
+
 	// Open the dataset
 	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
 	if (dataset_id == H5I_INVALID_HID) {
@@ -1736,6 +1850,11 @@ done:
 bool h5_read_dataset_data(void* out_data, const size_t dims[], int num_dim, hid_t file_id, hid_t mem_type_id, const char* field_name) {
 	ASSERT(out_data);
 	ASSERT(dims);
+
+	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+	if (exists == 0) {
+		return false;
+	}
 
 	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
 	if (dataset_id == H5I_INVALID_HID) {
@@ -1791,6 +1910,11 @@ done:
 bool h5_read_dataset(void** out_data, size_t* out_dims, int num_dim, hid_t file_id, hid_t mem_type_id, const char* field_name, md_allocator_i* alloc) {
 	ASSERT(out_data);
 	ASSERT(out_dims);
+
+	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+	if (exists == 0) {
+		return false;
+	}
 
 	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
 	if (dataset_id == H5I_INVALID_HID) {
@@ -1916,6 +2040,76 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
+static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
+	if (!h5_read_scalar(&vlx->rsp.number_of_excited_states, handle, H5T_NATIVE_HSIZE, "number_of_states")) {
+		return false;
+	}
+
+	if (vlx->rsp.number_of_excited_states == 0) {
+		// Wierd
+		MD_LOG_ERROR("No excited states listed in response section of VeloxChem h5 file");
+		return false;
+	}
+
+	// Allocate data
+	md_array_resize(vlx->rsp.nto, vlx->rsp.number_of_excited_states, vlx->arena);
+
+	md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+	md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+	md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+
+	md_array_resize(vlx->rsp.absorption_ev,			vlx->rsp.number_of_excited_states, vlx->arena);
+	md_array_resize(vlx->rsp.oscillator_strengths,	vlx->rsp.number_of_excited_states, vlx->arena);
+	md_array_resize(vlx->rsp.rotatory_strengths,	vlx->rsp.number_of_excited_states, vlx->arena);
+
+	// NTO data
+	char buf[32];
+	for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
+		int idx = (int)(i + 1);
+
+		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_energies", idx);
+		if (!h5_read_dataset(&vlx->rsp.nto[i].energy.data, &vlx->rsp.nto[i].energy.size, 1, handle, H5T_NATIVE_DOUBLE, buf, vlx->arena)) {
+			return false;
+		}
+
+		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_occupations", idx);
+		if (!h5_read_dataset(&vlx->rsp.nto[i].occupancy.data, &vlx->rsp.nto[i].occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, buf, vlx->arena)) {
+			return false;
+		}
+
+		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_orbitals", idx);
+		if (!h5_read_dataset(&vlx->rsp.nto[i].coefficients.data, vlx->rsp.nto[i].coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, buf, vlx->arena)) {
+			return false;
+		}
+	}
+
+	// Dipoles
+	size_t dipole_dim[2] = { vlx->rsp.number_of_excited_states, 3 };
+	if (!h5_read_dataset_data(vlx->rsp.electric_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "electric_transition_dipoles")) {
+		return false;
+	}
+	if (!h5_read_dataset_data(vlx->rsp.magnetic_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "magnetic_transition_dipoles")) {
+		return false;
+	}
+	if (!h5_read_dataset_data(vlx->rsp.velocity_transition_dipoles, dipole_dim, 2, handle, H5T_NATIVE_DOUBLE, "velocity_transition_dipoles")) {
+		return false;
+	}
+
+	// Abs, rot and osc
+	size_t dim[1] = { vlx->rsp.number_of_excited_states };
+	if (!h5_read_dataset_data(vlx->rsp.absorption_ev, dim, 1, handle, H5T_NATIVE_DOUBLE, "eigenvalues")) {
+		return false;
+	}
+	if (!h5_read_dataset_data(vlx->rsp.oscillator_strengths, dim, 1, handle, H5T_NATIVE_DOUBLE, "oscillator_strengths")) {
+		return false;
+	}
+	if (!h5_read_dataset_data(vlx->rsp.rotatory_strengths, dim, 1, handle, H5T_NATIVE_DOUBLE, "rotatory_strengths")) {
+		return false;
+	}
+
+	return true;
+}
+
 bool md_vlx_read_scf_results(md_vlx_t* vlx, str_t filename) {
 	ASSERT(vlx);
 
@@ -2012,8 +2206,7 @@ done:
 bool md_vlx_read_h5_file(md_vlx_t* vlx, str_t filename) {
 	ASSERT(vlx);
 
-	hid_t  file_id = 0;
-
+	hid_t file_id = 0;
 	char buf[2048];
 
 	// Ensure a zero terminated string for interfacing to HDF5
@@ -2069,31 +2262,33 @@ bool md_vlx_read_h5_file(md_vlx_t* vlx, str_t filename) {
 	}
 
 	md_array_resize(vlx->atom_coordinates, vlx->number_of_atoms, vlx->arena);
-	size_t coord_dim[2];
-	if (!h5_read_dataset_data(&vlx->atom_coordinates, coord_dim, 2, file_id, H5T_NATIVE_DOUBLE, "atom_coordinates")) {
-		goto done;
-	}
-
-	if (coord_dim[0] != vlx->number_of_atoms || coord_dim[1] != 3) {
-		MD_LOG_DEBUG("Unexpected dimensions for atom coordinates");
+	MEMSET(vlx->atom_coordinates, 0, md_array_bytes(vlx->atom_coordinates));
+	size_t coord_dim[2] = {vlx->number_of_atoms, 3};
+	if (!h5_read_dataset_data(vlx->atom_coordinates, coord_dim, 2, file_id, H5T_NATIVE_DOUBLE, "atom_coordinates")) {
 		goto done;
 	}
 
 	md_array_resize(vlx->atomic_numbers, vlx->number_of_atoms, vlx->arena);
-	size_t atomic_numbers_dim;
-	if (!h5_read_dataset_data(vlx->atomic_numbers, &atomic_numbers_dim, 1, file_id, H5T_NATIVE_UINT8, "nuclear_charges")) {
-		goto done;
-	}
-	if (atomic_numbers_dim != vlx->number_of_atoms) {
-		MD_LOG_ERROR("Unexpected dimensions for atomic numbers");
+	MEMSET(vlx->atomic_numbers, 0, md_array_bytes(vlx->atomic_numbers));
+	size_t atomic_numbers_dim[1] = { vlx->number_of_atoms };
+	if (!h5_read_dataset_data(vlx->atomic_numbers, atomic_numbers_dim, 1, file_id, H5T_NATIVE_UINT8, "nuclear_charges")) {
 		goto done;
 	}
 
 	// SCF
 	hid_t scf_id = H5Gopen(file_id, "scf", H5P_DEFAULT);
 	if (scf_id != H5I_INVALID_HID) {
-		result = result && h5_read_scf_data(vlx, scf_id);
+		result = h5_read_scf_data(vlx, scf_id);
 		H5Gclose(scf_id);
+		if (!result) goto done;
+	}
+
+	// RSP
+	hid_t rsp_id = H5Gopen(file_id, "rsp", H5P_DEFAULT);
+	if (rsp_id != H5I_INVALID_HID) {
+		result = h5_read_rsp_data(vlx, rsp_id);
+		H5Gclose(rsp_id);
+		if (!result) goto done;
 	}
 
 	result = true;
@@ -2140,51 +2335,14 @@ bool md_vlx_parse_out_file(md_vlx_t* vlx, str_t filename) {
 	}
 	md_file_close(file);
 
-	md_strb_t sb = md_strb_create(md_get_temp_allocator());
-
-	if (!str_empty(vlx->basis_set_ident)) {
-
-		md_strb_fmt(&sb, "%s/" STR_FMT, MD_VLX_BASIS_FOLDER, STR_ARG(vlx->basis_set_ident));
-		md_file_o* basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
-		if (basis_file) {
-			md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, file);
-			bool result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
-			md_file_close(basis_file);
-			if (!result) {
-				MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
-				return false;
-			}
-			normalize_basis_set(&vlx->basis_set);
-		} else {
-			// Attempt to read basis set file from same folder as file
-			str_t folder = {0};
-			if (!extract_folder_path(&folder, filename)) {
-				MD_LOG_ERROR("An error occured when extracting the path to supplied file");
-				return false;
-			}
-			md_strb_reset(&sb);
-			md_strb_push_str(&sb, folder);
-			md_strb_push_str(&sb, vlx->basis_set_ident);
-			basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
-			if (basis_file) {
-				md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, file);
-				bool result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
-				if (!result) {
-					MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
-					return false;
-				}
-				normalize_basis_set(&vlx->basis_set);
-			} else {
-				MD_LOG_ERROR("Could not find basis file corresponding to identifier: '"STR_FMT"'", STR_ARG(vlx->basis_set_ident));
-			}
-		}
-	}
 
 	str_t base_file = {0};
 	if (!extract_file_path_without_ext(&base_file, filename)) {
 		MD_LOG_ERROR("Failed to extract base file path");
 		return false;
 	}
+
+	md_strb_t sb = md_strb_create(md_get_temp_allocator());
 
 	{
 		// Attempt to read scf data
@@ -2247,16 +2405,75 @@ bool md_vlx_parse_out_file(md_vlx_t* vlx, str_t filename) {
 }
 
 bool md_vlx_parse_file(md_vlx_t* vlx, str_t filename) {
+	size_t temp_pos = md_temp_get_pos();
+
+	bool result = false;
+
 	if (str_ends_with(filename, STR_LIT(".out"))) {
-		md_vlx_parse_out_file(vlx, filename);
+		if (!md_vlx_parse_out_file(vlx, filename)) {
+			goto done;
+		}
 	} else if (str_ends_with(filename, STR_LIT(".scf.results.h5"))) {
-		md_vlx_read_scf_results(vlx, filename);
+		if (!md_vlx_read_scf_results(vlx, filename)) {
+			goto done;
+		}
 	} else if (str_ends_with(filename, STR_LIT(".h5"))) {
-		md_vlx_read_h5_file(vlx, filename);
+		if (!md_vlx_read_h5_file(vlx, filename)) {
+			goto done;
+		}
 	} else {
 		MD_LOG_DEBUG("Unsupported file format");
-		return false;
+		goto done;
 	}
 
-	return true;
+	if (!str_empty(vlx->basis_set_ident)) {
+		size_t cap = KILOBYTES(16);
+		char*  buf = md_temp_push(cap);
+		md_strb_t sb = md_strb_create(md_get_temp_allocator());
+
+		md_strb_fmt(&sb, "%s/" STR_FMT, MD_VLX_BASIS_FOLDER, STR_ARG(vlx->basis_set_ident));
+		md_file_o* basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
+		if (basis_file) {
+			md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
+			bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
+			md_file_close(basis_file);
+			if (!parse_result) {
+				MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
+				goto done;
+			}
+			normalize_basis_set(&vlx->basis_set);
+		}
+		else {
+			// Attempt to read basis set file from same folder as file
+			str_t folder = { 0 };
+			if (!extract_folder_path(&folder, filename)) {
+				MD_LOG_ERROR("An error occured when extracting the path to supplied file");
+				return false;
+			}
+			md_strb_reset(&sb);
+			md_strb_push_str(&sb, folder);
+			md_strb_push_str(&sb, vlx->basis_set_ident);
+			basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
+			if (basis_file) {
+				md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
+				bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
+				md_file_close(basis_file);
+				if (!parse_result) {
+					MD_LOG_ERROR("An error occured when parsing the basis set for veloxchem data");
+					goto done;
+				}
+				normalize_basis_set(&vlx->basis_set);
+			}
+			else {
+				MD_LOG_ERROR("Could not find basis file corresponding to identifier: '"STR_FMT"'", STR_ARG(vlx->basis_set_ident));
+				goto done;
+			}
+		}
+	}
+
+	result = true;
+done:
+	md_temp_set_pos_back(temp_pos);
+
+	return result;
 }

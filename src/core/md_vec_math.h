@@ -1551,6 +1551,30 @@ MD_VEC_INLINE mat3_t mat3_angle_axis(float angle, vec3_t axis) {
 	return M;
 }
 
+MD_VEC_INLINE double dvec2_dot(dvec2_t a, dvec2_t b) {
+    return a.x * b.x + a.y * b.y;
+}
+
+MD_VEC_INLINE double dvec2_length(dvec2_t v) {
+    return sqrt(dvec2_dot(v, v));
+}
+
+MD_VEC_INLINE double dvec3_dot(dvec3_t a, dvec3_t b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+MD_VEC_INLINE double dvec3_length(dvec3_t v) {
+    return sqrt(dvec3_dot(v, v));
+}
+
+MD_VEC_INLINE double dvec4_dot(dvec4_t a, dvec4_t b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+MD_VEC_INLINE double dvec4_length(dvec4_t v) {
+    return sqrt(dvec4_dot(v, v));
+}
+
 typedef struct mat3_eigen_t {
     mat3_t vectors;
     vec3_t values;
