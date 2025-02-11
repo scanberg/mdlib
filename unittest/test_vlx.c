@@ -318,7 +318,7 @@ UTEST(vlx, scf_results_meth) {
 }
 #endif
 
-UTEST(vlx, out) {
+UTEST(vlx, mol_out) {
     md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
 
     bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"));
