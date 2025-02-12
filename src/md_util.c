@@ -1709,8 +1709,8 @@ static inline float calc_hbond_energy(dssp_res_hbonds_t res_hbonds[], const dssp
     double e_ref = 0.084 * (1.0 / d_NO + 1.0 / d_HC - 1.0 / d_NC - 1.0 / d_OH) * 332.0;
     */
 
-    dssp_res_coords_t* don = &res_coords[don_idx];
-    dssp_res_coords_t* acc = &res_coords[acc_idx];
+    const dssp_res_coords_t* don = &res_coords[don_idx];
+    const dssp_res_coords_t* acc = &res_coords[acc_idx];
 
     float result = 0.0f;
 
@@ -2117,22 +2117,131 @@ static inline int build_key(char* buf, str_t res, str_t a, str_t b) {
     return len;
 }
 
+static const int max_valence_bonds[] = {
+    0,  // Z = 0 (placeholder, no element with Z = 0)
+    1,  // H
+    0,  // He
+    1,  // Li
+    2,  // Be
+    3,  // B
+    4,  // C
+    4,  // N
+    3,  // O
+    1,  // F
+    0,  // Ne
+    1,  // Na
+    2,  // Mg
+    4,  // Al
+    4,  // Si
+    5,  // P
+    6,  // S
+    7,  // Cl
+    4,  // Ar
+    1,  // K
+    2,  // Ca
+    6,  // Sc
+    6,  // Ti
+    6,  // V
+    6,  // Cr
+    6,  // Mn
+    6,  // Fe
+    6,  // Co
+    6,  // Ni
+    4,  // Cu
+    4,  // Zn
+    3,  // Ga
+    4,  // Ge
+    5,  // As
+    6,  // Se
+    7,  // Br
+    4,  // Kr
+    1,  // Rb
+    2,  // Sr
+    6,  // Y
+    6,  // Zr
+    6,  // Nb
+    6,  // Mo
+    6,  // Tc
+    6,  // Ru
+    6,  // Rh
+    6,  // Pd
+    4,  // Ag
+    4,  // Cd
+    3,  // In
+    4,  // Sn
+    5,  // Sb
+    6,  // Te
+    7,  // I
+    4,  // Xe
+    1,  // Cs
+    2,  // Ba
+    6,  // La
+    6,  // Ce
+    6,  // Pr
+    6,  // Nd
+    6,  // Pm
+    6,  // Sm
+    6,  // Eu
+    6,  // Gd
+    6,  // Tb
+    6,  // Dy
+    6,  // Ho
+    6,  // Er
+    6,  // Tm
+    6,  // Yb
+    6,  // Lu
+    6,  // Hf
+    6,  // Ta
+    6,  // W
+    6,  // Re
+    6,  // Os
+    6,  // Ir
+    6,  // Pt
+    4,  // Au
+    4,  // Hg
+    3,  // Tl
+    4,  // Pb
+    5,  // Bi
+    6,  // Po
+    7,  // At
+    4,  // Rn
+    1,  // Fr
+    2,  // Ra
+    6,  // Ac
+    6,  // Th
+    6,  // Pa
+    6,  // U
+    6,  // Np
+    6,  // Pu
+    6,  // Am
+    6,  // Cm
+    6,  // Bk
+    6,  // Cf
+    6,  // Es
+    6,  // Fm
+    6,  // Md
+    6,  // No
+    6,  // Lr
+    6,  // Rf
+    6,  // Db
+    6,  // Sg
+    6,  // Bh
+    6,  // Hs
+    6,  // Mt
+    6,  // Ds
+    6,  // Rg
+    6,  // Cn
+    6,  // Nh
+    6,  // Fl
+    6,  // Mc
+    6,  // Lv
+    6,  // Ts
+    6   // Og
+};
+
 static inline int max_neighbors_element(md_element_t elem) {
-    switch (elem) {
-    case Unknown:
-        return 0;
-    case B:
-    case I:
-        return 3;
-    case O:
-        return 2;
-    case H:
-    case F:
-    case Br:
-        return 1;
-    default:
-        return 4;
-    };
+    const int idx = MIN(elem, ARRAY_SIZE(max_valence_bonds)-1);
+    return max_valence_bonds[idx];
 }
 
 static inline float angle(vec3_t a, vec3_t b, vec3_t c) {
@@ -3143,7 +3252,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
                     md_mm256_set1_ps(atom->z[i]),
                 };
                 const md_256  ri = md_mm256_set1_ps(elem_cov_radii[atom->element[i]]);
-                const int mi = elem_metal_mask[atom->element[i]] ? -1 : 0;
+                const int mi = elem_metal_mask[atom->element[i]];
                 for (int j = i + 1; j < range_a.end; j += 8) {
                     const md_256  cj[3] = {
                         md_mm256_loadu_ps(atom->x + j),
