@@ -1097,8 +1097,7 @@ static inline void extract_mo_coefficients(double* out_coeff, const md_vlx_orbit
 	ASSERT(out_coeff);
 	ASSERT(orb);
 
-	size_t num_mo_coeffs = number_of_mo_coefficients(orb);
-	ASSERT(mo_idx < num_mo_coeffs);
+	ASSERT(mo_idx < number_of_mo_coefficients(orb));
 
 	extract_col(out_coeff, &orb->coefficients, mo_idx);
 }
@@ -1118,8 +1117,7 @@ static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbit
 	ASSERT(orb);
 	ASSERT(ao_idx < orb->coefficients.size[0]);
 
-	size_t num_ao_coeffs = number_of_ao_coefficients(orb);
-	ASSERT(ao_idx < num_ao_coeffs);
+	ASSERT(ao_idx < number_of_ao_coefficients(orb));
 
 	extract_row(out_coeff, &orb->coefficients, ao_idx);
 }
@@ -1745,29 +1743,61 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	// Alpha data
-	if (!h5_read_dataset(&vlx->scf.alpha.coefficients.data, vlx->scf.alpha.coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, "C_alpha", vlx->arena)) {
+	size_t dim[2];
+	h5_read_dataset_dims(dim, 2, handle, "C_alpha");
+
+	md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
+	MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
+
+	md_array_resize(vlx->scf.alpha.energy.data, dim[0], vlx->arena);
+	vlx->scf.alpha.energy.size = dim[0];
+
+	md_array_resize(vlx->scf.alpha.occupancy.data, dim[0], vlx->arena);
+	vlx->scf.alpha.occupancy.size = dim[0];
+
+	// Extract alpha data
+	if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, vlx->scf.alpha.coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, "C_alpha")) {
 		return false;
 	}
-	if (!h5_read_dataset(&vlx->scf.alpha.energy.data, &vlx->scf.alpha.energy.size, 1, handle, H5T_NATIVE_DOUBLE, "E_alpha", vlx->arena)) {
+	if (!h5_read_dataset_data(vlx->scf.alpha.energy.data, &vlx->scf.alpha.energy.size, 1, handle, H5T_NATIVE_DOUBLE, "E_alpha")) {
 		return false;
 	}
-	if (!h5_read_dataset(&vlx->scf.alpha.occupancy.data, &vlx->scf.alpha.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_alpha", vlx->arena)) {
+	if (!h5_read_dataset_data(vlx->scf.alpha.occupancy.data, &vlx->scf.alpha.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_alpha")) {
 		return false;
 	}
 
-	// Beta
-	if (!h5_read_dataset(&vlx->scf.beta.coefficients.data, vlx->scf.beta.coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, "C_beta", vlx->arena)) {
-		return false;
-	}
-	if (!h5_read_dataset(&vlx->scf.beta.energy.data, &vlx->scf.beta.energy.size, 1, handle, H5T_NATIVE_DOUBLE, "E_beta", vlx->arena)) {
-		return false;
-	}
-	if (!h5_read_dataset(&vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_beta", vlx->arena)) {
-		return false;
+	if (str_eq(vlx->scf.type, STR_LIT("unrestricted"))) {
+		md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
+		MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
+
+		md_array_resize(vlx->scf.beta.energy.data, dim[0], vlx->arena);
+		vlx->scf.beta.energy.size = dim[0];
+
+		md_array_resize(vlx->scf.beta.occupancy.data, dim[0], vlx->arena);
+		vlx->scf.beta.occupancy.size = dim[0];
+
+		// Extract beta data
+		if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, vlx->scf.beta.coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, "C_beta")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->scf.beta.energy.data, &vlx->scf.beta.energy.size, 1, handle, H5T_NATIVE_DOUBLE, "E_beta")) {
+			return false;
+		}
+		if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
+			return false;
+		}
+	} else if (str_eq(vlx->scf.type, STR_LIT("restricted_openshell"))) {
+		md_array_resize(vlx->scf.beta.occupancy.data, dim[0], vlx->arena);
+		vlx->scf.beta.occupancy.size = dim[0];
+		if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
+			return false;
+		}
 	}
 
-	if (!h5_read_dataset(&vlx->scf.S.data, vlx->scf.S.size, 2, handle, H5T_NATIVE_DOUBLE, "S", vlx->arena)) {
+	md_array_resize(vlx->scf.S.data, dim[0] * dim[1], vlx->arena);
+	MEMCPY(vlx->scf.S.size, dim, sizeof(dim));
+
+	if (!h5_read_dataset_data(vlx->scf.S.data, vlx->scf.S.size, 2, handle, H5T_NATIVE_DOUBLE, "S")) {
 		return false;
 	}
 
