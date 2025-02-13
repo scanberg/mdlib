@@ -18,7 +18,6 @@ jobs:
             uses: lukka/run-vcpkg@v11
             with:
               vcpkgGitCommitId: 344525f74edb4c1d47c559d8bbe06240271441d8
-              #runVcpkgInstall: true
 
           - name: Clone MDLIB
             run: git submodule update --init --recursive
