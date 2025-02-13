@@ -10,11 +10,23 @@ jobs:
     ci:
         runs-on: windows-2022
         steps:
-        - uses: actions/checkout@v2
+        - uses: actions/checkout@v4
 
-        - name: prepare
+        - name: "Clone Vcpkg"
+          with:
+          repository: microsoft/vcpkg
+          path: vcpkg
+
+        - name: "Configure Vcpkg"
+          shell: bash
           run: |
-            git submodule update --init --recursive
+          cd vcpkg
+          ./bootstrap-vcpkg.sh
+          echo "VCPKG_INSTALLATION_ROOT=`pwd`" >> $GITHUB_ENV
+          echo "VCPKG_ROOT=`pwd`" >> $GITHUB_ENV
+
+        - name: Checkout MDLIB
+          run: git submodule update --init --recursive
 
         - name: Cmake Version
           run: cmake --version
@@ -32,7 +44,7 @@ jobs:
           # Note the current convention is to use the -S and -B options here to specify source 
           # and build directories, but this is only available with CMake 3.13 and higher.  
           # The CMake binaries on the Github Actions machines are (as of this writing) 3.12
-          run: cmake -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMD_FORCE_ASSERTIONS=ON $GITHUB_WORKSPACE
+          run: cmake -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMD_ENABLE_VLX=ON -DMD_FORCE_ASSERTIONS=ON $GITHUB_WORKSPACE
 
         - name: Build
           working-directory: ${{github.workspace}}/build

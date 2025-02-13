@@ -248,7 +248,7 @@ static inline md_128 md_mm_fast_pow(md_128 base, md_128i exp) {
     return res;
 }
 
-FORCE_INLINE md_256 md_mm256_fast_pow(md_256 base1, md_256i exp) {
+static inline md_256 md_mm256_fast_pow(md_256 base1, md_256i exp) {
     md_256 base2 = md_mm256_mul_ps(base1, base1);
     md_256 base3 = md_mm256_mul_ps(base2, base1);
     md_256 base4 = md_mm256_mul_ps(base2, base2);

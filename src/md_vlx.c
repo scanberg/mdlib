@@ -105,8 +105,8 @@ typedef struct md_vlx_scf_history_t {
 // Self Consistent Field
 typedef struct md_vlx_scf_t {
 	str_t type;
-	uint32_t homo_idx;
-	uint32_t lumo_idx;
+	size_t homo_idx;
+	size_t lumo_idx;
 
 	double energy;
 	dvec3_t ground_state_dipole_moment;
@@ -890,7 +890,15 @@ static bool parse_vlx_scf(md_vlx_t* vlx, md_buffered_reader_t* reader, md_alloca
 			}
 		} else if (str_eq(line, STR_LIT("Ground State Dipole Moment"))) {
 			md_buffered_reader_skip_line(reader); // -----
-			md_buffered_reader_skip_line(reader); // *empty*
+			md_buffered_reader_extract_line(&line, reader);
+			line = str_trim_beg(line);
+
+			if (str_begins_with(line, STR_LIT("*** Warning:"))) {
+				md_buffered_reader_skip_line(reader);
+				md_buffered_reader_skip_line(reader);
+				md_buffered_reader_skip_line(reader);
+			}
+
 			dvec3_t vec = { 0 };
 			for (int i = 0; i < 3; ++i) {
 				if (!md_buffered_reader_extract_line(&line, reader) || extract_tokens(tok, ARRAY_SIZE(tok), &line) != 6) {
@@ -2002,19 +2010,23 @@ bool md_vlx_read_h5_file(md_vlx_t* vlx, str_t filename) {
 	}
 
 	// SCF
-	hid_t scf_id = H5Gopen(file_id, "scf", H5P_DEFAULT);
-	if (scf_id != H5I_INVALID_HID) {
-		result = h5_read_scf_data(vlx, scf_id);
-		H5Gclose(scf_id);
-		if (!result) goto done;
+	if (H5Lexists(file_id, "rsp", H5P_DEFAULT) > 0) {
+		hid_t scf_id = H5Gopen(file_id, "scf", H5P_DEFAULT);
+		if (scf_id != H5I_INVALID_HID) {
+			result = h5_read_scf_data(vlx, scf_id);
+			H5Gclose(scf_id);
+			if (!result) goto done;
+		}
 	}
 
 	// RSP
-	hid_t rsp_id = H5Gopen(file_id, "rsp", H5P_DEFAULT);
-	if (rsp_id != H5I_INVALID_HID) {
-		result = h5_read_rsp_data(vlx, rsp_id);
-		H5Gclose(rsp_id);
-		if (!result) goto done;
+	if (H5Lexists(file_id, "rsp", H5P_DEFAULT) > 0) {
+		hid_t rsp_id = H5Gopen(file_id, "rsp", H5P_DEFAULT);
+		if (rsp_id != H5I_INVALID_HID) {
+			result = h5_read_rsp_data(vlx, rsp_id);
+			H5Gclose(rsp_id);
+			if (!result) goto done;
+		}
 	}
 
 	result = true;
@@ -2088,14 +2100,6 @@ bool md_vlx_parse_out_file(md_vlx_t* vlx, str_t filename) {
 			}
 			if (!h5_read_dataset(&vlx->scf.alpha.occupancy.data, &vlx->scf.alpha.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations", vlx->arena)) {
 				return false;
-			}
-			// Identify homo and lumo
-			for (size_t i = 0; i < vlx->scf.alpha.occupancy.size; ++i) {
-				if (vlx->scf.alpha.occupancy.data[i] == 0.0) {
-					vlx->scf.homo_idx = (uint32_t)MAX(0, (int32_t)i - 1);
-					vlx->scf.lumo_idx = (uint32_t)i;
-					break;
-				}
 			}
 		}
 	}
@@ -2192,6 +2196,17 @@ bool md_vlx_parse_file(md_vlx_t* vlx, str_t filename) {
 			else {
 				MD_LOG_ERROR("Could not find basis file corresponding to identifier: '"STR_FMT"'", STR_ARG(vlx->basis_set_ident));
 				goto done;
+			}
+		}
+	}
+
+	// Identify homo and lumo
+	if (vlx->scf.alpha.occupancy.data) {
+		for (size_t i = 0; i < vlx->scf.alpha.occupancy.size; ++i) {
+			if (vlx->scf.alpha.occupancy.data[i] == 0.0) {
+				vlx->scf.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
+				vlx->scf.lumo_idx = i;
+				break;
 			}
 		}
 	}
