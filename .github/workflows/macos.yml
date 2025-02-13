@@ -12,6 +12,7 @@ jobs:
         runs-on: macos-latest
         steps:
           - uses: actions/checkout@v4
+          - uses: lukka/get-cmake@latest
 
           - name: Setup Vcpkg
             uses: lukka/run-vcpkg@v11
