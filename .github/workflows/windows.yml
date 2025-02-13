@@ -5,6 +5,7 @@ on: [push]
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: RelWithDebInfo
+  VCPKG_DEFAULT_TRIPLET: x64-windows-static
 
 jobs:
     ci:
@@ -12,19 +13,24 @@ jobs:
         steps:
           - uses: actions/checkout@v4
 
-          - name: "Clone Vcpkg"
-            uses: actions/checkout@v4
-            with:
-              repository: microsoft/vcpkg
-              path: vcpkg
+          #- name: "Clone Vcpkg"
+          #  uses: actions/checkout@v4
+          #  with:
+          #    repository: microsoft/vcpkg
+          #    path: vcpkg
 
-          - name: "Configure Vcpkg"
-            shell: bash
-            run: |
-              cd vcpkg
-              ./bootstrap-vcpkg.sh
-              echo "VCPKG_INSTALLATION_ROOT=`pwd`" >> $GITHUB_ENV
-              echo "VCPKG_ROOT=`pwd`" >> $GITHUB_ENV
+          #- name: "Configure Vcpkg"
+          #  shell: bash
+          #  run: |
+          #    cd vcpkg
+          #    ./bootstrap-vcpkg.sh
+          #    echo "VCPKG_INSTALLATION_ROOT=`pwd`" >> $GITHUB_ENV
+          #    echo "VCPKG_ROOT=`pwd`" >> $GITHUB_ENV
+
+          - name: Setup Vcpkg
+            uses: lukka/run-vcpkg@v11
+            with:
+              runVcpkgInstall: true
 
           - name: Clone MDLIB
             run: git submodule update --init --recursive
