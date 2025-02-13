@@ -5,6 +5,7 @@ on: [push]
 env:
   BUILD_TYPE: RelWithDebInfo
   VCPKG_DEFAULT_TRIPLET: x64-osx
+  CMAKE_MAKE_PROGRAM: make
 
 jobs:
     ci:
