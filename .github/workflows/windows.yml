@@ -20,10 +20,10 @@ jobs:
         - name: "Configure Vcpkg"
           shell: bash
           run: |
-          cd vcpkg
-          ./bootstrap-vcpkg.sh
-          echo "VCPKG_INSTALLATION_ROOT=`pwd`" >> $GITHUB_ENV
-          echo "VCPKG_ROOT=`pwd`" >> $GITHUB_ENV
+            cd vcpkg
+            ./bootstrap-vcpkg.sh
+            echo "VCPKG_INSTALLATION_ROOT=`pwd`" >> $GITHUB_ENV
+            echo "VCPKG_ROOT=`pwd`" >> $GITHUB_ENV
 
         - name: Checkout MDLIB
           run: git submodule update --init --recursive
