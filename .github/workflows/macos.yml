@@ -4,7 +4,7 @@ on: [push]
 
 env:
   BUILD_TYPE: RelWithDebInfo
-  VCPKG_DEFAULT_TRIPLET: x64-osx
+  VCPKG_DEFAULT_TRIPLET: arm64-osx
   CMAKE_MAKE_PROGRAM: make
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
             uses: lukka/run-vcpkg@v11
             with:
               vcpkgGitCommitId: 344525f74edb4c1d47c559d8bbe06240271441d8
-              runVcpkgInstall: true
+              #runVcpkgInstall: true
 
           - name: Clone MDLIB
             run: git submodule update --init --recursive
