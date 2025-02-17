@@ -701,6 +701,13 @@ md_unit_t md_unit_angstrom(void) {
     return (md_unit_t)UNIT_ANGSTROM;
 }
 
+md_unit_t md_unit_bohr_radius(void) {
+    return (md_unit_t) {
+        .base = { .dim = {.length = 1}},
+        .mult = 5.29177210544e-11
+    };
+}
+
 md_unit_t md_unit_kilogram(void) {
     return (md_unit_t)UNIT_KILOGRAM;
 }

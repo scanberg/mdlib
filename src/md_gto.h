@@ -92,7 +92,8 @@ void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t num_xyz, size_
 
 // Compute the cutoff parameter within the supplied GTOs based on the given value
 // Typically this could be somewhere around 1.0e-6
-void md_gto_cutoff_compute(md_gto_t* gtos, size_t num_gtos, double value);
+// returns the number of gtos left after this, as some may have no radius of influence and will be pruned away
+size_t md_gto_cutoff_compute(md_gto_t* gtos, size_t num_gtos, double value);
 
 // Extracts a subset of gtos from an input array which overlap a given aabb with its radii of influence
 size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float aabb_max[3], const md_gto_t* in_gtos, size_t num_gtos);

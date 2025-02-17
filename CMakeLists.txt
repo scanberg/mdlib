@@ -149,7 +149,7 @@ if (MD_ENABLE_HDF5)
     set(HDF5_USE_STATIC_LIBRARIES TRUE)
     set(HDF5_PREFER_PARALLEL FALSE)
     find_package(HDF5 REQUIRED)
-    set(MD_LIBS ${MD_LIBS} hdf5::hdf5-static)
+    set(MD_LIBS ${MD_LIBS} HDF5::HDF5)
 endif()
 
 create_resources("${GL_SHADER_FILES}"  "gen/gl_shaders.inl")

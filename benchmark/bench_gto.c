@@ -13,18 +13,20 @@
 #include <float.h>
 
 #define BLK_DIM 8
+#define ANGSTROM_TO_BOHR 1.0 / 0.529177210903
 
 UBENCH_EX(gto, evaluate_grid) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     
-    md_vlx_data_t vlx = {0};
-    md_vlx_data_parse_file(&vlx, STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.out"), arena);
+    md_vlx_t* vlx = md_vlx_create(arena);
+    md_vlx_parse_file(vlx, STR_LIT(MD_BENCHMARK_DATA_DIR "/vlx/mol.out"));
 
     vec3_t min_box = vec3_set1(FLT_MAX);
     vec3_t max_box = vec3_set1(-FLT_MAX);
 
-    for (size_t i = 0; i < vlx.geom.num_atoms; ++i) {
-        vec3_t c = {(float)vlx.geom.coord_x[i], (float)vlx.geom.coord_y[i], (float)vlx.geom.coord_z[i]};
+	const dvec3_t* coords = md_vlx_atom_coordinates(vlx);
+    for (size_t i = 0; i < md_vlx_number_of_atoms(vlx); ++i) {
+        vec3_t c = {(float)coords[i].x, (float)coords[i].y, (float)coords[i].z};
         min_box = vec3_min(min_box, c);
         max_box = vec3_max(max_box, c);
     }
@@ -33,7 +35,7 @@ UBENCH_EX(gto, evaluate_grid) {
     max_box = vec3_add_f(max_box, 2.0f);
 
     // Conversion from Ångström to Bohr
-    const float factor = 1.0 / 0.529177210903;
+    const float factor = ANGSTROM_TO_BOHR;
 
     min_box = vec3_mul_f(min_box, factor);
     max_box = vec3_mul_f(max_box, factor);
@@ -54,9 +56,9 @@ UBENCH_EX(gto, evaluate_grid) {
         .step_z = {0, 0, step.z},
     };
 
-    size_t num_gtos = md_vlx_mol_gto_count(&vlx);
+    size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mol_gto_extract(gtos, &vlx, 120);
+    md_vlx_mo_gto_extract(gtos, vlx, 120, MD_VLX_MO_TYPE_ALPHA);
     md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
 
     md_gto_t* sub_gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);

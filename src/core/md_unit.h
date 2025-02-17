@@ -93,6 +93,7 @@ md_unit_t md_unit_none(void);  // Unitless quantity
 md_unit_t md_unit_meter(void);
 md_unit_t md_unit_nanometer(void);
 md_unit_t md_unit_angstrom(void);
+md_unit_t md_unit_bohr_radius(void);
 
 md_unit_t md_unit_kilogram(void);
 

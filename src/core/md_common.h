@@ -202,6 +202,8 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 
 #endif
 
+// Define intrinsic functions for memcpy, memset, memmove and memcmp
+
 #if MD_COMPILER_MSVC
 
 #ifdef  __cplusplus
@@ -211,12 +213,6 @@ void *  __cdecl memcpy(void*, const void*, unsigned long long);
 void *  __cdecl memset(void*, int, unsigned long long);
 void *  __cdecl memmove(void*, const void*, unsigned long long);
 int     __cdecl memcmp(const void*, const void*, unsigned long long);
-float  __cdecl  fabsf(float);
-double  __cdecl fabs(double);
-int     __cdecl abs(int);
-long    __cdecl labs(long);
-long long __cdecl llabs(long long);
-__int64 __cdecl _abs64(__int64 n);
 #ifdef __cplusplus
 }
 #endif

@@ -248,7 +248,7 @@ static inline md_128 md_mm_fast_pow(md_128 base, md_128i exp) {
     return res;
 }
 
-FORCE_INLINE md_256 md_mm256_fast_pow(md_256 base1, md_256i exp) {
+static inline md_256 md_mm256_fast_pow(md_256 base1, md_256i exp) {
     md_256 base2 = md_mm256_mul_ps(base1, base1);
     md_256 base3 = md_mm256_mul_ps(base2, base1);
     md_256 base4 = md_mm256_mul_ps(base2, base2);
@@ -1157,16 +1157,22 @@ done:
     return d;
 }
 
-void md_gto_cutoff_compute(md_gto_t* gtos, size_t count, double value) {
+size_t md_gto_cutoff_compute(md_gto_t* gtos, size_t count, double value) {
     if (value == 0) {
         for (size_t i = 0; i < count; ++i) {
             gtos[i].cutoff = FLT_MAX;
         }
     } else {
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count;) {
             gtos[i].cutoff = (float)compute_distance_cutoff(value, gtos[i].i, gtos[i].j, gtos[i].k, gtos[i].l, gtos[i].coeff, gtos[i].alpha);
+            if (gtos[i].cutoff == 0.0f) {
+                gtos[i] = gtos[--count];
+            } else {
+                ++i;
+            }
         }
     }
+    return count;
 }
 
 size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float aabb_max[3], const md_gto_t* in_gtos, size_t in_num_gtos) {

@@ -137,6 +137,46 @@ typedef struct mat4x3_t {
     #endif
 } mat4x3_t;
 
+typedef struct dvec2_t {
+    union {
+        struct {
+            double x, y;  
+        };
+        double elem[2];
+    };
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec2_t;
+
+typedef struct dvec3_t {
+    union {
+        struct {
+            double x, y, z;  
+        };
+        double elem[3];
+    };
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec3_t;
+
+typedef struct dvec4_t {
+    union {
+        struct {
+            double x, y, z, w;  
+        };
+        double elem[4];
+};
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec4_t;
+
+
 #if MD_COMPILER_CLANG
 #	pragma clang diagnostic pop
 #elif MD_COMPILER_GCC
@@ -1509,6 +1549,30 @@ MD_VEC_INLINE mat3_t mat3_angle_axis(float angle, vec3_t axis) {
 		t * axis.x * axis.z - s * axis.y, t * axis.y * axis.z + s * axis.x, t * axis.z * axis.z + c
 	};
 	return M;
+}
+
+MD_VEC_INLINE double dvec2_dot(dvec2_t a, dvec2_t b) {
+    return a.x * b.x + a.y * b.y;
+}
+
+MD_VEC_INLINE double dvec2_length(dvec2_t v) {
+    return sqrt(dvec2_dot(v, v));
+}
+
+MD_VEC_INLINE double dvec3_dot(dvec3_t a, dvec3_t b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+MD_VEC_INLINE double dvec3_length(dvec3_t v) {
+    return sqrt(dvec3_dot(v, v));
+}
+
+MD_VEC_INLINE double dvec4_dot(dvec4_t a, dvec4_t b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+MD_VEC_INLINE double dvec4_length(dvec4_t v) {
+    return sqrt(dvec4_dot(v, v));
 }
 
 typedef struct mat3_eigen_t {
