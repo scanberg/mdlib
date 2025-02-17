@@ -1729,64 +1729,6 @@ done:
 	return result;
 }
 
-bool h5_read_dataset(void** out_data, size_t* out_dims, int num_dim, hid_t file_id, hid_t mem_type_id, const char* field_name, md_allocator_i* alloc) {
-	ASSERT(out_data);
-	ASSERT(out_dims);
-
-	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
-	if (exists == 0) {
-		return false;
-	}
-
-	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
-	if (dataset_id == H5I_INVALID_HID) {
-		MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
-		return false;
-	}
-
-	bool result = false;
-	hid_t space_id = H5Dget_space(dataset_id);
-	if (space_id == H5I_INVALID_HID) {
-		MD_LOG_ERROR("Failed to open H5 space");
-		goto done;
-	}
-
-	int ndim = H5Sget_simple_extent_ndims(space_id);
-	if (ndim != num_dim) {
-		MD_LOG_ERROR("Unexpected number of dimensions when reading dataset, got %i, expected %i", ndim, num_dim);
-		goto done;
-	}
-
-	ndim = H5Sget_simple_extent_dims(space_id, out_dims, 0);
-	ASSERT(ndim == num_dim);
-
-	size_t size = 1;
-	for (int i = 0; i < num_dim; ++i) {
-		size *= out_dims[i];
-	}
-
-	size_t elem_size = H5Tget_size(mem_type_id);
-
-	size_t bytes = size * elem_size;
-	*out_data = md_alloc(alloc, bytes);
-
-	herr_t status = H5Dread(dataset_id, mem_type_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, *out_data);
-
-	if (status != 0) {
-		MD_LOG_ERROR("An error occured when reading H5 data");
-		md_free(alloc, *out_data, bytes);
-		*out_data = NULL;
-		goto done;
-	}
-
-	result = true;
-done:
-	H5Sclose(space_id);
-	H5Dclose(dataset_id);
-
-	return result;
-}
-
 // Data extraction procedures
 
 static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
@@ -1939,20 +1881,41 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	for (size_t i = 0; i < vlx->rsp.number_of_excited_states; ++i) {
 		int idx = (int)(i + 1);
 
-		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_energies", idx);
-		if (!h5_read_dataset(&vlx->rsp.nto[i].energy.data, &vlx->rsp.nto[i].energy.size, 1, handle, H5T_NATIVE_DOUBLE, buf, vlx->arena)) {
+		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_orbitals", idx);
+
+		uint64_t dim[2];
+		if (!h5_read_dataset_dims(dim, 2, handle, buf)) {
+			return false;
+		}
+		if (dim[0] == 0 || dim[1] == 0) {
+			MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
+			return false;
+		}
+
+		md_array_resize(vlx->rsp.nto[i].coefficients.data, dim[0] * dim[1], vlx->arena);
+		MEMCPY(vlx->rsp.nto[i].coefficients.size, dim, sizeof(dim));
+
+		md_array_resize(vlx->rsp.nto[i].energy.data, dim[1], vlx->arena);
+		vlx->rsp.nto[i].energy.size = dim[1];
+
+		md_array_resize(vlx->rsp.nto[i].occupancy.data, dim[1], vlx->arena);
+		vlx->rsp.nto[i].occupancy.size = dim[1];
+
+		if (!h5_read_dataset_data(vlx->rsp.nto[i].coefficients.data, vlx->rsp.nto[i].coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, buf)) {
 			return false;
 		}
 
 		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_occupations", idx);
-		if (!h5_read_dataset(&vlx->rsp.nto[i].occupancy.data, &vlx->rsp.nto[i].occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, buf, vlx->arena)) {
+		if (!h5_read_dataset_data(vlx->rsp.nto[i].occupancy.data, &vlx->rsp.nto[i].occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, buf)) {
 			return false;
 		}
 
-		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_orbitals", idx);
-		if (!h5_read_dataset(&vlx->rsp.nto[i].coefficients.data, vlx->rsp.nto[i].coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, buf, vlx->arena)) {
+		snprintf(buf, sizeof(buf), "NTO_S%i_alpha_energies", idx);
+		if (!h5_read_dataset_data(&vlx->rsp.nto[i].energy.data, &vlx->rsp.nto[i].energy.size, 1, handle, H5T_NATIVE_DOUBLE, buf)) {
 			return false;
 		}
+
+
 	}
 
 	// Dipoles
@@ -2270,10 +2233,25 @@ bool md_vlx_parse_out_file(md_vlx_t* vlx, str_t filename) {
 					return false;
 				}
 
-				if (!h5_read_dataset(&vlx->rsp.nto[i].coefficients.data,  vlx->rsp.nto[i].coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals", vlx->arena)) {
+				uint64_t dim[2];
+				if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
 					return false;
 				}
-				if (!h5_read_dataset(&vlx->rsp.nto[i].occupancy.data,	    &vlx->rsp.nto[i].occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations", vlx->arena)) {
+				if (dim[0] == 0 || dim[1] == 0) {
+					MD_LOG_ERROR("Invalid dimensions in NTO orbitals");
+					return false;
+				}
+
+				md_array_resize(vlx->rsp.nto[i].coefficients.data, dim[0] * dim[1], vlx->arena);
+				MEMCPY(vlx->rsp.nto[i].coefficients.size, dim, sizeof(dim));
+
+				md_array_resize(vlx->rsp.nto[i].occupancy.data, dim[1], vlx->arena);
+				vlx->rsp.nto[i].occupancy.size = dim[1];
+
+				if (!h5_read_dataset_data(vlx->rsp.nto[i].coefficients.data,  vlx->rsp.nto[i].coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
+					return false;
+				}
+				if (!h5_read_dataset_data(vlx->rsp.nto[i].occupancy.data,	    &vlx->rsp.nto[i].occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
 					return false;
 				}
 			}
