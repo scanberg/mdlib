@@ -1867,14 +1867,25 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 
 	// Allocate data
 	md_array_resize(vlx->rsp.nto, vlx->rsp.number_of_excited_states, vlx->arena);
+	MEMSET(vlx->rsp.nto, 0, vlx->rsp.number_of_excited_states * sizeof(md_vlx_orbital_t));
 
 	md_array_resize(vlx->rsp.electric_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
-	md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
-	md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+	MEMSET(vlx->rsp.electric_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
 
-	md_array_resize(vlx->rsp.absorption_ev,			vlx->rsp.number_of_excited_states, vlx->arena);
-	md_array_resize(vlx->rsp.oscillator_strengths,	vlx->rsp.number_of_excited_states, vlx->arena);
-	md_array_resize(vlx->rsp.rotatory_strengths,	vlx->rsp.number_of_excited_states, vlx->arena);
+	md_array_resize(vlx->rsp.magnetic_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+	MEMSET(vlx->rsp.magnetic_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
+
+	md_array_resize(vlx->rsp.velocity_transition_dipoles, vlx->rsp.number_of_excited_states, vlx->arena);
+	MEMSET(vlx->rsp.velocity_transition_dipoles, 0, vlx->rsp.number_of_excited_states * sizeof(dvec3_t));
+
+	md_array_resize(vlx->rsp.absorption_ev,	vlx->rsp.number_of_excited_states, vlx->arena);
+	MEMSET(vlx->rsp.absorption_ev, 0, vlx->rsp.number_of_excited_states * sizeof(double));
+
+	md_array_resize(vlx->rsp.oscillator_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
+	MEMSET(vlx->rsp.oscillator_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
+
+	md_array_resize(vlx->rsp.rotatory_strengths, vlx->rsp.number_of_excited_states, vlx->arena);
+	MEMSET(vlx->rsp.rotatory_strengths, 0, vlx->rsp.number_of_excited_states * sizeof(double));
 
 	// NTO data
 	char buf[32];

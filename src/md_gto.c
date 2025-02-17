@@ -58,16 +58,33 @@ static GLuint get_temp_ssbo(void) {
 }
 
 void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
+
+    uint32_t orb_offsets[2] = {0, (uint32_t)num_gtos};
+    float orb_scaling[1] = {1.0f};
+
+    md_orbital_data_t orb = {
+        .num_gtos = num_gtos,
+        .gtos = gtos,
+        .num_orbs = 1,
+        .orb_offsets = orb_offsets,
+        .orb_scaling = orb_scaling,
+    };
+
+    md_gto_grid_evaluate_orb_GPU(vol_tex, vol_dim, vol_step, world_to_model, index_to_world, &orb, mode);
+}
+
+void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
     ASSERT(world_to_model);
     ASSERT(index_to_world);
     ASSERT(vol_dim);
     ASSERT(vol_step);
+    ASSERT(orb);
 
-    md_gl_debug_push("EVAL GTO");
+    md_gl_debug_push("EVAL ORBS");
 
     GLenum format = 0;
     if (glGetTextureLevelParameteriv) {
-        glGetTextureLevelParameteriv(vol_tex, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+        glGetTextureLevelParameteriv(vol_tex,   0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
     } else {
         glBindTexture(GL_TEXTURE_3D, vol_tex);
         glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
@@ -85,9 +102,26 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const floa
     }
 
     GLuint ssbo = get_temp_ssbo();
+
+    GLintptr   ssbo_gto_offset = 0;
+    GLsizeiptr ssbo_gto_size   = sizeof(md_gto_t) * orb->num_gtos;
+
+    GLintptr   ssbo_orb_offset = ALIGN_TO(ssbo_gto_offset + ssbo_gto_size, 256);
+    GLsizeiptr ssbo_orb_size   = sizeof(uint32_t) * (orb->num_orbs + 1);
+
+    GLintptr   ssbo_scl_offset = ALIGN_TO(ssbo_orb_offset + ssbo_orb_size, 256);
+    GLsizeiptr ssbo_scl_size   = sizeof(float) * (orb->num_orbs);
+
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(md_gto_t) * num_gtos, gtos);
-    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_gto_offset, ssbo_gto_size, orb->gtos);
+
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_orb_offset, ssbo_orb_size, orb->orb_offsets);
+    // Fill last portion of buffer with point indices
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_scl_offset, ssbo_scl_size, orb->orb_scaling);
+
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, ssbo, ssbo_gto_offset, ssbo_gto_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, ssbo, ssbo_orb_offset, ssbo_orb_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, ssbo, ssbo_scl_offset, ssbo_scl_size);
 
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
@@ -97,7 +131,7 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const floa
     glUniformMatrix4fv(0, 1, GL_FALSE, world_to_model);
     glUniformMatrix4fv(1, 1, GL_FALSE, index_to_world);
     glUniform3fv(2, 1, (const float*)vol_step);
-    glUniform1ui(3, (GLuint)num_gtos);
+    glUniform1ui(3, (GLuint)orb->num_orbs);
     glUniform1i(4, (GLint)mode);
 
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
@@ -117,6 +151,7 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const floa
 
     md_gl_debug_pop();
 }
+
 
 void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points) {
     ASSERT(out_group_values);
@@ -153,10 +188,10 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
     GLintptr   ssbo_group_value_offset = 0;
     GLsizeiptr ssbo_group_value_size   = sizeof(float) * 16;
 
-    GLintptr   ssbo_point_xyzr_offset  = ssbo_group_value_offset + ssbo_group_value_size;
+    GLintptr   ssbo_point_xyzr_offset  = ALIGN_TO(ssbo_group_value_offset + ssbo_group_value_size, 256);
     GLsizeiptr ssbo_point_xyzr_size    = sizeof(float) * 4 * num_points;
 
-    GLintptr   ssbo_point_group_offset = ssbo_point_xyzr_offset + ssbo_point_xyzr_size;
+    GLintptr   ssbo_point_group_offset = ALIGN_TO(ssbo_point_xyzr_offset + ssbo_point_xyzr_size, 256);
     GLsizeiptr ssbo_point_group_size   = sizeof(uint32_t) * num_points;
 
     // Clear first 16 bytes which represents the result (group_values)
@@ -607,7 +642,14 @@ static inline void evaluate_grid_ortho_8x8x8_256(float grid_data[], const int gr
 
                 md_256 prod_a = md_mm256_mul_ps(pc, fx);
                 md_256 prod_b = md_mm256_mul_ps(fy, fz);
-                vpsi[iz][iy] = md_mm256_fmadd_ps(md_mm256_mul_ps(prod_a, prod_b), ex, vpsi[iz][iy]);
+
+                md_256 psi = md_mm256_mul_ps(md_mm256_mul_ps(prod_a, prod_b), ex);
+
+                if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+                    psi = md_mm256_mul_ps(psi, psi);
+                }
+
+                vpsi[iz][iy] = md_mm256_add_ps(vpsi[iz][iy], psi);
             }
         }
     }
@@ -620,9 +662,9 @@ static inline void evaluate_grid_ortho_8x8x8_256(float grid_data[], const int gr
             int index = x_stride + y_stride + z_stride;
             md_256 psi = vpsi[iz][iy];
 
-            if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-                psi = md_mm256_mul_ps(psi, psi);
-            }
+            //if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+            //    psi = md_mm256_mul_ps(psi, psi);
+            //}
 
             md_mm256_storeu_ps(grid_data + index, psi);
         }
@@ -692,7 +734,16 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
 
                 md_256 prod_a = md_mm256_mul_ps(pc, fx);
                 md_256 prod_b = md_mm256_mul_ps(fy, fz);
-                vpsi[iz][iy] = md_mm256_fmadd_ps(md_mm256_mul_ps(prod_a, prod_b), ex, vpsi[iz][iy]);
+
+
+                md_256 psi = md_mm256_mul_ps(md_mm256_mul_ps(prod_a, prod_b), ex);
+
+                if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+                    psi = md_mm256_mul_ps(psi, psi);
+                }
+
+                vpsi[iz][iy] = md_mm256_add_ps(vpsi[iz][iy], psi);
+                //vpsi[iz][iy] = md_mm256_fmadd_ps(md_mm256_mul_ps(prod_a, prod_b), ex, vpsi[iz][iy]);
             }
         }
     }
@@ -705,9 +756,9 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
             int index = x_stride + y_stride + z_stride;
             md_256 psi = vpsi[iz][iy];
 
-            if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-                psi = md_mm256_mul_ps(psi, psi);
-            }
+            //if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+            //    psi = md_mm256_mul_ps(psi, psi);
+            //}
 
             md_mm256_storeu_ps(grid_data + index, psi);
         }

@@ -9,7 +9,7 @@ typedef struct md_gto_t {
 	float x;
 	float y;
 	float z;
-	float coeff;		// Baked coefficient (should include cartesian normalization factors)
+	float coeff;		// Baked coefficient (Including normalization factors)
 	float alpha;		// Exponent alpha
 	float cutoff;		// Radial cutoff
 	uint8_t i, j, k, l;
@@ -25,6 +25,18 @@ typedef struct md_grid_t {
 	float step_y[3];
 	float step_z[3];
 } md_grid_t;
+
+// Orbital Data 
+typedef struct md_orbital_data_t {
+	size_t num_gtos;
+	const md_gto_t* gtos;
+
+	// Optional parameters to evaluate multiple orbitals in one 'go'
+	// This is necessary in case the evaluation mode is psi squared as the squaring has to occur after each orbital
+	size_t num_orbs;
+	const uint32_t* orb_offsets;
+	const float* orb_scaling;
+} md_orbital_data_t;
 
 typedef enum {
 	MD_GTO_EVAL_MODE_PSI = 0,
@@ -52,6 +64,10 @@ void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
 void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
+
+
+void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
+
 
 // This is malplaced at the moment, but this is for the moment, the best match in where to place the functionality
 // Performs voronoi segmentation of the supplied volume to points with a supplied radius and accumulates the value of each voxel into the corresponding group of the closest point
