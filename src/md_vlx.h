@@ -26,8 +26,16 @@ enum {
 	MD_VLX_NTO_TYPE_HOLE = 1,
 };
 
+enum {
+	MD_VLX_SCF_TYPE_UNKNOWN = 0,
+	MD_VLX_SCF_TYPE_RESTRICTED,
+	MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL,
+	MD_VLX_SCF_TYPE_UNRESTRICTED,
+};
+
 typedef uint32_t md_vlx_nto_type_t;
 typedef uint32_t md_vlx_mo_type_t;
+typedef uint32_t md_vlx_scf_type_t;
 
 typedef struct md_vlx_t md_vlx_t;
 
@@ -56,7 +64,7 @@ const dvec3_t* md_vlx_atom_coordinates(const struct md_vlx_t* vlx);
 const uint8_t* md_vlx_atomic_numbers(const struct md_vlx_t* vlx);
 
 // SCF
-str_t   md_vlx_scf_type(const struct md_vlx_t* vlx);
+md_vlx_scf_type_t md_vlx_scf_type(const struct md_vlx_t* vlx);
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx);
 size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx);
@@ -97,8 +105,19 @@ size_t md_vlx_nto_gto_count(const md_vlx_t* vlx);
 bool   md_vlx_nto_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type);
 
 // Extract Molecular Orbital (MO) PGTOs
+
+// This provides an upper limit to the number of gtos supplied
+// Use this to reserve the data for the gtos
 size_t md_vlx_mo_gto_count(const md_vlx_t* vlx);
-bool   md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type);
+
+// This extract the gtos into the supplied array
+// Returns the number of gtos written
+// gtos: an array to hold the extracted gtos
+// vlx: a pointer to a valid VeloxChem object
+// mo_idx: Molecular Orbital Index
+// type: Molecular orbital type: Alpha / Beta
+// value_cutoff: A cutoff value which will be used to calculate an effective radius of influence for the gtos
+bool md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type);
 
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_t* vlx, struct md_allocator_i* alloc);

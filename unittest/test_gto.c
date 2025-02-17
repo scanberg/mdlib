@@ -134,7 +134,11 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
     md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
-    md_gto_cutoff_compute(gtos, num_gtos, 0);
+    
+    size_t pre_cutoff = num_gtos;
+    num_gtos = md_gto_cutoff_compute(gtos, num_gtos, cutoff_value);
+    printf("Applying value cutoff to gtos: %g\n", cutoff_value);
+    printf("Number of gtos pruned: %zu\n", pre_cutoff - num_gtos);
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
 
@@ -209,7 +213,7 @@ UTEST(gto, h2o) {
 
     size_t lumo_idx = md_vlx_scf_lumo_idx(vlx);
 
-    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 0.0, &cube_lumo, arena);
+    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 1.0E-5, &cube_lumo, arena);
 
     EXPECT_LT(max_delta_lumo, 1.0E-4);
 
@@ -231,8 +235,8 @@ UTEST(gto, amide) {
     size_t lumo_idx = md_vlx_scf_lumo_idx(vlx);
     size_t homo_idx = md_vlx_scf_homo_idx(vlx);
 
-    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 0.0, &cube_lumo, arena);
-    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, 0.0, &cube_homo, arena);
+    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 1.0E-5, &cube_lumo, arena);
+    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, 1.0E-5, &cube_homo, arena);
 
     EXPECT_LT(max_delta_lumo, 1.0E-4);
     EXPECT_LT(max_delta_homo, 1.0E-4);
@@ -254,8 +258,8 @@ UTEST(gto, ne) {
     size_t lumo_idx = md_vlx_scf_lumo_idx(vlx);
     size_t homo_idx = md_vlx_scf_homo_idx(vlx);
 
-    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 0.0, &cube_lumo, arena);
-    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, 0.0, &cube_homo, arena);
+    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 1.0E-5, &cube_lumo, arena);
+    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, 1.0E-5, &cube_homo, arena);
 
     EXPECT_LT(max_delta_lumo, 1.0E-4);
     EXPECT_LT(max_delta_homo, 1.0E-4);
@@ -277,8 +281,8 @@ UTEST(gto, myjob) {
     size_t lumo_idx = md_vlx_scf_lumo_idx(vlx);
     size_t homo_idx = md_vlx_scf_homo_idx(vlx);
 
-    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 0.0, &cube_lumo, arena);
-    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, 0.0, &cube_homo, arena);
+    double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 1.0E-5, &cube_lumo, arena);
+    double max_delta_homo = compare_vlx_and_cube(vlx, homo_idx, 1.0E-5, &cube_homo, arena);
 
     EXPECT_LT(max_delta_lumo, 1.0E-4);
     EXPECT_LT(max_delta_homo, 1.0E-4);

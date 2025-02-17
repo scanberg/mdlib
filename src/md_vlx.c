@@ -104,7 +104,7 @@ typedef struct md_vlx_scf_history_t {
 
 // Self Consistent Field
 typedef struct md_vlx_scf_t {
-	str_t type;
+	md_vlx_scf_type_t type;
 	size_t homo_idx;
 	size_t lumo_idx;
 
@@ -860,7 +860,25 @@ static bool parse_vlx_scf(md_vlx_t* vlx, md_buffered_reader_t* reader, md_alloca
 	int mask = 0;
 	while (md_buffered_reader_extract_line(&line, reader)) {
 		line = str_trim(line);
-		if (str_begins_with(line, STR_LIT("Iter. |")) && str_ends_with(line, STR_LIT("| Density Change"))) {
+
+		if (str_begins_with(line, STR_LIT("Wave Function Model"))) {
+			size_t loc = 0;
+			if (str_find_char(&loc, line, ':')) {
+				str_t scf_type = str_trim_beg(str_substr(line, loc+1, SIZE_MAX));
+				if (str_begins_with(scf_type, STR_LIT("Spin-Restricted Open-Shell"))) {
+					vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL;
+				} else if (str_begins_with(scf_type, STR_LIT("Spin-Restricted"))) {
+					vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED;
+				} else if (str_begins_with(scf_type, STR_LIT("Spin-Unrestricted"))) {
+					vlx->scf.type = MD_VLX_SCF_TYPE_UNRESTRICTED;
+				} else {
+					vlx->scf.type = MD_VLX_SCF_TYPE_UNKNOWN;
+					MD_LOG_ERROR("Unexpected Wave Function Model: '"STR_FMT"'", STR_ARG(scf_type));
+					return false;
+				}
+				mask |= 1;
+			}
+		} else if (str_begins_with(line, STR_LIT("Iter. |")) && str_ends_with(line, STR_LIT("| Density Change"))) {
 			md_buffered_reader_skip_line(reader); // -----
 			// Parse table, start tokenization
 			while (md_buffered_reader_extract_line(&line, reader)) {
@@ -879,7 +897,7 @@ static bool parse_vlx_scf(md_vlx_t* vlx, md_buffered_reader_t* reader, md_alloca
 					md_array_push(vlx->scf.history.density_diff,  density_change, alloc);
 					vlx->scf.history.number_of_iterations += 1;
 
-					mask |= 1;
+					mask |= 2;
 				} else if (num_tok == 0) {
 					// Assume valid end here upon empty line
 					break;
@@ -910,13 +928,13 @@ static bool parse_vlx_scf(md_vlx_t* vlx, md_buffered_reader_t* reader, md_alloca
 			vlx->scf.ground_state_dipole_moment.x = vec.x;
 			vlx->scf.ground_state_dipole_moment.y = vec.y;
 			vlx->scf.ground_state_dipole_moment.z = vec.z;
-			mask |= 2;
+			mask |= 4;
 		} else if (str_begins_with(line, STR_LIT("====="))) {
 			// We've read too far and into the next section
 			MD_LOG_ERROR("Failed to parse SCF section, some fields are missing");
 			return false;
 		}
-		if (mask == 3) {
+		if (mask == 7) {
 			return true;
 		}
 	}
@@ -1179,8 +1197,8 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx) {
 	return vlx_pgto_count(vlx);
 }
 
-bool md_vlx_mo_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type) {
-	ASSERT(pgtos);
+bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type) {
+	ASSERT(gtos);
 	ASSERT(vlx);
 
 	const md_vlx_orbital_t* orb = 0;
@@ -1203,7 +1221,7 @@ bool md_vlx_mo_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t mo_idx, 
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	extract_pgto_data(pgtos, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
+	extract_pgto_data(gtos, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
@@ -1421,9 +1439,9 @@ const uint8_t* md_vlx_atomic_numbers(const md_vlx_t* vlx) {
 	return NULL;
 }
 
-str_t md_vlx_scf_type(const md_vlx_t* vlx) {
+md_vlx_scf_type_t md_vlx_scf_type(const md_vlx_t* vlx) {
 	if (vlx) return vlx->scf.type;
-	return (str_t){0};
+	return MD_VLX_SCF_TYPE_UNKNOWN;
 }
 
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const md_vlx_t* vlx) {
@@ -1572,6 +1590,43 @@ done:
 	// Close HDF5 resources
 	H5Tclose(datatype_id);
 	H5Sclose(space_id);
+	H5Dclose(dataset_id);
+
+	return result;
+}
+
+static size_t h5_read_cstr(char* out_str, size_t str_cap, hid_t file_id, const char* field_name) {
+	htri_t exists = H5Lexists(file_id, field_name, H5P_DEFAULT);
+	if (exists == 0) {
+		return 0;
+	}
+
+	// Open the dataset
+	hid_t dataset_id = H5Dopen(file_id, field_name, H5P_DEFAULT);
+	if (dataset_id == H5I_INVALID_HID) {
+		MD_LOG_ERROR("Failed to open H5 dataset: '%s'", field_name);
+		return 0;
+	}
+
+	size_t result = 0;
+
+	// Get the datatype and space
+	hid_t datatype_id = H5Dget_type(dataset_id);  // Get datatype
+
+	// Determine size of string (assume variable-length string)
+	size_t size = H5Tget_size(datatype_id);
+	if (size < str_cap) {
+		herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, out_str);
+		if (status != 0) {
+			MD_LOG_ERROR("Failed to read data for H5 dataset: '%s'", field_name);
+			goto done;
+		}
+		result = size;
+	}
+done:
+
+	// Close HDF5 resources
+	H5Tclose(datatype_id);
 	H5Dclose(dataset_id);
 
 	return result;
@@ -1735,7 +1790,20 @@ done:
 // Data extraction procedures
 
 static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
-	if (!h5_read_str(&vlx->scf.type, handle, "scf_type", vlx->arena)) {
+	char scf_type[64] = {0};
+	if (!h5_read_cstr(scf_type, sizeof(scf_type), handle, "scf_type")) {
+		return false;
+	}
+
+	if (str_eq_cstr(STR_LIT("restricted"), scf_type)) {
+		vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED;
+	} else if (str_eq_cstr(STR_LIT("restricted_openshell"), scf_type)) {
+		vlx->scf.type = MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL;
+	} else if (str_eq_cstr(STR_LIT("unrestricted"), scf_type)) {
+		vlx->scf.type = MD_VLX_SCF_TYPE_UNRESTRICTED;
+	} else {
+		vlx->scf.type = MD_VLX_SCF_TYPE_UNKNOWN;
+		MD_LOG_ERROR("Unrecognized scf type present in h5 scf section: '%s'", scf_type);
 		return false;
 	}
 
@@ -1749,11 +1817,11 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
 	MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
 
-	md_array_resize(vlx->scf.alpha.energy.data, dim[0], vlx->arena);
-	vlx->scf.alpha.energy.size = dim[0];
+	md_array_resize(vlx->scf.alpha.energy.data, dim[1], vlx->arena);
+	vlx->scf.alpha.energy.size = dim[1];
 
-	md_array_resize(vlx->scf.alpha.occupancy.data, dim[0], vlx->arena);
-	vlx->scf.alpha.occupancy.size = dim[0];
+	md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
+	vlx->scf.alpha.occupancy.size = dim[1];
 
 	// Extract alpha data
 	if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, vlx->scf.alpha.coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, "C_alpha")) {
@@ -1766,15 +1834,15 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	if (str_eq(vlx->scf.type, STR_LIT("unrestricted"))) {
+	if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
 		md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
 		MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
 
-		md_array_resize(vlx->scf.beta.energy.data, dim[0], vlx->arena);
-		vlx->scf.beta.energy.size = dim[0];
+		md_array_resize(vlx->scf.beta.energy.data, dim[1], vlx->arena);
+		vlx->scf.beta.energy.size = dim[1];
 
-		md_array_resize(vlx->scf.beta.occupancy.data, dim[0], vlx->arena);
-		vlx->scf.beta.occupancy.size = dim[0];
+		md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
+		vlx->scf.beta.occupancy.size = dim[1];
 
 		// Extract beta data
 		if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, vlx->scf.beta.coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, "C_beta")) {
@@ -1786,11 +1854,16 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
 			return false;
 		}
-	} else if (str_eq(vlx->scf.type, STR_LIT("restricted_openshell"))) {
-		md_array_resize(vlx->scf.beta.occupancy.data, dim[0], vlx->arena);
-		vlx->scf.beta.occupancy.size = dim[0];
-		if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
-			return false;
+	} else {
+		// Shallow copy fields from Alpha
+		MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
+
+		if (vlx->scf.type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+			vlx->scf.beta.occupancy.data = 0;
+			md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
+			if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
+				return false;
+			}
 		}
 	}
 
@@ -2122,14 +2195,61 @@ bool md_vlx_parse_out_file(md_vlx_t* vlx, str_t filename) {
 				MD_LOG_ERROR("Could not open HDF5 file: '"STR_FMT"'", STR_ARG(md_strb_to_str(sb)));
 				return false;
 			}
-			if (!h5_read_dataset(&vlx->scf.alpha.coefficients.data, vlx->scf.alpha.coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals", vlx->arena)) {
+			size_t dim[2];
+			if (!h5_read_dataset_dims(dim, 2, file_id, "alpha_orbitals")) {
 				return false;
 			}
-			if (!h5_read_dataset(&vlx->scf.alpha.energy.data, &vlx->scf.alpha.energy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_energies", vlx->arena)) {
+
+			md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
+			MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
+
+			md_array_resize(vlx->scf.alpha.energy.data, dim[1], vlx->arena);
+			vlx->scf.alpha.energy.size = dim[1];
+
+			md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
+			vlx->scf.alpha.occupancy.size = dim[1];
+
+			if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, vlx->scf.alpha.coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "alpha_orbitals")) {
 				return false;
 			}
-			if (!h5_read_dataset(&vlx->scf.alpha.occupancy.data, &vlx->scf.alpha.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations", vlx->arena)) {
+			if (!h5_read_dataset_data(vlx->scf.alpha.energy.data, &vlx->scf.alpha.energy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_energies")) {
 				return false;
+			}
+			if (!h5_read_dataset_data(vlx->scf.alpha.occupancy.data, &vlx->scf.alpha.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "alpha_occupations")) {
+				return false;
+			}
+
+			if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
+				md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
+				MEMCPY(vlx->scf.beta.coefficients.size, dim, sizeof(dim));
+
+				md_array_resize(vlx->scf.beta.energy.data, dim[1], vlx->arena);
+				vlx->scf.beta.energy.size = dim[1];
+
+				md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
+				vlx->scf.beta.occupancy.size = dim[1];
+
+				// Extract beta data
+				if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, vlx->scf.beta.coefficients.size, 2, file_id, H5T_NATIVE_DOUBLE, "beta_orbitals")) {
+					return false;
+				}
+				if (!h5_read_dataset_data(vlx->scf.beta.energy.data, &vlx->scf.beta.energy.size, 1, file_id, H5T_NATIVE_DOUBLE, "beta_energies")) {
+					return false;
+				}
+				if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "beta_occupations")) {
+					return false;
+				}
+			} else {
+				// Shallow copy fields from Alpha
+				MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
+
+				if (vlx->scf.type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
+					vlx->scf.beta.occupancy.data = 0;
+					md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
+					if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, file_id, H5T_NATIVE_DOUBLE, "beta_occupations")) {
+						return false;
+					}
+				}
 			}
 		}
 	}
