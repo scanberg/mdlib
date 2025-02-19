@@ -1816,9 +1816,10 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
+	// The ground state dipole moment is not present in all versions
 	size_t dipole_dim[1] = { 3 };
 	if (!h5_read_dataset_data(&vlx->scf.ground_state_dipole_moment, dipole_dim, 1, handle, H5T_NATIVE_DOUBLE, "dipole_moment")) {
-		return false;
+		//return false;
 	}
 
 	size_t scf_hist_iter = 0;

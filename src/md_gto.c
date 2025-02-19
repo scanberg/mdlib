@@ -46,12 +46,14 @@ static GLuint get_vol_segment_to_groups_program(void) {
     return program;
 }
 
+#define TEMP_SSBO_BUFFER_SIZE MEGABYTES(8)
+
 static GLuint get_temp_ssbo(void) {
     static GLuint ssbo = 0;
     if (!ssbo) {
         glCreateBuffers(1, &ssbo);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, MEGABYTES(4), 0, GL_DYNAMIC_DRAW);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, TEMP_SSBO_BUFFER_SIZE, 0, GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     }
     return ssbo;
@@ -98,10 +100,8 @@ void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const 
     default:
         // Not good
         MD_LOG_ERROR("Unrecognized internal format of supplied volume texture");
-        return;
+        goto done;
     }
-
-    GLuint ssbo = get_temp_ssbo();
 
     GLintptr   ssbo_gto_offset = 0;
     GLsizeiptr ssbo_gto_size   = sizeof(md_gto_t) * orb->num_gtos;
@@ -111,6 +111,13 @@ void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const 
 
     GLintptr   ssbo_scl_offset = ALIGN_TO(ssbo_orb_offset + ssbo_orb_size, 256);
     GLsizeiptr ssbo_scl_size   = sizeof(float) * (orb->num_orbs);
+
+    if (ssbo_scl_offset + ssbo_scl_size > TEMP_SSBO_BUFFER_SIZE) {
+        MD_LOG_ERROR("The total data required to evaluate the GTOs exceeded the buffer capacity");
+        goto done;
+    }
+
+    GLuint ssbo = get_temp_ssbo();
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_gto_offset, ssbo_gto_size, orb->gtos);
@@ -149,6 +156,7 @@ void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const 
 
     glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
+done:
     md_gl_debug_pop();
 }
 
