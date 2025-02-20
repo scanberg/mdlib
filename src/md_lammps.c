@@ -714,8 +714,8 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		has_resid = true;
 	}
 
-	for (size_t i = 0; i < capacity; ++i) {
-		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, 6, "%i", data->atoms[i].type);
+	for (size_t i = 0; i < data->num_atoms; ++i) {
+		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, sizeof(mol->atom.type[i].buf), "%i", data->atoms[i].type);
 		mol->atom.x[i] = data->atoms[i].x - data->cell.xlo;
 		mol->atom.y[i] = data->atoms[i].y - data->cell.ylo;
 		mol->atom.z[i] = data->atoms[i].z - data->cell.zlo;
