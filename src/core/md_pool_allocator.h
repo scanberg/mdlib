@@ -2,7 +2,6 @@
 
 #include <stddef.h>
 
-typedef struct md_pool_allocator_t md_pool_allocator_t;
 struct md_allocator_i;
 
 #ifdef __cplusplus

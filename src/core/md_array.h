@@ -29,7 +29,7 @@ typedef struct md_array_header_t {
 #define md_array_last(a)                ((a) ? md_array_end(a) - 1 : NULL)
 #define md_array_capacity(a)            ((a) ? md_array_header(a)->capacity : 0)
 #define md_array_needs_to_grow(a,n)     (md_array_capacity(a) < n)
-#define md_array_pop(a)                 ((a)[--md_array_header(a)->size])
+#define md_array_pop(a)                 ((a) ? --md_array_header(a)->size : 0)
 #define md_array_shrink(a,n)            ((a) ? md_array_header(a)->size = n : 0)
 #define md_array_swap_back_and_pop(a,i) ((a)[i] = (a)[--md_array_header(a)->size])
 
@@ -42,21 +42,21 @@ typedef struct md_array_header_t {
 #if MD_COMPILER_MSVC
 // Suppress incorrect warnings for macros in MSVC
 #define md_array_push(a, item, alloc) \
-    __pragma(warning(suppress:6011 6387 6269)) \
-    (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = item, (a) + md_array_header(a)->size - 1)
+    __pragma(warning(suppress:6011 6387)) \
+    (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[(md_array_header(a)->size)++] = item)
 
 #define md_array_push_no_grow(a, item) \
-    __pragma(warning(suppress:6011 6387 6269)) \
-    (a)[md_array_header(a)->size++] = (item)
+    __pragma(warning(suppress:6011 6387)) \
+    (a)[(md_array_header(a)->size)++] = (item)
 
 #define md_array_push_array(a, items, n, alloc) \
     __pragma(warning(suppress:6011 6387)) \
-    ((n) ? ((md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)), 0) : 0)
+    ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 
 #else
-#define md_array_push(a, item, alloc)   (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = item, (a) + md_array_header(a)->size - 1)
+#define md_array_push(a, item, alloc) (md_array_ensure((a), md_array_size(a) + 1, alloc), (a)[md_array_header(a)->size++] = item)
 #define md_array_push_no_grow(a, item)  (a)[md_array_header(a)->size++] = (item)
-#define md_array_push_array(a, items, n, alloc) ((n) ? ((md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)), 0) : 0)
+#define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 #endif
 #define md_array_free(a, alloc)         ((*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__))
 

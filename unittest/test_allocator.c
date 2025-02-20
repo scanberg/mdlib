@@ -67,12 +67,15 @@ UTEST(allocator, ring_generic) {
 // @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
 UTEST(allocator, pool) {
     md_allocator_i* pool = md_pool_allocator_create(md_get_heap_allocator(), sizeof(uint64_t));
+    md_allocator_i* heap = md_get_heap_allocator();
 
-    uint64_t **items = {0};
+    md_array(uint64_t*) items = {0};
 
-    for (int j = 0; j < 1000; ++j) {
+    for (int
+        j = 0; j < 1000; ++j) {
         for (int i = 0; i < 1000; ++i) {
-            uint64_t *item = *md_array_push(items, md_alloc(pool, sizeof(uint64_t)), md_get_heap_allocator());
+            uint64_t *item = md_alloc(pool, sizeof(uint64_t));
+            md_array_push(items, item, heap);
             *item = i;
         }
 
@@ -94,7 +97,8 @@ UTEST(allocator, pool) {
         }
     }
 
-    md_array_free(items, md_get_heap_allocator());
+    md_array_free(items, heap);
+    md_pool_allocator_destroy(pool);
 }
 
 UTEST(allocator, arena_extended) {

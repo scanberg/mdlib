@@ -1436,7 +1436,8 @@ static identifier_t* create_identifier(md_script_ir_t* ir, str_t name) {
         .data = 0,
     };
 
-    return md_array_push(ir->identifiers, ident, ir->arena);
+    md_array_push(ir->identifiers, ident, ir->arena);
+    return md_array_last(ir->identifiers);
 }
 
 static inline bool is_token_type_comparison(token_type_t type) {
@@ -3042,7 +3043,8 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
                 .node = rhs,
                 .data = dst,
             };
-            ident = md_array_push(ctx->identifiers, id, ctx->alloc);
+            md_array_push(ctx->identifiers, id, ctx->alloc);
+            ident = md_array_last(ctx->identifiers);
             return evaluate_node(dst, rhs, ctx);
         }
     } else if (lhs->type == AST_ARRAY) {
@@ -3080,7 +3082,8 @@ static bool evaluate_assignment(data_t* dst, const ast_node_t* node, eval_contex
                     id.data->ptr = (char*)dst->ptr + stride * i;
                     id.data->size = stride;
                 }
-                ident = md_array_push(ctx->identifiers, id, ctx->alloc);
+                md_array_push(ctx->identifiers, id, ctx->alloc);
+                ident = md_array_last(ctx->identifiers);
             }
         }
         return true;
@@ -3519,7 +3522,7 @@ static bool convert_node(ast_node_t* node, type_info_t new_type, eval_context_t*
     return false;
 }
 
-static bool deduce_type_dim_from_args(type_info_t* type, const ast_node_t** const args, size_t num_args, token_t token, eval_context_t* ctx) {
+static bool deduce_type_dim_from_args(type_info_t* type, ast_node_t** args, size_t num_args, token_t token, eval_context_t* ctx) {
     ASSERT(ctx);
 
     int max_dim = 0;
@@ -3557,7 +3560,7 @@ static bool finalize_type_proc(type_info_t* type, const ast_node_t* node, eval_c
 
     *type = node->data.type;
 
-    const ast_node_t** const args = node->children;
+    ast_node_t** args = node->children;
     const size_t num_args = md_array_size(node->children);
 
     if (node->proc->flags & FLAG_DEDUCE_LENGTH_FROM_ARG) {
@@ -3971,7 +3974,8 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
 				}
             }
             if (success) {
-                table = md_array_push(ir->tables, (table_t){.num_values = edr.num_frames}, ir->arena);
+                md_array_push(ir->tables, (table_t){.num_values = edr.num_frames}, ir->arena);
+                table = md_array_last(ir->tables);
                 table->name = str_copy(path_to_file, ir->arena);
 
                 table_push_field_d(table, STR_LIT("Time"), md_unit_pikosecond(), edr.frame_time, edr.num_frames, ir->arena);
@@ -3998,7 +4002,8 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
                 }
             }
             if (success) {
-                table = md_array_push(ir->tables, (table_t){.num_values = xvg.num_values}, ir->arena);
+                md_array_push(ir->tables, (table_t){.num_values = xvg.num_values}, ir->arena);
+                table = md_array_last(ir->tables);
                 table->name = str_copy(path_to_file, ir->arena);
                 
                 size_t i = 0;
@@ -4037,7 +4042,8 @@ static table_t* import_table(md_script_ir_t* ir, token_t tok, str_t path_to_file
 				}
             }
             if (success) {
-                table = md_array_push(ir->tables, (table_t){.num_values = csv.num_values}, ir->arena);
+                md_array_push(ir->tables, (table_t){.num_values = csv.num_values}, ir->arena);
+                table = md_array_last(ir->tables);
                 table->name = str_copy(path_to_file, ir->arena);
 
                 size_t i = 0;
@@ -6359,7 +6365,8 @@ md_script_eval_t* md_script_eval_create(size_t num_frames, const md_script_ir_t*
     size_t num_props = md_array_size(ir->property_names);
     for (size_t i = 0; i < num_props; ++i) {
         md_array_push(eval->property_names, ir->property_names[i], eval->arena);
-        md_script_property_data_t* data = md_array_push(eval->property_data, (md_script_property_data_t){0}, eval->arena);
+        md_array_push(eval->property_data, (md_script_property_data_t){0}, eval->arena);
+        md_script_property_data_t* data = md_array_last(eval->property_data);
         const ast_node_t* node = ir->property_nodes[i];
         allocate_property_data(data, ir->property_flags[i], node->data.type, num_frames, eval->arena);
         data->unit[0] = node->data.unit[0];

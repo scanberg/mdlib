@@ -38,7 +38,8 @@ static inline page_t* pool_new_page(pool_t* pool) {
         .mem = md_alloc(pool->alloc, pool_page_size(pool))
     };
     ASSERT(page.mem);
-    return md_array_push(pool->pages, page, pool->alloc);
+    md_array_push(pool->pages, page, pool->alloc);
+    return md_array_last(pool->pages);
 }
 
 static void* pool_new_slot(pool_t* pool, size_t size) {

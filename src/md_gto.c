@@ -252,10 +252,10 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
 static inline float fast_powf(float base, int exp) {
     float val = 1.0f;
     switch(exp) {
-    case 4: val *= base;
-    case 3: val *= base;
-    case 2: val *= base;
-    case 1: val *= base;
+    case 4: val *= base; FALLTHROUGH;
+    case 3: val *= base; FALLTHROUGH;
+    case 2: val *= base; FALLTHROUGH;
+    case 1: val *= base; FALLTHROUGH;
     case 0: break;
     }
     return val;
@@ -264,10 +264,10 @@ static inline float fast_powf(float base, int exp) {
 static inline double fast_pow(double base, int exp){
     double val = 1.0;
     switch(exp) {
-    case 4: val *= base;
-    case 3: val *= base;
-    case 2: val *= base;
-    case 1: val *= base;
+    case 4: val *= base; FALLTHROUGH;
+    case 3: val *= base; FALLTHROUGH;
+    case 2: val *= base; FALLTHROUGH;
+    case 1: val *= base; FALLTHROUGH;
     case 0: break;
     }
     return val;

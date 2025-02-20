@@ -50,6 +50,16 @@
 #endif
 #endif
 
+#if MD_COMPILER_MSVC
+#ifndef FALLTHROUGH
+#define FALLTHROUGH 
+#endif
+#else
+#ifndef FALLTHROUGH
+#define FALLTHROUGH __attribute__((fallthrough))
+#endif
+#endif
+
 #ifndef RESTRICT
 #define RESTRICT __restrict
 #endif

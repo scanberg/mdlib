@@ -165,7 +165,7 @@ static int char_to_angular_momentum_type(int c) {
 }
 
 static inline basis_set_basis_t* basis_set_get_atom_basis(const basis_set_t* basis_set, int atomic_number) {
-	if (atomic_number < basis_set->atom_basis.count) {
+	if (atomic_number < (int)basis_set->atom_basis.count) {
 		return basis_set->atom_basis.data + atomic_number;
 	}
 	return NULL;
@@ -556,7 +556,7 @@ static size_t extract_pgto_data(md_gto_t* pgtos, const dvec3_t* atom_coordinates
 	return count;
 }
 
-static double compute_overlap(basis_func_t func, size_t i, size_t j) {
+static inline double compute_overlap(basis_func_t func, int i, int j) {
 	const double fab  = 1.0 / (func.exponents[i] + func.exponents[j]);
 	const double fab2 = fab * fab;
 	const double ovl = func.normalization_coefficients[i] * func.normalization_coefficients[j] * pow(PI * fab, 1.5);
@@ -578,7 +578,7 @@ static double compute_overlap(basis_func_t func, size_t i, size_t j) {
 static void rescale_basis_func(basis_func_t func) {
 	const double fpi = 2.0 / PI;
 
-	for (size_t i = 0; i < func.count; i++) {
+	for (int i = 0; i < func.count; i++) {
 		func.normalization_coefficients[i] *= pow(func.exponents[i] * fpi, 0.75);
 	}
 
@@ -600,7 +600,7 @@ static void rescale_basis_func(basis_func_t func) {
 	double f = f_table[func.type];
 	double e = (double)func.type * 0.5;
 
-	for (size_t i = 0; i < func.count; i++) {
+	for (int i = 0; i < func.count; i++) {
 		func.normalization_coefficients[i] *= pow(f * func.exponents[i], e);
 	}
 }
@@ -616,16 +616,16 @@ static void normalize_basis_set(basis_set_t* basis_set) {
 
 		// compute overlap
 		double ovl = 0.0;
-		for (size_t i = 0; i < func.count; i++) {
+		for (int i = 0; i < func.count; i++) {
 			ovl += compute_overlap(func, i, i);
-			for (size_t j = i + 1; j < func.count; j++) {
+			for (int j = i + 1; j < func.count; j++) {
 				ovl += 2.0 * compute_overlap(func, i, j);
 			}
 		}
 
 		// renormalize primitive BFs
 		ovl = 1.0 / sqrt(ovl);
-		for (size_t i = 0; i < func.count; i++) {
+		for (int i = 0; i < func.count; i++) {
 			func.normalization_coefficients[i] *= ovl;
 		}
 	}
@@ -665,7 +665,9 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 				md_array_push(basis_set->atom_basis.data, null_basis, alloc);
 			}
 
-			curr_atom_basis = md_array_push(basis_set->atom_basis.data, atom_basis, alloc);
+			md_array_push(basis_set->atom_basis.data, atom_basis, alloc);
+			curr_atom_basis = md_array_last(basis_set->atom_basis.data);
+
 			basis_set->atom_basis.count = md_array_size(basis_set->atom_basis.data);
 		}
 		else if (num_tok == 1 && str_eq(tok[0], STR_LIT("@END"))) {
@@ -1209,7 +1211,7 @@ static int h5_read_dataset_dims(size_t* dims, int max_dims, hid_t file_id, const
 		goto done;
 	}
 
-	ndim = H5Sget_simple_extent_dims(space_id, dims, 0);
+	ndim = H5Sget_simple_extent_dims(space_id, (hsize_t*)dims, 0);
 
 done:
 	H5Sclose(space_id);
@@ -1251,8 +1253,7 @@ static bool h5_read_dataset_data(void* out_data, const size_t dims[], int num_di
 		goto done;
 	}
 
-	size_t temp_dims[8];
-
+	hsize_t temp_dims[8];
 	ndim = H5Sget_simple_extent_dims(space_id, temp_dims, 0);
 	ASSERT(ndim == num_dim);
 
@@ -1820,7 +1821,8 @@ static bool vlx_parse_out_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags)
 					goto done;
 				}
 
-				md_vlx_orbital_t* nto = md_array_push(vlx->rsp.nto, (md_vlx_orbital_t){0}, vlx->arena);
+				md_array_push(vlx->rsp.nto, (md_vlx_orbital_t){0}, vlx->arena);
+				md_vlx_orbital_t* nto = md_array_last(vlx->rsp.nto);
 
 				md_array_resize(nto->coefficients.data, dim[0] * dim[1], vlx->arena);
 				MEMCPY(nto->coefficients.size, dim, sizeof(dim));

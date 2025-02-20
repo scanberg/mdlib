@@ -10,6 +10,8 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #pragma once
 
+#include <core/md_common.h>
+
 #if defined(__FMA__)
 #define SIMDE_X86_FMA_NATIVE
 #endif
@@ -18,10 +20,18 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #include <immintrin.h>
 #endif
 
+#if MD_COMPILER_GCC
+// Disable warning for _Float16 type on gcc
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+
 #include <simde/x86/avx2.h>
 #include <simde/x86/fma.h>
 
-#include <core/md_common.h>
+#if MD_COMPILER_GCC
+#pragma GCC diagnostic pop
+#endif
 
 #define MD_SIMD_INLINE static FORCE_INLINE
 

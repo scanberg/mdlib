@@ -793,7 +793,8 @@ static inline void push_sphere(vec3_t xyz, float r, uint32_t color, md_script_vi
 static inline md_bitfield_t* push_structure(md_script_vis_t* vis) {
     ASSERT(vis);
     ASSERT(vis->alloc);
-    md_bitfield_t* bf = md_array_push(vis->structures, (md_bitfield_t){0}, vis->alloc);
+    md_array_push(vis->structures, (md_bitfield_t){0}, vis->alloc);
+    md_bitfield_t* bf = md_array_last(vis->structures);
     md_bitfield_init(bf, vis->alloc);
     return bf;
 }
