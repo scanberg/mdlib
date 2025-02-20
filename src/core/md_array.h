@@ -27,9 +27,10 @@ typedef struct md_array_header_t {
 #define md_array_bytes(a)               (md_array_size(a) * sizeof(*(a)))
 #define md_array_end(a)                 ((a) ? (a + md_array_size(a)) : NULL)
 #define md_array_last(a)                ((a) ? md_array_end(a) - 1 : NULL)
+#define md_array_back(a)                ((a)[md_array_size(a) - 1])
 #define md_array_capacity(a)            ((a) ? md_array_header(a)->capacity : 0)
 #define md_array_needs_to_grow(a,n)     (md_array_capacity(a) < n)
-#define md_array_pop(a)                 ((a) ? --md_array_header(a)->size : 0)
+#define md_array_pop(a)                 (--md_array_header(a)->size)
 #define md_array_shrink(a,n)            ((a) ? md_array_header(a)->size = n : 0)
 #define md_array_swap_back_and_pop(a,i) ((a)[i] = (a)[--md_array_header(a)->size])
 

@@ -3543,7 +3543,8 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     if (bond_indices_to_remove) {
         size_t count = md_array_size(bond_indices_to_remove);
         for (size_t i = 0; i < count; ++i) {
-            uint32_t bond_idx = md_array_pop(bond_indices_to_remove);
+            uint32_t bond_idx = md_array_back(bond_indices_to_remove);
+            md_array_pop(bond_indices_to_remove);
             md_array_swap_back_and_pop(bond.pairs, bond_idx);
         }
         bond.count -= count;
@@ -8142,12 +8143,14 @@ static void backtrack(state_t* state) {
     uint32_t depth = (uint32_t)md_array_size(state->n_path);
 
     if (md_array_size(state->n_path)) {
-        int n_idx = md_array_pop(state->n_path);
+        int n_idx = md_array_back(state->n_path);
+        md_array_pop(state->n_path);
         state->map[n_idx] = -1;
         bitfield_clear_bit(state->n_path_bits, n_idx);
     }
     if (md_array_size(state->h_path)) {
-        int h_idx = md_array_pop(state->h_path);
+        int h_idx = md_array_back(state->h_path);
+        md_array_pop(state->h_path);
         bitfield_clear_bit(state->h_path_bits, h_idx);
     }
 

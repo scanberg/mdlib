@@ -16,6 +16,7 @@ UTEST(array, test) {
     }
 
     for (uint64_t i = 0; i < 1000; ++i) {
-        ASSERT_EQ(md_array_pop(arr), 999-i);
+        ASSERT_EQ(md_array_back(arr), 999-i);
+        md_array_pop(arr);
     }
 }
