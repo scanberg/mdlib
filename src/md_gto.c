@@ -66,7 +66,7 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const floa
 
     md_orbital_data_t orb = {
         .num_gtos = num_gtos,
-        .gtos = gtos,
+        .gtos = (md_gto_t*)gtos,
         .num_orbs = 1,
         .orb_offsets = orb_offsets,
         .orb_scaling = orb_scaling,

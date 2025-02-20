@@ -29,13 +29,13 @@ typedef struct md_grid_t {
 // Orbital Data 
 typedef struct md_orbital_data_t {
 	size_t num_gtos;
-	const md_gto_t* gtos;
+	md_gto_t* gtos;
 
 	// Optional parameters to evaluate multiple orbitals in one 'go'
 	// This is necessary in case the evaluation mode is psi squared as the squaring has to occur after each orbital
 	size_t num_orbs;
-	const uint32_t* orb_offsets;
-	const float* orb_scaling;
+	uint32_t* orb_offsets;
+	float* orb_scaling;
 } md_orbital_data_t;
 
 typedef enum {

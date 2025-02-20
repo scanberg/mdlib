@@ -81,10 +81,8 @@ static const double ref_density_change[] = {
 };
 
 UTEST(vlx, vlx_parse) {
-    str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out");
 	md_vlx_t* vlx = md_vlx_create(md_get_heap_allocator());
-
-    bool result = md_vlx_parse_out_file(vlx, path);
+    bool result = md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"));
     ASSERT_TRUE(result);
 
 #if 1
@@ -202,7 +200,7 @@ UTEST(vlx, minimal_example) {
 
     md_vlx_t* vlx = md_vlx_create(arena);
     if (!md_vlx_parse_file(vlx, path)) {
-        MD_LOG_ERROR("Could not parse VLX file");
+        MD_LOG_ERROR("Could not parse VLX file '"STR_FMT"'", STR_ARG(path));
         return;
     }
 

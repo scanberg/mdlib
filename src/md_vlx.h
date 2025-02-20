@@ -16,26 +16,22 @@ struct md_allocator_i;
 struct md_molecule_t;
 struct md_molecule_loader_i;
 
-enum {
+typedef enum {
 	MD_VLX_MO_TYPE_ALPHA = 0,
 	MD_VLX_MO_TYPE_BETA = 1,
-};
+} md_vlx_mo_type_t;
 
-enum {
+typedef enum {
 	MD_VLX_NTO_TYPE_PARTICLE = 0,
 	MD_VLX_NTO_TYPE_HOLE = 1,
-};
+} md_vlx_nto_type_t;
 
-enum {
+typedef enum {
 	MD_VLX_SCF_TYPE_UNKNOWN = 0,
 	MD_VLX_SCF_TYPE_RESTRICTED,
 	MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL,
 	MD_VLX_SCF_TYPE_UNRESTRICTED,
-};
-
-typedef uint32_t md_vlx_nto_type_t;
-typedef uint32_t md_vlx_mo_type_t;
-typedef uint32_t md_vlx_scf_type_t;
+} md_vlx_scf_type_t;
 
 typedef struct md_vlx_t md_vlx_t;
 
