@@ -209,7 +209,7 @@ static inline void md_index_data_free (md_index_data_t* data) {
 static inline size_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count) {
     ASSERT(data);
     ASSERT(data->alloc);
-    ASSERT(index_count >= 0);
+    ASSERT(index_count > 0);
 
     if (md_array_size(data->offsets) == 0) {
         md_array_push(data->offsets, 0, data->alloc);
