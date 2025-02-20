@@ -40,3 +40,12 @@ jobs:
             working-directory: ${{github.workspace}}/build
             shell: bash
             run: ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
+
+          - name: Setup upterm session
+            uses: lhotari/action-upterm@v1
+            if: ${{ failure() }}
+            with: 
+              ## limits ssh access and adds the ssh public key for the user which triggered the workflow
+              limit-access-to-actor: false
+              ## If no one connects after 5 minutes, shut down server.
+              wait-timeout-minutes: 5
