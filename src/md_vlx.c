@@ -2198,12 +2198,21 @@ bool md_vlx_molecule_init(md_molecule_t* mol, const md_vlx_t* vlx, md_allocator_
 		return false;
 	}
 
+	size_t capacity = ROUND_UP(vlx->number_of_atoms, 16);
+
 	mol->atom.count = vlx->number_of_atoms;
-	md_array_resize(mol->atom.element, mol->atom.count, alloc);
-	md_array_resize(mol->atom.type, mol->atom.count, alloc);
-	md_array_resize(mol->atom.x, mol->atom.count, alloc);
-	md_array_resize(mol->atom.y, mol->atom.count, alloc);
-	md_array_resize(mol->atom.z, mol->atom.count, alloc);
+	md_array_resize(mol->atom.element,	capacity, alloc);
+	md_array_resize(mol->atom.type,		capacity, alloc);
+	md_array_resize(mol->atom.x,		capacity, alloc);
+	md_array_resize(mol->atom.y,		capacity, alloc);
+	md_array_resize(mol->atom.z,		capacity, alloc);
+
+	MEMSET(mol->atom.element,	0, md_array_bytes(mol->atom.element));
+	MEMSET(mol->atom.type,		0, md_array_bytes(mol->atom.type));
+	MEMSET(mol->atom.x,			0, md_array_bytes(mol->atom.x));
+	MEMSET(mol->atom.y,			0, md_array_bytes(mol->atom.y));
+	MEMSET(mol->atom.z,			0, md_array_bytes(mol->atom.z));
+
 
 	for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
 		mol->atom.element[i] = vlx->atomic_numbers[i];

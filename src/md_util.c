@@ -24,7 +24,7 @@
 
 //#define PROFILE
 
-#define bake(str) {str, sizeof(str)-1}
+#define BAKE(str) {str, sizeof(str)-1}
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,29 +42,29 @@ enum {
 };
 
 static const str_t element_symbols[] = {
-    bake("Xx"), bake("H"),  bake("He"), bake("Li"), bake("Be"), bake("B"),  bake("C"),  bake("N"),  bake("O"),  bake("F"),  bake("Ne"), bake("Na"), bake("Mg"), bake("Al"), bake("Si"), bake("P"),  bake("S"),  bake("Cl"), bake("Ar"), bake("K"),  bake("Ca"), bake("Sc"), bake("Ti"), bake("V"),
-    bake("Cr"), bake("Mn"), bake("Fe"), bake("Co"), bake("Ni"), bake("Cu"), bake("Zn"), bake("Ga"), bake("Ge"), bake("As"), bake("Se"), bake("Br"), bake("Kr"), bake("Rb"), bake("Sr"), bake("Y"),  bake("Zr"), bake("Nb"), bake("Mo"), bake("Tc"), bake("Ru"), bake("Rh"), bake("Pd"), bake("Ag"),
-    bake("Cd"), bake("In"), bake("Sn"), bake("Sb"), bake("Te"), bake("I"),  bake("Xe"), bake("Cs"), bake("Ba"), bake("La"), bake("Ce"), bake("Pr"), bake("Nd"), bake("Pm"), bake("Sm"), bake("Eu"), bake("Gd"), bake("Tb"), bake("Dy"), bake("Ho"), bake("Er"), bake("Tm"), bake("Yb"), bake("Lu"),
-    bake("Hf"), bake("Ta"), bake("W"),  bake("Re"), bake("Os"), bake("Ir"), bake("Pt"), bake("Au"), bake("Hg"), bake("Tl"), bake("Pb"), bake("Bi"), bake("Po"), bake("At"), bake("Rn"), bake("Fr"), bake("Ra"), bake("Ac"), bake("Th"), bake("Pa"), bake("U"),  bake("Np"), bake("Pu"), bake("Am"),
-    bake("Cm"), bake("Bk"), bake("Cf"), bake("Es"), bake("Fm"), bake("Md"), bake("No"), bake("Lr"), bake("Rf"), bake("Db"), bake("Sg"), bake("Bh"), bake("Hs"), bake("Mt"), bake("Ds"), bake("Rg"), bake("Cn"), bake("Nh"), bake("Fl"), bake("Mc"), bake("Lv"), bake("Ts"), bake("Og"),
+    BAKE("Xx"), BAKE("H"),  BAKE("He"), BAKE("Li"), BAKE("Be"), BAKE("B"),  BAKE("C"),  BAKE("N"),  BAKE("O"),  BAKE("F"),  BAKE("Ne"), BAKE("Na"), BAKE("Mg"), BAKE("Al"), BAKE("Si"), BAKE("P"),  BAKE("S"),  BAKE("Cl"), BAKE("Ar"), BAKE("K"),  BAKE("Ca"), BAKE("Sc"), BAKE("Ti"), BAKE("V"),
+    BAKE("Cr"), BAKE("Mn"), BAKE("Fe"), BAKE("Co"), BAKE("Ni"), BAKE("Cu"), BAKE("Zn"), BAKE("Ga"), BAKE("Ge"), BAKE("As"), BAKE("Se"), BAKE("Br"), BAKE("Kr"), BAKE("Rb"), BAKE("Sr"), BAKE("Y"),  BAKE("Zr"), BAKE("Nb"), BAKE("Mo"), BAKE("Tc"), BAKE("Ru"), BAKE("Rh"), BAKE("Pd"), BAKE("Ag"),
+    BAKE("Cd"), BAKE("In"), BAKE("Sn"), BAKE("Sb"), BAKE("Te"), BAKE("I"),  BAKE("Xe"), BAKE("Cs"), BAKE("Ba"), BAKE("La"), BAKE("Ce"), BAKE("Pr"), BAKE("Nd"), BAKE("Pm"), BAKE("Sm"), BAKE("Eu"), BAKE("Gd"), BAKE("Tb"), BAKE("Dy"), BAKE("Ho"), BAKE("Er"), BAKE("Tm"), BAKE("Yb"), BAKE("Lu"),
+    BAKE("Hf"), BAKE("Ta"), BAKE("W"),  BAKE("Re"), BAKE("Os"), BAKE("Ir"), BAKE("Pt"), BAKE("Au"), BAKE("Hg"), BAKE("Tl"), BAKE("Pb"), BAKE("Bi"), BAKE("Po"), BAKE("At"), BAKE("Rn"), BAKE("Fr"), BAKE("Ra"), BAKE("Ac"), BAKE("Th"), BAKE("Pa"), BAKE("U"),  BAKE("Np"), BAKE("Pu"), BAKE("Am"),
+    BAKE("Cm"), BAKE("Bk"), BAKE("Cf"), BAKE("Es"), BAKE("Fm"), BAKE("Md"), BAKE("No"), BAKE("Lr"), BAKE("Rf"), BAKE("Db"), BAKE("Sg"), BAKE("Bh"), BAKE("Hs"), BAKE("Mt"), BAKE("Ds"), BAKE("Rg"), BAKE("Cn"), BAKE("Nh"), BAKE("Fl"), BAKE("Mc"), BAKE("Lv"), BAKE("Ts"), BAKE("Og"),
 };
 
 
 static const str_t element_names[] = {
-    bake("Unknown"),     bake("Hydrogen"),     bake("Helium"),       bake("Lithium"),     bake("Beryllium"),   bake("Boron"),         bake("Carbon"),     bake("Nitrogen"),   bake("Oxygen"),
-    bake("Fluorine"),    bake("Neon"),         bake("Sodium"),       bake("Magnesium"),   bake("Aluminium"),   bake("Silicon"),       bake("Phosphorus"), bake("Sulfur"),     bake("Chlorine"),
-    bake("Argon"),       bake("Potassium"),    bake("Calcium"),      bake("Scandium"),    bake("Titanium"),    bake("Vanadium"),      bake("Chromium"),   bake("Manganese"),  bake("Iron"),
-    bake("Cobalt"),      bake("Nickel"),       bake("Copper"),       bake("Zinc"),        bake("Gallium"),     bake("Germanium"),     bake("Arsenic"),    bake("Selenium"),   bake("Bromine"),
-    bake("Krypton"),     bake("Rubidium"),     bake("Strontium"),    bake("Yttrium"),     bake("Zirconium"),   bake("Niobium"),       bake("Molybdenum"), bake("Technetium"), bake("Ruthenium"),
-    bake("Rhodium"),     bake("Palladium"),    bake("Silver"),       bake("Cadmium"),     bake("Indium"),      bake("Tin"),           bake("Antimony"),   bake("Tellurium"),  bake("Iodine"),
-    bake("Xenon"),       bake("Caesium"),      bake("Barium"),       bake("Lanthanum"),   bake("Cerium"),      bake("Praseodymium"),  bake("Neodymium"),  bake("Promethium"), bake("Samarium"),
-    bake("Europium"),    bake("Gadolinium"),   bake("Terbium"),      bake("Dysprosium"),  bake("Holmium"),     bake("Erbium"),        bake("Thulium"),    bake("Ytterbium"),  bake("Lutetium"),
-    bake("Hafnium"),     bake("Tantalum"),     bake("Tungsten"),     bake("Rhenium"),     bake("Osmium"),      bake("Iridium"),       bake("Platinum"),   bake("Gold"),       bake("Mercury"),
-    bake("Thallium"),    bake("Lead"),         bake("Bismuth"),      bake("Polonium"),    bake("Astatine"),    bake("Radon"),         bake("Francium"),   bake("Radium"),     bake("Actinium"),
-    bake("Thorium"),     bake("Protactinium"), bake("Uranium"),      bake("Neptunium"),   bake("Plutonium"),   bake("Americium"),     bake("Curium"),     bake("Berkelium"),  bake("Californium"),
-    bake("Einsteinium"), bake("Fermium"),      bake("Mendelevium"),  bake("Nobelium"),    bake("Lawrencium"),  bake("Rutherfordium"), bake("Dubnium"),    bake("Seaborgium"), bake("Bohrium"),
-    bake("Hassium"),     bake("Meitnerium"),   bake("Darmstadtium"), bake("Roentgenium"), bake("Copernicium"), bake("Nihonium"),      bake("Flerovium"),  bake("Moscovium"),  bake("Livermorium"),
-    bake("Tennessine"),  bake("Oganesson"),                          
+    BAKE("Unknown"),     BAKE("Hydrogen"),     BAKE("Helium"),       BAKE("Lithium"),     BAKE("Beryllium"),   BAKE("Boron"),         BAKE("Carbon"),     BAKE("Nitrogen"),   BAKE("Oxygen"),
+    BAKE("Fluorine"),    BAKE("Neon"),         BAKE("Sodium"),       BAKE("Magnesium"),   BAKE("Aluminium"),   BAKE("Silicon"),       BAKE("Phosphorus"), BAKE("Sulfur"),     BAKE("Chlorine"),
+    BAKE("Argon"),       BAKE("Potassium"),    BAKE("Calcium"),      BAKE("Scandium"),    BAKE("Titanium"),    BAKE("Vanadium"),      BAKE("Chromium"),   BAKE("Manganese"),  BAKE("Iron"),
+    BAKE("Cobalt"),      BAKE("Nickel"),       BAKE("Copper"),       BAKE("Zinc"),        BAKE("Gallium"),     BAKE("Germanium"),     BAKE("Arsenic"),    BAKE("Selenium"),   BAKE("Bromine"),
+    BAKE("Krypton"),     BAKE("Rubidium"),     BAKE("Strontium"),    BAKE("Yttrium"),     BAKE("Zirconium"),   BAKE("Niobium"),       BAKE("Molybdenum"), BAKE("Technetium"), BAKE("Ruthenium"),
+    BAKE("Rhodium"),     BAKE("Palladium"),    BAKE("Silver"),       BAKE("Cadmium"),     BAKE("Indium"),      BAKE("Tin"),           BAKE("Antimony"),   BAKE("Tellurium"),  BAKE("Iodine"),
+    BAKE("Xenon"),       BAKE("Caesium"),      BAKE("Barium"),       BAKE("Lanthanum"),   BAKE("Cerium"),      BAKE("Praseodymium"),  BAKE("Neodymium"),  BAKE("Promethium"), BAKE("Samarium"),
+    BAKE("Europium"),    BAKE("Gadolinium"),   BAKE("Terbium"),      BAKE("Dysprosium"),  BAKE("Holmium"),     BAKE("Erbium"),        BAKE("Thulium"),    BAKE("Ytterbium"),  BAKE("Lutetium"),
+    BAKE("Hafnium"),     BAKE("Tantalum"),     BAKE("Tungsten"),     BAKE("Rhenium"),     BAKE("Osmium"),      BAKE("Iridium"),       BAKE("Platinum"),   BAKE("Gold"),       BAKE("Mercury"),
+    BAKE("Thallium"),    BAKE("Lead"),         BAKE("Bismuth"),      BAKE("Polonium"),    BAKE("Astatine"),    BAKE("Radon"),         BAKE("Francium"),   BAKE("Radium"),     BAKE("Actinium"),
+    BAKE("Thorium"),     BAKE("Protactinium"), BAKE("Uranium"),      BAKE("Neptunium"),   BAKE("Plutonium"),   BAKE("Americium"),     BAKE("Curium"),     BAKE("Berkelium"),  BAKE("Californium"),
+    BAKE("Einsteinium"), BAKE("Fermium"),      BAKE("Mendelevium"),  BAKE("Nobelium"),    BAKE("Lawrencium"),  BAKE("Rutherfordium"), BAKE("Dubnium"),    BAKE("Seaborgium"), BAKE("Bohrium"),
+    BAKE("Hassium"),     BAKE("Meitnerium"),   BAKE("Darmstadtium"), BAKE("Roentgenium"), BAKE("Copernicium"), BAKE("Nihonium"),      BAKE("Flerovium"),  BAKE("Moscovium"),  BAKE("Livermorium"),
+    BAKE("Tennessine"),  BAKE("Oganesson"),                          
 };
 
 // http://dx.doi.org/10.1039/b801115j
@@ -369,53 +369,53 @@ static const char* hydrophobic[] = { "ALA", "VAL", "ILE", "LEU", "MET", "PHE", "
 
 // If an entry exists in this table, it has order 2
 static str_t intra_bond_order_table[] = {
-    bake("HIS|CD2|CG"),
-    bake("HIS|CE1|ND1"),
-    bake("ARG|CZ|NH2"),
-    bake("PHE|CE1|CZ"),
-    bake("PHE|CD2|CE2"),
-    bake("PHE|CD1|CG"),
-    bake("TRP|CD1|CG"),
-    bake("TRP|CD2|CE2"),
-    bake("TRP|CE3|CZ3"),
-    bake("TRP|CH2|CZ2"),
-    bake("ASN|CG|OD1"),
-    bake("GLN|CD|OE1"),
-    bake("TYR|CD1|CG"),
-    bake("TYR|CD2|CE2"),
-    bake("TYR|CE1|CZ"),
-    bake("ASP|CG|OD1"),
-    bake("GLU|CD|OE1"),
+    BAKE("HIS|CD2|CG"),
+    BAKE("HIS|CE1|ND1"),
+    BAKE("ARG|CZ|NH2"),
+    BAKE("PHE|CE1|CZ"),
+    BAKE("PHE|CD2|CE2"),
+    BAKE("PHE|CD1|CG"),
+    BAKE("TRP|CD1|CG"),
+    BAKE("TRP|CD2|CE2"),
+    BAKE("TRP|CE3|CZ3"),
+    BAKE("TRP|CH2|CZ2"),
+    BAKE("ASN|CG|OD1"),
+    BAKE("GLN|CD|OE1"),
+    BAKE("TYR|CD1|CG"),
+    BAKE("TYR|CD2|CE2"),
+    BAKE("TYR|CE1|CZ"),
+    BAKE("ASP|CG|OD1"),
+    BAKE("GLU|CD|OE1"),
 
-    bake("G|C8|N7"),
-    bake("G|C4|C5"),
-    bake("G|C2|N3"),
-    bake("G|C6|O6"),
-    bake("C|C4|N3"),
-    bake("C|C5|C6"),
-    bake("C|C2|O2"),
-    bake("A|C2|N3"),
-    bake("A|C6|N1"),
-    bake("A|C4|C5"),
-    bake("A|C8|N7"),
-    bake("U|C5|C6"),
-    bake("U|C2|O2"),
-    bake("U|C4|O4"),
+    BAKE("G|C8|N7"),
+    BAKE("G|C4|C5"),
+    BAKE("G|C2|N3"),
+    BAKE("G|C6|O6"),
+    BAKE("C|C4|N3"),
+    BAKE("C|C5|C6"),
+    BAKE("C|C2|O2"),
+    BAKE("A|C2|N3"),
+    BAKE("A|C6|N1"),
+    BAKE("A|C4|C5"),
+    BAKE("A|C8|N7"),
+    BAKE("U|C5|C6"),
+    BAKE("U|C2|O2"),
+    BAKE("U|C4|O4"),
 
-    bake("DG|C8|N7"),
-    bake("DG|C4|C5"),
-    bake("DG|C2|N3"),
-    bake("DG|C6|O6"),
-    bake("DC|C4|N3"),
-    bake("DC|C5|C6"),
-    bake("DC|C2|O2"),
-    bake("DA|C2|N3"),
-    bake("DA|C6|N1"),
-    bake("DA|C4|C5"),
-    bake("DA|C8|N7"),
-    bake("DT|C5|C6"),
-    bake("DT|C2|O2"),
-    bake("DT|C4|O4"),
+    BAKE("DG|C8|N7"),
+    BAKE("DG|C4|C5"),
+    BAKE("DG|C2|N3"),
+    BAKE("DG|C6|O6"),
+    BAKE("DC|C4|N3"),
+    BAKE("DC|C5|C6"),
+    BAKE("DC|C2|O2"),
+    BAKE("DA|C2|N3"),
+    BAKE("DA|C6|N1"),
+    BAKE("DA|C4|C5"),
+    BAKE("DA|C8|N7"),
+    BAKE("DT|C5|C6"),
+    BAKE("DT|C2|O2"),
+    BAKE("DT|C4|O4"),
 };
 
 #include <stdlib.h>
@@ -3254,7 +3254,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
                 const md_256  ri = md_mm256_set1_ps(elem_cov_radii[atom->element[i]]);
                 const int mi = elem_metal_mask[atom->element[i]];
                 for (int j = i + 1; j < range_a.end; j += 8) {
-                    const md_256  cj[3] = {
+                    const md_256 cj[3] = {
                         md_mm256_loadu_ps(atom->x + j),
                         md_mm256_loadu_ps(atom->y + j),
                         md_mm256_loadu_ps(atom->z + j),
@@ -3276,7 +3276,6 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
                     // The metal mask is combined using logic NAND, meaning it is ok for
                     // two atoms to form a bond if only one of them is a metal,
                     int metal_mask = ~(mi & mj);
-
                     int mask = bond_mask & metal_mask;
 
                     md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
