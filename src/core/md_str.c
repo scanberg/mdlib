@@ -45,7 +45,7 @@ bool str_eq_n_ignore_case(const str_t str_a, const str_t str_b, size_t n) {
 bool str_eq_cstr(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
     if (str.ptr[0] != cstr[0]) return false;
-    return strncmp(str.ptr, cstr, str.len) == 0;
+    return (strncmp(str.ptr, cstr, str.len) == 0) && cstr[str.len] == '\0';
 }
 
 // Compare str and cstr only up to n characters
