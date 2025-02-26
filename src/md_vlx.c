@@ -104,8 +104,8 @@ typedef struct md_vlx_scf_history_t {
 // Self Consistent Field
 typedef struct md_vlx_scf_t {
 	md_vlx_scf_type_t type;
-	size_t homo_idx;
-	size_t lumo_idx;
+	size_t homo_idx[2];
+	size_t lumo_idx[2];
 
 	double energy;
 	dvec3_t ground_state_dipole_moment;
@@ -1924,8 +1924,18 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	if (vlx->scf.alpha.occupancy.data) {
 		for (size_t i = 0; i < vlx->scf.alpha.occupancy.size; ++i) {
 			if (vlx->scf.alpha.occupancy.data[i] == 0.0) {
-				vlx->scf.homo_idx = (size_t)MAX(0, (int64_t)i - 1);
-				vlx->scf.lumo_idx = i;
+				vlx->scf.homo_idx[0] = (size_t)MAX(0, (int64_t)i - 1);
+				vlx->scf.lumo_idx[0] = i;
+				break;
+			}
+		}
+	}
+
+	if (vlx->scf.beta.occupancy.data) {
+		for (size_t i = 0; i < vlx->scf.beta.occupancy.size; ++i) {
+			if (vlx->scf.beta.occupancy.data[i] == 0.0) {
+				vlx->scf.homo_idx[1] = (size_t)MAX(0, (int64_t)i - 1);
+				vlx->scf.lumo_idx[1] = i;
 				break;
 			}
 		}
@@ -2018,7 +2028,7 @@ bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx
 	}
 
 	// The lambda values are stored symmetrically around homo/lumo
-	size_t max_lambda_idx = vlx->scf.homo_idx;
+	size_t max_lambda_idx = vlx->scf.homo_idx[0];
 
 	if (max_lambda_idx == 0) {
 		MD_LOG_ERROR("Internal error: Incorrect max lambda");
@@ -2143,6 +2153,15 @@ const double* md_vlx_rsp_nto_occupancy(const md_vlx_t* vlx, size_t nto_idx) {
 	if (vlx) {
 		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
 			return vlx->rsp.nto[nto_idx].occupancy.data;
+		}
+	}
+	return NULL;
+}
+
+const double* md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx) {
+	if (vlx) {
+		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
+			return vlx->rsp.nto[nto_idx].occupancy.data + vlx->scf.lumo_idx[0];
 		}
 	}
 	return NULL;
@@ -2323,16 +2342,24 @@ dvec3_t md_vlx_scf_ground_state_dipole_moment(const md_vlx_t* vlx) {
 	return (dvec3_t){0};
 }
 
-size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx) {
+size_t md_vlx_scf_homo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	if (vlx) {
-		return vlx->scf.homo_idx;
+		if (type == MD_VLX_MO_TYPE_ALPHA) {
+			return vlx->scf.homo_idx[0];
+		} else if (type == MD_VLX_MO_TYPE_BETA) {
+			return vlx->scf.homo_idx[1];
+		}
 	}
 	return 0;
 }
 
-size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx) {
+size_t md_vlx_scf_lumo_idx(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	if (vlx) {
-		return vlx->scf.lumo_idx;
+		if (type == MD_VLX_MO_TYPE_ALPHA) {
+			return vlx->scf.lumo_idx[0];
+		} else if (type == MD_VLX_MO_TYPE_BETA) {
+			return vlx->scf.lumo_idx[1];
+		}
 	}
 	return 0;
 }

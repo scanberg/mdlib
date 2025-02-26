@@ -62,8 +62,8 @@ const uint8_t* md_vlx_atomic_numbers(const struct md_vlx_t* vlx);
 // SCF
 md_vlx_scf_type_t md_vlx_scf_type(const struct md_vlx_t* vlx);
 dvec3_t md_vlx_scf_ground_state_dipole_moment(const struct md_vlx_t* vlx);
-size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx);
-size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx);
+size_t  md_vlx_scf_homo_idx(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+size_t  md_vlx_scf_lumo_idx(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 
 size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
 
@@ -90,6 +90,7 @@ const double*  md_vlx_rsp_oscillator_strengths(const struct md_vlx_t* vlx);
 const double*  md_vlx_rsp_absorption_ev(const struct md_vlx_t* vlx);
 
 const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_idx);
+const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
 
 

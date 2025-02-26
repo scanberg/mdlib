@@ -5386,7 +5386,10 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_vm_arena_temp_end(tmp);
     } else if (ctx->vis) {
+        md_array(irange_t) ranges = ctx->subscript_ranges;
+        ctx->subscript_ranges = 0;
         coordinate_visualize(arg[0], ctx);
+        ctx->subscript_ranges = ranges;
     } else {
         int count = 0;
         if (arg[0].type.base_type == TYPE_BITFIELD) {

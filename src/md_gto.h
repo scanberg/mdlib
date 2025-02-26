@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include <core/md_grid.h>
+
 // Gaussian Type Orbital
 // Are evaluated as f(x',y',z') = (x'-x)^i (y'-y)^j (z'-z)^k c exp(-a ((x'-x)^2 + (y'-y)^2 + (z'-z)^2))
 // Where x' y' and z' are the observer coordinates we evaluate the function at
@@ -16,15 +18,6 @@ typedef struct md_gto_t {
 	uint32_t _pad;
 } md_gto_t;
 
-// The grid data is assumed to be given in Z,Y,X order (e.g. data[Z][Y][X])
-typedef struct md_grid_t {
-	float* data;
-	int   dim[3];
-	float origin[3];
-	float step_x[3];
-	float step_y[3];
-	float step_z[3];
-} md_grid_t;
 
 // Orbital Data 
 typedef struct md_orbital_data_t {

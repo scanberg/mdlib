@@ -147,7 +147,7 @@ UTEST(vlx, correctness) {
         .step_z = {0, 0, 0.143619},
     };
 
-    size_t mo_idx = md_vlx_scf_homo_idx(vlx);
+    size_t mo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
 
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
@@ -208,7 +208,7 @@ UTEST(vlx, minimal_example) {
     const int vol_dim = 80;
 
     // The molecular orbital index we aim to sample
-    size_t mo_idx = md_vlx_scf_homo_idx(vlx);
+    size_t mo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
 
     // Extract GTOs
     size_t num_gtos = md_vlx_mo_gto_count(vlx);

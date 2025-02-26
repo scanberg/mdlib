@@ -211,7 +211,7 @@ UTEST(gto, h2o) {
     md_vlx_t* vlx = md_vlx_create(arena);
     ASSERT_TRUE(md_vlx_parse_file(vlx, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/h2o.out")));
 
-    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx);
+    size_t lumo_idx = md_vlx_scf_lumo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
 
     double max_delta_lumo = compare_vlx_and_cube(vlx, lumo_idx, 1.0E-5, &cube_lumo, arena);
 

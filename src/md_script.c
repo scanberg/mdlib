@@ -6322,6 +6322,14 @@ str_t md_script_payload_ident(const md_script_vis_payload_o* payload) {
     return (str_t){0};
 }
 
+size_t md_script_payload_dim(const md_script_vis_payload_o* payload) {
+    if (payload) {
+        const ast_node_t* node = (const ast_node_t*)payload;
+        return node->data.type.dim[0];
+    }
+    return 0;
+}
+
 static md_script_eval_t* create_eval(md_allocator_i* alloc) {
     md_allocator_i* arena = md_arena_allocator_create(alloc, MEGABYTES(1));
     md_script_eval_t* eval = md_alloc(arena, sizeof(md_script_eval_t));
@@ -6822,8 +6830,19 @@ static void do_vis_eval(const ast_node_t* node, eval_context_t* ctx) {
         if (data.ptr) {
             evaluate_node(&data, node, ctx);
             const md_bitfield_t* bf_arr = data.ptr;
-            for (size_t i = 0; i < element_count(data); ++i) {
-                md_bitfield_or_inplace(&ctx->vis->atom_mask, &bf_arr[i]);
+            if (ctx->subscript_ranges) {
+                int count = element_count(data);
+                for (size_t i = 0; i < md_array_size(ctx->subscript_ranges); ++i) {
+                    irange_t rng = ctx->subscript_ranges[i];
+                    for (int j = rng.beg; j < rng.end; ++j) {
+                        if (j > count) break;
+                        md_bitfield_or_inplace(&ctx->vis->atom_mask, &bf_arr[j]);
+                    }
+                }
+            } else {
+                for (size_t i = 0; i < element_count(data); ++i) {
+                    md_bitfield_or_inplace(&ctx->vis->atom_mask, &bf_arr[i]);
+                }
             }
             free_data(&data, ctx->temp_alloc);
         } else {

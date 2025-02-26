@@ -200,8 +200,12 @@ md_script_property_flags_t      md_script_ir_property_flags(const md_script_ir_t
 const md_script_vis_payload_o*  md_script_ir_property_vis_payload(const md_script_ir_t* ir, str_t name);
 
 // Returns the identifier of the payload
-// May return an empty string if there is no identifier for the payload
+// May return an empty string if not valid
 str_t md_script_payload_ident(const md_script_vis_payload_o* payload);
+
+// Returns the major dimension (dim[0]) of the payload
+// returns zero if the payload is not valid
+size_t md_script_payload_dim(const md_script_vis_payload_o* payload);
 
 // ### EVALUATE ###
 // This API is a dumpster-fire currently and should REALLY be simplified.

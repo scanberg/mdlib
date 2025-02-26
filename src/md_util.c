@@ -1240,9 +1240,9 @@ static inline bool is_organic(char c) {
 }
 
 bool md_util_element_guess(md_element_t element[], size_t capacity, const struct md_molecule_t* mol) {
-    ASSERT(capacity >= 0);
+    ASSERT(capacity > 0);
     ASSERT(mol);
-    ASSERT(mol->atom.count >= 0);
+    ASSERT(mol->atom.count > 0);
 
     md_hashmap32_t map = { .allocator = md_get_temp_allocator() };
     md_hashmap_reserve(&map, 256);
@@ -2346,8 +2346,8 @@ static graph_t smiles_to_graph(str_t smiles_str, md_util_match_flags_t flags, md
                 }
                 hub = cur;
 
-                if ((flags & MD_UTIL_MATCH_FLAGS_NO_H) ||
-                    (flags & MD_UTIL_MATCH_FLAGS_NO_CH) && elem == C) {
+                if ( (flags & MD_UTIL_MATCH_FLAGS_NO_H) ||
+                    ((flags & MD_UTIL_MATCH_FLAGS_NO_CH) && elem == C)) {
                     continue;
                 }
 
@@ -3460,7 +3460,7 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
 
                 // @NOTE: Interresidual bonds
                 if (!(prev_flags & MD_FLAG_CHAIN_END) && aabb_overlap(prev_aabb, curr_aabb)) {
-                    size_t count = find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, prev_range, curr_range, alloc, temp_arena);
+                    find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, prev_range, curr_range, alloc, temp_arena);
                     // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
                 }
             }
@@ -7710,7 +7710,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();
         MD_LOG_DEBUG("Postprocess: allocate missing fields %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif;
+#endif
     }
 
     if (flags & MD_UTIL_POSTPROCESS_RESIDUE_BIT) {
