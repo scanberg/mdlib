@@ -1257,12 +1257,14 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
                 // For bitfields, we only care about the first subscript dimension [0]
                 irange_t range = ctx->subscript_ranges[0];
                 for (int i = range.beg; i < range.end; ++i) {
-                    const md_bitfield_t* bf = &in_bf[i];
-                    if (ctx->mol_ctx) {
-                        md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
-                        bf = &tmp_bf;
+                    if (i < bf_len) {
+                        const md_bitfield_t* bf = &in_bf[i];
+                        if (ctx->mol_ctx) {
+                            md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                            bf = &tmp_bf;
+                        }
+                        visualize_atom_mask(bf, ctx);
                     }
-                    visualize_atom_mask(bf, ctx);
                 }
             } else {
                 for (size_t i = 0; i < bf_len; ++i) {
@@ -5386,10 +5388,7 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         md_vm_arena_temp_end(tmp);
     } else if (ctx->vis) {
-        md_array(irange_t) ranges = ctx->subscript_ranges;
-        ctx->subscript_ranges = 0;
         coordinate_visualize(arg[0], ctx);
-        ctx->subscript_ranges = ranges;
     } else {
         int count = 0;
         if (arg[0].type.base_type == TYPE_BITFIELD) {

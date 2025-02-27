@@ -6949,7 +6949,9 @@ bool md_script_vis_eval_payload(md_script_vis_t* vis, const md_script_vis_payloa
         .subscript_ranges = ranges,
     };
 
-    visualize_node((ast_node_t*)payload, &ctx);
+    const ast_node_t* node = (const ast_node_t*)payload;
+
+    visualize_node(node, &ctx);
 
     // This just to see that we conceptually did not make any errors when evaluating sub_contexts
     ASSERT(ctx.vis_structure == &vis->atom_mask);
