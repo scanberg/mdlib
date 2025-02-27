@@ -363,6 +363,7 @@ static inline basis_func_t get_basis_func(const basis_set_t* basis_set, int basi
 	};
 }
 
+// This is a ported reference implementation from VeloxChem found in VisualizationDriver.cpp
 static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 	const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t num_atoms,
 	const basis_set_t* basis_set,
@@ -473,7 +474,7 @@ static size_t vlx_pgto_count(const md_vlx_t* vlx) {
 	return count;
 }
 
-static size_t extract_pgto_data(md_gto_t* pgtos, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, const double* mo_coeffs) {
+static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, const double* mo_coeffs) {
 	int natoms = (int)number_of_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
 
@@ -516,7 +517,7 @@ static size_t extract_pgto_data(md_gto_t* pgtos, const dvec3_t* atom_coordinates
 				// process atomic orbitals
 				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(basis_set, idelem, angl);
 				for (int funcidx = range.beg; funcidx < range.end; funcidx++) {
-					const double mo_coeff = mo_coeffs[mo_coeff_idx++];
+					const double mo_coeff = mo_coeffs ? mo_coeffs[mo_coeff_idx++] : 1.0;
 
 					// process primitives
 					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
@@ -534,16 +535,20 @@ static size_t extract_pgto_data(md_gto_t* pgtos, const dvec3_t* atom_coordinates
 							double fcart = fcarts[icomp];
 							double coeff = coef1 * fcart * mo_coeff;
 
-							pgtos[count].x		= x;
-							pgtos[count].y		= y;
-							pgtos[count].z		= z;
-							pgtos[count].coeff  = (float)coeff;
-							pgtos[count].alpha  = (float)alpha; 
-							pgtos[count].cutoff = FLT_MAX;
-							pgtos[count].i		= (uint8_t)lx[icomp];
-							pgtos[count].j		= (uint8_t)ly[icomp];
-							pgtos[count].k		= (uint8_t)lz[icomp];
-							pgtos[count].l		= (uint8_t)angl;
+							out_gtos[count].x		= x;
+							out_gtos[count].y		= y;
+							out_gtos[count].z		= z;
+							out_gtos[count].coeff	= (float)coeff;
+							out_gtos[count].alpha	= (float)alpha; 
+							out_gtos[count].cutoff	= FLT_MAX;
+							out_gtos[count].i		= (uint8_t)lx[icomp];
+							out_gtos[count].j		= (uint8_t)ly[icomp];
+							out_gtos[count].k		= (uint8_t)lz[icomp];
+							out_gtos[count].l		= (uint8_t)angl;
+
+							if (out_atom_idx) {
+								out_atom_idx[count] = atomidx;
+							}
 
 							count += 1;
 						}
@@ -1981,14 +1986,13 @@ static inline size_t number_of_molecular_orbitals(const md_vlx_orbital_t* orb) {
 
 static inline size_t number_of_mo_coefficients(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
-	return orb->coefficients.size[1];
+	return orb->coefficients.size[0];
 }
 
 static inline void extract_mo_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t mo_idx) {
 	ASSERT(out_coeff);
 	ASSERT(orb);
-
-	ASSERT(mo_idx < number_of_mo_coefficients(orb));
+	ASSERT(mo_idx < number_of_molecular_orbitals(orb));
 
 	extract_col(out_coeff, &orb->coefficients, mo_idx);
 }
@@ -2000,15 +2004,13 @@ static inline size_t number_of_atomic_orbitals(const md_vlx_orbital_t* orb) {
 
 static inline size_t number_of_ao_coefficients(const md_vlx_orbital_t* orb) {
 	ASSERT(orb);
-	return orb->coefficients.size[0];
+	return orb->coefficients.size[1];
 }
 
 static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbital_t* orb, size_t ao_idx) {
 	ASSERT(out_coeff);
 	ASSERT(orb);
-	ASSERT(ao_idx < orb->coefficients.size[0]);
-
-	ASSERT(ao_idx < number_of_ao_coefficients(orb));
+	ASSERT(ao_idx < number_of_atomic_orbitals(orb));
 
 	extract_row(out_coeff, &orb->coefficients, ao_idx);
 }
@@ -2057,7 +2059,7 @@ bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	extract_pgto_data(pgtos, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
+	extract_pgto_data(pgtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
@@ -2094,7 +2096,7 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	extract_pgto_data(gtos, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
+	extract_pgto_data(gtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
