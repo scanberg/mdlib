@@ -2044,9 +2044,9 @@ bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx
 
 	int64_t mo_idx = 0;
 	if (type == MD_VLX_NTO_TYPE_PARTICLE) {
-		mo_idx = (int64_t)vlx->scf.lumo_idx + (int64_t)lambda_idx;
+		mo_idx = (int64_t)vlx->scf.lumo_idx[0] + (int64_t)lambda_idx;
 	} else if (type == MD_VLX_NTO_TYPE_HOLE) {
-		mo_idx = (int64_t)vlx->scf.homo_idx - (int64_t)lambda_idx;
+		mo_idx = (int64_t)vlx->scf.homo_idx[0] - (int64_t)lambda_idx;
 	} else {
 		MD_LOG_ERROR("Invalid NTO type!");
 		return false;
