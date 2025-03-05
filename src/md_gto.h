@@ -61,6 +61,8 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const floa
 
 void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
 
+// Average local ionization energy
+void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
 
 // This is malplaced at the moment, but this is for the moment, the best match in where to place the functionality
 // Performs voronoi segmentation of the supplied volume to points with a supplied radius and accumulates the value of each voxel into the corresponding group of the closest point

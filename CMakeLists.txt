@@ -102,6 +102,7 @@ set(GL_SHADER_FILES
 )
 
 set(GTO_SHADER_FILES 
+    src/shaders/eval_alie.comp
     src/shaders/eval_gto.comp
     src/shaders/segment_and_attribute_to_group.comp
 )

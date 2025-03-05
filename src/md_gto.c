@@ -31,6 +31,21 @@ static GLuint get_gto_eval_program(void) {
     return program;
 }
 
+static GLuint get_alie_program(void) {
+    static GLuint program = 0;
+    if (!program) {
+        GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+        if (md_gl_shader_compile(shader, (str_t){(const char*)eval_alie_comp, eval_alie_comp_size}, 0, 0)) {
+            GLuint prog = glCreateProgram();
+            if (md_gl_program_attach_and_link(prog, &shader, 1)) {
+                program = prog;
+            }
+        }
+        glDeleteShader(shader);
+    }
+    return program;
+}
+
 static GLuint get_vol_segment_to_groups_program(void) {
     static GLuint program = 0;
     if (!program) {
@@ -75,7 +90,7 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const floa
     md_gto_grid_evaluate_orb_GPU(vol_tex, vol_dim, vol_step, world_to_model, index_to_world, &orb, mode);
 }
 
-void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
+static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode, GLuint program) {
     ASSERT(world_to_model);
     ASSERT(index_to_world);
     ASSERT(vol_dim);
@@ -132,7 +147,6 @@ void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const 
 
     glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 
-    GLuint program = get_gto_eval_program();
     glUseProgram(program);
 
     glUniformMatrix4fv(0, 1, GL_FALSE, world_to_model);
@@ -160,6 +174,27 @@ done:
     md_gl_debug_pop();
 }
 
+void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
+    ASSERT(world_to_model);
+    ASSERT(index_to_world);
+    ASSERT(vol_dim);
+    ASSERT(vol_step);
+    ASSERT(orb);
+
+    GLuint program = get_gto_eval_program();
+    gto_grid_evaluate_orb_GPU(vol_tex, vol_dim, vol_step, world_to_model, index_to_world, orb, mode, program);
+}
+
+void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
+    ASSERT(world_to_model);
+    ASSERT(index_to_world);
+    ASSERT(vol_dim);
+    ASSERT(vol_step);
+    ASSERT(orb);
+
+    GLuint program = get_alie_program();
+    gto_grid_evaluate_orb_GPU(vol_tex, vol_dim, vol_step, world_to_model, index_to_world, orb, mode, program);
+}
 
 void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points) {
     ASSERT(out_group_values);
