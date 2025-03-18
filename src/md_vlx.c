@@ -561,6 +561,156 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 	return count;
 }
 
+typedef struct {
+	int atom_idx;
+	int coeff_idx;
+	float coeff;
+	float alpha;
+	uint8_t lx;
+	uint8_t ly;
+	uint8_t lz;
+	uint8_t angle;
+} vlx_gto_t;
+
+static size_t dummy_gto(vlx_gto_t* gtos, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
+	int natoms = (int)number_of_atoms;
+	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
+
+	size_t count = 0;
+	size_t mo_coeff_idx = 0;
+
+	// azimuthal quantum number: s,p,d,f,...
+	for (int angl = 0; angl <= max_angl; angl++) {
+		//CSphericalMomentum sphmom(angl);
+		int nsph = spherical_momentum_num_components(angl);
+		const lmn_t* lmn = cartesian_angular_momentum(angl);
+		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
+		for (int isph = 0; isph < nsph; isph++) {
+			// prepare Cartesian components (Maximum number of components should be 6 here for the currently supported basis sets)
+			int lx[8];
+			int ly[8];
+			int lz[8];
+			int			      ncomp	= spherical_momentum_num_factors(angl, isph);
+			const double*	fcarts  = spherical_momentum_factors(angl, isph);
+			const uint8_t*	indices = spherical_momentum_indices(angl, isph);
+
+			for (int icomp = 0; icomp < ncomp; icomp++) {
+				int cartind = indices[icomp];
+
+				lx[icomp] = lmn[cartind][0];
+				ly[icomp] = lmn[cartind][1];
+				lz[icomp] = lmn[cartind][2];
+			}
+
+			// go through atoms
+			for (int atomidx = 0; atomidx < natoms; atomidx++) {
+				int idelem = atomic_numbers[atomidx];
+
+				// process atomic orbitals
+				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(basis_set, idelem, angl);
+				for (int funcidx = range.beg; funcidx < range.end; funcidx++) {
+					int coeff_idx = mo_coeff_idx++;
+
+					// process primitives
+					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
+					ASSERT(basis_func.type == angl);
+					const int        nprims = basis_func.count;
+					const double* exponents = basis_func.exponents;
+					const double* normcoefs = basis_func.normalization_coefficients;
+
+					for (int iprim = 0; iprim < nprims; iprim++) {
+						double alpha = exponents[iprim];
+						double coef1 = normcoefs[iprim];
+
+						// transform from Cartesian to spherical harmonics
+						for (int icomp = 0; icomp < ncomp; icomp++) {
+							gtos[count].atom_idx = atomidx;
+							gtos[count].coeff_idx = coeff_idx;
+							gtos[count].coeff = coef1 * fcarts[icomp];
+							gtos[count].alpha = alpha;
+							gtos[count].lx = lx[icomp];
+							gtos[count].ly = ly[icomp];
+							gtos[count].lz = lz[icomp];
+							gtos[count].angle = angl;
+
+							count += 1;
+						}
+					}
+				}
+			}
+		}
+	}
+	return count;
+}
+
+typedef struct md_gto_basis_prim_t {
+	float coeff;
+	float alpha;
+} md_gto_basis_prim_t;
+
+typedef struct md_gto_basis_t {
+	uint8_t  prim_count;
+	uint8_t  i, j, k, l;
+} md_gto_basis_t;
+
+typedef struct md_gto_basis_set_t {
+	md_gto_basis_t elem_basis[119];
+} md_gto_basis_set_t;
+
+static size_t num_gto_prims(const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
+	md_gto_basis_t elem[119] = {0};
+
+	int natoms = (int)number_of_atoms;
+	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
+
+	size_t count = 0;
+
+	// go through atoms
+	for (int atomidx = 0; atomidx < natoms; atomidx++) {
+		int idelem = atomic_numbers[atomidx];
+		if (elem[idelem].prim_offset > 0) continue;
+
+		int num_elem_prims = 0;
+
+		// azimuthal quantum number: s,p,d,f,...
+		for (int angl = 0; angl <= max_angl; angl++) {
+			//CSphericalMomentum sphmom(angl);
+			int nsph = spherical_momentum_num_components(angl);
+			// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
+			for (int isph = 0; isph < nsph; isph++) {
+				int	ncomp = spherical_momentum_num_factors(angl, isph);
+
+				// process atomic orbitals
+				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(basis_set, idelem, angl);
+				for (int funcidx = range.beg; funcidx < range.end; funcidx++) {
+					// process primitives
+					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
+					ASSERT(basis_func.type == angl);
+
+					num_elem_prims += basis_func.count * ncomp;
+				}
+			}
+		}
+
+		elem_prims[idelem] = num_elem_prims;
+		count += num_elem_prims;
+	}
+
+	for (int i = 0; i < ARRAY_SIZE(elem_prims); ++i) {
+		if (elem_prims[i] > 0) {
+			printf("%i: %i\n", i, elem_prims[i]);
+		}
+	}
+
+	printf("Num total elem prims: %zu\n", count);
+
+	return count;
+}
+
+static void extract_gto_basis(const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
+
+}
+
 static inline double compute_overlap(basis_func_t func, int i, int j) {
 	const double fab  = 1.0 / (func.exponents[i] + func.exponents[j]);
 	const double fab2 = fab * fab;
@@ -2072,6 +2222,13 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx) {
 	return vlx_pgto_count(vlx);
 }
 
+int cmp_gtos(const void* in_a, const void* in_b) {
+	const vlx_gto_t* a = in_a;
+	const vlx_gto_t* b = in_b;
+
+	return a->atom_idx - b->atom_idx;
+}
+
 bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type) {
 	ASSERT(gtos);
 	ASSERT(vlx);
@@ -2097,6 +2254,22 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
 	extract_pgto_data(gtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
+
+	size_t num_gtos = md_vlx_mo_gto_count(vlx);
+	vlx_gto_t* temp_gtos = md_temp_push(sizeof(vlx_gto_t) * num_gtos);
+
+	num_gto_prims(vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
+	
+#if 0
+	//dummy_gto(temp_gtos, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
+
+	qsort(temp_gtos, num_gtos, sizeof(vlx_gto_t), cmp_gtos);
+
+	for (size_t i = 0; i < num_gtos; i++) {
+		vlx_gto_t g = temp_gtos[i];
+		printf("%-3i %-3i %10.4f %10.4f %i %i %i %i\n", g.atom_idx, g.coeff_idx, g.coeff, g.alpha, g.lx, g.ly, g.lz, g.angle);
+	}
+#endif
 
 	md_temp_set_pos_back(temp_pos);
 	return true;

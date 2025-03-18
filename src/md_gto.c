@@ -1174,7 +1174,8 @@ static double compute_distance_cutoff(double cutoff_value, int i, int j, int k, 
     const double neg_alpha = -alpha;
 
     // Bake into single constant C
-    const double C = fabs(coeff * sqrt((fast_pow(i,i) * fast_pow(j,j) * fast_pow(k,k)) / fast_pow(l,l)));
+    const int max_ijk = MAX(i, MAX(j,k));
+    const double C = fabs(coeff) * MAX(1, max_ijk) / MAX(1, l);
 
     // Compute maxima
     const double d_maxima = sqrt(l / (2.0 * fabs(neg_alpha)));
