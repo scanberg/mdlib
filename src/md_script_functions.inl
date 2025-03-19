@@ -1,4 +1,4 @@
-// This is to mark that the procedure supports a varying length
+ï»¿// This is to mark that the procedure supports a varying length
 #define ANY_LENGTH -1
 
 #ifndef MD_DIST_BINS
@@ -704,12 +704,12 @@ static procedure_t procedures[] = {
 #undef CSTR
 
 static inline md_spatial_hash_t* get_spatial_hash(eval_context_t* ctx) {
-	ASSERT(ctx);
+    ASSERT(ctx);
     if (!ctx->spatial_hash) {
         // Lazily generate the spatial hash if needed
         ctx->spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, 0, ctx->mol->atom.count, &ctx->mol->unit_cell, ctx->temp_alloc);
     }
-	return ctx->spatial_hash;
+    return ctx->spatial_hash;
 }
 
 static inline void visualize_atom_mask(const md_bitfield_t* mask, eval_context_t* ctx) {
@@ -994,19 +994,19 @@ static inline irange_t clamp_range(irange_t range, irange_t context) {
 static int32_t find_val(const int32_t* arr, int64_t count, int32_t val) {
     for (int32_t i = 0; i < (int32_t)count; ++i) {
         if (arr[i] == val) {
-			return i;
-		}
+            return i;
+        }
     }
     return -1;
 }
 
 static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
     for (int32_t i = 0; i < (int32_t)count; ++i) {
-		if (str_eq(LBL_TO_STR(arr[i]), lbl)) {
-			return i;
-		}
-	}
-	return -1;
+        if (str_eq(LBL_TO_STR(arr[i]), lbl)) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static md_array(int32_t) get_residue_indices_in_context(const md_molecule_t* mol, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
@@ -1076,11 +1076,11 @@ static inline irange_t get_residue_range_in_context(const md_molecule_t* mol, co
         range.end = 0;
         for (size_t i = 0; i < mol->residue.count; ++i) {
             md_range_t res = md_residue_atom_range(mol->residue, i);
-			if (md_bitfield_popcount_range(mol_ctx, res.beg, res.end)) {
-				range.beg = MIN(range.beg, (int32_t)i);
+            if (md_bitfield_popcount_range(mol_ctx, res.beg, res.end)) {
+                range.beg = MIN(range.beg, (int32_t)i);
                 range.end = MAX(range.end, (int32_t)i + 1);
-				break;
-			}
+                break;
+            }
         }
     }
     return range;
@@ -1134,9 +1134,9 @@ static bool validate_atom_range_in_context(irange_t in_range, token_t token, con
     }
     if (ctx->mol_ctx) {
         if (!range_in_range(range, ctx_range)) {
-			LOG_ERROR(ctx->ir, token, "supplied range (%i:%i) is not contained within its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
-			return false;
-		}
+            LOG_ERROR(ctx->ir, token, "supplied range (%i:%i) is not contained within its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
+            return false;
+        }
     }
     return true;
 }
@@ -1160,8 +1160,8 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
         int count = 0;
         for (size_t i = 0; i < element_count(arg); ++i) {
             if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[arg_idx], ctx)) {
-				return STATIC_VALIDATION_ERROR;
-			}                
+                return STATIC_VALIDATION_ERROR;
+            }                
             count += 1;
         }
         return count;
@@ -1240,7 +1240,7 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
                         md_bitfield_iter_t it = md_bitfield_iter_range_create(ctx->mol_ctx, range.beg, range.end);
                         while (md_bitfield_iter_next(&it)) {
                             const int64_t idx = md_bitfield_iter_idx(&it);
-						    visualize_atom_index(idx, ctx);
+                            visualize_atom_index(idx, ctx);
                         }
                     }
                     else {
@@ -1631,8 +1631,8 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_array_shrink(indices, 0);
                 for (int32_t j = range.beg; j < range.end; ++j) {
                     // 1 based indexing to 0 based indexing
-					md_array_push(indices, j, ctx->temp_alloc);
-				}
+                    md_array_push(indices, j, ctx->temp_alloc);
+                }
                 xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
             }
         }
@@ -2595,8 +2595,8 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(ctx->arg_tokens);
         for (size_t i = 0; i < num_ranges; ++i) {
             if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
-				return STATIC_VALIDATION_ERROR;
-			}
+                return STATIC_VALIDATION_ERROR;
+            }
         }
     }
 
@@ -2625,7 +2625,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (size_t i = 0; i < num_indices; ++i) {
             if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[0], ctx)) {
                 return STATIC_VALIDATION_ERROR;
-			}
+            }
         }
     }
 
@@ -3018,11 +3018,11 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
                 const md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
-				size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
-				if (popcount) {
-					count += 1;
-				}
-			}
+                size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
+                if (popcount) {
+                    count += 1;
+                }
+            }
 
             if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
                 count = MIN(1, count);
@@ -3568,8 +3568,8 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                                 visualize_atom_index(a_idx[a], ctx);
                             } else if (arg[0].type.base_type == TYPE_BITFIELD && element_count(arg[0]) > 1) {
                                 if (i < (int)element_count(arg[0])) {
-                                	const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
-                                	visualize_atom_mask(&bf_arr[i], ctx);
+                                    const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
+                                    visualize_atom_mask(&bf_arr[i], ctx);
                                 }
                             }
 
@@ -3655,7 +3655,7 @@ static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_
     c = vec3_add(c, vec3_mul_f(n, len + 0.1f));
     char buf[32];
     angle = RAD_TO_DEG(angle);
-    snprintf(buf, sizeof(buf), (const char*)u8"%.1f°", angle);
+    snprintf(buf, sizeof(buf), (const char*)u8"%.1fÂ°", angle);
     push_text(c, buf, vis);
 }
 
@@ -3904,7 +3904,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             // Validate args
             // Nothing really to validate, arguments are of type bitfields and if the bitfield is empty, that would be ok, since that would yield a valid rmsd -> 0.
-			// And the empty bitfield must be valid in the case of dynamic selection.
+            // And the empty bitfield must be valid in the case of dynamic selection.
         }
     }
 
@@ -4029,8 +4029,8 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     } else {
         for (size_t i = 0; i < num_idx; ++i) {
             if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[0], ctx)) {
-				return STATIC_VALIDATION_ERROR;
-			}
+                return STATIC_VALIDATION_ERROR;
+            }
         }
     }
 
@@ -4067,8 +4067,8 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
     } else {
         for (size_t i = 0; i < num_ranges; ++i) {
             if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
-				return STATIC_VALIDATION_ERROR;
-			}
+                return STATIC_VALIDATION_ERROR;
+            }
         }
     }
 
@@ -4261,8 +4261,8 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         size_t count = md_array_size(xyz);
         vec4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count);
         for (size_t i = 0; i < count; ++i) {
-			xyzw[i] = vec4_from_vec3(xyz[i], 1.0f);
-		}
+            xyzw[i] = vec4_from_vec3(xyz[i], 1.0f);
+        }
 
         // Place structure within the same period
         md_util_unwrap_vec4(xyzw, count, &ctx->mol->unit_cell);
@@ -4419,14 +4419,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
         const double slice_vol = (ext.x * ext.y * ext.z) / MD_DIST_BINS;
 
-        // Convert atomic mass / Ångström^3 to SI units KG/M^3
-        // 1660.5390666?
-        // divide by bin volume
-        //const double factor[3] = {
-        //    1660.5390666 / slice_vol,
-        //    1660.5390666 / slice_vol,
-        //    1660.5390666 / slice_vol,
-        //};
+        // Convert atomic mass / Ã…ngstrÃ¶m^3 to SI units KG/M^3
         const double factor = (1660.5390666 / slice_vol);
 
         if (axis == -1) {
@@ -4762,11 +4755,11 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const data_t 
         md_array_resize(ref_pos, md_array_size(ref_idx), ctx->temp_alloc);
         for (size_t i = 0; i < md_array_size(ref_idx); ++i) {
             const int64_t idx = ref_idx[i];
-			ref_pos[i] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
-		}
+            ref_pos[i] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
+        }
     } else {
-		ref_pos = coordinate_extract(arg[0], ctx);
-	}
+        ref_pos = coordinate_extract(arg[0], ctx);
+    }
     const size_t ref_len = md_array_size(ref_pos);
 
     md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
@@ -4883,7 +4876,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_DISTRIBUTION));
             ASSERT(dst->ptr);
             float* bins    = as_float_arr(*dst);
-			float* weights = as_float_arr(*dst) + num_bins;
+            float* weights = as_float_arr(*dst) + num_bins;
             compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, &ctx->mol->unit_cell, ctx->temp_alloc, ctx);
         }
         if (ctx->vis) {
@@ -4949,27 +4942,27 @@ typedef enum {
 } count_type_t;
 
 static const str_t count_type_str[] = {
-	BAKE_STR(""),
-	BAKE_STR("atom"),
-	BAKE_STR("residue"),
-	BAKE_STR("chain"),
-	BAKE_STR("structure"),
+    BAKE_STR(""),
+    BAKE_STR("atom"),
+    BAKE_STR("residue"),
+    BAKE_STR("chain"),
+    BAKE_STR("structure"),
 };
 
 count_type_t count_type_from_str(str_t str) {
-	for (size_t i = 0; i < COUNT_TYPE_COUNT; ++i) {
-		if (str_eq(str, count_type_str[i])) {
-			return (count_type_t)i;
-		}
-	}
-	return COUNT_TYPE_UNKNOWN;
+    for (size_t i = 0; i < COUNT_TYPE_COUNT; ++i) {
+        if (str_eq(str, count_type_str[i])) {
+            return (count_type_t)i;
+        }
+    }
+    return COUNT_TYPE_UNKNOWN;
 }
 
 size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t count_type, eval_context_t* ctx) {
     ASSERT(ctx);
     if (!bf_arr || bf_len == 0) {
-		return 0;
-	}
+        return 0;
+    }
 
     md_bitfield_t bf = _internal_flatten_bf(bf_arr, bf_len, ctx->temp_alloc);
 
@@ -4977,24 +4970,24 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
     if (ctx->mol_ctx) {
         tmp = md_bitfield_create(ctx->temp_alloc);
         md_bitfield_and(&tmp, &bf, ctx->mol_ctx);
-		bf = tmp;
+        bf = tmp;
     }
     
     size_t count = 0;
 
     switch (count_type) {
-    	case COUNT_TYPE_ATOM: {
-			return md_bitfield_popcount(&bf);
-		}
-		case COUNT_TYPE_RESIDUE:
-			for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
+        case COUNT_TYPE_ATOM: {
+            return md_bitfield_popcount(&bf);
+        }
+        case COUNT_TYPE_RESIDUE:
+            for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
                 md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
                 if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
-					count += 1;
-				}
+                    count += 1;
+                }
             }
             break;
-		case COUNT_TYPE_CHAIN: {
+        case COUNT_TYPE_CHAIN: {
             for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
                 md_range_t range = md_chain_atom_range(ctx->mol->chain, i);
                 if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
@@ -5002,11 +4995,11 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
                 }
             }
             break;
-		}
-		case COUNT_TYPE_STRUCTURE: {
+        }
+        case COUNT_TYPE_STRUCTURE: {
             size_t num_structures = md_index_data_num_ranges(ctx->mol->structure);
             md_bitfield_t tmp2 = md_bitfield_create(ctx->temp_alloc);
-			for (size_t i = 0; i < num_structures; ++i) {
+            for (size_t i = 0; i < num_structures; ++i) {
                 const int32_t* idx = md_index_range_beg(ctx->mol->structure, i);
                 const size_t num_idx = md_index_range_size(ctx->mol->structure, i);
             
@@ -5014,15 +5007,15 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
                 md_bitfield_set_indices_u32(&tmp2, (const uint32_t*)idx, num_idx);
                 md_bitfield_and_inplace(&tmp2, &bf);
                 if (md_bitfield_popcount(&tmp2) > 0) {
-                	count += 1;
+                    count += 1;
                 }
             }
             break;
-		}
-		default: {
-			ASSERT(false);
-			break;
-		}
+        }
+        default: {
+            ASSERT(false);
+            break;
+        }
     }
     return count;
 }
@@ -5060,8 +5053,8 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 md_strb_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
             }
             LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
-			return -1;
-		}
+            return -1;
+        }
     }
 
     return 0;
@@ -5223,8 +5216,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         vec4_t* ref_xyzw[2] = {
             md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size),
-			md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size)
-		};
+            md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size)
+        };
 
         // Extract indices
         md_bitfield_iter_extract_indices(ref_idx[0], ref_size, md_bitfield_iter_create(ref_bf));
@@ -5408,10 +5401,10 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->backchannel) {
-			ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[0] = md_unit_none();
             ctx->backchannel->unit[1] = md_unit_none();
-			ctx->backchannel->value_range = (frange_t){0, 1.0};
-		}
+            ctx->backchannel->value_range = (frange_t){0, 1.0};
+        }
         return count;
     }
 
