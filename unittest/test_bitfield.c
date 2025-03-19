@@ -72,6 +72,22 @@ UTEST(bitfield, bit_op) {
     md_bitfield_free(&c);
 }
 
+UTEST(bitfield, realloc) {
+    md_allocator_i* alloc = md_tracking_allocator_create(md_get_heap_allocator());
+
+    md_bitfield_t bf = {0};
+    md_bitfield_init(&bf, alloc);
+    md_bitfield_set_bit(&bf, 0);
+    EXPECT_EQ(md_bitfield_popcount(&bf), 1);
+
+    md_bitfield_set_bit(&bf, 10001);
+    EXPECT_EQ(md_bitfield_popcount(&bf), 2);
+
+    md_bitfield_free(&bf);
+
+    md_tracking_allocator_destroy(alloc);
+}
+
 UTEST(bitfield, general) {
     md_allocator_i* alloc = md_tracking_allocator_create(md_get_heap_allocator());
 
@@ -189,10 +205,22 @@ UTEST(bitfield, general) {
     }
 
     md_bitfield_clear(&bf);
+    {
+        size_t count = md_bitfield_popcount(&bf);
+        EXPECT_EQ(0, count);
+    }
+
     md_bitfield_set_range(&bf, 10000, 10001);
+    {
+        size_t count = md_bitfield_popcount(&bf);
+        EXPECT_EQ(1, count);
+    }
+
     md_bitfield_not_inplace(&bf, 0, 12000);
-    int64_t count = md_bitfield_popcount(&bf);
-    EXPECT_EQ(count, 12000-1);
+    {
+        size_t count = md_bitfield_popcount(&bf);
+        EXPECT_EQ(count, 12000-1);
+    }
     
     md_bitfield_free(&mask);
     md_bitfield_free(&bf);
@@ -215,22 +243,30 @@ UTEST(bitfield, serialization) {
     md_bitfield_set_range(&a, 1000, 2000);
     md_bitfield_set_bit(&a, 1 << 16);
 
-    int64_t est_bytes = md_bitfield_serialize_size_in_bytes(&a);
-    void* mem = md_alloc(alloc, est_bytes);
-    int64_t real_bytes = md_bitfield_serialize(mem, &a);
+    EXPECT_EQ(1007, md_bitfield_popcount(&a));
 
-    md_logf(MD_LOG_TYPE_INFO, "Estimated serialization bytes for a: %i, actual bytes: %i", (int)est_bytes, (int)real_bytes);
+    size_t est_bytes = md_bitfield_serialize_size_in_bytes(&a);
+    void* mem = md_alloc(alloc, est_bytes);
+    size_t real_bytes = md_bitfield_serialize(mem, &a);
+
+    MD_LOG_INFO("Estimated serialization bytes for a: %i, actual bytes: %i", (int)est_bytes, (int)real_bytes);
 
     md_bitfield_t b = {0};
     md_bitfield_init(&b, alloc);
 
     bool result = md_bitfield_deserialize(&b, mem, real_bytes);
-    md_logf(MD_LOG_TYPE_INFO, "Deserialization of b: %s", result ? "true" : "false");
+    MD_LOG_INFO("Deserialization of b: %s", result ? "true" : "false");
     EXPECT_TRUE(result);
 
-    for (int64_t i = 0; i < 70000; ++i) {
+    EXPECT_EQ(a.beg_bit, b.beg_bit);
+    EXPECT_EQ(a.end_bit, b.end_bit);
+
+    for (size_t i = 0; i < 70000; ++i) {
         bool bit_a = md_bitfield_test_bit(&a, i);
         bool bit_b = md_bitfield_test_bit(&b, i);
+        if (bit_a != bit_b) {
+            while(0){};
+        }
         ASSERT_TRUE(bit_a == bit_b);
     }
 
@@ -239,7 +275,7 @@ UTEST(bitfield, serialization) {
     md_bitfield_set_bit(&c, 0);
 
     real_bytes = md_bitfield_serialize(mem, &c);
-    md_logf(MD_LOG_TYPE_INFO, "Serialized bytes bytes for c: %i", (int)est_bytes, (int)real_bytes);
+    MD_LOG_INFO("Serialized bytes bytes for c: %i", (int)est_bytes, (int)real_bytes);
 
 
     md_bitfield_clear(&b);
