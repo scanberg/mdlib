@@ -111,6 +111,11 @@ typedef struct md_script_vis_sphere_t {
     uint32_t color;
 } md_script_vis_sphere_t;
 
+typedef struct md_script_vis_text_t {
+    vec3_t pos;
+    str_t  str;
+} md_script_vis_text_t;
+
 typedef struct md_script_vis_t {
     uint64_t magic;
     struct md_allocator_i* alloc;
@@ -119,6 +124,7 @@ typedef struct md_script_vis_t {
     md_array(md_script_vis_vertex_t) lines;
     md_array(md_script_vis_vertex_t) triangles;
     md_array(md_script_vis_sphere_t) spheres;
+    md_array(md_script_vis_text_t)   text;
 
     // This is a bit of a shoe-horn case where we want to visualize the superimposed structures and the atoms involved
     // in computing an SDF, therefore this requires transformation matrices as well as the involved structures
@@ -139,6 +145,7 @@ enum {
     MD_SCRIPT_VISUALIZE_GEOMETRY    = 1,
     MD_SCRIPT_VISUALIZE_ATOMS       = 2,
     MD_SCRIPT_VISUALIZE_SDF         = 4,
+    MD_SCRIPT_VISUALIZE_TEXT        = 8,
 };
 
 typedef uint32_t md_script_vis_flags_t;

@@ -790,6 +790,13 @@ static inline void push_sphere(vec3_t xyz, float r, uint32_t color, md_script_vi
     md_array_push(vis->spheres, sphere, vis->alloc);
 }
 
+static inline void push_text(vec3_t xyz, const char* cstr, md_script_vis_t* vis) {
+    ASSERT(vis);
+    ASSERT(vis->alloc);
+    md_script_vis_text_t text = {xyz, str_copy_cstr(cstr, vis->alloc) };
+    md_array_push(vis->text, text, vis->alloc);
+} 
+
 static inline md_bitfield_t* push_structure(md_script_vis_t* vis) {
     ASSERT(vis);
     ASSERT(vis->alloc);
@@ -3371,6 +3378,28 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // Property Compute
 
+static void draw_distance(const vec3_t* a, size_t num_a, const vec3_t* b, size_t num_b, const float* values, md_script_vis_t* vis, uint32_t vis_flags) {
+    for (size_t i = 0; i < num_a; ++i) {
+        md_script_vis_vertex_t va = {a[i], COLOR_WHITE};
+        if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            push_point(va, vis);
+        }
+        for (size_t j = 0; j < num_b; ++j) {
+            md_script_vis_vertex_t vb = {b[j], COLOR_WHITE};
+            if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                push_point(vb, vis);
+                push_line(va, vb, vis);
+            }
+            if (vis_flags & MD_SCRIPT_VISUALIZE_TEXT) {
+                vec3_t c = vec3_mul_f(vec3_add(a[i], b[j]), 0.5f);
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.2f", values[i*num_a + j]);
+                push_text(c, buf, vis);
+            }
+        }
+    }
+}
+
 static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
@@ -3383,23 +3412,17 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec4_t b4 = vec4_from_vec3(b, 0);
         md_util_deperiodize_vec4(&b4, 1, a, &ctx->mol->unit_cell);
         b = vec3_from_vec4(b4);
+        float dist = vec3_distance(a, b);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
             float* ptr = dst->ptr;
-            *ptr = vec3_distance(a, b);
+            *ptr = dist;
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
-
-            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                md_script_vis_vertex_t va = vertex(a, COLOR_WHITE);
-                md_script_vis_vertex_t vb = vertex(b, COLOR_WHITE);
-                push_point(va, ctx->vis);
-                push_point(vb, ctx->vis);
-                push_line(va, vb, ctx->vis);
-            }
+            draw_distance(&a, 1, &b, 1, &dist, ctx->vis, ctx->vis_flags);
         }
     }
     else {
@@ -3439,16 +3462,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
-
-            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                if (a_pos && b_pos) {
-                    md_script_vis_vertex_t va = vertex(a_pos[min_i], COLOR_WHITE);
-                    md_script_vis_vertex_t vb = vertex(b_pos[min_j], COLOR_WHITE);
-                    push_point(va, ctx->vis);
-                    push_point(vb, ctx->vis);
-                    push_line(va, vb, ctx->vis);
-                }
-            }
+            draw_distance(&a_pos[min_i], 1, &b_pos[min_j], 1, &min_dist, ctx->vis, ctx->vis_flags);
         }
     }
     else {
@@ -3479,25 +3493,17 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t max_i, max_j;
-        float max_dist = md_util_unit_cell_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
+        float dist = md_util_unit_cell_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = max_dist;
+            as_float(*dst) = dist;
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
+            draw_distance(&a_pos[max_i], 1, &b_pos[max_j], 1, &dist, ctx->vis, ctx->vis_flags);
 
-            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                if (a_pos && b_pos) {
-                    md_script_vis_vertex_t va = vertex(a_pos[max_i], COLOR_WHITE);
-                    md_script_vis_vertex_t vb = vertex(a_pos[max_j], COLOR_WHITE);
-                    push_point(va, ctx->vis);
-                    push_point(vb, ctx->vis);
-                    push_line(va, vb, ctx->vis);
-                }
-            }
         }
     } else {
         int res_a = coordinate_validate(arg[0], 0, ctx);
@@ -3526,16 +3532,19 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         vec3_t* a_pos = coordinate_extract(arg[0], ctx);
         vec3_t* b_pos = coordinate_extract(arg[1], ctx);
-        const int64_t a_len = md_array_size(a_pos);
-        const int64_t b_len = md_array_size(b_pos);
+        const size_t a_len = md_array_size(a_pos);
+        const size_t b_len = md_array_size(b_pos);
+
+        float* dst_arr = 0;
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             ASSERT(element_count(*dst) == md_array_size(a_pos) * md_array_size(b_pos));
-            float* dst_arr = as_float_arr(*dst);
-
-            md_util_unit_cell_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
+            dst_arr = as_float_arr(*dst);
+        } else {
+            dst_arr = md_vm_arena_push(ctx->temp_alloc, a_len * b_len);
         }
+        md_util_unit_cell_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
         if (ctx->vis) {
             if (ctx->subscript_ranges) {
                 // @NOTE(Robin): This is not trivial...
@@ -3574,6 +3583,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                             }
                         }
 
+#if 0
                         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                             if (a != prev_a) {
                                 prev_a = a;
@@ -3584,23 +3594,14 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                             push_point(vb, ctx->vis);
                             push_line(va, vb, ctx->vis);
                         }
+#endif
+                        draw_distance(&a_pos[a], 1, &b_pos[b], 1, &dst_arr[i], ctx->vis, ctx->vis_flags);
                     }
                 }
             } else {
                 coordinate_visualize(arg[0], ctx);
                 coordinate_visualize(arg[1], ctx);
-
-                if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                    for (int64_t i = 0; i < a_len; ++i) {
-                        md_script_vis_vertex_t va = vertex(a_pos[i], COLOR_WHITE);
-                        push_point(va, ctx->vis);
-                        for (int64_t j = 0; j < b_len; ++j) {
-                            md_script_vis_vertex_t vb = vertex(b_pos[j], COLOR_WHITE);
-                            push_point(vb, ctx->vis);
-                            push_line(va, vb, ctx->vis);
-                        }
-                    }
-                }
+                draw_distance(a_pos, a_len, b_pos, b_len, dst_arr, ctx->vis, ctx->vis_flags);
             }
         }
         md_vm_arena_temp_end(temp);
@@ -3614,9 +3615,9 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
-        int64_t count = (int64_t)res0 * (int64_t)res1;
-        if (count > 1000000) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The size produced by the operation is %"PRId64", which exceeds the upper limit of 1'000'000", count);
+        size_t count = (size_t)res0 * (size_t)res1;
+        if (count > 1'000'000) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "The size produced by the operation is %zu, which exceeds the upper limit of 1'000'000", count);
             return STATIC_VALIDATION_ERROR;
         }
         result = (int)count;
@@ -3647,6 +3648,15 @@ static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_
         vp = vn;
     }
     push_line(vb, vp, vis);
+
+    // Add text
+    quat_t q = quat_axis_angle(axis, angle * 0.5f);
+    vec3_t n = quat_mul_vec3(q, v);
+    c = vec3_add(c, vec3_mul_f(n, len + 0.1f));
+    char buf[32];
+    angle = RAD_TO_DEG(angle);
+    snprintf(buf, sizeof(buf), (const char*)u8"%.1f°", angle);
+    push_text(c, buf, vis);
 }
 
 static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {

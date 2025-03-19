@@ -5878,6 +5878,7 @@ static void com(float* out_com, const float* in_x, const float* in_y, const floa
                 acc_y += in_y[i];
                 acc_z += in_z[i];
             }
+            acc_w = (double)count;
         }
     }
 
