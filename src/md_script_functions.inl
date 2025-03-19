@@ -3616,7 +3616,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         size_t count = (size_t)res0 * (size_t)res1;
-        if (count > 1'000'000) {
+        if (count > 1000000) {
             LOG_ERROR(ctx->ir, ctx->op_token, "The size produced by the operation is %zu, which exceeds the upper limit of 1'000'000", count);
             return STATIC_VALIDATION_ERROR;
         }
