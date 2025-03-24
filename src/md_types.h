@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 
 #include <core/md_str.h>
@@ -229,7 +229,7 @@ static inline size_t md_index_data_push_arr (md_index_data_t* data, const int32_
     return offset;
 }
 
-static inline void md_index_data_data_clear(md_index_data_t* data) {
+static inline void md_index_data_clear(md_index_data_t* data) {
     ASSERT(data);
     md_array_shrink(data->offsets, 0);
     md_array_shrink(data->indices, 0);

@@ -185,7 +185,7 @@ static inline void set_block(md_bitfield_t* bf, uint64_t idx, block_t blk) {
     ASSERT(bf->bits);
     const uint64_t beg_blk = block_idx(bf->beg_bit);
     ASSERT(beg_blk <= idx && idx <= block_idx(bf->end_bit));
-    MEMCPY(((block_t*)bf->bits) + (idx - beg_blk), &blk, sizeof(block_t));
+    MEMCPY((char*)bf->bits + (idx - beg_blk) * sizeof(block_t), &blk, sizeof(block_t));
 }
 
 static inline block_t get_block(const md_bitfield_t* bf, uint64_t idx) {
@@ -193,7 +193,7 @@ static inline block_t get_block(const md_bitfield_t* bf, uint64_t idx) {
     const uint64_t end_blk = block_idx(bf->end_bit);
     if (bf->bits && beg_blk <= idx && idx <= end_blk) {
         block_t blk;
-        MEMCPY(&blk, ((block_t*)bf->bits) + (idx - beg_blk), sizeof(block_t));
+        MEMCPY(&blk, (char*)(bf->bits) + (idx - beg_blk) * sizeof(block_t), sizeof(block_t));
         return blk;
     }
     return (block_t){0};

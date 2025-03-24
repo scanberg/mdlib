@@ -1,4 +1,4 @@
-﻿#include <md_util.h>
+#include <md_util.h>
 
 #include <md_molecule.h>
 #include <md_smiles.h>
@@ -2030,22 +2030,22 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
     return true;
 }
 
-static md_conn_data_t compute_connectivity(const md_bond_pair_t* bond_pairs, size_t bond_count, size_t atom_count, md_allocator_i* alloc, md_allocator_i* temp_arena) {    
+static void compute_connectivity(md_conn_data_t* out_conn, const md_bond_pair_t* bond_pairs, size_t bond_count, size_t atom_count, md_allocator_i* alloc, md_allocator_i* temp_arena) {    
+    ASSERT(out_conn);
     ASSERT(alloc);
 
-    md_conn_data_t conn = {0};
-    if (bond_pairs == NULL) return conn;
-    if (bond_count == 0) return conn;
-    if (atom_count == 0) return conn;
+    if (bond_pairs == NULL) return;
+    if (bond_count == 0) return;
+    if (atom_count == 0) return;
 
-    conn.offset_count = atom_count + 1;
-    conn.offset = md_array_create(uint32_t, conn.offset_count, alloc);
-    MEMSET(conn.offset, 0, md_array_bytes(conn.offset));
+    out_conn->offset_count = atom_count + 1;
+    out_conn->offset = md_array_create(uint32_t, out_conn->offset_count, alloc);
+    MEMSET(out_conn->offset, 0, md_array_bytes(out_conn->offset));
 
     // This have length of 2 * bond_count (one for each direction of the bond)
-    conn.count = 2 * bond_count;
-    conn.atom_idx = md_array_create(md_atom_idx_t, conn.count, alloc);
-    conn.bond_idx = md_array_create(md_bond_idx_t, conn.count, alloc);
+    out_conn->count = 2 * bond_count;
+    out_conn->atom_idx = md_array_create(md_atom_idx_t, out_conn->count, alloc);
+    out_conn->bond_idx = md_array_create(md_bond_idx_t, out_conn->count, alloc);
 
     typedef struct {
         uint16_t off[2];
@@ -2057,15 +2057,15 @@ static md_conn_data_t compute_connectivity(const md_bond_pair_t* bond_pairs, siz
     // Two packed 16-bit local offsets for each of the bond idx
     // Use offsets as accumulators for length
     for (size_t i = 0; i < bond_count; ++i) {
-        local_offset[i].off[0] = (uint16_t)conn.offset[bond_pairs[i].idx[0]]++;
-        local_offset[i].off[1] = (uint16_t)conn.offset[bond_pairs[i].idx[1]]++;
+        local_offset[i].off[0] = (uint16_t)out_conn->offset[bond_pairs[i].idx[0]]++;
+        local_offset[i].off[1] = (uint16_t)out_conn->offset[bond_pairs[i].idx[1]]++;
     }
 
     // Compute complete edge offsets (exclusive scan)
     uint32_t off = 0;
-    for (size_t i = 0; i < conn.offset_count; ++i) {
-        const uint32_t len = conn.offset[i];
-        conn.offset[i] = off;
+    for (size_t i = 0; i < out_conn->offset_count; ++i) {
+        const uint32_t len = out_conn->offset[i];
+        out_conn->offset[i] = off;
         off += len;
     }
 
@@ -2076,25 +2076,24 @@ static md_conn_data_t compute_connectivity(const md_bond_pair_t* bond_pairs, siz
         const int atom_b = p.idx[1];
         const int local_a = (int)local_offset[i].off[0];
         const int local_b = (int)local_offset[i].off[1];
-        const int off_a = conn.offset[atom_a];
-        const int off_b = conn.offset[atom_b];
+        const int off_a = out_conn->offset[atom_a];
+        const int off_b = out_conn->offset[atom_b];
 
         const int idx_a = off_a + local_a;
         const int idx_b = off_b + local_b;
 
-        ASSERT(idx_a < (int)conn.count);
-        ASSERT(idx_b < (int)conn.count);
+        ASSERT(idx_a < (int)out_conn->count);
+        ASSERT(idx_b < (int)out_conn->count);
 
         // Store the cross references to the 'other' atom index signified by the bond in the correct location
-        conn.atom_idx[idx_a] = atom_b;
-        conn.atom_idx[idx_b] = atom_a;
+        out_conn->atom_idx[idx_a] = atom_b;
+        out_conn->atom_idx[idx_b] = atom_a;
 
-        conn.bond_idx[idx_a] = (md_bond_idx_t)i;
-        conn.bond_idx[idx_b] = (md_bond_idx_t)i;
+        out_conn->bond_idx[idx_a] = (md_bond_idx_t)i;
+        out_conn->bond_idx[idx_b] = (md_bond_idx_t)i;
     }
 
     md_vm_arena_temp_end(temp);
-    return conn;
 }
 
 static inline int build_key(char* buf, str_t res, str_t a, str_t b) {
@@ -3405,12 +3404,14 @@ static inline bool aabb_overlap(aabb_t a, aabb_t b) {
         (a.min_box.z <= b.max_box.z && a.max_box.z >= b.min_box.z);
 }
 
-md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* atom, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+    ASSERT(bond);
     ASSERT(atom);
     ASSERT(alloc);
 
+    md_bond_data_clear(bond);
+
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-    md_bond_data_t bond = {0};
     
     if (!atom->x || !atom->y || !atom->z) {
         MD_LOG_ERROR("Missing atom field (x/y/z)");
@@ -3426,10 +3427,6 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     int metal_mask[119];
 
     for (md_element_t i = 0; i < 119; ++i) {
-#if 0
-        float not_metal = metal_element(i) ? 0.0f : 1.0f;
-        cov_radii[i] = element_covalent_radii_f32[i] * not_metal;
-#endif
         metal_mask[i] = is_metal(i) ? 0xFFFFFFFFU : 0;
     }
 
@@ -3447,7 +3444,7 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
         prev_aabb.min_box = vec3_sub_f(prev_aabb.min_box, aabb_pad);
         prev_aabb.max_box = vec3_add_f(prev_aabb.max_box, aabb_pad);
 
-        find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, prev_range, prev_range, alloc, temp_arena);
+        find_bonds_in_ranges(bond, atom, cell, cov_radii, metal_mask, prev_range, prev_range, alloc, temp_arena);
         for (int64_t curr_idx = 1; curr_idx < (int64_t)res->count; ++curr_idx) {
             md_range_t curr_range = md_residue_atom_range(*res, curr_idx);
             md_flags_t curr_flags = res->flags[curr_idx];
@@ -3460,11 +3457,11 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
 
                 // @NOTE: Interresidual bonds
                 if (!(prev_flags & MD_FLAG_CHAIN_END) && aabb_overlap(prev_aabb, curr_aabb)) {
-                    find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, prev_range, curr_range, alloc, temp_arena);
+                    find_bonds_in_ranges(bond, atom, cell, cov_radii, metal_mask, prev_range, curr_range, alloc, temp_arena);
                     // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
                 }
             }
-            find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, curr_range, curr_range, alloc, temp_arena);
+            find_bonds_in_ranges(bond, atom, cell, cov_radii, metal_mask, curr_range, curr_range, alloc, temp_arena);
             prev_range = curr_range;
             prev_flags = curr_flags;
             prev_idx   = curr_idx;
@@ -3473,18 +3470,19 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     }
     else {
         md_range_t range = {0, atom_count};
-        find_bonds_in_ranges(&bond, atom, cell, cov_radii, metal_mask, range, range, alloc, temp_arena);
+        find_bonds_in_ranges(bond, atom, cell, cov_radii, metal_mask, range, range, alloc, temp_arena);
     }
 
     // Compute connectivity count
     uint8_t* c_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, atom->count);
-    for (size_t i = 0; i < bond.count; ++i) {
-        c_count[bond.pairs[i].idx[0]] += 1;
-        c_count[bond.pairs[i].idx[1]] += 1;
+    for (size_t i = 0; i < bond->count; ++i) {
+        c_count[bond->pairs[i].idx[0]] += 1;
+        c_count[bond->pairs[i].idx[1]] += 1;
     }
 
     // This is allocated in temp until we know that all connections are final
-    md_conn_data_t conn = compute_connectivity(bond.pairs, bond.count, atom->count, temp_arena, temp_arena);
+    md_conn_data_t conn = {0};
+    compute_connectivity(&conn, bond->pairs, bond->count, atom->count, temp_arena, temp_arena);
 
     if (conn.count == 0) {
         goto done;
@@ -3499,7 +3497,7 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
     } bond_t;
 
     md_array(bond_t) bond_buf = 0;
-    md_array(uint64_t) checked_bonds = make_bitfield(bond.count, temp_arena);
+    md_array(uint64_t) checked_bonds = make_bitfield(bond->count, temp_arena);
 
     // Prune over-connected atoms by removing longest bonds
     for (size_t i = 0; i < atom->count; ++i) {
@@ -3544,39 +3542,38 @@ md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom, const 
         for (size_t i = 0; i < count; ++i) {
             uint32_t bond_idx = md_array_back(bond_indices_to_remove);
             md_array_pop(bond_indices_to_remove);
-            md_array_swap_back_and_pop(bond.pairs, bond_idx);
+            md_array_swap_back_and_pop(bond->pairs, bond_idx);
         }
-        bond.count -= count;
+        bond->count -= count;
 
         // Recompute connectivity information (since we removed bonds)
-        bond.conn = compute_connectivity(bond.pairs, bond.count, atom->count, alloc, temp_arena);
+        compute_connectivity(&bond->conn, bond->pairs, bond->count, atom->count, alloc, temp_arena);
     } else {
         // Commit the connectivity to molecule
-        md_array_push_array(bond.conn.offset,   conn.offset,   conn.offset_count, alloc);
-        md_array_push_array(bond.conn.atom_idx, conn.atom_idx, conn.count, alloc);
-        md_array_push_array(bond.conn.bond_idx, conn.bond_idx, conn.count, alloc);
-        bond.conn.count = conn.count;
-        bond.conn.offset_count = conn.offset_count;
+        md_array_push_array(bond->conn.offset,   conn.offset,   conn.offset_count, alloc);
+        md_array_push_array(bond->conn.atom_idx, conn.atom_idx, conn.count, alloc);
+        md_array_push_array(bond->conn.bond_idx, conn.bond_idx, conn.count, alloc);
+        bond->conn.count = conn.count;
+        bond->conn.offset_count = conn.offset_count;
     }
 
-    md_array_resize(bond.order, bond.count, alloc);
+    md_array_resize(bond->order, bond->count, alloc);
 
     if (res && res->count > 0) {
         // Mark interresidual bonds
-        for (size_t i = 0; i < bond.count; ++i) {
+        for (size_t i = 0; i < bond->count; ++i) {
             md_residue_idx_t res_idx[2] = {
-                atom->res_idx[bond.pairs[i].idx[0]],
-                atom->res_idx[bond.pairs[i].idx[1]],
+                atom->res_idx[bond->pairs[i].idx[0]],
+                atom->res_idx[bond->pairs[i].idx[1]],
             };
-            bond.order[i] = (res_idx[0] == res_idx[1]) ? 1 : MD_BOND_FLAG_INTER;
+            bond->order[i] = (res_idx[0] == res_idx[1]) ? 1 : MD_BOND_FLAG_INTER;
         }
     } else {
-        MEMSET(bond.order, 1, md_array_bytes(bond.order));
+        MEMSET(bond->order, 1, md_array_bytes(bond->order));
     }
     
 done:
     md_vm_arena_destroy(temp_arena);
-    return bond;
 }
 
 // Compute the prerequisite fields to enable hydrogen bond determination
@@ -7686,10 +7683,6 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
         }
         md_flags_t atom_flags = 0;
         for (size_t i = 0; i < mol->atom.count; ++i) {
-            if (i == 977) {
-                while(0) {};
-            }
-
             if (mol->atom.flags[i] & MD_FLAG_CHAIN_BEG) {
                 atom_flags |= MD_FLAG_CHAIN;
             }
@@ -7779,7 +7772,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 #ifdef PROFILE
         md_timestamp_t t0 = md_time_current();
 #endif
-        mol->bond = md_util_covalent_bonds_compute(&mol->atom, &mol->residue, &mol->unit_cell, alloc);
+        md_util_covalent_bonds_compute(&mol->bond, &mol->atom, &mol->residue, &mol->unit_cell, alloc);
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();
         MD_LOG_DEBUG("Postprocess: compute bonds %.3f ms\n", md_time_as_milliseconds(t1-t0));
@@ -7791,12 +7784,18 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 #ifdef PROFILE
             md_timestamp_t t0 = md_time_current();
 #endif
-            mol->structure = (md_index_data_t) { .alloc = alloc };
+            if (!mol->structure.alloc) {
+                mol->structure.alloc = alloc;
+            }
+            md_index_data_clear(&mol->structure);
             md_util_compute_structures(&mol->structure, &mol->bond);
 #ifdef PROFILE
             md_timestamp_t t1 = md_time_current();
 #endif
-            mol->ring = (md_index_data_t) { .alloc = alloc };
+            if (!mol->ring.alloc) {
+                mol->ring.alloc = alloc;
+            }
+            md_index_data_clear(&mol->ring);
             md_util_compute_rings(&mol->ring, &mol->atom, &mol->bond);
 #ifdef PROFILE
             md_timestamp_t t2 = md_time_current();

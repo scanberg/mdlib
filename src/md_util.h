@@ -83,7 +83,7 @@ bool md_util_backbone_ramachandran_classify(md_ramachandran_type_t ramachandran_
 
 // Computes the covalent bonds based from a heuristic approach, uses the covalent radius (derived from element) to determine the appropriate bond
 // length. atom_res_idx is an optional parameter and if supplied, it will limit the covalent bonds to only within the same or adjacent residues.
-md_bond_data_t md_util_covalent_bonds_compute(const md_atom_data_t* atom_data, const md_residue_data_t* res_data, const md_unit_cell_t* cell, struct md_allocator_i* alloc);
+void md_util_covalent_bonds_compute(md_bond_data_t* out_bonds, const md_atom_data_t* in_atom, const md_residue_data_t* in_res, const md_unit_cell_t* in_cell, struct md_allocator_i* alloc);
 
 // Grow a mask by bonds up to a certain extent (counted as number of bonds from the original mask)
 // Viable mask is optional and if supplied, it will limit the growth to only within the viable mask
@@ -108,6 +108,8 @@ void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_mol
 
 // Identify isolated structures by covalent bonds
 //bool md_util_compute_structures(md_index_data_t* structures, int64_t atom_count, const md_bond_t bonds[], int64_t bond_count, struct md_allocator_i* alloc);
+
+void md_util_covalent_bonds_compute(struct md_bond_data_t* bond, const struct md_atom_data_t* atom, const struct md_residue_data_t* res, const struct md_unit_cell_t* cell, struct md_allocator_i* alloc);
 
 // Attempts to generate missing data such as covalent bonds, chains, secondary structures, backbone angles etc.
 bool md_util_molecule_postprocess(struct md_molecule_t* mol, struct md_allocator_i* alloc, md_util_postprocess_flags_t flags);

@@ -266,6 +266,30 @@ static inline uint32_t md_bond_iter_bond_flags(md_bond_iter_t it) {
     return it.data->order[it.data->conn.bond_idx[it.i]] & MD_BOND_FLAG_MASK;
 }
 
+static inline void md_bond_conn_clear(md_conn_data_t* conn_data) {
+    ASSERT(conn_data);
+    md_array_shrink(conn_data->atom_idx, 0);
+    md_array_shrink(conn_data->bond_idx, 0);
+    conn_data->count = 0;
+
+    md_array_shrink(conn_data->offset, 0);
+    conn_data->offset_count = 0;
+}
+
+static inline void md_bond_data_clear(md_bond_data_t* bond_data) {
+    ASSERT(bond_data);
+
+    md_array_shrink(bond_data->pairs, 0);
+    md_array_shrink(bond_data->order, 0);
+    bond_data->count = 0;
+    
+    md_array_shrink(bond_data->conn.atom_idx, 0);
+    md_array_shrink(bond_data->conn.bond_idx, 0);
+    bond_data->conn.count = 0;
+
+    md_bond_conn_clear(&bond_data->conn);
+}
+
 /*
 
 The molecule loader interface is just a convenience interface for abstracing the functionality of initializing molecule data
