@@ -812,8 +812,8 @@ static bool parse_vlx_geom(md_vlx_t* vlx, md_buffered_reader_t* reader, md_alloc
 		}
 
 		// Copy data
-		vlx->molecular_charge			= (int)field_vals[0];
-		vlx->spin_multiplicity			= (int)field_vals[1];
+		vlx->molecular_charge			= (double)field_vals[0];
+		vlx->spin_multiplicity			= (size_t)field_vals[1];
 		vlx->number_of_atoms			= (size_t)field_vals[2];
 		vlx->number_of_alpha_electrons	= (size_t)field_vals[3];
 		vlx->number_of_beta_electrons	= (size_t)field_vals[4];

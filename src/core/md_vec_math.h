@@ -195,7 +195,7 @@ MD_VEC_INLINE double fract(double x) { return x - floor(x); }
 MD_VEC_INLINE int   signf(float x) { return (int)((x > 0.0f) - (x < 0.0f)); }
 MD_VEC_INLINE int   sign(double x) { return (int)((x > 0.0) - (x < 0.0)); }
 
-MD_VEC_INLINE float deperiodizef(float x, float r, float period) {
+MD_VEC_INLINE float deperiodize_orthof(float x, float r, float period) {
     if (period == 0.0f) return x;
     const float dx  = (x - r) / period;
     const float dxp = dx - roundf(dx);
@@ -203,7 +203,7 @@ MD_VEC_INLINE float deperiodizef(float x, float r, float period) {
     return x_prim;
 }
 
-MD_VEC_INLINE double deperiodize(double x, double r, double period) {
+MD_VEC_INLINE double deperiodize_ortho(double x, double r, double period) {
     if (period == 0.0) return x;
     const double dx  = (x - r) / period;
     const double dxp = dx - round(dx);
@@ -211,7 +211,7 @@ MD_VEC_INLINE double deperiodize(double x, double r, double period) {
     return x_prim;
 }
 
-MD_VEC_INLINE double deperiodize2(double x, double r, double period, double r_period) {
+MD_VEC_INLINE double deperiodize_ortho2(double x, double r, double period, double r_period) {
     if (period == 0.0) return x;
     const double dx  = (x - r) * r_period;
     const double dxp = dx - round(dx);
@@ -482,11 +482,11 @@ MD_VEC_INLINE vec3_t vec3_lerp(vec3_t a, vec3_t b, float t) {
     return vec3_add(vec3_mul_f(a, 1.0f - t), vec3_mul_f(b, t));
 }
 
-MD_VEC_INLINE vec3_t vec3_deperiodize(vec3_t v, vec3_t ref, vec3_t period) {
+MD_VEC_INLINE vec3_t vec3_deperiodize_ortho(vec3_t v, vec3_t ref, vec3_t period) {
     vec3_t res = {
-        deperiodizef(v.x, ref.x, period.x),
-        deperiodizef(v.y, ref.y, period.y),
-        deperiodizef(v.z, ref.z, period.z)
+        deperiodize_orthof(v.x, ref.x, period.x),
+        deperiodize_orthof(v.y, ref.y, period.y),
+        deperiodize_orthof(v.z, ref.z, period.z)
     };
     return res;
 }
@@ -1105,7 +1105,7 @@ MD_VEC_INLINE vec4_t vec4_min_image(vec4_t dx, vec4_t ext, vec4_t inv_ext) {
     return vec4_mul(dxp, ext);
 }
 
-MD_VEC_INLINE vec4_t vec4_deperiodize(vec4_t x, vec4_t r, vec4_t ext) {
+MD_VEC_INLINE vec4_t vec4_deperiodize_ortho(vec4_t x, vec4_t r, vec4_t ext) {
     const vec4_t inv_ext = vec4_div(vec4_set1(1.0f), ext);
     const vec4_t dx     = vec4_min_image(vec4_sub(x, r), ext, inv_ext);
     const vec4_t x_prim = vec4_add(r, dx);

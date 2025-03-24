@@ -82,7 +82,7 @@ static double com_min_image_ref(const float* in_x, const float* in_w, int64_t co
         double r = acc_x / acc_w;
         double x = in_x[i];
         double w = in_w[i];
-        x = deperiodize2(x, r, ext, r_ext);
+        x = deperiodize_ortho2(x, r, ext, r_ext);
         acc_x += x * w;
         acc_w += w;
     }

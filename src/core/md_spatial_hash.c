@@ -130,14 +130,14 @@ static void compute_aabb_vec3(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const 
         for (size_t i = 0; i < count; ++i) {
             int32_t idx = in_idx[i];
             vec4_t c = vec4_from_vec3(in_xyz[idx], 0);
-            c = vec4_deperiodize(c, ref, ext);
+            c = vec4_deperiodize_ortho(c, ref, ext);
             aabb_min = vec4_min(aabb_min, c);
             aabb_max = vec4_max(aabb_max, c);
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
             vec4_t c = vec4_from_vec3(in_xyz[i], 0);
-            c = vec4_deperiodize(c, ref, ext);
+            c = vec4_deperiodize_ortho(c, ref, ext);
             aabb_min = vec4_min(aabb_min, c);
             aabb_max = vec4_max(aabb_max, c);
         }
@@ -162,7 +162,7 @@ static void compute_aabb_soa(vec4_t* out_aabb_min, vec4_t* out_aabb_max, const f
         const int32_t idx = indices ? indices[i] : (int32_t)i;
         vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 0 };
         if (deperiodize) {
-            c = vec4_deperiodize(c, ref, ext);
+            c = vec4_deperiodize_ortho(c, ref, ext);
         }
         aabb_min = vec4_min(aabb_min, c);
         aabb_max = vec4_max(aabb_max, c);
@@ -597,7 +597,7 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int3
     for (size_t i = 0; i < count; ++i) {
         const int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
         const vec4_t coord = vec4_from_vec3(in_xyz[idx], 0);
-        vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
+        vec4_t cell = vec4_mul_f(vec4_deperiodize_ortho(coord, ref, ext), INV_CELL_EXT);
         vec4_t whole = vec4_floor(cell);
         
         int32_t cx = MAX(0, (int32_t)whole.x - cell_min[0]) % cell_dim[0];
@@ -622,7 +622,7 @@ md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int3
         const uint32_t cell_idx = cell_index[i];
         const int32_t  src_idx  = in_idx ? in_idx[i] : (int32_t)i;
         const uint32_t dst_idx  = hash->cell_offsets[cell_idx] + local_idx[i];
-        const vec4_t coord      = vec4_deperiodize(vec4_from_vec3(in_xyz[src_idx], 0), ref, ext);
+        const vec4_t coord      = vec4_deperiodize_ortho(vec4_from_vec3(in_xyz[src_idx], 0), ref, ext);
         hash->elements[dst_idx] = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};
     }
 
@@ -949,7 +949,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in
     for (size_t i = 0; i < count; ++i) {
         const int64_t idx = in_idx ? in_idx[i] : (int64_t)i;
         const vec4_t coord = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0);
-        vec4_t cell = vec4_mul_f(vec4_deperiodize(coord, ref, ext), INV_CELL_EXT);
+        vec4_t cell = vec4_mul_f(vec4_deperiodize_ortho(coord, ref, ext), INV_CELL_EXT);
 
         vec4_t whole = vec4_floor(cell);
         //vec4_t fract = vec4_sub(cell, whole);
@@ -978,7 +978,7 @@ md_spatial_hash_t* md_spatial_hash_create_soa(const float in_x[], const float in
         const int64_t cell_idx  = cell_index[i];
         const int64_t src_idx   = in_idx ? in_idx[i] : (int64_t)i;
         const int64_t dst_idx   = hash->cell_offsets[cell_idx] + local_idx[i];
-        const vec4_t coord      = vec4_deperiodize(vec4_set(in_x[src_idx], in_y[src_idx], in_z[src_idx], 0), ref, ext);
+        const vec4_t coord      = vec4_deperiodize_ortho(vec4_set(in_x[src_idx], in_y[src_idx], in_z[src_idx], 0), ref, ext);
         hash->elements[dst_idx] = (elem_t){coord.x, coord.y, coord.z, (uint32_t)src_idx};
     }
 
@@ -1187,7 +1187,7 @@ static void query_periodic(const md_spatial_hash_t* hash, const vec3_t coords[],
         const vec4_t pos = vec4_from_vec3(coords[i], 0);
 
         // Deperiodize the extent of the search (pos +/- rad) with respect to the periodic domain
-        const vec4_t pos_min = vec4_deperiodize(vec4_sub_f(pos, rad), ref, pbc_ext);
+        const vec4_t pos_min = vec4_deperiodize_ortho(vec4_sub_f(pos, rad), ref, pbc_ext);
         const vec4_t pos_max = vec4_add_f(pos_min, 2.0f * rad);
 
         const vec4_t cell_pos_min = vec4_floor(vec4_mul_f(pos_min, INV_CELL_EXT));
@@ -1306,7 +1306,7 @@ static void query_periodic_batch(const md_spatial_hash_t* hash, const vec3_t coo
         const vec4_t pos = vec4_from_vec3(coords[i], 0);
 
         // Deperiodize the extent of the search (pos +/- rad) with respect to the periodic domain
-        const vec4_t pos_min = vec4_deperiodize(vec4_sub_f(pos, rad), ref, pbc_ext);
+        const vec4_t pos_min = vec4_deperiodize_ortho(vec4_sub_f(pos, rad), ref, pbc_ext);
         const vec4_t pos_max = vec4_add_f(pos_min, 2.0f * rad);
 
         const vec4_t cell_pos_min = vec4_floor(vec4_mul_f(pos_min, INV_CELL_EXT));

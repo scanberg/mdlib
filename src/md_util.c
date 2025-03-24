@@ -1,4 +1,4 @@
-#include <md_util.h>
+﻿#include <md_util.h>
 
 #include <md_molecule.h>
 #include <md_smiles.h>
@@ -4472,6 +4472,168 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
     MEMCPY(out_aabb_max, &aabb_max, sizeof(float) * 3);
 }
 
+
+void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count, const md_unit_cell_t* cell) {
+    ASSERT(out_basis);
+    ASSERT(out_ext_min);
+    ASSERT(out_ext_max);
+
+    if (count == 0) return;
+
+    vec3_t com = md_util_com_compute(in_x, in_y, in_z, NULL, in_idx, count, cell);
+    double cov[3][3] = {0};
+    if (cell) {
+        vec4_t ref = vec4_from_vec3(com, 0);
+        if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+            vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+
+            for (size_t i = 0; i < count; ++i) {
+                const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
+                const vec4_t c = vec4_deperiodize_ortho(vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f), ref, ext);
+
+                cov[0][0] += c.x * c.x;
+                cov[0][1] += c.x * c.y;
+                cov[0][2] += c.x * c.z;
+                cov[1][0] += c.y * c.x;
+                cov[1][1] += c.y * c.y;
+                cov[1][2] += c.y * c.z;
+                cov[2][0] += c.z * c.x;
+                cov[2][1] += c.z * c.y;
+                cov[2][2] += c.z * c.z;
+            }
+        } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+            for (size_t i = 1; i < count; ++i) {
+                const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
+                vec4_t c = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f);
+                deperiodize_triclinic(c.elem, ref.elem, cell->basis.elem);
+
+                cov[0][0] += c.x * c.x;
+                cov[0][1] += c.x * c.y;
+                cov[0][2] += c.x * c.z;
+                cov[1][0] += c.y * c.x;
+                cov[1][1] += c.y * c.y;
+                cov[1][2] += c.y * c.z;
+                cov[2][0] += c.z * c.x;
+                cov[2][1] += c.z * c.y;
+                cov[2][2] += c.z * c.z;
+            }
+        }
+    }
+
+    mat3_t cov_mat;
+    const double scl = 1.0 / count;
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            cov_mat.elem[i][j] = (float)(cov[i][j] * scl);
+        }
+    }
+
+    mat3_eigen_t eigen = mat3_eigen(cov_mat);
+    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+    mat4_t Ri  = mat4_from_mat3(PCA);
+
+    // Compute min and maximum extent along the PCA axes
+    vec4_t min_ext = vec4_set1( FLT_MAX);
+    vec4_t max_ext = vec4_set1(-FLT_MAX);
+    mat3_t basis = mat3_transpose(PCA);
+
+    // Transform the gto (x,y,z,radius) into the PCA frame to find the min and max extend within it
+    for (size_t i = 0; i < count; ++i) {
+        int32_t idx = in_idx ? in_idx[i] : i;
+        float  r = in_r ? in_r[idx] : 0.0f;
+        vec4_t c = { in_x[idx], in_y[idx], in_z[idx], 1.0f };
+
+        vec4_t p = mat4_mul_vec4(Ri, c);
+        min_ext = vec4_min(min_ext, vec4_sub_f(p, r));
+        max_ext = vec4_max(max_ext, vec4_add_f(p, r));
+    }
+
+    MEMCPY(out_basis,   &basis,   sizeof(mat3_t));
+    MEMCPY(out_ext_min, &min_ext, sizeof(vec3_t));
+    MEMCPY(out_ext_max, &max_ext, sizeof(vec3_t));
+}
+
+void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unit_cell_t* cell) {
+    ASSERT(out_basis);
+    ASSERT(out_ext_min);
+    ASSERT(out_ext_max);
+
+    if (count == 0) return;
+
+    vec3_t com = md_util_com_compute_vec4(in_xyzr, in_idx, count, cell);
+    double cov[3][3] = {0};
+    if (cell) {
+        vec4_t ref = vec4_from_vec3(com, 0);
+        if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+            vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+
+            for (size_t i = 0; i < count; ++i) {
+                const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
+                const vec4_t c = vec4_deperiodize_ortho(in_xyzr[idx], ref, ext);
+
+                cov[0][0] += c.x * c.x;
+                cov[0][1] += c.x * c.y;
+                cov[0][2] += c.x * c.z;
+                cov[1][0] += c.y * c.x;
+                cov[1][1] += c.y * c.y;
+                cov[1][2] += c.y * c.z;
+                cov[2][0] += c.z * c.x;
+                cov[2][1] += c.z * c.y;
+                cov[2][2] += c.z * c.z;
+            }
+        } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+            for (size_t i = 1; i < count; ++i) {
+                const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
+                vec4_t c = in_xyzr[idx];
+                deperiodize_triclinic(c.elem, ref.elem, cell->basis.elem);
+
+                cov[0][0] += c.x * c.x;
+                cov[0][1] += c.x * c.y;
+                cov[0][2] += c.x * c.z;
+                cov[1][0] += c.y * c.x;
+                cov[1][1] += c.y * c.y;
+                cov[1][2] += c.y * c.z;
+                cov[2][0] += c.z * c.x;
+                cov[2][1] += c.z * c.y;
+                cov[2][2] += c.z * c.z;
+            }
+        }
+    }
+
+    mat3_t cov_mat;
+    const double scl = 1.0 / count;
+    for (size_t i = 0; i < 3; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            cov_mat.elem[i][j] = (float)(cov[i][j] * scl);
+        }
+    }
+
+    mat3_eigen_t eigen = mat3_eigen(cov_mat);
+    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+    mat4_t Ri  = mat4_from_mat3(PCA);
+
+    // Compute min and maximum extent along the PCA axes
+    vec4_t min_ext = vec4_set1( FLT_MAX);
+    vec4_t max_ext = vec4_set1(-FLT_MAX);
+    mat3_t basis = mat3_transpose(PCA);
+
+    // Transform the gto (x,y,z,radius) into the PCA frame to find the min and max extend within it
+    for (size_t i = 0; i < count; ++i) {
+        int32_t idx = in_idx ? in_idx[i] : i;
+        vec4_t xyzr = in_xyzr[idx];
+        vec4_t c = vec4_blend_mask(xyzr, vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
+        vec4_t r = vec4_splat_w(xyzr);
+
+        vec4_t p = mat4_mul_vec4(Ri, c);
+        min_ext = vec4_min(min_ext, vec4_sub(p, r));
+        max_ext = vec4_max(max_ext, vec4_add(p, r));
+    }
+
+    MEMCPY(out_basis,   &basis,   sizeof(mat3_t));
+    MEMCPY(out_ext_min, &min_ext, sizeof(vec3_t));
+    MEMCPY(out_ext_max, &max_ext, sizeof(vec3_t));
+}
+
 #define TRIG_ATAN2_R2_THRESHOLD 1.0e-8
 
 static vec3_t compute_com_periodic_trig_xyz(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, vec3_t xyz_max) {
@@ -7094,7 +7256,7 @@ static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size
         for (size_t i = 0; i < count; ++i) {
             int32_t idx = indices[i];
             vec4_t pos = {x[idx], y[idx], z[idx], 0};
-            pos = vec4_deperiodize(pos, ref, ext);
+            pos = vec4_deperiodize_ortho(pos, ref, ext);
             x[i] = pos.x;
             y[i] = pos.y;
             z[i] = pos.z;
@@ -7102,7 +7264,7 @@ static void pbc_ortho(float* x, float* y, float* z, const int32_t* indices, size
     } else {
         for (size_t i = 0; i < count; ++i) {
             vec4_t pos = {x[i], y[i], z[i], 0};
-            pos = vec4_deperiodize(pos, ref, ext);
+            pos = vec4_deperiodize_ortho(pos, ref, ext);
             x[i] = pos.x;
             y[i] = pos.y;
             z[i] = pos.z;
@@ -7114,7 +7276,7 @@ static void pbc_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
     const vec4_t ref = vec4_mul_f(ext, 0.5f);
     for (size_t i = 0; i < count; ++i) {
-        xyzw[i] = vec4_deperiodize(xyzw[i], ref, ext);
+        xyzw[i] = vec4_deperiodize_ortho(xyzw[i], ref, ext);
     }
 }
 
@@ -7231,7 +7393,7 @@ static void unwrap_ortho(float* x, float* y, float* z, const int32_t* indices, s
         vec4_t ref_pos = vec4_set(x[idx], y[idx], z[idx], 0);
         for (size_t i = 1; i < count; ++i) {
             idx = indices[i];
-            const vec4_t pos = vec4_deperiodize((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
+            const vec4_t pos = vec4_deperiodize_ortho((vec4_t){x[idx], y[idx], z[idx], 0}, ref_pos, ext);
             x[idx] = pos.x;
             y[idx] = pos.y;
             z[idx] = pos.z;
@@ -7240,7 +7402,7 @@ static void unwrap_ortho(float* x, float* y, float* z, const int32_t* indices, s
     } else {
         vec4_t ref_pos = {x[0], y[0], z[0], 0};
         for (size_t i = 1; i < count; ++i) {
-            const vec4_t pos = vec4_deperiodize((vec4_t){x[i], y[i], z[i], 0}, ref_pos, ext);
+            const vec4_t pos = vec4_deperiodize_ortho((vec4_t){x[i], y[i], z[i], 0}, ref_pos, ext);
             x[i] = pos.x;
             y[i] = pos.y;
             z[i] = pos.z;
@@ -7253,7 +7415,7 @@ static void unwrap_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
     const vec4_t ext = vec4_from_vec3(box_ext, 0);
     vec4_t ref_pos = xyzw[0];
     for (size_t i = 1; i < count; ++i) {
-        const vec4_t pos = vec4_deperiodize(xyzw[i], ref_pos, ext);
+        const vec4_t pos = vec4_deperiodize_ortho(xyzw[i], ref_pos, ext);
         xyzw[i] = pos;
         ref_pos = pos;
     }
@@ -7359,7 +7521,7 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
         vec4_t ref_pos = vec4_from_vec3(ref_xyz, 0);
         vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
         for (size_t i = 0; i < count; ++i) {
-            const vec4_t pos = vec4_deperiodize(xyzw[i], ref_pos, ext);
+            const vec4_t pos = vec4_deperiodize_ortho(xyzw[i], ref_pos, ext);
             xyzw[i] = pos;
         }
         return true;

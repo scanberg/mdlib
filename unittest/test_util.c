@@ -219,7 +219,7 @@ UTEST(util, com) {
         };
 
         vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
-		com = vec3_deperiodize(com, (vec3_t){ 0,0,0 }, pbc_ext);
+		com = vec3_deperiodize_ortho(com, (vec3_t){ 0,0,0 }, pbc_ext);
         EXPECT_NEAR(0, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -238,7 +238,7 @@ UTEST(util, com) {
         */
 
         vec3_t com = md_util_com_compute_vec4(xyzw, 0, ARRAY_SIZE(xyzw), &unit_cell);
-        com = vec3_deperiodize(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
+        com = vec3_deperiodize_ortho(com, vec3_mul_f(pbc_ext, 0.5f), pbc_ext);
         EXPECT_NEAR(4.5f, com.x, 1.0E-5F);
         EXPECT_EQ(0, com.y);
         EXPECT_EQ(0, com.z);
@@ -272,9 +272,9 @@ UTEST(util, com) {
         vec3_t com1 = md_util_com_compute_vec4(pos1, 0, ARRAY_SIZE(pos1), &unit_cell);
         vec3_t com2 = md_util_com_compute_vec4(pos2, 0, ARRAY_SIZE(pos2), &unit_cell);
 
-        com0 = vec3_deperiodize(com0, (vec3_t){ 0,0,0 }, pbc_ext);
-        com1 = vec3_deperiodize(com1, (vec3_t){ 0,0,0 }, pbc_ext);
-        com2 = vec3_deperiodize(com2, (vec3_t){ 0,0,0 }, pbc_ext);
+        com0 = vec3_deperiodize_ortho(com0, (vec3_t){ 0,0,0 }, pbc_ext);
+        com1 = vec3_deperiodize_ortho(com1, (vec3_t){ 0,0,0 }, pbc_ext);
+        com2 = vec3_deperiodize_ortho(com2, (vec3_t){ 0,0,0 }, pbc_ext);
         
         EXPECT_NEAR(0.5f, com0.x, 1.0E-5F);
         EXPECT_NEAR(0.5f, com1.x, 1.0E-5F);

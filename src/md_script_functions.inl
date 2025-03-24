@@ -4398,7 +4398,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
 
 
         for (size_t i = 0; i < count; ++i) {
-            vec4_t xyzw_dp = vec4_deperiodize(xyzw[i], mid_point, period);
+            vec4_t xyzw_dp = vec4_deperiodize_ortho(xyzw[i], mid_point, period);
             vec4_t fc = vec4_mul(vec4_sub(xyzw_dp, min_point), inv_ext);
             float w = xyzw[i].w;
 
