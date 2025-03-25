@@ -2,7 +2,7 @@
 
 #include <core/md_os.h>
 
-#include <core/md_allocator.h>
+#include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_common.h>
 #include <core/md_log.h>
@@ -22,8 +22,9 @@ typedef struct {
 } allocation_t;
 
 typedef struct {
-    struct md_allocator_i* backing;
-    allocation_t* allocations;
+    md_allocator_i* backing;
+    md_array(allocation_t) allocations;
+    md_allocator_i* arena;
     md_mutex_t mutex;
     uint64_t magic;
 } tracking_t;
@@ -37,7 +38,7 @@ allocation_t* find_allocation(tracking_t* tracking, void* ptr) {
 
 allocation_t* new_allocation(tracking_t* tracking) {
     allocation_t item = {0};
-    md_array_push(tracking->allocations, item, md_get_heap_allocator());
+    md_array_push(tracking->allocations, item, tracking->arena);
     return md_array_last(tracking->allocations);
 }
 
@@ -98,6 +99,7 @@ struct md_allocator_i* md_tracking_allocator_create(struct md_allocator_i* backi
     tracking_t* inst = (tracking_t*)md_alloc(backing, sizeof(tracking_t) + sizeof(md_allocator_i));
     inst->backing = backing;
     inst->allocations = 0;
+    inst->arena = md_vm_arena_create(GIGABYTES(1));
     inst->mutex = md_mutex_create();
     inst->magic = MAGIC_NUMBER;
 
@@ -121,6 +123,8 @@ void md_tracking_allocator_destroy(struct md_allocator_i* alloc) {
     }
     md_mutex_unlock(&tracking->mutex);
     md_mutex_destroy(&tracking->mutex);
+
+    md_vm_arena_destroy(tracking->arena);
 
     md_free(tracking->backing, tracking, sizeof(tracking_t) + sizeof(md_allocator_i));
 }

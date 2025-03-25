@@ -51,6 +51,16 @@
 #endif
 
 #if MD_COMPILER_MSVC
+#ifndef ALIGNOF
+#define ALIGNOF(x) alignof(x)
+#endif
+#else
+#ifndef ALIGNOF
+#define ALIGNOF(x) __alignof__(x)
+#endif
+#endif
+
+#if MD_COMPILER_MSVC
 #ifndef FALLTHROUGH
 #define FALLTHROUGH 
 #endif

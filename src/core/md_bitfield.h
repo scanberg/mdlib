@@ -5,9 +5,10 @@
 #include <stdbool.h>
 
 struct md_allocator_i;
+struct md_bitblock_t;
 
 typedef struct md_bitfield_t {
-    void* bits;
+    struct md_bitblock_t* bits;
     struct md_allocator_i* alloc;
     uint32_t beg_bit;
     uint32_t end_bit;

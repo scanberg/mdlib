@@ -290,6 +290,8 @@ UTEST(bitfield, serialization) {
     md_bitfield_free(&a);
     md_bitfield_free(&b);
     md_bitfield_free(&c);
+
+    md_tracking_allocator_destroy(alloc);
 }
 
 UTEST(bitfield, deserialize_base64) {
