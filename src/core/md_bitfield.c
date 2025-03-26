@@ -249,6 +249,7 @@ static inline void fit_to_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
         return;
     }
 
+    md_array_ensure(bf->bits, new_blocks, bf->alloc);
     md_array_resize(bf->bits, new_blocks, bf->alloc);
 
     //bf->bits = realloc_blocks(bf->alloc, bf->bits, cur_blocks, new_blocks);
