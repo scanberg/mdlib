@@ -216,6 +216,10 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 
 #if MD_COMPILER_MSVC
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void *  __cdecl             memcpy(void*, const void*, unsigned long long);
 void *  __cdecl             memset(void*, int, unsigned long long);
 void *  __cdecl             memmove(void*, const void*, unsigned long long);
@@ -223,6 +227,10 @@ int     __cdecl             memcmp(const void*, const void*, unsigned long long)
 unsigned short __cdecl      _byteswap_ushort (unsigned short);
 unsigned long __cdecl       _byteswap_ulong  (unsigned long);
 unsigned __int64 __cdecl    _byteswap_uint64 (unsigned __int64);
+
+#ifdef __cplusplus
+}
+#endif
 
 #pragma intrinsic(memcpy)
 #pragma intrinsic(memset)
