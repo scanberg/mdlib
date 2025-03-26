@@ -15,10 +15,8 @@
 #endif
 
 typedef struct md_array_header_t {
-    void*  ptr;
     size_t capacity;
     size_t size;
-    size_t __unused;
 } md_array_header_t;
 
 // Silly typedef to semantically differentiate between a pointer and an array
@@ -80,11 +78,9 @@ static inline void* md_array_set_capacity_internal(void* arr, size_t new_cap, si
     const size_t bytes_after = new_cap ? item_size * new_cap + extra : 0;
 
     uint8_t* new_p = (uint8_t*)alloc->realloc(alloc->inst, p, bytes_before, bytes_after, file, line);
-    //void*  new_arr = new_p ? (void*)ALIGN_TO((uintptr_t)new_p + sizeof(md_array_header_t), item_alignment) : 0;
     void*  new_arr = new_p ? new_p + extra : 0;
 
     if (new_arr) {
-        md_array_header(new_arr)->ptr = new_p;
         md_array_header(new_arr)->size = size;
         md_array_header(new_arr)->capacity = new_cap;
     }
