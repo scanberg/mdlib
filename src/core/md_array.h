@@ -4,7 +4,6 @@
 // (https://ourmachinery.com)
 
 #include <core/md_common.h>
-#include <core/md_intrinsics.h>
 #include <core/md_allocator.h>
 
 #include <stdint.h>
