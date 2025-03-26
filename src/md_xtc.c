@@ -1,4 +1,4 @@
-#include <md_xtc.h>
+﻿#include <md_xtc.h>
 
 #include <md_util.h>
 #include <md_trajectory.h>
@@ -57,7 +57,375 @@ typedef struct xtc_t {
     md_mutex_t mutex;    
 } xtc_t;
 
-static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, matrix box) {
+
+// XDR Specific stuff
+static inline bool xdr_read_bytes (uint8_t* ptr, size_t count, md_file_o* xdr_file) {
+    ASSERT(ptr);
+    ASSERT(xdr_file);
+
+    size_t bytes = count;
+    if (md_file_read(xdr_file, ptr, bytes) == bytes) {
+        return true;
+    }
+
+    return false;
+}
+
+static inline bool xdr_read_int16(int16_t* ptr, size_t count, md_file_o* xdr_file) {
+    ASSERT(ptr);
+    ASSERT(xdr_file);
+
+    size_t bytes = count * sizeof(int16_t);
+    if (md_file_read(xdr_file, ptr, bytes) == bytes) {
+#if __LITTLE_ENDIAN__
+        for (size_t i = 0; i < count; ++i) {
+            ptr[i] = BSWAP16(ptr[i]);
+        }
+#endif
+        return true;
+    }
+
+    return false;
+}
+
+static inline bool xdr_read_int32(int32_t* ptr, size_t count, md_file_o* xdr_file) {
+    ASSERT(ptr);
+    ASSERT(xdr_file);
+
+    size_t bytes = count * sizeof(int32_t);
+    if (md_file_read(xdr_file, ptr, bytes) == bytes) {
+#if __LITTLE_ENDIAN__
+        for (size_t i = 0; i < count; ++i) {
+            ptr[i] = BSWAP32(ptr[i]);
+        }
+#endif
+        return true;
+    }
+
+    return false;
+}
+
+static inline bool xdr_read_float (float* ptr, size_t count, md_file_o* xdr_file) {
+    ASSERT(ptr);
+    ASSERT(xdr_file);
+    return xdr_read_int32((int32_t*)ptr, count, xdr_file);
+}
+
+
+
+static inline int sizeofint(int size) {
+    unsigned int num = 1;
+    int num_of_bits = 0;
+
+    while (size >= num && num_of_bits < 32) {
+        num_of_bits++;
+        num <<= 1;
+    }
+    return num_of_bits;
+}
+
+static inline int sizeofints(int num_of_ints, unsigned int sizes[]) {
+    int i, num;
+    unsigned int num_of_bytes, num_of_bits, bytes[32], bytecnt, tmp;
+    num_of_bytes = 1;
+    bytes[0] = 1;
+    num_of_bits = 0;
+    for (i = 0; i < num_of_ints; i++) {
+        tmp = 0;
+        for (bytecnt = 0; bytecnt < num_of_bytes; bytecnt++) {
+            tmp = bytes[bytecnt] * sizes[i] + tmp;
+            bytes[bytecnt] = tmp & 0xff;
+            tmp >>= 8;
+        }
+        while (tmp != 0) {
+            bytes[bytecnt++] = tmp & 0xff;
+            tmp >>= 8;
+        }
+        num_of_bytes = bytecnt;
+    }
+    num = 1;
+    num_of_bytes--;
+    while (bytes[num_of_bytes] >= num) {
+        num_of_bits++;
+        num *= 2;
+    }
+    return num_of_bits + num_of_bytes * 8;
+}
+
+static inline int decodebits(int buf[3], int num_of_bits) {
+    int cnt, num;
+    unsigned int lastbits, lastbyte;
+    unsigned char* cbuf;
+    int mask = (1 << num_of_bits) - 1;
+
+    cbuf = ((unsigned char*)buf) + 3 * sizeof(*buf);
+    cnt = buf[0];
+    lastbits = (unsigned int)buf[1];
+    lastbyte = (unsigned int)buf[2];
+
+    num = 0;
+    while (num_of_bits >= 8) {
+        lastbyte = (lastbyte << 8) | cbuf[cnt++];
+        num |= (lastbyte >> lastbits) << (num_of_bits - 8);
+        num_of_bits -= 8;
+    }
+    if (num_of_bits > 0) {
+        if (lastbits < num_of_bits) {
+            lastbits += 8;
+            lastbyte = (lastbyte << 8) | cbuf[cnt++];
+        }
+        lastbits -= num_of_bits;
+        num |= (lastbyte >> lastbits) & ((1 << num_of_bits) - 1);
+    }
+    num &= mask;
+    buf[0] = cnt;
+    buf[1] = lastbits;
+    buf[2] = lastbyte;
+    return num;
+}
+
+/*
+* decodeints - decode 'small' integers from the buf array
+*
+* this routine is the inverse from encodeints() and decodes the small integers
+* written to buf by calculating the remainder and doing divisions with
+* the given sizes[]. You need to specify the total number of bits to be
+* used from buf in num_of_bits.
+*
+*/
+
+static inline void decodeints(int buf[], int num_of_ints, int num_of_bits, unsigned int sizes[], int nums[3]) {
+
+    int bytes[16];
+    int i, j, num_of_bytes, p, num, size;
+
+    bytes[1] = bytes[2] = bytes[3] = 0;
+    num_of_bytes = 0;
+    while (num_of_bits > 8) {
+        bytes[num_of_bytes++] = decodebits(buf, 8);
+        num_of_bits -= 8;
+    }
+    if (num_of_bits > 0) {
+        bytes[num_of_bytes++] = decodebits(buf, num_of_bits);
+    }
+    //printf("num_bytes %i\n", num_of_bytes);
+    for (i = num_of_ints - 1; i > 0; i--) {
+        num = 0;
+        size = sizes[i];
+        for (j = num_of_bytes - 1; j >= 0; j--) {
+            num = (num << 8) | bytes[j];
+            p = num / size;
+            num = num - p * size;
+            bytes[j] = p;
+        }
+        nums[i] = num;
+    }
+    nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+}
+
+static const int magicints[] = {
+    0,        0,        0,       0,       0,       0,       0,       0,       0,       8,
+    10,       12,       16,      20,      25,      32,      40,      50,      64,      80,
+    101,      128,      161,     203,     256,     322,     406,     512,     645,     812,
+    1024,     1290,     1625,    2048,    2580,    3250,    4096,    5060,    6501,    8192,
+    10321,    13003,    16384,   20642,   26007,   32768,   41285,   52015,   65536,   82570,
+    104031,   131072,   165140,  208063,  262144,  330280,  416127,  524287,  660561,  832255,
+    1048576,  1321122,  1664510, 2097152, 2642245, 3329021, 4194304, 5284491, 6658042, 8388607,
+    10568983, 13316085, 16777216};
+
+#define FIRSTIDX 9
+/* note that magicints[FIRSTIDX-1] == 0 */
+#define LASTIDX (sizeof(magicints) / sizeof(*magicints))
+
+/* Compressed coordinate routines - modified from the original
+* implementation by Frans v. Hoesel to make them threadsafe.
+*/
+bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file_o* xfp) {
+    int minint[3], maxint[3], *lip;
+    int smallidx;
+    unsigned sizeint[3], sizesmall[3], bitsizeint[3], size3;
+    int k, *buf1, *buf2, lsize, flag;
+    int smallnum, smaller, i, is_smaller, run;
+    float *lfp, inv_precision;
+    int tmp, *thiscoord, prevcoord[3];
+    unsigned int bitsize;
+    const float* ptrstart = ptr;
+
+    bitsizeint[0] = 0;
+    bitsizeint[1] = 0;
+    bitsizeint[2] = 0;
+
+    if (xfp == NULL || ptr == NULL) {
+        return false;
+    }
+    if (!xdr_read_int32(&lsize, 1, xfp)) {
+        return false; /* return if we could not read size */
+    }
+    *size = lsize;
+    size3 = *size * 3;
+
+    /* Dont bother with compression for three atoms or less */
+    if (*size <= 9) {
+        return xdr_read_float(ptr, size3, xfp);
+    }
+
+
+    /* Compression-time if we got here. Read precision first */
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+
+    buf1 = md_vm_arena_push(arena, sizeof(int) * size3);
+    buf2 = md_vm_arena_push(arena, sizeof(int) * (int)(size3 * 1.2));
+
+    bool result = false;
+
+    if (!xdr_read_float(precision, 1, xfp)) {
+        goto done;
+    }
+    if (!xdr_read_int32(minint, 3, xfp) || !xdr_read_int32(maxint, 3, xfp)) {
+        goto done;
+    }
+
+    /* buf2[0-2] are special and do not contain actual data */
+    buf2[0] = buf2[1] = buf2[2] = 0;
+
+    sizeint[0] = maxint[0] - minint[0] + 1;
+    sizeint[1] = maxint[1] - minint[1] + 1;
+    sizeint[2] = maxint[2] - minint[2] + 1;
+
+    /* check if one of the sizes is to big to be multiplied */
+    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
+        bitsizeint[0] = sizeofint(sizeint[0]);
+        bitsizeint[1] = sizeofint(sizeint[1]);
+        bitsizeint[2] = sizeofint(sizeint[2]);
+        bitsize = 0; /* flag the use of large sizes */
+    } else {
+        bitsize = sizeofints(3, sizeint);
+    }
+
+    if (!xdr_read_int32(&smallidx, 1, xfp)) {
+        return false; /* not sure what has happened here or why we return... */
+    }
+    tmp = smallidx + 8;
+    tmp = smallidx - 1;
+    tmp = (FIRSTIDX > tmp) ? FIRSTIDX : tmp;
+    smaller = magicints[tmp] / 2;
+    smallnum = magicints[smallidx] / 2;
+    sizesmall[0] = sizesmall[1] = sizesmall[2] = magicints[smallidx];
+
+    /* buf2[0] holds the length in bytes */
+    uint32_t num_bytes;
+    if (!xdr_read_int32((int32_t*)&num_bytes, 1, xfp)) {
+        goto done;
+    }
+    if (!xdr_read_bytes((uint8_t*)&(buf2[3]), num_bytes, xfp)) {
+        goto done;
+    }
+    buf2[0] = buf2[1] = buf2[2] = 0;
+
+    lfp = ptr;
+    inv_precision = 1.0f / *precision;
+    run = 0;
+    i = 0;
+    lip = buf1;
+    while (i < lsize) {
+        thiscoord = (int*)(lip) + i * 3;
+
+        if (bitsize == 0) {
+            thiscoord[0] = decodebits(buf2, bitsizeint[0]);
+            thiscoord[1] = decodebits(buf2, bitsizeint[1]);
+            thiscoord[2] = decodebits(buf2, bitsizeint[2]);
+        } else {
+            decodeints(buf2, 3, bitsize, sizeint, thiscoord);
+        }
+
+        i++;
+        thiscoord[0] += minint[0];
+        thiscoord[1] += minint[1];
+        thiscoord[2] += minint[2];
+
+        prevcoord[0] = thiscoord[0];
+        prevcoord[1] = thiscoord[1];
+        prevcoord[2] = thiscoord[2];
+
+        flag = decodebits(buf2, 1);
+        is_smaller = 0;
+        if (flag == 1) {
+            run = decodebits(buf2, 5);
+            is_smaller = run % 3;
+            run -= is_smaller;
+            is_smaller--;
+        }
+        if ((lfp - ptrstart) + run > size3) {
+            MD_LOG_ERROR("XTC: Buffer overrun during decompression.");
+            goto done;
+        }
+        if (run > 0) {
+            thiscoord += 3;
+            for (k = 0; k < run; k += 3) {
+                decodeints(buf2, 3, smallidx, sizesmall, thiscoord);
+                i++;
+                thiscoord[0] += prevcoord[0] - smallnum;
+                thiscoord[1] += prevcoord[1] - smallnum;
+                thiscoord[2] += prevcoord[2] - smallnum;
+                if (k == 0) {
+                    /* interchange first with second atom for better
+                    * compression of water molecules
+                    */
+                    tmp = thiscoord[0];
+                    thiscoord[0] = prevcoord[0];
+                    prevcoord[0] = tmp;
+                    tmp = thiscoord[1];
+                    thiscoord[1] = prevcoord[1];
+                    prevcoord[1] = tmp;
+                    tmp = thiscoord[2];
+                    thiscoord[2] = prevcoord[2];
+                    prevcoord[2] = tmp;
+                    *lfp++ = prevcoord[0] * inv_precision;
+                    *lfp++ = prevcoord[1] * inv_precision;
+                    *lfp++ = prevcoord[2] * inv_precision;
+                } else {
+                    prevcoord[0] = thiscoord[0];
+                    prevcoord[1] = thiscoord[1];
+                    prevcoord[2] = thiscoord[2];
+                }
+                *lfp++ = thiscoord[0] * inv_precision;
+                *lfp++ = thiscoord[1] * inv_precision;
+                *lfp++ = thiscoord[2] * inv_precision;
+            }
+        } else {
+            *lfp++ = thiscoord[0] * inv_precision;
+            *lfp++ = thiscoord[1] * inv_precision;
+            *lfp++ = thiscoord[2] * inv_precision;
+        }
+        smallidx += is_smaller;
+        if (is_smaller < 0) {
+            smallnum = smaller;
+
+            if (smallidx > FIRSTIDX) {
+                smaller = magicints[smallidx - 1] / 2;
+            } else {
+                smaller = 0;
+            }
+        } else if (is_smaller > 0) {
+            smaller = smallnum;
+            smallnum = magicints[smallidx] / 2;
+        }
+        sizesmall[0] = sizesmall[1] = sizesmall[2] = magicints[smallidx];
+        if (sizesmall[0] == 0 || sizesmall[1] == 0 || sizesmall[2] == 0) {
+            MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
+            goto done;
+        }
+    }
+    result = true;
+done:
+    md_vm_arena_destroy(arena);
+    return result;
+}
+
+
+
+
+static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, float box[3][3]) {
     int magic;
 
     if ((xdrfile_read_int(&magic, 1, xd)) != 1) {
@@ -80,12 +448,158 @@ static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, m
         MD_LOG_ERROR("XTC: Failed to read timestamp");
         return false;
     }
-    if ((xdrfile_read_float(box[0], DIM * DIM, xd)) != DIM * DIM) {
+    if ((xdrfile_read_float((float*)box, DIM * DIM, xd)) != DIM * DIM) {
         MD_LOG_ERROR("XTC: Failed to read box dimensions");
         return false;
     }
 
     return true;
+}
+
+bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* time, float box[3][3]) {
+    int magic;
+
+    if (!xdr_read_int32(&magic, 1, xdr)) {
+        MD_LOG_ERROR("XTC: Failed to read magic number in header");
+        return false;
+    }
+    if (magic != XTC_MAGIC) {
+        MD_LOG_ERROR("XTC: Magic number did not match");
+        return false;
+    }
+    if (!xdr_read_int32(natoms, 1, xdr)) {
+        MD_LOG_ERROR("XTC: Failed to read number of atoms");
+        return false;
+    }
+    if (!xdr_read_int32(step, 1, xdr)) {
+        MD_LOG_ERROR("XTC: Failed to read step");
+        return false;
+    }
+    if (!xdr_read_float(time, 1, xdr)) {
+        MD_LOG_ERROR("XTC: Failed to read timestamp");
+        return false;
+    }
+    if (!xdr_read_float((float*)box, 9, xdr)) {
+        MD_LOG_ERROR("XTC: Failed to read box dimensions");
+        return false;
+    }
+
+    return true;
+}
+
+bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
+    int step, natoms;
+    float time;
+    float box[3][3];
+
+    size_t filesize = (size_t)md_file_size(xdr);
+
+    if (filesize == 0) {
+        MD_LOG_ERROR("XTC: Failed extract filesize");
+        return false;
+    }
+
+    /* Go to file beg */
+    if (!md_file_seek(xdr, 0, MD_FILE_BEG)) {
+        MD_LOG_ERROR("XTC: Failed to seek to beginning of file");
+        return false;
+    }
+
+    if (!md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
+        return false;
+    }
+
+    /* Dont bother with compression for nine atoms or less */
+    if (natoms <= 9) {
+        const size_t framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
+        const size_t num_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
+
+        md_array_ensure(*frame_offsets, num_frames, alloc);
+        md_array_ensure(*frame_times,   num_frames, alloc);
+
+        md_array_push(*frame_offsets, 0, alloc);
+        md_array_push(*frame_times, time, alloc);
+
+        for (size_t i = 1; i < num_frames; i++) {
+            const size_t offset = i * framebytes;
+
+            if (!md_file_seek(xdr, offset, MD_FILE_BEG) || !md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
+                goto fail;
+            }
+
+            md_array_push(*frame_offsets, i * framebytes, alloc);
+            md_array_push(*frame_times, time, alloc);
+        }
+        md_array_push(*frame_offsets, num_frames * framebytes, alloc);
+
+        return true;
+    } else {
+        int framebytes, est_nframes;
+
+        /* Move pos back to end of first header */
+        if (!md_file_seek(xdr, (int64_t)XTC_HEADER_SIZE, MD_FILE_BEG)) {
+            return false;
+        }
+
+        if (!xdr_read_int32(&framebytes, 1, xdr)) {
+            MD_LOG_ERROR("XTC: Failed to read framebytes");
+            return false;
+        }
+        framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
+        est_nframes = (int)(filesize / ((int64_t)(framebytes + XTC_HEADER_SIZE)) + 1); /* must be at least 1 for successful growth */
+        /* First `framebytes` might be larger than average, so we would underestimate `est_nframes`
+        */
+        est_nframes += est_nframes / 5;
+
+        /* Skip `framebytes` */
+        if (!md_file_seek(xdr, (int64_t)(framebytes), MD_FILE_CUR)) {
+            goto fail;
+        }
+
+        md_array_ensure(*frame_offsets, (size_t)est_nframes, alloc);
+        md_array_ensure(*frame_times,   (size_t)est_nframes, alloc);
+
+        md_array_push(*frame_offsets, 0, alloc);
+        md_array_push(*frame_times, time, alloc);
+
+        while (true) {
+            const int64_t offset = md_file_tell(xdr);
+            if (offset == (int64_t)filesize) {
+                // Add last offset
+                md_array_push(*frame_offsets, offset, alloc);
+                return true;
+            }
+            if (!md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
+                goto fail;
+            }
+
+            /* Store position in `offsets`, adjust for header */
+            md_array_push(*frame_offsets, offset, alloc);
+            md_array_push(*frame_times, time, alloc);
+
+            if (!md_file_seek(xdr, offset + XTC_HEADER_SIZE, MD_FILE_BEG)) {
+                goto fail;
+            }
+            /* Read how much to skip */
+            if (!xdr_read_int32(&framebytes, 1, xdr)) {
+                goto fail;
+            }
+            
+            framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
+
+            /* Skip `framebytes` to next header */
+            if (!md_file_seek(xdr, framebytes, MD_FILE_CUR)) {
+                goto fail;
+            }
+        }
+
+    fail:
+        md_array_free(*frame_offsets, alloc);
+        md_array_free(*frame_times, alloc);
+        *frame_offsets = 0;
+        *frame_times = 0;
+        return false;
+    }
 }
 
 static bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
@@ -94,6 +608,19 @@ static bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
 
     result = xdrfile_decompress_coord_float(x[0], &natoms, &prec, xd);
     if (result != natoms) {
+        MD_LOG_ERROR("XTC: Failed to read coordinates");
+        return false;
+    }
+
+    return true;
+}
+
+size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* coords, size_t capacity) {
+    int natoms;
+    float prec;
+
+    bool result = xdr_decompress_coord_float(coords, &natoms, &prec, xdr_file);
+    if (!result) {
         MD_LOG_ERROR("XTC: Failed to read coordinates");
         return false;
     }
