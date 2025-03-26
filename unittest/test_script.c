@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
@@ -903,10 +903,10 @@ static bool test_selection(const char* expr, const char* ref_bit_str) {
         printf("Failed evaluation of expression: '%s'\n", expr);
         goto done;
     }
-    bool cmp_res = bit_cmp(bf.bits, &ref, 0, ATOM_COUNT);
+    bool cmp_res = bit_cmp((uint64_t*)bf.bits, &ref, 0, ATOM_COUNT);
     if (!cmp_res) {
         printf("Got:\n");
-        print_bits(bf.bits, ATOM_COUNT);
+        print_bits((uint64_t*)bf.bits, ATOM_COUNT);
         printf("\nExpected\n");
         print_bits(&ref, ATOM_COUNT);
         printf("\n");

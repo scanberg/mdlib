@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_compiler.h>
 
@@ -47,16 +47,6 @@
 #else
 #ifndef ALIGNAS
 #define ALIGNAS(x) __attribute__ ((aligned (x)))
-#endif
-#endif
-
-#if MD_COMPILER_MSVC
-#ifndef ALIGNOF
-#define ALIGNOF(x) alignof(x)
-#endif
-#else
-#ifndef ALIGNOF
-#define ALIGNOF(x) __alignof__(x)
 #endif
 #endif
 

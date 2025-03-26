@@ -1,9 +1,10 @@
-#pragma once
+﻿#pragma once
 
 // THIS IS INSIRED BY OUR MACHINERY'S IMPLEMENTATION OF ARRAY AT A PERVERTED LEVEL. 
 // (https://ourmachinery.com)
 
 #include <core/md_common.h>
+#include <core/md_intrinsics.h>
 #include <core/md_allocator.h>
 
 #include <stdint.h>
@@ -37,9 +38,9 @@ typedef struct md_array_header_t {
 #define md_array_swap_back_and_pop(a,i) ((a)[i] = (a)[--md_array_header(a)->size])
 
 // Allocator time!
-#define md_array_create(type, n, alloc) ((type*)md_array_create_internal( (n), sizeof(type), ALIGNOF(type), alloc, __FILE__, __LINE__))
-#define md_array_grow(a, n, alloc)      ((*(void **)&(a)) = md_array_capacity(a) >= (n) ? (a) : md_array_set_capacity_internal((void*)(a), md_array_grow_cap((void*)(a), (n)), sizeof(*(a)), ALIGNOF(*(a)), alloc, __FILE__, __LINE__))
-#define md_array_set_capacity(a, n, alloc)    ((*(void **)&(a)) = md_array_set_capacity_internal((void*)(a), (n), sizeof(*(a)), ALIGNOF(*(a)), alloc, __FILE__, __LINE__))
+#define md_array_create(type, n, alloc) ((type*)md_array_create_internal( (n), sizeof(type), alloc, __FILE__, __LINE__))
+#define md_array_grow(a, n, alloc)      ((*(void **)&(a)) = md_array_capacity(a) >= (n) ? (a) : md_array_set_capacity_internal((void*)(a), md_array_grow_cap((void*)(a), (n)), sizeof(*(a)), alloc, __FILE__, __LINE__))
+#define md_array_set_capacity(a, n, alloc)    ((*(void **)&(a)) = md_array_set_capacity_internal((void*)(a), (n), sizeof(*(a)), alloc, __FILE__, __LINE__))
 #define md_array_resize(a, n, alloc)    ((md_array_needs_to_grow((a), (n)) ? md_array_set_capacity((a), (n), alloc) : 0), (a) ? md_array_header(a)->size = (n) : 0)
 #define md_array_ensure(a, n, alloc)    (md_array_needs_to_grow((a), (n)) ? md_array_grow((a), (n), alloc) : 0)
 #if MD_COMPILER_MSVC
@@ -61,7 +62,7 @@ typedef struct md_array_header_t {
 #define md_array_push_no_grow(a, item)  (a)[md_array_header(a)->size++] = (item)
 #define md_array_push_array(a, items, n, alloc) ((n) ? (md_array_ensure((a), md_array_size(a) + (n), alloc), MEMCPY((a) + md_array_size(a), items, (n) * sizeof(*(a))), md_array_header(a)->size += (n)) : 0)
 #endif
-#define md_array_free(a, alloc)         ((*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), ALIGNOF(*(a)), alloc, __FILE__, __LINE__))
+#define md_array_free(a, alloc)         ((*(void **)&(a)) = md_array_set_capacity_internal((void *)(a), 0, sizeof(*(a)), alloc, __FILE__, __LINE__))
 
 
 #include <stdio.h>
@@ -70,39 +71,20 @@ typedef struct md_array_header_t {
 extern "C" {
 #endif
 
-static inline void* md_array_set_capacity_internal(void* arr, size_t new_cap, size_t item_size, size_t item_alignment, struct md_allocator_i* alloc, const char* file, size_t line) {
+static inline void* md_array_set_capacity_internal(void* arr, size_t new_cap, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
     ASSERT(alloc);
-    uint8_t* p = arr ? (uint8_t*)md_array_header(arr)->ptr : 0;
-    const size_t extra = item_alignment + sizeof(md_array_header_t);
+    uint8_t* p = arr ? (uint8_t*)md_array_header(arr) : 0;
+    const size_t extra = sizeof(md_array_header_t);
     const size_t size = md_array_size(arr);
     const size_t old_cap = md_array_capacity(arr);
     const size_t bytes_before = arr ? item_size * old_cap + extra : 0;
     const size_t bytes_after = new_cap ? item_size * new_cap + extra : 0;
 
-    if (p) {
-        ASSERT(old_cap > 0);
-    }
-    //p = (uint8_t*)alloc->realloc(alloc->inst, p, bytes_before, bytes_after, file, line);
-
-    //printf("bytes before: %zu, after: %zu       [%s:%i]\n", bytes_before, bytes_after, file, line);
-
     uint8_t* new_p = (uint8_t*)alloc->realloc(alloc->inst, p, bytes_before, bytes_after, file, line);
-    void*  new_arr = new_p ? (void*)ALIGN_TO((uintptr_t)new_p + sizeof(md_array_header_t), item_alignment) : 0;
-
-    ptrdiff_t old_diff = (uint8_t*)arr - p;
-    ptrdiff_t new_diff = (uint8_t*)new_arr - new_p;
-
-    //printf("ptr before: %p, after: %p      [%s:%i]\n", p, new_p, file, line);
+    //void*  new_arr = new_p ? (void*)ALIGN_TO((uintptr_t)new_p + sizeof(md_array_header_t), item_alignment) : 0;
+    void*  new_arr = new_p ? new_p + extra : 0;
 
     if (new_arr) {
-        if (arr && new_arr != arr) {
-            int64_t diff = new_diff - old_diff;
-            printf("DIFF: %i\n", (int)diff);
-            //printf("MOVED\n");
-            if (diff) {
-                MEMMOVE((uint8_t*)new_arr+diff, (uint8_t*)new_arr, bytes_before);
-            }
-        }
         md_array_header(new_arr)->ptr = new_p;
         md_array_header(new_arr)->size = size;
         md_array_header(new_arr)->capacity = new_cap;
@@ -111,8 +93,8 @@ static inline void* md_array_set_capacity_internal(void* arr, size_t new_cap, si
     return new_arr;
 }
 
-static inline void* md_array_create_internal(size_t size, size_t item_size, size_t item_alignment, struct md_allocator_i* alloc, const char* file, size_t line) {
-    void* arr = md_array_set_capacity_internal(NULL, size, item_size, item_alignment, alloc, file, line);
+static inline void* md_array_create_internal(size_t size, size_t item_size, struct md_allocator_i* alloc, const char* file, size_t line) {
+    void* arr = md_array_set_capacity_internal(NULL, size, item_size, alloc, file, line);
     md_array_header(arr)->size = size;
     return arr;
 }
