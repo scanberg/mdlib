@@ -401,7 +401,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
         return false;
     }
 
-    md_allocator_i* alloc = md_temp_allocator;
+    md_allocator_i* alloc = md_get_temp_allocator();
 
     char* buf = 0;
     md_array_ensure(buf, KILOBYTES(4), alloc);
@@ -480,7 +480,7 @@ static bool compile_shader_from_source(GLuint shader, const char* source, const 
 }
 
 static bool compile_shader_from_file(GLuint shader, const char* filename, const char* defines, const include_file_t* include_files, uint32_t include_file_count) {
-    str_t src = load_textfile(str_from_cstr(filename), md_temp_allocator);
+    str_t src = load_textfile(str_from_cstr(filename), md_get_temp_allocator());
     if (!str_empty(src)) {
         const bool success = compile_shader_from_source(shader, src.ptr, defines, include_files, include_file_count);
         const md_log_type_t log_type = success ? MD_LOG_TYPE_INFO : MD_LOG_TYPE_ERROR;
@@ -576,7 +576,7 @@ static gl_program_t gl_program_create_from_files(const char* shader_files[], uin
 
 static gl_context_t ctx = {0};
 
-static inline bool validate_context() {
+static inline bool validate_context(void) {
     if (ctx.version == 0) {
         MD_LOG_ERROR("gfx context has not been initialized");
         return false;
@@ -584,7 +584,7 @@ static inline bool validate_context() {
     return true;
 }
 
-void init_handles() {
+void init_handles(void) {
     for (uint32_t i = 0; i < ARRAY_SIZE(ctx.handles); ++i) {
         ctx.handles[i].idx = (uint16_t)(i + 1);
         // Scramble generations a bit
@@ -599,7 +599,7 @@ static inline void free_handle(uint16_t idx) {
     ctx.handle_next_idx = idx;
 }
 
-static inline uint16_t alloc_handle() {
+static inline uint16_t alloc_handle(void) {
     if (ctx.handle_next_idx >= ARRAY_SIZE(ctx.handles)) {
         ASSERT(false);
     }
@@ -697,16 +697,16 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
         ctx.color.capacity = 4 * 1000 * 1000;
         ctx.color_buf = gl_buffer_create(ctx.color.capacity * sizeof(md_gfx_color_t), NULL, GL_DYNAMIC_STORAGE_BIT | GL_MAP_WRITE_BIT);
 
-#define CONCAT_STR(STR_A, STR_B) (str_printf(md_temp_allocator, "%s%s", STR_A, STR_B).ptr)
+#define CONCAT_STR(STR_A, STR_B) (str_printf(md_get_temp_allocator(), "%s%s", STR_A, STR_B).ptr)
 #define BASE shader_base_dir
 
-        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), md_temp_allocator);
+        str_t common_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/common.h")), md_get_temp_allocator());
         if (str_empty(common_src)) {
             MD_LOG_ERROR("Failed to read common.h required for shaders");
             return false;
         }
 
-        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), md_temp_allocator);
+        str_t culling_src = load_textfile(str_from_cstr(CONCAT_STR(BASE, "/gfx/culling.glsl")), md_get_temp_allocator());
         if (str_empty(culling_src)) {
             MD_LOG_ERROR("Failed to read culling.glsl required for shaders");
             return false;
@@ -862,7 +862,7 @@ bool md_gfx_initialize(const char* shader_base_dir, uint32_t width, uint32_t hei
     return true;
 }
 
-void md_gfx_shutdown() {
+void md_gfx_shutdown(void) {
     if (ctx.fbo_id) glDeleteFramebuffers(1, &ctx.fbo_id);
     gl_texture_destroy(&ctx.color_tex);
     gl_texture_destroy(&ctx.normal_tex);
@@ -906,7 +906,7 @@ static void field_free(allocation_field_t* field, allocation_range_t range) {
 
 md_gfx_handle_t md_gfx_structure_create_from_mol(const md_molecule_t* mol) {
     ASSERT(mol);
-    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)md_array_size(mol->bond.pairs), (uint32_t)mol->backbone.count, (uint32_t)mol->backbone.range.count, (uint32_t)mol->residue.count, (uint32_t)mol->instance.count);
+    return md_gfx_structure_create((uint32_t)mol->atom.count, (uint32_t)md_array_size(mol->bond.pairs), (uint32_t)mol->protein_backbone.count, (uint32_t)mol->protein_backbone.range.count, (uint32_t)mol->residue.count, (uint32_t)mol->instance.count);
 }
 
 md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count, uint32_t backbone_segment_count, uint32_t backbone_range_count, uint32_t group_count, uint32_t instance_count) {
@@ -933,8 +933,8 @@ md_gfx_handle_t md_gfx_structure_create(uint32_t atom_count, uint32_t bond_count
     s->bb_range = field_alloc(&ctx.bb_range, backbone_range_count);
     s->cluster  = field_alloc(&ctx.cluster, DIV_UP(atom_count, MIN_COUNT_PER_CLUSTER)); // Reserve the maximum amount of clusters we need (this changes dynamically when recomputing clusters)
 
-    md_array_ensure(s->groups, group_count, md_heap_allocator);
-    md_array_ensure(s->instances, instance_count, md_heap_allocator);
+    md_array_ensure(s->groups, group_count, md_get_heap_allocator());
+    md_array_ensure(s->instances, instance_count, md_get_heap_allocator());
 
     // Create external handle for user
     return (md_gfx_handle_t) {ctx.handles[s->h_idx].gen, s->h_idx};
@@ -959,7 +959,7 @@ bool md_gfx_structure_destroy(md_gfx_handle_t id) {
     field_free(&ctx.bb_seg,     s->bb_seg);
     field_free(&ctx.bb_range,   s->bb_range);
 
-    md_array_free(s->instances, md_heap_allocator);
+    md_array_free(s->instances, md_get_heap_allocator());
 
     if (ctx.structure_count > 1) {
         // Swap back and pop resource array to keep it packed
@@ -1014,10 +1014,7 @@ uint32_t* create_cluster_ranges_from_groups(range_t* groups, uint32_t group_coun
 }
 
 void recompute_clusters2(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
-    md_vm_arena_t vm_arena;
-    md_vm_arena_init(&vm_arena, GIGABYTES(4));
-    md_allocator_i vm_alloc = md_vm_arena_create_interface(&vm_arena);
-    md_allocator_i* alloc = &vm_alloc;
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     // This is a bit fiddly to get the mapping right, especially if you have instances defined.
     // We make the assumption that if you have groups and instances defined, the instances are defined on the boarders of the defined groups.
@@ -1026,11 +1023,11 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     const uint32_t grp_count = (uint32_t)md_array_size(s->groups);
     const uint32_t inst_count = (uint32_t)md_array_size(s->instances);
 
-    uint32_t* grp_indices  = md_vm_arena_push(&vm_arena, sizeof(uint32_t) * count);
+    uint32_t* grp_indices  = md_vm_arena_push(arena, sizeof(uint32_t) * count);
 
-    aabb_t* grp_aabb = md_vm_arena_push(&vm_arena, sizeof(aabb_t) * grp_count);
-    vec3_t* grp_cent = md_vm_arena_push(&vm_arena, sizeof(vec3_t) * grp_count);
-    int32_t* grp_inst_idx = md_vm_arena_push(&vm_arena, sizeof(int32_t) * grp_count);
+    aabb_t* grp_aabb = md_vm_arena_push(arena, sizeof(aabb_t) * grp_count);
+    vec3_t* grp_cent = md_vm_arena_push(arena, sizeof(vec3_t) * grp_count);
+    int32_t* grp_inst_idx = md_vm_arena_push(arena, sizeof(int32_t) * grp_count);
 
     for (uint32_t g_idx = 0; g_idx < grp_count; ++g_idx) {
         vec3_t aabb_min = {+FLT_MAX, +FLT_MAX, +FLT_MAX};
@@ -1050,7 +1047,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
         grp_cent[g_idx] = cent;
     }
 
-    range_t* inst_grp_ranges = md_vm_arena_push(&vm_arena, sizeof(range_t) * md_array_size(s->instances));
+    range_t* inst_grp_ranges = md_vm_arena_push(arena, sizeof(range_t) * md_array_size(s->instances));
 
     // Mark any atoms part of an instance, these are special cases
     for (uint32_t i_idx = 0; i_idx < md_array_size(s->instances); ++i_idx) {
@@ -1063,7 +1060,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
         }
     }
 
-    uint32_t* grp_src_indices = md_vm_arena_push(&vm_arena, sizeof(uint32_t) * grp_count);
+    uint32_t* grp_src_indices = md_vm_arena_push(arena, sizeof(uint32_t) * grp_count);
     md_util_sort_spatial_vec3(grp_src_indices, grp_cent, grp_count);
 
     uint32_t* src_indices = NULL;
@@ -1073,19 +1070,19 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     for (uint32_t j = 0; j < grp_count; ++j) {
         uint32_t g_idx = grp_src_indices[j];
         if (grp_inst_idx[g_idx] > -1) continue;
-        md_array_push(base_groups, s->groups[g_idx], alloc);
+        md_array_push(base_groups, s->groups[g_idx], arena);
 
         uint32_t beg = s->groups[g_idx].offset;
         uint32_t end = s->groups[g_idx].offset + s->groups[g_idx].count;
         for (uint32_t i = beg; i < end; ++i) {
-            md_array_push(src_indices, i, alloc);
+            md_array_push(src_indices, i, arena);
         }
     }
 
-    uint32_t* cluster_base_ranges = create_cluster_ranges_from_groups(base_groups, (uint32_t)md_array_size(base_groups), alloc);
+    uint32_t* cluster_base_ranges = create_cluster_ranges_from_groups(base_groups, (uint32_t)md_array_size(base_groups), arena);
 
     uint32_t* cluster_ranges = NULL;
-    md_array_push_array(cluster_ranges, cluster_base_ranges, md_array_size(cluster_base_ranges), alloc);
+    md_array_push_array(cluster_ranges, cluster_base_ranges, md_array_size(cluster_base_ranges), arena);
 
     // Add according to group and part of instances
     for (uint32_t i = 0; i < inst_count; ++i) {
@@ -1094,11 +1091,11 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
         uint32_t end = inst_grp_ranges[i].offset + inst_grp_ranges[i].count;
 
         for (uint32_t j = beg; j < end; ++j) {
-            md_array_push(groups, s->groups[j], alloc);
+            md_array_push(groups, s->groups[j], arena);
         }
-        uint32_t* inst_ranges = create_cluster_ranges_from_groups(groups, (uint32_t)md_array_size(groups), alloc);
+        uint32_t* inst_ranges = create_cluster_ranges_from_groups(groups, (uint32_t)md_array_size(groups), arena);
         s->instances[i].cluster_range = (range_t){(uint32_t)md_array_size(cluster_ranges), (uint32_t)md_array_size(inst_ranges)};
-        md_array_push_array(cluster_ranges, inst_ranges, md_array_size(inst_ranges), alloc);
+        md_array_push_array(cluster_ranges, inst_ranges, md_array_size(inst_ranges), arena);
     }
 
     uint32_t cluster_count = (uint32_t)md_array_size(cluster_ranges);
@@ -1109,7 +1106,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
     gl_buffer_set_sub_data(ctx.cluster_data_atom_idx_buf, s->atom.offset * sizeof(uint32_t),     s->atom.count * sizeof(uint32_t),     src_indices);
     gl_buffer_set_sub_data(ctx.cluster_range_buf,         s->cluster.offset * sizeof(uint32_t),  s->cluster.count * sizeof(uint32_t),  cluster_ranges);
 
-    md_vm_arena_free(&vm_arena);
+    md_vm_arena_destroy(arena);
 }
 
 // Great resource and explanation of some of the techiques used when building BVH trees
@@ -1117,7 +1114,7 @@ void recompute_clusters2(structure_t* s, const float* x, const float* y, const f
 
 
 void recompute_clusters(structure_t* s, const float* x, const float* y, const float* z, uint32_t count, uint32_t byte_stride) {
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
 
     // Compute clusters
     // This is a tricky problem to solve in real-time
@@ -1461,7 +1458,7 @@ bool md_gfx_structure_set_instance_transforms(md_gfx_handle_t id, const struct m
         return false;
     }
 
-    md_array_resize(s->instances, count, md_heap_allocator);
+    md_array_resize(s->instances, count, md_get_heap_allocator());
 
     byte_stride = MAX(byte_stride, sizeof(mat4_t));
     for (uint32_t i = 0; i < count; ++i) {
@@ -1574,10 +1571,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
         return false;
     }
 
-    md_vm_arena_t arena;
-    md_vm_arena_init(&arena, GIGABYTES(4));
-    md_allocator_i arena_interface = md_vm_arena_create_interface(&arena);
-    md_allocator_i* alloc = &arena_interface;
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
     // Store old state
     uint32_t  old_draw_buffers[16];
@@ -1695,7 +1689,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
     InstanceData* inst_data = 0;
 
     mat4_t* transforms = 0;
-    md_array_push(transforms, mat4_ident(), alloc);
+    md_array_push(transforms, mat4_ident(), arena);
 
     for (uint32_t in_idx = 0; in_idx < in_draw_op_count; ++in_idx) {
         const md_gfx_draw_op_t* in_op = in_draw_ops + in_idx;
@@ -1722,7 +1716,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
             uint32_t transform_idx = 0; // This is the default and represents identity matrix
             if (in_op->model_mat && !mat4_equal(*in_op->model_mat, mat4_ident())) {
                 transform_idx = (uint32_t)md_array_size(transforms);
-                md_array_push(transforms, *in_op->model_mat, alloc);
+                md_array_push(transforms, *in_op->model_mat, arena);
             }
 
             InstanceData out = {0};
@@ -1731,7 +1725,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
             out.cluster_offset = s->base_instance.cluster_range.offset;
             out.cluster_count  = s->base_instance.cluster_range.count;
             out.transform_idx = ctx.transform.offset + transform_idx;
-            md_array_push(inst_data, out, alloc);
+            md_array_push(inst_data, out, arena);
         }
 
         // Create draw ops for instanced clusters
@@ -1742,7 +1736,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
                 M = mat4_mul(*in_op->model_mat, M);
             }
             uint32_t transform_idx = (uint32_t)md_array_size(transforms);
-            md_array_push(transforms, M, alloc);
+            md_array_push(transforms, M, arena);
 
             InstanceData out = {0};
             out.min_xyzr = inst->min_xyzr;
@@ -1750,7 +1744,7 @@ bool md_gfx_draw(uint32_t in_draw_op_count, const md_gfx_draw_op_t* in_draw_ops,
             out.cluster_offset = inst->cluster_range.offset;
             out.cluster_count  = inst->cluster_range.count;
             out.transform_idx = ctx.transform.offset + transform_idx;
-            md_array_push(inst_data, out, alloc);
+            md_array_push(inst_data, out, arena);
         }
     }
 
@@ -2029,7 +2023,7 @@ GL_PUSH_GPU_SECTION("RESET STATE");
     }
 GL_POP_GPU_SECTION();
 
-    md_vm_arena_free(&arena);
+    md_vm_arena_destroy(arena);
 
     return true;
 }
@@ -2052,13 +2046,13 @@ GL_POP_GPU_SECTION();
     return true;
 }
 
-uint32_t md_gfx_get_picking_idx() {
+uint32_t md_gfx_get_picking_idx(void) {
     if (!validate_context()) return INVALID_INDEX;
     uint32_t idx = ctx.debug_data->pick_index;
     return idx == 0 ? INVALID_INDEX : idx - 1;
 }
 
-float md_gfx_get_picking_depth() {
+float md_gfx_get_picking_depth(void) {
     if (!validate_context()) return 1.0f;
     return ctx.debug_data->pick_depth;
 }

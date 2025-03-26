@@ -1,0 +1,51 @@
+name: Ubuntu 24.04 (GCC 13)
+
+on: [push]
+
+env:
+  BUILD_TYPE: RelWithDebInfo
+  VCPKG_DEFAULT_TRIPLET: x64-linux
+
+jobs:
+    ci:
+        runs-on: ubuntu-24.04
+        steps:
+          - uses: actions/checkout@v4
+
+          - name: Setup Vcpkg
+            uses: lukka/run-vcpkg@v11
+            with:
+              vcpkgGitCommitId: 344525f74edb4c1d47c559d8bbe06240271441d8
+
+          - name: Clone MDLIB
+            run: git submodule update --init --recursive
+
+          - name: Cmake Version
+            run: cmake --version
+
+          - name: Create Build Environment
+            run: cmake -E make_directory ${{github.workspace}}/build
+
+          - name: Configure CMake
+            shell: bash
+            working-directory: ${{github.workspace}}/build
+            run: cmake -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DMD_ENABLE_VLX=ON -DMD_FORCE_ASSERTIONS=ON $GITHUB_WORKSPACE
+
+          - name: Build
+            working-directory: ${{github.workspace}}/build
+            shell: bash
+            run: cmake --build . --config $BUILD_TYPE
+
+          - name: Test
+            working-directory: ${{github.workspace}}/build
+            shell: bash
+            run: ctest -C $BUILD_TYPE --rerun-failed --output-on-failure
+          
+          - name: Setup upterm session
+            uses: lhotari/action-upterm@v1
+            if: ${{ failure() }}
+            with: 
+              ## limits ssh access and adds the ssh public key for the user which triggered the workflow
+              limit-access-to-actor: false
+              ## If no one connects after 5 minutes, shut down server.
+              wait-timeout-minutes: 5

@@ -1,4 +1,4 @@
-#include <md_pdb.h>
+﻿#include <md_pdb.h>
 
 #include <md_molecule.h>
 #include <md_trajectory.h>
@@ -7,6 +7,7 @@
 #include <core/md_common.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
+#include <core/md_str_builder.h>
 #include <core/md_parse.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
@@ -30,7 +31,6 @@ extern "C" {
 typedef struct pdb_trajectory_t {
     uint64_t magic;
     md_file_o* file;
-    md_file_mapping_o* mapping;
     int64_t* frame_offsets;
     md_unit_cell_t unit_cell;                // For pdb trajectories we have a static cell
     md_trajectory_header_t header;
@@ -51,7 +51,8 @@ static inline int32_t extract_int(str_t line, size_t beg, size_t end) {
 
 static inline float extract_float(str_t line, size_t beg, size_t end) {
     if (line.len < end) return 0.0f;
-    return (float)parse_float(str_substr(line, beg - 1, end-beg + 1));
+    str_t str = str_trim(str_substr(line, beg - 1, end-beg + 1));
+    return (float)parse_float_wide(str.ptr, str.len);
 }
 
 static inline char extract_char(str_t line, size_t idx) {
@@ -228,33 +229,38 @@ size_t pdb_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, voi
     return frame_size;
 }
 
-static bool pdb_decode_frame(const pdb_trajectory_t* pdb, str_t frame_str, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+bool pdb_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+    ASSERT(inst);
+    ASSERT(frame_data_ptr);
+    ASSERT(frame_data_size);
+
+    pdb_trajectory_t* pdb = (pdb_trajectory_t*)inst;
+    if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
+        MD_LOG_ERROR("Error when decoding frame header, pdb magic did not match");
+        return false;
+    }
+
+    str_t str = { .ptr = (char*)frame_data_ptr, .len = frame_data_size };
     str_t line;
 
     int32_t step = 0;
-    if (str_extract_line(&line, &frame_str)) {
+    if (str_extract_line(&line, &str)) {
         if (str_eq_cstr_n(line, "MODEL", 5)) {
             step = (int32_t)parse_int(str_substr(line, 10, 4));
         }
     }
 
     size_t i = 0;
-    if (x && y && z) {
-        while (str_extract_line(&line, &frame_str) && i < pdb->header.num_atoms) {
-            if (line.len < 6) continue;
-            if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
-                x[i] = extract_float(line, 31, 38);
-                y[i] = extract_float(line, 39, 46);
-                z[i] = extract_float(line, 47, 54);
-                i += 1;
-            }
+    while (str_extract_line(&line, &str) && i < pdb->header.num_atoms) {
+        if (line.len < 6) continue;
+        if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
+            if (x) { x[i] = extract_float(line, 31, 38); }
+            if (y) { y[i] = extract_float(line, 39, 46); }
+            if (z) { z[i] = extract_float(line, 47, 54); }
+
+            i += 1;
         }
     }
-
-    if (i != pdb->header.num_atoms) {
-		MD_LOG_ERROR("Number of atoms in frame does not match expected number");
-		return false;
-	}
 
     if (header) {
         header->num_atoms = i;
@@ -278,7 +284,7 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
         if (line.len < 6) continue;
         if (str_eq_cstr_n(line, "ATOM", 4) || str_eq_cstr_n(line, "HETATM", 6)) {
             md_pdb_coordinate_t coord = extract_coord(line);
-            coord.flags |= MD_PDB_COORD_FLAG_HETATM;
+            coord.flags |= line.ptr[0] == 'H' ? MD_PDB_COORD_FLAG_HETATM : 0;
             md_array_push(data->atom_coordinates, coord, alloc);
         }
         else if (str_eq_cstr_n(line, "TER", 3)) {
@@ -388,14 +394,14 @@ bool pdb_parse(md_pdb_data_t* data, md_buffered_reader_t* reader, struct md_allo
         }
     }
 
-    data->num_models = md_array_size(data->models);
-    data->num_atom_coordinates = md_array_size(data->atom_coordinates);
-    data->num_helices = md_array_size(data->helices);
-    data->num_sheets = md_array_size(data->sheets);
-    data->num_connections = md_array_size(data->connections);
-    data->num_cryst1 = md_array_size(data->cryst1);
-    data->num_assemblies = md_array_size(data->assemblies);
-    data->num_transforms = md_array_size(data->transforms);
+    data->num_models            = md_array_size(data->models);
+    data->num_atom_coordinates  = md_array_size(data->atom_coordinates);
+    data->num_helices           = md_array_size(data->helices);
+    data->num_sheets            = md_array_size(data->sheets);
+    data->num_connections       = md_array_size(data->connections);
+    data->num_cryst1            = md_array_size(data->cryst1);
+    data->num_assemblies        = md_array_size(data->assemblies);
+    data->num_transforms        = md_array_size(data->transforms);
 
     return true;
 }
@@ -410,12 +416,12 @@ bool md_pdb_data_parse_file(md_pdb_data_t* data, str_t filename, md_allocator_i*
     md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
         const size_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_heap_allocator, cap);
+        char* buf = md_alloc(md_get_heap_allocator(), cap);
         
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         result = pdb_parse(data, &reader, alloc, false);
         
-        md_free(md_heap_allocator, buf, cap);
+        md_free(md_get_heap_allocator(), buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
@@ -449,7 +455,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     bool result = false;
 
-    md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+    md_allocator_i* temp_alloc = md_vm_arena_create(GIGABYTES(4));
 
     size_t beg_atom_index = 0;
     size_t end_atom_index = data->num_atom_coordinates;
@@ -463,21 +469,19 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
 
-    size_t num_atoms = end_atom_index - beg_atom_index;
+    size_t capacity = ROUND_UP(end_atom_index - beg_atom_index, 16);
 
     md_array(md_label_t) chain_ids = 0;
     md_array(md_range_t) chain_ranges = 0;
 
-    md_array_ensure(mol->atom.x, num_atoms, alloc);
-    md_array_ensure(mol->atom.y, num_atoms, alloc);
-    md_array_ensure(mol->atom.z, num_atoms, alloc);
-    md_array_ensure(mol->atom.element, num_atoms, alloc);
-    md_array_ensure(mol->atom.type, num_atoms, alloc);
-
-    md_array_ensure(mol->atom.resid, num_atoms, alloc);
-    md_array_ensure(mol->atom.resname, num_atoms, alloc);
-
-    md_array_ensure(mol->atom.flags, num_atoms, alloc);
+    md_array_ensure(mol->atom.x,       capacity, alloc);
+    md_array_ensure(mol->atom.y,       capacity, alloc);
+    md_array_ensure(mol->atom.z,       capacity, alloc);
+    md_array_ensure(mol->atom.element, capacity, alloc);
+    md_array_ensure(mol->atom.type,    capacity, alloc);
+    md_array_ensure(mol->atom.resid,   capacity, alloc);
+    md_array_ensure(mol->atom.resname, capacity, alloc);
+    md_array_ensure(mol->atom.flags,   capacity, alloc);
 
     int32_t prev_res_id = -1;
     char prev_chain_id = -1;
@@ -486,19 +490,20 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         float x = data->atom_coordinates[i].x;
         float y = data->atom_coordinates[i].y;
         float z = data->atom_coordinates[i].z;
-        str_t atom_type = (str_t){data->atom_coordinates[i].atom_name, strnlen(data->atom_coordinates[i].atom_name, ARRAY_SIZE(data->atom_coordinates[i].atom_name))};
-        str_t res_name = (str_t){data->atom_coordinates[i].res_name, strnlen(data->atom_coordinates[i].res_name, ARRAY_SIZE(data->atom_coordinates[i].res_name))};
+        
+        str_t atom_type = str_from_cstrn(data->atom_coordinates[i].atom_name, sizeof(data->atom_coordinates[i].atom_name));
+        str_t res_name  = str_from_cstrn(data->atom_coordinates[i].res_name,  sizeof(data->atom_coordinates[i].res_name));
         md_residue_id_t res_id = data->atom_coordinates[i].res_seq;
-        const char chain_id = data->atom_coordinates[i].chain_id;
+        char chain_id = data->atom_coordinates[i].chain_id;
         md_flags_t flags = 0;
         md_element_t element = 0;
 
         if (data->atom_coordinates[i].element[0]) {
             // If the element is available, we directly try to use that to lookup the element
-            str_t element_str = { data->atom_coordinates[i].element, strnlen(data->atom_coordinates[i].element, ARRAY_SIZE(data->atom_coordinates[i].element)) };
+            str_t element_str = str_from_cstrn(data->atom_coordinates[i].element, sizeof(data->atom_coordinates[i].element));
             element = md_util_element_lookup_ignore_case(element_str);
             if (element == 0) {
-                md_logf(MD_LOG_TYPE_INFO, "Failed to lookup element with string '%s'", data->atom_coordinates[i].element);
+                MD_LOG_INFO("Failed to lookup element with string '" STR_FMT "'", STR_ARG(element_str));
             }
         }
 
@@ -507,6 +512,10 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         }
 
         if (chain_id != ' ') {
+            // Populate chain_ids with empty ' '
+            while (md_array_size(chain_ids) < mol->atom.count) {
+                md_array_push(chain_ids, (md_label_t){0}, temp_alloc);
+            }
             str_t chain_str = { &data->atom_coordinates[i].chain_id, 1 };
             md_array_push(chain_ids, make_label(chain_str), temp_alloc);
 
@@ -519,6 +528,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
                 prev_chain_id = chain_id;
             }
 
+            ASSERT(chain_ranges);
             md_array_last(chain_ranges)->end += 1;
         }
 
@@ -532,22 +542,31 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         }
 
         mol->atom.count += 1;
-        md_array_push(mol->atom.x, x, alloc);
-        md_array_push(mol->atom.y, y, alloc);
-        md_array_push(mol->atom.z, z, alloc);
-        md_array_push(mol->atom.element, element, alloc);
-        md_array_push(mol->atom.type, make_label(atom_type), alloc);
-        md_array_push(mol->atom.flags, flags, alloc);
-        md_array_push(mol->atom.resname, make_label(res_name), alloc);
-        md_array_push(mol->atom.resid, res_id, alloc);
+        md_array_push_no_grow(mol->atom.x, x);
+        md_array_push_no_grow(mol->atom.y, y);
+        md_array_push_no_grow(mol->atom.z, z);
+        md_array_push_no_grow(mol->atom.element, element);
+        md_array_push_no_grow(mol->atom.type, make_label(atom_type));
+        md_array_push_no_grow(mol->atom.flags, flags);
+        md_array_push_no_grow(mol->atom.resname, make_label(res_name));
+        md_array_push_no_grow(mol->atom.resid, res_id);
     }
 
-    if (md_array_size(chain_ids) == mol->atom.count) {
-        // Only add the chain ids if they are complete
+    if (chain_ids) {
+        while (md_array_size(chain_ids) < mol->atom.count) {
+            md_array_push(chain_ids, (md_label_t){0}, temp_alloc);
+        }
+        // Copy chain ids if they are filled (meaning they had some form of entry)
         md_array_push_array(mol->chain.id, chain_ids, md_array_size(chain_ids), alloc);
     }
 
-    md_array_free(chain_ids, temp_alloc);
+    if (mol->atom.count > 0) {
+        md_flags_t flags = MD_FLAG_RES_END;
+        if (mol->chain.id && !str_eq(LBL_TO_STR(mol->chain.id[mol->atom.count - 1]), STR_LIT(" "))) {
+            flags |= MD_FLAG_CHAIN_END;
+        }
+        mol->atom.flags[mol->atom.count - 1] |= flags;
+    }
 
     if (data->num_cryst1 > 0) {
         // Use first crystal
@@ -643,13 +662,13 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     }
 #endif
 
-    mol->instance.count = md_array_size(mol->instance.atom_range);
+    mol->instance.count = md_array_size(mol->instance.transform);
     ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
-    ASSERT(md_array_size(mol->instance.transform) == mol->instance.count);
+    ASSERT(md_array_size(mol->instance.atom_range) == mol->instance.count);
 
     result = true;
 done:
-    md_arena_allocator_destroy(temp_alloc);
+    md_vm_arena_destroy(temp_alloc);
     return result;
 }
 
@@ -657,9 +676,9 @@ static bool pdb_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
     (void)arg;
     md_pdb_data_t data = {0};
 
-    md_pdb_data_parse_str(&data, str, md_heap_allocator);
+    md_pdb_data_parse_str(&data, str, md_get_heap_allocator());
     bool success = md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
-    md_pdb_data_free(&data, md_heap_allocator);
+    md_pdb_data_free(&data, md_get_heap_allocator());
     
     return success;
 }
@@ -669,16 +688,16 @@ static bool pdb_init_from_file(md_molecule_t* mol, str_t filename, const void* a
     md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
         const size_t cap = MEGABYTES(1);
-        char *buf = md_alloc(md_heap_allocator, cap);
+        char *buf = md_alloc(md_get_heap_allocator(), cap);
         ASSERT(buf);
         md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
         
         md_pdb_data_t data = {0};
-        bool parse   = pdb_parse(&data, &reader, md_heap_allocator, true);
+        bool parse   = pdb_parse(&data, &reader, md_get_heap_allocator(), true);
         bool success = parse && md_pdb_molecule_init(mol, &data, MD_PDB_OPTION_NONE, alloc);
         
-        md_pdb_data_free(&data, md_heap_allocator);
-        md_free(md_heap_allocator, buf, cap);
+        md_pdb_data_free(&data, md_get_heap_allocator());
+        md_free(md_get_heap_allocator(), buf, cap);
         
         return success;
     }
@@ -691,7 +710,7 @@ static md_molecule_loader_i pdb_molecule_api = {
     pdb_init_from_file,
 };
 
-md_molecule_loader_i* md_pdb_molecule_api() {
+md_molecule_loader_i* md_pdb_molecule_api(void) {
     return &pdb_molecule_api;
 }
 
@@ -702,30 +721,25 @@ bool pdb_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     if (pdb->magic != MD_PDB_TRAJ_MAGIC) {
         MD_LOG_ERROR("Error when decoding frame coord, xtc magic did not match");
         return false;
-    }   
+    }
 
-    const int64_t beg = pdb->frame_offsets[frame_idx + 0];
-    const int64_t end = pdb->frame_offsets[frame_idx + 1];
-    const size_t frame_size = (size_t)MAX(0, end - beg);
+    bool result = false;
+    const size_t frame_size = pdb_fetch_frame_data(inst, frame_idx, NULL);
+    if (frame_size > 0) {
+        md_allocator_i* alloc = md_get_heap_allocator();
+        void* frame_data = md_alloc(alloc, frame_size);
+        ASSERT(frame_data);
 
-    if (frame_size == 0) {
-		MD_LOG_ERROR("Frame size was zero");
-		return false;
-	}
+        const size_t read_size = pdb_fetch_frame_data(inst, frame_idx, frame_data);
+        if (read_size != frame_size) {
+            MD_LOG_ERROR("Failed to read the expected size");
+            goto done;
+        }
 
-    if (!pdb->mapping) {
-		MD_LOG_ERROR("File mapping is NULL");
-		return false;
-	}
-    const char* frame_data = md_file_mem_map_view(pdb->mapping, beg, frame_size);
-    if (!frame_data) {
-		MD_LOG_ERROR("Failed to map view of file");
-		return false;
-	}
-
-    str_t frame_str = {frame_data, frame_size};
-    bool result = pdb_decode_frame(pdb, frame_str, header, x, y, z);
-    md_file_mem_unmap_view(frame_data, frame_size);
+        result = pdb_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
+    done:
+        md_free(alloc, frame_data, frame_size);
+    }
 
     return result;
 }
@@ -826,7 +840,7 @@ done:
     return result;
 }
 
-md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
+md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for PDB trajectory");
@@ -836,15 +850,15 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
     const size_t filesize = md_file_size(file);
     md_file_close(file);
 
-    char buf[1024] = "";
-    int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
-    str_t cache_file = {buf, len};
+    md_strb_t sb = md_strb_create(md_get_temp_allocator());
+    md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
+    str_t cache_file = md_strb_to_str(sb);
 
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
     pdb_cache_t cache = {0};
     if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
-        md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+        md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
         bool result = false;
         md_pdb_data_t data = {0};
@@ -891,7 +905,14 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
             cache.cell = md_util_unit_cell_from_extent_and_angles(data.cryst1[0].a, data.cryst1[0].b, data.cryst1[0].c, data.cryst1[0].alpha, data.cryst1[0].beta, data.cryst1[0].gamma);
         }
 
-        result = write_cache(&cache, cache_file);
+        if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
+            // If we fail to write the cache, that's ok, we can inform about it, but do not halt
+            if (write_cache(&cache, cache_file)) {
+                MD_LOG_INFO("PDB: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
+            }
+        }
+
+        result = true;
 
         cleanup:
         md_arena_allocator_destroy(temp_alloc);
@@ -920,7 +941,6 @@ md_trajectory_i* md_pdb_trajectory_create(str_t filename, struct md_allocator_i*
 
     pdb->magic = MD_PDB_TRAJ_MAGIC;
     pdb->file = md_file_open(filename, MD_FILE_READ);
-    pdb->mapping = md_file_mem_map(pdb->file);
     pdb->frame_offsets = cache.frame_offsets;
     pdb->allocator = alloc;
     pdb->mutex = md_mutex_create();
@@ -951,7 +971,7 @@ void md_pdb_trajectory_free(md_trajectory_i* traj) {
         ASSERT(false);
         return;
     }
-    if (pdb->mapping) md_file_mem_unmap(pdb->mapping);
+    
     if (pdb->file) md_file_close(pdb->file);
     md_mutex_destroy(&pdb->mutex);
     md_arena_allocator_destroy(pdb->allocator);
@@ -962,7 +982,7 @@ static md_trajectory_loader_i pdb_traj_loader = {
     md_pdb_trajectory_free,
 };
 
-md_trajectory_loader_i* md_pdb_trajectory_loader() {
+md_trajectory_loader_i* md_pdb_trajectory_loader(void) {
     return &pdb_traj_loader;
 }
 

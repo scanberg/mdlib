@@ -7,13 +7,15 @@
 
 #include <stdint.h>
 
-// We are sneaky, we encode the secondary structure as a uint8x4 unorm where the the components encode the fraction of each secondary structure type
-// This allows us later on to interpolate between them
+#if DEBUG
+#include <core/md_log.h>
+#endif
+
 enum {
     MD_SECONDARY_STRUCTURE_UNKNOWN  = 0,
     MD_SECONDARY_STRUCTURE_COIL     = 0x000000FF,
     MD_SECONDARY_STRUCTURE_HELIX    = 0x0000FF00,
-    MD_SECONDARY_STRUCTURE_SHEET    = 0x00FF0000
+    MD_SECONDARY_STRUCTURE_SHEET    = 0x00FF0000,
 };
 
 enum {
@@ -32,24 +34,39 @@ enum {
     MD_UNIT_CELL_FLAG_PBC_X         = 4,
     MD_UNIT_CELL_FLAG_PBC_Y         = 8,
     MD_UNIT_CELL_FLAG_PBC_Z         = 16,
+    MD_UNIT_CELL_FLAG_PBC_ANY       = 4 | 8 | 16,
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
-// Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards
+// Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
-    MD_FLAG_RES_BEG 		    = 1,
-    MD_FLAG_RES_END 		    = 2,
-    MD_FLAG_CHAIN_BEG 		    = 4,
-    MD_FLAG_CHAIN_END 		    = 8,
-    MD_FLAG_HETATM              = 16,
-    MD_FLAG_AMINO_ACID		    = 32,
-    MD_FLAG_NUCLEOBASE          = 64,
-    MD_FLAG_NUCLEOTIDE	        = 128,
-    MD_FLAG_WATER			    = 256,
-    MD_FLAG_ION			        = 512,
+    MD_FLAG_RES_BEG 		    = 0x1,
+    MD_FLAG_RES_END 		    = 0x2,
+    MD_FLAG_RES                 = 0x4,
+    MD_FLAG_CHAIN_BEG 		    = 0x8,
+    MD_FLAG_CHAIN_END 		    = 0x10,
+    MD_FLAG_CHAIN 		        = 0x20,
+    MD_FLAG_HETATM              = 0x40,
+    MD_FLAG_AMINO_ACID		    = 0x80,
+    MD_FLAG_SIDE_CHAIN          = 0x100,
+    MD_FLAG_NUCLEOTIDE	        = 0x200,
+    MD_FLAG_NUCLEOBASE          = 0x400,
+    MD_FLAG_NUCLEOSIDE          = 0x800,
+    MD_FLAG_WATER			    = 0x1000,
+    MD_FLAG_ION			        = 0x2000,
+    MD_FLAG_BACKBONE            = 0x4000,
 
-    MD_FLAG_AROMATIC            = 1024,
-    MD_FLAG_INTER_BOND          = 2048,
+    // Experimental
+    MD_FLAG_SP                  = 0x10000,
+    MD_FLAG_SP2                 = 0x20000,
+    MD_FLAG_SP3                 = 0x40000,
+    MD_FLAG_AROMATIC            = 0x80000,
+};
+
+// In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
+enum {
+    MD_BOND_FLAG_AROMATIC       = 0x10,
+    MD_BOND_FLAG_INTER          = 0x20,
 };
 
 typedef int32_t     md_atom_idx_t;
@@ -90,12 +107,13 @@ typedef struct md_bond_pair_t {
     md_atom_idx_t idx[2];
 } md_bond_pair_t;
 
-typedef struct md_backbone_atoms_t {
+typedef struct md_protein_backbone_atoms_t {
     md_atom_idx_t n;
     md_atom_idx_t ca;
     md_atom_idx_t c;
     md_atom_idx_t o;
-} md_backbone_atoms_t;
+    md_atom_idx_t hn;
+} md_protein_backbone_atoms_t;
 
 // Backbone angles
 // φ (phi) is the angle in the chain C' − N − Cα − C'
@@ -105,6 +123,15 @@ typedef struct md_backbone_angles_t {
     float phi;
     float psi;
 } md_backbone_angles_t;
+
+typedef struct md_nucleic_backbone_atoms_t {
+    md_atom_idx_t c5;
+    md_atom_idx_t c4;
+    md_atom_idx_t c3;
+    md_atom_idx_t o3;
+    md_atom_idx_t p;
+    md_atom_idx_t o5;
+} md_nucleic_backbone_atoms_t;
 
 // Miniature string buffer with explicit length
 // It can store up to 6 characters + null terminator which makes it compatible as a C-string
@@ -126,6 +153,7 @@ typedef struct md_label_t {
 // It is used to represent connected structures, rings and atom connectivity etc.
 
 typedef struct md_index_data_t {
+    struct md_allocator_i* alloc;
     md_array(uint32_t) offsets;
     md_array(int32_t)  indices;
 } md_index_data_t;
@@ -163,28 +191,39 @@ static inline md_label_t make_label(str_t str) {
 }
 
 // Access to substructure data
-static inline void md_index_data_free (md_index_data_t* data, md_allocator_i* alloc) {
+static inline void md_index_data_free (md_index_data_t* data) {
     ASSERT(data);
-    ASSERT(alloc);
-    if (data->offsets) md_array_free(data->offsets,  alloc);
-    if (data->indices) md_array_free(data->indices, alloc);
+    if (data->offsets) {
+        ASSERT(data->alloc);
+        md_array_free(data->offsets,  data->alloc);
+    }
+    if (data->indices) {
+        ASSERT(data->alloc);
+        md_array_free(data->indices,  data->alloc);
+    }
+#if DEBUG
     MEMSET(data, 0, sizeof(md_index_data_t));
+#endif
 }
 
-static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count, md_allocator_i* alloc) {
+static inline size_t md_index_data_push_arr (md_index_data_t* data, const int32_t* index_data, size_t index_count) {
     ASSERT(data);
-    ASSERT(alloc);
-    ASSERT(index_count >= 0);
+    ASSERT(data->alloc);
+    ASSERT(index_count > 0);
 
     if (md_array_size(data->offsets) == 0) {
-        md_array_push(data->offsets, 0, alloc);
+        md_array_push(data->offsets, 0, data->alloc);
     }
 
-    int64_t offset = *md_array_last(data->offsets);
+    size_t offset = *md_array_last(data->offsets);
     if (index_count > 0) {
-        ASSERT(index_data);
-        md_array_push_array(data->indices, index_data, index_count, alloc);
-        md_array_push(data->offsets, (int32_t)md_array_size(data->indices), alloc);
+        if (index_data) {
+            md_array_push_array(data->indices, index_data, index_count, data->alloc);
+        } else {
+            md_array_grow(data->indices, md_array_size(data->indices) + index_count, data->alloc);
+        }
+        offset = md_array_size(data->indices);
+        md_array_push(data->offsets, (uint32_t)offset, data->alloc);
     }
 
     return offset;
@@ -192,26 +231,44 @@ static inline int64_t md_index_data_push_arr (md_index_data_t* data, const int32
 
 static inline void md_index_data_data_clear(md_index_data_t* data) {
     ASSERT(data);
-    md_array_shrink(data->offsets,  0);
+    md_array_shrink(data->offsets, 0);
     md_array_shrink(data->indices, 0);
 }
 
-static inline size_t md_index_data_count(md_index_data_t data) {
+static inline size_t md_index_data_num_ranges(md_index_data_t data) {
     return data.offsets ? md_array_size(data.offsets) - 1 : 0;
 }
 
 // Access to individual substructures
-static inline int32_t* md_index_range_beg(md_index_data_t data, size_t idx) {
-    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
-    return data.indices + data.offsets[idx];
+static inline int32_t* md_index_range_beg(md_index_data_t data, size_t range_idx) {
+    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
+    return data.indices + data.offsets[range_idx];
 }
 
-static inline int32_t* md_index_range_end(md_index_data_t data, size_t idx) {
-    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
-    return data.indices + data.offsets[idx+1];
+static inline int32_t* md_index_range_end(md_index_data_t data, size_t range_idx) {
+    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
+    return data.indices + data.offsets[range_idx+1];
 }
 
-static inline size_t md_index_range_size(md_index_data_t data, size_t idx) {
-    ASSERT(data.offsets && idx < md_array_size(data.offsets) - 1);
-    return data.offsets[idx+1] - data.offsets[idx];
+static inline size_t md_index_range_size(md_index_data_t data, size_t range_idx) {
+    ASSERT(data.offsets && range_idx < md_array_size(data.offsets) - 1);
+    return data.offsets[range_idx+1] - data.offsets[range_idx];
+}
+
+// Create a vec4 mask which represents the periodic dimensions from a unit cell.
+// I.e. [0,1,1,0] -> periodic in y and z, but not x
+static inline vec4_t md_unit_cell_pbc_mask(const md_unit_cell_t* unit_cell) {
+    float val;
+    MEMSET(&val, 0xFF, sizeof(val));
+    return vec4_set((unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? val : 0, 0);
+}
+
+static inline vec4_t md_unit_cell_box_ext(const md_unit_cell_t* unit_cell) {
+#if DEBUG
+    ASSERT(unit_cell);
+    if (!(unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO)) {
+        MD_LOG_DEBUG("Attempting to extract box extent from non orthogonal box");
+    }
+#endif
+    return vec4_mul(md_unit_cell_pbc_mask(unit_cell), vec4_set(unit_cell->basis.elem[0][0], unit_cell->basis.elem[1][1], unit_cell->basis.elem[2][2], 0));
 }

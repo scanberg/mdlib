@@ -12,7 +12,7 @@
     void* mem = 0; \
     mem = md_alloc(alloc, 16); \
     EXPECT_NE(mem, NULL); \
-    EXPECT_EQ(md_free(alloc, mem, 16), NULL); \
+    md_free(alloc, mem, 16); \
     \
     int64_t* arr = NULL; \
     for (int64_t i = 0; i < 1000; ++i) { \
@@ -39,48 +39,43 @@ static char buf[KILOBYTES(16)];
 
 // COMMON TESTS
 UTEST(allocator, default) {
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
     COMMON_ALLOCATOR_TEST_BODY
 }
 
 UTEST(allocator, default_temp) {
-    md_allocator_i* alloc = md_temp_allocator;
+    md_allocator_i* alloc = md_get_temp_allocator();
     COMMON_ALLOCATOR_TEST_BODY
 }
 
 UTEST(allocator, arena) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
     COMMON_ALLOCATOR_TEST_BODY
     md_arena_allocator_destroy(alloc);
 }
 
 UTEST(allocator, linear_generic) {
-    md_linear_allocator_t linear;
-    md_linear_allocator_init(&linear, buf, sizeof(buf));
-    md_allocator_i linear_alloc = md_linear_allocator_create_interface(&linear);
-    md_allocator_i* alloc = &linear_alloc;
+    md_allocator_i* alloc = md_linear_allocator_create(buf, sizeof(buf));
     COMMON_ALLOCATOR_TEST_BODY
 }
 
 UTEST(allocator, ring_generic) {
-    md_ring_allocator_t ring;
-    md_ring_allocator_init(&ring, buf, sizeof(buf));
-    md_allocator_i ring_alloc = md_ring_allocator_create_interface(&ring);
-    md_allocator_i* alloc = &ring_alloc;
+    md_allocator_i* alloc = md_ring_allocator_create(buf, sizeof(buf));
     COMMON_ALLOCATOR_TEST_BODY
 }
 
-
 // @NOTE: Pool is an outlier here, since it is meant for allocations of a fixed size, thus cannot be tested with the common allocator test
-
 UTEST(allocator, pool) {
-    md_allocator_i* pool = md_pool_allocator_create(md_heap_allocator, sizeof(uint64_t));
+    md_allocator_i* pool = md_pool_allocator_create(md_get_heap_allocator(), sizeof(uint64_t));
+    md_allocator_i* heap = md_get_heap_allocator();
 
-    uint64_t **items = {0};
+    md_array(uint64_t*) items = {0};
 
-    for (int j = 0; j < 1000; ++j) {
+    for (int
+        j = 0; j < 1000; ++j) {
         for (int i = 0; i < 1000; ++i) {
-            uint64_t *item = *md_array_push(items, md_alloc(pool, sizeof(uint64_t)), md_heap_allocator);
+            uint64_t *item = md_alloc(pool, sizeof(uint64_t));
+            md_array_push(items, item, heap);
             *item = i;
         }
 
@@ -102,11 +97,12 @@ UTEST(allocator, pool) {
         }
     }
 
-    md_array_free(items, md_heap_allocator);
+    md_array_free(items, heap);
+    md_pool_allocator_destroy(pool);
 }
 
 UTEST(allocator, arena_extended) {
-    md_allocator_i* arena = md_arena_allocator_create(md_heap_allocator, MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_ARENA_ALLOCATOR_DEFAULT_PAGE_SIZE);
 
     for (int j = 0; j < 1000; ++j) {
         EXPECT_EQ((uint64_t)md_alloc(arena, 16) % 16, 0ULL); // Expect to be aligned to 16 bytes
@@ -139,35 +135,32 @@ UTEST(allocator, arena_extended) {
 }
 
 UTEST(allocator, vm_arena) {
-    md_vm_arena_t arena;
-    md_vm_arena_init(&arena, GIGABYTES(4));
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    ASSERT_TRUE(arena);
 
     for (uint32_t i = 0; i < 1000; ++i) {
         size_t size = rand() % 63 + 1;
-        void* mem = md_vm_arena_push(&arena, size);
-        memset(mem, 0, size);   // Important to touch memory in order to validate that it is writable
+        void* mem = md_vm_arena_push(arena, size);
+        MEMSET(mem, 0, size);   // Important to touch memory in order to validate that it is writable
     }
 
-    md_vm_arena_reset(&arena);
+    md_vm_arena_reset(arena);
 
     for (uint32_t i = 0; i < 1000; ++i) {
         size_t size = rand() % 127 + 1;
-        void* mem = md_vm_arena_push_aligned(&arena, size, 32);
-        memset(mem, 0, size); // Important to touch memory in order to validate that it is writable
+        void* mem = md_vm_arena_push_aligned(arena, size, 32);
+        MEMSET(mem, 0, size); // Important to touch memory in order to validate that it is writable
+        md_vm_arena_pop(arena, size);
     }
 
-    md_vm_arena_free(&arena);
+    md_vm_arena_destroy(arena);
 }
 
 UTEST(allocator, vm_arena_generic) {
-    md_vm_arena_t arena;
-    md_vm_arena_init(&arena, GIGABYTES(4));
-    md_allocator_i vm_alloc = md_vm_arena_create_interface(&arena);
-    md_allocator_i* alloc = &vm_alloc;
-
+    md_allocator_i* alloc = md_vm_arena_create(GIGABYTES(4));
+    ASSERT_TRUE(alloc);
     COMMON_ALLOCATOR_TEST_BODY
-
-    md_vm_arena_free(&arena);
+    md_vm_arena_destroy(alloc);
 }
 
 
@@ -186,35 +179,51 @@ UTEST(allocator, vm) {
 }
 
 UTEST(allocator, linear) {
-    md_linear_allocator_t linear;
-    md_linear_allocator_init(&linear, buf, sizeof(buf));
+    md_allocator_i* linear = md_linear_allocator_create(buf, sizeof(buf));
 
     for (uint32_t i = 0; i < 1000; ++i) {
-        md_linear_allocator_push(&linear, sizeof(uint64_t));
+        md_linear_allocator_push(linear, sizeof(uint64_t));
     }
 
     for (uint32_t i = 0; i < 500; ++i) {
-        md_linear_allocator_pop(&linear, sizeof(uint64_t));
+        md_linear_allocator_pop(linear, sizeof(uint64_t));
     }
 
     for (uint32_t i = 0; i < 1000; ++i) {
-        md_linear_allocator_push_aligned(&linear, sizeof(uint64_t), 32);
+        md_linear_allocator_push_aligned(linear, sizeof(uint64_t), 32);
     }
 }
 
 UTEST(allocator, ring) {
-    md_ring_allocator_t ring;
-    md_ring_allocator_init(&ring, buf, sizeof(buf));
+    md_allocator_i* ring = md_ring_allocator_create(buf, sizeof(buf));
 
-    for (uint32_t i = 0; i < 1000; ++i) {
-        md_ring_allocator_push(&ring, sizeof(uint64_t));
+    for (uint32_t i = 0; i < 100000; ++i) {
+        uint32_t size = i % 20 + 1;
+        md_ring_allocator_push(ring, size);
     }
 
     for (uint32_t i = 0; i < 500; ++i) {
-        md_ring_allocator_pop(&ring, sizeof(uint64_t));
+        md_ring_allocator_pop(ring, sizeof(uint64_t));
     }
 
     for (uint32_t i = 0; i < 1000; ++i) {
-        md_ring_allocator_push_aligned(&ring, sizeof(uint64_t), 32);
+        md_ring_allocator_push_aligned(ring, sizeof(uint64_t), 32);
+    }
+}
+
+UTEST(allocator, temp) {
+    md_allocator_i* ring = md_get_temp_allocator();
+
+    for (uint32_t i = 0; i < 100000; ++i) {
+        uint32_t size = i % 20 + 1;
+        md_ring_allocator_push(ring, size);
+    }
+
+    for (uint32_t i = 0; i < 500; ++i) {
+        md_ring_allocator_pop(ring, sizeof(uint64_t));
+    }
+
+    for (uint32_t i = 0; i < 1000; ++i) {
+        md_ring_allocator_push_aligned(ring, sizeof(uint64_t), 32);
     }
 }

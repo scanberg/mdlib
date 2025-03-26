@@ -16,10 +16,10 @@ extern "C" {
 
 // ### MISC OS ###
 // returns total physical ram available on the machine
-size_t md_os_physical_ram();
+size_t md_os_physical_ram(void);
 
 // returns number of processors available on machine
-size_t md_os_num_processors();
+size_t md_os_num_processors(void);
 
 // ### PATH ###
 // Gets the current working directory

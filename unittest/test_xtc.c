@@ -11,7 +11,7 @@
 
 UTEST(xtc, trajectory_i) {
     const str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/catalyst.xtc");
-    md_trajectory_i* traj = md_xtc_trajectory_create(path, md_heap_allocator);
+    md_trajectory_i* traj = md_xtc_trajectory_create(path, md_get_heap_allocator(), MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
     ASSERT_TRUE(traj);
 
     const int64_t num_atoms = md_trajectory_num_atoms(traj);
@@ -21,7 +21,7 @@ UTEST(xtc, trajectory_i) {
     EXPECT_EQ(num_frames, 501);
 
     const int64_t mem_size = num_atoms * 3 * sizeof(float);
-    void* mem_ptr = md_alloc(md_heap_allocator, mem_size);
+    void* mem_ptr = md_alloc(md_get_heap_allocator(), mem_size);
     float *x = (float*)mem_ptr;
     float *y = (float*)mem_ptr + num_atoms * 1;
     float *z = (float*)mem_ptr + num_atoms * 2;
@@ -32,6 +32,6 @@ UTEST(xtc, trajectory_i) {
         EXPECT_TRUE(md_trajectory_load_frame(traj, i, &header, x, y, z));
     }
 
-    md_free(md_heap_allocator, mem_ptr, mem_size);
+    md_free(md_get_heap_allocator(), mem_ptr, mem_size);
     md_xtc_trajectory_free(traj);
 }

@@ -77,7 +77,6 @@ typedef struct md_buffered_reader_t {
 
 static inline md_buffered_reader_t md_buffered_reader_from_file(char* buf, size_t cap, md_file_o* file) {
     ASSERT(buf);
-    ASSERT(cap > 0);
     ASSERT(file);
     
     md_buffered_reader_t lr = {
@@ -103,8 +102,7 @@ static inline bool md_buffered_reader_extract_line(str_t* line, md_buffered_read
     ASSERT(line);
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
-        ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
+        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -119,8 +117,7 @@ static inline bool md_buffered_reader_peek_line(str_t* line, md_buffered_reader_
     ASSERT(line);
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
-        ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
+        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -134,8 +131,7 @@ static inline bool md_buffered_reader_skip_line(md_buffered_reader_t* r) {
     ASSERT(r);
     if (r->file && !r->str.len) {
         ASSERT(r->buf);
-        ASSERT(r->cap > 0);
-        const int64_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
+        const size_t bytes_read = md_parse_read_lines(r->file, r->buf, r->cap);
         if (bytes_read > 0) {
             r->str.ptr = r->buf;
             r->str.len = bytes_read;
@@ -361,11 +357,6 @@ static inline __m128i mask(size_t n) {
     return _mm_cmpgt_epi8(_mm_set1_epi8((char)n), _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
 }
 
-static inline int find_first_char(__m128i v, char c) {
-    __m128i m = _mm_cmpeq_epi8(v, _mm_set1_epi8(c));
-    return ctz32(_mm_movemask_epi8(m));
-}
-
 static inline uint64_t
 #if MD_COMPILER_GCC || MD_COMPILER_CLANG
 __attribute__((target("sse4.1")))
@@ -404,7 +395,7 @@ static inline uint64_t parse_u64(const char* ptr, int64_t len) {
 
 static inline uint64_t load_u64(const char* ptr) {
     uint64_t val;
-    memcpy(&val, ptr, sizeof(val));
+    MEMCPY(&val, ptr, sizeof(val));
     return val;
 }
 
@@ -481,6 +472,11 @@ struct float_token_t {
     uint8_t _unused;
 };
 
+static inline int find_first_char(__m128i v, char c) {
+    __m128i m = _mm_cmpeq_epi8(v, _mm_set1_epi8(c));
+    return ctz32(_mm_movemask_epi8(m));
+}
+
 // Specialized version where the the integer and fractional part each
 // are expected to fit into 8 characters.
 static inline double parse_float_wide(const char* ptr, size_t len) {
@@ -528,7 +524,6 @@ static inline bool extract_token(str_t* tok, str_t* str) {
 // Extract multiple tokens with whitespace as delimiter
 static inline size_t extract_tokens(str_t tok_arr[], size_t tok_cap, str_t* str) {
     ASSERT(tok_arr);
-    ASSERT(tok_cap >= 0);
     ASSERT(str);
 
     size_t num_tokens = 0;
@@ -562,7 +557,6 @@ static inline bool extract_token_delim(str_t* tok, str_t* str, char delim) {
 // Extracts token with specific delimiter
 static inline size_t extract_tokens_delim(str_t tok_arr[], size_t tok_cap, str_t* str, char delim) {
     ASSERT(tok_arr);
-    ASSERT(tok_cap >= 0);
     ASSERT(str);
 
     size_t num_tokens = 0;

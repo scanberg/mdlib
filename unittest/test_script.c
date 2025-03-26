@@ -22,8 +22,8 @@
 // Create molecule for evaulation
 #define ATOM_COUNT 16
 static float mol_x[] = {1,2,3,4,5,6,7,8,1,2,3,4,5,6,7,8};
-static float mol_y[] = {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1};
-static float mol_z[] = {2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2};
+static float mol_y[] = {4,3,2,1,4,3,2,1,1,1,1,1,1,1,1,1};
+static float mol_z[] = {3,2,1,4,3,2,1,2,2,2,2,2,2,2,2,2};
 static float mol_r[] = {1,2,3,4,4,4,5,1,1,2,3,4,4,4,5,1};
 static float mol_m[] = {1,2,2,2,2,4,4,4,1,2,2,2,2,4,4,4};
 static uint8_t mol_e[] = {1,8,1,2,6,8,6,8,1,8,1,2,6,7,6,8};
@@ -103,8 +103,7 @@ md_molecule_t test_mol = {
 
 struct script {
     bool initialized;
-    md_vm_arena_t arena;
-    md_allocator_i alloc;
+    md_allocator_i* arena;
     md_molecule_t amy;
     md_molecule_t ala;
     md_trajectory_i* ala_traj;
@@ -115,27 +114,26 @@ static md_molecule_t* ala = 0;
 static md_trajectory_i* ala_traj = 0;
 
 UTEST_F_SETUP(script) {
-    md_vm_arena_init(&utest_fixture->arena, GIGABYTES(4));
-    utest_fixture->alloc = md_vm_arena_create_interface(&utest_fixture->arena);
+    utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
 
-    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"),   NULL, &utest_fixture->alloc));
-    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, &utest_fixture->alloc));
+    ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&utest_fixture->amy, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"),   NULL, utest_fixture->arena));
+    ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&utest_fixture->ala, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, utest_fixture->arena));
 
-    md_util_molecule_postprocess(&utest_fixture->amy, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
-    md_util_molecule_postprocess(&utest_fixture->ala, &utest_fixture->alloc, MD_UTIL_POSTPROCESS_ALL);
+    md_util_molecule_postprocess(&utest_fixture->amy, utest_fixture->arena, MD_UTIL_POSTPROCESS_ALL);
+    md_util_molecule_postprocess(&utest_fixture->ala, utest_fixture->arena, MD_UTIL_POSTPROCESS_ALL);
 
-    utest_fixture->ala_traj = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), &utest_fixture->alloc);
+    utest_fixture->ala_traj = md_pdb_trajectory_create(STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), utest_fixture->arena, MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE);
 }
 
 UTEST_F_TEARDOWN(script) {
-    md_vm_arena_free(&utest_fixture->arena);
+    md_vm_arena_destroy(utest_fixture->arena);
 }
 
 static bool eval_selection(md_bitfield_t* bitfield, str_t expr, md_molecule_t* mol) {
     ASSERT(bitfield);
     ASSERT(mol);
     data_t data = {0};
-    if (eval_expression(&data, expr, mol, md_temp_allocator)) {
+    if (eval_expression(&data, expr, mol, md_get_temp_allocator())) {
         if (data.type.base_type == TYPE_BITFIELD) {
             md_bitfield_t* res = (md_bitfield_t*)data.ptr;
             const int64_t len = type_info_array_len(data.type);
@@ -170,6 +168,69 @@ static void print_bits(uint64_t* bits, uint64_t num_bits) {
     }
 }
 
+#define SETUP_EVAL_CTX(ir, mol, arena) \
+	md_allocator_i temp_alloc = md_vm_arena_create_interface(&arena); \
+	eval_context_t ctx = { \
+		.ir = ir, \
+		.mol = mol, \
+		.temp_arena = &temp_arena, \
+		.temp_alloc = &temp_alloc, \
+		.alloc = &temp_alloc, \
+	}
+
+ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_molecule_t* mol, md_allocator_i* arena) {
+    // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
+    // Which means that the actual string data is contained within the ir->arena => temp_alloc
+    ir->str = str_copy(expr, ir->arena);
+
+    tokenizer_t tokenizer = tokenizer_init(ir->str);
+    bool result = false;
+
+    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = arena});
+    node = prune_expressions(node);
+    if (node) {
+        eval_context_t ctx = {
+            .ir = ir,
+            .mol = mol,
+            .temp_alloc = arena,
+            .alloc = arena,
+        };
+
+        if (static_check_node(node, &ctx)) {
+            return node;
+        }
+    }
+
+    if (ir->errors) {
+        for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
+            MD_LOG_ERROR("%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
+        }
+    }
+    return NULL;
+}
+
+UTEST_F(script, common_subexpression_elimination) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
+    str_t src = STR_LIT(
+        "x = element('H') in resname('ALA');\n"
+        "y = element('O') in resname('ALA');\n"
+    );
+
+    bool result = md_script_ir_compile_from_source(ir, src, &utest_fixture->ala, NULL, NULL);
+    ASSERT_TRUE(result);
+
+    identifier_t* x = get_identifier(ir, STR_LIT("x"));
+    identifier_t* y = get_identifier(ir, STR_LIT("y"));
+
+    uint64_t hx = hash_node(x->node, 0);
+    uint64_t hy = hash_node(y->node, 0);
+
+    EXPECT_NE(hx, hy);
+
+    md_vm_arena_destroy(arena);
+}
+
 UTEST(script, type_equal) {
     {
         type_info_t a = {.base_type = TYPE_INT, .dim = {1}};
@@ -193,7 +254,7 @@ UTEST(script, type_equal) {
 UTEST(script, basic_expressions) {
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("'this is a string'"), &test_mol, md_temp_allocator);
+        bool result = eval_expression(&data, STR_LIT("'this is a string'"), &test_mol, md_get_temp_allocator());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_STRING);
@@ -204,7 +265,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("2 + 5"), &test_mol, md_temp_allocator);
+        bool result = eval_expression(&data, STR_LIT("2 + 5"), &test_mol, md_get_temp_allocator());
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_INT);
             EXPECT_EQ(as_int(data), 7);
@@ -213,7 +274,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("2 + 5.0"), &test_mol, md_temp_allocator);
+        bool result = eval_expression(&data, STR_LIT("2 + 5.0"), &test_mol, md_get_temp_allocator());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
@@ -223,7 +284,7 @@ UTEST(script, basic_expressions) {
 
     {
         data_t data = {0};
-        bool result = eval_expression(&data, STR_LIT("{2,1} + {1,8}"), &test_mol, md_temp_allocator);
+        bool result = eval_expression(&data, STR_LIT("{2,1} + {1,8}"), &test_mol, md_get_temp_allocator());
         EXPECT_TRUE(result);
         if (result) {
             EXPECT_EQ(data.type.base_type, TYPE_INT);
@@ -232,60 +293,100 @@ UTEST(script, basic_expressions) {
             EXPECT_EQ(as_int_arr(data)[1], 9);
         }
     }
-}
 
-#define SETUP_EVAL_CTX(ir, mol, arena) \
-	md_allocator_i temp_alloc = md_vm_arena_create_interface(&arena); \
-	eval_context_t ctx = { \
-		.ir = ir, \
-		.mol = mol, \
-		.temp_arena = &temp_arena, \
-		.temp_alloc = &temp_alloc, \
-		.alloc = &temp_alloc, \
-	}
-
-ast_node_t* parse_and_type_check_expression(str_t expr, md_script_ir_t* ir, md_molecule_t* mol, md_vm_arena_t* temp_arena) {
-    // @HACK: We use alloc here: If the data type is a str_t, then it gets a shallow copy
-    // Which means that the actual string data is contained within the ir->arena => temp_alloc
-    ir->str = str_copy(expr, ir->arena);
-
-    md_allocator_i temp_alloc = md_vm_arena_create_interface(temp_arena);
-
-    tokenizer_t tokenizer = tokenizer_init(ir->str);
-    bool result = false;
-
-    ast_node_t* node = parse_expression(&(parse_context_t){ .ir = ir, .tokenizer = &tokenizer, .temp_alloc = &temp_alloc});
-    node = prune_expressions(node);
-    if (node) {
-        eval_context_t ctx = {
-            .ir = ir,
-            .mol = mol,
-            .temp_arena = temp_arena,
-            .temp_alloc = &temp_alloc,
-            .alloc = &temp_alloc,
-        };
-
-        if (static_check_node(node, &ctx)) {
-            return node;
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("{2.5,1.5} + {1.0,8.0}"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 2);
+            EXPECT_EQ(as_float_arr(data)[0], 3.5f);
+            EXPECT_EQ(as_float_arr(data)[1], 9.5f);
         }
     }
 
-    if (ir->errors) {
-        for (int64_t i = 0; i < md_array_size(ir->errors); ++i) {
-            MD_LOG_ERROR("%.*s", ir->errors[i].text.len, ir->errors[i].text.ptr);
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("7 - 4 + 2 - 3"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_INT);
+            EXPECT_EQ(data.type.dim[0], 1);
+            int val = as_int(data);
+            EXPECT_EQ(val, (7-4+2-3));
         }
     }
-    return NULL;
+
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("2.5 + 1.0 - 2.5 + 1.0"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 1);
+            float val = as_float(data);
+            EXPECT_EQ(val, (2.5f + 1.0f - 2.5f + 1.0f));
+        }
+    }
 }
 
-UTEST(script, assignment) {
-    SETUP_TEMP_ALLOC(GIGABYTES(1));
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+UTEST(script, type_compatability) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
 
     {
         md_script_ir_clear(ir);
 
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,2}"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("v = normalize(coord(4));"), ir, &test_mol, arena);
+        EXPECT_TRUE(node != NULL);
+        if (node) {
+            identifier_t* v = get_identifier(ir, STR_LIT("v"));
+            ASSERT_NE(NULL, v);
+            ASSERT_NE(NULL, v->data);
+            EXPECT_EQ(TYPE_FLOAT, v->data->type.base_type);
+        }
+    }
+    md_vm_arena_destroy(arena);
+}
+
+#if 0
+UTEST(script, vector_operations) {
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("vec3(2.5, 1.5, 1.0) + vec3(1.0, 8.0, 2.0)"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 3);
+            EXPECT_EQ(as_float_arr(data)[0], 3.5f);
+            EXPECT_EQ(as_float_arr(data)[1], 9.5f);
+            EXPECT_EQ(as_float_arr(data)[2], 3.0f);
+        }
+    }
+}
+
+UTEST(script, array_type_compatability) {
+    {
+        data_t data = {0};
+        bool result = eval_expression(&data, STR_LIT("coord(1) + coord(4)"), &test_mol, md_get_temp_allocator());
+        EXPECT_TRUE(result);
+        if (result) {
+            EXPECT_EQ(data.type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(data.type.dim[0], 3);
+        }
+    }
+}
+#endif
+
+UTEST(script, assignment) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
+
+    {
+        md_script_ir_clear(ir);
+
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,2}"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* a = get_identifier(ir, STR_LIT("a"));
@@ -306,7 +407,7 @@ UTEST(script, assignment) {
         md_script_ir_clear(ir);
 
         //@NOTE: Implicit conversion will kick in in the array composition converting 1 to 1.0f since that is the common 'compatible' type in array arguments
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,distance(1,2)}"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{a,b} = {1,distance(1,2)}"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* a = get_identifier(ir, STR_LIT("a"));
@@ -325,7 +426,7 @@ UTEST(script, assignment) {
 
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y,z} = coord(1)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y,z} = coord(1)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* x = get_identifier(ir, STR_LIT("x"));
@@ -351,16 +452,16 @@ UTEST(script, assignment) {
     {
         md_script_ir_clear(ir);
         // @NOTE: LHS contains 2 arguments, RHS contains 3 => No match in assignment
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y} = coord(1)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("{x,y} = coord(1)"), ir, &test_mol, arena);
         EXPECT_FALSE(node);
     }
 
-    FREE_TEMP_ALLOC();
+    md_vm_arena_destroy(arena);
 }
 
 UTEST(script, array) {
-    SETUP_TEMP_ALLOC(GIGABYTES(1));
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
 
     {
         str_t src = STR_LIT(
@@ -391,8 +492,67 @@ UTEST(script, array) {
     }
 
     {
+        str_t src = STR_LIT(
+            "d1 = distance(1,2) in residue(1:2);\n"
+            "d2 = distance(1,2) in residue(2:4);\n"
+            "d = {d1, d2};"
+        );
+
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = coord(1) in residue(:)"), ir, &test_mol, &vm_arena);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(result);
+        identifier_t* d1 = get_identifier(ir, STR_LIT("d1"));
+        identifier_t* d2 = get_identifier(ir, STR_LIT("d2"));
+        identifier_t* d  = get_identifier(ir, STR_LIT("d"));
+
+        if (d1) {
+            EXPECT_EQ(d1->data->type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(d1->data->type.dim[0], 2);
+        }
+        if (d2) {
+            EXPECT_EQ(d2->data->type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(d2->data->type.dim[0], 3);
+        }
+        if (d) {
+            EXPECT_EQ(d->data->type.base_type,  TYPE_FLOAT);
+            EXPECT_EQ(d->data->type.dim[0], 5);
+        }
+    }
+
+    {
+        str_t src = STR_LIT(
+            "c1 = coord(1:2);\n"
+            "c2 = coord(4:6);\n"
+            "c = {c1, c2};"
+        );
+
+        md_script_ir_clear(ir);
+        bool result = md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(result);
+        identifier_t* c1 = get_identifier(ir, STR_LIT("c1"));
+        identifier_t* c2 = get_identifier(ir, STR_LIT("c2"));
+        identifier_t* c  = get_identifier(ir, STR_LIT("c"));
+
+        if (c1) {
+            EXPECT_EQ(c1->data->type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(c1->data->type.dim[0], 2);
+            EXPECT_EQ(c1->data->type.dim[1], 3);
+        }
+        if (c2) {
+            EXPECT_EQ(c2->data->type.base_type, TYPE_FLOAT);
+            EXPECT_EQ(c2->data->type.dim[0], 3);
+            EXPECT_EQ(c1->data->type.dim[1], 3);
+        }
+        if (c) {
+            EXPECT_EQ(c->data->type.base_type,  TYPE_FLOAT);
+            EXPECT_EQ(c->data->type.dim[0], 5);
+            EXPECT_EQ(c->data->type.dim[1], 3);
+        }
+    }
+
+    {
+        md_script_ir_clear(ir);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = coord(1) in residue(:)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -404,19 +564,18 @@ UTEST(script, array) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = angle(1,2,3) in residue(:)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = angle(1,2,3) in residue(:)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
             ASSERT_NE(NULL, ident);
             ASSERT_NE(NULL, ident->data);
             EXPECT_EQ(4, ident->data->type.dim[0]);
-            EXPECT_EQ(1, ident->data->type.dim[1]);
         }
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = {angle(1,2,3), angle(3,2,1)} in residue(:)"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = {angle(1,2,3), angle(3,2,1)} in residue(:)"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -428,27 +587,26 @@ UTEST(script, array) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = {angle(1,2,3) in residue(:), angle(3,2,1) in residue(:)}"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = {angle(1,2,3) in residue(:), angle(3,2,1) in residue(:)}"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
             ASSERT_NE(NULL, ident);
             ASSERT_NE(NULL, ident->data);
-            EXPECT_EQ(2, ident->data->type.dim[0]);
-            EXPECT_EQ(4, ident->data->type.dim[1]);
+            EXPECT_EQ(8, ident->data->type.dim[0]);
         }
     }
 
-    FREE_TEMP_ALLOC();
+    md_vm_arena_destroy(arena);
 }
 
 UTEST(script, array_subscript) {
-    SETUP_TEMP_ALLOC(GIGABYTES(1));
-    md_script_ir_t* ir = create_ir(&temp_alloc);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
 
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[1]"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[1]"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -460,7 +618,7 @@ UTEST(script, array_subscript) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[1,:]"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[1,:]"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -472,7 +630,7 @@ UTEST(script, array_subscript) {
     }
     {
         md_script_ir_clear(ir);
-        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[:,1]"), ir, &test_mol, &vm_arena);
+        ast_node_t* node = parse_and_type_check_expression(STR_LIT("x = (coord(1) in residue(:))[:,1]"), ir, &test_mol, arena);
         EXPECT_TRUE(node != NULL);
         if (node) {
             identifier_t* ident = get_identifier(ir, STR_LIT("x"));
@@ -487,6 +645,7 @@ UTEST(script, array_subscript) {
             "xyz  = coord(:);"
             "xyz1 = xyz[1,:];"
             "xyz2 = xyz[2,2:];"
+            "xyz3 = xyz[2];"
             "x    = xyz[:,1];"
             "y    = xyz[:,2];"
             "z    = xyz[:,3];"
@@ -497,9 +656,8 @@ UTEST(script, array_subscript) {
         eval_context_t ctx = {
             .ir = ir,
             .mol = &test_mol,
-            .temp_arena = &vm_arena,
-            .temp_alloc = &temp_alloc,
-            .alloc = &temp_alloc,
+            .temp_alloc = arena,
+            .alloc = arena,
         };
 
         identifier_t* xyz = get_identifier(ir, STR_LIT("xyz"));
@@ -517,7 +675,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0, xyz1->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, xyz1->data->type, &temp_alloc);
+            allocate_data(&data, xyz1->data->type, arena);
             evaluate_node(&data, xyz1->node, &ctx);
             const float* coord = (const float*)data.ptr;
             EXPECT_NEAR(mol_x[0], coord[0], 1.0e-6f);
@@ -533,11 +691,27 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0, xyz2->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, xyz2->data->type, &temp_alloc);
+            allocate_data(&data, xyz2->data->type, arena);
             evaluate_node(&data, xyz2->node, &ctx);
             const float* coord = (const float*)data.ptr;
             EXPECT_NEAR(mol_y[1], coord[0], 1.0e-6f);
             EXPECT_NEAR(mol_z[1], coord[1], 1.0e-6f);
+        }
+
+        identifier_t* xyz3 = get_identifier(ir, STR_LIT("xyz3"));
+        EXPECT_TRUE(xyz3);
+        if (xyz3) {
+            EXPECT_TRUE(xyz1->data);
+            EXPECT_EQ(3, xyz3->data->type.dim[0]);
+            EXPECT_EQ(0, xyz3->data->type.dim[1]);
+
+            data_t data = {0};
+            allocate_data(&data, xyz3->data->type, arena);
+            evaluate_node(&data, xyz3->node, &ctx);
+            const float* coord = (const float*)data.ptr;
+            EXPECT_NEAR(mol_x[1], coord[0], 1.0e-6f);
+            EXPECT_NEAR(mol_y[1], coord[1], 1.0e-6f);
+            EXPECT_NEAR(mol_z[1], coord[2], 1.0e-6f);
         }
 
         identifier_t* x = get_identifier(ir, STR_LIT("x"));
@@ -548,7 +722,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0,  x->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, x->data->type, &temp_alloc);
+            allocate_data(&data, x->data->type, arena);
             evaluate_node(&data, x->node, &ctx);
             const float* coord = (const float*)data.ptr;
             for (int i = 0; i < ATOM_COUNT; ++i) {
@@ -564,7 +738,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0,  y->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, y->data->type, &temp_alloc);
+            allocate_data(&data, y->data->type, arena);
             evaluate_node(&data, y->node, &ctx);
             const float* coord = (const float*)data.ptr;
             for (int i = 0; i < ATOM_COUNT; ++i) {
@@ -580,7 +754,7 @@ UTEST(script, array_subscript) {
             EXPECT_EQ(0,  z->data->type.dim[1]);
 
             data_t data = {0};
-            allocate_data(&data, z->data->type, &temp_alloc);
+            allocate_data(&data, z->data->type, arena);
             evaluate_node(&data, z->node, &ctx);
             const float* coord = (const float*)data.ptr;
             for (int i = 0; i < ATOM_COUNT; ++i) {
@@ -589,14 +763,141 @@ UTEST(script, array_subscript) {
         }
     }
 
-    FREE_TEMP_ALLOC();
+    md_vm_arena_destroy(arena);
+}
+
+UTEST(script, dim_op) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    md_script_ir_t* ir = create_ir(arena);
+
+    {
+        str_t src = STR_LIT(
+            "xyz  = coord(1:15);\n"
+            "flat = flatten(xyz);\n"
+            "xyz_t = transpose(xyz);\n"
+            "sw = shape_weights(residue(1:4));\n"
+            "{lin,plan,iso} = transpose(shape_weights(residue(1:4)));"
+        );
+        md_script_ir_compile_from_source(ir, src, &test_mol, NULL, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        eval_context_t ctx = {
+            .ir = ir,
+            .mol = &test_mol,
+            .temp_alloc = arena,
+            .alloc = arena,
+        };
+
+        {
+            identifier_t* xyz = get_identifier(ir, STR_LIT("xyz"));
+            EXPECT_TRUE(xyz);
+            if (xyz) {
+                EXPECT_EQ(TYPE_FLOAT, xyz->data->type.base_type);
+                EXPECT_EQ(15, xyz->data->type.dim[0]);
+                EXPECT_EQ(3,  xyz->data->type.dim[1]);
+            }
+
+            data_t data = {0};
+            allocate_data(&data, xyz->data->type, arena);
+            evaluate_node(&data, xyz->node, &ctx);
+            const vec3_t* coord = (const vec3_t*)data.ptr;
+            for (int i = 0; i < xyz->data->type.dim[0]; ++i) {
+                EXPECT_NEAR(mol_x[i], coord[i].x, 1.0e-6f);
+                EXPECT_NEAR(mol_y[i], coord[i].y, 1.0e-6f);
+                EXPECT_NEAR(mol_z[i], coord[i].z, 1.0e-6f);
+            }
+        }
+
+        {
+            identifier_t* flat = get_identifier(ir, STR_LIT("flat"));
+            EXPECT_TRUE(flat);
+            if (flat) {
+                EXPECT_EQ(TYPE_FLOAT, flat->data->type.base_type);
+                EXPECT_EQ(45, flat->data->type.dim[0]);
+                EXPECT_EQ(0,  flat->data->type.dim[1]);
+            }
+
+            data_t data = {0};
+            allocate_data(&data, flat->data->type, arena);
+            evaluate_node(&data, flat->node, &ctx);
+            const float* coord = (const float*)data.ptr;
+            for (int i = 0; i < flat->data->type.dim[0]; ++i) {
+                switch(i % 3) {
+                case 0: EXPECT_NEAR(mol_x[i / 3], coord[i], 1.0e-6f); break;
+                case 1: EXPECT_NEAR(mol_y[i / 3], coord[i], 1.0e-6f); break;
+                case 2: EXPECT_NEAR(mol_z[i / 3], coord[i], 1.0e-6f); break;
+                }
+            }
+        }
+
+        {
+            identifier_t* xyz_t = get_identifier(ir, STR_LIT("xyz_t"));
+            EXPECT_TRUE(xyz_t);
+            if (xyz_t) {
+                EXPECT_EQ(TYPE_FLOAT, xyz_t->data->type.base_type);
+                EXPECT_EQ(3,  xyz_t->data->type.dim[0]);
+                EXPECT_EQ(15, xyz_t->data->type.dim[1]);
+
+                data_t data = {0};
+                allocate_data(&data, xyz_t->data->type, arena);
+                evaluate_node(&data, xyz_t->node, &ctx);
+                const float* coords = (const float*)data.ptr;
+                const float* x = coords + 0 * xyz_t->data->type.dim[1];
+                const float* y = coords + 1 * xyz_t->data->type.dim[1];
+                const float* z = coords + 2 * xyz_t->data->type.dim[1];
+                for (int i = 0; i < xyz_t->data->type.dim[1]; ++i) {
+                    EXPECT_NEAR(mol_x[i], x[i], 1.0e-6f);
+                    EXPECT_NEAR(mol_y[i], y[i], 1.0e-6f);
+                    EXPECT_NEAR(mol_z[i], z[i], 1.0e-6f);
+                }
+            }
+        }
+
+        {
+            identifier_t* sw = get_identifier(ir, STR_LIT("sw"));
+            EXPECT_TRUE(sw);
+            if (sw) {
+                EXPECT_EQ(TYPE_FLOAT, sw->data->type.base_type);
+                EXPECT_EQ(4, sw->data->type.dim[0]);
+                EXPECT_EQ(3, sw->data->type.dim[1]);
+            }
+        }
+
+        {
+            identifier_t* lin  = get_identifier(ir, STR_LIT("lin"));
+            identifier_t* plan = get_identifier(ir, STR_LIT("plan"));
+            identifier_t* iso  = get_identifier(ir, STR_LIT("iso"));
+
+            EXPECT_TRUE(lin);
+            EXPECT_TRUE(plan);
+            EXPECT_TRUE(iso);
+
+            if (lin) {
+                EXPECT_EQ(TYPE_FLOAT, lin->data->type.base_type);
+                EXPECT_EQ(4, lin->data->type.dim[0]);
+                EXPECT_EQ(0, lin->data->type.dim[1]);
+            }
+            if (plan) {
+                EXPECT_EQ(TYPE_FLOAT, plan->data->type.base_type);
+                EXPECT_EQ(4, plan->data->type.dim[0]);
+                EXPECT_EQ(0, plan->data->type.dim[1]);
+            }
+            if (iso) {
+                EXPECT_EQ(TYPE_FLOAT, iso->data->type.base_type);
+                EXPECT_EQ(4, iso->data->type.dim[0]);
+                EXPECT_EQ(0, iso->data->type.dim[1]);
+            }
+        }
+    }
+
+    md_vm_arena_destroy(arena);
 }
 
 static bool test_selection(const char* expr, const char* ref_bit_str) {
     bool result = false;
     uint64_t ref = make_bits(ref_bit_str);
     md_bitfield_t bf = {0};
-    md_bitfield_init(&bf, md_temp_allocator);
+    md_bitfield_init(&bf, md_get_temp_allocator());
 
     if (!eval_selection(&bf, str_from_cstr(expr), &test_mol)) {
         printf("Failed evaluation of expression: '%s'\n", expr);
@@ -627,7 +928,7 @@ UTEST(script, selection) {
 }
 
 UTEST_F(script, compile_script) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     str_t script_src = load_textfile(STR_LIT(MD_UNITTEST_DATA_DIR "/script.txt"), alloc);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -637,7 +938,7 @@ UTEST_F(script, compile_script) {
 }
 
 UTEST_F(script, implicit_conversion) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->amy;
     md_script_ir_t* ir = md_script_ir_create(alloc);
     
@@ -650,13 +951,19 @@ UTEST_F(script, implicit_conversion) {
 }
 
 UTEST_F(script, semantic) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->amy;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
 
+    EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
+        "dih1_pft = dihedral(22, 20, 1, 2) in resname('PFT');"
+    ), mol, NULL, NULL));
+
+    md_script_ir_clear(ir);
     EXPECT_FALSE(md_script_ir_compile_from_source(ir, STR_LIT("p1 = resname('ALA') resname('GLY');"), mol, NULL, NULL));
     
+    md_script_ir_clear(ir);
     EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT(
         "ads = residue({10629,10633,10635,10637,10653,10659,10661,10665,10678:10679,10684,10686});"
         "ads_end = residue({10628:10629,10633,10635:10638,10643,10647,10650,10653:10654,10656,10659,10661,10663:10665,10669:10671,10678:10679,10682,10684,10686});"
@@ -678,7 +985,7 @@ UTEST_F(script, semantic) {
 }
 
 UTEST_F(script, selection_big) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->amy;
 
     md_bitfield_t bf = md_bitfield_create(alloc);
@@ -688,7 +995,7 @@ UTEST_F(script, selection_big) {
 }
 
 UTEST_F(script, dynamic_length) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
 
@@ -703,7 +1010,7 @@ UTEST_F(script, dynamic_length) {
 }
 
 UTEST_F(script, property_compute) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
     uint32_t num_frames = (uint32_t)md_trajectory_num_frames(traj);
@@ -716,11 +1023,50 @@ UTEST_F(script, property_compute) {
         md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
-        ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
+        EXPECT_EQ(1, md_script_eval_property_count(eval));
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
+        md_script_eval_free(eval);
+    }
+
+    {
+        md_script_ir_clear(ir);
+        str_t src = STR_LIT("{lin, plan, iso} = shape_weights(:);");
+        md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
+        EXPECT_TRUE(md_script_ir_valid(ir));
+
+        identifier_t* lin  = get_identifier(ir, STR_LIT("lin"));
+        identifier_t* plan = get_identifier(ir, STR_LIT("plan"));
+        identifier_t* iso  = get_identifier(ir, STR_LIT("iso"));
+
+        EXPECT_TRUE(lin);
+        if (lin) {
+            EXPECT_EQ(TYPE_FLOAT, lin->data->type.base_type);
+            EXPECT_EQ(1, lin->data->type.dim[0]);
+        }
+
+        EXPECT_TRUE(plan);
+        if (plan) {
+            EXPECT_EQ(TYPE_FLOAT, plan->data->type.base_type);
+            EXPECT_EQ(1, plan->data->type.dim[0]);
+        }
+
+        EXPECT_TRUE(iso);
+        if (iso) {
+            EXPECT_EQ(TYPE_FLOAT, iso->data->type.base_type);
+            EXPECT_EQ(1, iso->data->type.dim[0]);
+        }
+        EXPECT_EQ(md_script_ir_property_count(ir), 3);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
+        EXPECT_NE(NULL, eval);
+        if (eval) {
+            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("lin")));
+            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("plan")));
+            EXPECT_TRUE(md_script_eval_property_data(eval, STR_LIT("iso")));
+        }
+        EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
         md_script_eval_free(eval);
     }
 
@@ -735,9 +1081,9 @@ UTEST_F(script, property_compute) {
         EXPECT_EQ(TYPE_FLOAT, prop1->data->type.base_type);
         EXPECT_EQ(1, prop1->data->type.dim[0]);
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         ASSERT_TRUE(eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        EXPECT_EQ(1, md_script_eval_property_count(eval));
         EXPECT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
@@ -760,9 +1106,9 @@ UTEST_F(script, property_compute) {
         md_script_ir_compile_from_source(ir, STR_LIT("prop1 = rdf(element('C'), element('O'), 20.0);"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        EXPECT_EQ(1, md_script_eval_property_count(eval));
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
@@ -773,9 +1119,9 @@ UTEST_F(script, property_compute) {
         md_script_ir_compile_from_source(ir, STR_LIT("sel = within_x(0:100);\np1  = distance(com(sel), 100);"), mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
 
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         EXPECT_NE(NULL, eval);
-        EXPECT_EQ(md_script_eval_num_properties(eval), 1);
+        EXPECT_EQ(1, md_script_eval_property_count(eval));
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
 
         md_script_eval_free(eval);
@@ -787,7 +1133,7 @@ UTEST_F(script, property_compute) {
         md_script_ir_clear(ir);
         md_script_ir_compile_from_source(ir, src, mol, traj, NULL);
         EXPECT_TRUE(md_script_ir_valid(ir));
-        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+        md_script_eval_t* eval = md_script_eval_create(num_frames, ir, alloc);
         ASSERT_TRUE(md_script_eval_frame_range(eval, ir, mol, traj, 0, num_frames));
         md_script_eval_free(eval);
     }
@@ -808,21 +1154,18 @@ typedef struct thread_data_t {
 
 void func(void* user_data) {
     thread_data_t* data = (thread_data_t*)user_data;
-    const int64_t num_cur_prop = md_script_eval_num_properties(data->eval);
-    const md_script_property_t* cur_prop = md_script_eval_properties(data->eval);
-
-    const int64_t num_ref_prop = md_script_eval_num_properties(data->ref_eval);
-    const md_script_property_t* ref_prop = md_script_eval_properties(data->ref_eval);
-
-    ASSERT(num_cur_prop == num_ref_prop);
+    const size_t num_props = md_script_ir_property_count(data->ir);
+    const str_t* props = md_script_ir_property_names(data->ir);
     const uint32_t num_frames = (uint32_t)md_trajectory_num_frames(data->traj);
     if (md_script_eval_frame_range(data->eval, data->ir, data->mol, data->traj, 0, num_frames)) {
-        for (int64_t p_idx = 0; p_idx < num_cur_prop; ++p_idx) {
-            ASSERT(cur_prop[p_idx].data.num_values == ref_prop[p_idx].data.num_values);
-            for (int64_t i = 0; i < cur_prop[p_idx].data.num_values; ++i) {
-                if (cur_prop[p_idx].data.values[i] != ref_prop[p_idx].data.values[i]) {
+        for (size_t p_idx = 0; p_idx < num_props; ++p_idx) {
+            const md_script_property_data_t* cur_data = md_script_eval_property_data(data->eval,     props[p_idx]);
+            const md_script_property_data_t* ref_data = md_script_eval_property_data(data->ref_eval, props[p_idx]);
+            ASSERT(cur_data->num_values == ref_data->num_values);
+            for (size_t i = 0; i < cur_data->num_values; ++i) {
+                if (cur_data->values[i] != ref_data->values[i]) {
                     data->num_corrupt_values += 1;
-                    fprintf(stderr, "Corruption occured in thread %"PRIu64" at frame %i, expected: '%g', got: '%g'\n", md_thread_id(), (int)i, ref_prop[p_idx].data.values[i], cur_prop[p_idx].data.values[i]);
+                    fprintf(stderr, "Corruption occured in thread %"PRIu64" at frame %i, expected: '%g', got: '%g'\n", md_thread_id(), (int)i, ref_data->values[i], cur_data->values[i]);
                 }
             }
         }
@@ -830,7 +1173,7 @@ void func(void* user_data) {
 }
 
 UTEST_F(script, parallel_evaluation) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
     md_trajectory_i* traj = utest_fixture->ala_traj;
 
@@ -840,17 +1183,20 @@ UTEST_F(script, parallel_evaluation) {
     md_thread_t* threads[NUM_THREADS] = {0};
     thread_data_t thread_data[NUM_THREADS] = {0};
 
-    int64_t num_frames = md_trajectory_num_frames(traj);
+    size_t num_frames = md_trajectory_num_frames(traj);
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
     md_script_ir_compile_from_source(ir, script, mol, traj, NULL);
     EXPECT_TRUE(md_script_ir_valid(ir));
+    ASSERT_EQ(1, md_script_ir_property_count(ir));
 
-    md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+    md_script_eval_t* ref_eval = md_script_eval_create(num_frames, ir, alloc);
+    EXPECT_EQ(num_frames, md_script_eval_frame_count(ref_eval));
     ASSERT_TRUE(md_script_eval_frame_range(ref_eval, ir, mol, traj, 0, (uint32_t)num_frames));
 
-    ASSERT_EQ(1, md_script_eval_num_properties(ref_eval));
-    ASSERT_EQ(num_frames, md_script_eval_properties(ref_eval)[0].data.num_values);
+    const md_script_property_data_t* data = md_script_eval_property_data(ref_eval, STR_LIT("p1"));
+    ASSERT_TRUE(data);
+    ASSERT_EQ(num_frames, data->num_values);
 
 #if 0
     printf("Ref Values:\n");
@@ -862,7 +1208,7 @@ UTEST_F(script, parallel_evaluation) {
 
     for (int pass = 0; pass < 10; ++pass) {
         for (int i = 0; i < NUM_THREADS; ++i) {
-            eval[i] = md_script_eval_create(num_frames, ir, STR_LIT(""), alloc);
+            eval[i] = md_script_eval_create(num_frames, ir, alloc);
             EXPECT_NE(NULL, eval[i]);
         }
 
@@ -894,7 +1240,7 @@ UTEST_F(script, parallel_evaluation) {
 }
 
 UTEST_F(script, parse_unary_binary) {
-    md_allocator_i* alloc = md_arena_allocator_create(&utest_fixture->alloc, MEGABYTES(1));
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
     md_molecule_t* mol = &utest_fixture->ala;
 
     md_script_ir_t* ir = md_script_ir_create(alloc);
@@ -919,6 +1265,46 @@ UTEST_F(script, parse_unary_binary) {
 
         md_script_ir_clear(ir);
         EXPECT_TRUE(md_script_ir_compile_from_source(ir, STR_LIT("x = (5) - 4;"), mol, NULL, NULL));
+    }
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST_F(script, visualize) {
+    md_allocator_i* alloc = md_arena_allocator_create(utest_fixture->arena, MEGABYTES(1));
+    md_molecule_t* mol = &utest_fixture->ala;
+
+    md_script_ir_t* ir = md_script_ir_create(alloc);
+    {
+        str_t src = STR_LIT(
+        "w = shape_weights(residue(:));"
+        "{x,y,z} = {w[:,1], w[:,2], w[:,3]};"
+        "sx = w[5,1];"
+        );
+        md_script_ir_clear(ir);
+        EXPECT_TRUE(md_script_ir_compile_from_source(ir, src, mol, NULL, NULL));
+
+        identifier_t*  x = get_identifier(ir, STR_LIT("x"));
+        identifier_t* sx = get_identifier(ir, STR_LIT("sx"));
+
+        ASSERT_TRUE(x);
+        ASSERT_TRUE(sx);
+
+        md_script_vis_t vis = {0};
+        md_script_vis_init(&vis, alloc);
+        md_script_vis_ctx_t ctx = {
+            .ir = ir,
+            .mol = mol,
+        };
+        
+        EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)x->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+        EXPECT_EQ(mol->atom.count, md_bitfield_popcount(&vis.atom_mask));
+        
+        md_script_vis_clear(&vis);
+        EXPECT_TRUE(md_script_vis_eval_payload(&vis, (const md_script_vis_payload_o*)sx->node, -1, &ctx, MD_SCRIPT_VISUALIZE_DEFAULT));
+        size_t res_atom_count = md_residue_atom_count(mol->residue, 4);
+        size_t pop_count = md_bitfield_popcount(&vis.atom_mask);
+        EXPECT_EQ(res_atom_count, pop_count);
     }
 
     md_arena_allocator_destroy(alloc);

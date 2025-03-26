@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_compiler.h>
 
@@ -50,6 +50,16 @@
 #endif
 #endif
 
+#if MD_COMPILER_MSVC
+#ifndef FALLTHROUGH
+#define FALLTHROUGH 
+#endif
+#else
+#ifndef FALLTHROUGH
+#define FALLTHROUGH __attribute__((fallthrough))
+#endif
+#endif
+
 #ifndef RESTRICT
 #define RESTRICT __restrict
 #endif
@@ -60,6 +70,10 @@
 #else
 #define FORCE_INLINE __attribute__((always_inline)) inline
 #endif
+#endif
+
+#ifndef TYPEOF
+#define TYPEOF(x) __typeof__(x)
 #endif
 
 // Really GCC? REALLY? DO WE REALLY NEED TO INCLUDE stddef.h for this??????
@@ -198,40 +212,42 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 
 #endif
 
+// Define intrinsic functions
+
 #if MD_COMPILER_MSVC
 
-#ifdef  __cplusplus
-extern "C" {
-#endif
-void *  __cdecl memcpy(void*, const void*, unsigned long long);
-void *  __cdecl memset(void*, int, unsigned long long);
-void *  __cdecl memmove(void*, const void*, unsigned long long);
-int     __cdecl memcmp(const void*, const void*, unsigned long long);
-float  __cdecl  fabsf(float);
-double  __cdecl fabs(double);
-int     __cdecl abs(int);
-long    __cdecl labs(long);
-long long __cdecl llabs(long long);
-__int64 __cdecl _abs64(__int64 n);
-#ifdef __cplusplus
-}
-#endif
+void *  __cdecl             memcpy(void*, const void*, unsigned long long);
+void *  __cdecl             memset(void*, int, unsigned long long);
+void *  __cdecl             memmove(void*, const void*, unsigned long long);
+int     __cdecl             memcmp(const void*, const void*, unsigned long long);
+unsigned short __cdecl      _byteswap_ushort (unsigned short);
+unsigned long __cdecl       _byteswap_ulong  (unsigned long);
+unsigned __int64 __cdecl    _byteswap_uint64 (unsigned __int64);
 
 #pragma intrinsic(memcpy)
 #pragma intrinsic(memset)
 #pragma intrinsic(memmove)
 #pragma intrinsic(memcmp)
+#pragma intrinsic(_byteswap_ushort)
+#pragma intrinsic(_byteswap_ulong)
+#pragma intrinsic(_byteswap_uint64)
 
 #define MEMCPY  memcpy
 #define MEMSET  memset
 #define MEMMOVE memmove
 #define MEMCMP  memcmp
+#define BSWAP16 _byteswap_ushort
+#define BSWAP32 _byteswap_ulong
+#define BSWAP64 _byteswap_uint64
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 #define MEMCPY  __builtin_memcpy
 #define MEMSET  __builtin_memset
 #define MEMMOVE __builtin_memmove
 #define MEMCMP  __builtin_memcmp
+#define BSWAP16 __builtin_bswap16
+#define BSWAP32 __builtin_bswap32
+#define BSWAP64 __builtin_bswap64
 
 #endif
 

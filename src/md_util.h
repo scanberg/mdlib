@@ -18,12 +18,12 @@ enum {
     MD_UTIL_POSTPROCESS_RADIUS_BIT          = 0x0002,
     MD_UTIL_POSTPROCESS_MASS_BIT            = 0x0004,
     MD_UTIL_POSTPROCESS_BOND_BIT            = 0x0008,
-    MD_UTIL_POSTPROCESS_CONNECTIVITY_BIT    = 0x0010,
-    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0020,
-    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0040,
-    MD_UTIL_POSTPROCESS_RESIDUE_BIT         = 0x0080,
-    MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 0x0100,
-    MD_UTIL_POSTPROCESS_ION_BIT             = 0x0200,
+    MD_UTIL_POSTPROCESS_CHAINS_BIT          = 0x0010,
+    MD_UTIL_POSTPROCESS_BACKBONE_BIT        = 0x0020,
+    MD_UTIL_POSTPROCESS_RESIDUE_BIT         = 0x0040,
+    MD_UTIL_POSTPROCESS_STRUCTURE_BIT       = 0x0080,
+    MD_UTIL_POSTPROCESS_ION_BIT             = 0x0100,
+    MD_UTIL_POSTPROCESS_ORDER_BIT           = 0x0200,
 
     MD_UTIL_POSTPROCESS_ALL                 = -1,
     MD_UTIL_POSTPROCESS_COARSE_GRAINED      = MD_UTIL_POSTPROCESS_RADIUS_BIT | MD_UTIL_POSTPROCESS_MASS_BIT
@@ -36,6 +36,11 @@ typedef uint32_t md_util_postprocess_flags_t;
 // E.g. H, He, Fe, Na, C
 md_element_t md_util_element_lookup(str_t element_str);
 md_element_t md_util_element_lookup_ignore_case(str_t element_str);
+
+// Access to the static arrays
+const str_t* md_util_element_symbols(void);
+const str_t* md_util_element_names(void);
+const float* md_util_element_vdw_radii(void);
 
 str_t md_util_element_symbol(md_element_t element);
 str_t md_util_element_name(md_element_t element);
@@ -54,7 +59,7 @@ bool md_util_resname_water(str_t str);
 bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
 
-static inline bool md_util_backbone_atoms_valid(md_backbone_atoms_t prot) {
+static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot) {
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);
 }
 
@@ -65,11 +70,8 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
 
 bool md_util_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count);
 
-// Extracts the atom indices which are central for a segment within the backbone for a single residue
-bool md_util_backbone_atoms_extract_from_residue_idx(md_backbone_atoms_t* backbone_atoms, md_residue_idx_t res_idx, const md_molecule_t* mol);
-
 // Computes secondary structures from backbone atoms
-// Does not allocate any data, it assumes that secondary_structures has the same length as args->backbone.count
+// Does not allocate any data, it assumes that secondary_structures has the same length as mol.backbone.count
 bool md_util_backbone_secondary_structure_compute(md_secondary_structure_t secondary_structures[], size_t capacity, const struct md_molecule_t* mol);
 
 // Computes backbone angles from backbone atoms
@@ -137,13 +139,20 @@ void md_util_unit_cell_distance_array(float* out_dist_arr, const vec3_t* coord_a
 float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell);
 float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell);
 
+void md_util_min_image_vec3(vec3_t* in_out_dx, size_t count, const md_unit_cell_t* unit_cell);
+void md_util_min_image_vec4(vec4_t* in_out_dx, size_t count, const md_unit_cell_t* unit_cell);
+
 // Applies periodic boundary conditions to coordinates
 bool md_util_pbc(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
 
-// Unwraps a structure 
+// Unwraps a structure
+// It implicitly uses the previous coordinate as a reference when deperiodizing
 bool md_util_unwrap(float* in_out_x, float* in_out_y, float* in_out_z, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 bool md_util_unwrap_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell);
+
+// Batch deperiodize a set of coordinates (vec4) with respect to a given reference
+bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unit_cell_t* cell);
 
 // Computes the minimum axis aligned bounding box for a set of points with a given radius
 // Indices are optional and are used to select a subset of points, the count dictates the number of elements to process
@@ -157,7 +166,7 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
 // count:       Length of all arrays
 // unit_cell:   The unit_cell of the system [Optional]
 vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, size_t count, const md_unit_cell_t* unit_cell);
+vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell);
 
 // Computes the similarity between two sets of points with given weights.
 // One of the sets is rotated and translated to match the other set in an optimal fashion before the similarity is computed.
@@ -166,8 +175,8 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, size_t count, const md_un
 // com:     Center of mass [2] (xyz0), (xyz1)
 // w:       Array of weights (optional): set as NULL to use equal weights
 // count:   Length of all arrays (x0, y0, z0, x1, y1, z1, w)
-double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* in_w, const int32_t* in_idx, size_t count, const vec3_t in_com[2]);
-double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* in_idx, size_t count, const vec3_t in_com[2]);
+double md_util_rmsd_compute(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
+double md_util_rmsd_compute_vec4(const vec4_t* const in_xyzw[2], const int32_t* const in_idx[2], size_t count, const vec3_t in_com[2]);
 
 // Computes linear shape descriptor weights (linear, planar, isotropic) from a covariance matrix
 vec3_t md_util_shape_weights(const mat3_t* covariance_matrix);
@@ -210,8 +219,6 @@ void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count);
 // Structure matching operations
 // In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.
 // This is due to the symmetry of extremities found in molecules.
-// To filter the result into 1 permutation per matched set of indices, the user can pass a parameter to filter permutations by RMSD
-// Which only selects the best matching permutation based on RMSD.
 
 typedef enum {
     MD_UTIL_MATCH_LEVEL_STRUCTURE = 0,  // Match within complete structures
@@ -221,23 +228,32 @@ typedef enum {
 
 typedef enum {
     MD_UTIL_MATCH_MODE_UNIQUE = 0,      // Store only unique matches
-    MD_UTIL_MATCH_MODE_FIRST = 1,       // Store the first match
-    MD_UTIL_MATCH_MODE_ALL = 2,		    // Store all matches
+    MD_UTIL_MATCH_MODE_FIRST,           // Store the first match
+    MD_UTIL_MATCH_MODE_ALL,		        // Store all matches
 } md_util_match_mode_t;
 
+typedef enum {
+    MD_UTIL_MATCH_FLAGS_NO_H  = 1,              // Disregard hydrogen
+    MD_UTIL_MATCH_FLAGS_NO_CH = 2,              // Disregard hydrogen connected to carbon
+    MD_UTIL_MATCH_FLAGS_STRICT_EDGE_COUNT = 4,  // Enforce a strict edge count for each matched atom pair
+    MD_UTIL_MATCH_FLAGS_STRICT_EDGE_TYPE  = 8,  // Enforce a matching edge type between matches
+} md_util_match_flags_t;
+
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure.
-md_index_data_t md_util_match_by_type(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+md_index_data_t md_util_match_by_type   (const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 md_index_data_t md_util_match_by_element(const int ref_indices[], size_t ref_size, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Performs complete structure matching within the given topology (mol) using a supplied reference structure given as a smiles string
-md_index_data_t md_util_match_smiles(str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, const md_molecule_t* mol, md_allocator_i* alloc);
+// The matcing results are stored into supplied idx_data
+// The returned value is the number of matches found
+size_t md_util_match_smiles(md_index_data_t* idx_data, str_t smiles, md_util_match_mode_t mode, md_util_match_level_t level, md_util_match_flags_t flags, const md_molecule_t* mol, md_allocator_i* alloc);
 
 // Computes the maximum common subgraph between two structures
 // The indices which maps from the source structure to the target structure is written to dst_idx_map
 // The returned value is the number of common atoms
 // It is assumed that the dst_idx_map has the same length as src_count
-int64_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
-int64_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+size_t md_util_match_maximum_common_subgraph_by_type(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
+size_t md_util_match_maximum_common_subgraph_by_element(int* dst_idx_map, const int* trg_indices, size_t trg_count, const int* src_indices, size_t src_count, const md_molecule_t* mol, md_allocator_i* alloc);
 
 #ifdef __cplusplus
 }

@@ -1,7 +1,8 @@
-#include <md_lammps.h>
+﻿#include <md_lammps.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_str_builder.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
@@ -436,36 +437,42 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedra
 	return true;
 }
 
-static bool parse_masses(md_array(float)* mass_type_table, size_t num_atom_types, md_buffered_reader_t* reader, md_allocator_i* alloc) {
+static size_t parse_masses(float* mass_type_table, size_t mass_type_capacity, size_t expected_count, md_buffered_reader_t* reader) {
 	str_t tok[4];
 	str_t line;
-	size_t num_mass = 0;
-	while (num_mass < num_atom_types && md_buffered_reader_extract_line(&line, reader)) {
+	size_t extracted_count = 0;
+	for (size_t i = 0; i < expected_count; ++i) {
+		if (!md_buffered_reader_extract_line(&line, reader)) {
+			MD_LOG_ERROR("Failed to extract mass line");
+			return 0;
+		}
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 2) {
 			MD_LOG_ERROR("Failed to parse mass line, expected 2 tokens, got %i", (int)num_tok);
-			return false;
+			return 0;
 		}
 		int   type = (int)parse_int(tok[0]);
 		float mass = (float)parse_float(tok[1]);
-		if (type >= (int)md_array_size(*mass_type_table)) {
-			md_array_resize(*mass_type_table, (size_t)type, alloc);
+		if (type >= (int)mass_type_capacity) {
+			MD_LOG_ERROR("Invalid atom type: %i", (int)num_tok);
+			return 0;
 		}
-		(*mass_type_table)[type] = mass;
-		num_mass += 1;
+		mass_type_table[type] = mass;
+		extracted_count += 1;
 	}
-	return true;
+
+	return extracted_count;
 }
 
-size_t md_lammps_atom_format_count() {
+size_t md_lammps_atom_format_count(void) {
 	return MD_LAMMPS_ATOM_FORMAT_COUNT;
 }
 
-const char** md_lammps_atom_format_names() {
+const char** md_lammps_atom_format_names(void) {
 	return atom_format_name;
 }
 
-const char** md_lammps_atom_format_strings() {
+const char** md_lammps_atom_format_strings(void) {
 	return atom_format_string;
 }
 
@@ -520,7 +527,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 
-	md_array(float) mass_table = 0;
+	float mass_table[256] = {0};
 
 	str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
@@ -543,7 +550,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			if (mass_table) {
 				for (size_t i = 0; i < data->num_atoms; ++i) {
 					int32_t type = data->atoms[i].type;
-					data->atoms[i].mass = type < (int)md_array_size(mass_table) ? mass_table[data->atoms[i].type] : 0.0f;
+					data->atoms[i].mass = type < (int)ARRAY_SIZE(mass_table) ? mass_table[type] : 0.0f;
 				}
 			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Bonds"))) {
@@ -572,8 +579,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 			md_buffered_reader_skip_line(reader);
-			md_array_resize(data->angles, data->num_angles, alloc);
-			if (!parse_angles(data->angles, data->num_angles, reader)) {
+			md_array_resize(data->dihedrals, data->num_dihedrals, alloc);
+			if (!parse_dihedrals(data->dihedrals, data->num_dihedrals, reader)) {
 				return false;
 			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Masses"))) {
@@ -582,9 +589,8 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 			md_buffered_reader_skip_line(reader);
-			mass_table = md_array_create(float, data->num_atom_types + 1, md_temp_allocator);
-			MEMSET(mass_table, 0, md_array_bytes(mass_table));
-			if (!parse_masses(&mass_table, data->num_atom_types, reader, md_temp_allocator)) {
+			if (parse_masses(mass_table, ARRAY_SIZE(mass_table), data->num_atom_types, reader) != data->num_atom_types) {
+				MD_LOG_ERROR("Number of masses in table did not match the number of atom types");
 				return false;
 			}
 		} else if (num_tok == 2 && is_int(tok[0])) {
@@ -664,12 +670,12 @@ bool md_lammps_data_parse_file(md_lammps_data_t* data, str_t filename, const cha
 	md_file_o* file = md_file_open(filename, MD_FILE_READ);
 	if (file) {
 		const size_t cap = MEGABYTES(1);
-		char* buf = md_alloc(md_heap_allocator, cap);
+		char* buf = md_alloc(md_get_heap_allocator(), cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
 		result = md_lammps_data_parse(data, &line_reader, format, alloc);
 
-		md_free(md_heap_allocator, buf, cap);
+		md_free(md_get_heap_allocator(), buf, cap);
 		md_file_close(file);
 	}
 	else {
@@ -694,20 +700,22 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	ASSERT(alloc);
 
 	MEMSET(mol, 0, sizeof(md_molecule_t));
-	const size_t num_atoms = data->num_atoms;
+	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_resize(mol->atom.x,	 num_atoms, alloc);
-	md_array_resize(mol->atom.y,	 num_atoms, alloc);
-	md_array_resize(mol->atom.z,	 num_atoms, alloc);
-	md_array_resize(mol->atom.mass,  num_atoms, alloc);
+	md_array_resize(mol->atom.type,  capacity, alloc);
+	md_array_resize(mol->atom.x,	 capacity, alloc);
+	md_array_resize(mol->atom.y,	 capacity, alloc);
+	md_array_resize(mol->atom.z,	 capacity, alloc);
+	md_array_resize(mol->atom.mass,  capacity, alloc);
 
 	bool has_resid = false;
-	if (num_atoms > 0 && data->atoms[0].resid != -1) {
-		md_array_resize(mol->atom.resid, num_atoms, alloc);
+	if (data->num_atoms > 0 && data->atoms[0].resid != -1) {
+		md_array_resize(mol->atom.resid, capacity, alloc);
 		has_resid = true;
 	}
 
-	for (size_t i = 0; i < num_atoms; ++i) {
+	for (size_t i = 0; i < data->num_atoms; ++i) {
+		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, sizeof(mol->atom.type[i].buf), "%i", data->atoms[i].type);
 		mol->atom.x[i] = data->atoms[i].x - data->cell.xlo;
 		mol->atom.y[i] = data->atoms[i].y - data->cell.ylo;
 		mol->atom.z[i] = data->atoms[i].z - data->cell.zlo;
@@ -717,13 +725,13 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		}
 	}
 
-	mol->atom.count = num_atoms;
-
 	//Set elements
-	md_array_resize(mol->atom.element, num_atoms, alloc);
-	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, num_atoms)) {
+	md_array_resize(mol->atom.element, capacity, alloc);
+	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, data->num_atoms)) {
 		MD_LOG_ERROR("One or more masses are missing matching element");
 	}
+
+	mol->atom.count = data->num_atoms;
 
 	//Create unit cell
 	float M[3][3] = {0};
@@ -754,10 +762,10 @@ static bool lammps_init_from_str(md_molecule_t* mol, str_t str, const void* arg,
 
 	md_lammps_data_t data = { 0 };
 	bool success = false;
-	if (md_lammps_data_parse_str(&data, str, format, md_heap_allocator)) {
+	if (md_lammps_data_parse_str(&data, str, format, md_get_heap_allocator())) {
 		success = md_lammps_molecule_init(mol, &data, alloc);
 	}
-	md_lammps_data_free(&data, md_heap_allocator);
+	md_lammps_data_free(&data, md_get_heap_allocator());
 
 	return success;
 }
@@ -778,10 +786,10 @@ static bool lammps_init_from_file(md_molecule_t* mol, str_t filename, const void
 
 	md_lammps_data_t data = { 0 };
 	bool success = false;
-	if (md_lammps_data_parse_file(&data, filename, format, md_heap_allocator)) {
+	if (md_lammps_data_parse_file(&data, filename, format, md_get_heap_allocator())) {
 		success = md_lammps_molecule_init(mol, &data, alloc);
 	}
-	md_lammps_data_free(&data, md_heap_allocator);
+	md_lammps_data_free(&data, md_get_heap_allocator());
 
 	return success;
 }
@@ -798,7 +806,7 @@ static md_molecule_loader_i lammps_api = {
 	lammps_init_from_file,
 };
 
-md_molecule_loader_i* md_lammps_molecule_api() {
+md_molecule_loader_i* md_lammps_molecule_api(void) {
 	return &lammps_api;
 }
 
@@ -1124,7 +1132,7 @@ bool lammps_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr
 		size_t expected_num_tokens = traj_data->coord_mappings.num_coord_tokens;
 
 		// We need to store the coordinates in a temporary buffer since we need to sort them by id
-		id_xyz_t* id_xyz = md_alloc(md_heap_allocator, sizeof(id_xyz_t) * header.num_atoms);
+		id_xyz_t* id_xyz = md_alloc(md_get_heap_allocator(), sizeof(id_xyz_t) * header.num_atoms);
 
 		while (md_buffered_reader_extract_line(&line, &reader) && line_count < header.num_atoms) {
 			size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
@@ -1259,12 +1267,12 @@ static bool lammps_trajectory_parse_file(lammps_cache_t* cache, str_t filename, 
 	md_file_o* file = md_file_open(filename, MD_FILE_READ);
 	if (file) {
 		const int64_t cap = MEGABYTES(1);
-		char* buf = md_alloc(md_heap_allocator, cap);
+		char* buf = md_alloc(md_get_heap_allocator(), cap);
 
 		md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
 		result = lammps_trajectory_parse(cache, &line_reader, alloc);
 
-		md_free(md_heap_allocator, buf, cap);
+		md_free(md_get_heap_allocator(), buf, cap);
 		md_file_close(file);
 	}
 	else {
@@ -1283,23 +1291,23 @@ bool lammps_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_traje
 		return false;
 	}
 
-	// Should this be exposed?
-	md_allocator_i* alloc = md_temp_allocator;
-
 	bool result = true;
-	const int64_t frame_size = lammps_fetch_frame_data(inst, frame_idx, NULL);
+	const size_t frame_size = lammps_fetch_frame_data(inst, frame_idx, NULL);
 	if (frame_size > 0) { //This check first that there actually is data to be read, before writing to frame_data
-		// This is a borderline case if one should use the md_temp_allocator as the raw frame size could potentially be several megabytes...
+		md_allocator_i* alloc = md_get_heap_allocator();
+
 		void* frame_data = md_alloc(alloc, frame_size);
-		const int64_t read_size = lammps_fetch_frame_data(inst, frame_idx, frame_data);
+		ASSERT(frame_data);
+
+		const size_t read_size = lammps_fetch_frame_data(inst, frame_idx, frame_data);
 		if (read_size != frame_size) {
 			MD_LOG_ERROR("Failed to read the expected size");
-			md_free(alloc, frame_data, frame_size);
-			return false;
+			goto done;
 		}
 
 		//Decode is what actually writes the data to x, y and z which are float pointers
 		result = lammps_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
+done:
 		md_free(alloc, frame_data, frame_size);
 	}
 
@@ -1374,7 +1382,6 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 			md_free(alloc, cache->frame_times, times_bytes);
 			goto done;
 		}
-		//Only overwrite if all tests passed
 
 		result = true;
 	done:
@@ -1383,7 +1390,7 @@ static bool try_read_cache(str_t cache_file, lammps_cache_t* cache, size_t traj_
 	return result;
 }
 
-static bool write_cache(str_t cache_file, lammps_cache_t* cache) {
+static bool write_cache(lammps_cache_t* cache, str_t cache_file) {
 	bool result = false;
 
 	md_file_o* file = md_file_open(cache_file, MD_FILE_WRITE);
@@ -1439,7 +1446,7 @@ void lammps_trajectory_free(struct md_trajectory_o* inst) {
 	lammps_trajectory_data_free(lammps_traj);
 }
 
-md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
+md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc, uint32_t flags) {
 	md_file_o* file = md_file_open(filename, MD_FILE_READ);
 	if (!file) {
 		MD_LOG_ERROR("Failed to open file for LAMMPS trajectory");
@@ -1449,32 +1456,29 @@ md_trajectory_i* md_lammps_trajectory_create(str_t filename, struct md_allocator
 	int64_t filesize = md_file_size(file);
 	md_file_close(file);
 
-	char buf[1024];
-	int len = snprintf(buf, sizeof(buf), "%.*s.cache", (int)filename.len, filename.ptr);
-	if (len <= 0) {
-		MD_LOG_ERROR("Failed to create cache filename");
-		return false;
-	}
-	str_t cache_file = { buf, (size_t)len };
+	md_strb_t sb = md_strb_create(md_get_temp_allocator());
+	md_strb_fmt(&sb, STR_FMT ".cache", STR_ARG(filename));
+	str_t cache_file = md_strb_to_str(sb);
 
 	lammps_cache_t cache = {0};
-
 	md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-	if (!try_read_cache(cache_file, &cache, filesize, alloc)) { //If the cache file does not exist, we create one
-
+	if (!try_read_cache(cache_file, &cache, filesize, alloc)) {
+		//If the cache file does not exist, we create one
 		if (!lammps_trajectory_parse_file(&cache, filename, alloc)) {
 			MD_LOG_ERROR("LAMMPS trajectory could not be read from file");
 			return false;
 		}
 
-		cache.header.magic   = MD_LAMMPS_CACHE_MAGIC;
-		cache.header.version = MD_LAMMPS_CACHE_VERSION;
+		cache.header.magic     = MD_LAMMPS_CACHE_MAGIC;
+		cache.header.version   = MD_LAMMPS_CACHE_VERSION;
 		cache.header.num_bytes = filesize;
 
-		if (!write_cache(cache_file, &cache)) {
-			MD_LOG_ERROR("LAMMPS trajectory could not be written to cache");
-			return false;
+		if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
+			// If we fail to write the cache, that's ok, we can inform about it, but do not halt
+			if (write_cache(&cache, cache_file)) {
+				MD_LOG_INFO("LAMMPS: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
+			}
 		}
 	}
 
@@ -1544,6 +1548,6 @@ static md_trajectory_loader_i lammps_traj_loader = {
 	md_lammps_trajectory_free,
 };
 
-md_trajectory_loader_i* md_lammps_trajectory_loader() {
+md_trajectory_loader_i* md_lammps_trajectory_loader(void) {
 	return &lammps_traj_loader;
 }

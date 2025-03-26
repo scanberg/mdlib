@@ -23,7 +23,7 @@ UTEST(spatial_hash, small_periodic) {
     float z[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
     md_unit_cell_t unit_cell = md_util_unit_cell_from_extent(10, 0, 0);
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, 10, &unit_cell, md_heap_allocator);
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, 10, &unit_cell, md_get_heap_allocator());
     ASSERT_TRUE(spatial_hash);
     
     uint32_t count = 0;
@@ -38,7 +38,7 @@ UTEST(spatial_hash, small_periodic) {
 }
 
 UTEST(spatial_hash, big) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, KILOBYTES(64));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
     const str_t pdb_file = STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb");
 
     md_pdb_data_t pdb_data = {0};
@@ -61,25 +61,22 @@ UTEST(spatial_hash, big) {
 }
 
 struct spatial_hash {
-    md_vm_arena_t arena;
-    md_allocator_i alloc;
+    md_allocator_i* arena;
     md_molecule_t mol;
     vec3_t pbc_ext;
 };
 
 UTEST_F_SETUP(spatial_hash) {
-    md_vm_arena_init(&utest_fixture->arena, GIGABYTES(4));
-
-    utest_fixture->alloc = md_vm_arena_create_interface(&utest_fixture->arena);
+    utest_fixture->arena = md_vm_arena_create(GIGABYTES(4));
 
     md_gro_data_t gro_data = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), &utest_fixture->alloc));
-    ASSERT_TRUE(md_gro_molecule_init(&utest_fixture->mol, &gro_data, &utest_fixture->alloc));
+    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), utest_fixture->arena));
+    ASSERT_TRUE(md_gro_molecule_init(&utest_fixture->mol, &gro_data, utest_fixture->arena));
     utest_fixture->pbc_ext = mat3_mul_vec3(utest_fixture->mol.unit_cell.basis, vec3_set1(1.f));
 }
 
 UTEST_F_TEARDOWN(spatial_hash) {
-    md_vm_arena_free(&utest_fixture->arena);
+    md_vm_arena_destroy(utest_fixture->arena);
 }
 
 static inline float rnd() {
@@ -101,7 +98,7 @@ static bool iter_batch_fn(const md_spatial_hash_elem_t* elem, int mask, void* us
 
 UTEST_F(spatial_hash, test_correctness_centered) {
     md_molecule_t* mol = &utest_fixture->mol;
-    md_allocator_i* alloc = &utest_fixture->alloc;
+    md_allocator_i* alloc = utest_fixture->arena;
     vec3_t pbc_ext = utest_fixture->pbc_ext;
 
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, NULL, alloc);
@@ -109,15 +106,15 @@ UTEST_F(spatial_hash, test_correctness_centered) {
     
     srand(31);
     
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
         vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), pbc_ext);
-        float rad = rnd() * 20;
+        float radius = rnd() * 20;
 
         int ref_count = 0;
-        const float rad2 = rad * rad;
+        const float rad2 = radius * radius;
         for (int64_t i = 0; i < mol->atom.count; ++i) {
             vec4_t c = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
 
@@ -126,17 +123,20 @@ UTEST_F(spatial_hash, test_correctness_centered) {
             }
         }
 
-        
         int count = 0;
-        md_spatial_hash_query(spatial_hash, pos, rad, iter_fn, &count);
+        md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
-        md_spatial_hash_query_batch(spatial_hash, pos, rad, iter_batch_fn, &batch_count);
+        md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
-        if (ref_count != batch_count) {
-            int new_count = 0;
-            md_spatial_hash_query_batch(spatial_hash, pos, rad, iter_batch_fn, &new_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
         }
     }
 
@@ -144,8 +144,8 @@ UTEST_F(spatial_hash, test_correctness_centered) {
 }
 
 UTEST_F(spatial_hash, test_correctness_ala) {
-    md_allocator_i* alloc = &utest_fixture->alloc;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
+    md_allocator_i* alloc = utest_fixture->arena;
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
     md_molecule_t mol;
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
@@ -160,11 +160,11 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
         vec3_t pos = vec3_mul(vec3_set(rnd(), rnd(), rnd()), vec3_from_vec4(pbc_ext));
-        float radius = rnd() * 20;
+        float radius = rnd() * 20.f;
+        const float rad2 = radius * radius;
 
         int ref_count = 0;
-        const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        for (size_t i = 0; i < mol.atom.count; ++i) {
             const vec4_t c = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
             if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
                 ref_count += 1;
@@ -175,17 +175,25 @@ UTEST_F(spatial_hash, test_correctness_ala) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
 }
 
 UTEST_F(spatial_hash, test_correctness_ala_vec3) {
-    md_allocator_i* alloc = &utest_fixture->alloc;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
+    md_allocator_i* alloc = utest_fixture->arena;
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
     md_molecule_t mol;
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
@@ -200,7 +208,7 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
 
     const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(mol.unit_cell.basis, vec3_set1(1)), 0);
 
-    //srand(31);
+    srand(31);
 
     const int num_iter = 100;
     for (int iter = 0; iter < num_iter; ++iter) {
@@ -209,7 +217,7 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
 
         int ref_count = 0;
         const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        for (size_t i = 0; i < mol.atom.count; ++i) {
             const vec4_t c = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
             if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
                 ref_count += 1;
@@ -220,17 +228,25 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
 }
 
 UTEST_F(spatial_hash, test_correctness_water) {
-    md_allocator_i* alloc = &utest_fixture->alloc;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
+    md_allocator_i* alloc = utest_fixture->arena;
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
     md_molecule_t mol;
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
@@ -249,7 +265,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
 
         int ref_count = 0;
         const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        for (size_t i = 0; i < mol.atom.count; ++i) {
             const vec4_t c = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
             if (vec4_distance_squared(vec4_from_vec3(pos, 0), c) < rad2) {
                 ref_count += 1;
@@ -260,17 +276,25 @@ UTEST_F(spatial_hash, test_correctness_water) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
 }
 
 UTEST_F(spatial_hash, test_correctness_periodic_centered) {
-    md_allocator_i* alloc = &utest_fixture->alloc;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
+    md_allocator_i* alloc = utest_fixture->arena;
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
     md_molecule_t* mol = &utest_fixture->mol;
     vec3_t pbc_ext = utest_fixture->pbc_ext;
@@ -288,7 +312,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_centered) {
 
         int ref_count = 0;
         const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol->atom.count; ++i) {
+        for (size_t i = 0; i < mol->atom.count; ++i) {
             vec4_t c = {mol->atom.x[i], mol->atom.y[i], mol->atom.z[i], 0};
 
             if (vec4_periodic_distance_squared(vec4_from_vec3(pos, 0), c, period) < rad2) {
@@ -301,20 +325,24 @@ UTEST_F(spatial_hash, test_correctness_periodic_centered) {
         EXPECT_EQ(ref_count, count);
 
         if (count != ref_count) {           
-            printf("iter: %i, pos: %f %f %f, rad: %f\n", iter, pos.x, pos.y, pos.z, radius);
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
         }
 
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);
 }
 
 UTEST_F(spatial_hash, test_correctness_periodic_water) {
-    md_allocator_i* alloc = &utest_fixture->alloc;
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(&utest_fixture->arena);
+    md_allocator_i* alloc = utest_fixture->arena;
+    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(utest_fixture->arena);
 
     md_molecule_t mol;
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
@@ -333,7 +361,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
 
         int ref_count = 0;
         const float rad2 = radius * radius;
-        for (int64_t i = 0; i < mol.atom.count; ++i) {
+        for (size_t i = 0; i < mol.atom.count; ++i) {
             const vec4_t c = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
             if (vec4_periodic_distance_squared(vec4_from_vec3(pos, 0), c, pbc_ext) < rad2) {
                 ref_count += 1;
@@ -344,9 +372,17 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
         md_spatial_hash_query(spatial_hash, pos, radius, iter_fn, &count);
         EXPECT_EQ(ref_count, count);
 
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
+
         int batch_count = 0;
         md_spatial_hash_query_batch(spatial_hash, pos, radius, iter_batch_fn, &batch_count);
         EXPECT_EQ(ref_count, batch_count);
+
+        if (count != ref_count) {           
+            printf("iter: %i, pos: %f %f %f, rad: %f, expected: %i, got: %i\n", iter, pos.x, pos.y, pos.z, radius, ref_count, count);
+        }
     }
 
     md_vm_arena_temp_end(temp);

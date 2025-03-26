@@ -137,12 +137,12 @@ bool md_gro_data_parse_file(md_gro_data_t* data, str_t filename, struct md_alloc
     md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
         const int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_heap_allocator, cap);
+        char* buf = md_alloc(md_get_heap_allocator(), cap);
         
         md_buffered_reader_t line_reader = md_buffered_reader_from_file(buf, cap, file);
         result = md_gro_data_parse(data, &line_reader, alloc);
         
-        md_free(md_heap_allocator, buf, cap);
+        md_free(md_get_heap_allocator(), buf, cap);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Could not open file '%.*s'", filename.len, filename.ptr);
@@ -163,19 +163,19 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
 
     MEMSET(mol, 0, sizeof(md_molecule_t));
 
-    const int64_t num_atoms = data->num_atoms;
+    const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-    mol->atom.x = md_array_create(float, num_atoms, alloc);
-    mol->atom.y = md_array_create(float, num_atoms, alloc);
-    mol->atom.z = md_array_create(float, num_atoms, alloc);
-    mol->atom.type = md_array_create(md_label_t, num_atoms, alloc);
+    mol->atom.x       = md_array_create(float, capacity, alloc);
+    mol->atom.y       = md_array_create(float, capacity, alloc);
+    mol->atom.z       = md_array_create(float, capacity, alloc);
+    mol->atom.type    = md_array_create(md_label_t, capacity, alloc);
 
-    mol->atom.resid = md_array_create(md_residue_id_t, num_atoms, alloc);
-    mol->atom.resname = md_array_create(md_label_t, num_atoms, alloc);
-    mol->atom.flags = md_array_create(md_flags_t, num_atoms, alloc);
+    mol->atom.resid   = md_array_create(md_residue_id_t, capacity, alloc);
+    mol->atom.resname = md_array_create(md_label_t, capacity, alloc);
+    mol->atom.flags   = md_array_create(md_flags_t, capacity, alloc);
 
     int32_t prev_res_id = -1;
-    for (int64_t i = 0; i < num_atoms; ++i) {
+    for (size_t i = 0; i < data->num_atoms; ++i) {
         const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
         const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
         const float z = data->atom_data[i].z * 10.0f; // convert from nm to Ångström
@@ -221,10 +221,10 @@ static bool gro_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
     (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
-    if (md_gro_data_parse_str(&data, str, md_heap_allocator)) {
+    if (md_gro_data_parse_str(&data, str, md_get_heap_allocator())) {
         success = md_gro_molecule_init(mol, &data, alloc);
     }
-    md_gro_data_free(&data, md_heap_allocator);
+    md_gro_data_free(&data, md_get_heap_allocator());
 
     return success;
 }
@@ -233,10 +233,10 @@ static bool gro_init_from_file(md_molecule_t* mol, str_t filename, const void* a
     (void)arg;
     md_gro_data_t data = {0};
     bool success = false;
-    if (md_gro_data_parse_file(&data, filename, md_heap_allocator)) {
+    if (md_gro_data_parse_file(&data, filename, md_get_heap_allocator())) {
         success = md_gro_molecule_init(mol, &data, alloc);
     }
-    md_gro_data_free(&data, md_heap_allocator);
+    md_gro_data_free(&data, md_get_heap_allocator());
 
     return success;
 }
@@ -246,6 +246,6 @@ static md_molecule_loader_i gro_api = {
     gro_init_from_file,
 };
 
-md_molecule_loader_i* md_gro_molecule_api() {
+md_molecule_loader_i* md_gro_molecule_api(void) {
     return &gro_api;
 }

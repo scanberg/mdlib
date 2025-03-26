@@ -9,37 +9,43 @@ target_compile_options(md_unittest PRIVATE ${MD_FLAGS_EXT} ${MD_FLAGS_AVX} $<$<C
 target_link_options(md_unittest PRIVATE ${MD_LINK_FLAGS} $<$<CONFIG:Debug>:${MD_LINK_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_LINK_FLAGS_REL}>)
 target_link_libraries(md_unittest PRIVATE mdlib ${MD_LIBS})
 
-target_sources(md_unittest
-  PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_allocator.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_array.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_bitop.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_bitfield.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_str.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_edr.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_cube.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_intrinsics.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_simd.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_vec_math.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_os.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_pdb.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_gro.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_trr.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_mmcif.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_util.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_unit.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_script.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_filter.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_frame_cache.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_spatial_hash.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_string_builder.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_base64.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_xtc.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_xyz.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_xvg.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/rmsd.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_lammps.c
-  )
+set (SRC_FILES
+    test_allocator.c
+    test_array.c
+    test_bitop.c
+    test_bitfield.c
+    test_str.c
+    test_hash.c
+    test_edr.c
+    test_cube.c
+    test_intrinsics.c
+    test_simd.c
+    test_vec_math.c
+    test_os.c
+    test_pdb.c
+    test_gro.c
+    test_trr.c
+    test_mmcif.c
+    test_util.c
+    test_unit.c
+    test_script.c
+    test_filter.c
+    test_frame_cache.c
+    test_spatial_hash.c
+    test_string_builder.c
+    test_base64.c
+    test_xtc.c
+    test_xyz.c
+    test_xvg.c
+    rmsd.c
+    test_lammps.c
+)
+
+if (${MD_ENABLE_VLX})
+    set (SRC_FILES ${SRC_FILES} test_vlx.c test_gto.c)
+endif()
+
+target_sources(md_unittest PRIVATE ${SRC_FILES})
 
 # adapted from https://github.com/Kitware/CMake/blob/master/Modules/GoogleTest.cmake
 # and https://github.com/Kitware/CMake/blob/master/Modules/GoogleTestAddTests.cmake

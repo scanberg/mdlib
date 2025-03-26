@@ -137,6 +137,46 @@ typedef struct mat4x3_t {
     #endif
 } mat4x3_t;
 
+typedef struct dvec2_t {
+    union {
+        struct {
+            double x, y;  
+        };
+        double elem[2];
+    };
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec2_t;
+
+typedef struct dvec3_t {
+    union {
+        struct {
+            double x, y, z;  
+        };
+        double elem[3];
+    };
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec3_t;
+
+typedef struct dvec4_t {
+    union {
+        struct {
+            double x, y, z, w;  
+        };
+        double elem[4];
+};
+#ifdef __cplusplus
+    double& operator[](size_t i)       { return elem[i]; }
+    const double& operator[](size_t i) const { return elem[i]; }
+#endif
+} dvec4_t;
+
+
 #if MD_COMPILER_CLANG
 #	pragma clang diagnostic pop
 #elif MD_COMPILER_GCC
@@ -291,7 +331,7 @@ MD_VEC_INLINE vec2_t vec2_fract(vec2_t v) {
 }
 
 // VEC3 OPERATIONS
-MD_VEC_INLINE vec3_t vec3_zero() {
+MD_VEC_INLINE vec3_t vec3_zero(void) {
     vec3_t res = {0};
     return res;
 }
@@ -399,9 +439,9 @@ MD_VEC_INLINE vec3_t vec3_div_f(vec3_t a, float f) {
 
 MD_VEC_INLINE vec3_t vec3_cross(vec3_t a, vec3_t b) {
     vec3_t res = {
-        a.y * b.z - b.y * a.z,
-        a.z * b.x - b.z * a.x,
-        a.x * b.y - b.x * a.y};
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x};
     return res;
 }
 
@@ -461,8 +501,49 @@ MD_VEC_INLINE vec3_t vec3_max(vec3_t a, vec3_t b) {
     return res;
 }
 
+MD_VEC_INLINE float vec3_reduce_min(vec3_t v) {
+    return MIN(v.x, MIN(v.y, v.z));
+}
+
+MD_VEC_INLINE float vec3_reduce_max(vec3_t v) {
+    return MAX(v.x, MAX(v.y, v.z));
+}
+
+MD_VEC_INLINE float vec3_angle(vec3_t v1, vec3_t v2) {
+    vec3_t w = vec3_cross(v1, v2);
+    float wl = vec3_length(w);
+    float  s = vec3_dot(v1, v2);
+    return atan2f(wl, s);
+}
+
+// Each vector d is a delta vector between points, d[i] = p[i] - p[i-1]
+// It is up to the caller to ensure that the resulting d1, d2 and d3 are constructed
+// from points p0, p1, p2 and p4 that abide the minimum image convention
+MD_VEC_INLINE float vec3_dihedral_angle(vec3_t d1, vec3_t d2, vec3_t d3) {
+    vec3_t v1 = vec3_cross(d1, d2);
+    vec3_t v2 = vec3_cross(d2, d3);
+    float angle = vec3_angle(v1, v2);
+    float dot   = vec3_dot(d1, v2);
+    if (dot < 0) {
+        angle = -angle;
+    }
+    return angle;
+}
+
+MD_VEC_INLINE vec3_t vec3_round(vec3_t v) {
+    v.x = roundf(v.x);
+    v.y = roundf(v.y);
+    v.z = roundf(v.z);
+    return v;
+}
+
+MD_VEC_INLINE vec3_t vec3_min_image(vec3_t dx, vec3_t ext, vec3_t inv_ext) {
+    const vec3_t dxp = vec3_sub(vec3_mul(dx, inv_ext), vec3_round(dx));
+    return vec3_mul(dxp, ext);
+}
+
 // VEC4 OPERATIONS
-MD_VEC_INLINE vec4_t vec4_zero() {
+MD_VEC_INLINE vec4_t vec4_zero(void) {
 #if MD_VEC_MATH_USE_SIMD
     vec4_t res;
     res.m128 = md_mm_setzero_ps();
@@ -622,10 +703,79 @@ MD_VEC_INLINE vec4_t vec4_fmadd(vec4_t a, vec4_t b, vec4_t c) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_fmadd_ps(a.m128, b.m128, c.m128);
 #else
-    r.x = a.x - s;
-    r.y = a.y - s;
-    r.z = a.z - s;
-    r.w = a.w - s;
+    r.x = a.x * b.x + c.x;
+    r.y = a.y * b.y + c.y;
+    r.z = a.z * b.z + c.z;
+    r.w = a.w * b.w + c.w;
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_fnmadd(vec4_t a, vec4_t b, vec4_t c) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_fnmadd_ps(a.m128, b.m128, c.m128);
+#else
+    r.x = -(a.x * b.x) + c.x;
+    r.y = -(a.y * b.y) + c.y;
+    r.z = -(a.z * b.z) + c.z;
+    r.w = -(a.w * b.w) + c.w;
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_fmsub(vec4_t a, vec4_t b, vec4_t c) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_fmsub_ps(a.m128, b.m128, c.m128);
+#else
+    r.x = a.x * b.x - c.x;
+    r.y = a.y * b.y - c.y;
+    r.z = a.z * b.z - c.z;
+    r.w = a.w * b.w - c.w;
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_fnmsub(vec4_t a, vec4_t b, vec4_t c) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_fnmsub_ps(a.m128, b.m128, c.m128);
+#else
+    r.x = -(a.x * b.x) - c.x;
+    r.y = -(a.y * b.y) - c.y;
+    r.z = -(a.z * b.z) - c.z;
+    r.w = -(a.w * b.w) - c.w;
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_sqrt(vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_sqrt_ps(v.m128);
+#else
+    r.x = sqrtf(v.x);
+    r.y = sqrtf(v.y);
+    r.z = sqrtf(v.z);
+    r.w = sqrtf(v.w);
+#endif
+    return r;
+}
+
+MD_VEC_INLINE vec4_t vec4_rsqrt(vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_rsqrt_ps(v.m128);
+    // Perform additional Newton-Rhapson step to improve precision
+    vec4_t vr = vec4_mul(v, r);
+    vec4_t hr = vec4_mul(vec4_set1(0.5f), r);
+    r = vec4_mul(hr, vec4_fnmadd(vr, r, vec4_set1(3.0f)));
+#else
+    r.x = 1.0f / sqrtf(v.x);
+    r.y = 1.0f / sqrtf(v.y);
+    r.z = 1.0f / sqrtf(v.z);
+    r.w = 1.0f / sqrtf(v.w);
 #endif
     return r;
 }
@@ -656,10 +806,16 @@ MD_VEC_INLINE float vec4_length(vec4_t v) {
     return sqrtf(vec4_dot(v,v));
 }
 
+MD_VEC_INLINE vec4_t vec4_normalize(vec4_t v) {
+    float mag2 = vec4_dot(v,v);
+    if (mag2 > 1.0e-5f) {
+        v = vec4_mul_f(v, 1.0f / sqrtf(mag2));
+    }
+    return v;
+}
+
 MD_VEC_INLINE vec4_t vec4_lerp(vec4_t a, vec4_t b, float t) {
-    t = CLAMP(t, 0.0f, 1.0f);
-    vec4_t r = vec4_add(vec4_mul_f(a, 1.0f - t), vec4_mul_f(b, t));
-    return r;
+    return vec4_add(vec4_mul_f(a, 1.0f - t), vec4_mul_f(b, t));
 }
 
 MD_VEC_INLINE vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p3, float t, float s) {
@@ -699,6 +855,43 @@ MD_VEC_INLINE vec4_t vec4_max(vec4_t a, vec4_t b) {
     r.y = MAX(a.y, b.y);
     r.z = MAX(a.z, b.z);
     r.w = MAX(a.w, b.w);
+#endif
+    return r;
+}
+
+MD_VEC_INLINE float vec4_reduce_min(vec4_t v) {
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_reduce_min_ps(v.m128);
+#else
+    return MIN(MIN(v.x, v.y), MIN(v.z, v.w));
+#endif
+}
+
+MD_VEC_INLINE float vec4_reduce_max(vec4_t v) {
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_reduce_max_ps(v.m128);
+#else
+    return MAX(MAX(v.x, v.y), MAX(v.z, v.w));
+#endif
+}
+
+MD_VEC_INLINE float vec4_reduce_add(vec4_t v) {
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_reduce_add_ps(v.m128);
+#else
+    return (v.x + v.y) + (v.z + v.w);
+#endif
+}
+
+MD_VEC_INLINE vec4_t vec4_clamp(vec4_t v, vec4_t min, vec4_t max) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = _mm_max_ps(_mm_min_ps(v.m128, max.m128), min.m128);
+#else
+    r.x = CLAMP(v.x, min.x, max.x);
+    r.y = CLAMP(v.y, min.y, max.y);
+    r.z = CLAMP(v.z, min.z, max.z);
+    r.w = CLAMP(v.w, min.w, max.w);
 #endif
     return r;
 }
@@ -786,10 +979,12 @@ MD_VEC_INLINE vec4_t vec4_cmp_eq(vec4_t a, vec4_t b) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_cmpeq_ps(a.m128, b.m128);
 #else
-    r.x = (a.x == b.x) ? 1.0f : 0.0f;
-    r.y = (a.y == b.y) ? 1.0f : 0.0f;
-    r.z = (a.z == b.z) ? 1.0f : 0.0f;
-    r.w = (a.w == b.w) ? 1.0f : 0.0f;
+    float mask;
+    MEMSET(&mask, 0xFF, sizeof(mask));
+    r.x = (a.x == b.x) ? mask : 0.0f;
+    r.y = (a.y == b.y) ? mask : 0.0f;
+    r.z = (a.z == b.z) ? mask : 0.0f;
+    r.w = (a.w == b.w) ? mask : 0.0f;
 #endif
     return r;
 }
@@ -799,10 +994,12 @@ MD_VEC_INLINE vec4_t vec4_cmp_lt(vec4_t a, vec4_t b) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_cmplt_ps(a.m128, b.m128);
 #else
-    r.x = (a.x < b.x) ? 1.0f : 0.0f;
-    r.y = (a.y < b.y) ? 1.0f : 0.0f;
-    r.z = (a.z < b.z) ? 1.0f : 0.0f;
-    r.w = (a.w < b.w) ? 1.0f : 0.0f;
+    float mask;
+    MEMSET(&mask, 0xFF, sizeof(mask));
+    r.x = (a.x < b.x) ? mask : 0.0f;
+    r.y = (a.y < b.y) ? mask : 0.0f;
+    r.z = (a.z < b.z) ? mask : 0.0f;
+    r.w = (a.w < b.w) ? mask : 0.0f;
 #endif
     return r;
 }
@@ -812,10 +1009,12 @@ MD_VEC_INLINE vec4_t vec4_cmp_le(vec4_t a, vec4_t b) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_cmple_ps(a.m128, b.m128);
 #else
-    r.x = (a.x <= b.x) ? 1.0f : 0.0f;
-    r.y = (a.y <= b.y) ? 1.0f : 0.0f;
-    r.z = (a.z <= b.z) ? 1.0f : 0.0f;
-    r.w = (a.w <= b.w) ? 1.0f : 0.0f;
+    float mask;
+    MEMSET(&mask, 0xFF, sizeof(mask));
+    r.x = (a.x <= b.x) ? mask : 0.0f;
+    r.y = (a.y <= b.y) ? mask : 0.0f;
+    r.z = (a.z <= b.z) ? mask : 0.0f;
+    r.w = (a.w <= b.w) ? mask : 0.0f;
 #endif
     return r;
 }
@@ -825,10 +1024,12 @@ MD_VEC_INLINE vec4_t vec4_cmp_gt(vec4_t a, vec4_t b) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_cmpgt_ps(a.m128, b.m128);
 #else
-    r.x = (a.x > b.x) ? 1.0f : 0.0f;
-    r.y = (a.y > b.y) ? 1.0f : 0.0f;
-    r.z = (a.z > b.z) ? 1.0f : 0.0f;
-    r.w = (a.w > b.w) ? 1.0f : 0.0f;
+    float mask;
+    MEMSET(&mask, 0xFF, sizeof(mask));
+    r.x = (a.x > b.x) ? mask : 0.0f;
+    r.y = (a.y > b.y) ? mask : 0.0f;
+    r.z = (a.z > b.z) ? mask : 0.0f;
+    r.w = (a.w > b.w) ? mask : 0.0f;
 #endif
     return r;
 }
@@ -838,10 +1039,12 @@ MD_VEC_INLINE vec4_t vec4_cmp_ge(vec4_t a, vec4_t b) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_cmpge_ps(a.m128, b.m128);
 #else
-    r.x = (a.x >= b.x) ? 1.0f : 0.0f;
-    r.y = (a.y >= b.y) ? 1.0f : 0.0f;
-    r.z = (a.z >= b.z) ? 1.0f : 0.0f;
-    r.w = (a.w >= b.w) ? 1.0f : 0.0f;
+    float mask;
+    MEMSET(&mask, 0xFF, sizeof(mask));
+    r.x = (a.x >= b.x) ? mask : 0.0f;
+    r.y = (a.y >= b.y) ? mask : 0.0f;
+    r.z = (a.z >= b.z) ? mask : 0.0f;
+    r.w = (a.w >= b.w) ? mask : 0.0f;
 #endif
     return r;
 }
@@ -888,12 +1091,25 @@ MD_VEC_INLINE vec4_t vec4_blend_mask(vec4_t a, vec4_t b, const int mask) {
 }
 #endif
 
+MD_VEC_INLINE int vec4_move_mask(vec4_t v) {
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_movemask_ps(v.m128);
+#else
+#error "Not implemented"
+#endif
+}
 
-MD_VEC_INLINE vec4_t vec4_deperiodize(vec4_t x, vec4_t r, vec4_t period) {
-    const vec4_t dx     = vec4_div(vec4_sub(x, r), period);
-    const vec4_t dxp    = vec4_sub(dx, vec4_round(dx));
-    const vec4_t x_prim = vec4_add(r, vec4_mul(dxp, period));
-    return vec4_blend(x_prim, x, vec4_cmp_eq(period, vec4_zero()));
+MD_VEC_INLINE vec4_t vec4_min_image(vec4_t dx, vec4_t ext, vec4_t inv_ext) {
+    dx = vec4_mul(dx, inv_ext);
+    const vec4_t dxp = vec4_sub(dx, vec4_round(dx));
+    return vec4_mul(dxp, ext);
+}
+
+MD_VEC_INLINE vec4_t vec4_deperiodize(vec4_t x, vec4_t r, vec4_t ext) {
+    const vec4_t inv_ext = vec4_div(vec4_set1(1.0f), ext);
+    const vec4_t dx     = vec4_min_image(vec4_sub(x, r), ext, inv_ext);
+    const vec4_t x_prim = vec4_add(r, dx);
+    return vec4_blend(x_prim, x, vec4_cmp_eq(ext, vec4_zero()));
 }
 
 MD_VEC_INLINE float vec4_periodic_distance_squared(vec4_t a, vec4_t b, vec4_t period) {
@@ -963,36 +1179,54 @@ MD_VEC_INLINE void vec4_sincos(vec4_t x, vec4_t* s, vec4_t* c) {
 #endif
 }
 
-MD_VEC_INLINE quat_t quat_ident() {
+MD_VEC_INLINE quat_t quat_ident(void) {
 	quat_t q = {0, 0, 0, 1};
 	return q;
 }
 
 // quat
 MD_VEC_INLINE float quat_dot(quat_t a, quat_t b) {
-    const float x = a.x * b.x + a.y * b.y;
-    const float y = a.z * b.z + a.w * b.w;
-    return x + y;
+#if MD_VEC_MATH_USE_SIMD
+    return md_mm_reduce_add_ps(md_mm_mul_ps(a.m128, b.m128));
+#else
+    return (a.x * b.x + a.y * b.y) + (a.z * b.z + a.w * b.w);
+#endif
 }
 
 MD_VEC_INLINE quat_t quat_mul(quat_t a, quat_t b) {
-    quat_t c = {
-        a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-        a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z,
-        a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x,
-        a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
-    };
+    quat_t c;
+#if MD_VEC_MATH_USE_SIMD
+    // @NOTE: Reversed notation used here for ijkl, because it makes more sense in my reptile brain
+    // shuffle from left to right (xyzw) x:0 y:1 z:2 w:3
+#define MD_SHUFFLE(v,i,j,k,l) md_mm_shuffle_ps(v,v,_MM_SHUFFLE(l,k,j,i))
+    __m128 t1 = _mm_mul_ps(MD_SHUFFLE(a.m128, 3,3,3,3), b.m128);
+    __m128 t2 = _mm_mul_ps(MD_SHUFFLE(a.m128, 0,1,2,0), MD_SHUFFLE(b.m128, 3,3,3,0));
+    __m128 t3 = _mm_mul_ps(MD_SHUFFLE(a.m128, 1,2,0,1), MD_SHUFFLE(b.m128, 2,0,1,1));
+    __m128 t4 = _mm_mul_ps(MD_SHUFFLE(a.m128, 2,0,1,2), MD_SHUFFLE(b.m128, 1,2,0,2));
+#undef MD_SHUFFLE
+    t2 = _mm_mul_ps(t2, _mm_set_ps(-1,1,1,1));
+    t3 = _mm_mul_ps(t3, _mm_set_ps(-1,1,1,1));
+    c.m128 = _mm_add_ps(_mm_add_ps(t1, t2), _mm_sub_ps(t3, t4));
+#else
+    c.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+    c.y = a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z;
+    c.z = a.w * b.z + a.z * b.w + a.x * b.y - a.y * b.x;
+    c.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+#endif
     return c;
 }
 
 MD_VEC_INLINE quat_t quat_mul_f(quat_t q, float s) {
-    quat_t c = {
-        q.x * s,
-        q.y * s,
-        q.z * s,
-        q.w * s
-    };
-    return c;
+    quat_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_mul_ps(q.m128, md_mm_set1_ps(s));
+#else
+    r.x = q.x * s,
+    r.y = q.y * s,
+    r.z = q.z * s,
+    r.w = q.w * s,
+#endif
+    return r;
 }
 
 MD_VEC_INLINE vec3_t quat_mul_vec3(quat_t q, vec3_t v) {
@@ -1003,40 +1237,51 @@ MD_VEC_INLINE vec3_t quat_mul_vec3(quat_t q, vec3_t v) {
 }
 
 MD_VEC_INLINE quat_t quat_conj(quat_t q) {
+
     quat_t r = {
         -q.x,
         -q.y,
         -q.z,
-         q.w
+         q.w,
     };
     return r;
 }
 
-MD_VEC_INLINE quat_t quat_angle_axis(float angle, vec3_t axis) {
+MD_VEC_INLINE quat_t quat_axis_angle(vec3_t axis, float angle) {
     float half_angle = angle * 0.5f;
     float sin_angle = sinf(half_angle);
-
-    quat_t q;
-    q.x = axis.x * sin_angle;
-    q.y = axis.y * sin_angle;
-    q.z = axis.z * sin_angle;
-    q.w = cosf(half_angle);
+    quat_t q = {
+        axis.x * sin_angle,
+        axis.y * sin_angle,
+        axis.z * sin_angle,
+        cosf(half_angle),
+    };
     return q;
 }
 
 MD_VEC_INLINE quat_t quat_normalize(quat_t q) {
-    quat_t r = q;
-
-    float mag2 = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
-    if (mag2 != 0.0f && (fabsf(mag2 - 1.0f) > 0.000001)) {
-        float mag = 1.0f / sqrtf(mag2);
-        r.x = q.x * mag;
-        r.y = q.y * mag;
-        r.z = q.z * mag;
-        r.w = q.w * mag;
+    float mag2 = quat_dot(q,q);
+    if (mag2 > 0.000001f) {
+        q = quat_mul_f(q, 1.0f / sqrtf(mag2));
     }
+    return q;
+}
 
-    return r;
+static inline quat_t quat_nlerp(quat_t qa, quat_t qb, float t) {
+    quat_t res;
+
+    if (quat_dot(qa, qb) < 0.0f) {
+        qb = quat_conj(qb);
+    }
+#if MD_VEC_MATH_USE_SIMD
+    res.m128 = md_mm_lerp_ps(qa.m128, qb.m128, t);
+#else
+    res.x = lerpf(qa.x, qb.x, t);
+    res.y = lerpf(qa.y, qb.y, t);
+    res.z = lerpf(qa.z, qb.z, t);
+    res.w = lerpf(qa.w, qb.w, t);
+#endif
+    return quat_normalize(res);
 }
 
 // https://www.euclideanspace.com/maths/algebra/realNormedAlgebra/quaternions/slerp/index.htm
@@ -1120,7 +1365,7 @@ MD_VEC_INLINE md_128 linear_combine_3(md_128 a, md_128 B[3]) {
 #endif
 
 // MAT2
-MD_VEC_INLINE mat2_t mat2_ident() {
+MD_VEC_INLINE mat2_t mat2_ident(void) {
     mat2_t M = {
         1,0,
         0,1,
@@ -1129,7 +1374,7 @@ MD_VEC_INLINE mat2_t mat2_ident() {
 }
 
 // MAT3
-MD_VEC_INLINE mat3_t mat3_ident() {
+MD_VEC_INLINE mat3_t mat3_ident(void) {
     mat3_t M = {
         1,0,0,
         0,1,0,
@@ -1306,6 +1551,30 @@ MD_VEC_INLINE mat3_t mat3_angle_axis(float angle, vec3_t axis) {
 	return M;
 }
 
+MD_VEC_INLINE double dvec2_dot(dvec2_t a, dvec2_t b) {
+    return a.x * b.x + a.y * b.y;
+}
+
+MD_VEC_INLINE double dvec2_length(dvec2_t v) {
+    return sqrt(dvec2_dot(v, v));
+}
+
+MD_VEC_INLINE double dvec3_dot(dvec3_t a, dvec3_t b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+MD_VEC_INLINE double dvec3_length(dvec3_t v) {
+    return sqrt(dvec3_dot(v, v));
+}
+
+MD_VEC_INLINE double dvec4_dot(dvec4_t a, dvec4_t b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+}
+
+MD_VEC_INLINE double dvec4_length(dvec4_t v) {
+    return sqrt(dvec4_dot(v, v));
+}
+
 typedef struct mat3_eigen_t {
     mat3_t vectors;
     vec3_t values;
@@ -1320,6 +1589,7 @@ typedef struct mat3_svd_t {
 mat3_eigen_t mat3_eigen(mat3_t M);
 mat3_svd_t   mat3_svd(mat3_t M);
 mat3_t       mat3_extract_rotation(mat3_t M);
+mat3_t       mat3_orthonormalize(mat3_t M);
 
 // Computes the covariance matrix for a set of coordinates with a given center of mass.
 // x,y,z / xyz: coordinates
@@ -1363,7 +1633,7 @@ mat3_t mat3_optimal_rotation(const float* const x[2], const float* const y[2], c
 mat3_t mat3_optimal_rotation_vec4(const vec4_t* const xyzw[2], const int32_t* const indices[2], size_t count, const vec3_t com[2]);
 
 // MAT4
-MD_VEC_INLINE mat4_t mat4_ident() {
+MD_VEC_INLINE mat4_t mat4_ident(void) {
     mat4_t M = {
         {
             1,0,0,0,
@@ -1429,6 +1699,32 @@ MD_VEC_INLINE mat4_t mat4_scale(float x, float y, float z) {
     return M;
 }
 
+// Create mat4 scaling matrix from scalar s which dictates the corresponding scaling factor for all axes
+MD_VEC_INLINE mat4_t mat4_scale_f(float s) {
+    mat4_t M = {
+        {
+            s,0,0,0,
+            0,s,0,0,
+            0,0,s,0,
+            0,0,0,1
+        }
+    };
+    return M;
+}
+
+// Create mat4 scaling matrix from scalar s which dictates the corresponding scaling factor for all axes
+MD_VEC_INLINE mat4_t mat4_scale_vec3(vec3_t v) {
+    mat4_t M = {
+        {
+            v.x,0,0,0,
+            0,v.y,0,0,
+            0,0,v.z,0,
+            0,0,0,1
+        }
+    };
+    return M;
+}
+
 // Create mat4 translation matrix from scalars x, y, z which dictates the corresponding translation for each axis
 MD_VEC_INLINE mat4_t mat4_translate(float x, float y, float z) {
     mat4_t M = {
@@ -1437,6 +1733,19 @@ MD_VEC_INLINE mat4_t mat4_translate(float x, float y, float z) {
             0,1,0,0,
             0,0,1,0,
             x,y,z,1
+        }
+    };
+    return M;
+}
+
+// Create mat4 translation matrix from scalars x, y, z which dictates the corresponding translation for each axis
+MD_VEC_INLINE mat4_t mat4_translate_vec3(vec3_t t) {
+    mat4_t M = {
+        {
+            1,0,0,0,
+            0,1,0,0,
+            0,0,1,0,
+            t.x,t.y,t.z,1
         }
     };
     return M;
@@ -1581,6 +1890,31 @@ MD_VEC_INLINE bool mat4_equal(mat4_t A, mat4_t B) {
     return vec4_equal(A.col[0], B.col[0]) && vec4_equal(A.col[1], B.col[1]) && vec4_equal(A.col[2], B.col[2]) && vec4_equal(A.col[3], B.col[3]);
 }
 
+// Some functionality for mat4x3 matrix
+
+MD_VEC_INLINE mat4x3_t mat4x3_from_mat3(mat3_t M) {
+    mat4x3_t R;
+    R.col[0] = vec4_from_vec3(M.col[0], 0);
+    R.col[1] = vec4_from_vec3(M.col[1], 0);
+    R.col[2] = vec4_from_vec3(M.col[2], 0);
+    return R;
+}
+
+MD_VEC_INLINE vec4_t mat4x3_mul_vec4(mat4x3_t M, vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = linear_combine_3(v.m128, &M.col[0].m128);
+#else
+    r.x = M.elem[0][0] * v.x + M.elem[1][0] * v.y + M.elem[2][0] * v.z + M.elem[3][0] * v.w;
+    r.y = M.elem[0][1] * v.x + M.elem[1][1] * v.y + M.elem[2][1] * v.z + M.elem[3][1] * v.w;
+    r.z = M.elem[0][2] * v.x + M.elem[1][2] * v.y + M.elem[2][2] * v.z + M.elem[3][2] * v.w;
+#endif
+    return r;
+}
+
+
+// More complex functionality
+
 vec3_t mat4_unproject(vec3_t window_coords, mat4_t inv_view_proj_mat, vec4_t viewport);
 
 mat4_t mat4_look_at(vec3_t eye, vec3_t center, vec3_t up);
@@ -1608,9 +1942,7 @@ void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float*
 
 #ifdef __cplusplus
 }
-#endif
 
-#ifdef __cplusplus
 static inline bool operator == (vec2_t a, vec2_t b){
     return a.x == b.x && a.y == b.y;
 }
@@ -1730,6 +2062,16 @@ static inline vec3_t operator - (const vec3_t &a) {
     return c;
 }
 
+static inline vec3_t operator -= (vec3_t& a, vec3_t b) {
+    a = vec3_sub(a, b);
+    return a;
+}
+
+static inline vec3_t operator -= (vec3_t& v, float s) {
+    v = vec3_sub_f(v, s);
+    return v;
+}
+
 static inline vec3_t operator * (vec3_t a, vec3_t b) {
     vec3_t c = {a.x * b.x, a.y * b.y, a.z * b.z};
     return c;
@@ -1745,6 +2087,16 @@ static inline vec3_t operator * (float s, vec3_t a) {
     return c;
 }
 
+static inline vec3_t operator *= (vec3_t& a, vec3_t b) {
+    a = vec3_mul(a, b);
+    return a;
+}
+
+static inline vec3_t operator *= (vec3_t& v, float s) {
+    v = vec3_mul_f(v, s);
+    return v;
+}
+
 static inline vec3_t operator / (vec3_t a, vec3_t b) {
     vec3_t c = {a.x / b.x, a.y / b.y, a.z / b.z};
     return c;
@@ -1758,6 +2110,16 @@ static inline vec3_t operator / (vec3_t a, float s) {
 static inline vec3_t operator / (float s, vec3_t a) {
     vec3_t c = {s / a.x, s / a.y, s / a.z};
     return c;
+}
+
+static inline vec3_t operator /= (vec3_t& a, vec3_t b) {
+    a = vec3_div(a, b);
+    return a;
+}
+
+static inline vec3_t operator /= (vec3_t& v, float s) {
+    v = vec3_div_f(v, s);
+    return v;
 }
 
 // vec4_t
@@ -1932,7 +2294,7 @@ static inline bool operator != (mat4_t A, mat4_t B) {
 
 template<typename T, typename V>
 T lerp (T a, T b, V t) {
-    return (1 - t) * a + t * b;
+    return (T)((1 - t) * a + t * b);
 }
 
 template <typename T, typename V>

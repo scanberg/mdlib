@@ -69,6 +69,11 @@ void md_frame_cache_frame_lock_release(struct md_frame_cache_lock_t* lock);
 // Returns True if the frame already exists
 bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock);
 
+// Try to find a frame within the cache
+// Returns true if the frame exists, and its data is provided in frame data together with an active frame lock that has to be released by the callee.
+// If the frame does not exist, it simply returns false and no action is required by the user
+bool md_frame_cache_find(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock);
+
 #ifdef __cplusplus
 }
 #endif

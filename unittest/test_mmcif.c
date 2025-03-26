@@ -9,7 +9,7 @@ UTEST(mmcif, 1fez) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/1fez.cif");
 
     md_molecule_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);
+    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
 
     if (result) {
@@ -26,16 +26,16 @@ UTEST(mmcif, 1fez) {
         EXPECT_NEAR(84.339, mol.atom.z[0], 0.001);
     }
 
-    md_molecule_free(&mol, md_heap_allocator);
+    md_molecule_free(&mol, md_get_heap_allocator());
 }
 
 UTEST(mmcif, 2or2) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/2or2.cif");
 
     md_molecule_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);
+    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
-    //md_util_molecule_postprocess(&mol, md_heap_allocator, MD_UTIL_POSTPROCESS_ALL);
+    //md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
 
     if (result) {
         EXPECT_EQ(5382, mol.atom.count);
@@ -51,16 +51,16 @@ UTEST(mmcif, 2or2) {
         EXPECT_NEAR(80.569, mol.atom.z[0], 0.001);
     }
 
-    md_molecule_free(&mol, md_heap_allocator);
+    md_molecule_free(&mol, md_get_heap_allocator());
 }
 
 UTEST(mmcif, 8g7u) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR"/8g7u.cif");
 
     md_molecule_t mol;
-    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_heap_allocator);
+    bool result = md_mmcif_molecule_api()->init_from_file(&mol, path, NULL, md_get_heap_allocator());
     EXPECT_TRUE(result);
-    md_util_molecule_postprocess(&mol, md_heap_allocator, MD_UTIL_POSTPROCESS_ALL);
+    md_util_molecule_postprocess(&mol, md_get_heap_allocator(), MD_UTIL_POSTPROCESS_ALL);
 
     if (result) {
         EXPECT_EQ(14229, mol.atom.count);
@@ -76,5 +76,5 @@ UTEST(mmcif, 8g7u) {
         EXPECT_NEAR(80.951,  mol.atom.z[0], 0.001);
     }
 
-    md_molecule_free(&mol, md_heap_allocator);
+    md_molecule_free(&mol, md_get_heap_allocator());
 }

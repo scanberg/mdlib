@@ -562,17 +562,21 @@ bool trr_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         return false;
     }
 
-    bool result = true;
+    bool result = false;
     const size_t frame_size = trr_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_heap_allocator : md_temp_allocator;
+        md_allocator_i* alloc = md_get_heap_allocator();
         void* frame_data = md_alloc(alloc, frame_size);
+        ASSERT(frame_data);
+
         const size_t read_size = trr_fetch_frame_data(inst, frame_idx, frame_data);
-        (void)read_size;
-        ASSERT(read_size == frame_size);
+        if (read_size != frame_size) {
+            MD_LOG_ERROR("TRR: Failed to read the expected size");
+            goto done;
+        }
 
         result = trr_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-
+    done:
         md_free(alloc, frame_data, frame_size);
     }
 
@@ -681,12 +685,12 @@ done:
     return result;
 }
 
-md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_alloc) {
+md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_alloc, uint32_t flags) {
     ASSERT(ext_alloc);
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
     // Ensure that the path is zero terminated (not guaranteed by str_t)
-    md_strb_t sb = md_strb_create(md_temp_allocator);
+    md_strb_t sb = md_strb_create(md_get_temp_allocator());
     md_strb_push_str(&sb, filename);
     XDRFILE* file = xdrfile_open(md_strb_to_cstr(sb), "r");
 
@@ -719,10 +723,11 @@ md_trajectory_i* md_trr_trajectory_create(str_t filename, md_allocator_i* ext_al
                 goto fail;
             }
 
-            if (write_cache(&cache, cache_file)) {
-                MD_LOG_INFO("TRR: Successfully created cache file for trajectory");
-            } else {
-                MD_LOG_ERROR("TRR: Failed to write cache file for trajectory");
+            if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
+                // If we fail to write the cache, that's ok, we can inform about it, but do not halt
+                if (write_cache(&cache, cache_file)) {
+                    MD_LOG_INFO("TRR: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
+                }
             }
         }
 

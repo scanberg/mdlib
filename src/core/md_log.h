@@ -6,7 +6,7 @@
 
 #define MD_LOG_INFO(fmt, ...)  md_logf(MD_LOG_TYPE_INFO,  fmt           , ##__VA_ARGS__)
 #define MD_LOG_DEBUG(fmt, ...) md_logf(MD_LOG_TYPE_DEBUG, fmt " [%s:%d]", ##__VA_ARGS__, __FILE__, __LINE__)
-#define MD_LOG_ERROR(fmt, ...) md_logf(MD_LOG_TYPE_ERROR, fmt " [%s]"   , ##__VA_ARGS__, __func__)
+#define MD_LOG_ERROR(fmt, ...) md_logf(MD_LOG_TYPE_ERROR, fmt " [%s:%d]"   , ##__VA_ARGS__, __func__, __LINE__)
 
 typedef struct md_logger_o md_logger_o;
 

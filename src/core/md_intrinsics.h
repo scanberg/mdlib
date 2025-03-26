@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_common.h>
 
@@ -87,20 +87,54 @@ static inline uint64_t find_first_zero_byte64(uint64_t x) {
 }
 
 static inline uint32_t next_power_of_two32(uint32_t x) {
-    if (x < 2) return x;  // avoid clz(0)
-    return 1U << (sizeof(uint32_t) * 8 - clz32(x-1));
+    // avoid clz(0)
+    return (x < 2) ? x : 1U << (sizeof(uint32_t) * 8 - clz32(x-1));
 }
 
 static inline uint64_t next_power_of_two64 (uint64_t x) {
-    if (x < 2) return x;  // avoid clz(0)
-    return 1ULL << (sizeof(uint64_t) * 8 - clz64(x-1));
+    // avoid clz(0)
+    return (x < 2) ? x : 1ULL << (sizeof(uint64_t) * 8 - clz64(x-1));
 }
 
-static inline uint32_t swap_endian32(uint32_t x) {
-	return (x >> 24) | ((x >> 8) & 0x0000FF00) | ((x << 8) & 0x00FF0000) | (x << 24);
+#ifdef __GLIBC__
+#include <byteswap.h>
+
+#define bswap32 bswap_32
+#define bswap64 bswap_64
+
+//Compiler-specific variants
+#elif defined(_MSC_VER) && _MSC_VER >= 1300
+#include <stdlib.h>
+#define bswap32 _byteswap_ulong
+#define bswap64 _byteswap_uint64
+#elif defined(__clang__)
+#if __has_builtin(__builtin_bswap32)
+#define bswap32 __builtin_bswap32
+#endif
+#if __has_builtin(__builtin_bswap64)
+#define bswap64 __builtin_bswap64
+#endif
+#elif defined(__GNUC__)  // Supported since at least GCC 4.4
+#define bswap32 __builtin_bswap32
+#define bswap64 __builtin_bswap64
+#else
+
+//default fallback
+static inline uint32_t bswap32(uint32_t v) {
+    return ((((uint32_t) (v) << 24))
+        | (((uint32_t) (v) << 8) & uint32_t(0x00FF0000))
+        | (((uint32_t) (v) >> 8) & uint32_t(0x0000FF00))
+        | (((uint32_t) (v) >> 24)));
 }
 
-static inline uint64_t swap_endian64(uint64_t x) {
-	return (x >> 56) | ((x >> 40) & 0x000000000000FF00) | ((x >> 24) & 0x0000000000FF0000) | ((x >> 8) & 0x00000000FF000000) |
-	       ((x << 8) & 0x000000FF00000000) | ((x << 24) & 0x0000FF0000000000) | ((x << 40) & 0x00FF000000000000) | (x << 56);
+static inline uint64_t bswap64(uint64_t v) {
+    return ((((uint64_t) (v) << 56))
+        | (((uint64_t) (v) << 40) & uint64_t(0x00FF000000000000))
+        | (((uint64_t) (v) << 24) & uint64_t(0x0000FF0000000000))
+        | (((uint64_t) (v) << 8) & uint64_t(0x000000FF00000000))
+        | (((uint64_t) (v) >> 8) & uint64_t(0x00000000FF000000))
+        | (((uint64_t) (v) >> 24) & uint64_t(0x0000000000FF0000))
+        | (((uint64_t) (v) >> 40) & uint64_t(0x000000000000FF00))
+        | (((uint64_t) (v) >> 56)));
 }
+#endif

@@ -21,6 +21,16 @@ typedef union {
     float val[8];
 } v8_t;
 
+typedef union {
+    md_128i vec;
+    int val[4];
+} v4i_t;
+
+typedef union {
+    md_256i vec;
+    int val[8];
+} v8i_t;
+
 /*
 Cephes Math Library Release 2.2:  June, 1992
 Copyright 1985, 1987, 1988, 1992 by Stephen L. Moshier
@@ -109,19 +119,16 @@ float cephes_sinf( float xx )
 // https://marc-b-reynolds.github.io/math/2019/04/24/ULPDiff.html
 
 // get the bit pattern of 'x'
-static uint32_t f32_to_bits(float x)
-{
+static uint32_t f32_to_bits(float x) {
     uint32_t u; memcpy(&u, &x, 4); return u;
 }
 
 // okay...the name's goofy, but you get what I mean
-static uint32_t u32_abs(uint32_t x)
-{
+static uint32_t u32_abs(uint32_t x) {
     return (int32_t)x >= 0 ? x : -x;
 }
 
-static uint32_t f32_ulp_dist(float a, float b)
-{
+static uint32_t f32_ulp_dist(float a, float b) {
     uint32_t ua = f32_to_bits(a);
     uint32_t ub = f32_to_bits(b);
     uint32_t s  = ub^ua;
@@ -262,3 +269,63 @@ UTEST(simd, hmin) {
     }
 }
 
+UTEST(simd, exp) {
+    {
+        v4_t res = { .vec = md_mm_exp_ps(md_mm_set_ps(1.0f, 2.0f, 3.0f, 4.0f)) };
+        EXPECT_NEAR(res.val[0], 54.5981500331f, 0.00001f);
+        EXPECT_NEAR(res.val[1], 20.0855369232f, 0.00001f);
+        EXPECT_NEAR(res.val[2], 7.38905609893f, 0.00001f);
+        EXPECT_NEAR(res.val[3], 2.71828182846f, 0.00001f);
+    }
+    {
+        v4_t res = { .vec = md_mm_exp_ps(md_mm_set_ps(0.8f, 0.5f, 0.3f, 0.0f)) };
+        EXPECT_NEAR(res.val[0], 1.0f,           0.00001f);
+        EXPECT_NEAR(res.val[1], 1.34985880758f, 0.00001f);
+        EXPECT_NEAR(res.val[2], 1.6487212707f,  0.00001f);
+        EXPECT_NEAR(res.val[3], 2.22554092849f, 0.00001f);
+    }
+    {
+        v8_t res = { .vec = md_mm256_exp_ps(md_mm256_set_ps(1.0f, 2.0f, 3.0f, 4.0f, 0.8f, 0.5f, 0.3f, 0.0f)) };
+        EXPECT_NEAR(res.val[0], 1.0f,           0.00001f);
+        EXPECT_NEAR(res.val[1], 1.34985880758f, 0.00001f);
+        EXPECT_NEAR(res.val[2], 1.6487212707f,  0.00001f);
+        EXPECT_NEAR(res.val[3], 2.22554092849f, 0.00001f);
+        EXPECT_NEAR(res.val[4], 54.5981500331f, 0.00001f);
+        EXPECT_NEAR(res.val[5], 20.0855369232f, 0.00001f);
+        EXPECT_NEAR(res.val[6], 7.38905609893f, 0.00001f);
+        EXPECT_NEAR(res.val[7], 2.71828182846f, 0.00001f);
+    }
+}
+
+static inline md_256 md_mm256_fast_pow_ps(md_256 base, md_256i exp) {
+    md_256 base1 = base;
+    md_256 base2 = md_mm256_mul_ps(base1, base1);
+    md_256 base3 = md_mm256_mul_ps(base2, base1);
+    md_256 base4 = md_mm256_mul_ps(base2, base2);
+
+    md_256 mask1 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(1)));
+    md_256 mask2 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(2)));
+    md_256 mask3 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(3)));
+    md_256 mask4 = md_mm256_castsi256_ps(md_mm256_cmpeq_epi32(exp, md_mm256_set1_epi32(4)));
+
+    md_256 res = md_mm256_set1_ps(1.0f);
+    res = md_mm256_blendv_ps(res, base1, mask1);
+    res = md_mm256_blendv_ps(res, base2, mask2);
+    res = md_mm256_blendv_ps(res, base3, mask3);
+    res = md_mm256_blendv_ps(res, base4, mask4);
+    return res;
+}
+
+UTEST(simd, fast_pow) {
+    v8i_t exp = { .vec = md_mm256_set_epi32(0, 1, 2, 3, 4, 3, 2, 1) };
+    v8_t res = { .vec = md_mm256_fast_pow_ps(md_mm256_set1_ps(2.0f), exp.vec) };
+
+    EXPECT_NEAR(2.0f,  res.val[0], 0.00001f);
+    EXPECT_NEAR(4.0f,  res.val[1], 0.00001f);
+    EXPECT_NEAR(8.0f,  res.val[2], 0.00001f);
+    EXPECT_NEAR(16.0f, res.val[3], 0.00001f);
+    EXPECT_NEAR(8.0f,  res.val[4], 0.00001f);
+    EXPECT_NEAR(4.0f,  res.val[5], 0.00001f);
+    EXPECT_NEAR(2.0f,  res.val[6], 0.00001f);
+    EXPECT_NEAR(1.0f,  res.val[7], 0.00001f);
+}

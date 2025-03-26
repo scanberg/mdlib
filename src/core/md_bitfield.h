@@ -34,6 +34,9 @@ void md_bitfield_init           (md_bitfield_t* bf, struct md_allocator_i* alloc
 bool md_bitfield_free           (md_bitfield_t* bf);
 bool md_bitfield_validate       (const md_bitfield_t* bf);
 
+// Reset data to empty
+void md_bitfield_reset          (md_bitfield_t* bf);
+
 void md_bitfield_reserve_range  (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 
 bool md_bitfield_empty          (const md_bitfield_t* bf);
@@ -44,6 +47,7 @@ void md_bitfield_set_range      (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 void md_bitfield_set_bit        (md_bitfield_t* bf, uint64_t bit_idx);
 void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, size_t num_indices);
 
+// Clear bits (does not deallocate data or change the range)
 void md_bitfield_clear          (md_bitfield_t* bf);
 void md_bitfield_clear_range    (md_bitfield_t* bf, uint64_t beg, uint64_t end);
 void md_bitfield_clear_bit      (md_bitfield_t* bf, uint64_t bit_idx);
@@ -104,6 +108,8 @@ md_bitfield_iter_t md_bitfield_iter_range_create(const md_bitfield_t* bf, uint64
 // Go to the next bit set in the bitfield, returns true if found, false if not found
 bool md_bitfield_iter_next(md_bitfield_iter_t* iter);
 
+void md_bitfield_iter_skip_to_idx(md_bitfield_iter_t* iter, uint64_t idx);
+
 // Extract the indices which are represented by the iterator
 // Writes the indices of bits set to the given buffer.
 // cap is the capacity (num elements) of the buffer.
@@ -134,7 +140,7 @@ size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf);
 bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_bytes);
 
 // Compute hash for the bitfield
-uint64_t md_bitfield_hash(const md_bitfield_t* bf);
+uint64_t md_bitfield_hash64(const md_bitfield_t* bf, uint64_t seed);
 
 #ifdef __cplusplus
 }

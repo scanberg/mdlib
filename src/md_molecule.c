@@ -15,12 +15,8 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->atom.x) md_array_free(mol->atom.x, alloc);
     if (mol->atom.y) md_array_free(mol->atom.y, alloc);
     if (mol->atom.z) md_array_free(mol->atom.z, alloc);
-    if (mol->atom.vx) md_array_free(mol->atom.vx, alloc);
-    if (mol->atom.vy) md_array_free(mol->atom.vy, alloc);
-    if (mol->atom.vz) md_array_free(mol->atom.vz, alloc);
     if (mol->atom.radius) md_array_free(mol->atom.radius, alloc);
     if (mol->atom.mass) md_array_free(mol->atom.mass, alloc);
-    if (mol->atom.valence) md_array_free(mol->atom.valence, alloc);
     if (mol->atom.element) md_array_free(mol->atom.element, alloc);
     if (mol->atom.resid) md_array_free(mol->atom.resid, alloc);
     if (mol->atom.resname) md_array_free(mol->atom.resname, alloc);
@@ -38,26 +34,22 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
     if (mol->chain.atom_offset) md_array_free(mol->chain.atom_offset, alloc);
 
     // Backbone
-    if (mol->backbone.range.offset) md_array_free(mol->backbone.range.offset, alloc);
-    if (mol->backbone.atoms) md_array_free(mol->backbone.atoms, alloc);
-    if (mol->backbone.angle) md_array_free(mol->backbone.angle, alloc);
-    if (mol->backbone.secondary_structure) md_array_free(mol->backbone.secondary_structure, alloc);
-    if (mol->backbone.ramachandran_type) md_array_free(mol->backbone.ramachandran_type, alloc);
-    if (mol->backbone.residue_idx) md_array_free(mol->backbone.residue_idx, alloc);
+    if (mol->protein_backbone.range.offset) md_array_free(mol->protein_backbone.range.offset, alloc);
+    if (mol->protein_backbone.atoms) md_array_free(mol->protein_backbone.atoms, alloc);
+    if (mol->protein_backbone.angle) md_array_free(mol->protein_backbone.angle, alloc);
+    if (mol->protein_backbone.secondary_structure) md_array_free(mol->protein_backbone.secondary_structure, alloc);
+    if (mol->protein_backbone.ramachandran_type) md_array_free(mol->protein_backbone.ramachandran_type, alloc);
+    if (mol->protein_backbone.residue_idx) md_array_free(mol->protein_backbone.residue_idx, alloc);
 
     // Bonds
     if (mol->bond.pairs) md_array_free(mol->bond.pairs, alloc);
     if (mol->bond.order) md_array_free(mol->bond.order, alloc);
-    if (mol->bond.flags) md_array_free(mol->bond.flags, alloc);
 
-    if (mol->conn.index) md_array_free(mol->conn.index, alloc);
-    if (mol->conn.flags) md_array_free(mol->conn.flags, alloc);
-    if (mol->conn.order) md_array_free(mol->conn.order, alloc);
+    if (mol->bond.conn.atom_idx) md_array_free(mol->bond.conn.atom_idx, alloc);
+    if (mol->bond.conn.bond_idx) md_array_free(mol->bond.conn.bond_idx, alloc);
 
-    md_index_data_free(&mol->structures, alloc);
-    md_index_data_free(&mol->rings, alloc);
-    
-    if (mol->hydrogen_bonds) md_array_free(mol->hydrogen_bonds, alloc);
+    md_index_data_free(&mol->structure);
+    md_index_data_free(&mol->ring);
 
     // Instance
     if (mol->instance.atom_range) md_array_free(mol->instance.atom_range, alloc);
@@ -89,12 +81,8 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(atom, x);
     ARRAY_PUSH(atom, y);
     ARRAY_PUSH(atom, z);
-    ARRAY_PUSH(atom, vx);
-    ARRAY_PUSH(atom, vy);
-    ARRAY_PUSH(atom, vz);
     ARRAY_PUSH(atom, radius);
     ARRAY_PUSH(atom, mass);
-    ARRAY_PUSH(atom, valence);
     ARRAY_PUSH(atom, element);
     ARRAY_PUSH(atom, type);
     ARRAY_PUSH(atom, flags);
@@ -102,19 +90,18 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(atom, resname);
     ARRAY_PUSH(atom, chainid);
 
-    ARRAY_PUSH(backbone, atoms);
-    ARRAY_PUSH(backbone, angle);
-    ARRAY_PUSH(backbone, secondary_structure);
-    ARRAY_PUSH(backbone, ramachandran_type);
-    ARRAY_PUSH(backbone, residue_idx);
+    ARRAY_PUSH(protein_backbone, atoms);
+    ARRAY_PUSH(protein_backbone, angle);
+    ARRAY_PUSH(protein_backbone, secondary_structure);
+    ARRAY_PUSH(protein_backbone, ramachandran_type);
+    ARRAY_PUSH(protein_backbone, residue_idx);
 
-    md_array_push_array(dst->backbone.range.offset, src->backbone.range.offset, src->backbone.range.count, alloc);
+    md_array_push_array(dst->protein_backbone.range.offset, src->protein_backbone.range.offset, src->protein_backbone.range.count, alloc);
 
     ARRAY_PUSH(chain, id);
     ARRAY_PUSH(chain, res_offset);
     ARRAY_PUSH(chain, atom_offset);
 
-    md_array_push_array(dst->hydrogen_bonds, src->hydrogen_bonds, md_array_size(src->hydrogen_bonds), alloc);
     md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
 
     ARRAY_PUSH(residue, name);
@@ -122,8 +109,8 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     ARRAY_PUSH(residue, atom_offset);
 
     dst->atom.count           = src->atom.count;
-    dst->backbone.count       = src->backbone.count;
-    dst->backbone.range.count = src->backbone.range.count;
+    dst->protein_backbone.count       = src->protein_backbone.count;
+    dst->protein_backbone.range.count = src->protein_backbone.range.count;
     dst->chain.count          = src->chain.count;
     dst->residue.count        = src->residue.count;
 }

@@ -298,8 +298,8 @@ typedef struct com_func_entry_t {
 	const char* name;
 } com_func_entry_t;
 
-void bench_com() {
-    md_allocator_i* alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(4));
+void bench_com(void) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 
     SETUP_XYZW
 

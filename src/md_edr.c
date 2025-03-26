@@ -663,7 +663,7 @@ done:
 }
 
 static bool edr_file_open(edr_fp_t* fp, str_t filename) {
-	str_t path = str_copy(filename, md_temp_allocator);
+	str_t path = str_copy(filename, md_get_temp_allocator());
 	bool result = false;
 
 	fp->xdr = xdrfile_open(path.ptr, "r");
@@ -672,7 +672,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 		return false;
 	}
 
-	md_allocator_i* arena = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+	md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 	bool wrong_precision = false;
 	md_enxframe_t frame = {0};
 	int file_version;
@@ -699,7 +699,7 @@ static bool edr_file_open(edr_fp_t* fp, str_t filename) {
 	}
 
 	if (fp->old.old_file_open) {
-		md_array_resize(fp->old.ener_prev, (size_t)frame.nre, md_heap_allocator);
+		md_array_resize(fp->old.ener_prev, (size_t)frame.nre, md_get_heap_allocator());
 	}
 
 	xdr_seek(fp->xdr, 0, SEEK_END);
@@ -717,7 +717,7 @@ static void edr_file_close(edr_fp_t* fp) {
 		xdrfile_close(fp->xdr);
 	}
 	if (fp->old.step_prev) {
-		md_array_free(fp->old.ener_prev, md_heap_allocator);
+		md_array_free(fp->old.ener_prev, md_get_heap_allocator());
 	}
 }
 
@@ -767,7 +767,7 @@ bool md_edr_energies_parse_file(md_edr_energies_t* energies, str_t filename, str
 		return false;
 	}
 
-	md_allocator_i* temp = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+	md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 	md_enxframe_t frame = {0};
 
 	int file_version = 0;

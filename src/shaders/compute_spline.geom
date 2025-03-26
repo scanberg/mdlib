@@ -121,6 +121,12 @@ vec3 spline_tangent(in vec3 p0, in vec3 p1, in vec3 p2, in vec3 p3, float s) {
 #endif
 }
 
+vec3 slerp(vec3 v0, vec3 v1, float t) {
+    float a = acos(dot(v0/length(v0), v1/length(v1)));
+    float iso = 1.0 / sin(a);
+    return sin((1.0-t)*a) * iso * v0 + sin(t*a) * iso * v1;
+}
+
 void main() {
     vec3 cp[4];
     vec3 cv[4];
@@ -166,15 +172,17 @@ void main() {
         vec3 s_vec = normalize(spline(sv[0], sv[1], sv[2], sv[3], t));
         vec3 s_tan = normalize(spline_tangent(cp[0], cp[1], cp[2], cp[3], t));
         vec3 s_sec = spline(ss[0], ss[1], ss[2], ss[3], t);
+        vec3 s_pos = spline(cp[0], cp[1], cp[2], cp[3], t);
+        vec3 s_vel = spline(cv[0], cv[1], cv[2], cv[3], t);
         uint s_flags = (i == 0) ? fl[0] : (i == end_idx - 1) ? fl[1] : 0U;
 
 #if ORTHONORMALIZE
         s_vec = normalize(s_vec - s_tan*dot(s_vec, s_tan));
 #endif
 
-        out_position = spline(cp[0], cp[1], cp[2], cp[3], t);
+        out_position = s_pos;
         out_atom_idx = t < 0.5 ? ai[0] : ai[1];   // Pick closest control point for index
-        out_velocity = spline(cv[0], cv[1], cv[2], cv[3], t);
+        out_velocity = s_vel;;
         out_segment_t = in_vert[1].segment_t + t;
         out_secondary_structure_and_flags = (s_flags << 24U) | (packUnorm4x8(vec4(s_sec, 0)) & 0x00FFFFFFU);
         out_support_and_tangent_vector[0] = packSnorm2x16(s_vec.xy);

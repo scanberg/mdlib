@@ -1,0 +1,106 @@
+#version 430 core
+
+#define QUANTIZATION_SCALE_FACTOR 1.0e6
+#define MAX_GROUPS 16
+
+struct Point {
+    vec3  coord;
+    float radius;
+};
+
+// This is exposed as an image since we want to perform atomic float operations on it...
+layout(binding = 0, r32f) readonly restrict uniform image3D in_vol;
+
+layout (binding = 0, std430) readonly restrict buffer PointBuffer {
+    Point in_points[];
+};
+
+layout (binding = 1, std430) readonly restrict buffer PointGroupIndexBuffer {
+    uint in_point_group_idx[];
+};
+
+layout (binding = 2, std430) buffer GroupValueBuffer {
+    uint out_group_values[MAX_GROUPS];
+};
+
+layout(location = 0) uniform mat4 in_world_to_model;
+layout(location = 1) uniform mat4 in_index_to_world;
+layout(location = 2) uniform vec3 in_step;
+layout(location = 3) uniform uint in_num_points;
+
+shared uint  num_points;
+shared Point points[512];
+shared uint  points_group_index[512];
+
+shared uint  group_values[MAX_GROUPS];
+
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+void main() {
+    uint wg_size  = gl_WorkGroupSize.x * gl_WorkGroupSize.y * gl_WorkGroupSize.z;
+
+    if (gl_LocalInvocationIndex == 0) {
+        num_points = 0;
+    }
+    if (gl_LocalInvocationIndex < MAX_GROUPS) {
+        group_values[gl_LocalInvocationIndex] = 0;
+    }
+
+    barrier();
+
+    // Step 1: Load and test points against current block
+    vec3 aabb_min = vec3( gl_WorkGroupID.xyz                 * gl_WorkGroupSize.xyz) * in_step;
+    vec3 aabb_max = vec3((gl_WorkGroupID.xyz + uvec3(1,1,1)) * gl_WorkGroupSize.xyz) * in_step;
+
+    uint num_iter = (in_num_points + wg_size - 1) / wg_size;
+    for (uint iter = 0; iter < num_iter; ++iter) {
+        uint i = iter * wg_size + gl_LocalInvocationIndex;
+        if (i < in_num_points) {
+            vec3 coord   = vec3(in_world_to_model * vec4(in_points[i].coord, 1.0));
+            float radius = in_points[i].radius;
+            vec3 clamped = clamp(coord, aabb_min, aabb_max);
+            vec3 delta = clamped - coord;
+            float r2 = dot(delta, delta);
+
+            if (r2 < radius * radius) {
+                // Push to workgroup GTOs
+                uint idx = atomicAdd(num_points, 1);
+                points[idx] = in_points[i];
+                points_group_index[idx] = in_point_group_idx[i];
+            }
+        }
+    }
+
+    // Wait for all threads to add group shared points
+    barrier();
+
+    ivec3 vol_idx = ivec3(gl_GlobalInvocationID.xyz);
+    vec3 coord = vec3(in_index_to_world * vec4(vec3(vol_idx), 1.0));
+
+    float psi = imageLoad(in_vol, vol_idx).x;
+
+    // Step 2: Find closest point (in the workgroup) for the coord and attribute to group index
+    uint closest_group_idx = MAX_GROUPS;
+    float closest_d2 = 1.0e20;
+    for (uint i = 0; i < num_points; ++i) {
+        vec3 delta = coord - points[i].coord;
+        float d2 = dot(delta, delta) - points[i].radius * points[i].radius;
+
+        if (d2 < closest_d2) {
+            closest_d2 = d2;
+            closest_group_idx = points_group_index[i];
+        }
+    }
+
+    if (closest_group_idx < MAX_GROUPS) {
+        uint quantized_value = uint(round(psi * QUANTIZATION_SCALE_FACTOR));
+        atomicAdd(group_values[closest_group_idx], quantized_value);
+    }
+
+    barrier();
+
+    // Step 5: Write out results to groups
+    if (gl_LocalInvocationIndex < MAX_GROUPS) {
+        uint idx = gl_LocalInvocationIndex;
+        atomicAdd(out_group_values[idx], group_values[idx]);
+    }
+}

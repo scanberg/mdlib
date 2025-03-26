@@ -29,7 +29,7 @@ static bool open_file(md_file_o* file, str_t path) {
 str_t md_xvg_format_header(str_t title, str_t xaxis_label, str_t yaxis_label, size_t num_legends, const str_t* legends, struct md_allocator_i* str_alloc) {
 	ASSERT(str_alloc);
 	
-	md_strb_t sb = md_strb_create(md_heap_allocator);
+	md_strb_t sb = md_strb_create(md_get_heap_allocator());
 
 	time_t t;
 	struct tm* info;
@@ -85,7 +85,7 @@ str_t md_xvg_format(str_t header, size_t num_fields, size_t num_values, const fl
     }
 
 	md_strb_t sb = {0};
-	md_strb_init(&sb, md_heap_allocator);
+	md_strb_init(&sb, md_get_heap_allocator());
 	md_strb_push_str(&sb, header);
 
 	for (size_t i = 0; i < num_values; ++i) {
@@ -104,9 +104,9 @@ done:
 
 str_t md_xvg_to_str(const md_xvg_t* xvg, struct md_allocator_i* alloc) {
 	ASSERT(alloc);
-	str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, md_heap_allocator);
+	str_t header = md_xvg_format_header(xvg->header_info.title, xvg->header_info.xaxis_label, xvg->header_info.yaxis_label, md_array_size(xvg->header_info.legends), xvg->header_info.legends, md_get_heap_allocator());
 	str_t result = md_xvg_format(header, md_array_size(xvg->fields), xvg->fields ? md_array_size(xvg->fields[0]) : 0, (const float* const*)xvg->fields, alloc);
-	str_free(header, md_heap_allocator);
+	str_free(header, md_get_heap_allocator());
 	return result;
 }
 
@@ -141,7 +141,7 @@ bool parse_header_info(md_xvg_header_info_t* header_info, md_buffered_reader_t* 
 	str_t line;
 
 	bool result = false;
-	md_strb_t sb = md_strb_create(md_heap_allocator);
+	md_strb_t sb = md_strb_create(md_get_heap_allocator());
 
 	while (md_buffered_reader_peek_line(&line, reader)) {
 		if (line.ptr[0] != '#' && line.ptr[0] != '@') break;
@@ -266,7 +266,7 @@ bool md_xvg_parse_file(md_xvg_t* xvg, str_t path, md_allocator_i* alloc) {
 	}
 
 	const size_t cap = MEGABYTES(1);
-	char* buf = md_alloc(md_heap_allocator, cap);
+	char* buf = md_alloc(md_get_heap_allocator(), cap);
 	md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 
 	bool result = parse(xvg, &reader, alloc);

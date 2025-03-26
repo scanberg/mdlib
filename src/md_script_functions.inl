@@ -1,4 +1,4 @@
-// This is to mark that the procedure supports a varying length
+﻿// This is to mark that the procedure supports a varying length
 #define ANY_LENGTH -1
 
 #ifndef MD_DIST_BINS
@@ -48,6 +48,9 @@
 
 #define TI_COORDINATE     {TYPE_COORDINATE, {1}}
 #define TI_COORDINATE_ARR {TYPE_COORDINATE, {ANY_LENGTH}}
+
+#define as_bool(arg) (*((bool*)((arg).ptr)))
+#define as_bool_arr(arg) ((bool*)((arg).ptr))
 
 #define as_float(arg) (*((float*)((arg).ptr)))
 #define as_float_arr(arg) ((float*)((arg).ptr))
@@ -147,7 +150,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
         if (!dst) return 0; \
-        for (size_t i = 0; i < element_count(*dst); ++i) { \
+        for (size_t i = 0; i < (size_t)type_info_dim_size(dst->type); ++i) { \
             ((base_type*)dst->ptr)[i] = op ((base_type*)arg[0].ptr)[i]; \
         } \
         return 0; \
@@ -165,7 +168,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
         if (!dst) return 0; \
-        for (size_t i = 0; i < element_count(*dst); ++i) { \
+        for (size_t i = 0; i < (size_t)type_info_dim_size(dst->type); ++i) { \
             ((base_type*)dst->ptr)[i] = ((base_type*)arg[0].ptr)[i] op *((base_type*)arg[1].ptr); \
         } \
         return 0; \
@@ -175,7 +178,7 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
     static int name(data_t* dst, data_t arg[], eval_context_t* ctx) { \
         (void)ctx; \
         if (!dst) return 0; \
-        for (size_t i = 0; i < element_count(*dst); ++i) { \
+        for (size_t i = 0; i < (size_t)type_info_dim_size(dst->type); ++i) { \
             ((base_type*)dst->ptr)[i] = ((base_type*)arg[0].ptr)[i] op ((base_type*)arg[1].ptr)[i]; \
         } \
         return 0; \
@@ -188,8 +191,9 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(arg[1].type.base_type == TYPE_FLOAT); \
-        const size_t count = type_info_element_stride_count(arg[0].type); \
-        ASSERT(count == type_info_element_stride_count(arg[1].type)); \
+        const size_t count = (size_t)type_info_dim_size(dst->type); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[1].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_a = as_float_arr(arg[0]); \
         const float* src_b = as_float_arr(arg[1]); \
@@ -209,7 +213,8 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
         ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT)); \
-        const size_t count = type_info_element_stride_count(arg[0].type); \
+        const size_t count = (size_t)type_info_dim_size(dst->type); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
@@ -226,7 +231,8 @@ BAKE_FUNC_FARR__FARR(_arr_, ceilf)
         ASSERT(dst); \
         ASSERT(dst->type.base_type == TYPE_FLOAT); \
         ASSERT(arg[0].type.base_type == TYPE_FLOAT); \
-        const size_t count = type_info_element_stride_count(arg[0].type); \
+        const size_t count = (size_t)type_info_dim_size(dst->type); \
+        ASSERT(count == (size_t)type_info_dim_size(arg[0].type)); \
         ASSERT(count % 8 == 0); \
         const float* src_arr = as_float_arr(arg[0]); \
         float* dst_arr = as_float_arr(*dst); \
@@ -307,7 +313,8 @@ static int _cast_int_arr_to_flt_arr     (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_frng_arr   (data_t*, data_t[], eval_context_t*);
 static int _cast_int_arr_to_bf          (data_t*, data_t[], eval_context_t*);
 static int _cast_irng_arr_to_bf         (data_t*, data_t[], eval_context_t*);
-static int _join_bf_arr              (data_t*, data_t[], eval_context_t*);
+static int _join_bf_arr                 (data_t*, data_t[], eval_context_t*);
+static int _split_bf                    (data_t*, data_t[], eval_context_t*);
 
 // Basic operations
 static int _min_farr  (data_t*, data_t[], eval_context_t*); // (float[]) -> float
@@ -318,6 +325,10 @@ static int _not  (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _and  (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _or   (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _xor  (data_t*, data_t[], eval_context_t*); // -> bitfield
+
+// Boolean operators
+static int _cmp_lt  (data_t*, data_t[], eval_context_t*); // -> bool
+static int _cmp_gt  (data_t*, data_t[], eval_context_t*); // -> bool
 
 // Selectors
 // Atom level selectors
@@ -337,13 +348,14 @@ static int _atom_irng       (data_t*, data_t[], eval_context_t*); // -> bitfield
 static int _atom_int        (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ion             (data_t*, data_t[], eval_context_t*); // -> bitfield
+static int _backbone        (data_t*, data_t[], eval_context_t*); // -> bitfield
 
 static int _ring            (data_t*, data_t[], eval_context_t*); // -> bitfield[]
 
 // Residue level selectors
 static int _water   (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
-static int _protein   (data_t*, data_t[], eval_context_t*); // -> bitfield[]
-static int _nucleic   (data_t*, data_t[], eval_context_t*); // -> bitfield[]
+static int _protein (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
+static int _nucleic (data_t*, data_t[], eval_context_t*);   // -> bitfield[]
 static int _resname (data_t*, data_t[], eval_context_t*);   // (str[])          -> bitfield[]
 static int _resid   (data_t*, data_t[], eval_context_t*);   // (int[]/irange[]) -> bitfield[]
 static int _residue (data_t*, data_t[], eval_context_t*);   // (irange[])       -> bitfield[]
@@ -395,6 +407,7 @@ static int _shape_weights(data_t*, data_t[], eval_context_t*); // (position[]) -
 
 // Linear algebra
 static int _dot           (data_t*, data_t[], eval_context_t*); // (float[], float[]) -> float
+static int _normalize     (data_t*, data_t[], eval_context_t*); // (float[]) -> float[]
 static int _cross         (data_t*, data_t[], eval_context_t*); // (float[3], float[3]) -> float[3]
 static int _length        (data_t*, data_t[], eval_context_t*); // (float[]) -> float
 static int _mat4_mul_mat4 (data_t*, data_t[], eval_context_t*); // (float[4][4], float[4][4]) -> float[4][4]
@@ -437,7 +450,7 @@ static int _op_simd_neg_farr(data_t* dst, data_t arg[], eval_context_t* ctx) {
 static constant_t constants[] = {
     {CSTR("PI"),     _PI,  {.base = {.dim.angle = 1 }, .mult = 1.0}},
     {CSTR("TAU"),    _TAU, {.base = {.dim.angle = 1 }, .mult = 1.0}},
-    {CSTR("E"),      _E},
+    {CSTR("E"),      _E,   {.mult = 1.0}},
 };
 
 // IMPLICIT CASTS/CONVERSIONS
@@ -445,9 +458,9 @@ static procedure_t casts[] = {
     {CSTR("cast"),    TI_FLOAT,         1,  {TI_INT},           _cast_int_to_flt},
     {CSTR("cast"),    TI_IRANGE,        1,  {TI_INT},           _cast_int_to_irng},
     {CSTR("cast"),    TI_FRANGE,        1,  {TI_IRANGE},        _cast_irng_to_frng},
-    {CSTR("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("cast"),    TI_IRANGE_ARR,    1,  {TI_INT_ARR},       _cast_int_arr_to_irng_arr,  FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("cast"),    TI_FLOAT_ARR,     1,  {TI_INT_ARR},       _cast_int_arr_to_flt_arr,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("cast"),    TI_FRANGE_ARR,    1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_frng_arr, FLAG_DEDUCE_LENGTH_FROM_ARG},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_INT_ARR},       _cast_int_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_IRANGE_ARR},    _cast_irng_arr_to_bf},
     {CSTR("cast"),    TI_BITFIELD,      1,  {TI_BITFIELD_ARR},  _join_bf_arr},
@@ -467,73 +480,82 @@ static procedure_t operators[] = {
     {CSTR("or"),     TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _or,    FLAG_FLATTEN},
     {CSTR("xor"),    TI_BITFIELD,       2,  {TI_BITFIELD_ARR, TI_BITFIELD_ARR}, _xor,   FLAG_FLATTEN},
 
+    // Boolean
+    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_lt,   FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("<"),      TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_lt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+
+    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT_ARR}, _cmp_gt,   FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT_ARR, TI_FLOAT},     _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR(">"),      TI_BOOL_ARR,       2,  {TI_FLOAT,     TI_FLOAT_ARR}, _cmp_gt,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+
     // Binary add
     {CSTR("+"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_add_f_f},
-    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_add_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_add_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_add_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_add_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_add_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_add_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_add_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_add_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("+"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_add_i_i},
-    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_add_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_add_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_add_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("+"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_add_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Unary negation
     {CSTR("-"),      TI_FLOAT,          1,  {TI_FLOAT},                             _op_neg_f},
-    {CSTR("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("-"),      TI_FLOAT_ARR,      1,  {TI_FLOAT_ARR},                         _op_neg_farr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
     {CSTR("-"),      TI_INT,            1,  {TI_INT},                               _op_neg_i},
-    {CSTR("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("-"),      TI_DISTRIBUTION,   1,  {TI_DISTRIBUTION},                      _op_simd_neg_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("-"),      TI_INT_ARR,        1,  {TI_INT_ARR},                           _op_neg_iarr,           FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("-"),      TI_DISTRIBUTION,   1,  {TI_DISTRIBUTION},                      _op_simd_neg_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("-"),      TI_VOLUME,         1,  {TI_VOLUME},                            _op_simd_neg_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG},
 
     // Binary sub
     {CSTR("-"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_sub_f_f},
-    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_sub_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_sub_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_sub_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_sub_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_sub_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_sub_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("-"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_sub_i_i},
-    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_sub_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("-"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_sub_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary mul
     {CSTR("*"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_mul_f_f},
-    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_mul_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_mul_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_mul_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_mul_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_mul_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_mul_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
     {CSTR("*"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_mul_i_i},
-    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_mul_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_mul_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("*"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_mul_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
     // Binary div
     {CSTR("/"),      TI_FLOAT,          2,  {TI_FLOAT,      TI_FLOAT},              _op_div_f_f},
-    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT},              _op_div_farr_f,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_FLOAT_ARR,      2,  {TI_FLOAT_ARR,  TI_FLOAT_ARR},          _op_div_farr_farr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 
-    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_DISTRIBUTION},    _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_DISTRIBUTION,   2,  {TI_DISTRIBUTION,  TI_FLOAT},           _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
     
-    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
-    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
+    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_VOLUME},                _op_simd_div_farr_farr, FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("/"),      TI_VOLUME,         2,  {TI_VOLUME,  TI_FLOAT},                 _op_simd_div_farr_f,    FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
 
-    {CSTR("/"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
-    {CSTR("/"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_SYMMETRIC_ARGS},
-    {CSTR("/"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH | FLAG_ARGS_EQUAL_LENGTH},
+    {CSTR("//"),      TI_INT,            2,  {TI_INT,        TI_INT},                _op_div_i_i},
+    {CSTR("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT},                _op_div_iarr_i,         FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_SYMMETRIC_ARGS},
+    {CSTR("//"),      TI_INT_ARR,        2,  {TI_INT_ARR,    TI_INT_ARR},            _op_div_iarr_iarr,      FLAG_DEDUCE_LENGTH_FROM_ARG | FLAG_ARGS_EQUAL_LENGTH},
 };
 
 static procedure_t procedures[] = {
@@ -561,9 +583,9 @@ static procedure_t procedures[] = {
     {CSTR("max"),    TI_FLOAT, 2, {TI_FLOAT, TI_FLOAT}, _fmaxf},
 
     // ARRAY VERSIONS OF NATIVE FUNCS
-    {CSTR("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
-    {CSTR("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_RET_AND_FIRST_ARG_EQUAL_LENGTH},
+    {CSTR("abs"),    TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_fabsf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("floor"),  TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_floorf,   FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("ceil"),   TI_FLOAT_ARR, 1, {TI_FLOAT_ARR}, _arr_ceilf,    FLAG_DEDUCE_LENGTH_FROM_ARG},
     {CSTR("min"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _min_farr},
     {CSTR("max"),    TI_FLOAT,     1, {TI_FLOAT_ARR}, _max_farr},
 
@@ -575,11 +597,12 @@ static procedure_t procedures[] = {
     {CSTR("max"),    TI_VOLUME, 2,  {TI_VOLUME, TI_VOLUME}, _op_simd_max_farr_farr},
 
     // LINEAR ALGEBRA
-    {CSTR("dot"),    TI_FLOAT,   2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
-    {CSTR("cross"),  TI_FLOAT3,  2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
-    {CSTR("length"), TI_FLOAT,   1, {TI_FLOAT_ARR},                  _length},
-    {CSTR("mul"),    TI_FLOAT44, 2, {TI_FLOAT44,     TI_FLOAT44},    _mat4_mul_mat4},
-    {CSTR("mul"),    TI_FLOAT4,  2, {TI_FLOAT44,     TI_FLOAT4},     _mat4_mul_vec4},
+    {CSTR("dot"),       TI_FLOAT,       2, {TI_FLOAT_ARR,   TI_FLOAT_ARR},  _dot},
+    {CSTR("cross"),     TI_FLOAT3,      2, {TI_FLOAT3,      TI_FLOAT3},     _cross},
+    {CSTR("length"),    TI_FLOAT,       1, {TI_FLOAT_ARR},                  _length},
+    {CSTR("normalize"), TI_FLOAT_ARR,   1, {TI_FLOAT_ARR},                  _normalize, FLAG_DEDUCE_LENGTH_FROM_ARG},
+    {CSTR("mul"),       TI_FLOAT44,     2, {TI_FLOAT44,     TI_FLOAT44},    _mat4_mul_mat4},
+    {CSTR("mul"),       TI_FLOAT4,      2, {TI_FLOAT44,     TI_FLOAT4},     _mat4_mul_vec4},
 
     // CONSTRUCTORS
     {CSTR("vec2"),   TI_FLOAT2,  2, {TI_FLOAT, TI_FLOAT},                       _vec2},
@@ -591,6 +614,8 @@ static procedure_t procedures[] = {
     // Atom level
     {CSTR("all"),       TI_BITFIELD, 0, {0},                _all},
     {CSTR("ion"),       TI_BITFIELD, 0, {0},                _ion},
+    {CSTR("backbone"),  TI_BITFIELD, 0, {0},                _backbone},
+
     {CSTR("type"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
     {CSTR("name"),      TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
     {CSTR("label"),     TI_BITFIELD, 1, {TI_STRING_ARR},    _name,              FLAG_STATIC_VALIDATION},
@@ -621,16 +646,14 @@ static procedure_t procedures[] = {
     {CSTR("within_z"),      TI_BITFIELD, 1, {TI_FRANGE},    _within_z,     FLAG_DYNAMIC},
     {CSTR("within_xyz"),    TI_BITFIELD, 3, {TI_FRANGE, TI_FRANGE, TI_FRANGE}, _within_xyz,     FLAG_DYNAMIC},
 
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_BITFIELD_ARR,   TI_FLOAT},  _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY | FLAG_SYMMETRIC_ARGS },
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT3_ARR,     TI_FLOAT},  _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY | FLAG_SYMMETRIC_ARGS },
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_BITFIELD_ARR,   TI_FRANGE}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY | FLAG_SYMMETRIC_ARGS },
-    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT3_ARR,     TI_FRANGE}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY | FLAG_SYMMETRIC_ARGS },
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_FLOAT,  TI_COORDINATE_ARR}, _within_expl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {CSTR("within"),    TI_BITFIELD, 2, {TI_FRANGE, TI_COORDINATE_ARR}, _within_expl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
 
-    {CSTR("within"),    TI_BITFIELD, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY},
-    {CSTR("within"),    TI_BITFIELD, 1, {TI_FRANGE},                    _within_impl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY},
+    {CSTR("within"),    TI_BITFIELD, 1, {TI_FLOAT},                     _within_impl_flt,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
+    {CSTR("within"),    TI_BITFIELD, 1, {TI_FRANGE},                    _within_impl_frng,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN | FLAG_SPATIAL_QUERY },
 
     // --- PROPERTY COMPUTE ---
-    {CSTR("distance"),          TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {CSTR("distance"),          TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance,          FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_FLATTEN },
     {CSTR("distance_min"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_min,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {CSTR("distance_max"),      TI_FLOAT,       2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_max,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
     {CSTR("distance_pair"),     TI_FLOAT_ARR,   2,  {TI_COORDINATE_ARR, TI_COORDINATE_ARR}, _distance_pair,     FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE | FLAG_QUERYABLE_LENGTH },
@@ -640,24 +663,24 @@ static procedure_t procedures[] = {
 
     {CSTR("rmsd"),      TI_FLOAT,   1,  {TI_BITFIELD},    _rmsd,     FLAG_DYNAMIC | FLAG_VISUALIZE},
 
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {CSTR("rdf"), TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {CSTR("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FLOAT},  _rdf_flt,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {CSTR("rdf"),       TI_DISTRIBUTION, 3, {TI_COORDINATE_ARR, TI_COORDINATE_ARR, TI_FRANGE}, _rdf_frng,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
 
     {CSTR("density"),   {TYPE_FLOAT, {3,2,MD_DIST_BINS}}, 1, {TI_BITFIELD_ARR}, _density,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
     {CSTR("density_x"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_x,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
     {CSTR("density_y"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_y,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
     {CSTR("density_z"), TI_DISTRIBUTION, 1, {TI_BITFIELD_ARR}, _density_z,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
 
-    {CSTR("sdf"),       TI_VOLUME, 3, {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE },
+    {CSTR("sdf"),       TI_VOLUME, 3,   {TI_BITFIELD_ARR, TI_BITFIELD, TI_FLOAT},      _sdf,  FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_SDF | FLAG_VISUALIZE },
 
-    {CSTR("count"),     TI_FLOAT,           1,  {TI_BITFIELD_ARR},              _count},
-    {CSTR("count"),     TI_FLOAT,           2,  {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
+    {CSTR("count"),     TI_FLOAT,  1,   {TI_BITFIELD_ARR},              _count},
+    {CSTR("count"),     TI_FLOAT,  2,   {TI_BITFIELD_ARR, TI_STRING},   _count_with_arg, FLAG_STATIC_VALIDATION},
 
 
     // --- GEOMETRICAL OPERATIONS ---
-    {CSTR("com"),           TI_FLOAT3,   1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {CSTR("plane"),         TI_FLOAT4,   1,  {TI_COORDINATE_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
-    {CSTR("shape_weights"), TI_FLOAT3,   1,  {TI_COORDINATE_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_FLATTEN},
+    {CSTR("com"),           TI_FLOAT3,      1,  {TI_COORDINATE_ARR},  _com,           FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {CSTR("plane"),         TI_FLOAT4,      1,  {TI_COORDINATE_ARR},  _plane,         FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_VISUALIZE },
+    {CSTR("shape_weights"), TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _shape_weights, FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE},
 
     {CSTR("coord"),      TI_FLOAT3_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate,      FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
     {CSTR("coord_x"),    TI_FLOAT_ARR,   1,  {TI_COORDINATE_ARR},  _coordinate_x,    FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
@@ -669,24 +692,24 @@ static procedure_t procedures[] = {
     {CSTR("coord_yz"),   TI_FLOAT2_ARR,  1,  {TI_COORDINATE_ARR},  _coordinate_yz,   FLAG_DYNAMIC | FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH | FLAG_VISUALIZE },
 
     // --- MISC ---
+    {CSTR("join"),      TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
+    {CSTR("flatten"),   TI_BITFIELD,     1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
+    {CSTR("split"),     TI_BITFIELD,     1,  {TI_BITFIELD, TI_STRING},  _split_bf},
 
-    {CSTR("join"),      TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
-    {CSTR("flatten"),   TI_BITFIELD,        1,  {TI_BITFIELD_ARR},  _join_bf_arr,   FLAG_FLATTEN},
-
-    {CSTR("residue"),   TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
-    {CSTR("chain"),     TI_BITFIELD_ARR,    1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {CSTR("residue"),   TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_residue,  FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
+    {CSTR("chain"),     TI_BITFIELD_ARR, 1,  {TI_BITFIELD_ARR},  _fill_chain,    FLAG_STATIC_VALIDATION | FLAG_QUERYABLE_LENGTH },
 
 };
 
 #undef CSTR
 
 static inline md_spatial_hash_t* get_spatial_hash(eval_context_t* ctx) {
-	ASSERT(ctx);
+    ASSERT(ctx);
     if (!ctx->spatial_hash) {
         // Lazily generate the spatial hash if needed
         ctx->spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, 0, ctx->mol->atom.count, &ctx->mol->unit_cell, ctx->temp_alloc);
     }
-	return ctx->spatial_hash;
+    return ctx->spatial_hash;
 }
 
 static inline void visualize_atom_mask(const md_bitfield_t* mask, eval_context_t* ctx) {
@@ -731,6 +754,9 @@ static inline void visualize_atom_indices64(const int64_t* indices, int64_t num_
 */
 
 #define COLOR_WHITE 0xFFFFFFFFU
+#define COLOR_GRAY  0x88888888U
+
+#define COLOR_U32(R,G,B,A) (((uint32_t)A << 24) | ((uint32_t)B << 16) | ((uint32_t)G << 8) | ((uint32_t)R))
 
 static inline md_script_vis_vertex_t vertex(vec3_t p, uint32_t color) {
     return (md_script_vis_vertex_t){p, color};
@@ -764,10 +790,18 @@ static inline void push_sphere(vec3_t xyz, float r, uint32_t color, md_script_vi
     md_array_push(vis->spheres, sphere, vis->alloc);
 }
 
+static inline void push_text(vec3_t xyz, const char* cstr, md_script_vis_t* vis) {
+    ASSERT(vis);
+    ASSERT(vis->alloc);
+    md_script_vis_text_t text = {xyz, str_copy_cstr(cstr, vis->alloc) };
+    md_array_push(vis->text, text, vis->alloc);
+} 
+
 static inline md_bitfield_t* push_structure(md_script_vis_t* vis) {
     ASSERT(vis);
     ASSERT(vis->alloc);
-    md_bitfield_t* bf = md_array_push(vis->structures, (md_bitfield_t){0}, vis->alloc);
+    md_array_push(vis->structures, (md_bitfield_t){0}, vis->alloc);
+    md_bitfield_t* bf = md_array_last(vis->structures);
     md_bitfield_init(bf, vis->alloc);
     return bf;
 }
@@ -807,7 +841,12 @@ static inline vec3_t* extract_vec3(const float* x, const float* y, const float* 
     ASSERT(bf);
     ASSERT(alloc);
 
-    md_array(vec3_t) result = md_array_create(vec3_t, md_bitfield_popcount(bf), alloc);
+    size_t count = md_bitfield_popcount(bf);
+    if (count == 0) {
+        return NULL;
+    }
+
+    md_array(vec3_t) result = md_array_create(vec3_t, count, alloc);
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     size_t i = 0;
     while (md_bitfield_iter_next(&it)) {
@@ -817,7 +856,7 @@ static inline vec3_t* extract_vec3(const float* x, const float* y, const float* 
     return result;
 }
 
-static inline int64_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bf) {
+static inline size_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bf) {
     ASSERT(dst_x);
     ASSERT(dst_y);
     ASSERT(dst_z);
@@ -826,11 +865,11 @@ static inline int64_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, cons
     ASSERT(src_z);
     ASSERT(bf);
 
-    int64_t count = 0;
+    size_t count = 0;
 
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
-        const int64_t idx = md_bitfield_iter_idx(&it);
+        const uint64_t idx = md_bitfield_iter_idx(&it);
         dst_x[count] = src_x[idx];
         dst_y[count] = src_y[idx];
         dst_z[count] = src_z[idx];
@@ -840,18 +879,18 @@ static inline int64_t extract_xyz(float* dst_x, float* dst_y, float* dst_z, cons
     return count;
 }
 
-static inline int64_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bf) {
+static inline size_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, const float* src_y, const float* src_z, const md_bitfield_t* bf) {
     ASSERT(dst_xyz);
     ASSERT(src_x);
     ASSERT(src_y);
     ASSERT(src_z);
     ASSERT(bf);
 
-    int64_t count = 0;
+    size_t count = 0;
 
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
-        const int64_t idx = md_bitfield_iter_idx(&it);
+        const uint64_t idx = md_bitfield_iter_idx(&it);
         dst_xyz[count] = vec3_set(src_x[idx], src_y[idx], src_z[idx]);
         count += 1;
     }
@@ -859,7 +898,7 @@ static inline int64_t extract_xyz_vec3(vec3_t* dst_xyz, const float* src_x, cons
     return count;
 }
 
-static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, float* dst_w, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
+static inline size_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, float* dst_w, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
     ASSERT(dst_x);
     ASSERT(dst_y);
     ASSERT(dst_z);
@@ -870,12 +909,11 @@ static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, flo
     ASSERT(src_w);
     ASSERT(bf);
 
-    int64_t count = 0;
+    size_t count = 0;
 
-    int64_t beg_bit = bf->beg_bit;
-    int64_t end_bit = bf->end_bit;
-    while ((beg_bit = md_bitfield_scan(bf, beg_bit, end_bit)) != 0) {
-        const int64_t idx = beg_bit - 1;
+    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
+    while (md_bitfield_iter_next(&it)) {
+        const uint64_t idx = md_bitfield_iter_idx(&it);
         dst_x[count] = src_x[idx];
         dst_y[count] = src_y[idx];
         dst_z[count] = src_z[idx];
@@ -886,18 +924,18 @@ static inline int64_t extract_xyzw(float* dst_x, float* dst_y, float* dst_z, flo
     return count;
 }
 
-static inline int64_t extract_xyzw_vec4(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
+static inline size_t extract_xyzw_vec4(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float* src_w, const md_bitfield_t* bf) {
     ASSERT(dst_xyzw);
     ASSERT(src_x);
     ASSERT(src_y);
     ASSERT(src_z);
     ASSERT(bf);
 
-    int64_t count = 0;
+    size_t count = 0;
     
     md_bitfield_iter_t it = md_bitfield_iter_create(bf);
     while (md_bitfield_iter_next(&it)) {
-        const int64_t idx = md_bitfield_iter_idx(&it);
+        const uint64_t idx = md_bitfield_iter_idx(&it);
         dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], src_w ? src_w[idx] : 1.0f);
         count += 1;
     }
@@ -905,6 +943,24 @@ static inline int64_t extract_xyzw_vec4(vec4_t* dst_xyzw, const float* src_x, co
     return count;
 }
 
+static inline size_t extract_xyz1_vec4(vec4_t* dst_xyzw, const float* src_x, const float* src_y, const float* src_z, const float fixed_w, const md_bitfield_t* bf) {
+    ASSERT(dst_xyzw);
+    ASSERT(src_x);
+    ASSERT(src_y);
+    ASSERT(src_z);
+    ASSERT(bf);
+
+    size_t count = 0;
+
+    md_bitfield_iter_t it = md_bitfield_iter_create(bf);
+    while (md_bitfield_iter_next(&it)) {
+        const uint64_t idx = md_bitfield_iter_idx(&it);
+        dst_xyzw[count] = vec4_set(src_x[idx], src_y[idx], src_z[idx], fixed_w);
+        count += 1;
+    }
+
+    return count;
+}
 
 // @TODO: All these have poor names
 
@@ -938,19 +994,19 @@ static inline irange_t clamp_range(irange_t range, irange_t context) {
 static int32_t find_val(const int32_t* arr, int64_t count, int32_t val) {
     for (int32_t i = 0; i < (int32_t)count; ++i) {
         if (arr[i] == val) {
-			return i;
-		}
+            return i;
+        }
     }
     return -1;
 }
 
 static int32_t find_label(const md_label_t* arr, int64_t count, str_t lbl) {
     for (int32_t i = 0; i < (int32_t)count; ++i) {
-		if (str_eq(LBL_TO_STR(arr[i]), lbl)) {
-			return i;
-		}
-	}
-	return -1;
+        if (str_eq(LBL_TO_STR(arr[i]), lbl)) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static md_array(int32_t) get_residue_indices_in_context(const md_molecule_t* mol, const md_bitfield_t* bitfield, md_allocator_i* alloc) {
@@ -1020,11 +1076,11 @@ static inline irange_t get_residue_range_in_context(const md_molecule_t* mol, co
         range.end = 0;
         for (size_t i = 0; i < mol->residue.count; ++i) {
             md_range_t res = md_residue_atom_range(mol->residue, i);
-			if (md_bitfield_popcount_range(mol_ctx, res.beg, res.end)) {
-				range.beg = MIN(range.beg, (int32_t)i);
+            if (md_bitfield_popcount_range(mol_ctx, res.beg, res.end)) {
+                range.beg = MIN(range.beg, (int32_t)i);
                 range.end = MAX(range.end, (int32_t)i + 1);
-				break;
-			}
+                break;
+            }
         }
     }
     return range;
@@ -1078,9 +1134,9 @@ static bool validate_atom_range_in_context(irange_t in_range, token_t token, con
     }
     if (ctx->mol_ctx) {
         if (!range_in_range(range, ctx_range)) {
-			LOG_ERROR(ctx->ir, token, "supplied range (%i:%i) is not contained within its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
-			return false;
-		}
+            LOG_ERROR(ctx->ir, token, "supplied range (%i:%i) is not contained within its context (%i:%i)", in_range.beg, in_range.end, 1, ctx_size);
+            return false;
+        }
     }
     return true;
 }
@@ -1091,7 +1147,8 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     if (ctx->backchannel) {
-        ctx->backchannel->unit = md_unit_angstrom();
+        ctx->backchannel->unit[0] = md_unit_none();
+        ctx->backchannel->unit[1] = md_unit_angstrom();
     }
 
     switch (arg.type.base_type) {
@@ -1103,8 +1160,8 @@ static int coordinate_validate(data_t arg, int arg_idx, eval_context_t* ctx) {
         int count = 0;
         for (size_t i = 0; i < element_count(arg); ++i) {
             if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[arg_idx], ctx)) {
-				return STATIC_VALIDATION_ERROR;
-			}                
+                return STATIC_VALIDATION_ERROR;
+            }                
             count += 1;
         }
         return count;
@@ -1183,7 +1240,7 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
                         md_bitfield_iter_t it = md_bitfield_iter_range_create(ctx->mol_ctx, range.beg, range.end);
                         while (md_bitfield_iter_next(&it)) {
                             const int64_t idx = md_bitfield_iter_idx(&it);
-						    visualize_atom_index(idx, ctx);
+                            visualize_atom_index(idx, ctx);
                         }
                     }
                     else {
@@ -1204,10 +1261,10 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
             }
 
             if (ctx->subscript_ranges) {
-                for (size_t ri = 0; ri < md_array_size(ctx->subscript_ranges); ++ri) {
-                    irange_t range = ctx->subscript_ranges[ri];
-                    range.beg -= 1; // @NOTE: We subtract 1 here because the ranges are 1-indexed
-                    for (int i = range.beg; i < range.end; ++i) {
+                // For bitfields, we only care about the first subscript dimension [0]
+                irange_t range = ctx->subscript_ranges[0];
+                for (int i = range.beg; i < range.end; ++i) {
+                    if (i < bf_len) {
                         const md_bitfield_t* bf = &in_bf[i];
                         if (ctx->mol_ctx) {
                             md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
@@ -1237,10 +1294,9 @@ static void coordinate_visualize(data_t arg, eval_context_t* ctx) {
     }
 }
 
-// Atom indices is optional and if supplied, will be filled with the atom indices corresponding to the positions
-static vec3_t* coordinate_extract(data_t arg, eval_context_t* ctx) {
+static md_array(vec3_t) coordinate_extract(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
-    vec3_t* positions = 0;
+    md_array(vec3_t) positions = 0;
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
@@ -1330,6 +1386,114 @@ static vec3_t* coordinate_extract(data_t arg, eval_context_t* ctx) {
     return positions;
 }
 
+static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight, eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
+    md_array(vec4_t) out_xyzw = 0;
+    const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
+
+    switch (arg.type.base_type) {
+    case TYPE_FLOAT:
+        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_FLOAT3_ARR));
+        size_t num_xyz = element_count(arg);
+        md_array_resize(out_xyzw, num_xyz, ctx->temp_alloc);
+        const vec3_t* src_xyz = as_vec3_arr(arg);
+        for (size_t i = 0; i < num_xyz; ++i) {
+            out_xyzw[i] = vec4_from_vec3(src_xyz[i], default_weight); 
+        }
+        md_array_push_array(out_xyzw, as_vec3_arr(arg), element_count(arg), ctx->temp_alloc);
+        break;
+    case TYPE_INT: {
+        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_INT_ARR));
+        size_t num_idx = element_count(arg);
+        md_array_resize(out_xyzw, num_idx, ctx->temp_alloc);
+        const int* in_idx = as_int_arr(arg);
+        for (size_t i = 0; i < num_idx; ++i) {
+            // Shift here since we use 1 based indices for atoms
+            const int idx = ctx_range.beg + in_idx[i] - 1;
+            out_xyzw[i] = vec4_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], ctx->mol->atom.mass ? ctx->mol->atom.mass[idx] : default_weight);
+        }
+        break;
+    }
+    case TYPE_IRANGE: {
+        ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_IRANGE_ARR));
+        const irange_t* ranges = as_irange_arr(arg);
+        size_t num_ranges = element_count(arg);
+        for (size_t i = 0; i < num_ranges; ++i) {
+            irange_t range = remap_range_to_context(ranges[i], ctx_range);
+            range = clamp_range(range, ctx_range);
+
+            if (ctx->mol_ctx) {
+                md_bitfield_iter_t it = md_bitfield_iter_range_create(ctx->mol_ctx, range.beg, range.end);
+                while (md_bitfield_iter_next(&it)) {
+                    const uint64_t idx = md_bitfield_iter_idx(&it);
+                    vec4_t xyzw = vec4_set(ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx], ctx->mol->atom.mass ? ctx->mol->atom.mass[idx] : default_weight);
+                    md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
+                }
+            }
+            else {
+                for (int j = range.beg; j < range.end; ++j) {
+                    vec4_t xyzw = vec4_set(ctx->mol->atom.x[j], ctx->mol->atom.y[j], ctx->mol->atom.z[j], ctx->mol->atom.mass ? ctx->mol->atom.mass[j] : default_weight);
+                    md_array_push(out_xyzw, xyzw, ctx->temp_alloc);
+                }
+            }
+        }
+        break;
+    }
+    case TYPE_BITFIELD: {
+        md_bitfield_t tmp_bf = { 0 };
+        if (ctx->mol_ctx) {
+            md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+        }
+
+        md_bitfield_t* bf_arr = as_bitfield(arg);
+        size_t num_bf = element_count(arg);
+
+        if (num_bf == 1) {
+            md_bitfield_t* bf = bf_arr;
+            if (ctx->mol_ctx) {
+                md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+                md_bitfield_and(&tmp_bf, bf_arr, ctx->mol_ctx);
+                bf = &tmp_bf;
+            }
+            md_array_resize(out_xyzw, md_bitfield_popcount(bf), ctx->temp_alloc);
+            extract_xyzw_vec4(out_xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+        }
+        else {
+            md_array(int32_t) indices = 0;
+            for (size_t i = 0; i < num_bf; ++i) {
+                md_bitfield_t* bf = &bf_arr[i];
+                if (ctx->mol_ctx) {
+                    md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                    bf = &tmp_bf;
+                }
+                md_array_resize(indices, md_bitfield_popcount(bf), ctx->temp_alloc);
+                md_bitfield_iter_t it = md_bitfield_iter_create(bf);
+                md_bitfield_iter_extract_indices(indices, md_array_size(indices), it);
+                vec3_t xyz = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, md_array_size(indices), &ctx->mol->unit_cell);
+                double w = 0;
+                if (ctx->mol->atom.mass) {
+                for (size_t j = 0; j < md_array_size(indices); ++j) {
+                    w += ctx->mol->atom.mass[indices[j]];
+                }
+                } else {
+                    w = (double)md_array_size(indices);
+                }
+                md_array_push(out_xyzw, vec4_from_vec3(xyz, (float)w), ctx->temp_alloc);
+            }
+        }
+
+        if (ctx->mol_ctx) {
+            md_bitfield_free(&tmp_bf);
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    return out_xyzw;
+}
+
 static md_array(int) coordinate_extract_indices(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     md_array(int) out_indices = 0;
@@ -1408,7 +1572,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg.type, (type_info_t)TI_COORDINATE_ARR));
     vec3_t com = {0};
 
-    md_vm_arena_temp_t tmp_pos = md_vm_arena_temp_begin(ctx->temp_arena);
+    md_vm_arena_temp_t tmp_pos = md_vm_arena_temp_begin(ctx->temp_alloc);
     const irange_t ctx_range = get_atom_range_in_context(ctx->mol, ctx->mol_ctx);
 
     switch (arg.type.base_type) {
@@ -1422,17 +1586,17 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             return in_pos[0];
         }
 
-        vec4_t* xyzw = md_vm_arena_push(ctx->temp_arena, len * sizeof(vec4_t));
+        vec4_t* xyzw = md_vm_arena_push(ctx->temp_alloc, len * sizeof(vec4_t));
         for (size_t i = 0; i < len; ++i) {
             xyzw[i] = vec4_from_vec3(in_pos[i], 1.0f);
         }
-        com = md_util_com_compute_vec4(xyzw, len, &ctx->mol->unit_cell);
+        com = md_util_com_compute_vec4(xyzw, 0, len, &ctx->mol->unit_cell);
         break;
     }
     case TYPE_INT: {
         const int32_t* in_idx = as_int_arr(arg);
         size_t num_idx = element_count(arg);
-        int32_t* idx = md_vm_arena_push(ctx->temp_arena, num_idx * sizeof(int32_t));
+        int32_t* idx = md_vm_arena_push(ctx->temp_alloc, num_idx * sizeof(int32_t));
 
         for (size_t i = 0; i < num_idx; ++i) {
             idx[i] = remap_index_to_context(in_idx[i], ctx_range);
@@ -1451,7 +1615,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         md_array(int32_t) indices = 0;
         // We have multiple ranges which may be overlapping
         // We therefore compute the com for each range and then compute the com from the sub-com
-        vec4_t* xyzw_arr = md_vm_arena_push(ctx->temp_arena, num_ranges * sizeof(vec4_t));
+        vec4_t* xyzw_arr = md_vm_arena_push(ctx->temp_alloc, num_ranges * sizeof(vec4_t));
         for (size_t i = 0; i < num_ranges; ++i) {
             irange_t range = remap_range_to_context(ranges[i], ctx_range);
             range = clamp_range(range, ctx_range);
@@ -1467,13 +1631,13 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_array_shrink(indices, 0);
                 for (int32_t j = range.beg; j < range.end; ++j) {
                     // 1 based indexing to 0 based indexing
-					md_array_push(indices, j, ctx->temp_alloc);
-				}
+                    md_array_push(indices, j, ctx->temp_alloc);
+                }
                 xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
             }
         }
 
-        com = md_util_com_compute_vec4(xyzw_arr, num_ranges, &ctx->mol->unit_cell);
+        com = md_util_com_compute_vec4(xyzw_arr, 0, num_ranges, &ctx->mol->unit_cell);
         break;
     }
     case TYPE_BITFIELD: {
@@ -1494,14 +1658,14 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 bf = &tmp_bf;
             }
             size_t len = md_bitfield_popcount(bf);
-            int32_t* indices = md_vm_arena_push(ctx->temp_arena, md_bitfield_popcount(bf) * sizeof(int32_t));
+            int32_t* indices = md_vm_arena_push(ctx->temp_alloc, md_bitfield_popcount(bf) * sizeof(int32_t));
             md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
             com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell);
         }
         else {
             // If we have multiple bitfields we compute the center of mass for each bitfield before computing a single com from the sub-coms
             md_array(int32_t) indices = 0;
-            vec4_t* xyzw_arr = md_vm_arena_push(ctx->temp_arena, num_bf * sizeof(vec4_t));
+            vec4_t* xyzw_arr = md_vm_arena_push(ctx->temp_alloc, num_bf * sizeof(vec4_t));
             for (size_t i = 0; i < num_bf; ++i) {
                 md_bitfield_t* bf = &in_bf[i];
                 if (ctx->mol_ctx) {
@@ -1514,7 +1678,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
                 xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
             }
-            com = md_util_com_compute_vec4(xyzw_arr, num_bf, &ctx->mol->unit_cell);
+            com = md_util_com_compute_vec4(xyzw_arr, 0, num_bf, &ctx->mol->unit_cell);
         }
         break;
     }
@@ -1525,15 +1689,6 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
     md_vm_arena_temp_end(tmp_pos);
 
     return com;
-}
-
-static inline float dihedral_angle(vec3_t p0, vec3_t p1, vec3_t p2, vec3_t p3) {
-    const vec3_t b1 = vec3_normalize(vec3_sub(p1, p0));
-    const vec3_t b2 = vec3_normalize(vec3_sub(p2, p1));
-    const vec3_t b3 = vec3_normalize(vec3_sub(p3, p2));
-    const vec3_t c1 = vec3_cross(b1, b2);
-    const vec3_t c2 = vec3_cross(b2, b3);
-    return atan2f(vec3_dot(vec3_cross(c1, c2), b2), vec3_dot(c1, c2));
 }
 
 // This should ideally be some light weight regular expression matching.
@@ -1796,16 +1951,41 @@ static int _length(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
     if (dst) {
         float* a = (float*)arg[0].ptr;
-        double res = 0; // Accumulate in double, then cast to float
-        for (size_t i = 0; i < element_count(arg[0]); ++i) {
-            res += (double)a[i] * (double)a[i];
+        double len2 = 0; // Accumulate in double, then cast to float
+        for (size_t i = 0; i < (size_t)type_info_dim_size(arg[0].type); ++i) {
+            len2 += (double)a[i] * (double)a[i];
         }
-        as_float(*dst) = (float)sqrt(res);
+        as_float(*dst) = (float)sqrt(len2);
     }
 
     return 0;
 }
 
+static int _normalize(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    (void)ctx;
+
+    if (dst) {
+        float* val = (float*)arg[0].ptr;
+        double len2 = 0;
+        size_t count = type_info_dim_size(dst->type);
+        ASSERT((size_t)type_info_dim_size(arg[0].type) == count);
+        for (size_t i = 0; i < count; ++i) {
+            len2 += (double)val[i] * (double)val[i];
+        }
+        if (len2 < DBL_EPSILON) {
+            MEMSET(dst->ptr, 0, dst->size);
+            return 0;
+        }
+        double scl = 1.0 / sqrt(len2);
+        for (size_t i = 0; i < count; ++i) {
+            as_float_arr(*dst)[i] = (float)(val[i] * scl);
+        }
+    }
+
+    return 0;
+}
 
 static int _mat4_mul_mat4(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT44));
@@ -2153,20 +2333,20 @@ static bool within_float_iter(const md_spatial_hash_elem_t* elem, int mask, void
 
 static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.x && ctx->mol->atom.y && ctx->mol->atom.z);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
-    const float radius = as_float(arg[1]);
+    const float radius = as_float(arg[0]);
 
     if (dst || ctx->vis) {
-        const vec3_t* in_pos = coordinate_extract(arg[0], ctx);
+        const vec3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_spatial_hash_t* sh = get_spatial_hash(ctx);
         const md_bitfield_t* bf_mask = 0;
         md_bitfield_t* bf_dst = 0;
         
-        if (is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD)) {           
-            bf_mask = as_bitfield(arg[0]);
+        if (is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD)) {           
+            bf_mask = as_bitfield(arg[1]);
         }
 
         if (dst) {
@@ -2179,7 +2359,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
             // Visualize
             ASSERT(ctx->vis);
             bf_dst = ctx->vis_structure;
-            coordinate_visualize(arg[0], ctx);
+            coordinate_visualize(arg[1], ctx);
             
             for (size_t i = 0; i < num_pos; ++i) {
                 push_sphere(in_pos[i], radius, COLOR_WHITE, ctx->vis);
@@ -2194,7 +2374,7 @@ static int _within_expl_flt(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (coordinate_validate(arg[0], 1, ctx) < 0) return -1;
+        if (coordinate_validate(arg[1], 1, ctx) < 0) return -1;
         if (radius <= 0) {
             LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied radius is negative or zero, please supply a positive value");
             return -1;
@@ -2272,20 +2452,20 @@ static bool within_frng_iter(const md_spatial_hash_elem_t* elem, void* user_data
 
 static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol && ctx->mol->atom.z);
-    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
-    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FRANGE));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_COORDINATE_ARR));
 
-    const frange_t rad_range = as_frange(arg[1]);
+    const frange_t rad_range = as_frange(arg[0]);
 
     if (dst || ctx->vis) {
         const md_spatial_hash_t* sh = get_spatial_hash(ctx);
-        const vec3_t* in_pos = coordinate_extract(arg[0], ctx);
+        const vec3_t* in_pos = coordinate_extract(arg[1], ctx);
         const size_t num_pos = md_array_size(in_pos);
         const md_bitfield_t* bf_mask = 0;
         md_bitfield_t* bf_dst = 0;
             
-        if (is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD)) {           
-            bf_mask = as_bitfield(arg[0]);
+        if (is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD)) {           
+            bf_mask = as_bitfield(arg[1]);
         }
         
         const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(ctx->mol->unit_cell.basis, vec3_set1(1.0f)), 0);
@@ -2322,7 +2502,7 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
     }
     else {
-        if (coordinate_validate(arg[0], 1, ctx) < 0) return -1;
+        if (coordinate_validate(arg[1], 1, ctx) < 0) return -1;
         if (rad_range.beg < 0 || rad_range.end < rad_range.beg) {
             LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "The supplied radius range is invalid, ");
             return -1;
@@ -2415,8 +2595,8 @@ static int _atom_irng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         ASSERT(ctx->arg_tokens);
         for (size_t i = 0; i < num_ranges; ++i) {
             if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
-				return STATIC_VALIDATION_ERROR;
-			}
+                return STATIC_VALIDATION_ERROR;
+            }
         }
     }
 
@@ -2445,7 +2625,7 @@ static int _atom_int(data_t* dst, data_t arg[], eval_context_t* ctx) {
         for (size_t i = 0; i < num_indices; ++i) {
             if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[0], ctx)) {
                 return STATIC_VALIDATION_ERROR;
-			}
+            }
         }
     }
 
@@ -2465,14 +2645,14 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
             md_bitfield_t* bf_arr = as_bitfield(*dst);
         
-            const size_t num_rings = md_index_data_count(ctx->mol->rings);
+            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
             int64_t dst_idx = 0;
             for (size_t i = 0; i < num_rings; ++i) {
                 md_bitfield_t* bf = &bf_arr[dst_idx];
             
                 // Only accept the ring if it is fully within the given context
-                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->rings, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->rings, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->ring, i);
 
                 if (ctx->mol_ctx) {
                     bool discard = false;
@@ -2492,11 +2672,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
         } else {
             ASSERT(ctx->vis);
-            const size_t num_rings = md_index_data_count(ctx->mol->rings);
+            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
             for (size_t i = 0; i < num_rings; ++i) {
                 // Only visualize the ring if it is fully within the given context
-                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->rings, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->rings, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->ring, i);
 
                 if (ctx->mol_ctx) {
                     bool discard = false;
@@ -2523,11 +2703,11 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
         // We need to check if the ring is within the given context
         if (ctx->mol_ctx) {
             int count = 0;
-            const size_t num_rings = md_index_data_count(ctx->mol->rings);
+            const size_t num_rings = md_index_data_num_ranges(ctx->mol->ring);
             for (size_t i = 0; i < num_rings; ++i) {
                 bool discard = false;
-                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->rings, i);
-                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->rings, i);
+                const md_atom_idx_t* ring_beg = md_index_range_beg(ctx->mol->ring, i);
+                const md_atom_idx_t* ring_end = md_index_range_end(ctx->mol->ring, i);
                 for (const md_atom_idx_t* it = ring_beg; it != ring_end; ++it) {
                     if (!md_bitfield_test_bit(ctx->mol_ctx, *it)) {
                         discard = true;
@@ -2540,7 +2720,7 @@ static int _ring(data_t* dst, data_t arg[], eval_context_t* ctx) {
             }
             result = count;
         } else {
-            return (int)md_index_data_count(ctx->mol->rings);
+            return (int)md_index_data_num_ranges(ctx->mol->ring);
         }
     }
 
@@ -2695,7 +2875,7 @@ static int _nucleic(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
-static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
+static int _select_atoms_with_flags(data_t* dst, data_t arg[], eval_context_t* ctx, int flags) {
     ASSERT(ctx && ctx->mol);
     (void)arg;
 
@@ -2709,13 +2889,13 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
             md_bitfield_iter_t it = md_bitfield_iter_create(ctx->mol_ctx);
             while (md_bitfield_iter_next(&it)) {
                 uint64_t idx = md_bitfield_iter_idx(&it);
-				if (ctx->mol->atom.flags[idx] & MD_FLAG_ION) {
-					md_bitfield_set_bit(bf, idx);
-				}
-			}
+                if (ctx->mol->atom.flags[idx] & flags) {
+                    md_bitfield_set_bit(bf, idx);
+                }
+            }
         } else {
             for (size_t i = 0; i < ctx->mol->atom.count; ++i) {
-                if (ctx->mol->atom.flags[i] & MD_FLAG_ION) {
+                if (ctx->mol->atom.flags[i] & flags) {
                     md_bitfield_set_bit(bf, i);
                 }
             }
@@ -2725,7 +2905,13 @@ static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
     return result;
 }
 
+static int _ion(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_ION);
+}
 
+static int _backbone(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    return _select_atoms_with_flags(dst, arg, ctx, MD_FLAG_BACKBONE);
+}
 
 static int _residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx && ctx->mol);
@@ -2832,11 +3018,11 @@ static int _fill_residue(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
                 const md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
-				size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
-				if (popcount) {
-					count += 1;
-				}
-			}
+                size_t popcount = md_bitfield_popcount_range(src_bf, range.beg, range.end);
+                if (popcount) {
+                    count += 1;
+                }
+            }
 
             if (ctx->eval_flags & EVAL_FLAG_FLATTEN) {
                 count = MIN(1, count);
@@ -3192,6 +3378,28 @@ static int _chain_str(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
 // Property Compute
 
+static void draw_distance(const vec3_t* a, size_t num_a, const vec3_t* b, size_t num_b, const float* values, md_script_vis_t* vis, uint32_t vis_flags) {
+    for (size_t i = 0; i < num_a; ++i) {
+        md_script_vis_vertex_t va = {a[i], COLOR_WHITE};
+        if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+            push_point(va, vis);
+        }
+        for (size_t j = 0; j < num_b; ++j) {
+            md_script_vis_vertex_t vb = {b[j], COLOR_WHITE};
+            if (vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
+                push_point(vb, vis);
+                push_line(va, vb, vis);
+            }
+            if (vis_flags & MD_SCRIPT_VISUALIZE_TEXT) {
+                vec3_t c = vec3_mul_f(vec3_add(a[i], b[j]), 0.5f);
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.2f", values[i*num_a + j]);
+                push_text(c, buf, vis);
+            }
+        }
+    }
+}
+
 static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(ctx);
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_COORDINATE_ARR));
@@ -3201,22 +3409,20 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec3_t a = coordinate_extract_com(arg[0], ctx);
         vec3_t b = coordinate_extract_com(arg[1], ctx);
 
+        vec4_t b4 = vec4_from_vec3(b, 0);
+        md_util_deperiodize_vec4(&b4, 1, a, &ctx->mol->unit_cell);
+        b = vec3_from_vec4(b4);
+        float dist = vec3_distance(a, b);
+
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            float* dst_arr = as_float_arr(*dst);
-            md_util_unit_cell_distance_array(dst_arr, &a, 1, &b, 1, &ctx->mol->unit_cell);
+            float* ptr = dst->ptr;
+            *ptr = dist;
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
-
-            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                md_script_vis_vertex_t va = vertex(a, COLOR_WHITE);
-                md_script_vis_vertex_t vb = vertex(b, COLOR_WHITE);
-                push_point(va, ctx->vis);
-                push_point(vb, ctx->vis);
-                push_line(va, vb, ctx->vis);
-            }
+            draw_distance(&a, 1, &b, 1, &dist, ctx->vis, ctx->vis_flags);
         }
     }
     else {
@@ -3225,7 +3431,8 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_angstrom();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3255,16 +3462,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
-
-            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                if (a_pos && b_pos) {
-                    md_script_vis_vertex_t va = vertex(a_pos[min_i], COLOR_WHITE);
-                    md_script_vis_vertex_t vb = vertex(b_pos[min_j], COLOR_WHITE);
-                    push_point(va, ctx->vis);
-                    push_point(vb, ctx->vis);
-                    push_line(va, vb, ctx->vis);
-                }
-            }
+            draw_distance(&a_pos[min_i], 1, &b_pos[min_j], 1, &min_dist, ctx->vis, ctx->vis_flags);
         }
     }
     else {
@@ -3273,7 +3471,8 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_angstrom();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3294,25 +3493,17 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t max_i, max_j;
-        float max_dist = md_util_unit_cell_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
+        float dist = md_util_unit_cell_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = max_dist;
+            as_float(*dst) = dist;
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
             coordinate_visualize(arg[1], ctx);
+            draw_distance(&a_pos[max_i], 1, &b_pos[max_j], 1, &dist, ctx->vis, ctx->vis_flags);
 
-            if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                if (a_pos && b_pos) {
-                    md_script_vis_vertex_t va = vertex(a_pos[max_i], COLOR_WHITE);
-                    md_script_vis_vertex_t vb = vertex(a_pos[max_j], COLOR_WHITE);
-                    push_point(va, ctx->vis);
-                    push_point(vb, ctx->vis);
-                    push_line(va, vb, ctx->vis);
-                }
-            }
         }
     } else {
         int res_a = coordinate_validate(arg[0], 0, ctx);
@@ -3320,7 +3511,8 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res_a < 0) return res_a;
         if (res_b < 0) return res_b;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_angstrom();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
         return 1;
@@ -3336,33 +3528,34 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     if (dst || ctx->vis) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(ctx->temp_arena);
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(ctx->temp_alloc);
 
         vec3_t* a_pos = coordinate_extract(arg[0], ctx);
         vec3_t* b_pos = coordinate_extract(arg[1], ctx);
-        const int64_t a_len = md_array_size(a_pos);
-        const int64_t b_len = md_array_size(b_pos);
+        const size_t a_len = md_array_size(a_pos);
+        const size_t b_len = md_array_size(b_pos);
+
+        float* dst_arr = 0;
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT_ARR));
             ASSERT(element_count(*dst) == md_array_size(a_pos) * md_array_size(b_pos));
-            float* dst_arr = as_float_arr(*dst);
-
-            md_util_unit_cell_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
+            dst_arr = as_float_arr(*dst);
+        } else {
+            dst_arr = md_vm_arena_push(ctx->temp_alloc, a_len * b_len);
         }
+        md_util_unit_cell_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
         if (ctx->vis) {
             if (ctx->subscript_ranges) {
                 // @NOTE(Robin): This is not trivial...
                 // We want to support visualization of subranges, which can be imposed by for example array subscripts or hovering a line plot corresponding to one subelement.
                 // In such case we have this encoded in ctx->subscript_ranges, which gives us the range of elements to visualize.
-                // This means we have to do a bit of extra work to figure out which elements to visualize, since they need to map 1:1 to the elements in the result array (dst)
+                // This means we have to do a bit of extra work to figure out what elements to visualize, since they need to map 1:1 to the elements in the result array (dst)
                 int32_t* a_idx = coordinate_extract_indices(arg[0], ctx);
                 int32_t* b_idx = coordinate_extract_indices(arg[1], ctx);
 
                 for (size_t ri = 0; ri < md_array_size(ctx->subscript_ranges); ++ri) {
                     irange_t range = ctx->subscript_ranges[ri];
-                    range.beg -= 1; // @NOTE: We subtract 1 here because the ranges are 1-indexed
-
                     int prev_a = -1;
                     md_script_vis_vertex_t va = {0};
 
@@ -3375,8 +3568,8 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                                 visualize_atom_index(a_idx[a], ctx);
                             } else if (arg[0].type.base_type == TYPE_BITFIELD && element_count(arg[0]) > 1) {
                                 if (i < (int)element_count(arg[0])) {
-                                	const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
-                                	visualize_atom_mask(&bf_arr[i], ctx);
+                                    const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
+                                    visualize_atom_mask(&bf_arr[i], ctx);
                                 }
                             }
 
@@ -3390,6 +3583,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                             }
                         }
 
+#if 0
                         if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
                             if (a != prev_a) {
                                 prev_a = a;
@@ -3400,23 +3594,14 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
                             push_point(vb, ctx->vis);
                             push_line(va, vb, ctx->vis);
                         }
+#endif
+                        draw_distance(&a_pos[a], 1, &b_pos[b], 1, &dst_arr[i], ctx->vis, ctx->vis_flags);
                     }
                 }
             } else {
                 coordinate_visualize(arg[0], ctx);
                 coordinate_visualize(arg[1], ctx);
-
-                if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                    for (int64_t i = 0; i < a_len; ++i) {
-                        md_script_vis_vertex_t va = vertex(a_pos[i], COLOR_WHITE);
-                        push_point(va, ctx->vis);
-                        for (int64_t j = 0; j < b_len; ++j) {
-                            md_script_vis_vertex_t vb = vertex(b_pos[j], COLOR_WHITE);
-                            push_point(vb, ctx->vis);
-                            push_line(va, vb, ctx->vis);
-                        }
-                    }
-                }
+                draw_distance(a_pos, a_len, b_pos, b_len, dst_arr, ctx->vis, ctx->vis_flags);
             }
         }
         md_vm_arena_temp_end(temp);
@@ -3426,18 +3611,52 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (res0 < 0) return res0;
         if (res1 < 0) return res1;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_angstrom();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_angstrom();
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
-        int64_t count = (int64_t)res0 * (int64_t)res1;
+        size_t count = (size_t)res0 * (size_t)res1;
         if (count > 1000000) {
-            LOG_ERROR(ctx->ir, ctx->op_token, "The size produced by the operation is %"PRId64", which exceeds the upper limit of 1'000'000", count);
+            LOG_ERROR(ctx->ir, ctx->op_token, "The size produced by the operation is %zu, which exceeds the upper limit of 1'000'000", count);
             return STATIC_VALIDATION_ERROR;
         }
         result = (int)count;
     }
 
     return result;
+}
+
+static void draw_angle_arc(vec3_t c, vec3_t v, vec3_t axis, float angle, uint32_t color, md_script_vis_t* vis) {
+    ASSERT(vis);
+    const float len = 0.5f;
+    /*if (angle < 0.0f) {
+        axis = vec3_mul_f(axis, -1.0f);
+        angle = -angle;
+    }*/
+    const size_t num_segments = MAX(1, (size_t)(fabs(angle) / DEG_TO_RAD(10)));
+    const float scl = 1.0f / (float)num_segments;
+    md_script_vis_vertex_t vb = vertex(c, color);
+    md_script_vis_vertex_t vp = vertex(vec3_add(c, vec3_mul_f(v, len)), color);
+    push_line(vb, vp, vis);
+    for (size_t i = 1; i <= num_segments; ++i) {
+        const float t = i * scl;
+        quat_t q = quat_axis_angle(axis, angle * t);
+        vec3_t n = quat_mul_vec3(q, v);
+        md_script_vis_vertex_t vn = vertex(vec3_add(c, vec3_mul_f(n, len)), color);
+        push_triangle(vb, vp, vn, vis);
+        push_line(vp, vn, vis);
+        vp = vn;
+    }
+    push_line(vb, vp, vis);
+
+    // Add text
+    quat_t q = quat_axis_angle(axis, angle * 0.5f);
+    vec3_t n = quat_mul_vec3(q, v);
+    c = vec3_add(c, vec3_mul_f(n, len + 0.1f));
+    char buf[32];
+    angle = RAD_TO_DEG(angle);
+    snprintf(buf, sizeof(buf), (const char*)u8"%.1f°", angle);
+    push_text(c, buf, vis);
 }
 
 static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -3474,11 +3693,27 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 push_line(vb, vc, ctx->vis);
 
                 // This is the angle arc
-                // @TODO: Insert more vertices here and make it a bit smoother
-                md_script_vis_vertex_t vd = vertex(vec3_add(b, vec3_mul_f(v0, 0.5f)), COLOR_WHITE);
-                md_script_vis_vertex_t ve = vertex(vec3_add(b, vec3_mul_f(v1, 0.5f)), COLOR_WHITE);
+                const vec3_t axis = vec3_normalize(vec3_cross(v0, v1));
+                const float angle = acosf(vec3_dot(v0, v1));
 
-                push_triangle(vb, vd, ve, ctx->vis);
+                draw_angle_arc(b, v0, axis, angle, COLOR_WHITE, ctx->vis);
+
+                /*
+                const size_t num_segments = 10;
+                const float scl = 1.0 / num_segments;
+                md_script_vis_vertex_t vp = vertex(vec3_add(b, vec3_mul_f(v0, 0.5f)), COLOR_WHITE);
+                push_line(vb, vp, ctx->vis);
+                for (size_t i = 1; i <= num_segments; ++i) {
+                    const float t = i * scl;
+                    quat_t q = quat_axis_angle(axis, angle * t);
+                    vec3_t n = quat_mul_vec3(q, v0);
+                    md_script_vis_vertex_t v = vertex(vec3_add(b, vec3_mul_f(n, 0.5f)), COLOR_WHITE);
+                    push_triangle(vb, vp, v, ctx->vis);
+                    push_line(vp, v, ctx->vis);
+                    vp = v;
+                }
+                push_line(vb, vp, ctx->vis);
+                */
             }
         }
     } else {
@@ -3487,7 +3722,8 @@ static int _angle(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (coordinate_validate(arg[1], 1, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (coordinate_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_radian();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_radian();
             //ctx->backchannel->value_range = (frange_t){0, PI};
         }
     }
@@ -3502,14 +3738,24 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[3].type, (type_info_t)TI_COORDINATE_ARR));
 
     if (dst || ctx->vis) {
-        vec3_t a = coordinate_extract_com(arg[0], ctx);
-        vec3_t b = coordinate_extract_com(arg[1], ctx);
-        vec3_t c = coordinate_extract_com(arg[2], ctx);
-        vec3_t d = coordinate_extract_com(arg[3], ctx);
+        vec3_t x[4] = {
+            coordinate_extract_com(arg[0], ctx),
+            coordinate_extract_com(arg[1], ctx),
+            coordinate_extract_com(arg[2], ctx),
+            coordinate_extract_com(arg[3], ctx),
+        };
+
+        vec3_t dx[3] = {
+            vec3_sub(x[1], x[0]),
+            vec3_sub(x[2], x[1]),
+            vec3_sub(x[3], x[2]),
+        };
+        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->mol->unit_cell);
+        float angle = (float)vec3_dihedral_angle(dx[0], dx[1], dx[2]);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
-            as_float(*dst) = (float)dihedral_angle(a,b,c,d);
+            as_float(*dst) = angle;
         }
         if (ctx->vis) {
             coordinate_visualize(arg[0], ctx);
@@ -3518,10 +3764,10 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             coordinate_visualize(arg[3], ctx);
 
             if (ctx->vis_flags & MD_SCRIPT_VISUALIZE_GEOMETRY) {
-                md_script_vis_vertex_t va = vertex(a, COLOR_WHITE);
-                md_script_vis_vertex_t vb = vertex(b, COLOR_WHITE);
-                md_script_vis_vertex_t vc = vertex(c, COLOR_WHITE);
-                md_script_vis_vertex_t vd = vertex(d, COLOR_WHITE);
+                md_script_vis_vertex_t va = vertex(x[0], COLOR_WHITE);
+                md_script_vis_vertex_t vb = vertex(x[1], COLOR_WHITE);
+                md_script_vis_vertex_t vc = vertex(x[2], COLOR_WHITE);
+                md_script_vis_vertex_t vd = vertex(x[3], COLOR_WHITE);
 
                 push_point(va, ctx->vis);
                 push_point(vb, ctx->vis);
@@ -3532,7 +3778,57 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 push_line(vb, vc, ctx->vis);
                 push_line(vc, vd, ctx->vis);
 
-                // @TODO: Draw planes and the angle between them
+#if 1
+                vec3_t b = x[1];
+                vec3_t c = x[2];
+
+                vec3_t ba = vec3_sub(x[0], x[1]);
+                vec3_t bc = vec3_sub(x[2], x[1]);
+                vec3_t cd = vec3_sub(x[3], x[2]);
+
+                vec3_t u  = vec3_normalize(bc); // Axis
+                vec3_t vp = vec3_mul_f(u, vec3_dot(ba, u));
+                vec3_t vo = vec3_sub(ba, vp);
+                vec3_t wp = vec3_mul_f(u, vec3_dot(cd, u));
+                vec3_t wo = vec3_sub(cd, wp);
+
+                // Plane 1
+                {
+                    vec3_t d = vec3_mul_f(vec3_normalize(vo), 1.0f);
+                    md_script_vis_vertex_t v[4] = {
+                        vb,
+                        vc,
+                        vertex(vec3_add(c, d), COLOR_WHITE),
+                        vertex(vec3_add(b, d), COLOR_WHITE),
+                    };
+
+                    push_line(v[0], v[1], ctx->vis);
+                    push_line(v[1], v[2], ctx->vis);
+                    push_line(v[2], v[3], ctx->vis);
+                    push_line(v[3], v[0], ctx->vis);
+                }
+
+                // Plane 2
+                {
+                    vec3_t d = vec3_mul_f(vec3_normalize(wo), 1.0f);
+                    md_script_vis_vertex_t v[4] = {
+                        vc,
+                        vb,
+                        vertex(vec3_add(b, d), COLOR_WHITE),
+                        vertex(vec3_add(c, d), COLOR_WHITE),
+                    };
+
+                    push_line(v[0], v[1], ctx->vis);
+                    push_line(v[1], v[2], ctx->vis);
+                    push_line(v[2], v[3], ctx->vis);
+                    push_line(v[3], v[0], ctx->vis);
+                }
+                // Angle
+                {
+                    vec3_t p0 = vec3_lerp(b, c, 0.5f);
+                    draw_angle_arc(p0, vo, u, angle, COLOR_WHITE, ctx->vis);
+                }
+#endif
             }
         }
     } else {
@@ -3542,7 +3838,8 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (coordinate_validate(arg[2], 2, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (coordinate_validate(arg[3], 3, ctx) < 0) return STATIC_VALIDATION_ERROR;
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_radian();
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_radian();
             //ctx->backchannel->value_range = (frange_t){-PI, PI};
         }
     }
@@ -3563,16 +3860,16 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (dst->ptr) {
             const md_bitfield_t* src_bf = as_bitfield(arg[0]);
             md_bitfield_t bf = _internal_flatten_bf(src_bf, element_count(arg[0]), ctx->temp_alloc);
-            md_bitfield_t tmp_bf = {0};
 
             if (ctx->mol_ctx) {
+                md_bitfield_t tmp_bf = {0};
                 md_bitfield_init(&tmp_bf, ctx->temp_alloc);
                 md_bitfield_and (&tmp_bf, &bf, ctx->mol_ctx);
                 bf = tmp_bf;
             }
             const size_t count = md_bitfield_popcount(&bf);
             if (count > 0) {
-                md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(ctx->temp_arena);
+                md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(ctx->temp_alloc);
                 //int32_t* indices = md_alloc(ctx->temp_alloc, sizeof(int32_t) * count);
                 //md_bitfield_iter_extract_indices(indices, count, md_bitfield_iter_create(&bf));
                 vec4_t* xyzw[2] = {
@@ -3590,8 +3887,8 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 md_util_unwrap_vec4(xyzw[1], count, &ctx->mol->unit_cell);
 
                 const vec3_t com[2] = {
-                    md_util_com_compute_vec4(xyzw[0], count, NULL),
-                    md_util_com_compute_vec4(xyzw[1], count, NULL),
+                    md_util_com_compute_vec4(xyzw[0], 0, count, NULL),
+                    md_util_com_compute_vec4(xyzw[1], 0, count, NULL),
                 };
 
                 as_float(*dst) = (float)md_util_rmsd_compute_vec4((const vec4_t* const*)xyzw, 0, count, com);
@@ -3607,7 +3904,7 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             // Validate args
             // Nothing really to validate, arguments are of type bitfields and if the bitfield is empty, that would be ok, since that would yield a valid rmsd -> 0.
-			// And the empty bitfield must be valid in the case of dynamic selection.
+            // And the empty bitfield must be valid in the case of dynamic selection.
         }
     }
 
@@ -3732,8 +4029,8 @@ static int _cast_int_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     } else {
         for (size_t i = 0; i < num_idx; ++i) {
             if (!validate_atom_index_in_context(indices[i], ctx->arg_tokens[0], ctx)) {
-				return STATIC_VALIDATION_ERROR;
-			}
+                return STATIC_VALIDATION_ERROR;
+            }
         }
     }
 
@@ -3770,8 +4067,8 @@ static int _cast_irng_arr_to_bf(data_t* dst, data_t arg[], eval_context_t* ctx) 
     } else {
         for (size_t i = 0; i < num_ranges; ++i) {
             if (!validate_atom_range_in_context(ranges[i], ctx->arg_tokens[0], ctx)) {
-				return STATIC_VALIDATION_ERROR;
-			}
+                return STATIC_VALIDATION_ERROR;
+            }
         }
     }
 
@@ -3792,6 +4089,132 @@ static int _join_bf_arr(data_t* dst, data_t arg[], eval_context_t* ctx) {
     for (int64_t i = 0; i < count; ++i) {
         md_bitfield_or_inplace(dst_bf, &src_bf_arr[i]);
     }
+
+    return 0;
+}
+
+static int _split_bf(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    (void)ctx;
+    if (!dst) return 0;
+
+    ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BITFIELD_ARR));
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_STRING));    
+
+    str_t str_arg = as_string(arg[1]);
+
+    enum split_t {
+        UNKNOWN,
+        RES,
+        CHAIN,
+        STRUCT,
+    };
+    enum split_t split = UNKNOWN;
+
+    struct entry_t {
+        str_t str;
+        enum split_t split;
+    };
+    struct entry_t entries[] = {
+        {STR_LIT("res"),        RES},
+        {STR_LIT("residue"),    RES},
+        {STR_LIT("comp"),       RES},
+        {STR_LIT("component"),  RES},
+        {STR_LIT("chain"),      CHAIN},
+        {STR_LIT("struct"),     STRUCT},
+        {STR_LIT("structure"),  STRUCT},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
+        if (str_eq(str_arg, entries[i].str)) {
+            split = entries[i].split;
+        }
+    }
+
+    if (split == UNKNOWN) {
+        md_strb_t sb = md_strb_create(ctx->temp_alloc);
+        md_strb_fmt(&sb, "Invalid argument ('" STR_FMT "'), valid arguments are: ", STR_ARG(str_arg));
+
+        for (size_t i = 0; i < ARRAY_SIZE(entries); ++i) {
+            md_strb_push_str(&sb, entries[i].str);
+            if (i < ARRAY_SIZE(entries) - 1) {
+                md_strb_push_str(&sb, STR_LIT(", "));
+            }
+        }
+
+        LOG_ERROR_STR(ctx->ir, ctx->arg_tokens[1], md_strb_to_str(sb));
+        return STATIC_VALIDATION_ERROR;
+    }
+
+    if (split == RES) {
+        if (ctx->mol->residue.count == 0 || !ctx->mol->atom.res_idx) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "Missing residue information, cannot perform split");
+            return STATIC_VALIDATION_ERROR;
+        }
+    } else if (split == CHAIN) {
+        if (ctx->mol->chain.count == 0 || !ctx->mol->atom.chain_idx) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "Missing chain information, cannot perform split");
+            return STATIC_VALIDATION_ERROR;
+        }
+    } else if (split == STRUCT) {
+        if (md_index_data_num_ranges(ctx->mol->structure) == 0) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "Missing struct information, cannot perform split");
+            return STATIC_VALIDATION_ERROR;
+        }
+    }
+
+    md_vm_arena_temp_t temp_pos = md_vm_arena_temp_begin(ctx->temp_alloc);
+
+    md_bitfield_t tmp_bf = {0};
+
+    md_bitfield_t* dst_bf_arr = as_bitfield(*dst);
+    const md_bitfield_t* src_bf = (md_bitfield_t*)arg[0].ptr;
+
+    // Modify bitfield if we have a context
+    if (ctx->mol_ctx) {
+        tmp_bf = md_bitfield_create(ctx->temp_alloc);
+        md_bitfield_or(&tmp_bf, src_bf, ctx->mol_ctx);
+        src_bf = &tmp_bf;
+    }
+
+    int prev_idx = -1;
+    int count = 0;
+
+    uint32_t* atom_struct_idx = 0;
+    if (split == STRUCT) {
+        atom_struct_idx = md_vm_arena_push(ctx->temp_alloc, ctx->mol->atom.count * sizeof(uint32_t));
+        for (size_t i = 0; i < md_index_data_num_ranges(ctx->mol->structure); ++i) {
+            uint32_t structure_idx = (uint32_t)i + 1;
+            const int32_t* s_beg_idx = md_index_range_beg(ctx->mol->structure, i);
+            const int32_t* s_end_idx = md_index_range_end(ctx->mol->structure, i);
+            for (const int32_t* it = s_beg_idx; it != s_end_idx; ++it) {
+                atom_struct_idx[*it] = structure_idx;
+            }
+        }
+    }
+
+    md_bitfield_iter_t it = md_bitfield_iter_create(src_bf);
+
+    while (md_bitfield_iter_next(&it)) {
+        size_t atom_idx = md_bitfield_iter_idx(&it);
+        int idx = -1;
+        switch (split) {
+        case RES:
+            idx = ctx->mol->atom.res_idx[atom_idx];
+            md_bitfield_iter_skip_to_idx(&it, md_residue_atom_range(ctx->mol->residue, idx).end);
+            break;
+        case CHAIN:
+            idx = ctx->mol->atom.chain_idx[atom_idx];
+            md_bitfield_iter_skip_to_idx(&it, md_chain_atom_range(ctx->mol->chain, idx).end);
+            break;
+        case STRUCT:
+            idx = atom_struct_idx[atom_idx];
+        default:
+            ASSERT(false);
+        }
+    }
+
+    md_vm_arena_temp_end(temp_pos);
 
     return 0;
 }
@@ -3838,12 +4261,12 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         size_t count = md_array_size(xyz);
         vec4_t* xyzw = md_alloc(ctx->temp_alloc, sizeof(vec4_t) * count);
         for (size_t i = 0; i < count; ++i) {
-			xyzw[i] = vec4_from_vec3(xyz[i], 1.0f);
-		}
+            xyzw[i] = vec4_from_vec3(xyz[i], 1.0f);
+        }
 
         // Place structure within the same period
         md_util_unwrap_vec4(xyzw, count, &ctx->mol->unit_cell);
-        vec3_t com = md_util_com_compute_vec4(xyzw, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
+        vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
         mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
         mat3_eigen_t eigen = mat3_eigen(M);
 
@@ -3941,13 +4364,42 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             bf = tmp_bf;
         }
 
+        // Reference point
+        vec3_t rc = mat3_mul_vec3(ctx->initial_configuration.header->unit_cell.basis, vec3_set1(0.5f));
+        // Reference extent
+        vec3_t re = mat3_diag(ctx->initial_configuration.header->unit_cell.basis);
+
+        vec4_t ext = vec4_from_vec3(re, 0);
+        if (axis == -1) {
+            // We use the max axis as we cannot output three individual value_ranges
+            ext = vec4_set1(MAX(re.x, MAX(re.y, re.z)));
+            ext.w = 0;
+        }
+
         size_t count = md_bitfield_popcount(&bf);
-        vec4_t* xyzw = md_vm_arena_push(ctx->temp_arena, count * sizeof(vec4_t));
+        vec4_t* xyzw = md_vm_arena_push(ctx->temp_alloc, count * sizeof(vec4_t));
         extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
-        md_util_pbc_vec4(xyzw, count, &ctx->mol->unit_cell);
+        //md_util_pbc_vec4(xyzw, count, &ctx->mol->unit_cell);
+
+        vec4_t mid_point = vec4_from_vec3(rc, 0);
+        vec4_t period = vec4_from_vec3(re, 0);
+        vec4_t inv_ext = {
+            ext.x > 0.0f ? 1.0f / ext.x : 0.0f,
+            ext.y > 0.0f ? 1.0f / ext.y : 0.0f,
+            ext.z > 0.0f ? 1.0f / ext.z : 0.0f,
+            0.0f
+        };
+
+        vec4_t min_point = vec4_sub(mid_point, vec4_mul_f(ext, 0.5f));
+
+        // @TODO: This is conceptually not correct in the periferi of the system as it does not count multiple occurences of atoms
+        // This should be resolved with spatial hashing and counting occurrences within the cells
+        // But the current inplementation of the spatial hash does not facilitate it properly...
+
 
         for (size_t i = 0; i < count; ++i) {
-            vec3_t fc = mat3_mul_vec3(ctx->mol->unit_cell.inv_basis, vec3_from_vec4(xyzw[i]));
+            vec4_t xyzw_dp = vec4_deperiodize(xyzw[i], mid_point, period);
+            vec4_t fc = vec4_mul(vec4_sub(xyzw_dp, min_point), inv_ext);
             float w = xyzw[i].w;
 
             int bin_idx[3] = {
@@ -3965,39 +4417,39 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             }
         }
 
-        const vec3_t vx = ctx->mol->unit_cell.basis.col[0];
-        const vec3_t vy = ctx->mol->unit_cell.basis.col[1];
-        const vec3_t vz = ctx->mol->unit_cell.basis.col[2];
+        const double slice_vol = (ext.x * ext.y * ext.z) / MD_DIST_BINS;
 
-        const double slice_volume[3] = {
-            fabs(vec3_length(vec3_cross(vy, vz)) * vec3_length(vx) / MD_DIST_BINS),
-            fabs(vec3_length(vec3_cross(vx, vz)) * vec3_length(vy) / MD_DIST_BINS),
-            fabs(vec3_length(vec3_cross(vx, vy)) * vec3_length(vz) / MD_DIST_BINS),
-        };
-
-        // Convert atomic mass / �ngstr�m^3 to SI units KG/M^3
-        // 1660.5390666?
-        // divide by bin volume
-        const double factor[3] = {
-            1660.5390666 / slice_volume[0],
-            1660.5390666 / slice_volume[1],
-            1660.5390666 / slice_volume[2],
-        };
+        // Convert atomic mass / Ångström^3 to SI units KG/M^3
+        const double factor = (1660.5390666 / slice_vol);
 
         if (axis == -1) {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[0][i] = (float)(density[0][i] * factor[0]);
-                density[1][i] = (float)(density[1][i] * factor[1]);
-                density[2][i] = (float)(density[2][i] * factor[2]);
+                density[0][i] = (float)(density[0][i] * factor);
+                density[1][i] = (float)(density[1][i] * factor);
+                density[2][i] = (float)(density[2][i] * factor);
             }
         } else {
             for (size_t i = 0; i < MD_DIST_BINS; ++i) {
-                density[axis][i] = (float)(density[axis][i] * factor[axis]);
+                density[axis][i] = (float)(density[axis][i] * factor);
             }
         }
     } else {
+        md_trajectory_frame_header_t frame_header = {0};
+        const md_unit_cell_t* unit_cell = NULL;
+        if (ctx->traj) {
+            md_trajectory_load_frame(ctx->traj, 0, &frame_header, 0, 0, 0);
+            unit_cell = &frame_header.unit_cell;
+        } else {
+            unit_cell = &ctx->mol->unit_cell;
+        }
+
+        if (!unit_cell) {
+            LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined");
+            return STATIC_VALIDATION_ERROR;
+        }
+
         if (axis == -1) {
-            if (ctx->mol->unit_cell.flags == 0) {
+            if (unit_cell->flags == 0) {
                 LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined");
                 return STATIC_VALIDATION_ERROR;
             }
@@ -4013,8 +4465,20 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             }
         }
         if (ctx->backchannel) {
-            ctx->backchannel->unit = md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
-            ctx->backchannel->value_range = (frange_t){0, 1};
+            // Reference half extent
+            vec3_t re = vec3_mul_f(mat3_diag(unit_cell->basis), 0.5f);
+
+            // We use the max axis half ext as we cannot output three individual value_ranges
+            float rad = 0;
+            if (axis == -1) {
+                rad  = MAX(re.x, MAX(re.y, re.z));
+            } else {
+                rad = re.elem[axis];
+            }
+
+            ctx->backchannel->unit[0] = md_unit_angstrom();
+            ctx->backchannel->unit[1] = md_unit_div(md_unit_kilogram(), md_unit_pow(md_unit_meter(), 3));
+            ctx->backchannel->value_range = (frange_t){-rad, rad};
         }
     }
     return 0;
@@ -4285,17 +4749,17 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const data_t 
     md_array(vec3_t) ref_pos = 0;
 
     const bool use_exclusion_masks = (arg[0].type.base_type == TYPE_BITFIELD) && (element_count(arg[0]) > 1);
-    const bool use_exclusion_indices = (ref_idx != 0);
+    const bool use_exclusion_indices = (ref_idx != NULL);
 
     if (ref_idx) {
         md_array_resize(ref_pos, md_array_size(ref_idx), ctx->temp_alloc);
         for (size_t i = 0; i < md_array_size(ref_idx); ++i) {
             const int64_t idx = ref_idx[i];
-			ref_pos[i] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
-		}
+            ref_pos[i] = (vec3_t){ctx->mol->atom.x[idx], ctx->mol->atom.y[idx], ctx->mol->atom.z[idx]};
+        }
     } else {
-		ref_pos = coordinate_extract(arg[0], ctx);
-	}
+        ref_pos = coordinate_extract(arg[0], ctx);
+    }
     const size_t ref_len = md_array_size(ref_pos);
 
     md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
@@ -4412,7 +4876,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_DISTRIBUTION));
             ASSERT(dst->ptr);
             float* bins    = as_float_arr(*dst);
-			float* weights = as_float_arr(*dst) + num_bins;
+            float* weights = as_float_arr(*dst) + num_bins;
             compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, &ctx->mol->unit_cell, ctx->temp_alloc, ctx);
         }
         if (ctx->vis) {
@@ -4442,7 +4906,8 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             return STATIC_VALIDATION_ERROR;
         }
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){ 0 };
+            ctx->backchannel->unit[0] = md_unit_angstrom();
+            ctx->backchannel->unit[1] = md_unit_none();
             ctx->backchannel->value_range = (frange_t){min_cutoff, max_cutoff};
         }
     }
@@ -4477,27 +4942,27 @@ typedef enum {
 } count_type_t;
 
 static const str_t count_type_str[] = {
-	BAKE_STR(""),
-	BAKE_STR("atom"),
-	BAKE_STR("residue"),
-	BAKE_STR("chain"),
-	BAKE_STR("structure"),
+    BAKE_STR(""),
+    BAKE_STR("atom"),
+    BAKE_STR("residue"),
+    BAKE_STR("chain"),
+    BAKE_STR("structure"),
 };
 
 count_type_t count_type_from_str(str_t str) {
-	for (size_t i = 0; i < COUNT_TYPE_COUNT; ++i) {
-		if (str_eq(str, count_type_str[i])) {
-			return (count_type_t)i;
-		}
-	}
-	return COUNT_TYPE_UNKNOWN;
+    for (size_t i = 0; i < COUNT_TYPE_COUNT; ++i) {
+        if (str_eq(str, count_type_str[i])) {
+            return (count_type_t)i;
+        }
+    }
+    return COUNT_TYPE_UNKNOWN;
 }
 
 size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t count_type, eval_context_t* ctx) {
     ASSERT(ctx);
     if (!bf_arr || bf_len == 0) {
-		return 0;
-	}
+        return 0;
+    }
 
     md_bitfield_t bf = _internal_flatten_bf(bf_arr, bf_len, ctx->temp_alloc);
 
@@ -4505,24 +4970,24 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
     if (ctx->mol_ctx) {
         tmp = md_bitfield_create(ctx->temp_alloc);
         md_bitfield_and(&tmp, &bf, ctx->mol_ctx);
-		bf = tmp;
+        bf = tmp;
     }
     
     size_t count = 0;
 
     switch (count_type) {
-    	case COUNT_TYPE_ATOM: {
-			return md_bitfield_popcount(&bf);
-		}
-		case COUNT_TYPE_RESIDUE:
-			for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
+        case COUNT_TYPE_ATOM: {
+            return md_bitfield_popcount(&bf);
+        }
+        case COUNT_TYPE_RESIDUE:
+            for (size_t i = 0; i < ctx->mol->residue.count; ++i) {
                 md_range_t range = md_residue_atom_range(ctx->mol->residue, i);
                 if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
-					count += 1;
-				}
+                    count += 1;
+                }
             }
             break;
-		case COUNT_TYPE_CHAIN: {
+        case COUNT_TYPE_CHAIN: {
             for (size_t i = 0; i < ctx->mol->chain.count; ++i) {
                 md_range_t range = md_chain_atom_range(ctx->mol->chain, i);
                 if (md_bitfield_popcount_range(&bf, range.beg, range.end) > 0) {
@@ -4530,27 +4995,27 @@ size_t internal_count(const md_bitfield_t* bf_arr, size_t bf_len, count_type_t c
                 }
             }
             break;
-		}
-		case COUNT_TYPE_STRUCTURE: {
-            size_t num_structures = md_index_data_count(ctx->mol->structures);
+        }
+        case COUNT_TYPE_STRUCTURE: {
+            size_t num_structures = md_index_data_num_ranges(ctx->mol->structure);
             md_bitfield_t tmp2 = md_bitfield_create(ctx->temp_alloc);
-			for (size_t i = 0; i < num_structures; ++i) {
-                const int32_t* idx = md_index_range_beg(ctx->mol->structures, i);
-                const size_t num_idx = md_index_range_size(ctx->mol->structures, i);
+            for (size_t i = 0; i < num_structures; ++i) {
+                const int32_t* idx = md_index_range_beg(ctx->mol->structure, i);
+                const size_t num_idx = md_index_range_size(ctx->mol->structure, i);
             
                 md_bitfield_clear(&tmp2);
                 md_bitfield_set_indices_u32(&tmp2, (const uint32_t*)idx, num_idx);
                 md_bitfield_and_inplace(&tmp2, &bf);
                 if (md_bitfield_popcount(&tmp2) > 0) {
-                	count += 1;
+                    count += 1;
                 }
             }
             break;
-		}
-		default: {
-			ASSERT(false);
-			break;
-		}
+        }
+        default: {
+            ASSERT(false);
+            break;
+        }
     }
     return count;
 }
@@ -4588,8 +5053,8 @@ static int _count_with_arg(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 md_strb_fmt(&sb, "\""STR_FMT"\"\n", STR_ARG(count_type_str[i]));
             }
             LOG_ERROR(ctx->ir, ctx->arg_tokens[1], "Unknown argument: '"STR_FMT"', valid arguments are:\n"STR_FMT, STR_ARG(str), STR_ARG(md_strb_to_str(sb)));
-			return -1;
-		}
+            return -1;
+        }
     }
 
     return 0;
@@ -4707,9 +5172,6 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_BITFIELD_ARR));
     ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_BITFIELD));
     ASSERT(is_type_directly_compatible(arg[2].type, (type_info_t)TI_FLOAT));
-    ASSERT(arg[0].ptr);
-    ASSERT(arg[1].ptr);
-    ASSERT(arg[2].ptr);
 
     const int64_t num_ref_bitfields = element_count(arg[0]);
     const md_bitfield_t* ref_bf_arr = as_bitfield(arg[0]);
@@ -4724,7 +5186,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
     int result = 0;
 
     if (dst || ctx->vis) {
-        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(ctx->temp_arena);
+        md_vm_arena_temp_t temp = md_vm_arena_temp_begin(ctx->temp_alloc);
 
         ASSERT(ctx->initial_configuration.x);
         ASSERT(ctx->initial_configuration.y);
@@ -4754,8 +5216,8 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
         vec4_t* ref_xyzw[2] = {
             md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size),
-			md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size)
-		};
+            md_alloc(ctx->temp_alloc, sizeof(vec4_t) * ref_size)
+        };
 
         // Extract indices
         md_bitfield_iter_extract_indices(ref_idx[0], ref_size, md_bitfield_iter_create(ref_bf));
@@ -4782,7 +5244,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec3_t* trg_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_bf, ctx->temp_alloc);
 
         md_util_unwrap_vec4(ref_xyzw[0], ref_size, &ctx->mol->unit_cell);
-        ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], ref_size, 0);
+        ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0);
 
         // @TODO(Robin): This should be measured
         const bool brute_force = trg_size < 5000;
@@ -4811,7 +5273,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             extract_xyzw_vec4(ref_xyzw[1], ref_x[1], ref_y[1], ref_z[1], ref_w, bf);
             md_util_unwrap_vec4(ref_xyzw[1], ref_size, &ctx->mol->unit_cell);
-            ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
+            ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], 0, ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
             mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
 
             if (ctx->frame_header->index == 0) {
@@ -4873,54 +5335,13 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         if (ctx->backchannel) {
-            ctx->backchannel->unit = (md_unit_t){0};
+            ctx->backchannel->unit[0] = md_unit_angstrom();
+            ctx->backchannel->unit[1] = md_unit_div(md_unit_count(), md_unit_pow(md_unit_angstrom(), 3));
             ctx->backchannel->value_range = (frange_t){0, FLT_MAX};
         }
     }
 
     return result;
-}
-
-static vec3_t compute_shape_weights(data_t arg[], eval_context_t* ctx) {
-    vec3_t weights = {0};
-    md_vm_arena_temp_t pos = md_vm_arena_temp_begin(ctx->temp_arena);
-
-    md_array(int) indices = 0;
-
-    if (arg[0].type.base_type == TYPE_BITFIELD && element_count(arg[0]) > 0) {
-        md_bitfield_t tmp_bf = {0};
-        md_bitfield_init(&tmp_bf, ctx->temp_alloc);
-
-        const size_t count = element_count(arg[0]);
-        const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
-        for (size_t i = 0; i < count; ++i) {
-            const md_bitfield_t* bf = &bf_arr[i];
-            md_bitfield_or_inplace(&tmp_bf, bf);
-        }
-
-        if (ctx->mol_ctx) {
-            md_bitfield_and_inplace(&tmp_bf, ctx->mol_ctx);
-        }
-
-        const size_t size = md_bitfield_popcount(&tmp_bf);
-        if (size > 0) {
-            md_array_resize(indices, size, ctx->temp_alloc);
-            md_bitfield_iter_extract_indices(indices, size, md_bitfield_iter_create(&tmp_bf));
-        }
-    } else {
-        indices = coordinate_extract_indices(arg[0], ctx);
-    }
-
-    if (indices) {
-        // @TODO: This needs to be deperiodized on the com
-        const size_t count = md_array_size(indices);
-        const vec3_t com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, count, &ctx->mol->unit_cell);
-        const mat3_t M = mat3_covariance_matrix(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, count, com);
-        weights = md_util_shape_weights(&M);
-    }
-
-    md_vm_arena_temp_end(pos);
-    return weights;
 }
 
 static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
@@ -4929,18 +5350,143 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
     ASSERT(arg[0].ptr);
 
     if (dst) {
-        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3));
-        vec3_t* weights = (vec3_t*)dst->ptr;
-        *weights = compute_shape_weights(arg, ctx);
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT3_ARR));
+        md_vm_arena_temp_t tmp = md_vm_arena_temp_begin(ctx->temp_alloc);
+
+        vec3_t* out_weights = as_vec3_arr(*dst);
+
+        md_array(vec4_t)  xyzw = 0;
+        if (arg[0].type.base_type == TYPE_BITFIELD) {
+            const size_t bf_len = element_count(arg[0]);
+            const md_bitfield_t* bf_arr = as_bitfield(arg[0]);
+            md_bitfield_t tmp_bf = {0};
+            if (ctx->mol_ctx) {
+                md_bitfield_init(&tmp_bf, ctx->temp_alloc);
+            }
+
+            for (size_t i = 0; i < bf_len; ++i) {
+                const md_bitfield_t* bf = &bf_arr[i];
+                if (ctx->mol_ctx) {
+                    md_bitfield_and(&tmp_bf, bf, ctx->mol_ctx);
+                    bf = &tmp_bf;
+                }
+                const size_t count = md_bitfield_popcount(bf);
+                if (count > 0) {
+                    md_array_resize(xyzw, count, ctx->temp_alloc);
+                    extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
+                    vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unit_cell);
+                    md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unit_cell);
+                    const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
+                    out_weights[i] = md_util_shape_weights(&M);
+                }
+            }
+        } else {
+            xyzw = coordinate_extract_xyzw(arg[0], 1.0f, ctx);
+            const size_t count = md_array_size(xyzw);
+            vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unit_cell);
+            md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unit_cell);
+            const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
+            out_weights[0] = md_util_shape_weights(&M);
+        }
+
+        md_vm_arena_temp_end(tmp);
+    } else if (ctx->vis) {
+        coordinate_visualize(arg[0], ctx);
     } else {
+        int count = 0;
+        if (arg[0].type.base_type == TYPE_BITFIELD) {
+            count = (int)element_count(arg[0]);
+        } else {
+            count = 1;
+        }
+
         if (ctx->backchannel) {
-			ctx->backchannel->unit = (md_unit_t){0};
-			ctx->backchannel->value_range = (frange_t){0, 1.0};
-		}
+            ctx->backchannel->unit[0] = md_unit_none();
+            ctx->backchannel->unit[1] = md_unit_none();
+            ctx->backchannel->value_range = (frange_t){0, 1.0};
+        }
+        return count;
     }
 
     return 0;
 }
+
+static int _cmp_lt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
+
+    const float* a = as_float_arr(arg[0]);
+    const float* b = as_float_arr(arg[1]);
+    int a_len = type_info_array_len(arg[0].type);
+    int b_len = type_info_array_len(arg[1].type);
+
+    int result = 0;
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR));
+        int out_len = type_info_array_len(dst->type);
+        bool* out = as_bool_arr(*dst);
+
+        if (a_len < b_len) {
+            ASSERT(a_len == 1);
+            for (int i = 0; i < out_len; ++i) {
+                out[i] = a[0] < b[i];
+            }
+        } else if (a_len > b_len) {
+            ASSERT(b_len == 1);
+            ASSERT(out_len == a_len);
+            for (int i = 0; i < out_len; ++i) {
+                out[i] = a[i] < b[0];
+            }
+        } else {
+            ASSERT(a_len == out_len && b_len == out_len);
+            for (int i = 0; i < a_len; ++i) {
+                out[i] = a[i] < b[i];
+            }
+        }
+    } else {
+        result = MAX(a_len, b_len);
+    }
+    return result;
+}
+
+static int _cmp_gt(data_t* dst, data_t arg[], eval_context_t* ctx) {
+    ASSERT(is_type_directly_compatible(arg[0].type, (type_info_t)TI_FLOAT_ARR));
+    ASSERT(is_type_directly_compatible(arg[1].type, (type_info_t)TI_FLOAT_ARR));
+
+    const float* a = as_float_arr(arg[0]);
+    const float* b = as_float_arr(arg[1]);
+    int a_len = type_info_array_len(arg[0].type);
+    int b_len = type_info_array_len(arg[1].type);
+
+    int result = 0;
+    if (dst) {
+        ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_BOOL_ARR));
+        int out_len = type_info_array_len(dst->type);
+        bool* out = as_bool_arr(*dst);
+
+        if (a_len < b_len) {
+            ASSERT(a_len == 1);
+            for (int i = 0; i < out_len; ++i) {
+                out[i] = a[0] > b[i];
+            }
+        } else if (a_len > b_len) {
+            ASSERT(b_len == 1);
+            ASSERT(out_len == a_len);
+            for (int i = 0; i < out_len; ++i) {
+                out[i] = a[i] > b[0];
+            }
+        } else {
+            ASSERT(a_len == out_len && b_len == out_len);
+            for (int i = 0; i < a_len; ++i) {
+                out[i] = a[i] > b[i];
+            }
+        }
+    } else {
+        result = MAX(a_len, b_len);
+    }
+    return result;
+}
+
 /*
 // This is some experimental future work, for matching structures using maximum common subgraph
 

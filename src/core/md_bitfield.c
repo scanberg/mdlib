@@ -7,6 +7,7 @@
 #include <core/md_intrinsics.h>
 #include <core/md_simd.h>
 #include <core/md_bitop.inl>
+#include <core/md_hash.h>
 
 #include <fastlz.h>
 
@@ -18,12 +19,11 @@
 #endif
 
 typedef union block_t {
+    md_256i    v[2];
     uint64_t u64[8];
     uint32_t u32[16];
     uint16_t u16[32];
     uint8_t   u8[64];
-    
-    md_256i     v[2];
 } block_t;
 
 #define BITS_PER_BLOCK (sizeof(block_t) * 8)
@@ -61,9 +61,9 @@ static inline uint64_t num_blocks(uint64_t beg_bit, uint64_t end_bit) {
 
 static inline block_t block_and(block_t a, block_t b) {
     block_t res;
-    for (int i = 0; i < (int)ARRAY_SIZE(a.v); ++i) {
+    for (size_t i = 0; i < ARRAY_SIZE(a.v); ++i) {
         res.v[i] = md_mm256_and_si256(a.v[i], b.v[i]);
-    }
+    };
     return res;
 }
 
@@ -95,7 +95,6 @@ static inline block_t block_xor(block_t a, block_t b) {
 static inline block_t block_not(block_t blk) {
     block_t res;
     for (int i = 0; i < (int)ARRAY_SIZE(blk.v); ++i) {
-        
         res.v[i] = md_mm256_not_si256(blk.v[i]);
     }
     return res;
@@ -162,8 +161,6 @@ static inline bool block_test_bit(block_t blk, uint64_t bit_idx) {
     return blk.u64[bit_idx >> 6] & (1ULL << (bit_idx & 63));
 }
 
-
-
 // Posix convention, returns 0 if no bit is set
 // otherwise it returns the index of the first set bit in the interval (1-512)
 static inline uint64_t block_scan_forward(block_t blk) {
@@ -188,33 +185,41 @@ static inline void set_block(md_bitfield_t* bf, uint64_t idx, block_t blk) {
     ASSERT(bf->bits);
     const uint64_t beg_blk = block_idx(bf->beg_bit);
     ASSERT(beg_blk <= idx && idx <= block_idx(bf->end_bit));
-    ((block_t*)bf->bits)[idx - beg_blk] = blk;
+    MEMCPY(((block_t*)bf->bits) + (idx - beg_blk), &blk, sizeof(block_t));
 }
 
-static inline block_t get_block(const md_bitfield_t* bf, uint64_t blk_idx) {
+static inline block_t get_block(const md_bitfield_t* bf, uint64_t idx) {
     const uint64_t beg_blk = block_idx(bf->beg_bit);
     const uint64_t end_blk = block_idx(bf->end_bit);
-    if (bf->bits && beg_blk <= blk_idx && blk_idx <= end_blk)
-        return ((block_t*)bf->bits)[blk_idx - beg_blk];
-    return (block_t) {0};
-}
-
-#define get_block_ptr(bf, idx) ((block_t*)bf->bits + (idx - block_idx(bf->beg_bit)))
-
-static inline void free_blocks(md_bitfield_t* bf) {
-    ASSERT(bf);
-    ASSERT(bf->bits != NULL);
-    md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
-    bf->bits = NULL;
-}
-
-static inline void allocate_blocks(md_bitfield_t* bf, uint64_t num_blocks) {
-    ASSERT(bf);
-    ASSERT(bf->bits == NULL);
-    ASSERT(bf->alloc);
-    if (num_blocks > 0) {
-        bf->bits = md_aligned_alloc(bf->alloc, num_blocks * sizeof(block_t), ALIGNMENT);
+    if (bf->bits && beg_blk <= idx && idx <= end_blk) {
+        block_t blk;
+        MEMCPY(&blk, ((block_t*)bf->bits) + (idx - beg_blk), sizeof(block_t));
+        return blk;
     }
+    return (block_t){0};
+}
+
+#define get_blk_ptr(bf, bit_idx) ((block_t*)bf->bits + (bit_idx - block_idx(bf->beg_bit)))
+
+static inline void free_blocks(md_allocator_i* alloc, void* ptr, size_t num_blocks) {
+    if (ptr) {
+        md_free(alloc, ptr, num_blocks * sizeof(block_t));
+        //md_aligned_free(alloc, ptr);
+    }
+}
+
+static inline void* alloc_blocks(md_allocator_i* alloc, size_t num_blocks) {
+    void* mem = 0;
+    if (num_blocks > 0) {
+        mem = md_alloc(alloc, num_blocks * sizeof(block_t));
+        //mem = md_aligned_alloc(alloc, num_blocks * sizeof(block_t), sizeof(block_t));
+    }
+    return mem;
+}
+
+static inline void* realloc_blocks(md_allocator_i* alloc, void* ptr, size_t cur_blocks, size_t new_blocks) {
+    return md_realloc(alloc, ptr, cur_blocks * sizeof(block_t), new_blocks * sizeof(block_t));
+    //return md_aligned_realloc(alloc, ptr, num_blocks * sizeof(block_t), sizeof(block_t));
 }
 
 // This fits the range of the bitfield to a bit interval.
@@ -223,26 +228,22 @@ static inline void fit_to_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
     ASSERT(bf);
     ASSERT(beg_bit <= end_bit);
 
-    if (beg_bit == 0 && end_bit == 0) {
-        
-    }
-
     const uint64_t beg_blk = block_idx(beg_bit);
     const uint64_t end_blk = block_idx(end_bit);
-    
-    if (bf->bits) {
-        if (block_idx(bf->beg_bit) == beg_blk && block_idx(bf->end_bit) == end_blk) {
-            // We already have the correct blocks, just need to update the bit range
-            bf->beg_bit = (uint32_t)beg_bit;
-            bf->end_bit = (uint32_t)end_bit;
-            return;
-        }
-        free_blocks(bf);
-    }
+    const uint64_t cur_beg_blk = block_idx(bf->beg_bit);
+    const uint64_t cur_end_blk = block_idx(bf->end_bit);
+
+    uint64_t cur_blocks = num_blocks(bf->beg_bit, bf->end_bit);
+    uint64_t new_blocks = num_blocks(beg_bit, end_bit);
 
     bf->beg_bit = (uint32_t)beg_bit;
     bf->end_bit = (uint32_t)end_bit;
-    allocate_blocks(bf, num_blocks(bf->beg_bit, bf->end_bit));
+    
+    if (bf->bits && cur_beg_blk == beg_blk && cur_end_blk == end_blk) {
+        return;
+    }
+
+    bf->bits = realloc_blocks(bf->alloc, bf->bits, cur_blocks, new_blocks);
 }
 
 // This ensures that the bits are represented by the bitfield and will grow it if necessary.
@@ -258,13 +259,18 @@ static inline void ensure_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
     // If the bitfield is empty, we need to set the bits for min max to work
     if (bf->beg_bit == 0 && bf->end_bit == 0) {
         if (bf->bits) {
-            free_blocks(bf);
+            ASSERT(false);
+            free_blocks(bf->alloc, bf->bits, 0);
+            bf->bits = 0;
         }
         bf->beg_bit = (uint32_t)beg_bit;
         bf->end_bit = (uint32_t)end_bit;
         uint64_t num_blk = num_blocks(beg_bit, end_bit);
-        allocate_blocks(bf, num_blk);
-        MEMSET(bf->bits, 0, num_blk * sizeof(block_t));
+        if (num_blk > 0) {
+            bf->bits = alloc_blocks(bf->alloc, num_blk);
+            ASSERT(bf->bits);
+            MEMSET(bf->bits, 0, num_blk * sizeof(block_t));
+        }
         return;
     }
 
@@ -277,20 +283,37 @@ static inline void ensure_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
 
     if (new_beg_blk < cur_beg_blk || cur_end_blk < new_end_blk) {
         // Grow!
+        // @NOTE: This is not great. Its not even good...
+        // The entire internal workings of the bitfield should change
+        // To a sparse layout of blocks that are indexed by a hashmap
+
+        const uint64_t cur_num_blk = num_blocks(bf->beg_bit, bf->end_bit);
         const uint64_t new_num_blk = num_blocks(new_beg_bit, new_end_bit);
-        block_t* new_bits = md_aligned_alloc(bf->alloc, new_num_blk * sizeof(block_t), ALIGNMENT);
-        ASSERT(new_bits);
-        MEMSET(new_bits, 0, new_num_blk * sizeof(block_t));
 
-        if (bf->bits) {
-            // Copy old data blocks
-            const uint64_t cur_num_blk = num_blocks(bf->beg_bit, bf->end_bit);
-            const uint64_t offset_old_in_new = cur_beg_blk - new_beg_blk;
-            MEMCPY(new_bits + offset_old_in_new, bf->bits, cur_num_blk * sizeof(block_t));
-            md_aligned_free(bf->alloc, bf->bits, cur_num_blk * sizeof(block_t));
+#if 1
+        if (new_beg_blk == cur_beg_blk) {
+            // The starting block has not changed, meaning we can use realloc
+            block_t* new_bits = realloc_blocks(bf->alloc, bf->bits, cur_num_blk, new_num_blk);
+
+            // Only clear newly allocated region
+            MEMSET(new_bits + cur_num_blk, 0, (new_num_blk - cur_num_blk) * sizeof(block_t));
+
+            bf->bits = new_bits;
+        } else {
+#endif
+            block_t* new_bits = alloc_blocks(bf->alloc, new_num_blk);
+            MEMSET(new_bits, 0, new_num_blk * sizeof(block_t));
+
+            if (bf->bits) {
+                size_t blk_diff = cur_beg_blk - new_beg_blk;
+                MEMCPY(new_bits + blk_diff, bf->bits, cur_num_blk * sizeof(block_t));
+                free_blocks(bf->alloc, bf->bits, cur_num_blk);
+            }
+
+            bf->bits = new_bits;
+#if 1
         }
-
-        bf->bits = new_bits;
+#endif
     }
 
     bf->beg_bit = (uint32_t)new_beg_bit;
@@ -318,7 +341,9 @@ void md_bitfield_init(md_bitfield_t* bf, md_allocator_i* alloc) {
 bool md_bitfield_free(md_bitfield_t* bf) {
     ASSERT(md_bitfield_validate(bf));
 
-    if (bf->bits) md_aligned_free(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    if (bf->bits) {
+        free_blocks(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit));
+    }
     MEMSET(bf, 0, sizeof(md_bitfield_t));
     return true;
 }
@@ -344,8 +369,6 @@ uint64_t md_bitfield_end_bit(const md_bitfield_t* bf) {
     return bf->bits ? bf->end_bit : 0;
 }
 
-
-
 void md_bitfield_set_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {
     ASSERT(md_bitfield_validate(bf));
     if (end <= beg) return;
@@ -358,7 +381,7 @@ void md_bitfield_set_bit(md_bitfield_t* bf, uint64_t bit_idx) {
     ASSERT(md_bitfield_validate(bf));
 
     ensure_range(bf, bit_idx, bit_idx+1);
-    block_set_bit(get_block_ptr(bf, block_idx(bit_idx)), bit_idx - block_bit(bit_idx));
+    block_set_bit(get_blk_ptr(bf, block_idx(bit_idx)), bit_idx - block_bit(bit_idx));
 }
 
 void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, size_t num_indices) {
@@ -372,9 +395,21 @@ void md_bitfield_set_indices_u32(md_bitfield_t* bf, const uint32_t* indices, siz
     }
 }
 
+void md_bitfield_reset(md_bitfield_t* bf) {
+    ASSERT(md_bitfield_validate(bf));
+    if (bf->bits) {
+        free_blocks(bf->alloc, bf->bits, num_blocks(bf->beg_bit, bf->end_bit));
+        bf->bits = NULL;
+        bf->beg_bit = 0;
+        bf->end_bit = 0;
+    }
+}
+
 void md_bitfield_clear(md_bitfield_t* bf) {
     ASSERT(md_bitfield_validate(bf));
-    MEMSET(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    if (bf->bits) {
+        MEMSET(bf->bits, 0, num_blocks(bf->beg_bit, bf->end_bit) * sizeof(block_t));
+    }
 }
 
 void md_bitfield_clear_range(md_bitfield_t* bf, uint64_t beg, uint64_t end) {
@@ -729,6 +764,11 @@ bool md_bitfield_iter_next(md_bitfield_iter_t* it) {
     return false;
 }
 
+void md_bitfield_iter_skip_to_idx(md_bitfield_iter_t* it, uint64_t idx) {
+    ASSERT(it);
+    it->idx = idx;
+}
+
 bool md_bitfield_get_range(uint64_t* first_idx, uint64_t* last_idx, const md_bitfield_t* bf) {
     ASSERT(first_idx);
     ASSERT(last_idx);
@@ -866,13 +906,15 @@ uint16_t* get_serialization_block_indices(const md_bitfield_t* bf, md_allocator_
 
 // Returns the maximum serialization size in bytes of a bitfield
 size_t md_bitfield_serialize_size_in_bytes(const md_bitfield_t* bf) {
+    size_t temp_pos = md_temp_get_pos();
     size_t size = sizeof(uint16_t);
-    uint16_t* indices = get_serialization_block_indices(bf, md_temp_allocator);
+    uint16_t* indices = get_serialization_block_indices(bf, md_get_temp_allocator());
     for (size_t i = 0; i < md_array_size(indices); ++i) {
         if (indices[i] & BLOCK_IDX_FLAG_ALL_SET) continue;
         size += sizeof(indices[i]) + sizeof(block_t);
     }
 
+    md_temp_set_pos_back(temp_pos);
     return MAX(66, size);
 }
 
@@ -887,7 +929,8 @@ typedef union block_idx_t {
 // Serializes a bitfield into a destination buffer
 // It is expected that the supplied buffer has the size_in_bytes supplied by bitfield_serialize_size_in_bytes()
 size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
-    md_allocator_i* alloc = md_temp_allocator;
+    size_t temp_pos = md_temp_get_pos();
+    md_allocator_i* alloc = md_get_temp_allocator();
 
     uint16_t* indices = get_serialization_block_indices(bf, alloc);
     uint16_t* data = 0;
@@ -908,14 +951,13 @@ size_t md_bitfield_serialize(void* dst, const md_bitfield_t* bf) {
             block_t blk = get_block(bf, blk_idx);
             if (blk_idx == beg_blk) block_and(blk, block_mask_hi(bf->beg_bit & (BITS_PER_BLOCK-1)));
             if (blk_idx == end_blk) block_and(blk, block_mask_lo(bf->end_bit & (BITS_PER_BLOCK-1)));
-            md_array_push_array(data, blk.u16, (int64_t)ARRAY_SIZE(blk.u16), alloc);
+            md_array_push_array(data, blk.u16, ARRAY_SIZE(blk.u16), alloc);
         }
     }
 
-    int lz_bytes = fastlz_compress_level(2, data, (int)(md_array_size(data) * sizeof(uint16_t)), dst);
+    int lz_bytes = fastlz_compress_level(2, data, (int)md_array_bytes(data), dst);
 
-    md_array_free(data, alloc);
-    md_array_free(indices, alloc);
+    md_temp_set_pos_back(temp_pos);
 
     return (size_t)lz_bytes;
 }
@@ -927,90 +969,77 @@ bool md_bitfield_deserialize(md_bitfield_t* bf, const void* src, size_t num_byte
 
     // Temporary buffer to decompress into.
     // The current compression is no where near 100:1 ratio.
-    const int64_t mem_bytes = num_bytes * 100;
-    void* mem = md_alloc(md_heap_allocator, mem_bytes);
+    const size_t mem_bytes = num_bytes * 100;
+    void* mem = md_alloc(md_get_heap_allocator(), mem_bytes);
 
-    int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);    
-
-    if (size == 0) {
-        MD_LOG_ERROR("Failed, to decompress bitfield.");
+    if (!mem) {
+        MD_LOG_ERROR("Failed to allocate temporary data for deserialization");
         return false;
     }
 
+    bool result = false;
+
+    int size = fastlz_decompress(src, (int)num_bytes, mem, (int)mem_bytes);    
+    if (size == 0) {
+        MD_LOG_ERROR("Failed, to decompress bitfield.");
+        goto done;
+    }
+
     const uint16_t* data = (const uint16_t*)mem;
-    uint16_t block_count = data[0];
+    size_t block_count = data[0];
     const uint16_t* block_indices = data + 1;
     const uint8_t*  block_data = (const uint8_t*)(block_indices + block_count);
 
     if (block_count == 0) {
         MD_LOG_ERROR("Block count was zero");
-        return false;
+        goto done;
     }
 
-    uint16_t beg_blk_idx = block_indices[0];
-    uint16_t end_blk_idx = block_indices[block_count - 1];
+    size_t beg_blk_idx = block_indices[0];
+    size_t end_blk_idx = block_indices[block_count - 1];
 
     // Allocate the blocks
     
     fit_to_range(bf, beg_blk_idx * BITS_PER_BLOCK, end_blk_idx * BITS_PER_BLOCK + (BITS_PER_BLOCK-1));
 
-    uint64_t nblocks = num_blocks(bf->beg_bit, bf->end_bit);
+    size_t nblocks = num_blocks(bf->beg_bit, bf->end_bit);
     MEMSET(bf->bits, 0, nblocks * sizeof(block_t));
 
     // Fetch block_data and store
-    int64_t  src_offset = 0;
-    for (int64_t i = 0; i < block_count; ++i) {
+    size_t src_offset = 0;
+    for (size_t i = 0; i < block_count; ++i) {
         uint16_t blk_idx = block_indices[i];
         if (blk_idx & BLOCK_IDX_FLAG_ALL_SET) {
             blk_idx &= ~BLOCK_IDX_FLAG_ALL_SET;
-            block_t* blk_ptr = get_block_ptr(bf, blk_idx);
+            block_t* blk_ptr = get_blk_ptr(bf, blk_idx);
             MEMSET(blk_ptr, 0xFFFFFFFF, sizeof(block_t));
         } else {
-            block_t* blk_ptr = get_block_ptr(bf, blk_idx);
+            block_t* blk_ptr = get_blk_ptr(bf, blk_idx);
             MEMCPY(blk_ptr, block_data + src_offset, sizeof(block_t));
             src_offset += sizeof(block_t);
         }
     }
 
     // Now we have the data, compute the true beg_bit and end_bit
-    int64_t beg_bit = block_scan_forward(get_block(bf, beg_blk_idx));
-    int64_t end_bit = block_scan_reverse(get_block(bf, end_blk_idx));
+    uint64_t beg_bit = block_scan_forward(get_block(bf, beg_blk_idx));
+    uint64_t end_bit = block_scan_reverse(get_block(bf, end_blk_idx));
 
     bf->beg_bit = (uint32_t)(beg_blk_idx * BITS_PER_BLOCK + (beg_bit ? beg_bit - 1 : 0));
     bf->end_bit = (uint32_t)(end_blk_idx * BITS_PER_BLOCK + (end_bit ? end_bit : 0));
 
-    md_free(md_heap_allocator, mem, mem_bytes);
-
-    return true;
-}
-
-// This can certainly be improved!
-// Not really performance critical
-
-static inline uint64_t hash64(const char* key, uint64_t len) {
-    // Murmur one at a time
-    uint64_t h = 525201411107845655ull;
-    for (uint64_t i = 0; i < len; ++i) {
-        h ^= key[i];
-        h *= 0x5bd1e9955bd1e995;
-        h ^= h >> 47;
+    result = true;
+done:
+    if (mem) {
+        md_free(md_get_heap_allocator(), mem, mem_bytes);
     }
-    return h;
+
+    return result;
 }
 
-uint64_t md_bitfield_hash(const md_bitfield_t* bf) {
+uint64_t md_bitfield_hash64(const md_bitfield_t* bf, uint64_t seed) {
     ASSERT(bf);
-
-    if (bf->beg_bit == bf->end_bit) return 0;
-
-    const uint64_t length = num_blocks(bf->beg_bit, bf->end_bit);
-    const uint64_t offset = block_idx(bf->beg_bit);
-
-    uint64_t hash = 91827481724897189ull;
-    for (uint64_t i = offset; i < offset + length; ++i) {
-        block_t blk = get_block(bf, i);
-        hash *= hash64((const char*)blk.u64, sizeof(blk.u64));
-    }
-
-    return hash;
+    if (bf->beg_bit == bf->end_bit) return seed;
+    const block_t* ptr = (const block_t*)bf->bits;
+    const size_t num_blk = num_blocks(bf->beg_bit, bf->end_bit);
+    return md_hash64(ptr, sizeof(block_t) * num_blk, seed);
 }

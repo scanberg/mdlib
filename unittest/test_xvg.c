@@ -10,7 +10,7 @@
 UTEST(xvg, rdf) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/rdf.xvg");
     md_xvg_t xvg = {0};
-    bool result = md_xvg_parse_file(&xvg, path, md_heap_allocator);
+    bool result = md_xvg_parse_file(&xvg, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
     
     EXPECT_EQ(2,    xvg.num_fields);
@@ -29,13 +29,13 @@ UTEST(xvg, rdf) {
     EXPECT_TRUE(str_eq(xvg.header_info.xaxis_label, STR_LIT("r (nm)")));
     EXPECT_TRUE(str_eq(xvg.header_info.yaxis_label, STR_LIT("g(r)")));
 
-    md_xvg_free(&xvg, md_heap_allocator);
+    md_xvg_free(&xvg, md_get_heap_allocator());
 }
 
 UTEST(xvg, energy) {
     str_t path = STR_LIT(MD_UNITTEST_DATA_DIR "/energy.xvg");
     md_xvg_t xvg = {0};
-    bool result = md_xvg_parse_file(&xvg, path, md_heap_allocator);
+    bool result = md_xvg_parse_file(&xvg, path, md_get_heap_allocator());
     ASSERT_TRUE(result);
 
     EXPECT_EQ(5,   xvg.num_fields);
@@ -65,5 +65,5 @@ UTEST(xvg, energy) {
     EXPECT_TRUE(str_eq(xvg.header_info.xaxis_label, STR_LIT("Time (ps)")));
     EXPECT_TRUE(str_eq(xvg.header_info.yaxis_label, STR_LIT("(kJ/mol)")));
 
-    md_xvg_free(&xvg, md_heap_allocator);
+    md_xvg_free(&xvg, md_get_heap_allocator());
 }

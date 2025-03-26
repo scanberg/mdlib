@@ -1,7 +1,6 @@
 #include <core/md_vec_math.h>
 
 #include <svd3.h>
-#include <math.h>
 
 #define SWAP_INT(x, y) {int t = x; x = y; y = t;}
 
@@ -298,6 +297,32 @@ mat3_t mat3_extract_rotation(mat3_t M) {
     mat3_t D = {1, 0, 0, 0, 1, 0, 0, 0, d};
     mat3_t R = mat3_mul(mat3_mul(svd.V, D), Ut);
     return R;
+}
+
+static double highp_dot(vec3_t a, vec3_t b) {
+    return (double)a.x * (double)b.x + (double)a.y * (double)b.y + (double)a.z * (double)b.z;
+}
+
+static vec3_t highp_normalize(vec3_t v) {
+    double len = sqrt(highp_dot(v, v));
+    vec3_t result = {
+        (float)(v.x / len),
+        (float)(v.y / len),
+        (float)(v.z / len),
+    };
+    return result;
+}
+
+mat3_t mat3_orthonormalize(mat3_t M) {
+    M.col[0] = vec3_normalize(M.col[0]);
+
+    M.col[1] = vec3_sub(M.col[1], vec3_mul_f(M.col[0], vec3_dot(M.col[0], M.col[1])));
+    M.col[1] = vec3_normalize(M.col[1]);
+
+    M.col[2] = vec3_sub(M.col[2], vec3_add(vec3_mul_f(M.col[0], vec3_dot(M.col[0], M.col[2])), vec3_mul_f(M.col[1], vec3_dot(M.col[1], M.col[2]))));
+    M.col[2] = vec3_normalize(M.col[2]);
+
+    return M;
 }
 
 mat3_t mat3_optimal_rotation(const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], const float* const in_w[2], const int32_t* const in_idx[2], size_t count, const vec3_t com[2]) {

@@ -1,4 +1,4 @@
-#include <md_xyz.h>
+﻿#include <md_xyz.h>
 
 #include <md_molecule.h>
 #include <md_trajectory.h>
@@ -28,6 +28,7 @@ enum {
     XYZ_TINKER          = 1,
     XYZ_ARC             = 2,
     XYZ_EXTENDED		= 4,
+    XYZ_STORE_COMMENT   = 8,
 };
 
 // The opaque blob
@@ -115,8 +116,8 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
 
     // Test for extended XYZ format
     if (str_find_str(NULL, lines[1], STR_LIT("Properties="))) {
-		*flags |= XYZ_EXTENDED;
-	} else {    
+        *flags |= XYZ_EXTENDED;
+    } else {    
         // Test if we have an ARC trajectory
         // Second line should then contain exactly 6 floats
         str_t token[8];
@@ -161,68 +162,68 @@ static inline bool extract_flags(uint32_t* flags, md_buffered_reader_t* reader) 
 }
 
 static inline str_t extract_quoted_substr(str_t in_str) {
-	const char* beg = in_str.ptr;
-	const char* end = in_str.ptr + in_str.len;
+    const char* beg = in_str.ptr;
+    const char* end = in_str.ptr + in_str.len;
 
-	str_t result = {0};
+    str_t result = {0};
 
-	if (beg >= end) return result;
+    if (beg >= end) return result;
 
-	while (beg < end && *beg != '\"') {
-		++beg;
-	}
+    while (beg < end && *beg != '\"') {
+        ++beg;
+    }
 
-	if (beg >= end) return result;
+    if (beg >= end) return result;
 
-	++beg;
-	const char* c = beg;
-	while (c < end && *c != '\"') {
-		++c;
-	}
+    ++beg;
+    const char* c = beg;
+    while (c < end && *c != '\"') {
+        ++c;
+    }
 
-	if (c < end) {
-		result.ptr = beg;
-		result.len = (int64_t)(c - beg);
-	}
+    if (c < end) {
+        result.ptr = beg;
+        result.len = (int64_t)(c - beg);
+    }
 
-	return result;
+    return result;
 }
 
 static inline str_t extract_balanced_substr(str_t in_str, char beg_char, char end_char) {
-	const char* beg = in_str.ptr;
-	const char* end = in_str.ptr + in_str.len;
+    const char* beg = in_str.ptr;
+    const char* end = in_str.ptr + in_str.len;
 
     ASSERT(beg_char != end_char);
 
     str_t result = {0};
 
-	if (beg >= end) return result;
+    if (beg >= end) return result;
 
-	while (beg < end && *beg != beg_char) {
-		++beg;
-	}
+    while (beg < end && *beg != beg_char) {
+        ++beg;
+    }
 
-	if (beg >= end) return result;
+    if (beg >= end) return result;
 
-	++beg;
-	const char* c = beg;
-	int depth = 1;
-	while (c < end && depth > 0) {
-		if (*c == beg_char) {
-			++depth;
-		}
+    ++beg;
+    const char* c = beg;
+    int depth = 1;
+    while (c < end && depth > 0) {
+        if (*c == beg_char) {
+            ++depth;
+        }
         else if (*c == end_char) {
-			--depth;
-		}
-		++c;
-	}
+            --depth;
+        }
+        ++c;
+    }
 
-	if (depth == 0) {
-		result.ptr = beg;
-		result.len = (int64_t)(c - beg - 1);
-	}
+    if (depth == 0) {
+        result.ptr = beg;
+        result.len = (int64_t)(c - beg - 1);
+    }
 
-	return result;
+    return result;
 }
 
 // @NOTE(Robin):
@@ -243,18 +244,18 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
 
     line = str_substr(line, loc + pattern.len, SIZE_MAX);
     if (line.len == 0) {
-	    MD_LOG_ERROR("Missing lattice information");
-		return false;
-	}
+        MD_LOG_ERROR("Missing lattice information");
+        return false;
+    }
 
     str_t tok[9];
-    int64_t num_tok = 0;
+    size_t num_tok = 0;
 
     if (line.ptr[0] == '\"') {
         line = extract_quoted_substr(line);
         if (str_empty(line)) {
             MD_LOG_ERROR("XYZ: Failed to extract quoted string");
-			return false;
+            return false;
         }
         num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
     } else if (line.ptr[0] == '{') {
@@ -266,9 +267,9 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
         num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
     } else if (line.ptr[0] == '[') {
         // This is the cheeky one
-		line = extract_balanced_substr(line, '[', ']');
-		if (str_empty(line)) {
-			MD_LOG_ERROR("XYZ: Failed to extract bracketed string");
+        line = extract_balanced_substr(line, '[', ']');
+        if (str_empty(line)) {
+            MD_LOG_ERROR("XYZ: Failed to extract bracketed string");
             return false;
         }
         for (int i = 0; i < 3; ++i) {
@@ -278,32 +279,32 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
                 return false;
             }
             line = str_substr(line, vec.len + 2, SIZE_MAX);
-            int64_t num_sub_toks = extract_tokens_delim(tok + i*3, ARRAY_SIZE(tok) - i*3, &vec, ',');
+            size_t num_sub_toks = extract_tokens_delim(tok + i*3, ARRAY_SIZE(tok) - i*3, &vec, ',');
             if (num_sub_toks != 3) {
                 MD_LOG_ERROR("XYZ: Failed to extract Lattice vector");
-				return false;
-			}
+                return false;
+            }
             tok[i*3+0] = str_trim(tok[i*3+0]);
             tok[i*3+1] = str_trim(tok[i*3+1]);
             tok[i*3+2] = str_trim(tok[i*3+2]);
             num_tok += num_sub_toks;
         }
     } else {
-		MD_LOG_ERROR("XYZ: Unrecognized Lattice encoding");
-		return false;
-	}
+        MD_LOG_ERROR("XYZ: Unrecognized Lattice encoding");
+        return false;
+    }
 
     if (num_tok == 3) {
         // Assume these encode the diagonal
-        for (int64_t i = 0; i < 3; ++i) {
+        for (size_t i = 0; i < 3; ++i) {
             if (is_float(tok[i])) {
-				cell[i][i] = (float)parse_float(tok[i]);
-			} else {
-				return false;
-			}
-		}
+                cell[i][i] = (float)parse_float(tok[i]);
+            } else {
+                return false;
+            }
+        }
     } else if (num_tok == 9) {
-        for (int64_t i = 0; i < num_tok; ++i) {
+        for (size_t i = 0; i < num_tok; ++i) {
             if (is_float(tok[i])) {
                 cell[i/3][i%3] = (float)parse_float(tok[i]);
             } else {
@@ -311,9 +312,9 @@ static inline bool extract_extxyz_cell(float cell[3][3], str_t line) {
             }
         }
     } else {
-		MD_LOG_ERROR("XYZ: Invalid number of tokens in Lattice encoding");
-		return false;
-	}
+        MD_LOG_ERROR("XYZ: Invalid number of tokens in Lattice encoding");
+        return false;
+    }
 
     return true;
 }
@@ -324,7 +325,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     str_t original = line;
 
     str_t tokens[16];
-    const int64_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
+    const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
 
     if (num_tokens < 4) {
         MD_LOG_ERROR("Invalid number of tokens in XYZ coordinate when parsing line: '%.*s', expected >= 4, got %i", (int)original.len, original.ptr, (int)num_tokens);
@@ -338,7 +339,9 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
 
     ASSERT(!str_empty(tokens[tok_idx]));
     if (is_alpha(tokens[tok_idx].ptr[0])) {
-        str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tokens[tok_idx++]);
+        size_t len = str_copy_to_char_buf(coord->element_symbol, sizeof(coord->element_symbol), tokens[tok_idx++]);
+        str_t symbol = {coord->element_symbol, len};
+        coord->atomic_number = md_util_element_lookup(symbol);
     } else {
         coord->atomic_number = (int)parse_int(tokens[tok_idx++]);
     }
@@ -351,7 +354,7 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
         coord->atom_type = (int)parse_int(tokens[tok_idx++]);
 
         // Connectivity follows atom_type
-        for (int i = tok_idx; i < num_tokens; ++i) {
+        for (int i = tok_idx; i < (int)num_tokens; ++i) {
             if (!is_digit(tokens[i].ptr[0])) {
                 MD_LOG_ERROR("Invalid connectivity information in XYZ file when parsing line: '%.*s', token: '%.*s', number of tokens: %i", (int)original.len, original.ptr, (int)tokens[i].len, tokens[i].ptr, (int)num_tokens);
                 return false;
@@ -363,39 +366,32 @@ static inline bool extract_coord(md_xyz_coordinate_t* coord, str_t line, uint32_
     return true;
 }
 
-static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_reader_t* reader, uint32_t flags, size_t* coord_count) {
+static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_reader_t* reader, uint32_t flags, size_t* coord_count, md_allocator_i* alloc) {
     ASSERT(model);
     ASSERT(reader);
     ASSERT(coord_count);
 
-    str_t line[2] = {0};
+    str_t line = {0};
     str_t tokens[8];
-    str_t comment = {0};
-    int32_t count = 0;
+    int64_t count = 0;
 
-    if (!md_buffered_reader_extract_line(&line[0], reader)) {
+    if (model->byte_offset == 261828) {
+        while(0);
+    }
+
+    if (!md_buffered_reader_extract_line(&line, reader)) {
         return false;
     }
 
-    str_t trimmed = str_trim(line[0]);
-    if (trimmed.len == 0) {
+    line = str_trim(line);
+    if (str_empty(line)) {
         return false;
-    }
-
-    // Check for exact match here
-    // Arc files are also flagged as tinker, but only pure tinker files uses 1 line for its header.
-    if (!(flags == XYZ_TINKER)) {
-        // Tinker is the only format that only uses 1 line for the header
-        // The others uses 2 lines
-        if (!md_buffered_reader_extract_line(&line[1], reader)) {
-            MD_LOG_ERROR("Failed to extract extra line");
-        }
     }
 
     // Parse data from first line, we only need the first two tokens even though more may exist
-    const size_t num_tok = extract_tokens(tokens, 2, &line[0]);
+    const size_t num_tok = extract_tokens(tokens, 2, &line);
     if (num_tok) {
-        count = (int32_t)parse_int(tokens[0]);
+        count = parse_int(tokens[0]);
     }
 
     if (count <= 0) {
@@ -403,21 +399,35 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
         return false;
     }
 
-    if (flags & XYZ_TINKER) {
+
+    if ((flags & XYZ_TINKER)) {
         // Comment encoded after the first token
-        comment = str_substr(line[0], (int64_t)(tokens[1].ptr - line[0].ptr), SIZE_MAX);
-    } else {
-        // Second line is the comment
-        comment = line[1];
+        str_t comment = str_substr(line, (ptrdiff_t)(tokens[1].ptr - line.ptr), SIZE_MAX);
+
+        if ((flags & XYZ_STORE_COMMENT) && !str_empty(comment)) {
+            ASSERT(alloc);
+            model->comment = str_copy(comment, alloc);
+        }
     }
 
-    if (comment.len > 0) {
+    // Arc files are also flagged as tinker, but only pure tinker files uses 1 line for its header.
+    bool pure_tinker = (flags & XYZ_TINKER) && !(flags & XYZ_ARC);
+    if (!pure_tinker) {
+        // Tinker is the only format that only uses 1 line for the header
+        // The others uses 2 lines
+        if (!md_buffered_reader_extract_line(&line, reader)) {
+            MD_LOG_ERROR("Failed to extract extra line");
+        }
 
-        str_copy_to_char_buf(model->comment, sizeof(model->comment), comment);
+        str_t comment = line;
+        if ((flags & XYZ_STORE_COMMENT) && !str_empty(comment)) {
+            ASSERT(alloc);
+            model->comment = str_copy(comment, alloc);
+        }
     }
 
     if (flags & XYZ_ARC) {
-        const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line[1]);
+        const size_t num_tokens = extract_tokens(tokens, ARRAY_SIZE(tokens), &line);
         
         if (num_tokens != 6) {
             MD_LOG_ERROR("Unexpected number of tokens (%zu) when parsing XYZ Arc Cell data", num_tokens);
@@ -438,12 +448,12 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
         md_unit_cell_t cell = md_util_unit_cell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
         MEMCPY(model->cell, cell.basis.elem, sizeof(model->cell));
     } else if (flags & XYZ_EXTENDED) {
-		// Extract cell data from comment
-		if (!extract_extxyz_cell(model->cell, comment)) {
-			MD_LOG_ERROR("Failed to extract cell data from comment");
-			return false;
-		}
-	}
+        // Extract cell data from line
+        if (!extract_extxyz_cell(model->cell, line)) {
+            MD_LOG_ERROR("Failed to extract cell data from line");
+            return false;
+        }
+    }
 
     *coord_count = count;
 
@@ -534,7 +544,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, s
 
     if (!data_ptr) {
         MD_LOG_ERROR("Data pointer is NULL");
-		return false;
+        return false;
     }
 
     if (data_size == 0) {
@@ -559,7 +569,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, s
 
     md_xyz_model_t model = {0};
     size_t coord_count = 0;
-    if (!xyz_parse_model_header(&model, &reader, xyz->flags, &coord_count)) {
+    if (!xyz_parse_model_header(&model, &reader, xyz->flags, &coord_count, NULL)) {
         MD_LOG_ERROR("Error when decoding header");
         return false;
     }
@@ -613,13 +623,21 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
 
     size_t expected_count = 0;
     md_xyz_model_t mdl = {0};
-    int64_t byte_offset = 0;
+    size_t byte_offset = 0;
 
-    while (xyz_parse_model_header(&mdl, reader, flags, &expected_count)) {
+    size_t model_count = 0;
+
+    while (xyz_parse_model_header(&mdl, reader, flags | XYZ_STORE_COMMENT, &expected_count, alloc)) {
+        if (md_array_size(data->models) == 16126) {
+            while(0) {};
+        }
+
+        model_count = md_array_size(data->models);
+
         md_array_ensure(data->coordinates, md_array_size(data->coordinates) + expected_count, alloc);
         
         mdl.byte_offset = byte_offset;
-        mdl.beg_coord_index = (int32_t)md_array_size(data->coordinates);
+        mdl.beg_coord_index = (uint32_t)md_array_size(data->coordinates);
         for (size_t i = 0; i < expected_count; ++i) {
             str_t line;
             md_xyz_coordinate_t coord = {0};
@@ -632,13 +650,14 @@ bool xyz_parse(md_xyz_data_t* data, md_buffered_reader_t* reader, md_allocator_i
                 return false;
             }
         }
-        mdl.end_coord_index = (int32_t)md_array_size(data->coordinates);
+
+        mdl.end_coord_index = (uint32_t)md_array_size(data->coordinates);
         md_array_push(data->models, mdl, alloc);
 
         if (stop_after_first_model) {
             break;
         }
-        byte_offset = md_buffered_reader_tellg(reader);
+        byte_offset = (size_t)md_buffered_reader_tellg(reader);
     }
 
     data->num_coordinates = md_array_size(data->coordinates);
@@ -667,14 +686,15 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
     bool result = false;
     md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
-        int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_heap_allocator, cap);
+        size_t temp_pos = md_temp_get_pos();
+        size_t buf_cap = MEGABYTES(1);
+        char* buf = md_temp_push(buf_cap);
         ASSERT(buf);
         
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
+        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
         result = xyz_parse(data, &reader, alloc, false);
         
-        md_free(md_heap_allocator, buf, cap);
+        md_temp_set_pos_back(temp_pos);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Parse XYZ: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
@@ -685,7 +705,14 @@ bool md_xyz_data_parse_file(md_xyz_data_t* data, str_t filename, struct md_alloc
 void md_xyz_data_free(md_xyz_data_t* data, struct md_allocator_i* alloc) {
     ASSERT(data);
     if (data->coordinates) md_array_free(data->coordinates, alloc);
-    if (data->models) md_array_free(data->models, alloc);
+    if (data->models) {
+        for (size_t i = 0; i < data->num_models; ++i) {
+            if (!str_empty(data->models[i].comment)) {
+                str_free(data->models[i].comment, alloc);
+            }
+        }
+        md_array_free(data->models, alloc);
+    }
     MEMSET(data, 0, sizeof(md_xyz_data_t));
 }
 
@@ -694,8 +721,8 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
     ASSERT(data);
     ASSERT(alloc);
 
-    int64_t beg_coord_index = 0;
-    int64_t end_coord_index = data->num_coordinates;
+    size_t beg_coord_index = 0;
+    size_t end_coord_index = data->num_coordinates;
 
     // if we have more than one model, interperet it as a trajectory and only load the first model
     if (data->num_models > 0) {
@@ -713,7 +740,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
     md_array_ensure(mol->atom.z, num_atoms, alloc);
     md_array_ensure(mol->atom.element, num_atoms, alloc);
 
-    for (int64_t i = beg_coord_index; i < end_coord_index; ++i) {
+    for (size_t i = beg_coord_index; i < end_coord_index; ++i) {
         float x = data->coordinates[i].x;
         float y = data->coordinates[i].y;
         float z = data->coordinates[i].z;
@@ -738,11 +765,14 @@ static bool xyz_init_from_str(md_molecule_t* mol, str_t str, const void* arg, md
     (void)arg;
 
     md_xyz_data_t data = {0};
+
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
     
     md_buffered_reader_t reader = md_buffered_reader_from_str(str);
-    bool result = xyz_parse(&data, &reader, md_heap_allocator, true);
+    bool result = xyz_parse(&data, &reader, arena, true);
     result = result && md_xyz_molecule_init(mol, &data, alloc);
-    md_xyz_data_free(&data, md_heap_allocator);
+
+    md_vm_arena_destroy(arena);
     
     return result;
 }
@@ -754,16 +784,16 @@ static bool xyz_init_from_file(md_molecule_t* mol, str_t filename, const void* a
     bool result = false;
     md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (file) {
-        int64_t cap = MEGABYTES(1);
-        char* buf = md_alloc(md_heap_allocator, cap);
+        md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+        size_t buf_cap = MEGABYTES(1);
+        char* buf = md_vm_arena_push(arena, buf_cap);
         ASSERT(buf);
 
-        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
-        result = xyz_parse(&data, &reader, md_heap_allocator, true);
+        md_buffered_reader_t reader = md_buffered_reader_from_file(buf, buf_cap, file);
+        result = xyz_parse(&data, &reader, arena, true);
         result = result && md_xyz_molecule_init(mol, &data, alloc);
 
-        md_xyz_data_free(&data, md_heap_allocator);
-        md_free(md_heap_allocator, buf, cap);
+        md_vm_arena_destroy(arena);
         md_file_close(file);
     } else {
         MD_LOG_ERROR("Init XYZ from file: Failed to open file '%.*s'", (int)filename.len, filename.ptr);
@@ -776,7 +806,7 @@ static md_molecule_loader_i xyz_molecule_api = {
     xyz_init_from_file,
 };
 
-md_molecule_loader_i* md_xyz_molecule_api() {
+md_molecule_loader_i* md_xyz_molecule_api(void) {
     return &xyz_molecule_api;
 }
 
@@ -789,19 +819,19 @@ bool xyz_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
         return false;
     }
 
-    bool result = true;
-    const size_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
+    bool result = false;
+    size_t frame_size = xyz_fetch_frame_data(inst, frame_idx, NULL);
     if (frame_size > 0) {
-        md_allocator_i* alloc = frame_size > md_temp_allocator_max_allocation_size() ? md_heap_allocator : md_temp_allocator;
+        md_allocator_i* alloc = md_get_heap_allocator();
         void* frame_data = md_alloc(alloc, frame_size);
-        const size_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
+        size_t read_size = xyz_fetch_frame_data(inst, frame_idx, frame_data);
         if (read_size != frame_size) {
             MD_LOG_ERROR("Failed to read the expected size");
-            md_free(alloc, frame_data, frame_size);
-            return false;
+            goto done;
         }
 
         result = xyz_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
+    done:
         md_free(alloc, frame_data, frame_size);
     }
 
@@ -826,19 +856,19 @@ static bool try_read_cache(xyz_cache_t* cache, str_t cache_file, size_t traj_num
         }
 
         if (cache->header.magic != MD_XYZ_CACHE_MAGIC) {
-        	MD_LOG_ERROR("XYZ trajectory cache: magic was incorrect or corrupt");
-        	goto done;
+            MD_LOG_ERROR("XYZ trajectory cache: magic was incorrect or corrupt");
+            goto done;
         }
         if (cache->header.version != MD_XYZ_CACHE_VERSION) {
             MD_LOG_INFO("XYZ trajectory cache: version mismatch, expected %i, got %i", MD_XYZ_CACHE_VERSION, (int)cache->header.version);
         }
         if (cache->header.num_bytes != traj_num_bytes) {
-			MD_LOG_INFO("XYZ trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
-		}
+            MD_LOG_INFO("XYZ trajectory cache: trajectory size mismatch, expected %zu, got %zu", traj_num_bytes, cache->header.num_bytes);
+        }
         if (cache->header.num_atoms == 0) {
-			MD_LOG_ERROR("XYZ trajectory cache: num atoms was zero");
-			goto done;
-		}
+            MD_LOG_ERROR("XYZ trajectory cache: num atoms was zero");
+            goto done;
+        }
         if (cache->header.num_frames == 0) {
             MD_LOG_ERROR("XYZ trajectory cache: num frames was zero");
             goto done;
@@ -869,9 +899,9 @@ static bool write_cache(const xyz_cache_t* cache, str_t cache_file) {
     }
 
     if (md_file_write(file, &cache->header, sizeof(cache->header)) != sizeof(cache->header)) {
-		MD_LOG_ERROR("XYZ trajectory cache: failed to write header");
-		goto done;
-	}
+        MD_LOG_ERROR("XYZ trajectory cache: failed to write header");
+        goto done;
+    }
 
     const size_t offset_bytes = (cache->header.num_frames + 1) * sizeof(int64_t);
     if (md_file_write(file, cache->offsets, offset_bytes) != offset_bytes) {
@@ -886,19 +916,19 @@ done:
     return result;
 }
 
-md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i* ext_alloc) {
+md_trajectory_i* md_xyz_trajectory_create(str_t filename, md_allocator_i* ext_alloc, uint32_t traj_flags) {
     md_file_o* file = md_file_open(filename, MD_FILE_READ);
     if (!file) {
         MD_LOG_ERROR("Failed to open file for XYZ trajectory");
         return false;
     }
 
-    uint32_t flags = 0;
+    uint32_t xyz_flags = 0;
     {
         char buf[1024];
         size_t len = md_file_read(file, buf, sizeof(buf));
         md_buffered_reader_t reader = md_buffered_reader_from_str((str_t){buf, len});
-        if (!extract_flags(&flags, &reader)) {
+        if (!extract_flags(&xyz_flags, &reader)) {
             MD_LOG_ERROR("Failed to determine format for XYZ trajectory");
             return false;
         }
@@ -915,7 +945,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
 
     xyz_cache_t cache = {0};
     if (!try_read_cache(&cache, cache_file, filesize, alloc)) {
-        md_allocator_i* temp_alloc = md_arena_allocator_create(md_heap_allocator, MEGABYTES(1));
+        md_allocator_i* temp_alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
 
         bool result = false;
         md_xyz_data_t data = {0};
@@ -950,7 +980,13 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
             cache.offsets[i] = data.models[i].byte_offset;
         }
         cache.offsets[data.num_models] = filesize;
-        write_cache(&cache, cache_file);
+
+        if (!(traj_flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
+            // If we fail to write the cache, that's ok, we can inform about it, but do not halt
+            if (write_cache(&cache, cache_file)) {
+                MD_LOG_INFO("XYZ: Successfully created cache file for '" STR_FMT "'", STR_ARG(cache_file));
+            }
+        }
 
         result = true;
     cleanup:
@@ -990,7 +1026,7 @@ md_trajectory_i* md_xyz_trajectory_create(str_t filename, struct md_allocator_i*
         .time_unit = {0},
         .frame_times = frame_times,
     };
-    xyz->flags = flags;
+    xyz->flags = xyz_flags;
 
     traj->inst = (struct md_trajectory_o*)xyz;
     traj->get_header = xyz_get_header;
@@ -1021,7 +1057,7 @@ static md_trajectory_loader_i xyz_traj_loader = {
     md_xyz_trajectory_free,
 };
 
-md_trajectory_loader_i* md_xyz_trajectory_loader() {
+md_trajectory_loader_i* md_xyz_trajectory_loader(void) {
     return &xyz_traj_loader;
 }
 

@@ -16,7 +16,7 @@ UBENCH_EX(str, buffered_reader) {
         return;
     }
     const int64_t cap = MEGABYTES(1);
-    char* buf = md_alloc(md_heap_allocator, cap);
+    char* buf = md_alloc(md_get_heap_allocator(), cap);
     
     md_buffered_reader_t reader = md_buffered_reader_from_file(buf, cap, file);
 
@@ -30,14 +30,14 @@ UBENCH_EX(str, buffered_reader) {
         }
     }
 
-    md_free(md_heap_allocator, buf, cap);
+    md_free(md_get_heap_allocator(), buf, cap);
     md_file_close(file);
 }
 
 UBENCH_EX(str, parse_int) {
     str_t str[] = {
         STR_LIT("1928123123123"),
-        STR_LIT("1123"),
+        STR_LIT("1123    "),
         STR_LIT("19228123"),
         STR_LIT("1921238123"),
     };
@@ -74,7 +74,7 @@ UBENCH_EX(str, parse_int) {
 UBENCH_EX(str, parse_int_simd) {
     str_t str[] = {
         STR_LIT("19312312"),
-        STR_LIT("1123"),
+        STR_LIT("1123    "),
         STR_LIT("19228123"),
         STR_LIT("19212381"),
     };
@@ -111,8 +111,8 @@ UBENCH_EX(str, parse_int_simd) {
 UBENCH_EX(str, parse_float) {
     str_t str[] = {
         STR_LIT("1928123.2767"),
-        STR_LIT("19.2"),
-        STR_LIT("12323"),
+        STR_LIT("19.2    "),
+        STR_LIT("12323   "),
         STR_LIT("0.000000"),
     };
 
@@ -147,10 +147,10 @@ UBENCH_EX(str, parse_float) {
 
 UBENCH_EX(str, parse_float_simd) {
     str_t str[] = {
-        STR_LIT("1928123.2767"),
-        STR_LIT("19.2"),
-        STR_LIT("12323"),
-        STR_LIT("0.000000"),
+        STR_LIT("1928123.2767    "),
+        STR_LIT("19.2            "),
+        STR_LIT("12323           "),
+        STR_LIT("0.000000        "),
     };
 
     int64_t num_bytes = 0;

@@ -94,7 +94,7 @@ STATIC_ASSERT(sizeof(semaphore_t) <= sizeof(md_semaphore_t), "MacOS semaphore_t 
 
 #if MD_PLATFORM_WINDOWS
 // https://docs.microsoft.com/en-us/windows/win32/debug/retrieving-the-last-error-code
-static void print_windows_error() {
+static void print_windows_error(void) {
     LPVOID msg_buf = 0;
     DWORD err_code = GetLastError();
 
@@ -114,7 +114,7 @@ static void print_windows_error() {
 #endif
 
 static size_t fullpath(char* buf, size_t cap, str_t path) {
-    str_t zpath = str_copy(path, md_temp_allocator); // Zero terminate
+    str_t zpath = str_copy(path, md_get_temp_allocator()); // Zero terminate
     if (zpath.len == 0) return 0;
     
 #if MD_PLATFORM_WINDOWS
@@ -362,7 +362,7 @@ str_t md_path_make_relative(str_t from, str_t to, struct md_allocator_i* alloc) 
 
 bool md_path_is_valid(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, md_temp_allocator);
+    path = str_copy(path, md_get_temp_allocator());
     bool result = PathFileExists(path.ptr);
 #elif MD_PLATFORM_UNIX
     bool result = (access(path.ptr, F_OK) == 0);
@@ -374,7 +374,7 @@ bool md_path_is_valid(str_t path) {
 
 bool md_path_is_directory(str_t path) {
 #if MD_PLATFORM_WINDOWS
-    path = str_copy(path, md_temp_allocator);
+    path = str_copy(path, md_get_temp_allocator());
     bool result = PathIsDirectory(path.ptr);
 #elif MD_PLATFORM_UNIX
     bool result = false;
@@ -809,7 +809,7 @@ size_t md_file_printf(md_file_o* file, const char* format, ...) {
 
 // ### TIME ###
 
-md_timestamp_t md_time_current() {
+md_timestamp_t md_time_current(void) {
 #if MD_PLATFORM_WINDOWS
     LARGE_INTEGER t;
     QueryPerformanceCounter(&t);
@@ -1086,7 +1086,7 @@ bool md_mutex_init(md_mutex_t* mutex) {
 #endif
 }
 
-md_mutex_t md_mutex_create() {
+md_mutex_t md_mutex_create(void) {
 #if MD_PLATFORM_WINDOWS
     md_mutex_t mutex;
     md_mutex_init(&mutex);

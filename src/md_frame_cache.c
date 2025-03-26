@@ -126,6 +126,30 @@ size_t md_frame_cache_num_frames(const md_frame_cache_t* cache) {
     return cache->slot.count;
 }
 
+bool md_frame_cache_find(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock) {
+    ASSERT(cache);
+    ASSERT(cache->magic == CACHE_MAGIC);
+    ASSERT(cache->traj);
+    ASSERT(frame_idx >= 0);
+    ASSERT(frame_lock);
+
+    const int64_t start_slot = ((frame_idx % cache->slot.count) / CACHE_ASSOCIATIVITY) * CACHE_ASSOCIATIVITY;
+
+    // If the frame is already in cache -> return data
+    for (int64_t i = start_slot; i < start_slot + CACHE_ASSOCIATIVITY; ++i) {
+        md_frame_cache_frame_lock_aquire((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);
+        if (cache->slot.header[i].frame_index == (uint32_t)frame_idx) {
+            cache->slot.header[i].access_count = 0;
+            *frame_lock = (struct md_frame_cache_lock_t*)&cache->slot.lock[i];
+            if (frame_data) *frame_data = &cache->slot.data[i];
+            return true;
+        }
+        md_frame_cache_frame_lock_release((struct md_frame_cache_lock_t*)&cache->slot.lock[i]);
+    }
+
+    return false;
+}
+
 bool md_frame_cache_find_or_reserve(md_frame_cache_t* cache, int64_t frame_idx, md_frame_data_t** frame_data, struct md_frame_cache_lock_t** frame_lock) {
     ASSERT(cache);
     ASSERT(cache->magic == CACHE_MAGIC);

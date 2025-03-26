@@ -11,72 +11,13 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-str_t str_from_cstr(const char* cstr) {
-    if (cstr) {
-		return (str_t){cstr, strlen(cstr)};
-	}
-    return (str_t){0};
-}
-
-void str_swap(str_t a, str_t b) {
-    str_t tmp = a;
-    a = b;
-    b = tmp;
-}
-
-static inline const char* _trim_beg(const char* beg, const char* end) {
-    while (beg < end && is_whitespace(*beg)) ++beg;
-	return beg;
-}
-
-static inline const char* _trim_end(const char* beg, const char* end) {
-    while (beg < end && (is_whitespace(end[-1]) || end[-1] == '\0')) --end;
-	return end;
-}
-
-str_t str_trim(str_t str) {
-    const char* beg = str_beg(str);
-    const char* end = str_end(str);
-    beg = _trim_beg(beg, end);
-	end = _trim_end(beg, end);
-    str.ptr = beg;
-    str.len = end - beg;
-    return str;
-}
-
-str_t str_trim_beg(str_t str) {
-    const char* beg = str_beg(str);
-	const char* end = str_end(str);
-	beg = _trim_beg(beg, end);
-	str.ptr = beg;
-	str.len = end - beg;
-	return str;
-}
-
-str_t str_trim_end(str_t str) {
-    const char* beg = str_beg(str);
-	const char* end = str_end(str);
-	end = _trim_end(beg, end);
-	str.ptr = beg;
-	str.len = end - beg;
-	return str;
-}
-
-bool str_eq(str_t str_a, str_t str_b) {
-    if (!str_a.ptr || !str_b.ptr) return false;
-    if (str_a.len != str_b.len) return false;
-    if (str_a.ptr[0] != str_b.ptr[0]) return false;
-    return memcmp(str_a.ptr, str_b.ptr, MIN(str_a.len, str_b.len)) == 0;
-
-}
-
 bool str_eq_n(str_t str_a, str_t str_b, size_t n) {
     if (!str_a.ptr || !str_b.ptr) return false;
     if ((str_a.len < n || str_b.len < n) && str_a.len != str_b.len) return false;
     if (str_a.ptr[0] != str_b.ptr[0]) return false;
     // str_a & str_b have equal len at this point
     n = n < str_a.len ? n : str_a.len;
-    return memcmp(str_a.ptr, str_b.ptr, n) == 0;
+    return MEMCMP(str_a.ptr, str_b.ptr, n) == 0;
 }
 
 
@@ -104,7 +45,7 @@ bool str_eq_n_ignore_case(const str_t str_a, const str_t str_b, size_t n) {
 bool str_eq_cstr(str_t str, const char* cstr) {
     if (!str.ptr || !str.len || !cstr) return false;
     if (str.ptr[0] != cstr[0]) return false;
-    return strncmp(str.ptr, cstr, str.len) == 0;
+    return (strncmp(str.ptr, cstr, str.len) == 0) && cstr[str.len] == '\0';
 }
 
 // Compare str and cstr only up to n characters
@@ -153,15 +94,13 @@ size_t str_count_occur_char(str_t str, char c) {
     return count;
 }
 
-str_t str_substr(str_t str, size_t offset, size_t length) {
-    if (offset > str.len) {
-        return (str_t){0};
-    }
-    const size_t max_len = str.len - offset;
-    length = MIN(length, max_len);
-
-    str_t res = { str.ptr + offset, length};
-    return res;
+str_t str_join(str_t first, str_t last) {
+    ASSERT(first.ptr < last.ptr + last.len);
+    str_t str = {
+        str_beg(first),
+        str_end(last) - str_beg(first)
+    };
+    return str;
 }
 
 int str_cmp_lex(str_t a, str_t b) {
@@ -342,12 +281,12 @@ bool str_find_str(size_t* loc, str_t haystack, str_t needle) {
     return false;
 }
 
-bool str_starts_with(str_t str, str_t prefix) {
-    return str.len >= prefix.len && strncmp(str.ptr, prefix.ptr, prefix.len) == 0;
+bool str_begins_with(str_t str, str_t prefix) {
+    return str.len >= prefix.len && MEMCMP(str.ptr, prefix.ptr, prefix.len) == 0;
 }
 
 bool str_ends_with(str_t str, str_t suffix) {
-    return str.len >= suffix.len && strncmp(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
+    return str.len >= suffix.len && MEMCMP(str.ptr + str.len - suffix.len, suffix.ptr, suffix.len) == 0;
 }
 
 str_t load_textfile(str_t filename, struct md_allocator_i* alloc) {
@@ -477,18 +416,19 @@ bool extract_file(str_t* file, str_t path) {
     return true;
 }
 
-# if 0
-// c:/folder/file.ext -> c:/folder/file.
-str_t extract_path_without_ext(str_t path) {
+// c:/folder/file.ext -> c:/folder/file
+bool extract_file_path_without_ext(str_t* file_path, str_t path) {
     size_t loc;
-    if (str_rfind_char(&loc, path, '.')) {
-
-        res.ptr = path.ptr;
-        res.len = pos;
+    if (!str_rfind_char(&loc, path, '.')) {
+        return false;
     }
-    return res;
+
+    if (file_path) {
+        file_path->ptr = path.ptr;
+        file_path->len = loc;
+    }
+    return true;
 }
-#endif
 
 // c:/folder/file.ext -> c:/folder/
 bool extract_folder_path(str_t* folder_path, str_t path) {
@@ -527,8 +467,7 @@ void convert_to_upper(char* str, size_t len) {
 
 size_t str_copy_to_char_buf(char* buf, size_t cap, str_t str) {
     ASSERT(buf);
-    if (cap == 0) return 0;
-    if (str_empty(str)) return 0;
+    if (cap == 0 || str_empty(str)) return 0;
     const size_t len = CLAMP(str.len, 0, cap - 1);
     MEMCPY(buf, str.ptr, len);
     buf[len] = '\0';

@@ -17,7 +17,7 @@
     }
 
 UBENCH_EX(allocator, default) {
-    md_allocator_i* alloc = md_heap_allocator;
+    md_allocator_i* alloc = md_get_heap_allocator();
     UBENCH_DO_BENCHMARK() {
         COMMON_ALLOCATOR_TEST_BODY
     }

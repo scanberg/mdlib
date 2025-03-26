@@ -10,6 +10,8 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #pragma once
 
+#include <core/md_common.h>
+
 #if defined(__FMA__)
 #define SIMDE_X86_FMA_NATIVE
 #endif
@@ -18,10 +20,18 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #include <immintrin.h>
 #endif
 
+#if MD_COMPILER_GCC
+// Disable warning for _Float16 type on gcc
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+
 #include <simde/x86/avx2.h>
 #include <simde/x86/fma.h>
 
-#include <core/md_common.h>
+#if MD_COMPILER_GCC
+#pragma GCC diagnostic pop
+#endif
 
 #define MD_SIMD_INLINE static FORCE_INLINE
 
@@ -55,6 +65,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_i32gather_pd simde_mm_i32gather_pd
 #define md_mm256_i32gather_ps simde_mm256_i32gather_ps
 #define md_mm256_i32gather_pd simde_mm256_i32gather_pd
+
+#define md_mm_mask_i32gather_ps simde_mm_mask_i32gather_ps
+#define md_mm_mask_i32gather_pd simde_mm_mask_i32gather_pd
+#define md_mm256_mask_i32gather_ps simde_mm256_mask_i32gather_ps
+#define md_mm256_mask_i32gather_pd simde_mm256_mask_i32gather_pd
 
 #define md_mm_storeu_ps simde_mm_storeu_ps
 #define md_mm_storeu_pd simde_mm_storeu_pd
@@ -181,12 +196,27 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_fmadd_ps simde_mm256_fmadd_ps
 #define md_mm256_fmadd_pd simde_mm256_fmadd_pd
 
+#define md_mm_fnmadd_ps simde_mm_fnmadd_ps
+#define md_mm_fnmadd_pd simde_mm_fnmadd_pd
+#define md_mm256_fnmadd_ps simde_mm256_fnmadd_ps
+#define md_mm256_fnmadd_pd simde_mm256_fnmadd_pd
+
+#define md_mm_fmsub_ps simde_mm_fmsub_ps
+#define md_mm_fmsub_pd simde_mm_fmsub_pd
+#define md_mm256_fmsub_ps simde_mm256_fmsub_ps
+#define md_mm256_fmsub_pd simde_mm256_fmsub_pd
+
+#define md_mm_fnmsub_ps simde_mm_fnmsub_ps
+#define md_mm_fnmsub_pd simde_mm_fnmsub_pd
+#define md_mm256_fnmsub_ps simde_mm256_fnmsub_ps
+#define md_mm256_fnmsub_pd simde_mm256_fnmsub_pd
+
 #define md_mm_blendv_ps simde_mm_blendv_ps
 #define md_mm_blendv_pd simde_mm_blendv_pd
 #define md_mm256_blendv_ps simde_mm256_blendv_ps
 #define md_mm256_blendv_pd simde_mm256_blendv_pd
 
-#define MD_SIMD_BLEND_MASK(x,y,z,w) (((x) << 3) | ((y) << 2) | ((z) << 1) | (w))
+#define MD_SIMD_BLEND_MASK(x,y,z,w) (((w) << 3) | ((z) << 2) | ((y) << 1) | (x))
 
 #define md_mm_blend_ps simde_mm_blend_ps
 #define md_mm_blend_pd simde_mm_blend_pd
@@ -197,6 +227,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_sqrt_pd simde_mm_sqrt_pd
 #define md_mm256_sqrt_ps simde_mm256_sqrt_ps
 #define md_mm256_sqrt_pd simde_mm256_sqrt_pd
+
+#define md_mm_rsqrt_ps simde_mm_rsqrt_ps
+#define md_mm_rsqrt_pd simde_mm_rsqrt_pd
+#define md_mm256_rsqrt_ps simde_mm256_rsqrt_ps
+#define md_mm256_rsqrt_pd simde_mm256_rsqrt_pd
 
 #define md_mm_min_ps simde_mm_min_ps   
 #define md_mm_min_pd simde_mm_min_pd   
@@ -215,7 +250,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #define md_mm_movehl_ps simde_mm_movehl_ps
 #define md_mm_movemask_ps simde_mm_movemask_ps
+#define md_mm_movemask_pd simde_mm_movemask_pd
 #define md_mm256_movemask_ps simde_mm256_movemask_ps
+#define md_mm256_movemask_pd simde_mm256_movemask_pd
 
 // BASE INT OPERATIONS
 
@@ -232,6 +269,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_load_si256 simde_mm256_load_si256
 #define md_mm256_load_epi32 simde_mm256_load_si256
 #define md_mm256_load_epi64 simde_mm256_load_si256
+
+#define md_mm_i32gather_epi32 simde_mm_i32gather_epi32
+#define md_mm_i32gather_epi64 simde_mm_i32gather_epi64
+#define md_mm256_i32gather_epi32 simde_mm256_i32gather_epi32
+#define md_mm256_i32gather_epi64 simde_mm256_i32gather_epi64
 
 #define md_mm_storeu_si128 simde_mm_storeu_si128
 #define md_mm_storeu_epi32 simde_mm_storeu_si128
@@ -323,6 +365,9 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 
 #define md_mm_cmplt_epi32 simde_mm_cmplt_epi32
 
+#define md_mm_movemask_epi8 simde_mm_movemask_epi8
+#define md_mm256_movemask_epi8 simde_mm256_movemask_epi8
+
 // CASTS AND CONVERSIONS
 
 #define md_mm_castps_si128 simde_mm_castps_si128
@@ -352,6 +397,7 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_cvttps_epi32 simde_mm_cvttps_epi32
 #define md_mm256_cvtps_epi32 simde_mm256_cvtps_epi32
 #define md_mm256_cvttps_epi32 simde_mm256_cvttps_epi32
+#define md_mm256_cvtepu8_epi32 simde_mm256_cvtepu8_epi32
 
 #define md_mm_cvtss_f32 simde_mm_cvtss_f32
 #define md_mm_cvtsd_f64 simde_mm_cvtsd_f64
@@ -371,10 +417,10 @@ MD_SIMD_INLINE void md_mm_unpack_xyz_ps(md_128* out_x, md_128* out_y, md_128* ou
     r2 = MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes);
     r3 = MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes);
 
-    t0 = simde_mm_unpacklo_ps(r0,r1); // xxyy xxyy
-    t1 = simde_mm_unpackhi_ps(r0,r1); // zzww zzww
-    t2 = simde_mm_unpacklo_ps(r2,r3); // xxyy xxyy
-    t3 = simde_mm_unpackhi_ps(r2,r3); // zzww zzww
+    t0 = simde_mm_unpacklo_ps(r0, r1); // xxyy xxyy
+    t1 = simde_mm_unpackhi_ps(r0, r1); // zzww zzww
+    t2 = simde_mm_unpacklo_ps(r2, r3); // xxyy xxyy
+    t3 = simde_mm_unpackhi_ps(r2, r3); // zzww zzww
 
     *out_x = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
     *out_y = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
@@ -392,10 +438,10 @@ MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256*
     r2 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 2, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 6, stride_in_bytes), 1);
     r3 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyz, 3, stride_in_bytes)), MD_LOAD_STRIDED_128(in_xyz, 7, stride_in_bytes), 1);
 
-    t0 = simde_mm256_unpacklo_ps(r0,r1); // xxyy xxyy
-    t1 = simde_mm256_unpackhi_ps(r0,r1); // zzww zzww
-    t2 = simde_mm256_unpacklo_ps(r2,r3); // xxyy xxyy
-    t3 = simde_mm256_unpackhi_ps(r2,r3); // zzww zzww
+    t0 = simde_mm256_unpacklo_ps(r0, r1); // xxyy xxyy
+    t1 = simde_mm256_unpackhi_ps(r0, r1); // zzww zzww
+    t2 = simde_mm256_unpacklo_ps(r2, r3); // xxyy xxyy
+    t3 = simde_mm256_unpackhi_ps(r2, r3); // zzww zzww
 
     *out_x = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
     *out_y = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
@@ -770,7 +816,7 @@ MD_SIMD_INLINE void md_mm_sincos_ps(md_128 in_x, md_128* out_sin, md_128* out_co
     *out_cos = md_mm_xor_ps(_mm_blendv_ps(sin_res, cos_res, cos_usecos), cos_sign_bit);
 }
 
-// We cannot reserve the name md_mm256_sincos_ps because it is already defined in immintrin.h
+// We cannot reserve the name mm256_sincos_ps because it is already defined in immintrin.h
 MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 in_x, md_256* out_sin, md_256* out_cos) {
     const md_256 two_over_pi = md_mm256_set1_ps(0.6366197466850280761718);
     const md_256 scaled = md_mm256_mul_ps(in_x, two_over_pi);
@@ -1110,6 +1156,145 @@ MD_SIMD_INLINE void md_mm512_sincos_ps(__m512 x, __m512* s, __m512* c) {
     /* update the sign */
     *s = _mm512_xor_ps(xmm1, sign_bit_sin);
     *c = _mm512_xor_ps(xmm2, sign_bit_cos);
+}
+#endif
+
+MD_SIMD_INLINE md_128 md_mm_exp_ps(md_128 x) {
+    md_128 tmp = md_mm_setzero_ps(), fx;
+    md_128i emm0;
+    md_128 one = md_mm_set1_ps(1.0f);
+
+    x = md_mm_min_ps(x, md_mm_set1_ps( 88.3762626647949f));
+    x = md_mm_max_ps(x, md_mm_set1_ps(-88.3762626647949f));
+
+    /* express exp(x) as exp(g + n*log(2)) */
+    fx = md_mm_mul_ps(x, md_mm_set1_ps(1.44269504088896341f));
+    fx = md_mm_add_ps(fx, md_mm_set1_ps(0.5f));
+
+    /* floor */
+    emm0 = md_mm_cvttps_epi32(fx);
+    tmp  = md_mm_cvtepi32_ps(emm0);
+
+    /* if greater, substract 1 */
+    md_128 mask = md_mm_cmpgt_ps(tmp, fx);    
+    mask = md_mm_and_ps(mask, one);
+    fx = md_mm_sub_ps(tmp, mask);
+
+    tmp = md_mm_mul_ps(fx, md_mm_set1_ps(0.693359375f));
+    md_128 z = md_mm_mul_ps(fx, md_mm_set1_ps(-2.12194440e-4f));
+    x = md_mm_sub_ps(x, tmp);
+    x = md_mm_sub_ps(x, z);
+
+    z = md_mm_mul_ps(x,x);
+
+    md_128 y = md_mm_set1_ps(1.9875691500E-4f);
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(1.3981999507E-3f));
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(8.3334519073E-3f));
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(4.1665795894E-2f));
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(1.6666665459E-1f));
+    y = md_mm_fmadd_ps(y, x, md_mm_set1_ps(5.0000001201E-1f));
+    y = md_mm_fmadd_ps(y, z, md_mm_add_ps(x, one));
+
+    /* build 2^n */
+    emm0 = md_mm_cvttps_epi32(fx);
+    emm0 = md_mm_add_epi32(emm0, md_mm_set1_epi32(0x7f));
+    emm0 = md_mm_slli_epi32(emm0, 23);
+    md_128 pow2n = md_mm_castsi128_ps(emm0);
+
+    y = md_mm_mul_ps(y, pow2n);
+    return y;
+}
+
+MD_SIMD_INLINE md_256 md_mm256_exp_ps(md_256 x) {
+    md_256 tmp = md_mm256_setzero_ps(), fx;
+    md_256i emm0;
+    md_256 one = md_mm256_set1_ps(1.0f);
+
+    x = md_mm256_min_ps(x, md_mm256_set1_ps( 88.3762626647949f));
+    x = md_mm256_max_ps(x, md_mm256_set1_ps(-88.3762626647949f));
+
+    /* express exp(x) as exp(g + n*log(2)) */
+    fx = md_mm256_mul_ps(x, md_mm256_set1_ps(1.44269504088896341f));
+    fx = md_mm256_add_ps(fx, md_mm256_set1_ps(0.5f));
+
+    /* floor */
+    emm0 = md_mm256_cvttps_epi32(fx);
+    tmp  = md_mm256_cvtepi32_ps(emm0);
+
+    /* if greater, substract 1 */
+    md_256 mask = md_mm256_cmpgt_ps(tmp, fx);    
+    mask = md_mm256_and_ps(mask, one);
+    fx = md_mm256_sub_ps(tmp, mask);
+
+    tmp = md_mm256_mul_ps(fx, md_mm256_set1_ps(0.693359375f));
+    md_256 z = md_mm256_mul_ps(fx, md_mm256_set1_ps(-2.12194440e-4f));
+    x = md_mm256_sub_ps(x, tmp);
+    x = md_mm256_sub_ps(x, z);
+
+    z = md_mm256_mul_ps(x,x);
+
+    md_256 y = md_mm256_set1_ps(1.9875691500E-4f);
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(1.3981999507E-3f));
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(8.3334519073E-3f));
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(4.1665795894E-2f));
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(1.6666665459E-1f));
+    y = md_mm256_fmadd_ps(y, x, md_mm256_set1_ps(5.0000001201E-1f));
+    y = md_mm256_fmadd_ps(y, z, md_mm256_add_ps(x, one));
+
+    /* build 2^n */
+    emm0 = md_mm256_cvttps_epi32(fx);
+    emm0 = md_mm256_add_epi32(emm0, md_mm256_set1_epi32(0x7f));
+    emm0 = md_mm256_slli_epi32(emm0, 23);
+    md_256 pow2n = md_mm256_castsi256_ps(emm0);
+
+    y = md_mm256_mul_ps(y, pow2n);
+    return y;
+}
+
+#ifdef __AVX512F__
+MD_SIMD_INLINE __m512 md_mm512_exp_ps(__m512 x) {
+    __m512 tmp = _mm512_setzero_ps(), fx;
+    __m512i emm0;
+    __m512 one = _mm512_set1_ps(1.0f);
+
+    x = _mm512_min_ps(x, _mm512_set1_ps( 88.3762626647949f));
+    x = _mm512_max_ps(x, _mm512_set1_ps(-88.3762626647949f));
+
+    /* express exp(x) as exp(g + n*log(2)) */
+    fx = _mm512_mul_ps(x, _mm512_set1_ps(1.44269504088896341f));
+    fx = _mm512_add_ps(fx, _mm512_set1_ps(0.5f));
+
+    /* floor */
+    emm0 = _mm512_cvttps_epi32(fx);
+    tmp  = _mm512_cvtepi32_ps(emm0);
+
+    /* if greater, substract 1 */
+    __mmask16 mask = _mm512_cmp_ps_mask(tmp, fx, _CMP_GT_OQ);
+    fx = _mm512_sub_ps(tmp, _mm512_maskz_mov_ps(mask, _mm512_set1_ps(1.0f)));
+
+    tmp = _mm512_mul_ps(fx, _mm512_set1_ps(0.693359375f));
+    __m512 z = _mm512_mul_ps(fx, _mm512_set1_ps(-2.12194440e-4f));
+    x = _mm512_sub_ps(x, tmp);
+    x = _mm512_sub_ps(x, z);
+
+    z = _mm512_mul_ps(x,x);
+
+    __m512 y = _mm512_set1_ps(1.9875691500E-4f);
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(1.3981999507E-3f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(8.3334519073E-3f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(4.1665795894E-2f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(1.6666665459E-1f));
+    y = _mm512_fmadd_ps(y, x, _mm512_set1_ps(5.0000001201E-1f));
+    y = _mm512_fmadd_ps(y, z, _mm512_add_ps(x, one));
+
+    /* build 2^n */
+    emm0 = _mm512_cvttps_epi32(fx);
+    emm0 = _mm512_add_epi32(emm0, _mm512_set1_epi32(0x7f));
+    emm0 = _mm512_slli_epi32(emm0, 23);
+    __m512 pow2n = _mm512_castsi512_ps(emm0);
+
+    y = _mm512_mul_ps(y, pow2n);
+    return y;
 }
 #endif
 
