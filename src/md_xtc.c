@@ -237,6 +237,182 @@ static const int magicints[] = {
 /* note that magicints[FIRSTIDX-1] == 0 */
 #define LASTIDX (sizeof(magicints) / sizeof(*magicints))
 
+typedef struct bit_reader_t {
+    uint64_t buf, next4b, curbit;
+    const uint64_t*data;
+    const uint32_t*data32;
+    uint32_t bitsavalable;
+} bit_reader_t;
+
+static inline void bit_reader_skip_load(bit_reader_t* r, uint32_t len) {
+    r->buf <<= len;
+    r->bitsavalable -= len;
+    r->curbit += len;
+    if (r->bitsavalable < 32) {
+        uint32_t next32 = r->data32[r->next4b++];
+#if __LITTLE_ENDIAN__
+        next32 = BSWAP32(next32);
+#endif
+        r->buf |= (uint64_t)next32 << (32 - r->bitsavalable);
+        r->bitsavalable += 32;
+    }
+}
+
+static inline void bit_reader_init(bit_reader_t* r, uint64_t bitpos) {
+    uint64_t ibuf = bitpos / 64;
+    r->buf = r->data[ibuf];
+
+#if __LITTLE_ENDIAN__
+    r->buf = BSWAP64(r->buf);
+#endif
+    r->curbit = ibuf*64;
+    uint64_t bitshift = bitpos - r->curbit;
+
+    r->next4b = 2 * (ibuf + 1);
+    r->bitsavalable = 64;
+
+    if (bitshift) {
+        bit_reader_skip_load(r, bitshift);
+    }
+}
+
+static inline bit_reader_t bit_reader_create(const uint64_t* data) {
+    bit_reader_t r = {
+        .data = data,
+        .data32 = (const uint32_t*)data,
+    };
+    bit_reader_init(&r, 0);
+    return r;
+}
+
+static inline void bit_reader_skip(bit_reader_t* r, uint32_t len) {
+    if (r->bitsavalable > len + 8) {
+        bit_reader_skip_load(r, len);
+    } else {
+        bit_reader_init(r, r->curbit + len);
+    }
+}
+
+//perform short read (1,5,8 bits)
+static inline uint8_t bit_reader_read(bit_reader_t* r, uint8_t len) {
+    uint64_t tmp = r->buf;
+    tmp >>= (64 - len);
+    bit_reader_skip(r, len);
+    return (uint8_t)tmp;
+}
+
+//read up to 32 bits
+static inline int bit_reader_read_int(bit_reader_t* r, int num_of_bits) {
+    int mask = (1 << num_of_bits) - 1;
+    int ret = 0;
+    //we should always have extra space, so extra read at the end of array is not a problem.
+    int num_of_bytes = MIN((num_of_bits >> 3) + 1, 4);
+    for (int i = 0; i < num_of_bytes; i++) {
+        ret |= ((int) bit_reader_read(r, 8)) << (8 * i);
+    }
+    return ret & mask;
+}
+
+static inline void bit_reader_unpack_from_uint64(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
+    int fullbytes = num_of_bits >> 3;
+    int partbits  = num_of_bits &  7;
+
+    uint64_t v = 0;
+    int i = 0;
+    for (; i < fullbytes; i++) {
+        uint64_t ibyte = bit_reader_read(r, 8);
+        v |= ibyte << (8 * i);
+    }
+
+    if (partbits) {
+        v |= ((uint64_t) bit_reader_read(r, partbits)) << (8 * i);
+    }
+
+    uint64_t sz = (uint64_t)sizeint[2];
+    uint32_t sy = sizeint[1];
+    uint64_t szy = sz*sy;
+    uint32_t x1 = v / szy;
+    uint64_t q1 = v - x1*szy;
+    uint32_t y1 = q1 / sz;
+    uint32_t z1 = q1 - y1*sz;
+
+    intcrds[0] = x1;
+    intcrds[1] = y1;
+    intcrds[2] = z1;
+}
+
+#ifdef HAS_INT128
+static inline void bit_reader_unpack_from_uint128(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
+    int fullbytes = num_of_bits >> 3;
+    int partbits  = num_of_bits &  7;
+
+    __int128 v = 0;
+    int i = 0;
+    for (; i < fullbytes; i++) {
+        uint64_t ibyte = bit_reader_read(r, 8);
+        v |= ibyte << (8 * i);
+    }
+
+    if (partbits) {
+        v |= ((uint64_t) bit_reader_read(r, partbits)) << (8 * i);
+    }
+
+    uint64_t sz = uint64_t(sizeint[2]);
+    uint32_t sy = sizeint[1];
+    uint64_t szy = sz*sy;
+    uint32_t x1 = v / szy;
+    __int128      q1 = v - x1*szy;
+    uint32_t y1 = q1 / sz;
+    uint32_t z1 = q1 - y1*sz;
+
+    intcrds[0] = x1;
+    intcrds[1] = y1;
+    intcrds[2] = z1;
+}
+#endif
+
+static inline void bit_reader_unpack(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
+    if (num_of_bits <= 64) {
+        bit_reader_unpack_from_uint64(r, num_of_bits, sizeint, intcrds);
+    } else
+#ifdef HAS_INT128
+    {
+        bit_reader_unpack_from_uint128(r, num_of_bits, sizeint, intcrds);
+    }
+#else
+    {
+        int fullbytes = num_of_bits >> 3;
+        int partbits  = num_of_bits  & 7;
+
+        int bytes[16];
+        int nbytes = 0;
+
+        for (; nbytes < fullbytes; nbytes++) {
+            bytes[nbytes] = bit_reader_read(r, 8);
+        }
+
+        if (partbits) {
+            bytes[nbytes++] = bit_reader_read(r, partbits);
+        }
+
+        int i, j, p, num;
+        static const int num_of_ints = 3;
+
+        for (i = num_of_ints - 1; i > 0; i--) {
+            num = 0;
+            for (j = nbytes - 1; j >= 0; j--) {
+                num = (num << 8) | bytes[j];
+                p = num / sizeint[i];
+                bytes[j] = p;
+                num = num - p * sizeint[i];
+            }
+            intcrds[i] = num;
+        }
+        intcrds[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+    }
+#endif
+}
+
 /* Compressed coordinate routines - modified from the original
 * implementation by Frans v. Hoesel to make them threadsafe.
 */
@@ -244,10 +420,10 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
     int minint[3], maxint[3], *lip;
     int smallidx;
     unsigned sizeint[3], sizesmall[3], bitsizeint[3], size3;
-    int k, *buf1, *buf2, lsize, flag;
+    int k, *buf1, *buf2, natoms, flag;
     int smallnum, smaller, i, is_smaller, run;
     float *lfp, inv_precision;
-    int tmp, *thiscoord, prevcoord[3];
+    int tmp, thiscoord[3], prevcoord[3];
     unsigned int bitsize;
     const float* ptrstart = ptr;
 
@@ -258,10 +434,10 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
     if (xfp == NULL || ptr == NULL) {
         return false;
     }
-    if (!xdr_read_int32(&lsize, 1, xfp)) {
+    if (!xdr_read_int32(&natoms, 1, xfp)) {
         return false; /* return if we could not read size */
     }
-    *size = lsize;
+    *size = natoms;
     size3 = *size * 3;
 
     /* Dont bother with compression for three atoms or less */
@@ -269,24 +445,13 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         return xdr_read_float(ptr, size3, xfp);
     }
 
-
     /* Compression-time if we got here. Read precision first */
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
-
-    buf1 = md_vm_arena_push(arena, sizeof(int) * size3);
-    buf2 = md_vm_arena_push(arena, sizeof(int) * (int)(size3 * 1.2));
-
-    bool result = false;
-
     if (!xdr_read_float(precision, 1, xfp)) {
         goto done;
     }
     if (!xdr_read_int32(minint, 3, xfp) || !xdr_read_int32(maxint, 3, xfp)) {
         goto done;
     }
-
-    /* buf2[0-2] are special and do not contain actual data */
-    buf2[0] = buf2[1] = buf2[2] = 0;
 
     sizeint[0] = maxint[0] - minint[0] + 1;
     sizeint[1] = maxint[1] - minint[1] + 1;
@@ -312,30 +477,44 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
     smallnum = magicints[smallidx] / 2;
     sizesmall[0] = sizesmall[1] = sizesmall[2] = magicints[smallidx];
 
-    /* buf2[0] holds the length in bytes */
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+
+    bool result = false;
+
+    /* length in bytes */
     uint32_t num_bytes;
     if (!xdr_read_int32((int32_t*)&num_bytes, 1, xfp)) {
         goto done;
     }
-    if (!xdr_read_bytes((uint8_t*)&(buf2[3]), num_bytes, xfp)) {
+
+    //buf1 = md_vm_arena_push(arena, sizeof(int) * size3);
+    buf2 = md_vm_arena_push(arena, ALIGN_TO(num_bytes + sizeof(int) * 3, 16));
+    buf2[0] = buf2[1] = buf2[2] = 0;
+
+    if (!xdr_read_bytes((uint8_t*)&buf2[3], num_bytes, xfp)) {
         goto done;
     }
-    buf2[0] = buf2[1] = buf2[2] = 0;
+
+    //bit_reader_t br = bit_reader_create((uint64_t*)buf2);
 
     lfp = ptr;
     inv_precision = 1.0f / *precision;
     run = 0;
     i = 0;
-    lip = buf1;
-    while (i < lsize) {
-        thiscoord = (int*)(lip) + i * 3;
+    //lip = buf1;
+    while (i < natoms) {
+        //thiscoord = (int*)(lip) + i * 3;
 
         if (bitsize == 0) {
+            //bit_reader_unpack(&br, smallidx, bitsizeint, thiscoord);
             thiscoord[0] = decodebits(buf2, bitsizeint[0]);
             thiscoord[1] = decodebits(buf2, bitsizeint[1]);
             thiscoord[2] = decodebits(buf2, bitsizeint[2]);
         } else {
             decodeints(buf2, 3, bitsize, sizeint, thiscoord);
+            //for (int i = 0; i < 3; ++i) {
+            //    thiscoord[i] = bit_reader_read_int(&br, bitsizeint[i]);
+            //}
         }
 
         i++;
@@ -348,9 +527,11 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         prevcoord[2] = thiscoord[2];
 
         flag = decodebits(buf2, 1);
+        //flag = bit_reader_read(&br, 1);
         is_smaller = 0;
         if (flag == 1) {
             run = decodebits(buf2, 5);
+            //run = bit_reader_read(&br, 5);
             is_smaller = run % 3;
             run -= is_smaller;
             is_smaller--;
@@ -360,9 +541,10 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
             goto done;
         }
         if (run > 0) {
-            thiscoord += 3;
+            //thiscoord += 3;
             for (k = 0; k < run; k += 3) {
                 decodeints(buf2, 3, smallidx, sizesmall, thiscoord);
+                //bit_reader_unpack(&br, smallidx, sizesmall, thiscoord);
                 i++;
                 thiscoord[0] += prevcoord[0] - smallnum;
                 thiscoord[1] += prevcoord[1] - smallnum;
