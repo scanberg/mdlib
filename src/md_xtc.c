@@ -332,9 +332,9 @@ static inline void bit_reader_unpack_from_uint64(bit_reader_t* r, int num_of_bit
     uint32_t sy = sizeint[1];
     uint64_t szy = sz*sy;
     uint32_t x1 = v / szy;
-    uint64_t q1 = v - x1*szy;
+    uint64_t q1 = v % szy;
     uint32_t y1 = q1 / sz;
-    uint32_t z1 = q1 - y1*sz;
+    uint32_t z1 = q1 % sz;
 
     intcrds[0] = x1;
     intcrds[1] = y1;
@@ -361,9 +361,9 @@ static inline void bit_reader_unpack_from_uint128(bit_reader_t* r, int num_of_bi
     uint32_t sy = sizeint[1];
     uint64_t szy = sz*sy;
     uint32_t x1 = v / szy;
-    __int128      q1 = v - x1*szy;
+    uint64_t q1 = v % szy;
     uint32_t y1 = q1 / sz;
-    uint32_t z1 = q1 - y1*sz;
+    uint32_t z1 = q1 % sz;
 
     intcrds[0] = x1;
     intcrds[1] = y1;
@@ -420,7 +420,7 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
     int minint[3], maxint[3], *lip;
     int smallidx;
     unsigned sizeint[3], sizesmall[3], bitsizeint[3], size3;
-    int k, *buf1, *buf2, natoms, flag;
+    int k, natoms, flag;
     int smallnum, smaller, i, is_smaller, run;
     float *lfp, inv_precision;
     int tmp, thiscoord[3], prevcoord[3];
@@ -487,37 +487,26 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         goto done;
     }
 
-    //buf1 = md_vm_arena_push(arena, sizeof(int) * size3);
-    buf2 = md_vm_arena_push(arena, ALIGN_TO(num_bytes + sizeof(int) * 3, 16));
-    buf2[0] = buf2[1] = buf2[2] = 0;
+    uint64_t* buf = md_vm_arena_push(arena, ALIGN_TO(num_bytes + sizeof(int) * 3, 16));
+    buf[0] = buf[1] = buf[2] = 0;
 
-    if (!xdr_read_bytes((uint8_t*)&buf2[3], num_bytes, xfp)) {
+    if (!xdr_read_bytes((uint8_t*)&buf[3], num_bytes, xfp)) {
         goto done;
     }
 
-    //bit_reader_t br = bit_reader_create((uint64_t*)buf2);
+    bit_reader_t br = bit_reader_create((uint64_t*)&buf[3]);
 
     lfp = ptr;
     inv_precision = 1.0f / *precision;
     run = 0;
-    i = 0;
-    //lip = buf1;
-    while (i < natoms) {
-        //thiscoord = (int*)(lip) + i * 3;
-
+    int atom_idx = 0;
+    while (atom_idx++ < natoms) {
         if (bitsize == 0) {
-            //bit_reader_unpack(&br, smallidx, bitsizeint, thiscoord);
-            thiscoord[0] = decodebits(buf2, bitsizeint[0]);
-            thiscoord[1] = decodebits(buf2, bitsizeint[1]);
-            thiscoord[2] = decodebits(buf2, bitsizeint[2]);
+            thiscoord[i] = bit_reader_read_int(&br, bitsizeint[i]);
         } else {
-            decodeints(buf2, 3, bitsize, sizeint, thiscoord);
-            //for (int i = 0; i < 3; ++i) {
-            //    thiscoord[i] = bit_reader_read_int(&br, bitsizeint[i]);
-            //}
+            bit_reader_unpack(&br, bitsize, sizeint, thiscoord);
         }
 
-        i++;
         thiscoord[0] += minint[0];
         thiscoord[1] += minint[1];
         thiscoord[2] += minint[2];
@@ -526,12 +515,12 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         prevcoord[1] = thiscoord[1];
         prevcoord[2] = thiscoord[2];
 
-        flag = decodebits(buf2, 1);
-        //flag = bit_reader_read(&br, 1);
+        flag = bit_reader_read(&br, 1);
+
         is_smaller = 0;
         if (flag == 1) {
-            run = decodebits(buf2, 5);
-            //run = bit_reader_read(&br, 5);
+            run = bit_reader_read(&br, 5);
+
             is_smaller = run % 3;
             run -= is_smaller;
             is_smaller--;
@@ -541,11 +530,10 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
             goto done;
         }
         if (run > 0) {
-            //thiscoord += 3;
             for (k = 0; k < run; k += 3) {
-                decodeints(buf2, 3, smallidx, sizesmall, thiscoord);
-                //bit_reader_unpack(&br, smallidx, sizesmall, thiscoord);
-                i++;
+                atom_idx++;
+                bit_reader_unpack(&br, smallidx, sizesmall, thiscoord);
+
                 thiscoord[0] += prevcoord[0] - smallnum;
                 thiscoord[1] += prevcoord[1] - smallnum;
                 thiscoord[2] += prevcoord[2] - smallnum;
@@ -553,22 +541,16 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
                     /* interchange first with second atom for better
                     * compression of water molecules
                     */
-                    tmp = thiscoord[0];
-                    thiscoord[0] = prevcoord[0];
-                    prevcoord[0] = tmp;
-                    tmp = thiscoord[1];
-                    thiscoord[1] = prevcoord[1];
-                    prevcoord[1] = tmp;
-                    tmp = thiscoord[2];
-                    thiscoord[2] = prevcoord[2];
-                    prevcoord[2] = tmp;
+                    int tempcoord[3];
+                    MEMCPY(tempcoord, thiscoord, sizeof(int) * 3);
+                    MEMCPY(thiscoord, prevcoord, sizeof(int) * 3);
+                    MEMCPY(prevcoord, tempcoord, sizeof(int) * 3);
+
                     *lfp++ = prevcoord[0] * inv_precision;
                     *lfp++ = prevcoord[1] * inv_precision;
                     *lfp++ = prevcoord[2] * inv_precision;
                 } else {
-                    prevcoord[0] = thiscoord[0];
-                    prevcoord[1] = thiscoord[1];
-                    prevcoord[2] = thiscoord[2];
+                    MEMCPY(prevcoord, thiscoord, sizeof(int) * 3);
                 }
                 *lfp++ = thiscoord[0] * inv_precision;
                 *lfp++ = thiscoord[1] * inv_precision;
@@ -582,12 +564,7 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         smallidx += is_smaller;
         if (is_smaller < 0) {
             smallnum = smaller;
-
-            if (smallidx > FIRSTIDX) {
-                smaller = magicints[smallidx - 1] / 2;
-            } else {
-                smaller = 0;
-            }
+            smaller = (smallidx > FIRSTIDX) ? magicints[smallidx - 1] / 2 : 0;
         } else if (is_smaller > 0) {
             smaller = smallnum;
             smallnum = magicints[smallidx] / 2;
