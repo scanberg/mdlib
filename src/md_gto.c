@@ -1,16 +1,19 @@
 #include <md_gto.h>
 
+#include <core/md_platform.h>
+
 #include <core/md_log.h>
 #include <core/md_simd.h>
 #include <core/md_allocator.h>
 #include <core/md_str.h>
-#include <core/md_gl_util.h>
 
 #include <stdbool.h>
 #include <float.h>
 
-#include <gto_shaders.inl>
+#if !MD_PLATFORM_OSX
 
+#include <core/md_gl_util.h>
+#include <gto_shaders.inl>
 #include <GL/gl3w.h>
 
 // This should be kept in sync with the define present in segment_and_attribute_to_group.comp
@@ -283,6 +286,8 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
 
     md_gl_debug_pop();
 }
+
+#endif
 
 static inline float fast_powf(float base, int exp) {
     float val = 1.0f;

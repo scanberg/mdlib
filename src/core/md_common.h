@@ -216,13 +216,18 @@ void md_assert_impl(const char* file, int line, const char* func_name, const cha
 
 #if MD_COMPILER_MSVC
 
-#ifdef  __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
-void *  __cdecl memcpy(void*, const void*, unsigned long long);
-void *  __cdecl memset(void*, int, unsigned long long);
-void *  __cdecl memmove(void*, const void*, unsigned long long);
-int     __cdecl memcmp(const void*, const void*, unsigned long long);
+
+    void *  __cdecl             memcpy(void*, const void*, unsigned long long);
+    void *  __cdecl             memset(void*, int, unsigned long long);
+    void *  __cdecl             memmove(void*, const void*, unsigned long long);
+    int     __cdecl             memcmp(const void*, const void*, unsigned long long);
+    unsigned short __cdecl      _byteswap_ushort (unsigned short);
+    unsigned long __cdecl       _byteswap_ulong  (unsigned long);
+    unsigned __int64 __cdecl    _byteswap_uint64 (unsigned __int64);
+
 #ifdef __cplusplus
 }
 #endif
@@ -231,17 +236,26 @@ int     __cdecl memcmp(const void*, const void*, unsigned long long);
 #pragma intrinsic(memset)
 #pragma intrinsic(memmove)
 #pragma intrinsic(memcmp)
+#pragma intrinsic(_byteswap_ushort)
+#pragma intrinsic(_byteswap_ulong)
+#pragma intrinsic(_byteswap_uint64)
 
 #define MEMCPY  memcpy
 #define MEMSET  memset
 #define MEMMOVE memmove
 #define MEMCMP  memcmp
+#define BSWAP16 _byteswap_ushort
+#define BSWAP32 _byteswap_ulong
+#define BSWAP64 _byteswap_uint64
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
 #define MEMCPY  __builtin_memcpy
 #define MEMSET  __builtin_memset
 #define MEMMOVE __builtin_memmove
 #define MEMCMP  __builtin_memcmp
+#define BSWAP16 __builtin_bswap16
+#define BSWAP32 __builtin_bswap32
+#define BSWAP64 __builtin_bswap64
 
 #endif
 

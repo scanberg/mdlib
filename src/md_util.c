@@ -5611,14 +5611,14 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
             double r = acc_x / acc_w;
             double x = in_x[idx];
             double w = in_w[idx];
-            double dx = deperiodize(x, r, d_x_max);
+            double dx = deperiodize_ortho(x, r, d_x_max);
             acc_x += dx * w;
             acc_w += w;
         } else {
             int64_t idx = in_idx[i];
             double r = acc_x / acc_w;
             double x = in_x[idx];
-            double dx = deperiodize(x, r, d_x_max);
+            double dx = deperiodize_ortho(x, r, d_x_max);
             acc_x += dx;
             acc_w += 1.0;
         }
@@ -5627,13 +5627,13 @@ static float compute_com_periodic_reg(const float* in_x, const float* in_w, cons
             double r = acc_x / acc_w;
             double x = in_x[i];
             double w = in_w[i];
-            double dx = deperiodize(x, r, d_x_max);
+            double dx = deperiodize_ortho(x, r, d_x_max);
             acc_x += dx * w;
             acc_w += w;
         } else {
             double r = acc_x / acc_w;
             double x = in_x[i];
-            double dx = deperiodize(x, r, d_x_max);
+            double dx = deperiodize_ortho(x, r, d_x_max);
             acc_x += dx;
             acc_w += 1.0;
         }
