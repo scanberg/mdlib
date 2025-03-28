@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 include(cmake/common.cmake)
 
@@ -138,7 +138,10 @@ set(MD_LIBS)
 
 if (${MD_ENABLE_VLX})
     set (SRC_FILES ${SRC_FILES} src/md_vlx.c src/md_vlx.h)
-    set (MD_DEFINES ${MD_DEFINES} MD_VLX MD_VLX_BASIS_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis")
+    if(NOT DEFINED MD_VLX_BASIS_FOLDER)
+        set(MD_VLX_BASIS_FOLDER "${CMAKE_CURRENT_SOURCE_DIR}/ext/veloxchem/basis")
+    endif()
+    set (MD_DEFINES ${MD_DEFINES} MD_VLX MD_VLX_BASIS_FOLDER="${MD_VLX_BASIS_FOLDER}")
 endif()
 
 if (MD_ENABLE_NETCDF)

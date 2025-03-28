@@ -1,4 +1,4 @@
-#include <md_vlx.h>
+ï»¿#include <md_vlx.h>
 
 #include <core/md_os.h>
 #include <core/md_log.h>
@@ -403,7 +403,7 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 
 			for (int atomidx = 0; atomidx < natoms; atomidx++) {
 				// process coordinates
-				// Conversion from Ångström to Bohr
+				// Conversion from Ã…ngstrÃ¶m to Bohr
 				double rx = (xp - atom_coordinates[atomidx].x) * ANGSTROM_TO_BOHR;
 				double ry = (yp - atom_coordinates[atomidx].y) * ANGSTROM_TO_BOHR;
 				double rz = (zp - atom_coordinates[atomidx].z) * ANGSTROM_TO_BOHR;
@@ -507,7 +507,7 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 			// go through atoms
 			for (int atomidx = 0; atomidx < natoms; atomidx++) {
 				// process coordinates
-				// Conversion from Ångström to Bohr
+				// Conversion from Ã…ngstrÃ¶m to Bohr
 				float x = (float)(atom_coordinates[atomidx].x * ANGSTROM_TO_BOHR);
 				float y = (float)(atom_coordinates[atomidx].y * ANGSTROM_TO_BOHR);
 				float z = (float)(atom_coordinates[atomidx].z * ANGSTROM_TO_BOHR);
@@ -1580,7 +1580,7 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	// Convert Atomic units to Ångström
+	// Convert Atomic units to Ã…ngstrÃ¶m
 	if (vlx->atom_coordinates) {
 		for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
 			vlx->atom_coordinates[i].x *= BOHR_TO_ANGSTROM;

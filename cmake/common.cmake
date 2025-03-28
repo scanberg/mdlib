@@ -1,4 +1,4 @@
-# We do not want to have a hard dependency on VCPKG
+﻿# We do not want to have a hard dependency on VCPKG
 # As it is only used for big external libs
 # So if VCPKG_ROOT is defined in the environment, we use the cmake toolchain of vcpkg
 if (NOT DEFINED {CMAKE_TOOLCHAIN_FILE} AND DEFINED ENV{VCPKG_ROOT})
