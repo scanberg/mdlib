@@ -267,11 +267,6 @@ static inline void ensure_range(md_bitfield_t* bf, uint64_t beg_bit, uint64_t en
 
     // If the bitfield is empty, we need to set the bits for min max to work
     if (bf->beg_bit == 0 && bf->end_bit == 0) {
-        if (bf->bits) {
-            ASSERT(false);
-            md_array_free(bf->bits, bf->alloc);
-            bf->bits = 0;
-        }
         bf->beg_bit = (uint32_t)beg_bit;
         bf->end_bit = (uint32_t)end_bit;
         uint64_t num_blk = num_blocks(beg_bit, end_bit);
