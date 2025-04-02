@@ -1,4 +1,4 @@
-#include <core/md_allocator.h>
+﻿#include <core/md_allocator.h>
 
 #include <core/md_ring_allocator.h>
 #include <core/md_common.h>
@@ -8,7 +8,7 @@
 #include <string.h>
 
 #ifndef MD_TEMP_ALLOC_SIZE
-#define MD_TEMP_ALLOC_SIZE MEGABYTES(16)
+#define MD_TEMP_ALLOC_SIZE MEGABYTES(64)
 #endif 
 
 #define MAX_TEMP_ALLOCATION_SIZE (MD_TEMP_ALLOC_SIZE / 2)

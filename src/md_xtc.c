@@ -12,7 +12,12 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
+#include <core/md_lru_cache.inl>
+
 #include <xdrfile.h>
+
+#define LIBDIVIDE_AVX2
+#include <libdivide.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -110,8 +115,6 @@ static inline bool xdr_read_float (float* ptr, size_t count, md_file_o* xdr_file
     ASSERT(xdr_file);
     return xdr_read_int32((int32_t*)ptr, count, xdr_file);
 }
-
-
 
 static inline int sizeofint(int size) {
     unsigned int num = 1;
@@ -223,7 +226,7 @@ static inline void decodeints(int buf[], int num_of_ints, int num_of_bits, unsig
     nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
 }
 
-static const int magicints[] = {
+static const uint32_t magicints[] = {
     0,        0,        0,       0,       0,       0,       0,       0,       0,       8,
     10,       12,       16,      20,      25,      32,      40,      50,      64,      80,
     101,      128,      161,     203,     256,     322,     406,     512,     645,     812,
@@ -236,6 +239,73 @@ static const int magicints[] = {
 #define FIRSTIDX 9
 /* note that magicints[FIRSTIDX-1] == 0 */
 #define LASTIDX (sizeof(magicints) / sizeof(*magicints))
+
+static const struct libdivide_u32_branchfree_t denoms32[] = {
+    {0, 2}, {0X9999999A, 3}, {0X55555556, 3}, {0, 3}, {0X9999999A, 4}, {0X47AE147B, 4}, {0, 4}, {0X9999999A, 5}, {0X47AE147B, 5}, {0, 5}, {0X9999999A, 6}, {0X446F8657, 6}, {0, 6},
+    {0X970E4F81, 7}, {0X42D6625E, 7}, {0, 7}, {0X970E4F81, 8}, {0X42D6625E, 8}, {0, 8}, {0X966CC01A, 9}, {0X42D6625E, 9}, {0, 9}, {0X966CC01A, 10}, {0X42A38662, 10}, {0, 10},
+    {0X966CC01A, 11}, {0X42A38662, 11}, {0, 11}, {0X9E74F884, 12}, {0X4296D1E4, 12}, {0, 12}, {0X9662AB65, 13}, {0X42907805, 13}, {0, 13}, {0X9662AB65, 14}, {0X428D4B2D, 14}, {0, 14},
+    {0X9660264C, 15}, {0X428BB4C8, 15}, {0, 15}, {0X9660264C, 16}, {0X428AE996, 16}, {0, 16}, {0X9660264C, 17}, {0X428A83FE, 17}, {0, 17}, {0X9660264C, 18}, {0X428A5132, 18}, {0X2001, 18},
+    {0X965FFDFB, 19}, {0X428A37CC, 19}, {0, 19}, {0X965FFDFB, 20}, {0X428A37CC, 20}, {0, 20}, {0X965FF3E7, 21}, {0X428A3172, 21}, {0, 21}, {0X965FEEDD, 22}, {0X428A3172, 22}, {0X201, 22},
+    {0X965FEC57, 23}, {0X428A2FDC, 23}, {0, 23}, 
+};
+
+static const struct libdivide_u64_branchfree_t denoms64[] = {
+    {0, 5}, {0X47AE147AE147AE15, 6}, {0XC71C71C71C71C71D, 7}, {0, 7}, {0X47AE147AE147AE15, 8}, {0XA36E2EB1C432CA58, 9}, {0, 9}, {0X47AE147AE147AE15, 10}, {0XA36E2EB1C432CA58, 11},
+    {0, 11}, {0X47AE147AE147AE15, 12}, {0X9B2A7C9FE8B617F1, 13}, {0, 13}, {0X439F40CC28F760CC, 14}, {0X972002FB5C05974D, 15}, {0, 15}, {0X439F40CC28F760CC, 16}, {0X972002FB5C05974D, 17},
+    {0, 17}, {0X429E8FC19BD1F6F1, 18}, {0X972002FB5C05974D, 19}, {0, 19}, {0X429E8FC19BD1F6F1, 20}, {0X969FC68151912805, 21}, {0, 21}, {0X429E8FC19BD1F6F1, 22}, {0X969FC68151912805, 23},
+    {0, 23}, {0X4F7F449D26A949DD, 24}, {0X967FC0DA51BF3DDD, 25}, {0, 25}, {0X428E8ED5E63B8E8A, 26}, {0X966FBF71EFB24C2F, 27}, {0, 27}, {0X428E8ED5E63B8E8A, 28}, {0X9667BF187DCBD4ED, 29},
+    {0, 29}, {0X428A8ECA9A8C6397, 30}, {0X9663BF027395D269, 31}, {0, 31}, {0X428A8ECA9A8C6397, 32}, {0X9661BEFD1A08C80F, 33}, {0, 33}, {0X428A8ECA9A8C6397, 34}, {0X9660BEFBD82195C9, 35},
+    {0, 35}, {0X428A8ECA9A8C6397, 36}, {0X96603EFB91E54C07, 37}, {0X40000C000201, 37}, {0X428A4ECA87BD4923, 38}, {0X965FFEFB8574EA53, 39}, {0, 39}, {0X428A4ECA87BD4923, 40},
+    {0X965FFEFB8574EA53, 41}, {0, 41}, {0X428A3ECA8603773D, 42}, {0X965FEEFB84B5956C, 43}, {0, 43}, {0X428A36CA8598D950, 44}, {0X965FEEFB84B5956C, 45}, {0X400000C0001, 45},
+    {0X428A32CA85801D1A, 46}, {0X965FEAFB84AB8C66, 47}, {0, 47},
+};
+
+typedef struct br_t {
+    const uint64_t* stream;
+    uint64_t data;
+    uint64_t next;
+    uint32_t cache_bits;
+    uint32_t stream_size;
+} br_t;
+
+static void br_init(br_t* r, const uint64_t* stream, size_t num_qwords) {
+    ASSERT(num_qwords >= 2);
+    r->stream = stream + 2;
+    r->data   = stream[0];
+    r->next   = stream[1];
+#if __LITTLE_ENDIAN__
+    r->data   = BSWAP64(r->data);
+    r->next   = BSWAP64(r->next);
+#endif
+    r->cache_bits = 128;
+    r->stream_size = (uint32_t)num_qwords - 2;
+}
+
+static inline uint64_t br_read(br_t* r, size_t num_bits) {
+    ASSERT(num_bits <= 64);
+    uint64_t shft = 64 - num_bits;
+    uint64_t res  = r->data >> shft;
+
+    r->cache_bits -= (uint32_t)num_bits;
+
+    // Append extracted bits from next
+    r->data = (r->data << num_bits) | (r->next >> shft);
+    r->next <<= num_bits;
+
+    if (r->cache_bits < 64 && r->stream_size > 0) {
+        r->stream_size -= 1;
+        uint64_t data = *r->stream++;
+#if __LITTLE_ENDIAN__
+        data = BSWAP64(data);
+#endif
+        // Fill in missing bits
+        r->data |= data >> r->cache_bits;
+        r->next  = data << (64 - r->cache_bits);
+        r->cache_bits += 64;
+    }
+
+    return res;
+}
 
 typedef struct bit_reader_t {
     uint64_t buf, next4b, curbit;
@@ -313,7 +383,7 @@ static inline int bit_reader_read_int(bit_reader_t* r, int num_of_bits) {
     return ret & mask;
 }
 
-static inline void bit_reader_unpack_from_uint64(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
+static uint64_t bit_reader_unpack_from_uint64(bit_reader_t* r, int num_of_bits, const uint32_t sizeint[], int32_t intcrds[]) {
     int fullbytes = num_of_bits >> 3;
     int partbits  = num_of_bits &  7;
 
@@ -328,7 +398,7 @@ static inline void bit_reader_unpack_from_uint64(bit_reader_t* r, int num_of_bit
         v |= ((uint64_t) bit_reader_read(r, partbits)) << (8 * i);
     }
 
-    uint64_t sz = (uint64_t)sizeint[2];
+    uint64_t sz = sizeint[2];
     uint32_t sy = sizeint[1];
     uint64_t szy = sz*sy;
     uint32_t x1 = v / szy;
@@ -339,10 +409,12 @@ static inline void bit_reader_unpack_from_uint64(bit_reader_t* r, int num_of_bit
     intcrds[0] = x1;
     intcrds[1] = y1;
     intcrds[2] = z1;
+
+    return v;
 }
 
 #ifdef HAS_INT128
-static inline void bit_reader_unpack_from_uint128(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
+static inline void bit_reader_unpack_from_uint128(bit_reader_t* r, int num_of_bits, const uint32_t sizeint[], int32_t intcrds[]) {
     int fullbytes = num_of_bits >> 3;
     int partbits  = num_of_bits &  7;
 
@@ -357,7 +429,7 @@ static inline void bit_reader_unpack_from_uint128(bit_reader_t* r, int num_of_bi
         v |= ((uint64_t) bit_reader_read(r, partbits)) << (8 * i);
     }
 
-    uint64_t sz = uint64_t(sizeint[2]);
+    uint64_t sz = sizeint[2];
     uint32_t sy = sizeint[1];
     uint64_t szy = sz*sy;
     uint32_t x1 = v / szy;
@@ -371,7 +443,7 @@ static inline void bit_reader_unpack_from_uint128(bit_reader_t* r, int num_of_bi
 }
 #endif
 
-static inline void bit_reader_unpack(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
+static inline void bit_reader_unpack(bit_reader_t* r, int num_of_bits, const uint32_t sizeint[], int32_t intcrds[]) {
     if (num_of_bits <= 64) {
         bit_reader_unpack_from_uint64(r, num_of_bits, sizeint, intcrds);
     } else
@@ -396,15 +468,14 @@ static inline void bit_reader_unpack(bit_reader_t* r, int num_of_bits, const int
         }
 
         int i, j, p, num;
-        static const int num_of_ints = 3;
 
-        for (i = num_of_ints - 1; i > 0; i--) {
+        for (i = 2; i > 0; i--) {
             num = 0;
             for (j = nbytes - 1; j >= 0; j--) {
                 num = (num << 8) | bytes[j];
-                p = num / sizeint[i];
+                p   = num / sizeint[i];
+                num = num % sizeint[i];
                 bytes[j] = p;
-                num = num - p * sizeint[i];
             }
             intcrds[i] = num;
         }
@@ -413,23 +484,143 @@ static inline void bit_reader_unpack(bit_reader_t* r, int num_of_bits, const int
 #endif
 }
 
-/* Compressed coordinate routines - modified from the original
-* implementation by Frans v. Hoesel to make them threadsafe.
-*/
+typedef struct {
+    uint64_t size_zy;
+    uint32_t size_z;
+    uint8_t  num_of_bits;
+    uint8_t  part_mask;
+    uint8_t  big_shift;
+    uint8_t  sml_shift;
+    struct libdivide_u64_branchfree_t div_zy;
+    struct libdivide_u32_branchfree_t div_z;
+} unpack_data_t;
+
+typedef struct {
+    union {
+        __m128i v;
+        int arr[4];
+    };
+} v4i_t;
+
+static inline v4i_t v4i_add(v4i_t a, v4i_t b) {
+    v4i_t r;
+    r.v = _mm_add_epi32(a.v, b.v);
+    return r;
+}
+
+static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bits) {
+    uint32_t partbits = num_of_bits & 7;
+    data->num_of_bits = (uint8_t)num_of_bits;
+    data->big_shift = 64 - ((num_of_bits + 7) & ~7);  // Align to the next multiple of 8
+    data->sml_shift = (8 - partbits) & 7;
+    data->part_mask = partbits ? (1ul << partbits) - 1 : 0xFF;
+}
+
+static inline v4i_t unpack_u64_to_v4i(uint64_t v, const unpack_data_t* unpack) {
+    uint32_t x1 = libdivide_u64_branchfree_do(v, &unpack->div_zy);
+    uint32_t q1 = (uint32_t)(v - x1 * unpack->size_zy);
+
+    uint32_t y1 = libdivide_u32_branchfree_do(q1, &unpack->div_z);
+    uint32_t z1 = q1 - y1 * unpack->size_z;
+
+    v4i_t res;
+    res.v = _mm_set_epi32(0, z1, y1, x1);
+
+    return res;
+}
+
+static inline uint64_t br_read_u64(br_t* br, const unpack_data_t* unpack) {
+    ASSERT(unpack->num_of_bits <= 64);
+    uint64_t w = br_read(br, unpack->num_of_bits);
+    uint64_t r = ((w << unpack->sml_shift) & (~0xFFull)) | (w & unpack->part_mask);
+    return BSWAP64(r) >> unpack->big_shift;
+}
+
+static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
+    v4i_t res = {0};
+    for (int i = 0; i < 3; ++i) {
+        _mm_slli_si128(res.v, 32);
+        uint32_t num_of_bits = bitsizes[i];
+        uint32_t partbits = num_of_bits & 7;
+        uint32_t big_shift = 32 - ((num_of_bits + 7) & ~7);  // Align to the next multiple of 8
+        uint32_t sml_shift = (8 - partbits) & 7;
+        uint32_t part_mask = partbits ? (1ul << partbits) - 1 : 0xFF;
+        uint32_t w = (uint32_t)br_read(br, num_of_bits);
+        uint32_t r = ((w << sml_shift) & (~0xFFul)) | (w & part_mask);
+        uint32_t v = BSWAP32(r) >> big_shift;
+        res.v = _mm_blend_epi32(res.v, _mm_cvtsi32_si128(v), 1);
+    }
+    return res;
+} 
+
+static inline write_coord(float* dst, v4i_t coord, float inv_precision) {
+    md_128 v = md_mm_mul_ps(md_mm_cvtepi32_ps(coord.v), md_mm_set1_ps(inv_precision));
+    MEMCPY(dst, &v, sizeof(float) * 3);
+}
+
+#if 0
+typedef struct {
+    struct libdivide_u64_branchfree_t z;
+    struct libdivide_u64_branchfree_t zy;
+} div_t;
+
+typedef struct {
+    div_t divs[8];
+    __m128i hash;
+    uint64_t lru_matrix;
+} div_cache_t;
+
+static inline void div_cache_init(div_cache_t* cache) {
+    MEMSET(cache, 0, sizeof(*cache));
+    cache->lru_matrix = 0x0080c0e0f0f8fcfeLLU;
+}
+
+static inline const div_t* div_cache_get(div_cache_t* cache, int idx) {
+    __m128i val = _mm_set1_epi16(idx & 0xFFFF);
+    __m128i res = _mm_cmpeq_epi16(cache->hash, val);
+    int mask = _mm_movemask_epi8(res);
+    int idx;
+    if (mask) {
+        idx = __builtin_ctz(mask) >> 1;
+    } else {
+        idx = find_first_zero_byte64(cache->lru_matrix);
+        __m128i mask = res;
+        cache->hash = _mm_or_si128(_mm_andnot_si128(mask, cache->hash), _mm_and_si128(mask, val));
+        cache->divs[idx].zy = libdivide_u64_branchfree_gen(idx * idx);
+        cache->divs[idx].z  = libdivide_u64_branchfree_gen(idx);
+    }
+    cache->lru_matrix = (cache->lru_matrix | (0xFFLLU << (8 * idx)) & ~(0x0101010101010101LLU << idx));
+
+    return &cache->divs[idx];
+}
+#endif
+
+static inline __m256i _mm256_prefix_sum_epi32(__m256i v) {
+    // Compute prefix sum within each 128-bit lane
+    v = _mm256_add_epi32(v, _mm256_slli_si256(v, 4));
+    v = _mm256_add_epi32(v, _mm256_slli_si256(v, 8));
+
+    // Manually handle the carry from lower lane to upper lane
+    __m128i upper_lane = _mm256_extracti128_si256(v, 1); // Extract upper 128-bit lane
+    __m128i lower_last = _mm_broadcastd_epi32(_mm_shuffle_epi32(_mm256_castsi256_si128(v), 0x3)); // Last element of lower lane
+    upper_lane = _mm_add_epi32(upper_lane, lower_last); // Propagate the last lower element to the upper lane
+
+    return _mm256_inserti128_si256(v, upper_lane, 1); // Reinsert modified upper lane
+}
+
+
+
 bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file_o* xfp) {
-    int minint[3], maxint[3], *lip;
     int smallidx;
-    unsigned sizeint[3], sizesmall[3], bitsizeint[3], size3;
-    int k, natoms, flag;
-    int smallnum, smaller, i, is_smaller, run;
+    int natoms, flag;
+    int smallnum, smaller, is_smaller, run;
     float *lfp, inv_precision;
-    int tmp, thiscoord[3], prevcoord[3];
     unsigned int bitsize;
     const float* ptrstart = ptr;
 
-    bitsizeint[0] = 0;
-    bitsizeint[1] = 0;
-    bitsizeint[2] = 0;
+    v4i_t sizesmall, thiscoord, prevcoord;
+
+    size_t temp_pos = md_temp_get_pos();
 
     if (xfp == NULL || ptr == NULL) {
         return false;
@@ -438,7 +629,7 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         return false; /* return if we could not read size */
     }
     *size = natoms;
-    size3 = *size * 3;
+    uint32_t size3 = natoms * 3;
 
     /* Dont bother with compression for three atoms or less */
     if (*size <= 9) {
@@ -449,77 +640,120 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
     if (!xdr_read_float(precision, 1, xfp)) {
         goto done;
     }
-    if (!xdr_read_int32(minint, 3, xfp) || !xdr_read_int32(maxint, 3, xfp)) {
+    v4i_t minint, maxint;
+    if (!xdr_read_int32(minint.arr, 3, xfp) || !xdr_read_int32(maxint.arr, 3, xfp)) {
         goto done;
     }
 
-    sizeint[0] = maxint[0] - minint[0] + 1;
-    sizeint[1] = maxint[1] - minint[1] + 1;
-    sizeint[2] = maxint[2] - minint[2] + 1;
+    v4i_t sizeint;
+    sizeint.v = md_mm_add_epi32(md_mm_sub_epi32(maxint.v, minint.v), md_mm_set1_epi32(1));
+
+    unpack_data_t big_unpack = {
+        .size_zy = sizeint.arr[1] * sizeint.arr[2],
+        .size_z = sizeint.arr[2],
+        .div_zy = libdivide_u64_branchfree_gen(sizeint.arr[1] * sizeint.arr[2]),
+        .div_z = libdivide_u32_branchfree_gen(sizeint.arr[2]),
+    };
 
     /* check if one of the sizes is to big to be multiplied */
-    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
-        bitsizeint[0] = sizeofint(sizeint[0]);
-        bitsizeint[1] = sizeofint(sizeint[1]);
-        bitsizeint[2] = sizeofint(sizeint[2]);
+    uint32_t bitsizeint[3] = {0};
+    if ((sizeint.arr[0] | sizeint.arr[1] | sizeint.arr[2]) > 0xffffff) {
+        bitsizeint[0] = sizeofint(sizeint.arr[0]);
+        bitsizeint[1] = sizeofint(sizeint.arr[1]);
+        bitsizeint[2] = sizeofint(sizeint.arr[2]);
         bitsize = 0; /* flag the use of large sizes */
     } else {
-        bitsize = sizeofints(3, sizeint);
+        bitsize = sizeofints(3, (unsigned int*)sizeint.arr);
+        init_unpack_data_bits(&big_unpack, bitsize);
     }
 
     if (!xdr_read_int32(&smallidx, 1, xfp)) {
         return false; /* not sure what has happened here or why we return... */
     }
-    tmp = smallidx + 8;
+    int tmp = smallidx + 8;
     tmp = smallidx - 1;
     tmp = (FIRSTIDX > tmp) ? FIRSTIDX : tmp;
     smaller = magicints[tmp] / 2;
     smallnum = magicints[smallidx] / 2;
-    sizesmall[0] = sizesmall[1] = sizesmall[2] = magicints[smallidx];
+    uint32_t smallsize = magicints[smallidx];
 
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+    unpack_data_t sml_unpack = {
+        .size_zy = (uint64_t)smallsize * smallsize,
+        .size_z  = smallsize,
+        .div_zy = denoms64[smallidx - FIRSTIDX],
+        .div_z  = denoms32[smallidx - FIRSTIDX],
+    };
 
     bool result = false;
 
     /* length in bytes */
-    uint32_t num_bytes;
+    uint32_t num_bytes = 0;
     if (!xdr_read_int32((int32_t*)&num_bytes, 1, xfp)) {
         goto done;
     }
 
-    uint64_t* buf = md_vm_arena_push(arena, ALIGN_TO(num_bytes + sizeof(int) * 3, 16));
-    buf[0] = buf[1] = buf[2] = 0;
+    size_t mem_size = ALIGN_TO(num_bytes, 16);
+    uint64_t* mem = md_temp_push_aligned(mem_size, 16);
 
-    if (!xdr_read_bytes((uint8_t*)&buf[3], num_bytes, xfp)) {
+    if (!xdr_read_bytes((uint8_t*)mem, num_bytes, xfp)) {
         goto done;
     }
 
-    bit_reader_t br = bit_reader_create((uint64_t*)&buf[3]);
+    br_t br = {0};
+    br_init(&br, mem, mem_size / 8);
+
+#if 0
+    bit_reader_t r = bit_reader_create(buf);
+#endif
 
     lfp = ptr;
     inv_precision = 1.0f / *precision;
     run = 0;
     int atom_idx = 0;
+    //printf("bitsize: %i\n", bitsize);
+    //printf("sizeint: [%u, %u, %u]\n", sizeint.arr[0], sizeint.arr[1], sizeint.arr[2]);
+    int max_smallidx = 0;
+
     while (atom_idx++ < natoms) {
         if (bitsize == 0) {
-            thiscoord[i] = bit_reader_read_int(&br, bitsizeint[i]);
+#if 0
+            for (int i = 0; i < 3; ++i) {
+                thiscoord.arr[i] = bit_reader_read_int(&r, bitsizeint.arr[i]);
+            }
+#endif
+            thiscoord = br_read_ints(&br, bitsizeint);
         } else {
-            bit_reader_unpack(&br, bitsize, sizeint, thiscoord);
+            uint64_t v = br_read_u64(&br, &big_unpack);
+            thiscoord = unpack_u64_to_v4i(v, &big_unpack);
+#if 0
+            uint64_t x = bit_reader_unpack_from_uint64(&r, bitsize, sizeint.arr, thiscoord.arr);
+            if (x != y) {
+                while(0) {};
+            }
+#endif
         }
 
-        thiscoord[0] += minint[0];
-        thiscoord[1] += minint[1];
-        thiscoord[2] += minint[2];
+        thiscoord = v4i_add(thiscoord, minint);
+        prevcoord = thiscoord;
 
-        prevcoord[0] = thiscoord[0];
-        prevcoord[1] = thiscoord[1];
-        prevcoord[2] = thiscoord[2];
+        flag = (int)br_read(&br, 1);
 
-        flag = bit_reader_read(&br, 1);
+#if 0
+        int flg = bit_reader_read(&r, 1);
+        if (flg != flag) {
+            while(0) {};
+        }
+#endif
 
         is_smaller = 0;
         if (flag == 1) {
-            run = bit_reader_read(&br, 5);
+            run = (int)br_read(&br, 5);
+#if 0
+            int rn = bit_reader_read(&r, 5);
+            if (run != rn) {
+                while (0) {};
+            }
+#endif
 
             is_smaller = run % 3;
             run -= is_smaller;
@@ -530,36 +764,312 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
             goto done;
         }
         if (run > 0) {
-            for (k = 0; k < run; k += 3) {
-                atom_idx++;
-                bit_reader_unpack(&br, smallidx, sizesmall, thiscoord);
+            //printf("run: %i\n", run);
+            //printf("smallidx:  %i\n", smallidx);
+            //printf("sizesmall: %i\n", sizesmall.arr[0]);
+            //printf("sizesmall: %i\n", sml_unpack.sz);
+#if 0
+            int count = run / 3;
+            v4i_t vsmall;
+            vsmall.v = _mm_set1_epi32(smallnum);
 
-                thiscoord[0] += prevcoord[0] - smallnum;
-                thiscoord[1] += prevcoord[1] - smallnum;
-                thiscoord[2] += prevcoord[2] - smallnum;
-                if (k == 0) {
+            for (int i = 0; i < count; ++i) {
+                uint64_t v = br_read_u64(&br, &sml_unpack);
+                thiscoord = unpack_u64_to_v4i(v, &sml_unpack);
+                thiscoord.v = md_mm_add_epi32(thiscoord.v, md_mm_sub_epi32(prevcoord.v, md_mm_set1_epi32(smallnum)));
+
+                if (i == 0) {
                     /* interchange first with second atom for better
                     * compression of water molecules
                     */
-                    int tempcoord[3];
-                    MEMCPY(tempcoord, thiscoord, sizeof(int) * 3);
-                    MEMCPY(thiscoord, prevcoord, sizeof(int) * 3);
-                    MEMCPY(prevcoord, tempcoord, sizeof(int) * 3);
+                    v4i_t tempcoord;
+                    tempcoord = thiscoord;
+                    thiscoord = prevcoord;
+                    prevcoord = tempcoord;
 
-                    *lfp++ = prevcoord[0] * inv_precision;
-                    *lfp++ = prevcoord[1] * inv_precision;
-                    *lfp++ = prevcoord[2] * inv_precision;
+                    //buf_submit_vec128i(&buf, prevcoord.v, 3, inv_precision);
+                    write_coord(lfp, prevcoord, inv_precision);
+                    lfp += 3;
                 } else {
-                    MEMCPY(prevcoord, thiscoord, sizeof(int) * 3);
+                    prevcoord = thiscoord;
                 }
-                *lfp++ = thiscoord[0] * inv_precision;
-                *lfp++ = thiscoord[1] * inv_precision;
-                *lfp++ = thiscoord[2] * inv_precision;
+                //buf_submit_vec128i(&buf, thiscoord.v, 3, inv_precision);
+
+                write_coord(lfp, thiscoord, inv_precision);
+                lfp += 3;
             }
+#endif
+            int count = run / 3;
+            v4i_t vsmall;
+            vsmall.v = _mm_set1_epi32(smallnum);
+            if (count < 4) {
+                uint64_t v = br_read_u64(&br, &sml_unpack);
+                v4i_t coord = unpack_u64_to_v4i(v, &sml_unpack);
+                thiscoord.v = md_mm_add_epi32(coord.v, md_mm_sub_epi32(thiscoord.v, vsmall.v));
+
+                write_coord(lfp, thiscoord, inv_precision);
+                lfp += 3;
+                write_coord(lfp, prevcoord, inv_precision);
+                lfp += 3;
+
+                for (int i = 1; i < count; ++i) {
+                    v = br_read_u64(&br, &sml_unpack);
+                    coord = unpack_u64_to_v4i(v, &sml_unpack);
+                    thiscoord.v = md_mm_add_epi32(coord.v, md_mm_sub_epi32(thiscoord.v, vsmall.v));
+                    write_coord(lfp, thiscoord, inv_precision);
+                    lfp += 3;
+                }
+            } else {
+                float ref_x[8], ref_y[8], ref_z[8];
+
+                uint64_t bits[8];
+                for (int i = 0; i < count; ++i) {
+                    bits[i] = br_read_u64(&br, &sml_unpack);
+                }
+
+                __m256i v = _mm256_load_si256((__m256i*)bits);
+                __m256i x1 = libdivide_u64_branchfree_do_vec256(v, &sml_unpack.div_zy);
+                __m256i q1 = _mm256_sub_epi64(v, _mm256_mul_epu32(x1, _mm256_set1_epi32((uint32_t)sml_unpack.size_zy)));
+                x1 = _mm256_permutevar8x32_epi32(x1, _mm256_set_epi32(-1, -1, -1, -1, 6, 4, 2, 0));
+                q1 = _mm256_permutevar8x32_epi32(q1, _mm256_set_epi32(-1, -1, -1, -1, 6, 4, 2, 0));
+
+                if (count > 4) {
+                    __m256i w  = _mm256_load_si256((__m256i*)(bits + 4));
+                    __m256i x2 = libdivide_u64_branchfree_do_vec256(w, &sml_unpack.div_zy);
+                    __m256i q2 = _mm256_sub_epi64(w, _mm256_mul_epu32(x2, _mm256_set1_epi32((uint32_t)sml_unpack.size_zy)));
+                    x2 = _mm256_permutevar8x32_epi32(x2, _mm256_set_epi32(6, 4, 2, 0, -1, -1, -1, -1));
+                    q2 = _mm256_permutevar8x32_epi32(q2, _mm256_set_epi32(6, 4, 2, 0, -1, -1, -1, -1));
+                    x1 = _mm256_blend_epi32(x1, x2, 0x00AA);
+                    q1 = _mm256_blend_epi32(q1, q2, 0x00AA);
+                }
+
+                __m256i y1 = libdivide_u32_branchfree_do_vec256(q1, &sml_unpack.div_z);
+                __m256i z1 = _mm256_sub_epi32(q1, _mm256_mullo_epi32(y1, _mm256_set1_epi32(sml_unpack.size_z)));
+
+                x1 = _mm256_sub_epi32(x1, _mm256_set1_epi32(smallnum));
+                y1 = _mm256_sub_epi32(y1, _mm256_set1_epi32(smallnum));
+                z1 = _mm256_sub_epi32(z1, _mm256_set1_epi32(smallnum));
+
+                x1 = _mm256_prefix_sum_epi32(x1);
+                y1 = _mm256_prefix_sum_epi32(y1);
+                z1 = _mm256_prefix_sum_epi32(z1);
+
+                x1 = _mm256_add_epi32(x1, _mm256_set1_epi32(prevcoord.arr[0]));
+                y1 = _mm256_add_epi32(y1, _mm256_set1_epi32(prevcoord.arr[1]));
+                z1 = _mm256_add_epi32(z1, _mm256_set1_epi32(prevcoord.arr[2]));
+
+                __m256 scl = _mm256_set1_ps(inv_precision);
+                __m256 x = _mm256_mul_ps(_mm256_cvtepi32_ps(x1), scl);
+                __m256 y = _mm256_mul_ps(_mm256_cvtepi32_ps(y1), scl);
+                __m256 z = _mm256_mul_ps(_mm256_cvtepi32_ps(z1), scl);
+
+                // Interleave x, y, z and write back to memory
+
+                // Step 1: Interleave x and y using unpack operations
+                __m256 xy_lo = _mm256_unpacklo_ps(x, y); // [ x0, y0, x1, y1, x2, y2, x3, y3 ]
+                __m256 xy_hi = _mm256_unpackhi_ps(x, y); // [ x4, y4, x5, y5, x6, y6, x7, y7 ]
+
+                // Step 2: Interleave z into the xy pairs
+                __m256 xyz_lo = _mm256_unpacklo_ps(xy_lo, z); // [ x0, y0, z0, x1, y1, z1, x2, y2 ]
+                __m256 xyz_hi = _mm256_unpackhi_ps(xy_lo, z); // [ z2, x3, y3, z3, x4, y4, z4, x5 ]
+                __m256 xyz_ex = _mm256_unpackhi_ps(xy_hi, z); // [ y5, z5, x6, y6, z6, x7, y7, z7 ]
+
+                // Store first entry
+                _mm_storeu_ps(lfp, _mm256_castps256_ps128(xyz_lo));
+                lfp += 3;
+
+                // Swap in prevcoords XYZ
+                __m128 prev_xyz = _mm_mul_ps(_mm_cvtepi32_ps(prevcoord.v), _mm256_castps256_ps128(scl));
+                xyz_lo = _mm256_blend_ps(xyz_lo, _mm256_castps128_ps256(prev_xyz), 7);
+
+                // Store count elements to
+                _mm256_storeu_ps(lfp, xyz_lo);
+                _mm256_storeu_ps(lfp + 8, xyz_hi);
+                _mm256_storeu_ps(lfp + 16, xyz_ex);
+                lfp += run;
+            }
+            atom_idx += count;
+#if 0
+                uint64_t bits[8];
+                int count = 0;
+                for (int i = 0; i < run; i += 3) {
+                    uint64_t w = br_read(&br, num_of_bits);
+                    uint64_t r = ((w << sml_bits.sml_shift) & (~0xFFull)) | (w & sml_bits.part_mask);
+                    uint64_t v = BSWAP64(r) >> sml_bits.big_shift;
+                    bits[count++] = v;
+                }
+
+                //printf("count: %i\n", count);
+
+                atom_idx += count;
+
+                for (int i = 0; i < count; ++i) {
+                    uint64_t v = bits[i];
+                    uint32_t x1 = libdivide_u64_branchfree_do(v, &sml_div.div_zy);
+                    uint32_t q1 = (uint32_t)(v - x1 * sml_div.szy);
+                    uint32_t y1 = libdivide_u32_branchfree_do(q1, &sml_div.div_z);
+                    uint32_t z1 = q1 - y1 * sml_div.sz;
+                    thiscoord.v = md_mm_add_epi32(md_mm_set_epi32(0, z1, y1, x1), md_mm_sub_epi32(prevcoord.v, md_mm_set1_epi32(smallnum)));
+
+                    if (i == 0) {
+                        /* interchange first with second atom for better
+                        * compression of water molecules
+                        */
+                        v4i_t tempcoord;
+                        tempcoord = thiscoord;
+                        thiscoord = prevcoord;
+                        prevcoord = tempcoord;
+
+                        //buf_submit_vec128i(&buf, prevcoord.v, 3, inv_precision);
+                        write_coord(lfp, prevcoord, inv_precision);
+                        lfp += 3;
+                    } else {
+                        prevcoord = thiscoord;
+                    }
+                    //buf_submit_vec128i(&buf, thiscoord.v, 3, inv_precision);
+
+                    write_coord(lfp, thiscoord, inv_precision);
+                    lfp += 3;
+                }
+            }
+#endif
+
+#if 0
+            // Deal with first coord as it should be written before
+            uint64_t v = bits[0];
+            uint32_t x1 = libdivide_u64_branchfree_do(v, &sml_unpack.div_zy);
+            uint32_t q1 = v - x1 * (uint32_t)sml_unpack.szy;
+            uint32_t y1 = libdivide_u32_branchfree_do(q1, &sml_unpack.div_z);
+            uint32_t z1 = q1 - y1 * sml_unpack.sz;
+            thiscoord.v = md_mm_add_epi32(md_mm_set_epi32(0, z1, y1, x1), md_mm_sub_epi32(thiscoord.v, md_mm_set1_epi32(smallnum)));
+            // Interchange first with second for better compression of water molecules
+            write_coord(lfp, thiscoord, inv_precision);
+            lfp += 3;
+            write_coord(lfp, prevcoord, inv_precision);
+            lfp += 3;
+
+            thiscoord = prevcoord;
+
+#if 1
+            for (int i = 0; i < count; ++i) {
+                uint64_t v = bits[i];
+                uint32_t x1 = libdivide_u64_branchfree_do(v, &sml_unpack.div_zy);
+                uint32_t q1 = v - x1 * sml_unpack.szy;
+                uint32_t y1 = libdivide_u32_branchfree_do(q1, &sml_unpack.div_z);
+                uint32_t z1 = q1 - y1 * sml_unpack.sz;
+                thiscoord.v = md_mm_add_epi32(md_mm_set_epi32(0, z1, y1, x1), md_mm_sub_epi32(prevcoord.v, md_mm_set1_epi32(smallnum)));
+
+                if (i == 0) {
+                    /* interchange first with second atom for better
+                    * compression of water molecules
+                    */
+                    v4i_t tempcoord;
+                    tempcoord = thiscoord;
+                    thiscoord = prevcoord;
+                    prevcoord = tempcoord;
+
+                    write_coord(lfp, prevcoord, inv_precision);
+                    lfp += 3;
+                } else {
+                    prevcoord = thiscoord;
+                }
+                write_coord(lfp, thiscoord, inv_precision);
+                lfp += 3;
+            }
+#else
+#if 0
+            for (int i = 1; i < count; ++i) {
+                uint64_t v = bits[i];
+                uint32_t x1 = libdivide_u64_branchfree_do(v, &sml_unpack.div_zy);
+                uint32_t q1 = v - x1 * sml_unpack.szy;
+                uint32_t y1 = libdivide_u32_branchfree_do(q1, &sml_unpack.div_z);
+                uint32_t z1 = q1 - y1 * sml_unpack.sz;
+                thiscoord.v = md_mm_add_epi32(md_mm_set_epi32(0, z1, y1, x1), md_mm_sub_epi32(thiscoord.v, md_mm_set1_epi32(smallnum)));
+                write_coord(lfp, prevcoord, inv_precision);
+                lfp += 3;
+            }
+#endif
+
+#if 0
+            __m256i v = _mm256_load_si256((__m256i*)bits);
+            __m256i x1 = libdivide_u64_branchfree_do_vec256(v, &sml_unpack.div_zy);
+            __m256i q1 = _mm256_sub_epi64(v, _mm256_mul_epu32(x1, _mm256_set1_epi32((uint32_t)sml_unpack.szy)));
+            x1 = _mm256_permutevar8x32_epi32(x1, _mm256_set_epi32(-1, -1, -1, -1, 6, 4, 2, 0));
+            q1 = _mm256_permutevar8x32_epi32(q1, _mm256_set_epi32(-1, -1, -1, -1, 6, 4, 2, 0));
+                    
+            if (count > 4) {
+                __m256i w  = _mm256_load_si256((__m256i*)(bits + 4));
+                __m256i x2 = libdivide_u64_branchfree_do_vec256(w, &sml_unpack.div_zy);
+                __m256i q2 = _mm256_sub_epi64(w, _mm256_mul_epu32(x2, _mm256_set1_epi32((uint32_t)sml_unpack.szy)));
+                x2 = _mm256_permutevar8x32_epi32(x2, _mm256_set_epi32(6, 4, 2, 0, -1, -1, -1, -1));
+                q2 = _mm256_permutevar8x32_epi32(q2, _mm256_set_epi32(6, 4, 2, 0, -1, -1, -1, -1));
+                x1 = _mm256_blend_epi32(x1, x2, 0x00AA);
+                q1 = _mm256_blend_epi32(q1, q2, 0x00AA);
+            }
+
+            __m256i y1 = libdivide_u32_branchfree_do_vec256(q1, &sml_unpack.div_z);
+            __m256i z1 = _mm256_sub_epi32(q1, _mm256_mullo_epi32(y1, _mm256_set1_epi32(sml_unpack.sz)));
+
+            x1 = _mm256_sub_epi32(x1, _mm256_set1_epi32(smallnum));
+            y1 = _mm256_sub_epi32(y1, _mm256_set1_epi32(smallnum));
+            z1 = _mm256_sub_epi32(z1, _mm256_set1_epi32(smallnum));
+
+            x1 = _mm256_prefix_sum_epi32(x1);
+            y1 = _mm256_prefix_sum_epi32(y1);
+            z1 = _mm256_prefix_sum_epi32(z1);
+
+            x1 = _mm256_add_epi32(x1, _mm256_set1_epi32(prevcoord.arr[0]));
+            y1 = _mm256_add_epi32(y1, _mm256_set1_epi32(prevcoord.arr[1]));
+            z1 = _mm256_add_epi32(z1, _mm256_set1_epi32(prevcoord.arr[2]));
+
+            __m256 scl = _mm256_set1_ps(inv_precision);
+            __m256 x = _mm256_mul_ps(_mm256_cvtepi32_ps(x1), scl);
+            __m256 y = _mm256_mul_ps(_mm256_cvtepi32_ps(y1), scl);
+            __m256 z = _mm256_mul_ps(_mm256_cvtepi32_ps(z1), scl);
+
+            // Interleave x, y, z and write back to memory
+                
+            // Step 1: Interleave x and y using unpack operations
+            __m256 xy_lo = _mm256_unpacklo_ps(x, y); // [ x0, y0, x1, y1, x2, y2, x3, y3 ]
+            __m256 xy_hi = _mm256_unpackhi_ps(x, y); // [ x4, y4, x5, y5, x6, y6, x7, y7 ]
+
+            // Step 2: Interleave z into the xy pairs
+            __m256 xyz_lo = _mm256_unpacklo_ps(xy_lo, z); // [ x0, y0, z0, x1, y1, z1, x2, y2 ]
+            __m256 xyz_hi = _mm256_unpackhi_ps(xy_lo, z); // [ z2, x3, y3, z3, x4, y4, z4, x5 ]
+            __m256 xyz_ex = _mm256_unpackhi_ps(xy_hi, z); // [ y5, z5, x6, y6, z6, x7, y7, z7 ]
+
+            // Step 3: Shuffle and reorder to get final interleaved result
+            write_coord(lfp, prevcoord, inv_precision);
+            lfp += 3;
+
+            int num_elem = 3 * count;
+            MEMCPY(lfp, &xyz_lo, MIN(num_elem, 8) * sizeof(float));
+            lfp += MIN(num_elem, 8);
+            num_elem -= 8;
+            if (num_elem > 0) {
+                MEMCPY(lfp, &xyz_hi, MIN(num_elem, 8) * sizeof(float));
+                lfp += MIN(num_elem, 8);
+                num_elem -= 8;
+            }
+            if (num_elem > 0) {
+                MEMCPY(lfp, &xyz_ex, MIN(num_elem, 8) * sizeof(float));
+                lfp += MIN(num_elem, 8);
+            }
+#endif
+
+            /*
+            for (int i = 0; i < count; ++i) {
+                write_coord(lfp, coords[i], inv_precision);
+                lfp += 3;
+            }
+            */
+#endif
+#endif
+
         } else {
-            *lfp++ = thiscoord[0] * inv_precision;
-            *lfp++ = thiscoord[1] * inv_precision;
-            *lfp++ = thiscoord[2] * inv_precision;
+            //buf_submit_vec128i(&buf, thiscoord.v, 3, inv_precision);
+            write_coord(lfp, thiscoord, inv_precision);
+            lfp += 3;
         }
         smallidx += is_smaller;
         if (is_smaller < 0) {
@@ -569,15 +1079,24 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
             smaller = smallnum;
             smallnum = magicints[smallidx] / 2;
         }
-        sizesmall[0] = sizesmall[1] = sizesmall[2] = magicints[smallidx];
-        if (sizesmall[0] == 0 || sizesmall[1] == 0 || sizesmall[2] == 0) {
+        uint32_t new_small = magicints[smallidx];
+        if (new_small == 0) {
             MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
             goto done;
+        }
+        if (new_small != sml_unpack.size_z) {
+            uint32_t idx = smallidx - FIRSTIDX;
+            sml_unpack.size_zy    = (uint64_t)new_small * new_small;
+            sml_unpack.size_z     = new_small;
+            sml_unpack.div_zy = denoms64[idx];
+            sml_unpack.div_z  = denoms32[idx];
+
+            init_unpack_data_bits(&sml_unpack, smallidx);
         }
     }
     result = true;
 done:
-    md_vm_arena_destroy(arena);
+    md_temp_set_pos_back(temp_pos);
     return result;
 }
 
