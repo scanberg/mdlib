@@ -81,6 +81,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_store_ps simde_mm256_store_ps
 #define md_mm256_store_pd simde_mm256_store_pd
 
+#define md_mm_maskstore_ps simde_mm_maskstore_ps
+#define md_mm_maskstore_pd simde_mm_maskstore_pd
+#define md_mm256_maskstore_ps simde_mm256_maskstore_ps
+#define md_mm256_maskstore_pd simde_mm256_maskstore_pd
+
 #define md_mm_set1_ps simde_mm_set1_ps
 #define md_mm_set1_pd simde_mm_set1_pd
 #define md_mm256_set1_ps simde_mm256_set1_ps

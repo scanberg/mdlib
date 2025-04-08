@@ -1,4 +1,4 @@
-#include <md_xtc.h>
+﻿#include <md_xtc.h>
 
 #include <md_util.h>
 #include <md_trajectory.h>
@@ -12,11 +12,8 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
-#include <core/md_lru_cache.inl>
-
 #include <xdrfile.h>
 
-#define LIBDIVIDE_AVX2
 #include <libdivide.h>
 
 #include <string.h>
@@ -30,6 +27,7 @@
 #define MD_XTC_CACHE_VERSION 3
 
 #define MD_XTC_TRAJ_MAGIC 0x162365dac721995
+
 #define XTC_MAGIC 1995
 
 /* XTC small header size (natoms<=9).
@@ -63,7 +61,7 @@ typedef struct xtc_t {
     md_array(int64_t) frame_offsets;
     md_trajectory_header_t header;
     md_allocator_i* allocator;
-    md_mutex_t mutex;    
+    md_mutex_t mutex;
 } xtc_t;
 
 
@@ -157,77 +155,6 @@ static inline int sizeofints(int num_of_ints, unsigned int sizes[]) {
         num *= 2;
     }
     return num_of_bits + num_of_bytes * 8;
-}
-
-static inline int decodebits(int buf[3], int num_of_bits) {
-    int cnt, num;
-    unsigned int lastbits, lastbyte;
-    unsigned char* cbuf;
-    int mask = (1 << num_of_bits) - 1;
-
-    cbuf = ((unsigned char*)buf) + 3 * sizeof(*buf);
-    cnt = buf[0];
-    lastbits = (unsigned int)buf[1];
-    lastbyte = (unsigned int)buf[2];
-
-    num = 0;
-    while (num_of_bits >= 8) {
-        lastbyte = (lastbyte << 8) | cbuf[cnt++];
-        num |= (lastbyte >> lastbits) << (num_of_bits - 8);
-        num_of_bits -= 8;
-    }
-    if (num_of_bits > 0) {
-        if (lastbits < num_of_bits) {
-            lastbits += 8;
-            lastbyte = (lastbyte << 8) | cbuf[cnt++];
-        }
-        lastbits -= num_of_bits;
-        num |= (lastbyte >> lastbits) & ((1 << num_of_bits) - 1);
-    }
-    num &= mask;
-    buf[0] = cnt;
-    buf[1] = lastbits;
-    buf[2] = lastbyte;
-    return num;
-}
-
-/*
-* decodeints - decode 'small' integers from the buf array
-*
-* this routine is the inverse from encodeints() and decodes the small integers
-* written to buf by calculating the remainder and doing divisions with
-* the given sizes[]. You need to specify the total number of bits to be
-* used from buf in num_of_bits.
-*
-*/
-
-static inline void decodeints(int buf[], int num_of_ints, int num_of_bits, unsigned int sizes[], int nums[3]) {
-
-    int bytes[16];
-    int i, j, num_of_bytes, p, num, size;
-
-    bytes[1] = bytes[2] = bytes[3] = 0;
-    num_of_bytes = 0;
-    while (num_of_bits > 8) {
-        bytes[num_of_bytes++] = decodebits(buf, 8);
-        num_of_bits -= 8;
-    }
-    if (num_of_bits > 0) {
-        bytes[num_of_bytes++] = decodebits(buf, num_of_bits);
-    }
-    //printf("num_bytes %i\n", num_of_bytes);
-    for (i = num_of_ints - 1; i > 0; i--) {
-        num = 0;
-        size = sizes[i];
-        for (j = num_of_bytes - 1; j >= 0; j--) {
-            num = (num << 8) | bytes[j];
-            p = num / size;
-            num = num - p * size;
-            bytes[j] = p;
-        }
-        nums[i] = num;
-    }
-    nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
 }
 
 static const uint32_t magicints[] = {
@@ -349,17 +276,17 @@ typedef struct {
 } unpack_data_t;
 
 typedef md_128i v4i_t;
-#define v4i_set(x, y, z, w) md_mm_set_epi32(w, z, z, x)
+#define v4i_set(x, y, z, w) md_mm_set_epi32(w, z, y, x)
 #define v4i_set1(x)         md_mm_set1_epi32(x)
 #define v4i_add(a, b)       md_mm_add_epi32(a, b)
 #define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
-#define v4i_load(addr)      md_mm_loadu_epi32(addr)
+#define v4i_load(addr)      _mm_loadu_si32(addr)
 
 static inline write_coord(float* dst, v4i_t coord, float inv_precision) {
-    md_128 v = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), md_mm_set1_ps(inv_precision));
-    //md_m128i mask = md_mm_set_epi32(0, -1, -1, -1);
-    //md_mm_maskstore_ps(dst, mask, v);
-    MEMCPY(dst, &v, 3 * sizeof(float));
+    md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), md_mm_set1_ps(inv_precision));
+    md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
+    md_mm_maskstore_ps(dst, mask, data);
+    //MEMCPY(dst, &v, 3 * sizeof(float));
 }
 
 static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bits) {
@@ -370,67 +297,64 @@ static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bi
     data->part_mask = partbits ? (1ul << partbits) - 1 : 0xFF;
 }
 
-static inline v4i_t unpack_coord(br_t* r, const unpack_data_t* unpack) {
-    v4i_t res;
-    if (unpack->num_of_bits <= 64) {
-        uint64_t w = br_read(r, unpack->num_of_bits);
-        uint64_t t = ((w << unpack->sml_shift) & (~0xFFull)) | (w & unpack->part_mask);
-        uint64_t v = BSWAP64(t) >> unpack->big_shift;
+static inline v4i_t unpack_coord64(br_t* r, const unpack_data_t* unpack) {
+    uint64_t w = br_read(r, unpack->num_of_bits);
+    uint64_t t = ((w << unpack->sml_shift) & (~0xFFull)) | (w & unpack->part_mask);
+    uint64_t v = BSWAP64(t) >> unpack->big_shift;
 
-        uint32_t x1 = libdivide_u64_branchfree_do(v, &unpack->div_zy);
-        uint32_t q1 = (uint32_t)(v - x1 * unpack->size_zy);
+    uint32_t x1 = libdivide_u64_branchfree_do(v, &unpack->div_zy);
+    uint32_t q1 = (uint32_t)(v - x1 * unpack->size_zy);
 
-        uint32_t y1 = libdivide_u32_branchfree_do(q1, &unpack->div_z);
-        uint32_t z1 = q1 - y1 * unpack->size_z;
+    uint32_t y1 = libdivide_u32_branchfree_do(q1, &unpack->div_z);
+    uint32_t z1 = q1 - y1 * unpack->size_z;
 
-        res = v4i_set(x1, y1, z1, 0);
-    } else {
-        int fullbytes = unpack->num_of_bits >> 3;
-        int partbits  = unpack->num_of_bits  & 7;
+    return v4i_set(x1, y1, z1, 0);
+}
+
+static inline v4i_t unpack_coord128(br_t* r, const unpack_data_t* unpack) {
+    int fullbytes = unpack->num_of_bits >> 3;
+    int partbits  = unpack->num_of_bits  & 7;
 
 #ifdef HAS_INT128_T
-        int i = 0;
-        __uint128_t v = 0;
-        for (; i < fullbytes; i++) {
-            v |= ((__uint128_t) br_read(r, 8)) << (8 * i);
-        }
-        if (partbits) {
-            v |= ((__uint128_t) br_read(r, partbits)) << (8 * i);
-        }
-        uint32_t x1 = (uint32_t)(v / unpack->size_zy);
-        uint64_t q1 = (uint64_t)(v - x1*unpack->size_zy);
-        uint32_t y1 = (uint32_t)(q1 / unpack->size_z);
-        uint32_t z1 = (uint32_t)(q1 % unpack->size_z);
-        res = v4i_set(x1, y1, z1, 0);
-#else
-        // Default fallback
-        uint32_t nums[4] = {0};
-        uint32_t sizes[3] = {0, (uint32_t)(unpack->size_zy / unpack->size_z), unpack->size_z};
-        uint32_t bytes[16];
-        bytes[1] = bytes[2] = bytes[3] = 0;
-        int num_of_bits  = (int)unpack->num_of_bits;
-        int num_of_bytes = 0;
-        for (int i = 0; i < fullbytes; ++i) {
-            bytes[num_of_bytes++] = br_read(r, 8);
-        }
-        if (partbits) {
-            bytes[num_of_bytes++] = br_read(buf, partbits);
-        }
-        for (int i = 2; i > 0; i--) {
-            uint32_t num = 0;
-            for (int j = num_of_bytes - 1; j >= 0; j--) {
-                num = (num << 8) | bytes[j];
-                bytes[j] = num / sizes[i];
-                num = num % size[i];
-            }
-            nums[i] = num;
-        }
-        nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
-        res = v4i_load(nums);
-#endif
+    int i = 0;
+    __uint128_t v = 0;
+    for (; i < fullbytes; i++) {
+        v |= ((__uint128_t) br_read(r, 8)) << (8 * i);
     }
-
-    return res;
+    if (partbits) {
+        v |= ((__uint128_t) br_read(r, partbits)) << (8 * i);
+    }
+    uint32_t x1 = (uint32_t)(v / unpack->size_zy);
+    uint64_t q1 = (uint64_t)(v - x1*unpack->size_zy);
+    uint32_t y1 = (uint32_t)(q1 / unpack->size_z);
+    uint32_t z1 = (uint32_t)(q1 % unpack->size_z);
+    return v4i_set(x1, y1, z1, 0);
+#else
+    // Default fallback
+    uint32_t nums[4] = {0};
+    uint32_t sizes[3] = {0, (uint32_t)(unpack->size_zy / unpack->size_z), unpack->size_z};
+    uint32_t bytes[16];
+    bytes[1] = bytes[2] = bytes[3] = 0;
+    int num_of_bits  = (int)unpack->num_of_bits;
+    int num_of_bytes = 0;
+    for (int i = 0; i < fullbytes; ++i) {
+        bytes[num_of_bytes++] = br_read(r, 8);
+    }
+    if (partbits) {
+        bytes[num_of_bytes++] = br_read(buf, partbits);
+    }
+    for (int i = 2; i > 0; i--) {
+        uint32_t num = 0;
+        for (int j = num_of_bytes - 1; j >= 0; j--) {
+            num = (num << 8) | bytes[j];
+            bytes[j] = num / sizes[i];
+            num = num % size[i];
+        }
+        nums[i] = num;
+    }
+    nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+    return v4i_load(nums);
+#endif
 }
 
 static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
@@ -547,13 +471,18 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
     v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
     v4i_t thiscoord;
     uint32_t run = 0;
+    uint32_t run_count = 0;
     uint32_t atom_idx = 0;
 
     while (atom_idx++ < natoms) {
         if (bitsize == 0) {
             thiscoord = br_read_ints(&br, bitsizeint);
         } else {
-            thiscoord = unpack_coord(&br, &big_unpack);
+            if (big_unpack.num_of_bits <= 64) {
+                thiscoord = unpack_coord64(&br, &big_unpack);
+            } else {
+                thiscoord = unpack_coord128(&br, &big_unpack);
+            }
         }
 
         thiscoord = v4i_add(thiscoord, vminint);
@@ -566,6 +495,7 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         is_smaller = 0;
         if (flag) {
             run = (uint32_t)(data & 31);
+            run_count  = run / 3;
             is_smaller = run % 3;
             run -= is_smaller;
             is_smaller--;
@@ -576,27 +506,37 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         }
         if (run > 0) {
             v4i_t prevcoord = thiscoord;
-
-            int count = run / 3;
             v4i_t vsmall = v4i_set1(smallnum);
-            v4i_t coord = unpack_coord(&br, &sml_unpack);
-            thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
 
-            write_coord(lfp, thiscoord, inv_precision);
-            lfp += 3;
-            write_coord(lfp, prevcoord, inv_precision);
-            lfp += 3;
-
-            for (int i = 1; i < count; ++i) {
-                coord = unpack_coord(&br, &sml_unpack);
+            if (sml_unpack.num_of_bits <= 64) {
+                v4i_t coord = unpack_coord64(&br, &sml_unpack);
                 thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                write_coord(lfp, thiscoord, inv_precision);
-                lfp += 3;
+
+                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
+
+                for (uint32_t i = 1; i < run_count; ++i) {
+                    coord = unpack_coord64(&br, &sml_unpack);
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                }
+            } else {
+                v4i_t coord = unpack_coord128(&br, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
+
+                for (uint32_t i = 1; i < run_count; ++i) {
+                    coord = unpack_coord128(&br, &sml_unpack);
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                }
             }
-            atom_idx += count;
+
+            atom_idx += run_count;
         } else {
-            write_coord(lfp, thiscoord, inv_precision);
-            lfp += 3;
+            write_coord(lfp, thiscoord, inv_precision); lfp += 3;
         }
         smallidx += is_smaller;
         if (is_smaller < 0) {
@@ -612,7 +552,7 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
             goto done;
         }
         if (new_small != sml_unpack.size_z) {
-            uint32_t idx = smallidx - FIRSTIDX;
+            uint32_t idx            = smallidx - FIRSTIDX;
             sml_unpack.size_zy      = (uint64_t)new_small * new_small;
             sml_unpack.size_z       = new_small;
             sml_unpack.num_of_bits  = smallidx;
@@ -804,7 +744,7 @@ bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fram
     }
 }
 
-static bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
+static inline bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
     int result;
     float prec;
 

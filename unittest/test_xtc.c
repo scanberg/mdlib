@@ -254,6 +254,8 @@ UTEST(xtc, catalyst) {
                 xyz[j * 3 + 2] * 10.0f,
             };
             if (ref[0] != crd[0] || ref[1] != crd[1] || ref[2] != crd[2]) {
+                printf("Error in coordinate [%i], expected (%.3f, %.3f, %.3f), got (%.3f, %.3f, %.3f)",
+                    j, ref[0], ref[1], ref[2], crd[0], crd[1], crd[2]);
                 EXPECT_TRUE(false);
             }
         }
