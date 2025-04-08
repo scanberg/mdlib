@@ -802,10 +802,10 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
             int count = run / 3;
             v4i_t vsmall;
             vsmall.v = _mm_set1_epi32(smallnum);
-            if (count < 4) {
+            if (count < 16) {
                 uint64_t v = br_read_u64(&br, &sml_unpack);
                 v4i_t coord = unpack_u64_to_v4i(v, &sml_unpack);
-                thiscoord.v = md_mm_add_epi32(coord.v, md_mm_sub_epi32(thiscoord.v, vsmall.v));
+                thiscoord.v = _mm_add_epi32(coord.v, _mm_sub_epi32(thiscoord.v, vsmall.v));
 
                 write_coord(lfp, thiscoord, inv_precision);
                 lfp += 3;
@@ -815,7 +815,7 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
                 for (int i = 1; i < count; ++i) {
                     v = br_read_u64(&br, &sml_unpack);
                     coord = unpack_u64_to_v4i(v, &sml_unpack);
-                    thiscoord.v = md_mm_add_epi32(coord.v, md_mm_sub_epi32(thiscoord.v, vsmall.v));
+                    thiscoord.v = _mm_add_epi32(coord.v, _mm_sub_epi32(thiscoord.v, vsmall.v));
                     write_coord(lfp, thiscoord, inv_precision);
                     lfp += 3;
                 }
@@ -882,10 +882,14 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
                 __m128 prev_xyz = _mm_mul_ps(_mm_cvtepi32_ps(prevcoord.v), _mm256_castps256_ps128(scl));
                 xyz_lo = _mm256_blend_ps(xyz_lo, _mm256_castps128_ps256(prev_xyz), 7);
 
+                ALIGNAS(32) float data[24];
+
                 // Store count elements to
-                _mm256_storeu_ps(lfp, xyz_lo);
-                _mm256_storeu_ps(lfp + 8, xyz_hi);
-                _mm256_storeu_ps(lfp + 16, xyz_ex);
+                _mm256_storeu_ps(data, xyz_lo);
+                _mm256_storeu_ps(data + 8, xyz_hi);
+                _mm256_storeu_ps(data + 16, xyz_ex);
+
+                MEMCPY(lfp, data, run * sizeof(float));
                 lfp += run;
             }
             atom_idx += count;
