@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.15)
+﻿cmake_minimum_required(VERSION 3.15)
 
 project(md_unittest VERSION 0.1 LANGUAGES C)
 
@@ -46,6 +46,11 @@ if (${MD_ENABLE_VLX})
 endif()
 
 target_sources(md_unittest PRIVATE ${SRC_FILES})
+
+target_include_directories(md_unittest
+  PRIVATE
+  ../ext/xtc/
+)
 
 # adapted from https://github.com/Kitware/CMake/blob/master/Modules/GoogleTest.cmake
 # and https://github.com/Kitware/CMake/blob/master/Modules/GoogleTestAddTests.cmake

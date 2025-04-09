@@ -7,10 +7,16 @@
 
 #include <xdrfile_xtc.h>
 
+#define STR(x) {x"", sizeof(x"")-1};
+
+static const str_t cat_path = STR(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
+static const str_t amy_path = STR("E:/data/md/amyloid-6T/prod-centered.xtc");
+static const str_t asp_path = STR("E:/data/md/asp/inside-md-pullout.xtc");
+static const str_t ion_path = STR("E:/data/md/Delemotte_group/Ion_conducting/ef.xtc");
+
 UBENCH_EX(xtc, xdr_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(cat_path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -20,7 +26,7 @@ UBENCH_EX(xtc, xdr_catalyst) {
     UBENCH_SET_BYTES(md_file_size(file));
     md_file_close(file);
 
-    XDRFILE* xdr = xdrfile_open(path.ptr, "rb");
+    XDRFILE* xdr = xdrfile_open(cat_path.ptr, "rb");
     
     static const size_t num_frames = 501;
     static const size_t num_atoms  = 1336;
@@ -45,8 +51,7 @@ UBENCH_EX(xtc, xdr_catalyst) {
 
 UBENCH_EX(xtc, xdr_amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(amy_path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -56,10 +61,10 @@ UBENCH_EX(xtc, xdr_amyloid) {
     UBENCH_SET_BYTES(md_file_size(file));
     md_file_close(file);
 
-    XDRFILE* xdr = xdrfile_open(path.ptr, "rb");
+    XDRFILE* xdr = xdrfile_open(amy_path.ptr, "rb");
     
-    static const size_t num_frames = 2345;
-    static const size_t num_atoms  = 161742;
+    static const size_t num_frames = 5701;
+    static const size_t num_atoms  = 161271;
 
     int natoms, step;
     float time, prec, box[3][3];
@@ -81,8 +86,7 @@ UBENCH_EX(xtc, xdr_amyloid) {
 
 UBENCH_EX(xtc, xdr_aspirin) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/aspirin-phospholipase.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(asp_path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -92,7 +96,7 @@ UBENCH_EX(xtc, xdr_aspirin) {
     UBENCH_SET_BYTES(md_file_size(file));
     md_file_close(file);
 
-    XDRFILE* xdr = xdrfile_open(path.ptr, "rb");
+    XDRFILE* xdr = xdrfile_open(asp_path.ptr, "rb");
 
     static const size_t num_frames = 601;
     static const size_t num_atoms  = 5015;
@@ -117,8 +121,7 @@ UBENCH_EX(xtc, xdr_aspirin) {
 
 UBENCH_EX(xtc, xdr_ion_channel) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/ef.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(ion_path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -128,7 +131,7 @@ UBENCH_EX(xtc, xdr_ion_channel) {
     UBENCH_SET_BYTES(md_file_size(file));
     md_file_close(file);
 
-    XDRFILE* xdr = xdrfile_open(path.ptr, "rb");
+    XDRFILE* xdr = xdrfile_open(ion_path.ptr, "rb");
 
     static const size_t num_frames = 1989;
     static const size_t num_atoms  = 222387;
@@ -155,8 +158,7 @@ UBENCH_EX(xtc, xdr_ion_channel) {
 
 UBENCH_EX(xtc, xtc_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(cat_path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -195,8 +197,7 @@ UBENCH_EX(xtc, xtc_catalyst) {
 #if 1
 UBENCH_EX(xtc, xtc_amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(amy_path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -213,8 +214,8 @@ UBENCH_EX(xtc, xtc_amyloid) {
         return;
     }
 
-    static const size_t num_frames = 2345;
-    static const size_t num_atoms  = 161742;
+    static const size_t num_frames = 5701;
+    static const size_t num_atoms  = 161271;
 
     int natoms, step;
     float time, box[3][3];
@@ -234,8 +235,7 @@ UBENCH_EX(xtc, xtc_amyloid) {
 
 UBENCH_EX(xtc, xtc_aspirin) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/aspirin-phospholipase.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(asp_path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (!file) {
         MD_LOG_ERROR("Bad");
@@ -273,8 +273,7 @@ UBENCH_EX(xtc, xtc_aspirin) {
 
 UBENCH_EX(xtc, xtc_ion_channel) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
-    const str_t path = STR_LIT(MD_BENCHMARK_DATA_DIR "/ef.xtc");
-    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
+    md_file_o* file = md_file_open(ion_path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (!file) {
         MD_LOG_ERROR("Bad");

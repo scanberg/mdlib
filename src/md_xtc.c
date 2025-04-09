@@ -57,13 +57,13 @@
 
 typedef struct xtc_t {
     uint64_t magic;
-    XDRFILE* file;
+    md_file_o* file;
+    str_t filepath; // Store path if we need to create multiple file streams
     md_array(int64_t) frame_offsets;
     md_trajectory_header_t header;
     md_allocator_i* allocator;
-    md_mutex_t mutex;
+    //md_mutex_t mutex;
 } xtc_t;
-
 
 // XDR Specific stuff
 static inline bool xdr_read_bytes (uint8_t* ptr, size_t count, md_file_o* xdr_file) {
@@ -122,7 +122,7 @@ static inline int sizeofint(int size) {
     unsigned int num = 1;
     int num_of_bits = 0;
 
-    while (size >= num && num_of_bits < 32) {
+    while (size >= (int)num && num_of_bits < 32) {
         num_of_bits++;
         num <<= 1;
     }
@@ -130,12 +130,11 @@ static inline int sizeofint(int size) {
 }
 
 static inline int sizeofints(int num_of_ints, unsigned int sizes[]) {
-    int i, num;
-    unsigned int num_of_bytes, num_of_bits, bytes[32], bytecnt, tmp;
+    unsigned int num_of_bytes, num_of_bits, bytes[32], bytecnt, tmp, num;
     num_of_bytes = 1;
     bytes[0] = 1;
     num_of_bits = 0;
-    for (i = 0; i < num_of_ints; i++) {
+    for (int i = 0; i < num_of_ints; i++) {
         tmp = 0;
         for (bytecnt = 0; bytecnt < num_of_bytes; bytecnt++) {
             tmp = bytes[bytecnt] * sizes[i] + tmp;
@@ -171,18 +170,28 @@ static const uint32_t magicints[] = {
 /* note that magicints[FIRSTIDX-1] == 0 */
 #define LASTIDX (sizeof(magicints) / sizeof(*magicints))
 
+#define BRANCHFREE_DIV
+
+
+#ifdef BRANCHFREE_DIV
+#define DIV_T struct libdivide_u64_branchfree_t
+#define DIV_INIT(x) libdivide_u64_branchfree_gen(x)
+#define DIV(x, y) libdivide_u64_branchfree_do(x, y)
+
 // These contain precalculated multiplies and shifts for the corresponding magic numbers from FIRSTIDX to LASTIDX
-static const struct libdivide_u32_branchfree_t denoms32[] = {
-    {0, 2}, {0X9999999A, 3}, {0X55555556, 3}, {0, 3}, {0X9999999A, 4}, {0X47AE147B, 4}, {0, 4}, {0X9999999A, 5}, {0X47AE147B, 5}, {0, 5}, {0X9999999A, 6}, {0X446F8657, 6}, {0, 6},
-    {0X970E4F81, 7}, {0X42D6625E, 7}, {0, 7}, {0X970E4F81, 8}, {0X42D6625E, 8}, {0, 8}, {0X966CC01A, 9}, {0X42D6625E, 9}, {0, 9}, {0X966CC01A, 10}, {0X42A38662, 10}, {0, 10},
-    {0X966CC01A, 11}, {0X42A38662, 11}, {0, 11}, {0X9E74F884, 12}, {0X4296D1E4, 12}, {0, 12}, {0X9662AB65, 13}, {0X42907805, 13}, {0, 13}, {0X9662AB65, 14}, {0X428D4B2D, 14}, {0, 14},
-    {0X9660264C, 15}, {0X428BB4C8, 15}, {0, 15}, {0X9660264C, 16}, {0X428AE996, 16}, {0, 16}, {0X9660264C, 17}, {0X428A83FE, 17}, {0, 17}, {0X9660264C, 18}, {0X428A5132, 18}, {0X2001, 18},
-    {0X965FFDFB, 19}, {0X428A37CC, 19}, {0, 19}, {0X965FFDFB, 20}, {0X428A37CC, 20}, {0, 20}, {0X965FF3E7, 21}, {0X428A3172, 21}, {0, 21}, {0X965FEEDD, 22}, {0X428A3172, 22}, {0X201, 22},
-    {0X965FEC57, 23}, {0X428A2FDC, 23}, {0, 23}, 
+static const DIV_T denoms_64_1[] = {
+    {0, 2}, {0X999999999999999A, 3}, {0X5555555555555556, 3}, {0, 3}, {0X999999999999999A, 4}, {0X47AE147AE147AE15, 4}, {0, 4}, {0X999999999999999A, 5}, {0X47AE147AE147AE15, 5}, {0, 5},
+    {0X999999999999999A, 6}, {0X446F86562D9FAEE5, 6}, {0, 6}, {0X970E4F80CB8727C1, 7}, {0X42D6625D51F86EFA, 7}, {0, 7}, {0X970E4F80CB8727C1, 8}, {0X42D6625D51F86EFA, 8}, {0, 8},
+    {0X966CC01966CC0197, 9}, {0X42D6625D51F86EFA, 9}, {0, 9}, {0X966CC01966CC0197, 10}, {0X42A386615BD84CE1, 10}, {0, 10}, {0X966CC01966CC0197, 11}, {0X42A386615BD84CE1, 11}, {0, 11},
+    {0X9E74F8832302A17F, 12}, {0X4296D1E340EF6BF0, 12}, {0, 12}, {0X9662AB64ED3938ED, 13}, {0X4290780440A7950F, 13}, {0, 13}, {0X9662AB64ED3938ED, 14}, {0X428D4B2CC2273C78, 14}, {0, 14},
+    {0X9660264BCF9BE4F1, 15}, {0X428BB4C7031B065B, 15}, {0, 15}, {0X9660264BCF9BE4F1, 16}, {0X428AE995A39B4B45, 16}, {0, 16}, {0X9660264BCF9BE4F1, 17}, {0X428A83FD53DC320A, 17}, {0, 17},
+    {0X9660264BCF9BE4F1, 18}, {0X428A513143FCBC0B, 18}, {0X200004000081, 18}, {0X965FFDFA81C292FF, 19}, {0X428A37CB420D0364, 19}, {0, 19}, {0X965FFDFA81C292FF, 20},
+    {0X428A37CB420D0364, 20}, {0, 20}, {0X965FF3E62F8C3EC9, 21}, {0X428A3171C2311550, 21}, {0, 21}, {0X965FEEDC06A114B2, 22}, {0X428A3171C2311550, 22}, {0X20000040001, 22},
+    {0X965FEC56F2377FA7, 23}, {0X428A2FDB624419CC, 23}, {0, 23}, 
 };
 
 // Precalculated multiply and shifts for squared magic numbers
-static const struct libdivide_u64_branchfree_t denoms64[] = {
+static const DIV_T denoms_64_2[] = {
     {0, 5}, {0X47AE147AE147AE15, 6}, {0XC71C71C71C71C71D, 7}, {0, 7}, {0X47AE147AE147AE15, 8}, {0XA36E2EB1C432CA58, 9}, {0, 9}, {0X47AE147AE147AE15, 10}, {0XA36E2EB1C432CA58, 11},
     {0, 11}, {0X47AE147AE147AE15, 12}, {0X9B2A7C9FE8B617F1, 13}, {0, 13}, {0X439F40CC28F760CC, 14}, {0X972002FB5C05974D, 15}, {0, 15}, {0X439F40CC28F760CC, 16}, {0X972002FB5C05974D, 17},
     {0, 17}, {0X429E8FC19BD1F6F1, 18}, {0X972002FB5C05974D, 19}, {0, 19}, {0X429E8FC19BD1F6F1, 20}, {0X969FC68151912805, 21}, {0, 21}, {0X429E8FC19BD1F6F1, 22}, {0X969FC68151912805, 23},
@@ -192,7 +201,36 @@ static const struct libdivide_u64_branchfree_t denoms64[] = {
     {0X965FFEFB8574EA53, 41}, {0, 41}, {0X428A3ECA8603773D, 42}, {0X965FEEFB84B5956C, 43}, {0, 43}, {0X428A36CA8598D950, 44}, {0X965FEEFB84B5956C, 45}, {0X400000C0001, 45},
     {0X428A32CA85801D1A, 46}, {0X965FEAFB84AB8C66, 47}, {0, 47},
 };
+#else
+#define DIV_T struct libdivide_u64_t
+#define DIV_INIT(x) libdivide_u64_gen(x)
+#define DIV(x, y) libdivide_u64_do(x, y)
 
+static const DIV_T denoms_64_1[] = {
+    {0, 2}, {0X999999999999999A, 3}, {0X5555555555555556, 3}, {0, 3}, {0X999999999999999A, 4}, {0X47AE147AE147AE15, 4}, {0, 4}, {0X999999999999999A, 5}, {0X47AE147AE147AE15, 5}, {0, 5},
+    {0X999999999999999A, 6}, {0X446F86562D9FAEE5, 6}, {0, 6}, {0X970E4F80CB8727C1, 7}, {0X42D6625D51F86EFA, 7}, {0, 7}, {0X970E4F80CB8727C1, 8}, {0X42D6625D51F86EFA, 8}, {0, 8},
+    {0X966CC01966CC0197, 9}, {0X42D6625D51F86EFA, 9}, {0, 9}, {0X966CC01966CC0197, 10}, {0X42A386615BD84CE1, 10}, {0, 10}, {0X966CC01966CC0197, 11}, {0X42A386615BD84CE1, 11}, {0, 11},
+    {0X9E74F8832302A17F, 12}, {0X4296D1E340EF6BF0, 12}, {0, 12}, {0X9662AB64ED3938ED, 13}, {0X4290780440A7950F, 13}, {0, 13}, {0X9662AB64ED3938ED, 14}, {0X428D4B2CC2273C78, 14}, {0, 14},
+    {0X9660264BCF9BE4F1, 15}, {0X428BB4C7031B065B, 15}, {0, 15}, {0X9660264BCF9BE4F1, 16}, {0X428AE995A39B4B45, 16}, {0, 16}, {0X9660264BCF9BE4F1, 17}, {0X428A83FD53DC320A, 17}, {0, 17},
+    {0X9660264BCF9BE4F1, 18}, {0X428A513143FCBC0B, 18}, {0X200004000081, 18}, {0X965FFDFA81C292FF, 19}, {0X428A37CB420D0364, 19}, {0, 19}, {0X965FFDFA81C292FF, 20},
+    {0X428A37CB420D0364, 20}, {0, 20}, {0X965FF3E62F8C3EC9, 21}, {0X428A3171C2311550, 21}, {0, 21}, {0X965FEEDC06A114B2, 22}, {0X428A3171C2311550, 22}, {0X20000040001, 22},
+    {0X965FEC56F2377FA7, 23}, {0X428A2FDB624419CC, 23}, {0, 23},
+};
+
+static const DIV_T denoms_64_2[] = {
+    {0, 6}, {0X47AE147AE147AE15, 70}, {0XE38E38E38E38E38F, 7}, {0, 8}, {0X47AE147AE147AE15, 72}, {0XD1B71758E219652C, 9}, {0, 10}, {0X47AE147AE147AE15, 74}, {0XD1B71758E219652C, 11},
+    {0, 12}, {0X47AE147AE147AE15, 76}, {0XCD953E4FF45B0BF9, 13}, {0, 14}, {0XA1CFA066147BB066, 14}, {0XCB90017DAE02CBA7, 15}, {0, 16}, {0XA1CFA066147BB066, 16}, {0XCB90017DAE02CBA7, 17},
+    {0, 18}, {0XA14F47E0CDE8FB79, 18}, {0XCB90017DAE02CBA7, 19}, {0, 20}, {0XA14F47E0CDE8FB79, 20}, {0XCB4FE340A8C89403, 21}, {0, 22}, {0XA14F47E0CDE8FB79, 22}, {0XCB4FE340A8C89403, 23},
+    {0, 24}, {0X4F7F449D26A949DD, 88}, {0XCB3FE06D28DF9EEF, 25}, {0, 26}, {0XA147476AF31DC745, 26}, {0XCB37DFB8F7D92618, 27}, {0, 28}, {0XA147476AF31DC745, 28}, {0XCB33DF8C3EE5EA77, 29},
+    {0, 30}, {0X428A8ECA9A8C6397, 94}, {0XCB31DF8139CAE935, 31}, {0, 32}, {0X428A8ECA9A8C6397, 96}, {0XCB30DF7E8D046408, 33}, {0, 34}, {0X428A8ECA9A8C6397, 98}, {0XCB305F7DEC10CAE5, 35},
+    {0, 36}, {0X428A8ECA9A8C6397, 100}, {0X96603EFB91E54C07, 101}, {0X40000C000201, 101}, {0X428A4ECA87BD4923, 102}, {0X965FFEFB8574EA53, 103}, {0, 40}, {0X428A4ECA87BD4923, 104},
+    {0X965FFEFB8574EA53, 105}, {0, 42}, {0X428A3ECA8603773D, 106}, {0XCB2FF77DC25ACAB6, 43}, {0, 44}, {0XA1451B6542CC6CA8, 44}, {0XCB2FF77DC25ACAB6, 45}, {0X400000C0001, 109},
+    {0XA145196542C00E8D, 46}, {0XCB2FF57DC255C633, 47}, {0, 48},
+};
+#endif
+
+
+// Bitreader
 typedef struct br_t {
     const uint64_t* stream;
     uint64_t data;
@@ -254,7 +292,7 @@ static inline uint64_t br_peek(br_t* r, size_t num_bits) {
 
 static inline br_skip(br_t* r, size_t num_bits) {
     ASSERT(num_bits <= 64);
-    r->cache_bits -= num_bits;
+    r->cache_bits -= (uint32_t)num_bits;
     r->data <<= num_bits;
 
     // Append extracted bits from next
@@ -264,6 +302,8 @@ static inline br_skip(br_t* r, size_t num_bits) {
     br_load_next(r);
 }
 
+#define BRANCHFREE_DIV
+
 typedef struct {
     uint64_t size_zy;
     uint32_t size_z;
@@ -271,8 +311,8 @@ typedef struct {
     uint8_t  part_mask;
     uint8_t  big_shift;
     uint8_t  sml_shift;
-    struct libdivide_u64_branchfree_t div_zy;
-    struct libdivide_u32_branchfree_t div_z;
+    DIV_T    div_zy;
+    DIV_T    div_z;
 } unpack_data_t;
 
 typedef md_128i v4i_t;
@@ -301,12 +341,10 @@ static inline v4i_t unpack_coord64(br_t* r, const unpack_data_t* unpack) {
     uint64_t w = br_read(r, unpack->num_of_bits);
     uint64_t t = ((w << unpack->sml_shift) & (~0xFFull)) | (w & unpack->part_mask);
     uint64_t v = BSWAP64(t) >> unpack->big_shift;
-
-    uint32_t x1 = libdivide_u64_branchfree_do(v, &unpack->div_zy);
-    uint32_t q1 = (uint32_t)(v - x1 * unpack->size_zy);
-
-    uint32_t y1 = libdivide_u32_branchfree_do(q1, &unpack->div_z);
-    uint32_t z1 = q1 - y1 * unpack->size_z;
+    uint32_t x1 = (uint32_t)DIV(v, &unpack->div_zy);
+    uint64_t q1 = v - x1 * unpack->size_zy;
+    uint32_t y1 = (uint32_t)DIV(q1, &unpack->div_z);
+    uint32_t z1 = (uint32_t)(q1 - y1 * unpack->size_z);
 
     return v4i_set(x1, y1, z1, 0);
 }
@@ -335,20 +373,19 @@ static inline v4i_t unpack_coord128(br_t* r, const unpack_data_t* unpack) {
     uint32_t sizes[3] = {0, (uint32_t)(unpack->size_zy / unpack->size_z), unpack->size_z};
     uint32_t bytes[16];
     bytes[1] = bytes[2] = bytes[3] = 0;
-    int num_of_bits  = (int)unpack->num_of_bits;
     int num_of_bytes = 0;
     for (int i = 0; i < fullbytes; ++i) {
-        bytes[num_of_bytes++] = br_read(r, 8);
+        bytes[num_of_bytes++] = (uint32_t)br_read(r, 8);
     }
     if (partbits) {
-        bytes[num_of_bytes++] = br_read(buf, partbits);
+        bytes[num_of_bytes++] = (uint32_t)br_read(r, partbits);
     }
     for (int i = 2; i > 0; i--) {
         uint32_t num = 0;
         for (int j = num_of_bytes - 1; j >= 0; j--) {
             num = (num << 8) | bytes[j];
             bytes[j] = num / sizes[i];
-            num = num % size[i];
+            num = num % sizes[i];
         }
         nums[i] = num;
     }
@@ -372,6 +409,8 @@ static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
     }
     return v4i_load(val);
 }
+
+//#define PRINT_DEBUG
 
 bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file_o* xfp) {
     int smallidx;
@@ -425,11 +464,11 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         bitsizeint[2] = sizeofint(sizeint[2]);
     } else {
         bitsize = sizeofints(3, sizeint);
-        big_unpack.size_zy = (uint64_t)sizeint[1] * sizeint[2],
-        big_unpack.size_z = sizeint[2],
-        big_unpack.num_of_bits = bitsize;
-        big_unpack.div_zy = libdivide_u64_branchfree_gen(sizeint[1] * sizeint[2]),
-        big_unpack.div_z  = libdivide_u32_branchfree_gen(sizeint[2]),
+        big_unpack.size_zy = (uint64_t)sizeint[1] * sizeint[2];
+        big_unpack.size_z = sizeint[2];
+        big_unpack.num_of_bits = (uint8_t)bitsize;
+        big_unpack.div_zy = DIV_INIT(big_unpack.size_zy);
+        big_unpack.div_z = DIV_INIT(big_unpack.size_z);
         init_unpack_data_bits(&big_unpack, bitsize);
     }
 
@@ -446,8 +485,8 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
         .size_zy = (uint64_t)smallsize * smallsize,
         .size_z  = smallsize,
         .num_of_bits = smallidx,
-        .div_zy = denoms64[smallidx - FIRSTIDX],
-        .div_z  = denoms32[smallidx - FIRSTIDX],
+        .div_zy = denoms_64_2[smallidx - FIRSTIDX],
+        .div_z  = denoms_64_1[smallidx - FIRSTIDX],
     };
 
     /* length in bytes */
@@ -472,7 +511,11 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
     v4i_t thiscoord;
     uint32_t run = 0;
     uint32_t run_count = 0;
-    uint32_t atom_idx = 0;
+    int atom_idx = 0;
+
+#ifdef PRINT_DEBUG
+    uint32_t smlbits_hist[LASTIDX] = {0};
+#endif
 
     while (atom_idx++ < natoms) {
         if (bitsize == 0) {
@@ -487,14 +530,14 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
 
         thiscoord = v4i_add(thiscoord, vminint);
 
-        uint64_t data = br_peek(&br, 6);
-        uint32_t flag = (uint32_t)(data & 32);
+        uint32_t data = (uint32_t)br_peek(&br, 6);
+        uint32_t flag = data & 32;
         uint32_t skip = flag ? 6 : 1;
         br_skip(&br, skip);
 
         is_smaller = 0;
         if (flag) {
-            run = (uint32_t)(data & 31);
+            run = data & 31;
             run_count  = run / 3;
             is_smaller = run % 3;
             run -= is_smaller;
@@ -546,24 +589,52 @@ bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file
             smaller = smallnum;
             smallnum = magicints[smallidx] / 2;
         }
-        uint32_t new_small = magicints[smallidx];
-        if (new_small == 0) {
+        if (smallidx < FIRSTIDX) {
             MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
             goto done;
         }
-        if (new_small != sml_unpack.size_z) {
-            uint32_t idx            = smallidx - FIRSTIDX;
-            sml_unpack.size_zy      = (uint64_t)new_small * new_small;
-            sml_unpack.size_z       = new_small;
+        if (smallidx != sml_unpack.num_of_bits) {
+#ifdef PRINT_DEBUG
+            smlbits_hist[smallidx]++;
+#endif
+            uint32_t size           = magicints[smallidx];
+            sml_unpack.size_zy      = (uint64_t)size * size;
+            sml_unpack.size_z       = size;
             sml_unpack.num_of_bits  = smallidx;
-            sml_unpack.div_zy       = denoms64[idx];
-            sml_unpack.div_z        = denoms32[idx];
+            sml_unpack.div_zy       = denoms_64_2[smallidx - FIRSTIDX];
+            sml_unpack.div_z        = denoms_64_1[smallidx - FIRSTIDX];
             init_unpack_data_bits(&sml_unpack, smallidx);
         }
     }
     result = true;
 done:
     md_temp_set_pos_back(temp_pos);
+
+#ifdef PRINT_DEBUG
+    int max_smallbits = 0;
+    uint32_t total_count = 0;
+    for (int i = 0; i < LASTIDX; i++) {
+        if (smlbits_hist[i] > smlbits_hist[max_smallbits]) {
+            max_smallbits = i;
+        }
+        total_count += smlbits_hist[i];
+    }
+
+    // Printf a histogram with horizontal bars
+    printf("--- Smallbits ---\n");
+    for (int i = 0; i < LASTIDX; i++) {
+        if (smlbits_hist[i] > 0) {
+            int num_hashes = (int)(smlbits_hist[i] * 50 / total_count);
+            printf("%2d: ", i);
+            for (int j = 0; j < num_hashes; j++) {
+                printf("#");
+            }
+            printf(" (%d)\n", smlbits_hist[i]);
+        }
+    }
+    printf("----------------\n\n");
+#endif
+
     return result;
 }
 
@@ -629,7 +700,7 @@ bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* tim
     return true;
 }
 
-bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
+size_t md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
     int step, natoms;
     float time;
     float box[3][3];
@@ -638,17 +709,17 @@ bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fram
 
     if (filesize == 0) {
         MD_LOG_ERROR("XTC: Failed extract filesize");
-        return false;
+        return 0;
     }
 
     /* Go to file beg */
     if (!md_file_seek(xdr, 0, MD_FILE_BEG)) {
         MD_LOG_ERROR("XTC: Failed to seek to beginning of file");
-        return false;
+        return 0;
     }
 
     if (!md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
-        return false;
+        return 0;
     }
 
     /* Dont bother with compression for nine atoms or less */
@@ -674,18 +745,18 @@ bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fram
         }
         md_array_push(*frame_offsets, num_frames * framebytes, alloc);
 
-        return true;
+        return md_array_size(*frame_times);
     } else {
         int framebytes, est_nframes;
 
         /* Move pos back to end of first header */
         if (!md_file_seek(xdr, (int64_t)XTC_HEADER_SIZE, MD_FILE_BEG)) {
-            return false;
+            return 0;
         }
 
         if (!xdr_read_int32(&framebytes, 1, xdr)) {
             MD_LOG_ERROR("XTC: Failed to read framebytes");
-            return false;
+            return 0;
         }
         framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
         est_nframes = (int)(filesize / ((int64_t)(framebytes + XTC_HEADER_SIZE)) + 1); /* must be at least 1 for successful growth */
@@ -709,7 +780,7 @@ bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fram
             if (offset == (int64_t)filesize) {
                 // Add last offset
                 md_array_push(*frame_offsets, offset, alloc);
-                return true;
+                return md_array_size(*frame_times);
             }
             if (!md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
                 goto fail;
@@ -740,7 +811,7 @@ bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fram
         md_array_free(*frame_times, alloc);
         *frame_offsets = 0;
         *frame_times = 0;
-        return false;
+        return 0;
     }
 }
 
@@ -764,10 +835,10 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* coords, size_t capac
     bool result = xdr_decompress_coord_float(coords, &natoms, &prec, xdr_file);
     if (!result) {
         MD_LOG_ERROR("XTC: Failed to read coordinates");
-        return false;
+        return 0;
     }
 
-    return true;
+    return (size_t)natoms;
 }
 
 static size_t xtc_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
@@ -898,71 +969,21 @@ bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
     return true;
 }
 
-// This is lowlevel cruft for enabling parallel loading and decoding of frames
-static size_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
-    xtc_t* xtc = (xtc_t*)inst;
-    ASSERT(xtc);
-    ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
-
-    if (!xtc->file) {
-        MD_LOG_ERROR("XTC: File handle is NULL");
-        return 0;
-    }
-
-    if (!xtc->frame_offsets) {
-        MD_LOG_ERROR("XTC: Frame offsets is empty");
-        return 0;
-    }
-
-    if (frame_idx < 0 || (int64_t)xtc->header.num_frames <= frame_idx) {
-        MD_LOG_ERROR("XTC: Frame index is out of range");
-        return 0;
-    }
-
-    const int64_t beg = xtc->frame_offsets[frame_idx];
-    const int64_t end = xtc->frame_offsets[frame_idx + 1];
-    const size_t frame_size = (size_t)MAX(0, end - beg);
-
-    if (frame_data_ptr) {
-        ASSERT(xtc->file);
-        md_mutex_lock(&xtc->mutex);
-        // Seek and read must be an atomic operation to avoid race conditions
-        xdr_seek(xtc->file, beg, SEEK_SET);
-        const size_t bytes_read = xdr_read(xtc->file, frame_data_ptr, frame_size);
-        md_mutex_unlock(&xtc->mutex);
-        (void)bytes_read;
-        ASSERT(frame_size == bytes_read);
-    }
-    return frame_size;
-}
-
-static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    ASSERT(inst);
-    ASSERT(frame_data_ptr);
-    ASSERT(frame_data_size);
+static bool xtc_decode_frame_data(md_file_o* file, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+    ASSERT(file);
 
     bool result = true;
-
-    xtc_t* xtc = (xtc_t*)inst;
-    if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        MD_LOG_ERROR("XTC: Error when decoding frame coord, xtc magic did not match");
-        return false;
-    }
 
     if ((x || y || z) && !(x && y && z)) {
         MD_LOG_ERROR("XTC: User supplied coordinates (x,y,z) cannot be partially supplied");
         return false;
     }
 
-    // There is a warning for ignoring const qualifier for frame_data_ptr, but it is ok since we only perform read operations "r" with the data.
-    XDRFILE* file = xdrfile_mem((void*)frame_data_ptr, frame_data_size, "r");
-    ASSERT(file);
-
     // Get header
     int natoms = 0, step = 0;
     float time = 0;
     float box[3][3];
-    result = xtc_frame_header(file, &natoms, &step, &time, box);
+    result = md_xtc_read_frame_header(file, &natoms, &step, &time, box);
     if (result) {
         if (header) {
             // nm -> Ångström
@@ -978,22 +999,21 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
         }
 
         if (x && y && z) {
-            size_t byte_size = natoms * sizeof(rvec);
-            rvec* pos = md_alloc(md_get_heap_allocator(), byte_size);
-            result = xtc_frame_coords(file, natoms, pos);
+            size_t byte_size = natoms * sizeof(float) * 3;
+            float* xyz = md_alloc(md_get_heap_allocator(), byte_size);
+            size_t written_count = md_xtc_read_frame_coords(file, xyz, natoms);
+            result = (written_count == natoms);
             if (result) {            
                 // nm -> Ångström
                 for (int i = 0; i < natoms; ++i) {
-                    x[i] = pos[i][0] * 10.0f;
-                    y[i] = pos[i][1] * 10.0f;
-                    z[i] = pos[i][2] * 10.0f;
+                    x[i] = xyz[i*3 + 0] * 10.0f;
+                    y[i] = xyz[i*3 + 1] * 10.0f;
+                    z[i] = xyz[i*3 + 2] * 10.0f;
                 }
             }
-            md_free(md_get_heap_allocator(), pos, byte_size);
+            md_free(md_get_heap_allocator(), xyz, byte_size);
         }
     }
-
-    xdrfile_close(file);
 
     return result;
 }
@@ -1008,21 +1028,35 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     bool result = false;
-    const size_t frame_size = xtc_fetch_frame_data(inst, frame_idx, NULL);
-    if (frame_size > 0) {
-        md_allocator_i* alloc = md_get_heap_allocator();
-
-        void* frame_data = md_alloc(alloc, frame_size);
-        ASSERT(frame_data);
-
-        const size_t read_size = xtc_fetch_frame_data(inst, frame_idx, frame_data);
-        if (read_size != frame_size) {
-            MD_LOG_ERROR("Failed to read the expected size");
-            goto done;
+    if (xtc->file) {
+        md_file_o* file = md_file_open(xtc->filepath, MD_FILE_READ | MD_FILE_BINARY);
+        if (!file) {
+            MD_LOG_ERROR("XTC: Failed to open file");
+            return false;
         }
-        result = xtc_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-    done:
-        md_free(alloc, frame_data, frame_size);
+
+        if (!xtc->frame_offsets) {
+            MD_LOG_ERROR("XTC: Frame offsets is empty");
+            return 0;
+        }
+
+        if (frame_idx < 0 || (int64_t)xtc->header.num_frames <= frame_idx) {
+            MD_LOG_ERROR("XTC: Frame index is out of range");
+            return 0;
+        }
+
+        const int64_t beg = xtc->frame_offsets[frame_idx];
+        const int64_t end = xtc->frame_offsets[frame_idx + 1];
+        const size_t frame_size = (size_t)MAX(0, end - beg);
+
+        if (!md_file_seek(file, beg, MD_FILE_BEG)) {
+            MD_LOG_ERROR("XTC: Failed to seek to frame offset");
+            md_file_close(file);
+            return false;
+        }
+
+        result = xtc_decode_frame_data(file, header, x, y, z);
+        md_file_close(file);
     }
 
     return result;
@@ -1134,20 +1168,16 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
     ASSERT(ext_alloc);
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-    // Ensure that the path is zero terminated (not guaranteed by str_t)
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
-    md_strb_push_str(&sb, filename);
-    XDRFILE* file = xdrfile_open(md_strb_to_cstr(sb), "r");
+    str_t path = str_copy(filename, alloc);
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (file) {
-        xdr_seek(file, 0L, SEEK_END);
-        const size_t filesize = (size_t)xdr_tell(file);
-        xdr_seek(file, 0L, SEEK_SET);
+        const size_t filesize = md_file_size(file);
 
         int num_atoms, step;
         float time;
         float box[3][3];
-        if (!xtc_frame_header(file, &num_atoms, &step, &time, box)) {
+        if (!md_xtc_read_frame_header(file, &num_atoms, &step, &time, box)) {
             goto fail;
         }
 
@@ -1156,16 +1186,18 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
             goto fail;
         }
 
+        md_strb_t sb = md_strb_create(md_get_temp_allocator());
+        md_strb_push_str(&sb, path);
         md_strb_push_str(&sb, STR_LIT(".cache"));
-        str_t path = md_strb_to_str(sb);
+        str_t cache_path = md_strb_to_str(sb);
 
         xtc_cache_t cache = {0};
-        if (!try_read_cache(&cache, path, filesize, alloc)) {
+        if (!try_read_cache(&cache, cache_path, filesize, alloc)) {
             cache.header.magic     = MD_XTC_CACHE_MAGIC;
             cache.header.version   = MD_XTC_CACHE_VERSION;
             cache.header.num_bytes = filesize;
             cache.header.num_atoms = num_atoms;
-            cache.header.num_frames = xtc_frame_offsets_and_times(file, &cache.frame_offsets, &cache.frame_times, alloc);
+            cache.header.num_frames = md_xtc_read_frame_offsets_and_times(file, &cache.frame_offsets, &cache.frame_times, alloc);
             if (!cache.header.num_frames) {
                 goto fail;
             }
@@ -1198,8 +1230,8 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         xtc->magic = MD_XTC_TRAJ_MAGIC;
         xtc->allocator = alloc;
         xtc->file = file;
+        xtc->filepath = path;
         xtc->frame_offsets = cache.frame_offsets;
-        xtc->mutex = md_mutex_create();
 
         xtc->header = (md_trajectory_header_t) {
             .num_frames = cache.header.num_frames,
@@ -1212,13 +1244,11 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         traj->inst = (struct md_trajectory_o*)xtc;
         traj->get_header = xtc_get_header;
         traj->load_frame = xtc_load_frame;
-        //traj->fetch_frame_data = xtc_fetch_frame_data;
-        //traj->decode_frame_data = xtc_decode_frame_data;
 
         return traj;
     }
 fail:
-    if (file) xdrfile_close(file);
+    if (file) md_file_close(file);
     md_arena_allocator_destroy(alloc);
     return NULL;
 }
@@ -1233,8 +1263,7 @@ void md_xtc_trajectory_free(md_trajectory_i* traj) {
         return;
     }
 
-    if (xtc->file) xdrfile_close(xtc->file);
-    md_mutex_destroy(&xtc->mutex);
+    if (xtc->file) md_file_close(xtc->file);
     md_arena_allocator_destroy(xtc->allocator);
 }
 
