@@ -10,9 +10,9 @@
 #define STR(x) {x"", sizeof(x"")-1};
 
 static const str_t cat_path = STR(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
-static const str_t amy_path = STR("E:/data/md/amyloid-6T/prod-centered.xtc");
-static const str_t asp_path = STR("E:/data/md/asp/inside-md-pullout.xtc");
-static const str_t ion_path = STR("E:/data/md/Delemotte_group/Ion_conducting/ef.xtc");
+static const str_t amy_path = STR(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
+static const str_t asp_path = STR(MD_BENCHMARK_DATA_DIR "/aspirin-phospholipase.xtc");
+static const str_t ion_path = STR(MD_BENCHMARK_DATA_DIR "/ef.xtc");
 
 UBENCH_EX(xtc, xdr_catalyst) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
@@ -63,8 +63,8 @@ UBENCH_EX(xtc, xdr_amyloid) {
 
     XDRFILE* xdr = xdrfile_open(amy_path.ptr, "rb");
     
-    static const size_t num_frames = 5701;
-    static const size_t num_atoms  = 161271;
+    static const size_t num_frames = 2345;
+    static const size_t num_atoms  = 161742;
 
     int natoms, step;
     float time, prec, box[3][3];
@@ -214,8 +214,8 @@ UBENCH_EX(xtc, xtc_amyloid) {
         return;
     }
 
-    static const size_t num_frames = 5701;
-    static const size_t num_atoms  = 161271;
+    static const size_t num_frames = 2345;
+    static const size_t num_atoms  = 161742;
 
     int natoms, step;
     float time, box[3][3];

@@ -262,8 +262,8 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 // BASE INT OPERATIONS
 
 #define md_mm_loadu_si128 simde_mm_loadu_si128
-#define md_mm_loadu_epi32 simde_mm_loadu_si32
-#define md_mm_loadu_epi64 simde_mm_loadu_si64
+#define md_mm_loadu_epi32 simde_mm_loadu_epi32
+#define md_mm_loadu_epi64 simde_mm_loadu_epi64
 #define md_mm256_loadu_si256 simde_mm256_loadu_si256
 #define md_mm256_loadu_epi32 simde_mm256_loadu_epi32
 #define md_mm256_loadu_epi64 simde_mm256_loadu_epi64
