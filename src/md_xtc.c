@@ -12,8 +12,6 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
-//#include <xdrfile.h>
-
 #include <libdivide.h>
 
 #include <string.h>
@@ -71,23 +69,6 @@ static inline bool xdr_read_bytes (uint8_t* ptr, size_t count, md_file_o* xdr_fi
 
     size_t bytes = count;
     if (md_file_read(xdr_file, ptr, bytes) == bytes) {
-        return true;
-    }
-
-    return false;
-}
-
-static inline bool xdr_read_int16(int16_t* ptr, size_t count, md_file_o* xdr_file) {
-    ASSERT(ptr);
-    ASSERT(xdr_file);
-
-    size_t bytes = count * sizeof(int16_t);
-    if (md_file_read(xdr_file, ptr, bytes) == bytes) {
-#if __LITTLE_ENDIAN__
-        for (size_t i = 0; i < count; ++i) {
-            ptr[i] = BSWAP16(ptr[i]);
-        }
-#endif
         return true;
     }
 
@@ -251,49 +232,51 @@ static inline void br_init(br_t* r, const uint64_t* stream, size_t num_qwords) {
 }
 
 static inline void br_load_next(br_t* r) {
-    if (r->cache_bits < 64 && r->stream_size > 0) {
-        r->stream_size -= 1;
-        uint64_t data = *r->stream++;
+    if (r->cache_bits > 64 || r->stream_size == 0) return;
+
+    uint64_t data = *r->stream++;
+    r->stream_size -= 1;
+
 #if __LITTLE_ENDIAN__
-        data = BSWAP64(data);
+    data = BSWAP64(data);
 #endif
-        // Fill in missing bits
-        r->data |= data >> r->cache_bits;
-        r->next  = data << (64 - r->cache_bits);
-        r->cache_bits += 64;
-    }
+
+    // Always perform unified update
+    uint64_t value = (r->cache_bits < 64) ? (data >> r->cache_bits) : 0;
+    r->data |= value;
+    r->next  = data << (64 - r->cache_bits);
+    r->cache_bits += 64;
 }
 
 static inline uint64_t br_read(br_t* r, size_t num_bits) {
     ASSERT(num_bits <= 64);
-    uint64_t shft = 64 - num_bits;
-    uint64_t res  = r->data >> shft;
 
+    uint64_t shift = 64 - num_bits;
+    uint64_t res   = r->data >> shift;
     r->cache_bits -= (uint32_t)num_bits;
 
+    // Unified handling
     if (num_bits < 64) {
         r->data <<= num_bits;
-        r->data |= r->next >> shft;
+        r->data |= r->next >> shift;
         r->next <<= num_bits;
     } else {
         r->data = r->next;
-        r->next = 0;
     }
 
     br_load_next(r);
-
     return res;
 }
 
 static inline uint64_t br_peek(br_t* r, size_t num_bits) {
     ASSERT(num_bits <= 64);
-    uint64_t shft = 64 - num_bits;
-    uint64_t res  = r->data >> shft;
+    uint64_t shift = 64 - num_bits;
+    uint64_t res   = r->data >> shift;
     return res;
 }
 
-static inline br_skip(br_t* r, size_t num_bits) {
-    ASSERT(num_bits <= 64);
+static inline void br_skip(br_t* r, size_t num_bits) {
+    ASSERT(num_bits < 64);
     r->cache_bits -= (uint32_t)num_bits;
     r->data <<= num_bits;
 
@@ -320,9 +303,9 @@ typedef md_128i v4i_t;
 #define v4i_set1(x)         md_mm_set1_epi32(x)
 #define v4i_add(a, b)       md_mm_add_epi32(a, b)
 #define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
-#define v4i_load(addr)      _mm_loadu_si32(addr)
+#define v4i_load(addr)      md_mm_loadu_epi32(addr)
 
-static inline write_coord(float* dst, v4i_t coord, float inv_precision) {
+static inline void write_coord(float* dst, v4i_t coord, float inv_precision) {
     md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), md_mm_set1_ps(inv_precision));
     md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
     md_mm_maskstore_ps(dst, mask, data);
@@ -341,32 +324,50 @@ static inline v4i_t unpack_coord64(br_t* r, const unpack_data_t* unpack) {
     uint64_t w = br_read(r, unpack->num_of_bits);
     uint64_t t = ((w << unpack->sml_shift) & (~0xFFull)) | (w & unpack->part_mask);
     uint64_t v = BSWAP64(t) >> unpack->big_shift;
-    uint32_t x1 = (uint32_t)DIV(v, &unpack->div_zy);
-    uint64_t q1 = v - x1 * unpack->size_zy;
-    uint32_t y1 = (uint32_t)DIV(q1, &unpack->div_z);
-    uint32_t z1 = (uint32_t)(q1 - y1 * unpack->size_z);
+    uint32_t x = (uint32_t)DIV(v, &unpack->div_zy);
+    uint64_t q = v - x * unpack->size_zy;
+    uint32_t y = (uint32_t)DIV(q, &unpack->div_z);
+    uint32_t z = (uint32_t)(q - y * unpack->size_z);
 
-    return v4i_set(x1, y1, z1, 0);
+    return v4i_set(x, y, z, 0);
 }
 
 static inline v4i_t unpack_coord128(br_t* r, const unpack_data_t* unpack) {
     int fullbytes = unpack->num_of_bits >> 3;
     int partbits  = unpack->num_of_bits  & 7;
+    ASSERT(fullbytes >= 8);
 
 #ifdef HAS_INT128_T
-    int i = 0;
-    __uint128_t v = 0;
+    __uint128_t v = BSWAP64(br_read(r, 64));
+    int i = 8;
     for (; i < fullbytes; i++) {
         v |= ((__uint128_t) br_read(r, 8)) << (8 * i);
     }
     if (partbits) {
         v |= ((__uint128_t) br_read(r, partbits)) << (8 * i);
     }
-    uint32_t x1 = (uint32_t)(v / unpack->size_zy);
-    uint64_t q1 = (uint64_t)(v - x1*unpack->size_zy);
-    uint32_t y1 = (uint32_t)(q1 / unpack->size_z);
-    uint32_t z1 = (uint32_t)(q1 % unpack->size_z);
-    return v4i_set(x1, y1, z1, 0);
+    uint32_t x = (uint32_t)(v / unpack->size_zy);
+    uint64_t q = (uint64_t)(v - x*unpack->size_zy);
+    uint32_t y = (uint32_t)(q / unpack->size_z);
+    uint32_t z = (uint32_t)(q % unpack->size_z);
+    return v4i_set(x, y, z, 0);
+#elif defined(__x86_64__) && defined(_MSC_VER) && (_MSC_VER >= 1920)
+    uint64_t lo = BSWAP64(br_read(r, 64));
+    uint64_t hi = 0;
+    fullbytes -= 8;
+    int i = 0;
+    for (; i < fullbytes; ++i) {
+        hi |= ((uint64_t)br_read(r, 8)) << (8 * i);
+    }
+    if (partbits) {
+        hi |= ((uint64_t)br_read(r, partbits)) << (8 * i);
+    }
+
+    uint64_t q;
+    uint32_t x = (uint32_t)_udiv128(hi, lo, unpack->size_zy, &q);
+    uint32_t y = (uint32_t)(q / unpack->size_z);
+    uint32_t z = (uint32_t)(q % unpack->size_z);
+    return v4i_set(x, y, z, 0);
 #else
     // Default fallback
     uint32_t nums[4] = {0};
@@ -408,261 +409,6 @@ static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
         val[i] = v;
     }
     return v4i_load(val);
-}
-
-//#define PRINT_DEBUG
-
-bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file_o* xfp) {
-    int smallidx;
-    int natoms;
-    int smallnum, smaller, is_smaller;
-    float *lfp;
-    const float* ptrstart = ptr;
-
-    bool result = false;
-
-    size_t temp_pos = md_temp_get_pos();
-
-    if (xfp == NULL || ptr == NULL) {
-        goto done;
-    }
-    if (!xdr_read_int32(&natoms, 1, xfp)) {
-        goto done; /* return if we could not read size */
-    }
-    *size = natoms;
-    uint32_t size3 = natoms * 3;
-
-    /* Dont bother with compression for three atoms or less */
-    if (*size <= 9) {
-        return xdr_read_float(ptr, size3, xfp);
-    }
-
-    /* Compression-time if we got here. Read precision first */
-    if (!xdr_read_float(precision, 1, xfp)) {
-        goto done;
-    }
-    
-    int32_t minint[3], maxint[3];
-    if (!xdr_read_int32(minint, 3, xfp) || !xdr_read_int32(maxint, 3, xfp)) {
-        goto done;
-    }
-
-    uint32_t sizeint[3] = {
-        (uint32_t)(maxint[0] - minint[0] + 1),
-        (uint32_t)(maxint[1] - minint[1] + 1),
-        (uint32_t)(maxint[2] - minint[2] + 1),
-    };
-
-    uint32_t bitsize = 0;
-    uint32_t bitsizeint[3] = {0};
-    unpack_data_t big_unpack = {0};
-
-    /* check if one of the sizes is to big to be multiplied */
-    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
-        bitsizeint[0] = sizeofint(sizeint[0]);
-        bitsizeint[1] = sizeofint(sizeint[1]);
-        bitsizeint[2] = sizeofint(sizeint[2]);
-    } else {
-        bitsize = sizeofints(3, sizeint);
-        big_unpack.size_zy = (uint64_t)sizeint[1] * sizeint[2];
-        big_unpack.size_z = sizeint[2];
-        big_unpack.num_of_bits = (uint8_t)bitsize;
-        big_unpack.div_zy = DIV_INIT(big_unpack.size_zy);
-        big_unpack.div_z = DIV_INIT(big_unpack.size_z);
-        init_unpack_data_bits(&big_unpack, bitsize);
-    }
-
-    if (!xdr_read_int32(&smallidx, 1, xfp)) {
-        return false; /* not sure what has happened here or why we return... */
-    }
-
-    int idx = MAX(smallidx - 1, FIRSTIDX);
-    smaller = magicints[idx] / 2;
-    smallnum = magicints[smallidx] / 2;
-    uint32_t smallsize = magicints[smallidx];
-
-    unpack_data_t sml_unpack = {
-        .size_zy = (uint64_t)smallsize * smallsize,
-        .size_z  = smallsize,
-        .num_of_bits = smallidx,
-        .div_zy = denoms_64_2[smallidx - FIRSTIDX],
-        .div_z  = denoms_64_1[smallidx - FIRSTIDX],
-    };
-
-    /* length in bytes */
-    uint32_t num_bytes = 0;
-    if (!xdr_read_int32((int32_t*)&num_bytes, 1, xfp)) {
-        goto done;
-    }
-
-    size_t mem_size = ALIGN_TO(num_bytes, 16);
-    uint64_t* mem = md_temp_push_aligned(mem_size, 16);
-
-    if (!xdr_read_bytes((uint8_t*)mem, num_bytes, xfp)) {
-        goto done;
-    }
-
-    br_t br = {0};
-    br_init(&br, mem, mem_size / 8);
-
-    lfp = ptr;
-    float inv_precision = 1.0f / *precision;
-    v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
-    v4i_t thiscoord;
-    uint32_t run = 0;
-    uint32_t run_count = 0;
-    int atom_idx = 0;
-
-#ifdef PRINT_DEBUG
-    uint32_t smlbits_hist[LASTIDX] = {0};
-    uint32_t rle_hist[9] = {0};
-    MD_LOG_DEBUG("bigsize: %i", bitsize);
-#endif
-
-    while (atom_idx < natoms) {
-        if (bitsize == 0) {
-            thiscoord = br_read_ints(&br, bitsizeint);
-        } else {
-            if (big_unpack.num_of_bits <= 64) {
-                thiscoord = unpack_coord64(&br, &big_unpack);
-            } else {
-                thiscoord = unpack_coord128(&br, &big_unpack);
-            }
-        }
-
-        thiscoord = v4i_add(thiscoord, vminint);
-
-        uint32_t data = (uint32_t)br_peek(&br, 6);
-        uint32_t flag = data & 32;
-        uint32_t skip = flag ? 6 : 1;
-        br_skip(&br, skip);
-
-        is_smaller = 0;
-        if (flag) {
-            run = data & 31;
-            run_count  = run / 3;
-            is_smaller = run % 3;
-            run -= is_smaller;
-            is_smaller--;
-        }
-
-        uint32_t batch_size = run_count + 1;
-        if (atom_idx + batch_size > size) {
-            MD_LOG_ERROR("XTC: Buffer overrun during decompression.");
-            goto done;
-        }
-        atom_idx += batch_size;
-
-        #ifdef PRINT_DEBUG
-        rle_hist[run_count]++;
-        #endif
-
-        if (run > 0) {
-            v4i_t prevcoord = thiscoord;
-            v4i_t vsmall = v4i_set1(smallnum);
-
-            if (sml_unpack.num_of_bits <= 64) {
-                v4i_t coord = unpack_coord64(&br, &sml_unpack);
-                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-
-                // Write second atom before first atom
-                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
-
-                for (uint32_t i = 1; i < run_count; ++i) {
-                    coord = unpack_coord64(&br, &sml_unpack);
-                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                }
-            } else {
-                v4i_t coord = unpack_coord128(&br, &sml_unpack);
-                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-
-                // Write second atom before first atom
-                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
-
-                for (uint32_t i = 1; i < run_count; ++i) {
-                    coord = unpack_coord128(&br, &sml_unpack);
-                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                }
-            }
-        } else {
-            write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-        }
-        smallidx += is_smaller;
-        if (is_smaller < 0) {
-            smallnum = smaller;
-            smaller = (smallidx > FIRSTIDX) ? magicints[smallidx - 1] / 2 : 0;
-        } else if (is_smaller > 0) {
-            smaller = smallnum;
-            smallnum = magicints[smallidx] / 2;
-        }
-        if (smallidx < FIRSTIDX) {
-            MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
-            goto done;
-        }
-        if (smallidx != sml_unpack.num_of_bits) {
-#ifdef PRINT_DEBUG
-            smlbits_hist[smallidx]++;
-#endif
-            uint32_t size           = magicints[smallidx];
-            sml_unpack.size_zy      = (uint64_t)size * size;
-            sml_unpack.size_z       = size;
-            sml_unpack.num_of_bits  = smallidx;
-            sml_unpack.div_zy       = denoms_64_2[smallidx - FIRSTIDX];
-            sml_unpack.div_z        = denoms_64_1[smallidx - FIRSTIDX];
-            init_unpack_data_bits(&sml_unpack, smallidx);
-        }
-    }
-    result = true;
-done:
-    md_temp_set_pos_back(temp_pos);
-
-#ifdef PRINT_DEBUG
-    int max_smallbits = 0;
-    uint32_t total_smallbits = 0;
-    for (int i = 0; i < LASTIDX; i++) {
-        if (smlbits_hist[i] > smlbits_hist[max_smallbits]) {
-            max_smallbits = i;
-        }
-        total_smallbits += smlbits_hist[i];
-    }
-
-    uint32_t total_rle = 0;
-    for (int i = 0; i < 9; ++i) {
-        total_rle += rle_hist[i];
-    }
-
-    // Printf a histogram with horizontal bars
-    printf("--- Smallbits ---\n");
-    for (int i = 0; i < LASTIDX; i++) {
-        if (smlbits_hist[i] > 0) {
-            int num_hashes = (int)(smlbits_hist[i] * 50 / total_smallbits);
-            printf("%2d: ", i);
-            for (int j = 0; j < num_hashes; j++) {
-                printf("#");
-            }
-            printf(" (%d)\n", smlbits_hist[i]);
-        }
-    }
-    printf("----------------\n");
-    printf("--- run length ---\n");
-    for (int i = 0; i < 9; i++) {
-        if (rle_hist[i] > 0) {
-            int num_hashes = (int)(rle_hist[i] * 50 / total_rle);
-            printf("%2d: ", i);
-            for (int j = 0; j < num_hashes; j++) {
-                printf("#");
-            }
-            printf(" (%d)\n", rle_hist[i]);
-        }
-    }
-    printf("----------------\n\n");
-#endif
-
-    return result;
 }
 
 bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* time, float box[3][3]) {
@@ -715,38 +461,44 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fr
     }
 
     if (!md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
+        MD_LOG_ERROR("XTC: File does not appear to be a valid xtc trajectory");
         return 0;
     }
+
+    size_t num_frames = 0;
 
     /* Dont bother with compression for nine atoms or less */
     if (natoms <= 9) {
         const size_t framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
-        const size_t num_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
+        const size_t est_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
 
-        md_array_ensure(*frame_offsets, num_frames, alloc);
-        md_array_ensure(*frame_times,   num_frames, alloc);
+        md_array_ensure(*frame_offsets, est_frames, alloc);
+        md_array_ensure(*frame_times,   est_frames, alloc);
 
+        // Push first frame
         md_array_push(*frame_offsets, 0, alloc);
         md_array_push(*frame_times, time, alloc);
+        num_frames += 1;
 
-        for (size_t i = 1; i < num_frames; i++) {
+        for (size_t i = 1; i < est_frames; i++) {
             const size_t offset = i * framebytes;
 
             if (!md_file_seek(xdr, offset, MD_FILE_BEG) || !md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
-                goto fail;
+                MD_LOG_DEBUG("XTC: encountered corrupted frame header");
+                break;
             }
 
-            md_array_push(*frame_offsets, i * framebytes, alloc);
+            // Push frame i
+            md_array_push(*frame_offsets, offset, alloc);
             md_array_push(*frame_times, time, alloc);
+            num_frames += 1;
         }
         md_array_push(*frame_offsets, num_frames * framebytes, alloc);
-
-        return md_array_size(*frame_times);
     } else {
         int framebytes, est_nframes;
 
         /* Move pos back to end of first header */
-        if (!md_file_seek(xdr, (int64_t)XTC_HEADER_SIZE, MD_FILE_BEG)) {
+        if (!md_file_seek(xdr, XTC_HEADER_SIZE, MD_FILE_BEG)) {
             return 0;
         }
 
@@ -755,14 +507,13 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fr
             return 0;
         }
         framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
-        est_nframes = (int)(filesize / ((int64_t)(framebytes + XTC_HEADER_SIZE)) + 1); /* must be at least 1 for successful growth */
-        /* First `framebytes` might be larger than average, so we would underestimate `est_nframes`
-        */
+        est_nframes = (int)(filesize / ((int64_t)(framebytes + XTC_HEADER_SIZE)) + 1);
+        /* First `framebytes` might be larger than average, so we would underestimate `est_nframes`*/
         est_nframes += est_nframes / 5;
 
         /* Skip `framebytes` */
         if (!md_file_seek(xdr, (int64_t)(framebytes), MD_FILE_CUR)) {
-            goto fail;
+            MD_LOG_DEBUG("XTC: encountered corrupted frame");
         }
 
         md_array_ensure(*frame_offsets, (size_t)est_nframes, alloc);
@@ -770,58 +521,299 @@ size_t md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fr
 
         md_array_push(*frame_offsets, 0, alloc);
         md_array_push(*frame_times, time, alloc);
+        num_frames += 1;
 
         while (true) {
             const int64_t offset = md_file_tell(xdr);
             if (offset == (int64_t)filesize) {
-                // Add last offset
-                md_array_push(*frame_offsets, offset, alloc);
-                return md_array_size(*frame_times);
+                break;
             }
             if (!md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
-                goto fail;
+                MD_LOG_DEBUG("XTC: encountered corrupted frame header");
+                goto done;
+            }
+
+            // Skip natoms + additional frame data
+            md_file_seek(xdr, 4 + 32, MD_FILE_CUR);
+
+            /* Read how much to skip */
+            if (!xdr_read_int32(&framebytes, 1, xdr)) {
+                MD_LOG_DEBUG("XTC: encountered corrupted frame");
+                goto done;
+            }
+            framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
+
+            /* Skip `framebytes` to next header */
+            if (!md_file_seek(xdr, framebytes, MD_FILE_CUR)) {
+                MD_LOG_DEBUG("XTC: encountered corrupted frame");
+                goto done;
             }
 
             /* Store position in `offsets`, adjust for header */
             md_array_push(*frame_offsets, offset, alloc);
             md_array_push(*frame_times, time, alloc);
+            num_frames += 1;
+        }
+        // Add last offset
+        md_array_push(*frame_offsets, filesize, alloc);
+    }
+done:
+    return num_frames;
+}
 
-            if (!md_file_seek(xdr, offset + XTC_HEADER_SIZE, MD_FILE_BEG)) {
-                goto fail;
-            }
-            /* Read how much to skip */
-            if (!xdr_read_int32(&framebytes, 1, xdr)) {
-                goto fail;
-            }
-            
-            framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
+size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
+    if (xdr_file == NULL || out_coords_ptr == NULL) {
+        return 0;
+    }
 
-            /* Skip `framebytes` to next header */
-            if (!md_file_seek(xdr, framebytes, MD_FILE_CUR)) {
-                goto fail;
+    int natoms;
+    if (!xdr_read_int32(&natoms, 1, xdr_file)) {
+        return 0;
+    }
+
+    if (out_coord_cap < (size_t)natoms) {
+        MD_LOG_ERROR("The supplied coordinate buffer is not sufficient to fit the number of atoms within the frame");
+        return 0;
+    }
+
+    /* Dont bother with compression for three atoms or less */
+    if (natoms <= 9) {
+        if (!xdr_read_float(out_coords_ptr, natoms * 3, xdr_file)) {
+            return 0;
+        }
+        return (size_t)natoms;
+    }
+
+    /* Compression-time if we got here. Read precision first */
+    float precision;
+    if (!xdr_read_float(&precision, 1, xdr_file)) {
+        return 0;
+    }
+
+    int32_t minint[3], maxint[3];
+    if (!xdr_read_int32(minint, 3, xdr_file) || !xdr_read_int32(maxint, 3, xdr_file)) {
+        return 0;
+    }
+
+    uint32_t sizeint[3] = {
+        (uint32_t)(maxint[0] - minint[0] + 1),
+        (uint32_t)(maxint[1] - minint[1] + 1),
+        (uint32_t)(maxint[2] - minint[2] + 1),
+    };
+
+    uint32_t bitsize = 0;
+    uint32_t bitsizeint[3] = {0};
+    unpack_data_t big_unpack = {0};
+
+    /* check if one of the sizes is to big to be multiplied */
+    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
+        bitsizeint[0] = sizeofint(sizeint[0]);
+        bitsizeint[1] = sizeofint(sizeint[1]);
+        bitsizeint[2] = sizeofint(sizeint[2]);
+    } else {
+        bitsize = sizeofints(3, sizeint);
+        big_unpack.size_zy = (uint64_t)sizeint[1] * sizeint[2];
+        big_unpack.size_z = sizeint[2];
+        big_unpack.num_of_bits = (uint8_t)bitsize;
+        big_unpack.div_zy = DIV_INIT(big_unpack.size_zy);
+        big_unpack.div_z = DIV_INIT(big_unpack.size_z);
+        init_unpack_data_bits(&big_unpack, bitsize);
+    }
+
+    int smallidx;
+    if (!xdr_read_int32(&smallidx, 1, xdr_file)) {
+        return 0;
+    }
+
+    int idx = MAX(smallidx - 1, FIRSTIDX);
+    int smaller = magicints[idx] / 2;
+    int smallnum = magicints[smallidx] / 2;
+    uint32_t smallsize = magicints[smallidx];
+
+    unpack_data_t sml_unpack = {
+        .size_zy = (uint64_t)smallsize * smallsize,
+        .size_z  = smallsize,
+        .num_of_bits = (uint8_t)smallidx,
+        .div_zy = denoms_64_2[smallidx - FIRSTIDX],
+        .div_z  = denoms_64_1[smallidx - FIRSTIDX],
+    };
+    init_unpack_data_bits(&sml_unpack, smallidx);
+
+    /* length in bytes */
+    uint32_t num_bytes = 0;
+    if (!xdr_read_int32((int32_t*)&num_bytes, 1, xdr_file)) {
+        return 0;
+    }
+
+    size_t temp_pos = md_temp_get_pos();
+    size_t mem_size = ALIGN_TO(num_bytes, 16);
+    uint64_t* mem = md_temp_push_aligned(mem_size, 16);
+
+    int atom_idx = 0;
+    if (!xdr_read_bytes((uint8_t*)mem, num_bytes, xdr_file)) {
+        goto done;
+    }
+
+    br_t br = {0};
+    br_init(&br, mem, mem_size / 8);
+
+    float* lfp = out_coords_ptr;
+    float inv_precision = 1.0f / precision;
+    v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
+    v4i_t thiscoord;
+    int run = 0;
+    int run_count = 0;
+
+#ifdef PRINT_DEBUG
+    uint32_t smlbits_hist[LASTIDX] = {0};
+    uint32_t rle_hist[9] = {0};
+    MD_LOG_DEBUG("bigsize: %i", bitsize);
+#endif
+
+    while (atom_idx < natoms) {
+        if (bitsize == 0) {
+            thiscoord = br_read_ints(&br, bitsizeint);
+        } else {
+            if (big_unpack.num_of_bits <= 64) {
+                thiscoord = unpack_coord64(&br, &big_unpack);
+            } else {
+                thiscoord = unpack_coord128(&br, &big_unpack);
             }
         }
 
-    fail:
-        md_array_free(*frame_offsets, alloc);
-        md_array_free(*frame_times, alloc);
-        *frame_offsets = 0;
-        *frame_times = 0;
-        return 0;
+        thiscoord = v4i_add(thiscoord, vminint);
+
+        uint32_t data = (uint32_t)br_peek(&br, 6);
+        uint32_t flag = data & 32;
+        uint32_t skip = flag ? 6 : 1;
+        br_skip(&br, skip);
+
+        int is_smaller = 0;
+        if (flag) {
+            run = data & 31;
+            run_count  = run / 3;
+            is_smaller = run % 3;
+            run -= is_smaller;
+            is_smaller--;
+        }
+
+        int batch_size = run_count + 1;
+        if (atom_idx + batch_size > natoms) {
+            MD_LOG_ERROR("XTC: Buffer overrun during decompression.");
+            goto done;
+        }
+        atom_idx += batch_size;
+
+#ifdef PRINT_DEBUG
+        rle_hist[run_count]++;
+#endif
+
+        if (run > 0) {
+            v4i_t prevcoord = thiscoord;
+            v4i_t vsmall = v4i_set1(smallnum);
+
+            if (sml_unpack.num_of_bits <= 64) {
+                v4i_t coord = unpack_coord64(&br, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+                // Write second atom before first atom
+                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
+
+                for (int i = 1; i < run_count; ++i) {
+                    coord = unpack_coord64(&br, &sml_unpack);
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                }
+            } else {
+                v4i_t coord = unpack_coord128(&br, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+                // Write second atom before first atom
+                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
+
+                for (int i = 1; i < run_count; ++i) {
+                    coord = unpack_coord128(&br, &sml_unpack);
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                }
+            }
+        } else {
+            write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+        }
+        smallidx += is_smaller;
+        if (is_smaller < 0) {
+            smallnum = smaller;
+            smaller = (smallidx > FIRSTIDX) ? magicints[smallidx - 1] / 2 : 0;
+        } else if (is_smaller > 0) {
+            smaller = smallnum;
+            smallnum = magicints[smallidx] / 2;
+        }
+        if (smallidx < FIRSTIDX) {
+            MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
+            goto done;
+        }
+        if (smallidx != sml_unpack.num_of_bits) {
+#ifdef PRINT_DEBUG
+            smlbits_hist[smallidx]++;
+#endif
+            uint32_t sml_size       = magicints[smallidx];
+            sml_unpack.size_zy      = (uint64_t)sml_size * sml_size;
+            sml_unpack.size_z       = sml_size;
+            sml_unpack.num_of_bits  = (uint8_t)smallidx;
+            sml_unpack.div_zy       = denoms_64_2[smallidx - FIRSTIDX];
+            sml_unpack.div_z        = denoms_64_1[smallidx - FIRSTIDX];
+            init_unpack_data_bits(&sml_unpack, smallidx);
+        }
     }
-}
+    
+done:
+    md_temp_set_pos_back(temp_pos);
 
-size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* coords, size_t capacity) {
-    int natoms;
-    float prec;
-
-    bool result = xdr_decompress_coord_float(coords, &natoms, &prec, xdr_file);
-    if (!result) {
-        MD_LOG_ERROR("XTC: Failed to read coordinates");
-        return 0;
+#ifdef PRINT_DEBUG
+    int max_smallbits = 0;
+    uint32_t total_smallbits = 0;
+    for (int i = 0; i < LASTIDX; i++) {
+        if (smlbits_hist[i] > smlbits_hist[max_smallbits]) {
+            max_smallbits = i;
+        }
+        total_smallbits += smlbits_hist[i];
     }
 
-    return (size_t)natoms;
+    uint32_t total_rle = 0;
+    for (int i = 0; i < 9; ++i) {
+        total_rle += rle_hist[i];
+    }
+
+    // Printf a histogram with horizontal bars
+    printf("--- Smallbits ---\n");
+    for (int i = 0; i < LASTIDX; i++) {
+        if (smlbits_hist[i] > 0) {
+            int num_hashes = (int)(smlbits_hist[i] * 50 / total_smallbits);
+            printf("%2d: ", i);
+            for (int j = 0; j < num_hashes; j++) {
+                printf("#");
+            }
+            printf(" (%d)\n", smlbits_hist[i]);
+        }
+    }
+    printf("----------------\n");
+    printf("--- run length ---\n");
+    for (int i = 0; i < 9; i++) {
+        if (rle_hist[i] > 0) {
+            int num_hashes = (int)(rle_hist[i] * 50 / total_rle);
+            printf("%2d: ", i);
+            for (int j = 0; j < num_hashes; j++) {
+                printf("#");
+            }
+            printf(" (%d)\n", rle_hist[i]);
+        }
+    }
+    printf("----------------\n\n");
+#endif
+
+    return (size_t)atom_idx;
 }
 
 bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
@@ -910,11 +902,8 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
             return 0;
         }
 
-        const int64_t beg = xtc->frame_offsets[frame_idx];
-        const int64_t end = xtc->frame_offsets[frame_idx + 1];
-        const size_t frame_size = (size_t)MAX(0, end - beg);
-
-        if (!md_file_seek(file, beg, MD_FILE_BEG)) {
+        const int64_t pos = xtc->frame_offsets[frame_idx];
+        if (!md_file_seek(file, pos, MD_FILE_BEG)) {
             MD_LOG_ERROR("XTC: Failed to seek to frame offset");
             md_file_close(file);
             return false;
