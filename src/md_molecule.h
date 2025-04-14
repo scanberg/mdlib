@@ -138,7 +138,7 @@ typedef struct md_molecule_t {
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
     md_index_data_t             structure;          // Isolated structures connected by persistent bonds
 
-    md_instance_data_t          instance;           // Symmetry instances of the molecule (duplications of ranges with new transforms)
+    md_instance_data_t          instance;           // Instances of the molecule (duplications of ranges with new transforms)
     
     // @NOTE(Robin): This should probably move elsewhere.
     // Hydrogen bonds are of interest to be evaluated and analyzed over the trajectory
@@ -150,11 +150,11 @@ typedef struct md_molecule_t {
 extern "C" {
 #endif
 
-static inline vec3_t md_atom_coord(md_atom_data_t atom_data, int64_t atom_idx) {
+static inline vec3_t md_atom_coord(md_atom_data_t atom_data, size_t atom_idx) {
     return vec3_set(atom_data.x[atom_idx], atom_data.y[atom_idx], atom_data.z[atom_idx]);
 }
 
-static inline md_range_t md_residue_atom_range(md_residue_data_t res, int64_t res_idx) {
+static inline md_range_t md_residue_atom_range(md_residue_data_t res, size_t res_idx) {
 	md_range_t range = {0};
     size_t i = (size_t)res_idx; // Cast to unsigned to only check for positive
 	if (res.atom_offset && i < res.count) {
@@ -164,55 +164,50 @@ static inline md_range_t md_residue_atom_range(md_residue_data_t res, int64_t re
 	return range;
 }
 
-static inline size_t md_residue_atom_count(md_residue_data_t res, int64_t res_idx) {
+static inline size_t md_residue_atom_count(md_residue_data_t res, size_t res_idx) {
     size_t count = 0;
-    size_t i = (size_t)res_idx;
-    if (res.atom_offset && i < res.count) {
-        count = res.atom_offset[i + 1] - res.atom_offset[i];
+    if (res.atom_offset && res_idx < res.count) {
+        count = res.atom_offset[res_idx + 1] - res.atom_offset[res_idx];
     }
     return count;
 }
 
 
-static inline md_range_t md_chain_residue_range(md_chain_data_t chain, int64_t chain_idx) {
+static inline md_range_t md_chain_residue_range(md_chain_data_t chain, size_t chain_idx) {
     md_range_t range = {0};
-    size_t i = (size_t)chain_idx; // Cast to unsigned to only check for positive
-    if (chain.res_offset && i < chain.count) {
-        range.beg = chain.res_offset[i];
-        range.end = chain.res_offset[i + 1];
+    if (chain.res_offset && chain_idx < chain.count) {
+        range.beg = chain.res_offset[chain_idx];
+        range.end = chain.res_offset[chain_idx + 1];
     }
     return range;
 }
 
-static inline size_t md_chain_residue_count(md_chain_data_t chain, int64_t chain_idx) {
+static inline size_t md_chain_residue_count(md_chain_data_t chain, size_t chain_idx) {
     size_t count = 0;
-    size_t i = (size_t)chain_idx; // Cast to unsigned to only check for positive
-    if (chain.res_offset && i < chain.count) {
-        count = chain.res_offset[i + 1] - chain.res_offset[i];
+    if (chain.res_offset && chain_idx < chain.count) {
+        count = chain.res_offset[chain_idx + 1] - chain.res_offset[chain_idx];
     }
     return count;
 }
 
-static inline md_range_t md_chain_atom_range(md_chain_data_t chain, int64_t chain_idx) {
+static inline md_range_t md_chain_atom_range(md_chain_data_t chain, size_t chain_idx) {
     md_range_t range = {0};
-    size_t i = (size_t)chain_idx; // Cast to unsigned to only check for positive
-    if (chain.atom_offset && i < chain.count) {
-        range.beg = chain.atom_offset[i];
-        range.end = chain.atom_offset[i + 1];
+    if (chain.atom_offset && chain_idx < chain.count) {
+        range.beg = chain.atom_offset[chain_idx];
+        range.end = chain.atom_offset[chain_idx + 1];
     }
     return range;
 }
 
-static inline size_t md_chain_atom_count(md_chain_data_t chain, int64_t chain_idx) {
+static inline size_t md_chain_atom_count(md_chain_data_t chain, size_t chain_idx) {
     size_t count = 0;
-    size_t i = (size_t)chain_idx; // Cast to unsigned to only check for positive
-    if (chain.atom_offset && i < chain.count) {
-        count = chain.atom_offset[i + 1] - chain.atom_offset[i];
+    if (chain.atom_offset && chain_idx < chain.count) {
+        count = chain.atom_offset[chain_idx + 1] - chain.atom_offset[chain_idx];
     }
     return count;
 }
 
-static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, int64_t atom_idx) {
+static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_t atom_idx) {
     md_bond_iter_t it = {0};
     if (bond_data && bond_data->conn.offset && atom_idx < (int64_t)bond_data->conn.offset_count) {
         it.data = bond_data;
@@ -225,7 +220,7 @@ static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, int64
 #define MD_BOND_FLAG_MASK  0xF0
 #define MD_BOND_ORDER_MASK 0x0F
 
-static inline size_t md_bond_conn_count(md_bond_data_t bond_data, int64_t atom_idx) {
+static inline size_t md_bond_conn_count(md_bond_data_t bond_data, size_t atom_idx) {
     return bond_data.conn.offset[atom_idx + 1] - bond_data.conn.offset[atom_idx];
 }
 
