@@ -64,7 +64,50 @@ static void br_init(br_t* r, const uint64_t* stream, size_t num_qwords) {
     r->stream_size = (uint32_t)num_qwords - 2;
 }
 
+static inline uint64_t br_peek(br_t* r, size_t num_bits) {
+    ASSERT(num_bits <= 64);
+    uint64_t shft = 64 - num_bits;
+    uint64_t res  = r->data >> shft;
+    return res;
+}
+
+static inline void br_load_next(br_t* r) {
+#if 0
+    if (r->cache_bits <= 64 && r->stream_size > 0) {
+        r->stream_size -= 1;
+        uint64_t data = *r->stream++;
+#if __LITTLE_ENDIAN__
+        data = BSWAP64(data);
+#endif
+        if (r->cache_bits < 64) {
+            // Fill in missing bits
+            r->data |= data >> r->cache_bits;
+            r->next  = data << (64 - r->cache_bits);
+        } else {
+            r->next = data;
+        }
+        r->cache_bits += 64;
+    }
+#else
+    if (r->cache_bits > 64 || r->stream_size == 0) return;
+
+    uint64_t data = *r->stream++;
+    r->stream_size -= 1;
+
+#if __LITTLE_ENDIAN__
+    data = BSWAP64(data);
+#endif
+
+    // Always perform unified update
+    uint64_t value = (r->cache_bits < 64) ? (data >> r->cache_bits) : 0;
+    r->data |= value;
+    r->next  = data << (64 - r->cache_bits);
+    r->cache_bits += 64;
+#endif
+}
+
 static inline uint64_t br_read(br_t* r, size_t num_bits) {
+#if 0
     ASSERT(num_bits <= 64);
     uint64_t shft = 64 - num_bits;
     uint64_t res  = r->data >> shft;
@@ -80,22 +123,45 @@ static inline uint64_t br_read(br_t* r, size_t num_bits) {
         r->next = 0;
     }
 
-    if (r->cache_bits < 64 && r->stream_size > 0) {
+    if (r->cache_bits <= 64 && r->stream_size > 0) {
         r->stream_size -= 1;
         uint64_t data = *r->stream++;
 #if __LITTLE_ENDIAN__
         data = BSWAP64(data);
 #endif
         // Fill in missing bits
-        r->data |= data >> r->cache_bits;
-        r->next  = data << (64 - r->cache_bits);
+        if (r->cache_bits < 64) {
+            r->data |= data >> r->cache_bits;
+            r->next  = data << (64 - r->cache_bits);
+        } else {;
+            r->next  = data;
+        }
         r->cache_bits += 64;
     }
 
     return res;
+#else
+    ASSERT(num_bits <= 64);
+
+    uint64_t res = r->data >> (64 - num_bits);
+    r->cache_bits -= (uint32_t)num_bits;
+
+    // Unified handling
+    if (num_bits < 64) {
+        r->data <<= num_bits;
+        r->data |= r->next >> (64 - num_bits);
+        r->next <<= num_bits;
+    } else {
+        r->data = r->next;
+        //r->next = 0;
+    }
+
+    br_load_next(r);
+    return res;
+#endif
 }
 
-static const int num_bits[] = {64, 48, 8, 4, 4, 48, 5, 32, 8, 55, 8, 55, 55, 48, 8, 4, 1, 1, 2, 3, 7, 64, 64, 64, 64, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32 ,33, 35, 41, 44, 51, 55, 59, 63, 63, 63, 1, 2, 3,4};
+static const int num_bits[] = {64, 48, 7, 1, 2, 64, 5, 32, 8, 55, 8, 55, 55, 48, 8, 4, 1, 1, 2, 3, 7, 64, 64, 64, 64, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32 ,33, 35, 41, 44, 51, 55, 59, 63, 63, 63, 1, 2, 3,4};
 
 UTEST(xtc, bitread) {
     size_t temp_pos = md_temp_get_pos();
@@ -115,6 +181,19 @@ UTEST(xtc, bitread) {
         EXPECT_EQ(val, ref);
     }
 
+    for (uint32_t num_of_bits = 1; num_of_bits <= 64; ++num_of_bits) {
+        buf[0] = buf[1] = buf[2] = 0;
+        br_init(&r, (const uint64_t*)&buf[3], 512 * sizeof(int));
+        for (size_t i = 0; i < 512; ++i) {
+            uint64_t ref = decodebits(buf, num_of_bits);
+            uint64_t val = br_read(&r,     num_of_bits);
+            EXPECT_EQ(val, ref);
+            if (val != ref) {
+                printf("Error with N=%i\n", num_of_bits);
+            }
+        }
+    }
+
     md_temp_set_pos_back(temp_pos);
 }
 
@@ -132,8 +211,7 @@ UTEST(xtc, decode_bits) {
 
     for (size_t i = 0; i < ARRAY_SIZE(num_bits); ++i) {
         int num_of_bits = num_bits[i];
-            
-#if 1
+           
         int fullbytes = num_of_bits >> 3;
         int partbits  = num_of_bits &  7;
 
@@ -148,24 +226,23 @@ UTEST(xtc, decode_bits) {
             v |= ((uint64_t) decodebits(buf, partbits)) << (8 * i);
         }
 
-
-
         uint64_t big_shift = 64 - ((num_of_bits + 7) & ~7);  // Align to the next multiple of 8
         uint64_t sml_shift = (8 - partbits) & 7;             // Avoid branch, ensures zero when partbits == 0
         uint64_t part_mask = partbits ? (1ull << partbits) - 1 : 0xFF;
 
-        uint64_t w = br_read(&r, num_of_bits);
+        uint64_t next = ALIGN_TO(num_of_bits, 8);
+        uint64_t u = br_peek(&r, num_of_bits);
+        uint64_t l = u << sml_shift;
+        uint64_t j = BSWAP64(u);
+        uint64_t m = BSWAP64(l);
+        uint64_t k = j >> big_shift;
 
+        uint64_t w = br_read(&r, num_of_bits);
         // Remove unnecessary masking by directly applying shifts
         uint64_t t = (w << sml_shift) & ~0xFFull | (w & part_mask);
-
         // Byte-swap and shift to align the result correctly
         uint64_t q = BSWAP64(t) >> big_shift;
-#else
-        uint64_t v = decodebits(buf, num_of_bits);
-        uint64_t q = br_read(&r, num_of_bits);
 
-#endif
         EXPECT_EQ(v, q);
         if (v != q) {
             printf("Error with N=%i\n", num_of_bits);
