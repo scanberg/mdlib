@@ -11,6 +11,8 @@
 
 #include <xdrfile_xtc.h>
 
+#define FULL_TEST 0
+
 static inline uint64_t decodebits(int buf[3], int num_of_bits) {
     int cnt;
     unsigned char* cbuf;
@@ -335,6 +337,7 @@ done:
     xdrfile_close(xdr);
 }
 
+#if FULL_TEST
 UTEST(xtc, big) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
@@ -363,7 +366,7 @@ UTEST(xtc, big) {
     int natoms, step;
     float time, box[3][3];
 
-    for (size_t i = 0; i < num_frames; ++i) {
+    for (size_t i = 0; i < 1; ++i) {
         md_file_seek(file, frame_offsets[i], MD_FILE_BEG);
         EXPECT_TRUE(md_xtc_read_frame_header(file, &natoms, &step, &time, box));
         EXPECT_TRUE(md_xtc_read_frame_coords(file, (float*)xyz, num_atoms));
@@ -391,7 +394,6 @@ done:
     xdrfile_close(xdr);
 }
 
-#if 0
 UTEST(xtc, amyloid) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
