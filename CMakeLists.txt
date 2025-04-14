@@ -303,6 +303,7 @@ target_include_directories(mdlib
   ext/xtc/
   ext/svd3/
   ext/stb/
+  ext/libdivide
 )
 
 set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})

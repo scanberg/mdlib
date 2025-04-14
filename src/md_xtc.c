@@ -12,15 +12,20 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
-#include <xdrfile.h>
+#include <libdivide.h>
 
 #include <string.h>
 #include <stdio.h>
+
+#if defined(__SIZEOF_INT128__)
+#define HAS_INT128_T
+#endif
 
 #define MD_XTC_CACHE_MAGIC   0x8281237612371
 #define MD_XTC_CACHE_VERSION 3
 
 #define MD_XTC_TRAJ_MAGIC 0x162365dac721995
+
 #define XTC_MAGIC 1995
 
 /* XTC small header size (natoms<=9).
@@ -50,13 +55,12 @@
 
 typedef struct xtc_t {
     uint64_t magic;
-    XDRFILE* file;
+    md_file_o* file;
+    str_t filepath; // Store path to create multiple file streams
     md_array(int64_t) frame_offsets;
     md_trajectory_header_t header;
     md_allocator_i* allocator;
-    md_mutex_t mutex;    
 } xtc_t;
-
 
 // XDR Specific stuff
 static inline bool xdr_read_bytes (uint8_t* ptr, size_t count, md_file_o* xdr_file) {
@@ -65,23 +69,6 @@ static inline bool xdr_read_bytes (uint8_t* ptr, size_t count, md_file_o* xdr_fi
 
     size_t bytes = count;
     if (md_file_read(xdr_file, ptr, bytes) == bytes) {
-        return true;
-    }
-
-    return false;
-}
-
-static inline bool xdr_read_int16(int16_t* ptr, size_t count, md_file_o* xdr_file) {
-    ASSERT(ptr);
-    ASSERT(xdr_file);
-
-    size_t bytes = count * sizeof(int16_t);
-    if (md_file_read(xdr_file, ptr, bytes) == bytes) {
-#if __LITTLE_ENDIAN__
-        for (size_t i = 0; i < count; ++i) {
-            ptr[i] = BSWAP16(ptr[i]);
-        }
-#endif
         return true;
     }
 
@@ -111,13 +98,11 @@ static inline bool xdr_read_float (float* ptr, size_t count, md_file_o* xdr_file
     return xdr_read_int32((int32_t*)ptr, count, xdr_file);
 }
 
-
-
 static inline int sizeofint(int size) {
     unsigned int num = 1;
     int num_of_bits = 0;
 
-    while (size >= num && num_of_bits < 32) {
+    while (size >= (int)num && num_of_bits < 32) {
         num_of_bits++;
         num <<= 1;
     }
@@ -125,12 +110,11 @@ static inline int sizeofint(int size) {
 }
 
 static inline int sizeofints(int num_of_ints, unsigned int sizes[]) {
-    int i, num;
-    unsigned int num_of_bytes, num_of_bits, bytes[32], bytecnt, tmp;
+    unsigned int num_of_bytes, num_of_bits, bytes[32], bytecnt, tmp, num;
     num_of_bytes = 1;
     bytes[0] = 1;
     num_of_bits = 0;
-    for (i = 0; i < num_of_ints; i++) {
+    for (int i = 0; i < num_of_ints; i++) {
         tmp = 0;
         for (bytecnt = 0; bytecnt < num_of_bytes; bytecnt++) {
             tmp = bytes[bytecnt] * sizes[i] + tmp;
@@ -152,78 +136,7 @@ static inline int sizeofints(int num_of_ints, unsigned int sizes[]) {
     return num_of_bits + num_of_bytes * 8;
 }
 
-static inline int decodebits(int buf[3], int num_of_bits) {
-    int cnt, num;
-    unsigned int lastbits, lastbyte;
-    unsigned char* cbuf;
-    int mask = (1 << num_of_bits) - 1;
-
-    cbuf = ((unsigned char*)buf) + 3 * sizeof(*buf);
-    cnt = buf[0];
-    lastbits = (unsigned int)buf[1];
-    lastbyte = (unsigned int)buf[2];
-
-    num = 0;
-    while (num_of_bits >= 8) {
-        lastbyte = (lastbyte << 8) | cbuf[cnt++];
-        num |= (lastbyte >> lastbits) << (num_of_bits - 8);
-        num_of_bits -= 8;
-    }
-    if (num_of_bits > 0) {
-        if (lastbits < num_of_bits) {
-            lastbits += 8;
-            lastbyte = (lastbyte << 8) | cbuf[cnt++];
-        }
-        lastbits -= num_of_bits;
-        num |= (lastbyte >> lastbits) & ((1 << num_of_bits) - 1);
-    }
-    num &= mask;
-    buf[0] = cnt;
-    buf[1] = lastbits;
-    buf[2] = lastbyte;
-    return num;
-}
-
-/*
-* decodeints - decode 'small' integers from the buf array
-*
-* this routine is the inverse from encodeints() and decodes the small integers
-* written to buf by calculating the remainder and doing divisions with
-* the given sizes[]. You need to specify the total number of bits to be
-* used from buf in num_of_bits.
-*
-*/
-
-static inline void decodeints(int buf[], int num_of_ints, int num_of_bits, unsigned int sizes[], int nums[3]) {
-
-    int bytes[16];
-    int i, j, num_of_bytes, p, num, size;
-
-    bytes[1] = bytes[2] = bytes[3] = 0;
-    num_of_bytes = 0;
-    while (num_of_bits > 8) {
-        bytes[num_of_bytes++] = decodebits(buf, 8);
-        num_of_bits -= 8;
-    }
-    if (num_of_bits > 0) {
-        bytes[num_of_bytes++] = decodebits(buf, num_of_bits);
-    }
-    //printf("num_bytes %i\n", num_of_bytes);
-    for (i = num_of_ints - 1; i > 0; i--) {
-        num = 0;
-        size = sizes[i];
-        for (j = num_of_bytes - 1; j >= 0; j--) {
-            num = (num << 8) | bytes[j];
-            p = num / size;
-            num = num - p * size;
-            bytes[j] = p;
-        }
-        nums[i] = num;
-    }
-    nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
-}
-
-static const int magicints[] = {
+static const uint32_t magicints[] = {
     0,        0,        0,       0,       0,       0,       0,       0,       0,       8,
     10,       12,       16,      20,      25,      32,      40,      50,      64,      80,
     101,      128,      161,     203,     256,     322,     406,     512,     645,     812,
@@ -237,382 +150,265 @@ static const int magicints[] = {
 /* note that magicints[FIRSTIDX-1] == 0 */
 #define LASTIDX (sizeof(magicints) / sizeof(*magicints))
 
-typedef struct bit_reader_t {
-    uint64_t buf, next4b, curbit;
-    const uint64_t*data;
-    const uint32_t*data32;
-    uint32_t bitsavalable;
-} bit_reader_t;
+#define BRANCHFREE_DIV
 
-static inline void bit_reader_skip_load(bit_reader_t* r, uint32_t len) {
-    r->buf <<= len;
-    r->bitsavalable -= len;
-    r->curbit += len;
-    if (r->bitsavalable < 32) {
-        uint32_t next32 = r->data32[r->next4b++];
-#if __LITTLE_ENDIAN__
-        next32 = BSWAP32(next32);
-#endif
-        r->buf |= (uint64_t)next32 << (32 - r->bitsavalable);
-        r->bitsavalable += 32;
-    }
-}
+#ifdef BRANCHFREE_DIV
+#define DIV_T struct libdivide_u64_branchfree_t
+#define DIV_INIT(x) libdivide_u64_branchfree_gen(x)
+#define DIV(x, y) libdivide_u64_branchfree_do(x, y)
 
-static inline void bit_reader_init(bit_reader_t* r, uint64_t bitpos) {
-    uint64_t ibuf = bitpos / 64;
-    r->buf = r->data[ibuf];
+// These contain precalculated multiplies and shifts for the corresponding magic numbers from FIRSTIDX to LASTIDX
+static const DIV_T denoms_64_1[] = {
+    {0, 2}, {0X999999999999999A, 3}, {0X5555555555555556, 3}, {0, 3}, {0X999999999999999A, 4}, {0X47AE147AE147AE15, 4}, {0, 4}, {0X999999999999999A, 5}, {0X47AE147AE147AE15, 5}, {0, 5},
+    {0X999999999999999A, 6}, {0X446F86562D9FAEE5, 6}, {0, 6}, {0X970E4F80CB8727C1, 7}, {0X42D6625D51F86EFA, 7}, {0, 7}, {0X970E4F80CB8727C1, 8}, {0X42D6625D51F86EFA, 8}, {0, 8},
+    {0X966CC01966CC0197, 9}, {0X42D6625D51F86EFA, 9}, {0, 9}, {0X966CC01966CC0197, 10}, {0X42A386615BD84CE1, 10}, {0, 10}, {0X966CC01966CC0197, 11}, {0X42A386615BD84CE1, 11}, {0, 11},
+    {0X9E74F8832302A17F, 12}, {0X4296D1E340EF6BF0, 12}, {0, 12}, {0X9662AB64ED3938ED, 13}, {0X4290780440A7950F, 13}, {0, 13}, {0X9662AB64ED3938ED, 14}, {0X428D4B2CC2273C78, 14}, {0, 14},
+    {0X9660264BCF9BE4F1, 15}, {0X428BB4C7031B065B, 15}, {0, 15}, {0X9660264BCF9BE4F1, 16}, {0X428AE995A39B4B45, 16}, {0, 16}, {0X9660264BCF9BE4F1, 17}, {0X428A83FD53DC320A, 17}, {0, 17},
+    {0X9660264BCF9BE4F1, 18}, {0X428A513143FCBC0B, 18}, {0X200004000081, 18}, {0X965FFDFA81C292FF, 19}, {0X428A37CB420D0364, 19}, {0, 19}, {0X965FFDFA81C292FF, 20},
+    {0X428A37CB420D0364, 20}, {0, 20}, {0X965FF3E62F8C3EC9, 21}, {0X428A3171C2311550, 21}, {0, 21}, {0X965FEEDC06A114B2, 22}, {0X428A3171C2311550, 22}, {0X20000040001, 22},
+    {0X965FEC56F2377FA7, 23}, {0X428A2FDB624419CC, 23}, {0, 23}, 
+};
 
-#if __LITTLE_ENDIAN__
-    r->buf = BSWAP64(r->buf);
-#endif
-    r->curbit = ibuf*64;
-    uint64_t bitshift = bitpos - r->curbit;
-
-    r->next4b = 2 * (ibuf + 1);
-    r->bitsavalable = 64;
-
-    if (bitshift) {
-        bit_reader_skip_load(r, bitshift);
-    }
-}
-
-static inline bit_reader_t bit_reader_create(const uint64_t* data) {
-    bit_reader_t r = {
-        .data = data,
-        .data32 = (const uint32_t*)data,
-    };
-    bit_reader_init(&r, 0);
-    return r;
-}
-
-static inline void bit_reader_skip(bit_reader_t* r, uint32_t len) {
-    if (r->bitsavalable > len + 8) {
-        bit_reader_skip_load(r, len);
-    } else {
-        bit_reader_init(r, r->curbit + len);
-    }
-}
-
-//perform short read (1,5,8 bits)
-static inline uint8_t bit_reader_read(bit_reader_t* r, uint8_t len) {
-    uint64_t tmp = r->buf;
-    tmp >>= (64 - len);
-    bit_reader_skip(r, len);
-    return (uint8_t)tmp;
-}
-
-//read up to 32 bits
-static inline int bit_reader_read_int(bit_reader_t* r, int num_of_bits) {
-    int mask = (1 << num_of_bits) - 1;
-    int ret = 0;
-    //we should always have extra space, so extra read at the end of array is not a problem.
-    int num_of_bytes = MIN((num_of_bits >> 3) + 1, 4);
-    for (int i = 0; i < num_of_bytes; i++) {
-        ret |= ((int) bit_reader_read(r, 8)) << (8 * i);
-    }
-    return ret & mask;
-}
-
-static inline void bit_reader_unpack_from_uint64(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
-    int fullbytes = num_of_bits >> 3;
-    int partbits  = num_of_bits &  7;
-
-    uint64_t v = 0;
-    int i = 0;
-    for (; i < fullbytes; i++) {
-        uint64_t ibyte = bit_reader_read(r, 8);
-        v |= ibyte << (8 * i);
-    }
-
-    if (partbits) {
-        v |= ((uint64_t) bit_reader_read(r, partbits)) << (8 * i);
-    }
-
-    uint64_t sz = (uint64_t)sizeint[2];
-    uint32_t sy = sizeint[1];
-    uint64_t szy = sz*sy;
-    uint32_t x1 = v / szy;
-    uint64_t q1 = v % szy;
-    uint32_t y1 = q1 / sz;
-    uint32_t z1 = q1 % sz;
-
-    intcrds[0] = x1;
-    intcrds[1] = y1;
-    intcrds[2] = z1;
-}
-
-#ifdef HAS_INT128
-static inline void bit_reader_unpack_from_uint128(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
-    int fullbytes = num_of_bits >> 3;
-    int partbits  = num_of_bits &  7;
-
-    __int128 v = 0;
-    int i = 0;
-    for (; i < fullbytes; i++) {
-        uint64_t ibyte = bit_reader_read(r, 8);
-        v |= ibyte << (8 * i);
-    }
-
-    if (partbits) {
-        v |= ((uint64_t) bit_reader_read(r, partbits)) << (8 * i);
-    }
-
-    uint64_t sz = uint64_t(sizeint[2]);
-    uint32_t sy = sizeint[1];
-    uint64_t szy = sz*sy;
-    uint32_t x1 = v / szy;
-    uint64_t q1 = v % szy;
-    uint32_t y1 = q1 / sz;
-    uint32_t z1 = q1 % sz;
-
-    intcrds[0] = x1;
-    intcrds[1] = y1;
-    intcrds[2] = z1;
-}
-#endif
-
-static inline void bit_reader_unpack(bit_reader_t* r, int num_of_bits, const int32_t sizeint[], int32_t intcrds[]) {
-    if (num_of_bits <= 64) {
-        bit_reader_unpack_from_uint64(r, num_of_bits, sizeint, intcrds);
-    } else
-#ifdef HAS_INT128
-    {
-        bit_reader_unpack_from_uint128(r, num_of_bits, sizeint, intcrds);
-    }
+// Precalculated multiply and shifts for squared magic numbers
+static const DIV_T denoms_64_2[] = {
+    {0, 5}, {0X47AE147AE147AE15, 6}, {0XC71C71C71C71C71D, 7}, {0, 7}, {0X47AE147AE147AE15, 8}, {0XA36E2EB1C432CA58, 9}, {0, 9}, {0X47AE147AE147AE15, 10}, {0XA36E2EB1C432CA58, 11},
+    {0, 11}, {0X47AE147AE147AE15, 12}, {0X9B2A7C9FE8B617F1, 13}, {0, 13}, {0X439F40CC28F760CC, 14}, {0X972002FB5C05974D, 15}, {0, 15}, {0X439F40CC28F760CC, 16}, {0X972002FB5C05974D, 17},
+    {0, 17}, {0X429E8FC19BD1F6F1, 18}, {0X972002FB5C05974D, 19}, {0, 19}, {0X429E8FC19BD1F6F1, 20}, {0X969FC68151912805, 21}, {0, 21}, {0X429E8FC19BD1F6F1, 22}, {0X969FC68151912805, 23},
+    {0, 23}, {0X4F7F449D26A949DD, 24}, {0X967FC0DA51BF3DDD, 25}, {0, 25}, {0X428E8ED5E63B8E8A, 26}, {0X966FBF71EFB24C2F, 27}, {0, 27}, {0X428E8ED5E63B8E8A, 28}, {0X9667BF187DCBD4ED, 29},
+    {0, 29}, {0X428A8ECA9A8C6397, 30}, {0X9663BF027395D269, 31}, {0, 31}, {0X428A8ECA9A8C6397, 32}, {0X9661BEFD1A08C80F, 33}, {0, 33}, {0X428A8ECA9A8C6397, 34}, {0X9660BEFBD82195C9, 35},
+    {0, 35}, {0X428A8ECA9A8C6397, 36}, {0X96603EFB91E54C07, 37}, {0X40000C000201, 37}, {0X428A4ECA87BD4923, 38}, {0X965FFEFB8574EA53, 39}, {0, 39}, {0X428A4ECA87BD4923, 40},
+    {0X965FFEFB8574EA53, 41}, {0, 41}, {0X428A3ECA8603773D, 42}, {0X965FEEFB84B5956C, 43}, {0, 43}, {0X428A36CA8598D950, 44}, {0X965FEEFB84B5956C, 45}, {0X400000C0001, 45},
+    {0X428A32CA85801D1A, 46}, {0X965FEAFB84AB8C66, 47}, {0, 47},
+};
 #else
-    {
-        int fullbytes = num_of_bits >> 3;
-        int partbits  = num_of_bits  & 7;
+#define DIV_T struct libdivide_u64_t
+#define DIV_INIT(x) libdivide_u64_gen(x)
+#define DIV(x, y) libdivide_u64_do(x, y)
 
-        int bytes[16];
-        int nbytes = 0;
+static const DIV_T denoms_64_1[] = {
+    {0, 2}, {0X999999999999999A, 3}, {0X5555555555555556, 3}, {0, 3}, {0X999999999999999A, 4}, {0X47AE147AE147AE15, 4}, {0, 4}, {0X999999999999999A, 5}, {0X47AE147AE147AE15, 5}, {0, 5},
+    {0X999999999999999A, 6}, {0X446F86562D9FAEE5, 6}, {0, 6}, {0X970E4F80CB8727C1, 7}, {0X42D6625D51F86EFA, 7}, {0, 7}, {0X970E4F80CB8727C1, 8}, {0X42D6625D51F86EFA, 8}, {0, 8},
+    {0X966CC01966CC0197, 9}, {0X42D6625D51F86EFA, 9}, {0, 9}, {0X966CC01966CC0197, 10}, {0X42A386615BD84CE1, 10}, {0, 10}, {0X966CC01966CC0197, 11}, {0X42A386615BD84CE1, 11}, {0, 11},
+    {0X9E74F8832302A17F, 12}, {0X4296D1E340EF6BF0, 12}, {0, 12}, {0X9662AB64ED3938ED, 13}, {0X4290780440A7950F, 13}, {0, 13}, {0X9662AB64ED3938ED, 14}, {0X428D4B2CC2273C78, 14}, {0, 14},
+    {0X9660264BCF9BE4F1, 15}, {0X428BB4C7031B065B, 15}, {0, 15}, {0X9660264BCF9BE4F1, 16}, {0X428AE995A39B4B45, 16}, {0, 16}, {0X9660264BCF9BE4F1, 17}, {0X428A83FD53DC320A, 17}, {0, 17},
+    {0X9660264BCF9BE4F1, 18}, {0X428A513143FCBC0B, 18}, {0X200004000081, 18}, {0X965FFDFA81C292FF, 19}, {0X428A37CB420D0364, 19}, {0, 19}, {0X965FFDFA81C292FF, 20},
+    {0X428A37CB420D0364, 20}, {0, 20}, {0X965FF3E62F8C3EC9, 21}, {0X428A3171C2311550, 21}, {0, 21}, {0X965FEEDC06A114B2, 22}, {0X428A3171C2311550, 22}, {0X20000040001, 22},
+    {0X965FEC56F2377FA7, 23}, {0X428A2FDB624419CC, 23}, {0, 23},
+};
 
-        for (; nbytes < fullbytes; nbytes++) {
-            bytes[nbytes] = bit_reader_read(r, 8);
-        }
+static const DIV_T denoms_64_2[] = {
+    {0, 6}, {0X47AE147AE147AE15, 70}, {0XE38E38E38E38E38F, 7}, {0, 8}, {0X47AE147AE147AE15, 72}, {0XD1B71758E219652C, 9}, {0, 10}, {0X47AE147AE147AE15, 74}, {0XD1B71758E219652C, 11},
+    {0, 12}, {0X47AE147AE147AE15, 76}, {0XCD953E4FF45B0BF9, 13}, {0, 14}, {0XA1CFA066147BB066, 14}, {0XCB90017DAE02CBA7, 15}, {0, 16}, {0XA1CFA066147BB066, 16}, {0XCB90017DAE02CBA7, 17},
+    {0, 18}, {0XA14F47E0CDE8FB79, 18}, {0XCB90017DAE02CBA7, 19}, {0, 20}, {0XA14F47E0CDE8FB79, 20}, {0XCB4FE340A8C89403, 21}, {0, 22}, {0XA14F47E0CDE8FB79, 22}, {0XCB4FE340A8C89403, 23},
+    {0, 24}, {0X4F7F449D26A949DD, 88}, {0XCB3FE06D28DF9EEF, 25}, {0, 26}, {0XA147476AF31DC745, 26}, {0XCB37DFB8F7D92618, 27}, {0, 28}, {0XA147476AF31DC745, 28}, {0XCB33DF8C3EE5EA77, 29},
+    {0, 30}, {0X428A8ECA9A8C6397, 94}, {0XCB31DF8139CAE935, 31}, {0, 32}, {0X428A8ECA9A8C6397, 96}, {0XCB30DF7E8D046408, 33}, {0, 34}, {0X428A8ECA9A8C6397, 98}, {0XCB305F7DEC10CAE5, 35},
+    {0, 36}, {0X428A8ECA9A8C6397, 100}, {0X96603EFB91E54C07, 101}, {0X40000C000201, 101}, {0X428A4ECA87BD4923, 102}, {0X965FFEFB8574EA53, 103}, {0, 40}, {0X428A4ECA87BD4923, 104},
+    {0X965FFEFB8574EA53, 105}, {0, 42}, {0X428A3ECA8603773D, 106}, {0XCB2FF77DC25ACAB6, 43}, {0, 44}, {0XA1451B6542CC6CA8, 44}, {0XCB2FF77DC25ACAB6, 45}, {0X400000C0001, 109},
+    {0XA145196542C00E8D, 46}, {0XCB2FF57DC255C633, 47}, {0, 48},
+};
+#endif
 
-        if (partbits) {
-            bytes[nbytes++] = bit_reader_read(r, partbits);
-        }
 
-        int i, j, p, num;
-        static const int num_of_ints = 3;
+// Bitreader
+typedef struct br_t {
+    const uint64_t* stream;
+    uint64_t data;
+    uint64_t next;
+    uint32_t cache_bits;
+    uint32_t stream_size;
+} br_t;
 
-        for (i = num_of_ints - 1; i > 0; i--) {
-            num = 0;
-            for (j = nbytes - 1; j >= 0; j--) {
-                num = (num << 8) | bytes[j];
-                p = num / sizeint[i];
-                bytes[j] = p;
-                num = num - p * sizeint[i];
-            }
-            intcrds[i] = num;
-        }
-        intcrds[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+static inline void br_init(br_t* r, const uint64_t* stream, size_t num_qwords) {
+    ASSERT(num_qwords >= 2);
+    r->stream = stream + 2;
+    r->data   = stream[0];
+    r->next   = stream[1];
+#if __LITTLE_ENDIAN__
+    r->data   = BSWAP64(r->data);
+    r->next   = BSWAP64(r->next);
+#endif
+    r->cache_bits = 128;
+    r->stream_size = (uint32_t)num_qwords - 2;
+}
+
+static inline void br_load_next(br_t* r) {
+    if (r->cache_bits > 64 || r->stream_size == 0) return;
+
+    uint64_t data = *r->stream++;
+    r->stream_size -= 1;
+
+#if __LITTLE_ENDIAN__
+    data = BSWAP64(data);
+#endif
+
+    // Always perform unified update
+    uint64_t value = (r->cache_bits < 64) ? (data >> r->cache_bits) : 0;
+    r->data |= value;
+    r->next  = data << (64 - r->cache_bits);
+    r->cache_bits += 64;
+}
+
+static inline uint64_t br_read(br_t* r, size_t num_bits) {
+    ASSERT(num_bits <= 64);
+
+    uint64_t shift = 64 - num_bits;
+    uint64_t res   = r->data >> shift;
+    r->cache_bits -= (uint32_t)num_bits;
+
+    // Unified handling
+    if (num_bits < 64) {
+        r->data <<= num_bits;
+        r->data |= r->next >> shift;
+        r->next <<= num_bits;
+    } else {
+        r->data = r->next;
     }
+
+    br_load_next(r);
+    return res;
+}
+
+static inline uint64_t br_peek(br_t* r, size_t num_bits) {
+    ASSERT(num_bits <= 64);
+    uint64_t shift = 64 - num_bits;
+    uint64_t res   = r->data >> shift;
+    return res;
+}
+
+static inline void br_skip(br_t* r, size_t num_bits) {
+    ASSERT(num_bits < 64);
+    r->cache_bits -= (uint32_t)num_bits;
+    r->data <<= num_bits;
+
+    // Append extracted bits from next
+    r->data |= r->next >> (64 - num_bits);
+    r->next <<= num_bits;
+
+    br_load_next(r);
+}
+
+typedef struct {
+    uint64_t size_zy;
+    uint32_t size_z;
+    uint8_t  num_of_bits;
+    uint8_t  part_mask;
+    uint8_t  big_shift;
+    uint8_t  sml_shift;
+    DIV_T    div_zy;
+    DIV_T    div_z;
+} unpack_data_t;
+
+typedef md_128i v4i_t;
+#define v4i_set(x, y, z, w) md_mm_set_epi32(w, z, y, x)
+#define v4i_set1(x)         md_mm_set1_epi32(x)
+#define v4i_add(a, b)       md_mm_add_epi32(a, b)
+#define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
+#define v4i_load(addr)      md_mm_loadu_epi32(addr)
+
+static inline void write_coord(float* dst, v4i_t coord, float inv_precision) {
+    md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), md_mm_set1_ps(inv_precision));
+    md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
+    md_mm_maskstore_ps(dst, mask, data);
+    //MEMCPY(dst, &v, 3 * sizeof(float));
+}
+
+static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bits) {
+    uint32_t partbits = num_of_bits & 7;
+    data->num_of_bits = (uint8_t)num_of_bits;
+    data->big_shift = 64 - ((num_of_bits + 7) & ~7);  // Align to the next multiple of 8
+    data->sml_shift = (8 - partbits) & 7;
+    data->part_mask = partbits ? (1ul << partbits) - 1 : 0xFF;
+}
+
+static inline v4i_t unpack_coord64(br_t* r, const unpack_data_t* unpack) {
+    uint64_t w = br_read(r, unpack->num_of_bits);
+    uint64_t t = ((w << unpack->sml_shift) & (~0xFFull)) | (w & unpack->part_mask);
+    uint64_t v = BSWAP64(t) >> unpack->big_shift;
+    uint32_t x = (uint32_t)DIV(v, &unpack->div_zy);
+    uint64_t q = v - x * unpack->size_zy;
+    uint32_t y = (uint32_t)DIV(q, &unpack->div_z);
+    uint32_t z = (uint32_t)(q - y * unpack->size_z);
+
+    return v4i_set(x, y, z, 0);
+}
+
+static inline v4i_t unpack_coord128(br_t* r, const unpack_data_t* unpack) {
+    int fullbytes = unpack->num_of_bits >> 3;
+    int partbits  = unpack->num_of_bits  & 7;
+    ASSERT(fullbytes >= 8);
+
+#ifdef HAS_INT128_T
+    __uint128_t v = BSWAP64(br_read(r, 64));
+    int i = 8;
+    for (; i < fullbytes; i++) {
+        v |= ((__uint128_t) br_read(r, 8)) << (8 * i);
+    }
+    if (partbits) {
+        v |= ((__uint128_t) br_read(r, partbits)) << (8 * i);
+    }
+    uint32_t x = (uint32_t)(v / unpack->size_zy);
+    uint64_t q = (uint64_t)(v - x*unpack->size_zy);
+    uint32_t y = (uint32_t)(q / unpack->size_z);
+    uint32_t z = (uint32_t)(q % unpack->size_z);
+    return v4i_set(x, y, z, 0);
+#elif defined(__x86_64__) && defined(_MSC_VER) && (_MSC_VER >= 1920)
+    uint64_t lo = BSWAP64(br_read(r, 64));
+    uint64_t hi = 0;
+    fullbytes -= 8;
+    int i = 0;
+    for (; i < fullbytes; ++i) {
+        hi |= ((uint64_t)br_read(r, 8)) << (8 * i);
+    }
+    if (partbits) {
+        hi |= ((uint64_t)br_read(r, partbits)) << (8 * i);
+    }
+
+    uint64_t q;
+    uint32_t x = (uint32_t)_udiv128(hi, lo, unpack->size_zy, &q);
+    uint32_t y = (uint32_t)(q / unpack->size_z);
+    uint32_t z = (uint32_t)(q % unpack->size_z);
+    return v4i_set(x, y, z, 0);
+#else
+    // Default fallback
+    uint32_t nums[4] = {0};
+    uint32_t sizes[3] = {0, (uint32_t)(unpack->size_zy / unpack->size_z), unpack->size_z};
+    uint32_t bytes[16];
+    bytes[1] = bytes[2] = bytes[3] = 0;
+    int num_of_bytes = 0;
+    for (int i = 0; i < fullbytes; ++i) {
+        bytes[num_of_bytes++] = (uint32_t)br_read(r, 8);
+    }
+    if (partbits) {
+        bytes[num_of_bytes++] = (uint32_t)br_read(r, partbits);
+    }
+    for (int i = 2; i > 0; i--) {
+        uint32_t num = 0;
+        for (int j = num_of_bytes - 1; j >= 0; j--) {
+            num = (num << 8) | bytes[j];
+            bytes[j] = num / sizes[i];
+            num = num % sizes[i];
+        }
+        nums[i] = num;
+    }
+    nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+    return v4i_load(nums);
 #endif
 }
 
-/* Compressed coordinate routines - modified from the original
-* implementation by Frans v. Hoesel to make them threadsafe.
-*/
-bool xdr_decompress_coord_float(float* ptr, int* size, float* precision, md_file_o* xfp) {
-    int minint[3], maxint[3], *lip;
-    int smallidx;
-    unsigned sizeint[3], sizesmall[3], bitsizeint[3], size3;
-    int k, natoms, flag;
-    int smallnum, smaller, i, is_smaller, run;
-    float *lfp, inv_precision;
-    int tmp, thiscoord[3], prevcoord[3];
-    unsigned int bitsize;
-    const float* ptrstart = ptr;
-
-    bitsizeint[0] = 0;
-    bitsizeint[1] = 0;
-    bitsizeint[2] = 0;
-
-    if (xfp == NULL || ptr == NULL) {
-        return false;
+static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
+    uint32_t val[4];
+    for (int i = 0; i < 3; ++i) {
+        uint32_t num_of_bits = bitsizes[i];
+        uint32_t partbits = num_of_bits & 7;
+        uint32_t big_shift = 32 - ((num_of_bits + 7) & ~7);  // Align to the next multiple of 8
+        uint32_t sml_shift = (8 - partbits) & 7;
+        uint32_t part_mask = partbits ? (1ul << partbits) - 1 : 0xFF;
+        uint32_t w = (uint32_t)br_read(br, num_of_bits);
+        uint32_t r = ((w << sml_shift) & (~0xFFul)) | (w & part_mask);
+        uint32_t v = BSWAP32(r) >> big_shift;
+        val[i] = v;
     }
-    if (!xdr_read_int32(&natoms, 1, xfp)) {
-        return false; /* return if we could not read size */
-    }
-    *size = natoms;
-    size3 = *size * 3;
-
-    /* Dont bother with compression for three atoms or less */
-    if (*size <= 9) {
-        return xdr_read_float(ptr, size3, xfp);
-    }
-
-    /* Compression-time if we got here. Read precision first */
-    if (!xdr_read_float(precision, 1, xfp)) {
-        goto done;
-    }
-    if (!xdr_read_int32(minint, 3, xfp) || !xdr_read_int32(maxint, 3, xfp)) {
-        goto done;
-    }
-
-    sizeint[0] = maxint[0] - minint[0] + 1;
-    sizeint[1] = maxint[1] - minint[1] + 1;
-    sizeint[2] = maxint[2] - minint[2] + 1;
-
-    /* check if one of the sizes is to big to be multiplied */
-    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
-        bitsizeint[0] = sizeofint(sizeint[0]);
-        bitsizeint[1] = sizeofint(sizeint[1]);
-        bitsizeint[2] = sizeofint(sizeint[2]);
-        bitsize = 0; /* flag the use of large sizes */
-    } else {
-        bitsize = sizeofints(3, sizeint);
-    }
-
-    if (!xdr_read_int32(&smallidx, 1, xfp)) {
-        return false; /* not sure what has happened here or why we return... */
-    }
-    tmp = smallidx + 8;
-    tmp = smallidx - 1;
-    tmp = (FIRSTIDX > tmp) ? FIRSTIDX : tmp;
-    smaller = magicints[tmp] / 2;
-    smallnum = magicints[smallidx] / 2;
-    sizesmall[0] = sizesmall[1] = sizesmall[2] = magicints[smallidx];
-
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
-
-    bool result = false;
-
-    /* length in bytes */
-    uint32_t num_bytes;
-    if (!xdr_read_int32((int32_t*)&num_bytes, 1, xfp)) {
-        goto done;
-    }
-
-    uint64_t* buf = md_vm_arena_push(arena, ALIGN_TO(num_bytes + sizeof(int) * 3, 16));
-    buf[0] = buf[1] = buf[2] = 0;
-
-    if (!xdr_read_bytes((uint8_t*)&buf[3], num_bytes, xfp)) {
-        goto done;
-    }
-
-    bit_reader_t br = bit_reader_create((uint64_t*)&buf[3]);
-
-    lfp = ptr;
-    inv_precision = 1.0f / *precision;
-    run = 0;
-    int atom_idx = 0;
-    while (atom_idx++ < natoms) {
-        if (bitsize == 0) {
-            thiscoord[i] = bit_reader_read_int(&br, bitsizeint[i]);
-        } else {
-            bit_reader_unpack(&br, bitsize, sizeint, thiscoord);
-        }
-
-        thiscoord[0] += minint[0];
-        thiscoord[1] += minint[1];
-        thiscoord[2] += minint[2];
-
-        prevcoord[0] = thiscoord[0];
-        prevcoord[1] = thiscoord[1];
-        prevcoord[2] = thiscoord[2];
-
-        flag = bit_reader_read(&br, 1);
-
-        is_smaller = 0;
-        if (flag == 1) {
-            run = bit_reader_read(&br, 5);
-
-            is_smaller = run % 3;
-            run -= is_smaller;
-            is_smaller--;
-        }
-        if ((lfp - ptrstart) + run > size3) {
-            MD_LOG_ERROR("XTC: Buffer overrun during decompression.");
-            goto done;
-        }
-        if (run > 0) {
-            for (k = 0; k < run; k += 3) {
-                atom_idx++;
-                bit_reader_unpack(&br, smallidx, sizesmall, thiscoord);
-
-                thiscoord[0] += prevcoord[0] - smallnum;
-                thiscoord[1] += prevcoord[1] - smallnum;
-                thiscoord[2] += prevcoord[2] - smallnum;
-                if (k == 0) {
-                    /* interchange first with second atom for better
-                    * compression of water molecules
-                    */
-                    int tempcoord[3];
-                    MEMCPY(tempcoord, thiscoord, sizeof(int) * 3);
-                    MEMCPY(thiscoord, prevcoord, sizeof(int) * 3);
-                    MEMCPY(prevcoord, tempcoord, sizeof(int) * 3);
-
-                    *lfp++ = prevcoord[0] * inv_precision;
-                    *lfp++ = prevcoord[1] * inv_precision;
-                    *lfp++ = prevcoord[2] * inv_precision;
-                } else {
-                    MEMCPY(prevcoord, thiscoord, sizeof(int) * 3);
-                }
-                *lfp++ = thiscoord[0] * inv_precision;
-                *lfp++ = thiscoord[1] * inv_precision;
-                *lfp++ = thiscoord[2] * inv_precision;
-            }
-        } else {
-            *lfp++ = thiscoord[0] * inv_precision;
-            *lfp++ = thiscoord[1] * inv_precision;
-            *lfp++ = thiscoord[2] * inv_precision;
-        }
-        smallidx += is_smaller;
-        if (is_smaller < 0) {
-            smallnum = smaller;
-            smaller = (smallidx > FIRSTIDX) ? magicints[smallidx - 1] / 2 : 0;
-        } else if (is_smaller > 0) {
-            smaller = smallnum;
-            smallnum = magicints[smallidx] / 2;
-        }
-        sizesmall[0] = sizesmall[1] = sizesmall[2] = magicints[smallidx];
-        if (sizesmall[0] == 0 || sizesmall[1] == 0 || sizesmall[2] == 0) {
-            MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
-            goto done;
-        }
-    }
-    result = true;
-done:
-    md_vm_arena_destroy(arena);
-    return result;
-}
-
-
-
-
-static bool xtc_frame_header(XDRFILE* xd, int* natoms, int* step, float* time, float box[3][3]) {
-    int magic;
-
-    if ((xdrfile_read_int(&magic, 1, xd)) != 1) {
-        MD_LOG_ERROR("XTC: Failed to read magic number in header");
-        return false;
-    }
-    if (magic != XTC_MAGIC) {
-        MD_LOG_ERROR("XTC: Magic number did not match");
-        return false;
-    }
-    if ((xdrfile_read_int(natoms, 1, xd)) != 1) {
-        MD_LOG_ERROR("XTC: Failed to read number of atoms");
-        return false;
-    }
-    if ((xdrfile_read_int(step, 1, xd)) != 1) {
-        MD_LOG_ERROR("XTC: Failed to read step");
-        return false;
-    }
-    if ((xdrfile_read_float(time, 1, xd)) != 1) {
-        MD_LOG_ERROR("XTC: Failed to read timestamp");
-        return false;
-    }
-    if ((xdrfile_read_float((float*)box, DIM * DIM, xd)) != DIM * DIM) {
-        MD_LOG_ERROR("XTC: Failed to read box dimensions");
-        return false;
-    }
-
-    return true;
+    return v4i_load(val);
 }
 
 bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* time, float box[3][3]) {
@@ -646,7 +442,7 @@ bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* tim
     return true;
 }
 
-bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
+size_t md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
     int step, natoms;
     float time;
     float box[3][3];
@@ -655,64 +451,69 @@ bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fram
 
     if (filesize == 0) {
         MD_LOG_ERROR("XTC: Failed extract filesize");
-        return false;
+        return 0;
     }
 
     /* Go to file beg */
     if (!md_file_seek(xdr, 0, MD_FILE_BEG)) {
         MD_LOG_ERROR("XTC: Failed to seek to beginning of file");
-        return false;
+        return 0;
     }
 
     if (!md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
-        return false;
+        MD_LOG_ERROR("XTC: File does not appear to be a valid xtc trajectory");
+        return 0;
     }
+
+    size_t num_frames = 0;
 
     /* Dont bother with compression for nine atoms or less */
     if (natoms <= 9) {
         const size_t framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
-        const size_t num_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
+        const size_t est_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
 
-        md_array_ensure(*frame_offsets, num_frames, alloc);
-        md_array_ensure(*frame_times,   num_frames, alloc);
+        md_array_ensure(*frame_offsets, est_frames, alloc);
+        md_array_ensure(*frame_times,   est_frames, alloc);
 
+        // Push first frame
         md_array_push(*frame_offsets, 0, alloc);
         md_array_push(*frame_times, time, alloc);
+        num_frames += 1;
 
-        for (size_t i = 1; i < num_frames; i++) {
+        for (size_t i = 1; i < est_frames; i++) {
             const size_t offset = i * framebytes;
 
             if (!md_file_seek(xdr, offset, MD_FILE_BEG) || !md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
-                goto fail;
+                MD_LOG_DEBUG("XTC: encountered corrupted frame header");
+                break;
             }
 
-            md_array_push(*frame_offsets, i * framebytes, alloc);
+            // Push frame i
+            md_array_push(*frame_offsets, offset, alloc);
             md_array_push(*frame_times, time, alloc);
+            num_frames += 1;
         }
         md_array_push(*frame_offsets, num_frames * framebytes, alloc);
-
-        return true;
     } else {
         int framebytes, est_nframes;
 
         /* Move pos back to end of first header */
-        if (!md_file_seek(xdr, (int64_t)XTC_HEADER_SIZE, MD_FILE_BEG)) {
-            return false;
+        if (!md_file_seek(xdr, XTC_HEADER_SIZE, MD_FILE_BEG)) {
+            return 0;
         }
 
         if (!xdr_read_int32(&framebytes, 1, xdr)) {
             MD_LOG_ERROR("XTC: Failed to read framebytes");
-            return false;
+            return 0;
         }
         framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
-        est_nframes = (int)(filesize / ((int64_t)(framebytes + XTC_HEADER_SIZE)) + 1); /* must be at least 1 for successful growth */
-        /* First `framebytes` might be larger than average, so we would underestimate `est_nframes`
-        */
+        est_nframes = (int)(filesize / ((int64_t)(framebytes + XTC_HEADER_SIZE)) + 1);
+        /* First `framebytes` might be larger than average, so we would underestimate `est_nframes`*/
         est_nframes += est_nframes / 5;
 
         /* Skip `framebytes` */
         if (!md_file_seek(xdr, (int64_t)(framebytes), MD_FILE_CUR)) {
-            goto fail;
+            MD_LOG_DEBUG("XTC: encountered corrupted frame");
         }
 
         md_array_ensure(*frame_offsets, (size_t)est_nframes, alloc);
@@ -720,189 +521,299 @@ bool md_xtc_read_frame_offsets_and_times(md_file_o* xdr, md_array(int64_t)* fram
 
         md_array_push(*frame_offsets, 0, alloc);
         md_array_push(*frame_times, time, alloc);
+        num_frames += 1;
 
         while (true) {
             const int64_t offset = md_file_tell(xdr);
             if (offset == (int64_t)filesize) {
-                // Add last offset
-                md_array_push(*frame_offsets, offset, alloc);
-                return true;
+                break;
             }
             if (!md_xtc_read_frame_header(xdr, &natoms, &step, &time, box)) {
-                goto fail;
+                MD_LOG_DEBUG("XTC: encountered corrupted frame header");
+                goto done;
             }
 
-            /* Store position in `offsets`, adjust for header */
-            md_array_push(*frame_offsets, offset, alloc);
-            md_array_push(*frame_times, time, alloc);
+            // Skip natoms + additional frame data
+            md_file_seek(xdr, 4 + 32, MD_FILE_CUR);
 
-            if (!md_file_seek(xdr, offset + XTC_HEADER_SIZE, MD_FILE_BEG)) {
-                goto fail;
-            }
             /* Read how much to skip */
             if (!xdr_read_int32(&framebytes, 1, xdr)) {
-                goto fail;
+                MD_LOG_DEBUG("XTC: encountered corrupted frame");
+                goto done;
             }
-            
             framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
 
             /* Skip `framebytes` to next header */
             if (!md_file_seek(xdr, framebytes, MD_FILE_CUR)) {
-                goto fail;
-            }
-        }
-
-    fail:
-        md_array_free(*frame_offsets, alloc);
-        md_array_free(*frame_times, alloc);
-        *frame_offsets = 0;
-        *frame_times = 0;
-        return false;
-    }
-}
-
-static bool xtc_frame_coords(XDRFILE* xd, int natoms, rvec* x) {
-    int result;
-    float prec;
-
-    result = xdrfile_decompress_coord_float(x[0], &natoms, &prec, xd);
-    if (result != natoms) {
-        MD_LOG_ERROR("XTC: Failed to read coordinates");
-        return false;
-    }
-
-    return true;
-}
-
-size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* coords, size_t capacity) {
-    int natoms;
-    float prec;
-
-    bool result = xdr_decompress_coord_float(coords, &natoms, &prec, xdr_file);
-    if (!result) {
-        MD_LOG_ERROR("XTC: Failed to read coordinates");
-        return false;
-    }
-
-    return true;
-}
-
-static size_t xtc_frame_offsets_and_times(XDRFILE* xd, md_array(int64_t)* frame_offsets, md_array(double)* frame_times, md_allocator_i* alloc) {
-    int step, natoms;
-    float time;
-    float box[3][3];
-
-    /* Go to file beg */
-    if (xdr_seek(xd, 0L, SEEK_SET) != exdrOK) {
-        MD_LOG_ERROR("XTC: Failed to seek to beginning of file");
-        return 0;
-    }
-
-    if (!xtc_frame_header(xd, &natoms, &step, &time, box)) {
-        return 0;
-    }
-
-    /* Go to file end */
-    if (xdr_seek(xd, 0L, SEEK_END) != exdrOK) {
-        return 0;
-    }
-    /* Cursor position is equivalent to file size */
-    size_t filesize = (size_t)xdr_tell(xd);
-
-    /* Dont bother with compression for nine atoms or less */
-    if (natoms <= 9) {
-        const size_t framebytes = XTC_SMALL_HEADER_SIZE + XTC_SMALL_COORDS_SIZE * natoms;
-        const size_t num_frames = (filesize / framebytes); /* Should we complain if framesize doesn't divide filesize? */
-
-        md_array_push(*frame_offsets, 0, alloc);
-        md_array_push(*frame_times, time, alloc);
-
-        for (size_t i = 1; i < num_frames; i++) {
-            const size_t offset = i * framebytes;
-
-            if (xdr_seek(xd, offset, SEEK_SET) != exdrOK || !xtc_frame_header(xd, &natoms, &step, &time, box)) {
-                md_array_free(*frame_offsets, alloc);
-                md_array_free(*frame_times, alloc);
-                *frame_offsets = 0;
-                *frame_times = 0;
-                return 0;
-            }
-
-            md_array_push(*frame_offsets, i * framebytes, alloc);
-            md_array_push(*frame_times, time, alloc);
-        }
-        md_array_push(*frame_offsets, num_frames * framebytes, alloc);
-
-        return num_frames;
-    } else {
-        int framebytes, est_nframes;
-
-        /* Move pos back to end of first header */
-        if (xdr_seek(xd, (int64_t)XTC_HEADER_SIZE, SEEK_SET) != exdrOK) {
-            return false;
-        }
-        
-        if (xdrfile_read_int(&framebytes, 1, xd) == 0) {
-            MD_LOG_ERROR("XTC: Failed to read framebytes");
-            return false;
-        }
-        framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
-        est_nframes = (int)(filesize / ((int64_t)(framebytes + XTC_HEADER_SIZE)) +
-            1); /* must be at least 1 for successful growth */
-                /* First `framebytes` might be larger than average, so we would underestimate `est_nframes`
-                */
-        est_nframes += est_nframes / 5;
-
-        /* Skip `framebytes` */
-        if (xdr_seek(xd, (int64_t)(framebytes), SEEK_CUR) != exdrOK) {
-            goto fail;
-        }
-        
-        md_array_ensure(*frame_offsets, (size_t)est_nframes, alloc);
-        md_array_ensure(*frame_times,   (size_t)est_nframes, alloc);
-
-        md_array_push(*frame_offsets, 0, alloc);
-        md_array_push(*frame_times, time, alloc);
-        size_t num_frames = 1;
-
-        while (1) {
-            const int64_t offset = xdr_tell(xd);
-            if (offset == (int64_t)filesize) {
-                // Add last offset
-                md_array_push(*frame_offsets, offset, alloc);
-                return num_frames;
-            }
-            if (!xtc_frame_header(xd, &natoms, &step, &time, box)) {
-                goto fail;
+                MD_LOG_DEBUG("XTC: encountered corrupted frame");
+                goto done;
             }
 
             /* Store position in `offsets`, adjust for header */
             md_array_push(*frame_offsets, offset, alloc);
             md_array_push(*frame_times, time, alloc);
             num_frames += 1;
+        }
+        // Add last offset
+        md_array_push(*frame_offsets, filesize, alloc);
+    }
+done:
+    return num_frames;
+}
 
-            if (xdr_seek(xd, offset + XTC_HEADER_SIZE, SEEK_SET) != exdrOK) {
-                goto fail;
-            }
-            /* Read how much to skip */
-            if (xdrfile_read_int(&framebytes, 1, xd) == 0) {
-                goto fail;
-            }
-            framebytes = (framebytes + 3) & ~0x03; /* Rounding to the next 32-bit boundary */
+size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
+    if (xdr_file == NULL || out_coords_ptr == NULL) {
+        return 0;
+    }
 
-            /* Skip `framebytes` to next header */
-            if (xdr_seek(xd, framebytes, SEEK_CUR) != exdrOK) {
-                goto fail;
+    int natoms;
+    if (!xdr_read_int32(&natoms, 1, xdr_file)) {
+        return 0;
+    }
+
+    if (out_coord_cap < (size_t)natoms) {
+        MD_LOG_ERROR("The supplied coordinate buffer is not sufficient to fit the number of atoms within the frame");
+        return 0;
+    }
+
+    /* Dont bother with compression for three atoms or less */
+    if (natoms <= 9) {
+        if (!xdr_read_float(out_coords_ptr, natoms * 3, xdr_file)) {
+            return 0;
+        }
+        return (size_t)natoms;
+    }
+
+    /* Compression-time if we got here. Read precision first */
+    float precision;
+    if (!xdr_read_float(&precision, 1, xdr_file)) {
+        return 0;
+    }
+
+    int32_t minint[3], maxint[3];
+    if (!xdr_read_int32(minint, 3, xdr_file) || !xdr_read_int32(maxint, 3, xdr_file)) {
+        return 0;
+    }
+
+    uint32_t sizeint[3] = {
+        (uint32_t)(maxint[0] - minint[0] + 1),
+        (uint32_t)(maxint[1] - minint[1] + 1),
+        (uint32_t)(maxint[2] - minint[2] + 1),
+    };
+
+    uint32_t bitsize = 0;
+    uint32_t bitsizeint[3] = {0};
+    unpack_data_t big_unpack = {0};
+
+    /* check if one of the sizes is to big to be multiplied */
+    if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
+        bitsizeint[0] = sizeofint(sizeint[0]);
+        bitsizeint[1] = sizeofint(sizeint[1]);
+        bitsizeint[2] = sizeofint(sizeint[2]);
+    } else {
+        bitsize = sizeofints(3, sizeint);
+        big_unpack.size_zy = (uint64_t)sizeint[1] * sizeint[2];
+        big_unpack.size_z = sizeint[2];
+        big_unpack.num_of_bits = (uint8_t)bitsize;
+        big_unpack.div_zy = DIV_INIT(big_unpack.size_zy);
+        big_unpack.div_z = DIV_INIT(big_unpack.size_z);
+        init_unpack_data_bits(&big_unpack, bitsize);
+    }
+
+    int smallidx;
+    if (!xdr_read_int32(&smallidx, 1, xdr_file)) {
+        return 0;
+    }
+
+    int idx = MAX(smallidx - 1, FIRSTIDX);
+    int smaller = magicints[idx] / 2;
+    int smallnum = magicints[smallidx] / 2;
+    uint32_t smallsize = magicints[smallidx];
+
+    unpack_data_t sml_unpack = {
+        .size_zy = (uint64_t)smallsize * smallsize,
+        .size_z  = smallsize,
+        .num_of_bits = (uint8_t)smallidx,
+        .div_zy = denoms_64_2[smallidx - FIRSTIDX],
+        .div_z  = denoms_64_1[smallidx - FIRSTIDX],
+    };
+    init_unpack_data_bits(&sml_unpack, smallidx);
+
+    /* length in bytes */
+    uint32_t num_bytes = 0;
+    if (!xdr_read_int32((int32_t*)&num_bytes, 1, xdr_file)) {
+        return 0;
+    }
+
+    size_t temp_pos = md_temp_get_pos();
+    size_t mem_size = ALIGN_TO(num_bytes, 16);
+    uint64_t* mem = md_temp_push_aligned(mem_size, 16);
+
+    int atom_idx = 0;
+    if (!xdr_read_bytes((uint8_t*)mem, num_bytes, xdr_file)) {
+        goto done;
+    }
+
+    br_t br = {0};
+    br_init(&br, mem, mem_size / 8);
+
+    float* lfp = out_coords_ptr;
+    float inv_precision = 1.0f / precision;
+    v4i_t vminint = v4i_set(minint[0], minint[1], minint[2], 0);
+    v4i_t thiscoord;
+    int run = 0;
+    int run_count = 0;
+
+#ifdef PRINT_DEBUG
+    uint32_t smlbits_hist[LASTIDX] = {0};
+    uint32_t rle_hist[9] = {0};
+    MD_LOG_DEBUG("bigsize: %i", bitsize);
+#endif
+
+    while (atom_idx < natoms) {
+        if (bitsize == 0) {
+            thiscoord = br_read_ints(&br, bitsizeint);
+        } else {
+            if (big_unpack.num_of_bits <= 64) {
+                thiscoord = unpack_coord64(&br, &big_unpack);
+            } else {
+                thiscoord = unpack_coord128(&br, &big_unpack);
             }
         }
 
-    fail:
-        md_array_free(*frame_offsets, alloc);
-        md_array_free(*frame_times, alloc);
-        *frame_offsets = 0;
-        *frame_times = 0;
-        return 0;
+        thiscoord = v4i_add(thiscoord, vminint);
+
+        uint32_t data = (uint32_t)br_peek(&br, 6);
+        uint32_t flag = data & 32;
+        uint32_t skip = flag ? 6 : 1;
+        br_skip(&br, skip);
+
+        int is_smaller = 0;
+        if (flag) {
+            run = data & 31;
+            run_count  = run / 3;
+            is_smaller = run % 3;
+            run -= is_smaller;
+            is_smaller--;
+        }
+
+        int batch_size = run_count + 1;
+        if (atom_idx + batch_size > natoms) {
+            MD_LOG_ERROR("XTC: Buffer overrun during decompression.");
+            goto done;
+        }
+        atom_idx += batch_size;
+
+#ifdef PRINT_DEBUG
+        rle_hist[run_count]++;
+#endif
+
+        if (run > 0) {
+            v4i_t prevcoord = thiscoord;
+            v4i_t vsmall = v4i_set1(smallnum);
+
+            if (sml_unpack.num_of_bits <= 64) {
+                v4i_t coord = unpack_coord64(&br, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+                // Write second atom before first atom
+                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
+
+                for (int i = 1; i < run_count; ++i) {
+                    coord = unpack_coord64(&br, &sml_unpack);
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                }
+            } else {
+                v4i_t coord = unpack_coord128(&br, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+                // Write second atom before first atom
+                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
+
+                for (int i = 1; i < run_count; ++i) {
+                    coord = unpack_coord128(&br, &sml_unpack);
+                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+                }
+            }
+        } else {
+            write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+        }
+        smallidx += is_smaller;
+        if (is_smaller < 0) {
+            smallnum = smaller;
+            smaller = (smallidx > FIRSTIDX) ? magicints[smallidx - 1] / 2 : 0;
+        } else if (is_smaller > 0) {
+            smaller = smallnum;
+            smallnum = magicints[smallidx] / 2;
+        }
+        if (smallidx < FIRSTIDX) {
+            MD_LOG_ERROR("XTC: Invalid size found in 'xdrfile_decompress_coord_float'.");
+            goto done;
+        }
+        if (smallidx != sml_unpack.num_of_bits) {
+#ifdef PRINT_DEBUG
+            smlbits_hist[smallidx]++;
+#endif
+            uint32_t sml_size       = magicints[smallidx];
+            sml_unpack.size_zy      = (uint64_t)sml_size * sml_size;
+            sml_unpack.size_z       = sml_size;
+            sml_unpack.num_of_bits  = (uint8_t)smallidx;
+            sml_unpack.div_zy       = denoms_64_2[smallidx - FIRSTIDX];
+            sml_unpack.div_z        = denoms_64_1[smallidx - FIRSTIDX];
+            init_unpack_data_bits(&sml_unpack, smallidx);
+        }
     }
+    
+done:
+    md_temp_set_pos_back(temp_pos);
+
+#ifdef PRINT_DEBUG
+    int max_smallbits = 0;
+    uint32_t total_smallbits = 0;
+    for (int i = 0; i < LASTIDX; i++) {
+        if (smlbits_hist[i] > smlbits_hist[max_smallbits]) {
+            max_smallbits = i;
+        }
+        total_smallbits += smlbits_hist[i];
+    }
+
+    uint32_t total_rle = 0;
+    for (int i = 0; i < 9; ++i) {
+        total_rle += rle_hist[i];
+    }
+
+    // Printf a histogram with horizontal bars
+    printf("--- Smallbits ---\n");
+    for (int i = 0; i < LASTIDX; i++) {
+        if (smlbits_hist[i] > 0) {
+            int num_hashes = (int)(smlbits_hist[i] * 50 / total_smallbits);
+            printf("%2d: ", i);
+            for (int j = 0; j < num_hashes; j++) {
+                printf("#");
+            }
+            printf(" (%d)\n", smlbits_hist[i]);
+        }
+    }
+    printf("----------------\n");
+    printf("--- run length ---\n");
+    for (int i = 0; i < 9; i++) {
+        if (rle_hist[i] > 0) {
+            int num_hashes = (int)(rle_hist[i] * 50 / total_rle);
+            printf("%2d: ", i);
+            for (int j = 0; j < num_hashes; j++) {
+                printf("#");
+            }
+            printf(" (%d)\n", rle_hist[i]);
+        }
+    }
+    printf("----------------\n\n");
+#endif
+
+    return (size_t)atom_idx;
 }
 
 bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
@@ -915,71 +826,21 @@ bool xtc_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header
     return true;
 }
 
-// This is lowlevel cruft for enabling parallel loading and decoding of frames
-static size_t xtc_fetch_frame_data(struct md_trajectory_o* inst, int64_t frame_idx, void* frame_data_ptr) {
-    xtc_t* xtc = (xtc_t*)inst;
-    ASSERT(xtc);
-    ASSERT(xtc->magic == MD_XTC_TRAJ_MAGIC);
-
-    if (!xtc->file) {
-        MD_LOG_ERROR("XTC: File handle is NULL");
-        return 0;
-    }
-
-    if (!xtc->frame_offsets) {
-        MD_LOG_ERROR("XTC: Frame offsets is empty");
-        return 0;
-    }
-
-    if (frame_idx < 0 || (int64_t)xtc->header.num_frames <= frame_idx) {
-        MD_LOG_ERROR("XTC: Frame index is out of range");
-        return 0;
-    }
-
-    const int64_t beg = xtc->frame_offsets[frame_idx];
-    const int64_t end = xtc->frame_offsets[frame_idx + 1];
-    const size_t frame_size = (size_t)MAX(0, end - beg);
-
-    if (frame_data_ptr) {
-        ASSERT(xtc->file);
-        md_mutex_lock(&xtc->mutex);
-        // Seek and read must be an atomic operation to avoid race conditions
-        xdr_seek(xtc->file, beg, SEEK_SET);
-        const size_t bytes_read = xdr_read(xtc->file, frame_data_ptr, frame_size);
-        md_mutex_unlock(&xtc->mutex);
-        (void)bytes_read;
-        ASSERT(frame_size == bytes_read);
-    }
-    return frame_size;
-}
-
-static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* frame_data_ptr, size_t frame_data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-    ASSERT(inst);
-    ASSERT(frame_data_ptr);
-    ASSERT(frame_data_size);
+static bool xtc_decode_frame_data(md_file_o* file, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
+    ASSERT(file);
 
     bool result = true;
-
-    xtc_t* xtc = (xtc_t*)inst;
-    if (xtc->magic != MD_XTC_TRAJ_MAGIC) {
-        MD_LOG_ERROR("XTC: Error when decoding frame coord, xtc magic did not match");
-        return false;
-    }
 
     if ((x || y || z) && !(x && y && z)) {
         MD_LOG_ERROR("XTC: User supplied coordinates (x,y,z) cannot be partially supplied");
         return false;
     }
 
-    // There is a warning for ignoring const qualifier for frame_data_ptr, but it is ok since we only perform read operations "r" with the data.
-    XDRFILE* file = xdrfile_mem((void*)frame_data_ptr, frame_data_size, "r");
-    ASSERT(file);
-
     // Get header
     int natoms = 0, step = 0;
     float time = 0;
     float box[3][3];
-    result = xtc_frame_header(file, &natoms, &step, &time, box);
+    result = md_xtc_read_frame_header(file, &natoms, &step, &time, box);
     if (result) {
         if (header) {
             // nm -> Ångström
@@ -995,22 +856,21 @@ static bool xtc_decode_frame_data(struct md_trajectory_o* inst, const void* fram
         }
 
         if (x && y && z) {
-            size_t byte_size = natoms * sizeof(rvec);
-            rvec* pos = md_alloc(md_get_heap_allocator(), byte_size);
-            result = xtc_frame_coords(file, natoms, pos);
-            if (result) {            
+            size_t byte_size = natoms * sizeof(float) * 3;
+            float* xyz = md_alloc(md_get_heap_allocator(), byte_size);
+            size_t written_count = md_xtc_read_frame_coords(file, xyz, natoms);
+            result = (written_count == natoms);
+            if (result) {
                 // nm -> Ångström
                 for (int i = 0; i < natoms; ++i) {
-                    x[i] = pos[i][0] * 10.0f;
-                    y[i] = pos[i][1] * 10.0f;
-                    z[i] = pos[i][2] * 10.0f;
+                    x[i] = xyz[i*3 + 0] * 10.0f;
+                    y[i] = xyz[i*3 + 1] * 10.0f;
+                    z[i] = xyz[i*3 + 2] * 10.0f;
                 }
             }
-            md_free(md_get_heap_allocator(), pos, byte_size);
+            md_free(md_get_heap_allocator(), xyz, byte_size);
         }
     }
-
-    xdrfile_close(file);
 
     return result;
 }
@@ -1025,21 +885,32 @@ bool xtc_load_frame(struct md_trajectory_o* inst, int64_t frame_idx, md_trajecto
     }
 
     bool result = false;
-    const size_t frame_size = xtc_fetch_frame_data(inst, frame_idx, NULL);
-    if (frame_size > 0) {
-        md_allocator_i* alloc = md_get_heap_allocator();
-
-        void* frame_data = md_alloc(alloc, frame_size);
-        ASSERT(frame_data);
-
-        const size_t read_size = xtc_fetch_frame_data(inst, frame_idx, frame_data);
-        if (read_size != frame_size) {
-            MD_LOG_ERROR("Failed to read the expected size");
-            goto done;
+    if (xtc->file) {
+        md_file_o* file = md_file_open(xtc->filepath, MD_FILE_READ | MD_FILE_BINARY);
+        if (!file) {
+            MD_LOG_ERROR("XTC: Failed to open file");
+            return false;
         }
-        result = xtc_decode_frame_data(inst, frame_data, frame_size, header, x, y, z);
-    done:
-        md_free(alloc, frame_data, frame_size);
+
+        if (!xtc->frame_offsets) {
+            MD_LOG_ERROR("XTC: Frame offsets is empty");
+            return 0;
+        }
+
+        if (frame_idx < 0 || (int64_t)xtc->header.num_frames <= frame_idx) {
+            MD_LOG_ERROR("XTC: Frame index is out of range");
+            return 0;
+        }
+
+        const int64_t pos = xtc->frame_offsets[frame_idx];
+        if (!md_file_seek(file, pos, MD_FILE_BEG)) {
+            MD_LOG_ERROR("XTC: Failed to seek to frame offset");
+            md_file_close(file);
+            return false;
+        }
+
+        result = xtc_decode_frame_data(file, header, x, y, z);
+        md_file_close(file);
     }
 
     return result;
@@ -1151,20 +1022,16 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
     ASSERT(ext_alloc);
     md_allocator_i* alloc = md_arena_allocator_create(ext_alloc, MEGABYTES(1));
 
-    // Ensure that the path is zero terminated (not guaranteed by str_t)
-    md_strb_t sb = md_strb_create(md_get_temp_allocator());
-    md_strb_push_str(&sb, filename);
-    XDRFILE* file = xdrfile_open(md_strb_to_cstr(sb), "r");
+    str_t path = str_copy(filename, alloc);
+    md_file_o* file = md_file_open(path, MD_FILE_READ | MD_FILE_BINARY);
 
     if (file) {
-        xdr_seek(file, 0L, SEEK_END);
-        const size_t filesize = (size_t)xdr_tell(file);
-        xdr_seek(file, 0L, SEEK_SET);
+        const size_t filesize = md_file_size(file);
 
         int num_atoms, step;
         float time;
         float box[3][3];
-        if (!xtc_frame_header(file, &num_atoms, &step, &time, box)) {
+        if (!md_xtc_read_frame_header(file, &num_atoms, &step, &time, box)) {
             goto fail;
         }
 
@@ -1173,16 +1040,18 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
             goto fail;
         }
 
+        md_strb_t sb = md_strb_create(md_get_temp_allocator());
+        md_strb_push_str(&sb, path);
         md_strb_push_str(&sb, STR_LIT(".cache"));
-        str_t path = md_strb_to_str(sb);
+        str_t cache_path = md_strb_to_str(sb);
 
         xtc_cache_t cache = {0};
-        if (!try_read_cache(&cache, path, filesize, alloc)) {
+        if (!try_read_cache(&cache, cache_path, filesize, alloc)) {
             cache.header.magic     = MD_XTC_CACHE_MAGIC;
             cache.header.version   = MD_XTC_CACHE_VERSION;
             cache.header.num_bytes = filesize;
             cache.header.num_atoms = num_atoms;
-            cache.header.num_frames = xtc_frame_offsets_and_times(file, &cache.frame_offsets, &cache.frame_times, alloc);
+            cache.header.num_frames = md_xtc_read_frame_offsets_and_times(file, &cache.frame_offsets, &cache.frame_times, alloc);
             if (!cache.header.num_frames) {
                 goto fail;
             }
@@ -1215,8 +1084,8 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         xtc->magic = MD_XTC_TRAJ_MAGIC;
         xtc->allocator = alloc;
         xtc->file = file;
+        xtc->filepath = path;
         xtc->frame_offsets = cache.frame_offsets;
-        xtc->mutex = md_mutex_create();
 
         xtc->header = (md_trajectory_header_t) {
             .num_frames = cache.header.num_frames,
@@ -1229,13 +1098,11 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
         traj->inst = (struct md_trajectory_o*)xtc;
         traj->get_header = xtc_get_header;
         traj->load_frame = xtc_load_frame;
-        //traj->fetch_frame_data = xtc_fetch_frame_data;
-        //traj->decode_frame_data = xtc_decode_frame_data;
 
         return traj;
     }
 fail:
-    if (file) xdrfile_close(file);
+    if (file) md_file_close(file);
     md_arena_allocator_destroy(alloc);
     return NULL;
 }
@@ -1250,8 +1117,7 @@ void md_xtc_trajectory_free(md_trajectory_i* traj) {
         return;
     }
 
-    if (xtc->file) xdrfile_close(xtc->file);
-    md_mutex_destroy(&xtc->mutex);
+    if (xtc->file) md_file_close(xtc->file);
     md_arena_allocator_destroy(xtc->allocator);
 }
 

@@ -1,4 +1,4 @@
-/*
+﻿/*
 
 SIMDE handles most of the portability issues for us.
 It automatically maps the intrinsics written in x86-64 to the corresponding ARM NEON intrinsics.
@@ -80,6 +80,11 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm_store_pd simde_mm_store_pd
 #define md_mm256_store_ps simde_mm256_store_ps
 #define md_mm256_store_pd simde_mm256_store_pd
+
+#define md_mm_maskstore_ps simde_mm_maskstore_ps
+#define md_mm_maskstore_pd simde_mm_maskstore_pd
+#define md_mm256_maskstore_ps simde_mm256_maskstore_ps
+#define md_mm256_maskstore_pd simde_mm256_maskstore_pd
 
 #define md_mm_set1_ps simde_mm_set1_ps
 #define md_mm_set1_pd simde_mm_set1_pd
@@ -290,12 +295,12 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_store_epi64 simde_mm256_store_si256
 
 #define md_mm_set1_epi32 simde_mm_set1_epi32
-#define md_mm_set1_epi64 simde_mm_set1_epi64
+#define md_mm_set1_epi64 simde_mm_set1_epi64x
 #define md_mm256_set1_epi32 simde_mm256_set1_epi32
 #define md_mm256_set1_epi64 simde_mm256_set1_epi64x
 
 #define md_mm_set_epi32 simde_mm_set_epi32
-#define md_mm_set_epi64 simde_mm_set_epi64
+#define md_mm_set_epi64 simde_mm_set_epi64x
 #define md_mm256_set_epi32 simde_mm256_set_epi32
 #define md_mm256_set_epi64 simde_mm256_set_epi64x
 
@@ -316,11 +321,7 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_xor_si256 simde_mm256_xor_si256
 
 #define md_mm_andnot_si128 simde_mm_andnot_si128
-#define md_mm_andnot_epi32 simde_mm_andnot_si128
-#define md_mm_andnot_epi64 simde_mm_andnot_si128
 #define md_mm256_andnot_si256 simde_mm256_andnot_si256
-#define md_mm256_andnot_epi32 simde_mm256_andnot_si256
-#define md_mm256_andnot_epi64 simde_mm256_andnot_si256
 
 #define md_mm_blendv_epi8 simde_mm_blendv_epi8
 #define md_mm256_blendv_epi8 simde_mm256_blendv_epi8
@@ -942,7 +943,7 @@ MD_SIMD_INLINE void md_mm_sincos_ps(md_128 xx, md_128* s, md_128* c) {
     const md_128 poly_mask         = md_mm_castsi128_ps(imm2);
 
     imm3 = md_mm_sub_epi32(imm3, md_mm_set1_epi32(2));
-    imm3 = md_mm_andnot_epi32(imm3, md_mm_set1_epi32(4));
+    imm3 = md_mm_andnot_si128(imm3, md_mm_set1_epi32(4));
     imm3 = md_mm_slli_epi32(imm3, 29);
 
     const md_128 sign_bit_cos = md_mm_castsi128_ps(imm3);
@@ -1026,7 +1027,7 @@ MD_SIMD_INLINE void md_mm256_sincos_ps(md_256 x, md_256* s, md_256* c) {
     const md_256 poly_mask         = md_mm256_castsi256_ps(imm2);
 
     imm3 = md_mm256_sub_epi32(imm3, md_mm256_set1_epi32(2));
-    imm3 = md_mm256_andnot_epi32(imm3, md_mm256_set1_epi32(4));
+    imm3 = md_mm256_andnot_si256(imm3, md_mm256_set1_epi32(4));
     imm3 = md_mm256_slli_epi32(imm3, 29);
 
     const md_256 sign_bit_cos = md_mm256_castsi256_ps(imm3);

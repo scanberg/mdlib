@@ -1,4 +1,4 @@
-// We do not want any include guard:
+﻿// We do not want any include guard:
 // This is only meant to be used directly inside translation units
 
 #include <core/md_intrinsics.h>
@@ -35,16 +35,16 @@
 //
 // @TODO: Provide example of how to use this as a building-block for creating a LRU controlled cache
 
-typedef uint64_t lru_cache_t;
+typedef uint64_t md_lru_cache8_t;
 
 // Initializes the cache matrix to an upper triangular bit matrix
-#define md_lru_cache_init(cache) (cache = 0x0080c0e0f0f8fcfeLLU)
+#define md_lru_cache8_init(cache) (cache = 0x0080c0e0f0f8fcfeLLU)
 
 // Validates the integrity of the matrix
-#define md_lru_cache_validate(cache) (popcnt64(cache) == 28LLU)
+#define md_lru_cache8_validate(cache) (popcnt64(cache) == 28LLU)
 
 // Get the Least Recently Used index
-#define md_lru_cache_get_lru(cache) (ASSERT(md_lru_cache_validate(cache)), find_first_zero_byte64(cache))
+#define md_lru_cache8_get_lru(cache) (ASSERT(md_lru_cache_validate(cache)), find_first_zero_byte64(cache))
 
 // Set the Most Recently Used index
-#define md_lru_cache_set_mru(cache, idx) (ASSERT(md_lru_cache_validate(cache)), ASSERT(0 <= idx && idx < 8), cache = (cache | (0xFFLLU << (8 * idx)) & ~(0x0101010101010101LLU << idx)))
+#define md_lru_cache8_set_mru(cache, idx) (ASSERT(md_lru_cache_validate(cache)), ASSERT(0 <= idx && idx < 8), cache = (cache | (0xFFLLU << (8 * idx)) & ~(0x0101010101010101LLU << idx)))
