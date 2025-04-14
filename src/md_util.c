@@ -3204,9 +3204,11 @@ static inline md_256 simd_distance_squared(const md_256 dx[3], const md_unit_cel
     return md_mm256_fmadd_ps(d[0], d[0], md_mm256_fmadd_ps(d[1], d[1], md_mm256_mul_ps(d[2], d[2])));
 }
 
-static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* atom, const md_unit_cell_t* cell, const float* elem_cov_radii, const int* elem_metal_mask, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
+static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unit_cell_t* cell, const float* elem_cov_radii, const int* elem_metal_mask, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
     ASSERT(bond);
-    ASSERT(atom);
+    ASSERT(x);
+    ASSERT(y);
+    ASSERT(z);
     ASSERT(cell);
 
     size_t pre_count = bond->count;
@@ -3223,13 +3225,13 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
         if (range_a.beg == range_b.beg && range_a.end == range_b.end) {
 #if 0
             for (int i = range_a.beg; i < range_a.end - 1; ++i) {
-                const vec4_t ci = {atom->x[i], atom->y[i], atom->z[i], 0};
-                const float  ri = elem_cov_radii[atom->element[i]];
-                const bool   mi = is_metal(atom->element[i]);
+                const vec4_t ci = {x[i], y[i], z[i], 0};
+                const float  ri = elem_cov_radii[element[i]];
+                const bool   mi = is_metal(element[i]);
                 for (int j = i + 1; j < range_a.end; ++j) {
-                    const vec4_t cj = {atom->x[j], atom->y[j], atom->z[j], 0};
-                    const float  rj = elem_cov_radii[atom->element[j]];
-                    const bool   mj = is_metal(atom->element[j]);
+                    const vec4_t cj = {x[j], y[j], z[j], 0};
+                    const float  rj = elem_cov_radii[element[j]];
+                    const bool   mj = is_metal(element[j]);
 
                     // Do not consider potential metal - metal as covalent bonds
                     if (mi && mj) continue;
@@ -3246,21 +3248,21 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
 #else
             for (int i = range_a.beg; i < range_a.end - 1; ++i) {
                 const md_256  ci[3] = {
-                    md_mm256_set1_ps(atom->x[i]),
-                    md_mm256_set1_ps(atom->y[i]),
-                    md_mm256_set1_ps(atom->z[i]),
+                    md_mm256_set1_ps(x[i]),
+                    md_mm256_set1_ps(y[i]),
+                    md_mm256_set1_ps(z[i]),
                 };
-                const md_256  ri = md_mm256_set1_ps(elem_cov_radii[atom->element[i]]);
-                const int mi = elem_metal_mask[atom->element[i]];
+                const md_256  ri = md_mm256_set1_ps(elem_cov_radii[element[i]]);
+                const int mi = elem_metal_mask[element[i]];
                 for (int j = i + 1; j < range_a.end; j += 8) {
                     const md_256 cj[3] = {
-                        md_mm256_loadu_ps(atom->x + j),
-                        md_mm256_loadu_ps(atom->y + j),
-                        md_mm256_loadu_ps(atom->z + j),
+                        md_mm256_loadu_ps(x + j),
+                        md_mm256_loadu_ps(y + j),
+                        md_mm256_loadu_ps(z + j),
                     };
                     const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
                     const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(atom->element + j)), nj);
+                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
                     const md_256  rj = md_mm256_i32gather_ps(elem_cov_radii, ej, 4);
                     const int mj = md_mm256_movemask_ps(md_mm256_cvtepi32_ps(md_mm256_i32gather_epi32(elem_metal_mask, ej, 4)));
 
@@ -3290,13 +3292,13 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
         } else {
 #if 0
             for (int i = range_a.beg; i < range_a.end; ++i) {
-                const vec4_t ci = {atom->x[i], atom->y[i], atom->z[i], 0};
-                const float  ri = elem_cov_radii[atom->element[i]];
-                const bool   mi = is_metal(atom->element[i]);
+                const vec4_t ci = {x[i], y[i], z[i], 0};
+                const float  ri = elem_cov_radii[element[i]];
+                const bool   mi = is_metal(element[i]);
                 // @NOTE: Only store monotonic bond connections
                 for (int j = MAX(i+1, range_b.beg); j < range_b.end; ++j) {
-                    const vec4_t cj = {atom->x[j], atom->y[j], atom->z[j], 0};
-                    const float  rj = elem_cov_radii[atom->element[j]];
+                    const vec4_t cj = {x[j], y[j], z[j], 0};
+                    const float  rj = elem_cov_radii[element[j]];
                     const vec4_t dx = vec4_sub(ci, cj);
                     if (covalent_bond_heuristic(distance_squared(dx, cell), ri, rj)) {
                         md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
@@ -3307,20 +3309,20 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
 #else
             for (int i = range_a.beg; i < range_a.end; ++i) {
                 const md_256  ci[3] = {
-                    md_mm256_set1_ps(atom->x[i]),
-                    md_mm256_set1_ps(atom->y[i]),
-                    md_mm256_set1_ps(atom->z[i]),
+                    md_mm256_set1_ps(x[i]),
+                    md_mm256_set1_ps(y[i]),
+                    md_mm256_set1_ps(z[i]),
                 };
-                const md_256  ri = md_mm256_set1_ps(elem_cov_radii[atom->element[i]]);
+                const md_256  ri = md_mm256_set1_ps(elem_cov_radii[element[i]]);
                 for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
                     const md_256  cj[3] = {
-                        md_mm256_loadu_ps(atom->x + j),
-                        md_mm256_loadu_ps(atom->y + j),
-                        md_mm256_loadu_ps(atom->z + j),
+                        md_mm256_loadu_ps(x + j),
+                        md_mm256_loadu_ps(y + j),
+                        md_mm256_loadu_ps(z + j),
                     };
                     const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
                     const md_256i mj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(atom->element + j)), mj);
+                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), mj);
                     const md_256  rj = md_mm256_i32gather_ps(elem_cov_radii, ej, 4);
 
                     const md_256 dx[3] = {
@@ -3349,30 +3351,30 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const md_atom_data_t* a
 
         int size = 0;
         for (int i = range_b.beg; i < range_b.end; ++i) {
-            if (atom->element[i] != 0) {
+            if (element[i] != 0) {
                 indices[size++] = i;
             }
         }
 
         // Spatial acceleration structure
-        md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom->x, atom->y, atom->z, indices, size, cell, temp_arena);
+        md_spatial_hash_t* sh = md_spatial_hash_create_soa(x, y, z, indices, size, cell, temp_arena);
 
         const float cutoff = 3.0f;
 
         for (int i = range_a.beg; i < range_a.end; ++i) {
-            if (atom->element[i] != 0) {
-                const vec4_t ci = {atom->x[i], atom->y[i], atom->z[i], 0};
-                const float  ri = elem_cov_radii[atom->element[i]];
-                const bool   mi = is_metal(atom->element[i]);
+            if (element[i] != 0) {
+                const vec4_t ci = {x[i], y[i], z[i], 0};
+                const float  ri = elem_cov_radii[element[i]];
+                const bool   mi = is_metal(element[i]);
                 const size_t num_indices = md_spatial_hash_query_idx(indices, capacity, sh, vec3_from_vec4(ci), cutoff);
                 for (size_t idx = 0; idx < num_indices; ++idx) {
                     const int j = indices[idx];
                     // Only store monotonic bond connections
                     if (j < i) continue;
 
-                    const vec4_t cj = {atom->x[j], atom->y[j], atom->z[j], 0};
-                    const float  rj = elem_cov_radii[atom->element[j]];
-                    const bool   mj = is_metal(atom->element[j]);
+                    const vec4_t cj = {x[j], y[j], z[j], 0};
+                    const float  rj = elem_cov_radii[element[j]];
+                    const bool   mj = is_metal(element[j]);
 
                     // Do not consider potential metal - metal bonds as covalent
                     if (mi && mj) continue;
@@ -3404,21 +3406,20 @@ static inline bool aabb_overlap(aabb_t a, aabb_t b) {
         (a.min_box.z <= b.max_box.z && a.max_box.z >= b.min_box.z);
 }
 
-void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* atom, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* elem, size_t atom_count, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
     ASSERT(bond);
-    ASSERT(atom);
     ASSERT(alloc);
 
     md_bond_data_clear(bond);
 
     md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
     
-    if (!atom->x || !atom->y || !atom->z) {
+    if (!x || !y || !z) {
         MD_LOG_ERROR("Missing atom field (x/y/z)");
         goto done;
     }
 
-    if (!atom->element) {
+    if (!elem) {
         MD_LOG_ERROR("Missing atom field element");
         goto done;
     }
@@ -3430,38 +3431,48 @@ void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* 
         metal_mask[i] = is_metal(i) ? 0xFFFFFFFFU : 0;
     }
 
-    const int atom_count = (int)atom->count;
+    int* atom_res_idx = 0;
        
     if (res && res->count > 0) {
+        atom_res_idx = md_vm_arena_push(temp_arena, atom_count * sizeof(int));
+
         // The padding applied to residue AABBs in order to determine potential overlap
         const float aabb_pad = 1.5f;
-        int64_t prev_idx = 0;
+        size_t prev_idx = 0;
         md_range_t prev_range = md_residue_atom_range(*res, prev_idx);
         md_flags_t prev_flags = res->flags[prev_idx];
 
+        for (int i = prev_range.beg; i < prev_range.end; ++i) {
+            atom_res_idx[i] = prev_idx;
+        }
+
         aabb_t prev_aabb = {0};
-        md_util_aabb_compute(prev_aabb.min_box.elem, prev_aabb.max_box.elem, atom->x + prev_range.beg, atom->y + prev_range.beg, atom->z + prev_range.beg, 0, 0, prev_range.end - prev_range.beg);
+        md_util_aabb_compute(prev_aabb.min_box.elem, prev_aabb.max_box.elem, x + prev_range.beg, y + prev_range.beg, z + prev_range.beg, 0, 0, prev_range.end - prev_range.beg);
         prev_aabb.min_box = vec3_sub_f(prev_aabb.min_box, aabb_pad);
         prev_aabb.max_box = vec3_add_f(prev_aabb.max_box, aabb_pad);
 
-        find_bonds_in_ranges(bond, atom, cell, cov_radii, metal_mask, prev_range, prev_range, alloc, temp_arena);
-        for (int64_t curr_idx = 1; curr_idx < (int64_t)res->count; ++curr_idx) {
+        find_bonds_in_ranges(bond, x, y, z, elem, cell, cov_radii, metal_mask, prev_range, prev_range, alloc, temp_arena);
+        for (size_t curr_idx = 1; curr_idx < res->count; ++curr_idx) {
             md_range_t curr_range = md_residue_atom_range(*res, curr_idx);
             md_flags_t curr_flags = res->flags[curr_idx];
 
+            for (int i = curr_range.beg; i < curr_range.end; ++i) {
+                atom_res_idx[i] = curr_idx;
+            }
+
             aabb_t curr_aabb = {0};
             if (!(curr_flags & (MD_FLAG_WATER | MD_FLAG_ION))) {
-                md_util_aabb_compute(curr_aabb.min_box.elem, curr_aabb.max_box.elem, atom->x + curr_range.beg, atom->y + curr_range.beg, atom->z + curr_range.beg, 0, 0, curr_range.end - curr_range.beg);
+                md_util_aabb_compute(curr_aabb.min_box.elem, curr_aabb.max_box.elem, x + curr_range.beg, y + curr_range.beg, z + curr_range.beg, 0, 0, curr_range.end - curr_range.beg);
                 curr_aabb.min_box = vec3_sub_f(curr_aabb.min_box, aabb_pad);
                 curr_aabb.max_box = vec3_add_f(curr_aabb.max_box, aabb_pad);
 
                 // @NOTE: Interresidual bonds
                 if (!(prev_flags & MD_FLAG_CHAIN_END) && aabb_overlap(prev_aabb, curr_aabb)) {
-                    find_bonds_in_ranges(bond, atom, cell, cov_radii, metal_mask, prev_range, curr_range, alloc, temp_arena);
+                    find_bonds_in_ranges(bond, x, y, z, elem, cell, cov_radii, metal_mask, prev_range, curr_range, alloc, temp_arena);
                     // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
                 }
             }
-            find_bonds_in_ranges(bond, atom, cell, cov_radii, metal_mask, curr_range, curr_range, alloc, temp_arena);
+            find_bonds_in_ranges(bond, x, y, z, elem, cell, cov_radii, metal_mask, curr_range, curr_range, alloc, temp_arena);
             prev_range = curr_range;
             prev_flags = curr_flags;
             prev_idx   = curr_idx;
@@ -3469,12 +3480,12 @@ void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* 
         }
     }
     else {
-        md_range_t range = {0, atom_count};
-        find_bonds_in_ranges(bond, atom, cell, cov_radii, metal_mask, range, range, alloc, temp_arena);
+        md_range_t range = {0, (int)atom_count};
+        find_bonds_in_ranges(bond, x, y, z, elem, cell, cov_radii, metal_mask, range, range, alloc, temp_arena);
     }
 
     // Compute connectivity count
-    uint8_t* c_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, atom->count);
+    uint8_t* c_count = md_vm_arena_push_zero_array(temp_arena, uint8_t, atom_count);
     for (size_t i = 0; i < bond->count; ++i) {
         c_count[bond->pairs[i].idx[0]] += 1;
         c_count[bond->pairs[i].idx[1]] += 1;
@@ -3482,7 +3493,7 @@ void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* 
 
     // This is allocated in temp until we know that all connections are final
     md_conn_data_t conn = {0};
-    compute_connectivity(&conn, bond->pairs, bond->count, atom->count, temp_arena, temp_arena);
+    compute_connectivity(&conn, bond->pairs, bond->count, atom_count, temp_arena, temp_arena);
 
     if (conn.count == 0) {
         goto done;
@@ -3500,12 +3511,12 @@ void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* 
     md_array(uint64_t) checked_bonds = make_bitfield(bond->count, temp_arena);
 
     // Prune over-connected atoms by removing longest bonds
-    for (size_t i = 0; i < atom->count; ++i) {
-        md_element_t elem = atom->element[i];
-        const int max_con = max_neighbors_element(elem);
+    for (size_t i = 0; i < atom_count; ++i) {
+        md_element_t e = elem[i];
+        const int max_con = max_neighbors_element(e);
 
         if ((int)c_count[i] > max_con) {
-            const vec3_t xi = md_atom_coord(*atom, i);
+            const vec3_t xi = {x[i], y[i], z[i]};
             const uint32_t conn_beg = conn.offset[i];
             const uint32_t conn_end = conn.offset[i+1];
             md_array_shrink(bond_buf, 0);
@@ -3516,7 +3527,7 @@ void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* 
 
                 bitfield_set_bit(checked_bonds, bij);
                 md_atom_idx_t j = conn.atom_idx[conn_idx];
-                const vec3_t xj = md_atom_coord(*atom, j);
+                const vec3_t xj = {x[j], y[j], z[j]};
                 bond_t b = {
                     .len2 = vec3_distance_squared(xi, xj),
                     .idx  = bij,
@@ -3547,7 +3558,7 @@ void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* 
         bond->count -= count;
 
         // Recompute connectivity information (since we removed bonds)
-        compute_connectivity(&bond->conn, bond->pairs, bond->count, atom->count, alloc, temp_arena);
+        compute_connectivity(&bond->conn, bond->pairs, bond->count, atom_count, alloc, temp_arena);
     } else {
         // Commit the connectivity to molecule
         md_array_push_array(bond->conn.offset,   conn.offset,   conn.offset_count, alloc);
@@ -3563,8 +3574,8 @@ void md_util_covalent_bonds_compute(md_bond_data_t* bond, const md_atom_data_t* 
         // Mark interresidual bonds
         for (size_t i = 0; i < bond->count; ++i) {
             md_residue_idx_t res_idx[2] = {
-                atom->res_idx[bond->pairs[i].idx[0]],
-                atom->res_idx[bond->pairs[i].idx[1]],
+                atom_res_idx[bond->pairs[i].idx[0]],
+                atom_res_idx[bond->pairs[i].idx[1]],
             };
             bond->order[i] = (res_idx[0] == res_idx[1]) ? 1 : MD_BOND_FLAG_INTER;
         }
@@ -7934,7 +7945,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 #ifdef PROFILE
         md_timestamp_t t0 = md_time_current();
 #endif
-        md_util_covalent_bonds_compute(&mol->bond, &mol->atom, &mol->residue, &mol->unit_cell, alloc);
+        md_util_covalent_bonds_compute(&mol->bond, mol, alloc);
 #ifdef PROFILE
         md_timestamp_t t1 = md_time_current();
         MD_LOG_DEBUG("Postprocess: compute bonds %.3f ms\n", md_time_as_milliseconds(t1-t0));
