@@ -156,10 +156,9 @@ static inline vec3_t md_atom_coord(md_atom_data_t atom_data, size_t atom_idx) {
 
 static inline md_range_t md_residue_atom_range(md_residue_data_t res, size_t res_idx) {
 	md_range_t range = {0};
-    size_t i = (size_t)res_idx; // Cast to unsigned to only check for positive
-	if (res.atom_offset && i < res.count) {
-		range.beg = res.atom_offset[i];
-		range.end = res.atom_offset[i + 1];
+	if (res.atom_offset && res_idx < res.count) {
+		range.beg = res.atom_offset[res_idx];
+		range.end = res.atom_offset[res_idx + 1];
 	}
 	return range;
 }
@@ -209,7 +208,7 @@ static inline size_t md_chain_atom_count(md_chain_data_t chain, size_t chain_idx
 
 static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_t atom_idx) {
     md_bond_iter_t it = {0};
-    if (bond_data && bond_data->conn.offset && atom_idx < (int64_t)bond_data->conn.offset_count) {
+    if (bond_data && bond_data->conn.offset && atom_idx < bond_data->conn.offset_count) {
         it.data = bond_data;
         it.i = bond_data->conn.offset[atom_idx];
 		it.end_idx = bond_data->conn.offset[atom_idx + 1];

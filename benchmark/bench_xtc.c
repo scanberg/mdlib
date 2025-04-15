@@ -7,7 +7,7 @@
 
 #include <xdrfile_xtc.h>
 
-#define STR(x) {x"", sizeof(x"")-1};
+#define STR(x) {x"", sizeof(x"")-1}
 
 #define FULL_TEST 0
 
