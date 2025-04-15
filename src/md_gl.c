@@ -1,4 +1,4 @@
-#include <md_gl.h>
+ï»¿#include <md_gl.h>
 #include <md_util.h>
 
 #include <core/md_common.h>
@@ -337,6 +337,13 @@ static inline void gl_buffer_conditional_delete(gl_buffer_t* buf) {
     }
 }
 
+static inline void gl_buffer_set_data(gl_buffer_t buf, uint32_t num_bytes, const void* data) {
+    glBindBuffer(GL_ARRAY_BUFFER, buf.id);
+    glBufferData(GL_ARRAY_BUFFER, num_bytes, data, buf.usage_hint);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    buf.size = num_bytes;
+}
+
 static inline void gl_buffer_set_sub_data(gl_buffer_t buf, uint32_t byte_offset, uint32_t byte_size, const void* data) {
     glBindBuffer(GL_ARRAY_BUFFER, buf.id);
     glBufferSubData(GL_ARRAY_BUFFER, byte_offset, byte_size, data);
@@ -547,16 +554,25 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
         MD_LOG_ERROR("One or more arguments are missing");
         return;
     }
+
     molecule_t* mol = mol_lookup(handle.id);
     if (mol) {
         if (!mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id) {
             MD_LOG_ERROR("Molecule bond buffer buffer missing");
             return;
         }
-        if (offset + count > mol->bond_count) {
+
+        if (offset > 0 && offset + count > mol->bond_count) {
             MD_LOG_ERROR("Attempting to write out of bounds");
             return;
         }
+
+        if (offset == 0 && count > mol->bond_count) {
+            gl_buffer_set_data(mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], count * sizeof(md_bond_pair_t), bonds);
+            mol->bond_count = count;
+            return;
+        }
+
         byte_stride = MAX(sizeof(md_bond_pair_t), byte_stride);
         glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
         gl_bond_t* bond_data = (gl_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
@@ -1255,7 +1271,7 @@ bool md_gl_draw(const md_gl_draw_args_t* args) {
             gl_buffer_set_sub_data(ctx.ubo, offsetof(gl_ubo_base_t, atom_index_base), sizeof(index_base), &index_base);
         }
 
-        // Maximum bond length in units (Ångström assumed)
+        // Maximum bond length in units (Ã…ngstrÃ¶m assumed)
         const float max_length = 5.0f;
 
         switch (draw_op->type) {
