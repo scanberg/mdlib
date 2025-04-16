@@ -135,6 +135,7 @@ set(MD_LINK_FLAGS)
 set(MD_LINK_FLAGS_REL)
 set(MD_LINK_FLAGS_DEB)
 set(MD_LIBS)
+set(MD_PROPERTIES)
 
 if (${MD_ENABLE_VLX})
     set (SRC_FILES ${SRC_FILES} src/md_vlx.c src/md_vlx.h)
@@ -261,10 +262,15 @@ elseif ((CMAKE_C_COMPILER_ID STREQUAL "MSVC")) # msvc
     set(MD_LINK_FLAGS_DEB ${MD_LINK_FLAGS_DEB} "/INCREMENTAL")
     set(MD_LINK_FLAGS_REL ${MD_LINK_FLAGS_REL} "/LTCG")
     set(PROJ_FILES ${PROJ_FILES} "mdlib.natvis")
+
+    if (MD_LINK_STDLIB_STATIC)
+        set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    else()
+        set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    endif()
 endif()
 
 set(MD_FLAGS ${MD_FLAGS} ${MD_FLAGS_AVX})
-set(MD_PROPERTIES)
 
 if (MD_UNITTEST)
   enable_testing()
@@ -283,12 +289,6 @@ source_group("proj"     FILES ${PROJ_FILES})
 
 add_library(mdlib ${CORE_FILES} ${SRC_FILES} ${EXT_FILES} ${SHADER_FILES} ${PROJ_FILES})
 
-if (MD_LINK_STDLIB_STATIC)
-    set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-else()
-    set(MD_PROPERTIES ${MD_PROPERTIES} MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-endif()
-
 target_include_directories(mdlib
   PUBLIC
   src/
@@ -306,7 +306,9 @@ target_include_directories(mdlib
   ext/libdivide
 )
 
+if (MD_PROPERTIES)
 set_target_properties(mdlib PROPERTIES ${MD_PROPERTIES})
+endif()
 
 target_compile_definitions(mdlib PRIVATE ${MD_DEFINES})
 target_compile_options(mdlib PRIVATE ${MD_FLAGS} $<$<CONFIG:Debug>:${MD_FLAGS_DEB}> $<$<CONFIG:Release>:${MD_FLAGS_REL}>)
