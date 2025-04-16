@@ -1028,6 +1028,12 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
     if (file) {
         const size_t filesize = md_file_size(file);
 
+        /* Go to file beg */
+        if (!md_file_seek(file, 0, MD_FILE_BEG)) {
+            MD_LOG_ERROR("XTC: Failed to seek to beginning of file");
+            return 0;
+        }
+
         int num_atoms, step;
         float time;
         float box[3][3];
@@ -1062,7 +1068,7 @@ md_trajectory_i* md_xtc_trajectory_create(str_t filename, md_allocator_i* ext_al
 
             if (!(flags & MD_TRAJECTORY_FLAG_DISABLE_CACHE_WRITE)) {
                 // If we fail to write the cache, that's ok, we can inform about it, but do not halt
-                if (write_cache(&cache, path)) {
+                if (write_cache(&cache, cache_path)) {
                     MD_LOG_INFO("XTC: Successfully created cache file for '" STR_FMT "'", STR_ARG(path));
                 }
             }
