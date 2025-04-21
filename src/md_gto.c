@@ -1,4 +1,4 @@
-#include <md_gto.h>
+﻿#include <md_gto.h>
 
 #include <core/md_platform.h>
 
@@ -171,7 +171,7 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], co
     glUseProgram(0);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
 
 done:
     md_gl_debug_pop();

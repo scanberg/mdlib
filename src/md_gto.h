@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <stdint.h>
 #include <stddef.h>
 
@@ -40,13 +40,6 @@ typedef enum {
 extern "C" {
 #endif
 
-// Evaluates GTOs over a grid
-// - grid: The grid to evaluate a subportion of
-// - gtos: The gtos to evaluate
-// - num_gtos: Number of supplied gtos
-// - eval_mode: GTO evaluation mode
-void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
-
 // Evaluates GTOs over a grid on the GPU and stores the result into a supplied volume
 // - vol_tex: The texture handle to the volume
 // - vol_dim: The dimensions of the volume
@@ -77,6 +70,13 @@ void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const int vol_dim[3], const
 // - point_group_idx: Point group index [0, num_groups-1]
 // - num_points: Number of points
 void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points);
+
+// Evaluates GTOs over a grid
+// - grid: The grid to evaluate a subportion of
+// - gtos: The gtos to evaluate
+// - num_gtos: Number of supplied gtos
+// - eval_mode: GTO evaluation mode
+void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
 // Evaluate GTOs over subportion of a grid
 // - grid: The grid to evaluate a subportion of

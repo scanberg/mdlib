@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "md_common.h"
 #include "md_compiler.h"
@@ -1559,12 +1559,47 @@ MD_VEC_INLINE double dvec2_length(dvec2_t v) {
     return sqrt(dvec2_dot(v, v));
 }
 
+MD_VEC_INLINE dvec2_t dvec2_add(dvec2_t a, dvec2_t b) {
+    dvec2_t r = {
+        a.x + b.x,
+        a.y + b.y,
+    };
+    return r;
+}
+
 MD_VEC_INLINE double dvec3_dot(dvec3_t a, dvec3_t b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
 MD_VEC_INLINE double dvec3_length(dvec3_t v) {
     return sqrt(dvec3_dot(v, v));
+}
+
+MD_VEC_INLINE dvec3_t dvec3_add(dvec3_t a, dvec3_t b) {
+    dvec3_t r = {
+        a.x + b.x,
+        a.y + b.y,
+        a.z + b.z,
+    };
+    return r;
+}
+
+MD_VEC_INLINE dvec3_t dvec3_mul(dvec3_t a, dvec3_t b) {
+    dvec3_t r = {
+        a.x * b.x,
+        a.y * b.y,
+        a.z * b.z,
+    };
+    return r;
+}
+
+MD_VEC_INLINE dvec3_t dvec3_mul_f(dvec3_t v, float s) {
+    dvec3_t r = {
+        v.x * s,
+        v.y * s,
+        v.z * s,
+    };
+    return r;
 }
 
 MD_VEC_INLINE double dvec4_dot(dvec4_t a, dvec4_t b) {
