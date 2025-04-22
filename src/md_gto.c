@@ -100,6 +100,10 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], co
     ASSERT(vol_step);
     ASSERT(orb);
 
+    if (orb->num_gtos == 0 || orb->num_orbs == 0) {
+        return;
+    }
+
     md_gl_debug_push("EVAL ORBS");
 
     GLenum format = 0;
