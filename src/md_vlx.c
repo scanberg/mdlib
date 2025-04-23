@@ -1886,6 +1886,15 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		char*  buf = md_temp_push(cap);
 		md_strb_t sb = md_strb_create(md_get_temp_allocator());
 
+		char exe_buf[1024];
+		str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
+
+		str_t exe_dir = {0};
+		if (!extract_folder_path(&exe_dir, exe_path)) {
+			MD_LOG_ERROR("Failed to extract executable directory");
+		}
+		md_strb_push_str(&sb, exe_dir);
+
 		md_strb_fmt(&sb, "%s/" STR_FMT, MD_VLX_BASIS_FOLDER, STR_ARG(vlx->basis_set_ident));
 		md_file_o* basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
 		if (basis_file) {

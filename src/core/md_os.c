@@ -1,4 +1,4 @@
-#include <core/md_os.h>
+﻿#include <core/md_os.h>
 
 #include <core/md_common.h>
 #include <core/md_platform.h>
@@ -148,10 +148,18 @@ static size_t fullpath(char* buf, size_t cap, str_t path) {
 
 size_t md_path_write_cwd(char* buf, size_t cap) {
     char* val;
+    size_t len = 0;
 #if MD_PLATFORM_WINDOWS
     val = _getcwd(buf, (int)cap);
+    if (val) {
+        len = strnlen(buf, cap);
+        replace_char(buf, len, '\\', '/');
+    }
 #elif MD_PLATFORM_UNIX
     val = getcwd(buf, (size_t)cap);
+    if (val) {
+        len = strnlen(buf, cap);
+    }
 #else
     ASSERT(false);
 #endif
@@ -159,13 +167,14 @@ size_t md_path_write_cwd(char* buf, size_t cap) {
     	MD_LOG_ERROR("Failed to get current working directory");
 		return 0;
     }
-    return strnlen(buf, cap);
+    return len;
 }
 
 size_t md_path_write_exe(char* buf, size_t buf_cap) {
 #if MD_PLATFORM_WINDOWS
     DWORD res = GetModuleFileName(NULL, buf, (DWORD)buf_cap);
     if (res != 0) {
+        replace_char(buf, res, '\\', '/');
         return (size_t)res;
     }
 #elif MD_PLATFORM_LINUX
