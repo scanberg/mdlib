@@ -287,6 +287,47 @@ static inline void br_skip(br_t* r, size_t num_bits) {
     br_load_next(r);
 }
 
+
+// Bitreader
+typedef struct br2_t {
+    const uint8_t* base;
+    size_t bit_offset;
+} br2_t;
+
+static inline uint64_t br2_peek_be(br2_t* r, size_t num_bits) {
+    ASSERT(num_bits <= 64);
+    size_t byte_offset = r->bit_offset >> 3;
+    size_t shift = r->bit_offset & 7;
+    uint64_t raw;
+    MEMCPY(&raw, r->base + byte_offset, 8);
+    uint64_t x = BSWAP64(raw);
+    x <<= shift;
+    x >>= 64 - num_bits;
+    return x;
+}
+
+static inline uint64_t br2_read_be(br2_t* r, size_t num_bits) {
+    uint64_t val = br2_peek_be(r, num_bits);
+    r->bit_offset += num_bits;
+    return val;
+}
+
+static inline void br2_skip(br2_t* r, size_t num_bits) {
+    r->bit_offset += num_bits;
+}
+
+static inline uint64_t extract_u56_be(const uint8_t* base, size_t bit_offset, size_t num_bits) {
+    ASSERT(num_bits <= 64);
+    size_t byte_offset = bit_offset >> 3;
+    size_t shift = bit_offset & 7;
+    uint64_t raw;
+    MEMCPY(&raw, base + byte_offset, 8);
+    uint64_t x = BSWAP64(raw);
+    x <<= shift;
+    x >>= 64 - num_bits;
+    return x;
+}
+
 typedef struct {
     uint64_t size_zy;
     uint32_t size_z;
@@ -307,9 +348,9 @@ typedef md_128i v4i_t;
 
 static inline void write_coord(float* dst, v4i_t coord, float inv_precision) {
     md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), md_mm_set1_ps(inv_precision));
-    md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
-    md_mm_maskstore_ps(dst, mask, data);
-    //MEMCPY(dst, &v, 3 * sizeof(float));
+    //md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
+    //md_mm_maskstore_ps(dst, mask, data);
+    MEMCPY(dst, &data, 3 * sizeof(float));
 }
 
 static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bits) {
@@ -323,6 +364,17 @@ static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bi
 static inline v4i_t unpack_coord64(br_t* r, const unpack_data_t* unpack) {
     uint64_t w = br_read(r, unpack->num_of_bits);
     uint64_t t = ((w << unpack->sml_shift) & (~0xFFull)) | (w & unpack->part_mask);
+    uint64_t v = BSWAP64(t) >> unpack->big_shift;
+    uint32_t x = (uint32_t)DIV(v, &unpack->div_zy);
+    uint64_t q = v - x * unpack->size_zy;
+    uint32_t y = (uint32_t)DIV(q, &unpack->div_z);
+    uint32_t z = (uint32_t)(q - y * unpack->size_z);
+
+    return v4i_set(x, y, z, 0);
+}
+
+static inline v4i_t unpack_coords64_2(uint64_t data, const unpack_data_t* unpack) {
+    uint64_t t = ((data << unpack->sml_shift) & (~0xFFull)) | (data & unpack->part_mask);
     uint64_t v = BSWAP64(t) >> unpack->big_shift;
     uint32_t x = (uint32_t)DIV(v, &unpack->div_zy);
     uint64_t q = v - x * unpack->size_zy;
@@ -399,12 +451,12 @@ static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
     uint32_t val[4];
     for (int i = 0; i < 3; ++i) {
         uint32_t num_of_bits = bitsizes[i];
-        uint32_t partbits = num_of_bits & 7;
+        uint32_t partbits  = num_of_bits & 7;
         uint32_t big_shift = 32 - ((num_of_bits + 7) & ~7);  // Align to the next multiple of 8
         uint32_t sml_shift = (8 - partbits) & 7;
-        uint32_t part_mask = partbits ? (1ul << partbits) - 1 : 0xFF;
+        uint32_t part_mask = partbits ? (1 << partbits) - 1 : 0xFF;
         uint32_t w = (uint32_t)br_read(br, num_of_bits);
-        uint32_t r = ((w << sml_shift) & (~0xFFul)) | (w & part_mask);
+        uint32_t r = ((w << sml_shift) & (~0xFF)) | (w & part_mask);
         uint32_t v = BSWAP32(r) >> big_shift;
         val[i] = v;
     }
@@ -561,6 +613,9 @@ done:
     return num_frames;
 }
 
+//#define PRINT_DEBUG
+#define USE_BR2 1
+
 size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
     if (xdr_file == NULL || out_coords_ptr == NULL) {
         return 0;
@@ -647,12 +702,15 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
     size_t temp_pos = md_temp_get_pos();
     size_t mem_size = ALIGN_TO(num_bytes, 16);
-    uint64_t* mem = md_temp_push_aligned(mem_size, 16);
+    uint8_t* mem = md_temp_push_aligned(mem_size, 16);
 
     int atom_idx = 0;
-    if (!xdr_read_bytes((uint8_t*)mem, num_bytes, xdr_file)) {
+    if (!xdr_read_bytes(mem, num_bytes, xdr_file)) {
         goto done;
     }
+
+    const uint8_t* base = mem;
+    size_t bit_offset = 0;
 
     br_t br = {0};
     br_init(&br, mem, mem_size / 8);
@@ -675,7 +733,12 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             thiscoord = br_read_ints(&br, bitsizeint);
         } else {
             if (big_unpack.num_of_bits <= 64) {
+#if USE_BR2
+                uint64_t 
+                thiscoord = unpack_coords64_2(&br2, &big_unpack);
+#else
                 thiscoord = unpack_coord64(&br, &big_unpack);
+#endif
             } else {
                 thiscoord = unpack_coord128(&br, &big_unpack);
             }
@@ -683,10 +746,19 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
         thiscoord = v4i_add(thiscoord, vminint);
 
+#if USE_BR2
+        uint32_t data = (uint32_t)br2_peek_be(&br2, 6);
+#else
         uint32_t data = (uint32_t)br_peek(&br, 6);
+#endif
         uint32_t flag = data & 32;
         uint32_t skip = flag ? 6 : 1;
+
+#if USE_BR2
+        br2_skip(&br2, skip);
+#else
         br_skip(&br, skip);
+#endif
 
         int is_smaller = 0;
         if (flag) {
@@ -713,7 +785,11 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             v4i_t vsmall = v4i_set1(smallnum);
 
             if (sml_unpack.num_of_bits <= 64) {
+#if USE_BR2
+                v4i_t coord = unpack_coord64_2(&br2, &sml_unpack);
+#else
                 v4i_t coord = unpack_coord64(&br, &sml_unpack);
+#endif
                 thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
 
                 // Write second atom before first atom
@@ -721,7 +797,11 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
                 write_coord(lfp, prevcoord, inv_precision); lfp += 3;
 
                 for (int i = 1; i < run_count; ++i) {
+#if USE_BR2
+                    coord = unpack_coord64_2(&br2, &sml_unpack);
+#else
                     coord = unpack_coord64(&br, &sml_unpack);
+#endif
                     thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
                     write_coord(lfp, thiscoord, inv_precision); lfp += 3;
                 }

@@ -9,7 +9,7 @@
 
 #define STR(x) {x"", sizeof(x"")-1}
 
-#define FULL_TEST 0
+#define FULL_TEST 1
 
 static const str_t cat_path = STR(MD_BENCHMARK_DATA_DIR "/catalyst.xtc");
 static const str_t amy_path = STR(MD_BENCHMARK_DATA_DIR "/amyloid-pftaa.xtc");
