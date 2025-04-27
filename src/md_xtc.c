@@ -316,13 +316,13 @@ static inline void br2_skip(br2_t* r, size_t num_bits) {
     r->bit_offset += num_bits;
 }
 
-static inline uint64_t extract_u56_be(const uint8_t* base, size_t bit_offset, size_t num_bits) {
+static inline uint64_t extract_u64_be(const uint8_t* base, size_t bit_offset, size_t num_bits) {
     ASSERT(num_bits <= 64);
     size_t byte_offset = bit_offset >> 3;
     size_t shift = bit_offset & 7;
-    uint64_t raw;
-    MEMCPY(&raw, base + byte_offset, 8);
-    uint64_t x = BSWAP64(raw);
+    uint64_t x;
+    MEMCPY(&x, base + byte_offset, 8);
+    x = BSWAP64(x);
     x <<= shift;
     x >>= 64 - num_bits;
     return x;
@@ -335,6 +335,10 @@ typedef struct {
     uint8_t  part_mask;
     uint8_t  big_shift;
     uint8_t  sml_shift;
+    uint64_t hi_shift;
+    uint64_t lo_shift;
+    uint64_t hi_mask;
+    uint64_t lo_mask;
     DIV_T    div_zy;
     DIV_T    div_z;
 } unpack_data_t;
@@ -461,6 +465,50 @@ static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
         val[i] = v;
     }
     return v4i_load(val);
+}
+
+static inline __m256i bswap64_avx2(__m256i x) {
+    const __m256i shuffle_mask = _mm256_set_epi8(
+        8, 9,10,11,12,13,14,15,
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 9,10,11,12,13,14,15,
+        0, 1, 2, 3, 4, 5, 6, 7
+    );
+    return _mm256_shuffle_epi8(x, shuffle_mask);
+}
+
+static inline __m256i load_and_extract_bits_avx2_4_56_le(const uint8_t* data, int bit_offset, const unpack_data_t* unpack) {
+    // Compute bit offsets per lane
+    __m256i idx         = md_mm256_set_epi64(3,2,1,0);
+    __m256i base_bit    = md_mm256_set1_epi64(bit_offset);
+    __m256i bit_offsets = _mm256_add_epi64(base_bit, _mm256_mul_epu32(idx, md_mm256_set1_epi64(unpack->num_of_bits)));
+
+    // Byte offset for each lane
+    __m256i byte_offsets = _mm256_srli_epi64(bit_offsets, 3);
+
+    // Bit shifts within each 32-bit load
+    __m256i shift       = _mm256_and_si256(bit_offsets, md_mm256_set1_epi64(7));
+
+    // Load 8 bytes from base
+    __m256i x           = _mm256_i64gather_epi64((const __int64*)data, byte_offsets, 1);
+
+    __m256i y = bswap64_avx2(x);
+
+    __m256i hi_shift = _mm256_sub_epi64(_mm256_set1_epi64x(unpack->hi_shift), shift);
+    __m256i lo_shift = _mm256_sub_epi64(_mm256_set1_epi64x(unpack->lo_shift), shift);
+
+    __m256i hi_mask  = _mm256_set1_epi64x(unpack->hi_mask);
+    __m256i lo_mask  = _mm256_set1_epi64x(unpack->lo_mask);
+
+    __m256i hi = _mm256_and_si256(_mm256_srlv_epi64(y, hi_shift), hi_mask);
+    __m256i lo = _mm256_and_si256(_mm256_srlv_epi64(y, lo_shift), lo_mask);
+
+    __m256i combined = _mm256_or_si256(hi, lo);
+
+    __m256i swapped  = bswap64_avx2(combined);
+
+    __m256i result   = _mm256_srlv_epi64(swapped, md_mm256_set1_epi64(unpack->big_shift));
+    return result;
 }
 
 bool md_xtc_read_frame_header(md_file_o* xdr, int* natoms, int* step, float* time, float box[3][3]) {
@@ -614,7 +662,7 @@ done:
 }
 
 //#define PRINT_DEBUG
-#define USE_BR2 1
+#define USE_STATELESS 1
 
 size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
     if (xdr_file == NULL || out_coords_ptr == NULL) {
@@ -659,12 +707,14 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     uint32_t bitsize = 0;
     uint32_t bitsizeint[3] = {0};
     unpack_data_t big_unpack = {0};
+    uint32_t big_skip = 0;
 
     /* check if one of the sizes is to big to be multiplied */
     if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
         bitsizeint[0] = sizeofint(sizeint[0]);
         bitsizeint[1] = sizeofint(sizeint[1]);
         bitsizeint[2] = sizeofint(sizeint[2]);
+        big_skip = bitsizeint[0] + bitsizeint[1] + bitsizeint[2];
     } else {
         bitsize = sizeofints(3, sizeint);
         big_unpack.size_zy = (uint64_t)sizeint[1] * sizeint[2];
@@ -673,6 +723,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         big_unpack.div_zy = DIV_INIT(big_unpack.size_zy);
         big_unpack.div_z = DIV_INIT(big_unpack.size_z);
         init_unpack_data_bits(&big_unpack, bitsize);
+        big_skip = bitsize;
     }
 
     int smallidx;
@@ -729,13 +780,25 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 #endif
 
     while (atom_idx < natoms) {
+
+#if 1
+        size_t byte_offset = bit_offset >> 3;
+        size_t shift = bit_offset & 7;
+        uint64_t x;
+        MEMCPY(&x, base + byte_offset, 8);
+        x = BSWAP64(x);
+        x <<= shift;
+        uint64_t coord_bits = x >> (64 - big_unpack.num_of_bits);
+        uint64_t data  = x >> (64 - big_unpack.num_of_bits - 6) & 63;
+        thiscoord = unpack_coords64_2(coord_bits, &big_unpack);
+        //uint32_t data = (uint32_t)extract_u64_be(base, bit_offset, 6);
+#else
         if (bitsize == 0) {
             thiscoord = br_read_ints(&br, bitsizeint);
         } else {
             if (big_unpack.num_of_bits <= 64) {
-#if USE_BR2
-                uint64_t 
-                thiscoord = unpack_coords64_2(&br2, &big_unpack);
+#if USE_STATELESS
+                thiscoord = unpack_coords64_2(extract_u64_be(base, bit_offset, big_unpack.num_of_bits), &big_unpack);
 #else
                 thiscoord = unpack_coord64(&br, &big_unpack);
 #endif
@@ -743,19 +806,21 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
                 thiscoord = unpack_coord128(&br, &big_unpack);
             }
         }
+#endif
+        bit_offset += big_skip;
 
         thiscoord = v4i_add(thiscoord, vminint);
 
-#if USE_BR2
-        uint32_t data = (uint32_t)br2_peek_be(&br2, 6);
+#if USE_STATELESS
+        //uint32_t data = (uint32_t)extract_u64_be(base, bit_offset, 6);
 #else
         uint32_t data = (uint32_t)br_peek(&br, 6);
 #endif
         uint32_t flag = data & 32;
         uint32_t skip = flag ? 6 : 1;
 
-#if USE_BR2
-        br2_skip(&br2, skip);
+#if USE_STATELESS
+        bit_offset += skip;
 #else
         br_skip(&br, skip);
 #endif
@@ -781,12 +846,25 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 #endif
 
         if (run > 0) {
+            uint64_t bits[8];
+            __m256i lo = load_and_extract_bits_avx2_4_56_le(base, bit_offset, &sml_unpack);
+            __m256i hi = load_and_extract_bits_avx2_4_56_le(base, bit_offset + 4 * sml_unpack.num_of_bits, &sml_unpack);
+            _mm256_storeu_epi64(bits, lo);
+            _mm256_storeu_epi64(bits + 4, hi);
+            bit_offset += run_count * sml_unpack.num_of_bits;
+#if 1
+            for (int i = 0; i < run_count; ++i) {
+                thiscoord = unpack_coords64_2(bits[i], &sml_unpack);
+                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
+            }
+#else
             v4i_t prevcoord = thiscoord;
             v4i_t vsmall = v4i_set1(smallnum);
 
             if (sml_unpack.num_of_bits <= 64) {
-#if USE_BR2
-                v4i_t coord = unpack_coord64_2(&br2, &sml_unpack);
+#if USE_STATELESS
+                v4i_t coord = unpack_coords64_2(extract_u64_be(base, bit_offset, sml_unpack.num_of_bits), &sml_unpack);
+                bit_offset += sml_unpack.num_of_bits;
 #else
                 v4i_t coord = unpack_coord64(&br, &sml_unpack);
 #endif
@@ -797,8 +875,9 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
                 write_coord(lfp, prevcoord, inv_precision); lfp += 3;
 
                 for (int i = 1; i < run_count; ++i) {
-#if USE_BR2
-                    coord = unpack_coord64_2(&br2, &sml_unpack);
+#if USE_STATELESS
+                    coord = unpack_coords64_2(extract_u64_be(base, bit_offset, sml_unpack.num_of_bits), &sml_unpack);
+                    bit_offset += sml_unpack.num_of_bits;
 #else
                     coord = unpack_coord64(&br, &sml_unpack);
 #endif
@@ -819,6 +898,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
                     write_coord(lfp, thiscoord, inv_precision); lfp += 3;
                 }
             }
+#endif
         } else {
             write_coord(lfp, thiscoord, inv_precision); lfp += 3;
         }
