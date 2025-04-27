@@ -490,7 +490,7 @@ static inline __m256i load_and_extract_bits_avx2_4_56_le(const uint8_t* data, in
     __m256i shift       = _mm256_and_si256(bit_offsets, md_mm256_set1_epi64(7));
 
     // Load 8 bytes from base
-    __m256i x           = _mm256_i64gather_epi64((const __int64*)data, byte_offsets, 1);
+    __m256i x           = _mm256_i64gather_epi64((const __int64_t*)data, byte_offsets, 1);
 
     __m256i y = bswap64_avx2(x);
 
@@ -849,8 +849,8 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             uint64_t bits[8];
             __m256i lo = load_and_extract_bits_avx2_4_56_le(base, bit_offset, &sml_unpack);
             __m256i hi = load_and_extract_bits_avx2_4_56_le(base, bit_offset + 4 * sml_unpack.num_of_bits, &sml_unpack);
-            _mm256_storeu_epi64(bits, lo);
-            _mm256_storeu_epi64(bits + 4, hi);
+            _mm256_storeu_si256(bits, lo);
+            _mm256_storeu_si256(bits + 4, hi);
             bit_offset += run_count * sml_unpack.num_of_bits;
 #if 1
             for (int i = 0; i < run_count; ++i) {

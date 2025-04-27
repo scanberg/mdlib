@@ -254,7 +254,7 @@ __m256i load_packed_bits_avx2_4_56_be(const uint8_t* data, int bit_offset, int N
     __m256i shift      = _mm256_and_si256(bit_offsets, md_mm256_set1_epi64(7));
 
     // Load 8 bytes from base
-    __m256i gather     = _mm256_i64gather_epi64((const __int64*)data, byte_offsets, 1);
+    __m256i gather     = _mm256_i64gather_epi64((const __int64_t*)data, byte_offsets, 1);
 
     __m256i shifted    = _mm256_sllv_epi64(gather, shift);
     return _mm256_srlv_epi64(shifted, big_shift);
@@ -282,7 +282,7 @@ __m256i load_packed_bits_avx2_4_56_le(const uint8_t* data, int bit_offset, const
     __m256i shift       = _mm256_and_si256(bit_offsets, md_mm256_set1_epi64(7));
 
     // Load 8 bytes from base
-    __m256i x           = _mm256_i64gather_epi64((const __int64*)data, byte_offsets, 1);
+    __m256i x           = _mm256_i64gather_epi64((const __int64_t*)data, byte_offsets, 1);
 
     __m256i y = bswap64_avx2(x);
 
