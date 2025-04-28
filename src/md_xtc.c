@@ -782,14 +782,14 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     while (atom_idx < natoms) {
 
 #if 1
-        size_t byte_offset = bit_offset >> 3;
-        size_t shift = bit_offset & 7;
+        size_t offset = bit_offset >> 3;
+        size_t shift  = bit_offset & 7;
         uint64_t x;
-        MEMCPY(&x, base + byte_offset, 8);
+        MEMCPY(&x, base + offset, 8);
         x = BSWAP64(x);
         x <<= shift;
         uint64_t coord_bits = x >> (64 - big_unpack.num_of_bits);
-        uint64_t data  = x >> (64 - big_unpack.num_of_bits - 6) & 63;
+        uint64_t data       = x >> (64 - big_unpack.num_of_bits - 6) & 63;
         thiscoord = unpack_coords64_2(coord_bits, &big_unpack);
         //uint32_t data = (uint32_t)extract_u64_be(base, bit_offset, 6);
 #else
@@ -808,7 +808,6 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         }
 #endif
         bit_offset += big_skip;
-
         thiscoord = v4i_add(thiscoord, vminint);
 
 #if USE_STATELESS
@@ -819,11 +818,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         uint32_t flag = data & 32;
         uint32_t skip = flag ? 6 : 1;
 
-#if USE_STATELESS
         bit_offset += skip;
-#else
-        br_skip(&br, skip);
-#endif
 
         int is_smaller = 0;
         if (flag) {
@@ -846,57 +841,34 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 #endif
 
         if (run > 0) {
-            uint64_t bits[8];
             __m256i lo = load_and_extract_bits_avx2_4_56_le(base, bit_offset, &sml_unpack);
             __m256i hi = load_and_extract_bits_avx2_4_56_le(base, bit_offset + 4 * sml_unpack.num_of_bits, &sml_unpack);
-            _mm256_storeu_si256(bits, lo);
-            _mm256_storeu_si256(bits + 4, hi);
             bit_offset += run_count * sml_unpack.num_of_bits;
-#if 1
+
+            __m256 x, y, z;
+            x = _mm256_mul_ps(_mm256_cvtepi32_ps(lo), _mm256_set1_ps(inv_precision));
+            y = _mm256_mul_ps(_mm256_cvtepi32_ps(lo), _mm256_set1_ps(inv_precision));
+            z = _mm256_mul_ps(_mm256_cvtepi32_ps(hi), _mm256_set1_ps(inv_precision));
+
+            // Interlace to XYZ
+            //__m256 a, b, c;
+
+            // Masked Store
+            __m256i v_run  = _mm256_set1_epi32(run);
+            __m256i mask_a = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(7,6,5,4,3,2,1,0));
+            __m256i mask_b = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(15,14,13,12,11,10,9,8));
+            __m256i mask_c = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(23,22,21,20,19,18,17,16));
+
+            _mm256_maskstore_ps(lfp, mask_a, x);
+            _mm256_maskstore_ps(lfp, mask_b, y);
+            _mm256_maskstore_ps(lfp, mask_c, z);
+
+            lfp += run;
+
+#if 0
             for (int i = 0; i < run_count; ++i) {
                 thiscoord = unpack_coords64_2(bits[i], &sml_unpack);
                 write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-            }
-#else
-            v4i_t prevcoord = thiscoord;
-            v4i_t vsmall = v4i_set1(smallnum);
-
-            if (sml_unpack.num_of_bits <= 64) {
-#if USE_STATELESS
-                v4i_t coord = unpack_coords64_2(extract_u64_be(base, bit_offset, sml_unpack.num_of_bits), &sml_unpack);
-                bit_offset += sml_unpack.num_of_bits;
-#else
-                v4i_t coord = unpack_coord64(&br, &sml_unpack);
-#endif
-                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-
-                // Write second atom before first atom
-                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
-
-                for (int i = 1; i < run_count; ++i) {
-#if USE_STATELESS
-                    coord = unpack_coords64_2(extract_u64_be(base, bit_offset, sml_unpack.num_of_bits), &sml_unpack);
-                    bit_offset += sml_unpack.num_of_bits;
-#else
-                    coord = unpack_coord64(&br, &sml_unpack);
-#endif
-                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                }
-            } else {
-                v4i_t coord = unpack_coord128(&br, &sml_unpack);
-                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-
-                // Write second atom before first atom
-                write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                write_coord(lfp, prevcoord, inv_precision); lfp += 3;
-
-                for (int i = 1; i < run_count; ++i) {
-                    coord = unpack_coord128(&br, &sml_unpack);
-                    thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                    write_coord(lfp, thiscoord, inv_precision); lfp += 3;
-                }
             }
 #endif
         } else {
