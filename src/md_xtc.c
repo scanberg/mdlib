@@ -935,45 +935,50 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
         if (run > 0) {
             bit_offset += run_count * sml_unpack.num_of_bits;
+            if (run_count == 1) {
 
-            __m256i cor_lo = create_correction_mask(cor_a, cor_b);
-            __m256i cor_hi = create_correction_mask(cor_c, cor_d);
+            } else {
+                __m256i cor_lo = create_correction_mask(cor_a, cor_b);
+                __m256i cor_hi = create_correction_mask(cor_c, cor_d);
 
-            shift_lo = _mm256_add_epi64(shift_lo, _mm256_set1_epi64x(sml_shift));
-            shift_hi = _mm256_add_epi64(shift_hi, _mm256_set1_epi64x(sml_shift));
+                shift_lo = _mm256_add_epi64(shift_lo, _mm256_set1_epi64x(sml_shift));
+                shift_hi = _mm256_add_epi64(shift_hi, _mm256_set1_epi64x(sml_shift));
 
-            // Construct a shuffle mask to emulate a 64-bit gather on the
-            __m256i shuffle_base = _mm256_set_epi8(15,14,13,12,11,10,9,8, 7,6,5,4,3,2,1,0, 15,14,13,12,11,10,9,8, 7,6,5,4,3,2,1,0);
-            __m256i shuffle_lo   = _mm256_sub_epi8(shuffle_base, cor_lo);
-            __m256i shuffle_hi   = _mm256_sub_epi8(shuffle_base, cor_hi);
+                // Construct a shuffle mask to emulate a 64-bit gather on the
+                __m256i shuffle_base = _mm256_set_epi8(15,14,13,12,11,10,9,8, 7,6,5,4,3,2,1,0, 15,14,13,12,11,10,9,8, 7,6,5,4,3,2,1,0);
+                __m256i shuffle_lo   = _mm256_sub_epi8(shuffle_base, cor_lo);
+                __m256i shuffle_hi   = _mm256_sub_epi8(shuffle_base, cor_hi);
 
-            // Extract the correct data from lo and hi
-            data_lo = _mm256_shuffle_epi8(data_lo, shuffle_lo);
-            data_hi = _mm256_shuffle_epi8(data_hi, shuffle_hi);
+                // Extract the correct data from lo and hi
+                data_lo = _mm256_shuffle_epi8(data_lo, shuffle_lo);
+                data_hi = _mm256_shuffle_epi8(data_hi, shuffle_hi);
 
-            // Create mask for store
-            __m256i v_run  = _mm256_set1_epi32(run);
-            __m256i mask_a = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32( 7, 6, 5, 4, 3, 2, 1, 0));
-            __m256i mask_b = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(15,14,13,12,11,10, 9, 8));
-            __m256i mask_c = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(23,22,21,20,19,18,17,16));
+                data_lo = extract_bits_avx2_4_64_le(data_lo, shift_lo, &sml_unpack);
+                data_hi = extract_bits_avx2_4_64_le(data_hi, shift_hi, &sml_unpack);
 
-            //__m256i lo = load_and_extract_bits_avx2_4_56_le(base, bit_offset, &sml_unpack);
-            //__m256i hi = load_and_extract_bits_avx2_4_56_le(base, bit_offset + 4 * sml_unpack.num_of_bits, &sml_unpack);
-            //lo = extract_bits_avx2_4_64_le(lo, &sml_unpack);
-            //hi = extract_bits_avx2_4_64_le(hi, &sml_unpack);
+                // Create mask for store
+                __m256i v_run  = _mm256_set1_epi32(run);
+                __m256i mask_a = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32( 7, 6, 5, 4, 3, 2, 1, 0));
+                __m256i mask_b = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(15,14,13,12,11,10, 9, 8));
+                __m256i mask_c = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(23,22,21,20,19,18,17,16));
 
-            __m256 x, y, z;
-            x = _mm256_mul_ps(_mm256_cvtepi32_ps(data_lo), _mm256_set1_ps(inv_precision));
-            y = _mm256_mul_ps(_mm256_cvtepi32_ps(data_lo), _mm256_set1_ps(inv_precision));
-            z = _mm256_mul_ps(_mm256_cvtepi32_ps(data_hi), _mm256_set1_ps(inv_precision));
+                //__m256i lo = load_and_extract_bits_avx2_4_56_le(base, bit_offset, &sml_unpack);
+                //__m256i hi = load_and_extract_bits_avx2_4_56_le(base, bit_offset + 4 * sml_unpack.num_of_bits, &sml_unpack);
+                //lo = extract_bits_avx2_4_64_le(lo, &sml_unpack);
+                //hi = extract_bits_avx2_4_64_le(hi, &sml_unpack);
 
-            // Interleave X, Y and Z into 3x XYZXYZ...
-            //__m256 a, b, c;
+                __m256 x, y, z;
+                x = _mm256_mul_ps(_mm256_cvtepi32_ps(data_lo), _mm256_set1_ps(inv_precision));
+                y = _mm256_mul_ps(_mm256_cvtepi32_ps(data_lo), _mm256_set1_ps(inv_precision));
+                z = _mm256_mul_ps(_mm256_cvtepi32_ps(data_hi), _mm256_set1_ps(inv_precision));
 
-            _mm256_maskstore_ps(lfp +  0, mask_a, x);
-            _mm256_maskstore_ps(lfp +  8, mask_b, y);
-            _mm256_maskstore_ps(lfp + 16, mask_c, z);
+                // Interleave X, Y and Z into 3x XYZXYZ...
+                //__m256 a, b, c;
 
+                _mm256_maskstore_ps(lfp +  0, mask_a, x);
+                _mm256_maskstore_ps(lfp +  8, mask_b, y);
+                _mm256_maskstore_ps(lfp + 16, mask_c, z);
+            }
             lfp += run;
         } else {
             write_coord(lfp, thiscoord, inv_precision); lfp += 3;
