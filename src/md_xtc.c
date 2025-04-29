@@ -467,7 +467,7 @@ static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
     return v4i_load(val);
 }
 
-static inline __m256i bswap64_avx2(__m256i x) {
+static inline __m256i _mm256_bswap_epi64(__m256i x) {
     const __m256i shuffle_mask = _mm256_set_epi8(
         8, 9,10,11,12,13,14,15,
         0, 1, 2, 3, 4, 5, 6, 7,
@@ -476,6 +476,15 @@ static inline __m256i bswap64_avx2(__m256i x) {
     );
     return _mm256_shuffle_epi8(x, shuffle_mask);
 }
+
+static inline __m128i _mm_bswap_epi64(__m128i x) {
+    const __m128i shuffle_mask = _mm_set_epi8(
+        8, 9,10,11,12,13,14,15,
+        0, 1, 2, 3, 4, 5, 6, 7
+    );
+    return _mm_shuffle_epi8(x, shuffle_mask);
+}
+
 
 static inline __m256i load_and_extract_bits_avx2_4_56_le(const uint8_t* data, int bit_offset, const unpack_data_t* unpack) {
     // Compute bit offsets per lane
@@ -492,7 +501,7 @@ static inline __m256i load_and_extract_bits_avx2_4_56_le(const uint8_t* data, in
     // Load 8 bytes from base
     __m256i x           = _mm256_i64gather_epi64((const __int64_t*)data, byte_offsets, 1);
 
-    __m256i y = bswap64_avx2(x);
+    __m256i y          = _mm256_bswap_epi64(x);
 
     __m256i hi_shift = _mm256_sub_epi64(_mm256_set1_epi64x(unpack->hi_shift), shift);
     __m256i lo_shift = _mm256_sub_epi64(_mm256_set1_epi64x(unpack->lo_shift), shift);
@@ -505,14 +514,14 @@ static inline __m256i load_and_extract_bits_avx2_4_56_le(const uint8_t* data, in
 
     __m256i combined = _mm256_or_si256(hi, lo);
 
-    __m256i swapped  = bswap64_avx2(combined);
+    __m256i swapped  = _mm256_bswap_epi64(combined);
 
     __m256i result   = _mm256_srlv_epi64(swapped, md_mm256_set1_epi64(unpack->big_shift));
     return result;
 }
 
 static inline __m256i extract_bits_avx2_4_64_le(__m256i data, __m256i shift, const unpack_data_t* unpack) {
-    __m256i x = bswap64_avx2(data);
+    __m256i data_be  = _mm256_bswap_epi64(data);
 
     __m256i hi_shift = _mm256_sub_epi64(_mm256_set1_epi64x(unpack->hi_shift), shift);
     __m256i lo_shift = _mm256_sub_epi64(_mm256_set1_epi64x(unpack->lo_shift), shift);
@@ -520,11 +529,11 @@ static inline __m256i extract_bits_avx2_4_64_le(__m256i data, __m256i shift, con
     __m256i hi_mask  = _mm256_set1_epi64x(unpack->hi_mask);
     __m256i lo_mask  = _mm256_set1_epi64x(unpack->lo_mask);
 
-    __m256i hi = _mm256_and_si256(_mm256_srlv_epi64(x, hi_shift), hi_mask);
-    __m256i lo = _mm256_and_si256(_mm256_srlv_epi64(x, lo_shift), lo_mask);
+    __m256i hi       = _mm256_and_si256(_mm256_srlv_epi64(data_be, hi_shift), hi_mask);
+    __m256i lo       = _mm256_and_si256(_mm256_srlv_epi64(data_be, lo_shift), lo_mask);
 
     __m256i combined = _mm256_or_si256(hi, lo);
-    __m256i swapped  = bswap64_avx2(combined);
+    __m256i swapped  = _mm256_bswap_epi64(combined);
 
     __m256i result   = _mm256_srlv_epi64(swapped, md_mm256_set1_epi64(unpack->big_shift));
     return result;
@@ -845,26 +854,28 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
 #if 1
         size_t offset = bit_offset >> 3;
-        size_t shift  = bit_offset & 7;
-        uint64_t x;
-        MEMCPY(&x, base + offset, 8);
+        size_t shift  = bit_offset  & 7;
+        __m128i v = _mm_loadu_si128(base + offset);
+        uint64_t x = _mm_cvtsi128_si64(v);
+
         x = BSWAP64(x);
         x <<= shift;
+
         uint64_t coord_bits = x >> (64 - big_unpack.num_of_bits);
         uint64_t data       = x >> (64 - big_unpack.num_of_bits - 6) & 63;
         uint32_t flag       = data & 32;
         uint32_t skip       = flag ? 6 : 1;
+        uint32_t sml_shift  = flag ? 5 : 0;
         thiscoord = unpack_coords64_2(coord_bits, &big_unpack);
-        //__m256i lo = load_and_extract_bits_avx2_4_56_le(base, bit_offset, &sml_unpack);
-        //__m256i hi = load_and_extract_bits_avx2_4_56_le(base, bit_offset + 4 * sml_unpack.num_of_bits, &sml_unpack);
-        //uint32_t data = (uint32_t)extract_u64_be(base, bit_offset, 6);
-        size_t bit_off_base = bit_offset + big_skip;
 
-        __m256i v_idx  = _mm256_set_epi32(7,6,5,4,3,2,1,0);
-        __m256i v_base = _mm256_add_epi32(_mm256_set1_epi32(bit_off_base), _mm256_mul_epu32(v_idx, _mm256_set1_epi32(sml_unpack.num_of_bits)));
-        __m256i v_off  = _mm256_srli_si256(v_base, 3);
-        __m256i v_shft = _mm256_and_si256(v_base, _mm256_set1_epi32(7));
-        __m256i v_corr = _mm256_sub_epi32(v_off, _mm256_add_epi32(_mm256_slli_si256(v_off, 32), _mm256_set1_epi32(16)));
+        size_t bit_off_base = bit_offset + big_skip + 1;
+
+        __m256i idx_lo    = _mm256_set_epi64x(3,2,1,0);
+        __m256i idx_hi    = _mm256_set_epi64x(7,6,5,4);
+        __m256i base_lo   = _mm256_add_epi64(_mm256_set1_epi64x(bit_off_base), _mm256_mul_epu32(idx_lo, _mm256_set1_epi64x(sml_unpack.num_of_bits)));
+        __m256i base_hi   = _mm256_add_epi64(_mm256_set1_epi64x(bit_off_base), _mm256_mul_epu32(idx_hi, _mm256_set1_epi64x(sml_unpack.num_of_bits)));
+        __m256i shift_lo  = _mm256_and_si256(base_lo, _mm256_set1_epi64x(7));
+        __m256i shift_hi  = _mm256_and_si256(base_hi, _mm256_set1_epi64x(7));
 
         size_t off_a =  (bit_off_base + 0 * sml_unpack.num_of_bits) >> 3;
         int8_t cor_a = ((bit_off_base + 1 * sml_unpack.num_of_bits) >> 3) - (off_a + 16);
@@ -875,8 +886,8 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         size_t off_d =  (bit_off_base + 6 * sml_unpack.num_of_bits) >> 3;
         int8_t cor_d = ((bit_off_base + 7 * sml_unpack.num_of_bits) >> 3) - (off_d + 16);
 
-        __m256i lo = _mm256_loadu2_m128((const __m128i*)(base + off_b), (const __m128i*)(base + off_a));
-        __m256i hi = _mm256_loadu2_m128((const __m128i*)(base + off_d), (const __m128i*)(base + off_c));
+        __m256i data_lo = _mm256_loadu2_m128((const __m128i*)(base + off_b), (const __m128i*)(base + off_a));
+        __m256i data_hi = _mm256_loadu2_m128((const __m128i*)(base + off_d), (const __m128i*)(base + off_c));
 
         //__m256i lo = load_and_extract_bits_avx2_4_56_le(base, offset_lo, &sml_unpack);
         //__m256i hi = load_and_extract_bits_avx2_4_56_le(base, offset_hi, &sml_unpack);
@@ -928,12 +939,17 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             __m256i cor_lo = create_correction_mask(cor_a, cor_b);
             __m256i cor_hi = create_correction_mask(cor_c, cor_d);
 
+            shift_lo = _mm256_add_epi64(shift_lo, _mm256_set1_epi64x(sml_shift));
+            shift_hi = _mm256_add_epi64(shift_hi, _mm256_set1_epi64x(sml_shift));
+
+            // Construct a shuffle mask to emulate a 64-bit gather on the
             __m256i shuffle_base = _mm256_set_epi8(15,14,13,12,11,10,9,8, 7,6,5,4,3,2,1,0, 15,14,13,12,11,10,9,8, 7,6,5,4,3,2,1,0);
             __m256i shuffle_lo   = _mm256_sub_epi8(shuffle_base, cor_lo);
             __m256i shuffle_hi   = _mm256_sub_epi8(shuffle_base, cor_hi);
 
-            lo = _mm256_shuffle_epi8(lo, shuffle_lo);
-            hi = _mm256_shuffle_epi8(hi, shuffle_hi);
+            // Extract the correct data from lo and hi
+            data_lo = _mm256_shuffle_epi8(data_lo, shuffle_lo);
+            data_hi = _mm256_shuffle_epi8(data_hi, shuffle_hi);
 
             // Create mask for store
             __m256i v_run  = _mm256_set1_epi32(run);
@@ -947,9 +963,9 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             //hi = extract_bits_avx2_4_64_le(hi, &sml_unpack);
 
             __m256 x, y, z;
-            x = _mm256_mul_ps(_mm256_cvtepi32_ps(lo), _mm256_set1_ps(inv_precision));
-            y = _mm256_mul_ps(_mm256_cvtepi32_ps(lo), _mm256_set1_ps(inv_precision));
-            z = _mm256_mul_ps(_mm256_cvtepi32_ps(hi), _mm256_set1_ps(inv_precision));
+            x = _mm256_mul_ps(_mm256_cvtepi32_ps(data_lo), _mm256_set1_ps(inv_precision));
+            y = _mm256_mul_ps(_mm256_cvtepi32_ps(data_lo), _mm256_set1_ps(inv_precision));
+            z = _mm256_mul_ps(_mm256_cvtepi32_ps(data_hi), _mm256_set1_ps(inv_precision));
 
             // Interleave X, Y and Z into 3x XYZXYZ...
             //__m256 a, b, c;
