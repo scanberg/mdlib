@@ -316,12 +316,12 @@ static inline void br2_skip(br2_t* r, size_t num_bits) {
     r->bit_offset += num_bits;
 }
 
-static inline uint64_t extract_u64_be(const uint8_t* base, size_t bit_offset, size_t num_bits) {
+static inline uint64_t extract_be_u64(const uint8_t* base, size_t bit_offset, size_t num_bits) {
     ASSERT(num_bits <= 64);
-    size_t byte_offset = bit_offset >> 3;
-    size_t shift = bit_offset & 7;
+    size_t offset = bit_offset >> 3;
+    size_t shift  = bit_offset & 7;
     uint64_t x;
-    MEMCPY(&x, base + byte_offset, 8);
+    MEMCPY(&x, base + offset, sizeof(x));
     x = BSWAP64(x);
     x <<= shift;
     x >>= 64 - num_bits;
@@ -350,6 +350,12 @@ typedef md_128i v4i_t;
 #define v4i_sub(a, b)       md_mm_sub_epi32(a, b)
 #define v4i_load(addr)      md_mm_loadu_epi32(addr)
 
+static inline uint64_t convert_to_le(uint64_t data, const unpack_data_t* unpack) {
+    uint64_t t = ((data << unpack->sml_shift) & (~0xFFull)) | (data & unpack->part_mask);
+    uint64_t v = BSWAP64(t) >> unpack->big_shift;
+    return v;
+}
+
 static inline void write_coord(float* dst, v4i_t coord, float inv_precision) {
     md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), md_mm_set1_ps(inv_precision));
     //md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
@@ -365,7 +371,7 @@ static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bi
     data->part_mask = partbits ? (1ul << partbits) - 1 : 0xFF;
 }
 
-static inline v4i_t unpack_coord64(br_t* r, const unpack_data_t* unpack) {
+static inline v4i_t br_unpack_coord64(br_t* r, const unpack_data_t* unpack) {
     uint64_t w = br_read(r, unpack->num_of_bits);
     uint64_t t = ((w << unpack->sml_shift) & (~0xFFull)) | (w & unpack->part_mask);
     uint64_t v = BSWAP64(t) >> unpack->big_shift;
@@ -377,9 +383,7 @@ static inline v4i_t unpack_coord64(br_t* r, const unpack_data_t* unpack) {
     return v4i_set(x, y, z, 0);
 }
 
-static inline v4i_t unpack_coords64_2(uint64_t data, const unpack_data_t* unpack) {
-    uint64_t t = ((data << unpack->sml_shift) & (~0xFFull)) | (data & unpack->part_mask);
-    uint64_t v = BSWAP64(t) >> unpack->big_shift;
+static inline v4i_t unpack_coords64(uint64_t v, const unpack_data_t* unpack) {
     uint32_t x = (uint32_t)DIV(v, &unpack->div_zy);
     uint64_t q = v - x * unpack->size_zy;
     uint32_t y = (uint32_t)DIV(q, &unpack->div_z);
@@ -388,7 +392,7 @@ static inline v4i_t unpack_coords64_2(uint64_t data, const unpack_data_t* unpack
     return v4i_set(x, y, z, 0);
 }
 
-static inline v4i_t unpack_coord128(br_t* r, const unpack_data_t* unpack) {
+static inline v4i_t br_unpack_coord128(br_t* r, const unpack_data_t* unpack) {
     int fullbytes = unpack->num_of_bits >> 3;
     int partbits  = unpack->num_of_bits  & 7;
     ASSERT(fullbytes >= 8);
@@ -774,7 +778,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
     uint32_t bitsize = 0;
     uint32_t bitsizeint[3] = {0};
-    unpack_data_t big_unpack = {0};
+    unpack_data_t big_unpack[3] = {0};
     uint32_t big_skip = 0;
 
     /* check if one of the sizes is to big to be multiplied */
@@ -782,15 +786,21 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         bitsizeint[0] = sizeofint(sizeint[0]);
         bitsizeint[1] = sizeofint(sizeint[1]);
         bitsizeint[2] = sizeofint(sizeint[2]);
+        big_unpack[0].num_of_bits = sizeofint(sizeint[0]);
+        big_unpack[1].num_of_bits = sizeofint(sizeint[1]);
+        big_unpack[2].num_of_bits = sizeofint(sizeint[2]);
+        init_unpack_data_bits(&big_unpack[0], big_unpack[0].num_of_bits);
+        init_unpack_data_bits(&big_unpack[1], big_unpack[1].num_of_bits);
+        init_unpack_data_bits(&big_unpack[2], big_unpack[2].num_of_bits);
         big_skip = bitsizeint[0] + bitsizeint[1] + bitsizeint[2];
     } else {
         bitsize = sizeofints(3, sizeint);
-        big_unpack.size_zy = (uint64_t)sizeint[1] * sizeint[2];
-        big_unpack.size_z = sizeint[2];
-        big_unpack.num_of_bits = (uint8_t)bitsize;
-        big_unpack.div_zy = DIV_INIT(big_unpack.size_zy);
-        big_unpack.div_z = DIV_INIT(big_unpack.size_z);
-        init_unpack_data_bits(&big_unpack, bitsize);
+        big_unpack[0].size_zy = (uint64_t)sizeint[1] * sizeint[2];
+        big_unpack[0].size_z = sizeint[2];
+        big_unpack[0].num_of_bits = (uint8_t)bitsize;
+        big_unpack[0].div_zy = DIV_INIT(big_unpack[0].size_zy);
+        big_unpack[0].div_z  = DIV_INIT(big_unpack[0].size_z);
+        init_unpack_data_bits(&big_unpack[0], bitsize);
         big_skip = bitsize;
     }
 
@@ -831,8 +841,8 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     const uint8_t* base = mem;
     size_t bit_offset = 0;
 
-    br_t br = {0};
-    br_init(&br, mem, mem_size / 8);
+    //br_t br = {0};
+    //br_init(&br, mem, mem_size / 8);
 
     float* lfp = out_coords_ptr;
     float inv_precision = 1.0f / precision;
@@ -847,27 +857,69 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     MD_LOG_DEBUG("bigsize: %i", bitsize);
 #endif
 
-    size_t bit_offset_lo = big_skip;
-    size_t bit_offset_hi = big_skip + 4 * sml_unpack.num_of_bits;
-
     while (atom_idx < natoms) {
+        uint32_t run_data = (uint32_t)extract_be_u64(base, bit_offset + big_skip, 6);
+        uint32_t run_flag = run_data & 32;
+        uint32_t run_skip = run_flag ? 6 : 1;
 
-#if 1
-        size_t offset = bit_offset >> 3;
-        size_t shift  = bit_offset  & 7;
+        // All these branches are very predictable and should not affect performance significantly
+        if (bitsize == 0) {
+            uint64_t x_be = extract_be_u64(base, bit_offset                , bitsizeint[0]);
+            uint64_t y_be = extract_be_u64(base, bit_offset + bitsizeint[0], bitsizeint[1]);
+            uint64_t z_be = extract_be_u64(base, bit_offset + bitsizeint[1], bitsizeint[2]);
+            uint32_t x = (uint32_t)convert_to_le(x_be, &big_unpack[0]);
+            uint32_t y = (uint32_t)convert_to_le(y_be, &big_unpack[1]);
+            uint32_t z = (uint32_t)convert_to_le(z_be, &big_unpack[2]);
+            thiscoord = v4i_set(x, y, z, 0);
+        } else {
+            if (bitsize > 64) {
+
+            } else {
+
+            }
+            uint64_t xyz_be = extract_be_u64(base, bit_offset, big_unpack[0].num_of_bits);
+            uint64_t xyz_le = convert_to_le(xyz_be, &big_unpack[0]);
+            thiscoord = unpack_coords64(xyz_le, &big_unpack[0]);
+        }
+        thiscoord = v4i_add(thiscoord, vminint);
+
+#if 0
         __m128i v = _mm_loadu_si128(base + offset);
-        uint64_t x = _mm_cvtsi128_si64(v);
+        v = _mm_bswap_epi64(v);
+        v = _mm_sllv_epi64(v, _mm_set1_epi64x(shift));
+        uint64_t lo = _mm_cvtsi128_si64(v);
+        uint64_t hi = _mm_cvtsi128_si64(_mm_srli_si128(v, 64));
 
-        x = BSWAP64(x);
-        x <<= shift;
+        size_t run_offset = bit_offset >> 3;
+        size_t run_shift  = bit_offset  & 7;
 
-        uint64_t coord_bits = x >> (64 - big_unpack.num_of_bits);
-        uint64_t data       = x >> (64 - big_unpack.num_of_bits - 6) & 63;
-        uint32_t flag       = data & 32;
-        uint32_t skip       = flag ? 6 : 1;
-        uint32_t sml_shift  = flag ? 5 : 0;
-        thiscoord = unpack_coords64_2(coord_bits, &big_unpack);
+        uint32_t run_data;
+        MEMCPY(&run_data, base + offset, sizeof(run_data));
+        run_data = BSWAP32(run_data);
+        run_data <<= run_shift;
+        run_data >>= (32 - 6);
+        uint32_t run_flag = run_data & 32;
+        uint32_t run_skip = run_flag ? 6 : 1;
 
+        uint64_t coord_bits = lo >> (64 - big_unpack.num_of_bits);
+#endif
+
+        size_t off_a =  (bit_off_base + 0 * sml_unpack.num_of_bits) >> 3;
+        int8_t cor_a = ((bit_off_base + 1 * sml_unpack.num_of_bits) >> 3) - (off_a + 16);
+        size_t off_b =  (bit_off_base + 2 * sml_unpack.num_of_bits) >> 3;
+        int8_t cor_b = ((bit_off_base + 3 * sml_unpack.num_of_bits) >> 3) - (off_b + 16);
+        size_t off_c =  (bit_off_base + 4 * sml_unpack.num_of_bits) >> 3;
+        int8_t cor_c = ((bit_off_base + 5 * sml_unpack.num_of_bits) >> 3) - (off_c + 16);
+        size_t off_d =  (bit_off_base + 6 * sml_unpack.num_of_bits) >> 3;
+        int8_t cor_d = ((bit_off_base + 7 * sml_unpack.num_of_bits) >> 3) - (off_d + 16);
+
+        __m128i data[4];
+        data[0] = _mm_loadu_si128(base + off_a);
+        data[1] = _mm_loadu_si128(base + off_b);
+        data[2] = _mm_loadu_si128(base + off_c);
+        data[3] = _mm_loadu_si128(base + off_d);
+
+#if 0
         size_t bit_off_base = bit_offset + big_skip + 1;
 
         __m256i idx_lo    = _mm256_set_epi64x(3,2,1,0);
@@ -891,31 +943,13 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
         //__m256i lo = load_and_extract_bits_avx2_4_56_le(base, offset_lo, &sml_unpack);
         //__m256i hi = load_and_extract_bits_avx2_4_56_le(base, offset_hi, &sml_unpack);
-
-        bit_offset += big_skip + skip;
-
-
-
-#else
-        if (bitsize == 0) {
-            thiscoord = br_read_ints(&br, bitsizeint);
-        } else {
-            if (big_unpack.num_of_bits <= 64) {
-#if USE_STATELESS
-                thiscoord = unpack_coords64_2(extract_u64_be(base, bit_offset, big_unpack.num_of_bits), &big_unpack);
-#else
-                thiscoord = unpack_coord64(&br, &big_unpack);
 #endif
-            } else {
-                thiscoord = unpack_coord128(&br, &big_unpack);
-            }
-        }
-#endif
-        thiscoord = v4i_add(thiscoord, vminint);
+
+        bit_offset += big_skip + run_skip;
 
         int is_smaller = 0;
-        if (flag) {
-            run = data & 31;
+        if (run_flag) {
+            run = run_data & 31;
             run_count  = run / 3;
             is_smaller = run % 3;
             run -= is_smaller;
@@ -934,7 +968,31 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 #endif
 
         if (run > 0) {
+            v4i_t prevcoord = thiscoord;
+            v4i_t vsmall = v4i_set1(smallnum);
+
+            uint64_t sml_be = extract_be_u64(base, bit_offset, sml_unpack.num_of_bits);
+            uint64_t sml_le = convert_to_le(sml_be, &sml_unpack);
+            v4i_t coord = unpack_coords64(sml_le, &sml_unpack);
+            thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+
+            // Write second coordinate in batch before first
+            write_coord(lfp + 0, thiscoord, inv_precision);
+            write_coord(lfp + 3, prevcoord, inv_precision);
+
+            #if 0
+            for (size_t i = 1; i < run_count; ++i) {
+                sml_be = extract_be_u64(base, bit_offset + sml_unpack.num_of_bits * i, sml_unpack.num_of_bits);
+                sml_le = convert_to_le(sml_be, &sml_unpack);
+                coord = unpack_coords64(sml_le, &sml_unpack);
+                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+                write_coord(lfp + 3 * i, thiscoord, inv_precision);
+            }
+            #endif
             bit_offset += run_count * sml_unpack.num_of_bits;
+
+            #if 0
+
             if (run_count == 1) {
 
             } else {
@@ -979,6 +1037,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
                 _mm256_maskstore_ps(lfp +  8, mask_b, y);
                 _mm256_maskstore_ps(lfp + 16, mask_c, z);
             }
+            #endif
             lfp += run;
         } else {
             write_coord(lfp, thiscoord, inv_precision); lfp += 3;
