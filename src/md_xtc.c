@@ -316,6 +316,18 @@ static inline void br2_skip(br2_t* r, size_t num_bits) {
     r->bit_offset += num_bits;
 }
 
+static inline uint64_t extract_be_u32(const uint8_t* base, size_t bit_offset, size_t num_bits) {
+    ASSERT(num_bits <= 32);
+    size_t offset = bit_offset >> 3;
+    size_t shift  = bit_offset & 7;
+    uint32_t x;
+    MEMCPY(&x, base + offset, sizeof(x));
+    x = BSWAP32(x);
+    x <<= shift;
+    x >>= 32 - num_bits;
+    return x;
+}
+
 static inline uint64_t extract_be_u64(const uint8_t* base, size_t bit_offset, size_t num_bits) {
     ASSERT(num_bits <= 64);
     size_t offset = bit_offset >> 3;
@@ -327,6 +339,23 @@ static inline uint64_t extract_be_u64(const uint8_t* base, size_t bit_offset, si
     x >>= 64 - num_bits;
     return x;
 }
+
+/*
+// Only extracts up to 121 bits
+static inline __m128i extract_be_128(const uint8_t* base, size_t bit_offset, size_t num_bits) {
+    ASSERT(num_bits <= 121);
+    size_t offset = bit_offset >> 3;
+    __m128i x = _mm_loadu_si128((const __m128i*)(base + offset));
+    x = _mm_bswap_si128(x);
+
+    // Shift all right by 128 - num_bits - shift
+    size_t shift = num_bits + bit_offset & 7;
+    __m128i hi = _mm_sllv_epi64(_mm_srli_si128(x, 8), _mm_set1_epi64x(64 - num_bits));
+    __m128i lo = _mm_srlv_epi64(x, _mm_set1_epi64x(128 - shift));
+
+    return _mm_or_si128(y, z);
+}
+*/
 
 typedef struct {
     uint64_t size_zy;
@@ -455,6 +484,51 @@ static inline v4i_t br_unpack_coord128(br_t* r, const unpack_data_t* unpack) {
 #endif
 }
 
+static inline v4i_t unpack_coord128(__m128i data, const unpack_data_t* unpack) {
+#ifdef HAS_INT128_T
+    __uint128_t v;
+    MEMCPY(&v, &data, sizeof(v));
+    uint32_t x = (uint32_t)(v / unpack->size_zy);
+    uint64_t q = (uint64_t)(v - x*unpack->size_zy);
+    uint32_t y = (uint32_t)(q / unpack->size_z);
+    uint32_t z = (uint32_t)(q % unpack->size_z);
+    return v4i_set(x, y, z, 0);
+#elif defined(__x86_64__) && defined(_MSC_VER) && (_MSC_VER >= 1920)
+    uint64_t lo = _mm_cvtsi128_si64(data);
+    uint64_t hi = _mm_cvtsi128_si64(_mm_unpackhi_epi64(data, data));
+
+    uint64_t q;
+    uint32_t x = (uint32_t)_udiv128(hi, lo, unpack->size_zy, &q);
+    uint32_t y = (uint32_t)(q / unpack->size_z);
+    uint32_t z = (uint32_t)(q % unpack->size_z);
+    return v4i_set(x, y, z, 0);
+#else
+    // Default fallback
+    uint32_t nums[4] = {0};
+    uint32_t sizes[3] = {0, (uint32_t)(unpack->size_zy / unpack->size_z), unpack->size_z};
+    uint32_t bytes[16];
+    bytes[1] = bytes[2] = bytes[3] = 0;
+    int num_of_bytes = 0;
+    for (int i = 0; i < fullbytes; ++i) {
+        bytes[num_of_bytes++] = (uint32_t)br_read(r, 8);
+    }
+    if (partbits) {
+        bytes[num_of_bytes++] = (uint32_t)br_read(r, partbits);
+    }
+    for (int i = 2; i > 0; i--) {
+        uint32_t num = 0;
+        for (int j = num_of_bytes - 1; j >= 0; j--) {
+            num = (num << 8) | bytes[j];
+            bytes[j] = num / sizes[i];
+            num = num % sizes[i];
+        }
+        nums[i] = num;
+    }
+    nums[0] = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+    return v4i_load(nums);
+#endif
+}
+
 static inline v4i_t br_read_ints(br_t* br, const uint32_t bitsizes[]) {
     uint32_t val[4];
     for (int i = 0; i < 3; ++i) {
@@ -489,6 +563,14 @@ static inline __m128i _mm_bswap_epi64(__m128i x) {
     return _mm_shuffle_epi8(x, shuffle_mask);
 }
 
+static inline __m128i _mm_bswap_si128(__m128i x) {
+    const __m128i shuffle_mask = _mm_set_epi8(
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 9,10,11,12,13,14,15
+    );
+    return _mm_shuffle_epi8(x, shuffle_mask);
+}
+
 
 static inline __m256i load_and_extract_bits_avx2_4_56_le(const uint8_t* data, int bit_offset, const unpack_data_t* unpack) {
     // Compute bit offsets per lane
@@ -503,7 +585,7 @@ static inline __m256i load_and_extract_bits_avx2_4_56_le(const uint8_t* data, in
     __m256i shift       = _mm256_and_si256(bit_offsets, md_mm256_set1_epi64(7));
 
     // Load 8 bytes from base
-    __m256i x           = _mm256_i64gather_epi64((const __int64_t*)data, byte_offsets, 1);
+    __m256i x           = _mm256_i64gather_epi64((const long long*)data, byte_offsets, 1);
 
     __m256i y          = _mm256_bswap_epi64(x);
 
@@ -714,26 +796,37 @@ static inline __m256i create_correction_mask(int8_t cor_a, int8_t cor_b) {
     __m256i mask = _mm256_setr_epi8(
         // lower 128-bit lane
         0, 0, 0, 0, 0, 0, 0, 0,    // use broad_b
-        (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, // zero
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, // zero
         // upper 128-bit lane
         0, 0, 0, 0, 0, 0, 0, 0,    // use broad_a
-        (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80, (char)0x80  // zero
+        0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80  // zero
     );
 
     // blend broad_a and broad_b using shuffle mask
     __m256i blended = _mm256_blendv_epi8(broad_b, broad_a, _mm256_setr_epi8(
         // lower 128-bit
         0,0,0,0,0,0,0,0,    // b
-        (char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF, // 0
+        0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, // 0
         // upper 128-bit
-        (char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF, // a
-        (char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF,(char)0xFF  // 0
+        0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, // a
+        0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF  // 0
     ));
 
     // zero out the zeros
     __m256i result = _mm256_shuffle_epi8(blended, mask);
     return result;
     #endif
+}
+
+// Create a shuffle mask to extract two 64-bits from a 128-bit vector
+// The input variables `bit_offset_low` and `bit_offset_hi` are the bit offsets of the two 64-bit values
+// within the 128-bit vector. The function returns a 128-bit mask that can be used with `_mm_shuffle_epi8`
+static inline __m128i create_shuffle_mask_2x64(int bit_offset_lo, int bit_offset_hi) {
+    int off_lo = bit_offset_lo >> 3;
+    int off_hi = bit_offset_hi >> 3;
+    __m128i mask = _mm_setr_epi8(off_lo, off_lo + 1, off_lo + 2, off_lo + 3, off_lo + 4, off_lo + 5, off_lo + 6, off_lo + 7,
+                                 off_hi, off_hi + 1, off_hi + 2, off_hi + 3, off_hi + 4, off_hi + 5, off_hi + 6, off_hi + 7);
+    return mask;
 }
 
 size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
@@ -779,20 +872,25 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     uint32_t bitsize = 0;
     uint32_t bitsizeint[3] = {0};
     unpack_data_t big_unpack[3] = {0};
-    uint32_t big_skip = 0;
+    uint32_t big_bits = 0;
+    __m128i big_shuffle_lo, big_shuffle_hi;
 
     /* check if one of the sizes is to big to be multiplied */
     if ((sizeint[0] | sizeint[1] | sizeint[2]) > 0xffffff) {
         bitsizeint[0] = sizeofint(sizeint[0]);
         bitsizeint[1] = sizeofint(sizeint[1]);
         bitsizeint[2] = sizeofint(sizeint[2]);
+
+        big_shuffle_lo = create_shuffle_mask_2x64(0, bitsizeint[0]);
+        big_shuffle_hi = create_shuffle_mask_2x64(bitsizeint[0] + bitsizeint[1], bitsizeint[0] + bitsizeint[1] + bitsizeint[2]); 
+
         big_unpack[0].num_of_bits = sizeofint(sizeint[0]);
         big_unpack[1].num_of_bits = sizeofint(sizeint[1]);
         big_unpack[2].num_of_bits = sizeofint(sizeint[2]);
         init_unpack_data_bits(&big_unpack[0], big_unpack[0].num_of_bits);
         init_unpack_data_bits(&big_unpack[1], big_unpack[1].num_of_bits);
         init_unpack_data_bits(&big_unpack[2], big_unpack[2].num_of_bits);
-        big_skip = bitsizeint[0] + bitsizeint[1] + bitsizeint[2];
+        big_bits = bitsizeint[0] + bitsizeint[1] + bitsizeint[2];
     } else {
         bitsize = sizeofints(3, sizeint);
         big_unpack[0].size_zy = (uint64_t)sizeint[1] * sizeint[2];
@@ -801,7 +899,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         big_unpack[0].div_zy = DIV_INIT(big_unpack[0].size_zy);
         big_unpack[0].div_z  = DIV_INIT(big_unpack[0].size_z);
         init_unpack_data_bits(&big_unpack[0], bitsize);
-        big_skip = bitsize;
+        big_bits = bitsize;
     }
 
     int smallidx;
@@ -857,8 +955,20 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     MD_LOG_DEBUG("bigsize: %i", bitsize);
 #endif
 
+    uint64_t mask = 1LLU << (bitsize - 1);
+
     while (atom_idx < natoms) {
-        uint32_t run_data = (uint32_t)extract_be_u64(base, bit_offset + big_skip, 6);
+        //uint32_t shift = bit_offset & 7;
+        __m128i raw = _mm_loadu_si128((const __m128i*)(base + (bit_offset >> 3)));
+        raw = _mm_bswap_epi64(raw);
+        // These are raw and need to be shifted before use
+        uint64_t lo = _mm_cvtsi128_si64(raw);
+        uint64_t hi = _mm_cvtsi128_si64(_mm_srli_si128(raw, 8));
+
+        //uint64_t lo = extract_be_u64(base, bit_offset, bitsize);
+
+        // Read the run length
+        uint32_t run_data = extract_be_u32(base, bit_offset + big_bits, 6);
         uint32_t run_flag = run_data & 32;
         uint32_t run_skip = run_flag ? 6 : 1;
 
@@ -872,15 +982,11 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             uint32_t z = (uint32_t)convert_to_le(z_be, &big_unpack[2]);
             thiscoord = v4i_set(x, y, z, 0);
         } else {
-            if (bitsize > 64) {
-
-            } else {
-
-            }
-            uint64_t xyz_be = extract_be_u64(base, bit_offset, big_unpack[0].num_of_bits);
+            uint64_t xyz_be = lo;
             uint64_t xyz_le = convert_to_le(xyz_be, &big_unpack[0]);
             thiscoord = unpack_coords64(xyz_le, &big_unpack[0]);
         }
+
         thiscoord = v4i_add(thiscoord, vminint);
 
 #if 0
@@ -903,6 +1009,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 
         uint64_t coord_bits = lo >> (64 - big_unpack.num_of_bits);
 #endif
+        /*
 
         size_t off_a =  (bit_off_base + 0 * sml_unpack.num_of_bits) >> 3;
         int8_t cor_a = ((bit_off_base + 1 * sml_unpack.num_of_bits) >> 3) - (off_a + 16);
@@ -918,7 +1025,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         data[1] = _mm_loadu_si128(base + off_b);
         data[2] = _mm_loadu_si128(base + off_c);
         data[3] = _mm_loadu_si128(base + off_d);
-
+        */
 #if 0
         size_t bit_off_base = bit_offset + big_skip + 1;
 
@@ -945,7 +1052,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
         //__m256i hi = load_and_extract_bits_avx2_4_56_le(base, offset_hi, &sml_unpack);
 #endif
 
-        bit_offset += big_skip + run_skip;
+        bit_offset += big_bits + run_skip;
 
         int is_smaller = 0;
         if (run_flag) {
@@ -968,6 +1075,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 #endif
 
         if (run > 0) {
+#if 0
             v4i_t prevcoord = thiscoord;
             v4i_t vsmall = v4i_set1(smallnum);
 
@@ -980,7 +1088,6 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             write_coord(lfp + 0, thiscoord, inv_precision);
             write_coord(lfp + 3, prevcoord, inv_precision);
 
-            #if 0
             for (size_t i = 1; i < run_count; ++i) {
                 sml_be = extract_be_u64(base, bit_offset + sml_unpack.num_of_bits * i, sml_unpack.num_of_bits);
                 sml_le = convert_to_le(sml_be, &sml_unpack);
@@ -988,7 +1095,7 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
                 thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
                 write_coord(lfp + 3 * i, thiscoord, inv_precision);
             }
-            #endif
+#endif
             bit_offset += run_count * sml_unpack.num_of_bits;
 
             #if 0

@@ -167,6 +167,13 @@ static const int num_bits[] = {5, 56, 48, 7, 1, 2, 64, 5, 32, 8, 55, 8, 55, 55, 
 
 static const int num_bits_32[] = {5, 26, 28, 7, 1, 2, 14, 5, 32, 8, 15, 8, 15, 25, 18, 8, 4, 1, 1, 2, 3, 7, 32, 32, 32, 32, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32 ,23, 25, 21, 24, 21, 25, 29, 23, 23, 13, 1, 2, 3,4};
 
+static inline __m128i _mm_bswap_si128(__m128i x) {
+    const __m128i shuffle_mask = _mm_set_epi8(
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 9,10,11,12,13,14,15
+    );
+    return _mm_shuffle_epi8(x, shuffle_mask);
+}
 
 UTEST(xtc, bitread) {
     size_t temp_pos = md_temp_get_pos();
@@ -181,7 +188,7 @@ UTEST(xtc, bitread) {
     br_init(&r, (const uint64_t*)&buf[3], 512 * sizeof(int));
 
     size_t bit_offset = 0;
-    uint8_t* base = &buf[3];
+    uint8_t* base = (uint8_t*)&buf[3];
 
     for (size_t i = 0; i < ARRAY_SIZE(num_bits_32); ++i) {
         size_t num_of_bits = num_bits_32[i];
@@ -190,13 +197,22 @@ UTEST(xtc, bitread) {
         EXPECT_EQ(val, ref);
 
         uint64_t byte_offset = bit_offset >> 3;
-        uint64_t shift       = bit_offset & 7;
+        uint64_t shift       = bit_offset  & 7;
 
-        uint64_t x;
+        uint64_t x, y;
         MEMCPY(&x, base + byte_offset, 8);
         x = BSWAP64(x);
+        y = x;
         x <<= shift;
-        x >>= (64 - num_of_bits);
+        //x >>= (64 - num_of_bits);
+        //y >>= (64 - num_of_bits - shift);
+
+        __m128i w, z = _mm_loadu_si128(base + byte_offset);
+        z = _mm_bswap_si128(z);
+        __m128i hi = _mm_slli_si128(z, 8);
+        w  = _mm_sllv_epi64(z,  _mm_set1_epi64x(shift));
+        hi = _mm_srlv_epi64(hi, _mm_set1_epi64x(64 - shift));
+        w  = _mm_and_si128(w, hi);
 
         bit_offset += num_of_bits;
     }
@@ -254,7 +270,7 @@ __m256i load_packed_bits_avx2_4_56_be(const uint8_t* data, int bit_offset, int N
     __m256i shift      = _mm256_and_si256(bit_offsets, md_mm256_set1_epi64(7));
 
     // Load 8 bytes from base
-    __m256i gather     = _mm256_i64gather_epi64((const __int64_t*)data, byte_offsets, 1);
+    __m256i gather     = _mm256_i64gather_epi64((const long long*)data, byte_offsets, 1);
 
     __m256i shifted    = _mm256_sllv_epi64(gather, shift);
     return _mm256_srlv_epi64(shifted, big_shift);
@@ -282,7 +298,7 @@ __m256i load_packed_bits_avx2_4_56_le(const uint8_t* data, int bit_offset, const
     __m256i shift       = _mm256_and_si256(bit_offsets, md_mm256_set1_epi64(7));
 
     // Load 8 bytes from base
-    __m256i x           = _mm256_i64gather_epi64((const __int64_t*)data, byte_offsets, 1);
+    __m256i x           = _mm256_i64gather_epi64((const long long*)data, byte_offsets, 1);
 
     __m256i y = bswap64_avx2(x);
 
