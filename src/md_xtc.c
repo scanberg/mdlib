@@ -12,6 +12,7 @@
 #include <core/md_os.h>
 #include <core/md_vec_math.h>
 
+#define LIBDIVIDE_AVX2
 #include <libdivide.h>
 
 #include <string.h>
@@ -387,9 +388,9 @@ static inline uint64_t convert_to_le(uint64_t data, const unpack_data_t* unpack)
 
 static inline void write_coord(float* dst, v4i_t coord, float inv_precision) {
     md_128  data = md_mm_mul_ps(md_mm_cvtepi32_ps(coord), md_mm_set1_ps(inv_precision));
-    //md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
-    //md_mm_maskstore_ps(dst, mask, data);
-    MEMCPY(dst, &data, 3 * sizeof(float));
+    md_128i mask = md_mm_set_epi32(0, -1, -1, -1);
+    md_mm_maskstore_ps(dst, mask, data);
+    //MEMCPY(dst, &data, 3 * sizeof(float));
 }
 
 static inline void init_unpack_data_bits(unpack_data_t* data, uint32_t num_of_bits) {
@@ -829,6 +830,36 @@ static inline __m128i create_shuffle_mask_2x64(int bit_offset_lo, int bit_offset
     return mask;
 }
 
+__m256i mullo_epu64(__m256i a, __m256i b) {
+    // Get low 32 bits of each 64-bit element
+    __m256i a_lo = _mm256_and_si256(a, _mm256_set1_epi64x(0xFFFFFFFF));
+    __m256i b_lo = _mm256_and_si256(b, _mm256_set1_epi64x(0xFFFFFFFF));
+
+    // Get high 32 bits of each 64-bit element
+    __m256i a_hi = _mm256_srli_epi64(a, 32);
+    __m256i b_hi = _mm256_srli_epi64(b, 32);
+
+    // a_lo * b_lo (full 64-bit result, but we keep it as is for now)
+    __m256i lo_lo = _mm256_mul_epu32(a, b);  // Multiplies even indices of 32-bit values
+
+    // a_hi * b_lo
+    __m256i a_hi_b_lo = _mm256_mul_epu32(a_hi, b_lo);
+
+    // a_lo * b_hi
+    __m256i a_lo_b_hi = _mm256_mul_epu32(a_lo, b_hi);
+
+    // Add the cross products (a_hi*b_lo + a_lo*b_hi)
+    __m256i cross = _mm256_add_epi64(a_hi_b_lo, a_lo_b_hi);
+
+    // Shift the cross product by 32 bits to the left (multiply by 2^32)
+    __m256i cross_shifted = _mm256_slli_epi64(cross, 32);
+
+    // Add to lo_lo to get the final lower 64-bit result
+    __m256i result = _mm256_add_epi64(lo_lo, cross_shifted);
+
+    return result;
+}
+
 size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size_t out_coord_cap) {
     if (xdr_file == NULL || out_coords_ptr == NULL) {
         return 0;
@@ -958,20 +989,17 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
     uint64_t mask = 1LLU << (bitsize - 1);
 
     while (atom_idx < natoms) {
-        //uint32_t shift = bit_offset & 7;
-        __m128i raw = _mm_loadu_si128((const __m128i*)(base + (bit_offset >> 3)));
-        raw = _mm_bswap_epi64(raw);
-        // These are raw and need to be shifted before use
-        uint64_t lo = _mm_cvtsi128_si64(raw);
-        uint64_t hi = _mm_cvtsi128_si64(_mm_srli_si128(raw, 8));
-
-        //uint64_t lo = extract_be_u64(base, bit_offset, bitsize);
 
         // Read the run length
         uint32_t run_data = extract_be_u32(base, bit_offset + big_bits, 6);
         uint32_t run_flag = run_data & 32;
         uint32_t run_skip = run_flag ? 6 : 1;
 
+        uint64_t lo = extract_be_u64(base, bit_offset, bitsize);
+        uint64_t e = convert_to_le(lo, &big_unpack[0]);
+        thiscoord = unpack_coords64(e, &big_unpack[0]);
+
+        #if 0
         // All these branches are very predictable and should not affect performance significantly
         if (bitsize == 0) {
             uint64_t x_be = extract_be_u64(base, bit_offset                , bitsizeint[0]);
@@ -982,10 +1010,18 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
             uint32_t z = (uint32_t)convert_to_le(z_be, &big_unpack[2]);
             thiscoord = v4i_set(x, y, z, 0);
         } else {
-            uint64_t xyz_be = lo;
-            uint64_t xyz_le = convert_to_le(xyz_be, &big_unpack[0]);
-            thiscoord = unpack_coords64(xyz_le, &big_unpack[0]);
+            if (bitsize <= 57) {
+
+            } else {
+                /*
+                uint64_t hi = _mm_cvtsi128_si64(_mm_unpackhi_epi64(raw, raw));
+                uint64_t xyz_be = (lo >> shift) | (hi << (64 - shift));
+                uint64_t xyz_le = convert_to_le(xyz_be, &big_unpack[0]);
+                thiscoord = unpack_coords64(xyz_le, &big_unpack[0]);
+                */
+            }
         }
+        #endif
 
         thiscoord = v4i_add(thiscoord, vminint);
 
@@ -1075,76 +1111,42 @@ size_t md_xtc_read_frame_coords(md_file_o* xdr_file, float* out_coords_ptr, size
 #endif
 
         if (run > 0) {
-#if 0
-            v4i_t prevcoord = thiscoord;
-            v4i_t vsmall = v4i_set1(smallnum);
+            // Read the small coordinates
+            __m256i lo = load_and_extract_bits_avx2_4_56_le(base, bit_offset, &sml_unpack);
+            __m256i hi = load_and_extract_bits_avx2_4_56_le(base, bit_offset + 4 * sml_unpack.num_of_bits, &sml_unpack);
 
-            uint64_t sml_be = extract_be_u64(base, bit_offset, sml_unpack.num_of_bits);
-            uint64_t sml_le = convert_to_le(sml_be, &sml_unpack);
-            v4i_t coord = unpack_coords64(sml_le, &sml_unpack);
-            thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
+            __m256i x_lo = libdivide_u32_do_vec256(lo, &sml_unpack.div_zy);
+            __m256i x_hi = libdivide_u32_do_vec256(hi, &sml_unpack.div_zy);
 
-            // Write second coordinate in batch before first
-            write_coord(lfp + 0, thiscoord, inv_precision);
-            write_coord(lfp + 3, prevcoord, inv_precision);
+            __m256i q_lo = _mm256_sub_epi64(lo, _mm256_mul_epu32(x_lo, _mm256_set1_epi64x(sml_unpack.size_zy)));
+            __m256i q_hi = _mm256_sub_epi64(hi, _mm256_mul_epu32(x_hi, _mm256_set1_epi64x(sml_unpack.size_zy)));
 
-            for (size_t i = 1; i < run_count; ++i) {
-                sml_be = extract_be_u64(base, bit_offset + sml_unpack.num_of_bits * i, sml_unpack.num_of_bits);
-                sml_le = convert_to_le(sml_be, &sml_unpack);
-                coord = unpack_coords64(sml_le, &sml_unpack);
-                thiscoord = v4i_add(coord, v4i_sub(thiscoord, vsmall));
-                write_coord(lfp + 3 * i, thiscoord, inv_precision);
-            }
-#endif
+            __m256i y_lo = libdivide_u32_do_vec256(q_lo, &sml_unpack.div_z);
+            __m256i y_hi = libdivide_u32_do_vec256(q_hi, &sml_unpack.div_z);
+
+            __m256i z_lo = _mm256_sub_epi32(q_lo, _mm256_mul_epu32(y_lo, _mm256_set1_epi64x(sml_unpack.size_z)));
+            __m256i z_hi = _mm256_sub_epi32(q_hi, _mm256_mul_epu32(y_hi, _mm256_set1_epi64x(sml_unpack.size_z)));
+
+            // Combine x, y, z
+            __m256i x = _mm256_unpacklo_epi32(x_lo, x_hi);
+            __m256i y = _mm256_unpacklo_epi32(y_lo, y_hi);
+            __m256i z = _mm256_unpacklo_epi32(z_lo, z_hi);
+
+            __m256i v_run = _mm256_set1_epi32(run);
+            __m256i mask_a = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(7, 6, 5, 4, 3, 2, 1, 0));
+            __m256i mask_b = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(15, 14, 13, 12, 11, 10, 9, 8));
+            __m256i mask_c = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(23, 22, 21, 20, 19, 18, 17, 16));
+
+            __m256 fx = _mm256_mul_ps(_mm256_cvtepi32_ps(x), _mm256_set1_ps(inv_precision));
+            __m256 fy = _mm256_mul_ps(_mm256_cvtepi32_ps(y), _mm256_set1_ps(inv_precision));
+            __m256 fz = _mm256_mul_ps(_mm256_cvtepi32_ps(z), _mm256_set1_ps(inv_precision));
+
+            _mm256_maskstore_ps(lfp + 0, mask_a, fx);
+            _mm256_maskstore_ps(lfp + 8, mask_b, fy);
+            _mm256_maskstore_ps(lfp + 16, mask_c, fz);
+
             bit_offset += run_count * sml_unpack.num_of_bits;
 
-            #if 0
-
-            if (run_count == 1) {
-
-            } else {
-                __m256i cor_lo = create_correction_mask(cor_a, cor_b);
-                __m256i cor_hi = create_correction_mask(cor_c, cor_d);
-
-                shift_lo = _mm256_add_epi64(shift_lo, _mm256_set1_epi64x(sml_shift));
-                shift_hi = _mm256_add_epi64(shift_hi, _mm256_set1_epi64x(sml_shift));
-
-                // Construct a shuffle mask to emulate a 64-bit gather on the
-                __m256i shuffle_base = _mm256_set_epi8(15,14,13,12,11,10,9,8, 7,6,5,4,3,2,1,0, 15,14,13,12,11,10,9,8, 7,6,5,4,3,2,1,0);
-                __m256i shuffle_lo   = _mm256_sub_epi8(shuffle_base, cor_lo);
-                __m256i shuffle_hi   = _mm256_sub_epi8(shuffle_base, cor_hi);
-
-                // Extract the correct data from lo and hi
-                data_lo = _mm256_shuffle_epi8(data_lo, shuffle_lo);
-                data_hi = _mm256_shuffle_epi8(data_hi, shuffle_hi);
-
-                data_lo = extract_bits_avx2_4_64_le(data_lo, shift_lo, &sml_unpack);
-                data_hi = extract_bits_avx2_4_64_le(data_hi, shift_hi, &sml_unpack);
-
-                // Create mask for store
-                __m256i v_run  = _mm256_set1_epi32(run);
-                __m256i mask_a = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32( 7, 6, 5, 4, 3, 2, 1, 0));
-                __m256i mask_b = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(15,14,13,12,11,10, 9, 8));
-                __m256i mask_c = _mm256_cmpgt_epi32(v_run, _mm256_set_epi32(23,22,21,20,19,18,17,16));
-
-                //__m256i lo = load_and_extract_bits_avx2_4_56_le(base, bit_offset, &sml_unpack);
-                //__m256i hi = load_and_extract_bits_avx2_4_56_le(base, bit_offset + 4 * sml_unpack.num_of_bits, &sml_unpack);
-                //lo = extract_bits_avx2_4_64_le(lo, &sml_unpack);
-                //hi = extract_bits_avx2_4_64_le(hi, &sml_unpack);
-
-                __m256 x, y, z;
-                x = _mm256_mul_ps(_mm256_cvtepi32_ps(data_lo), _mm256_set1_ps(inv_precision));
-                y = _mm256_mul_ps(_mm256_cvtepi32_ps(data_lo), _mm256_set1_ps(inv_precision));
-                z = _mm256_mul_ps(_mm256_cvtepi32_ps(data_hi), _mm256_set1_ps(inv_precision));
-
-                // Interleave X, Y and Z into 3x XYZXYZ...
-                //__m256 a, b, c;
-
-                _mm256_maskstore_ps(lfp +  0, mask_a, x);
-                _mm256_maskstore_ps(lfp +  8, mask_b, y);
-                _mm256_maskstore_ps(lfp + 16, mask_c, z);
-            }
-            #endif
             lfp += run;
         } else {
             write_coord(lfp, thiscoord, inv_precision); lfp += 3;

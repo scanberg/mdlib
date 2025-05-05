@@ -207,7 +207,7 @@ UTEST(xtc, bitread) {
         //x >>= (64 - num_of_bits);
         //y >>= (64 - num_of_bits - shift);
 
-        __m128i w, z = _mm_loadu_si128(base + byte_offset);
+        __m128i w, z = _mm_loadu_si128((const __m128i*)(base + byte_offset));
         z = _mm_bswap_si128(z);
         __m128i hi = _mm_slli_si128(z, 8);
         w  = _mm_sllv_epi64(z,  _mm_set1_epi64x(shift));
