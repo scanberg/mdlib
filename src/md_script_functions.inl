@@ -5108,9 +5108,15 @@ static inline bool are_bitfields_equivalent(const md_bitfield_t bitfields[], int
     return true;
 }
 
-static inline void populate_volume(float* vol, const vec3_t* xyz, size_t count, mat4_t M) {
+static inline void populate_volume(float* vol, const vec3_t* xyz, const int* idx, size_t count, const md_bitfield_t* exclusion_mask, mat4_t M) {
     const vec4_t dim = vec4_set(MD_VOL_DIM, MD_VOL_DIM, MD_VOL_DIM, 0);
     for (size_t i = 0; i < count; ++i) {
+        if (exclusion_mask) {
+            if (md_bitfield_test_bit(exclusion_mask, idx[i])) {
+                continue;
+            }
+        }
+
         const vec4_t coord = mat4_mul_vec4(M, vec4_from_vec3(xyz[i], 1.0f));
         
         const md_128 a = md_mm_cmplt_ps(md_mm_setzero_ps(), coord.m128);
@@ -5250,7 +5256,9 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         extract_xyzw_vec4(ref_xyzw[0], ref_x[0], ref_y[0], ref_z[0], ref_w, ref_bf);
 
         // Fetch target positions
-        vec3_t* trg_xyz = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_bf, ctx->temp_alloc);
+        int*    trg_idx = md_vm_arena_push(ctx->temp_alloc, sizeof(int) * trg_size);
+        md_bitfield_iter_extract_indices(trg_idx, trg_size, md_bitfield_iter_create(trg_bf));
+        vec3_t* trg_xyz = NULL;
 
         md_util_unwrap_vec4(ref_xyzw[0], ref_size, &ctx->mol->unit_cell);
         ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0);
@@ -5262,7 +5270,15 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const float spatial_hash_radius = sqrtf(cutoff * cutoff * 3); // distance from center of volume to corners of the volume.
 
         if (!brute_force) {
-            spatial_hash = md_spatial_hash_create_vec3(trg_xyz, 0, trg_size, &ctx->mol->unit_cell, ctx->temp_alloc);
+            spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, &ctx->mol->unit_cell, ctx->temp_alloc);
+        } else {
+            for (size_t i = 0; i < trg_size; ++i) {
+                const int idx = trg_idx[i];
+                const float x = ctx->mol->atom.x[idx];
+                const float y = ctx->mol->atom.y[idx];
+                const float z = ctx->mol->atom.z[idx];
+                trg_xyz[i] = vec3_set(x, y, z);
+            }
         }
 
         // A for alignment matrix, Align eigen vectors with axis x,y,z etc.
@@ -5292,7 +5308,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
 
             if (vol) {
                 if (brute_force) {
-                    populate_volume(vol, trg_xyz, trg_size, mat4_mul(VA, RT));
+                    populate_volume(vol, trg_xyz, trg_idx, trg_size, bf, mat4_mul(VA, RT));
                 } else {
                     sdf_payload_t payload = {
                         .M = mat4_mul(VA, RT),
