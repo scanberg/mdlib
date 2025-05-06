@@ -5142,6 +5142,7 @@ static inline mat4_t compute_volume_matrix(float radius) {
 typedef struct sdf_payload_t {
     mat4_t M;
     float* vol;
+    const md_bitfield_t* exclusion_mask;
 } sdf_payload_t;
 
 bool sdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param) {
@@ -5149,6 +5150,14 @@ bool sdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
     
     while (mask) {
         const int idx = ctz32(mask);
+
+        if (data->exclusion_mask) {
+            if (md_bitfield_test_bit(data->exclusion_mask, elem_arr[idx].idx)) {
+                mask &= ~(1 << idx);
+                continue;
+            }
+        }
+
         const vec4_t coord = mat4_mul_vec4(data->M, vec4_from_vec3(elem_arr[idx].xyz, 1.0f));
 
         // Dwelling into intrinsic land here, is a bit unsure if we should expose these as vec4 operations
@@ -5276,10 +5285,6 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], 0, ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
             mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
 
-            if (ctx->frame_header->index == 0) {
-                while(0) {};
-            }
-
             //md_bitfield_iter_extract_indices(ref_idx[1], ref_size, md_bitfield_iter_create(bf));
             //ref_com[1] = md_util_com_compute(ref_x[1], ref_y[1], ref_z[1], ref_w[1], ref_idx[1], ref_size, &ctx->mol->unit_cell);
             //mat3_t R  = mat3_optimal_rotation(ref_x, ref_y, ref_z, ref_w, (const int32_t* const*)ref_idx, ref_size, ref_com);
@@ -5292,6 +5297,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
                     sdf_payload_t payload = {
                         .M = mat4_mul(VA, RT),
                         .vol = vol,
+                        .exclusion_mask = bf,
                     };
                     md_spatial_hash_query_batch(spatial_hash, ref_com[1], spatial_hash_radius, sdf_iter, &payload);
                 }
