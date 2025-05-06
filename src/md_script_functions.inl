@@ -5272,6 +5272,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         if (!brute_force) {
             spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, &ctx->mol->unit_cell, ctx->temp_alloc);
         } else {
+            trg_xyz = md_vm_arena_push(ctx->temp_alloc, sizeof(vec3_t) * trg_size);
             for (size_t i = 0; i < trg_size; ++i) {
                 const int idx = trg_idx[i];
                 const float x = ctx->mol->atom.x[idx];
