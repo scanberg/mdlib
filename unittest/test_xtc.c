@@ -420,8 +420,8 @@ UTEST(xtc, trajectory_i) {
     const int64_t num_atoms  = md_trajectory_num_atoms(traj);
     const int64_t num_frames = md_trajectory_num_frames(traj);
 
-    EXPECT_EQ(num_atoms, 1336);
-    EXPECT_EQ(num_frames, 501);
+    ASSERT_EQ(num_atoms, 1336);
+    ASSERT_EQ(num_frames, 501);
 
     const int64_t mem_size = num_atoms * 3 * sizeof(float);
     void* mem_ptr = md_alloc(md_get_heap_allocator(), mem_size);
@@ -462,7 +462,7 @@ UTEST(xtc, catalyst) {
 
     md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
-    EXPECT_EQ(xtc_num_frames, num_frames);
+    ASSERT_EQ(xtc_num_frames, num_frames);
 
     int natoms, step;
     float time, box[3][3];
@@ -480,12 +480,12 @@ UTEST(xtc, catalyst) {
             MD_LOG_ERROR("Error reading coordinates from XDR file\n");
             goto done;
         }
-        EXPECT_EQ(ncoord, num_atoms);
+        ASSERT_EQ(ncoord, num_atoms);
 
         for (int j = 0; j < num_atoms; ++j) {
-            EXPECT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
-            EXPECT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
-            EXPECT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
+            ASSERT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
+            ASSERT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
+            ASSERT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
         }
     }
     
@@ -518,7 +518,7 @@ UTEST(xtc, amyloid) {
 
     md_xtc_read_frame_offsets_and_times(file, &frame_offsets, &frame_times, arena);
     size_t xtc_num_frames = frame_offsets ? md_array_size(frame_offsets) - 1 : 0;
-    EXPECT_EQ(xtc_num_frames, num_frames);
+    ASSERT_EQ(xtc_num_frames, num_frames);
 
     int natoms, step;
     float time, box[3][3];
@@ -536,12 +536,12 @@ UTEST(xtc, amyloid) {
             MD_LOG_ERROR("Error reading coordinates from XDR file\n");
             goto done;
         }
-        EXPECT_EQ(ncoord, num_atoms);
+        ASSERT_EQ(ncoord, num_atoms);
 
         for (int j = 0; j < num_atoms; ++j) {
-            EXPECT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
-            EXPECT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
-            EXPECT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
+            ASSERT_EQ(ref[j * 3 + 0], xyz[j * 3 + 0]);
+            ASSERT_EQ(ref[j * 3 + 1], xyz[j * 3 + 1]);
+            ASSERT_EQ(ref[j * 3 + 2], xyz[j * 3 + 2]);
         }
     }
 
