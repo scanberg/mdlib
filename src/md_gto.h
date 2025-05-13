@@ -49,54 +49,53 @@ extern "C" {
 // - gtos: The gtos to evaluate
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
-void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
+void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
 
 
-void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
+void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
 
 // Average local ionization energy
-void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
+void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
 
 // This is malplaced at the moment, but this is for the moment, the best match in where to place the functionality
 // Performs voronoi segmentation of the supplied volume to points with a supplied radius and accumulates the value of each voxel into the corresponding group of the closest point
 // - out_group_values: Destination array holding the group values that are written to
 // - cap_groups: Capacity of group array
 // - vol_tex: The texture handle to the volume
-// - vol_dim: The dimensions of the volume
-// - vol_step: The voxel spacing in world space length units
-// - world_to_model: float[4][4] (col-major) transformation matrix to transform a point in world_space coordinates into the volumes model space (note not texture space, but a space which is rotated and translated such that the axes align with the volume and its origin is placed at (0,0,0))
-// - index_to_world: float[4][4] (col-major) transformation matrix to transform a point in the volumes index coordinates [0, dim[ into world space coordinates
+// - vol_grid: The grid defining the volume
 // - point_xyzr: Point coordinates + radius, packed xyzrxyzrxyzr
 // - point_group_idx: Point group index [0, num_groups-1]
 // - num_points: Number of points
-void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points);
+void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const md_grid_t* vol_grid, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points);
 
 // Evaluates GTOs over a grid
-// - grid: The grid to evaluate a subportion of
+// - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
+// - grid: The grid to evaluate
 // - gtos: The gtos to evaluate
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
-void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
+void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const md_gto_t* gtos, size_t in_num_gtos, md_gto_eval_mode_t in_mode);
 
 // Evaluate GTOs over subportion of a grid
+// - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
 // - grid: The grid to evaluate a subportion of
 // - grid_idx_off: Index offset for x,y,z
 // - grid_idx_len: Index length for x,y,z
 // - gtos: The gtos to evaluate
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
-// @NOTE: It is strongly recommended that the evaluation occurs over a 8x8x8 blocks as this will get the fastpath
-void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
+// @NOTE: It is strongly recommended that the evaluation occurs over a 8x8x8 blocks as this will get a vectorized fastpath
+void md_gto_grid_evaluate_sub(float* out_grid_values, const md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
 
 // Evaluates GTOs over a set of given XYZ coordinates
-// - out_psi: Array of values to write evaluated values to, should have length 'num_xyz'
+// - out_xyz_values: Array of values to write evaluated values to, should have length 'num_xyz'
 // - xyz: Pointer to base addr of xyz packed coordinates to be evaluated, should have length 'num_xyz'
 // - num_xyz: Number of coordinates to evaluate
 // - stride_xyz [OPTIONAL]: Stride in bytes between the given xyz coordinates. A value of zero implies fully packed XYZXYZ... -> (12 bytes)
 // - gtos: input gtos to be evaluated for the supplied coordinates
 // - num_gtos: Number of gtos
 // - eval_mode: GTO evaluation mode
-void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
+void md_gto_xyz_evaluate(float* out_xyz_values, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t eval_mode);
 
 // Evaluates GTOs over space 
 //void md_gto_xyz_voronoi_evaluate(float* out_val, const float* xyz, size_t num_xyz, size_t stride_xyz, const md_gto_t* gtos, size_t)
@@ -106,8 +105,15 @@ void md_gto_xyz_evaluate(float* out_psi, const float* xyz, size_t num_xyz, size_
 // returns the number of gtos left after this, as some may have no radius of influence and will be pruned away
 size_t md_gto_cutoff_compute(md_gto_t* gtos, size_t num_gtos, double value);
 
-// Extracts a subset of gtos from an input array which overlap a given aabb with its radii of influence
+// Extracts a subset of gtos from an input array which overlap a given axis aligned bounding box with its radii of influence
+// - out_gtos: The output array to store the gtos in
+// - min_ext: The minimum extent of the axis aligned bounding box
+// - max_ext: The maximum extent of the axis aligned bounding box
+
 size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float aabb_max[3], const md_gto_t* in_gtos, size_t num_gtos);
+
+// Extracts a subset of gtos from an input array which overlap a given oriented bounding box with its radii of influence
+size_t md_gto_obb_test(md_gto_t* out_gtos, const float obb_center[3], const float obb_half_ext[3], const float obb_orientation[3][3], const md_gto_t* in_gtos, size_t num_gtos);
 
 #ifdef __cplusplus
 }

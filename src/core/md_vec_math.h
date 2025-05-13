@@ -239,6 +239,26 @@ MD_VEC_INLINE float cubic_splinef(float p0, float p1, float p2, float p3, float 
 }
 
 // VEC2 OPERATIONS
+MD_VEC_INLINE vec2_t vec2_set(float x, float y) {
+    vec2_t v = {x, y};
+    return v;
+}
+
+MD_VEC_INLINE vec2_t vec2_set1(float x) {
+    vec2_t v = {x, x};
+    return v;
+}
+
+MD_VEC_INLINE vec2_t vec2_load(const float* ptr) {
+    vec2_t v;
+    MEMCPY(v.elem, ptr, sizeof(vec2_t));
+    return v;
+}
+
+MD_VEC_INLINE void vec2_store(float* ptr, vec2_t v) {
+    MEMCPY(ptr, v.elem, sizeof(vec2_t));
+}
+
 MD_VEC_INLINE vec2_t vec2_from_vec3(vec3_t v) {
     vec2_t r = {v.x, v.y};
     return r;
@@ -344,6 +364,16 @@ MD_VEC_INLINE vec3_t vec3_set(float x, float y, float z) {
 MD_VEC_INLINE vec3_t vec3_set1(float x) {
     vec3_t v = {x,x,x};
     return v;
+}
+
+MD_VEC_INLINE vec3_t vec3_load(const float* v) {
+    vec3_t r;
+    MEMCPY(r.elem, v, sizeof(vec3_t));
+    return r;
+}
+
+MD_VEC_INLINE void vec3_store(float* v, vec3_t r) {
+    MEMCPY(v, r.elem, sizeof(vec3_t));
 }
 
 MD_VEC_INLINE vec3_t vec3_fract(vec3_t v) {
@@ -578,6 +608,16 @@ MD_VEC_INLINE vec4_t vec4_set1(float v) {
     res.w = v;
 #endif
     return res;
+}
+
+MD_VEC_INLINE vec4_t vec4_load(const float* ptr) {
+    vec4_t v;
+    MEMCPY(v.elem, ptr, sizeof(vec4_t));
+    return v;
+}
+
+MD_VEC_INLINE void vec4_store(float* ptr, vec4_t v) {
+    MEMCPY(ptr, v.elem, sizeof(vec4_t));
 }
 
 MD_VEC_INLINE vec4_t vec4_from_float(float v) {
@@ -1383,6 +1423,16 @@ MD_VEC_INLINE mat3_t mat3_ident(void) {
     return M;
 }
 
+MD_VEC_INLINE mat3_t mat3_load(const float* ptr) {
+    mat3_t M;
+    MEMCPY(M.elem, ptr, sizeof(mat3_t));
+    return M;
+}
+
+MD_VEC_INLINE void mat3_store(float* ptr, mat3_t M) {
+    MEMCPY(ptr, M.elem, sizeof(mat3_t));
+}
+
 MD_VEC_INLINE bool mat3_equal(mat3_t A, mat3_t B) {
     return MEMCMP(A.elem, B.elem, sizeof(mat3_t)) == 0;
 }
@@ -1551,6 +1601,27 @@ MD_VEC_INLINE mat3_t mat3_angle_axis(float angle, vec3_t axis) {
 	return M;
 }
 
+// dvec2
+MD_VEC_INLINE dvec2_t dvec2_set(double x, double y) {
+    dvec2_t v = {x, y};
+    return v;
+}
+
+MD_VEC_INLINE dvec2_t dvec2_set1(double s) {
+    dvec2_t v = {s, s};
+    return v;
+}
+
+MD_VEC_INLINE dvec2_t dvec2_load(const double* ptr) {
+    dvec2_t v;
+    MEMCPY(&v, ptr, sizeof(dvec2_t));
+    return v;
+}
+
+MD_VEC_INLINE void dvec2_store(double* ptr, dvec2_t v) {
+    MEMCPY(ptr, &v, sizeof(dvec2_t));
+}
+
 MD_VEC_INLINE double dvec2_dot(dvec2_t a, dvec2_t b) {
     return a.x * b.x + a.y * b.y;
 }
@@ -1565,6 +1636,28 @@ MD_VEC_INLINE dvec2_t dvec2_add(dvec2_t a, dvec2_t b) {
         a.y + b.y,
     };
     return r;
+}
+
+
+// dvec3
+MD_VEC_INLINE dvec3_t dvec3_set(double x, double y, double z) {
+    dvec3_t v = {x, y, z};
+    return v;
+}
+
+MD_VEC_INLINE dvec3_t dvec3_set1(double s) {
+    dvec3_t v = {s, s, s};
+    return v;
+}
+
+MD_VEC_INLINE dvec3_t dvec3_load(const double* ptr) {
+    dvec3_t v;
+    MEMCPY(&v, ptr, sizeof(dvec3_t));
+    return v;
+}
+
+MD_VEC_INLINE void dvec3_store(double* ptr, dvec3_t v) {
+    MEMCPY(ptr, &v, sizeof(dvec3_t));
 }
 
 MD_VEC_INLINE double dvec3_dot(dvec3_t a, dvec3_t b) {
@@ -1602,6 +1695,28 @@ MD_VEC_INLINE dvec3_t dvec3_mul_f(dvec3_t v, float s) {
     return r;
 }
 
+
+// dvec4
+MD_VEC_INLINE dvec4_t dvec4_set(double x, double y, double z, double w) {
+    dvec4_t v = {x, y, z, w};
+    return v;
+}
+
+MD_VEC_INLINE dvec4_t dvec4_set1(double s) {
+    dvec4_t v = {s, s, s, s};
+    return v;
+}
+
+MD_VEC_INLINE dvec4_t dvec4_load(const double* ptr) {
+    dvec4_t v;
+    MEMCPY(&v, ptr, sizeof(dvec4_t));
+    return v;
+}
+
+MD_VEC_INLINE void dvec4_store(double* ptr, dvec4_t v) {
+    MEMCPY(ptr, &v, sizeof(dvec4_t));
+}
+
 MD_VEC_INLINE double dvec4_dot(dvec4_t a, dvec4_t b) {
     return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
 }
@@ -1609,6 +1724,12 @@ MD_VEC_INLINE double dvec4_dot(dvec4_t a, dvec4_t b) {
 MD_VEC_INLINE double dvec4_length(dvec4_t v) {
     return sqrt(dvec4_dot(v, v));
 }
+
+
+
+
+
+// Math misc
 
 typedef struct mat3_eigen_t {
     mat3_t vectors;
@@ -1678,6 +1799,16 @@ MD_VEC_INLINE mat4_t mat4_ident(void) {
         }
     };
     return M;
+}
+
+MD_VEC_INLINE mat4_t mat4_load(const float* ptr) {
+    mat4_t M;
+    MEMCPY(M.elem, ptr, sizeof(mat4_t));
+    return M;
+}
+
+MD_VEC_INLINE void mat4_store(float* ptr, mat4_t M) {
+    MEMCPY(ptr, M.elem, sizeof(mat4_t));
 }
 
 MD_VEC_INLINE mat4_t mat4_from_mat3(const mat3_t M) {

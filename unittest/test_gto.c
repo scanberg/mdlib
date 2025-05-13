@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 
 #include <core/md_arena_allocator.h>
 #include <md_vlx.h>
@@ -14,7 +14,7 @@
 #define BOHR_TO_ANGSTROM 0.529177210903
 #define VALUE_CUTOFF 1.0E-5
 
-static void init(md_grid_t* grid, md_gto_t** gtos, size_t* num_gtos, int vol_dim, str_t filename, md_allocator_i* arena) {
+static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* num_gtos, int vol_dim, str_t filename, md_allocator_i* arena) {
     md_vlx_t* vlx = md_vlx_create(arena);
     md_vlx_parse_file(vlx, filename);
 
@@ -41,13 +41,13 @@ static void init(md_grid_t* grid, md_gto_t** gtos, size_t* num_gtos, int vol_dim
     vec3_t step = vec3_div_f(vec3_sub(max_box, min_box), (float)vol_dim);
 
     *grid = (md_grid_t) {
-        .data = vol_data,
-        .dim = {vol_dim, vol_dim, vol_dim},
+        .orientation = mat3_ident(),
         .origin = {min_box.x, min_box.y, min_box.z},
-        .step_x = {step.x, 0, 0},
-        .step_y = {0, step.y, 0},
-        .step_z = {0, 0, step.z},
+        .spacing = {step.x, step.y, step.z},
+        .dim = {vol_dim, vol_dim, vol_dim},
     };
+
+    *grid_data = vol_data;
 
     *num_gtos = md_vlx_mo_gto_count(vlx);
     *gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * *num_gtos);
@@ -59,61 +59,30 @@ UTEST(gto, evaluate_grid) {
     md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
     
     md_grid_t grid;
+    float* grid_data;
     md_gto_t* gtos;
     size_t num_gtos;
 
     int vol_dim = 64;
-    init(&grid, &gtos, &num_gtos, vol_dim, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"), arena);
+    init(&grid, &grid_data, &gtos, &num_gtos, vol_dim, STR_LIT(MD_UNITTEST_DATA_DIR "/vlx/mol.out"), arena);
+    size_t num_points = md_grid_num_points(&grid);
 
     md_grid_t ref_grid = grid;
-    ref_grid.data = md_alloc(arena, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
+    float* ref_data = md_alloc(arena, sizeof(float) * num_points);
+    vec3_t* ref_points = md_alloc(arena, sizeof(vec3_t) * num_points);
 
-    MEMSET(grid.data, 0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
-    MEMSET(ref_grid.data, 0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
+    md_grid_extract_points((float*)ref_points, &ref_grid);
 
-    md_gto_t* sub_gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
+    MEMSET(grid_data, 0, sizeof(float) * num_points);
+    MEMSET(ref_data,  0, sizeof(float) * num_points);
 
-    // Number of NxNxN blocks in each dimension
-    int num_blk[3] = {
-        grid.dim[0] / BLK_DIM,
-        grid.dim[1] / BLK_DIM,
-        grid.dim[2] / BLK_DIM,
-    };
+    md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+    md_gto_xyz_evaluate(ref_data, (float*)ref_points, num_points, 0, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
-    int num_tot_blk = num_blk[0] * num_blk[1] * num_blk[2];
-
-    float step_ortho[3] = {
-        grid.step_x[0],
-        grid.step_y[1],
-        grid.step_z[2],
-    };
-
-    int bi[3] = {0};
-
-    for (; bi[2] < num_blk[2]; ++bi[2]) {
-        for (; bi[1] < num_blk[1]; ++bi[1]) {
-            for (; bi[0] < num_blk[0]; ++bi[0]) {
-                int off_idx[3] = { bi[0] * BLK_DIM, bi[1] * BLK_DIM, bi[2] * BLK_DIM };
-                int len_idx[3] = { BLK_DIM, BLK_DIM, BLK_DIM };
-
-                int beg_idx[3] = {off_idx[0], off_idx[1], off_idx[2]};
-                int end_idx[3] = {off_idx[0] + len_idx[0], off_idx[1] + len_idx[1], off_idx[2] + len_idx[2]};
-
-                float aabb_min[3] = {
-                    grid.origin[0] + beg_idx[0] * grid.step_x[0],
-                    grid.origin[1] + beg_idx[1] * grid.step_y[1],
-                    grid.origin[2] + beg_idx[2] * grid.step_z[2],
-                };
-                float aabb_max[3] = {
-                    grid.origin[0] + end_idx[0] * grid.step_x[0],
-                    grid.origin[1] + end_idx[1] * grid.step_y[1],
-                    grid.origin[2] + end_idx[2] * grid.step_z[2],
-                };
-
-                size_t num_sub_gtos = md_gto_aabb_test(sub_gtos, aabb_min, aabb_max, gtos, num_gtos);
-
-                md_gto_grid_evaluate_sub(&grid, beg_idx, end_idx, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
-            }
+    for (size_t i = 0; i < num_points; ++i) {
+        double delta = fabs(grid_data[i] - ref_data[i]);
+        if (delta > 1.0e-4) {
+            printf("Delta: %g at [%zu]\n", delta, i);
         }
     }
 
@@ -123,14 +92,26 @@ UTEST(gto, evaluate_grid) {
 // compares vlx file of specific orbital and compares it with a cube file, returns the abs max difference between the two
 static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cutoff_value, const md_cube_t* cube, md_allocator_i* arena) {
 
+    mat3_t orientation = mat3_ident();
+    vec3_t x_axis = vec3_set(cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]);
+    vec3_t y_axis = vec3_set(cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]);
+    vec3_t z_axis = vec3_set(cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]);
+
+    float x_len = vec3_length(x_axis);
+    float y_len = vec3_length(y_axis);
+    float z_len = vec3_length(z_axis);
+
+    orientation.col[0] = vec3_div_f(x_axis, x_len);
+    orientation.col[1] = vec3_div_f(y_axis, y_len);
+    orientation.col[2] = vec3_div_f(z_axis, z_len);
+
     md_grid_t grid = {
-        .data = md_arena_allocator_push(arena, sizeof(float) * cube->data.num_x * cube->data.num_y * cube->data.num_z),
-        .dim = {cube->data.num_x, cube->data.num_y, cube->data.num_z},
+        .orientation = orientation,
         .origin = {cube->origin[0], cube->origin[1], cube->origin[2]},
-        .step_x = {cube->xaxis[0], cube->xaxis[1], cube->xaxis[2]},
-        .step_y = {cube->yaxis[0], cube->yaxis[1], cube->yaxis[2]},
-        .step_z = {cube->zaxis[0], cube->zaxis[1], cube->zaxis[2]},
+        .spacing = vec3_set(x_len, y_len, z_len),
+        .dim = {cube->data.num_x, cube->data.num_y, cube->data.num_z},
     };
+    float* grid_data = md_arena_allocator_push(arena, sizeof(float) * cube->data.num_x * cube->data.num_y * cube->data.num_z);
 
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
@@ -143,25 +124,17 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
 
+    mat4_t M = md_grid_index_to_world(&grid);
+
     float* psi  = md_arena_allocator_push(arena, sizeof(float)  * count);
     vec3_t* xyz = md_arena_allocator_push(arena, sizeof(vec3_t) * count);
-    for (int z = 0; z < grid.dim[2]; ++z) {
-        for (int y = 0; y < grid.dim[1]; ++y) {
-            for (int x = 0; x < grid.dim[0]; ++x) {
-                int i = z * grid.dim[1] * grid.dim[0] + y * grid.dim[0] + x;
-                xyz[i] = vec3_set(
-                    grid.origin[0] + grid.step_x[0] * x,
-                    grid.origin[1] + grid.step_y[1] * y,
-                    grid.origin[2] + grid.step_z[2] * z);
-            }
-        }
-    }
+    md_grid_extract_points((float*)xyz, &grid);
 
     md_gto_xyz_evaluate(psi, (float*)xyz, count, sizeof(vec3_t), gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
-    MEMSET(grid.data, 0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
+    MEMSET(grid_data, 0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
 
-    md_gto_grid_evaluate(&grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+    md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
     double xyz_sum  = 0.0;
     double grid_sum = 0.0;
@@ -175,7 +148,7 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
             for (int ix = 0; ix < grid.dim[0]; ++ix) {
                 int grid_idx = iz * grid.dim[0] * grid.dim[1] + iy * grid.dim[0] + ix;
                 int cube_idx = ix * grid.dim[1] * grid.dim[2] + iy * grid.dim[2] + iz;
-                double g_val = grid.data[grid_idx];
+                double g_val = grid_data[grid_idx];
                 double c_val = cube->data.val[cube_idx];
                 double p_val = psi[grid_idx];
                 grid_sum += g_val;

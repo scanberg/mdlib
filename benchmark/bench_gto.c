@@ -1,4 +1,4 @@
-#include "ubench.h"
+ï»¿#include "ubench.h"
 
 #include <md_vlx.h>
 #include <core/md_allocator.h>
@@ -34,7 +34,7 @@ UBENCH_EX(gto, evaluate_grid) {
     min_box = vec3_sub_f(min_box, 2.0f);
     max_box = vec3_add_f(max_box, 2.0f);
 
-    // Conversion from Ångström to Bohr
+    // Conversion from Ã…ngstrÃ¶m to Bohr
     const float factor = ANGSTROM_TO_BOHR;
 
     min_box = vec3_mul_f(min_box, factor);
@@ -48,12 +48,10 @@ UBENCH_EX(gto, evaluate_grid) {
     vec3_t step = vec3_div_f(vec3_sub(max_box, min_box), (float)vol_dim);
 
     md_grid_t grid = {
-        .data = vol_data,
+        .orientation = mat3_ident(),
+        .origin = min_box,
+        .spacing = step,
         .dim = {vol_dim, vol_dim, vol_dim},
-        .origin = {min_box.x, min_box.y, min_box.z},
-        .step_x = {step.x, 0, 0},
-        .step_y = {0, step.y, 0},
-        .step_z = {0, 0, step.z},
     };
 
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
@@ -77,19 +75,19 @@ UBENCH_EX(gto, evaluate_grid) {
             const int len_idx[3] = {BLK_DIM, BLK_DIM, BLK_DIM};
 
             float aabb_min[3] = {
-                grid.origin[0] + off_idx[0] * grid.step_x[0],
-                grid.origin[1] + off_idx[1] * grid.step_y[1],
-                grid.origin[2] + off_idx[2] * grid.step_z[2],
+                grid.origin.x + off_idx[0] * grid.spacing.x,
+                grid.origin.y + off_idx[1] * grid.spacing.y,
+                grid.origin.z + off_idx[2] * grid.spacing.z,
             };
             float aabb_max[3] = {
-                grid.origin[0] + (off_idx[0] + len_idx[0]) * grid.step_x[0],
-                grid.origin[1] + (off_idx[1] + len_idx[1]) * grid.step_y[1],
-                grid.origin[2] + (off_idx[2] + len_idx[2]) * grid.step_z[2],
+                grid.origin.x + (off_idx[0] + len_idx[0]) * grid.spacing.x,
+                grid.origin.y + (off_idx[1] + len_idx[1]) * grid.spacing.y,
+                grid.origin.z + (off_idx[2] + len_idx[2]) * grid.spacing.z,
             };
 
             size_t num_sub_gtos = md_gto_aabb_test(sub_gtos, aabb_min, aabb_max, gtos, num_gtos);
             
-            md_gto_grid_evaluate_sub(&grid, off_idx, len_idx, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
+            md_gto_grid_evaluate_sub(vol_data, &grid, off_idx, len_idx, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
             //evaluate_grid_ortho_8x8x8_256(grid.data, off_idx, len_idx, grid.origin, step.elem, sub_pgtos, num_sub_pgtos, MD_GTO_EVAL_MODE_PSI);
             //evaluate_grid_8x8x8_256(grid.data, off_idx, len_idx, grid.origin, grid.step_x, grid.step_y, grid.step_z, sub_gtos, num_sub_gtos, MD_GTO_EVAL_MODE_PSI);
         }

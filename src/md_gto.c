@@ -19,6 +19,45 @@
 // This should be kept in sync with the define present in segment_and_attribute_to_group.comp
 #define QUANTIZATION_SCALE_FACTOR 1.0e6
 
+static inline void world_to_model_matrix(float out_mat[4][4], const md_grid_t* grid) {
+    // There is no scaling applied in this transformation, only rotation and translation
+    out_mat[0][0] = grid->orientation.elem[0][0];
+    out_mat[0][1] = grid->orientation.elem[1][0];
+    out_mat[0][2] = grid->orientation.elem[2][0];
+    out_mat[0][3] = 0.0f;
+    out_mat[1][0] = grid->orientation.elem[0][1];
+    out_mat[1][1] = grid->orientation.elem[1][1];
+    out_mat[1][2] = grid->orientation.elem[2][1];
+    out_mat[1][3] = 0.0f;
+    out_mat[2][0] = grid->orientation.elem[0][2];
+    out_mat[2][1] = grid->orientation.elem[1][2];
+    out_mat[2][2] = grid->orientation.elem[2][2];
+    out_mat[2][3] = 0.0f;
+    out_mat[3][0] = -grid->orientation.elem[0][0] * grid->origin.elem[0] - grid->orientation.elem[0][1] * grid->origin.elem[1] - grid->orientation.elem[0][2] * grid->origin.elem[2],
+    out_mat[3][1] = -grid->orientation.elem[1][0] * grid->origin.elem[0] - grid->orientation.elem[1][1] * grid->origin.elem[1] - grid->orientation.elem[1][2] * grid->origin.elem[2],
+    out_mat[3][2] = -grid->orientation.elem[2][0] * grid->origin.elem[0] - grid->orientation.elem[2][1] * grid->origin.elem[1] - grid->orientation.elem[2][2] * grid->origin.elem[2],
+    out_mat[3][3] = 1.0f;
+}
+
+static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* grid) {
+    out_mat[0][0] = grid->orientation.elem[0][0] * grid->spacing.elem[0];
+    out_mat[0][1] = grid->orientation.elem[0][1] * grid->spacing.elem[0];
+    out_mat[0][2] = grid->orientation.elem[0][2] * grid->spacing.elem[0];
+    out_mat[0][3] = 0.0f;
+    out_mat[1][0] = grid->orientation.elem[1][0] * grid->spacing.elem[1];
+    out_mat[1][1] = grid->orientation.elem[1][1] * grid->spacing.elem[1];
+    out_mat[1][2] = grid->orientation.elem[1][2] * grid->spacing.elem[1];
+    out_mat[1][3] = 0.0f;
+    out_mat[2][0] = grid->orientation.elem[2][0] * grid->spacing.elem[2];
+    out_mat[2][1] = grid->orientation.elem[2][1] * grid->spacing.elem[2];
+    out_mat[2][2] = grid->orientation.elem[2][2] * grid->spacing.elem[2];
+    out_mat[2][3] = 0.0f;
+    out_mat[3][0] = grid->origin.elem[0];
+    out_mat[3][1] = grid->origin.elem[1];
+    out_mat[3][2] = grid->origin.elem[2];
+    out_mat[3][3] = 1.0f;
+}
+
 static GLuint get_gto_eval_program(void) {
     static GLuint program = 0;
     if (!program) {
@@ -77,8 +116,7 @@ static GLuint get_temp_ssbo(void) {
     return ssbo;
 }
 
-void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
-
+void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
     uint32_t orb_offsets[2] = {0, (uint32_t)num_gtos};
     float orb_scaling[1] = {1.0f};
 
@@ -90,14 +128,11 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const int vol_dim[3], const floa
         .orb_scaling = orb_scaling,
     };
 
-    md_gto_grid_evaluate_orb_GPU(vol_tex, vol_dim, vol_step, world_to_model, index_to_world, &orb, mode);
+    md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
-static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode, GLuint program) {
-    ASSERT(world_to_model);
-    ASSERT(index_to_world);
-    ASSERT(vol_dim);
-    ASSERT(vol_step);
+static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode, GLuint program) {
+    ASSERT(grid);
     ASSERT(orb);
 
     if (orb->num_gtos == 0 || orb->num_orbs == 0) {
@@ -105,6 +140,11 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], co
     }
 
     md_gl_debug_push("EVAL ORBS");
+
+    if (!glIsTexture(vol_tex)) {
+        MD_LOG_ERROR("Invalid volume texture handle");
+        return;
+    }
 
     GLenum format = 0;
     if (glGetTextureLevelParameteriv) {
@@ -156,18 +196,24 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], co
 
     glUseProgram(program);
 
-    glUniformMatrix4fv(0, 1, GL_FALSE, world_to_model);
-    glUniformMatrix4fv(1, 1, GL_FALSE, index_to_world);
-    glUniform3fv(2, 1, (const float*)vol_step);
+    float world_to_model[4][4];
+    float index_to_world[4][4];
+
+    world_to_model_matrix(world_to_model, grid);
+    index_to_world_matrix(index_to_world, grid);
+
+    glUniformMatrix4fv(0, 1, GL_FALSE, (const float*)world_to_model);
+    glUniformMatrix4fv(1, 1, GL_FALSE, (const float*)index_to_world);
+    glUniform3fv(2, 1, grid->spacing.elem);
     glUniform1ui(3, (GLuint)orb->num_orbs);
     glUniform1i(4, (GLint)mode);
 
     glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
 
     int num_groups[3] = {
-        DIV_UP(vol_dim[0], 8),
-        DIV_UP(vol_dim[1], 8),
-        DIV_UP(vol_dim[2], 8),
+        DIV_UP(grid->dim[0], 8),
+        DIV_UP(grid->dim[1], 8),
+        DIV_UP(grid->dim[2], 8),
     };
 
     glDispatchCompute(num_groups[0], num_groups[1], num_groups[2]);
@@ -181,33 +227,24 @@ done:
     md_gl_debug_pop();
 }
 
-void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
-    ASSERT(world_to_model);
-    ASSERT(index_to_world);
-    ASSERT(vol_dim);
-    ASSERT(vol_step);
+void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
+    ASSERT(vol_grid);
     ASSERT(orb);
 
     GLuint program = get_gto_eval_program();
-    gto_grid_evaluate_orb_GPU(vol_tex, vol_dim, vol_step, world_to_model, index_to_world, orb, mode, program);
+    gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, orb, mode, program);
 }
 
-void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
-    ASSERT(world_to_model);
-    ASSERT(index_to_world);
-    ASSERT(vol_dim);
-    ASSERT(vol_step);
+void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
+    ASSERT(vol_grid);
     ASSERT(orb);
 
     GLuint program = get_alie_program();
-    gto_grid_evaluate_orb_GPU(vol_tex, vol_dim, vol_step, world_to_model, index_to_world, orb, mode, program);
+    gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, orb, mode, program);
 }
 
-void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const int vol_dim[3], const float vol_step[3], const float* world_to_model, const float* index_to_world, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points) {
+void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const md_grid_t* grid, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points) {
     ASSERT(out_group_values);
-    ASSERT(vol_dim);
-    ASSERT(world_to_model);
-    ASSERT(index_to_world);
     ASSERT(point_xyzr);
     ASSERT(point_group_idx);
 
@@ -262,15 +299,20 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
     GLuint program = get_vol_segment_to_groups_program();
     glUseProgram(program);
 
-    glUniformMatrix4fv(0, 1, GL_FALSE, world_to_model);
-    glUniformMatrix4fv(1, 1, GL_FALSE, index_to_world);
-    glUniform3fv(2, 1, (const float*)vol_step);
+    float world_to_model[4][4];
+    float index_to_world[4][4];
+    world_to_model_matrix(world_to_model, grid);
+    index_to_world_matrix(index_to_world, grid);
+
+    glUniformMatrix4fv(0, 1, GL_FALSE, (const float*)world_to_model);
+    glUniformMatrix4fv(1, 1, GL_FALSE, (const float*)index_to_world);
+    glUniform3fv(2, 1, grid->spacing.elem);
     glUniform1ui(3, (GLuint)num_points);
 
     int num_groups[3] = {
-        DIV_UP(vol_dim[0], 8),
-        DIV_UP(vol_dim[1], 8),
-        DIV_UP(vol_dim[2], 8),
+        DIV_UP(grid->dim[0], 8),
+        DIV_UP(grid->dim[1], 8),
+        DIV_UP(grid->dim[2], 8),
     };
 
     glDispatchCompute(num_groups[0], num_groups[1], num_groups[2]);
@@ -1016,7 +1058,7 @@ static inline void evaluate_grid_8x8x8_128(float grid_data[], const int grid_idx
     }
 }
 
-void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
+void md_gto_grid_evaluate_sub(float* out_values, const md_grid_t* grid, const int grid_idx_off[3], const int grid_idx_len[3], const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
     ASSERT(grid);
     ASSERT(gtos);
 
@@ -1030,11 +1072,13 @@ void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const 
     //printf("Number of pgtos in volume region: %zu\n", gto.count);
 
     bool ortho =
-        (grid->step_x[1] == 0 && grid->step_x[2] == 0) &&
-        (grid->step_y[0] == 0 && grid->step_y[2] == 0) &&
-        (grid->step_z[0] == 0 && grid->step_z[1] == 0);
+        (grid->orientation.elem[0][1] == 0 && grid->orientation.elem[0][2] == 0) &&
+        (grid->orientation.elem[1][0] == 0 && grid->orientation.elem[1][2] == 0) &&
+        (grid->orientation.elem[2][0] == 0 && grid->orientation.elem[2][1] == 0);
 
-    float ortho_step[3] = {grid->step_x[0], grid->step_y[1], grid->step_z[2]};
+    vec3_t step_x = {grid->orientation.elem[0][0] * grid->spacing.x, grid->orientation.elem[1][0] * grid->spacing.y, grid->orientation.elem[2][0] * grid->spacing.z};
+    vec3_t step_y = {grid->orientation.elem[0][1] * grid->spacing.x, grid->orientation.elem[1][1] * grid->spacing.y, grid->orientation.elem[2][1] * grid->spacing.z};
+    vec3_t step_z = {grid->orientation.elem[0][2] * grid->spacing.x, grid->orientation.elem[1][2] * grid->spacing.y, grid->orientation.elem[2][2] * grid->spacing.z};
 
     // There are specialized versions for evaluating 8x8x8 subgrids
     // 8x8x8 Is a good chunk size to operate on as it probably fits in L1 Cache together with the GTOs
@@ -1044,31 +1088,37 @@ void md_gto_grid_evaluate_sub(md_grid_t* grid, const int grid_idx_off[3], const 
 #if defined(__AVX512F__) && defined(__AVX512DQ__) || defined (__AVX2__)
         // @TODO: Implement real AVX512 path
         if (ortho) {
-            evaluate_grid_ortho_8x8x8_256(grid->data, grid_idx_min, grid->dim, grid->origin, ortho_step, gtos, num_gtos, mode);
+            evaluate_grid_ortho_8x8x8_256(out_values, grid_idx_min, grid->dim, grid->origin.elem, grid->spacing.elem, gtos, num_gtos, mode);
         } else {
-            evaluate_grid_8x8x8_256(grid->data, grid_idx_min, grid->dim, grid->origin, grid->step_x, grid->step_y, grid->step_z, gtos, num_gtos, mode);
+            evaluate_grid_8x8x8_256(out_values, grid_idx_min, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
         }
 #elif defined(__SSE2__)
         if (ortho) {
-            evaluate_grid_ortho_8x8x8_128(grid->data, grid_idx_min, grid->dim, grid->origin, ortho_step, gtos, num_gtos, mode);
+            evaluate_grid_ortho_8x8x8_128(out_values, grid_idx_min, grid->dim, grid->origin.elem, grid->spacing.elem, gtos, num_gtos, mode);
         } else {
-            evaluate_grid_8x8x8_128(grid->data, grid_idx_min, grid->dim, grid->origin, grid->step_x, grid->step_y, grid->step_z, gtos, num_gtos, mode);
+            evaluate_grid_8x8x8_128(out_values, grid_idx_min, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
         }
 #else
-        evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->step_x, grid->step_y, grid->step_z, gtos, num_gtos, mode);
+        evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
 #endif
     } else {
         // Slowpath
-        evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin, grid->step_x, grid->step_y, grid->step_z, gtos, num_gtos, mode);
+        evaluate_grid_ref(out_values, grid_idx_min, grid_idx_max, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
     }
 }
 
-void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
+void md_gto_grid_evaluate(float* out_values, const md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
     ASSERT(grid);
     ASSERT(gtos);
 
     int idx_off[3] = {0};
     int idx_len[3] = {0};
+
+    float scl[3] = {
+        (grid->orientation.elem[0][0] + grid->orientation.elem[0][1] + grid->orientation.elem[0][2]) * grid->spacing.elem[0],
+        (grid->orientation.elem[1][0] + grid->orientation.elem[1][1] + grid->orientation.elem[1][2]) * grid->spacing.elem[1],
+        (grid->orientation.elem[2][0] + grid->orientation.elem[2][1] + grid->orientation.elem[2][2]) * grid->spacing.elem[2]
+    };
 
     size_t temp_pos = md_temp_get_pos();
     md_gto_t* sub_gtos = (md_gto_t*)md_temp_push(sizeof(md_gto_t) * num_gtos);
@@ -1081,18 +1131,18 @@ void md_gto_grid_evaluate(md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos
                 idx_len[0] = MIN(8, grid->dim[0] - idx_off[0]);
 
                 float aabb_min[3] = {
-                    grid->origin[0] + idx_off[0] * (grid->step_x[0] + grid->step_y[0] + grid->step_z[0]),
-                    grid->origin[1] + idx_off[1] * (grid->step_x[1] + grid->step_y[1] + grid->step_z[1]),
-                    grid->origin[2] + idx_off[2] * (grid->step_x[2] + grid->step_y[2] + grid->step_z[2]),
+                    grid->origin.elem[0] + idx_off[0] * scl[0],
+                    grid->origin.elem[1] + idx_off[1] * scl[1],
+                    grid->origin.elem[2] + idx_off[2] * scl[2],
                 };
                 float aabb_max[3] = {
-                    grid->origin[0] + (idx_off[0] + idx_len[0]) * (grid->step_x[0] + grid->step_y[0] + grid->step_z[0]),
-                    grid->origin[1] + (idx_off[1] + idx_len[1]) * (grid->step_x[1] + grid->step_y[1] + grid->step_z[1]),
-                    grid->origin[2] + (idx_off[2] + idx_len[2]) * (grid->step_x[2] + grid->step_y[2] + grid->step_z[2]),
+                    grid->origin.elem[0] + (idx_off[0] + idx_len[0]) * scl[0],
+                    grid->origin.elem[1] + (idx_off[1] + idx_len[1]) * scl[1],
+                    grid->origin.elem[2] + (idx_off[2] + idx_len[2]) * scl[2],
                 };
 
                 size_t num_sub_gtos = md_gto_aabb_test(sub_gtos, aabb_min, aabb_max, gtos, num_gtos);
-                md_gto_grid_evaluate_sub(grid, idx_off, idx_len, sub_gtos, num_sub_gtos, mode);
+                md_gto_grid_evaluate_sub(out_values, grid, idx_off, idx_len, sub_gtos, num_sub_gtos, mode);
             }
         }
     }
@@ -1280,7 +1330,7 @@ size_t md_gto_cutoff_compute(md_gto_t* gtos, size_t count, double value) {
 
 size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float aabb_max[3], const md_gto_t* in_gtos, size_t in_num_gtos) {
     // Extract a subset of gtos that overlap with the evaluated subportion of the grid
-    // @TODO: This can be vectorized as well
+    // @TODO: This can be vectorized, Let us pray to the compiler gods for now
     size_t num_gtos = 0;
     for (size_t i = 0; i < in_num_gtos; ++i) {
         float x  = in_gtos[i].x;
@@ -1303,5 +1353,35 @@ size_t md_gto_aabb_test(md_gto_t* out_gtos, const float aabb_min[3], const float
         }
         out_gtos[num_gtos++] = in_gtos[i];
     }
+    return num_gtos;
+}
+
+size_t md_gto_obb_test(md_gto_t* out_gtos, const float center[3], const float half_ext[3], const float orientation[3][3], const md_gto_t* in_gtos, size_t in_num_gtos) {
+
+    size_t num_gtos = 0;
+    for (size_t i = 0; i < in_num_gtos; ++i) {
+        float x = in_gtos[i].x;
+        float y = in_gtos[i].y;
+        float z = in_gtos[i].z;
+        float r = in_gtos[i].cutoff;
+
+        // Transform to OBB space
+        float dx = x - center[0];
+        float dy = y - center[1];
+        float dz = z - center[2];
+
+        // Transform to OBB space
+        float ox = dx * orientation[0][0] + dy * orientation[1][0] + dz * orientation[2][0];
+        float oy = dx * orientation[0][1] + dy * orientation[1][1] + dz * orientation[2][1];
+        float oz = dx * orientation[0][2] + dy * orientation[1][2] + dz * orientation[2][2];
+
+        // Check overlap including radius
+        if (fabs(ox) > half_ext[0] + r || fabs(oy) > half_ext[1] + r || fabs(oz) > half_ext[2] + r) {
+            continue;
+        }
+         
+        out_gtos[num_gtos++] = in_gtos[i];
+    }
+
     return num_gtos;
 }

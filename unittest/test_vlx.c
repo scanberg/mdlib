@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 
 #include <md_vlx.h>
 #include <core/md_allocator.h>
@@ -135,16 +135,11 @@ UTEST(vlx, correctness) {
     float* vol_data = md_arena_allocator_push(arena, bytes);
     MEMSET(vol_data, 0, bytes);
 
-    float* ref_data = md_arena_allocator_push(arena, bytes);
-    MEMSET(ref_data, 0, bytes);
-
     md_grid_t grid = (md_grid_t) {
-        .data = vol_data,
-        .dim = {vol_dim, vol_dim, vol_dim},
+        .orientation = mat3_ident(),
         .origin = {-5.744767, -5.744767, -5.522177},
-        .step_x = {0.143619, 0, 0},
-        .step_y = {0, 0.143619, 0},
-        .step_z = {0, 0, 0.143619},
+        .spacing = {0.143619, 0.143619, 0.143619},
+        .dim = {vol_dim, vol_dim, vol_dim},
     };
 
     size_t mo_idx = md_vlx_scf_homo_idx(vlx, MD_VLX_MO_TYPE_ALPHA);
@@ -160,32 +155,28 @@ UTEST(vlx, correctness) {
     double* mo_coeffs = md_arena_allocator_push(arena, sizeof(double) * num_mo_coeffs);
     extract_mo_coefficients(mo_coeffs, &vlx->scf.alpha, mo_idx);
 
-    int beg_idx[3] = {0, 0, 0};
-    int end_idx[3] = {grid.dim[0], grid.dim[1], grid.dim[2]};
+    md_gto_grid_evaluate(vol_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
-    md_gto_grid_evaluate(&grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+    mat4_t index_to_world = md_grid_index_to_world(&grid);
 
     for (int iz = 0; iz < grid.dim[2]; ++iz) {
-        double z = grid.origin[2] + grid.step_z[2] * iz;
-        z *= BOHR_TO_ANGSTROM;
         for (int iy = 0; iy < grid.dim[1]; ++iy) {
-            double y = grid.origin[1] + grid.step_y[1] * iy;
-            y *= BOHR_TO_ANGSTROM;
             for (int ix = 0; ix < grid.dim[0]; ++ix) {
-                double x = grid.origin[0] + grid.step_x[0] * ix;
-                x *= BOHR_TO_ANGSTROM;
+                vec4_t pos = mat4_mul_vec4(index_to_world, vec4_set(ix, iy, iz, 1.0));
+                pos = vec4_mul_f(pos, BOHR_TO_ANGSTROM);
 
-                size_t num_phi = compPhiAtomicOrbitals(phi, cap_phi, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, x, y, z);
+                size_t num_phi = compPhiAtomicOrbitals(phi, cap_phi, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, pos.x, pos.y, pos.z);
 
                 ASSERT(num_phi == num_mo_coeffs);
-                double psi = 0.0;
+                double ref_psi = 0.0;
                 for (size_t i = 0; i < num_mo_coeffs; ++i) {
-                    psi += mo_coeffs[i] * phi[i]; 
+                    ref_psi += mo_coeffs[i] * phi[i]; 
                 }
 
                 int idx = iz * grid.dim[1] * grid.dim[0] + iy * grid.dim[0] + ix;
-                float grid_psi = grid.data[idx];
-                ref_data[idx] = (float)psi;
+                float grid_psi = vol_data[idx];
+                
+                EXPECT_NEAR(ref_psi, grid_psi, 1.0e-5);
             }
         }
     }
@@ -243,22 +234,19 @@ UTEST(vlx, minimal_example) {
     vec3_t origin = vec3_add(min_aabb, vec3_mul_f(step_size, 0.5f));
 
     // Allocate data for storing the result
-    size_t bytes = sizeof(float) * vol_dim * vol_dim * vol_dim;
-    float* vol_data = md_arena_allocator_push(arena, bytes);
-    MEMSET(vol_data, 0, bytes);
+    float* vol_data = md_arena_allocator_push(arena, sizeof(float) * vol_dim * vol_dim * vol_dim);
+    MEMSET(vol_data, 0, sizeof(float) * vol_dim * vol_dim * vol_dim);
 
     // Setup the grid structure that control how we aim to sample over space
     md_grid_t grid = (md_grid_t) {
-        .data = vol_data,
+        .orientation = mat3_ident(),
+        .origin = origin,
+        .spacing = step_size,
         .dim = {vol_dim, vol_dim, vol_dim},
-        .origin = {origin.x, origin.y, origin.z},
-        .step_x = {step_size.x, 0, 0},
-        .step_y = {0, step_size.y, 0},
-        .step_z = {0, 0, step_size.z},
     };
 
     // Evaluate the GTOs over the supplied grid
-    md_gto_grid_evaluate(&grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
+    md_gto_grid_evaluate(vol_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
     // Define a subrange over the center of the volume
     int range_min = vol_dim / 2 - vol_dim / 8;
