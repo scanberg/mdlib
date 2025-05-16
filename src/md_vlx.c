@@ -128,6 +128,11 @@ typedef struct md_vlx_rsp_t {
 	md_vlx_orbital_t* nto;
 } md_vlx_rsp_t;
 
+typedef struct md_vlx_vib_t {
+	size_t number_of_normal_modes;
+	dvec3_t** normal_modes;
+} md_vlx_vib_t;
+
 typedef struct md_vlx_t {
 	str_t  basis_set_ident;
 	str_t  dft_func_label;
@@ -148,6 +153,7 @@ typedef struct md_vlx_t {
 	// Data blocks
 	md_vlx_scf_t scf;
 	md_vlx_rsp_t rsp;
+	md_vlx_vib_t vib;
 	basis_set_t basis_set;
 
 	struct md_allocator_i* arena;
@@ -1522,6 +1528,52 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
+static herr_t normal_mode_iter(hid_t group_id, const char *name, const H5L_info_t *info, void *user_data) {
+    ASSERT(user_data);
+    (void)info;  // Unused in this example
+    md_vlx_t* vlx = (md_vlx_t*)user_data;
+    size_t dims[2] = {vlx->number_of_atoms, 3};
+
+    dvec3_t* data = md_array_create(dvec3_t, num_atoms, vlx->arena);
+    MEMSET(data, 0, sizeof(dvec3_t) * num_atoms);
+
+    if (!h5_read_dataset_data(data, dims, 2, handle, H5T_NATIVE_DOUBLE, name)) {
+    	MD_LOG_ERROR("Failed to extract dataset");
+    	md_array_free(data, vlx->arena);
+		return -1;
+	}
+
+	// Success, append ata
+	md_array_push(vlx->vib.normal_modes, data);
+	vlx->vib.normal_modes += 1;
+
+    return 0; // Continue iteration
+}
+
+static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
+	if (vlx->number_of_atoms == 0) {
+		MD_LOG_ERROR("Missing number of atoms");
+		return false;
+	}
+
+	// Normal Modes
+    herr_t status = H5Literate2(
+        handle,                   	// Group ID
+        H5_INDEX_CRT_ORDER,
+        H5_ITER_INC,             	// Iteration order
+        NULL,                       // Start from beginning
+        normal_mode_iter,         	// Callback function
+        vlx
+    );
+
+    if (status < 0) {
+    	MD_LOG_ERROR("Failed to iterate over normal modes");
+    	return false;
+    }
+
+	return true;
+}
+
 static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 	ASSERT(vlx);
 
@@ -2182,6 +2234,22 @@ const double* md_vlx_rsp_nto_energy(const md_vlx_t* vlx, size_t nto_idx) {
 	if (vlx) {
 		if (vlx->rsp.nto && nto_idx < vlx->rsp.number_of_excited_states) {
 			return vlx->rsp.nto[nto_idx].energy.data;
+		}
+	}
+	return NULL;
+}
+
+size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->vib.number_of_normal_modes;
+	}
+	return 0;
+}
+
+const dvec3_t* md_vlx_vib_normal_mode_data(const struct md_vlx_t* vlx, size_t normal_mode_idx) {
+	if (vlx) {
+		if (normal_mode_idx < vlx->vib.number_of_normal_modes) {
+			return vlx->vib.normal_modes[normal_mode_idx];
 		}
 	}
 	return NULL;

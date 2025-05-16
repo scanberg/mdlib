@@ -93,7 +93,8 @@ const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_i
 const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
 
-
+size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx);
+const dvec3_t* md_vlx_vib_normal_mode_data(const struct md_vlx_t* vlx, size_t normal_mode_idx);
 
 // Extract Natural Transition Orbitals GTOs
 // nto_idx: The index of the excited state (0-based indexing)
