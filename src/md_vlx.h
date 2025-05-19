@@ -95,7 +95,7 @@ const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx)
 
 // VIB
 // Many of the fields within the VIB portion has a length given by the degrees of freedom (D)
-size_t md_vlx_vib_degrees_of_freedom(const struct md_vlx_t* vlx);
+size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx);
 
 // Returns arrays of length D
 const double* md_vlx_vib_ir_intensities(const struct md_vlx_t* vlx); 	// Unit: km/mol
@@ -108,6 +108,7 @@ const double* md_vlx_vib_force_constants(const struct md_vlx_t* vlx);	// Unit: m
 const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx);
 
 size_t md_vlx_vib_num_raman_activity(const struct md_vlx_t* vlx);
+
 // Returns array of length D
 const double*  md_vlx_vib_raman_activity(const struct md_vlx_t* vlx, size_t idx);
 

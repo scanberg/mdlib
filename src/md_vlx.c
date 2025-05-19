@@ -24,6 +24,7 @@ typedef enum {
 	VLX_FLAG_CORE = 1,
 	VLX_FLAG_SCF  = 2,
 	VLX_FLAG_RSP  = 4,
+	VLX_FLAG_VIB  = 8,
 	VLX_FLAG_ALL  = -1,
 } vlx_flags_t;
 
@@ -129,7 +130,7 @@ typedef struct md_vlx_rsp_t {
 } md_vlx_rsp_t;
 
 typedef struct md_vlx_vib_t {
-	size_t degrees_of_freedom;
+	size_t number_of_normal_modes;
 	double* force_constants;
 	double* ir_intensities;
 	double* frequencies;
@@ -1532,27 +1533,6 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static herr_t normal_mode_iter(hid_t handle, const char *name, const H5L_info_t *info, void *user_data) {
-    ASSERT(user_data);
-    (void)info;  // Unused in this example
-    md_vlx_t* vlx = (md_vlx_t*)user_data;
-    size_t dims[2] = {vlx->number_of_atoms, 3};
-
-    dvec3_t* data = md_array_create(dvec3_t, vlx->number_of_atoms, vlx->arena);
-    MEMSET(data, 0, sizeof(dvec3_t) * vlx->number_of_atoms);
-
-    if (!h5_read_dataset_data(data, dims, 2, handle, H5T_NATIVE_DOUBLE, name)) {
-    	MD_LOG_ERROR("Failed to extract dataset");
-    	md_array_free(data, vlx->arena);
-		return -1;
-	}
-
-	// Success, append ata
-	md_array_push(vlx->vib.normal_modes, data, vlx->arena);
-
-    return 0; // Continue iteration
-}
-
 static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 	if (vlx->number_of_atoms == 0) {
 		MD_LOG_ERROR("Missing number of atoms");
@@ -1585,21 +1565,31 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	vlx->vib.degrees_of_freedom = dim[1];
+	vlx->vib.number_of_normal_modes = dim[1];
 
 	// Normal Modes
-    herr_t status = H5Literate2(
-        handle,                   	// Group ID
-        H5_INDEX_CRT_ORDER,
-        H5_ITER_INC,             	// Iteration order
-        NULL,                       // Start from beginning
-        normal_mode_iter,         	// Callback function
-        vlx
-    );
+	if (H5Lexists(handle, "normal_modes", H5P_DEFAULT) > 0) {
+        hid_t normal_modes_id = H5Gopen(handle, "normal_modes", H5P_DEFAULT);
+        if (normal_modes_id != H5I_INVALID_HID) {
+            char lbl[32];
+            size_t data_dim[2] = {vlx->number_of_atoms, 3};
 
-    if (status < 0) {
-    	MD_LOG_ERROR("Failed to iterate over normal modes");
-    	return false;
+            for (size_t i = 0; i < vlx->vib.number_of_normal_modes; ++i) {
+                snprintf(lbl, sizeof(lbl), "%zu", i + 1);
+
+                dvec3_t* data = md_array_create(dvec3_t, vlx->number_of_atoms, vlx->arena);
+                MEMSET(data, 0, sizeof(dvec3_t) * vlx->number_of_atoms);
+
+                if (!h5_read_dataset_data(data, data_dim, 2, normal_modes_id, H5T_NATIVE_DOUBLE, lbl)) {
+                    MD_LOG_ERROR("Failed to extract dataset in '%s' normal mode", lbl);
+                    md_array_free(data, vlx->arena);
+                    return false;
+                }
+
+                // Success, append ata
+                md_array_push(vlx->vib.normal_modes, data, vlx->arena);
+            }
+        }
     }
 
 	return true;
@@ -1745,6 +1735,23 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
+	// VIB
+    if (flags & VLX_FLAG_VIB) {
+        if (H5Lexists(file_id, "vib", H5P_DEFAULT) > 0) {
+            hid_t vib_id = H5Gopen(file_id, "vib", H5P_DEFAULT);
+            if (vib_id != H5I_INVALID_HID) {
+                result = h5_read_vib_data(vlx, vib_id);
+                H5Gclose(vib_id);
+                if (!result) goto done;
+            }
+        }
+
+		// @TODO, @HACK, @REMOVE: This is just to get VIB data loaded
+        // Which currently write alot of restart data into the rsp section
+        // clear
+        flags &= ~VLX_FLAG_RSP;
+    }
+
 	// RSP
 	if (flags & VLX_FLAG_RSP) {
 		if (H5Lexists(file_id, "rsp", H5P_DEFAULT) > 0) {
@@ -1756,6 +1763,8 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			}
 		}
 	}
+
+
 
 	result = true;
 done:
@@ -2270,21 +2279,65 @@ const double* md_vlx_rsp_nto_energy(const md_vlx_t* vlx, size_t nto_idx) {
 	return NULL;
 }
 
-size_t md_vlx_vib_degrees_of_freedom(const struct md_vlx_t* vlx) {
+size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx) {
 	if (vlx) {
-		return vlx->vib.degrees_of_freedom;
+		return vlx->vib.number_of_normal_modes;
 	}
 	return 0;
 }
 
-const dvec3_t* md_vlx_vib_normal_mode_data(const struct md_vlx_t* vlx, size_t idx) {
+const double* md_vlx_vib_ir_intensities(const md_vlx_t* vlx) {
+    if (vlx) {
+        return vlx->vib.ir_intensities;
+	}
+	return NULL;
+}
+
+const double* md_vlx_vib_frequencies(const md_vlx_t* vlx) {
+    if (vlx) {
+        return vlx->vib.frequencies;
+    }
+    return NULL;
+}
+
+const double* md_vlx_vib_reduced_masses(const md_vlx_t* vlx) {
+    if (vlx) {
+        return vlx->vib.reduced_masses;
+    }
+    return NULL;
+}
+
+const double* md_vlx_vib_force_constants(const md_vlx_t* vlx) {
+    if (vlx) {
+        return vlx->vib.force_constants;
+    }
+    return NULL;
+}
+
+const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx) {
 	if (vlx) {
-		if (idx < vlx->vib.degrees_of_freedom) {
+		if (idx < vlx->vib.number_of_normal_modes) {
 			return vlx->vib.normal_modes[idx];
 		}
 	}
 	return NULL;
 }
+
+/*
+size_t md_vlx_vib_num_raman_activity(const md_vlx_t* vlx) {
+    if (vlx) {
+        return vlx->vib.num_raman;
+	}
+    return 0;
+}
+
+const double* md_vlx_vib_raman_activity(const md_vlx_t* vlx, size_t idx) {
+    if (vlx) {
+        return vlx->vib.raman_activity;
+	}
+    return NULL;
+}
+*/
 
 md_vlx_t* md_vlx_create(md_allocator_i* backing) {
 	ASSERT(backing);
