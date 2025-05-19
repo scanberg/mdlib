@@ -93,8 +93,23 @@ const double*  md_vlx_rsp_nto_occupancy(const struct md_vlx_t* vlx, size_t nto_i
 const double*  md_vlx_rsp_nto_lambdas(const md_vlx_t* vlx, size_t nto_idx);
 const double*  md_vlx_rsp_nto_energy(const struct md_vlx_t* vlx, size_t nto_idx);
 
-size_t md_vlx_vib_number_of_normal_modes(const struct md_vlx_t* vlx);
-const dvec3_t* md_vlx_vib_normal_mode_data(const struct md_vlx_t* vlx, size_t normal_mode_idx);
+// VIB
+// Many of the fields within the VIB portion has a length given by the degrees of freedom (D)
+size_t md_vlx_vib_degrees_of_freedom(const struct md_vlx_t* vlx);
+
+// Returns arrays of length D
+const double* md_vlx_vib_ir_intensities(const struct md_vlx_t* vlx); 	// Unit: km/mol
+const double* md_vlx_vib_frequencies(const struct md_vlx_t* vlx);		// Unit: cm^-1
+const double* md_vlx_vib_reduced_masses(const struct md_vlx_t* vlx);	// Unit: amu
+const double* md_vlx_vib_force_constants(const struct md_vlx_t* vlx);	// Unit: mdyne/Å (millidyne / Ångström)
+
+// The normal mode for each atom
+// Returns array of length N (Number of atoms)
+const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx);
+
+size_t md_vlx_vib_num_raman_activity(const struct md_vlx_t* vlx);
+// Returns array of length D
+const double*  md_vlx_vib_raman_activity(const struct md_vlx_t* vlx, size_t idx);
 
 // Extract Natural Transition Orbitals GTOs
 // nto_idx: The index of the excited state (0-based indexing)
