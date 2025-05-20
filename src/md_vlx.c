@@ -86,6 +86,7 @@ typedef struct md_vlx_2d_data_t {
 
 typedef struct md_vlx_orbital_t {
 	md_vlx_2d_data_t coefficients;
+    md_vlx_2d_data_t density;
 	md_vlx_1d_data_t energy;
 	md_vlx_1d_data_t occupancy;
 	// In VeloxChem there are two additional fields present in the case of molecular orbitals which are D, and F
@@ -358,10 +359,10 @@ static basis_func_range_t basis_get_atomic_angl_basis_func_range(const basis_set
 }
 
 typedef struct basis_func_t {
-	int type;
-	int count;
-	double* exponents;
-	double* normalization_coefficients;
+    int type;
+    int count;
+    double* exponents;
+    double* normalization_coefficients;
 } basis_func_t;
 
 static inline basis_func_t get_basis_func(const basis_set_t* basis_set, int basis_func_idx) {
@@ -372,6 +373,24 @@ static inline basis_func_t get_basis_func(const basis_set_t* basis_set, int basi
 		.exponents = basis_set->param.exponents + func.param_offset,
 		.normalization_coefficients = basis_set->param.normalization_coefficients + func.param_offset,
 	};
+}
+
+static size_t basis_set_extract_atomic_basis_func_angl(basis_func_t* out_funcs, size_t cap_funcs, const basis_set_t* basis_set, int atomic_number, int angl) {
+    size_t count = 0;
+
+    basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_number);
+    if (atom_basis) {
+        int beg = atom_basis->basis_func_offset;
+        int end = atom_basis->basis_func_offset + atom_basis->basis_func_count;
+        for (int i = beg; i < end; ++i) {
+            if (count == cap_funcs) break;
+            if (basis_set->basis_func.data[i].type == angl) {
+                out_funcs[count++] = get_basis_func(basis_set, i);
+            }
+        }
+    }
+
+    return count;
 }
 
 // This is a ported reference implementation from VeloxChem found in VisualizationDriver.cpp
@@ -386,6 +405,8 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, num_atoms);
 
 	size_t count = 0;
+
+	basis_func_t basis_funcs[128];
 
 	// azimuthal quantum number: s,p,d,f,...
 	for (int aoidx = 0, angl = 0; angl <= max_angl; angl++) {
@@ -423,11 +444,11 @@ static size_t compPhiAtomicOrbitals(double* out_phi, size_t phi_cap,
 				// process atomic orbitals
 				int idelem = atomic_numbers[atomidx];
 
-				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(basis_set, idelem, angl);
-				for (int funcidx = range.beg; funcidx < range.end; funcidx++, aoidx++) {
+				size_t num_basis_funcs = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
+				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++, aoidx++) {
 					double phiao = 0.0;
 
-					basis_func_t bf = get_basis_func(basis_set, funcidx);
+					basis_func_t bf = basis_funcs[funcidx];
 
 					// process primitives
 					for (int iprim = 0; iprim < bf.count; iprim++) {
@@ -460,8 +481,10 @@ static size_t vlx_pgto_count(const md_vlx_t* vlx) {
 
 	size_t count = 0;
 
+	basis_func_t basis_funcs[128];
+
 	// azimuthal quantum number: s,p,d,f,...
-	for (int aoidx = 0, angl = 0; angl <= max_angl; angl++) {
+	for (int angl = 0; angl <= max_angl; angl++) {
 		//CSphericalMomentum sphmom(angl);
 		int nsph = spherical_momentum_num_components(angl);
 		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
@@ -472,11 +495,10 @@ static size_t vlx_pgto_count(const md_vlx_t* vlx) {
 				int idelem = vlx->atomic_numbers[atomidx];
 
 				// process atomic orbitals
-				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(&vlx->basis_set, idelem, angl);
-				for (int funcidx = range.beg; funcidx < range.end; funcidx++, aoidx++) {
+                size_t num_basis_funcs = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), &vlx->basis_set, idelem, angl);
+				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
 					// process primitives
-					basis_func_t basis_func = get_basis_func(&vlx->basis_set, funcidx);
-					count += basis_func.count * ncomp;
+					count += basis_funcs[funcidx].count * ncomp;
 				}
 			}
 		}
@@ -491,6 +513,8 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 
 	size_t count = 0;
 	size_t mo_coeff_idx = 0;
+
+    basis_func_t basis_funcs[128];
 
 	// azimuthal quantum number: s,p,d,f,...
 	for (int angl = 0; angl <= max_angl; angl++) {
@@ -525,13 +549,14 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 
 				int idelem = atomic_numbers[atomidx];
 
+				size_t num_basis_funcs = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
+
 				// process atomic orbitals
-				basis_func_range_t range = basis_get_atomic_angl_basis_func_range(basis_set, idelem, angl);
-				for (int funcidx = range.beg; funcidx < range.end; funcidx++) {
+				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
 					const double mo_coeff = mo_coeffs ? mo_coeffs[mo_coeff_idx++] : 1.0;
 
 					// process primitives
-					basis_func_t basis_func = get_basis_func(basis_set, funcidx);
+					basis_func_t basis_func = basis_funcs[funcidx];
 					ASSERT(basis_func.type == angl);
 					const int        nprims = basis_func.count;
 					const double* exponents = basis_func.exponents;
@@ -1322,6 +1347,10 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	size_t dim[2];
 	h5_read_dataset_dims(dim, 2, handle, "C_alpha");
 
+	// Density dimensions (May differ from dim is always square)
+	size_t den_dim[2];
+    h5_read_dataset_dims(den_dim, 2, handle, "D_alpha");
+
 	md_array_resize(vlx->scf.alpha.coefficients.data, dim[0] * dim[1], vlx->arena);
 	MEMCPY(vlx->scf.alpha.coefficients.size, dim, sizeof(dim));
 
@@ -1330,6 +1359,9 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 
 	md_array_resize(vlx->scf.alpha.occupancy.data, dim[1], vlx->arena);
 	vlx->scf.alpha.occupancy.size = dim[1];
+
+	md_array_resize(vlx->scf.alpha.density.data, den_dim[0] * den_dim[1], vlx->arena);
+    MEMCPY(vlx->scf.alpha.density.size, den_dim, sizeof(den_dim));
 
 	// Extract alpha data
 	if (!h5_read_dataset_data(vlx->scf.alpha.coefficients.data, vlx->scf.alpha.coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, "C_alpha")) {
@@ -1341,6 +1373,9 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 	if (!h5_read_dataset_data(vlx->scf.alpha.occupancy.data, &vlx->scf.alpha.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_alpha")) {
 		return false;
 	}
+    if (!h5_read_dataset_data(vlx->scf.alpha.density.data, vlx->scf.alpha.density.size, 2, handle, H5T_NATIVE_DOUBLE, "D_alpha")) {
+        return false;
+    }
 
 	if (vlx->scf.type == MD_VLX_SCF_TYPE_UNRESTRICTED) {
 		md_array_resize(vlx->scf.beta.coefficients.data, dim[0] * dim[1], vlx->arena);
@@ -1352,6 +1387,9 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		md_array_resize(vlx->scf.beta.occupancy.data, dim[1], vlx->arena);
 		vlx->scf.beta.occupancy.size = dim[1];
 
+		md_array_resize(vlx->scf.beta.density.data, den_dim[0] * den_dim[0], vlx->arena);
+        MEMCPY(vlx->scf.beta.density.size, den_dim, sizeof(den_dim));
+
 		// Extract beta data
 		if (!h5_read_dataset_data(vlx->scf.beta.coefficients.data, vlx->scf.beta.coefficients.size, 2, handle, H5T_NATIVE_DOUBLE, "C_beta")) {
 			return false;
@@ -1362,10 +1400,12 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		if (!h5_read_dataset_data(vlx->scf.beta.occupancy.data, &vlx->scf.beta.occupancy.size, 1, handle, H5T_NATIVE_DOUBLE, "occ_beta")) {
 			return false;
 		}
+        if (!h5_read_dataset_data(vlx->scf.beta.density.data, vlx->scf.beta.density.size, 2, handle, H5T_NATIVE_DOUBLE, "D_beta")) {
+            return false;
+        }
 	} else {
 		// Shallow copy fields from Alpha
 		MEMCPY(&vlx->scf.beta, &vlx->scf.alpha, sizeof(md_vlx_orbital_t));
-
 		if (vlx->scf.type == MD_VLX_SCF_TYPE_RESTRICTED_OPENSHELL) {
 			vlx->scf.beta.occupancy.data = 0;
 			md_array_resize(vlx->scf.beta.occupancy.data, vlx->scf.beta.occupancy.size, vlx->arena);
@@ -1375,8 +1415,9 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		}
 	}
 
-	md_array_resize(vlx->scf.S.data, dim[0] * dim[1], vlx->arena);
-	MEMCPY(vlx->scf.S.size, dim, sizeof(dim));
+	// S matrix is overlap (notice dimension is the same as D)
+	md_array_resize(vlx->scf.S.data, den_dim[0] * den_dim[1], vlx->arena);
+    MEMCPY(vlx->scf.S.size, den_dim, sizeof(den_dim));
 
 	if (!h5_read_dataset_data(vlx->scf.S.data, vlx->scf.S.size, 2, handle, H5T_NATIVE_DOUBLE, "S")) {
 		return false;
