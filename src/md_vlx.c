@@ -1967,6 +1967,47 @@ done:
 	return result;
 }
 
+#define BAKE_STR(str) {str "", sizeof(str) - 1}
+
+static inline str_t resolve_basis_set_ident(str_t input) {
+	struct map_t {
+        str_t in;
+        str_t out;
+	};
+
+	static const struct map_t alias_table[] = {
+        {BAKE_STR("6-31G*"),			BAKE_STR("6-31G_D_")},
+		{BAKE_STR("6-31G**"),			BAKE_STR("6-31G_D,P_")},
+		{BAKE_STR("6-31+G*"),			BAKE_STR("6-31+G_D_")},
+        {BAKE_STR("6-31+G**"),			BAKE_STR("6-31+G_D,P_")},
+		{BAKE_STR("6-31++G*"),			BAKE_STR("6-31++G_D_")},
+		{BAKE_STR("6-31++G**"),			BAKE_STR("6-31++G_D,P_")},
+        {BAKE_STR("6-311G*"),			BAKE_STR("6-311G_D_")},
+		{BAKE_STR("6-311G**"),			BAKE_STR("6-311G_D,P_")},
+		{BAKE_STR("6-311+G*"),			BAKE_STR("6-311+G_D_")},
+        {BAKE_STR("6-311+G**"),			BAKE_STR("6-311+G_D,P_")},
+		{BAKE_STR("6-311++G*"),			BAKE_STR("6-311++G_D_")},
+		{BAKE_STR("6-311++G**"),		BAKE_STR("6-311++G_D,P_")},
+        {BAKE_STR("6-31G(2DF,P)"),		BAKE_STR("6-31G_2DF,P_")},
+		{BAKE_STR("6-31G(3DF,3PD)"),	BAKE_STR("6-31G_3DF,3PD_")},
+		{BAKE_STR("6-311G(2DF,2PD)"),	BAKE_STR("6-311G_2DF,2PD_")},
+        {BAKE_STR("6-311+G(2D,P)"),		BAKE_STR("6-311+G_2D,P_")},
+		{BAKE_STR("6-311++G(2D,2P)"),	BAKE_STR("6-311++G_2D,2P_")},
+		{BAKE_STR("6-311++G(3DF,3PD)"),	BAKE_STR("6-311++G_3DF,3PD_")},
+        {BAKE_STR("DEF2-SV(P)"),		BAKE_STR("DEF2-SV_P_")},
+    };
+
+	for (size_t i = 0; i < ARRAY_SIZE(alias_table); ++i) {
+        if (str_eq(input, alias_table[i].in)) {
+            return alias_table[i].out;
+		}
+	}
+
+	return input;
+}
+
+#undef BAKE_STR
+
 // Internal version to control what portions to load
 static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 	size_t temp_pos = md_temp_get_pos();
@@ -2004,7 +2045,9 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 		md_strb_push_str(&sb, exe_dir);
 
-		md_strb_fmt(&sb, "%s/" STR_FMT, MD_VLX_BASIS_FOLDER, STR_ARG(vlx->basis_set_ident));
+		str_t basis_set = resolve_basis_set_ident(vlx->basis_set_ident);
+
+		md_strb_fmt(&sb, "%s/" STR_FMT, MD_VLX_BASIS_FOLDER, STR_ARG(basis_set));
 		md_file_o* basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
 		if (basis_file) {
 			md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
@@ -2024,7 +2067,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			}
 			md_strb_reset(&sb);
 			md_strb_push_str(&sb, folder);
-			md_strb_push_str(&sb, vlx->basis_set_ident);
+			md_strb_push_str(&sb, basis_set);
 			basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
 			if (basis_file) {
 				md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
@@ -2037,7 +2080,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 				normalize_basis_set(&vlx->basis_set);
 			}
 			else {
-				MD_LOG_ERROR("Could not find basis file corresponding to identifier: '"STR_FMT"'", STR_ARG(vlx->basis_set_ident));
+                MD_LOG_ERROR("Could not find basis file corresponding to identifier: '" STR_FMT "'", STR_ARG(basis_set));
 				goto done;
 			}
 		}
