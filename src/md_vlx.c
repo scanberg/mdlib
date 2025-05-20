@@ -334,30 +334,6 @@ static inline const lmn_t* cartesian_angular_momentum(int angl) {
 	}
 }
 
-typedef struct basis_func_range_t {
-	int beg;
-	int end;
-} basis_func_range_t;
-
-static basis_func_range_t basis_get_atomic_angl_basis_func_range(const basis_set_t* basis_set, int atomic_number, int angl) {
-	basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_number);
-	basis_func_range_t range = {0};
-
-	if (atom_basis) {
-		int beg = atom_basis->basis_func_offset;
-		int end = atom_basis->basis_func_offset + atom_basis->basis_func_count;
-		for (int i = beg; i < end; ++i) {
-			int type = basis_set->basis_func.data[i].type;
-			if (type == angl) {
-				range.beg = (range.end == 0) ? i : range.beg;
-				range.end = i + 1;
-			}
-		}
-	}
-
-	return range;
-}
-
 typedef struct basis_func_t {
     int type;
     int count;
