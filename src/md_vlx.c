@@ -1551,43 +1551,46 @@ static bool h5_read_rsp_data(md_vlx_t* vlx, hid_t handle) {
 }
 
 static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
-	if (vlx->number_of_atoms == 0) {
-		MD_LOG_ERROR("Missing number of atoms");
-		return false;
-	}
-
 	// @TODO(This will likely be exposed as its own variable in the future, for now we extract the length from one of the fields)
 	uint64_t dim[2];
-	if (!h5_read_dataset_dims(dim, 2, handle, "force_constants")) {
+	int num_dim = h5_read_dataset_dims(dim, 2, handle, "force_constants");
+	if (num_dim <= 0) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.force_constants, dim[1], vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.force_constants, dim, 2, handle, H5T_NATIVE_DOUBLE, "force_constants")) {
+	// This is a fix because the input data in one version is supplied as a 2D object
+	size_t len = (num_dim == 1) ? dim[0] : dim[1];
+	vlx->vib.number_of_normal_modes = len;
+
+	md_array_resize(vlx->vib.force_constants, len, vlx->arena);
+	if (!h5_read_dataset_data(vlx->vib.force_constants, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "force_constants")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.ir_intensities, dim[1], vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.ir_intensities, dim, 2, handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
+	md_array_resize(vlx->vib.ir_intensities, len, vlx->arena);
+	if (!h5_read_dataset_data(vlx->vib.ir_intensities, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "ir_intensities")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.frequencies, dim[1], vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.frequencies, dim, 2, handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
+	md_array_resize(vlx->vib.frequencies, len, vlx->arena);
+	if (!h5_read_dataset_data(vlx->vib.frequencies, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "vib_frequencies")) {
 		return false;
 	}
 
-	md_array_resize(vlx->vib.reduced_masses, dim[1], vlx->arena);
-	if (!h5_read_dataset_data(vlx->vib.reduced_masses, dim, 2, handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
+	md_array_resize(vlx->vib.reduced_masses, len, vlx->arena);
+	if (!h5_read_dataset_data(vlx->vib.reduced_masses, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "reduced_masses")) {
 		return false;
 	}
-
-	vlx->vib.number_of_normal_modes = dim[1];
 
 	// Normal Modes
 	if (H5Lexists(handle, "normal_modes", H5P_DEFAULT) > 0) {
         hid_t normal_modes_id = H5Gopen(handle, "normal_modes", H5P_DEFAULT);
         if (normal_modes_id != H5I_INVALID_HID) {
+			if (vlx->number_of_atoms == 0) {
+				MD_LOG_ERROR("Missing number of atoms, is required for normal modes");
+				return false;
+			}
+
             char lbl[32];
             size_t data_dim[2] = {vlx->number_of_atoms, 3};
 

@@ -50,13 +50,17 @@
 #endif
 #endif
 
+#ifdef  __cplusplus
+#define FALLTHROUGH  [[fallthrough]]
+#else
 #if MD_COMPILER_MSVC
 #ifndef FALLTHROUGH
-#define FALLTHROUGH 
+#define FALLTHROUGH
 #endif
 #else
 #ifndef FALLTHROUGH
 #define FALLTHROUGH __attribute__((fallthrough))
+#endif
 #endif
 #endif
 
