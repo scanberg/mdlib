@@ -595,7 +595,7 @@ static size_t do_magic(vec3_t aabb_min, vec3_t aabb_max, double value_cutoff, co
 
 	uint32_t coeff_idx = 0; // same as the cgto_idx
 
-
+	size_t num_cgtos = 0;
 
 	// azimuthal quantum number: s,p,d,f,...
 	for (int angl = 0; angl <= max_angl; angl++) {
@@ -673,21 +673,24 @@ static size_t do_magic(vec3_t aabb_min, vec3_t aabb_max, double value_cutoff, co
 							float r2 = (float)(radius * radius);
 							if (d2 < r2) {
 								//printf("%i %6.3f, %6.3f    ijkl: [%i,%i,%i,%i]\n", gto.atom_idx, gto.alpha, gto.coeff, (int)gto.i, (int)gto.j, (int)gto.k, (int)gto.l);
-								md_array_push(gtos, gto, arena);
+								//md_array_push(gtos, gto, arena);
+								num_cgtos += 1;
+								goto next_cgto;
 							}
 						}
 					}
-
+				next_cgto:
+					while (0) {};
 				}
 			}
 		}
 	}
 
-	size_t result = md_array_size(gtos);
+	//size_t result = md_array_size(gtos);
 
 	md_vm_arena_destroy(arena);
 
-	return result;
+	return num_cgtos;
 }
 
 static inline double compute_overlap(basis_func_t func, int i, int j) {
@@ -2392,6 +2395,9 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 
 		aabb_min = vec3_mul_f(aabb_min, ANGSTROM_TO_BOHR);
 		aabb_max = vec3_mul_f(aabb_max, ANGSTROM_TO_BOHR);
+		const float pad = 5.0f;
+		aabb_min = vec3_sub_f(aabb_min, pad);
+		aabb_max = vec3_sub_f(aabb_max, pad);
 		vec3_t ext = vec3_sub(aabb_max, aabb_min);
 
 		const float samples_per_unit_length = 8 * BOHR_TO_ANGSTROM;
@@ -2402,26 +2408,44 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 		vec3_t voxel_ext = vec3_div(ext, vec3_set(dim[0], dim[1], dim[2]));
 
 		//const double* den_matrix = vlx->scf.alpha.density.data;
-		//size_t den_dim = vlx->scf.alpha.density.size[0];
+		size_t den_dim = vlx->scf.alpha.density.size[0];
 
 		printf("dimensions of volume: %i %i %i\n", dim[0], dim[1], dim[2]);
 
 		size_t non_zero_blocks = 0;
+		size_t min_gtos_per_region = INT64_MAX;
+		size_t max_gtos_per_region = 0;
+
+		size_t sparse_matrix_bytes = 0;
+
 		// Iterate over all 8x8x8 subregions
 		for (int z = 0; z < dim[2]; z += 8) {
 			for (int y = 0; y < dim[1]; y += 8) {
 				for (int x = 0; x < dim[0]; x += 8) {
 					vec3_t local_min = vec3_add(aabb_min, vec3_mul(vec3_set(x + 0, y + 0, z + 0), voxel_ext));
 					vec3_t local_max = vec3_add(aabb_min, vec3_mul(vec3_set(x + 8, y + 8, z + 8), voxel_ext));
-					size_t num_gtos = do_magic(local_min, local_max, cutoff, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
-					non_zero_blocks += (num_gtos > 0) ? 1 : 0;
+					size_t num_gtos  = do_magic(local_min, local_max, cutoff, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
+					if (num_gtos > 0) {
+						min_gtos_per_region = MIN(min_gtos_per_region, num_gtos);
+						max_gtos_per_region = MAX(max_gtos_per_region, num_gtos);
+						non_zero_blocks += 1;
+					}
+
+					sparse_matrix_bytes += num_gtos * num_gtos * sizeof(float);
 				}
 			}
 		}
 
+		size_t dense_matrix_bytes = den_dim * den_dim * sizeof(float);
+
 		size_t total = (size_t)dim[0] * (size_t)dim[1] * (size_t)dim[2] / 512;
 		printf("Number of 8x8x8 blocks in total: %zu\n", total);
 		printf("Number of populated 8x8x8 blocks: %zu \n", non_zero_blocks);
+		printf("Min CGTOs per region: %zu \n", min_gtos_per_region);
+		printf("Max CGTOs per region: %zu \n", max_gtos_per_region);
+
+		printf("Dense matrix bytes: %zu \n", dense_matrix_bytes);
+		printf("Spares matrix bytes: %zu \n", sparse_matrix_bytes);
 	}
 
 	size_t temp_pos = md_temp_get_pos();
