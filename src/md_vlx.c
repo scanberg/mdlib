@@ -1764,12 +1764,11 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
                 H5Gclose(vib_id);
                 if (!result) goto done;
             }
+			// @TODO, @HACK, @REMOVE: This is just to get VIB data loaded
+			// Which currently write alot of restart data into the rsp section
+			// clear
+			flags &= ~VLX_FLAG_RSP;
         }
-
-		// @TODO, @HACK, @REMOVE: This is just to get VIB data loaded
-        // Which currently write alot of restart data into the rsp section
-        // clear
-        flags &= ~VLX_FLAG_RSP;
     }
 
 	// RSP
