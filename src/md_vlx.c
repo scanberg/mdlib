@@ -574,24 +574,28 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 
 // Attempt to construct 
 
-static void do_magic(vec3_t aabb_min, vec3_t aabb_max, double value_cutoff, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, const double* density_matrix, size_t density_matrix_dim) {
+static size_t do_magic(vec3_t aabb_min, vec3_t aabb_max, double value_cutoff, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
 	int natoms = (int)number_of_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
 
 	md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
-	struct big_baba_t {
+	struct gto_t {
+		float x, y, z;
 		float radius;
+		float alpha;
+		float coeff;
 		uint8_t i, j, k, l;
 		uint32_t atom_idx;
 		uint32_t cgto_idx;
 		uint32_t atom_nr;
 	};
 
-	md_array(uint32_t) atom_idx = NULL;
-	md_array(uint32_t) cgto_idx = NULL;
+	md_array(struct gto_t) gtos = NULL;
 
 	uint32_t coeff_idx = 0; // same as the cgto_idx
+
+
 
 	// azimuthal quantum number: s,p,d,f,...
 	for (int angl = 0; angl <= max_angl; angl++) {
@@ -631,16 +635,14 @@ static void do_magic(vec3_t aabb_min, vec3_t aabb_max, double value_cutoff, cons
 
 				// process atomic orbitals
 				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
-					cgto_idx++;
-					cgto_t cgto = {0};
+					struct gto_t gto = { 0 };
 
-					cgto.x = x;
-					cgto.y = y;
-					cgto.z = z;
-					cgto.pgto_offset = md_array_size(pgtos);
-
-					int idx = (int)md_array_size(cgtos);
-					printf("CGTO[%i] %.3f, %.3f, %.3f:\n", idx, x, y, z);
+					gto.x = x;
+					gto.y = y;
+					gto.z = z;
+					gto.atom_idx = atomidx;
+					gto.cgto_idx = coeff_idx++;
+					gto.atom_nr = idelem;
 
 					// process primitives
 					basis_func_t basis_func = basis_funcs[funcidx];
@@ -655,29 +657,37 @@ static void do_magic(vec3_t aabb_min, vec3_t aabb_max, double value_cutoff, cons
 
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
-							pgto_t pgto = {
-								.alpha = alpha,
-								.coeff = coef1 * fcarts[icomp],
-							};
+							gto.alpha = alpha;
+							gto.coeff = coef1 * fcarts[icomp];
+							gto.i = lx[icomp];
+							gto.j = ly[icomp];
+							gto.k = lz[icomp];
+							gto.l = angl;
 
-							uint8_t i = lx[icomp];
-							uint8_t j = ly[icomp];
-							uint8_t k = lz[icomp];
-							uint8_t l = angl;
+							double radius = md_gto_compute_radius_of_influence(gto.i, gto.j, gto.k, gto.coeff, gto.alpha, value_cutoff);
 
-							printf("\t%6.3f, %6.3f    i: %i, j: %i, k: %i, l: %i\n", pgto.alpha, pgto.coeff, i, j, k, l);
+							vec3_t xyz = { x,y,z };
+							vec3_t clamped = vec3_clamp(xyz, aabb_min, aabb_max);
+							float d2 = vec3_distance_squared(xyz, clamped);
+
+							float r2 = (float)(radius * radius);
+							if (d2 < r2) {
+								//printf("%i %6.3f, %6.3f    ijkl: [%i,%i,%i,%i]\n", gto.atom_idx, gto.alpha, gto.coeff, (int)gto.i, (int)gto.j, (int)gto.k, (int)gto.l);
+								md_array_push(gtos, gto, arena);
+							}
 						}
 					}
 
-					md_array_push(cgtos, cgto, arena);
 				}
 			}
 		}
 	}
 
-	// Print statistics
+	size_t result = md_array_size(gtos);
 
 	md_vm_arena_destroy(arena);
+
+	return result;
 }
 
 static inline double compute_overlap(basis_func_t func, int i, int j) {
@@ -2343,6 +2353,13 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx) {
 	return vlx_pgto_count(vlx);
 }
 
+// Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
+static inline void compute_dim(int out_dim[3], vec3_t in_ext, float samples_per_unit_length) {
+	out_dim[0] = CLAMP(ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
+	out_dim[1] = CLAMP(ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
+	out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
+}
+
 bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type) {
 	ASSERT(gtos);
 	ASSERT(vlx);
@@ -2363,12 +2380,48 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 	}
 
 	{
-		vec3_t aabb_min = {0};
-		vec3_t aabb_max = {0};
+		vec3_t aabb_min = vec3_set1( FLT_MAX);
+		vec3_t aabb_max = vec3_set1(-FLT_MAX);
 		double cutoff = 1.0e-6;
-		const double* den_matrix = vlx->scf.alpha.density.data;
-		size_t den_dim = vlx->scf.alpha.density.size[0];
-		do_magic(aabb_min, aabb_max, cutoff, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, den_matrix, den_dim);
+
+		for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
+			vec3_t coord = { vlx->atom_coordinates[i].x, vlx->atom_coordinates[i].y, vlx->atom_coordinates[i].z };
+			aabb_min = vec3_min(aabb_min, coord);
+			aabb_max = vec3_max(aabb_max, coord);
+		}
+
+		aabb_min = vec3_mul_f(aabb_min, ANGSTROM_TO_BOHR);
+		aabb_max = vec3_mul_f(aabb_max, ANGSTROM_TO_BOHR);
+		vec3_t ext = vec3_sub(aabb_max, aabb_min);
+
+		const float samples_per_unit_length = 8 * BOHR_TO_ANGSTROM;
+
+		int dim[3];
+		compute_dim(dim, ext, samples_per_unit_length);
+
+		vec3_t voxel_ext = vec3_div(ext, vec3_set(dim[0], dim[1], dim[2]));
+
+		//const double* den_matrix = vlx->scf.alpha.density.data;
+		//size_t den_dim = vlx->scf.alpha.density.size[0];
+
+		printf("dimensions of volume: %i %i %i\n", dim[0], dim[1], dim[2]);
+
+		size_t non_zero_blocks = 0;
+		// Iterate over all 8x8x8 subregions
+		for (int z = 0; z < dim[2]; z += 8) {
+			for (int y = 0; y < dim[1]; y += 8) {
+				for (int x = 0; x < dim[0]; x += 8) {
+					vec3_t local_min = vec3_add(aabb_min, vec3_mul(vec3_set(x + 0, y + 0, z + 0), voxel_ext));
+					vec3_t local_max = vec3_add(aabb_min, vec3_mul(vec3_set(x + 8, y + 8, z + 8), voxel_ext));
+					size_t num_gtos = do_magic(local_min, local_max, cutoff, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
+					non_zero_blocks += (num_gtos > 0) ? 1 : 0;
+				}
+			}
+		}
+
+		size_t total = (size_t)dim[0] * (size_t)dim[1] * (size_t)dim[2] / 512;
+		printf("Number of 8x8x8 blocks in total: %zu\n", total);
+		printf("Number of populated 8x8x8 blocks: %zu \n", non_zero_blocks);
 	}
 
 	size_t temp_pos = md_temp_get_pos();
