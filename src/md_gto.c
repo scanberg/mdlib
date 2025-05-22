@@ -1310,7 +1310,12 @@ done:
     return d;
 }
 
-size_t md_gto_cutoff_compute(md_gto_t* gtos, size_t count, double value) {
+double md_gto_compute_radius_of_influence(int i, int j, int k, double coeff, double alpha, double cutoff) {
+    int l = i + j + k;
+    return compute_distance_cutoff(cutoff, i, j, k, l, coeff, alpha);
+}
+
+size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value) {
     if (value == 0) {
         for (size_t i = 0; i < count; ++i) {
             gtos[i].cutoff = FLT_MAX;

@@ -103,7 +103,10 @@ void md_gto_xyz_evaluate(float* out_xyz_values, const float* xyz, size_t num_xyz
 // Compute the cutoff parameter within the supplied GTOs based on the given value
 // Typically this could be somewhere around 1.0e-6
 // returns the number of gtos left after this, as some may have no radius of influence and will be pruned away
-size_t md_gto_cutoff_compute(md_gto_t* gtos, size_t num_gtos, double value);
+size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t num_gtos, double value);
+
+// Calculate the radius of influence for a single GTO
+double md_gto_compute_radius_of_influence(int i, int j, int k, double coeff, double alpha, double cutoff);
 
 // Extracts a subset of gtos from an input array which overlap a given axis aligned bounding box with its radii of influence
 // - out_gtos: The output array to store the gtos in

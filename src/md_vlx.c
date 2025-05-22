@@ -569,8 +569,115 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 			}
 		}
 	}
-
 	return count;
+}
+
+// Attempt to construct 
+
+static void do_magic(vec3_t aabb_min, vec3_t aabb_max, double value_cutoff, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, const double* density_matrix, size_t density_matrix_dim) {
+	int natoms = (int)number_of_atoms;
+	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
+
+	md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+
+	struct big_baba_t {
+		float radius;
+		uint8_t i, j, k, l;
+		uint32_t atom_idx;
+		uint32_t cgto_idx;
+		uint32_t atom_nr;
+	};
+
+	md_array(uint32_t) atom_idx = NULL;
+	md_array(uint32_t) cgto_idx = NULL;
+
+	uint32_t coeff_idx = 0; // same as the cgto_idx
+
+	// azimuthal quantum number: s,p,d,f,...
+	for (int angl = 0; angl <= max_angl; angl++) {
+		//CSphericalMomentum sphmom(angl);
+		int nsph = spherical_momentum_num_components(angl);
+		const lmn_t* lmn = cartesian_angular_momentum(angl);
+		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
+		for (int isph = 0; isph < nsph; isph++) {
+			// prepare Cartesian components (Maximum number of components should be 6 here for the currently supported basis sets)
+			int lx[8];
+			int ly[8];
+			int lz[8];
+			int			      ncomp	= spherical_momentum_num_factors(angl, isph);
+			const double*	fcarts  = spherical_momentum_factors(angl, isph);
+			const uint8_t*	indices = spherical_momentum_indices(angl, isph);
+
+			for (int icomp = 0; icomp < ncomp; icomp++) {
+				int cartind = indices[icomp];
+
+				lx[icomp] = lmn[cartind][0];
+				ly[icomp] = lmn[cartind][1];
+				lz[icomp] = lmn[cartind][2];
+			}
+
+			// go through atoms
+			for (int atomidx = 0; atomidx < natoms; atomidx++) {
+				// process coordinates
+				// Conversion from Ångström to Bohr
+				float x = (float)(atom_coordinates[atomidx].x * ANGSTROM_TO_BOHR);
+				float y = (float)(atom_coordinates[atomidx].y * ANGSTROM_TO_BOHR);
+				float z = (float)(atom_coordinates[atomidx].z * ANGSTROM_TO_BOHR);
+
+				int idelem = atomic_numbers[atomidx];
+
+				basis_func_t basis_funcs[128];
+				size_t num_basis_funcs = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
+
+				// process atomic orbitals
+				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
+					cgto_idx++;
+					cgto_t cgto = {0};
+
+					cgto.x = x;
+					cgto.y = y;
+					cgto.z = z;
+					cgto.pgto_offset = md_array_size(pgtos);
+
+					int idx = (int)md_array_size(cgtos);
+					printf("CGTO[%i] %.3f, %.3f, %.3f:\n", idx, x, y, z);
+
+					// process primitives
+					basis_func_t basis_func = basis_funcs[funcidx];
+					ASSERT(basis_func.type == angl);
+					const int        nprims = basis_func.count;
+					const double* exponents = basis_func.exponents;
+					const double* normcoefs = basis_func.normalization_coefficients;
+
+					for (int iprim = 0; iprim < nprims; iprim++) {
+						double alpha = exponents[iprim];
+						double coef1 = normcoefs[iprim];
+
+						// transform from Cartesian to spherical harmonics
+						for (int icomp = 0; icomp < ncomp; icomp++) {
+							pgto_t pgto = {
+								.alpha = alpha,
+								.coeff = coef1 * fcarts[icomp],
+							};
+
+							uint8_t i = lx[icomp];
+							uint8_t j = ly[icomp];
+							uint8_t k = lz[icomp];
+							uint8_t l = angl;
+
+							printf("\t%6.3f, %6.3f    i: %i, j: %i, k: %i, l: %i\n", pgto.alpha, pgto.coeff, i, j, k, l);
+						}
+					}
+
+					md_array_push(cgtos, cgto, arena);
+				}
+			}
+		}
+	}
+
+	// Print statistics
+
+	md_vm_arena_destroy(arena);
 }
 
 static inline double compute_overlap(basis_func_t func, int i, int j) {
@@ -2253,6 +2360,15 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 	if (mo_idx >= number_of_molecular_orbitals(orb)) {
 		MD_LOG_ERROR("Invalid mo index!");
 		return false;
+	}
+
+	{
+		vec3_t aabb_min = {0};
+		vec3_t aabb_max = {0};
+		double cutoff = 1.0e-6;
+		const double* den_matrix = vlx->scf.alpha.density.data;
+		size_t den_dim = vlx->scf.alpha.density.size[0];
+		do_magic(aabb_min, aabb_max, cutoff, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, den_matrix, den_dim);
 	}
 
 	size_t temp_pos = md_temp_get_pos();
