@@ -2471,8 +2471,8 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 		md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
 
 		size_t non_zero_blocks = 0;
-		size_t min_gtos_per_region = 1024;
-		size_t max_gtos_per_region = 0;
+		size_t min_CGTOs_per_region = 1024;
+		size_t max_CGTOs_per_region = 0;
 
 		size_t sparse_matrix_bytes = 0;
 
@@ -2485,8 +2485,15 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 
 			extract_ao_data(&ao_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
 
+			for (size_t i = 0; i < ao_data.num_cgtos; ++i) {
+				printf("CGTO %zu\n", i);
+				for (size_t j = ao_data.cgtos[i].pgto_offset; j < ao_data.cgtos[i].pgto_offset + ao_data.cgtos[i].pgto_count; ++j) {
+					struct pgto_t pgto = ao_data.pgtos[j];
+					printf("\t %i [%i %i %i]   %12.6f %12.6f\n", pgto.l, pgto.i, pgto.j, pgto.k, pgto.coeff, pgto.alpha);
+				}
+			}
+
 			md_array(uint32_t) candidates = 0;
-			md_array(uint32_t) final = 0;
 			md_array(float)  max_cgto_radius = 0;
 
 			md_array_resize(max_cgto_radius, ao_data.num_cgtos, arena);
@@ -2506,43 +2513,19 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 					for (int x = 0; x < dim[0]; x += 8) {
 						vec3_t local_min = vec3_add(aabb_min, vec3_mul(vec3_set(x + 0, y + 0, z + 0), voxel_ext));
 						vec3_t local_max = vec3_add(aabb_min, vec3_mul(vec3_set(x + 8, y + 8, z + 8), voxel_ext));
-						md_array_shrink(candidates, 0);
-						md_array_shrink(final, 0);
+						size_t num_cgtos = 0;
 
 						for (size_t i = 0; i < ao_data.num_cgtos; ++i) {
 							vec3_t coord   = vec3_load(&ao_data.cgtos[i].x);
 							vec3_t clamped = vec3_clamp(coord, local_min, local_max);
 							float r2 = max_cgto_radius[i] * max_cgto_radius[i];
 							if (vec3_distance_squared(coord, clamped) < r2) {
-								md_array_push(candidates, (uint32_t)i, arena);
+								num_cgtos += 1;
 							}
 						}
 
-						size_t num_candidates = md_array_size(candidates);
-						printf("Num candidates %zu\n", num_candidates);
-
-						sparse_matrix_bytes += num_candidates * sizeof(uint16_t);
-
-						for (size_t i = 0; i < num_candidates; ++i) {
-							size_t ci = candidates[i];
-							vec3_t A  = vec3_load(&ao_data.cgtos[ci].x);
-							const struct pgto_t* pgtos_i = ao_data.pgtos + ao_data.cgtos[ci].pgto_offset;
-							size_t pgto_count_i = ao_data.cgtos[ci].pgto_count;
-
-							for (size_t j = i; j < num_candidates; ++j) {
-								size_t cj = candidates[j];
-								vec3_t B  = vec3_load(&ao_data.cgtos[cj].x);
-								const struct pgto_t* pgtos_j = ao_data.pgtos + ao_data.cgtos[cj].pgto_offset;
-								size_t pgto_count_j = ao_data.cgtos[cj].pgto_count;
-								double D_ij = den_matrix[ci * den_dim + cj];
-								double val  = estimate_contracted_pair_bound(A, pgtos_i, pgto_count_i, B, pgtos_j, pgto_count_j, D_ij, local_min, local_max);
-								if (val > cutoff) {
-									md_array_push(final, (uint32_t)ci, arena);
-								}
-							}
-						}
-						size_t num_final = md_array_size(final);
-						printf("Num pairs %zu\n", num_final);
+						min_CGTOs_per_region = MIN(min_CGTOs_per_region, num_cgtos);
+						max_CGTOs_per_region = MAX(max_CGTOs_per_region, num_cgtos);
 					}
 				}
 			}
@@ -2553,8 +2536,8 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 		size_t total = (size_t)dim[0] * (size_t)dim[1] * (size_t)dim[2] / 512;
 		printf("Number of 8x8x8 blocks in total: %zu\n", total);
 		printf("Number of populated 8x8x8 blocks: %zu \n", non_zero_blocks);
-		printf("Min CGTOs per region: %zu \n", min_gtos_per_region);
-		printf("Max CGTOs per region: %zu \n", max_gtos_per_region);
+		printf("Min CGTOs per region: %zu \n", min_CGTOs_per_region);
+		printf("Max CGTOs per region: %zu \n", max_CGTOs_per_region);
 
 		printf("Dense matrix bytes: %zu \n", dense_matrix_bytes);
 		printf("Spares matrix bytes: %zu \n", sparse_matrix_bytes);
@@ -2686,7 +2669,7 @@ const double* md_vlx_vib_force_constants(const md_vlx_t* vlx) {
 
 const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx) {
 	if (vlx) {
-		if (idx < vlx->vib.number_of_normal_modes) {
+		if (vlx->vib.normal_modes && idx < vlx->vib.number_of_normal_modes) {
 			return vlx->vib.normal_modes[idx];
 		}
 	}

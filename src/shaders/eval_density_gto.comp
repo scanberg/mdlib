@@ -1,0 +1,245 @@
+#version 430 core
+
+struct CGTO {
+    vec3  coord;
+    uint  offset_length;
+};
+
+struct PGTO {
+    float coeff;
+    float alpha;
+    uint  packed_ijkl;
+};
+
+layout (binding = 0, std430) readonly restrict buffer CGTO_XYZR_BUFFER {
+    vec4 cgto_xyzr[];
+};
+
+layout (binding = 1, std430) readonly restrict buffer CGTO_OFF_LEN_BUFFER {
+    uint cgto_off_len[];
+}
+
+layout (binding = 2, std430) readonly restrict buffer PGTO_BUFFER {
+    PGTO pgto_data[];
+}
+
+layout (binding = 3, std430) readonly restrict buffer D_BUFFER {
+    float D[];
+}
+
+layout(std140, binding = 0) uniform UniformBlock {
+    mat4 world_to_model;
+    mat4 index_to_world;
+    vec3 step;
+    uint D_dim;
+};
+
+layout(binding = 0) writeonly restrict uniform image3D out_vol;
+
+float safe_pow(float base, uint exp) {
+    switch(exp) {
+    case 4: return (base * base) * (base * base);
+    case 3: return (base * base) * base;
+    case 2: return base * base;
+    case 1: return base;
+    case 0: return 1.0;
+    }
+}
+
+uvec4 unpack_ijkl(in uint packed_ijkl) {
+    return uvec4(
+        (packed_ijkl >>  0) & 0xFFu,
+        (packed_ijkl >>  8) & 0xFFu,
+        (packed_ijkl >> 16) & 0xFFu,
+        (packed_ijkl >> 24) & 0xFFu
+    );
+}
+
+float evaluate_cgto(vec3 coord, uint cgto_idx) {
+    uint off_len = cgto_off_len[cgto_idx];
+    vec3 xyz = cgto_xyzr[cgto_idx].xyz;
+    uint off = off_len & 0x00FFFFFFu;
+    uint len = off_len >> 24u;
+    vec3  d  = coord - xyz;
+    float r2 = dot(d, d);
+
+    float phi = 0.0;
+    for (uint i = off; i < off + len; ++i) {
+        PGTO pgto = pgto_data[i];
+        uvec4 ijkl = unpack_ijkl(pgto.packed_ijkl);
+        float fx   = safe_pow(d.x, ijkl.x);
+        float fy   = safe_pow(d.y, ijkl.y);
+        float fz   = safe_pow(d.z, ijkl.z);
+        phi += pgto.coeff * fx * fy * fz * exp(-pgto.alpha * r2);
+    }
+    return phi;
+}
+
+#define TILE_SIZE 32
+#define TILE_AREA (TILE_SIZE*TILE_SIZE)
+#define MAX_PRUNED_CGTOS 2048
+#define INVALID_CGTO_IDX 0xFFFFFFFFu
+
+shared uint  pruned_cgto_idx[MAX_PRUNED_CGTOS];
+shared uint  num_pruned_cgtos;
+shared float D_tile[TILE_SIZE][TILE_SIZE];
+shared PGTO  pgtos_tile_mu[TILE_SIZE * 8];
+shared PGTO  pgtos_tile_nu[TILE_SIZE * 8];
+shared CGTO  cgto_tile_mu[TILE_SIZE];
+shared CGTO  cgto_tile_nu[TILE_SIZE];
+shared uint  num_pgtos_mu;
+shared uint  num_pgtos_nu;
+
+#define WG_SIZE 512
+
+uint get_offset(uint x) {
+    return 0x00FFFFFFu;
+}
+
+uint get_length(uint x) {
+    return x >> 24u;
+}
+
+void fill_D_tile(uint tile_i, uint tile_j) {
+    uint thread_id = gl_LocalInvocationIndex;
+    for (uint idx = thread_id; idx < TILE_AREA; idx += WG_SIZE) {
+        uint i = idx / TILE_SIZE;
+        uint j = idx % TILE_SIZE;
+
+        uint global_i = pruned_cgto_idx[tile_i * TILE_SIZE + i];
+        uint global_j = pruned_cgto_idx[tile_j * TILE_SIZE + j];
+
+        bool valid_i = (global_i != INVALID_CGTO_IDX);
+        bool valid_j = (global_j != INVALID_CGTO_IDX);
+
+        float D_value = 0.0;
+        if (valid_i && valid_j) {
+            D_value = D_matrix[global_i * D_dim + global_j];
+        }
+
+        D_tile[i][j] = D_value;
+    }
+}
+
+void fill_cgtos_mu(uint tile_idx) {
+    uint i = gl_LocalInvocationId.x * gl_LocalInvocationId.y;
+    uint j = gl_LocalInvocationId.z;
+
+    CGTO cgto;
+    cgto.offset_length = 0;
+    if (j == 0) {
+        uint cgto_idx = pruned_cgto_idx[tile_idx * TILE_SIZE + i];
+        cgto.xyz = cgto_xyzr[cgto_idx].xyz;
+        cgto.offset_length = cgto_off_len[cgto_idx];
+        uint len = get_length(cgto.offset_length);
+        uint offset = atomicAdd(num_pgtos);
+    }
+
+    barrier();
+
+    uint len = get_length(cgto_nu.offset_length);
+    uint pgto_offset = atomicAdd(num_pgtos);
+}
+
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+void main() {
+    uint thread_id = gl_LocalInvocationIndex;
+    if (thread_id == 0) {
+        num_pruned_cgtos = 0;
+    }
+    barrier();
+
+    vec3 model_aabb_min = vec3( gl_WorkGroupID.xyz                 * gl_WorkGroupSize.xyz) * in_step;
+    vec3 model_aabb_max = vec3((gl_WorkGroupID.xyz + uvec3(1,1,1)) * gl_WorkGroupSize.xyz) * in_step;
+
+    for (uint i = thread_id; i < D_dim; i += WG_SIZE) {
+        vec4 cgto = cgto_xyzr[i];
+        if (cgto.w == 0.0) continue;
+
+        vec3 model_xyz = vec3(world_to_model * vec4(cgto.xyz, 1.0));
+        float r2       = cgto.w * cgto.w;
+
+        vec3   d = clamp(model_xyz, model_aabb_min, model_aabb_max) - gto_coord;
+        float d2 = dot(d, d);
+
+        if (d2 < r2) {
+            // Push to GSM CGTOs
+            uint idx = atomicAdd(num_pruned_cgtos, 1);
+            pruned_cgto_idx[idx] = i;
+        }
+    }
+
+    // Write invalid indices for the unused portion of pruned_cgto_idx
+    for (uint i = thread_id; i < MAX_PRUNED_CGTOS; i += WG_SIZE) {
+        if (i >= num_pruned_cgtos) {
+            pruned_cgto_idx[i] = MAX_PRUNED_CGTOS;
+        }
+    }
+
+    float phi_tile_mu[TILE_SIZE]; // evaluated φ_μ(r) in registers
+    float phi_tile_nu[TILE_SIZE]; // evaluated φ_ν(r) in registers
+    float rho = 0.0;
+
+    // DIV UP
+    uint num_tiles = (num_pruned_cgtos + TILE_SIZE - 1) / TILE_SIZE;
+
+    for (uint tile_i = 0; tile_i < num_tiles; ++tile_i) {
+        // DIAGONAL TILE
+
+        if (thread_id == 0) {
+            num_pgtos_mu = 0;
+        }
+
+        barrier();
+
+        // Populate D_tile
+        fill_D_tile(tile_i, tile_i);
+
+        // Populate cgto_tile
+        fill_cgto_tile(cgto_mu, tile_i);
+
+        // Evaluate into phi
+        eval_phi(phi_mu, cgto_tile_mu);
+
+        barrier();
+
+        uint pgto_reset_idx = num_pgtos;
+
+        // Diagonal tile Contribution loop
+        for (int i = 0; i < TILE_SIZE; ++i) {
+            rho += D_tile[i][j] * phi_mu[i] * phi_mu[j];            // Diagonal
+            for (int j = i + 1; j < TILE_SIZE; ++j) {
+                rho += 2.0 * D_tile[i][j] * phi_mu[i] * phi_mu[j];  // Off-diagonal
+            }
+        }
+
+        for (uint tile_j = tile_i + 1; tile_j < num_tiles; ++tile_j) {
+            // OFF DIAGONAL TILE
+
+            // Populate D_tile
+            fill_D_tile(tile_i, tile_j);
+
+            // Populate cgto_tile
+            fill_cgto_tile(cgto_nu, tile_j);
+
+            // Evaluate into phi
+            eval_phi(phi_nu, cgto_tile_nu);
+
+            barrier();
+
+            // Off-Diagonal tile Contribution loop
+            for (uint i = 0; i < TILE_SIZE; ++i) {
+                for (uint j = 0; j < TILE_SIZE; ++j) {
+                    rho += D_tile[i][j] * phi_mu[i] * phi_nu[j];
+                }
+            }
+        }
+    }
+
+    barrier();
+    
+    // Step 3: Write result
+    if (all(lessThan(vol_idx, imageSize(out_vol)))) {
+        imageStore(out_vol, vol_idx, vec4(rho));
+    }
+}
