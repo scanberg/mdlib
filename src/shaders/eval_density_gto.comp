@@ -1,11 +1,15 @@
 #version 430 core
 
-struct CGTO {
-    vec3  coord;
-    uint  offset_length;
-};
+// Input PGTO
+struct PGTO_IN {
+    float coeff;
+    float alpha;
+    uint packed_ijkl;
+}
 
+// This is the internal representation used for PGTOs
 struct PGTO {
+    vec3  coord;
     float coeff;
     float alpha;
     uint  packed_ijkl;
@@ -20,18 +24,18 @@ layout (binding = 1, std430) readonly restrict buffer CGTO_OFF_LEN_BUFFER {
 }
 
 layout (binding = 2, std430) readonly restrict buffer PGTO_BUFFER {
-    PGTO pgto_data[];
+    PGTO_IN pgto_data[];
 }
 
 layout (binding = 3, std430) readonly restrict buffer D_BUFFER {
-    float D[];
+    float D_matrix[];
 }
 
 layout(std140, binding = 0) uniform UniformBlock {
     mat4 world_to_model;
     mat4 index_to_world;
     vec3 step;
-    uint D_dim;
+    uint D_matrix_dim;
 };
 
 layout(binding = 0) writeonly restrict uniform image3D out_vol;
@@ -82,13 +86,11 @@ float evaluate_cgto(vec3 coord, uint cgto_idx) {
 
 shared uint  pruned_cgto_idx[MAX_PRUNED_CGTOS];
 shared uint  num_pruned_cgtos;
+
 shared float D_tile[TILE_SIZE][TILE_SIZE];
-shared PGTO  pgtos_tile_mu[TILE_SIZE * 8];
-shared PGTO  pgtos_tile_nu[TILE_SIZE * 8];
-shared CGTO  cgto_tile_mu[TILE_SIZE];
-shared CGTO  cgto_tile_nu[TILE_SIZE];
-shared uint  num_pgtos_mu;
-shared uint  num_pgtos_nu;
+
+shared PGTO  pgtos_tile[TILE_SIZE * 16];
+shared uint  num_pgtos;
 
 #define WG_SIZE 512
 
@@ -121,14 +123,14 @@ void fill_D_tile(uint tile_i, uint tile_j) {
     }
 }
 
-void fill_cgtos_mu(uint tile_idx) {
-    uint i = gl_LocalInvocationId.x * gl_LocalInvocationId.y;
-    uint j = gl_LocalInvocationId.z;
+// Populate PGTO GSM with CGTOs found in tile
+void fill_pgtos(uint tile_i) {
+    uint thread_id = gl_LocalInvocationIndex;
+    uint i = thread_id / TILE_SIZE;
+    uint j = thread_id % TILE_SIZE;
 
-    CGTO cgto;
-    cgto.offset_length = 0;
     if (j == 0) {
-        uint cgto_idx = pruned_cgto_idx[tile_idx * TILE_SIZE + i];
+        uint cgto_idx = pruned_cgto_idx[tile_i * TILE_SIZE + i];
         cgto.xyz = cgto_xyzr[cgto_idx].xyz;
         cgto.offset_length = cgto_off_len[cgto_idx];
         uint len = get_length(cgto.offset_length);
