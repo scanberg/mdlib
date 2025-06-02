@@ -49,7 +49,7 @@ size_t md_vlx_number_of_alpha_electrons(const struct md_vlx_t* vlx);
 size_t md_vlx_number_of_beta_electrons(const struct md_vlx_t* vlx);
 
 double md_vlx_molecular_charge(const struct md_vlx_t* vlx);
-double md_vlx_nuclear_repulsion(const struct md_vlx_t* vlx);
+double md_vlx_nuclear_repulsion_energy(const struct md_vlx_t* vlx);
 size_t md_vlx_spin_multiplicity(const struct md_vlx_t* vlx);
 
 str_t  md_vlx_basis_set_ident(const struct md_vlx_t* vlx);
@@ -102,6 +102,14 @@ const double* md_vlx_vib_ir_intensities(const struct md_vlx_t* vlx); 	// Unit: k
 const double* md_vlx_vib_frequencies(const struct md_vlx_t* vlx);		// Unit: cm^-1
 const double* md_vlx_vib_reduced_masses(const struct md_vlx_t* vlx);	// Unit: amu
 const double* md_vlx_vib_force_constants(const struct md_vlx_t* vlx);	// Unit: mdyne/Å (millidyne / Ångström)
+
+// OPT
+size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx);
+
+// Returns atom coordinates for a given optimization step
+const dvec3_t* md_vlx_opt_coordinates(const struct md_vlx_t* vlx, size_t opt_idx);
+const double* md_vlx_opt_energies(const struct md_vlx_t* vlx);
+const double* md_vlx_opt_nuclear_repulsion_energies(const struct md_vlx_t* vlx);
 
 // The normal mode for each atom
 // Returns array of length N (Number of atoms)
