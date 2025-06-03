@@ -1328,7 +1328,7 @@ done:
     return d;
 }
 
-size_t md_gto_cutoff_compute(md_gto_t* gtos, size_t count, double value) {
+size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value) {
     if (value == 0) {
         for (size_t i = 0; i < count; ++i) {
             gtos[i].cutoff = FLT_MAX;

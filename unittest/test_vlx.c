@@ -207,7 +207,7 @@ UTEST(vlx, minimal_example) {
     md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
 
     // Compute radial cutoffs for the GTOs
-    md_gto_cutoff_compute(gtos, num_gtos, 1.0e-6);
+    num_gtos = md_gto_cutoff_compute_and_filter(gtos, num_gtos, 1.0e-6);
 
     // Calculate bounding box (AABB)
     vec3_t min_aabb = vec3_set1( FLT_MAX);
