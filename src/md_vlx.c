@@ -194,6 +194,8 @@ static inline basis_set_basis_t* basis_set_get_atom_basis(const basis_set_t* bas
 }
 
 static inline int compute_max_angular_momentum(const basis_set_t* basis_set, const md_element_t* atomic_numbers, size_t count) {
+	ASSERT(basis_set);
+	ASSERT(atomic_numbers);
 	int max_angl = 0;
 	for (size_t i = 0; i < count; ++i) {
 		const basis_set_basis_t* atom_basis = basis_set_get_atom_basis(basis_set, atomic_numbers[i]);
@@ -579,8 +581,117 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 			}
 		}
 	}
-
 	return count;
+}
+
+// Attempt to construct
+
+struct pgto_t {
+	float radius;
+	float alpha;
+	float coeff;
+	uint8_t i, j, k, l;
+};
+
+struct cgto_t {
+	float x, y, z;
+	uint32_t pgto_offset;
+	uint32_t pgto_count;
+};
+
+struct ao_data_t {
+	size_t num_pgtos;
+	struct pgto_t* pgtos;
+
+	size_t num_cgtos;
+	struct cgto_t* cgtos;
+
+	md_allocator_i* alloc;
+};
+
+static void extract_ao_data(struct ao_data_t* ao_data, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
+	int natoms = (int)number_of_atoms;
+	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
+
+	uint32_t coeff_idx = 0; // same as the cgto_idx
+
+	// azimuthal quantum number: s,p,d,f,...
+	for (int angl = 0; angl <= max_angl; angl++) {
+		//CSphericalMomentum sphmom(angl);
+		int nsph = spherical_momentum_num_components(angl);
+		const lmn_t* lmn = cartesian_angular_momentum(angl);
+		// magnetic quantum number: s,p-1,p0,p+1,d-2,d-1,d0,d+1,d+2,...
+		for (int isph = 0; isph < nsph; isph++) {
+			// prepare Cartesian components (Maximum number of components should be 6 here for the currently supported basis sets)
+			int lx[8];
+			int ly[8];
+			int lz[8];
+			int			      ncomp	= spherical_momentum_num_factors(angl, isph);
+			const double*	fcarts  = spherical_momentum_factors(angl, isph);
+			const uint8_t*	indices = spherical_momentum_indices(angl, isph);
+
+			for (int icomp = 0; icomp < ncomp; icomp++) {
+				int cartind = indices[icomp];
+
+				lx[icomp] = lmn[cartind][0];
+				ly[icomp] = lmn[cartind][1];
+				lz[icomp] = lmn[cartind][2];
+			}
+
+			// go through atoms
+			for (int atomidx = 0; atomidx < natoms; atomidx++) {
+				// process coordinates
+				// Conversion from Ångström to Bohr
+				float x = (float)(atom_coordinates[atomidx].x * ANGSTROM_TO_BOHR);
+				float y = (float)(atom_coordinates[atomidx].y * ANGSTROM_TO_BOHR);
+				float z = (float)(atom_coordinates[atomidx].z * ANGSTROM_TO_BOHR);
+
+				int idelem = atomic_numbers[atomidx];
+
+				basis_func_t basis_funcs[128];
+				size_t num_basis_funcs = basis_set_extract_atomic_basis_func_angl(basis_funcs, ARRAY_SIZE(basis_funcs), basis_set, idelem, angl);
+
+				// process atomic orbitals
+				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
+					struct cgto_t cgto = { 0 };
+
+					cgto.x = x;
+					cgto.y = y;
+					cgto.z = z;
+					cgto.pgto_offset = ao_data->num_pgtos;
+
+					// process primitives
+					basis_func_t basis_func = basis_funcs[funcidx];
+					ASSERT(basis_func.type == angl);
+					const int        nprims = basis_func.count;
+					const double* exponents = basis_func.exponents;
+					const double* normcoefs = basis_func.normalization_coefficients;
+
+					for (int iprim = 0; iprim < nprims; iprim++) {
+						double alpha = exponents[iprim];
+						double coef1 = normcoefs[iprim];
+
+						// transform from Cartesian to spherical harmonics
+						for (int icomp = 0; icomp < ncomp; icomp++) {
+							struct pgto_t pgto = {0};
+							pgto.alpha = alpha;
+							pgto.coeff = coef1 * fcarts[icomp];
+							pgto.i = lx[icomp];
+							pgto.j = ly[icomp];
+							pgto.k = lz[icomp];
+							pgto.l = angl;
+
+							md_array_push(ao_data->pgtos, pgto, ao_data->alloc);
+							ao_data->num_pgtos += 1;
+							cgto.pgto_count += 1;
+						}
+					}
+					md_array_push(ao_data->cgtos, cgto, ao_data->alloc);
+					ao_data->num_cgtos += 1;
+				}
+			}
+		}
+	}
 }
 
 static inline double compute_overlap(basis_func_t func, int i, int j) {
@@ -663,17 +774,21 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 
 	str_t line;
 	str_t tok[4];
+	size_t line_count = 0;
 
 	// Insert null_basis element for index 0
 	const basis_set_basis_t null_basis = {0};
 
 	basis_set_basis_t* curr_atom_basis = NULL;
 	while (md_buffered_reader_extract_line(&line, reader)) {
+		line_count += 1;
+		str_t line_original = line;
 		size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (!num_tok) continue;
 
 		if (num_tok == 2 && str_eq(tok[0], STR_LIT("@BASIS_SET"))) {
 			basis_set->identifier = str_copy(tok[1], alloc);
+			MD_LOG_DEBUG("Parsing Basis Set with identifier: '" STR_FMT "'", STR_ARG(tok[1]));
 		}
 		else if (num_tok == 2 && str_eq(tok[0], STR_LIT("@ATOMBASIS"))) {
 			int atomic_number = md_util_element_lookup_ignore_case(tok[1]);
@@ -704,6 +819,8 @@ static bool parse_basis_set(basis_set_t* basis_set, md_buffered_reader_t* reader
 			int type = char_to_angular_momentum_type(tok[0].ptr[0]);
 			if (type == -1) {
 				MD_LOG_ERROR("Unrecognized angular momentum type '" STR_FMT "' in basis set", STR_ARG(tok[0]));
+				MD_LOG_ERROR("This occured on line %zu: '" STR_FMT "'", line_count, STR_ARG(line_original));
+
 				return false;
 			}
 			int count = (int)parse_int(tok[1]);
@@ -2104,6 +2221,9 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		char*  buf = md_temp_push(cap);
 		md_strb_t sb = md_strb_create(md_get_temp_allocator());
 
+		str_t ident = resolve_basis_set_ident(vlx->basis_set_ident);
+		MD_LOG_DEBUG("Basis set ident: '" STR_FMT "'", STR_ARG(ident));
+
 		char exe_buf[1024];
 		str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
 
@@ -2111,13 +2231,12 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		if (!extract_folder_path(&exe_dir, exe_path)) {
 			MD_LOG_ERROR("Failed to extract executable directory");
 		}
-		md_strb_push_str(&sb, exe_dir);
 
-		str_t basis_set = resolve_basis_set_ident(vlx->basis_set_ident);
-
-		md_strb_fmt(&sb, "%s/" STR_FMT, MD_VLX_BASIS_FOLDER, STR_ARG(basis_set));
-		md_file_o* basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
+		md_strb_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
+		str_t basis_filepath = md_strb_to_str(sb);
+		md_file_o* basis_file = md_file_open(basis_filepath, MD_FILE_READ | MD_FILE_BINARY);
 		if (basis_file) {
+			MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
 			md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
 			bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
 			md_file_close(basis_file);
@@ -2135,9 +2254,11 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			}
 			md_strb_reset(&sb);
 			md_strb_push_str(&sb, folder);
-			md_strb_push_str(&sb, basis_set);
-			basis_file = md_file_open(md_strb_to_str(sb), MD_FILE_READ | MD_FILE_BINARY);
+			md_strb_push_str(&sb, ident);
+			basis_filepath = md_strb_to_str(sb);
+			basis_file = md_file_open(basis_filepath, MD_FILE_READ | MD_FILE_BINARY);
 			if (basis_file) {
+				MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
 				md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
 				bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
 				md_file_close(basis_file);
@@ -2148,7 +2269,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 				normalize_basis_set(&vlx->basis_set);
 			}
 			else {
-                MD_LOG_ERROR("Could not find basis file corresponding to identifier: '" STR_FMT "'", STR_ARG(basis_set));
+                MD_LOG_ERROR("Could not find basis file corresponding to identifier: '" STR_FMT "'", STR_ARG(ident));
 				goto done;
 			}
 		}
@@ -2301,6 +2422,67 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx) {
 	return vlx_pgto_count(vlx);
 }
 
+// Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
+static inline void compute_dim(int out_dim[3], vec3_t in_ext, float samples_per_unit_length) {
+	out_dim[0] = CLAMP(ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
+	out_dim[1] = CLAMP(ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
+	out_dim[2] = CLAMP(ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
+}
+
+static inline vec3_t closest_point_in_aabb(vec3_t p, vec3_t aabb_min, vec3_t aabb_max) {
+    return vec3_clamp(p, aabb_min, aabb_max);
+}
+
+static inline float monomial_bound(vec3_t center, int powers[3], vec3_t aabb_min, vec3_t aabb_max) {
+    vec3_t bounds = {0};
+    bounds.x = MAX(fabs(powf(aabb_min.x - center.x, powers[0])), fabs(powf(aabb_max.x - center.x, powers[0])));
+    bounds.y = MAX(fabs(powf(aabb_min.y - center.y, powers[1])), fabs(powf(aabb_max.y - center.y, powers[1])));
+    bounds.z = MAX(fabs(powf(aabb_min.z - center.z, powers[2])), fabs(powf(aabb_max.z - center.z, powers[2])));
+    return bounds.x * bounds.y * bounds.z;
+}
+
+static inline void gaussian_product_center(vec3_t* out_P, float* out_gamma, float alpha1, vec3_t A, float alpha2, vec3_t B) {
+    *out_gamma = alpha1 + alpha2;
+    *out_P = vec3_div_f(vec3_add(vec3_mul_f(A, alpha1), vec3_mul_f(B, alpha2)), *out_gamma);
+}
+
+static double estimate_contracted_pair_bound(vec3_t A, const struct pgto_t* ao1, size_t num_ao1, vec3_t B, const struct pgto_t* ao2, size_t num_ao2, double D_mu_nu, vec3_t aabb_min, vec3_t aabb_max) {
+    double max_bound = 0.0;
+    for (size_t i = 0; i < num_ao1; ++i) {
+    	float alpha1 = ao1[i].alpha;
+    	float coeff1 = ao1[i].coeff;
+
+        for (size_t j = 0; j < num_ao2; ++j) {
+	    	float alpha2 = ao2[j].alpha;
+	    	float coeff2 = ao2[j].coeff;
+
+            vec3_t P;
+            float gamma;
+            gaussian_product_center(&P, &gamma, alpha1, A, alpha2, B);
+
+            //printf("P: %f %f %f, gamma: %f\n", P.x, P.y, P.z, gamma);
+
+            vec3_t r_min = closest_point_in_aabb(P, aabb_min, aabb_max);
+            float dist2 = vec3_distance_squared(r_min, P);
+            double exp_bound = exp(-gamma * dist2);
+
+            // Polynomial Bound
+            int powers[3] = {
+            	ao1[i].i + ao2[j].i,
+            	ao1[i].j + ao2[j].j,
+            	ao1[i].k + ao2[j].k,
+            };
+            double poly_bound = monomial_bound(P, powers, aabb_min, aabb_max);
+
+            // Primitive pair contribution
+            double prim_bound = fabs(coeff1 * coeff2) * poly_bound * exp_bound;
+            max_bound += prim_bound;
+        }
+    }
+
+    return fabs(D_mu_nu) * max_bound;
+}
+
 bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type) {
 	ASSERT(gtos);
 	ASSERT(vlx);
@@ -2318,6 +2500,114 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 	if (mo_idx >= number_of_molecular_orbitals(orb)) {
 		MD_LOG_ERROR("Invalid mo index!");
 		return false;
+	}
+
+	{
+		vec3_t aabb_min = vec3_set1( FLT_MAX);
+		vec3_t aabb_max = vec3_set1(-FLT_MAX);
+		double cutoff = 1.0e-6;
+
+		for (size_t i = 0; i < vlx->number_of_atoms; ++i) {
+			vec3_t coord = { vlx->atom_coordinates[i].x, vlx->atom_coordinates[i].y, vlx->atom_coordinates[i].z };
+			aabb_min = vec3_min(aabb_min, coord);
+			aabb_max = vec3_max(aabb_max, coord);
+		}
+
+		aabb_min = vec3_mul_f(aabb_min, ANGSTROM_TO_BOHR);
+		aabb_max = vec3_mul_f(aabb_max, ANGSTROM_TO_BOHR);
+		const float pad = 5.0f;
+		aabb_min = vec3_sub_f(aabb_min, pad);
+		aabb_max = vec3_sub_f(aabb_max, pad);
+		vec3_t ext = vec3_sub(aabb_max, aabb_min);
+
+		const float samples_per_unit_length = 8 * BOHR_TO_ANGSTROM;
+
+		int dim[3];
+		compute_dim(dim, ext, samples_per_unit_length);
+
+		vec3_t voxel_ext = vec3_div(ext, vec3_set(dim[0], dim[1], dim[2]));
+
+		const double* den_matrix = vlx->scf.alpha.density.data;
+		size_t den_dim = vlx->scf.alpha.density.size[0];
+
+		printf("Den_dim: %zu\n", den_dim);
+		printf("dimensions of volume: %i %i %i\n", dim[0], dim[1], dim[2]);
+
+		md_allocator_i* arena = md_vm_arena_create(GIGABYTES(4));
+
+		size_t non_zero_blocks = 0;
+		size_t min_CGTOs_per_region = 1024;
+		size_t max_CGTOs_per_region = 0;
+
+		size_t sparse_matrix_bytes = 0;
+
+		if (den_matrix && den_dim > 0) {
+
+
+			struct ao_data_t ao_data = {
+				.alloc = arena,
+			};
+
+			extract_ao_data(&ao_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
+
+			for (size_t i = 0; i < ao_data.num_cgtos; ++i) {
+				printf("CGTO %zu\n", i);
+				for (size_t j = ao_data.cgtos[i].pgto_offset; j < ao_data.cgtos[i].pgto_offset + ao_data.cgtos[i].pgto_count; ++j) {
+					struct pgto_t pgto = ao_data.pgtos[j];
+					printf("\t %i [%i %i %i]   %12.6f %12.6f\n", pgto.l, pgto.i, pgto.j, pgto.k, pgto.coeff, pgto.alpha);
+				}
+			}
+
+			md_array(uint32_t) candidates = 0;
+			md_array(float)  max_cgto_radius = 0;
+
+			md_array_resize(max_cgto_radius, ao_data.num_cgtos, arena);
+
+			for (size_t i = 0; i < ao_data.num_cgtos; ++i) {
+				float max_radius = 0.0f;
+				for (size_t j = ao_data.cgtos[i].pgto_offset; j < ao_data.cgtos[i].pgto_offset + ao_data.cgtos[i].pgto_count; ++j) {
+					ao_data.pgtos[j].radius = md_gto_compute_radius_of_influence(ao_data.pgtos[j].i, ao_data.pgtos[j].j, ao_data.pgtos[j].k, ao_data.pgtos[j].coeff, ao_data.pgtos[j].alpha, cutoff);
+					max_radius = MAX(max_radius, ao_data.pgtos[j].radius);
+				}
+				max_cgto_radius[i] = max_radius;
+			}
+
+			// Iterate over all 8x8x8 subregions
+			for (int z = 0; z < dim[2]; z += 8) {
+				for (int y = 0; y < dim[1]; y += 8) {
+					for (int x = 0; x < dim[0]; x += 8) {
+						vec3_t local_min = vec3_add(aabb_min, vec3_mul(vec3_set(x + 0, y + 0, z + 0), voxel_ext));
+						vec3_t local_max = vec3_add(aabb_min, vec3_mul(vec3_set(x + 8, y + 8, z + 8), voxel_ext));
+						size_t num_cgtos = 0;
+
+						for (size_t i = 0; i < ao_data.num_cgtos; ++i) {
+							vec3_t coord   = vec3_load(&ao_data.cgtos[i].x);
+							vec3_t clamped = vec3_clamp(coord, local_min, local_max);
+							float r2 = max_cgto_radius[i] * max_cgto_radius[i];
+							if (vec3_distance_squared(coord, clamped) < r2) {
+								num_cgtos += 1;
+							}
+						}
+
+						min_CGTOs_per_region = MIN(min_CGTOs_per_region, num_cgtos);
+						max_CGTOs_per_region = MAX(max_CGTOs_per_region, num_cgtos);
+					}
+				}
+			}
+		}
+
+		size_t dense_matrix_bytes = den_dim * den_dim * sizeof(float);
+
+		size_t total = (size_t)dim[0] * (size_t)dim[1] * (size_t)dim[2] / 512;
+		printf("Number of 8x8x8 blocks in total: %zu\n", total);
+		printf("Number of populated 8x8x8 blocks: %zu \n", non_zero_blocks);
+		printf("Min CGTOs per region: %zu \n", min_CGTOs_per_region);
+		printf("Max CGTOs per region: %zu \n", max_CGTOs_per_region);
+
+		printf("Dense matrix bytes: %zu \n", dense_matrix_bytes);
+		printf("Spares matrix bytes: %zu \n", sparse_matrix_bytes);
+
+		md_vm_arena_destroy(arena);
 	}
 
 	size_t temp_pos = md_temp_get_pos();
@@ -2444,7 +2734,7 @@ const double* md_vlx_vib_force_constants(const md_vlx_t* vlx) {
 
 const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx) {
 	if (vlx) {
-		if (idx < vlx->vib.number_of_normal_modes) {
+		if (vlx->vib.normal_modes && idx < vlx->vib.number_of_normal_modes) {
 			return vlx->vib.normal_modes[idx];
 		}
 	}

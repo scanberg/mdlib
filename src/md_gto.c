@@ -116,6 +116,21 @@ static GLuint get_temp_ssbo(void) {
     return ssbo;
 }
 
+void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
+    uint32_t orb_offsets[2] = {0, (uint32_t)num_gtos};
+    float orb_scaling[1] = {1.0f};
+
+    md_orbital_data_t orb = {
+        .num_gtos = num_gtos,
+        .gtos = (md_gto_t*)gtos,
+        .num_orbs = 1,
+        .orb_offsets = orb_offsets,
+        .orb_scaling = orb_scaling,
+    };
+
+    md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
+}
+
 static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode, GLuint program) {
     ASSERT(grid);
     ASSERT(orb);
@@ -210,21 +225,6 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, c
 
 done:
     md_gl_debug_pop();
-}
-
-void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
-    uint32_t orb_offsets[2] = {0, (uint32_t)num_gtos};
-    float orb_scaling[1] = {1.0f};
-
-    md_orbital_data_t orb = {
-        .num_gtos = num_gtos,
-        .gtos = (md_gto_t*)gtos,
-        .num_orbs = 1,
-        .orb_offsets = orb_offsets,
-        .orb_scaling = orb_scaling,
-    };
-
-    md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
 }
 
 void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
@@ -331,24 +331,6 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     md_gl_debug_pop();
-}
-
-#else
-
-void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode) {
-
-}
-
-void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
-
-}
-
-void md_gto_grid_evaluate_ALIE_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode) {
-
-}
-
-void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t cap_groups, uint32_t vol_tex, const md_grid_t* grid, const float* point_xyzr, const uint32_t* point_group_idx, size_t num_points) {
-
 }
 
 #endif
@@ -1117,7 +1099,7 @@ void md_gto_grid_evaluate_sub(float* out_values, const md_grid_t* grid, const in
             evaluate_grid_8x8x8_128(out_values, grid_idx_min, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
         }
 #else
-        evaluate_grid_ref(out_values, grid_idx_min, grid_idx_max, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
+        evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
 #endif
     } else {
         // Slowpath
@@ -1326,6 +1308,11 @@ done:
     }
 #endif
     return d;
+}
+
+double md_gto_compute_radius_of_influence(int i, int j, int k, double coeff, double alpha, double cutoff) {
+    int l = i + j + k;
+    return compute_distance_cutoff(cutoff, i, j, k, l, coeff, alpha);
 }
 
 size_t md_gto_cutoff_compute_and_filter(md_gto_t* gtos, size_t count, double value) {
