@@ -51,8 +51,7 @@ static void init(md_grid_t* grid, float** grid_data, md_gto_t** gtos, size_t* nu
 
     *num_gtos = md_vlx_mo_gto_count(vlx);
     *gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * *num_gtos);
-    md_vlx_mo_gto_extract(*gtos, vlx, 120, MD_VLX_MO_TYPE_ALPHA);
-    *num_gtos = md_gto_cutoff_compute_and_filter(*gtos, *num_gtos, 1.0e-6);
+    *num_gtos = md_vlx_mo_gto_extract(*gtos, vlx, 120, MD_VLX_MO_TYPE_ALPHA, 1.0e-6);
 }
 
 UTEST(gto, evaluate_grid) {
@@ -115,12 +114,7 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
 
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
-    
-    size_t pre_cutoff = num_gtos;
-    num_gtos = md_gto_cutoff_compute_and_filter(gtos, num_gtos, cutoff_value);
-    printf("Applying value cutoff to gtos: %g\n", cutoff_value);
-    printf("Number of gtos pruned: %zu\n", pre_cutoff - num_gtos);
+    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, cutoff_value);
 
     size_t count = grid.dim[0] * grid.dim[1] * grid.dim[2];
 

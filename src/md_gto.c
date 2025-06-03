@@ -1076,9 +1076,9 @@ void md_gto_grid_evaluate_sub(float* out_values, const md_grid_t* grid, const in
         (grid->orientation.elem[1][0] == 0 && grid->orientation.elem[1][2] == 0) &&
         (grid->orientation.elem[2][0] == 0 && grid->orientation.elem[2][1] == 0);
 
-    vec3_t step_x = {grid->orientation.elem[0][0] * grid->spacing.x, grid->orientation.elem[1][0] * grid->spacing.y, grid->orientation.elem[2][0] * grid->spacing.z};
-    vec3_t step_y = {grid->orientation.elem[0][1] * grid->spacing.x, grid->orientation.elem[1][1] * grid->spacing.y, grid->orientation.elem[2][1] * grid->spacing.z};
-    vec3_t step_z = {grid->orientation.elem[0][2] * grid->spacing.x, grid->orientation.elem[1][2] * grid->spacing.y, grid->orientation.elem[2][2] * grid->spacing.z};
+    vec3_t step_x = vec3_mul_f(grid->orientation.col[0], grid->spacing.x);
+    vec3_t step_y = vec3_mul_f(grid->orientation.col[1], grid->spacing.y);
+    vec3_t step_z = vec3_mul_f(grid->orientation.col[2], grid->spacing.z);
 
     // There are specialized versions for evaluating 8x8x8 subgrids
     // 8x8x8 Is a good chunk size to operate on as it probably fits in L1 Cache together with the GTOs

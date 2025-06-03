@@ -2483,7 +2483,7 @@ static double estimate_contracted_pair_bound(vec3_t A, const struct pgto_t* ao1,
     return fabs(D_mu_nu) * max_bound;
 }
 
-bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type) {
+size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff) {
 	ASSERT(gtos);
 	ASSERT(vlx);
 
@@ -2494,14 +2494,15 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 		orb = &vlx->scf.beta;
 	} else {
 		MD_LOG_ERROR("Invalid MO type!");
-		return false;
+		return 0;
 	}
 
 	if (mo_idx >= number_of_molecular_orbitals(orb)) {
 		MD_LOG_ERROR("Invalid mo index!");
-		return false;
+		return 0;
 	}
 
+#if 0
 	{
 		vec3_t aabb_min = vec3_set1( FLT_MAX);
 		vec3_t aabb_max = vec3_set1(-FLT_MAX);
@@ -2596,6 +2597,7 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 			}
 		}
 
+
 		size_t dense_matrix_bytes = den_dim * den_dim * sizeof(float);
 
 		size_t total = (size_t)dim[0] * (size_t)dim[1] * (size_t)dim[2] / 512;
@@ -2609,16 +2611,19 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 
 		md_vm_arena_destroy(arena);
 	}
+#endif
 
 	size_t temp_pos = md_temp_get_pos();
 	size_t num_mo_coeffs = number_of_mo_coefficients(orb);
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	extract_pgto_data(gtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
+	size_t num_gtos = extract_pgto_data(gtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
 
+	num_gtos = md_gto_cutoff_compute_and_filter(gtos, num_gtos, value_cutoff);
+	
 	md_temp_set_pos_back(temp_pos);
-	return true;
+	return num_gtos;
 }
 
 size_t md_vlx_rsp_number_of_excited_states(const md_vlx_t* vlx) {

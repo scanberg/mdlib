@@ -138,8 +138,8 @@ size_t md_vlx_mo_gto_count(const md_vlx_t* vlx);
 // vlx: a pointer to a valid VeloxChem object
 // mo_idx: Molecular Orbital Index
 // type: Molecular orbital type: Alpha / Beta
-// value_cutoff: A cutoff value which will be used to calculate an effective radius of influence for the gtos
-bool md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type);
+// value_cutoff: A cutoff value which will be used to calculate an effective radius of influence for the gtos (0 == no cutoff (Infinite radius of influence))
+size_t md_vlx_mo_gto_extract(md_gto_t gtos[], const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff);
 
 // MOLECULE
 bool md_vlx_molecule_init(struct md_molecule_t* mol, const md_vlx_t* vlx, struct md_allocator_i* alloc);

@@ -146,7 +146,7 @@ UTEST(vlx, correctness) {
 
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
+    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, 0.0);
 
     size_t cap_phi = num_gtos;
     double* phi = (double*)md_arena_allocator_push(arena, sizeof(double) * cap_phi);
@@ -204,10 +204,7 @@ UTEST(vlx, minimal_example) {
     // Extract GTOs
     size_t num_gtos = md_vlx_mo_gto_count(vlx);
     md_gto_t* gtos = (md_gto_t*)md_arena_allocator_push(arena, sizeof(md_gto_t) * num_gtos);
-    md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA);
-
-    // Compute radial cutoffs for the GTOs
-    num_gtos = md_gto_cutoff_compute_and_filter(gtos, num_gtos, 1.0e-6);
+    num_gtos = md_vlx_mo_gto_extract(gtos, vlx, mo_idx, MD_VLX_MO_TYPE_ALPHA, 1.0e-6);
 
     // Calculate bounding box (AABB)
     vec3_t min_aabb = vec3_set1( FLT_MAX);
