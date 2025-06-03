@@ -2225,7 +2225,8 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		MD_LOG_DEBUG("Basis set ident: '" STR_FMT "'", STR_ARG(ident));
 
 		char exe_buf[1024];
-		str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
+		size_t exe_len = md_path_write_exe(exe_buf, sizeof(exe_buf));
+		str_t exe_path = {exe_buf, exe_len};
 
 		str_t exe_dir = {0};
 		if (!extract_folder_path(&exe_dir, exe_path)) {
@@ -2233,10 +2234,10 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 
 		md_strb_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
-		str_t basis_filepath = md_strb_to_str(sb);
-		md_file_o* basis_file = md_file_open(basis_filepath, MD_FILE_READ | MD_FILE_BINARY);
+		str_t abs_filepath = md_strb_to_str(sb);
+		md_file_o* basis_file = md_file_open(abs_filepath, MD_FILE_READ | MD_FILE_BINARY);
 		if (basis_file) {
-			MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
+			MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(abs_filepath));
 			md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
 			bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
 			md_file_close(basis_file);
@@ -2246,6 +2247,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			}
 			normalize_basis_set(&vlx->basis_set);
 		} else {
+			MD_LOG_DEBUG("The basis set was not found in '" STR_FMT "', attempting to read it from the folder of the file.", STR_ARG(abs_filepath));
 			// Attempt to read basis set file from same folder as file
 			str_t folder = { 0 };
 			if (!extract_folder_path(&folder, filename)) {
@@ -2255,10 +2257,10 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			md_strb_reset(&sb);
 			md_strb_push_str(&sb, folder);
 			md_strb_push_str(&sb, ident);
-			basis_filepath = md_strb_to_str(sb);
-			basis_file = md_file_open(basis_filepath, MD_FILE_READ | MD_FILE_BINARY);
+			str_t rel_filepath = md_strb_to_str(sb);
+			basis_file = md_file_open(rel_filepath, MD_FILE_READ | MD_FILE_BINARY);
 			if (basis_file) {
-				MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
+				MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(rel_filepath));
 				md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
 				bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
 				md_file_close(basis_file);

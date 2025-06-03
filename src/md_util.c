@@ -7842,6 +7842,8 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 
     //MD_LOG_DEBUG("Starting Postprocessing Molecule");
 
+    if (mol->atom.count == 0) return false;
+
     {
 #ifdef PROFILE
         md_timestamp_t t0 = md_time_current();

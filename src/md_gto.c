@@ -913,8 +913,8 @@ static inline void evaluate_grid_ortho_8x8x8_128(float grid_data[], const int gr
 
                 for (int ix = 0; ix < 2; ++ix) {
                     md_128 dx = md_mm_sub_ps(vx[ix], px);
-                    md_128 dy = md_mm_sub_ps(vy,	 py);	 
-                    md_128 dz = md_mm_sub_ps(vz,	 pz);	 
+                    md_128 dy = md_mm_sub_ps(vy,	 py);
+                    md_128 dz = md_mm_sub_ps(vz,	 pz);
                     md_128 d2 = md_mm_fmadd_ps(dx, dx, md_mm_fmadd_ps(dy, dy, md_mm_mul_ps(dz, dz)));
                     md_128 fx = md_mm_fast_pow(dx, pi);
                     md_128 fy = md_mm_fast_pow(dy, pj);
@@ -1104,7 +1104,7 @@ void md_gto_grid_evaluate_sub(float* out_values, const md_grid_t* grid, const in
     // Then we vectorize over the spatial domain rather than the GTOs to get better register occupation
     if (grid_idx_len[0] == 8 && grid_idx_len[1] == 8 && grid_idx_len[2] == 8) {
 
-#if defined(__AVX512F__) && defined(__AVX512DQ__) || defined (__AVX2__)
+#if defined(__AVX512F__) && defined(__AVX512DQ__) || defined (__AVX2__) || defined(__aarch64__) || defined(_M_ARM64)
         // @TODO: Implement real AVX512 path
         if (ortho) {
             evaluate_grid_ortho_8x8x8_256(out_values, grid_idx_min, grid->dim, grid->origin.elem, grid->spacing.elem, gtos, num_gtos, mode);

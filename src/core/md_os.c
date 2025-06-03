@@ -186,7 +186,7 @@ size_t md_path_write_exe(char* buf, size_t buf_cap) {
 	uint32_t buf_cap32 = (uint32_t)buf_cap;
 	int res = _NSGetExecutablePath(buf, &buf_cap32);
 	if (res == 0) {
-    	return (size_t)buf_cap32;
+    	return (size_t)strnlen(buf, buf_cap);
     }
 #else
     ASSERT(false);

@@ -175,24 +175,23 @@ if (CMAKE_C_COMPILER_ID MATCHES "Clang")
     "-Wno-gnu-zero-variadic-macro-arguments"
     "-Wno-nested-anon-types")
 
+  if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
     if (MD_ENABLE_AVX512)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f" "-mavx512dq")
+      set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx512f" "-mavx512dq")
     elseif (MD_ENABLE_AVX2)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
+      set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx2")
     elseif (MD_ENABLE_AVX)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
+      set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mavx")
     endif()
 
     if (MD_ENABLE_FMA)
-        set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mfma" "-ffp-contract=fast")
+      set(MD_FLAGS_AVX ${MD_FLAGS_AVX} "-mfma" "-ffp-contract=fast")
     endif()
-
-  if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
     if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC") # clang-cl
-    message(STATUS "mdlib: MSVC-Clang configuration was used")
+      message(STATUS "mdlib: MSVC-Clang configuration was used")
     elseif (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU") # clang native
-    message(STATUS "mdlib: Clang configuration was used")
-        set(MD_LIBS ${MD_LIBS} "m" "atomic")
+      message(STATUS "mdlib: Clang configuration was used")
+      set(MD_LIBS ${MD_LIBS} "m" "atomic")
     endif()
   elseif (CMAKE_C_COMPILER_ID STREQUAL "AppleClang")
     message(STATUS "mdlib: AppleClang configuration was used")

@@ -432,7 +432,7 @@ bool extract_file_path_without_ext(str_t* file_path, str_t path) {
 
 // c:/folder/file.ext -> c:/folder/
 bool extract_folder_path(str_t* folder_path, str_t path) {
-    size_t loc;
+    size_t loc = path.len;
     if (!str_rfind_char(&loc, path, '/') && !str_rfind_char(&loc, path, '\\')) {
         return false;
     }
@@ -441,6 +441,7 @@ bool extract_folder_path(str_t* folder_path, str_t path) {
         folder_path->ptr = path.ptr;
         folder_path->len = loc+1;    // include '/' or '\'
     }
+
     return true;
 }
 
