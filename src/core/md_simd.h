@@ -42,6 +42,8 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_256d simde__m256d
 #define md_256i simde__m256i
 
+#define MD_SHUFFLE SIMDE_MM_SHUFFLE
+
 #if defined(__AVX512F__)
 #define md_512  __m512
 #define md_512d __m512d
@@ -294,11 +296,15 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_store_epi32 simde_mm256_store_si256
 #define md_mm256_store_epi64 simde_mm256_store_si256
 
+#define md_mm_set1_epi8  simde_mm_set1_epi8
+#define md_mm_set1_epi16 simde_mm_set1_epi16
 #define md_mm_set1_epi32 simde_mm_set1_epi32
 #define md_mm_set1_epi64 simde_mm_set1_epi64x
 #define md_mm256_set1_epi32 simde_mm256_set1_epi32
 #define md_mm256_set1_epi64 simde_mm256_set1_epi64x
 
+#define md_mm_set_epi8  simde_mm_set_epi8
+#define md_mm_set_epi16 simde_mm_set_epi16
 #define md_mm_set_epi32 simde_mm_set_epi32
 #define md_mm_set_epi64 simde_mm_set_epi64x
 #define md_mm256_set_epi32 simde_mm256_set_epi32
@@ -349,8 +355,13 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_srli_epi32 simde_mm256_srli_epi32
 #define md_mm256_srli_epi64 simde_mm256_srli_epi64
 
+#define md_mm_cmpeq_epi8  simde_mm_cmpeq_epi8
+#define md_mm_cmpeq_epi16 simde_mm_cmpeq_epi16
 #define md_mm_cmpeq_epi32 simde_mm_cmpeq_epi32
 #define md_mm_cmpeq_epi64 simde_mm_cmpeq_epi64
+
+#define md_mm256_cmpeq_epi8  simde_mm256_cmpeq_epi8
+#define md_mm256_cmpeq_epi16 simde_mm256_cmpeq_epi16
 #define md_mm256_cmpeq_epi32 simde_mm256_cmpeq_epi32
 #define md_mm256_cmpeq_epi64 simde_mm256_cmpeq_epi64
 
@@ -359,12 +370,20 @@ In the future, when the support for AVX512 matures, or it is superseeded by some
 #define md_mm256_cmpneq_epi32(a,b) md_mm256_not_si256(md_mm256_cmpeq_epi32(a,b))
 #define md_mm256_cmpneq_epi64(a,b) md_mm256_not_si256(md_mm256_cmpeq_epi64(a,b))
 
+#define md_mm_cmpgt_epi8  simde_mm_cmpgt_epi8
+#define md_mm_cmpgt_epi16 simde_mm_cmpgt_epi16
 #define md_mm_cmpgt_epi32 simde_mm_cmpgt_epi32
 #define md_mm_cmpgt_epi64 simde_mm_cmpgt_epi64
+
+#define md_mm256_cmpgt_epi8  simde_mm256_cmpgt_epi8
+#define md_mm256_cmpgt_epi16 simde_mm256_cmpgt_epi16
 #define md_mm256_cmpgt_epi32 simde_mm256_cmpgt_epi32
 #define md_mm256_cmpgt_epi64 simde_mm256_cmpgt_epi64
 
+#define md_mm_cmplt_epi8  simde_mm_cmplt_epi8
+#define md_mm_cmplt_epi16 simde_mm_cmplt_epi16
 #define md_mm_cmplt_epi32 simde_mm_cmplt_epi32
+#define md_mm_cmplt_epi64 simde_mm_cmplt_epi64
 
 #define md_mm_movemask_epi8 simde_mm_movemask_epi8
 #define md_mm256_movemask_epi8 simde_mm256_movemask_epi8

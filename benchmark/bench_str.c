@@ -48,27 +48,14 @@ UBENCH_EX(str, parse_int) {
     }
     UBENCH_SET_BYTES(num_bytes);
 
-    uint64_t num_iter = 0;
-    uint64_t min = UINT64_MAX;
-    uint64_t max = 0;
-    uint64_t avg = 0;
-
-    int64_t acc = 0;
+    size_t acc = 0;
     UBENCH_DO_BENCHMARK() {
-        const uint64_t st = __rdtsc();
 		acc += parse_int(str[0]);
         acc += parse_int(str[1]);
         acc += parse_int(str[2]);
         acc += parse_int(str[3]);
-        const uint64_t et = __rdtsc() - st;
-        
-        avg += et;
-        min = MIN(min, et);
-        max = MAX(max, et);
-        num_iter += 4;
     }
-
-    printf("avg cycles: %f, min cycles: %"PRIu64", acc: %"PRIi64"\n", (double)(avg) / (double)num_iter, min / 4, acc);
+    UBENCH_DO_NOTHING(&acc);
 }
 
 UBENCH_EX(str, parse_int_simd) {
@@ -85,27 +72,14 @@ UBENCH_EX(str, parse_int_simd) {
     }
     UBENCH_SET_BYTES(num_bytes);
 
-    uint64_t num_iter = 0;
-    uint64_t min = UINT64_MAX;
-    uint64_t max = 0;
-    uint64_t avg = 0;
-
-    int64_t acc = 0;
+    size_t acc = 0;
     UBENCH_DO_BENCHMARK() {
-        const uint64_t st = __rdtsc();
         acc += parse_u32(str[0].ptr, str[0].len);
         acc += parse_u32(str[1].ptr, str[1].len);
         acc += parse_u32(str[2].ptr, str[2].len);
         acc += parse_u32(str[3].ptr, str[3].len);
-        const uint64_t et = __rdtsc() - st;
-
-        avg += et;
-        min = MIN(min, et);
-        max = MAX(max, et);
-        num_iter += 4;
     }
-
-    printf("avg cycles: %f, min cycles: %"PRIu64", acc: %"PRIi64"\n", (double)(avg) / (double)num_iter, min / 4, acc);
+    UBENCH_DO_NOTHING(&acc);
 }
 
 UBENCH_EX(str, parse_float) {
@@ -121,28 +95,15 @@ UBENCH_EX(str, parse_float) {
         num_bytes += str[i].len;
     }
     UBENCH_SET_BYTES(num_bytes);
-    
-    uint64_t num_iter = 0;
-    uint64_t min = UINT64_MAX;
-    uint64_t max = 0;
-    uint64_t avg = 0;
 
     double acc = 0;
     UBENCH_DO_BENCHMARK() {
-        const uint64_t st = __rdtsc();
         acc += parse_float(str[0]);
         acc += parse_float(str[1]);
         acc += parse_float(str[2]);
         acc += parse_float(str[3]);
-        const uint64_t et = __rdtsc() - st;
-
-        avg += et;
-        min = MIN(min, et);
-        max = MAX(max, et);
-        num_iter += 4;
     }
-
-    printf("avg cycles: %f, min cycles: %"PRIu64", acc: %f\n", (double)(avg) / (double)num_iter, min / 4, acc);
+    UBENCH_DO_NOTHING(&acc);
 }
 
 UBENCH_EX(str, parse_float_simd) {
@@ -159,25 +120,12 @@ UBENCH_EX(str, parse_float_simd) {
     }
     UBENCH_SET_BYTES(num_bytes);
 
-    uint64_t num_iter = 0;
-    uint64_t min = UINT64_MAX;
-    uint64_t max = 0;
-    uint64_t avg = 0;
-
     double acc = 0;
     UBENCH_DO_BENCHMARK() {
-        const uint64_t st = __rdtsc();
         acc += parse_float_wide(str[0].ptr, str[0].len);
         acc += parse_float_wide(str[1].ptr, str[1].len);
         acc += parse_float_wide(str[2].ptr, str[2].len);
         acc += parse_float_wide(str[3].ptr, str[3].len);
-        const uint64_t et = __rdtsc() - st;
-
-        avg += et;
-        min = MIN(min, et);
-        max = MAX(max, et);
-        num_iter += 4;
     }
-
-    printf("avg cycles: %f, min cycles: %"PRIu64", acc: %f\n", (double)(avg) / (double)num_iter, min / 4, acc);
+    UBENCH_DO_NOTHING(&acc);
 }

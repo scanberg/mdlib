@@ -253,13 +253,13 @@ extern "C" {
 #define BSWAP64 _byteswap_uint64
 
 #elif MD_COMPILER_GCC || MD_COMPILER_CLANG
-#define MEMCPY  __builtin_memcpy
-#define MEMSET  __builtin_memset
-#define MEMMOVE __builtin_memmove
-#define MEMCMP  __builtin_memcmp
-#define BSWAP16 __builtin_bswap16
-#define BSWAP32 __builtin_bswap32
-#define BSWAP64 __builtin_bswap64
+#define MEMCPY   __builtin_memcpy
+#define MEMSET   __builtin_memset
+#define MEMMOVE  __builtin_memmove
+#define MEMCMP   __builtin_memcmp
+#define BSWAP16  __builtin_bswap16
+#define BSWAP32  __builtin_bswap32
+#define BSWAP64  __builtin_bswap64
 
 #endif
 

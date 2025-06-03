@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20)
 
 include(cmake/common.cmake)
 
@@ -31,7 +31,7 @@ endif()
 
 if (APPLE)
     # Remove once we have proper support for Apple Silicon?
-    set(CMAKE_OSX_ARCHITECTURES "x86_64")
+    # set(CMAKE_OSX_ARCHITECTURES "x86_64")
 endif()
 
 file(GLOB CORE_FILES src/core/*.h src/core/*.c src/core/*.inl)

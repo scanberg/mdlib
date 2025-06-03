@@ -1099,7 +1099,7 @@ void md_gto_grid_evaluate_sub(float* out_values, const md_grid_t* grid, const in
             evaluate_grid_8x8x8_128(out_values, grid_idx_min, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
         }
 #else
-        evaluate_grid_ref(grid->data, grid_idx_min, grid_idx_max, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
+        evaluate_grid_ref(out_values, grid_idx_min, grid_idx_max, grid->dim, grid->origin.elem, step_x.elem, step_y.elem, step_z.elem, gtos, num_gtos, mode);
 #endif
     } else {
         // Slowpath

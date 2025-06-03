@@ -13,12 +13,6 @@
 **
 **  13 Apr 2014
 **
-**
-**  Modified to use some SSE2 intrinsics
-**  Minimal changes to support C through pointers and not references
-**  Changed interface to array types
-**  Robin Sk�nberg
-**  4 Aug 2021
 **************************************************************************/
 
 
@@ -30,20 +24,14 @@
 #include "svd3.h"
 
 #include <stdbool.h>
-#include <xmmintrin.h>
-
 #include <math.h>
 
 static inline float rsqrt(float x) {
-    __m128 res = _mm_rsqrt_ss(_mm_set_ps1(x));
-    _mm_store_ss(&x, res);
-    return x;
+    return 1.0f / sqrtf(x);
 }
 
 static inline float accurateSqrt(float x) {
-    __m128 res = _mm_sqrt_ss(_mm_set_ps1(x));
-    _mm_store_ss(&x, res);
-    return x;
+    return sqrtf(x);
 }
 
 static inline void condSwap(bool c, float *X, float *Y) {
@@ -61,12 +49,7 @@ static inline void condNegSwap(bool c, float *X, float *Y) {
 }
 
 // matrix multiplication C = A * B
-static inline void multAB(const float A[3][3],
-                   //
-                   const float B[3][3],
-                   //
-                   float C[3][3]) {
-
+static inline void multAB(const float A[3][3], const float B[3][3], float C[3][3]) {
     C[0][0] = A[0][0] * B[0][0] + A[0][1] * B[1][0] + A[0][2] * B[2][0];
     C[0][1] = A[0][0] * B[0][1] + A[0][1] * B[1][1] + A[0][2] * B[2][1];
     C[0][2] = A[0][0] * B[0][2] + A[0][1] * B[1][2] + A[0][2] * B[2][2];
@@ -79,11 +62,7 @@ static inline void multAB(const float A[3][3],
 }
 
 // matrix multiplication C = Transpose[A] * B
-static inline void multAtB(const float A[3][3],
-                    //
-                    const float B[3][3],
-                    //
-                    float C[3][3]) {
+static inline void multAtB(const float A[3][3], const float B[3][3], float C[3][3]) {
     C[0][0] = A[0][0] * B[0][0] + A[1][0] * B[1][0] + A[2][0] * B[2][0];
     C[0][1] = A[0][0] * B[0][1] + A[1][0] * B[1][1] + A[2][0] * B[2][1];
     C[0][2] = A[0][0] * B[0][2] + A[1][0] * B[1][2] + A[2][0] * B[2][2];
@@ -198,11 +177,7 @@ static inline void jacobiConjugation(const int x, const int y, const int z, floa
 static inline float dist2(float x, float y, float z) { return x * x + y * y + z * z; }
 
 // finds transformation that diagonalizes a symmetric matrix
-static inline void jacobiEigenanlysis( 
-        // symmetric matrix
-        float S[3][3],
-        // quaternion representation of V
-        float q[4]) {
+static inline void jacobiEigenanlysis(float S[3][3], float q[4]) {
     q[0] = 0;
     q[1] = 0;
     q[2] = 0;
@@ -219,10 +194,7 @@ static inline void jacobiEigenanlysis(
     }
 }
 
-static inline void sortSingularValues(  // matrix that we want to decompose
-        float B[3][3],
-        // sort V simultaneously
-        float V[3][3]) {
+static inline void sortSingularValues(float B[3][3], float V[3][3]) {
     float rho1 = dist2(B[0][0], B[1][0], B[2][0]);
     float rho2 = dist2(B[0][1], B[1][1], B[2][1]);
     float rho3 = dist2(B[0][2], B[1][2], B[2][2]);
@@ -267,14 +239,7 @@ static inline void QRGivensQuaternion(float a1, float a2, float *ch, float *sh) 
     *sh *= w;
 }
 
-static inline void QRDecomposition( 
-        // matrix that we want to decompose
-        float B[3][3],
-        // output Q
-        float Q[3][3],
-        // output R
-        float R[3][3]) {
-
+static inline void QRDecomposition(float B[3][3], float Q[3][3], float R[3][3]) {
     float ch1, sh1, ch2, sh2, ch3, sh3;
     float a, b;
 
@@ -344,16 +309,7 @@ static inline void QRDecomposition(
     Q[2][2] = (-1 + 2 * sh22) * (-1 + 2 * sh32);
 }
 
-void svd(
-        // input A
-        const float A[3][3],
-        // output U
-        float U[3][3],
-        // output S
-        float S[3][3],
-        // output V
-        float V[3][3]) {
-
+void svd(const float A[3][3], float U[3][3], float S[3][3], float V[3][3]) {
     // normal equations matrix
     float ATA[3][3];
 
@@ -376,13 +332,7 @@ void svd(
 
 /// polar decomposition can be reconstructed trivially from SVD result
 // A = UP
-void pd(
-        // input A
-        const float A[3][3],
-        // output U
-        float U[3][3],
-        // output P
-        float P[3][3]) {
+void pd(const float A[3][3], float U[3][3], float P[3][3]) {
     float W[3][3];
     float S[3][3];
     float V[3][3];

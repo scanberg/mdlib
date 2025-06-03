@@ -114,11 +114,11 @@ static inline md_bitblock_t block_not(md_bitblock_t blk) {
 static inline md_bitblock_t block_mask_lo(uint32_t idx) {
     md_bitblock_t res;
 
-    __m256i eq_idx = md_mm256_set1_epi64(idx / 64);
-    __m256i eq_bit = md_mm256_set1_epi64((1ULL << (idx & 63)) - 1);
+    md_256i eq_idx = md_mm256_set1_epi64(idx / 64);
+    md_256i eq_bit = md_mm256_set1_epi64((1ULL << (idx & 63)) - 1);
 
-    __m256i lo_idx = md_mm256_set_epi64(3, 2, 1, 0);
-    __m256i hi_idx = md_mm256_set_epi64(7, 6, 5, 4);
+    md_256i lo_idx = md_mm256_set_epi64(3, 2, 1, 0);
+    md_256i hi_idx = md_mm256_set_epi64(7, 6, 5, 4);
 
     res.v[0] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(eq_idx, lo_idx), eq_bit, md_mm256_cmpeq_epi64(lo_idx, eq_idx));
     res.v[1] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(eq_idx, hi_idx), eq_bit, md_mm256_cmpeq_epi64(hi_idx, eq_idx));
@@ -134,11 +134,11 @@ static inline md_bitblock_t block_mask_lo(uint32_t idx) {
 static inline md_bitblock_t block_mask_hi(uint32_t idx) {
     md_bitblock_t res;
 
-    __m256i eq_idx = md_mm256_set1_epi64(idx / 32);
-    __m256i eq_bit = md_mm256_set1_epi64(~((1UL << (idx & 31)) - 1));
+    md_256i eq_idx = md_mm256_set1_epi64(idx / 32);
+    md_256i eq_bit = md_mm256_set1_epi64(~((1UL << (idx & 31)) - 1));
 
-    __m256i lo_idx = md_mm256_set_epi64(3, 2, 1, 0);
-    __m256i hi_idx = md_mm256_set_epi64(7, 6, 5, 4);
+    md_256i lo_idx = md_mm256_set_epi64(3, 2, 1, 0);
+    md_256i hi_idx = md_mm256_set_epi64(7, 6, 5, 4);
 
     res.v[0] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(lo_idx, eq_idx), eq_bit, md_mm256_cmpeq_epi64(lo_idx, eq_idx));
     res.v[1] = md_mm256_blendv_epi8(md_mm256_cmpgt_epi64(hi_idx, eq_idx), eq_bit, md_mm256_cmpeq_epi64(hi_idx, eq_idx));

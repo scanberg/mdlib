@@ -876,7 +876,7 @@ MD_VEC_INLINE vec4_t vec4_cubic_spline(vec4_t p0, vec4_t p1, vec4_t p2, vec4_t p
 MD_VEC_INLINE vec4_t vec4_min(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.m128 = _mm_min_ps(a.m128, b.m128);
+    r.m128 = md_mm_min_ps(a.m128, b.m128);
 #else
     r.x = MIN(a.x, b.x);
     r.y = MIN(a.y, b.y);
@@ -889,7 +889,7 @@ MD_VEC_INLINE vec4_t vec4_min(vec4_t a, vec4_t b) {
 MD_VEC_INLINE vec4_t vec4_max(vec4_t a, vec4_t b) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.m128 = _mm_max_ps(a.m128, b.m128);
+    r.m128 = md_mm_max_ps(a.m128, b.m128);
 #else
     r.x = MAX(a.x, b.x);
     r.y = MAX(a.y, b.y);
@@ -926,7 +926,7 @@ MD_VEC_INLINE float vec4_reduce_add(vec4_t v) {
 MD_VEC_INLINE vec4_t vec4_clamp(vec4_t v, vec4_t min, vec4_t max) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
-    r.m128 = _mm_max_ps(_mm_min_ps(v.m128, max.m128), min.m128);
+    r.m128 = md_mm_max_ps(md_mm_min_ps(v.m128, max.m128), min.m128);
 #else
     r.x = CLAMP(v.x, min.x, max.x);
     r.y = CLAMP(v.y, min.y, max.y);
@@ -1238,15 +1238,15 @@ MD_VEC_INLINE quat_t quat_mul(quat_t a, quat_t b) {
 #if MD_VEC_MATH_USE_SIMD
     // @NOTE: Reversed notation used here for ijkl, because it makes more sense in my reptile brain
     // shuffle from left to right (xyzw) x:0 y:1 z:2 w:3
-#define MD_SHUFFLE(v,i,j,k,l) md_mm_shuffle_ps(v,v,_MM_SHUFFLE(l,k,j,i))
-    __m128 t1 = _mm_mul_ps(MD_SHUFFLE(a.m128, 3,3,3,3), b.m128);
-    __m128 t2 = _mm_mul_ps(MD_SHUFFLE(a.m128, 0,1,2,0), MD_SHUFFLE(b.m128, 3,3,3,0));
-    __m128 t3 = _mm_mul_ps(MD_SHUFFLE(a.m128, 1,2,0,1), MD_SHUFFLE(b.m128, 2,0,1,1));
-    __m128 t4 = _mm_mul_ps(MD_SHUFFLE(a.m128, 2,0,1,2), MD_SHUFFLE(b.m128, 1,2,0,2));
-#undef MD_SHUFFLE
-    t2 = _mm_mul_ps(t2, _mm_set_ps(-1,1,1,1));
-    t3 = _mm_mul_ps(t3, _mm_set_ps(-1,1,1,1));
-    c.m128 = _mm_add_ps(_mm_add_ps(t1, t2), _mm_sub_ps(t3, t4));
+#define MD_PS_SHUFFLE(v,i,j,k,l) md_mm_shuffle_ps(v,v, MD_SHUFFLE(l,k,j,i))
+    md_128 t1 = md_mm_mul_ps(MD_PS_SHUFFLE(a.m128, 3,3,3,3), b.m128);
+    md_128 t2 = md_mm_mul_ps(MD_PS_SHUFFLE(a.m128, 0,1,2,0), MD_PS_SHUFFLE(b.m128, 3,3,3,0));
+    md_128 t3 = md_mm_mul_ps(MD_PS_SHUFFLE(a.m128, 1,2,0,1), MD_PS_SHUFFLE(b.m128, 2,0,1,1));
+    md_128 t4 = md_mm_mul_ps(MD_PS_SHUFFLE(a.m128, 2,0,1,2), MD_PS_SHUFFLE(b.m128, 1,2,0,2));
+#undef MD_PS_SHUFFLE
+    t2 = md_mm_mul_ps(t2, md_mm_set_ps(-1,1,1,1));
+    t3 = md_mm_mul_ps(t3, md_mm_set_ps(-1,1,1,1));
+    c.m128 = md_mm_add_ps(md_mm_add_ps(t1, t2), md_mm_sub_ps(t3, t4));
 #else
     c.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
     c.y = a.w * b.y + a.y * b.w + a.z * b.x - a.x * b.z;

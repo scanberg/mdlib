@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #if (MD_COMPILER_CLANG || MD_COMPILER_GCC)
-#include <x86intrin.h>
+//#include <x86intrin.h>
 
 #define popcnt32 __builtin_popcount
 #define popcnt64 __builtin_popcountll
@@ -37,12 +37,23 @@ static inline uint64_t bsr64(uint64_t x) {
 #elif MD_COMPILER_MSVC
 #include <intrin.h>
 
-#define popcnt32 __popcnt
-#define popcnt64 __popcnt64
-#define clz32 __lzcnt
-#define clz64 __lzcnt64
-#define ctz32 _tzcnt_u32
-#define ctz64 _tzcnt_u64
+#if defined(__x86_64__) || defined(_M_X64)
+    #define popcnt32 __popcnt
+    #define popcnt64 __popcnt64
+    #define clz32    __lzcnt
+    #define clz64    __lzcnt64
+    #define ctz32    _tzcnt_u32
+    #define ctz64    _tzcnt_u64
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #define popcnt32 _CountOneBits
+    #define popcnt64 _CountOneBits64
+    #define clz32    _CountLeadingZeros
+    #define clz64    _CountLeadingZeros64
+    #define ctz32    _CountTrailingZeros
+    #define ctz64    _CountTrailingZeros64
+#else
+    #error "Unsupported hardware"
+#endif
 
 // Scans for the first bit set from least significant bit (LSB) to most significant bit (MSB)
 // indexing starts at 1, returns 0 if no bit is set (posix convention)

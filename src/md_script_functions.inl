@@ -5125,7 +5125,7 @@ static inline void populate_volume(float* vol, const vec3_t* xyz, const int* idx
 
         // Count the number of lanes which is not zero
         // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
-        if (_mm_movemask_ps(c) == 0x7) {
+        if (md_mm_movemask_ps(c) == 0x7) {
             vol[(uint32_t)coord.z * (MD_VOL_DIM * MD_VOL_DIM) + (uint32_t)coord.y * MD_VOL_DIM + (uint32_t)coord.x] += 1.0f;
         }
     }
@@ -5173,7 +5173,7 @@ bool sdf_iter(const md_spatial_hash_elem_t* elem_arr, int mask, void* user_param
 
         // Count the number of lanes which are not zero
         // 0x7 = 1 + 2 + 4 means that first three lanes (x,y,z) are within min and max
-        if (_mm_movemask_ps(c) == 0x7) {
+        if (md_mm_movemask_ps(c) == 0x7) {
             data->vol[(uint32_t)coord.z * (MD_VOL_DIM * MD_VOL_DIM) + (uint32_t)coord.y * MD_VOL_DIM + (uint32_t)coord.x] += 1.0f;
         }
         mask &= ~(1 << idx);

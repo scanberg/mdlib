@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/md_intrinsics.h>
+#include <core/md_simd.h>
 #include <core/md_str.h>
 #include <core/md_os.h>
 
@@ -17,23 +18,23 @@ static inline uint32_t tzcnt_u32(uint32_t x) {
 #endif
 }
 
-static inline __m128i _load(const char* p) {
-    return _mm_loadu_si128((const __m128i*)p);
+static inline md_128i _load(const char* p) {
+    return _mm_loadu_si128((const md_128i*)p);
 }
 
-static inline __m128i _load_partial(const char* p, uint32_t n) {
-    __m128i a0 = _mm_set1_epi8((char)n);
-    __m128i a1 = _mm_set_epi8(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16);
-    __m128i m  = _mm_cmpgt_epi8(a0,a1);
+static inline md_128i _load_partial(const char* p, uint32_t n) {
+    md_128i a0 = _mm_set1_epi8((char)n);
+    md_128i a1 = _mm_set_epi8(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16);
+    md_128i m  = _mm_cmpgt_epi8(a0,a1);
     return _mm_and_si128(_load(p), m);
 }
 
 static inline int64_t find_char(const char* ptr, int64_t len, char character) {
     int64_t off = 0;
-    __m128i c = _mm_set1_epi8(character);
+    md_128i c = _mm_set1_epi8(character);
     while (len > 16) {
-        __m128i d = _load(ptr + off);
-        __m128i m = _mm_cmpeq_epi8(d, c);
+        md_128i d = _load(ptr + off);
+        md_128i m = _mm_cmpeq_epi8(d, c);
         int r = _mm_movemask_epi8(m);
         if (r)
             return off + tzcnt_u32(r);
@@ -41,8 +42,8 @@ static inline int64_t find_char(const char* ptr, int64_t len, char character) {
         len -= 16;
     }
     if (len > 0) {
-        __m128i d = _load_partial(ptr + off, (uint32_t)len);
-        __m128i m = _mm_cmpeq_epi8(d, c);
+        md_128i d = _load_partial(ptr + off, (uint32_t)len);
+        md_128i m = _mm_cmpeq_epi8(d, c);
         int r = _mm_movemask_epi8(m);
         if (r)
             return off + tzcnt_u32(r);
@@ -351,17 +352,16 @@ static inline int64_t parse_int(str_t str) {
     return neg ? -val : val;
 }
 
-static inline __m128i mask(size_t n) {
-    //ALIGNAS(32) static const char mask[32] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
-    //return _mm_loadu_si128((const __m128i*)(mask + n));
-    return _mm_cmpgt_epi8(_mm_set1_epi8((char)n), _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
+#if 0
+static inline md_128i mask(size_t n) {
+    return md_mm_cmpgt_epi8(md_mm_set1_epi8((char)n), md_mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15));
 }
 
 static inline uint64_t
 #if MD_COMPILER_GCC || MD_COMPILER_CLANG
 __attribute__((target("sse4.1")))
 #endif
-parse_uint64_si128(__m128i v, __m128i m) {
+parse_uint64_si128(md_128i v, md_128i m) {
     v = _mm_subs_epu8(v, _mm_set1_epi8('0'));
     v = _mm_and_si128(v, m);
 
@@ -377,21 +377,22 @@ static inline uint64_t
 #if MD_COMPILER_GCC || MD_COMPILER_CLANG
 __attribute__((target("sse4.1")))
 #endif
-parse_uint32x2_si128(__m128i v, __m128i m) {
-    v = _mm_subs_epu8(v, _mm_set1_epi8('0'));
-    v = _mm_and_si128(v, m);
-    v = _mm_maddubs_epi16(v, _mm_set_epi8(1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10));
-    v = _mm_madd_epi16(v, _mm_set_epi16(1, 100, 1, 100, 1, 100, 1, 100));
+parse_uint32x2_si128(md_128i v, md_128i m) {
+    v = _mm_subs_epu8(v, md_mm_set1_epi8('0'));
+    v = md_mm_and_si128(v, m);
+    v = _mm_maddubs_epi16(v, md_mm_set_epi8(1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10, 1, 10));
+    v = md_mm_madd_epi16(v, md_mm_set_epi16(1, 100, 1, 100, 1, 100, 1, 100));
     v = _mm_packus_epi32(v, v);
-    v = _mm_madd_epi16(v, _mm_set_epi16(1, 10000, 1, 10000, 1, 10000, 1, 10000));
-    return _mm_cvtsi128_si64(v);
+    v = md_mm_madd_epi16(v, _mm_set_epi16(1, 10000, 1, 10000, 1, 10000, 1, 10000));
+    return md_mm_cvtsi128_si64(v);
 }
 
 static inline uint64_t parse_u64(const char* ptr, int64_t len) {
-    __m128i m = mask(len);
-    __m128i v = _mm_loadu_si128((const __m128i*)(ptr+len-16));
+    md_128i m = mask(len);
+    md_128i v = _mm_loadu_si128((const md_128i*)(ptr+len-16));
     return parse_uint64_si128(v, m);
 }
+#endif
 
 static inline uint64_t load_u64(const char* ptr) {
     uint64_t val;
@@ -412,13 +413,14 @@ static inline uint32_t parse_u32(const char* ptr, size_t len) {
     return (uint32_t)val;
 }
 
+#if 0
 static inline uint64_t parse_uint_wide(const char* ptr, size_t len) {
     uint64_t val;
-    switch (len >> 3) {
-        case 0:  val = parse_u32(ptr, len); break;
-        default: val = parse_u64(ptr, len);
+    if (len > 8) {
+        return parse_u64(ptr, len);
+    } else {
+        return parse_u32(ptr, len);
     }
-    return val;
 }
 
 static inline int64_t parse_int_wide(const char* ptr, size_t len) {
@@ -432,16 +434,17 @@ static inline int64_t parse_int_wide(const char* ptr, size_t len) {
     return neg ? -val : val;
 }
 
-static inline __m128i shift_left(__m128i in, int n) {
+static inline md_128i shift_left(md_128i in, int n) {
     static const char shift_shuffle_lookup[32] = {
         -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128,
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
     };
 
     const char*   lookup_center = shift_shuffle_lookup + 16;
-    const __m128i shuffle = _mm_lddqu_si128((const __m128i*)(lookup_center - n));
-    return _mm_shuffle_epi8(in, shuffle);
+    const md_128i shuffle = md_mm_loadu_si128(lookup_center - n);
+    return md_mm_shuffle_epi8(in, shuffle);
 }
+#endif
 
 // https://github.com/fastfloat/fast_float/blob/main/include/fast_float/ascii_number.h
 static inline uint32_t parse_eight_digits_unrolled(uint64_t val) {
@@ -472,13 +475,13 @@ struct float_token_t {
     uint8_t _unused;
 };
 
-static inline int find_first_char(__m128i v, char c) {
-    __m128i m = _mm_cmpeq_epi8(v, _mm_set1_epi8(c));
-    return ctz32(_mm_movemask_epi8(m));
+static inline int find_first_char(md_128i v, char c) {
+    md_128i m = md_mm_cmpeq_epi8(v, md_mm_set1_epi8(c));
+    return ctz32(md_mm_movemask_epi8(m));
 }
 
 // Specialized version where the the integer and fractional part each
-// are expected to fit into 8 characters.
+// are expected to fit into 8 characters. ptr is expected to have 16 readable characters from its loacation in memory.
 static inline double parse_float_wide(const char* ptr, size_t len) {
     int neg = (*ptr == '-');
     if (*ptr == '-') {
@@ -486,7 +489,7 @@ static inline double parse_float_wide(const char* ptr, size_t len) {
         --len;
     }
     // Find decimal point by 128-bit intrinsics
-    int dec = find_first_char(_mm_loadu_si128((const __m128i*)ptr), '.');
+    int dec = find_first_char(md_mm_loadu_si128((const md_128i*)ptr), '.');
     dec = MIN(dec, (int)len);
     int frac_len = (int)len - (dec + 1);
     frac_len = MAX(0, frac_len);
