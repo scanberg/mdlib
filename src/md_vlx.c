@@ -115,6 +115,8 @@ typedef struct md_vlx_scf_t {
 	md_vlx_orbital_t alpha;
 	md_vlx_orbital_t beta;
 
+	double* resp_charges;
+
 	md_vlx_2d_data_t S;
 	md_vlx_scf_history_t history;
 } md_vlx_scf_t;
@@ -1532,6 +1534,17 @@ static bool h5_read_scf_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
+	{
+		size_t dim;
+		if (h5_read_dataset_dims(&dim, 1, handle, "charges_resp")) {
+			md_array_resize(vlx->scf.resp_charges, dim, vlx->arena);
+			if (!h5_read_dataset_data(vlx->scf.resp_charges, &dim, 1, handle, H5T_NATIVE_DOUBLE, "charges_resp")) {
+				MD_LOG_ERROR("Could not read charges_resp");
+				return false;
+			}
+		}
+	}
+
 	return true;
 }
 
@@ -2557,6 +2570,13 @@ size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx,
 
 	md_temp_set_pos_back(temp_pos);
 	return count;
+}
+
+const double* md_vlx_scf_resp_charges(const md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->scf.resp_charges;
+	}
+	return NULL;
 }
 
 size_t md_vlx_rsp_number_of_excited_states(const md_vlx_t* vlx) {
