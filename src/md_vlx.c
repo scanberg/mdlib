@@ -25,6 +25,7 @@ typedef enum {
 	VLX_FLAG_SCF  = 2,
 	VLX_FLAG_RSP  = 4,
 	VLX_FLAG_VIB  = 8,
+	VLX_FLAG_OPT  = 16,
 	VLX_FLAG_ALL  = -1,
 } vlx_flags_t;
 
@@ -141,7 +142,16 @@ typedef struct md_vlx_vib_t {
 	dvec3_t** normal_modes;
 } md_vlx_vib_t;
 
+typedef struct md_vlx_opt_t {
+	size_t number_of_steps;
+	double* nuclear_repulsion_energies;
+	double* energies;
+	dvec3_t* coordinates;
+} md_vlx_opt_t;
+
 typedef struct md_vlx_t {
+	basis_set_t basis_set;
+
 	str_t  basis_set_ident;
 	str_t  dft_func_label;
 	str_t  potfile_text;
@@ -162,7 +172,7 @@ typedef struct md_vlx_t {
 	md_vlx_scf_t scf;
 	md_vlx_rsp_t rsp;
 	md_vlx_vib_t vib;
-	basis_set_t basis_set;
+	md_vlx_opt_t opt;
 
 	// Atomic orbital data
 	md_gto_data_t ao_data;
@@ -1725,6 +1735,50 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
+static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
+	// @TODO(This will likely be exposed as its own variable in the future, for now we extract the length from one of the fields)
+	uint64_t dim[3];
+	int num_dim;
+	
+	num_dim = h5_read_dataset_dims(dim, 3, handle, "nuclear_repulsion_energies");
+	if (num_dim <= 0) {
+		return false;
+	}
+
+	// This is a fix because the input data in one version is supplied as a 2D object
+	size_t len = dim[0];
+	vlx->opt.number_of_steps = len;
+
+	md_array_resize(vlx->opt.nuclear_repulsion_energies, len, vlx->arena);
+	if (!h5_read_dataset_data(vlx->opt.nuclear_repulsion_energies, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "nuclear_repulsion_energies")) {
+		return false;
+	}
+
+	md_array_resize(vlx->opt.energies, len, vlx->arena);
+	if (!h5_read_dataset_data(vlx->opt.energies, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "opt_energies")) {
+		return false;
+	}
+
+	num_dim = h5_read_dataset_dims(dim, 3, handle, "opt_coordinates_au");
+	if (dim[0] != len || dim[1] != vlx->number_of_atoms || dim[2] != 3) {
+		MD_LOG_ERROR("Inconsistent or invalid opt_coordinates dimensions");
+		return false;
+	}
+
+	md_array_resize(vlx->opt.coordinates, dim[0] * dim[1], vlx->arena);
+	if (!h5_read_dataset_data(vlx->opt.coordinates, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "opt_coordinates_au")) {
+		return false;
+	}
+
+	if (vlx->opt.coordinates) {
+		for (size_t i = 0; i < dim[0] * dim[1]; ++i) {
+			vlx->opt.coordinates[i] = dvec3_mul_f(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
+		}
+	}
+
+	return true;
+}
+
 static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 	ASSERT(vlx);
 
@@ -1881,6 +1935,18 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
         // clear
         flags &= ~VLX_FLAG_RSP;
     }
+
+	// OPT
+	if (flags & VLX_FLAG_OPT) {
+		if (H5Lexists(file_id, "opt", H5P_DEFAULT) > 0) {
+			hid_t opt_id = H5Gopen(file_id, "opt", H5P_DEFAULT);
+			if (opt_id != H5I_INVALID_HID) {
+				result = h5_read_opt_data(vlx, opt_id);
+				H5Gclose(opt_id);
+				if (!result) goto done;
+			}
+		}
+	}
 
 	// RSP
 	if (flags & VLX_FLAG_RSP) {
@@ -2695,6 +2761,39 @@ const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx) {
 		if (vlx->vib.normal_modes && idx < vlx->vib.number_of_normal_modes) {
 			return vlx->vib.normal_modes[idx];
 		}
+	}
+	return NULL;
+}
+
+// OPT
+size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->opt.number_of_steps;
+	}
+	return 0;
+}
+
+// Returns atom coordinates for a given optimization step
+const dvec3_t* md_vlx_opt_coordinates(const struct md_vlx_t* vlx, size_t opt_idx) {
+	if (vlx) {
+		if (vlx->opt.coordinates && 0 <= opt_idx && opt_idx < vlx->opt.number_of_steps) {
+			const size_t stride = vlx->number_of_atoms;
+			return vlx->opt.coordinates + stride * opt_idx;
+		}
+	}
+	return NULL;
+}
+
+const double* md_vlx_opt_energies(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->opt.energies;
+	}
+	return NULL;
+}
+
+const double* md_vlx_opt_nuclear_repulsion_energies(const struct md_vlx_t* vlx) {
+	if (vlx) {
+		return vlx->opt.nuclear_repulsion_energies;
 	}
 	return NULL;
 }
