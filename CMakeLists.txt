@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 
 include(cmake/common.cmake)
 
@@ -104,6 +104,7 @@ set(GL_SHADER_FILES
 set(GTO_SHADER_FILES 
     src/shaders/eval_alie.comp
     src/shaders/eval_gto.comp
+    src/shaders/eval_gto_density.comp
     src/shaders/segment_and_attribute_to_group.comp
 )
 

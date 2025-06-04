@@ -58,7 +58,7 @@ static inline void index_to_world_matrix(float out_mat[4][4], const md_grid_t* g
     out_mat[3][3] = 1.0f;
 }
 
-static GLuint get_gto_eval_program(void) {
+static GLuint get_gto_program(void) {
     static GLuint program = 0;
     if (!program) {
         GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
@@ -103,17 +103,34 @@ static GLuint get_vol_segment_to_groups_program(void) {
     return program;
 }
 
-#define TEMP_SSBO_BUFFER_SIZE MEGABYTES(8)
-
-static GLuint get_temp_ssbo(void) {
-    static GLuint ssbo = 0;
-    if (!ssbo) {
-        glCreateBuffers(1, &ssbo);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, TEMP_SSBO_BUFFER_SIZE, 0, GL_DYNAMIC_DRAW);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+static GLuint get_gto_density_program(void) {
+    static GLuint program = 0;
+    if (!program) {
+        GLuint shader = glCreateShader(GL_COMPUTE_SHADER);
+        if (md_gl_shader_compile(shader, (str_t){(const char*)eval_gto_density_comp, eval_gto_density_comp_size}, 0, 0)) {
+            GLuint prog = glCreateProgram();
+            if (md_gl_program_attach_and_link(prog, &shader, 1)) {
+                program = prog;
+            }
+        }
+        glDeleteShader(shader);
     }
-    return ssbo;
+    return program;
+}
+
+static GLuint get_buffer(size_t size) {
+    GLuint id = 0;
+    glCreateBuffers(1, &id);
+    glBindBuffer(GL_ARRAY_BUFFER, id);
+    glBufferData(GL_ARRAY_BUFFER, size, 0, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    return id;
+}
+
+static void free_buffer(GLuint id) {
+    if (glIsBuffer(id)) {
+        glDeleteBuffers(1, &id);
+    }
 }
 
 static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode, GLuint program) {
@@ -159,12 +176,8 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, c
     GLintptr   ssbo_scl_offset = ALIGN_TO(ssbo_orb_offset + ssbo_orb_size, 256);
     GLsizeiptr ssbo_scl_size   = sizeof(float) * (orb->num_orbs);
 
-    if (ssbo_scl_offset + ssbo_scl_size > TEMP_SSBO_BUFFER_SIZE) {
-        MD_LOG_ERROR("The total data required to evaluate the GTOs exceeded the buffer capacity");
-        goto done;
-    }
-
-    GLuint ssbo = get_temp_ssbo();
+    size_t total_size = ALIGN_TO(ssbo_scl_offset + ssbo_scl_size, 256);
+    GLuint ssbo = get_buffer(total_size);
 
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_gto_offset, ssbo_gto_size, orb->gtos);
@@ -208,6 +221,7 @@ static void gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* grid, c
 
     glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
 
+    free_buffer(ssbo);
 done:
     md_gl_debug_pop();
 }
@@ -216,7 +230,7 @@ void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, c
     ASSERT(vol_grid);
     ASSERT(orb);
 
-    GLuint program = get_gto_eval_program();
+    GLuint program = get_gto_program();
     gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, orb, mode, program);
 }
 
@@ -254,9 +268,6 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
 
     md_gl_debug_push("SEGMENT VOL TO GROUP");
 
-    GLuint ssbo = get_temp_ssbo();
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-
     GLintptr   ssbo_group_value_offset = 0;
     GLsizeiptr ssbo_group_value_size   = sizeof(float) * 16;
 
@@ -265,6 +276,12 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
 
     GLintptr   ssbo_point_group_offset = ALIGN_TO(ssbo_point_xyzr_offset + ssbo_point_xyzr_size, 256);
     GLsizeiptr ssbo_point_group_size   = sizeof(uint32_t) * num_points;
+
+    size_t total_size = ALIGN_TO(ssbo_point_group_offset + ssbo_point_group_size, 256);
+
+    GLuint ssbo = get_buffer(total_size);
+    
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
 
     // Clear first 16 bytes which represents the result (group_values)
     glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32F, ssbo_group_value_offset, ssbo_group_value_size, GL_RED, GL_FLOAT, NULL);
@@ -315,6 +332,7 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
     glUseProgram(0);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
+    free_buffer(ssbo);
     md_gl_debug_pop();
 }
 
@@ -331,6 +349,104 @@ void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const
     };
 
     md_gto_grid_evaluate_orb_GPU(vol_tex, vol_grid, &orb, mode);
+}
+
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix_data, size_t matrix_size) {
+    ASSERT(grid);
+    ASSERT(gto_data);
+    ASSERT(matrix_data);
+
+    md_gl_debug_push("EVAL DENSITY");
+
+    if (!glIsTexture(vol_tex)) {
+        MD_LOG_ERROR("Invalid volume texture handle");
+        return;
+    }
+
+    GLenum format = 0;
+    if (glGetTextureLevelParameteriv) {
+        glGetTextureLevelParameteriv(vol_tex,   0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+    } else {
+        glBindTexture(GL_TEXTURE_3D, vol_tex);
+        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
+        glBindTexture(GL_TEXTURE_3D, 0);
+    }
+
+    switch (format) {
+    case GL_R16F:
+    case GL_R32F:
+        break;
+    default:
+        // Not good
+        MD_LOG_ERROR("Unrecognized internal format of supplied volume texture");
+        goto done;
+    }
+
+    GLuint program = get_gto_density_program();
+    if (!program) {
+        MD_LOG_ERROR("Program not found?!");
+        goto done;
+    }
+
+    GLintptr   ssbo_cgto_xyzr_base      = 0;
+    GLsizeiptr ssbo_cgto_xyzr_size      = sizeof(vec4_t) * gto_data->num_cgtos;
+
+    GLintptr   ssbo_cgto_offset_base   = ALIGN_TO(ssbo_cgto_xyzr_base + ssbo_cgto_xyzr_size, 256);
+    GLsizeiptr ssbo_cgto_offset_size   = sizeof(uint32_t) * (gto_data->num_cgtos + 1);
+
+    GLintptr   ssbo_pgto_base           = ALIGN_TO(ssbo_cgto_offset_base + ssbo_cgto_offset_size, 256);
+    GLsizeiptr ssbo_pgto_size           = sizeof(md_pgto_t) * (gto_data->num_pgtos);
+
+    GLintptr   ssbo_matrix_base = ALIGN_TO(ssbo_pgto_base + ssbo_pgto_size, 256);
+    GLsizeiptr ssbo_matrix_size = sizeof(float) * matrix_size;
+
+    size_t total_size = ALIGN_TO(ssbo_matrix_base + ssbo_matrix_size, 256);
+    GLuint ssbo = get_buffer(total_size);
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_xyzr_base,      ssbo_cgto_xyzr_size,    gto_data->cgto_xyzr);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_cgto_offset_base,    ssbo_cgto_offset_size,  gto_data->cgto_offset);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_pgto_base,           ssbo_pgto_size,         gto_data->pgtos);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, ssbo_matrix_base,         ssbo_matrix_size,       matrix_data);
+
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, ssbo, ssbo_cgto_xyzr_base,       ssbo_cgto_xyzr_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, ssbo, ssbo_cgto_offset_base,     ssbo_cgto_offset_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 2, ssbo, ssbo_pgto_base,            ssbo_pgto_size);
+    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 3, ssbo, ssbo_matrix_base,          ssbo_matrix_size);
+
+    glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+
+    glUseProgram(program);
+
+    float world_to_model[4][4];
+    float index_to_world[4][4];
+
+    world_to_model_matrix(world_to_model, grid);
+    index_to_world_matrix(index_to_world, grid);
+
+    glUniformMatrix4fv(0, 1, GL_FALSE, (const float*)world_to_model);
+    glUniformMatrix4fv(1, 1, GL_FALSE, (const float*)index_to_world);
+    glUniform3fv(2, 1, grid->spacing.elem);
+    glUniform1ui(3, (GLuint)gto_data->num_cgtos);
+
+    glBindImageTexture(0, vol_tex, 0, GL_TRUE, 0, GL_WRITE_ONLY, format);
+
+    int num_groups[3] = {
+        DIV_UP(grid->dim[0], 8),
+        DIV_UP(grid->dim[1], 8),
+        DIV_UP(grid->dim[2], 8),
+    };
+
+    glDispatchCompute(num_groups[0], num_groups[1], num_groups[2]);
+
+    glUseProgram(0);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT);
+
+done:
+    md_gl_debug_pop();
 }
 
 #else

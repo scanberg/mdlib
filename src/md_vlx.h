@@ -71,10 +71,13 @@ const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_mo_type
 const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 
 // Atomic orbital data
-const md_gto_data_t* md_vlx_scf_ao_data(const struct md_vlx_t* vlx);
+bool md_vlx_scf_extract_ao_data(md_gto_data_t* out_ao_data, const struct md_vlx_t* vlx, double cutoff_value, struct md_allocator_i* alloc);
 
-// Density matrix
-const double* md_vlx_scf_density_matrix(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+// Get the required element size of a compact upper triangular matrix representation
+size_t md_vlx_scf_density_matrix_size(const struct md_vlx_t* vlx);
+
+// Extracts the elements of the matrix into a compact upper triangular matrix
+bool md_vlx_scf_extract_density_matrix_data(float* out_values, const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 
 // SCF History
 size_t		  md_vlx_scf_history_size(const struct md_vlx_t* vlx);
@@ -83,6 +86,11 @@ const double* md_vlx_scf_history_energy_diff(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_history_density_diff(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_history_gradient_norm(const struct md_vlx_t* vlx);
 const double* md_vlx_scf_history_max_gradient(const struct md_vlx_t* vlx);
+
+// SCF (Optional data)
+// 
+// If present, has the length of num of atoms
+const double* md_vlx_scf_resp_charges(const struct md_vlx_t* vlx);
 
 // RSP
 size_t md_vlx_rsp_number_of_excited_states(const struct md_vlx_t* vlx);

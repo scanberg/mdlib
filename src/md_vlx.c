@@ -2934,6 +2934,78 @@ const double* md_vlx_scf_mo_energy(const md_vlx_t* vlx, md_vlx_mo_type_t type) {
 	return NULL;
 }
 
+bool md_vlx_scf_extract_ao_data(md_gto_data_t* out_ao_data, const md_vlx_t* vlx, double cutoff_value, md_allocator_i* alloc) {
+	if (vlx) {
+        ASSERT(out_ao_data);
+		for (size_t i = 0; i < vlx->ao_data.num_cgtos; ++i) {
+            double cgto_radius = 0.0;
+			uint32_t cgto_offset = out_ao_data->num_cgtos;
+			for (size_t j = vlx->ao_data.cgto_offset[i]; j < vlx->ao_data.cgto_offset[i + 1]; ++j) {
+				double radius = md_gto_compute_radius_of_influence(vlx->ao_data.pgtos[j].i, vlx->ao_data.pgtos[j].j, vlx->ao_data.pgtos[j].k, vlx->ao_data.pgtos[j].coeff, vlx->ao_data.pgtos[j].alpha, cutoff_value);
+				if (radius == 0.0) {
+					continue;
+				}
+
+                md_pgto_t pgto = vlx->ao_data.pgtos[j];
+				pgto.radius = radius;  // Update the radius of influence
+
+				md_array_push(out_ao_data->pgtos, pgto, alloc);
+				out_ao_data->num_pgtos += 1;
+
+				cgto_radius = MAX(cgto_radius, radius);
+            }
+            // Push cgtos regardless of radius (otherwise indexing will be off)
+            vec4_t cgto_xyzr = {vlx->ao_data.cgto_xyzr[i].x, vlx->ao_data.cgto_xyzr[i].y, vlx->ao_data.cgto_xyzr[i].z, (float)cgto_radius};
+            md_array_push(out_ao_data->cgto_xyzr, cgto_xyzr, alloc);
+            md_array_push(out_ao_data->cgto_offset, cgto_offset, alloc);
+			
+			out_ao_data->num_cgtos += 1;
+        }
+
+		return true;
+	}
+	return false;
+}
+
+static inline size_t get_matrix_index(size_t row, size_t col) {
+	size_t i = MAX(row, col);
+	size_t j = MIN(row, col);
+	return (i * (i + 1)) / 2 + j;
+}
+
+// Returns the size of the density matrix in number of elements.
+// This only contains the upper triangular part of the matrix, due to symmetry.
+size_t md_vlx_scf_density_matrix_size(const md_vlx_t* vlx) {
+	if (vlx) {
+		return (vlx->scf.alpha.density.size[0] > 0) ? (vlx->scf.alpha.density.size[0] * (vlx->scf.alpha.density.size[0] + 1)) / 2 : 0;
+	}
+	return 0;
+}
+
+// Populates the provided array with the density matrix data.
+bool md_vlx_scf_extract_density_matrix_data(float* out_values, const md_vlx_t* vlx, md_vlx_mo_type_t type) {
+	if (vlx) {
+		size_t dim = vlx->scf.alpha.density.size[0];
+        const double* density_data = NULL;
+        if (type == MD_VLX_MO_TYPE_ALPHA) {
+			density_data = vlx->scf.alpha.density.data;
+		} else if (type == MD_VLX_MO_TYPE_BETA) {
+			density_data = vlx->scf.beta.density.data;
+		} else {
+			MD_LOG_ERROR("Invalid MO type for density matrix extraction!");
+			return false;
+        }
+		for (size_t i = 0; i < dim; ++i) {
+			for (size_t j = i; j < dim; ++j) {
+				size_t idx = get_matrix_index(i, j);
+                out_values[idx] = (float)density_data[i * dim + j];  // Convert to float
+            }
+		}
+		return true;
+	}
+	return false;
+}
+
 // SCF History
 size_t md_vlx_scf_history_size(const md_vlx_t* vlx) {
 	if (vlx) return vlx->scf.history.number_of_iterations;
