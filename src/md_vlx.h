@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <stddef.h>
@@ -69,6 +69,12 @@ size_t  md_vlx_scf_number_of_molecular_orbitals(const struct md_vlx_t* vlx);
 
 const double* md_vlx_scf_mo_occupancy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 const double* md_vlx_scf_mo_energy(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
+
+// Atomic orbital data
+const md_gto_data_t* md_vlx_scf_ao_data(const struct md_vlx_t* vlx);
+
+// Density matrix
+const double* md_vlx_scf_density_matrix(const struct md_vlx_t* vlx, md_vlx_mo_type_t type);
 
 // SCF History
 size_t		  md_vlx_scf_history_size(const struct md_vlx_t* vlx);

@@ -18,6 +18,12 @@ typedef struct md_gto_t {
 	uint32_t _pad;
 } md_gto_t;
 
+typedef struct md_pgto_t {
+	float coeff;
+	float alpha;
+	float radius;
+	uint8_t i, j, k, l;
+} md_pgto_t;
 
 // Orbital Data 
 typedef struct md_orbital_data_t {
@@ -30,6 +36,15 @@ typedef struct md_orbital_data_t {
 	uint32_t* orb_offsets;
 	float* orb_scaling;
 } md_orbital_data_t;
+
+typedef struct md_gto_data_t {
+	size_t     num_cgtos;
+	vec4_t*    cgto_xyzr;
+	uint32_t*  cgto_offset;		// offsets into pgtos (contains num_cgtos + 1 entries) such that a 'range' can be represented by cgto_offset[i] -> cgto_offset[i+1]
+
+	size_t     num_pgtos;
+	md_pgto_t* pgtos;
+} md_gto_data_t;
 
 typedef enum {
 	MD_GTO_EVAL_MODE_PSI = 0,
@@ -50,7 +65,6 @@ extern "C" {
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
 void md_gto_grid_evaluate_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
-
 
 void md_gto_grid_evaluate_orb_GPU(uint32_t vol_tex, const md_grid_t* vol_grid, const md_orbital_data_t* orb, md_gto_eval_mode_t mode);
 
@@ -74,7 +88,23 @@ void md_gto_segment_and_attribute_to_groups_GPU(float* out_group_values, size_t 
 // - gtos: The gtos to evaluate
 // - num_gtos: Number of supplied gtos
 // - eval_mode: GTO evaluation mode
-void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const md_gto_t* gtos, size_t in_num_gtos, md_gto_eval_mode_t in_mode);
+void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const md_gto_t* gtos, size_t num_gtos, md_gto_eval_mode_t mode);
+
+// Evaluates CGTOs defined by gto_data with a given 'density' matrix
+// - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
+// - grid: The grid defining the samples to evaluate
+// - gto_data: The gto data to evaluate
+// - matrix: The matrix coefficients
+// - mode: evaluation mode
+void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix);
+
+// Evaluates CGTOs defined by gto_data with a given 'density' matrix
+// - vol_tex: The texture handle to the volume
+// - grid: The grid defining the location of samples to evaluate
+// - gto_data: The gto data to evaluate
+// - matrix: The matrix coefficients
+// - mode: evaluation mode
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix);
 
 // Evaluate GTOs over subportion of a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'

@@ -25,7 +25,6 @@ typedef enum {
 	VLX_FLAG_SCF  = 2,
 	VLX_FLAG_RSP  = 4,
 	VLX_FLAG_VIB  = 8,
-	VLX_FLAG_OPT  = 16,
 	VLX_FLAG_ALL  = -1,
 } vlx_flags_t;
 
@@ -140,16 +139,7 @@ typedef struct md_vlx_vib_t {
 	dvec3_t** normal_modes;
 } md_vlx_vib_t;
 
-typedef struct md_vlx_opt_t {
-	size_t number_of_steps;
-	double* nuclear_repulsion_energies;
-	double* energies;
-	dvec3_t* coordinates;
-} md_vlx_opt_t;
-
 typedef struct md_vlx_t {
-	basis_set_t basis_set;
-
 	str_t  basis_set_ident;
 	str_t  dft_func_label;
 	str_t  potfile_text;
@@ -159,7 +149,7 @@ typedef struct md_vlx_t {
 	size_t number_of_beta_electrons;
 
 	double molecular_charge;
-	double nuclear_repulsion;
+	double nuclear_repulsion_energy;
 	size_t spin_multiplicity;
 
 	// Arrays (length = number_of_atoms)
@@ -170,7 +160,10 @@ typedef struct md_vlx_t {
 	md_vlx_scf_t scf;
 	md_vlx_rsp_t rsp;
 	md_vlx_vib_t vib;
-	md_vlx_opt_t opt;
+	basis_set_t basis_set;
+
+	// Atomic orbital data
+	md_gto_data_t ao_data;
 
 	struct md_allocator_i* arena;
 } md_vlx_t;
@@ -584,32 +577,7 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 	return count;
 }
 
-// Attempt to construct
-
-struct pgto_t {
-	float radius;
-	float alpha;
-	float coeff;
-	uint8_t i, j, k, l;
-};
-
-struct cgto_t {
-	float x, y, z;
-	uint32_t pgto_offset;
-	uint32_t pgto_count;
-};
-
-struct ao_data_t {
-	size_t num_pgtos;
-	struct pgto_t* pgtos;
-
-	size_t num_cgtos;
-	struct cgto_t* cgtos;
-
-	md_allocator_i* alloc;
-};
-
-static void extract_ao_data(struct ao_data_t* ao_data, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
+static void extract_ao_data(struct md_gto_data_t* out_data, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, md_allocator_i* alloc) {
 	int natoms = (int)number_of_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
 
@@ -653,12 +621,8 @@ static void extract_ao_data(struct ao_data_t* ao_data, const dvec3_t* atom_coord
 
 				// process atomic orbitals
 				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
-					struct cgto_t cgto = { 0 };
-
-					cgto.x = x;
-					cgto.y = y;
-					cgto.z = z;
-					cgto.pgto_offset = ao_data->num_pgtos;
+                    vec4_t   cgto_xyzr = {x, y, z, FLT_MAX};
+                    uint32_t cgto_offset = out_data->num_pgtos;
 
 					// process primitives
 					basis_func_t basis_func = basis_funcs[funcidx];
@@ -673,24 +637,30 @@ static void extract_ao_data(struct ao_data_t* ao_data, const dvec3_t* atom_coord
 
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
-							struct pgto_t pgto = {0};
-							pgto.alpha = alpha;
-							pgto.coeff = coef1 * fcarts[icomp];
-							pgto.i = lx[icomp];
-							pgto.j = ly[icomp];
-							pgto.k = lz[icomp];
-							pgto.l = angl;
+							struct md_pgto_t pgto = {
+								.coeff = coef1 * fcarts[icomp],
+								.alpha = alpha,
+								.radius = FLT_MAX,
+								.i = lx[icomp],
+								.j = ly[icomp],
+								.k = lz[icomp],
+								.l = angl,
+							};
 
-							md_array_push(ao_data->pgtos, pgto, ao_data->alloc);
-							ao_data->num_pgtos += 1;
-							cgto.pgto_count += 1;
+							md_array_push(out_data->pgtos, pgto, alloc);
+							out_data->num_pgtos += 1;
 						}
 					}
-					md_array_push(ao_data->cgtos, cgto, ao_data->alloc);
-					ao_data->num_cgtos += 1;
+					md_array_push(out_data->cgto_xyzr, cgto_xyzr, alloc);
+					md_array_push(out_data->cgto_offset, cgto_offset, alloc);
+					out_data->num_cgtos += 1;
 				}
 			}
 		}
+	}
+
+	if (out_data->num_cgtos > 0) {
+		md_array_push(out_data->cgto_offset, (uint32_t)out_data->num_pgtos, alloc);
 	}
 }
 
@@ -1742,50 +1712,6 @@ static bool h5_read_vib_data(md_vlx_t* vlx, hid_t handle) {
 	return true;
 }
 
-static bool h5_read_opt_data(md_vlx_t* vlx, hid_t handle) {
-	// @TODO(This will likely be exposed as its own variable in the future, for now we extract the length from one of the fields)
-	uint64_t dim[3];
-	int num_dim;
-	
-	num_dim = h5_read_dataset_dims(dim, 3, handle, "nuclear_repulsion_energies");
-	if (num_dim <= 0) {
-		return false;
-	}
-
-	// This is a fix because the input data in one version is supplied as a 2D object
-	size_t len = dim[0];
-	vlx->opt.number_of_steps = len;
-
-	md_array_resize(vlx->opt.nuclear_repulsion_energies, len, vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.nuclear_repulsion_energies, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "nuclear_repulsion_energies")) {
-		return false;
-	}
-
-	md_array_resize(vlx->opt.energies, len, vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.energies, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "opt_energies")) {
-		return false;
-	}
-
-	num_dim = h5_read_dataset_dims(dim, 3, handle, "opt_coordinates_au");
-	if (dim[0] != len || dim[1] != vlx->number_of_atoms || dim[2] != 3) {
-		MD_LOG_ERROR("Inconsistent or invalid opt_coordinates dimensions");
-		return false;
-	}
-
-	md_array_resize(vlx->opt.coordinates, dim[0] * dim[1], vlx->arena);
-	if (!h5_read_dataset_data(vlx->opt.coordinates, dim, num_dim, handle, H5T_NATIVE_DOUBLE, "opt_coordinates_au")) {
-		return false;
-	}
-
-	if (vlx->opt.coordinates) {
-		for (size_t i = 0; i < dim[0] * dim[1]; ++i) {
-			vlx->opt.coordinates[i] = dvec3_mul_f(vlx->opt.coordinates[i], BOHR_TO_ANGSTROM);
-		}
-	}
-
-	return true;
-}
-
 static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 	ASSERT(vlx);
 
@@ -1801,7 +1727,7 @@ static bool h5_read_core_data(md_vlx_t* vlx, hid_t handle) {
 		return false;
 	}
 
-	if (!h5_read_scalar(&vlx->nuclear_repulsion, handle, H5T_NATIVE_DOUBLE, "nuclear_repulsion")) {
+	if (!h5_read_scalar(&vlx->nuclear_repulsion_energy, handle, H5T_NATIVE_DOUBLE, "nuclear_repulsion")) {
 		return false;
 	}
 
@@ -1935,24 +1861,13 @@ static bool vlx_read_h5_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
                 H5Gclose(vib_id);
                 if (!result) goto done;
             }
-			// @TODO, @HACK, @REMOVE: This is just to get VIB data loaded
-			// Which currently write alot of restart data into the rsp section
-			// clear
-			flags &= ~VLX_FLAG_RSP;
         }
-    }
 
-	// OPT
-	if (flags & VLX_FLAG_OPT) {
-		if (H5Lexists(file_id, "opt", H5P_DEFAULT) > 0) {
-			hid_t opt_id = H5Gopen(file_id, "opt", H5P_DEFAULT);
-			if (opt_id != H5I_INVALID_HID) {
-				result = h5_read_opt_data(vlx, opt_id);
-				H5Gclose(opt_id);
-				if (!result) goto done;
-			}
-		}
-	}
+		// @TODO, @HACK, @REMOVE: This is just to get VIB data loaded
+        // Which currently write alot of restart data into the rsp section
+        // clear
+        flags &= ~VLX_FLAG_RSP;
+    }
 
 	// RSP
 	if (flags & VLX_FLAG_RSP) {
@@ -2225,8 +2140,7 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		MD_LOG_DEBUG("Basis set ident: '" STR_FMT "'", STR_ARG(ident));
 
 		char exe_buf[1024];
-		size_t exe_len = md_path_write_exe(exe_buf, sizeof(exe_buf));
-		str_t exe_path = {exe_buf, exe_len};
+		str_t exe_path = {exe_buf, md_path_write_exe(exe_buf, sizeof(exe_buf))};
 
 		str_t exe_dir = {0};
 		if (!extract_folder_path(&exe_dir, exe_path)) {
@@ -2234,10 +2148,10 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 
 		md_strb_fmt(&sb, STR_FMT "%s/" STR_FMT, STR_ARG(exe_dir), MD_VLX_BASIS_FOLDER, STR_ARG(ident));
-		str_t abs_filepath = md_strb_to_str(sb);
-		md_file_o* basis_file = md_file_open(abs_filepath, MD_FILE_READ | MD_FILE_BINARY);
+		str_t basis_filepath = md_strb_to_str(sb);
+		md_file_o* basis_file = md_file_open(basis_filepath, MD_FILE_READ | MD_FILE_BINARY);
 		if (basis_file) {
-			MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(abs_filepath));
+			MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
 			md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
 			bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
 			md_file_close(basis_file);
@@ -2247,7 +2161,6 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			}
 			normalize_basis_set(&vlx->basis_set);
 		} else {
-			MD_LOG_DEBUG("The basis set was not found in '" STR_FMT "', attempting to read it from the folder of the file.", STR_ARG(abs_filepath));
 			// Attempt to read basis set file from same folder as file
 			str_t folder = { 0 };
 			if (!extract_folder_path(&folder, filename)) {
@@ -2257,10 +2170,10 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 			md_strb_reset(&sb);
 			md_strb_push_str(&sb, folder);
 			md_strb_push_str(&sb, ident);
-			str_t rel_filepath = md_strb_to_str(sb);
-			basis_file = md_file_open(rel_filepath, MD_FILE_READ | MD_FILE_BINARY);
+			basis_filepath = md_strb_to_str(sb);
+			basis_file = md_file_open(basis_filepath, MD_FILE_READ | MD_FILE_BINARY);
 			if (basis_file) {
-				MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(rel_filepath));
+				MD_LOG_DEBUG("Attempting to parse VLX basis set from file: '" STR_FMT "'", STR_ARG(basis_filepath));
 				md_buffered_reader_t basis_reader = md_buffered_reader_from_file(buf, cap, basis_file);
 				bool parse_result = parse_basis_set(&vlx->basis_set, &basis_reader, vlx->arena);
 				md_file_close(basis_file);
@@ -2298,6 +2211,10 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
+	if (vlx->number_of_atoms > 0) {
+		extract_ao_data(&vlx->ao_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, vlx->arena);
+	}
+
 	result = true;
 done:
 	md_temp_set_pos_back(temp_pos);
@@ -2307,7 +2224,7 @@ done:
 
 // Extract Natural Transition Orbitals PGTOs
 size_t md_vlx_nto_gto_count(const md_vlx_t* vlx) {
-	return vlx_pgto_count(vlx);
+	return vlx->ao_data.num_pgtos;
 }
 
 static inline void extract_row(double* dst, const md_vlx_2d_data_t* data, size_t row_idx) {
@@ -2367,8 +2284,33 @@ static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbit
 	extract_row(out_coeff, &orb->coefficients, ao_idx);
 }
 
-bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
-	ASSERT(pgtos);
+static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, const double* mo_coeffs, double value_cutoff) {
+	size_t count = 0;
+	for (size_t i = 0; i < ao_data->num_cgtos; ++i) {
+		for (size_t j = ao_data->cgto_offset[i]; j < ao_data->cgto_offset[i+1]; ++j) {
+			double radius = md_gto_compute_radius_of_influence(ao_data->pgtos[j].i, ao_data->pgtos[j].k, ao_data->pgtos[j].k, ao_data->pgtos[j].coeff, ao_data->pgtos[j].alpha, value_cutoff);
+			if (radius == 0.0) {
+				continue; // Skip GTOs with zero radius of influence given this cutoff_value
+			}
+
+			out_gtos[count].x = ao_data->cgto_xyzr[i].x;
+			out_gtos[count].y = ao_data->cgto_xyzr[i].y;
+			out_gtos[count].z = ao_data->cgto_xyzr[i].z;
+			out_gtos[count].coeff = mo_coeffs[i] * ao_data->pgtos[j].coeff;
+			out_gtos[count].alpha = ao_data->pgtos[j].alpha;
+			out_gtos[count].cutoff = (float)radius;
+			out_gtos[count].i = ao_data->pgtos[j].i;
+			out_gtos[count].j = ao_data->pgtos[j].j;
+			out_gtos[count].k = ao_data->pgtos[j].k;
+			out_gtos[count].l = ao_data->pgtos[j].l;
+			count += 1;
+		}
+	}
+	return count;
+}
+
+bool md_vlx_nto_gto_extract(md_gto_t* out_gtos, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
+	ASSERT(out_gtos);
 	ASSERT(vlx);
 
 	if (nto_idx >= vlx->rsp.number_of_excited_states) {
@@ -2411,7 +2353,7 @@ bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	extract_pgto_data(pgtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
+	extract_gtos(out_gtos, &vlx->ao_data, mo_coeffs, 0.0);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
@@ -2419,9 +2361,7 @@ bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx
 
 size_t md_vlx_mo_gto_count(const md_vlx_t* vlx) {
 	ASSERT(vlx);
-	// @NOTE: This needs to be modified in the case of Unrestricted Open Shell type.
-	// In such case, we need to expand the pgtos with the contribution of Beta electrons
-	return vlx_pgto_count(vlx);
+	return vlx->ao_data.num_pgtos;
 }
 
 // Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
@@ -2448,6 +2388,7 @@ static inline void gaussian_product_center(vec3_t* out_P, float* out_gamma, floa
     *out_P = vec3_div_f(vec3_add(vec3_mul_f(A, alpha1), vec3_mul_f(B, alpha2)), *out_gamma);
 }
 
+# if 0
 static double estimate_contracted_pair_bound(vec3_t A, const struct pgto_t* ao1, size_t num_ao1, vec3_t B, const struct pgto_t* ao2, size_t num_ao2, double D_mu_nu, vec3_t aabb_min, vec3_t aabb_max) {
     double max_bound = 0.0;
     for (size_t i = 0; i < num_ao1; ++i) {
@@ -2484,6 +2425,7 @@ static double estimate_contracted_pair_bound(vec3_t A, const struct pgto_t* ao1,
 
     return fabs(D_mu_nu) * max_bound;
 }
+#endif
 
 size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type, double value_cutoff) {
 	ASSERT(gtos);
@@ -2496,12 +2438,12 @@ size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx,
 		orb = &vlx->scf.beta;
 	} else {
 		MD_LOG_ERROR("Invalid MO type!");
-		return 0;
+		return false;
 	}
 
 	if (mo_idx >= number_of_molecular_orbitals(orb)) {
 		MD_LOG_ERROR("Invalid mo index!");
-		return 0;
+		return false;
 	}
 
 #if 0
@@ -2523,7 +2465,7 @@ size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx,
 		aabb_max = vec3_sub_f(aabb_max, pad);
 		vec3_t ext = vec3_sub(aabb_max, aabb_min);
 
-		const float samples_per_unit_length = 8 * BOHR_TO_ANGSTROM;
+		const float samples_per_unit_length = 4 * BOHR_TO_ANGSTROM;
 
 		int dim[3];
 		compute_dim(dim, ext, samples_per_unit_length);
@@ -2545,14 +2487,6 @@ size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx,
 		size_t sparse_matrix_bytes = 0;
 
 		if (den_matrix && den_dim > 0) {
-
-
-			struct ao_data_t ao_data = {
-				.alloc = arena,
-			};
-
-			extract_ao_data(&ao_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
-
 			for (size_t i = 0; i < ao_data.num_cgtos; ++i) {
 				printf("CGTO %zu\n", i);
 				for (size_t j = ao_data.cgtos[i].pgto_offset; j < ao_data.cgtos[i].pgto_offset + ao_data.cgtos[i].pgto_count; ++j) {
@@ -2599,7 +2533,6 @@ size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx,
 			}
 		}
 
-
 		size_t dense_matrix_bytes = den_dim * den_dim * sizeof(float);
 
 		size_t total = (size_t)dim[0] * (size_t)dim[1] * (size_t)dim[2] / 512;
@@ -2618,14 +2551,12 @@ size_t md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx,
 	size_t temp_pos = md_temp_get_pos();
 	size_t num_mo_coeffs = number_of_mo_coefficients(orb);
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
-
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	size_t num_gtos = extract_pgto_data(gtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
 
-	num_gtos = md_gto_cutoff_compute_and_filter(gtos, num_gtos, value_cutoff);
-	
+	size_t count = extract_gtos(gtos, &vlx->ao_data, mo_coeffs, value_cutoff);
+
 	md_temp_set_pos_back(temp_pos);
-	return num_gtos;
+	return count;
 }
 
 size_t md_vlx_rsp_number_of_excited_states(const md_vlx_t* vlx) {
@@ -2744,39 +2675,6 @@ const dvec3_t* md_vlx_vib_normal_mode(const struct md_vlx_t* vlx, size_t idx) {
 		if (vlx->vib.normal_modes && idx < vlx->vib.number_of_normal_modes) {
 			return vlx->vib.normal_modes[idx];
 		}
-	}
-	return NULL;
-}
-
-// OPT
-size_t md_vlx_opt_number_of_steps(const struct md_vlx_t* vlx) {
-	if (vlx) {
-		return vlx->opt.number_of_steps;
-	}
-	return 0;
-}
-
-// Returns atom coordinates for a given optimization step
-const dvec3_t* md_vlx_opt_coordinates(const struct md_vlx_t* vlx, size_t opt_idx) {
-	if (vlx) {
-		if (vlx->opt.coordinates && 0 <= opt_idx && opt_idx < vlx->opt.number_of_steps) {
-			const size_t stride = vlx->number_of_atoms;
-			return vlx->opt.coordinates + stride * opt_idx;
-		}
-	}
-	return NULL;
-}
-
-const double* md_vlx_opt_energies(const struct md_vlx_t* vlx) {
-	if (vlx) {
-		return vlx->opt.energies;
-	}
-	return NULL;
-}
-
-const double* md_vlx_opt_nuclear_repulsion_energies(const struct md_vlx_t* vlx) {
-	if (vlx) {
-		return vlx->opt.nuclear_repulsion_energies;
 	}
 	return NULL;
 }
@@ -2919,7 +2817,7 @@ double md_vlx_molecular_charge(const md_vlx_t* vlx) {
 }
 
 double md_vlx_nuclear_repulsion_energy(const md_vlx_t* vlx) {
-	if (vlx) return vlx->nuclear_repulsion;
+	if (vlx) return vlx->nuclear_repulsion_energy;
 	return 0;
 }
 
