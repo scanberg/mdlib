@@ -359,9 +359,46 @@ static inline double fast_pow(double base, int exp){
     return val;
 }
 
-static inline md_128 md_mm_fast_pow(md_128 base, md_128i exp) {
-    md_128 base2 = md_mm_mul_ps(base,  base);
-    md_128 base3 = md_mm_mul_ps(base2, base);
+
+static inline md_128 md_mm_fast_pow1(md_128 base, int exp) {
+    switch (exp) {
+    case 1:
+        return base;
+    case 2:
+        return md_mm_mul_ps(base, base);
+    case 3:
+        return md_mm_mul_ps(base, md_mm_mul_ps(base, base));
+    case 4: {
+        md_128 squared = md_mm_mul_ps(base, base);
+        return md_mm_mul_ps(squared, squared);
+    }
+    case 0:
+    default:
+        return md_mm_set1_ps(1.0f);
+    }
+}
+
+static inline md_256 md_mm256_fast_pow1(md_256 base, int exp) {
+    switch (exp) {
+    case 1:
+        return base;
+    case 2:
+        return md_mm256_mul_ps(base, base);
+    case 3:
+        return md_mm256_mul_ps(base, md_mm256_mul_ps(base, base));
+    case 4: {
+        md_256 squared = md_mm256_mul_ps(base, base);
+        return md_mm256_mul_ps(squared, squared);
+    }
+    case 0:
+    default:
+        return md_mm256_set1_ps(1.0f);
+    }
+}
+
+static inline md_128 md_mm_fast_pow(md_128 base1, md_128i exp) {
+    md_128 base2 = md_mm_mul_ps(base1, base1);
+    md_128 base3 = md_mm_mul_ps(base2, base1);
     md_128 base4 = md_mm_mul_ps(base2, base2);
 
     md_128 mask1 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(1)));
@@ -370,7 +407,7 @@ static inline md_128 md_mm_fast_pow(md_128 base, md_128i exp) {
     md_128 mask4 = md_mm_castsi128_ps(md_mm_cmpeq_epi32(exp, md_mm_set1_epi32(4)));
 
     md_128 res = md_mm_set1_ps(1.0f);
-    res = md_mm_blendv_ps(res, base, mask1);
+    res = md_mm_blendv_ps(res, base1, mask1);
     res = md_mm_blendv_ps(res, base2, mask2);
     res = md_mm_blendv_ps(res, base3, mask3);
     res = md_mm_blendv_ps(res, base4, mask4);
@@ -396,9 +433,9 @@ static inline md_256 md_mm256_fast_pow(md_256 base1, md_256i exp) {
 }
 
 #ifdef __AVX512F__
-static inline __m512 md_mm512_fast_pow(__m512 base, __m512i exp) {
-    __m512 base2 = _mm512_mul_ps(base,  base);
-    __m512 base3 = _mm512_mul_ps(base2, base);
+static inline __m512 md_mm512_fast_pow(__m512 base1, __m512i exp) {
+    __m512 base2 = _mm512_mul_ps(base1,  base1);
+    __m512 base3 = _mm512_mul_ps(base2, base1);
     __m512 base4 = _mm512_mul_ps(base2, base2);
 
     __mmask16 mask1 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(1), _MM_CMPINT_EQ);
@@ -407,7 +444,7 @@ static inline __m512 md_mm512_fast_pow(__m512 base, __m512i exp) {
     __mmask16 mask4 = _mm512_cmp_epi32_mask(exp, _mm512_set1_epi32(4), _MM_CMPINT_EQ);
 
     __m512 res = _mm512_set1_ps(1.0f);
-    res = _mm512_mask_blend_ps(mask1, res, base);
+    res = _mm512_mask_blend_ps(mask1, res, base1);
     res = _mm512_mask_blend_ps(mask2, res, base2);
     res = _mm512_mask_blend_ps(mask3, res, base3);
     res = _mm512_mask_blend_ps(mask4, res, base4);
@@ -791,15 +828,15 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
     // Operate on local block to avoid cache-line contention across threads
     md_256 vpsi[8][8] = {0};
 
-    for (size_t i = 0; i < num_gtos; ++i) {
-        const md_256  px = md_mm256_set1_ps(gtos[i].x);
-        const md_256  py = md_mm256_set1_ps(gtos[i].y);
-        const md_256  pz = md_mm256_set1_ps(gtos[i].z);
-        const md_256  pc = md_mm256_set1_ps(gtos[i].coeff);
-        const md_256  pa = md_mm256_set1_ps(-gtos[i].alpha); // Negate alpha here
-        const md_256i pi = md_mm256_set1_epi32(gtos[i].i);
-        const md_256i pj = md_mm256_set1_epi32(gtos[i].j);
-        const md_256i pk = md_mm256_set1_epi32(gtos[i].k);
+    for (size_t gto_idx = 0; gto_idx < num_gtos; ++gto_idx) {
+        const float px = gtos[gto_idx].x;
+        const float py = gtos[gto_idx].y;
+        const float pz = gtos[gto_idx].z;
+        const float pc = gtos[gto_idx].coeff;
+        const float pa = -gtos[gto_idx].alpha; // Negate alpha here
+        const int pi = gtos[gto_idx].i;
+        const int pj = gtos[gto_idx].j;
+        const int pk = gtos[gto_idx].i;
     
         for (int iz = 0; iz < 8; ++iz) {
             const md_256 tz = md_mm256_cvtepi32_ps(md_mm256_add_epi32(md_mm256_set1_epi32(grid_idx_min[2]), md_mm256_set1_epi32(iz)));
@@ -817,27 +854,25 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
                 md_256 vy = md_mm256_fmadd_ps(ty, gsy[1], xz[1]);
                 md_256 vz = md_mm256_fmadd_ps(ty, gsy[2], xz[2]);
 
-                md_256 dx = md_mm256_sub_ps(vx, px);
-                md_256 dy = md_mm256_sub_ps(vy, py);
-                md_256 dz = md_mm256_sub_ps(vz, pz);
+                md_256 dx = md_mm256_sub_ps(vx, md_mm256_set1_ps(px));
+                md_256 dy = md_mm256_sub_ps(vy, md_mm256_set1_ps(py));
+                md_256 dz = md_mm256_sub_ps(vz, md_mm256_set1_ps(pz));
                 md_256 d2 = md_mm256_fmadd_ps(dx, dx, md_mm256_fmadd_ps(dy, dy, md_mm256_mul_ps(dz, dz)));
-                md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(pa, d2));
-                md_256 fx = md_mm256_fast_pow(dx, pi);
-                md_256 fy = md_mm256_fast_pow(dy, pj);
-                md_256 fz = md_mm256_fast_pow(dz, pk);
+                md_256 ex = md_mm256_exp_ps(md_mm256_mul_ps(md_mm256_set1_ps(pa), d2));
+                md_256 fx = md_mm256_fast_pow1(dx, pi);
+                md_256 fy = md_mm256_fast_pow1(dy, pj);
+                md_256 fz = md_mm256_fast_pow1(dz, pk);
 
-                md_256 prod_a = md_mm256_mul_ps(pc, fx);
+                md_256 prod_a = md_mm256_mul_ps(md_mm256_set1_ps(pc), fx);
                 md_256 prod_b = md_mm256_mul_ps(fy, fz);
 
+                vpsi[iz][iy] = md_mm256_fmadd_ps(md_mm256_mul_ps(prod_a, prod_b), ex, vpsi[iz][iy]);
 
-                md_256 psi = md_mm256_mul_ps(md_mm256_mul_ps(prod_a, prod_b), ex);
-
-                if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-                    psi = md_mm256_mul_ps(psi, psi);
-                }
-
-                vpsi[iz][iy] = md_mm256_add_ps(vpsi[iz][iy], psi);
-                //vpsi[iz][iy] = md_mm256_fmadd_ps(md_mm256_mul_ps(prod_a, prod_b), ex, vpsi[iz][iy]);
+                // md_256 psi = md_mm256_mul_ps(md_mm256_mul_ps(prod_a, prod_b), ex);
+                // if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+                //     psi = md_mm256_mul_ps(psi, psi);
+                // }
+                // vpsi[iz][iy] = md_mm256_add_ps(vpsi[iz][iy], psi);
             }
         }
     }
@@ -850,9 +885,9 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
             int index = x_stride + y_stride + z_stride;
             md_256 psi = vpsi[iz][iy];
 
-            //if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
-            //    psi = md_mm256_mul_ps(psi, psi);
-            //}
+            if (mode == MD_GTO_EVAL_MODE_PSI_SQUARED) {
+                psi = md_mm256_mul_ps(psi, psi);
+            }
 
             md_mm256_storeu_ps(grid_data + index, psi);
         }
@@ -1076,9 +1111,9 @@ void md_gto_grid_evaluate_sub(float* out_values, const md_grid_t* grid, const in
         (grid->orientation.elem[1][0] == 0 && grid->orientation.elem[1][2] == 0) &&
         (grid->orientation.elem[2][0] == 0 && grid->orientation.elem[2][1] == 0);
 
-    vec3_t step_x = {grid->orientation.elem[0][0] * grid->spacing.x, grid->orientation.elem[1][0] * grid->spacing.y, grid->orientation.elem[2][0] * grid->spacing.z};
-    vec3_t step_y = {grid->orientation.elem[0][1] * grid->spacing.x, grid->orientation.elem[1][1] * grid->spacing.y, grid->orientation.elem[2][1] * grid->spacing.z};
-    vec3_t step_z = {grid->orientation.elem[0][2] * grid->spacing.x, grid->orientation.elem[1][2] * grid->spacing.y, grid->orientation.elem[2][2] * grid->spacing.z};
+    vec3_t step_x = vec3_mul_f(grid->orientation.col[0], grid->spacing.x);
+    vec3_t step_y = vec3_mul_f(grid->orientation.col[1], grid->spacing.y);
+    vec3_t step_z = vec3_mul_f(grid->orientation.col[2], grid->spacing.z);
 
     // There are specialized versions for evaluating 8x8x8 subgrids
     // 8x8x8 Is a good chunk size to operate on as it probably fits in L1 Cache together with the GTOs

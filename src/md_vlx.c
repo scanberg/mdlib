@@ -162,6 +162,9 @@ typedef struct md_vlx_t {
 	md_vlx_vib_t vib;
 	basis_set_t basis_set;
 
+	// Atomic orbital data
+	md_gto_data_t ao_data;
+
 	struct md_allocator_i* arena;
 } md_vlx_t;
 
@@ -574,32 +577,7 @@ static size_t extract_pgto_data(md_gto_t* out_gtos, int* out_atom_idx, const dve
 	return count;
 }
 
-// Attempt to construct
-
-struct pgto_t {
-	float radius;
-	float alpha;
-	float coeff;
-	uint8_t i, j, k, l;
-};
-
-struct cgto_t {
-	float x, y, z;
-	uint32_t pgto_offset;
-	uint32_t pgto_count;
-};
-
-struct ao_data_t {
-	size_t num_pgtos;
-	struct pgto_t* pgtos;
-
-	size_t num_cgtos;
-	struct cgto_t* cgtos;
-
-	md_allocator_i* alloc;
-};
-
-static void extract_ao_data(struct ao_data_t* ao_data, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set) {
+static void extract_ao_data(struct md_gto_data_t* out_data, const dvec3_t* atom_coordinates, const md_element_t* atomic_numbers, size_t number_of_atoms, const basis_set_t* basis_set, md_allocator_i* alloc) {
 	int natoms = (int)number_of_atoms;
 	int max_angl = compute_max_angular_momentum(basis_set, atomic_numbers, number_of_atoms);
 
@@ -643,12 +621,8 @@ static void extract_ao_data(struct ao_data_t* ao_data, const dvec3_t* atom_coord
 
 				// process atomic orbitals
 				for (size_t funcidx = 0; funcidx < num_basis_funcs; funcidx++) {
-					struct cgto_t cgto = { 0 };
-
-					cgto.x = x;
-					cgto.y = y;
-					cgto.z = z;
-					cgto.pgto_offset = ao_data->num_pgtos;
+                    vec4_t   cgto_xyzr = {x, y, z, FLT_MAX};
+                    uint32_t cgto_offset = out_data->num_pgtos;
 
 					// process primitives
 					basis_func_t basis_func = basis_funcs[funcidx];
@@ -663,24 +637,30 @@ static void extract_ao_data(struct ao_data_t* ao_data, const dvec3_t* atom_coord
 
 						// transform from Cartesian to spherical harmonics
 						for (int icomp = 0; icomp < ncomp; icomp++) {
-							struct pgto_t pgto = {0};
-							pgto.alpha = alpha;
-							pgto.coeff = coef1 * fcarts[icomp];
-							pgto.i = lx[icomp];
-							pgto.j = ly[icomp];
-							pgto.k = lz[icomp];
-							pgto.l = angl;
+							struct md_pgto_t pgto = {
+								.coeff = coef1 * fcarts[icomp],
+								.alpha = alpha,
+								.radius = FLT_MAX,
+								.i = lx[icomp],
+								.j = ly[icomp],
+								.k = lz[icomp],
+								.l = angl,
+							};
 
-							md_array_push(ao_data->pgtos, pgto, ao_data->alloc);
-							ao_data->num_pgtos += 1;
-							cgto.pgto_count += 1;
+							md_array_push(out_data->pgtos, pgto, alloc);
+							out_data->num_pgtos += 1;
 						}
 					}
-					md_array_push(ao_data->cgtos, cgto, ao_data->alloc);
-					ao_data->num_cgtos += 1;
+					md_array_push(out_data->cgto_xyzr, cgto_xyzr, alloc);
+					md_array_push(out_data->cgto_offset, cgto_offset, alloc);
+					out_data->num_cgtos += 1;
 				}
 			}
 		}
+	}
+
+	if (out_data->num_cgtos > 0) {
+		md_array_push(out_data->cgto_offset, out_data->num_pgtos, alloc);
 	}
 }
 
@@ -2231,6 +2211,10 @@ static bool vlx_parse_file(md_vlx_t* vlx, str_t filename, vlx_flags_t flags) {
 		}
 	}
 
+	if (vlx->number_of_atoms > 0) {
+		extract_ao_data(&vlx->ao_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, vlx->arena);
+	}
+
 	result = true;
 done:
 	md_temp_set_pos_back(temp_pos);
@@ -2240,7 +2224,7 @@ done:
 
 // Extract Natural Transition Orbitals PGTOs
 size_t md_vlx_nto_gto_count(const md_vlx_t* vlx) {
-	return vlx_pgto_count(vlx);
+	return vlx->ao_data.num_pgtos;
 }
 
 static inline void extract_row(double* dst, const md_vlx_2d_data_t* data, size_t row_idx) {
@@ -2300,8 +2284,28 @@ static inline void extract_ao_coefficients(double* out_coeff, const md_vlx_orbit
 	extract_row(out_coeff, &orb->coefficients, ao_idx);
 }
 
-bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
-	ASSERT(pgtos);
+static size_t extract_gtos(md_gto_t* out_gtos, const md_gto_data_t* ao_data, const double* mo_coeffs) {
+	size_t count = 0;
+	for (size_t i = 0; i < ao_data->num_cgtos; ++i) {
+		for (size_t j = ao_data->cgto_offset[i]; j < ao_data->cgto_offset[i+1]; ++j) {
+			out_gtos[count].x = ao_data->cgto_xyzr[i].x;
+			out_gtos[count].y = ao_data->cgto_xyzr[i].y;
+			out_gtos[count].z = ao_data->cgto_xyzr[i].z;
+			out_gtos[count].coeff = mo_coeffs[i] * ao_data->pgtos[j].coeff;
+			out_gtos[count].alpha = ao_data->pgtos[j].alpha;
+			out_gtos[count].cutoff = FLT_MAX;
+			out_gtos[count].i = ao_data->pgtos[j].i;
+			out_gtos[count].j = ao_data->pgtos[j].j;
+			out_gtos[count].k = ao_data->pgtos[j].k;
+			out_gtos[count].l = ao_data->pgtos[j].l;
+			count += 1;
+		}
+	}
+	return count;
+}
+
+bool md_vlx_nto_gto_extract(md_gto_t* out_gtos, const md_vlx_t* vlx, size_t nto_idx, size_t lambda_idx, md_vlx_nto_type_t type) {
+	ASSERT(out_gtos);
 	ASSERT(vlx);
 
 	if (nto_idx >= vlx->rsp.number_of_excited_states) {
@@ -2344,7 +2348,7 @@ bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
 
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	extract_pgto_data(pgtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
+	extract_gtos(out_gtos, &vlx->ao_data, mo_coeffs);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;
@@ -2352,9 +2356,7 @@ bool md_vlx_nto_gto_extract(md_gto_t* pgtos, const md_vlx_t* vlx, size_t nto_idx
 
 size_t md_vlx_mo_gto_count(const md_vlx_t* vlx) {
 	ASSERT(vlx);
-	// @NOTE: This needs to be modified in the case of Unrestricted Open Shell type.
-	// In such case, we need to expand the pgtos with the contribution of Beta electrons
-	return vlx_pgto_count(vlx);
+	return vlx->ao_data.num_pgtos;
 }
 
 // Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
@@ -2381,6 +2383,7 @@ static inline void gaussian_product_center(vec3_t* out_P, float* out_gamma, floa
     *out_P = vec3_div_f(vec3_add(vec3_mul_f(A, alpha1), vec3_mul_f(B, alpha2)), *out_gamma);
 }
 
+# if 0
 static double estimate_contracted_pair_bound(vec3_t A, const struct pgto_t* ao1, size_t num_ao1, vec3_t B, const struct pgto_t* ao2, size_t num_ao2, double D_mu_nu, vec3_t aabb_min, vec3_t aabb_max) {
     double max_bound = 0.0;
     for (size_t i = 0; i < num_ao1; ++i) {
@@ -2417,6 +2420,7 @@ static double estimate_contracted_pair_bound(vec3_t A, const struct pgto_t* ao1,
 
     return fabs(D_mu_nu) * max_bound;
 }
+#endif
 
 bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, md_vlx_mo_type_t type) {
 	ASSERT(gtos);
@@ -2437,6 +2441,7 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 		return false;
 	}
 
+#if 0
 	{
 		vec3_t aabb_min = vec3_set1( FLT_MAX);
 		vec3_t aabb_max = vec3_set1(-FLT_MAX);
@@ -2455,7 +2460,7 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 		aabb_max = vec3_sub_f(aabb_max, pad);
 		vec3_t ext = vec3_sub(aabb_max, aabb_min);
 
-		const float samples_per_unit_length = 8 * BOHR_TO_ANGSTROM;
+		const float samples_per_unit_length = 4 * BOHR_TO_ANGSTROM;
 
 		int dim[3];
 		compute_dim(dim, ext, samples_per_unit_length);
@@ -2477,14 +2482,6 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 		size_t sparse_matrix_bytes = 0;
 
 		if (den_matrix && den_dim > 0) {
-
-
-			struct ao_data_t ao_data = {
-				.alloc = arena,
-			};
-
-			extract_ao_data(&ao_data, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set);
-
 			for (size_t i = 0; i < ao_data.num_cgtos; ++i) {
 				printf("CGTO %zu\n", i);
 				for (size_t j = ao_data.cgtos[i].pgto_offset; j < ao_data.cgtos[i].pgto_offset + ao_data.cgtos[i].pgto_count; ++j) {
@@ -2544,13 +2541,14 @@ bool md_vlx_mo_gto_extract(md_gto_t* gtos, const md_vlx_t* vlx, size_t mo_idx, m
 
 		md_vm_arena_destroy(arena);
 	}
+#endif
 
 	size_t temp_pos = md_temp_get_pos();
 	size_t num_mo_coeffs = number_of_mo_coefficients(orb);
 	double* mo_coeffs = md_temp_push(sizeof(double) * num_mo_coeffs);
-
 	extract_mo_coefficients(mo_coeffs, orb, mo_idx);
-	extract_pgto_data(gtos, NULL, vlx->atom_coordinates, vlx->atomic_numbers, vlx->number_of_atoms, &vlx->basis_set, mo_coeffs);
+
+	extract_gtos(gtos, &vlx->ao_data, mo_coeffs);
 
 	md_temp_set_pos_back(temp_pos);
 	return true;

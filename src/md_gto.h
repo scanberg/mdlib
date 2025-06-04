@@ -40,7 +40,7 @@ typedef struct md_orbital_data_t {
 typedef struct md_gto_data_t {
 	size_t     num_cgtos;
 	vec4_t*    cgto_xyzr;
-	uint32_t   cgto_off_len; // Packed offset + length into PGTOs, 24-bit offset (lo) + 8-bit length (hi)
+	uint32_t*  cgto_offset;		// offsets into pgtos (contains num_cgtos + 1 entries) such that a 'range' can be represented by cgto_offset[i] -> cgto_offset[i+1]
 
 	size_t     num_pgtos;
 	md_pgto_t* pgtos;
@@ -54,18 +54,6 @@ typedef enum {
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-static inline uint32_t md_gto_pack_offset_length(size_t offset, size_t length) {
-	return (offset & 0x00FFFFFFu) | ((length & 0xFFu) << 24);
-}
-
-static inline uint32_t md_gto_unpack_offset(uint32_t packed_off_len) {
-	return packed_off_len & 0x00FFFFFFu;
-}
-
-static inline uint32_t md_gto_unpack_length(uint32_t packed_off_len) {
-	return packed_off_len >> 24;
-}
 
 // Evaluates GTOs over a grid on the GPU and stores the result into a supplied volume
 // - vol_tex: The texture handle to the volume
@@ -108,7 +96,15 @@ void md_gto_grid_evaluate(float* out_grid_values, const md_grid_t* grid, const m
 // - gto_data: The gto data to evaluate
 // - matrix: The matrix coefficients
 // - mode: evaluation mode
-void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix, md_gto_eval_mode_t mode);
+void md_gto_grid_evaluate_matrix(float* out_grid_values, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix);
+
+// Evaluates CGTOs defined by gto_data with a given 'density' matrix
+// - vol_tex: The texture handle to the volume
+// - grid: The grid defining the location of samples to evaluate
+// - gto_data: The gto data to evaluate
+// - matrix: The matrix coefficients
+// - mode: evaluation mode
+void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, const md_gto_data_t* gto_data, const float* matrix);
 
 // Evaluate GTOs over subportion of a grid
 // - out_grid_values: The grid to write the evaluated values to, should have length 'grid->dim[0] * grid->dim[1] * grid->dim[2]'
