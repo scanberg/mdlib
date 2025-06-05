@@ -363,14 +363,10 @@ void md_gto_grid_evaluate_matrix_GPU(uint32_t vol_tex, const md_grid_t* grid, co
         return;
     }
 
-    GLenum format = 0;
-    if (glGetTextureLevelParameteriv) {
-        glGetTextureLevelParameteriv(vol_tex,   0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
-    } else {
-        glBindTexture(GL_TEXTURE_3D, vol_tex);
-        glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, (GLint*)&format);
-        glBindTexture(GL_TEXTURE_3D, 0);
-    }
+    GLint format = 0;
+    glBindTexture(GL_TEXTURE_3D, vol_tex);
+    glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
+    glBindTexture(GL_TEXTURE_3D, 0);
 
     switch (format) {
     case GL_R16F:
