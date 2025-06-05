@@ -628,7 +628,7 @@ static inline void evaluate_grid_ref(float grid_data[], const int grid_idx_min[3
                 }
 
                 int index = x_stride + y_stride + z_stride;
-                grid_data[index] = (float)psi;
+                grid_data[index] += (float)psi;
             }
         }
     }
@@ -926,7 +926,7 @@ static inline void evaluate_grid_ortho_8x8x8_256(float grid_data[], const int gr
                 psi = md_mm256_mul_ps(psi, psi);
             }
 
-            md_mm256_storeu_ps(grid_data + index, psi);
+            md_mm256_storeu_ps(grid_data + index, md_mm256_add_ps(md_mm256_loadu_ps(grid_data + index), psi));
         }
     }
 }
@@ -965,7 +965,7 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
         const float pa = -gtos[gto_idx].alpha; // Negate alpha here
         const int pi = gtos[gto_idx].i;
         const int pj = gtos[gto_idx].j;
-        const int pk = gtos[gto_idx].i;
+        const int pk = gtos[gto_idx].k;
     
         for (int iz = 0; iz < 8; ++iz) {
             const md_256 tz = md_mm256_cvtepi32_ps(md_mm256_add_epi32(md_mm256_set1_epi32(grid_idx_min[2]), md_mm256_set1_epi32(iz)));
@@ -1012,7 +1012,7 @@ static inline void evaluate_grid_8x8x8_256(float grid_data[], const int grid_idx
                 psi = md_mm256_mul_ps(psi, psi);
             }
 
-            md_mm256_storeu_ps(grid_data + index, psi);
+            md_mm256_storeu_ps(grid_data + index, md_mm256_add_ps(md_mm256_loadu_ps(grid_data + index), psi));
         }
     }
 }
@@ -1087,8 +1087,8 @@ static inline void evaluate_grid_ortho_8x8x8_128(float grid_data[], const int gr
                 psi[1] = md_mm_mul_ps(psi[1], psi[1]);
             }
 
-            md_mm_storeu_ps(grid_data + index[0], psi[0]);
-            md_mm_storeu_ps(grid_data + index[1], psi[1]);
+            md_mm_storeu_ps(grid_data + index[0], md_mm_add_ps(md_mm_loadu_ps(grid_data + index[0]), psi[0]));
+            md_mm_storeu_ps(grid_data + index[1], md_mm_add_ps(md_mm_loadu_ps(grid_data + index[1]), psi[1]));
         }
     }
 }
@@ -1210,8 +1210,8 @@ static inline void evaluate_grid_8x8x8_128(float grid_data[], const int grid_idx
                 psi[1] = md_mm_mul_ps(psi[1], psi[1]);
             }
 
-            md_mm_storeu_ps(grid_data + index[0], psi[0]);
-            md_mm_storeu_ps(grid_data + index[1], psi[1]);
+            md_mm_storeu_ps(grid_data + index[0], md_mm_add_ps(md_mm_loadu_ps(grid_data + index[0]), psi[0]));
+            md_mm_storeu_ps(grid_data + index[1], md_mm_add_ps(md_mm_loadu_ps(grid_data + index[1]), psi[1]));
         }
     }
 }

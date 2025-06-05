@@ -121,12 +121,13 @@ static double compare_vlx_and_cube(const md_vlx_t* vlx, size_t mo_idx, double cu
     mat4_t M = md_grid_index_to_world(&grid);
 
     float* psi  = md_arena_allocator_push(arena, sizeof(float)  * count);
+    MEMSET(psi, 0, sizeof(float) * count);
     vec3_t* xyz = md_arena_allocator_push(arena, sizeof(vec3_t) * count);
     md_grid_extract_points((float*)xyz, &grid);
 
     md_gto_xyz_evaluate(psi, (float*)xyz, count, sizeof(vec3_t), gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
-    MEMSET(grid_data, 0, sizeof(float) * grid.dim[0] * grid.dim[1] * grid.dim[2]);
+    MEMSET(grid_data, 0, sizeof(float) * md_grid_num_points(&grid));
 
     md_gto_grid_evaluate(grid_data, &grid, gtos, num_gtos, MD_GTO_EVAL_MODE_PSI);
 
