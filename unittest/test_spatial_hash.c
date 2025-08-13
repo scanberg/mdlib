@@ -60,6 +60,292 @@ UTEST(spatial_hash, big) {
     md_arena_allocator_destroy(alloc);
 }
 
+typedef struct elem_t {
+    float x, y, z;
+    uint32_t idx;
+} elem_t;
+
+typedef struct data_t {
+    md_256 rx, ry, rz, r2;
+    const elem_t* elem;
+    const uint32_t* cell_offset;
+} data_t;
+
+static inline size_t test_cell(const data_t* data, uint32_t cell_idx) {
+    size_t result = 0;
+
+    uint32_t length = data->cell_offset[cell_idx + 1] - data->cell_offset[cell_idx];
+    uint32_t offset = data->cell_offset[cell_idx];
+
+    for (size_t i = 0; i < length; i += 8) {
+        md_256 vx, vy, vz;
+        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)(data->elem + offset), sizeof(elem_t));
+        md_256 dx = md_mm256_sub_ps(vx, data->rx);
+        md_256 dy = md_mm256_sub_ps(vy, data->ry);
+        md_256 dz = md_mm256_sub_ps(vz, data->rz);
+        md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
+        md_256 vmask = md_mm256_cmplt_ps(d2, data->r2);
+
+        const int step = MIN(length, 8);
+        const int lane_mask = (1 << step) - 1;
+        const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
+
+        result += popcnt32(mask);
+    }
+
+    return result;
+}
+
+#define CELL_EXT (6.0f)
+
+static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const float* in_z, size_t num_points, float cutoff, const md_unit_cell_t* unit_cell) {
+    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
+
+    vec3_t ext = md_unit_cell_extent(unit_cell);
+
+    printf("unit cell ext: %f %f %f \n", ext.x, ext.y, ext.z);
+
+    uint32_t cell_dim[3] = {
+        CLAMP((uint32_t)(ext.x / CELL_EXT + 0.5f), 1, 1024),
+        CLAMP((uint32_t)(ext.y / CELL_EXT + 0.5f), 1, 1024),
+        CLAMP((uint32_t)(ext.z / CELL_EXT + 0.5f), 1, 1024),
+    };
+
+    vec4_t cell_ext = {
+        ext.x / cell_dim[0],
+        ext.y / cell_dim[1],
+        ext.z / cell_dim[2],
+        1.0f,
+    };
+
+    printf("cell ext: %f %f %f \n", cell_ext.x, cell_ext.y, cell_ext.z);
+
+    vec4_t inv_cell_ext = vec4_div(vec4_set1(1.0f), cell_ext);
+
+    uint32_t c0  = cell_dim[0];
+    uint32_t c01 = cell_dim[0] * cell_dim[1];
+
+    size_t num_cells = cell_dim[0] * cell_dim[1] * cell_dim[2];
+    size_t cell_offset_count = num_cells + 1;
+
+    printf("Cell dim: %i %i %i \n", cell_dim[0], cell_dim[1], cell_dim[2]);
+
+    uint32_t* cell_offset = md_vm_arena_push_zero(temp_arena, cell_offset_count * sizeof(uint32_t));
+    uint32_t* local_idx   = md_vm_arena_push(temp_arena, num_points * sizeof(uint32_t));
+    uint32_t* cell_idx    = md_vm_arena_push(temp_arena, num_points * sizeof(uint32_t));
+    elem_t* elements      = md_vm_arena_push(temp_arena, num_points * sizeof(elem_t));
+
+    printf("Calculating cell and local indices\n");
+
+    const vec4_t mask = md_unit_cell_pbc_mask(unit_cell);
+    mat4x3_t I = mat4x3_from_mat3(unit_cell->inv_basis);
+    mat4x3_t M = mat4x3_from_mat3(unit_cell->basis);
+
+    // Calculate cell and local cell indices
+    for (size_t i = 0; i < num_points; ++i) {
+        vec4_t coord = {in_x[i], in_y[i], in_z[i], 0};
+        coord = vec4_mul(coord, inv_cell_ext);
+
+        uint32_t cx = (uint32_t)coord.x;
+        uint32_t cy = (uint32_t)coord.y;
+        uint32_t cz = (uint32_t)coord.z;
+        uint32_t ci = cz * c01 + cy * c0 + cx;
+        if (ci >= num_cells) {
+            printf("Invalid index with cell coords: %i %i %i\n", cx, cy, cz);
+        }
+        ASSERT(ci < num_cells);
+        uint32_t li = cell_offset[ci]++;
+        local_idx[i] = li;
+        cell_idx[i]  = ci;
+    }
+
+    uint32_t max_cell_count = 0;
+
+    printf("Cell prefix sum\n");
+
+    // Prefix sum the cell offsets
+    uint32_t offset = 0;
+    for (size_t i = 0; i < cell_offset_count; ++i) {
+        uint32_t length = cell_offset[i];
+        max_cell_count = MAX(max_cell_count, length);
+        cell_offset[i] = offset;
+        offset += length;
+    }
+
+    printf("Max cell count: %i\n", max_cell_count);
+
+    printf("Write data\n");
+    // Calculate final destination index and write data
+    for (size_t i = 0; i < num_points; ++i) {
+        uint32_t ci = cell_idx[i];
+        uint32_t dst_idx = cell_offset[ci] + local_idx[i];
+        elements[dst_idx] = (elem_t) {
+            in_x[i],
+            in_y[i],
+            in_z[i],
+            i,
+        };
+    }
+
+    #define CELL_IDX(x, y, z) (z * c01 + y * c0 + x)
+
+    data_t data = { 0 };
+    data.r2 = md_mm256_set1_ps(cutoff * cutoff);
+    data.elem = elements;
+    data.cell_offset = cell_offset;
+
+    size_t result = 0;
+
+    printf("Do test\n");
+
+    for (uint32_t ci = 0; ci < num_cells - 1; ++ci) {
+        for (size_t i = cell_offset[ci]; i < cell_offset[ci + 1]; ++i) {
+            data.rx = md_mm256_set1_ps(elements[i].x);
+            data.ry = md_mm256_set1_ps(elements[i].y);
+            data.rz = md_mm256_set1_ps(elements[i].z);
+            result += test_cell(&data, ci);
+
+            for (uint32_t cj = ci + 1; cj < num_cells; ++cj) {
+                result += test_cell(&data, cj);
+            }
+        }
+    }
+
+#if 0
+    for (uint32_t ci = 0; ci < num_cells; ++ci) {
+        for (size_t i = cell_offset[ci]; i < cell_offset[ci + 1]; ++i) {
+            data.rx = md_mm256_set1_ps(elements[i].x);
+            data.ry = md_mm256_set1_ps(elements[i].y);
+            data.rz = md_mm256_set1_ps(elements[i].z);
+            result += test_cell(&data, ci);
+        }
+    }
+    
+    for (int iz = 0; iz < cell_dim[2] - 1; ++iz) {
+        for (int iy = 0; iy < cell_dim[1] - 1; ++iy) {
+            for (int ix = 0; ix < cell_dim[0] - 1; ++ix) {
+                uint32_t ci = CELL_IDX(ix, iy, iz);
+                //printf ("Testing Cell (%i %i %i)\n", ix, iy, iz);
+                for (size_t i = cell_offset[ci]; i < cell_offset[ci + 1]; ++i) {
+                    data.rx = md_mm256_set1_ps(elements[i].x);
+                    data.ry = md_mm256_set1_ps(elements[i].y);
+                    data.rz = md_mm256_set1_ps(elements[i].z);
+
+#if 1
+                    result += test_cell(&data, CELL_IDX(ix + 1, iy,     iz));
+
+                    if (ix > 0) {
+                        result += test_cell(&data, CELL_IDX(ix - 1, iy + 1, iz));
+                    }
+                    result += test_cell(&data, CELL_IDX(ix,     iy + 1, iz));
+                    result += test_cell(&data, CELL_IDX(ix + 1, iy + 1, iz));
+
+                    if (ix > 0) {
+                        result += test_cell(&data, CELL_IDX(ix - 1, iy - 1, iz + 1));
+                    }
+                    result += test_cell(&data, CELL_IDX(ix,     iy - 1, iz + 1));
+                    result += test_cell(&data, CELL_IDX(ix + 1, iy - 1, iz + 1));
+
+                    if (ix > 0) {
+                        result += test_cell(&data, CELL_IDX(ix - 1, iy, iz + 1));
+                    }
+                    result += test_cell(&data, CELL_IDX(ix    , iy,     iz + 1));
+                    result += test_cell(&data, CELL_IDX(ix + 1, iy,     iz + 1));
+
+                    if (ix > 0) {
+                        result += test_cell(&data, CELL_IDX(ix - 1, iy + 1, iz + 1));
+                    }
+                    result += test_cell(&data, CELL_IDX(ix,     iy + 1, iz + 1));
+                    result += test_cell(&data, CELL_IDX(ix + 1, iy + 1, iz + 1));
+#endif
+                }
+            }
+        }
+    }
+    #endif
+
+    #undef CELL_IDX
+
+    md_vm_arena_destroy(temp_arena);
+
+    return result;
+}
+
+UTEST(spatial_hash, n2_custom) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    md_gro_data_t gro_data = {0};
+    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
+
+    md_molecule_t mol = {0};
+    ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
+
+    const vec4_t mask = md_unit_cell_pbc_mask(&mol.unit_cell);
+    mat4x3_t I = mat4x3_from_mat3(mol.unit_cell.inv_basis);
+    mat4x3_t M = mat4x3_from_mat3(mol.unit_cell.basis);
+
+    for (size_t i = 0; i < mol.atom.count; ++i) {
+        vec4_t original = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
+        vec4_t coord = mat4x3_mul_vec4(I, original);
+        coord = vec4_fract(coord);
+        coord = mat4x3_mul_vec4(M, coord);
+        coord = vec4_blend(original, coord, mask);
+
+        mol.atom.x[i] = coord.x;
+        mol.atom.y[i] = coord.y;
+        mol.atom.z[i] = coord.z;
+    }
+
+    size_t count = do_pairwise_periodic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &mol.unit_cell);
+
+    EXPECT_EQ(30, count);
+
+    md_arena_allocator_destroy(alloc);
+}
+
+UTEST(spatial_hash, n2_brute_force) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+
+    md_gro_data_t gro_data = {0};
+    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
+
+    md_molecule_t mol = {0};
+    ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
+
+    const vec4_t mask = md_unit_cell_pbc_mask(&mol.unit_cell);
+    mat4x3_t I = mat4x3_from_mat3(mol.unit_cell.inv_basis);
+    mat4x3_t M = mat4x3_from_mat3(mol.unit_cell.basis);
+
+    for (size_t i = 0; i < mol.atom.count; ++i) {
+        vec4_t original = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
+        vec4_t coord = mat4x3_mul_vec4(I, original);
+        coord = vec4_fract(coord);
+        coord = mat4x3_mul_vec4(M, coord);
+        coord = vec4_blend(original, coord, mask);
+
+        mol.atom.x[i] = coord.x;
+        mol.atom.y[i] = coord.y;
+        mol.atom.z[i] = coord.z;
+    }
+
+    const float r2 = 5.0f * 5.0f;
+
+    size_t count = 0;
+    for (size_t i = 0; i < mol.atom.count - 1; ++i) {
+        vec4_t xi = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0.0f};
+        for (size_t j = i + 1; j < mol.atom.count; ++j) {
+            vec4_t xj = {mol.atom.x[j], mol.atom.y[j], mol.atom.z[j], 0.0f};
+            if (vec4_distance_squared(xi, xj) < r2) {
+                count += 1;
+            }
+        }
+    }
+
+    EXPECT_EQ(30, count);
+
+    md_arena_allocator_destroy(alloc);
+}
+
 struct spatial_hash {
     md_allocator_i* arena;
     md_molecule_t mol;

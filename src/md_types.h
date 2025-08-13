@@ -94,6 +94,11 @@ typedef struct md_unit_cell_t {
     uint32_t flags;
 } md_unit_cell_t;
 
+static inline vec3_t md_unit_cell_extent(const md_unit_cell_t* cell) {
+    ASSERT(cell);
+    return mat3_mul_vec3(cell->basis, vec3_set1(1));
+}
+
 /*
 // Single bond between two entities represented by atom indices
 typedef struct md_bond_t {
