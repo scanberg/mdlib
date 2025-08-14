@@ -71,29 +71,33 @@ typedef struct data_t {
     const uint32_t* cell_offset;
 } data_t;
 
-static inline size_t test_cell(const data_t* data, uint32_t cell_idx) {
+static inline size_t test_elem(md_256 rx, md_256 ry, md_256 rz, md_256 r2, const elem_t* elem, uint32_t len) {
     size_t result = 0;
 
-    uint32_t length = data->cell_offset[cell_idx + 1] - data->cell_offset[cell_idx];
-    uint32_t offset = data->cell_offset[cell_idx];
-
-    for (size_t i = 0; i < length; i += 8) {
+    for (uint32_t i = 0; i < len; i += 8) {
         md_256 vx, vy, vz;
-        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)(data->elem + offset), sizeof(elem_t));
-        md_256 dx = md_mm256_sub_ps(vx, data->rx);
-        md_256 dy = md_mm256_sub_ps(vy, data->ry);
-        md_256 dz = md_mm256_sub_ps(vz, data->rz);
+        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)(elem + i), sizeof(elem_t));
+        md_256 dx = md_mm256_sub_ps(vx, rx);
+        md_256 dy = md_mm256_sub_ps(vy, ry);
+        md_256 dz = md_mm256_sub_ps(vz, rz);
         md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
-        md_256 vmask = md_mm256_cmplt_ps(d2, data->r2);
+        md_256 vmask = md_mm256_cmplt_ps(d2, r2);
 
-        const int step = MIN(length, 8);
-        const int lane_mask = (1 << step) - 1;
-        const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
+        const uint32_t remainder = MIN(len - i, 8);
+        const uint32_t lane_mask = (1U << remainder) - 1U;
+        const uint32_t mask = md_mm256_movemask_ps(vmask) & lane_mask;
 
         result += popcnt32(mask);
     }
 
     return result;
+}
+
+static inline size_t test_cell(const data_t* data, uint32_t cell_idx) {
+    uint32_t offset = data->cell_offset[cell_idx];
+    uint32_t length = data->cell_offset[cell_idx + 1] - offset;
+
+    return test_elem(data->rx, data->ry, data->rz, data->r2, data->elem + offset, length);
 }
 
 #define CELL_EXT (6.0f)
@@ -135,8 +139,6 @@ static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const f
     uint32_t* cell_idx    = md_vm_arena_push(temp_arena, num_points * sizeof(uint32_t));
     elem_t* elements      = md_vm_arena_push(temp_arena, num_points * sizeof(elem_t));
 
-    printf("Calculating cell and local indices\n");
-
     const vec4_t mask = md_unit_cell_pbc_mask(unit_cell);
     mat4x3_t I = mat4x3_from_mat3(unit_cell->inv_basis);
     mat4x3_t M = mat4x3_from_mat3(unit_cell->basis);
@@ -161,8 +163,6 @@ static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const f
 
     uint32_t max_cell_count = 0;
 
-    printf("Cell prefix sum\n");
-
     // Prefix sum the cell offsets
     uint32_t offset = 0;
     for (size_t i = 0; i < cell_offset_count; ++i) {
@@ -174,7 +174,6 @@ static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const f
 
     printf("Max cell count: %i\n", max_cell_count);
 
-    printf("Write data\n");
     // Calculate final destination index and write data
     for (size_t i = 0; i < num_points; ++i) {
         uint32_t ci = cell_idx[i];
@@ -187,8 +186,6 @@ static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const f
         };
     }
 
-    #define CELL_IDX(x, y, z) (z * c01 + y * c0 + x)
-
     data_t data = { 0 };
     data.r2 = md_mm256_set1_ps(cutoff * cutoff);
     data.elem = elements;
@@ -196,75 +193,21 @@ static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const f
 
     size_t result = 0;
 
-    printf("Do test\n");
-
     for (uint32_t ci = 0; ci < num_cells - 1; ++ci) {
-        for (size_t i = cell_offset[ci]; i < cell_offset[ci + 1]; ++i) {
-            data.rx = md_mm256_set1_ps(elements[i].x);
-            data.ry = md_mm256_set1_ps(elements[i].y);
-            data.rz = md_mm256_set1_ps(elements[i].z);
-            result += test_cell(&data, ci);
+        uint32_t offset = cell_offset[ci];
+        uint32_t length = cell_offset[ci + 1] - offset;
+        const elem_t* elem = elements + offset;
+        for (size_t i = 0; i < length; ++i) {
+            data.rx = md_mm256_set1_ps(elem[i].x);
+            data.ry = md_mm256_set1_ps(elem[i].y);
+            data.rz = md_mm256_set1_ps(elem[i].z);
+            result += test_elem(data.rx, data.ry, data.rz, data.r2, elem + i, length - i);
 
             for (uint32_t cj = ci + 1; cj < num_cells; ++cj) {
                 result += test_cell(&data, cj);
             }
         }
     }
-
-#if 0
-    for (uint32_t ci = 0; ci < num_cells; ++ci) {
-        for (size_t i = cell_offset[ci]; i < cell_offset[ci + 1]; ++i) {
-            data.rx = md_mm256_set1_ps(elements[i].x);
-            data.ry = md_mm256_set1_ps(elements[i].y);
-            data.rz = md_mm256_set1_ps(elements[i].z);
-            result += test_cell(&data, ci);
-        }
-    }
-    
-    for (int iz = 0; iz < cell_dim[2] - 1; ++iz) {
-        for (int iy = 0; iy < cell_dim[1] - 1; ++iy) {
-            for (int ix = 0; ix < cell_dim[0] - 1; ++ix) {
-                uint32_t ci = CELL_IDX(ix, iy, iz);
-                //printf ("Testing Cell (%i %i %i)\n", ix, iy, iz);
-                for (size_t i = cell_offset[ci]; i < cell_offset[ci + 1]; ++i) {
-                    data.rx = md_mm256_set1_ps(elements[i].x);
-                    data.ry = md_mm256_set1_ps(elements[i].y);
-                    data.rz = md_mm256_set1_ps(elements[i].z);
-
-#if 1
-                    result += test_cell(&data, CELL_IDX(ix + 1, iy,     iz));
-
-                    if (ix > 0) {
-                        result += test_cell(&data, CELL_IDX(ix - 1, iy + 1, iz));
-                    }
-                    result += test_cell(&data, CELL_IDX(ix,     iy + 1, iz));
-                    result += test_cell(&data, CELL_IDX(ix + 1, iy + 1, iz));
-
-                    if (ix > 0) {
-                        result += test_cell(&data, CELL_IDX(ix - 1, iy - 1, iz + 1));
-                    }
-                    result += test_cell(&data, CELL_IDX(ix,     iy - 1, iz + 1));
-                    result += test_cell(&data, CELL_IDX(ix + 1, iy - 1, iz + 1));
-
-                    if (ix > 0) {
-                        result += test_cell(&data, CELL_IDX(ix - 1, iy, iz + 1));
-                    }
-                    result += test_cell(&data, CELL_IDX(ix    , iy,     iz + 1));
-                    result += test_cell(&data, CELL_IDX(ix + 1, iy,     iz + 1));
-
-                    if (ix > 0) {
-                        result += test_cell(&data, CELL_IDX(ix - 1, iy + 1, iz + 1));
-                    }
-                    result += test_cell(&data, CELL_IDX(ix,     iy + 1, iz + 1));
-                    result += test_cell(&data, CELL_IDX(ix + 1, iy + 1, iz + 1));
-#endif
-                }
-            }
-        }
-    }
-    #endif
-
-    #undef CELL_IDX
 
     md_vm_arena_destroy(temp_arena);
 
