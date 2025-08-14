@@ -5,15 +5,37 @@
 #include <core/md_spatial_hash.h>
 #include <core/md_str.h>
 #include <core/md_intrinsics.h>
+#include <core/md_os.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_molecule.h>
 #include <md_util.h>
 
-static bool func(const md_spatial_hash_elem_t* elem, void* param) {
+static bool iter_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
     (void)elem;
-    uint32_t* count = param;
-    (*count)++;
+    uint32_t* count = (uint32_t*)user_param;
+    *count += 1;
+    return true;
+}
+
+typedef struct {
+    uint32_t exclude_idx;
+    uint32_t count;
+} iter_excl_data_t;
+
+static bool iter_excl_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
+    (void)elem;
+    iter_excl_data_t* data = user_param;
+    if (elem->idx != data->exclude_idx) {
+        data->count += 1;
+    }
+    return true;
+}
+
+static bool iter_batch_fn(const md_spatial_hash_elem_t* elem, int mask, void* user_param) {
+    (void)elem;
+    uint32_t* count = (uint32_t*)user_param;
+    *count += popcnt32(mask);
     return true;
 }
 
@@ -27,11 +49,11 @@ UTEST(spatial_hash, small_periodic) {
     ASSERT_TRUE(spatial_hash);
     
     uint32_t count = 0;
-    md_spatial_hash_query(spatial_hash, (vec3_t){5,0,0}, 1.5f, func, &count);
+    md_spatial_hash_query(spatial_hash, (vec3_t){5,0,0}, 1.5f, iter_fn, &count);
     EXPECT_EQ(3, count);
 
     count = 0;
-    md_spatial_hash_query(spatial_hash, (vec3_t){8.5f, 0, 0}, 3, func, &count);
+    md_spatial_hash_query(spatial_hash, (vec3_t){8.5f, 0, 0}, 3, iter_fn, &count);
     EXPECT_EQ(6, count);
 
     md_spatial_hash_free(spatial_hash);
@@ -53,7 +75,7 @@ UTEST(spatial_hash, big) {
     vec3_t pos = {24, 48, 24};
     float  rad = 10.0f;
     uint32_t count = 0;
-    md_spatial_hash_query(spatial_hash, pos, rad, func, &count);
+    md_spatial_hash_query(spatial_hash, pos, rad, iter_fn, &count);
 
     EXPECT_NE(0, count);
 
@@ -71,8 +93,27 @@ typedef struct data_t {
     const uint32_t* cell_offset;
 } data_t;
 
-static inline size_t test_elem(md_256 rx, md_256 ry, md_256 rz, md_256 r2, const elem_t* elem, uint32_t len) {
+static inline size_t test_elem_scalar(float x, float y, float z, float r2, const elem_t* elem, uint32_t len) {
     size_t result = 0;
+    for (uint32_t i = 0; i < len; ++i) {
+        float dx = elem[i].x - x;
+        float dy = elem[i].y - y;
+        float dz = elem[i].z - z;
+        float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < r2) {
+            result++;
+        }
+    }
+    return result;
+}
+
+static inline size_t test_elem(float x, float y, float z, float r2, const elem_t* elem, uint32_t len) {
+    size_t result = 0;
+
+    md_256 rx = md_mm256_set1_ps(x);
+    md_256 ry = md_mm256_set1_ps(y);
+    md_256 rz = md_mm256_set1_ps(z);
+    md_256 r2_vec = md_mm256_set1_ps(r2);
 
     for (uint32_t i = 0; i < len; i += 8) {
         md_256 vx, vy, vz;
@@ -81,7 +122,7 @@ static inline size_t test_elem(md_256 rx, md_256 ry, md_256 rz, md_256 r2, const
         md_256 dy = md_mm256_sub_ps(vy, ry);
         md_256 dz = md_mm256_sub_ps(vz, rz);
         md_256 d2 = md_mm256_add_ps(md_mm256_add_ps(md_mm256_mul_ps(dx, dx), md_mm256_mul_ps(dy, dy)), md_mm256_mul_ps(dz, dz));
-        md_256 vmask = md_mm256_cmplt_ps(d2, r2);
+        md_256 vmask = md_mm256_cmplt_ps(d2, r2_vec);
 
         const uint32_t remainder = MIN(len - i, 8);
         const uint32_t lane_mask = (1U << remainder) - 1U;
@@ -93,11 +134,32 @@ static inline size_t test_elem(md_256 rx, md_256 ry, md_256 rz, md_256 r2, const
     return result;
 }
 
+/*
 static inline size_t test_cell(const data_t* data, uint32_t cell_idx) {
     uint32_t offset = data->cell_offset[cell_idx];
     uint32_t length = data->cell_offset[cell_idx + 1] - offset;
 
     return test_elem(data->rx, data->ry, data->rz, data->r2, data->elem + offset, length);
+}
+*/
+
+static size_t do_brute_force(const float* in_x, const float* in_y, const float* in_z, size_t num_points, float cutoff) {
+    size_t count = 0;
+    const float r2 = cutoff * cutoff;
+    for (size_t i = 0; i < num_points - 1; ++i) {
+        float x = in_x[i];
+        float y = in_y[i];
+        float z = in_z[i];
+        for (size_t j = i + 1; j < num_points; ++j) {
+            float dx = in_x[j] - x;
+            float dy = in_y[j] - y;
+            float dz = in_z[j] - z;
+            if ((dx * dx + dy * dy + dz * dz) < r2) {
+                count += 1;
+            }
+        }
+    }
+    return count;
 }
 
 #define CELL_EXT (6.0f)
@@ -108,6 +170,8 @@ static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const f
     vec3_t ext = md_unit_cell_extent(unit_cell);
 
     printf("unit cell ext: %f %f %f \n", ext.x, ext.y, ext.z);
+
+    md_timestamp_t start = md_time_current();
 
     uint32_t cell_dim[3] = {
         CLAMP((uint32_t)(ext.x / CELL_EXT + 0.5f), 1, 1024),
@@ -182,39 +246,122 @@ static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const f
             in_x[i],
             in_y[i],
             in_z[i],
-            i,
+            0,
         };
     }
 
+    md_timestamp_t end = md_time_current();
+
+    printf("Cell creation took: %f ms\n", md_time_as_milliseconds(end - start));
+
     data_t data = { 0 };
+    const float r2 = cutoff * cutoff;
     data.r2 = md_mm256_set1_ps(cutoff * cutoff);
     data.elem = elements;
     data.cell_offset = cell_offset;
 
     size_t result = 0;
 
+        // Convert 3D -> 1D cell index
+    #define CELL_INDEX(x, y, z) ((z) * c01 + (y) * c0 + (x))
+    #define CELL_OFFSET(ci) (cell_offset[ci])
+    #define CELL_LENGTH(ci) (cell_offset[ci + 1] - cell_offset[ci])
+    #define TEST_ELEM(x, y, z, r2, elem, len) \
+        test_elem(x, y, z, r2, elem, len)
+    #define TEST_CELL(x, y, z, r2, ci) \
+        TEST_ELEM(x, y, z, r2, elements + CELL_OFFSET(ci), CELL_LENGTH(ci))
+
+    // Forward neighbor offsets in 3D grid (no PBC)
+    static const int8_t FWD_NBRS[13][3] = {
+        {1, 0, 0},
+        {-1, 1, 0},
+        {0, 1, 0},
+        {1, 1, 0},
+        {-1, -1, 1},
+        {0, -1, 1},
+        {1, -1, 1},
+        {-1, 0, 1},
+        {0, 0, 1},
+        {1, 0, 1},
+        {-1, 1, 1},
+        {0, 1, 1},
+        {1, 1, 1},
+    };
+
+    #if 0
     for (uint32_t ci = 0; ci < num_cells - 1; ++ci) {
         uint32_t offset = cell_offset[ci];
         uint32_t length = cell_offset[ci + 1] - offset;
         const elem_t* elem = elements + offset;
         for (size_t i = 0; i < length; ++i) {
-            data.rx = md_mm256_set1_ps(elem[i].x);
-            data.ry = md_mm256_set1_ps(elem[i].y);
-            data.rz = md_mm256_set1_ps(elem[i].z);
-            result += test_elem(data.rx, data.ry, data.rz, data.r2, elem + i, length - i);
+            float x = elem[i].x;
+            float y = elem[i].y;
+            float z = elem[i].z;
+            result += TEST_ELEM(x, y, z, r2, elem + (i + 1), length - (i + 1));
 
             for (uint32_t cj = ci + 1; cj < num_cells; ++cj) {
-                result += test_cell(&data, cj);
+                result += TEST_CELL(x, y, z, r2, cj);
             }
         }
     }
+
+    #else
+
+    for (uint32_t cz = 0; cz < cell_dim[2]; ++cz) {
+        for (uint32_t cy = 0; cy < cell_dim[1]; ++cy) {
+            for (uint32_t cx = 0; cx < cell_dim[0]; ++cx) {
+                uint32_t ci = CELL_INDEX(cx, cy, cz);
+                uint32_t offset_i = cell_offset[ci];
+                uint32_t length_i = cell_offset[ci + 1] - offset_i;
+                const elem_t* cell_i = elements + offset_i;
+
+                // Self-cell: only j > i
+                for (uint32_t a = 0; a < length_i; ++a) {
+                    float x = cell_i[a].x;
+                    float y = cell_i[a].y;
+                    float z = cell_i[a].z;
+                    result += TEST_ELEM(x, y, z, r2, cell_i + a + 1, length_i - (a + 1));
+                }
+
+                // Forward neighbors
+                for (int n = 0; n < 13; ++n) {
+                    int nx = (int)cx + FWD_NBRS[n][0];
+                    int ny = (int)cy + FWD_NBRS[n][1];
+                    int nz = (int)cz + FWD_NBRS[n][2];
+
+                    if (nx < 0 || ny < 0 || nz < 0 || nx >= (int)cell_dim[0] || ny >= (int)cell_dim[1] || nz >= (int)cell_dim[2]) {
+                        continue;  // Skip out-of-bounds
+                    }
+
+                    uint32_t cj = CELL_INDEX(nx, ny, nz);
+                    uint32_t offset_j = cell_offset[cj];
+                    uint32_t length_j = cell_offset[cj + 1] - offset_j;
+                    const elem_t* cell_j = elements + offset_j;
+
+                    for (uint32_t a = 0; a < length_i; ++a) {
+                        float x = cell_i[a].x;
+                        float y = cell_i[a].y;
+                        float z = cell_i[a].z;
+                        result += TEST_ELEM(x, y, z, r2, cell_j, length_j);
+                    }
+                }
+            }
+        }
+    }
+    #endif
+
+    #undef CELL_INDEX
+    #undef CELL_OFFSET
+    #undef CELL_LENGTH
+    #undef TEST_ELEM
+    #undef TEST_CELL
 
     md_vm_arena_destroy(temp_arena);
 
     return result;
 }
 
-UTEST(spatial_hash, n2_custom) {
+UTEST(spatial_hash, n2) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 
     md_gro_data_t gro_data = {0};
@@ -239,52 +386,35 @@ UTEST(spatial_hash, n2_custom) {
         mol.atom.z[i] = coord.z;
     }
 
+    // Custom implementation of pairwise periodic N^2
+    md_timestamp_t start = md_time_current();
     size_t count = do_pairwise_periodic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &mol.unit_cell);
-
-    EXPECT_EQ(30, count);
-
-    md_arena_allocator_destroy(alloc);
-}
-
-UTEST(spatial_hash, n2_brute_force) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
-
-    md_gro_data_t gro_data = {0};
-    ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), alloc));
-
-    md_molecule_t mol = {0};
-    ASSERT_TRUE(md_gro_molecule_init(&mol, &gro_data, alloc));
-
-    const vec4_t mask = md_unit_cell_pbc_mask(&mol.unit_cell);
-    mat4x3_t I = mat4x3_from_mat3(mol.unit_cell.inv_basis);
-    mat4x3_t M = mat4x3_from_mat3(mol.unit_cell.basis);
-
-    for (size_t i = 0; i < mol.atom.count; ++i) {
-        vec4_t original = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
-        vec4_t coord = mat4x3_mul_vec4(I, original);
-        coord = vec4_fract(coord);
-        coord = mat4x3_mul_vec4(M, coord);
-        coord = vec4_blend(original, coord, mask);
-
-        mol.atom.x[i] = coord.x;
-        mol.atom.y[i] = coord.y;
-        mol.atom.z[i] = coord.z;
+    md_timestamp_t end = md_time_current();
+    printf("Custom: %f ms\n", md_time_as_milliseconds(end - start));
+    EXPECT_EQ(3701958, count);
+    if (count != 3701958) {
+        printf("Count mismatch: expected 3701958, got %zu\n", count);
     }
-
-    const float r2 = 5.0f * 5.0f;
-
-    size_t count = 0;
-    for (size_t i = 0; i < mol.atom.count - 1; ++i) {
-        vec4_t xi = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0.0f};
-        for (size_t j = i + 1; j < mol.atom.count; ++j) {
-            vec4_t xj = {mol.atom.x[j], mol.atom.y[j], mol.atom.z[j], 0.0f};
-            if (vec4_distance_squared(xi, xj) < r2) {
-                count += 1;
-            }
-        }
+    
+    // Current implementation of spatial hash for N^2
+    start = md_time_current();
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
+    iter_excl_data_t data = {0};
+    for (uint32_t i = 0; i < mol.atom.count; ++i) {
+        vec3_t pos = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i]};
+        data.exclude_idx = i;
+        md_spatial_hash_query(spatial_hash, pos, 5.0f, iter_excl_fn, &data);
     }
+    end = md_time_current();
+    printf("Spatial hash: %f ms\n", md_time_as_milliseconds(end - start));
+    ASSERT_TRUE(spatial_hash);
 
-    EXPECT_EQ(30, count);
+    // Brute force
+    start = md_time_current();
+    size_t bf_count = do_brute_force(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f);
+    end = md_time_current();
+    printf("Brute force: %f ms\n", md_time_as_milliseconds(end - start));
+    EXPECT_EQ(3701958, bf_count);
 
     md_arena_allocator_destroy(alloc);
 }
@@ -310,19 +440,6 @@ UTEST_F_TEARDOWN(spatial_hash) {
 
 static inline float rnd() {
     return rand() / (float)RAND_MAX;
-}
-
-static bool iter_fn(const md_spatial_hash_elem_t* elem, void* user_param) {
-    uint32_t* count = (uint32_t*)user_param;
-    *count += 1;
-    return true;
-}
-
-static bool iter_batch_fn(const md_spatial_hash_elem_t* elem, int mask, void* user_param) {
-    (void)elem;
-    uint32_t* count = (uint32_t*)user_param;
-    *count += popcnt32(mask);
-    return true;
 }
 
 UTEST_F(spatial_hash, test_correctness_centered) {
