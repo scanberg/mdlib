@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -51,8 +51,8 @@ typedef struct md_residue_data_t {
 typedef struct md_chain_data_t {
     size_t count;
     md_label_t* id;
-    uint32_t* res_offset;
-    uint32_t* atom_offset;
+    md_range_t* res_range;
+    md_range_t* atom_range;
 } md_chain_data_t;
 
 // @TODO: Split this into two or more structures,
@@ -174,34 +174,34 @@ static inline size_t md_residue_atom_count(md_residue_data_t res, size_t res_idx
 
 static inline md_range_t md_chain_residue_range(md_chain_data_t chain, size_t chain_idx) {
     md_range_t range = {0};
-    if (chain.res_offset && chain_idx < chain.count) {
-        range.beg = chain.res_offset[chain_idx];
-        range.end = chain.res_offset[chain_idx + 1];
+    if (chain.res_range && chain_idx < chain.count) {
+        range = chain.res_range[chain_idx];
     }
     return range;
 }
 
 static inline size_t md_chain_residue_count(md_chain_data_t chain, size_t chain_idx) {
     size_t count = 0;
-    if (chain.res_offset && chain_idx < chain.count) {
-        count = chain.res_offset[chain_idx + 1] - chain.res_offset[chain_idx];
+    if (chain.res_range && chain_idx < chain.count) {
+        md_range_t range = chain.res_range[chain_idx];
+        count = range.end - range.beg;
     }
     return count;
 }
 
 static inline md_range_t md_chain_atom_range(md_chain_data_t chain, size_t chain_idx) {
     md_range_t range = {0};
-    if (chain.atom_offset && chain_idx < chain.count) {
-        range.beg = chain.atom_offset[chain_idx];
-        range.end = chain.atom_offset[chain_idx + 1];
+    if (chain.atom_range && chain_idx < chain.count) {
+        range = chain.atom_range[chain_idx];
     }
     return range;
 }
 
 static inline size_t md_chain_atom_count(md_chain_data_t chain, size_t chain_idx) {
     size_t count = 0;
-    if (chain.atom_offset && chain_idx < chain.count) {
-        count = chain.atom_offset[chain_idx + 1] - chain.atom_offset[chain_idx];
+    if (chain.atom_range && chain_idx < chain.count) {
+        md_range_t range = chain.atom_range[chain_idx];
+        count = range.end - range.beg;
     }
     return count;
 }
@@ -262,24 +262,24 @@ static inline uint32_t md_bond_iter_bond_flags(md_bond_iter_t it) {
 
 static inline void md_bond_conn_clear(md_conn_data_t* conn_data) {
     ASSERT(conn_data);
+    conn_data->count = 0;
     md_array_shrink(conn_data->atom_idx, 0);
     md_array_shrink(conn_data->bond_idx, 0);
-    conn_data->count = 0;
 
-    md_array_shrink(conn_data->offset, 0);
     conn_data->offset_count = 0;
+    md_array_shrink(conn_data->offset, 0);
 }
 
 static inline void md_bond_data_clear(md_bond_data_t* bond_data) {
     ASSERT(bond_data);
 
+    bond_data->count = 0;
     md_array_shrink(bond_data->pairs, 0);
     md_array_shrink(bond_data->order, 0);
-    bond_data->count = 0;
     
+    bond_data->conn.count = 0;
     md_array_shrink(bond_data->conn.atom_idx, 0);
     md_array_shrink(bond_data->conn.bond_idx, 0);
-    bond_data->conn.count = 0;
 
     md_bond_conn_clear(&bond_data->conn);
 }
