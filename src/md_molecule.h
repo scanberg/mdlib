@@ -51,8 +51,8 @@ typedef struct md_residue_data_t {
 typedef struct md_chain_data_t {
     size_t count;
     md_label_t* id;
-    uint32_t* res_offset;
-    uint32_t* atom_offset;
+    md_range_t* res_range;
+    md_range_t* atom_range;
 } md_chain_data_t;
 
 // @TODO: Split this into two or more structures,
@@ -174,34 +174,34 @@ static inline size_t md_residue_atom_count(md_residue_data_t res, size_t res_idx
 
 static inline md_range_t md_chain_residue_range(md_chain_data_t chain, size_t chain_idx) {
     md_range_t range = {0};
-    if (chain.res_offset && chain_idx < chain.count) {
-        range.beg = chain.res_offset[chain_idx];
-        range.end = chain.res_offset[chain_idx + 1];
+    if (chain.res_range && chain_idx < chain.count) {
+        range = chain.res_range[chain_idx];
     }
     return range;
 }
 
 static inline size_t md_chain_residue_count(md_chain_data_t chain, size_t chain_idx) {
     size_t count = 0;
-    if (chain.res_offset && chain_idx < chain.count) {
-        count = chain.res_offset[chain_idx + 1] - chain.res_offset[chain_idx];
+    if (chain.res_range && chain_idx < chain.count) {
+        md_range_t range = chain.res_range[chain_idx];
+        count = range.end - range.beg;
     }
     return count;
 }
 
 static inline md_range_t md_chain_atom_range(md_chain_data_t chain, size_t chain_idx) {
     md_range_t range = {0};
-    if (chain.atom_offset && chain_idx < chain.count) {
-        range.beg = chain.atom_offset[chain_idx];
-        range.end = chain.atom_offset[chain_idx + 1];
+    if (chain.atom_range && chain_idx < chain.count) {
+        range = chain.atom_range[chain_idx];
     }
     return range;
 }
 
 static inline size_t md_chain_atom_count(md_chain_data_t chain, size_t chain_idx) {
     size_t count = 0;
-    if (chain.atom_offset && chain_idx < chain.count) {
-        count = chain.atom_offset[chain_idx + 1] - chain.atom_offset[chain_idx];
+    if (chain.atom_range && chain_idx < chain.count) {
+        md_range_t range = chain.atom_range[chain_idx];
+        count = range.end - range.beg;
     }
     return count;
 }

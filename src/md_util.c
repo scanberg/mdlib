@@ -3150,6 +3150,15 @@ static inline uint8_t covalent_bond_heuristic2(float d2, md_element_t a, md_elem
 #define R_MIN 0.8f
 #define R_MAX 0.45f // 0.3f ???
 
+static inline bool bond_heuristic(float d2, float r_min, float r_max) {
+    return (r_min * r_min) < d2 && d2 < (r_max * r_max);
+}
+
+static inline int simd_bond_heuristic(md_256 d2, md_256 r_min, md_256 r_max) {
+    const md_256 mask_d2  = md_mm256_and_ps(md_mm256_cmpgt_ps(d2, md_mm256_mul_ps(r_min, r_min)), md_mm256_cmplt_ps(d2, md_mm256_mul_ps(r_max, r_max)));
+    return md_mm256_movemask_ps(mask_d2);
+}
+
 static inline bool covalent_bond_heuristic(float d2, float ra, float rb) {
     const float r_sum = ra + rb;
     const float r_min = R_MIN;
@@ -3204,7 +3213,287 @@ static inline md_256 simd_distance_squared(const md_256 dx[3], const md_unit_cel
     return md_mm256_fmadd_ps(d[0], d[0], md_mm256_fmadd_ps(d[1], d[1], md_mm256_mul_ps(d[2], d[2])));
 }
 
-static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unit_cell_t* cell, const float* elem_cov_radii, const int* elem_metal_mask, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
+// Compile-time bond_allowed table
+// Indexed as bond_allowed[NUM_ELEMENTS][NUM_ELEMENTS]
+// Assumes md_element_t enum matches periodic order (H=1, He=2, ...)
+
+// ---------------------- Covalent Bonds ----------------------
+static const float cov_r_min[Num_Elements][Num_Elements] = {
+    [0] = {0},  // dummy
+
+    // Main group elements
+    [H]  = { [H]=0.33f, [B]=0.33f, [C]=0.33f, [N]=0.33f, [O]=0.33f, [F]=0.33f, [Si]=0.33f, [P]=0.33f, [S]=0.33f, [Cl]=0.33f, [Br]=0.33f, [I]=0.33f },
+    [Li] = { [H]=1.68f, [C]=1.68f, [O]=1.68f, [N]=1.68f },
+    [Be] = { [O]=1.42f, [N]=1.42f, [C]=1.42f },
+    [B]  = { [H]=0.33f, [C]=0.99f, [N]=0.99f, [O]=0.99f, [F]=0.99f, [Si]=1.21f, [P]=1.21f, [S]=1.32f },
+    [C]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [Si]=1.16f, [P]=1.37f, [S]=0.77f, [Cl]=1.79f, [Br]=1.94f, [I]=2.14f, [B]=0.99f },
+    [N]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f, [P]=1.37f, [S]=1.58f, [B]=0.99f },
+    [O]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [S]=1.58f, [P]=1.37f, [B]=0.99f },
+    [F]  = { [H]=0.33f, [C]=0.77f, [N]=0.77f, [O]=0.77f, [F]=0.77f },
+    [Na] = { [H]=1.89f, [O]=1.89f, [N]=1.89f },
+    [Mg] = { [O]=1.99f, [N]=1.99f, [S]=2.04f },
+    [Al] = { [H]=1.26f, [C]=1.58f, [N]=1.47f, [O]=1.47f, [Si]=1.47f, [P]=1.68f, [S]=1.84f },
+    [Si] = { [H]=0.33f, [C]=1.16f, [O]=1.47f, [Si]=1.22f, [P]=1.63f, [S]=1.84f, [B]=1.21f },
+    [P]  = { [H]=0.33f, [C]=1.37f, [N]=1.37f, [O]=1.37f, [S]=1.79f },
+    [S]  = { [H]=0.33f, [C]=0.77f, [O]=1.58f, [P]=1.79f, [S]=1.84f },
+    [Cl] = { [H]=0.33f, [C]=1.79f, [N]=1.63f, [O]=1.53f, [Cl]=0.95f },
+    [K]  = { [H]=2.24f, [O]=2.24f, [N]=2.24f },
+    [Ca] = { [O]=2.04f, [S]=2.14f },
+
+    // Transition metals
+    [Sc] = { [O]=1.68f, [N]=1.68f, [C]=1.78f },
+    [Ti] = { [O]=1.53f, [N]=1.68f, [C]=1.78f },
+    [V]  = { [O]=1.63f, [N]=1.73f, [C]=1.84f },
+    [Cr] = { [O]=1.63f, [N]=1.73f, [C]=1.84f, [S]=1.84f },
+    [Mn] = { [O]=1.63f, [N]=1.73f, [C]=1.84f, [S]=1.84f },
+    [Fe] = { [O]=1.68f, [N]=1.68f, [C]=1.78f, [S]=1.73f },
+    [Co] = { [O]=1.68f, [N]=1.68f, [C]=1.78f },
+    [Ni] = { [O]=1.68f, [N]=1.68f, [C]=1.78f },
+    [Cu] = { [O]=1.43f, [N]=1.43f, [S]=1.53f },
+    [Zn] = { [O]=1.43f, [N]=1.43f, [S]=1.53f },
+    [Ga] = { [O]=1.42f, [N]=1.42f, [C]=1.58f, [Ga]=1.22f },
+    [Ge] = { [O]=1.43f, [C]=1.58f, [Ge]=1.22f },
+    [As] = { [H]=0.33f, [C]=1.37f, [O]=1.37f, [S]=1.63f, [P]=1.53f },
+    [Se] = { [H]=0.33f, [C]=1.58f, [O]=1.58f, [S]=1.73f },
+    [Br] = { [H]=0.33f, [C]=1.99f, [Cl]=1.99f, [Br]=1.27f },
+    [Rb] = { [O]=2.24f },
+    [Sr] = { [O]=2.14f },
+    [Y]  = { [O]=1.68f },
+    [Zr] = { [O]=1.68f },
+    [Nb] = { [O]=1.68f },
+    [Mo] = { [O]=1.58f },
+    [Tc] = { [O]=1.58f },
+    [Ru] = { [O]=1.58f },
+    [Rh] = { [O]=1.58f },
+    [Pd] = { [O]=1.58f },
+    [Ag] = { [O]=1.53f },
+    [Cd] = { [O]=1.53f },
+    [In] = { [O]=1.43f },
+    [Sn] = { [O]=1.43f },
+    [Sb] = { [O]=1.53f },
+    [Te] = { [O]=1.53f },
+    [I]  = { [H]=0.33f, [C]=2.14f, [Cl]=2.14f, [I]=1.40f },
+
+    // Lanthanides
+    [La] = { [O]=2.04f, [N]=2.04f },
+    [Ce] = { [O]=2.04f, [N]=2.04f },
+    [Pr] = { [O]=2.04f, [N]=2.04f },
+    [Nd] = { [O]=2.04f, [N]=2.04f },
+    [Sm] = { [O]=2.04f },
+    [Eu] = { [O]=2.04f },
+    [Gd] = { [O]=2.04f },
+    [Tb] = { [O]=2.04f },
+    [Dy] = { [O]=2.04f },
+    [Ho] = { [O]=2.04f },
+    [Er] = { [O]=2.04f },
+    [Tm] = { [O]=2.04f },
+    [Yb] = { [O]=2.04f },
+    [Lu] = { [O]=2.04f },
+
+    // Actinides
+    [Th] = { [O]=2.04f },
+    [Pa] = { [O]=2.04f },
+    [U]  = { [O]=2.04f },
+    [Np] = { [O]=2.04f },
+    [Pu] = { [O]=2.04f },
+};
+
+static const float cov_r_max[Num_Elements][Num_Elements] = {
+    [0] = {0},  // dummy
+
+    // Main group elements
+    [H]  = { [H]=0.951f, [B]=1.251f, [C]=1.251f, [N]=1.251f, [O]=1.251f, [F]=1.151f, [Si]=1.651f, [P]=1.651f, [S]=1.651f, [Cl]=1.651f, [Br]=1.951f, [I]=2.151f },
+    [Li] = { [H]=2.151f, [C]=2.251f, [O]=2.151f, [N]=2.151f },
+    [Be] = { [O]=1.951f, [N]=1.951f, [C]=1.951f },
+    [B]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.851f, [P]=1.851f, [S]=2.051f },
+    [C]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [Si]=1.951f, [P]=2.051f, [S]=1.951f, [Cl]=2.151f, [Br]=2.351f, [I]=2.651f, [B]=1.651f },
+    [N]  = { [H]=1.251f, [C]=1.651f, [N]=1.651f, [O]=1.551f, [F]=1.551f, [P]=1.951f, [S]=2.051f, [B]=1.651f },
+    [O]  = { [H]=1.251f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [S]=2.051f, [P]=1.951f, [B]=1.551f },
+    [F]  = { [H]=1.151f, [C]=1.551f, [N]=1.551f, [O]=1.551f, [F]=1.451f },
+    [Na] = { [H]=2.451f, [O]=2.451f, [N]=2.451f },
+    [Mg] = { [O]=2.251f, [N]=2.251f, [S]=2.351f },
+    [Al] = { [H]=1.651f, [C]=2.151f, [N]=2.051f, [O]=2.051f, [Si]=2.151f, [P]=2.451f, [S]=2.551f },
+    [Si] = { [H]=1.651f, [C]=1.951f, [O]=2.151f, [Si]=2.151f, [P]=2.451f, [S]=2.551f, [B]=1.851f },
+    [P]  = { [H]=1.651f, [C]=2.051f, [N]=2.051f, [O]=1.951f, [S]=2.551f },
+    [S]  = { [H]=1.651f, [C]=1.951f, [O]=2.051f, [P]=2.551f, [S]=2.651f },
+    [Cl] = { [H]=1.651f, [C]=2.151f, [N]=1.951f, [O]=1.951f, [Cl]=1.951f },
+    [K]  = { [O]=2.851f, [H]=2.851f, [N]=2.851f },
+    [Ca] = { [O]=2.451f, [S]=2.551f },
+
+    // Transition metals
+    [Sc] = { [O]=2.151f, [N]=2.151f, [C]=2.251f },
+    [Ti] = { [O]=2.051f, [N]=2.151f, [C]=2.251f },
+    [V]  = { [O]=2.051f, [N]=2.151f, [C]=2.251f },
+    [Cr] = { [O]=2.051f, [N]=2.151f, [C]=2.251f, [S]=2.351f },
+    [Mn] = { [O]=2.051f, [N]=2.151f, [C]=2.251f, [S]=2.351f },
+    [Fe] = { [O]=2.151f, [N]=2.151f, [C]=2.251f, [S]=2.251f },
+    [Co] = { [O]=2.151f, [N]=2.151f, [C]=2.251f },
+    [Ni] = { [O]=2.151f, [N]=2.151f, [C]=2.251f },
+    [Cu] = { [O]=2.051f, [N]=2.051f, [S]=2.151f },
+    [Zn] = { [O]=2.051f, [N]=2.051f, [S]=2.151f },
+    [Ga] = { [O]=1.951f, [N]=1.951f, [C]=2.151f, [Ga]=2.051f },
+    [Ge] = { [O]=2.051f, [C]=2.151f, [Ge]=2.151f },
+    [As] = { [H]=1.651f, [C]=2.051f, [O]=2.051f, [S]=2.351f, [P]=2.151f },
+    [Se] = { [H]=1.651f, [C]=2.151f, [O]=2.151f, [S]=2.451f },
+    [Br] = { [H]=1.951f, [C]=2.351f, [Cl]=2.351f, [Br]=2.051f },
+    [Rb] = { [O]=2.851f },
+    [Sr] = { [O]=2.551f },
+    [Y]  = { [O]=2.151f },
+    [Zr] = { [O]=2.151f },
+    [Nb] = { [O]=2.151f },
+    [Mo] = { [O]=2.051f },
+    [Tc] = { [O]=2.051f },
+    [Ru] = { [O]=2.051f },
+    [Rh] = { [O]=2.051f },
+    [Pd] = { [O]=2.051f },
+    [Ag] = { [O]=2.151f },
+    [Cd] = { [O]=2.151f },
+    [In] = { [O]=2.051f },
+    [Sn] = { [O]=2.051f },
+    [Sb] = { [O]=2.151f },
+    [Te] = { [O]=2.151f },
+    [I]  = { [H]=2.151f, [C]=2.651f, [Cl]=2.651f, [I]=2.251f },
+
+    // Lanthanides
+    [La] = { [O]=2.451f, [N]=2.451f },
+    [Ce] = { [O]=2.451f, [N]=2.451f },
+    [Pr] = { [O]=2.451f, [N]=2.451f },
+    [Nd] = { [O]=2.451f, [N]=2.451f },
+    [Sm] = { [O]=2.451f },
+    [Eu] = { [O]=2.451f },
+    [Gd] = { [O]=2.451f },
+    [Tb] = { [O]=2.451f },
+    [Dy] = { [O]=2.451f },
+    [Ho] = { [O]=2.451f },
+    [Er] = { [O]=2.451f },
+    [Tm] = { [O]=2.451f },
+    [Yb] = { [O]=2.451f },
+    [Lu] = { [O]=2.451f },
+
+    // Actinides
+    [Ac] = { [O]=2.451f },
+    [Th] = { [O]=2.451f },
+    [Pa] = { [O]=2.451f },
+    [U]  = { [O]=2.451f },
+};
+
+// ---------------------- Coordination Bonds ----------------------
+static const float coord_r_min[Num_Elements][Num_Elements] = {
+    [0] = {0},  // dummy
+
+    // Common donor atoms
+    [C]  = { [H]=0.90f, [C]=1.20f, [N]=1.10f, [O]=1.10f, [S]=1.50f, [P]=1.50f },
+    [N]  = { [H]=0.90f, [C]=1.10f, [N]=1.20f, [O]=1.20f, [P]=1.50f, [S]=1.50f },
+    [O]  = { [H]=0.90f, [C]=1.10f, [N]=1.20f, [O]=1.20f, [S]=1.50f, [P]=1.50f },
+    [S]  = { [H]=1.00f, [C]=1.50f, [N]=1.50f, [O]=1.50f, [S]=1.60f, [P]=1.60f },
+    [P]  = { [H]=1.10f, [C]=1.50f, [N]=1.50f, [O]=1.50f, [S]=1.60f, [P]=1.60f },
+
+    // Halogens as donors are uncommon but possible
+    [F]  = { [H]=0.90f, [C]=1.20f, [N]=1.20f, [O]=1.20f },
+    [Cl] = { [H]=1.20f, [C]=1.80f, [N]=1.80f, [O]=1.80f },
+    [Br] = { [H]=1.20f, [C]=2.00f, [N]=2.00f, [O]=2.00f },
+    [I]  = { [H]=1.20f, [C]=2.20f, [N]=2.20f, [O]=2.20f },
+
+    // Metals (common acceptors in coordination)
+    [Li] = { [O]=1.80f, [N]=1.80f, [S]=2.00f },
+    [Be] = { [O]=1.60f, [N]=1.60f, [C]=1.70f },
+    [Na] = { [O]=2.00f, [N]=2.00f },
+    [Mg] = { [O]=1.90f, [N]=1.90f },
+    [Al] = { [O]=1.80f, [N]=1.80f },
+    [K]  = { [O]=2.20f, [N]=2.20f },
+    [Ca] = { [O]=2.00f, [N]=2.00f },
+
+    // Transition metals (typical coordination distances, minimal)
+    [Ti] = { [O]=1.80f, [N]=1.85f, [S]=1.90f },
+    [V]  = { [O]=1.80f, [N]=1.85f },
+    [Cr] = { [O]=1.85f, [N]=1.90f },
+    [Mn] = { [O]=1.85f, [N]=1.90f },
+    [Fe] = { [O]=1.85f, [N]=1.90f },
+    [Co] = { [O]=1.85f, [N]=1.90f },
+    [Ni] = { [O]=1.85f, [N]=1.90f },
+    [Cu] = { [O]=1.85f, [N]=1.90f, [S]=2.00f },
+    [Zn] = { [O]=1.85f, [N]=1.90f, [S]=2.00f },
+
+    // Post-transition metals
+    [Ga] = { [O]=1.80f, [N]=1.80f },
+    [In] = { [O]=1.90f, [N]=1.90f },
+    [Sn] = { [O]=1.90f, [N]=1.90f },
+
+    // Selected lanthanides (typical coordination distances)
+    [La] = { [O]=2.20f, [N]=2.20f },
+    [Ce] = { [O]=2.20f, [N]=2.20f },
+    [Nd] = { [O]=2.20f, [N]=2.20f },
+    [Eu] = { [O]=2.20f, [N]=2.20f },
+    [Yb] = { [O]=2.20f, [N]=2.20f },
+
+    // Actinides
+    [Th] = { [O]=2.30f, [N]=2.30f },
+    [U]  = { [O]=2.30f, [N]=2.30f },
+};
+
+// Coordination max distances
+static const float coord_r_max[Num_Elements][Num_Elements] = {
+    [0] = {0},  // dummy
+
+    // Common donor atoms
+    [C]  = { [H]=1.40f, [C]=1.90f, [N]=1.80f, [O]=1.80f, [S]=2.20f, [P]=2.20f },
+    [N]  = { [H]=1.40f, [C]=1.80f, [N]=1.90f, [O]=1.90f, [P]=2.20f, [S]=2.20f },
+    [O]  = { [H]=1.40f, [C]=1.80f, [N]=1.90f, [O]=1.90f, [S]=2.20f, [P]=2.20f },
+    [S]  = { [H]=1.50f, [C]=2.20f, [N]=2.20f, [O]=2.20f, [S]=2.30f, [P]=2.30f },
+    [P]  = { [H]=1.60f, [C]=2.20f, [N]=2.20f, [O]=2.20f, [S]=2.30f, [P]=2.30f },
+
+    // Halogens as donors
+    [F]  = { [H]=1.40f, [C]=1.90f, [N]=1.90f, [O]=1.90f },
+    [Cl] = { [H]=1.60f, [C]=2.50f, [N]=2.50f, [O]=2.50f },
+    [Br] = { [H]=1.60f, [C]=2.70f, [N]=2.70f, [O]=2.70f },
+    [I]  = { [H]=1.60f, [C]=3.00f, [N]=3.00f, [O]=3.00f },
+
+    // Metals (typical acceptors in coordination)
+    [Li] = { [O]=2.50f, [N]=2.50f, [S]=2.80f },
+    [Be] = { [O]=2.10f, [N]=2.10f, [C]=2.20f },
+    [Na] = { [O]=2.80f, [N]=2.80f },
+    [Mg] = { [O]=2.50f, [N]=2.50f },
+    [Al] = { [O]=2.30f, [N]=2.30f },
+    [K]  = { [O]=3.00f, [N]=3.00f },
+    [Ca] = { [O]=2.80f, [N]=2.80f },
+
+    // Transition metals
+    [Ti] = { [O]=2.30f, [N]=2.40f, [S]=2.50f },
+    [V]  = { [O]=2.30f, [N]=2.40f },
+    [Cr] = { [O]=2.40f, [N]=2.50f },
+    [Mn] = { [O]=2.40f, [N]=2.50f },
+    [Fe] = { [O]=2.40f, [N]=2.50f },
+    [Co] = { [O]=2.40f, [N]=2.50f },
+    [Ni] = { [O]=2.40f, [N]=2.50f },
+    [Cu] = { [O]=2.40f, [N]=2.50f, [S]=2.60f },
+    [Zn] = { [O]=2.40f, [N]=2.50f, [S]=2.60f },
+
+    // Post-transition metals
+    [Ga] = { [O]=2.30f, [N]=2.30f },
+    [In] = { [O]=2.50f, [N]=2.50f },
+    [Sn] = { [O]=2.50f, [N]=2.50f },
+
+    // Lanthanides
+    [La] = { [O]=2.80f, [N]=2.80f },
+    [Ce] = { [O]=2.80f, [N]=2.80f },
+    [Nd] = { [O]=2.80f, [N]=2.80f },
+    [Eu] = { [O]=2.80f, [N]=2.80f },
+    [Yb] = { [O]=2.80f, [N]=2.80f },
+
+    // Actinides
+    [Th] = { [O]=3.00f, [N]=3.00f },
+    [U]  = { [O]=3.00f, [N]=3.00f },
+};
+
+static float fudge_factor(float r1, float r2) {
+    const float min_fudge = 0.05f;    // Minimum fudge factor (Å)
+    const float scale = 0.1f;         // Fraction of average radius to add
+
+    float avg_radius = 0.5f * (r1 + r2);
+    return MAX(min_fudge, scale * avg_radius);
+}
+
+static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unit_cell_t* cell, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
     ASSERT(bond);
     ASSERT(x);
     ASSERT(y);
@@ -3252,8 +3541,12 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     md_mm256_set1_ps(y[i]),
                     md_mm256_set1_ps(z[i]),
                 };
-                const md_256  ri = md_mm256_set1_ps(elem_cov_radii[element[i]]);
-                const int mi = elem_metal_mask[element[i]];
+
+                const float* table_cov_r_min   = cov_r_min[element[i]];
+                const float* table_cov_r_max   = cov_r_max[element[i]];
+                //const float* table_coord_r_min = coord_r_min[element[i]];
+                //const float* table_coord_r_max = coord_r_max[element[i]];
+
                 for (int j = i + 1; j < range_a.end; j += 8) {
                     const md_256 cj[3] = {
                         md_mm256_loadu_ps(x + j),
@@ -3263,8 +3556,11 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
                     const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
                     const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
-                    const md_256  rj = md_mm256_i32gather_ps(elem_cov_radii, ej, 4);
-                    const int mj = md_mm256_movemask_ps(md_mm256_cvtepi32_ps(md_mm256_i32gather_epi32(elem_metal_mask, ej, 4)));
+                    
+                    const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
+                    const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
+                    //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
+                    //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
 
                     const md_256 dx[3] = {
                         md_mm256_sub_ps(ci[0], cj[0]),
@@ -3272,12 +3568,10 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                         md_mm256_sub_ps(ci[2], cj[2]),
                     };
                     const md_256 d2 = simd_distance_squared(dx, cell);
-                    int bond_mask = simd_covalent_bond_heuristic(d2, ri, rj);
+                    int cov_mask    = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
+                    //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
 
-                    // The metal mask is combined using logic NAND, meaning it is ok for
-                    // two atoms to form a bond if only one of them is a metal,
-                    int metal_mask = ~(mi & mj);
-                    int mask = bond_mask & metal_mask;
+                    int mask = cov_mask;
 
                     md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
                     while (mask) {
@@ -3313,7 +3607,12 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                     md_mm256_set1_ps(y[i]),
                     md_mm256_set1_ps(z[i]),
                 };
-                const md_256  ri = md_mm256_set1_ps(elem_cov_radii[element[i]]);
+
+                const float* table_cov_r_min   = cov_r_min[element[i]];
+                const float* table_cov_r_max   = cov_r_max[element[i]];
+                //const float* table_coord_r_min = coord_r_min[element[i]];
+                //const float* table_coord_r_max = coord_r_max[element[i]];
+
                 for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
                     const md_256  cj[3] = {
                         md_mm256_loadu_ps(x + j),
@@ -3321,9 +3620,13 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                         md_mm256_loadu_ps(z + j),
                     };
                     const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
-                    const md_256i mj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), mj);
-                    const md_256  rj = md_mm256_i32gather_ps(elem_cov_radii, ej, 4);
+                    const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
+                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
+
+                    const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
+                    const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
+                    //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
+                    //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
 
                     const md_256 dx[3] = {
                         md_mm256_sub_ps(ci[0], cj[0]),
@@ -3331,7 +3634,11 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                         md_mm256_sub_ps(ci[2], cj[2]),
                     };
                     const md_256 d2 = simd_distance_squared(dx, cell);
-                    int mask = simd_covalent_bond_heuristic(d2, ri, rj);
+                    int cov_mask    = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
+                    //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
+
+                    int mask = cov_mask;
+
                     md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
                     while (mask) {
                         const int idx = ctz32(mask);
@@ -3364,23 +3671,28 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
         for (int i = range_a.beg; i < range_a.end; ++i) {
             if (element[i] != 0) {
                 const vec4_t ci = {x[i], y[i], z[i], 0};
-                const float  ri = elem_cov_radii[element[i]];
-                const bool   mi = is_metal(element[i]);
+                const float* table_cov_r_min   = cov_r_min[element[i]];
+                const float* table_cov_r_max   = cov_r_max[element[i]];
+                const float* table_coord_r_min = coord_r_min[element[i]];
+                const float* table_coord_r_max = coord_r_max[element[i]];
+
                 const size_t num_indices = md_spatial_hash_query_idx(indices, capacity, sh, vec3_from_vec4(ci), cutoff);
                 for (size_t idx = 0; idx < num_indices; ++idx) {
                     const int j = indices[idx];
                     // Only store monotonic bond connections
                     if (j < i) continue;
 
+                    const float r_min_cov   = table_cov_r_min[element[j]];
+                    const float r_max_cov   = table_cov_r_max[element[j]];
+                    const float r_min_coord = table_coord_r_min[element[j]];
+                    const float r_max_coord = table_coord_r_max[element[j]];
+
                     const vec4_t cj = {x[j], y[j], z[j], 0};
-                    const float  rj = elem_cov_radii[element[j]];
-                    const bool   mj = is_metal(element[j]);
-
-                    // Do not consider potential metal - metal bonds as covalent
-                    if (mi && mj) continue;
-
                     const vec4_t dx = vec4_sub(ci, cj);
-                    if (covalent_bond_heuristic(distance_squared(dx, cell), ri, rj)) {
+                    const float d2 = distance_squared(dx, cell);
+
+                    if (bond_heuristic(d2, r_min_cov,   r_max_cov))
+                    {
                         md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
                         bond->count += 1;
                     }
@@ -3424,13 +3736,6 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
         goto done;
     }
 
-    const float* cov_radii = element_covalent_radii_f32;
-    int metal_mask[119];
-
-    for (md_element_t i = 0; i < 119; ++i) {
-        metal_mask[i] = is_metal(i) ? 0xFFFFFFFFU : 0;
-    }
-
     int* atom_res_idx = 0;
        
     if (res && res->count > 0) {
@@ -3451,7 +3756,7 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
         prev_aabb.min_box = vec3_sub_f(prev_aabb.min_box, aabb_pad);
         prev_aabb.max_box = vec3_add_f(prev_aabb.max_box, aabb_pad);
 
-        find_bonds_in_ranges(bond, x, y, z, elem, cell, cov_radii, metal_mask, prev_range, prev_range, alloc, temp_arena);
+        find_bonds_in_ranges(bond, x, y, z, elem, cell, prev_range, prev_range, alloc, temp_arena);
         for (size_t curr_idx = 1; curr_idx < res->count; ++curr_idx) {
             md_range_t curr_range = md_residue_atom_range(*res, curr_idx);
             md_flags_t curr_flags = res->flags[curr_idx];
@@ -3468,11 +3773,11 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
 
                 // @NOTE: Interresidual bonds
                 if (!(prev_flags & MD_FLAG_CHAIN_END) && aabb_overlap(prev_aabb, curr_aabb)) {
-                    find_bonds_in_ranges(bond, x, y, z, elem, cell, cov_radii, metal_mask, prev_range, curr_range, alloc, temp_arena);
+                    find_bonds_in_ranges(bond, x, y, z, elem, cell, prev_range, curr_range, alloc, temp_arena);
                     // We want to flag these bonds with INTER flag to signify that they connect residues (which are used to identify chains)
                 }
             }
-            find_bonds_in_ranges(bond, x, y, z, elem, cell, cov_radii, metal_mask, curr_range, curr_range, alloc, temp_arena);
+            find_bonds_in_ranges(bond, x, y, z, elem, cell, curr_range, curr_range, alloc, temp_arena);
             prev_range = curr_range;
             prev_flags = curr_flags;
             prev_idx   = curr_idx;
@@ -3481,7 +3786,7 @@ void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, co
     }
     else {
         md_range_t range = {0, (int)atom_count};
-        find_bonds_in_ranges(bond, x, y, z, elem, cell, cov_radii, metal_mask, range, range, alloc, temp_arena);
+        find_bonds_in_ranges(bond, x, y, z, elem, cell, range, range, alloc, temp_arena);
     }
 
     // Compute connectivity count
@@ -3658,6 +3963,8 @@ md_array(md_bond_t) md_util_compute_hydrogen_bonds(const md_molecule_t* mol, md_
 #define MIN_NUC_LEN 6
 #define MAX_NUC_LEN 35
 
+#define MIN_RESIDUE_CHAIN_LEN 2
+
 bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, md_allocator_i* alloc) {
     ASSERT(res);
     ASSERT(atom);
@@ -3825,17 +4132,21 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
 
     MEMSET(chain, 0, sizeof(md_chain_data_t));
 
-    if (res->count == 1) {
-        // There can be no chains if there is only one residue
+    if (res->count <= 1) {
         return true;
     }
 
     md_array(uint64_t) res_bond_to_prev = make_bitfield(res->count + 1, md_get_temp_allocator());
+    md_residue_idx_t max_bonded_residue_idx = 0;
     for (size_t i = 0; i < bond->count; ++i) {
         if (bond->order[i] & MD_BOND_FLAG_INTER) {
             const md_residue_idx_t res_a = atom->res_idx[bond->pairs[i].idx[0]];
             const md_residue_idx_t res_b = atom->res_idx[bond->pairs[i].idx[1]];
-            bitfield_set_bit(res_bond_to_prev, MAX(res_a, res_b));
+            const md_residue_idx_t res_max = MAX(res_a, res_b);
+            if (abs(res_b - res_a) == 1) {
+                bitfield_set_bit(res_bond_to_prev, res_max);
+                max_bonded_residue_idx = MAX(max_bonded_residue_idx, res_max);
+            }
         }
     }
 
@@ -3843,39 +4154,45 @@ bool md_util_compute_chain_data(md_chain_data_t* chain, md_atom_data_t* atom, co
     str_t prev_id = {0};
     md_flags_t prev_flags = 0;
     int chain_end_idx = 0;
-    // We iterate up to res->count + 1 to ensure that the last residue is also included
-    // And it will automatically not be bonded to prev as its bit is zero and all is well
-    for (int i = 0; i <= (int)res->count; ++i) {
+
+    for (int i = 0; i <= max_bonded_residue_idx + 1; ++i) {
         str_t id = {0};
         md_flags_t flags = 0;
-        if (i < (int)res->count) {
+        if (i < res->count) {
             const md_range_t atom_range = md_residue_atom_range(*res, i);
             id = atom->chainid ? LBL_TO_STR(atom->chainid[atom_range.beg]) : (str_t){0};
             flags = res->flags[i];
         }
 
-        if ((!str_empty(id) && !str_eq(id, prev_id)) || (flags & MD_FLAG_CHAIN_BEG) || (prev_flags & MD_FLAG_CHAIN_END) || !bitfield_test_bit(res_bond_to_prev, i)) {
+        if (i < max_bonded_residue_idx && !(flags & (MD_FLAG_AMINO_ACID | MD_FLAG_NUCLEOTIDE))) {
+            beg_idx += 1;
+            goto next;
+        }
+
+        bool different_id = !str_empty(id) && !str_eq(id, prev_id);
+        bool chain_flags = (flags & MD_FLAG_CHAIN_BEG) || (prev_flags & MD_FLAG_CHAIN_END);
+        bool disconnected = !bitfield_test_bit(res_bond_to_prev, i);
+
+        if (different_id || chain_flags || disconnected) {
             int end_idx = i;
-            if (end_idx - beg_idx > 1) {
+            if (end_idx - beg_idx >= MIN_RESIDUE_CHAIN_LEN) {
                 md_label_t lbl = str_empty(prev_id) ? generate_chain_id_from_index(chain->count) : make_label(prev_id);
+                md_range_t res_rng = {beg_idx, end_idx};
+                md_range_t atom_rng = {res->atom_offset[beg_idx], res->atom_offset[end_idx]};
 
                 md_array_push(chain->id, lbl, alloc);
-                md_array_push(chain->atom_offset, res->atom_offset[beg_idx], alloc);
-                md_array_push(chain->res_offset, beg_idx, alloc);
+                md_array_push(chain->atom_range, atom_rng, alloc);
+                md_array_push(chain->res_range,   res_rng, alloc);
 
                 chain_end_idx = i;
                 chain->count += 1;
             }
             beg_idx = i;
         }
+
+next:
         prev_id = id;
         prev_flags = flags;
-    }
-
-    // Set end offsets
-    if (chain->count) {
-        md_array_push(chain->res_offset, chain_end_idx, alloc);
-        md_array_push(chain->atom_offset, res->atom_offset[chain_end_idx], alloc);
     }
 
     md_array_resize(atom->chain_idx, atom->count, alloc);
@@ -8116,7 +8433,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                     }
                     // Possibly commit remainder of the chain
                     if (backbone_length >= MIN_BACKBONE_LENGTH && res_base != -1) {
-                        int32_t res_idx = mol->chain.res_offset[chain_idx + 1] - (int32_t)backbone_length;
+                        int32_t res_idx = mol->chain.res_range[chain_idx].end - (int32_t)backbone_length;
                         commit_nucleic_backbone(backbone_atoms, backbone_length, res_base, (md_chain_idx_t)chain_idx, mol, alloc);
                     }
                     backbone_length = 0;

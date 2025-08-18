@@ -72,8 +72,8 @@ static uint32_t r_off[] = {0, 3, 8, 12, 16};
 
 #define CHAIN_COUNT 1
 static md_label_t c_id[] = {MAKE_LABEL("A")};
-static uint32_t c_aoff[] = {0,16};
-static uint32_t c_roff[] = {0,4};
+static md_range_t c_atom_rng[] = {{0,16}};
+static md_range_t c_res_rng [] = {{0,4}};
 
 md_molecule_t test_mol = {
     .atom = {
@@ -96,8 +96,8 @@ md_molecule_t test_mol = {
 .chain = {
         .count = CHAIN_COUNT,
         .id = c_id,
-        .atom_offset = c_aoff,
-        .res_offset = c_roff
+        .atom_range = c_atom_rng,
+        .res_range = c_res_rng,
 }
 };
 

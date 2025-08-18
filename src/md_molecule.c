@@ -1,4 +1,4 @@
-#include <md_molecule.h>
+﻿#include <md_molecule.h>
 
 #include <core/md_array.h>
 #include <core/md_allocator.h>
@@ -30,8 +30,8 @@ void md_molecule_free(md_molecule_t* mol, struct md_allocator_i* alloc) {
 
     // Chain
     if (mol->chain.id) md_array_free(mol->chain.id, alloc);
-    if (mol->chain.res_offset) md_array_free(mol->chain.res_offset, alloc);
-    if (mol->chain.atom_offset) md_array_free(mol->chain.atom_offset, alloc);
+    if (mol->chain.res_range)  md_array_free(mol->chain.res_range, alloc);
+    if (mol->chain.atom_range) md_array_free(mol->chain.atom_range, alloc);
 
     // Backbone
     if (mol->protein_backbone.range.offset) md_array_free(mol->protein_backbone.range.offset, alloc);
@@ -99,8 +99,8 @@ void md_molecule_copy(md_molecule_t* dst, const md_molecule_t* src, struct md_al
     md_array_push_array(dst->protein_backbone.range.offset, src->protein_backbone.range.offset, src->protein_backbone.range.count, alloc);
 
     ARRAY_PUSH(chain, id);
-    ARRAY_PUSH(chain, res_offset);
-    ARRAY_PUSH(chain, atom_offset);
+    ARRAY_PUSH(chain, res_range);
+    ARRAY_PUSH(chain, atom_range);
 
     md_array_push_array(dst->bond.pairs, src->bond.pairs, src->bond.count, alloc);
 

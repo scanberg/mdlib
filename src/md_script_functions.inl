@@ -3054,7 +3054,7 @@ static int _fill_chain(data_t* dst, data_t arg[], eval_context_t* ctx) {
     }
 
     int result = 0;
-    if (ctx->mol && ctx->mol->chain.atom_offset) {
+    if (ctx->mol && ctx->mol->chain.atom_range) {
         if (dst) {
             md_bitfield_t* dst_bf = as_bitfield(*dst);
             const int64_t cap = type_info_array_len(dst->type);
