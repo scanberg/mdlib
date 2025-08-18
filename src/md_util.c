@@ -3485,14 +3485,6 @@ static const float coord_r_max[Num_Elements][Num_Elements] = {
     [U]  = { [O]=3.00f, [N]=3.00f },
 };
 
-static float fudge_factor(float r1, float r2) {
-    const float min_fudge = 0.05f;    // Minimum fudge factor (Å)
-    const float scale = 0.1f;         // Fraction of average radius to add
-
-    float avg_radius = 0.5f * (r1 + r2);
-    return MAX(min_fudge, scale * avg_radius);
-}
-
 static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unit_cell_t* cell, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
     ASSERT(bond);
     ASSERT(x);
@@ -3511,144 +3503,52 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
     }
     if (N < 20000) {
         // Brute force
-        if (range_a.beg == range_b.beg && range_a.end == range_b.end) {
-#if 0
-            for (int i = range_a.beg; i < range_a.end - 1; ++i) {
-                const vec4_t ci = {x[i], y[i], z[i], 0};
-                const float  ri = elem_cov_radii[element[i]];
-                const bool   mi = is_metal(element[i]);
-                for (int j = i + 1; j < range_a.end; ++j) {
-                    const vec4_t cj = {x[j], y[j], z[j], 0};
-                    const float  rj = elem_cov_radii[element[j]];
-                    const bool   mj = is_metal(element[j]);
+        for (int i = range_a.beg; i < range_a.end; ++i) {
+            const md_256  ci[3] = {
+                md_mm256_set1_ps(x[i]),
+                md_mm256_set1_ps(y[i]),
+                md_mm256_set1_ps(z[i]),
+            };
 
-                    // Do not consider potential metal - metal as covalent bonds
-                    if (mi && mj) continue;
+            const float* table_cov_r_min   = cov_r_min[element[i]];
+            const float* table_cov_r_max   = cov_r_max[element[i]];
+            //const float* table_coord_r_min = coord_r_min[element[i]];
+            //const float* table_coord_r_max = coord_r_max[element[i]];
 
-                    const vec4_t dx = vec4_sub(ci, cj);
-                    const float  d2 = distance_squared(dx, cell);
-                    if (covalent_bond_heuristic(d2, ri, rj)) {
-                        md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                        md_array_push(bond->order, bond_order, alloc);
-                        bond->count += 1;
-                    }
-                }
-            }
-#else
-            for (int i = range_a.beg; i < range_a.end - 1; ++i) {
-                const md_256  ci[3] = {
-                    md_mm256_set1_ps(x[i]),
-                    md_mm256_set1_ps(y[i]),
-                    md_mm256_set1_ps(z[i]),
+            for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
+                const md_256  cj[3] = {
+                    md_mm256_loadu_ps(x + j),
+                    md_mm256_loadu_ps(y + j),
+                    md_mm256_loadu_ps(z + j),
                 };
+                const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
+                const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
+                const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
 
-                const float* table_cov_r_min   = cov_r_min[element[i]];
-                const float* table_cov_r_max   = cov_r_max[element[i]];
-                //const float* table_coord_r_min = coord_r_min[element[i]];
-                //const float* table_coord_r_max = coord_r_max[element[i]];
+                const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
+                const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
+                //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
+                //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
 
-                for (int j = i + 1; j < range_a.end; j += 8) {
-                    const md_256 cj[3] = {
-                        md_mm256_loadu_ps(x + j),
-                        md_mm256_loadu_ps(y + j),
-                        md_mm256_loadu_ps(z + j),
-                    };
-                    const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
-                    const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
-                    
-                    const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
-                    const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
-                    //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
-                    //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
-
-                    const md_256 dx[3] = {
-                        md_mm256_sub_ps(ci[0], cj[0]),
-                        md_mm256_sub_ps(ci[1], cj[1]),
-                        md_mm256_sub_ps(ci[2], cj[2]),
-                    };
-                    const md_256 d2 = simd_distance_squared(dx, cell);
-                    int cov_mask    = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
-                    //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
-
-                    int mask = cov_mask;
-
-                    md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
-                    while (mask) {
-                        const int idx = ctz32(mask);
-                        mask = mask & ~(1 << idx);
-                        md_array_push_no_grow(bond->pairs, ((md_bond_pair_t){i, j + idx}));
-                        bond->count += 1;
-                    }
-                }
-            }
-#endif
-        } else {
-#if 0
-            for (int i = range_a.beg; i < range_a.end; ++i) {
-                const vec4_t ci = {x[i], y[i], z[i], 0};
-                const float  ri = elem_cov_radii[element[i]];
-                const bool   mi = is_metal(element[i]);
-                // @NOTE: Only store monotonic bond connections
-                for (int j = MAX(i+1, range_b.beg); j < range_b.end; ++j) {
-                    const vec4_t cj = {x[j], y[j], z[j], 0};
-                    const float  rj = elem_cov_radii[element[j]];
-                    const vec4_t dx = vec4_sub(ci, cj);
-                    if (covalent_bond_heuristic(distance_squared(dx, cell), ri, rj)) {
-                        md_array_push(bond->pairs, ((md_bond_pair_t){i, j}), alloc);
-                        bond->count += 1;
-                    }
-                }
-            }
-#else
-            for (int i = range_a.beg; i < range_a.end; ++i) {
-                const md_256  ci[3] = {
-                    md_mm256_set1_ps(x[i]),
-                    md_mm256_set1_ps(y[i]),
-                    md_mm256_set1_ps(z[i]),
+                const md_256 dx[3] = {
+                    md_mm256_sub_ps(ci[0], cj[0]),
+                    md_mm256_sub_ps(ci[1], cj[1]),
+                    md_mm256_sub_ps(ci[2], cj[2]),
                 };
+                const md_256 d2 = simd_distance_squared(dx, cell);
+                int cov_mask    = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
+                //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
 
-                const float* table_cov_r_min   = cov_r_min[element[i]];
-                const float* table_cov_r_max   = cov_r_max[element[i]];
-                //const float* table_coord_r_min = coord_r_min[element[i]];
-                //const float* table_coord_r_max = coord_r_max[element[i]];
+                int mask = cov_mask;
 
-                for (int j = MAX(i+1, range_b.beg); j < range_b.end; j += 8) {
-                    const md_256  cj[3] = {
-                        md_mm256_loadu_ps(x + j),
-                        md_mm256_loadu_ps(y + j),
-                        md_mm256_loadu_ps(z + j),
-                    };
-                    const md_256i vj = md_mm256_add_epi32(md_mm256_set1_epi32(j), md_mm256_set_epi32(7,6,5,4,3,2,1,0));
-                    const md_256i nj = md_mm256_cmpgt_epi32(md_mm256_set1_epi32(range_b.end), vj);
-                    const md_256i ej = md_mm256_and_epi32(md_mm256_cvtepu8_epi32(md_mm_loadu_epi32(element + j)), nj);
-
-                    const md_256  r_min_cov   = md_mm256_i32gather_ps(table_cov_r_min,   ej, 4);
-                    const md_256  r_max_cov   = md_mm256_i32gather_ps(table_cov_r_max,   ej, 4);
-                    //const md_256  r_min_coord = md_mm256_i32gather_ps(table_coord_r_min, ej, 4);
-                    //const md_256  r_max_coord = md_mm256_i32gather_ps(table_coord_r_max, ej, 4);
-
-                    const md_256 dx[3] = {
-                        md_mm256_sub_ps(ci[0], cj[0]),
-                        md_mm256_sub_ps(ci[1], cj[1]),
-                        md_mm256_sub_ps(ci[2], cj[2]),
-                    };
-                    const md_256 d2 = simd_distance_squared(dx, cell);
-                    int cov_mask    = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
-                    //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
-
-                    int mask = cov_mask;
-
-                    md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
-                    while (mask) {
-                        const int idx = ctz32(mask);
-                        mask = mask & ~(1 << idx);
-                        md_array_push_no_grow(bond->pairs, ((md_bond_pair_t){i, j + idx}));
-                        bond->count += 1;
-                    }
+                md_array_ensure(bond->pairs, md_array_size(bond->pairs) + popcnt32(mask), alloc);
+                while (mask) {
+                    const int idx = ctz32(mask);
+                    mask = mask & ~(1 << idx);
+                    md_array_push_no_grow(bond->pairs, ((md_bond_pair_t){i, j + idx}));
+                    bond->count += 1;
                 }
             }
-#endif
         }
     }
     else {
@@ -3704,6 +3604,10 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
     }
 
     return bond->count - pre_count;
+}
+
+static inline void find_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, size_t count, const md_unit_cell_t* cell) {
+
 }
 
 typedef struct aabb_t {
