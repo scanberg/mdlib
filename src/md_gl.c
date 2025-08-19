@@ -76,9 +76,6 @@ enum {
     GL_BUFFER_ATOM_RADIUS,                     // float
     GL_BUFFER_ATOM_VELOCITY,                   // vec3
     GL_BUFFER_ATOM_FLAGS,                      // u8
-    //GL_BUFFER_RESIDUE_ATOM_OFFSET,             // u32
-    //GL_BUFFER_RESIDUE_AABB,                    // vec3[2]  (aabb_min, aabb_max)
-    //GL_BUFFER_RESIDUE_VISIBLE,                 // int
     GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
     GL_BUFFER_BACKBONE_DATA,                   // u32: residue index, u32: residue atom offset, u8: CA index, C index and O Index, u8: flags
     GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE,    // u8[4]  (0: Unknown, 1: Coil, 2: Helix, 3: Sheet)
@@ -154,15 +151,6 @@ typedef struct {
     int16_t support_vector[3];
     int16_t tangent_vector[3];
 } gl_control_point_t;
-
-typedef struct {
-    float pos[3];
-    uint32_t atom_idx;
-    int16_t support_vector[3];
-    int16_t tangent_vector[3];
-    uint8_t secondary_structure[3];
-    uint8_t flags;
-} gl_cp2_t;
 
 typedef struct {
     mat4_t world_to_view;
@@ -590,6 +578,28 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
     }
 }
 
+static inline uint32_t md_secondary_structure_to_gl(md_secondary_structure_t ss) {
+    switch (ss) {
+        case MD_SECONDARY_STRUCTURE_UNKNOWN:
+        case MD_SECONDARY_STRUCTURE_COIL:
+        case MD_SECONDARY_STRUCTURE_TURN:
+        case MD_SECONDARY_STRUCTURE_BEND:
+        default:
+            return 0x000000FF;
+            break;
+        case MD_SECONDARY_STRUCTURE_HELIX_310:
+        case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
+        case MD_SECONDARY_STRUCTURE_HELIX_PI:
+            return 0x0000FF00;
+            break;
+        case MD_SECONDARY_STRUCTURE_BETA_SHEET:
+        case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
+            return 0x00FF0000;
+            break;
+    }
+    return 0;
+}
+
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
     if (secondary_structure == NULL) {
         MD_LOG_ERROR("One or more arguments are missing");
@@ -606,22 +616,18 @@ void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t off
             return;
         }
         byte_stride = MAX(sizeof(md_secondary_structure_t), byte_stride);
-        if (byte_stride > sizeof(md_secondary_structure_t)) {
-            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
-            md_secondary_structure_t* data = (md_secondary_structure_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-            if (data == NULL) {
-                MD_LOG_ERROR("Failed to map molecule secondary structure buffer");
-                return;
-            }
-            for (uint32_t i = offset; i < count; ++i) {
-                data[i] = secondary_structure[byte_stride * i];
-            }
-            glUnmapBuffer(GL_ARRAY_BUFFER);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
+        uint32_t* buffer_data = (md_secondary_structure_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+        if (buffer_data == NULL) {
+            MD_LOG_ERROR("Failed to map molecule secondary structure buffer");
+            return;
         }
-        else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE], offset * sizeof(md_secondary_structure_t), count * sizeof(md_secondary_structure_t), secondary_structure);
+        for (uint32_t i = offset; i < count; ++i) {
+            md_secondary_structure_t ss = *(const md_secondary_structure_t*)(const uint8_t*)(secondary_structure + byte_stride * i);
+            md_secondary_structure_to_gl(ss);
         }
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 }
 
@@ -957,7 +963,7 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
                     for (uint32_t j = mol->protein_backbone.range.offset[i]; j < mol->protein_backbone.range.offset[i+1]; ++j) {
-                        secondary_structure[idx++] = mol->protein_backbone.secondary_structure[j];
+                        secondary_structure[idx++] = md_secondary_structure_to_gl(mol->protein_backbone.secondary_structure[j]);
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);

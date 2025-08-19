@@ -12,10 +12,15 @@
 #endif
 
 enum {
-    MD_SECONDARY_STRUCTURE_UNKNOWN  = 0,
-    MD_SECONDARY_STRUCTURE_COIL     = 0x000000FF,
-    MD_SECONDARY_STRUCTURE_HELIX    = 0x0000FF00,
-    MD_SECONDARY_STRUCTURE_SHEET    = 0x00FF0000,
+    MD_SECONDARY_STRUCTURE_UNKNOWN = 0,
+    MD_SECONDARY_STRUCTURE_COIL,
+    MD_SECONDARY_STRUCTURE_TURN,
+    MD_SECONDARY_STRUCTURE_BEND,
+    MD_SECONDARY_STRUCTURE_HELIX_310,
+    MD_SECONDARY_STRUCTURE_HELIX_ALPHA,
+    MD_SECONDARY_STRUCTURE_HELIX_PI,
+    MD_SECONDARY_STRUCTURE_BETA_SHEET,
+    MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
 };
 
 enum {
@@ -40,12 +45,7 @@ enum {
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
-    MD_FLAG_RES_BEG 		    = 0x1,
-    MD_FLAG_RES_END 		    = 0x2,
-    MD_FLAG_RES                 = 0x4,
-    MD_FLAG_CHAIN_BEG 		    = 0x8,
-    MD_FLAG_CHAIN_END 		    = 0x10,
-    MD_FLAG_CHAIN 		        = 0x20,
+    MD_FLAG_SEQ_TERM	        = 0x1,
     MD_FLAG_HETATM              = 0x40,
     MD_FLAG_AMINO_ACID		    = 0x80,
     MD_FLAG_SIDE_CHAIN          = 0x100,
