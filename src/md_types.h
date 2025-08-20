@@ -268,6 +268,10 @@ static inline vec4_t md_unit_cell_pbc_mask(const md_unit_cell_t* unit_cell) {
     return vec4_set((unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? val : 0, 0);
 }
 
+static inline uint32_t md_unit_cell_flags(const md_unit_cell_t* unit_cell) {
+    return unit_cell->flags;
+}
+
 static inline vec4_t md_unit_cell_box_ext(const md_unit_cell_t* unit_cell) {
 #if DEBUG
     ASSERT(unit_cell);
