@@ -2099,7 +2099,7 @@ MD_VEC_INLINE mat4x3_t mat4x3_from_mat3(mat3_t M) {
 }
 
 MD_VEC_INLINE vec4_t mat4x3_mul_vec4(mat4x3_t M, vec4_t v) {
-    vec4_t r;
+    vec4_t r = {0};
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = linear_combine_3(v.m128, &M.col[0].m128);
 #else
