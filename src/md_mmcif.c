@@ -188,10 +188,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
                 flags |= MD_FLAG_HETATM;
             }
             if (entity_id != prev_entity_id) {
-                flags |= MD_FLAG_CHAIN_BEG;
-                if (atom->flags) {
-                    *md_array_last(atom->flags) |= MD_FLAG_CHAIN_END;
-                }
+                flags |= MD_FLAG_SEQ_TERM;
                 prev_entity_id = entity_id;
             }
 
