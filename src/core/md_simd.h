@@ -491,6 +491,12 @@ MD_SIMD_INLINE md_128d md_mm_sign_pd(md_128d a) { return simde_mm_xor_pd(   simd
 MD_SIMD_INLINE md_256  md_mm256_sign_ps(md_256 a)  { return simde_mm256_xor_ps(simde_mm256_and_ps(a, simde_mm256_set1_ps(-0.0)), simde_mm256_set1_ps(1.0)); }
 MD_SIMD_INLINE md_256d md_mm256_sign_pd(md_256d a) { return simde_mm256_xor_pd(simde_mm256_and_pd(a, simde_mm256_set1_pd(-0.0)), simde_mm256_set1_pd(1.0));  }
 
+MD_SIMD_INLINE md_128   md_mm_neg_ps(md_128 a) { return simde_mm_or_ps(a, simde_mm_set1_ps(-0.0)); }
+MD_SIMD_INLINE md_128d  md_mm_neg_pd(md_128d a) { return simde_mm_or_pd(a, simde_mm_set1_pd(-0.0)); }
+MD_SIMD_INLINE md_256   md_mm256_neg_ps(md_256 a) { return simde_mm256_or_ps(a, simde_mm256_set1_ps(-0.0)); }
+MD_SIMD_INLINE md_256d  md_mm256_neg_pd(md_256d a) { return simde_mm256_or_pd(a, simde_mm256_set1_pd(-0.0)); }
+
+
 MD_SIMD_INLINE float md_mm_reduce_min_ps(md_128 x) {
     md_128 a = simde_mm_min_ps(x, simde_mm_shuffle_ps(x, x, SIMDE_MM_SHUFFLE(0, 0, 3, 2)));
     md_128 b = simde_mm_min_ps(a, simde_mm_shuffle_ps(a, a, SIMDE_MM_SHUFFLE(0, 0, 0, 1)));

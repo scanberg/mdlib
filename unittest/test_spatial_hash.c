@@ -160,8 +160,7 @@ static inline float d2_metric(vec4_t ds, mat4x3_t G) {
 
 // Scalar kernels (drop in your AVX where these are called if you want)
 
-static inline size_t test_elem_frac(float sx, float sy, float sz, const elem_t* elem, uint32_t len, const mat4x3_t* G, const int periodic[3],
-                                    float r2_cut) {
+static inline size_t test_elem_frac(float sx, float sy, float sz, const elem_t* elem, uint32_t len, const mat4x3_t* G, float r2_cut) {
     size_t cnt = 0;
     vec4_t s = vec4_set(sx, sy, sz, 0);
     for (uint32_t i = 0; i < len; ++i) {
@@ -170,7 +169,54 @@ static inline size_t test_elem_frac(float sx, float sy, float sz, const elem_t* 
         t = vec4_blend_mask(t, vec4_zero(), MD_SIMD_BLEND_MASK(0, 0, 0, 1));
         vec4_t ds = vec4_sub(t, s);
         float d2 = d2_metric(ds, *G);
-        cnt += (d2 <= r2_cut);
+        cnt += (d2 < r2_cut);
+    }
+    return cnt;
+}
+
+static inline size_t test_elem_frac_simd(float x, float y, float z, float r2, const elem_t* elem, uint32_t len, const float G[3][3]) {
+    size_t cnt = 0;
+    md_256 rx = md_mm256_set1_ps(x);
+    md_256 ry = md_mm256_set1_ps(y);
+    md_256 rz = md_mm256_set1_ps(z);
+    md_256 r2_vec = md_mm256_set1_ps(r2);
+
+    md_256 G00 = md_mm256_set1_ps(G[0][0]);
+    md_256 G01 = md_mm256_set1_ps(G[0][1]);
+    md_256 G02 = md_mm256_set1_ps(G[0][2]);
+
+    md_256 G10 = md_mm256_set1_ps(G[1][0]);
+    md_256 G11 = md_mm256_set1_ps(G[1][1]);
+    md_256 G12 = md_mm256_set1_ps(G[1][2]);
+
+    md_256 G20 = md_mm256_set1_ps(G[2][0]);
+    md_256 G21 = md_mm256_set1_ps(G[2][1]);
+    md_256 G22 = md_mm256_set1_ps(G[2][2]);
+
+    for (uint32_t i = 0; i < len; i += 8) {
+        md_256 vx, vy, vz;
+        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)(elem + i), sizeof(elem_t));
+        md_256 dx = md_mm256_sub_ps(vx, rx);
+        md_256 dy = md_mm256_sub_ps(vy, ry);
+        md_256 dz = md_mm256_sub_ps(vz, rz);
+
+        // gx = G[0][0] * dsx + G[0][1] * dsy + G[0][2] * dsz;
+        // gy = G[1][0] * dsx + G[1][1] * dsy + G[1][2] * dsz;
+        // gz = G[2][0] * dsx + G[2][1] * dsy + G[2][2] * dsz;
+        md_256 gx = md_mm256_fmadd_ps(G00, dx, md_mm256_fmadd_ps(G01, dy, md_mm256_mul_ps(G02, dz)));
+        md_256 gy = md_mm256_fmadd_ps(G10, dx, md_mm256_fmadd_ps(G11, dy, md_mm256_mul_ps(G12, dz)));
+        md_256 gz = md_mm256_fmadd_ps(G20, dx, md_mm256_fmadd_ps(G21, dy, md_mm256_mul_ps(G22, dz)));
+
+        // d2 = dsx * gx + dsy * gy + dsz * gz;
+        md_256 d2 = md_mm256_fmadd_ps(dx, gx, md_mm256_fmadd_ps(dy, gy, md_mm256_mul_ps(dz, gz)));
+
+        md_256 vmask = md_mm256_cmplt_ps(d2, r2_vec);
+
+        const uint32_t remainder = MIN(len - i, 8);
+        const uint32_t lane_mask = (1U << remainder) - 1U;
+        const uint32_t mask = md_mm256_movemask_ps(vmask) & lane_mask;
+
+        cnt += popcnt32(mask);
     }
     return cnt;
 }
@@ -278,21 +324,51 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         flags = unit_cell->flags;
     }
 
+    vec4_t coord_offset = vec4_zero();
+
     const int PBC_ALL = (MD_UNIT_CELL_FLAG_PBC_X | MD_UNIT_CELL_FLAG_PBC_Y | MD_UNIT_CELL_FLAG_PBC_Z);
     if (flags & PBC_ALL != PBC_ALL) {
+        if (unit_cell) {
+            // We cannot have a triclinic system that is partially periodic
+            ASSERT(flags & MD_UNIT_CELL_FLAG_ORTHO);
+        }
         // Unit cell either missing or not periodic along one or more axis
         vec4_t aabb_min = {0}, aabb_max = {0};
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, in_x, in_y, in_z, NULL, NULL, num_points);
 
-        // Construct A and Ai from aabb extent (use 0
+        // Construct A and Ai from aabb extent
+        vec4_t aabb_ext = vec4_sub(aabb_max, aabb_min);
+
+        if (!(flags & MD_UNIT_CELL_FLAG_PBC_X)) {
+            coord_offset.x = -aabb_min.x;
+            if (aabb_ext.x > 0.0f) {
+                A.elem[0][0]  = aabb_ext.x;
+                Ai.elem[0][0] = 1.0f / aabb_ext.x;
+            }
+        }
+        if (!(flags & MD_UNIT_CELL_FLAG_PBC_Y)) {
+            coord_offset.y = -aabb_min.y;
+            if (aabb_ext.y > 0.0f) {
+                A.elem[1][1]  = aabb_ext.y;
+                Ai.elem[1][1] = 1.0f / aabb_ext.y;
+            }
+        }
+        if (!(flags & MD_UNIT_CELL_FLAG_PBC_Z)) {
+            coord_offset.z = -aabb_min.z;
+            if (aabb_ext.z > 0.0f) {
+                A.elem[2][2]  = aabb_ext.z;
+                Ai.elem[2][2] = 1.0f / aabb_ext.z;
+            }
+        }
     }
 
     // Precompute metric G = A^T A
-    const mat4x3_t G = mat4x3_from_mat3(mat3_mul(mat3_transpose(unit_cell->basis), unit_cell->basis));
+    const mat3_t G = mat3_mul(mat3_transpose(unit_cell->basis), unit_cell->basis);
+    const mat4x3_t G43 = mat4x3_from_mat3(G);
 
     // Choose grid resolution. Heuristic:  cell_dim ≈ |A|/CELL_EXT.
     // Using ~cutoff-ish spacing gives good pruning. Tweak CELL_EXT if you like.
-    const float CELL_EXT = cutoff > 0.f ? cutoff : 1.0f;
+    const float CELL_EXT = cutoff > 0.0f ? cutoff : 1.0f;
 
     // Estimate cell_dim by measuring the extents of the box vectors (norms of columns of A)
     // This is only a heuristic for bin counts; the grid is still in fractional space.
@@ -328,6 +404,8 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
     // 1) Convert to fractional, wrap periodic axes into [0,1), bin to cells
     for (size_t i = 0; i < num_points; ++i) {
         vec4_t r = {in_x[i], in_y[i], in_z[i], 0};
+        r = vec4_add(r, coord_offset);
+
         vec4_t s = mat4x3_mul_vec4(Ai, r);
         s = vec4_fract(s);
 
@@ -418,21 +496,51 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
     size_t result = 0;
 
 // Macros for cell offsets/lengths in the sorted array
+#define CELL_INDEX(cx, cy, cz) ((uint32_t)cz * c01 + (uint32_t)cy * c0 + (uint32_t)cx)
 #define CELL_OFFSET(ci) (cell_offset[(ci)])
 #define CELL_LENGTH(ci) (cell_offset[(ci) + 1] - cell_offset[(ci)])
 
     for (uint32_t cz = 0; cz < cell_dim[2]; ++cz) {
         for (uint32_t cy = 0; cy < cell_dim[1]; ++cy) {
             for (uint32_t cx = 0; cx < cell_dim[0]; ++cx) {
-                const uint32_t ci = (uint32_t)cz * c01 + (uint32_t)cy * c0 + (uint32_t)cx;
+                const uint32_t ci    = CELL_INDEX(cx, cy, cz);
                 const uint32_t off_i = CELL_OFFSET(ci);
                 const uint32_t len_i = CELL_LENGTH(ci);
                 const elem_t* cell_i = elements + off_i;
 
+                if (len_i == 0) continue;
+
                 // Self cell: only j > i
                 for (uint32_t a = 0; a < len_i; ++a) {
-                    float sx = cell_i[a].x, sy = cell_i[a].y, sz = cell_i[a].z;
-                    result += test_elem_frac(sx, sy, sz, cell_i + (a + 1), len_i - (a + 1), &G, periodic, r2_cut);
+                    float x = cell_i[a].x;
+                    float y = cell_i[a].y;
+                    float z = cell_i[a].z;
+                    //result += test_elem_frac(x, y, z, cell_i + (a + 1), len_i - (a + 1), &G43, r2_cut);
+                    result += test_elem_frac_simd(x, y, z, r2_cut, cell_i + (a + 1), len_i - (a + 1), G.elem);
+                }
+
+                // Forward neighbors
+                for (int n = 0; n < 13; ++n) {
+                    int nx = (int)cx + FWD_NBRS[n][0];
+                    int ny = (int)cy + FWD_NBRS[n][1];
+                    int nz = (int)cz + FWD_NBRS[n][2];
+
+                    if (nx < 0 || ny < 0 || nz < 0 || nx >= (int)cell_dim[0] || ny >= (int)cell_dim[1] || nz >= (int)cell_dim[2]) {
+                        continue;  // Skip out-of-bounds
+                    }
+
+                    const uint32_t cj    = CELL_INDEX(nx, ny, nz);
+                    const uint32_t off_j = CELL_OFFSET(cj);
+                    const uint32_t len_j = CELL_LENGTH(cj);
+                    const elem_t* cell_j = elements + off_j;
+
+                    for (uint32_t a = 0; a < len_i; ++a) {
+                        float x = cell_i[a].x;
+                        float y = cell_i[a].y;
+                        float z = cell_i[a].z;
+                        //result += TEST_ELEM(x, y, z, r2, cell_j, length_j);
+                        result += test_elem_frac_simd(x, y, z, r2_cut, cell_j, len_j, G.elem);
+                    }
                 }
 
                 /*

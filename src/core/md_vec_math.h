@@ -1001,6 +1001,19 @@ MD_VEC_INLINE vec4_t vec4_sign(vec4_t v) {
     return r;
 }
 
+MD_VEC_INLINE vec4_t vec4_neg(vec4_t v) {
+    vec4_t r;
+#if MD_VEC_MATH_USE_SIMD
+    r.m128 = md_mm_neg_ps(v.m128);
+#else
+    r.x = -v.x;
+    r.y = -v.y;
+    r.z = -v.z;
+    r.w = -v.w;
+#endif
+    return r;
+}
+
 MD_VEC_INLINE vec4_t vec4_round(vec4_t v) {
     vec4_t r;
 #if MD_VEC_MATH_USE_SIMD
