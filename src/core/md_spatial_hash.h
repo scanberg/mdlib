@@ -107,6 +107,7 @@ void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t p
 
 void md_spatial_hash_query_multi_batch(const md_spatial_hash_t* spatial_hash, const vec3_t pos[], size_t count, float radius, md_spatial_hash_batch_iter_fn iter, void* user_param);
 
+void md_spatial_hash_query_n2_batch(const md_spatial_hash_t* hash, float radius, md_spatial_hash_batch_iter_fn iter, void* user_param);
 
 // Get a list of indices which fall within the search space (pos + radius)
 // Writes directly to the supplied buffer and will return the number of indices written.

@@ -578,7 +578,7 @@ static size_t do_brute_force(const float* in_x, const float* in_y, const float* 
     size_t count = 0;
     const float r2 = cutoff * cutoff;
 
-    if (unit_cell) {
+    if (unit_cell && (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_ALL) == MD_UNIT_CELL_FLAG_PBC_ALL) {
         vec4_t ext = md_unit_cell_box_ext(unit_cell);
         vec4_t inv_ext = vec4_set(ext.x > 0.0f ? 1.0f / ext.x : 0.0f, ext.y > 0.0f ? 1.0f / ext.y : 0.0f, ext.z > 0.0f ? 1.0f / ext.z : 0.0f, 0.0f);
 
@@ -592,7 +592,8 @@ static size_t do_brute_force(const float* in_x, const float* in_y, const float* 
                 float dz = in_z[j] - z;
 
                 vec4_t d = vec4_min_image(vec4_set(dx, dy, dz, 0.0f), ext, inv_ext);
-                if ((d.x * d.x + d.y * d.y + d.z * d.z) < r2) {
+                float d2 = vec4_dot(d, d);
+                if (d2 <= r2) {
                     count += 1;
                 }
             }
@@ -607,7 +608,8 @@ static size_t do_brute_force(const float* in_x, const float* in_y, const float* 
                 float dy = in_y[j] - y;
                 float dz = in_z[j] - z;
 
-                if ((dx * dx + dy * dy + dz * dz) < r2) {
+                float d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 <= r2) {
                     count += 1;
                 }
             }
@@ -856,6 +858,7 @@ UTEST(spatial_hash, n2) {
     mat4x3_t I = mat4x3_from_mat3(mol.unit_cell.inv_basis);
     mat4x3_t M = mat4x3_from_mat3(mol.unit_cell.basis);
 
+    /*
     for (size_t i = 0; i < mol.atom.count; ++i) {
         vec4_t original = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
         vec4_t coord = mat4x3_mul_vec4(I, original);
@@ -867,14 +870,15 @@ UTEST(spatial_hash, n2) {
         mol.atom.y[i] = coord.y;
         mol.atom.z[i] = coord.z;
     }
+    */
 
     md_unit_cell_t unit_cell = mol.unit_cell;
     // Clear pbc flags
 
-    size_t expected_count = 3701955;
+    size_t expected_count = 3711879;
     if (true) {
         unit_cell.flags &= ~(MD_UNIT_CELL_FLAG_PBC_X | MD_UNIT_CELL_FLAG_PBC_Y | MD_UNIT_CELL_FLAG_PBC_Z);
-        expected_count = 3701955;
+        expected_count = 3701958;
     }
 
     // Custom implementation of pairwise periodic N^2
@@ -892,18 +896,14 @@ UTEST(spatial_hash, n2) {
     start = md_time_current();
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &unit_cell, alloc);
     iter_excl_data_t data = {0};
-    for (uint32_t i = 0; i < mol.atom.count; ++i) {
-        vec3_t pos = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i]};
-        data.exclude_idx = i;
-        md_spatial_hash_query(spatial_hash, pos, 5.0f, iter_excl_fn, &data);
-    }
+    md_spatial_hash_query_n2_batch(spatial_hash, 5.0f, iter_batch_fn, &data.count);
     end = md_time_current();
     printf("Spatial hash: %f ms\n", md_time_as_milliseconds(end - start));
     size_t sh_count = data.count;
     ASSERT_TRUE(spatial_hash);
-    EXPECT_EQ(expected_count, count);
-    if (count != expected_count) {
-        printf("Count mismatch: expected %zu, got %zu\n", expected_count, count);
+    EXPECT_EQ(expected_count, sh_count);
+    if (sh_count != expected_count) {
+        printf("Count mismatch: expected %zu, got %zu\n", expected_count, sh_count);
     }
 
     // Brute force
@@ -912,8 +912,8 @@ UTEST(spatial_hash, n2) {
     end = md_time_current();
     printf("Brute force: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_EQ(expected_count, bf_count);
-    if (count != expected_count) {
-        printf("Count mismatch: expected %zu, got %zu\n", expected_count, count);
+    if (bf_count != expected_count) {
+        printf("Count mismatch: expected %zu, got %zu\n", expected_count, bf_count);
     }
 
     md_arena_allocator_destroy(alloc);

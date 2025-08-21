@@ -447,6 +447,26 @@ MD_SIMD_INLINE void md_mm_unpack_xyz_ps(md_128* out_x, md_128* out_y, md_128* ou
     *out_z = simde_mm_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
 }
 
+MD_SIMD_INLINE void md_mm_unpack_xyzw_ps(md_128* out_x, md_128* out_y, md_128* out_z, md_128* out_w, const float* in_xyzw, size_t stride_in_bytes) {
+    md_128 r0, r1, r2, r3;
+    md_128 t0, t1, t2, t3;
+
+    r0 = MD_LOAD_STRIDED_128(in_xyzw, 0, stride_in_bytes);
+    r1 = MD_LOAD_STRIDED_128(in_xyzw, 1, stride_in_bytes);
+    r2 = MD_LOAD_STRIDED_128(in_xyzw, 2, stride_in_bytes);
+    r3 = MD_LOAD_STRIDED_128(in_xyzw, 3, stride_in_bytes);
+
+    t0 = simde_mm_unpacklo_ps(r0, r1);  // xxyy xxyy
+    t1 = simde_mm_unpackhi_ps(r0, r1);  // zzww zzww
+    t2 = simde_mm_unpacklo_ps(r2, r3);  // xxyy xxyy
+    t3 = simde_mm_unpackhi_ps(r2, r3);  // zzww zzww
+
+    *out_x = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1, 0, 1, 0));  // xxxx xxxx
+    *out_y = simde_mm_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3, 2, 3, 2));  // yyyy yyyy
+    *out_z = simde_mm_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1, 0, 1, 0));  // zzzz zzzz
+    *out_w = simde_mm_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(3, 2, 3, 2));  // wwww wwww
+}
+
 MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256* out_z, const float* in_xyz, size_t stride_in_bytes) {
     md_256 r0, r1, r2, r3;
     md_256 t0, t1, t2, t3;
@@ -466,6 +486,32 @@ MD_SIMD_INLINE void md_mm256_unpack_xyz_ps(md_256* out_x, md_256* out_y, md_256*
     *out_x = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1,0,1,0));  // xxxx xxxx
     *out_y = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3,2,3,2));  // yyyy yyyy
     *out_z = simde_mm256_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1,0,1,0));  // zzzz zzzz
+}
+
+MD_SIMD_INLINE void md_mm256_unpack_xyzw_ps(md_256* out_x, md_256* out_y, md_256* out_z, md_256* out_w, const float* in_xyzw, size_t stride_in_bytes) {
+    md_256 r0, r1, r2, r3;
+    md_256 t0, t1, t2, t3;
+
+    // @TODO: Try and implement this using 256-bit loads and then shuffle all the way.
+    // It's a tradeoff between the number of loads issued and the port pressure on the generally few ports that are used for shuffle instructions.
+    r0 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyzw, 0, stride_in_bytes)),
+                                   MD_LOAD_STRIDED_128(in_xyzw, 4, stride_in_bytes), 1);
+    r1 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyzw, 1, stride_in_bytes)),
+                                   MD_LOAD_STRIDED_128(in_xyzw, 5, stride_in_bytes), 1);
+    r2 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyzw, 2, stride_in_bytes)),
+                                   MD_LOAD_STRIDED_128(in_xyzw, 6, stride_in_bytes), 1);
+    r3 = simde_mm256_insertf128_ps(simde_mm256_castps128_ps256(MD_LOAD_STRIDED_128(in_xyzw, 3, stride_in_bytes)),
+                                   MD_LOAD_STRIDED_128(in_xyzw, 7, stride_in_bytes), 1);
+
+    t0 = simde_mm256_unpacklo_ps(r0, r1);  // xxyy xxyy
+    t1 = simde_mm256_unpackhi_ps(r0, r1);  // zzww zzww
+    t2 = simde_mm256_unpacklo_ps(r2, r3);  // xxyy xxyy
+    t3 = simde_mm256_unpackhi_ps(r2, r3);  // zzww zzww
+
+    *out_x = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(1, 0, 1, 0));  // xxxx xxxx
+    *out_y = simde_mm256_shuffle_ps(t0, t2, SIMDE_MM_SHUFFLE(3, 2, 3, 2));  // yyyy yyyy
+    *out_z = simde_mm256_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(1, 0, 1, 0));  // zzzz zzzz
+    *out_w = simde_mm256_shuffle_ps(t1, t3, SIMDE_MM_SHUFFLE(3, 2, 3, 2));  // wwww wwww
 }
 
 #undef MD_LOAD_STRIDED_128

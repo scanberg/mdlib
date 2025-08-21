@@ -39,7 +39,7 @@ enum {
     MD_UNIT_CELL_FLAG_PBC_X         = 4,
     MD_UNIT_CELL_FLAG_PBC_Y         = 8,
     MD_UNIT_CELL_FLAG_PBC_Z         = 16,
-    MD_UNIT_CELL_FLAG_PBC_ANY       = 4 | 8 | 16,
+    MD_UNIT_CELL_FLAG_PBC_ALL       = 4 | 8 | 16,
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
@@ -273,11 +273,16 @@ static inline uint32_t md_unit_cell_flags(const md_unit_cell_t* unit_cell) {
 }
 
 static inline vec4_t md_unit_cell_box_ext(const md_unit_cell_t* unit_cell) {
-#if DEBUG
-    ASSERT(unit_cell);
-    if (!(unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO)) {
-        MD_LOG_DEBUG("Attempting to extract box extent from non orthogonal box");
+    vec4_t ext = {0};
+    if (unit_cell) {
+        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+            return vec4_set(unit_cell->basis.elem[0][0], unit_cell->basis.elem[1][1], unit_cell->basis.elem[2][2], 0);
+        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+            const mat3_t* A = &unit_cell->basis;
+            ext.x = sqrtf(A->elem[0][0] * A->elem[0][0] + A->elem[1][0] * A->elem[1][0] + A->elem[2][0] * A->elem[2][0]);
+            ext.y = sqrtf(A->elem[0][1] * A->elem[0][1] + A->elem[1][1] * A->elem[1][1] + A->elem[2][1] * A->elem[2][1]);
+            ext.z = sqrtf(A->elem[0][2] * A->elem[0][2] + A->elem[1][2] * A->elem[1][2] + A->elem[2][2] * A->elem[2][2]);
+        }
     }
-#endif
-    return vec4_mul(md_unit_cell_pbc_mask(unit_cell), vec4_set(unit_cell->basis.elem[0][0], unit_cell->basis.elem[1][1], unit_cell->basis.elem[2][2], 0));
+    return ext;
 }
