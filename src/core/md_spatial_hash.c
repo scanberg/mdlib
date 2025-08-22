@@ -1482,11 +1482,11 @@ static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_
     const int cd_0 = cell_dim[0];
     const int cd_01 = cell_dim[0] * cell_dim[1];
 
-    for (int cz = cell_min[2]; cz < cell_max[2]; cz += 1) {
+    for (int cz = 0; cz < cell_dim[2]; cz += 1) {
         const int idx_z = cz * cd_01;
-        for (int cy = cell_min[1]; cy < cell_max[1]; cy += 1) {
+        for (int cy = 0; cy < cell_dim[1]; cy += 1) {
             const int idx_yz = idx_z + cy * cd_0;
-            for (int cx = cell_min[0]; cx < cell_max[0]; cx += 1) {
+            for (int cx = 0; cx < cell_dim[0]; cx += 1) {
                 const uint32_t ci = idx_yz + cx;
                 const uint32_t off_i = cell_offsets[ci];
                 const uint32_t len_i = cell_offsets[ci + 1] - off_i;
@@ -1514,13 +1514,13 @@ static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_
                     int ccy = cy + nbr[1];
                     int ccz = cz + nbr[2];
 
-                    if (ccx < cell_min[0] || ccx >= cell_max[0]) {
+                    if (ccx < 0 || ccx >= cell_dim[0]) {
                         continue;
                     }
-                    if (ccy < cell_min[1] || ccy >= cell_max[1]) {
+                    if (ccy < 0 || ccy >= cell_dim[1]) {
                         continue;
                     }
-                    if (ccz < cell_min[2] || ccz >= cell_max[2]) {
+                    if (ccz < 0 || ccz >= cell_dim[2]) {
                         continue;
                     }
 
@@ -1543,6 +1543,16 @@ static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_
             }
         }
     }
+}
+
+static inline int wrap_coord(int c, int min, int max, int pbc) {
+    // Map to [0, pbc)
+    int abs = (min + c + pbc) % pbc;
+    if (abs < min || max <= abs) {
+        // outside active window -> no stored cells here
+        return -1;   // mark invalid
+    }
+    return abs - min;
 }
 
 static void query_n2_periodic_batch(const md_spatial_hash_t* hash, float rad, md_spatial_hash_batch_iter_fn iter, void* user_param) {
@@ -1588,11 +1598,11 @@ static void query_n2_periodic_batch(const md_spatial_hash_t* hash, float rad, md
         cell_pbc[2] > cell_dim[2],
     };
 
-    for (int cz = cell_min[2]; cz < cell_max[2]; cz += 1) {
+    for (int cz = 0; cz < cell_dim[2]; cz += 1) {
         const int idx_z = cz * cd_01;
-        for (int cy = cell_min[1]; cy < cell_max[1]; cy += 1) {
+        for (int cy = 0; cy < cell_dim[1]; cy += 1) {
             const int idx_yz = idx_z + cy * cd_0;
-            for (int cx = cell_min[0]; cx < cell_max[0]; cx += 1) {
+            for (int cx = 0; cx < cell_dim[0]; cx += 1) {
                 const uint32_t ci = idx_yz + cx;
                 const uint32_t off_i = cell_offsets[ci];
                 const uint32_t len_i = cell_offsets[ci + 1] - off_i;
@@ -1616,36 +1626,13 @@ static void query_n2_periodic_batch(const md_spatial_hash_t* hash, float rad, md
                 // Test neighbors
                 for (int j = 0; j < 13; ++j) {
                     const int8_t* nbr = FWD_NBRS[j];
-                    int ccx = cx + nbr[0];
-                    int ccy = cy + nbr[1];
-                    int ccz = cz + nbr[2];
 
-                    if (do_pbc_jump[0]) {
-                        if (ccx < cell_min[0]) {
-                            ccx = cell_max[0] - 1;
-                        } else if (ccx >= cell_max[0]) {
-                            ccx = cell_min[0];
-                        }
-                    } else if (ccx < cell_min[0] || ccx >= cell_max[0]) {
-                        continue;
-                    }
-                    if (do_pbc_jump[1]) {
-                        if (ccy < cell_min[1]) {
-                            ccy = cell_max[1] - 1;
-                        } else if (ccy >= cell_max[1]) {
-                            ccy = cell_min[1];
-                        }
-                    } else if (ccy < cell_min[1] || ccy >= cell_max[1]) {
-                        continue;
-                    }
-                    if (do_pbc_jump[2]) {
-                        if (ccz < cell_min[2]) {
-                            ccz = cell_max[2] - 1;
-                        } else if (ccz >= cell_max[2]) {
-                            ccz = cell_min[2];
-                        }
-                    } else if (ccz < cell_min[2] || ccz >= cell_max[2]) {
-                        continue;
+                    int ccx = wrap_coord(cx + nbr[0], cell_min[0], cell_max[0], cell_pbc[0]);
+                    int ccy = wrap_coord(cy + nbr[1], cell_min[1], cell_max[1], cell_pbc[1]);
+                    int ccz = wrap_coord(cz + nbr[2], cell_min[2], cell_max[2], cell_pbc[2]);
+
+                    if (ccx < 0 || ccy < 0 || ccz < 0) {
+                        continue;  // neighbor lies outside stored window
                     }
 
                     const uint32_t cj = ccz * cd_01 + ccy * cd_0 + ccx;

@@ -279,8 +279,16 @@ static inline ivec4_t ivec4_set1(int v) {
     return simde_mm_set1_epi32(v);
 }
 
+static inline ivec4_t ivec4_min(ivec4_t a, ivec4_t b) {
+    return simde_mm_min_epi32(a, b);
+}
+
+static inline ivec4_t ivec4_max(ivec4_t a, ivec4_t b) {
+    return simde_mm_max_epi32(a, b);
+}
+
 static inline ivec4_t ivec4_clamp(ivec4_t v, ivec4_t min, ivec4_t max) {
-    return simde_mm_max_epi32(simde_mm_min_epi32(v, max), min);
+    return ivec4_max(ivec4_min(v, max), min);
 }
 
 static inline ivec4_t ivec4_from_vec4(vec4_t v) {
@@ -401,6 +409,9 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
 
     const ivec4_t c = ivec4_set(1, c0, c01, 0);
 
+    ivec4_t cell_min = ivec4_set1(INT32_MAX);
+    ivec4_t cell_max = ivec4_set1(INT32_MIN);
+
     // 1) Convert to fractional, wrap periodic axes into [0,1), bin to cells
     for (size_t i = 0; i < num_points; ++i) {
         vec4_t r = {in_x[i], in_y[i], in_z[i], 0};
@@ -413,6 +424,9 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         ivec4_t ic = ivec4_from_vec4(f);
 
         ic = ivec4_clamp(ic, icell_min, icell_max);
+
+        cell_min = ivec4_min(cell_min, ic);
+        cell_max = ivec4_max(cell_max, ic);
 
         uint32_t ci = ivec4_dot(ic, c);
         ASSERT(ci < num_cells);
@@ -500,9 +514,13 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
 #define CELL_OFFSET(ci) (cell_offset[(ci)])
 #define CELL_LENGTH(ci) (cell_offset[(ci) + 1] - cell_offset[(ci)])
 
-    for (uint32_t cz = 0; cz < cell_dim[2]; ++cz) {
-        for (uint32_t cy = 0; cy < cell_dim[1]; ++cy) {
-            for (uint32_t cx = 0; cx < cell_dim[0]; ++cx) {
+    int cmin[4], cmax[4];
+    MEMCPY(cmin, &cell_min, sizeof(cmin));
+    MEMCPY(cmax, &cell_max, sizeof(cmax));
+
+    for (uint32_t cz = cmin[2]; cz <= cmax[2]; ++cz) {
+        for (uint32_t cy = cmin[1]; cy <= cmax[1]; ++cy) {
+            for (uint32_t cx = cmin[0]; cx <= cmax[0]; ++cx) {
                 const uint32_t ci    = CELL_INDEX(cx, cy, cz);
                 const uint32_t off_i = CELL_OFFSET(ci);
                 const uint32_t len_i = CELL_LENGTH(ci);
@@ -875,8 +893,8 @@ UTEST(spatial_hash, n2) {
     md_unit_cell_t unit_cell = mol.unit_cell;
     // Clear pbc flags
 
-    size_t expected_count = 3711879;
-    if (true) {
+    size_t expected_count = 3711880;
+    if (false) {
         unit_cell.flags &= ~(MD_UNIT_CELL_FLAG_PBC_X | MD_UNIT_CELL_FLAG_PBC_Y | MD_UNIT_CELL_FLAG_PBC_Z);
         expected_count = 3701958;
     }
