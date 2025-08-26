@@ -1,4 +1,4 @@
-#include <core/md_spatial_hash.h>
+﻿#include <core/md_spatial_hash.h>
 
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -1415,7 +1415,7 @@ static const int8_t FWD_NBRS[13][3] = {
     {-1, 0, 1}, {0, 0, 1},  {1, 0, 1}, {-1, 1, 1}, {0, 1, 1},   {1, 1, 1},
 };
 
-static inline bool test_elem(md_256 x, md_256 y, md_256 z, md_256 r2, const elem_t* elem, int len, md_spatial_hash_batch_iter_fn iter, void* user_param) {
+static inline bool test_elem(md_256 x, md_256 y, md_256 z, md_256 r2, const elem_t* elem, int len, uint32_t i, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
     while (len > 0) {
         md_256 vx, vy, vz;
         md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
@@ -1429,7 +1429,7 @@ static inline bool test_elem(md_256 x, md_256 y, md_256 z, md_256 r2, const elem
         const int lane_mask = (1 << step) - 1;
         const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
 
-        if (!iter(elem, mask, user_param)) {
+        if (!iter(elem, d2, mask, i, user_param)) {
             return false;
         }
         len -= 8;
@@ -1439,7 +1439,7 @@ static inline bool test_elem(md_256 x, md_256 y, md_256 z, md_256 r2, const elem
 }
 
 static inline bool test_elem_periodic(md_256 x, md_256 y, md_256 z, md_256 r2, md_256 px, md_256 py, md_256 pz, md_256 rpx, md_256 rpy, md_256 rpz,
-                      const elem_t* elem, int len, md_spatial_hash_batch_iter_fn iter, void* user_param) {
+                      const elem_t* elem, int len, uint32_t i, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
     while (len > 0) {
         md_256 vx, vy, vz;
         md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
@@ -1453,7 +1453,7 @@ static inline bool test_elem_periodic(md_256 x, md_256 y, md_256 z, md_256 r2, m
         const int lane_mask = (1 << step) - 1;
         const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
 
-        if (!iter(elem, mask, user_param)) {
+        if (!iter(elem, d2, mask, i, user_param)) {
             return false;
         }
         len -= 8;
@@ -1502,7 +1502,7 @@ static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_
                     const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
                     const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
                     const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
-                    if (!test_elem(x, y, z, r2, elem_i + (a + 1), len_i - (a + 1), iter, user_param)) {
+                    if (!test_elem(x, y, z, r2, elem_i + (a + 1), len_i - (a + 1), elem_i[a].idx, iter, user_param)) {
                         return;
                     }
                 }
@@ -1535,7 +1535,7 @@ static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_
                         const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
                         const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
                         const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
-                        if (!test_elem(x, y, z, r2, elem_j, len_j, iter, user_param)) {
+                        if (!test_elem(x, y, z, r2, elem_j, len_j, elem_i[a].idx, iter, user_param)) {
                             return;
                         }
                     }
@@ -1544,18 +1544,15 @@ static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_
         }
     }
 }
-
 static inline int wrap_coord(int c, int min, int max, int pbc) {
-    // Map to [0, pbc)
     int abs = (min + c + pbc) % pbc;
-    if (abs < min || max <= abs) {
-        // outside active window -> no stored cells here
-        return -1;   // mark invalid
+    if (abs < min || abs >= max) {
+        return -1;
     }
     return abs - min;
 }
 
-static void query_n2_periodic_batch(const md_spatial_hash_t* hash, float rad, md_spatial_hash_batch_iter_fn iter, void* user_param) {
+static void query_n2_periodic_batch(const md_spatial_hash_t* hash, float rad, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
     ASSERT(hash);
     ASSERT(iter);
 
@@ -1618,7 +1615,7 @@ static void query_n2_periodic_batch(const md_spatial_hash_t* hash, float rad, md
                     const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
                     const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
                     const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
-                    if (!test_elem_periodic(x, y, z, r2, px, py, pz, rpx, rpy, rpz, elem_i + (a + 1), len_i - (a + 1), iter, user_param)) {
+                    if (!test_elem_periodic(x, y, z, r2, px, py, pz, rpx, rpy, rpz, elem_i + (a + 1), len_i - (a + 1), elem_i[a].idx, iter, user_param)) {
                         return;
                     }
                 }
@@ -1641,12 +1638,25 @@ static void query_n2_periodic_batch(const md_spatial_hash_t* hash, float rad, md
                     if (len_j == 0) {
                         continue;
                     }
+
+                    if (cx == 0 || cx == cell_dim[0] - 1 ||
+                        cy == 0 || cy == cell_dim[1] - 1 ||
+                        cz == cell_dim[2] - 1)
+                    {
+                        while(0){};
+                    }
+
                     const elem_t* elem_j = elems + off_j;
                     for (int a = 0; a < len_i; ++a) {
+
+                        if (elem_i[a].idx == 53) {
+                            while(0) {};
+                        }
+
                         const md_256 x = md_mm256_set1_ps(elem_i[a].xyz.x);
                         const md_256 y = md_mm256_set1_ps(elem_i[a].xyz.y);
                         const md_256 z = md_mm256_set1_ps(elem_i[a].xyz.z);
-                        if (!test_elem_periodic(x, y, z, r2, px, py, pz, rpx, rpy, rpz, elem_j, len_j, iter, user_param)) {
+                        if (!test_elem_periodic(x, y, z, r2, px, py, pz, rpx, rpy, rpz, elem_j, len_j, elem_i[a].idx, iter, user_param)) {
                             return;
                         }
                     }
@@ -1729,7 +1739,7 @@ void md_spatial_hash_query_multi_batch(const md_spatial_hash_t* spatial_hash, co
     }
 }
 
-void md_spatial_hash_query_n2_batch(const md_spatial_hash_t* spatial_hash, float radius, md_spatial_hash_batch_iter_fn iter, void* user_param) {
+void md_spatial_hash_query_n2_batch(const md_spatial_hash_t* spatial_hash, float radius, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
     ASSERT(iter);
 
     if (!validate_spatial_hash(spatial_hash)) {

@@ -1032,10 +1032,10 @@ MD_VEC_INLINE vec4_t vec4_floor(vec4_t v) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_floor_ps(v.m128);
 #else
-    r.x = roundf(v.x);
-    r.y = roundf(v.y);
-    r.z = roundf(v.z);
-    r.w = roundf(v.w);
+    r.x = floorf(v.x);
+    r.y = floorf(v.y);
+    r.z = floorf(v.z);
+    r.w = floorf(v.w);
 #endif
     return r;
 }
@@ -1045,10 +1045,10 @@ MD_VEC_INLINE vec4_t vec4_ceil(vec4_t v) {
 #if MD_VEC_MATH_USE_SIMD
     r.m128 = md_mm_ceil_ps(v.m128);
 #else
-    r.x = roundf(v.x);
-    r.y = roundf(v.y);
-    r.z = roundf(v.z);
-    r.w = roundf(v.w);
+    r.x = ceilf(v.x);
+    r.y = ceilf(v.y);
+    r.z = ceilf(v.z);
+    r.w = ceilf(v.w);
 #endif
     return r;
 }

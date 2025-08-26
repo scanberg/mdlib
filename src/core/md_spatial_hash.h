@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <core/md_vec_math.h>
 
@@ -38,6 +38,8 @@ typedef bool (*md_spatial_hash_iterator_fn)(const md_spatial_hash_elem_t* elem, 
 // elem_mask contains the set bits of elements which passed the test for the query.
 // To iterate over the elem_array, just find the set bits and clear them. Or just do a popcount for example if counting occurrences.
 typedef bool (*md_spatial_hash_batch_iter_fn)(const md_spatial_hash_elem_t* elem_ptr, int elem_mask, void* user_param);
+
+typedef bool (*md_spatial_hash_n2_batch_iter_fn)(const md_spatial_hash_elem_t* elem_ptr, md_256 d2, int elem_mask, size_t i, void* user_param);
 
 #ifdef __cplusplus
 extern "C" {
@@ -107,7 +109,7 @@ void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t p
 
 void md_spatial_hash_query_multi_batch(const md_spatial_hash_t* spatial_hash, const vec3_t pos[], size_t count, float radius, md_spatial_hash_batch_iter_fn iter, void* user_param);
 
-void md_spatial_hash_query_n2_batch(const md_spatial_hash_t* hash, float radius, md_spatial_hash_batch_iter_fn iter, void* user_param);
+void md_spatial_hash_query_n2_batch(const md_spatial_hash_t* hash, float radius, md_spatial_hash_n2_batch_iter_fn iter, void* user_param);
 
 // Get a list of indices which fall within the search space (pos + radius)
 // Writes directly to the supplied buffer and will return the number of indices written.
