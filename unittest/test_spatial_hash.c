@@ -42,10 +42,10 @@ static bool iter_batch_fn(const md_spatial_hash_elem_t* elem, int mask, void* us
 typedef struct {
     uint32_t i, j;
     double d2;
-} sh_pair_t;
+} dist_pair_t;
 
 typedef struct {
-    sh_pair_t* pairs;
+    dist_pair_t* pairs;
     uint32_t count;
 } iter_batch_pair_data_t;
 
@@ -163,75 +163,134 @@ static inline size_t test_elem(float x, float y, float z, float r2, const elem_t
     return result;
 }
 
-// -----------------------------------------------------------------------------
-// MIC + metric distance in fractional space
-// -----------------------------------------------------------------------------
+typedef void (*n2_callback_fn)(const float* j_x, const float* j_y, const float* j_z, const uint32_t* j_idx, md_256 d2, int mask, uint32_t i,
+                               void* user_param);
 
-static inline float mic1(float ds, int periodic) {
-    // Minimum image per-axis in fractional coordinates
-    if (!periodic) return ds;  // no wrap on non-PBC axis
-    ds -= roundf(ds);          // shift into [-0.5, 0.5)
-    return ds;
-}
-
-static inline float dist2_metric_frac(float dsx, float dsy, float dsz, const float G[3][3]) {
-    // d^2 = (Δs)^T G (Δs)
-    float gx = G[0][0] * dsx + G[0][1] * dsy + G[0][2] * dsz;
-    float gy = G[1][0] * dsx + G[1][1] * dsy + G[1][2] * dsz;
-    float gz = G[2][0] * dsx + G[2][1] * dsy + G[2][2] * dsz;
-    return dsx * gx + dsy * gy + dsz * gz;
-}
-
-static inline float d2_metric(vec4_t ds, mat4x3_t G) {
-    vec4_t v = mat4x3_mul_vec4(G, ds);
-    return vec4_dot(ds, v);
-}
-
-// Scalar kernels (drop in your AVX where these are called if you want)
-
-static inline size_t test_elem_frac(float sx, float sy, float sz, const elem_t* elem, uint32_t len, const mat4x3_t* G, float r2_cut) {
-    size_t cnt = 0;
-    vec4_t s = vec4_set(sx, sy, sz, 0);
-    for (uint32_t i = 0; i < len; ++i) {
-        vec4_t t;
-        MEMCPY(&t, elem + i, sizeof(vec4_t));
-        t = vec4_blend_mask(t, vec4_zero(), MD_SIMD_BLEND_MASK(0, 0, 0, 1));
-        vec4_t ds = vec4_sub(t, s);
-        float d2 = d2_metric(ds, *G);
-        cnt += (d2 < r2_cut);
-    }
-    return cnt;
-}
-
-
-
-static inline void test_elem_frac_simd(md_256 x, md_256 y, md_256 z, md_256 r2, const elem_t* elem, int len,
-    md_256 G00, md_256 G01, md_256 G02,
-    md_256 G10, md_256 G11, md_256 G12,
-    md_256 G20, md_256 G21, md_256 G22,
-    uint32_t i, sh_pair_t* pairs, size_t* count) {
-
-    const md_256i x_offset = simde_mm256_setr_epi32(0,3,6,9,12,15,18,21);
-    const md_256i y_offset = simde_mm256_setr_epi32(1,4,7,10,13,16,19,22);
-    const md_256i z_offset = simde_mm256_setr_epi32(2,5,8,11,14,17,20,23);
-
+static inline void test_elem_frac_ortho_simd2(md_256 x, md_256 y, md_256 z, md_256 r2,
+                                              const float* elem_x, const float* elem_y, const float* elem_z, const uint32_t* elem_idx, int len,
+                                              md_256 G00, md_256 G11, md_256 G22, md_256 H01, md_256 H02, md_256 H12,
+                                              uint32_t i, dist_pair_t* out_pairs, size_t* count) {
     while (len > 0) {
         //md_256 vx, vy, vz;
         //md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
-        md_256 vx = md_mm256_i32gather_ps((const float*)elem, x_offset, 4);
-        md_256 vy = md_mm256_i32gather_ps((const float*)elem, y_offset, 4);
-        md_256 vz = md_mm256_i32gather_ps((const float*)elem, z_offset, 4);
+        md_256 vx = md_mm256_loadu_ps(elem_x);
+        md_256 vy = md_mm256_loadu_ps(elem_y);
+        md_256 vz = md_mm256_loadu_ps(elem_z);
 
         md_256 dx = md_mm256_sub_ps(vx, x);
         md_256 dy = md_mm256_sub_ps(vy, y);
         md_256 dz = md_mm256_sub_ps(vz, z);
 
-        md_256 gx = md_mm256_fmadd_ps(G00, dx, md_mm256_fmadd_ps(G01, dy, md_mm256_mul_ps(G02, dz)));
-        md_256 gy = md_mm256_fmadd_ps(G10, dx, md_mm256_fmadd_ps(G11, dy, md_mm256_mul_ps(G12, dz)));
-        md_256 gz = md_mm256_fmadd_ps(G20, dx, md_mm256_fmadd_ps(G21, dy, md_mm256_mul_ps(G22, dz)));
+        // Orthonormal / diagonal G: d2 = dx^2 + dy^2 + dz^2 (or scaled diag)
+        // If truly identity, you can drop the coeff multiplies entirely.
+        md_256 dx2 = md_mm256_mul_ps(dx, dx);
+        md_256 dy2 = md_mm256_mul_ps(dy, dy);
+        md_256 dz2 = md_mm256_mul_ps(dz, dz);
+        md_256 d2 = md_mm256_fmadd_ps(G00, dx2, md_mm256_fmadd_ps(G11, dy2, md_mm256_mul_ps(G22, dz2)));
 
-        // d2 = dsx * gx + dsy * gy + dsz * gz;
-        md_256 d2 = md_mm256_fmadd_ps(dx, gx, md_mm256_fmadd_ps(dy, gy, md_mm256_mul_ps(dz, gz)));
+        md_256 vmask = md_mm256_cmplt_ps(d2, r2);
+
+        const int remainder = MIN(len, 8);
+        const int lane_mask = (1U << remainder) - 1U;
+        const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
+
+        if (mask) {
+            float d2_raw[8];
+            md_mm256_storeu_ps(d2_raw, d2);
+            int bits = mask;
+            while (bits) {
+                const int idx = ctz32(bits);
+                bits = bits & ~(1 << idx);
+                uint32_t j = elem_idx[idx];
+                out_pairs[*count].i = MIN(i, j);
+                out_pairs[*count].j = MAX(i, j);
+                out_pairs[*count].d2 = d2_raw[idx];
+                *count += 1;
+            }
+        }
+
+        len -= 8;
+        elem_x += 8;
+        elem_y += 8;
+        elem_z += 8;
+        elem_idx += 8;
+    };
+}
+
+static inline void test_elem_frac_ortho_simd(md_256 x, md_256 y, md_256 z, md_256 r2, const elem_t* elem, int len, md_256 G00, md_256 G11, md_256 G22,
+                                             md_256 H01, md_256 H02, md_256 H12, uint32_t i, dist_pair_t* pairs, size_t* count) {
+    while (len > 0) {
+        md_256 vx, vy, vz;
+        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
+
+        md_256 dx = md_mm256_sub_ps(vx, x);
+        md_256 dy = md_mm256_sub_ps(vy, y);
+        md_256 dz = md_mm256_sub_ps(vz, z);
+
+        // Orthonormal / diagonal G: d2 = dx^2 + dy^2 + dz^2 (or scaled diag)
+        // If truly identity, you can drop the coeff multiplies entirely.
+        md_256 dx2 = md_mm256_mul_ps(dx, dx);
+        md_256 dy2 = md_mm256_mul_ps(dy, dy);
+        md_256 dz2 = md_mm256_mul_ps(dz, dz);
+        md_256 d2 = md_mm256_fmadd_ps(G00, dx2, md_mm256_fmadd_ps(G11, dy2, md_mm256_mul_ps(G22, dz2)));
+
+        md_256 vmask = md_mm256_cmplt_ps(d2, r2);
+
+        const int remainder = MIN(len, 8);
+        const int lane_mask = (1U << remainder) - 1U;
+        const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
+
+        size_t cnt = popcnt32(mask);
+        if (pairs && mask) {
+            int bits = mask;
+            float d2_raw[8];
+            md_mm256_storeu_ps(d2_raw, d2);
+
+            while (bits) {
+                const int idx = ctz32(bits);
+                bits = bits & ~(1 << idx);
+                uint32_t j = elem[idx].idx;
+                pairs[*count].i = MIN(i, j);
+                pairs[*count].j = MAX(i, j);
+                pairs[*count].d2 = d2_raw[idx];
+                *count += 1;
+            }
+        } else {
+            *count += cnt;
+        }
+
+        len -= 8;
+        elem += 8;
+    };
+}
+
+static inline void test_elem_frac_simd(md_256 x, md_256 y, md_256 z, md_256 r2, const elem_t* elem, int len,
+    md_256 G00, md_256 G11, md_256 G22,
+    md_256 H01, md_256 H02, md_256 H12,
+    uint32_t i, dist_pair_t* pairs, size_t* count)
+{
+    while (len > 0) {
+        md_256 vx, vy, vz;
+        md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
+
+        md_256 dx = md_mm256_sub_ps(vx, x);
+        md_256 dy = md_mm256_sub_ps(vy, y);
+        md_256 dz = md_mm256_sub_ps(vz, z);
+
+        // Full symmetric quadratic form:
+        // d2 = G00*dx^2 + G11*dy^2 + G22*dz^2 + H01*(dx*dy) + H02*(dx*dz) + H12*(dy*dz)
+        md_256 dx2 = md_mm256_mul_ps(dx, dx);
+        md_256 dy2 = md_mm256_mul_ps(dy, dy);
+        md_256 dz2 = md_mm256_mul_ps(dz, dz);
+
+        md_256 dxy = md_mm256_mul_ps(dx, dy);
+        md_256 dxz = md_mm256_mul_ps(dx, dz);
+        md_256 dyz = md_mm256_mul_ps(dy, dz);
+
+        md_256 acc   = md_mm256_fmadd_ps(G00, dx2, md_mm256_fmadd_ps(G11, dy2, md_mm256_mul_ps(G22, dz2)));
+        md_256 cross = md_mm256_fmadd_ps(H01, dxy, md_mm256_fmadd_ps(H02, dxz, md_mm256_mul_ps(H12, dyz)));
+        md_256 d2 = md_mm256_add_ps(acc, cross);
+
         md_256 vmask = md_mm256_cmplt_ps(d2, r2);
 
         const int remainder = MIN(len, 8);
@@ -260,23 +319,6 @@ static inline void test_elem_frac_simd(md_256 x, md_256 y, md_256 z, md_256 r2, 
         len  -= 8;
         elem += 8;
     };
-}
-
-static inline size_t test_elem_frac_shift(float sx, float sy, float sz, int kx, int ky, int kz,  // image shift from neighbor wrap
-                                          const elem_t* elem, uint32_t len, const mat3_t* G, const int periodic[3], float r2_cut) {
-    size_t cnt = 0;
-    for (uint32_t j = 0; j < len; ++j) {
-        float dsx = (elem[j].x - sx) + (float)kx;
-        float dsy = (elem[j].y - sy) + (float)ky;
-        float dsz = (elem[j].z - sz) + (float)kz;
-        // MIC after applying the integer image shift
-        dsx = mic1(dsx, periodic[0]);
-        dsy = mic1(dsy, periodic[1]);
-        dsz = mic1(dsz, periodic[2]);
-        float d2 = dist2_metric_frac(dsx, dsy, dsz, G);
-        cnt += (d2 <= r2_cut);
-    }
-    return cnt;
 }
 
 // -----------------------------------------------------------------------------
@@ -344,16 +386,17 @@ static inline ivec4_t ivec4_sub(ivec4_t a, ivec4_t b) {
     return simde_mm_sub_epi32(a, b);
 }
 
-static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff, const md_unit_cell_t* unit_cell, sh_pair_t* pairs) {
+static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff,
+                                             const md_unit_cell_t* unit_cell, dist_pair_t* out_pairs) {
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));  // 1 GiB arena
 
-    mat4x3_t A = {0};
-    mat4x3_t Ai = {0};
+    mat3_t A = {0};
+    mat3_t Ai = {0};
     uint32_t flags = 0;
 
     if (unit_cell) {
-        A  = mat4x3_from_mat3(unit_cell->basis);
-        Ai = mat4x3_from_mat3(unit_cell->inv_basis);
+        A  = unit_cell->basis;
+        Ai = unit_cell->inv_basis;
         flags = unit_cell->flags;
     }
 
@@ -396,7 +439,7 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
     }
 
     // Precompute metric G = A^T A
-    const mat3_t G = mat3_mul(mat3_transpose(unit_cell->basis), unit_cell->basis);
+    const mat3_t G = mat3_mul(mat3_transpose(A), A);
     const mat4x3_t G43 = mat4x3_from_mat3(G);
 
     // Choose grid resolution. Heuristic:  cell_dim ≈ |A|/CELL_EXT.
@@ -415,7 +458,7 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         CLAMP((uint32_t)(cz / CELL_EXT + 0.5), 1, 1024),
     };
 
-    const uint32_t c0 = cell_dim[0];
+    const uint32_t c0  = cell_dim[0];
     const uint32_t c01 = cell_dim[0] * cell_dim[1];
     const size_t num_cells = (size_t)cell_dim[0] * cell_dim[1] * cell_dim[2];
 
@@ -424,7 +467,6 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
     uint32_t* local_idx = (uint32_t*)md_vm_arena_push(arena, num_points * sizeof(uint32_t));
     uint32_t* cell_idx = (uint32_t*)md_vm_arena_push(arena, num_points * sizeof(uint32_t));
     elem_t* scratch_s = (elem_t*)md_vm_arena_push(arena, num_points * sizeof(elem_t));  // holds fractional coords before scatter
-    elem_t* elements = (elem_t*)md_vm_arena_push(arena, num_points * sizeof(elem_t));   // sorted fractional coords
 
     md_timestamp_t t0 = md_time_current();
 
@@ -438,97 +480,19 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
     ivec4_t cell_min = ivec4_set1(INT32_MAX);
     ivec4_t cell_max = ivec4_set1(INT32_MIN);
 
-    size_t i = 0;
-    const size_t simd_len = 0;//ROUND_DOWN(num_points, 8);
-    const md_256 off_x = md_mm256_set1_ps(coord_offset.x);
-    const md_256 off_y = md_mm256_set1_ps(coord_offset.y);
-    const md_256 off_z = md_mm256_set1_ps(coord_offset.z);
-
-    const md_256 m11 = md_mm256_set1_ps(Ai.elem[0][0]);
-    const md_256 m12 = md_mm256_set1_ps(Ai.elem[0][1]);
-    const md_256 m13 = md_mm256_set1_ps(Ai.elem[0][2]);
-
-    const md_256 m21 = md_mm256_set1_ps(Ai.elem[1][0]);
-    const md_256 m22 = md_mm256_set1_ps(Ai.elem[1][1]);
-    const md_256 m23 = md_mm256_set1_ps(Ai.elem[1][2]);
-
-    const md_256 m31 = md_mm256_set1_ps(Ai.elem[2][0]);
-    const md_256 m32 = md_mm256_set1_ps(Ai.elem[2][1]);
-    const md_256 m33 = md_mm256_set1_ps(Ai.elem[2][2]);
-
-    const md_256 cell_dim_x = md_mm256_set1_ps(cell_dim[0]);
-    const md_256 cell_dim_y = md_mm256_set1_ps(cell_dim[1]);
-    const md_256 cell_dim_z = md_mm256_set1_ps(cell_dim[2]);
-
-    const md_256i cell_max_x = md_mm256_set1_epi32(MAX(1, (int32_t)cell_dim[0] - 1));
-    const md_256i cell_max_y = md_mm256_set1_epi32(MAX(1, (int32_t)cell_dim[1] - 1));
-    const md_256i cell_max_z = md_mm256_set1_epi32(MAX(1, (int32_t)cell_dim[2] - 1));
-
-    for (; i < simd_len; ++i) {
-        md_256 x = md_mm256_loadu_ps(in_x + i);
-        md_256 y = md_mm256_loadu_ps(in_y + i);
-        md_256 z = md_mm256_loadu_ps(in_z + i);
-
-        // Add offset
-        x = md_mm256_add_ps(x, off_x);
-        y = md_mm256_add_ps(x, off_y);
-        z = md_mm256_add_ps(x, off_z);
-
-        // Multiply with Ai
-        md_256 rx = md_mm256_mul_ps(m11, x);
-        md_256 ry = md_mm256_mul_ps(m12, x);
-        md_256 rz = md_mm256_mul_ps(m13, x);
-
-        rx = md_mm256_fmadd_ps(m21, y, rx);
-        ry = md_mm256_fmadd_ps(m22, y, ry);
-        rz = md_mm256_fmadd_ps(m23, y, rz);
-
-        rx = md_mm256_fmadd_ps(m31, z, rx);
-        ry = md_mm256_fmadd_ps(m32, z, ry);
-        rz = md_mm256_fmadd_ps(m33, z, rz);
-
-        // Fract
-        rx = md_mm256_fract_ps(rx);
-        ry = md_mm256_fract_ps(ry);
-        rz = md_mm256_fract_ps(rz);
-
-        // Mul with cell_dim and floor
-        md_256 fx = md_mm256_floor_ps(md_mm256_mul_ps(rx, cell_dim_x));
-        md_256 fy = md_mm256_floor_ps(md_mm256_mul_ps(ry, cell_dim_y));
-        md_256 fz = md_mm256_floor_ps(md_mm256_mul_ps(rz, cell_dim_z));
-
-        // Convert to integer
-        md_256i ix = md_mm256_cvtps_epi32(fx);
-        md_256i iy = md_mm256_cvtps_epi32(fy);
-        md_256i iz = md_mm256_cvtps_epi32(fz);
-
-        // Clamp coordinates
-        ix = simde_mm256_min_epi32(simde_mm256_max_epi32(ix, md_mm256_setzero_si256()), cell_max_x);
-        iy = simde_mm256_min_epi32(simde_mm256_max_epi32(iy, md_mm256_setzero_si256()), cell_max_y);
-        iz = simde_mm256_min_epi32(simde_mm256_max_epi32(iz, md_mm256_setzero_si256()), cell_max_z);
-
-        // Calculate cell indices as ci = c01 * iz + c0 * iy + ix
-        const md_256i vc0  = md_mm256_set1_epi32(c0);
-        const md_256i vc01 = md_mm256_set1_epi32(c01);
-        md_256i vci = md_mm256_add_epi32(md_mm256_add_epi32(simde_mm256_mullo_epi32(iz, vc01), simde_mm256_mullo_epi32(iy, vc0)), ix);
-
-        uint32_t ci[8];
-        md_mm256_store_epi32(ci, vci);
-        for (size_t j = i; j < i + 8; ++j) {
-            local_idx[j] = cell_offset[ci[j]]++;  // count for now
-            cell_idx[j] = ci[j];
-        }
-    }
+    mat4x3_t A43  = mat4x3_from_mat3(A);
+    mat4x3_t Ai43 = mat4x3_from_mat3(Ai);
 
     // 1) Convert to fractional, wrap periodic axes into [0,1), bin to cells
-    for (; i < num_points; ++i) {
+    for (size_t i = 0; i < num_points; ++i) {
         vec4_t r = {in_x[i], in_y[i], in_z[i], 0};
         r = vec4_add(r, coord_offset);
 
-        vec4_t s = mat4x3_mul_vec4(Ai, r);
+        vec4_t s = mat4x3_mul_vec4(Ai43, r);
         s = vec4_fract(s);
 
-        vec4_t   f = vec4_floor(vec4_mul(s, fcell_dim));
+        vec4_t f = vec4_mul(s, fcell_dim);
+        f = vec4_floor(f);
         ivec4_t ic = ivec4_from_vec4(f);
 
         ic = ivec4_clamp(ic, icell_min, icell_max);
@@ -536,10 +500,9 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         cell_min = ivec4_min(cell_min, ic);
         cell_max = ivec4_max(cell_max, ic);
 
-        md_128i ci2 = simde_mm_mul_epu32(ic, c);
-        uint64_t lo = simde_mm_cvtsi128_si64(ci2);               // extract low 64
-        uint64_t hi = simde_mm_extract_epi64(ci2, 1);            // extract high 64
-        uint64_t ci =  lo + hi;
+        uint32_t cell_coord[4];
+        md_mm_storeu_epi32(cell_coord, ic);
+        uint64_t ci = (uint64_t)cell_coord[2] * c01 + (uint64_t)cell_coord[1] * c0 + (uint64_t)cell_coord[0];
 
         ASSERT(ci < num_cells);
 
@@ -562,65 +525,32 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         running += len;
     }
 
+    size_t alloc_len = running + 8;
+    float*    element_x = md_vm_arena_push(arena, alloc_len * sizeof(float));
+    float*    element_y = md_vm_arena_push(arena, alloc_len * sizeof(float));
+    float*    element_z = md_vm_arena_push(arena, alloc_len * sizeof(float));
+    uint32_t* element_i = md_vm_arena_push(arena, alloc_len * sizeof(uint32_t));
+    elem_t* elements = md_vm_arena_push(arena, alloc_len * sizeof(elem_t));  // sorted fractional coords
+
     md_timestamp_t t2 = md_time_current();
     printf("2: %.2f\n", md_time_as_milliseconds(t2 - t1));
 
     // 3) Scatter fractional coords into 'elements' in cell order
     for (size_t i = 0; i < num_points; ++i) {
         uint32_t dst = cell_offset[cell_idx[i]] + local_idx[i];
-        elements[dst] = scratch_s[i];
+        //elements[dst] = scratch_s[i];
+        element_x[dst] = scratch_s[i].x;
+        element_y[dst] = scratch_s[i].y;
+        element_z[dst] = scratch_s[i].z;
+        element_i[dst] = scratch_s[i].idx;
     }
 
     md_timestamp_t t3 = md_time_current();
     printf("3: %.2f\n", md_time_as_milliseconds(t3 - t2));
 
-    /*
-    // 4) Precompute wrapped neighbor indices (+ image shifts) for every cell
-    typedef struct {
-        uint32_t idx;
-        int8_t kx, ky, kz;
-    } nb_t;
-    nb_t* nb13 = (nb_t*)md_vm_arena_push(arena, num_cells * 13 * sizeof(nb_t));
-
-    for (uint32_t cz = 0; cz < cell_dim[2]; ++cz) {
-        for (uint32_t cy = 0; cy < cell_dim[1]; ++cy) {
-            for (uint32_t cx = 0; cx < cell_dim[0]; ++cx) {
-                const uint32_t ci = (uint32_t)cz * c01 + (uint32_t)cy * c0 + (uint32_t)cx;
-                nb_t* dst = nb13 + ci * 13;
-                for (int n = 0; n < 13; ++n) {
-                    int nx = (int)cx + FWD_NBRS[n][0];
-                    int ny = (int)cy + FWD_NBRS[n][1];
-                    int nz = (int)cz + FWD_NBRS[n][2];
-                    int kx = 0, ky = 0, kz = 0;
-
-                    nx = wrap_and_shift(nx, (int)cell_dim[0], periodic[0], &kx);
-                    ny = wrap_and_shift(ny, (int)cell_dim[1], periodic[1], &ky);
-                    nz = wrap_and_shift(nz, (int)cell_dim[2], periodic[2], &kz);
-
-                    nb_t e;
-                    if (nx < 0 || ny < 0 || nz < 0) {
-                        // Non-periodic axis went OOB → mark as invalid
-                        e.idx = (uint32_t)~0u;
-                        e.kx = e.ky = e.kz = 0;
-                    } else {
-                        e.idx = (uint32_t)nz * c01 + (uint32_t)ny * c0 + (uint32_t)nx;
-                        e.kx = (int8_t)kx;
-                        e.ky = (int8_t)ky;
-                        e.kz = (int8_t)kz;
-                    }
-                    dst[n] = e;
-                }
-            }
-        }
-    }
-    */
-
-    md_timestamp_t t4 = md_time_current();
-    printf("4: %.2f\n", md_time_as_milliseconds(t4 - t3));
-
     // 5) Pair counting
     const float r2_cut = cutoff * cutoff;
-    size_t result = 0;
+    size_t count = 0;
 
 // Macros for cell offsets/lengths in the sorted array
 #define CELL_INDEX(x, y, z) ((uint32_t)z * c01 + (uint32_t)y * c0 + (uint32_t)x)
@@ -632,16 +562,12 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
     MEMCPY(cmax, &cell_max, sizeof(cmax));
 
     const md_256 G00 = md_mm256_set1_ps(G.elem[0][0]);
-    const md_256 G01 = md_mm256_set1_ps(G.elem[0][1]);
-    const md_256 G02 = md_mm256_set1_ps(G.elem[0][2]);
-    
-    const md_256 G10 = md_mm256_set1_ps(G.elem[1][0]);
     const md_256 G11 = md_mm256_set1_ps(G.elem[1][1]);
-    const md_256 G12 = md_mm256_set1_ps(G.elem[1][2]);
-
-    const md_256 G20 = md_mm256_set1_ps(G.elem[2][0]);
-    const md_256 G21 = md_mm256_set1_ps(G.elem[2][1]);
     const md_256 G22 = md_mm256_set1_ps(G.elem[2][2]);
+
+    const md_256 H01 = md_mm256_set1_ps(2.0 * G.elem[0][1]);
+    const md_256 H02 = md_mm256_set1_ps(2.0 * G.elem[0][2]);
+    const md_256 H12 = md_mm256_set1_ps(2.0 * G.elem[1][2]);
 
     const md_256 r2  = md_mm256_set1_ps(r2_cut);
 
@@ -651,25 +577,38 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
                 const uint32_t ci    = CELL_INDEX(cx, cy, cz);
                 const uint32_t off_i = CELL_OFFSET(ci);
                 const uint32_t len_i = CELL_LENGTH(ci);
-                const elem_t* elem_i = elements + off_i;
+                //const elem_t* elem_i = elements + off_i;
+                const float* elem_i_x      = element_x + off_i;
+                const float* elem_i_y      = element_y + off_i;
+                const float* elem_i_z      = element_z + off_i;
+                const uint32_t* elem_i_idx = element_i + off_i;
 
                 if (len_i == 0) continue;
 
                 // Self cell: only j > i
                 for (uint32_t a = 0; a < len_i; ++a) {
-                    const md_256 x = md_mm256_set1_ps(elem_i[a].x);
-                    const md_256 y = md_mm256_set1_ps(elem_i[a].y);
-                    const md_256 z = md_mm256_set1_ps(elem_i[a].z);
-                    int i = elem_i[a].idx;
+                    const md_256 x = md_mm256_set1_ps(elem_i_x[a]);
+                    const md_256 y = md_mm256_set1_ps(elem_i_y[a]);
+                    const md_256 z = md_mm256_set1_ps(elem_i_z[a]);
+                    uint32_t i = elem_i_idx[a];
+
+                    uint32_t off = a + 1;
+                    uint32_t len = len_i - off;
                     
-                    test_elem_frac_simd(x, y, z, r2, elem_i + (a + 1), len_i - (a + 1), G00, G01, G02, G10, G11, G12, G20, G21, G22, i, pairs, &result);
+                    //test_elem_frac_ortho_simd(x, y, z, r2, elem_i + (a + 1), len_i - (a + 1), G00, G11, G22, H01, H02, H12, i, pairs, &result);
+                    test_elem_frac_ortho_simd2(x, y, z, r2, elem_i_x + off, elem_i_y + off, elem_i_z + off, elem_i_idx + off, len, G00, G11, G22, H01,
+                                               H02, H12, i, out_pairs, &count);
                 }
 
                 // Forward neighbors
                 for (int n = 0; n < 13; ++n) {
-                    int nx = (int)cx + FWD_NBRS[n][0];
-                    int ny = (int)cy + FWD_NBRS[n][1];
-                    int nz = (int)cz + FWD_NBRS[n][2];
+                    int ndx = FWD_NBRS[n][0];
+                    int ndy = FWD_NBRS[n][1];
+                    int ndz = FWD_NBRS[n][2];
+
+                    int nx = (int)cx + ndx;
+                    int ny = (int)cy + ndy;
+                    int nz = (int)cz + ndz;
 
                     int pnx = (nx + cell_dim[0]) % cell_dim[0];
                     int pny = (ny + cell_dim[1]) % cell_dim[1];
@@ -691,33 +630,39 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
                     const uint32_t off_j = CELL_OFFSET(cj);
                     const uint32_t len_j = CELL_LENGTH(cj);
                     const elem_t* elem_j = elements + off_j;
+                    const float* elem_j_x = element_x + off_j;
+                    const float* elem_j_y = element_y + off_j;
+                    const float* elem_j_z = element_z + off_j;
+                    const uint32_t* elem_j_idx = element_i + off_j;
 
-                    if (!len_j) continue;
+                    if (len_j == 0) continue;
 
                     for (uint32_t a = 0; a < len_i; ++a) {
-                        const md_256 x = md_mm256_set1_ps(elem_i[a].x + px);
-                        const md_256 y = md_mm256_set1_ps(elem_i[a].y + py);
-                        const md_256 z = md_mm256_set1_ps(elem_i[a].z + pz);
-                        const int i = elem_i[a].idx;
+                        const md_256 x = md_mm256_set1_ps(elem_i_x[a] + px);
+                        const md_256 y = md_mm256_set1_ps(elem_i_y[a] + py);
+                        const md_256 z = md_mm256_set1_ps(elem_i_z[a] + pz);
+                        const uint32_t i = elem_i_idx[a];
 
-                        test_elem_frac_simd(x, y, z, r2, elem_j, len_j, G00, G01, G02, G10, G11, G12, G20, G21, G22, i, pairs, &result);
+                        //test_elem_frac_ortho_simd(x, y, z, r2, elem_j, len_j, G00, G11, G22, H01, H02, H12, i, pairs, &result);
+                        test_elem_frac_ortho_simd2(x, y, z, r2, elem_j_x, elem_j_y, elem_j_z, elem_j_idx, len_j, G00, G11, G22, H01, H02, H12, i, out_pairs, &count);
                     }
                 }
             }
         }
     }
 
-    md_timestamp_t t5 = md_time_current();
-    printf("5: %.2f\n", md_time_as_milliseconds(t5 - t4));
+    md_timestamp_t t4 = md_time_current();
+    printf("4: %.2f\n", md_time_as_milliseconds(t4 - t3));
 
+#undef CELL_INDEX
 #undef CELL_OFFSET
 #undef CELL_LENGTH
 
     md_vm_arena_destroy(arena);
-    return result;
+    return count;
 }
 
-static size_t do_brute_force(const float* in_x, const float* in_y, const float* in_z, size_t num_points, float cutoff, const md_unit_cell_t* unit_cell, sh_pair_t* pairs) {
+static size_t do_brute_force(const float* in_x, const float* in_y, const float* in_z, size_t num_points, float cutoff, const md_unit_cell_t* unit_cell, dist_pair_t* pairs) {
     size_t count = 0;
     const float r2 = cutoff * cutoff;
 
@@ -772,243 +717,34 @@ static size_t do_brute_force(const float* in_x, const float* in_y, const float* 
     return count;
 }
 
-#define CELL_EXT (6.0f)
-
-static size_t do_pairwise_periodic(const float* in_x, const float* in_y, const float* in_z, size_t num_points, float cutoff, const md_unit_cell_t* unit_cell) {
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-
-    #define PBC_ALL (MD_UNIT_CELL_FLAG_PBC_X | MD_UNIT_CELL_FLAG_PBC_Y | MD_UNIT_CELL_FLAG_PBC_Z)
-
-    mat4x3_t Ai = mat4x3_from_mat3(unit_cell->inv_basis);
-    mat4x3_t A  = mat4x3_from_mat3(unit_cell->basis);
-    uint32_t flags = unit_cell->flags;
-    vec3_t ext = md_unit_cell_extent(unit_cell);
-
-    if ((flags & PBC_ALL) != PBC_ALL) {
-        // We need to calculate the AABB of the points
-        float aabb_min[3] = {0};
-        float aabb_max[3] = {0};
-        md_util_aabb_compute(aabb_min, aabb_max, in_x, in_y, in_z, NULL, NULL, num_points);
-
-        if (flags & MD_UNIT_CELL_FLAG_PBC_X) {
-            ext.x = aabb_max[0];
-            Ai.elem[0][0] = ext.x > 0.0f ? 1.0f / ext.x : 0.0f;
-             A.elem[0][0] = ext.x;
-        }
-        if (flags & MD_UNIT_CELL_FLAG_PBC_Y) {
-            ext.y = aabb_max[1];
-            Ai.elem[1][1] = ext.y > 0.0f ? 1.0f / ext.y : 0.0f;
-             A.elem[1][1] = ext.y;
-        }
-        if (flags & MD_UNIT_CELL_FLAG_PBC_Z) {
-            ext.z = aabb_max[2];
-            Ai.elem[2][2] = ext.z > 0.0f ? 1.0f / ext.z : 0.0f;
-             A.elem[2][2] = ext.z;
-        }
-    }
-
-    printf("unit cell ext: %f %f %f \n", ext.x, ext.y, ext.z);
-
-    md_timestamp_t start = md_time_current();
-
-    uint32_t cell_dim[3] = {
-        CLAMP((uint32_t)(ext.x / CELL_EXT + 0.5f), 1, 1024),
-        CLAMP((uint32_t)(ext.y / CELL_EXT + 0.5f), 1, 1024),
-        CLAMP((uint32_t)(ext.z / CELL_EXT + 0.5f), 1, 1024),
-    };
-
-    vec4_t cell_ext = {
-        ext.x / cell_dim[0],
-        ext.y / cell_dim[1],
-        ext.z / cell_dim[2],
-        1.0f,
-    };
-
-    printf("cell ext: %f %f %f \n", cell_ext.x, cell_ext.y, cell_ext.z);
-
-    uint32_t c0  = cell_dim[0];
-    uint32_t c01 = cell_dim[0] * cell_dim[1];
-
-    size_t num_cells = cell_dim[0] * cell_dim[1] * cell_dim[2];
-    size_t cell_offset_count = num_cells + 1;
-
-    printf("Cell dim: %i %i %i \n", cell_dim[0], cell_dim[1], cell_dim[2]);
-
-    uint32_t* cell_offset = md_vm_arena_push_zero(temp_arena, cell_offset_count * sizeof(uint32_t));
-    uint32_t* local_idx   = md_vm_arena_push(temp_arena, num_points * sizeof(uint32_t));
-    uint32_t* cell_idx    = md_vm_arena_push(temp_arena, num_points * sizeof(uint32_t));
-    elem_t* elements      = md_vm_arena_push(temp_arena, num_points * sizeof(elem_t));
-
-    if ((flags & PBC_ALL) == PBC_ALL) {
-        // Handle full PBC case
-        for (size_t i = 0; i < num_points; ++i) {
-            // Convert to fractional: s = Ai * r
-            vec4_t r = {in_x[i], in_y[i], in_z[i], 0.0f};
-            vec4_t s = mat4x3_mul_vec4(Ai, r);
-            s = vec4_fract(vec4_fract(s));
-
-            // Map to cell indices in [0, cell_dim[d]-1]
-            uint32_t cx = (uint32_t)CLAMP((int)floorf(s.x * cell_dim[0]), 0, (int)cell_dim[0] - 1);
-            uint32_t cy = (uint32_t)CLAMP((int)floorf(s.y * cell_dim[1]), 0, (int)cell_dim[1] - 1);
-            uint32_t cz = (uint32_t)CLAMP((int)floorf(s.z * cell_dim[2]), 0, (int)cell_dim[2] - 1);
-
-            uint32_t ci = cz * c01 + cy * c0 + cx;
-            ASSERT(ci < num_cells);
-
-            // bump counts
-            uint32_t li  = cell_offset[ci]++;
-            local_idx[i] = li;
-            cell_idx[i]  = ci;
-        }
-    }
-
-    uint32_t max_cell_count = 0;
-
-    // Prefix sum the cell offsets
-    uint32_t offset = 0;
-    for (size_t i = 0; i < cell_offset_count; ++i) {
-        uint32_t length = cell_offset[i];
-        max_cell_count = MAX(max_cell_count, length);
-        cell_offset[i] = offset;
-        offset += length;
-    }
-
-    printf("Max cell count: %i\n", max_cell_count);
-
-    // Calculate final destination index and write data
-    for (size_t i = 0; i < num_points; ++i) {
-        uint32_t ci = cell_idx[i];
-        uint32_t dst_idx = cell_offset[ci] + local_idx[i];
-        elements[dst_idx] = (elem_t) {
-            in_x[i],
-            in_y[i],
-            in_z[i],
-            (uint32_t)i,
-        };
-    }
-
-    md_timestamp_t end = md_time_current();
-
-    printf("Cell creation took: %f ms\n", md_time_as_milliseconds(end - start));
-
-    data_t data = { 0 };
-    const float r2 = cutoff * cutoff;
-    data.r2 = md_mm256_set1_ps(cutoff * cutoff);
-    data.elem = elements;
-    data.cell_offset = cell_offset;
-
-    size_t result = 0;
-
-        // Convert 3D -> 1D cell index
-    #define CELL_INDEX(x, y, z) ((z) * c01 + (y) * c0 + (x))
-    #define CELL_OFFSET(ci) (cell_offset[ci])
-    #define CELL_LENGTH(ci) (cell_offset[ci + 1] - cell_offset[ci])
-    #define TEST_ELEM(x, y, z, r2, elem, len) \
-        test_elem(x, y, z, r2, elem, len)
-    #define TEST_CELL(x, y, z, r2, ci) \
-        TEST_ELEM(x, y, z, r2, elements + CELL_OFFSET(ci), CELL_LENGTH(ci))
-
-    // Forward neighbor offsets in 3D grid (no PBC)
-    static const int8_t FWD_NBRS[13][3] = {
-        {1, 0, 0},
-        {-1, 1, 0},
-        {0, 1, 0},
-        {1, 1, 0},
-        {-1, -1, 1},
-        {0, -1, 1},
-        {1, -1, 1},
-        {-1, 0, 1},
-        {0, 0, 1},
-        {1, 0, 1},
-        {-1, 1, 1},
-        {0, 1, 1},
-        {1, 1, 1},
-    };
-
-    #if 0
-    for (uint32_t ci = 0; ci < num_cells - 1; ++ci) {
-        uint32_t offset = cell_offset[ci];
-        uint32_t length = cell_offset[ci + 1] - offset;
-        const elem_t* elem = elements + offset;
-        for (size_t i = 0; i < length; ++i) {
-            float x = elem[i].x;
-            float y = elem[i].y;
-            float z = elem[i].z;
-            result += TEST_ELEM(x, y, z, r2, elem + (i + 1), length - (i + 1));
-
-            for (uint32_t cj = ci + 1; cj < num_cells; ++cj) {
-                result += TEST_CELL(x, y, z, r2, cj);
-            }
-        }
-    }
-
-    #else
-
-    for (uint32_t cz = 0; cz < cell_dim[2]; ++cz) {
-        for (uint32_t cy = 0; cy < cell_dim[1]; ++cy) {
-            for (uint32_t cx = 0; cx < cell_dim[0]; ++cx) {
-                uint32_t ci = CELL_INDEX(cx, cy, cz);
-                uint32_t offset_i = cell_offset[ci];
-                uint32_t length_i = cell_offset[ci + 1] - offset_i;
-                const elem_t* cell_i = elements + offset_i;
-
-                // Self-cell: only j > i
-                for (uint32_t a = 0; a < length_i; ++a) {
-                    float x = cell_i[a].x;
-                    float y = cell_i[a].y;
-                    float z = cell_i[a].z;
-                    result += TEST_ELEM(x, y, z, r2, cell_i + a + 1, length_i - (a + 1));
-                }
-
-                // Forward neighbors
-                for (int n = 0; n < 13; ++n) {
-                    int nx = (int)cx + FWD_NBRS[n][0];
-                    int ny = (int)cy + FWD_NBRS[n][1];
-                    int nz = (int)cz + FWD_NBRS[n][2];
-
-                    if (nx < 0 || ny < 0 || nz < 0 || nx >= (int)cell_dim[0] || ny >= (int)cell_dim[1] || nz >= (int)cell_dim[2]) {
-                        continue;  // Skip out-of-bounds
-                    }
-
-                    uint32_t cj = CELL_INDEX(nx, ny, nz);
-                    uint32_t offset_j = cell_offset[cj];
-                    uint32_t length_j = cell_offset[cj + 1] - offset_j;
-                    const elem_t* cell_j = elements + offset_j;
-
-                    for (uint32_t a = 0; a < length_i; ++a) {
-                        float x = cell_i[a].x;
-                        float y = cell_i[a].y;
-                        float z = cell_i[a].z;
-                        result += TEST_ELEM(x, y, z, r2, cell_j, length_j);
-                    }
-                }
-            }
-        }
-    }
-    #endif
-
-    #undef CELL_INDEX
-    #undef CELL_OFFSET
-    #undef CELL_LENGTH
-    #undef TEST_ELEM
-    #undef TEST_CELL
-
-    md_vm_arena_destroy(temp_arena);
-
-    return result;
-}
-
 static inline double rnd_rng(double min, double max) {
     double r = ((double)rand() / (double)RAND_MAX);
     return r * (max - min) + min;
 }
 
-static int compare_sh_pair(void const* a, void const* b) {
-    const sh_pair_t* pa = a;
-    const sh_pair_t* pb = b;
+static int compare_dist_pair(void const* a, void const* b) {
+    const dist_pair_t* pa = a;
+    const dist_pair_t* pb = b;
     if (pa->i != pb->i) return pa->i - pb->i;
     if (pa->j != pb->j) return pa->j - pb->j;
     return 0;
+}
+
+static void n2_callback(const float* j_x, const float* j_y, const float* j_z, const uint32_t* j_idx, md_256 d2, int mask, uint32_t i, void* user_param) {
+    size_t* count = (size_t*)user_param;
+    *count += popcnt32(mask);
+};
+
+void insertion_sort_uint32(uint32_t* array, size_t n) {
+    for (int64_t i = 1; i < (int64_t)n; i++) {
+        int64_t j = i;
+        while (j > 0 && array[j] < array[j - 1]) {
+            uint32_t tmp = array[j];
+            array[j] = array[j - 1];
+            array[j - 1] = tmp;
+            j--;
+        }
+    }
 }
 
 UTEST(spatial_hash, n2) {
@@ -1029,20 +765,6 @@ UTEST(spatial_hash, n2) {
     mat4x3_t I = mat4x3_from_mat3(mol.unit_cell.inv_basis);
     mat4x3_t M = mat4x3_from_mat3(mol.unit_cell.basis);
 
-    /*
-    for (size_t i = 0; i < mol.atom.count; ++i) {
-        vec4_t original = {mol.atom.x[i], mol.atom.y[i], mol.atom.z[i], 0};
-        vec4_t coord = mat4x3_mul_vec4(I, original);
-        coord = vec4_fract(coord);
-        coord = mat4x3_mul_vec4(M, coord);
-        coord = vec4_blend(original, coord, mask);
-
-        mol.atom.x[i] = coord.x;
-        mol.atom.y[i] = coord.y;
-        mol.atom.z[i] = coord.z;
-    }
-    */
-
     {
 
 #define test_count 2048
@@ -1059,19 +781,56 @@ UTEST(spatial_hash, n2) {
             z[i] = rnd_rng(0.0, ext);
         }
 
-        sh_pair_t bf_pairs[4096];
-        sh_pair_t sh_pairs[4096];
+        dist_pair_t bf_pairs[4096];
+        dist_pair_t sh_pairs[4096];
 
         md_unit_cell_t test_cell = md_util_unit_cell_from_extent(ext, ext, ext);
         md_spatial_hash_t* sh = md_spatial_hash_create_soa(x, y, z, NULL, test_count, &test_cell, alloc);
 
+
+
         for (double rad = 4.0; rad <= 5.5; rad += 0.5) {
             size_t bf_count = do_brute_force(x, y, z, test_count, rad, &test_cell, bf_pairs);
+
             size_t sh_count = do_pairwise_periodic_triclinic(x, y, z, test_count, rad, &test_cell, sh_pairs);
             
             if (bf_count != sh_count) {
-                qsort(bf_pairs, bf_count, sizeof(sh_pair_t), compare_sh_pair);
-                qsort(sh_pairs, sh_count, sizeof(sh_pair_t), compare_sh_pair);
+                qsort(bf_pairs, bf_count, sizeof(dist_pair_t), compare_dist_pair);
+                qsort(sh_pairs, sh_count, sizeof(dist_pair_t), compare_dist_pair);
+                
+                printf("D2: %f\n", rad * rad);
+                printf("Box ext: %f %f %f\n", ext, ext, ext);
+                size_t i = 0, j = 0;
+                for (; i < bf_count && j < sh_count;) {
+                    int c = compare_dist_pair(&bf_pairs[i], &sh_pairs[j]);
+                    if (c == 0) {
+                        i++; j++;
+                    } else if (c < 0) {
+                        float x_i = x[bf_pairs[i].i];
+                        float y_i = y[bf_pairs[i].i];
+                        float z_i = z[bf_pairs[i].i];
+                        float x_j = x[bf_pairs[i].j];
+                        float y_j = y[bf_pairs[i].j];
+                        float z_j = z[bf_pairs[i].j];
+
+                        int cx_i = (int)floorf(x_i / rad);
+                        int cy_i = (int)floorf(y_i / rad);
+                        int cz_i = (int)floorf(z_i / rad);
+                        int cx_j = (int)floorf(x_j / rad);
+                        int cy_j = (int)floorf(y_j / rad);
+                        int cz_j = (int)floorf(z_j / rad);
+
+                        printf("BF only: %u %u %.5f\n", bf_pairs[i].i, bf_pairs[i].j, bf_pairs[i].d2);
+                        printf("i coord: %f %f %f [%i,%i,%i]\n", x_i, y_i, z_i, cx_i, cy_i, cz_i);
+                        printf("j coord: %f %f %f [%i,%i,%i]\n", x_j, y_j, z_j, cx_j, cy_j, cz_j);
+                        i++;
+                    } else {
+                        printf("SH only: %u %u %.5f\n", sh_pairs[j].i, sh_pairs[j].j, sh_pairs[j].d2);
+                        printf("i coord: %f %f %f\n", x[sh_pairs[j].i], y[sh_pairs[j].i], z[sh_pairs[j].i]);
+                        printf("j coord: %f %f %f\n", x[sh_pairs[j].j], y[sh_pairs[j].j], z[sh_pairs[j].j]);
+                        j++;
+                    }
+                }
                 printf("WIERD\n");
             }
         }
@@ -1089,18 +848,28 @@ UTEST(spatial_hash, n2) {
         expected_count = 3701958;
     }
 
-
-
     // Custom implementation of pairwise periodic N^2
+    dist_pair_t* pairs = md_alloc(alloc, sizeof(dist_pair_t) * 10000000);
     md_timestamp_t start = md_time_current();
     //size_t count = do_pairwise_periodic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &unit_cell);
-    size_t custom_count = do_pairwise_periodic_triclinic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &unit_cell, NULL);
+    size_t custom_count = do_pairwise_periodic_triclinic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &unit_cell, pairs);
     md_timestamp_t end = md_time_current();
     printf("Custom: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_EQ(expected_count, custom_count);
     if (custom_count != expected_count) {
         printf("Count mismatch: expected %zu, got %zu\n", expected_count, custom_count);
     }
+
+    start = md_time_current();
+
+    int* x_coords = md_alloc(alloc, sizeof(int) * mol.atom.count);
+    for (size_t i = 0; i < mol.atom.count; ++i) {
+        x_coords[i] = (uint32_t)(mol.atom.x[i] * 1000.0f);
+    }
+    insertion_sort_uint32(x_coords, mol.atom.count);
+
+    end = md_time_current();
+    printf("Radix sort: %f ms\n", md_time_as_milliseconds(end - start));
     
     // Current implementation of spatial hash for N^2
     

@@ -508,17 +508,8 @@ static void sort_radix_inplace_uint32(uint32_t* data, size_t count, md_allocator
     md_128i sum = md_mm_setzero_si128();
     for (size_t i = 0; i < ARRAY_SIZE(hist.u32); ++i) {
         md_128i val = hist.vec[i];
-        // uint32_t val[4] = { hist.u32[i][0], hist.u32[i][1], hist.u32[i][2], hist.u32[i][3] };
         hist.vec[i] = sum;
-        // hist.u32[i][0] = sum[0];
-        // hist.u32[i][1] = sum[1];
-        // hist.u32[i][2] = sum[2];
-        // hist.u32[i][3] = sum[3];
         sum = md_mm_add_epi32(sum, val);
-        // sum[0] += val[0];
-        // sum[1] += val[1];
-        // sum[2] += val[2];
-        // sum[3] += val[3];
     }
 
     // 4-pass 8-bit radix sort computes the resulting order into scratch
@@ -528,6 +519,65 @@ static void sort_radix_inplace_uint32(uint32_t* data, size_t count, md_allocator
     radix_pass_8(data, scratch, count, hist.u32, 3);
 
     md_vm_arena_temp_end(temp);
+}
+
+
+static inline void radix_pass_indices_8(uint32_t* dst_indices, const uint32_t* keys, const uint32_t* src_indices, size_t count, uint32_t hist[256],
+                                        int pass) {
+    int bitoff = pass * 8;
+    uint32_t pos[256];
+    memcpy(pos, hist, sizeof(uint32_t) * 256);
+
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t key = (keys[src_indices[i]] >> bitoff) & 0xFF;
+        dst_indices[pos[key]++] = src_indices[i];
+    }
+}
+
+void radix_sort_indices_uint32(const uint32_t* keys,    // array of keys (e.g., min_x of AABBs)
+                               uint32_t* indices,       // output: sorted indices
+                               uint32_t* temp_indices,  // scratch array of size 'count'
+                               size_t count) {
+    uint32_t hist[256];
+
+    // Initialize indices
+    for (size_t i = 0; i < count; ++i) indices[i] = (uint32_t)i;
+
+    uint32_t* src = indices;
+    uint32_t* dst = temp_indices;
+
+    // 4 passes of 8-bit radix
+    for (int pass = 0; pass < 4; ++pass) {
+        MEMSET(hist, 0, sizeof(hist));
+
+        // Compute histogram for this pass
+        for (size_t i = 0; i < count; ++i) {
+            uint32_t key = (keys[src[i]] >> (pass * 8)) & 0xFF;
+            hist[key]++;
+        }
+
+        // Prefix sum
+        uint32_t sum = 0;
+        for (int i = 0; i < 256; ++i) {
+            uint32_t tmp = hist[i];
+            hist[i] = sum;
+            sum += tmp;
+        }
+
+        // Sort pass
+        radix_pass_indices_8(dst, keys, src, count, hist, pass);
+
+        // Swap src and dst for next pass
+        uint32_t* tmp = src;
+        src = dst;
+        dst = tmp;
+    }
+
+    // After even number of passes, result is in 'indices' already
+    // If odd, copy back from temp
+    if (src != indices) {
+        MEMCPY(indices, src, count * sizeof(uint32_t));
+    }
 }
 
 typedef struct fifo_t {
