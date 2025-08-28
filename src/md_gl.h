@@ -106,7 +106,7 @@ void md_gl_mol_compute_velocity(md_gl_mol_t handle, const float pbc_ext[3]);
 // Clear the velocity to zero.
 void md_gl_mol_zero_velocity(md_gl_mol_t handle);
 
-void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const struct md_bond_pair_t* bond_pairs, uint32_t byte_stride);
+void md_gl_mol_set_bonds(md_gl_mol_t mol, uint32_t offset, uint32_t count, const struct md_atom_pair_t* bond_pairs, uint32_t byte_stride);
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t mol, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride);
 
 #if 0

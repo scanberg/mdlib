@@ -76,9 +76,6 @@ enum {
     GL_BUFFER_ATOM_RADIUS,                     // float
     GL_BUFFER_ATOM_VELOCITY,                   // vec3
     GL_BUFFER_ATOM_FLAGS,                      // u8
-    //GL_BUFFER_RESIDUE_ATOM_OFFSET,             // u32
-    //GL_BUFFER_RESIDUE_AABB,                    // vec3[2]  (aabb_min, aabb_max)
-    //GL_BUFFER_RESIDUE_VISIBLE,                 // int
     GL_BUFFER_BOND_ATOM_INDICES,               // u32[2]
     GL_BUFFER_BACKBONE_DATA,                   // u32: residue index, u32: residue atom offset, u8: CA index, C index and O Index, u8: flags
     GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE,    // u8[4]  (0: Unknown, 1: Coil, 2: Helix, 3: Sheet)
@@ -154,15 +151,6 @@ typedef struct {
     int16_t support_vector[3];
     int16_t tangent_vector[3];
 } gl_control_point_t;
-
-typedef struct {
-    float pos[3];
-    uint32_t atom_idx;
-    int16_t support_vector[3];
-    int16_t tangent_vector[3];
-    uint8_t secondary_structure[3];
-    uint8_t flags;
-} gl_cp2_t;
 
 typedef struct {
     mat4_t world_to_view;
@@ -549,8 +537,8 @@ void md_gl_mol_set_atom_flags(md_gl_mol_t handle, uint32_t offset, uint32_t coun
     }
 }
 
-void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_bond_pair_t* bond_data, uint32_t byte_stride) {
-    if (bond_data == NULL) {
+void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_atom_pair_t* bonds, uint32_t byte_stride) {
+    if (bonds == NULL) {
         MD_LOG_ERROR("One or more arguments are missing");
         return;
     }
@@ -567,33 +555,49 @@ void md_gl_mol_set_bonds(md_gl_mol_t handle, uint32_t offset, uint32_t count, co
             return;
         }
 
-        if (offset == 0) {
-            gl_buffer_set_data(mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], count * sizeof(md_bond_pair_t), bond_data);
+        if (offset == 0 && count > mol->bond_count) {
+            gl_buffer_set_data(mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], count * sizeof(md_atom_pair_t), bonds);
             mol->bond_count = count;
             return;
         }
 
-        byte_stride = MAX(sizeof(md_bond_pair_t), byte_stride);
-
-        if (byte_stride > sizeof(md_bond_pair_t)) {
-            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
-            gl_bond_t* bond_data = (gl_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-            if (bond_data == NULL) {
-                MD_LOG_ERROR("Failed to map molecule bond buffer");
-                return;
-            }
-            for (uint32_t i = offset; i < count; ++i) {
-                const md_bond_pair_t* bond = (const md_bond_pair_t*)((const uint8_t*)bond_data + byte_stride * i);
-                bond_data[i].atom_idx[0] = bond->idx[0];
-                bond_data[i].atom_idx[1] = bond->idx[1];
-            }
-            glUnmapBuffer(GL_ARRAY_BUFFER);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        byte_stride = MAX(sizeof(md_atom_pair_t), byte_stride);
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
+        gl_bond_t* bond_data = (gl_bond_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+        if (bond_data == NULL) {
+            MD_LOG_ERROR("Failed to map molecule bond buffer");
+            return;
         }
-        else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_BOND_ATOM_INDICES], offset * sizeof(gl_bond_t), count * sizeof(gl_bond_t), bond_data);
+        for (uint32_t i = offset; i < count; ++i) {
+            const md_atom_pair_t* bond = (const md_atom_pair_t*)((const uint8_t*)bonds + byte_stride * i);
+            bond_data[i].atom_idx[0] = bond->idx[0];
+            bond_data[i].atom_idx[1] = bond->idx[1];
         }
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
+}
+
+static inline uint32_t md_secondary_structure_to_gl(md_secondary_structure_t ss) {
+    switch (ss) {
+        case MD_SECONDARY_STRUCTURE_UNKNOWN:
+        case MD_SECONDARY_STRUCTURE_COIL:
+        case MD_SECONDARY_STRUCTURE_TURN:
+        case MD_SECONDARY_STRUCTURE_BEND:
+        default:
+            return 0x000000FF;
+            break;
+        case MD_SECONDARY_STRUCTURE_HELIX_310:
+        case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
+        case MD_SECONDARY_STRUCTURE_HELIX_PI:
+            return 0x0000FF00;
+            break;
+        case MD_SECONDARY_STRUCTURE_BETA_SHEET:
+        case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
+            return 0x00FF0000;
+            break;
+    }
+    return 0;
 }
 
 void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t offset, uint32_t count, const md_secondary_structure_t* secondary_structure, uint32_t byte_stride) {
@@ -612,22 +616,18 @@ void md_gl_mol_set_backbone_secondary_structure(md_gl_mol_t handle, uint32_t off
             return;
         }
         byte_stride = MAX(sizeof(md_secondary_structure_t), byte_stride);
-        if (byte_stride > sizeof(md_secondary_structure_t)) {
-            glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
-            md_secondary_structure_t* data = (md_secondary_structure_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-            if (data == NULL) {
-                MD_LOG_ERROR("Failed to map molecule secondary structure buffer");
-                return;
-            }
-            for (uint32_t i = offset; i < count; ++i) {
-                data[i] = secondary_structure[byte_stride * i];
-            }
-            glUnmapBuffer(GL_ARRAY_BUFFER);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE].id);
+        uint32_t* buffer_data = (md_secondary_structure_t*)glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+        if (buffer_data == NULL) {
+            MD_LOG_ERROR("Failed to map molecule secondary structure buffer");
+            return;
         }
-        else {
-            gl_buffer_set_sub_data(mol->buffer[GL_BUFFER_BACKBONE_SECONDARY_STRUCTURE], offset * sizeof(md_secondary_structure_t), count * sizeof(md_secondary_structure_t), secondary_structure);
+        for (uint32_t i = offset; i < count; ++i) {
+            md_secondary_structure_t ss = *(const md_secondary_structure_t*)(const uint8_t*)(secondary_structure + byte_stride * i);
+            md_secondary_structure_to_gl(ss);
         }
+        glUnmapBuffer(GL_ARRAY_BUFFER);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
     }
 }
 
@@ -963,7 +963,7 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
                 uint32_t idx = 0;
                 for (uint32_t i = 0; i < (uint32_t)mol->protein_backbone.range.count; ++i) {
                     for (uint32_t j = mol->protein_backbone.range.offset[i]; j < mol->protein_backbone.range.offset[i+1]; ++j) {
-                        secondary_structure[idx++] = mol->protein_backbone.secondary_structure[j];
+                        secondary_structure[idx++] = md_secondary_structure_to_gl(mol->protein_backbone.secondary_structure[j]);
                     }
                 }
                 glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -1023,7 +1023,7 @@ md_gl_mol_t md_gl_mol_create(const md_molecule_t* mol) {
         gl_mol->buffer[GL_BUFFER_BOND_ATOM_INDICES] = gl_buffer_create(gl_mol->bond_count * sizeof(uint32_t) * 2, NULL, GL_DYNAMIC_COPY);
 
         if (mol->bond.pairs) {
-            md_gl_mol_set_bonds(handle, 0, gl_mol->bond_count, mol->bond.pairs, sizeof(md_bond_pair_t));
+            md_gl_mol_set_bonds(handle, 0, gl_mol->bond_count, mol->bond.pairs, sizeof(md_atom_pair_t));
         }
     }
 
@@ -1325,8 +1325,6 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
     ASSERT(mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     ASSERT(atom_color.id);
 
-	PUSH_GPU_SECTION("SPACEFILL DRAW")
-
     gl_buffer_set_sub_data(ctx.ubo, sizeof(gl_ubo_base_t), sizeof(scale), &scale);
 
     glBindVertexArray(ctx.vao);
@@ -1350,10 +1348,6 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
     glEnableVertexAttribArray(4);
     glBindBuffer(GL_ARRAY_BUFFER, atom_color.id);
     glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, 0);
-
-    glDisableVertexAttribArray(5);
-    glDisableVertexAttribArray(6);
-    glDisableVertexAttribArray(7);
     
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     
@@ -1361,9 +1355,13 @@ static bool draw_space_fill(gl_program_t program, const molecule_t* mol, gl_buff
     glDrawArrays(GL_POINTS, 0, mol->atom_count);
     glUseProgram(0);
     
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glDisableVertexAttribArray(3);
+    glDisableVertexAttribArray(4);
+    
     glBindVertexArray(0);
-
-    POP_GPU_SECTION()
     
     return true;
 }
@@ -1379,8 +1377,6 @@ static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer
     if (max_length == 0) {
         max_length = 1000.0f;
     }
-
-	PUSH_GPU_SECTION("LICORICE DRAW")
 
     struct {
 		float radius;
@@ -1407,10 +1403,7 @@ static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer
     glBindBuffer(GL_ARRAY_BUFFER, atom_color.id);
     glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, 0);
 
-    glDisableVertexAttribArray(4);
-    glDisableVertexAttribArray(5);
-    glDisableVertexAttribArray(6);
-    glDisableVertexAttribArray(7);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mol->buffer[GL_BUFFER_BOND_ATOM_INDICES].id);
 
@@ -1419,10 +1412,13 @@ static bool draw_licorice(gl_program_t program, const molecule_t* mol, gl_buffer
     glUseProgram(0);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
 
-	POP_GPU_SECTION()
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glDisableVertexAttribArray(3);
+
+    glBindVertexArray(0);
 
     return true;
 }
@@ -1433,8 +1429,6 @@ bool draw_ribbons(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_
     ASSERT(mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX].id);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     ASSERT(atom_color.id);
-
-	PUSH_GPU_SECTION("RIBBONS DRAW")
 
     const float profile_scale[2] = {
         width_scale,
@@ -1493,9 +1487,13 @@ bool draw_ribbons(gl_program_t program, const molecule_t* mol, gl_buffer_t atom_
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    glBindVertexArray(0);
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glDisableVertexAttribArray(3);
+    glDisableVertexAttribArray(4);
 
-    POP_GPU_SECTION()
+    glBindVertexArray(0);
 
     return true;
 }
@@ -1506,8 +1504,6 @@ static bool draw_cartoon(gl_program_t program, const molecule_t* mol, gl_buffer_
     ASSERT(mol->buffer[GL_BUFFER_BACKBONE_SPLINE_INDEX].id);
     ASSERT(mol->buffer[GL_BUFFER_ATOM_FLAGS].id);
     ASSERT(atom_color.id);
-
-	PUSH_GPU_SECTION("CARTOON DRAW")
 
     const float profile_scale[4] = {
         coil_scale,
@@ -1569,9 +1565,14 @@ static bool draw_cartoon(gl_program_t program, const molecule_t* mol, gl_buffer_
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    glBindVertexArray(0);
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glDisableVertexAttribArray(3);
+    glDisableVertexAttribArray(4);
+    glDisableVertexAttribArray(5);
 
-    POP_GPU_SECTION()
+    glBindVertexArray(0);
 
     return true;
 }
@@ -1592,8 +1593,6 @@ static bool compute_spline(const molecule_t* mol) {
         MD_LOG_ERROR("Backbone data buffer is zero, which is required to compute the protein_backbone. Is the molecule missing a protein_backbone?");
         return false;
     }
-
-	PUSH_GPU_SECTION("COMPUTE SPLINE")
 
     glEnable(GL_RASTERIZER_DISCARD);
     glBindVertexArray(ctx.vao);
@@ -1618,9 +1617,6 @@ static bool compute_spline(const molecule_t* mol) {
 
     glEnableVertexAttribArray(5);
     glVertexAttribIPointer(5, 1, GL_UNSIGNED_BYTE, sizeof(gl_backbone_data_t), (const void*)offsetof(gl_backbone_data_t, flags));
-
-    glDisableVertexAttribArray(6);
-    glDisableVertexAttribArray(7);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_BUFFER, ctx.texture[GL_TEXTURE_BUFFER_0].id);
@@ -1704,10 +1700,15 @@ static bool compute_spline(const molecule_t* mol) {
     glDisable(GL_PRIMITIVE_RESTART);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glDisableVertexAttribArray(3);
+    glDisableVertexAttribArray(4);
+    glDisableVertexAttribArray(5);
+
     glBindVertexArray(0);
     glDisable(GL_RASTERIZER_DISCARD);
-
-	POP_GPU_SECTION()
 
     return true;
 }

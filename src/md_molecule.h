@@ -111,7 +111,7 @@ typedef struct md_conn_data_t {
 // Bond centric representation
 typedef struct md_bond_data_t {
     size_t count;
-    md_bond_pair_t* pairs;
+    md_atom_pair_t* pairs;
     md_order_t*     order;
     md_conn_data_t  conn;   // Connectivity
 } md_bond_data_t;
@@ -122,6 +122,27 @@ typedef struct md_bond_iter_t {
     uint32_t end_idx;
 } md_bond_iter_t;
 
+typedef struct md_hydrogen_bond_donor_t {
+    md_atom_idx_t d_idx; // donor
+    md_atom_idx_t h_idx; // hydrogen
+} md_hydrogen_bond_donor_t;
+
+typedef struct md_hydrogen_bond_acceptor_t {
+    md_atom_idx_t idx;
+    int num_of_lone_pairs;
+} md_hydrogen_bond_acceptor_t;
+
+typedef struct md_hydrogen_bond_data_t {
+    size_t num_acceptors;
+    md_hydrogen_bond_acceptor_t* acceptors;
+   
+    size_t num_donors;
+    md_hydrogen_bond_donor_t* donors;
+
+    size_t num_bonds;
+    md_atom_pair_t* bonds; // index[0] = donor atom idx, index[1] = acceptor atom idx
+} md_hydrogen_bond_data_t;
+
 typedef struct md_molecule_t {
     md_unit_cell_t              unit_cell;
     md_atom_data_t              atom;
@@ -130,20 +151,13 @@ typedef struct md_molecule_t {
     md_protein_backbone_data_t  protein_backbone;
     md_nucleic_backbone_data_t  nucleic_backbone;
     
-    md_bond_data_t              bond;               // Persistent covalent bonds
-    
-    // @TODO: move this into some containing structure
-    //md_array(md_hbond_data_t)  hbond_data;     
+    md_bond_data_t              bond;               // Covalent bonds
+    md_hydrogen_bond_data_t     hydrogen_bond;      // Hydrogen bonds
 
     md_index_data_t             ring;               // Ring structures formed by persistent bonds
     md_index_data_t             structure;          // Isolated structures connected by persistent bonds
 
     md_instance_data_t          instance;           // Instances of the molecule (duplications of ranges with new transforms)
-    
-    // @NOTE(Robin): This should probably move elsewhere.
-    // Hydrogen bonds are of interest to be evaluated and analyzed over the trajectory
-    // So this should be computed over all frames in the preload
-    //md_array(md_bond_pair_t)    hydrogen_bonds;
 } md_molecule_t;
 
 #ifdef __cplusplus

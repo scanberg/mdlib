@@ -12,10 +12,15 @@
 #endif
 
 enum {
-    MD_SECONDARY_STRUCTURE_UNKNOWN  = 0,
-    MD_SECONDARY_STRUCTURE_COIL     = 0x000000FF,
-    MD_SECONDARY_STRUCTURE_HELIX    = 0x0000FF00,
-    MD_SECONDARY_STRUCTURE_SHEET    = 0x00FF0000,
+    MD_SECONDARY_STRUCTURE_UNKNOWN = 0,
+    MD_SECONDARY_STRUCTURE_COIL,
+    MD_SECONDARY_STRUCTURE_TURN,
+    MD_SECONDARY_STRUCTURE_BEND,
+    MD_SECONDARY_STRUCTURE_HELIX_310,
+    MD_SECONDARY_STRUCTURE_HELIX_ALPHA,
+    MD_SECONDARY_STRUCTURE_HELIX_PI,
+    MD_SECONDARY_STRUCTURE_BETA_SHEET,
+    MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
 };
 
 enum {
@@ -34,18 +39,13 @@ enum {
     MD_UNIT_CELL_FLAG_PBC_X         = 4,
     MD_UNIT_CELL_FLAG_PBC_Y         = 8,
     MD_UNIT_CELL_FLAG_PBC_Z         = 16,
-    MD_UNIT_CELL_FLAG_PBC_ANY       = 4 | 8 | 16,
+    MD_UNIT_CELL_FLAG_PBC_ALL       = 4 | 8 | 16,
 };
 
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
-    MD_FLAG_RES_BEG 		    = 0x1,
-    MD_FLAG_RES_END 		    = 0x2,
-    MD_FLAG_RES                 = 0x4,
-    MD_FLAG_CHAIN_BEG 		    = 0x8,
-    MD_FLAG_CHAIN_END 		    = 0x10,
-    MD_FLAG_CHAIN 		        = 0x20,
+    MD_FLAG_SEQ_TERM = 0x1,
     MD_FLAG_HETATM              = 0x40,
     MD_FLAG_AMINO_ACID		    = 0x80,
     MD_FLAG_SIDE_CHAIN          = 0x100,
@@ -61,6 +61,8 @@ enum {
     MD_FLAG_SP2                 = 0x20000,
     MD_FLAG_SP3                 = 0x40000,
     MD_FLAG_AROMATIC            = 0x80000,
+    MD_FLAG_H_DONOR             = 0x100000,
+    MD_FLAG_H_ACCEPTOR          = 0x200000,
 };
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.
@@ -94,18 +96,14 @@ typedef struct md_unit_cell_t {
     uint32_t flags;
 } md_unit_cell_t;
 
-/*
-// Single bond between two entities represented by atom indices
-typedef struct md_bond_t {
-    md_atom_idx_t idx[2];
-    uint16_t order;
-    uint16_t flags;
-} md_bond_t;
-*/
+static inline vec3_t md_unit_cell_extent(const md_unit_cell_t* cell) {
+    ASSERT(cell);
+    return mat3_mul_vec3(cell->basis, vec3_set1(1));
+}
 
-typedef struct md_bond_pair_t {
+typedef struct md_atom_pair_t {
     md_atom_idx_t idx[2];
-} md_bond_pair_t;
+} md_atom_pair_t;
 
 typedef struct md_protein_backbone_atoms_t {
     md_atom_idx_t n;
@@ -263,12 +261,21 @@ static inline vec4_t md_unit_cell_pbc_mask(const md_unit_cell_t* unit_cell) {
     return vec4_set((unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_X) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Y) ? val : 0, (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_Z) ? val : 0, 0);
 }
 
+static inline uint32_t md_unit_cell_flags(const md_unit_cell_t* unit_cell) {
+    return unit_cell->flags;
+}
+
 static inline vec4_t md_unit_cell_box_ext(const md_unit_cell_t* unit_cell) {
-#if DEBUG
-    ASSERT(unit_cell);
-    if (!(unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO)) {
-        MD_LOG_DEBUG("Attempting to extract box extent from non orthogonal box");
+    vec4_t ext = {0};
+    if (unit_cell) {
+        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+            return vec4_set(unit_cell->basis.elem[0][0], unit_cell->basis.elem[1][1], unit_cell->basis.elem[2][2], 0);
+        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+            const mat3_t* A = &unit_cell->basis;
+            ext.x = sqrtf(A->elem[0][0] * A->elem[0][0] + A->elem[1][0] * A->elem[1][0] + A->elem[2][0] * A->elem[2][0]);
+            ext.y = sqrtf(A->elem[0][1] * A->elem[0][1] + A->elem[1][1] * A->elem[1][1] + A->elem[2][1] * A->elem[2][1]);
+            ext.z = sqrtf(A->elem[0][2] * A->elem[0][2] + A->elem[1][2] * A->elem[1][2] + A->elem[2][2] * A->elem[2][2]);
+        }
     }
-#endif
-    return vec4_mul(md_unit_cell_pbc_mask(unit_cell), vec4_set(unit_cell->basis.elem[0][0], unit_cell->basis.elem[1][1], unit_cell->basis.elem[2][2], 0));
+    return ext;
 }
