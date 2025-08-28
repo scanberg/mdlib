@@ -859,17 +859,6 @@ UTEST(spatial_hash, n2) {
     if (custom_count != expected_count) {
         printf("Count mismatch: expected %zu, got %zu\n", expected_count, custom_count);
     }
-
-    start = md_time_current();
-
-    int* x_coords = md_alloc(alloc, sizeof(int) * mol.atom.count);
-    for (size_t i = 0; i < mol.atom.count; ++i) {
-        x_coords[i] = (uint32_t)(mol.atom.x[i] * 1000.0f);
-    }
-    insertion_sort_uint32(x_coords, mol.atom.count);
-
-    end = md_time_current();
-    printf("Radix sort: %f ms\n", md_time_as_milliseconds(end - start));
     
     // Current implementation of spatial hash for N^2
     
