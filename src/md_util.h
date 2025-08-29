@@ -222,7 +222,7 @@ void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count);
 
 // Sort array of uint32_t by producing a remapping array of source indices
 // The source_indices represents the indices of the sorted array, i.e. source_indices[0] is the index of the smallest element in data
-//void md_util_sort_radix_uint32(uint32_t* source_indices, const uint32_t* data, size_t count);
+void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* key, size_t count, uint32_t* tmp_indices);
 
 // Structure matching operations
 // In many of the cases, there will be multiple matches which contain the indices, only with slight permutations.

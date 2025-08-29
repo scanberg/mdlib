@@ -1462,7 +1462,7 @@ static inline bool test_elem_periodic(md_256 x, md_256 y, md_256 z, md_256 r2, m
     return true;
 }
 
-static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_hash_batch_iter_fn iter, void* user_param) {
+static void query_n2_batch(const md_spatial_hash_t* hash, float rad, md_spatial_hash_n2_batch_iter_fn iter, void* user_param) {
     ASSERT(hash);
     ASSERT(iter);
 
