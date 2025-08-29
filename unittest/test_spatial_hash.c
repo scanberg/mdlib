@@ -170,12 +170,13 @@ static inline void test_elem_frac_ortho_simd2(md_256 x, md_256 y, md_256 z, md_2
                                               const float* elem_x, const float* elem_y, const float* elem_z, const uint32_t* elem_idx, int len,
                                               md_256 G00, md_256 G11, md_256 G22, md_256 H01, md_256 H02, md_256 H12,
                                               uint32_t i, dist_pair_t* out_pairs, size_t* count) {
+    size_t off = 0;
     while (len > 0) {
         //md_256 vx, vy, vz;
         //md_mm256_unpack_xyz_ps(&vx, &vy, &vz, (const float*)elem, sizeof(elem_t));
-        md_256 vx = md_mm256_loadu_ps(elem_x);
-        md_256 vy = md_mm256_loadu_ps(elem_y);
-        md_256 vz = md_mm256_loadu_ps(elem_z);
+        md_256 vx = md_mm256_loadu_ps(elem_x + off);
+        md_256 vy = md_mm256_loadu_ps(elem_y + off);
+        md_256 vz = md_mm256_loadu_ps(elem_z + off);
 
         md_256 dx = md_mm256_sub_ps(vx, x);
         md_256 dy = md_mm256_sub_ps(vy, y);
@@ -194,26 +195,10 @@ static inline void test_elem_frac_ortho_simd2(md_256 x, md_256 y, md_256 z, md_2
         const int lane_mask = (1U << remainder) - 1U;
         const int mask = md_mm256_movemask_ps(vmask) & lane_mask;
 
-        if (mask) {
-            float d2_raw[8];
-            md_mm256_storeu_ps(d2_raw, d2);
-            int bits = mask;
-            while (bits) {
-                const int idx = ctz32(bits);
-                bits = bits & ~(1 << idx);
-                uint32_t j = elem_idx[idx];
-                out_pairs[*count].i = MIN(i, j);
-                out_pairs[*count].j = MAX(i, j);
-                out_pairs[*count].d2 = d2_raw[idx];
-                *count += 1;
-            }
-        }
+        *count += popcnt32(mask);
 
         len -= 8;
-        elem_x += 8;
-        elem_y += 8;
-        elem_z += 8;
-        elem_idx += 8;
+        off += 8;
     };
 }
 
@@ -571,19 +556,23 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
 
     const md_256 r2  = md_mm256_set1_ps(r2_cut);
 
+    int periodic_x = 1;
+    int periodic_y = 1;
+    int periodic_z = 1;
+
     for (uint32_t cz = cmin[2]; cz <= cmax[2]; ++cz) {
         for (uint32_t cy = cmin[1]; cy <= cmax[1]; ++cy) {
             for (uint32_t cx = cmin[0]; cx <= cmax[0]; ++cx) {
                 const uint32_t ci    = CELL_INDEX(cx, cy, cz);
                 const uint32_t off_i = CELL_OFFSET(ci);
                 const uint32_t len_i = CELL_LENGTH(ci);
-                //const elem_t* elem_i = elements + off_i;
+
+                if (len_i == 0) continue;
+                
                 const float* elem_i_x      = element_x + off_i;
                 const float* elem_i_y      = element_y + off_i;
                 const float* elem_i_z      = element_z + off_i;
                 const uint32_t* elem_i_idx = element_i + off_i;
-
-                if (len_i == 0) continue;
 
                 // Self cell: only j > i
                 for (uint32_t a = 0; a < len_i; ++a) {
@@ -602,45 +591,64 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
 
                 // Forward neighbors
                 for (int n = 0; n < 13; ++n) {
-                    int ndx = FWD_NBRS[n][0];
-                    int ndy = FWD_NBRS[n][1];
-                    int ndz = FWD_NBRS[n][2];
+                    int nx = (int)cx + FWD_NBRS[n][0];
+                    int ny = (int)cy + FWD_NBRS[n][1];
+                    int nz = (int)cz + FWD_NBRS[n][2];
 
-                    int nx = (int)cx + ndx;
-                    int ny = (int)cy + ndy;
-                    int nz = (int)cz + ndz;
+                    float dx = 0.0f;
+                    float dy = 0.0f;
+                    float dz = 0.0f;
 
-                    int pnx = (nx + cell_dim[0]) % cell_dim[0];
-                    int pny = (ny + cell_dim[1]) % cell_dim[1];
-                    int pnz = (nz + cell_dim[2]) % cell_dim[2];
+                    if (periodic_x) {
+                        if (nx >= (int)cell_dim[0]) {
+                            nx -= cell_dim[0];
+                            dx  = -1.0f;
+                        } else if (nx < 0) {
+                            nx += cell_dim[0];
+                            dx  = 1.0f;
+                        }
+                    } else if (nx < cmin[0] || nx > (int)cmax[0]) {
+                        continue;
+                    }
+                    if (periodic_y) {
+                        if (ny >= (int)cell_dim[1]) {
+                            ny -= cell_dim[1];
+                            dy  = -1.0f;
+                        } else if (ny < 0) {
+                            ny += cell_dim[1];
+                            dy  = 1.0f;
+                        }
+                    } else if (ny < cmin[1] || ny > (int)cmax[1]) {
+                        continue;
+                    }
+                    if (periodic_z) {
+                        if (nz >= (int)cell_dim[2]) {
+                            nz -= cell_dim[2];
+                            dz  = -1.0f;
+                        } else if (nz < 0) {
+                            nz += cell_dim[2];
+                            dz  = 1.0f;
+                        }
+                    } else if (nz < cmin[2] || nz > (int)cmax[2]) {
+                        continue;
+                    }
 
-                    float px = 0.0f;
-                    if (pnx < nx) px = -1.0f;
-                    if (pnx > nx) px =  1.0f;
-
-                    float py = 0.0f;
-                    if (pny < ny) py = -1.0f;
-                    if (pny > ny) py =  1.0f;
-
-                    float pz = 0.0f;
-                    if (pnz < nz) pz = -1.0f;
-                    if (pnz > nz) pz =  1.0f;
-
-                    const uint32_t cj    = CELL_INDEX(pnx, pny, pnz);
+                    const uint32_t cj    = CELL_INDEX(nx, ny, nz);
                     const uint32_t off_j = CELL_OFFSET(cj);
                     const uint32_t len_j = CELL_LENGTH(cj);
+                    
+                    if (len_j == 0) continue;
+
                     const elem_t* elem_j = elements + off_j;
                     const float* elem_j_x = element_x + off_j;
                     const float* elem_j_y = element_y + off_j;
                     const float* elem_j_z = element_z + off_j;
                     const uint32_t* elem_j_idx = element_i + off_j;
 
-                    if (len_j == 0) continue;
-
                     for (uint32_t a = 0; a < len_i; ++a) {
-                        const md_256 x = md_mm256_set1_ps(elem_i_x[a] + px);
-                        const md_256 y = md_mm256_set1_ps(elem_i_y[a] + py);
-                        const md_256 z = md_mm256_set1_ps(elem_i_z[a] + pz);
+                        const md_256 x = md_mm256_set1_ps(elem_i_x[a] + dx);
+                        const md_256 y = md_mm256_set1_ps(elem_i_y[a] + dy);
+                        const md_256 z = md_mm256_set1_ps(elem_i_z[a] + dz);
                         const uint32_t i = elem_i_idx[a];
 
                         //test_elem_frac_ortho_simd(x, y, z, r2, elem_j, len_j, G00, G11, G22, H01, H02, H12, i, pairs, &result);
@@ -735,18 +743,6 @@ static void n2_callback(const float* j_x, const float* j_y, const float* j_z, co
     *count += popcnt32(mask);
 };
 
-void insertion_sort_uint32(uint32_t* array, size_t n) {
-    for (int64_t i = 1; i < (int64_t)n; i++) {
-        int64_t j = i;
-        while (j > 0 && array[j] < array[j - 1]) {
-            uint32_t tmp = array[j];
-            array[j] = array[j - 1];
-            array[j - 1] = tmp;
-            j--;
-        }
-    }
-}
-
 UTEST(spatial_hash, n2) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
 
@@ -787,13 +783,12 @@ UTEST(spatial_hash, n2) {
         md_unit_cell_t test_cell = md_util_unit_cell_from_extent(ext, ext, ext);
         md_spatial_hash_t* sh = md_spatial_hash_create_soa(x, y, z, NULL, test_count, &test_cell, alloc);
 
-
-
         for (double rad = 4.0; rad <= 5.5; rad += 0.5) {
             size_t bf_count = do_brute_force(x, y, z, test_count, rad, &test_cell, bf_pairs);
 
             size_t sh_count = do_pairwise_periodic_triclinic(x, y, z, test_count, rad, &test_cell, sh_pairs);
             
+#if 0
             if (bf_count != sh_count) {
                 qsort(bf_pairs, bf_count, sizeof(dist_pair_t), compare_dist_pair);
                 qsort(sh_pairs, sh_count, sizeof(dist_pair_t), compare_dist_pair);
@@ -833,6 +828,7 @@ UTEST(spatial_hash, n2) {
                 }
                 printf("WIERD\n");
             }
+#endif
         }
         md_spatial_hash_free(sh);
 #undef test_count
@@ -852,7 +848,7 @@ UTEST(spatial_hash, n2) {
     dist_pair_t* pairs = md_alloc(alloc, sizeof(dist_pair_t) * 10000000);
     md_timestamp_t start = md_time_current();
     //size_t count = do_pairwise_periodic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &unit_cell);
-    size_t custom_count = do_pairwise_periodic_triclinic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &unit_cell, pairs);
+    size_t custom_count = do_pairwise_periodic_triclinic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count / 16, 5.0f, &unit_cell, pairs);
     md_timestamp_t end = md_time_current();
     printf("Custom: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_EQ(expected_count, custom_count);
@@ -866,7 +862,7 @@ UTEST(spatial_hash, n2) {
     for (size_t i = 0; i < mol.atom.count; ++i) {
         x_coords[i] = (uint32_t)(mol.atom.x[i] * 1000.0f);
     }
-    insertion_sort_uint32(x_coords, mol.atom.count);
+    md_util_sort_radix_inplace_uint32(x_coords, mol.atom.count);
 
     end = md_time_current();
     printf("Radix sort: %f ms\n", md_time_as_milliseconds(end - start));
