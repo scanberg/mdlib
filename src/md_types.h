@@ -45,7 +45,8 @@ enum {
 // These flags are not specific to any distinct subtype, but can appear in both atoms, residues, bonds and whatnot.
 // Where ever they make sense, they can appear. This makes it easy to propagate the flags upwards and downwards between structures
 enum {
-    MD_FLAG_SEQ_TERM = 0x1,
+    MD_FLAG_SEQ_TERM	        = 0x1,
+
     MD_FLAG_HETATM              = 0x40,
     MD_FLAG_AMINO_ACID		    = 0x80,
     MD_FLAG_SIDE_CHAIN          = 0x100,

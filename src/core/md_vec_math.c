@@ -1,4 +1,4 @@
-#include <core/md_vec_math.h>
+﻿#include <core/md_vec_math.h>
 
 #include <svd3.h>
 
@@ -599,25 +599,21 @@ void mat3_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
         const md_256 y = md_mm256_loadu_ps(in_out_y + i);
         const md_256 z = md_mm256_loadu_ps(in_out_z + i);
 
-        const md_256 m11x = md_mm256_mul_ps(m11, x);
-        const md_256 m21y = md_mm256_mul_ps(m21, y);
-        const md_256 m31z = md_mm256_mul_ps(m31, z);
+        md_256 rx = md_mm256_mul_ps(m11, x);
+        md_256 ry = md_mm256_mul_ps(m12, x);
+        md_256 rz = md_mm256_mul_ps(m13, x);
 
-        const md_256 m12x = md_mm256_mul_ps(m12, x);
-        const md_256 m22y = md_mm256_mul_ps(m22, y);
-        const md_256 m32z = md_mm256_mul_ps(m32, z);
+        rx = md_mm256_fmadd_ps(m21, y, rx);
+        ry = md_mm256_fmadd_ps(m22, y, ry);
+        rz = md_mm256_fmadd_ps(m23, y, rz);
 
-        const md_256 m13x = md_mm256_mul_ps(m13, x);
-        const md_256 m23y = md_mm256_mul_ps(m23, y);
-        const md_256 m33z = md_mm256_mul_ps(m33, z);
+        rx = md_mm256_fmadd_ps(m31, z, rx);
+        ry = md_mm256_fmadd_ps(m32, z, ry);
+        rz = md_mm256_fmadd_ps(m33, z, rz);
 
-        const md_256 res_x = md_mm256_add_ps(md_mm256_add_ps(m11x, m21y), m31z);
-        const md_256 res_y = md_mm256_add_ps(md_mm256_add_ps(m12x, m22y), m32z);
-        const md_256 res_z = md_mm256_add_ps(md_mm256_add_ps(m13x, m23y), m33z);
-
-        md_mm256_storeu_ps(in_out_x + i, res_x);
-        md_mm256_storeu_ps(in_out_y + i, res_y);
-        md_mm256_storeu_ps(in_out_z + i, res_z);
+        md_mm256_storeu_ps(in_out_x + i, rx);
+        md_mm256_storeu_ps(in_out_y + i, ry);
+        md_mm256_storeu_ps(in_out_z + i, rz);
     }
 
     for (; i < count; i++) {
@@ -651,25 +647,21 @@ void mat3_batch_transform(float* out_x, float* out_y, float* out_z, const float*
         md_256 y = md_mm256_loadu_ps(in_y + i);
         md_256 z = md_mm256_loadu_ps(in_z + i);
 
-        md_256 m11x = md_mm256_mul_ps(m11, x);
-        md_256 m21y = md_mm256_mul_ps(m21, y);
-        md_256 m31z = md_mm256_mul_ps(m31, z);
+        md_256 rx = md_mm256_mul_ps(m11, x);
+        md_256 ry = md_mm256_mul_ps(m12, x);
+        md_256 rz = md_mm256_mul_ps(m13, x);
 
-        md_256 m12x = md_mm256_mul_ps(m12, x);
-        md_256 m22y = md_mm256_mul_ps(m22, y);
-        md_256 m32z = md_mm256_mul_ps(m32, z);
+        rx = md_mm256_fmadd_ps(m21, y, rx);
+        ry = md_mm256_fmadd_ps(m22, y, ry);
+        rz = md_mm256_fmadd_ps(m23, y, rz);
 
-        md_256 m13x = md_mm256_mul_ps(m13, x);
-        md_256 m23y = md_mm256_mul_ps(m23, y);
-        md_256 m33z = md_mm256_mul_ps(m33, z);
+        rx = md_mm256_fmadd_ps(m31, z, rx);
+        ry = md_mm256_fmadd_ps(m32, z, ry);
+        rz = md_mm256_fmadd_ps(m33, z, rz);
 
-        md_256 res_x = md_mm256_add_ps(md_mm256_add_ps(m11x, m21y), m31z);
-        md_256 res_y = md_mm256_add_ps(md_mm256_add_ps(m12x, m22y), m32z);
-        md_256 res_z = md_mm256_add_ps(md_mm256_add_ps(m13x, m23y), m33z);
-
-        md_mm256_storeu_ps(out_x + i, res_x);
-        md_mm256_storeu_ps(out_y + i, res_y);
-        md_mm256_storeu_ps(out_z + i, res_z);
+        md_mm256_storeu_ps(out_x + i, rx);
+        md_mm256_storeu_ps(out_y + i, ry);
+        md_mm256_storeu_ps(out_z + i, rz);
     }
 
     for (; i < count; i++) {
@@ -709,28 +701,25 @@ void mat4_batch_transform_inplace(float* RESTRICT in_out_x, float* RESTRICT in_o
         const md_256 y = md_mm256_loadu_ps(in_out_y + i);
         const md_256 z = md_mm256_loadu_ps(in_out_z + i);
 
-        const md_256 m11x = md_mm256_mul_ps(m11, x);
-        const md_256 m21y = md_mm256_mul_ps(m21, y);
-        const md_256 m31z = md_mm256_mul_ps(m31, z);
-        const md_256 m41w = md_mm256_mul_ps(m41, w);
+        md_256 rx = md_mm256_mul_ps(m11, x);
+        md_256 ry = md_mm256_mul_ps(m12, x);
+        md_256 rz = md_mm256_mul_ps(m13, x);
 
-        const md_256 m12x = md_mm256_mul_ps(m12, x);
-        const md_256 m22y = md_mm256_mul_ps(m22, y);
-        const md_256 m32z = md_mm256_mul_ps(m32, z);
-        const md_256 m42w = md_mm256_mul_ps(m42, w);
+        rx = md_mm256_fmadd_ps(m21, y, rx);
+        rx = md_mm256_fmadd_ps(m31, z, rx);
+        rx = md_mm256_fmadd_ps(m41, w, rx);
 
-        const md_256 m13x = md_mm256_mul_ps(m13, x);
-        const md_256 m23y = md_mm256_mul_ps(m23, y);
-        const md_256 m33z = md_mm256_mul_ps(m33, z);
-        const md_256 m43w = md_mm256_mul_ps(m43, w);
+        ry = md_mm256_fmadd_ps(m22, y, ry);
+        ry = md_mm256_fmadd_ps(m32, z, ry);
+        ry = md_mm256_fmadd_ps(m42, w, ry);
 
-        const md_256 res_x = md_mm256_add_ps(md_mm256_add_ps(m11x, m21y), md_mm256_add_ps(m31z, m41w));
-        const md_256 res_y = md_mm256_add_ps(md_mm256_add_ps(m12x, m22y), md_mm256_add_ps(m32z, m42w));
-        const md_256 res_z = md_mm256_add_ps(md_mm256_add_ps(m13x, m23y), md_mm256_add_ps(m33z, m43w));
+        rz = md_mm256_fmadd_ps(m23, y, rz);
+        rz = md_mm256_fmadd_ps(m33, z, rz);
+        rz = md_mm256_fmadd_ps(m43, w, rz);
 
-        md_mm256_storeu_ps(in_out_x + i, res_x);
-        md_mm256_storeu_ps(in_out_y + i, res_y);
-        md_mm256_storeu_ps(in_out_z + i, res_z);
+        md_mm256_storeu_ps(in_out_x + i, rx);
+        md_mm256_storeu_ps(in_out_y + i, ry);
+        md_mm256_storeu_ps(in_out_z + i, rz);
     }
 
     for (; i < count; i++) {
@@ -770,28 +759,25 @@ void mat4_batch_transform(float* out_x, float* out_y, float* out_z, const float*
         md_256 y = md_mm256_loadu_ps(in_y + i);
         md_256 z = md_mm256_loadu_ps(in_z + i);
 
-        md_256 m11x = md_mm256_mul_ps(m11, x);
-        md_256 m21y = md_mm256_mul_ps(m21, y);
-        md_256 m31z = md_mm256_mul_ps(m31, z);
-        md_256 m41w = md_mm256_mul_ps(m41, w);
+        md_256 rx = md_mm256_mul_ps(m11, x);
+        md_256 ry = md_mm256_mul_ps(m12, x);
+        md_256 rz = md_mm256_mul_ps(m13, x);
 
-        md_256 m12x = md_mm256_mul_ps(m12, x);
-        md_256 m22y = md_mm256_mul_ps(m22, y);
-        md_256 m32z = md_mm256_mul_ps(m32, z);
-        md_256 m42w = md_mm256_mul_ps(m42, w);
+        rx = md_mm256_fmadd_ps(m21, y, rx);
+        rx = md_mm256_fmadd_ps(m31, z, rx);
+        rx = md_mm256_fmadd_ps(m41, w, rx);
 
-        md_256 m13x = md_mm256_mul_ps(m13, x);
-        md_256 m23y = md_mm256_mul_ps(m23, y);
-        md_256 m33z = md_mm256_mul_ps(m33, z);
-        md_256 m43w = md_mm256_mul_ps(m43, w);
+        ry = md_mm256_fmadd_ps(m22, y, ry);
+        ry = md_mm256_fmadd_ps(m32, z, ry);
+        ry = md_mm256_fmadd_ps(m42, w, ry);
 
-        md_256 res_x = md_mm256_add_ps(md_mm256_add_ps(m11x, m21y), md_mm256_add_ps(m31z, m41w));
-        md_256 res_y = md_mm256_add_ps(md_mm256_add_ps(m12x, m22y), md_mm256_add_ps(m32z, m42w));
-        md_256 res_z = md_mm256_add_ps(md_mm256_add_ps(m13x, m23y), md_mm256_add_ps(m33z, m43w));
+        rz = md_mm256_fmadd_ps(m23, y, rz);
+        rz = md_mm256_fmadd_ps(m33, z, rz);
+        rz = md_mm256_fmadd_ps(m43, w, rz);
 
-        md_mm256_storeu_ps(out_x + i, res_x);
-        md_mm256_storeu_ps(out_y + i, res_y);
-        md_mm256_storeu_ps(out_z + i, res_z);
+        md_mm256_storeu_ps(out_x + i, rx);
+        md_mm256_storeu_ps(out_y + i, ry);
+        md_mm256_storeu_ps(out_z + i, rz);
     }
 
     for (; i < count; i++) {

@@ -478,47 +478,85 @@ static void sort_arr_masked64(int64_t* arr, size_t n, int64_t mask) {
 
 static inline void radix_pass_8(uint32_t* dst, const uint32_t* src, size_t count, uint32_t hist[256][4], int pass) {
     int bitoff = pass * 8;
-
     for (size_t i = 0; i < count; ++i) {
         uint32_t id = (src[i] >> bitoff) & 255;
         dst[hist[id][pass]++] = src[i];
     }
 }
 
-static void sort_radix_inplace_uint32(uint32_t* data, size_t count, md_allocator_i* temp_arena) {
-    md_vm_arena_temp_t temp = md_vm_arena_temp_begin(temp_arena);
-    uint32_t* scratch = md_vm_arena_push_array(temp_arena,uint32_t, count);
+static void sort_radix_inplace_uint32(uint32_t* data, size_t count, uint32_t* temp) {
+    // Histograms for each pass
+    uint32_t hist[256][4] = {0};
 
-    typedef union {
-        uint32_t u32[256][4];
-        md_128i  vec[256];
-    } hist_t;
-
-    hist_t hist = {0};
+    // Populate histogram
     for (size_t i = 0; i < count; ++i) {
         uint32_t id = data[i];
-        hist.u32[(id >> 0)  & 255][0]++;
-        hist.u32[(id >> 8)  & 255][1]++;
-        hist.u32[(id >> 16) & 255][2]++;
-        hist.u32[(id >> 24) & 255][3]++;
+        hist[(id >> 0)  & 255][0]++;
+        hist[(id >> 8)  & 255][1]++;
+        hist[(id >> 16) & 255][2]++;
+        hist[(id >> 24) & 255][3]++;
     }
 
     // Prefix sum
-    //uint32_t sum[4] = {0};
     md_128i sum = md_mm_setzero_si128();
-    for (size_t i = 0; i < ARRAY_SIZE(hist.u32); ++i) {
-        md_128i val = hist.vec[i];
-        hist.vec[i] = sum;
+    for (size_t i = 0; i < 256; ++i) {
+        md_128i val = md_mm_loadu_si128(hist[i]);
+        md_mm_storeu_si128(hist[i], sum);
         sum = md_mm_add_epi32(sum, val);
     }
 
-    // 4-pass 8-bit radix sort computes the resulting order into scratch
-    radix_pass_8(scratch, data, count, hist.u32, 0);
-    radix_pass_8(data, scratch, count, hist.u32, 1);
-    radix_pass_8(scratch, data, count, hist.u32, 2);
-    radix_pass_8(data, scratch, count, hist.u32, 3);
+    // 4-pass 8-bit radix sort
+    radix_pass_8(temp, data, count, hist, 0);
+    radix_pass_8(data, temp, count, hist, 1);
+    radix_pass_8(temp, data, count, hist, 2);
+    radix_pass_8(data, temp, count, hist, 3);
+}
 
-    md_vm_arena_temp_end(temp);
+static inline void radix_pass_idx_8(uint32_t* dst, const uint32_t* src, const uint32_t* keys, size_t count, const uint32_t hist[256], int pass) {
+    int bitoff = pass * 8;
+
+    // Make a working copy of the counts for prefix sums
+    uint32_t offsets[256];
+    MEMCPY(offsets, hist, sizeof(uint32_t) * 256);
+
+    // Prefix sum on offsets
+    uint32_t sum = 0;
+    for (int i = 0; i < 256; ++i) {
+        uint32_t v = offsets[i];
+        offsets[i] = sum;
+        sum += v;
+    }
+
+    // Scatter indices to dst using offsets
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t idx = src[i];
+        uint32_t key = keys[idx];
+        uint32_t id  = (key >> bitoff) & 255;
+        dst[offsets[id]++] = idx;
+    }
+}
+
+static void sort_radix_uint32(uint32_t* out_indices, const uint32_t* keys, size_t count, uint32_t* tmp_indices) {
+    // Initialize indices
+    for (size_t i = 0; i < count; ++i) {
+        out_indices[i] = (uint32_t)i;
+    }
+
+    // Precompute histograms for each pass (counts only)
+    uint32_t hist[4][256] = {0};
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t key = keys[i];
+        hist[0][(key >> 0)  & 255]++;
+        hist[1][(key >> 8)  & 255]++;
+        hist[2][(key >> 16) & 255]++;
+        hist[3][(key >> 24) & 255]++;
+    }
+
+    // 4-pass radix sort using precomputed counts
+    radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[0], 0);
+    radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[1], 1);
+    radix_pass_idx_8(tmp_indices, out_indices, keys, count, hist[2], 2);
+    radix_pass_idx_8(out_indices, tmp_indices, keys, count, hist[3], 3);
 }
 
 
@@ -4541,9 +4579,10 @@ size_t md_util_compute_structures(md_index_data_t* out_structures, const md_bond
         // Sort the indices within the structure for more coherent memory access
         size_t size = md_array_size(indices);
         if (size < 128) {
-            sort_arr(indices, (int)md_array_size(indices));
+            sort_arr(indices, (int)size);
         } else {
-            sort_radix_inplace_uint32((uint32_t*)indices, md_array_size(indices), temp_arena);
+            uint32_t* temp = md_vm_arena_push(temp_arena, size * sizeof(uint32_t));
+            sort_radix_inplace_uint32((uint32_t*)indices, size, temp);
         }
         
         // Here we should have exhausted every atom that is connected to index i.
@@ -8624,14 +8663,18 @@ void md_util_sort_spatial_vec3(uint32_t* source, const vec3_t* xyz, size_t count
 void md_util_sort_radix_inplace_uint32(uint32_t* data, size_t count) {
     if (!data || count <= 0) return;
 
-    md_allocator_i* temp_arena = md_vm_arena_create(GIGABYTES(1));
-    sort_radix_inplace_uint32(data, count, temp_arena);
-    md_vm_arena_destroy(temp_arena);
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+    uint32_t* temp = md_vm_arena_push(arena, count * sizeof(uint32_t));
+    sort_radix_inplace_uint32(data, count, temp);
+    md_vm_arena_destroy(arena);
 }
 
-// Non inplace version of radix sort which should fill in the source indices which represents the sorted order
-//void md_util_sort_radix_uint32(uint32_t* source_indices, const uint32_t* data, size_t count) {
-//}
+void md_util_sort_radix_uint32(uint32_t* out_indices, const uint32_t* in_keys, size_t count, uint32_t* tmp_indices) {
+    ASSERT(in_keys);
+    ASSERT(out_indices);
+    ASSERT(tmp_indices);
+    sort_radix_uint32(out_indices, in_keys, count, tmp_indices);
+}
 
 #define DEBUG_PRINT 0
 

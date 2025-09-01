@@ -806,11 +806,45 @@ UTEST(util, parse_smiles) {
 }
 
 UTEST(util, radix_sort) {
-    uint32_t arr[] = { 1, 278, 128312745, 4, 5, 0, 12382, 26, 12, 12, 7 };
+    uint32_t arr[] = { 1, 278, 128312745, 4, 5, 0, 12382, 26, 12, 14, 7 };
     size_t len = ARRAY_SIZE(arr);
+
+    uint32_t idx[16];
+    uint32_t tmp[16];
+
+    md_util_sort_radix_uint32(idx, arr, len, tmp);
+    for (size_t i = 0; i < len - 1; ++i) {
+        EXPECT_LE(arr[idx[i]], arr[idx[i+1]]);
+    }
+
     md_util_sort_radix_inplace_uint32(arr, len);
 
     for (size_t i = 0; i < len - 1; ++i) {
     	EXPECT_LE(arr[i], arr[i+1]);
     }
+
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    size_t N = 10000000;
+    uint32_t* values  = md_vm_arena_push(arena, N * sizeof(uint32_t));
+    uint32_t* indices = md_vm_arena_push(arena, N * sizeof(uint32_t));
+    uint32_t* temp    = md_vm_arena_push(arena, N * sizeof(uint32_t));
+
+    for (size_t i = 0; i < N; ++i) {
+        values[i] = (uint32_t)rand() * rand();
+    }
+
+    md_timestamp_t t0, t1;
+
+    t0 = md_time_current();
+    md_util_sort_radix_uint32(indices, values, N, temp);
+    t1 = md_time_current();
+
+    printf("Time for radix index sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
+
+    t0 = md_time_current();
+    md_util_sort_radix_inplace_uint32(values, N);
+    t1 = md_time_current();
+
+    printf("Time for radix inplace sort: %.4f ms\n", md_time_as_milliseconds(t1 - t0));
 }
