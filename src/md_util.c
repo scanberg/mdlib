@@ -3054,15 +3054,8 @@ static bool compute_covalent_bond_order(md_bond_data_t* bond, const md_atom_data
             int dbl_bond_targets[4];
             int dbl_bond_target_count = 0;
 
-            if (ring_idx == 15) {
-                while(0) {};
-            }
-
             // 8a: Try to resolve ambigous cases, by looking at neighbors
             for (int *it = atom_beg, j = 0; it != atom_end; ++it, ++j) {
-                if (*it == 801) {
-                    while(0) {};
-                }
                 int pi = pidx[j];
                 if (pi == 5 || pi == 13) {
                     int prev_pat_idx = (j == 0) ? pidx[ring_size-1] : pidx[j-1];
@@ -3961,10 +3954,6 @@ bool md_util_compute_residue_data(md_residue_data_t* res, md_atom_data_t* atom, 
         md_range_t range = md_residue_atom_range(*res, i);
         size_t len = (size_t)(range.end - range.beg);
 
-        if (i == 130) {
-            while(0) {};
-        }
-
         md_protein_backbone_atoms_t prot_atoms = {0};
         md_nucleic_backbone_atoms_t nucl_atoms = {0};
         if (MIN_RES_LEN <= len && len <= MAX_RES_LEN && (atom->type && md_util_protein_backbone_atoms_extract(&prot_atoms, atom->type + range.beg, len, range.beg)))
@@ -4167,11 +4156,12 @@ void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const f
 
     md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
 
-    int32_t* acc_idx = md_vm_arena_push_array(arena, int32_t, hbond_data->num_acceptors);
+    vec3_t*  acc_pos = md_vm_arena_push_array(arena, vec3_t,  hbond_data->num_acceptors);
     uint8_t* acc_cap = md_vm_arena_push_array(arena, uint8_t, hbond_data->num_acceptors);
 
     for (size_t i = 0; i < hbond_data->num_acceptors; ++i) {
-        acc_idx[i] = hbond_data->acceptors[i].idx;
+        int atom_idx = hbond_data->acceptors[i].idx;
+        acc_pos[i] = vec3_set(atom_x[atom_idx], atom_y[atom_idx], atom_z[atom_idx]);
         acc_cap[i] = (uint8_t)hbond_data->acceptors[i].num_of_lone_pairs;
     }
 
@@ -4180,7 +4170,7 @@ void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const f
     
     float radius = 3.0;
     
-    md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom_x, atom_y, atom_z, acc_idx, hbond_data->num_donors, unit_cell, arena);
+    md_spatial_hash_t* sh = md_spatial_hash_create_vec3(acc_pos, NULL, hbond_data->num_acceptors, unit_cell, arena);
 
     for (size_t i = 0; i < hbond_data->num_donors; ++i) {
         int d_idx = hbond_data->donors[i].d_idx;
@@ -4188,6 +4178,7 @@ void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const f
         payload.don = vec4_set(atom_x[d_idx], atom_y[d_idx], atom_z[d_idx], 0);
         payload.hyd = vec4_set(atom_x[h_idx], atom_y[h_idx], atom_z[h_idx], 0);
         payload.num_candidates = 0;
+
         md_spatial_hash_query(sh, vec3_from_vec4(payload.don), radius, hbond_iter, &payload);
 
         // Pick top candidates
@@ -4195,31 +4186,30 @@ void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const f
             hbond_candidate_t* arr = payload.candidates;
             // Sort them (insertion sort)
             int n = payload.num_candidates;
-            for (int i = 1; i < n; i++) {
-                int j = i - 1;
+            for (int j = 1; j < n; j++) {
+                int k = j - 1;
 
                 // descending order
-                while (j >= 0 && arr[j].score < arr[i].score) {
-                    arr[j + 1] = arr[j];
-                    j--;
+                while (k >= 0 && arr[k].score < arr[j].score) {
+                    arr[k + 1] = arr[k];
+                    k--;
                 }
-                arr[j + 1] = arr[i];
+                arr[k + 1] = arr[j];
             }
 
             // Try to form bonds
-            for (int i = 0; i < n ; ++i) {
-                int a_idx = arr[i].acc_idx;
+            for (int j = 0; j < n ; ++j) {
+                int a_idx = arr[j].acc_idx;
                 if (acc_cap[a_idx] > 0) {
-                    md_atom_pair_t bond = { a_idx, h_idx };
+                    md_atom_pair_t bond = { hbond_data->acceptors[a_idx].idx, h_idx };
                     md_array_push_no_grow(hbond_data->bonds, bond);
+                    hbond_data->num_bonds += 1;
                     acc_cap[a_idx] -= 1;
                     break;
                 }
             }
         }
     }
-
-    hbond_data->num_bonds = md_array_size(hbond_data->bonds);
 
     md_vm_arena_destroy(arena);
 }
@@ -8424,7 +8414,8 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
 
     if (flags & MD_UTIL_POSTPROCESS_HBOND_BIT) {
         if (mol->atom.element && mol->atom.count > 0 && mol->bond.count > 0) {
-            
+            md_util_hydrogen_bond_init(&mol->hydrogen_bond, &mol->atom, &mol->bond, alloc);
+            md_util_hydrogen_bond_identify(&mol->hydrogen_bond, mol->atom.x, mol->atom.y, mol->atom.z, &mol->unit_cell);
         }
     }
 
@@ -8462,11 +8453,6 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
                 for (size_t chain_idx = 0; chain_idx < mol->chain.count; ++chain_idx) {
                     md_range_t range = md_chain_residue_range(mol->chain, chain_idx);
                     for (md_residue_idx_t res_idx = range.beg; res_idx < range.end; ++res_idx) {
-
-                        if (res_idx == 130) {
-                            while(0) {};
-                        }
-
                         md_protein_backbone_atoms_t atoms = {-1, -1, -1, -1, -1};
                         md_range_t atom_range = md_residue_atom_range(mol->residue, res_idx);
                         if (md_util_protein_backbone_atoms_extract(&atoms, mol->atom.type + atom_range.beg, atom_range.end - atom_range.beg, atom_range.beg)) {
