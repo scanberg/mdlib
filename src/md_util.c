@@ -4062,7 +4062,7 @@ bool md_util_identify_ions(md_atom_data_t* atom, const md_bond_data_t* bond) {
     return true;
 }
 
-void md_util_init_hydrogen_bond_data(md_hydrogen_bond_data_t* hbond_data, md_atom_data_t* atom_data, const md_bond_data_t* bond_data, md_allocator_i* alloc) {
+void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, md_atom_data_t* atom_data, const md_bond_data_t* bond_data, md_allocator_i* alloc) {
     ASSERT(hbond_data);
     ASSERT(atom_data);
     ASSERT(bond_data);
@@ -4099,16 +4099,17 @@ void md_util_init_hydrogen_bond_data(md_hydrogen_bond_data_t* hbond_data, md_ato
         while (md_bond_iter_has_next(it)) {
             md_atom_idx_t j = md_bond_iter_atom_index(it);
             if (atom_data->element[j] == H) {
-                flags |= MD_FLAG_H_DONOR;
+                flags |= MD_FLAG_HBOND_DONOR;
                 md_hydrogen_bond_donor_t donor = {(md_atom_idx_t)i, j};
                 md_array_push(hbond_data->donors, donor, alloc);
+                hbond_data->num_donors += 1;
             }
             md_bond_iter_next(&it);
         }
         
         size_t num_conn = md_bond_conn_count(*bond_data, i);
         if (num_conn <= max_conn) {
-            flags |= MD_FLAG_H_ACCEPTOR;
+            flags |= MD_FLAG_HBOND_ACCEPTOR;
 
             if (atom_data->element[i] == S) {
                 num_of_lone_pairs = 4 - num_conn;
@@ -4124,6 +4125,105 @@ void md_util_init_hydrogen_bond_data(md_hydrogen_bond_data_t* hbond_data, md_ato
 
     md_array_ensure(hbond_data->bonds, 2 * hbond_data->num_donors, alloc);
 }
+
+typedef struct hbond_candidate_t {
+    float score;
+    int acc_idx;
+} hbond_candidate_t;
+
+typedef struct hbond_payload_t {
+    vec4_t don;
+    vec4_t hyd;
+    hbond_candidate_t candidates[16];
+    size_t num_candidates;
+    float min_angle_in_radians;
+} hbond_payload_t;
+
+static bool hbond_iter(const md_spatial_hash_elem_t* elem, void* param) {
+    hbond_payload_t* data = (hbond_payload_t*)param;
+    if (data->num_candidates == ARRAY_SIZE(data->candidates)) {
+        return false;
+    }
+
+    vec4_t acc = vec4_from_vec3(elem->xyz, 0);
+    float angle = vec4_angle(vec4_sub(data->don, data->hyd), vec4_sub(acc, data->hyd));
+    float dist  = vec4_length(vec4_sub(data->don, acc));
+    if (angle > data->min_angle_in_radians) {
+        float h_dist = vec4_length(vec4_sub(data->hyd, acc));
+        float score = cosf(PI - angle) / h_dist;
+        hbond_candidate_t candidate = {
+            .score = score,
+            .acc_idx = elem->idx,
+        };
+        data->candidates[data->num_candidates++] = candidate;
+    }
+
+    return true;
+}
+
+void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z, const md_unit_cell_t* unit_cell) {
+    hbond_data->num_bonds = 0;
+    md_array_shrink(hbond_data->bonds, 0);
+
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    int32_t* acc_idx = md_vm_arena_push_array(arena, int32_t, hbond_data->num_acceptors);
+    uint8_t* acc_cap = md_vm_arena_push_array(arena, uint8_t, hbond_data->num_acceptors);
+
+    for (size_t i = 0; i < hbond_data->num_acceptors; ++i) {
+        acc_idx[i] = hbond_data->acceptors[i].idx;
+        acc_cap[i] = (uint8_t)hbond_data->acceptors[i].num_of_lone_pairs;
+    }
+
+    hbond_payload_t payload = {0};
+    payload.min_angle_in_radians = DEG_TO_RAD(150);
+    
+    float radius = 3.0;
+    
+    md_spatial_hash_t* sh = md_spatial_hash_create_soa(atom_x, atom_y, atom_z, acc_idx, hbond_data->num_donors, unit_cell, arena);
+
+    for (size_t i = 0; i < hbond_data->num_donors; ++i) {
+        int d_idx = hbond_data->donors[i].d_idx;
+        int h_idx = hbond_data->donors[i].h_idx;
+        payload.don = vec4_set(atom_x[d_idx], atom_y[d_idx], atom_z[d_idx], 0);
+        payload.hyd = vec4_set(atom_x[h_idx], atom_y[h_idx], atom_z[h_idx], 0);
+        payload.num_candidates = 0;
+        md_spatial_hash_query(sh, vec3_from_vec4(payload.don), radius, hbond_iter, &payload);
+
+        // Pick top candidates
+        if (payload.num_candidates > 0) {
+            hbond_candidate_t* arr = payload.candidates;
+            // Sort them (insertion sort)
+            int n = payload.num_candidates;
+            for (int i = 1; i < n; i++) {
+                int j = i - 1;
+
+                // descending order
+                while (j >= 0 && arr[j].score < arr[i].score) {
+                    arr[j + 1] = arr[j];
+                    j--;
+                }
+                arr[j + 1] = arr[i];
+            }
+
+            // Try to form bonds
+            for (int i = 0; i < n ; ++i) {
+                int a_idx = arr[i].acc_idx;
+                if (acc_cap[a_idx] > 0) {
+                    md_atom_pair_t bond = { a_idx, h_idx };
+                    md_array_push_no_grow(hbond_data->bonds, bond);
+                    acc_cap[a_idx] -= 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    hbond_data->num_bonds = md_array_size(hbond_data->bonds);
+
+    md_vm_arena_destroy(arena);
+}
+
 
 // @NOTE(Robin): This could certainly be improved to incorporate more characters
 // Perhaps first A-Z, then [A-Z]0-9, then AA-ZZ etc.

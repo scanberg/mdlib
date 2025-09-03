@@ -81,6 +81,25 @@ UTEST_F_TEARDOWN(util) {
     md_vm_arena_destroy(utest_fixture->alloc);
 }
 
+UTEST(util, hbonds) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
+
+    md_molecule_t mol = {0};
+    md_gro_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), NULL, arena);
+    md_util_molecule_postprocess(&mol, arena, MD_UTIL_POSTPROCESS_ALL);
+
+    md_hydrogen_bond_data_t hbond_data = {0};
+    md_util_hydrogen_bond_init(&hbond_data, &mol.atom, &mol.bond, arena);
+
+    EXPECT_LT(0, hbond_data.num_donors);
+    EXPECT_LT(0, hbond_data.num_acceptors);
+
+    md_util_hydrogen_bond_identify(&hbond_data, mol.atom.x, mol.atom.y, mol.atom.z, &mol.unit_cell);
+    EXPECT_LT(0, hbond_data.num_bonds);
+
+    md_vm_arena_destroy(arena);
+} 
+
 UTEST_F(util, bonds) {
     EXPECT_EQ(152,    utest_fixture->mol_ala.bond.count);
     EXPECT_EQ(55,     utest_fixture->mol_pftaa.bond.count);

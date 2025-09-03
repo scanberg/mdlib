@@ -1427,7 +1427,7 @@ void md_spatial_hash_query(const md_spatial_hash_t* spatial_hash, vec3_t pos, fl
         return;
     }
 
-    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ANY) {
+    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ALL) {
         query_periodic(spatial_hash, &pos, 1, radius, iter, user_param);
     } else {
         query(spatial_hash, &pos, 1, radius, iter, user_param);
@@ -1441,7 +1441,7 @@ void md_spatial_hash_query_multi(const md_spatial_hash_t* spatial_hash, const ve
         return;
     }
 
-    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ANY) {
+    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ALL) {
         query_periodic(spatial_hash, pos, count, radius, iter, user_param);
     } else {
         query(spatial_hash, pos, count, radius, iter, user_param);
@@ -1455,7 +1455,7 @@ void md_spatial_hash_query_batch(const md_spatial_hash_t* spatial_hash, vec3_t p
         return;
     }
 
-    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ANY) {
+    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ALL) {
         query_periodic_batch(spatial_hash, &pos, 1, radius, iter, user_param);
     } else {
         query_batch(spatial_hash, &pos, 1, radius, iter, user_param);
@@ -1470,7 +1470,7 @@ void md_spatial_hash_query_multi_batch(const md_spatial_hash_t* spatial_hash, co
     }
 
     // This is for non periodic lookup
-    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ANY) {
+    if (spatial_hash->unit_cell.flags & MD_UNIT_CELL_FLAG_PBC_ALL) {
         query_periodic_batch(spatial_hash, pos, count, radius, iter, user_param);
     } else {
         query_batch(spatial_hash, pos, count, radius, iter, user_param);

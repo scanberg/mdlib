@@ -483,7 +483,6 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     md_array_ensure(mol->atom.resname, capacity, alloc);
     md_array_ensure(mol->atom.flags,   capacity, alloc);
 
-    int32_t prev_res_id = -1;
     char prev_chain_id = -1;
 
     for (size_t i = beg_atom_index; i < end_atom_index; ++i) {
@@ -508,7 +507,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         }
 
         if (data->atom_coordinates[i].flags & MD_PDB_COORD_FLAG_TERMINATOR) {
-            flags |= MD_FLAG_CHAIN_END;
+            flags |= MD_FLAG_SEQ_TERM;
         }
 
         if (chain_id != ' ') {
@@ -520,25 +519,11 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
             md_array_push(chain_ids, make_label(chain_str), temp_alloc);
 
             if (chain_id != prev_chain_id) {
-                if (prev_chain_id != -1) {
-                    *md_array_last(mol->atom.flags) |= MD_FLAG_CHAIN_END;
-                }
-                flags |= MD_FLAG_CHAIN_BEG;
-                md_array_push(chain_ranges, ((md_range_t){(int)i, (int)i}), temp_alloc);
-                prev_chain_id = chain_id;
+                flags |= MD_FLAG_SEQ_TERM;
             }
 
             ASSERT(chain_ranges);
             md_array_last(chain_ranges)->end += 1;
-        }
-
-        if (res_id != prev_res_id) {
-            if (prev_res_id != -1) {
-				*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
-			}
-
-            flags |= MD_FLAG_RES_BEG;
-            prev_res_id = res_id;
         }
 
         mol->atom.count += 1;
@@ -558,14 +543,6 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         }
         // Copy chain ids if they are filled (meaning they had some form of entry)
         md_array_push_array(mol->chain.id, chain_ids, md_array_size(chain_ids), alloc);
-    }
-
-    if (mol->atom.count > 0) {
-        md_flags_t flags = MD_FLAG_RES_END;
-        if (mol->chain.id && !str_eq(LBL_TO_STR(mol->chain.id[mol->atom.count - 1]), STR_LIT(" "))) {
-            flags |= MD_FLAG_CHAIN_END;
-        }
-        mol->atom.flags[mol->atom.count - 1] |= flags;
     }
 
     if (data->num_cryst1 > 0) {

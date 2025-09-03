@@ -174,7 +174,6 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     mol->atom.resname = md_array_create(md_label_t, capacity, alloc);
     mol->atom.flags   = md_array_create(md_flags_t, capacity, alloc);
 
-    int32_t prev_res_id = -1;
     for (size_t i = 0; i < data->num_atoms; ++i) {
         const float x = data->atom_data[i].x * 10.0f; // convert from nm to Ångström
         const float y = data->atom_data[i].y * 10.0f; // convert from nm to Ångström
@@ -183,15 +182,6 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         str_t res_name  = (str_t){data->atom_data[i].res_name,  strnlen(data->atom_data[i].res_name, sizeof(data->atom_data[i].res_name))};
         md_residue_id_t res_id = data->atom_data[i].res_id;
         md_flags_t flags = 0;
-
-        if (prev_res_id != res_id) {
-			flags |= MD_FLAG_RES_BEG;
-
-            if (prev_res_id != -1) {
-            	*md_array_last(mol->atom.flags) |= MD_FLAG_RES_END;
-            }
-            prev_res_id = res_id;
-        }
 
         mol->atom.count += 1;
         mol->atom.x[i] = x;
