@@ -6,6 +6,7 @@
 #include <core/md_str.h>
 #include <core/md_intrinsics.h>
 #include <core/md_os.h>
+#include <core/md_log.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_molecule.h>
@@ -380,20 +381,22 @@ static inline ivec4_t ivec4_sub(ivec4_t a, ivec4_t b) {
 }
 
 typedef struct md_spatial_acc_t {
+    size_t num_elems;
     float* elem_x;
     float* elem_y;
     float* elem_z;
     uint32_t* elem_idx;
-    size_t num_elems;
 
+    size_t num_cells;
+    uint32_t* cell_off;
     uint32_t  cell_min[3];
     uint32_t  cell_max[3];
     uint32_t  cell_dim[3];
-    uint32_t* cell_off;
-    size_t num_cells;
 
     float G00, G11, G22;
     float H01, H02, H12;
+
+    uint32_t flags;
 
     md_allocator_i* alloc;
 } md_spatial_acc_t;
@@ -412,8 +415,14 @@ static void md_spatial_acc_free(md_spatial_acc_t* acc) {
     MEMSET(acc, 0, sizeof(md_spatial_acc_t));
 }
 
-static void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double cell_ext, const md_unitcell_t* unitcell, md_allocator_i* alloc)
-{
+static void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double cell_ext, const md_unitcell_t* unitcell) {
+    ASSERT(acc);
+    if (!acc->alloc) {
+        MD_LOG_ERROR("Must specify allocator within spatial acc");
+    }
+
+    md_allocator_i* alloc = acc->alloc;
+
     double A[3][3]  = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     double Ai[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     uint32_t flags = 0;
@@ -481,7 +490,7 @@ static void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const 
         CLAMP((uint32_t)(cz / CELL_EXT + 0.5), 1, 1024),
     };
 
-    const uint32_t c0 = cell_dim[0];
+    const uint32_t c0  = cell_dim[0];
     const uint32_t c01 = cell_dim[0] * cell_dim[1];
     const size_t num_cells = (size_t)cell_dim[0] * cell_dim[1] * cell_dim[2];
 
@@ -604,24 +613,25 @@ static void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const 
     acc->H01 = (float)H01;
     acc->H02 = (float)H02;
     acc->H12 = (float)H12;
-    acc->alloc = alloc;
+
+    acc->flags = flags;
 
     md_temp_set_pos_back(pos);
 }
 
 static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff,
                                              const md_unitcell_t* unit_cell, dist_pair_t* out_pairs) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));  // 1 GiB arena
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));
 
-    md_spatial_acc_t acc = {0};
-    md_spatial_acc_init(&acc, in_x, in_y, in_z, NULL, num_points, cutoff, unit_cell, arena);
+    md_spatial_acc_t acc = {.alloc = arena};
+    md_spatial_acc_init(&acc, in_x, in_y, in_z, NULL, num_points, cutoff, unit_cell);
 
     // Pair counting
     const float r2_cut = cutoff * cutoff;
     size_t count = 0;
 
 // Macros for cell offsets/lengths in the sorted array
-#define CELL_INDEX(x, y, z) ((uint32_t)z * c01 + (uint32_t)y * c0 + (uint32_t)x)
+#define CELL_INDEX(x, y, z) ((size_t)z * c01 + (size_t)y * c0 + (size_t)x)
 #define CELL_OFFSET(ci) (cell_offset[(ci)])
 #define CELL_LENGTH(ci) (cell_offset[(ci) + 1] - cell_offset[(ci)])
 
@@ -640,23 +650,23 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
     const float* element_z = acc.elem_z;
     const uint32_t* element_i = acc.elem_idx;
     const uint32_t* cell_offset = acc.cell_off;
-    const uint32_t* cell_dim = acc.cell_dim;
-    const uint32_t c0 = cell_dim[0];
-    const uint32_t c01 = cell_dim[0] * cell_dim[1];
     const uint32_t num_cells = acc.num_cells;
+    const uint32_t cdim[3] = {acc.cell_dim[0], acc.cell_dim[1], acc.cell_dim[2]};
     const uint32_t cmin[3] = {acc.cell_min[0], acc.cell_min[1], acc.cell_min[2]};
     const uint32_t cmax[3] = {acc.cell_max[0], acc.cell_max[1], acc.cell_max[2]};
+    const uint32_t c0  = cdim[0];
+    const uint32_t c01 = cdim[0] * cdim[1];
 
-    int periodic_x = 1;
-    int periodic_y = 1;
-    int periodic_z = 1;
+    const bool periodic_x = acc.flags & MD_UNITCELL_PBC_X;
+    const bool periodic_y = acc.flags & MD_UNITCELL_PBC_Y;
+    const bool periodic_z = acc.flags & MD_UNITCELL_PBC_Z;
 
     for (uint32_t cz = cmin[2]; cz <= cmax[2]; ++cz) {
         for (uint32_t cy = cmin[1]; cy <= cmax[1]; ++cy) {
             for (uint32_t cx = cmin[0]; cx <= cmax[0]; ++cx) {
-                const uint32_t ci    = CELL_INDEX(cx, cy, cz);
-                const uint32_t off_i = CELL_OFFSET(ci);
-                const uint32_t len_i = CELL_LENGTH(ci);
+                const size_t ci    = CELL_INDEX(cx, cy, cz);
+                const size_t off_i = CELL_OFFSET(ci);
+                const size_t len_i = CELL_LENGTH(ci);
 
                 if (len_i == 0) continue;
                 
@@ -670,7 +680,7 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
                     const md_256 x = md_mm256_set1_ps(elem_i_x[a]);
                     const md_256 y = md_mm256_set1_ps(elem_i_y[a]);
                     const md_256 z = md_mm256_set1_ps(elem_i_z[a]);
-                    uint32_t i = elem_i_idx[a];
+                    const uint32_t i = elem_i_idx[a];
 
                     uint32_t off = a + 1;
                     uint32_t len = len_i - off;
@@ -691,33 +701,33 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
                     float dz = 0.0f;
 
                     if (periodic_x) {
-                        if (nx >= (int)cell_dim[0]) {
-                            nx -= cell_dim[0];
+                        if (nx >= (int)cdim[0]) {
+                            nx -= cdim[0];
                             dx  = -1.0f;
                         } else if (nx < 0) {
-                            nx += cell_dim[0];
+                            nx += cdim[0];
                             dx  = 1.0f;
                         }
                     } else if (nx < cmin[0] || nx > (int)cmax[0]) {
                         continue;
                     }
                     if (periodic_y) {
-                        if (ny >= (int)cell_dim[1]) {
-                            ny -= cell_dim[1];
+                        if (ny >= (int)cdim[1]) {
+                            ny -= cdim[1];
                             dy  = -1.0f;
                         } else if (ny < 0) {
-                            ny += cell_dim[1];
+                            ny += cdim[1];
                             dy  = 1.0f;
                         }
                     } else if (ny < cmin[1] || ny > (int)cmax[1]) {
                         continue;
                     }
                     if (periodic_z) {
-                        if (nz >= (int)cell_dim[2]) {
-                            nz -= cell_dim[2];
+                        if (nz >= (int)cdim[2]) {
+                            nz -= cdim[2];
                             dz  = -1.0f;
                         } else if (nz < 0) {
-                            nz += cell_dim[2];
+                            nz += cdim[2];
                             dz  = 1.0f;
                         }
                     } else if (nz < cmin[2] || nz > (int)cmax[2]) {

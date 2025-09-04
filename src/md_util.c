@@ -4189,7 +4189,18 @@ static bool hbond_iter(const md_spatial_hash_elem_t* elem, void* param) {
     return true;
 }
 
-void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z, const md_unit_cell_t* unit_cell) {
+void md_util_hydrogen_bond_calc(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z,
+                                    const md_unitcell_t* unitcell, const md_hydrogen_bond_param_t* in_param) {
+    ASSERT(hbond_data);
+    ASSERT(atom_x);
+    ASSERT(atom_y);
+    ASSERT(atom_z);
+
+    md_hydrogen_bond_param_t param = md_hydrogen_bond_param_default();
+    if (in_param) {
+        MEMCPY(&param, in_param, sizeof(md_hydrogen_bond_param_t));
+    }
+
     hbond_data->num_bonds = 0;
     md_array_shrink(hbond_data->bonds, 0);
 
@@ -4205,11 +4216,10 @@ void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const f
     }
 
     hbond_payload_t payload = {0};
-    payload.min_angle_in_radians = DEG_TO_RAD(150);
+    payload.min_angle_in_radians = DEG_TO_RAD(param.min_angle);
+    const float radius = param.max_dist;
     
-    float radius = 3.0;
-    
-    md_spatial_hash_t* sh = md_spatial_hash_create_vec3(acc_pos, NULL, hbond_data->num_acceptors, unit_cell, arena);
+    md_spatial_hash_t* sh = md_spatial_hash_create_vec3(acc_pos, NULL, hbond_data->num_acceptors, unitcell, arena);
 
     for (size_t i = 0; i < hbond_data->num_donors; ++i) {
         int d_idx = hbond_data->donors[i].d_idx;
@@ -8351,7 +8361,7 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
     if (flags & MD_UTIL_POSTPROCESS_HBOND_BIT) {
         if (mol->atom.element && mol->atom.count > 0 && mol->bond.count > 0) {
             md_util_hydrogen_bond_init(&mol->hydrogen_bond, &mol->atom, &mol->bond, alloc);
-            md_util_hydrogen_bond_identify(&mol->hydrogen_bond, mol->atom.x, mol->atom.y, mol->atom.z, &mol->unit_cell);
+            md_util_hydrogen_bond_calc(&mol->hydrogen_bond, mol->atom.x, mol->atom.y, mol->atom.z, &mol->unitcell, NULL);
         }
     }
 

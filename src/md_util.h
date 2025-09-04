@@ -101,7 +101,44 @@ void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_mol
 //bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
 void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, md_atom_data_t* atom_data, const md_bond_data_t* bond_data, md_allocator_i* alloc);
-void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z, const md_unit_cell_t* unit_cell);
+
+enum {
+    MD_UTIL_HYDROGEN_BOND_DONOR_N = 0x01,
+    MD_UTIL_HYDROGEN_BOND_DONOR_O = 0x02,
+    MD_UTIL_HYDROGEN_BOND_DONOR_S = 0x04,
+    MD_UTIL_HYDROGEN_BOND_DONOR_ALL = MD_UTIL_HYDROGEN_BOND_DONOR_N | MD_UTIL_HYDROGEN_BOND_DONOR_O | MD_UTIL_HYDROGEN_BOND_DONOR_S,
+    MD_UTIL_HYDROGEN_BOND_ACCEPTOR_N = 0x10,
+    MD_UTIL_HYDROGEN_BOND_ACCEPTOR_O = 0x20,
+    MD_UTIL_HYDROGEN_BOND_ACCEPTOR_S = 0x40,
+    MD_UTIL_HYDROGEN_BOND_ACCEPTOR_ALL = MD_UTIL_HYDROGEN_BOND_ACCEPTOR_N | MD_UTIL_HYDROGEN_BOND_ACCEPTOR_O | MD_UTIL_HYDROGEN_BOND_ACCEPTOR_S,
+};
+
+typedef uint32_t md_util_hydrogen_bond_type_flags_t;
+
+// Paremeters for hydrogen bond calculation
+typedef struct md_hydrogen_bond_param_t {
+    double max_dist;    // Maximum distance between donor and acceptor
+    double min_angle;   // Minimum angle (in degrees) between donor-hydrogen-acceptor
+
+    md_util_hydrogen_bond_type_flags_t flags;  // Combination of MD_UTIL_HYDROGEN_BOND_
+} md_hydrogen_bond_param_t;
+
+static inline md_hydrogen_bond_param_t md_hydrogen_bond_param_default(void) {
+    md_hydrogen_bond_param_t param = {
+        .max_dist = 3.0,
+        .min_angle = 150.0,
+        .flags = MD_UTIL_HYDROGEN_BOND_DONOR_ALL | MD_UTIL_HYDROGEN_BOND_ACCEPTOR_ALL,
+    };
+    return param;
+}
+
+// Attempts to identify hydrogen bonds based on distance and angle criteria
+// The identified hydrogen bonds are stored in hbond_data
+// atom_x, atom_y, atom_z: Arrays of atom coordinates
+// unitcell: Periodic boundary conditions, (optional, can be NULL for non-periodic systems)
+// desc: Descriptor for the hydrogen bond calculation (optional, can be NULL for default values)
+void md_util_hydrogen_bond_calc(md_hydrogen_bond_data_t* in_out_hbond_data, const float* in_x, const float* in_y, const float* in_z,
+                                    const md_unitcell_t* opt_in_unitcell, const md_hydrogen_bond_param_t* opt_in_param);
 
 // Computes chains from connected residues
 // The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
