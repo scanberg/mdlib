@@ -520,6 +520,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
 
             if (chain_id != prev_chain_id) {
                 md_array_push(chain_ranges, ((md_range_t){(int)i, (int)i}), temp_alloc);
+                flags |= MD_FLAG_SEQ_TERM;
             }
 
             ASSERT(chain_ranges);

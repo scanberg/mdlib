@@ -62,8 +62,8 @@ enum {
     MD_FLAG_SP2                 = 0x20000,
     MD_FLAG_SP3                 = 0x40000,
     MD_FLAG_AROMATIC            = 0x80000,
-    MD_FLAG_H_DONOR             = 0x100000,
-    MD_FLAG_H_ACCEPTOR          = 0x200000,
+    MD_FLAG_HBOND_DONOR         = 0x100000,
+    MD_FLAG_HBOND_ACCEPTOR      = 0x200000,
 };
 
 // In bonds, the order and flags are merged where the lower 4 bits encode the order and the upper 4 bits encode flags.

@@ -100,6 +100,9 @@ void md_util_mask_grow_by_radius(struct md_bitfield_t* mask, const struct md_mol
 
 //bool md_util_compute_hydrogen_bonds(md_bond_data_t* dst, const float* atom_x, const float* atom_y, const float* atom_z, const md_element_t* atom_elem, int64_t atom_count, vec3_t pbc_ext, struct md_allocator_i* alloc);
 
+void md_util_hydrogen_bond_init(md_hydrogen_bond_data_t* hbond_data, md_atom_data_t* atom_data, const md_bond_data_t* bond_data, md_allocator_i* alloc);
+void md_util_hydrogen_bond_identify(md_hydrogen_bond_data_t* hbond_data, const float* atom_x, const float* atom_y, const float* atom_z, const md_unit_cell_t* unit_cell);
+
 // Computes chains from connected residues
 // The definition of a chain here is a linear sequence of residues which are connected by covalent bonds.
 // This means that single residues which are not connected to any other residue will not classify as a chain.
