@@ -229,7 +229,7 @@ done:
     return atom->count > 0;
 }
 
-static bool mmcif_parse_cell(md_unit_cell_t* cell, md_buffered_reader_t* reader) {
+static bool mmcif_parse_cell(md_unitcell_t* cell, md_buffered_reader_t* reader) {
     ASSERT(cell);
     ASSERT(reader);
     str_t line;
@@ -275,7 +275,7 @@ static bool mmcif_parse_cell(md_unit_cell_t* cell, md_buffered_reader_t* reader)
         if (param[0] == 90.0 && param[1] == 90.0 && param[2] == 90.0 && param[3] == 1.0 && param[4] == 1.0 && param[5] == 1.0) {
             // This is the identity matrix, and in such case, we assume there is no unit cell (no periodic boundary conditions)
         } else {
-            *cell = md_util_unit_cell_from_extent_and_angles(param[3],param[4],param[5],param[0],param[1],param[2]);
+            *cell = md_unitcell_from_extent_and_angles(param[3], param[4], param[5], param[0], param[1], param[2]);
         }
         return true;
     }
@@ -297,7 +297,7 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
                 }
                 atom_site_found = true;
             } else if (str_eq_cstr_n(line, "_cell.", 6)) {
-                if (!mmcif_parse_cell(&mol->unit_cell, reader)) {
+                if (!mmcif_parse_cell(&mol->unitcell, reader)) {
                     MD_LOG_ERROR("Failed to parse _cell");
                     return false;
                 }

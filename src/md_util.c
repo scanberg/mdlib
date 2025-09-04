@@ -2084,7 +2084,7 @@ bool md_util_backbone_angles_compute(md_backbone_angles_t backbone_angles[], siz
                 vec3_sub(n_next, c),
             };
 
-            md_util_min_image_vec3(d, ARRAY_SIZE(d), &mol->unit_cell);
+            md_util_min_image_vec3(d, ARRAY_SIZE(d), &mol->unitcell);
 
             backbone_angles[i].phi = vec3_dihedral_angle(d[0], d[1], d[2]);
             backbone_angles[i].psi = vec3_dihedral_angle(d[1], d[2], d[3]);
@@ -3270,40 +3270,42 @@ static inline int simd_covalent_bond_heuristic(md_256 d2, md_256 cov_rad_a, md_2
     return md_mm256_movemask_ps(md_mm256_and_ps(mask_d2, mask_rad));
 }
 
-static inline float distance_squared(vec4_t dx, const md_unit_cell_t* cell) {
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec4_t p  = vec4_from_vec3(mat3_diag(cell->basis), 0);
-        const vec4_t rp = vec4_from_vec3(mat3_diag(cell->inv_basis), 0);
+static inline float distance_squared(vec4_t dx, const md_unitcell_t* cell) {
+    if (cell->flags & MD_UNITCELL_ORTHO) {
+        const vec4_t p  = md_unitcell_diag_vec4(cell);
+        const vec4_t rp = vec4_set(p.x != 0.0f ? 1.0f / p.x : 0.0f, p.y != 0.0f ? 1.0f / p.y : 0.0f, p.z != 0.0f ? 1.0f / p.z : 0.0f, 0.0f);
         const vec4_t d  = vec4_sub(dx, vec4_mul(vec4_round(vec4_mul(dx, rp)), p));
         dx = vec4_blend(d, dx, vec4_cmp_eq(p, vec4_zero()));
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        minimum_image_triclinic(dx.elem, cell->basis.elem);
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        mat3_t basis = md_unitcell_basis_mat3(cell);
+        minimum_image_triclinic(dx.elem, basis.elem);
     }
     return vec4_length_squared(dx);
 }
 
-static inline md_256 simd_distance_squared(const md_256 dx[3], const md_unit_cell_t* cell) {
+static inline md_256 simd_distance_squared(const md_256 dx[3], const md_unitcell_t* cell) {
     md_256 d[3] = {
         dx[0],
         dx[1],
         dx[2],
     };
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+    mat3_t basis = md_unitcell_basis_mat3(cell);
+    if (cell->flags & MD_UNITCELL_ORTHO) {
         md_256 p[3] = {
-            md_mm256_set1_ps(cell->basis.elem[0][0]),
-            md_mm256_set1_ps(cell->basis.elem[1][1]),
-            md_mm256_set1_ps(cell->basis.elem[2][2]),
+            md_mm256_set1_ps(basis.elem[0][0]),
+            md_mm256_set1_ps(basis.elem[1][1]),
+            md_mm256_set1_ps(basis.elem[2][2]),
         };
         md_256 rp[3] = {
-            md_mm256_set1_ps(cell->inv_basis.elem[0][0]),
-            md_mm256_set1_ps(cell->inv_basis.elem[1][1]),
-            md_mm256_set1_ps(cell->inv_basis.elem[2][2]),
+            md_mm256_set1_ps(basis.elem[0][0] ? 1.0f / basis.elem[0][0] : 0.0f),
+            md_mm256_set1_ps(basis.elem[1][1] ? 1.0f / basis.elem[1][1] : 0.0f),
+            md_mm256_set1_ps(basis.elem[2][2] ? 1.0f / basis.elem[2][2] : 0.0f),
         };
         d[0] = md_mm256_minimage_ps(d[0], p[0], rp[0]);
         d[1] = md_mm256_minimage_ps(d[1], p[1], rp[1]);
         d[2] = md_mm256_minimage_ps(d[2], p[2], rp[2]);
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        simd_minimum_image_triclinic(d, cell->basis.elem);
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        simd_minimum_image_triclinic(d, basis.elem);
     }
     return md_mm256_fmadd_ps(d[0], d[0], md_mm256_fmadd_ps(d[1], d[1], md_mm256_mul_ps(d[2], d[2])));
 }
@@ -3580,7 +3582,7 @@ static const float coord_r_max[Num_Elements][Num_Elements] = {
     [U]  = { [O]=3.00f, [N]=3.00f },
 };
 
-static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unit_cell_t* cell, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
+static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, const md_unitcell_t* cell, md_range_t range_a, md_range_t range_b, md_allocator_i* alloc, md_allocator_i* temp_arena) {
     ASSERT(bond);
     ASSERT(x);
     ASSERT(y);
@@ -3632,7 +3634,6 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
                 };
                 const md_256 d2 = simd_distance_squared(dx, cell);
                 int cov_mask    = simd_bond_heuristic(d2, r_min_cov,   r_max_cov);
-                //int coord_mask  = simd_bond_heuristic(d2, r_min_coord, r_max_coord);
 
                 int mask = cov_mask;
 
@@ -3701,7 +3702,7 @@ static size_t find_bonds_in_ranges(md_bond_data_t* bond, const float* x, const f
     return bond->count - pre_count;
 }
 
-static inline void find_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, size_t count, const md_unit_cell_t* cell) {
+static inline void find_bonds(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* element, size_t count, const md_unitcell_t* cell) {
 
 }
 
@@ -3717,7 +3718,7 @@ static inline bool aabb_overlap(aabb_t a, aabb_t b) {
         (a.min_box.z <= b.max_box.z && a.max_box.z >= b.min_box.z);
 }
 
-void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* elem, size_t atom_count, const md_residue_data_t* res, const md_unit_cell_t* cell, md_allocator_i* alloc) {
+void md_util_covalent_bonds_compute_exp(md_bond_data_t* bond, const float* x, const float* y, const float* z, const md_element_t* elem, size_t atom_count, const md_residue_data_t* res, const md_unitcell_t* cell, md_allocator_i* alloc) {
     ASSERT(bond);
     ASSERT(alloc);
 
@@ -4681,7 +4682,7 @@ void md_util_mask_grow_by_radius(md_bitfield_t* mask, const struct md_molecule_t
         count = md_bitfield_iter_extract_indices(indices, num_atoms, md_bitfield_iter_create(&tmp_bf));
     }
 
-    md_spatial_hash_t* ctx = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, indices, count, &mol->unit_cell, arena);
+    md_spatial_hash_t* ctx = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, indices, count, &mol->unitcell, arena);
     
     md_bitfield_t old_mask = md_bitfield_create(arena);
     md_bitfield_copy(&old_mask, mask);
@@ -4859,7 +4860,7 @@ void md_util_aabb_compute_vec4(float out_aabb_min[3], float out_aabb_max[3], con
 }
 
 
-void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count, const md_unit_cell_t* cell) {
+void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const float* in_x, const float* in_y, const float* in_z, const float* in_r, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     ASSERT(out_basis);
     ASSERT(out_ext_min);
     ASSERT(out_ext_max);
@@ -4870,8 +4871,8 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
     double cov[3][3] = {0};
     if (cell) {
         vec4_t ref = vec4_from_vec3(com, 0);
-        if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-            vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+        if (cell->flags & MD_UNITCELL_ORTHO) {
+            vec4_t ext = md_unitcell_diag_vec4(cell);
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
@@ -4887,11 +4888,12 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
                 cov[2][1] += c.z * c.y;
                 cov[2][2] += c.z * c.z;
             }
-        } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+            mat3_t basis = md_unitcell_basis_mat3(cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = vec4_set(in_x[idx], in_y[idx], in_z[idx], 0.0f);
-                deperiodize_triclinic(c.elem, ref.elem, cell->basis.elem);
+                deperiodize_triclinic(c.elem, ref.elem, basis.elem);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -4939,7 +4941,7 @@ void md_util_oobb_compute(float out_basis[3][3], float out_ext_min[3], float out
     MEMCPY(out_ext_max, &max_ext, sizeof(vec3_t));
 }
 
-void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unit_cell_t* cell) {
+void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], float out_ext_max[3], const vec4_t* in_xyzr, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     ASSERT(out_basis);
     ASSERT(out_ext_min);
     ASSERT(out_ext_max);
@@ -4950,8 +4952,8 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
     double cov[3][3] = {0};
     if (cell) {
         vec4_t ref = vec4_from_vec3(com, 0);
-        if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-            vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+        if (cell->flags & MD_UNITCELL_ORTHO) {
+            vec4_t ext = md_unitcell_diag_vec4(cell);
 
             for (size_t i = 0; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
@@ -4967,11 +4969,12 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
                 cov[2][1] += c.z * c.y;
                 cov[2][2] += c.z * c.z;
             }
-        } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+            mat3_t basis = md_unitcell_basis_mat3(cell);
             for (size_t i = 1; i < count; ++i) {
                 const int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
                 vec4_t c = in_xyzr[idx];
-                deperiodize_triclinic(c.elem, ref.elem, cell->basis.elem);
+                deperiodize_triclinic(c.elem, ref.elem, basis.elem);
 
                 cov[0][0] += c.x * c.x;
                 cov[0][1] += c.x * c.y;
@@ -7068,12 +7071,15 @@ static void _com_pbc_iw(float out_com[3], const float* in_x, const float* in_y, 
 }
 
 // This is uses the trigonometric com algorithm presented in: INSERT REF HERE
-static void com_pbc(float* out_com, const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+static void com_pbc(float* out_com, const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
+
+    mat3_t A  = md_unitcell_basis_mat3(cell);
+    mat3_t Ai = md_unitcell_inv_basis_mat3(cell);
 
     // Should transform cartesian coordinates to fractional coordinates and scale by 2 pi
-    mat3_t M = mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), unit_cell->inv_basis);
+    mat3_t M = mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), Ai);
     // Inverse transform
-    mat3_t I = mat3_mul(unit_cell->basis, mat3_scale(1.0/TWO_PI, 1.0/TWO_PI, 1.0/TWO_PI));
+    mat3_t I = mat3_mul(A, mat3_scale(1.0/TWO_PI, 1.0/TWO_PI, 1.0/TWO_PI));
 
     // Here we select the correct internal version based on the available inputs
     if (in_w) {
@@ -7106,17 +7112,18 @@ static void com_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_id
     MEMCPY(out_com, &acc, sizeof(float) * 3);
 }
 
-static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* cell) {
     ASSERT(out_com);
     ASSERT(in_xyzw);
-    ASSERT(unit_cell);
+    ASSERT(cell);
 
     vec4_t acc_c = {0};
     vec4_t acc_s = {0};
     vec4_t acc_xyzw = {0};
 
-    if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec3_t ext = mat3_diag(unit_cell->basis);
+    uint32_t flags = md_unitcell_flags(cell);
+    if (flags & MD_UNITCELL_ORTHO) {
+        const vec3_t ext = md_unitcell_diag_vec3(cell);
         const vec4_t scl = vec4_div(vec4_set1(TWO_PI), vec4_from_vec3(ext, TWO_PI));
 
         if (in_idx) {
@@ -7156,16 +7163,19 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             out_com[i] = (float)((theta_prim / TWO_PI) * ext.elem[i]);
         }
     } else {
-        ASSERT(unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC);
-        const mat4_t M = mat4_mul(mat4_scale(TWO_PI, TWO_PI, TWO_PI), mat4_from_mat3(unit_cell->inv_basis));
-        const mat4_t I = mat4_mul(mat4_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI), mat4_from_mat3(unit_cell->basis));
+        ASSERT(flags & MD_UNITCELL_TRICLINIC);
+        const mat3_t A  = md_unitcell_inv_basis_mat3(cell);
+        const mat3_t Ai = md_unitcell_basis_mat3(cell);
+
+        const mat4x3_t M = mat4x3_from_mat3(mat3_mul(mat3_scale(TWO_PI, TWO_PI, TWO_PI), Ai));
+        const mat4x3_t I = mat4x3_from_mat3(mat3_mul(mat3_scale(1.0f / TWO_PI, 1.0f / TWO_PI, 1.0f / TWO_PI), A));
 
         if (in_idx) {
             for (size_t i = 0; i < count; ++i) {
                 int32_t idx  = in_idx[i];
                 vec4_t xyzw  = in_xyzw[idx];
                 vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = mat4_mul_vec4(M, xyzw);
+                vec4_t theta = mat4x3_mul_vec4(M, xyzw);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
                 acc_s = vec4_add(acc_s, vec4_mul(s, www1));
@@ -7176,7 +7186,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
             for (size_t i = 0; i < count; ++i) {
                 vec4_t xyzw  = in_xyzw[i];
                 vec4_t www1  = vec4_blend_mask(vec4_splat_w(xyzw), vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
-                vec4_t theta = mat4_mul_vec4(I, xyzw);
+                vec4_t theta = mat4x3_mul_vec4(I, xyzw);
                 vec4_t s,c;
                 vec4_sincos(theta, &s, &c);
                 acc_s = vec4_add(acc_s, vec4_mul(s, www1));
@@ -7198,7 +7208,7 @@ static void com_pbc_vec4(float* out_com, const vec4_t* in_xyzw, const int32_t* i
     }
 }
 
-vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in_z, const float* in_w, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
     ASSERT(in_x);
     ASSERT(in_y);
     ASSERT(in_z);
@@ -7208,12 +7218,12 @@ vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in
     }
 
     vec3_t xyz = {0};
-    if (!unit_cell || unit_cell->flags == MD_UNIT_CELL_FLAG_NONE) {
+    if (!unit_cell || unit_cell->flags == MD_UNITCELL_NONE) {
         com(xyz.elem, in_x, in_y, in_z, in_w, in_idx, count);
         return xyz;
     }
 
-    if (unit_cell->flags & (MD_UNIT_CELL_FLAG_ORTHO | MD_UNIT_CELL_FLAG_TRICLINIC)) {
+    if (unit_cell->flags & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) {
         com_pbc(xyz.elem, in_x, in_y, in_z, in_w, in_idx, count, unit_cell);
         return xyz;
     }
@@ -7223,7 +7233,7 @@ vec3_t md_util_com_compute(const float* in_x, const float* in_y, const float* in
     return xyz;
 }
 
-vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unit_cell_t* unit_cell) {
+vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, size_t count, const md_unitcell_t* unit_cell) {
     ASSERT(in_xyzw);
 
     if (count == 0) {
@@ -7231,7 +7241,7 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
     }
 
     vec3_t xyz = {0};
-    if (unit_cell && (unit_cell->flags & (MD_UNIT_CELL_FLAG_ORTHO | MD_UNIT_CELL_FLAG_TRICLINIC))) {
+    if (unit_cell && (unit_cell->flags & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC))) {
         com_pbc_vec4(xyz.elem, in_xyzw, in_idx, count, unit_cell);
     } else {
         com_vec4(xyz.elem, in_xyzw, in_idx, count);
@@ -7245,141 +7255,7 @@ vec3_t md_util_com_compute_vec4(const vec4_t* in_xyzw, const int32_t* in_idx, si
 #   pragma warning( disable : 4244 )
 #endif
 
-// From here: https://www.arianarab.com/post/crystal-structure-software
-mat3_t md_util_compute_unit_cell_basis(double a, double b, double c, double alpha, double beta, double gamma) {
-    alpha = DEG_TO_RAD(alpha);
-    beta  = DEG_TO_RAD(beta);
-    gamma = DEG_TO_RAD(gamma);
-
-    const double cb = cos(beta);
-    const double x = (cos(alpha) - cb * cos(gamma)) / sin(gamma);
-    mat3_t M = {
-        .col = {
-            {(float)a, 0, 0},
-            {(float)(b * cos(gamma)), (float)(b * sin(gamma)), 0},
-            {(float)(c * cb), (float)(c * x), (float)(c * sqrt(1 - cb * cb - x * x))},
-        },
-    };
-    return M;
-}
-
-//Triclinic
-mat3_t md_util_compute_triclinic_unit_cell_basis(double x, double y, double z, double xy, double xz, double yz) {
-    mat3_t M = {
-        .col = {
-            {x, 0, 0},
-            {xy, y, 0},
-            {xz, yz, z},
-        },
-    };
-    return M;
-}
-
-md_unit_cell_t md_util_unit_cell_from_triclinic(double x, double y, double z, double xy, double xz, double yz) {
-    mat3_t matrix = md_util_compute_triclinic_unit_cell_basis(x, y, z, xy, xz, yz);
-    return md_util_unit_cell_from_matrix(matrix.elem);
-}
-
-md_unit_cell_t md_util_unit_cell_from_extent(double x, double y, double z) {
-    if (x == 0.0 && y == 0.0 && z == 0.0) {
-        return (md_unit_cell_t) {0};
-    }
-
-    md_unit_cell_t cell = {
-        .basis = {
-            (float)x, 0, 0,
-            0, (float)y, 0,
-            0, 0, (float)z,
-        },
-        .inv_basis = {
-            x != 0.0 ? 1.0/x : 0, 0, 0,
-            0, y != 0.0 ? 1.0/y : 0, 0,
-            0, 0, z != 0.0 ? 1.0/z : 0,
-        },
-        .flags = MD_UNIT_CELL_FLAG_ORTHO | (x != 0.0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (y != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (z != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
-    };
-    return cell;
-}
-
-md_unit_cell_t md_util_unit_cell_from_extent_and_angles(double a, double b, double c, double alpha, double beta, double gamma) {
-    if (a == 0 && b == 0 && c == 0) {
-        return (md_unit_cell_t) {0};
-    }
-
-    if (alpha == 90.0 && beta == 90.0 && gamma == 90.0) {
-        return md_util_unit_cell_from_extent(a,b,c);
-    }
-
-    alpha = DEG_TO_RAD(alpha);
-    beta  = DEG_TO_RAD(beta);
-    gamma = DEG_TO_RAD(gamma);
-
-    const double cosa = cos(alpha);
-    const double cosb = cos(beta);
-    const double cosg = cos(gamma);
-    const double sing = sin(gamma);
-    const double x = (cosa - cosb * cosg) / sing;
-
-    // Values for basis. Keep in double precision for inverse
-    const double M[9] = {
-               a,        0,                             0,
-        b * cosg, b * sing,                             0,
-        c * cosb,    c * x, c * sqrt(1 - cosb*cosb - x*x),
-    };
-
-    // Inverse of M
-    const double I[9] = {
-                                        1.0/M[0],                 0,        0,
-                               -M[3]/(M[0]*M[4]),          1.0/M[4],        0,
-        (M[3]*M[7]/(M[0]*M[4]) - M[6]/M[0])/M[8], -M[7]/(M[4]*M[8]), 1.0/M[8],
-    };
-    
-    md_unit_cell_t cell = {
-        .basis = {
-            M[0], M[1], M[2], M[3], M[4], M[5], M[6], M[7], M[8],
-        },
-        .inv_basis = {
-            I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
-        },
-        .flags = MD_UNIT_CELL_FLAG_TRICLINIC | (a != 0.0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (b != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (c != 0.0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
-    };
-
-    return cell;
-}
-
-md_unit_cell_t md_util_unit_cell_from_matrix(float M[3][3]) {
-    if (M[0][1] == 0 && M[0][2] == 0 && M[1][0] == 0 && M[1][2] == 0 && M[2][0] == 0 && M[2][1] == 0) {
-        return md_util_unit_cell_from_extent(M[0][0], M[1][1], M[2][2]);
-    } else {
-        const float* N = &M[0][0];
-        
-        // Inverse of M
-        const double I[9] = {
-            1.0/(double)N[0], 0, 0,
-            -(double)N[3]/((double)N[0]*(double)N[4]), 1.0/(double)N[4], 0,
-            ((double)N[3]*(double)N[7]/((double)N[0]*(double)N[4]) - (double)N[6]/(double)N[0])/(double)N[8], -(double)N[7]/((double)N[4]*(double)N[8]), 1.0/(double)N[8],
-        };
-        
-
-        const float a = M[0][0]*M[0][0] + M[0][1]*M[0][1] + M[0][2]*M[0][2];
-        const float b = M[1][0]*M[1][0] + M[1][1]*M[1][1] + M[1][2]*M[1][2];
-        const float c = M[2][0]*M[2][0] + M[2][1]*M[2][1] + M[2][2]*M[2][2];
-        
-        
-        mat3_t basis;
-        MEMCPY(basis.elem, M, sizeof(basis));
-        md_unit_cell_t cell = {
-            .basis = basis,
-            .inv_basis = {
-                I[0], I[1], I[2], I[3], I[4], I[5], I[6], I[7], I[8],
-            },
-            .flags = MD_UNIT_CELL_FLAG_TRICLINIC | (a != 0 ? MD_UNIT_CELL_FLAG_PBC_X : 0) | (b != 0 ? MD_UNIT_CELL_FLAG_PBC_Y : 0) | (c != 0 ? MD_UNIT_CELL_FLAG_PBC_Z : 0),
-        };
-        return cell;
-    }
-}
-
-void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell) {
+void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     if (cell->flags == 0) {
         for (size_t i = 0; i < num_a; ++i) {
             for (size_t j = 0; j < num_b; ++j) {
@@ -7387,8 +7263,8 @@ void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, si
             }
         }
     }
-    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+    else if (cell->flags & MD_UNITCELL_ORTHO) {
+        const vec4_t box = md_unitcell_diag_vec4(cell);
         for (size_t i = 0; i < num_a; ++i) {
             for (size_t j = 0; j < num_b; ++j) {
                 vec4_t a = vec4_from_vec3(coord_a[i], 0);
@@ -7396,19 +7272,20 @@ void md_util_unit_cell_distance_array(float* out_dist, const vec3_t* coord_a, si
                 out_dist[i * num_b + j] = vec4_periodic_distance(a, b, box);
             }
         }
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        mat3_t A = md_unitcell_basis_mat3(cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (size_t i = 0; i < num_a; ++i) {
             for (size_t j = 0; j < num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                minimum_image_triclinic(dx.elem, A.elem);
                 out_dist[i * num_b + j] = vec3_length(dx);
             }
         }
     }
 }
 
-float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell) {
+float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     int64_t min_i = 0;
     int64_t min_j = 0;
     float min_dist = FLT_MAX;
@@ -7425,8 +7302,8 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
             }
         }
     }
-    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+    else if (cell->flags & MD_UNITCELL_ORTHO) {
+        const vec4_t box = md_unitcell_diag_vec4(cell);
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec4_t a = vec4_from_vec3(coord_a[i], 0);
@@ -7439,12 +7316,13 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
                 }
             }
         }
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        const mat3_t A = md_unitcell_basis_mat3(cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                minimum_image_triclinic(dx.elem, A.elem);
                 const float d = vec3_length(dx);
                 if (d < min_dist) {
                     min_dist = d;
@@ -7461,7 +7339,7 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
     return min_dist;
 }
 
-float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unit_cell_t* cell) {
+float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     int64_t max_i = 0;
     int64_t max_j = 0;
     float max_dist = 0;
@@ -7478,8 +7356,8 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
             }
         }
     }
-    else if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        const vec4_t box = {cell->basis.elem[0][0], cell->basis.elem[1][1], cell->basis.elem[2][2], 0};
+    else if (cell->flags & MD_UNITCELL_ORTHO) {
+        const vec4_t box = md_unitcell_diag_vec4(cell);
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec4_t a = vec4_from_vec3(coord_a[i], 0);
@@ -7492,12 +7370,13 @@ float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
                 }
             }
         }
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        const mat3_t A = md_unitcell_basis_mat3(cell);
         // We make the assumption that we are not beyond 1 cell unit in distance
         for (int64_t i = 0; i < (int64_t)num_a; ++i) {
             for (int64_t j = 0; j < (int64_t)num_b; ++j) {
                 vec3_t dx = vec3_sub(coord_a[i], coord_b[j]);
-                minimum_image_triclinic(dx.elem, cell->basis.elem);
+                minimum_image_triclinic(dx.elem, A.elem);
                 const float d = vec3_length(dx);
                 if (d > max_dist) {
                     max_dist = d;
@@ -7598,33 +7477,37 @@ static inline void min_image_ortho(float dx[3], float ext[3], float half_ext[3])
     }
 }
 
-void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unit_cell_t* unit_cell) {
-    if (unit_cell) {
-        vec3_t diag = mat3_diag(unit_cell->basis);
+void md_util_min_image_vec3(vec3_t dx[], size_t count, const md_unitcell_t* cell) {
+    if (cell) {
+        vec3_t diag = md_unitcell_diag_vec3(cell);
         vec3_t half_diag = vec3_mul_f(diag, 0.5f);
-        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        uint32_t flags = md_unitcell_flags(cell);
+        if (flags & MD_UNITCELL_ORTHO) {
             for (size_t i = 0; i < count; ++i) {
                 min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
             }
-        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        } else if (flags & MD_UNITCELL_TRICLINIC) {
+            mat3_t A = md_unitcell_basis_mat3(cell);
             for (size_t i = 0; i < count; ++i) {
-                min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
+                min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
             }
         }
     }
 }
 
-void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unit_cell_t* unit_cell) {
-    if (unit_cell) {
-        vec3_t diag = mat3_diag(unit_cell->basis);
+void md_util_min_image_vec4(vec4_t dx[], size_t count, const md_unitcell_t* cell) {
+    if (cell) {
+        vec3_t diag = md_unitcell_diag_vec3(cell);
         vec3_t half_diag = vec3_mul_f(diag, 0.5f);
-        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+        uint32_t flags = md_unitcell_flags(cell);
+        if (flags & MD_UNITCELL_ORTHO) {
             for (size_t i = 0; i < count; ++i) {
                 min_image_ortho(dx[i].elem, diag.elem, half_diag.elem);
             }
-        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+        } else if (flags & MD_UNITCELL_TRICLINIC) {
+            mat3_t A = md_unitcell_basis_mat3(cell);
             for (size_t i = 0; i < count; ++i) {
-                min_image_triclinic(dx[i].elem, unit_cell->basis.elem, half_diag.elem);
+                min_image_triclinic(dx[i].elem, A.elem, half_diag.elem);
             }
         }
     }
@@ -7666,14 +7549,14 @@ static void pbc_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
     }
 }
 
-static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
     ASSERT(x);
     ASSERT(y);
     ASSERT(z);
-
-    const vec4_t mask = md_unit_cell_pbc_mask(cell);
-    mat4x3_t I = mat4x3_from_mat3(cell->inv_basis);
-    mat4x3_t M = mat4x3_from_mat3(cell->basis);
+    
+    const vec4_t mask = md_unitcell_pbc_mask_vec4(cell);
+    mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(cell));
+    mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(cell));
 
     if (indices) {
         for (size_t i = 0; i < count; ++i) {
@@ -7703,10 +7586,10 @@ static void pbc_triclinic(float* x, float* y, float* z, const int32_t* indices, 
     }
 }
 
-static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
-    const vec4_t mask = md_unit_cell_pbc_mask(cell);
-    mat4x3_t I = mat4x3_from_mat3(cell->inv_basis);
-    mat4x3_t M = mat4x3_from_mat3(cell->basis);
+static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
+    const vec4_t mask = md_unitcell_pbc_mask_vec4(cell);
+    mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(cell));
+    mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(cell));
 
     for (size_t i = 0; i < count; ++i) {
         vec4_t c = xyzw[i];
@@ -7717,23 +7600,24 @@ static void pbc_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t*
     }
 }
 
-bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* unit_cell) {
+bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
     }
 
-    if (!unit_cell) {
-        MD_LOG_ERROR("Missing unit cell");
+    if (!cell) {
+        MD_LOG_ERROR("Missing unitcell");
         return false;
     }
 
-    if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(unit_cell->basis);
+    uint32_t flags = md_unitcell_flags(cell);
+    if (flags & MD_UNITCELL_ORTHO) {
+        vec3_t ext = md_unitcell_diag_vec3(cell);
         pbc_ortho(x, y, z, indices, count, ext);
         return true;
-    } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        pbc_triclinic(x, y, z, indices, count, unit_cell);
+    } else if (flags & MD_UNITCELL_TRICLINIC) {
+        pbc_triclinic(x, y, z, indices, count, cell);
         return true;
     }
 
@@ -7742,23 +7626,24 @@ bool md_util_pbc(float* x, float* y, float* z, const int32_t* indices, size_t co
     return false;
 }
 
-bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unit_cell_t* unit_cell) {
+bool md_util_pbc_vec4(vec4_t* in_out_xyzw, size_t count, const md_unitcell_t* cell) {
     if (!in_out_xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
     }
 
-    if (!unit_cell) {
+    if (!cell) {
         MD_LOG_ERROR("Missing unit cell");
         return false;
     }
 
-    if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(unit_cell->basis);
+    uint32_t flags = md_unitcell_flags(cell);
+    if (flags & MD_UNITCELL_ORTHO) {
+        vec3_t ext = md_unitcell_diag_vec3(cell);
         pbc_ortho_vec4(in_out_xyzw, count, ext);
         return true;
-    } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-        pbc_triclinic_vec4(in_out_xyzw, count, unit_cell);
+    } else if (flags & MD_UNITCELL_TRICLINIC) {
+        pbc_triclinic_vec4(in_out_xyzw, count, cell);
         return true;
     }
 
@@ -7807,14 +7692,15 @@ static void unwrap_ortho_vec4(vec4_t* xyzw, size_t count, vec3_t box_ext) {
     }
 }
 
-static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
+    mat3_t A = md_unitcell_basis_mat3(cell);
     if (indices) {
         int idx = indices[0];
         vec3_t ref_pos = {x[idx], y[idx], z[idx]};
         for (size_t i = 1; i < count; ++i) {
             idx = indices[i];
             vec3_t pos = {x[idx], y[idx], z[idx]};
-            deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
+            deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
             x[idx] = pos.x;
             y[idx] = pos.y;
             z[idx] = pos.z;
@@ -7824,7 +7710,7 @@ static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indice
         vec3_t ref_pos = {x[0], y[0], z[0]};
         for (size_t i = 1; i < count; ++i) {
             vec3_t pos = {x[i], y[i], z[i]};
-            deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
+            deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
             x[i] = pos.x;
             y[i] = pos.y;
             z[i] = pos.z;
@@ -7833,18 +7719,19 @@ static void unwrap_triclinic(float* x, float* y, float* z, const int32_t* indice
     }
 }
 
-static void unwrap_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
+static void unwrap_triclinic_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
+    mat3_t A = md_unitcell_basis_mat3(cell);
     vec4_t ref_pos = xyzw[0];
     for (size_t i = 1; i < count; ++i) {
         vec4_t pos = xyzw[i];
-        deperiodize_triclinic(pos.elem, ref_pos.elem, cell->basis.elem);
+        deperiodize_triclinic(pos.elem, ref_pos.elem, A.elem);
         xyzw[i] = pos;
         ref_pos = pos;
     }
 
 }
 
-bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unit_cell_t* cell) {
+bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t count, const md_unitcell_t* cell) {
     if (!x || !y || !z) {
         MD_LOG_ERROR("Missing required input: x,y or z");
         return false;
@@ -7855,11 +7742,11 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
         return false;
     }
 
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(cell->basis);
+    if (cell->flags & MD_UNITCELL_ORTHO) {
+        vec3_t ext = md_unitcell_diag_vec3(cell);
         unwrap_ortho(x, y, z, indices, count, ext);
         return true;
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
         unwrap_triclinic(x, y, z, indices, count, cell);
         return true;
     }
@@ -7868,7 +7755,7 @@ bool md_util_unwrap(float* x, float* y, float* z, const int32_t* indices, size_t
     return false;
 }
 
-bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell) {
+bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unitcell_t* cell) {
     if (!xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
@@ -7879,11 +7766,11 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell)
         return false;
     }
 
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-        vec3_t ext = mat3_diag(cell->basis);
+    if (md_unitcell_is_orthorhombic(cell)) {
+        vec3_t ext = md_unitcell_diag_vec3(cell);
         unwrap_ortho_vec4(xyzw, count, ext);
         return true;
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (md_unitcell_is_triclinic(cell)) {
         unwrap_triclinic_vec4(xyzw, count, cell);
         return true;
     }
@@ -7892,7 +7779,7 @@ bool md_util_unwrap_vec4(vec4_t* xyzw, size_t count, const md_unit_cell_t* cell)
     return false;
 }
 
-bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unit_cell_t* cell) {
+bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const md_unitcell_t* cell) {
     if (!xyzw) {
         MD_LOG_ERROR("Missing required input: in_out_xyzw");
         return false;
@@ -7903,18 +7790,19 @@ bool md_util_deperiodize_vec4(vec4_t* xyzw, size_t count, vec3_t ref_xyz, const 
         return false;
     }
 
-    if (cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
+    if (cell->flags & MD_UNITCELL_ORTHO) {
         vec4_t ref_pos = vec4_from_vec3(ref_xyz, 0);
-        vec4_t ext = vec4_from_vec3(mat3_diag(cell->basis), 0);
+        vec4_t ext = md_unitcell_diag_vec4(cell);
         for (size_t i = 0; i < count; ++i) {
             const vec4_t pos = vec4_deperiodize_ortho(xyzw[i], ref_pos, ext);
             xyzw[i] = pos;
         }
         return true;
-    } else if (cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
+    } else if (cell->flags & MD_UNITCELL_TRICLINIC) {
+        mat3_t A = md_unitcell_basis_mat3(cell);
         for (size_t i = 1; i < count; ++i) {
             vec4_t pos = xyzw[i];
-            deperiodize_triclinic(pos.elem, ref_xyz.elem, cell->basis.elem);
+            deperiodize_triclinic(pos.elem, ref_xyz.elem, A.elem);
             xyzw[i] = pos;
         }
         return true;
@@ -7994,7 +7882,7 @@ vec3_t md_util_shape_weights(const mat3_t* covariance_matrix) {
     return weights;
 }
 
-bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], size_t count, const md_unit_cell_t* unit_cell, float t) {
+bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const float* const in_x[2], const float* const in_y[2], const float* const in_z[2], size_t count, const md_unitcell_t* cell, float t) {
     ASSERT(out_x);
     ASSERT(out_y);
     ASSERT(out_z);
@@ -8004,7 +7892,11 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
 
     t = CLAMP(t, 0.0f, 1.0f);
 
-    if (unit_cell && unit_cell->flags & (MD_UNIT_CELL_FLAG_ORTHO | MD_UNIT_CELL_FLAG_TRICLINIC)) {
+    bool ortho = md_unitcell_is_orthorhombic(cell);
+    bool tricl = md_unitcell_is_triclinic(cell);
+    
+    if (ortho | tricl) {
+        mat3_t A = md_unitcell_basis_mat3(cell);
         for (size_t i = 0; i < count; i += 8) {
             md_256 x0[3] = {
                 md_mm256_loadu_ps(in_x[0] + i),
@@ -8018,12 +7910,12 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
                 md_mm256_loadu_ps(in_z[1] + i)
             };
 
-            if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-                simd_deperiodize_ortho(x1[0], x0[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-                simd_deperiodize_ortho(x1[1], x0[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-                simd_deperiodize_ortho(x1[2], x0[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-            } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-                simd_deperiodize_triclinic(x1, x0, unit_cell->basis.elem);
+            if (ortho) {
+                simd_deperiodize_ortho(x1[0], x0[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(A.elem[0][0]));
+                simd_deperiodize_ortho(x1[1], x0[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(A.elem[1][1]));
+                simd_deperiodize_ortho(x1[2], x0[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(A.elem[2][2]));
+            } else if (tricl) {
+                simd_deperiodize_triclinic(x1, x0, A.elem);
             }
 
             md_256 x = md_mm256_lerp_ps(x0[0], x1[0], t);
@@ -8058,7 +7950,7 @@ bool md_util_interpolate_linear(float* out_x, float* out_y, float* out_z, const 
     return true;
 }
 
-bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, const float* const in_x[4], const float* const in_y[4], const float* const in_z[4], size_t count, const md_unit_cell_t* unit_cell, float t, float s) {
+bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, const float* const in_x[4], const float* const in_y[4], const float* const in_z[4], size_t count, const md_unitcell_t* cell, float t, float s) {
     ASSERT(out_x);
     ASSERT(out_y);
     ASSERT(out_z);
@@ -8068,6 +7960,11 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
     
     t = CLAMP(t, 0.0f, 1.0f);
     s = CLAMP(s, 0.0f, 1.0f);
+
+    bool ortho = md_unitcell_is_orthorhombic(cell);
+    bool tricl = md_unitcell_is_triclinic(cell);
+    mat3_t A   = md_unitcell_basis_mat3(cell);
+    mat3_t Ai  = md_unitcell_inv_basis_mat3(cell);
 
     for (size_t i = 0; i < count; i += 8) {
         md_256 x0[3] = {
@@ -8094,20 +7991,20 @@ bool md_util_interpolate_cubic_spline(float* out_x, float* out_y, float* out_z, 
             md_mm256_loadu_ps(in_z[3] + i),
         };
 
-        if (unit_cell->flags & MD_UNIT_CELL_FLAG_ORTHO) {
-            x0[0] = simd_deperiodize_ortho(x0[0], x1[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x2[0] = simd_deperiodize_ortho(x2[0], x1[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x3[0] = simd_deperiodize_ortho(x3[0], x2[0], md_mm256_set1_ps(unit_cell->basis.elem[0][0]), md_mm256_set1_ps(unit_cell->inv_basis.elem[0][0]));
-            x0[1] = simd_deperiodize_ortho(x0[1], x1[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x2[1] = simd_deperiodize_ortho(x2[1], x1[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x3[1] = simd_deperiodize_ortho(x3[1], x2[1], md_mm256_set1_ps(unit_cell->basis.elem[1][1]), md_mm256_set1_ps(unit_cell->inv_basis.elem[1][1]));
-            x0[2] = simd_deperiodize_ortho(x0[2], x1[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-            x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-            x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(unit_cell->basis.elem[2][2]), md_mm256_set1_ps(unit_cell->inv_basis.elem[2][2]));
-        } else if (unit_cell->flags & MD_UNIT_CELL_FLAG_TRICLINIC) {
-            simd_deperiodize_triclinic(x0, x1, unit_cell->basis.elem);
-            simd_deperiodize_triclinic(x2, x1, unit_cell->basis.elem);
-            simd_deperiodize_triclinic(x3, x2, unit_cell->basis.elem);
+        if (ortho) {
+            x0[0] = simd_deperiodize_ortho(x0[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
+            x2[0] = simd_deperiodize_ortho(x2[0], x1[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
+            x3[0] = simd_deperiodize_ortho(x3[0], x2[0], md_mm256_set1_ps(A.elem[0][0]), md_mm256_set1_ps(Ai.elem[0][0]));
+            x0[1] = simd_deperiodize_ortho(x0[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
+            x2[1] = simd_deperiodize_ortho(x2[1], x1[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
+            x3[1] = simd_deperiodize_ortho(x3[1], x2[1], md_mm256_set1_ps(A.elem[1][1]), md_mm256_set1_ps(Ai.elem[1][1]));
+            x0[2] = simd_deperiodize_ortho(x0[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
+            x2[2] = simd_deperiodize_ortho(x2[2], x1[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
+            x3[2] = simd_deperiodize_ortho(x3[2], x2[2], md_mm256_set1_ps(A.elem[2][2]), md_mm256_set1_ps(Ai.elem[2][2]));
+        } else if (tricl) {
+            simd_deperiodize_triclinic(x0, x1, A.elem);
+            simd_deperiodize_triclinic(x2, x1, A.elem);
+            simd_deperiodize_triclinic(x3, x2, A.elem);
         }
 
         const md_256 x = md_mm256_cubic_spline_ps(x0[0], x1[0], x2[0], x3[0], md_mm256_set1_ps(t), md_mm256_set1_ps(s));
@@ -8496,14 +8393,12 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
         }
     }
 
-    if ((mol->unit_cell.flags != MD_UNIT_CELL_FLAG_NONE) &&
-        mol->protein_backbone.count)
-    {
+    if ((md_unitcell_flags(&mol->unitcell) != 0) && mol->protein_backbone.count > 0) {
         for (size_t i = 0; i < mol->protein_backbone.range.count; ++i) {
             md_chain_idx_t chain_idx = mol->protein_backbone.range.chain_idx[i];
             size_t beg = md_chain_atom_range(mol->chain, chain_idx).beg;
             size_t len = md_chain_atom_count(mol->chain, chain_idx);
-            md_util_unwrap(mol->atom.x + beg, mol->atom.y + beg, mol->atom.z + beg, 0, len, &mol->unit_cell);
+            md_util_unwrap(mol->atom.x + beg, mol->atom.y + beg, mol->atom.z + beg, 0, len, &mol->unitcell);
         }
     }
 

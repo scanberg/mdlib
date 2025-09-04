@@ -445,8 +445,9 @@ static inline bool xyz_parse_model_header(md_xyz_model_t* model, md_buffered_rea
         angle[1] = (float)parse_float(tokens[4]);
         angle[2] = (float)parse_float(tokens[5]);
 
-        md_unit_cell_t cell = md_util_unit_cell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
-        MEMCPY(model->cell, cell.basis.elem, sizeof(model->cell));
+        md_unitcell_t cell = md_unitcell_from_extent_and_angles(extent[0], extent[1], extent[2], angle[0], angle[1], angle[2]);
+        mat3_t A = md_unitcell_basis_mat3(&cell);
+        MEMCPY(model->cell, A.elem, sizeof(model->cell));
     } else if (flags & XYZ_EXTENDED) {
         // Extract cell data from line
         if (!extract_extxyz_cell(model->cell, line)) {
@@ -604,7 +605,7 @@ bool xyz_decode_frame_data(struct md_trajectory_o* inst, const void* data_ptr, s
         header->index = step;
         header->timestamp = (double)(step); // This information is missing from xyz trajectories
         //header->unit_cell = md_util_unit_cell_from_extent_and_angles(model.cell_extent[0], model.cell_extent[1], model.cell_extent[2], model.cell_angle[0], model.cell_angle[1], model.cell_angle[2]);
-        header->unit_cell = md_util_unit_cell_from_matrix(model.cell);
+        header->unitcell = md_unitcell_from_matrix_float(model.cell);
     }
 
     return true;
@@ -756,7 +757,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         md_array_push(mol->atom.flags, 0, alloc);
     }
 
-    mol->unit_cell = md_util_unit_cell_from_matrix(data->models[0].cell);
+    mol->unitcell = md_unitcell_from_matrix_float(data->models[0].cell);
 
     return true;
 }

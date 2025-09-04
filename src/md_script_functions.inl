@@ -707,7 +707,7 @@ static inline md_spatial_hash_t* get_spatial_hash(eval_context_t* ctx) {
     ASSERT(ctx);
     if (!ctx->spatial_hash) {
         // Lazily generate the spatial hash if needed
-        ctx->spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, 0, ctx->mol->atom.count, &ctx->mol->unit_cell, ctx->temp_alloc);
+        ctx->spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, 0, ctx->mol->atom.count, &ctx->mol->unitcell, ctx->temp_alloc);
     }
     return ctx->spatial_hash;
 }
@@ -1469,7 +1469,7 @@ static md_array(vec4_t) coordinate_extract_xyzw(data_t arg, float default_weight
                 md_array_resize(indices, md_bitfield_popcount(bf), ctx->temp_alloc);
                 md_bitfield_iter_t it = md_bitfield_iter_create(bf);
                 md_bitfield_iter_extract_indices(indices, md_array_size(indices), it);
-                vec3_t xyz = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, md_array_size(indices), &ctx->mol->unit_cell);
+                vec3_t xyz = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, md_array_size(indices), &ctx->mol->unitcell);
                 double w = 0;
                 if (ctx->mol->atom.mass) {
                 for (size_t j = 0; j < md_array_size(indices); ++j) {
@@ -1590,7 +1590,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
         for (size_t i = 0; i < len; ++i) {
             xyzw[i] = vec4_from_vec3(in_pos[i], 1.0f);
         }
-        com = md_util_com_compute_vec4(xyzw, 0, len, &ctx->mol->unit_cell);
+        com = md_util_com_compute_vec4(xyzw, 0, len, &ctx->mol->unitcell);
         break;
     }
     case TYPE_INT: {
@@ -1606,7 +1606,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             return (vec3_t) { ctx->mol->atom.x[idx[0]], ctx->mol->atom.y[idx[0]], ctx->mol->atom.z[idx[0]] };
         }
         
-        com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, idx, num_idx, &ctx->mol->unit_cell);
+        com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, idx, num_idx, &ctx->mol->unitcell);
         break;
     }
     case TYPE_IRANGE: {
@@ -1622,7 +1622,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             if (ctx->mol_ctx) {
                 size_t len = md_bitfield_popcount_range(ctx->mol_ctx, range.beg, range.end);
                 md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_range_create(ctx->mol_ctx, range.beg, range.end));
-                vec4_t xyzw = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
+                vec4_t xyzw = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unitcell), 1.0f);
                 md_array_push(xyzw_arr, xyzw, ctx->temp_alloc);
             }
             else {
@@ -1633,11 +1633,11 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                     // 1 based indexing to 0 based indexing
                     md_array_push(indices, j, ctx->temp_alloc);
                 }
-                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
+                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unitcell), 1.0f);
             }
         }
 
-        com = md_util_com_compute_vec4(xyzw_arr, 0, num_ranges, &ctx->mol->unit_cell);
+        com = md_util_com_compute_vec4(xyzw_arr, 0, num_ranges, &ctx->mol->unitcell);
         break;
     }
     case TYPE_BITFIELD: {
@@ -1660,7 +1660,7 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
             size_t len = md_bitfield_popcount(bf);
             int32_t* indices = md_vm_arena_push(ctx->temp_alloc, md_bitfield_popcount(bf) * sizeof(int32_t));
             md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
-            com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell);
+            com = md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unitcell);
         }
         else {
             // If we have multiple bitfields we compute the center of mass for each bitfield before computing a single com from the sub-coms
@@ -1676,9 +1676,9 @@ static vec3_t coordinate_extract_com(data_t arg, eval_context_t* ctx) {
                 md_array_ensure(indices, len, ctx->temp_alloc);
                 md_array_shrink(indices, len);
                 md_bitfield_iter_extract_indices(indices, len, md_bitfield_iter_create(bf));
-                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unit_cell), 1.0f);
+                xyzw_arr[i] = vec4_from_vec3(md_util_com_compute(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, indices, len, &ctx->mol->unitcell), 1.0f);
             }
-            com = md_util_com_compute_vec4(xyzw_arr, 0, num_bf, &ctx->mol->unit_cell);
+            com = md_util_com_compute_vec4(xyzw_arr, 0, num_bf, &ctx->mol->unitcell);
         }
         break;
     }
@@ -2468,7 +2468,8 @@ static int _within_expl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
             bf_mask = as_bitfield(arg[1]);
         }
         
-        const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(ctx->mol->unit_cell.basis, vec3_set1(1.0f)), 0);
+        mat3_t A = md_unitcell_basis_mat3(&ctx->mol->unitcell);
+        const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(A, vec3_set1(1.0f)), 0);
         within_frng_payload_t payload = {
             .min_r2 = rad_range.beg * rad_range.beg,
             .max_r2 = rad_range.end * rad_range.end,
@@ -2524,8 +2525,9 @@ static int _within_impl_frng(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const vec3_t* in_pos = extract_vec3(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol_ctx, ctx->temp_alloc);
         const size_t num_pos = md_array_size(in_pos);
         md_bitfield_t* bf_dst = 0;
-           
-        const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(ctx->mol->unit_cell.basis, vec3_set1(1.0f)), 0);
+          
+        mat3_t A = md_unitcell_basis_mat3(&ctx->mol->unitcell);
+        const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(A, vec3_set1(1.0f)), 0);
         within_frng_payload_t payload = {
             .min_r2 = rad_range.beg * rad_range.beg,
             .max_r2 = rad_range.end * rad_range.end,
@@ -3410,7 +3412,7 @@ static int _distance(data_t* dst, data_t arg[], eval_context_t* ctx) {
         vec3_t b = coordinate_extract_com(arg[1], ctx);
 
         vec4_t b4 = vec4_from_vec3(b, 0);
-        md_util_deperiodize_vec4(&b4, 1, a, &ctx->mol->unit_cell);
+        md_util_deperiodize_vec4(&b4, 1, a, &ctx->mol->unitcell);
         b = vec3_from_vec4(b4);
         float dist = vec3_distance(a, b);
 
@@ -3453,7 +3455,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t min_i, min_j;
-        float min_dist = md_util_unit_cell_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
+        float min_dist = md_util_unit_cell_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unitcell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -3493,7 +3495,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t max_i, max_j;
-        float dist = md_util_unit_cell_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
+        float dist = md_util_unit_cell_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unitcell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -3544,7 +3546,7 @@ static int _distance_pair(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             dst_arr = md_vm_arena_push(ctx->temp_alloc, a_len * b_len);
         }
-        md_util_unit_cell_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->mol->unit_cell);
+        md_util_distance_array(dst_arr, a_pos, a_len, b_pos, b_len, &ctx->mol->unitcell);
         if (ctx->vis) {
             if (ctx->subscript_ranges) {
                 // @NOTE(Robin): This is not trivial...
@@ -3750,7 +3752,7 @@ static int _dihedral(data_t* dst, data_t arg[], eval_context_t* ctx) {
             vec3_sub(x[2], x[1]),
             vec3_sub(x[3], x[2]),
         };
-        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->mol->unit_cell);
+        md_util_min_image_vec3(dx, ARRAY_SIZE(dx), &ctx->mol->unitcell);
         float angle = (float)vec3_dihedral_angle(dx[0], dx[1], dx[2]);
 
         if (dst) {
@@ -3880,11 +3882,11 @@ static int _rmsd(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 extract_xyzw_vec4(xyzw[0], ctx->initial_configuration.x, ctx->initial_configuration.y, ctx->initial_configuration.z, ctx->mol->atom.mass, &bf);
                 extract_xyzw_vec4(xyzw[1], ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
 
-                md_util_pbc_vec4(xyzw[0], count, &ctx->mol->unit_cell);
-                md_util_unwrap_vec4(xyzw[0], count, &ctx->mol->unit_cell);
+                md_util_pbc_vec4(xyzw[0], count, &ctx->mol->unitcell);
+                md_util_unwrap_vec4(xyzw[0], count, &ctx->mol->unitcell);
 
-                md_util_pbc_vec4(xyzw[1], count, &ctx->mol->unit_cell);
-                md_util_unwrap_vec4(xyzw[1], count, &ctx->mol->unit_cell);
+                md_util_pbc_vec4(xyzw[1], count, &ctx->mol->unitcell);
+                md_util_unwrap_vec4(xyzw[1], count, &ctx->mol->unitcell);
 
                 const vec3_t com[2] = {
                     md_util_com_compute_vec4(xyzw[0], 0, count, NULL),
@@ -4265,7 +4267,7 @@ static int _plane(data_t* dst, data_t arg[], eval_context_t* ctx) {
         }
 
         // Place structure within the same period
-        md_util_unwrap_vec4(xyzw, count, &ctx->mol->unit_cell);
+        md_util_unwrap_vec4(xyzw, count, &ctx->mol->unitcell);
         vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, 0); // @NOTE: No need to supply the unit cell here since we already unwrapped the structure
         mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
         mat3_eigen_t eigen = mat3_eigen(M);
@@ -4364,10 +4366,12 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             bf = tmp_bf;
         }
 
+        mat3_t A = md_unitcell_basis_mat3(&ctx->initial_configuration.header->unitcell);
+
         // Reference point
-        vec3_t rc = mat3_mul_vec3(ctx->initial_configuration.header->unit_cell.basis, vec3_set1(0.5f));
+        vec3_t rc = mat3_mul_vec3(A, vec3_set1(0.5f));
         // Reference extent
-        vec3_t re = mat3_diag(ctx->initial_configuration.header->unit_cell.basis);
+        vec3_t re = mat3_diag(A);
 
         vec4_t ext = vec4_from_vec3(re, 0);
         if (axis == -1) {
@@ -4379,7 +4383,7 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         size_t count = md_bitfield_popcount(&bf);
         vec4_t* xyzw = md_vm_arena_push(ctx->temp_alloc, count * sizeof(vec4_t));
         extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, &bf);
-        //md_util_pbc_vec4(xyzw, count, &ctx->mol->unit_cell);
+        //md_util_pbc_vec4(xyzw, count, &ctx->mol->unitcell);
 
         vec4_t mid_point = vec4_from_vec3(rc, 0);
         vec4_t period = vec4_from_vec3(re, 0);
@@ -4435,12 +4439,12 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
         }
     } else {
         md_trajectory_frame_header_t frame_header = {0};
-        const md_unit_cell_t* unit_cell = NULL;
+        const md_unitcell_t* unit_cell = NULL;
         if (ctx->traj) {
             md_trajectory_load_frame(ctx->traj, 0, &frame_header, 0, 0, 0);
-            unit_cell = &frame_header.unit_cell;
+            unit_cell = &frame_header.unitcell;
         } else {
-            unit_cell = &ctx->mol->unit_cell;
+            unit_cell = &ctx->mol->unitcell;
         }
 
         if (!unit_cell) {
@@ -4455,18 +4459,19 @@ static int _internal_density(data_t* dst, data_t arg[], eval_context_t* ctx, int
             }
         } else {
             uint32_t required_flags = 0;
-            if (axis == 0)      required_flags = MD_UNIT_CELL_FLAG_PBC_X;
-            else if (axis == 1) required_flags = MD_UNIT_CELL_FLAG_PBC_Y;
-            else if (axis == 2) required_flags = MD_UNIT_CELL_FLAG_PBC_Z;
+            if (axis == 0)      required_flags = MD_UNITCELL_PBC_X;
+            else if (axis == 1) required_flags = MD_UNITCELL_PBC_Y;
+            else if (axis == 2) required_flags = MD_UNITCELL_PBC_Z;
 
-            if (!(ctx->mol->unit_cell.flags & required_flags)) {
+            if (!(ctx->mol->unitcell.flags & required_flags)) {
                 LOG_ERROR(ctx->ir, ctx->op_token, "The unitcell is not defined along the given axis");
                 return STATIC_VALIDATION_ERROR;
             }
         }
         if (ctx->backchannel) {
             // Reference half extent
-            vec3_t re = vec3_mul_f(mat3_diag(unit_cell->basis), 0.5f);
+            mat3_t A = md_unitcell_basis_mat3(unit_cell);
+            vec3_t re = vec3_mul_f(mat3_diag(A), 0.5f);
 
             // We use the max axis half ext as we cannot output three individual value_ranges
             float rad = 0;
@@ -4735,7 +4740,7 @@ static inline double sphere_volume(double r) {
     return (4.0 / 3.0) * PI * (r * r * r);
 }
 
-static void compute_rdf(float* bins, float* weights, int num_bins, const data_t arg[2], float min_cutoff, float max_cutoff, const md_unit_cell_t* unit_cell, md_allocator_i* alloc, eval_context_t* ctx) {
+static void compute_rdf(float* bins, float* weights, int num_bins, const data_t arg[2], float min_cutoff, float max_cutoff, const md_unitcell_t* unit_cell, md_allocator_i* alloc, eval_context_t* ctx) {
     const float inv_cutoff_range = 1.0f / (max_cutoff - min_cutoff);
 
     uint64_t total_count = 0;
@@ -4765,7 +4770,8 @@ static void compute_rdf(float* bins, float* weights, int num_bins, const data_t 
     md_array(vec3_t) trg_pos = coordinate_extract(arg[1], ctx);
     const size_t trg_len = md_array_size(trg_pos);
 
-    const vec4_t ext = unit_cell ? vec4_from_vec3(mat3_mul_vec3(unit_cell->basis, vec3_set1(1.0f)), 0) : vec4_zero();
+    mat3_t A = md_unitcell_basis_mat3(unit_cell);
+    const vec4_t ext = unit_cell ? vec4_from_vec3(mat3_mul_vec3(A, vec3_set1(1.0f)), 0) : vec4_zero();
     if ((ref_len * trg_len) < RDF_BRUTE_FORCE_LIMIT) {
         for (size_t i = 0; i < ref_len; ++i) {
             for (size_t j = 0; j < trg_len; ++j) {
@@ -4877,7 +4883,7 @@ static int internal_rdf(data_t* dst, data_t arg[], float min_cutoff, float max_c
             ASSERT(dst->ptr);
             float* bins    = as_float_arr(*dst);
             float* weights = as_float_arr(*dst) + num_bins;
-            compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, &ctx->mol->unit_cell, ctx->temp_alloc, ctx);
+            compute_rdf(bins, weights, num_bins, arg, min_cutoff, max_cutoff, &ctx->mol->unitcell, ctx->temp_alloc, ctx);
         }
         if (ctx->vis) {
             //return visualize_rdf(arg, min_cutoff, max_cutoff, ctx);
@@ -5260,7 +5266,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         md_bitfield_iter_extract_indices(trg_idx, trg_size, md_bitfield_iter_create(trg_bf));
         vec3_t* trg_xyz = NULL;
 
-        md_util_unwrap_vec4(ref_xyzw[0], ref_size, &ctx->mol->unit_cell);
+        md_util_unwrap_vec4(ref_xyzw[0], ref_size, &ctx->mol->unitcell);
         ref_com[0] = md_util_com_compute_vec4(ref_xyzw[0], 0, ref_size, 0);
 
         // @TODO(Robin): This should be measured
@@ -5270,7 +5276,7 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const float spatial_hash_radius = sqrtf(cutoff * cutoff * 3); // distance from center of volume to corners of the volume.
 
         if (!brute_force) {
-            spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, &ctx->mol->unit_cell, ctx->temp_alloc);
+            spatial_hash = md_spatial_hash_create_soa(ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, trg_idx, trg_size, &ctx->mol->unitcell, ctx->temp_alloc);
         } else {
             trg_xyz = md_vm_arena_push(ctx->temp_alloc, sizeof(vec3_t) * trg_size);
             for (size_t i = 0; i < trg_size; ++i) {
@@ -5298,12 +5304,12 @@ static int _sdf(data_t* dst, data_t arg[], eval_context_t* ctx) {
             const md_bitfield_t* bf = &ref_bf_arr[i];
 
             extract_xyzw_vec4(ref_xyzw[1], ref_x[1], ref_y[1], ref_z[1], ref_w, bf);
-            md_util_unwrap_vec4(ref_xyzw[1], ref_size, &ctx->mol->unit_cell);
+            md_util_unwrap_vec4(ref_xyzw[1], ref_size, &ctx->mol->unitcell);
             ref_com[1] = md_util_com_compute_vec4(ref_xyzw[1], 0, ref_size, 0); // @NOTE: since the structure has been unwrapped, no need to compute com in periodic space
             mat3_t R = mat3_optimal_rotation_vec4((const vec4_t* const*)ref_xyzw, 0, ref_size, ref_com);
 
             //md_bitfield_iter_extract_indices(ref_idx[1], ref_size, md_bitfield_iter_create(bf));
-            //ref_com[1] = md_util_com_compute(ref_x[1], ref_y[1], ref_z[1], ref_w[1], ref_idx[1], ref_size, &ctx->mol->unit_cell);
+            //ref_com[1] = md_util_com_compute(ref_x[1], ref_y[1], ref_z[1], ref_w[1], ref_idx[1], ref_size, &ctx->mol->unitcell);
             //mat3_t R  = mat3_optimal_rotation(ref_x, ref_y, ref_z, ref_w, (const int32_t* const*)ref_idx, ref_size, ref_com);
             mat4_t RT = mat4_mul(mat4_from_mat3(R), mat4_translate(-ref_com[1].x, -ref_com[1].y, -ref_com[1].z));
 
@@ -5397,8 +5403,8 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
                 if (count > 0) {
                     md_array_resize(xyzw, count, ctx->temp_alloc);
                     extract_xyzw_vec4(xyzw, ctx->mol->atom.x, ctx->mol->atom.y, ctx->mol->atom.z, ctx->mol->atom.mass, bf);
-                    vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unit_cell);
-                    md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unit_cell);
+                    vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unitcell);
+                    md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unitcell);
                     const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
                     out_weights[i] = md_util_shape_weights(&M);
                 }
@@ -5406,8 +5412,8 @@ static int _shape_weights(data_t* dst, data_t arg[], eval_context_t* ctx) {
         } else {
             xyzw = coordinate_extract_xyzw(arg[0], 1.0f, ctx);
             const size_t count = md_array_size(xyzw);
-            vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unit_cell);
-            md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unit_cell);
+            vec3_t com = md_util_com_compute_vec4(xyzw, 0, count, &ctx->mol->unitcell);
+            md_util_deperiodize_vec4(xyzw, count, com, &ctx->mol->unitcell);
             const mat3_t M = mat3_covariance_matrix_vec4(xyzw, 0, count, com);
             out_weights[0] = md_util_shape_weights(&M);
         }

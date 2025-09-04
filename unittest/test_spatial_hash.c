@@ -73,7 +73,7 @@ UTEST(spatial_hash, small_periodic) {
     float y[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
     float z[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-    md_unit_cell_t unit_cell = md_util_unit_cell_from_extent(10, 0, 0);
+    md_unitcell_t unit_cell = md_unitcell_from_extent(10, 0, 0);
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(x, y, z, NULL, 10, &unit_cell, md_get_heap_allocator());
     ASSERT_TRUE(spatial_hash);
     
@@ -98,7 +98,7 @@ UTEST(spatial_hash, big) {
     md_molecule_t mol = {0};
     ASSERT_TRUE(md_pdb_molecule_init(&mol, &pdb_data, MD_PDB_OPTION_NONE, alloc));
 
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unitcell, alloc);
     ASSERT_TRUE(spatial_hash);
 
     vec3_t pos = {24, 48, 24};
@@ -343,6 +343,14 @@ static inline ivec4_t ivec4_set(int x, int y, int z, int w) {
     return simde_mm_set_epi32(w, z, y, x);
 }
 
+static inline ivec4_t ivec4_load(const int* v) {
+    return simde_mm_loadu_si128((const md_128i*)v);
+}
+
+static inline void ivec4_store(int* v, ivec4_t a) {
+    simde_mm_storeu_si128((md_128i*)v, a);
+}
+
 static inline ivec4_t ivec4_set1(int v) {
     return simde_mm_set1_epi32(v);
 }
@@ -371,71 +379,101 @@ static inline ivec4_t ivec4_sub(ivec4_t a, ivec4_t b) {
     return simde_mm_sub_epi32(a, b);
 }
 
-static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff,
-                                             const md_unit_cell_t* unit_cell, dist_pair_t* out_pairs) {
-    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));  // 1 GiB arena
+typedef struct md_spatial_acc_t {
+    float* elem_x;
+    float* elem_y;
+    float* elem_z;
+    uint32_t* elem_idx;
+    size_t num_elems;
 
-    mat3_t A = {0};
-    mat3_t Ai = {0};
+    uint32_t  cell_min[3];
+    uint32_t  cell_max[3];
+    uint32_t  cell_dim[3];
+    uint32_t* cell_off;
+    size_t num_cells;
+
+    float G00, G11, G22;
+    float H01, H02, H12;
+
+    md_allocator_i* alloc;
+} md_spatial_acc_t;
+
+static void md_spatial_acc_free(md_spatial_acc_t* acc) {
+    ASSERT(acc);
+    if (acc->alloc) {
+        md_allocator_i* a = acc->alloc;
+        if (acc->elem_x)   md_free(a, acc->elem_x,   acc->num_elems * sizeof(float));
+        if (acc->elem_y)   md_free(a, acc->elem_y,   acc->num_elems * sizeof(float));
+        if (acc->elem_z)   md_free(a, acc->elem_z,   acc->num_elems * sizeof(float));
+        if (acc->elem_idx) md_free(a, acc->elem_idx, acc->num_elems * sizeof(uint32_t));
+
+        if (acc->cell_off) md_free(a, acc->cell_off, (acc->num_cells + 1) * sizeof(uint32_t));
+    }
+    MEMSET(acc, 0, sizeof(md_spatial_acc_t));
+}
+
+static void md_spatial_acc_init(md_spatial_acc_t* acc, const float* in_x, const float* in_y, const float* in_z, const int32_t* in_idx, size_t count, double cell_ext, const md_unitcell_t* unitcell, md_allocator_i* alloc)
+{
+    double A[3][3]  = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    double Ai[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     uint32_t flags = 0;
 
-    if (unit_cell) {
-        A  = unit_cell->basis;
-        Ai = unit_cell->inv_basis;
-        flags = unit_cell->flags;
+    if (unitcell) {
+        md_unitcell_basis_extract(A, unitcell);
+        md_unitcell_inv_basis_extract(Ai, unitcell);
+        flags = md_unitcell_flags(unitcell);
     }
 
     vec4_t coord_offset = vec4_zero();
 
-    const int PBC_ALL = (MD_UNIT_CELL_FLAG_PBC_X | MD_UNIT_CELL_FLAG_PBC_Y | MD_UNIT_CELL_FLAG_PBC_Z);
-    if (flags & PBC_ALL != PBC_ALL) {
-        if (unit_cell) {
-            // We cannot have a triclinic system that is partially periodic
-            ASSERT(flags & MD_UNIT_CELL_FLAG_ORTHO);
-        }
+    if (flags & MD_UNITCELL_PBC_ALL != MD_UNITCELL_PBC_ALL) {
         // Unit cell either missing or not periodic along one or more axis
         vec4_t aabb_min = {0}, aabb_max = {0};
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, in_x, in_y, in_z, NULL, NULL, num_points);
+        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, in_x, in_y, in_z, NULL, NULL, count);
 
         // Construct A and Ai from aabb extent
         vec4_t aabb_ext = vec4_sub(aabb_max, aabb_min);
 
-        if (!(flags & MD_UNIT_CELL_FLAG_PBC_X)) {
+        if ((flags & MD_UNITCELL_PBC_X) == 0) {
             coord_offset.x = -aabb_min.x;
             if (aabb_ext.x > 0.0f) {
-                A.elem[0][0]  = aabb_ext.x;
-                Ai.elem[0][0] = 1.0f / aabb_ext.x;
+                A[0][0]  = aabb_ext.x;
+                Ai[0][0] = 1.0 / aabb_ext.x;
             }
         }
-        if (!(flags & MD_UNIT_CELL_FLAG_PBC_Y)) {
+        if ((flags & MD_UNITCELL_PBC_Y) == 0) {
             coord_offset.y = -aabb_min.y;
             if (aabb_ext.y > 0.0f) {
-                A.elem[1][1]  = aabb_ext.y;
-                Ai.elem[1][1] = 1.0f / aabb_ext.y;
+                A[1][1]  = aabb_ext.y;
+                Ai[1][1] = 1.0 / aabb_ext.y;
             }
         }
-        if (!(flags & MD_UNIT_CELL_FLAG_PBC_Z)) {
+        if ((flags & MD_UNITCELL_PBC_Z) == 0) {
             coord_offset.z = -aabb_min.z;
             if (aabb_ext.z > 0.0f) {
-                A.elem[2][2]  = aabb_ext.z;
-                Ai.elem[2][2] = 1.0f / aabb_ext.z;
+                A[2][2]  = aabb_ext.z;
+                Ai[2][2] = 1.0 / aabb_ext.z;
             }
         }
     }
 
     // Precompute metric G = A^T A
-    const mat3_t G = mat3_mul(mat3_transpose(A), A);
-    const mat4x3_t G43 = mat4x3_from_mat3(G);
+    double G00 = A[0][0] * A[0][0];
+    double G11 = A[1][0] * A[1][0] + A[1][1] * A[1][1];
+    double G22 = A[2][0] * A[2][0] + A[2][1] * A[2][1] + A[2][2] * A[2][2];
+    double H01 = 2 * A[0][0] * A[1][0];
+    double H02 = 2 * A[0][0] * A[2][0];
+    double H12 = 2 * (A[1][0] * A[2][0] + A[1][1] * A[2][1]);
 
     // Choose grid resolution. Heuristic:  cell_dim ≈ |A|/CELL_EXT.
-    // Using ~cutoff-ish spacing gives good pruning. Tweak CELL_EXT if you like.
-    const double CELL_EXT = cutoff > 0.0 ? cutoff : 6.0;
+    // Using ~cutoff-ish spacing gives good pruning.
+    const double CELL_EXT = cell_ext > 0.0 ? cell_ext : 6.0;
 
     // Estimate cell_dim by measuring the extents of the box vectors (norms of columns of A)
     // This is only a heuristic for bin counts; the grid is still in fractional space.
-    double ax = sqrt((double)A.elem[0][0] * (double)A.elem[0][0] + (double)A.elem[1][0] * (double)A.elem[1][0] + (double)A.elem[2][0] * (double)A.elem[2][0]);
-    double by = sqrt((double)A.elem[0][1] * (double)A.elem[0][1] + (double)A.elem[1][1] * (double)A.elem[1][1] + (double)A.elem[2][1] * (double)A.elem[2][1]);
-    double cz = sqrt((double)A.elem[0][2] * (double)A.elem[0][2] + (double)A.elem[1][2] * (double)A.elem[1][2] + (double)A.elem[2][2] * (double)A.elem[2][2]);
+    double ax = sqrt(A[0][0] * A[0][0] + A[1][0] * A[1][0] + A[2][0] * A[2][0]);
+    double by = sqrt(A[0][1] * A[0][1] + A[1][1] * A[1][1] + A[2][1] * A[2][1]);
+    double cz = sqrt(A[0][2] * A[0][2] + A[1][2] * A[1][2] + A[2][2] * A[2][2]);
 
     uint32_t cell_dim[3] = {
         CLAMP((uint32_t)(ax / CELL_EXT + 0.5), 1, 1024),
@@ -443,43 +481,72 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         CLAMP((uint32_t)(cz / CELL_EXT + 0.5), 1, 1024),
     };
 
-    const uint32_t c0  = cell_dim[0];
+    const uint32_t c0 = cell_dim[0];
     const uint32_t c01 = cell_dim[0] * cell_dim[1];
     const size_t num_cells = (size_t)cell_dim[0] * cell_dim[1] * cell_dim[2];
 
     // Temporary arrays
-    uint32_t* cell_offset = (uint32_t*)md_vm_arena_push_zero(arena, (num_cells + 1) * sizeof(uint32_t));
-    uint32_t* local_idx = (uint32_t*)md_vm_arena_push(arena, num_points * sizeof(uint32_t));
-    uint32_t* cell_idx = (uint32_t*)md_vm_arena_push(arena, num_points * sizeof(uint32_t));
-    elem_t* scratch_s = (elem_t*)md_vm_arena_push(arena, num_points * sizeof(elem_t));  // holds fractional coords before scatter
+    size_t pos = md_temp_get_pos();
+    uint32_t* local_idx = (uint32_t*)md_temp_push(count * sizeof(uint32_t));
+    uint32_t* cell_idx  = (uint32_t*)md_temp_push(count * sizeof(uint32_t));
+    elem_t* scratch_s   = (elem_t*)md_temp_push(count * sizeof(elem_t));  // unsorted fractional coords
+
+    // Persistent arrays
+    size_t alloc_len = ALIGN_TO(count, 16);
+
+    float* element_x = md_alloc(alloc, alloc_len * sizeof(float));
+    float* element_y = md_alloc(alloc, alloc_len * sizeof(float));
+    float* element_z = md_alloc(alloc, alloc_len * sizeof(float));
+    uint32_t* element_i = md_alloc(alloc, alloc_len * sizeof(uint32_t));
+
+    uint32_t* cell_offset = (uint32_t*)md_alloc(alloc, (num_cells + 1) * sizeof(uint32_t));
 
     md_timestamp_t t0 = md_time_current();
 
-    const vec4_t  fcell_dim = vec4_set(cell_dim[0], cell_dim[1], cell_dim[2], 0);
-    const vec4_t  fcell_max = vec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0);
+    const vec4_t fcell_dim  = vec4_set(cell_dim[0], cell_dim[1], cell_dim[2], 0);
+    const vec4_t fcell_max  = vec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0);
     const ivec4_t icell_min = ivec4_set1(0);
     const ivec4_t icell_max = ivec4_set(cell_dim[0] - 1, cell_dim[1] - 1, cell_dim[2] - 1, 0);
-
-    const ivec4_t c = ivec4_set(1, c0, c01, 0);
 
     ivec4_t cell_min = ivec4_set1(INT32_MAX);
     ivec4_t cell_max = ivec4_set1(INT32_MIN);
 
-    mat4x3_t A43  = mat4x3_from_mat3(A);
-    mat4x3_t Ai43 = mat4x3_from_mat3(Ai);
+    mat4_t Ai4 = {
+        (float)Ai[0][0],
+        (float)Ai[0][1],
+        (float)Ai[0][2],
+        0,
+        (float)Ai[1][0],
+        (float)Ai[1][1],
+        (float)Ai[1][2],
+        0,
+        (float)Ai[2][0],
+        (float)Ai[2][1],
+        (float)Ai[2][2],
+        0,
+        0,
+        0,
+        0,
+        0,
+    };
+
+    float val;
+    MEMSET(&val, 0xFF, sizeof(val));
+    const vec4_t pbc_mask = vec4_set((flags & MD_UNITCELL_PBC_X) ? val : 0, (flags & MD_UNITCELL_PBC_Y) ? val : 0, (flags & MD_UNITCELL_PBC_Z) ? val : 0, 0);
 
     // 1) Convert to fractional, wrap periodic axes into [0,1), bin to cells
-    for (size_t i = 0; i < num_points; ++i) {
-        vec4_t r = {in_x[i], in_y[i], in_z[i], 0};
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t idx = in_idx ? in_idx[i] : (uint32_t)i;
+
+        vec4_t r = {in_x[idx], in_y[idx], in_z[idx], 0};
         r = vec4_add(r, coord_offset);
 
-        vec4_t s = mat4x3_mul_vec4(Ai43, r);
-        s = vec4_fract(s);
+        // Fractional coordinates
+        vec4_t c = mat4_mul_vec4(Ai4, r);
+        c = vec4_blend(c, vec4_fract(c), pbc_mask);
 
-        vec4_t f = vec4_mul(s, fcell_dim);
-        f = vec4_floor(f);
-        ivec4_t ic = ivec4_from_vec4(f);
-
+        // Bin to cell indices
+        ivec4_t ic = ivec4_from_vec4(vec4_floor(vec4_mul(c, fcell_dim)));
         ic = ivec4_clamp(ic, icell_min, icell_max);
 
         cell_min = ivec4_min(cell_min, ic);
@@ -492,15 +559,11 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         ASSERT(ci < num_cells);
 
         local_idx[i] = cell_offset[ci]++;  // count for now
-        cell_idx[i] = (uint32_t)ci;
+        cell_idx[i]  = (uint32_t)ci;
 
         // stash fractional coordinates
-        MEMCPY(&scratch_s[i], &s, sizeof(elem_t));
-        scratch_s[i].idx = (uint32_t)i;
+        scratch_s[i] = (elem_t){c.x, c.y, c.z, idx};
     }
-
-    md_timestamp_t t1 = md_time_current();
-    printf("1: %.2f\n", md_time_as_milliseconds(t1 - t0));
 
     // 2) Prefix sum cell offsets
     uint32_t running = 0;
@@ -510,30 +573,50 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         running += len;
     }
 
-    size_t alloc_len = running + 8;
-    float*    element_x = md_vm_arena_push(arena, alloc_len * sizeof(float));
-    float*    element_y = md_vm_arena_push(arena, alloc_len * sizeof(float));
-    float*    element_z = md_vm_arena_push(arena, alloc_len * sizeof(float));
-    uint32_t* element_i = md_vm_arena_push(arena, alloc_len * sizeof(uint32_t));
-    elem_t* elements = md_vm_arena_push(arena, alloc_len * sizeof(elem_t));  // sorted fractional coords
-
-    md_timestamp_t t2 = md_time_current();
-    printf("2: %.2f\n", md_time_as_milliseconds(t2 - t1));
-
     // 3) Scatter fractional coords into 'elements' in cell order
-    for (size_t i = 0; i < num_points; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         uint32_t dst = cell_offset[cell_idx[i]] + local_idx[i];
-        //elements[dst] = scratch_s[i];
         element_x[dst] = scratch_s[i].x;
         element_y[dst] = scratch_s[i].y;
         element_z[dst] = scratch_s[i].z;
         element_i[dst] = scratch_s[i].idx;
     }
 
-    md_timestamp_t t3 = md_time_current();
-    printf("3: %.2f\n", md_time_as_milliseconds(t3 - t2));
+    int cmin[4];
+    int cmax[4];
+    ivec4_store(cmin, cell_min);
+    ivec4_store(cmax, cell_max);
 
-    // 5) Pair counting
+    acc->elem_x = element_x;
+    acc->elem_y = element_y;
+    acc->elem_z = element_z;
+    acc->elem_idx = element_i;
+    acc->num_elems = count;
+    MEMCPY(acc->cell_min, cmin, sizeof(acc->cell_min));
+    MEMCPY(acc->cell_max, cmax, sizeof(acc->cell_max));
+    MEMCPY(acc->cell_dim, cell_dim, sizeof(acc->cell_dim));
+    acc->cell_off = cell_offset;
+    acc->num_cells = num_cells;
+        
+    acc->G00 = (float)G00;
+    acc->G11 = (float)G11;
+    acc->G22 = (float)G22;
+    acc->H01 = (float)H01;
+    acc->H02 = (float)H02;
+    acc->H12 = (float)H12;
+    acc->alloc = alloc;
+
+    md_temp_set_pos_back(pos);
+}
+
+static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_y, const float* in_z, size_t num_points, double cutoff,
+                                             const md_unitcell_t* unit_cell, dist_pair_t* out_pairs) {
+    md_allocator_i* arena = md_vm_arena_create(GIGABYTES(1));  // 1 GiB arena
+
+    md_spatial_acc_t acc = {0};
+    md_spatial_acc_init(&acc, in_x, in_y, in_z, NULL, num_points, cutoff, unit_cell, arena);
+
+    // Pair counting
     const float r2_cut = cutoff * cutoff;
     size_t count = 0;
 
@@ -542,19 +625,27 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
 #define CELL_OFFSET(ci) (cell_offset[(ci)])
 #define CELL_LENGTH(ci) (cell_offset[(ci) + 1] - cell_offset[(ci)])
 
-    int cmin[4], cmax[4];
-    MEMCPY(cmin, &cell_min, sizeof(cmin));
-    MEMCPY(cmax, &cell_max, sizeof(cmax));
+    const md_256 G00 = md_mm256_set1_ps(acc.G00);
+    const md_256 G11 = md_mm256_set1_ps(acc.G11);
+    const md_256 G22 = md_mm256_set1_ps(acc.G22);
 
-    const md_256 G00 = md_mm256_set1_ps(G.elem[0][0]);
-    const md_256 G11 = md_mm256_set1_ps(G.elem[1][1]);
-    const md_256 G22 = md_mm256_set1_ps(G.elem[2][2]);
-
-    const md_256 H01 = md_mm256_set1_ps(2.0 * G.elem[0][1]);
-    const md_256 H02 = md_mm256_set1_ps(2.0 * G.elem[0][2]);
-    const md_256 H12 = md_mm256_set1_ps(2.0 * G.elem[1][2]);
+    const md_256 H01 = md_mm256_set1_ps(acc.H01);
+    const md_256 H02 = md_mm256_set1_ps(acc.H02);
+    const md_256 H12 = md_mm256_set1_ps(acc.H12);
 
     const md_256 r2  = md_mm256_set1_ps(r2_cut);
+
+    const float* element_x = acc.elem_x;
+    const float* element_y = acc.elem_y;
+    const float* element_z = acc.elem_z;
+    const uint32_t* element_i = acc.elem_idx;
+    const uint32_t* cell_offset = acc.cell_off;
+    const uint32_t* cell_dim = acc.cell_dim;
+    const uint32_t c0 = cell_dim[0];
+    const uint32_t c01 = cell_dim[0] * cell_dim[1];
+    const uint32_t num_cells = acc.num_cells;
+    const uint32_t cmin[3] = {acc.cell_min[0], acc.cell_min[1], acc.cell_min[2]};
+    const uint32_t cmax[3] = {acc.cell_max[0], acc.cell_max[1], acc.cell_max[2]};
 
     int periodic_x = 1;
     int periodic_y = 1;
@@ -639,7 +730,6 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
                     
                     if (len_j == 0) continue;
 
-                    const elem_t* elem_j = elements + off_j;
                     const float* elem_j_x = element_x + off_j;
                     const float* elem_j_y = element_y + off_j;
                     const float* elem_j_z = element_z + off_j;
@@ -659,9 +749,6 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
         }
     }
 
-    md_timestamp_t t4 = md_time_current();
-    printf("4: %.2f\n", md_time_as_milliseconds(t4 - t3));
-
 #undef CELL_INDEX
 #undef CELL_OFFSET
 #undef CELL_LENGTH
@@ -670,12 +757,14 @@ static size_t do_pairwise_periodic_triclinic(const float* in_x, const float* in_
     return count;
 }
 
-static size_t do_brute_force(const float* in_x, const float* in_y, const float* in_z, size_t num_points, float cutoff, const md_unit_cell_t* unit_cell, dist_pair_t* pairs) {
+static size_t do_brute_force(const float* in_x, const float* in_y, const float* in_z, size_t num_points, float cutoff, const md_unitcell_t* cell, dist_pair_t* pairs) {
     size_t count = 0;
     const float r2 = cutoff * cutoff;
 
-    if (unit_cell && (unit_cell->flags & MD_UNIT_CELL_FLAG_PBC_ALL) == MD_UNIT_CELL_FLAG_PBC_ALL) {
-        vec4_t ext = md_unit_cell_box_ext(unit_cell);
+    uint32_t flags = md_unitcell_flags(cell);
+
+    if ((flags & MD_UNITCELL_PBC_ALL) == MD_UNITCELL_PBC_ALL) {
+        vec4_t ext = md_unitcell_diag_vec4(cell);
         vec4_t inv_ext = vec4_set(ext.x > 0.0f ? 1.0f / ext.x : 0.0f, ext.y > 0.0f ? 1.0f / ext.y : 0.0f, ext.z > 0.0f ? 1.0f / ext.z : 0.0f, 0.0f);
 
         for (size_t i = 0; i < num_points - 1; ++i) {
@@ -757,9 +846,9 @@ UTEST(spatial_hash, n2) {
         xyz[i] = vec3_set(mol.atom.x[i], mol.atom.y[i], mol.atom.z[i]);
     }
 
-    const vec4_t mask = md_unit_cell_pbc_mask(&mol.unit_cell);
-    mat4x3_t I = mat4x3_from_mat3(mol.unit_cell.inv_basis);
-    mat4x3_t M = mat4x3_from_mat3(mol.unit_cell.basis);
+    const vec4_t mask = md_unitcell_pbc_mask_vec4(&mol.unitcell);
+    mat4x3_t I = mat4x3_from_mat3(md_unitcell_inv_basis_mat3(&mol.unitcell));
+    mat4x3_t M = mat4x3_from_mat3(md_unitcell_basis_mat3(&mol.unitcell));
 
     {
 
@@ -780,7 +869,7 @@ UTEST(spatial_hash, n2) {
         dist_pair_t bf_pairs[4096];
         dist_pair_t sh_pairs[4096];
 
-        md_unit_cell_t test_cell = md_util_unit_cell_from_extent(ext, ext, ext);
+        md_unitcell_t test_cell = md_unitcell_from_extent(ext, ext, ext);
         md_spatial_hash_t* sh = md_spatial_hash_create_soa(x, y, z, NULL, test_count, &test_cell, alloc);
 
         for (double rad = 4.0; rad <= 5.5; rad += 0.5) {
@@ -835,12 +924,12 @@ UTEST(spatial_hash, n2) {
     }
 
 #if 1
-    md_unit_cell_t unit_cell = mol.unit_cell;
+    md_unitcell_t cell = mol.unitcell;
     // Clear pbc flags
 
     size_t expected_count = 3711880;
     if (false) {
-        unit_cell.flags &= ~(MD_UNIT_CELL_FLAG_PBC_X | MD_UNIT_CELL_FLAG_PBC_Y | MD_UNIT_CELL_FLAG_PBC_Z);
+        cell.flags &= ~(MD_UNITCELL_PBC_X | MD_UNITCELL_PBC_Y | MD_UNITCELL_PBC_Z);
         expected_count = 3701958;
     }
 
@@ -848,7 +937,7 @@ UTEST(spatial_hash, n2) {
     dist_pair_t* pairs = md_alloc(alloc, sizeof(dist_pair_t) * 10000000);
     md_timestamp_t start = md_time_current();
     //size_t count = do_pairwise_periodic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &unit_cell);
-    size_t custom_count = do_pairwise_periodic_triclinic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count / 16, 5.0f, &unit_cell, pairs);
+    size_t custom_count = do_pairwise_periodic_triclinic(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &cell, pairs);
     md_timestamp_t end = md_time_current();
     printf("Custom: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_EQ(expected_count, custom_count);
@@ -859,7 +948,7 @@ UTEST(spatial_hash, n2) {
     // Current implementation of spatial hash for N^2
     
     start = md_time_current();
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &unit_cell, alloc);
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &cell, alloc);
     uint32_t count = 0;
     md_spatial_hash_query_multi_batch(spatial_hash, xyz, mol.atom.count, 5.0f, iter_batch_fn, &count);
     end = md_time_current();
@@ -873,7 +962,7 @@ UTEST(spatial_hash, n2) {
 
     // Brute force
     start = md_time_current();
-    size_t bf_count = do_brute_force(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &unit_cell, NULL);
+    size_t bf_count = do_brute_force(mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.count, 5.0f, &cell, NULL);
     end = md_time_current();
     printf("Brute force: %f ms\n", md_time_as_milliseconds(end - start));
     EXPECT_EQ(expected_count, bf_count);
@@ -897,7 +986,7 @@ UTEST_F_SETUP(spatial_hash) {
     md_gro_data_t gro_data = {0};
     ASSERT_TRUE(md_gro_data_parse_file(&gro_data, STR_LIT(MD_UNITTEST_DATA_DIR "/centered.gro"), utest_fixture->arena));
     ASSERT_TRUE(md_gro_molecule_init(&utest_fixture->mol, &gro_data, utest_fixture->arena));
-    utest_fixture->pbc_ext = mat3_mul_vec3(utest_fixture->mol.unit_cell.basis, vec3_set1(1.f));
+    utest_fixture->pbc_ext = md_unitcell_diag_vec3(&utest_fixture->mol.unitcell);
 }
 
 UTEST_F_TEARDOWN(spatial_hash) {
@@ -962,10 +1051,10 @@ UTEST_F(spatial_hash, test_correctness_ala) {
     md_molecule_t mol;
     ASSERT_TRUE(md_pdb_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/1ALA-560ns.pdb"), NULL, alloc));
 
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unitcell, alloc);
     ASSERT_TRUE(spatial_hash);
 
-    const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(mol.unit_cell.basis, vec3_set1(1)), 0);
+    const vec4_t pbc_ext = md_unitcell_diag_vec4(&mol.unitcell);
 
     srand(31);
 
@@ -1015,10 +1104,10 @@ UTEST_F(spatial_hash, test_correctness_ala_vec3) {
         xyz[i] = vec3_set(mol.atom.x[i], mol.atom.y[i], mol.atom.z[i]);
     }
 
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_vec3(xyz, NULL, md_array_size(xyz), &mol.unit_cell, alloc);
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_vec3(xyz, NULL, md_array_size(xyz), &mol.unitcell, alloc);
     ASSERT_TRUE(spatial_hash);
 
-    const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(mol.unit_cell.basis, vec3_set1(1)), 0);
+    const vec4_t pbc_ext = md_unitcell_diag_vec4(&mol.unitcell);
 
     srand(31);
 
@@ -1066,7 +1155,7 @@ UTEST_F(spatial_hash, test_correctness_water) {
     md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, NULL, alloc);
     ASSERT_TRUE(spatial_hash);
 
-    const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(mol.unit_cell.basis, vec3_set1(1)), 0);
+    const vec4_t pbc_ext = md_unitcell_diag_vec4(&mol.unitcell);
 
     srand(31);
 
@@ -1111,7 +1200,7 @@ UTEST_F(spatial_hash, test_correctness_periodic_centered) {
     md_molecule_t* mol = &utest_fixture->mol;
     vec3_t pbc_ext = utest_fixture->pbc_ext;
 
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unit_cell, alloc);
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol->atom.x, mol->atom.y, mol->atom.z, NULL, mol->atom.count, &mol->unitcell, alloc);
     ASSERT_TRUE(spatial_hash);
     
     srand(31);
@@ -1159,10 +1248,10 @@ UTEST_F(spatial_hash, test_correctness_periodic_water) {
     md_molecule_t mol;
     ASSERT_TRUE(md_gro_molecule_api()->init_from_file(&mol, STR_LIT(MD_UNITTEST_DATA_DIR "/water.gro"), NULL, alloc));
 
-    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unit_cell, alloc);
+    md_spatial_hash_t* spatial_hash = md_spatial_hash_create_soa(mol.atom.x, mol.atom.y, mol.atom.z, NULL, mol.atom.count, &mol.unitcell, alloc);
     ASSERT_TRUE(spatial_hash);
 
-    const vec4_t pbc_ext = vec4_from_vec3(mat3_mul_vec3(mol.unit_cell.basis, vec3_set1(1)), 0);
+    const vec4_t pbc_ext = md_unitcell_diag_vec4(&mol.unitcell);
 
     srand(31);
 

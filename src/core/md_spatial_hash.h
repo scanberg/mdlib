@@ -21,7 +21,7 @@
 
 struct md_allocator_i;
 struct md_bitfield_t;
-struct md_unit_cell_t;
+struct md_unitcell_t;
 
 typedef struct md_spatial_hash_t md_spatial_hash_t;
 
@@ -94,8 +94,8 @@ static inline vec3_t md_spatial_acc_iter_pos(const md_spatial_acc_iter_t* iter) 
 
 // Initialize a spatial hash structure with a set of coordinates given by array of vec3_t (xyz) or separate arrays (x,y,z).
 // pbc_ext is optional and supplies the periodic extent for each axis. To disable periodicity, supply (0,0,0).
-md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], size_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
-md_spatial_hash_t* md_spatial_hash_create_soa (const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const struct md_unit_cell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_vec3(const vec3_t in_xyz[], const int32_t in_idx[], size_t count, const struct md_unitcell_t* unit_cell, struct md_allocator_i* alloc);
+md_spatial_hash_t* md_spatial_hash_create_soa (const float in_x[], const float in_y[], const float in_z[], const int32_t in_idx[], size_t count, const struct md_unitcell_t* unit_cell, struct md_allocator_i* alloc);
 
 void md_spatial_hash_free(md_spatial_hash_t* spatial_hash);
 

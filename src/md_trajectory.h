@@ -27,7 +27,7 @@ typedef struct md_trajectory_frame_header_t {
 	size_t  num_atoms;
 	int64_t index;
 	double  timestamp;
-	md_unit_cell_t unit_cell;
+	md_unitcell_t unitcell;
 } md_trajectory_frame_header_t;
 
 // This is a common header we use for generated cache files

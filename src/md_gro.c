@@ -202,7 +202,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         box[i][2] *= 10.0f;
     }
 
-    mol->unit_cell = md_util_unit_cell_from_matrix(box);
+    mol->unitcell = md_unitcell_from_basis_parameters(box[0][0], box[1][1], box[2][2], box[0][1], box[0][2], box[1][2]);    
 
     return true;
 }

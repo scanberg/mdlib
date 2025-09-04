@@ -144,7 +144,7 @@ typedef struct md_hydrogen_bond_data_t {
 } md_hydrogen_bond_data_t;
 
 typedef struct md_molecule_t {
-    md_unit_cell_t              unit_cell;
+    md_unitcell_t               unitcell;
     md_atom_data_t              atom;
     md_residue_data_t           residue;
     md_chain_data_t             chain;

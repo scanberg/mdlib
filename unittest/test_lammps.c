@@ -273,13 +273,13 @@ UTEST(lammps, read_standardASCII_lammpstrj_cubic) {
     
 
     EXPECT_NEAR(x[0], 0.018331 * 39.121262, 0.0001); //Should be about 0.018331 of cell
-    EXPECT_NEAR(header.unit_cell.basis.col[0].x, 39.121262, 0.0001);
+    EXPECT_NEAR(header.unitcell.x, 39.121262, 0.0001);
 
     EXPECT_NEAR(y[0], 0.518904 * 39.121262, 0.0001); //Should be about 0.518904 of cell
-    EXPECT_NEAR(header.unit_cell.basis.col[1].y, 39.121262, 0.0001);
+    EXPECT_NEAR(header.unitcell.y, 39.121262, 0.0001);
 
     EXPECT_NEAR(z[0], 0.420586 * 39.121262, 0.0001); //Should be about 0.420586 of cell
-    EXPECT_NEAR(header.unit_cell.basis.col[2].z, 39.121262, 0.0001);
+    EXPECT_NEAR(header.unitcell.z, 39.121262, 0.0001);
 
     md_free(md_get_temp_allocator(), mem, bytes);
     md_lammps_trajectory_free(traj);
@@ -313,13 +313,13 @@ UTEST(lammps, read_standardASCII_lammpstrj_triclinic) {
     EXPECT_TRUE(md_trajectory_load_frame(traj, 0, &header, x, y, z));
 
     EXPECT_NEAR(12.2316074, x[0], 0.0001); //Should be about 0.35 of cell
-    EXPECT_NEAR(39.1199989, header.unit_cell.basis.elem[0][0], 0.0001);
+    EXPECT_NEAR(39.1199989, header.unitcell.x, 0.0001);
 
     EXPECT_NEAR(29.3010769, y[0], 0.0001); //Should be about 0.87 of cell
-    EXPECT_NEAR(35.7833138, header.unit_cell.basis.elem[1][1], 0.0001);
+    EXPECT_NEAR(35.7833138, header.unitcell.y, 0.0001);
 
     EXPECT_NEAR(23.6809902, z[0], 0.0001); //Should be about 0.56 of cell
-    EXPECT_NEAR(42.3503265, header.unit_cell.basis.elem[2][2], 0.0001);
+    EXPECT_NEAR(42.3503265, header.unitcell.z, 0.0001);
 
     md_free(md_get_temp_allocator(), mem, bytes);
     md_lammps_trajectory_free(traj);
