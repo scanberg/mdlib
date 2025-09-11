@@ -1283,9 +1283,9 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
             uint64_t res_key = 0;
             if (mol->atom.resname) {
                 resname = LBL_TO_STR(mol->atom.resname[i]);
-                res_key = md_hash64(resname.ptr, resname.len, 0);
+                res_key = md_hash64_str(resname, 0);
             }
-            uint64_t key = md_hash64(name.ptr, name.len, res_key);
+            uint64_t key = md_hash64_str(name, res_key);
             uint32_t* ptr = md_hashmap_get(&map, key);
             if (ptr) {
                 element[i] = (md_element_t)*ptr;
@@ -1341,11 +1341,11 @@ bool md_util_element_guess(md_element_t element[], size_t capacity, const struct
             }
 
             size_t num_alpha = 0;
-            while (num_alpha < original.len && is_alpha(original.ptr[num_alpha])) ++num_alpha;
+            while (num_alpha < str_len(original) && is_alpha(original.ptr[num_alpha])) ++num_alpha;
             
             size_t num_digits = 0;
             str_t digits = str_substr(original, num_alpha, SIZE_MAX);
-            while (num_digits < digits.len && is_digit(digits.ptr[num_digits])) ++num_digits;
+            while (num_digits < str_len(digits) && is_digit(digits.ptr[num_digits])) ++num_digits;
 
             // 2-3 letters + 1-2 digit (e.g. HO(H)[0-99]) usually means just look at the first letter
             if ((num_alpha == 2 || num_alpha == 3) && (num_digits == 1 || num_digits == 2)) {
@@ -4947,7 +4947,7 @@ void md_util_oobb_compute_vec4(float out_basis[3][3], float out_ext_min[3], floa
 
     // Transform the gto (x,y,z,radius) into the PCA frame to find the min and max extend within it
     for (size_t i = 0; i < count; ++i) {
-        int32_t idx = in_idx ? in_idx[i] : i;
+        int32_t idx = in_idx ? in_idx[i] : (int32_t)i;
         vec4_t xyzr = in_xyzr[idx];
         vec4_t c = vec4_blend_mask(xyzr, vec4_set1(1.0f), MD_SIMD_BLEND_MASK(0,0,0,1));
         vec4_t r = vec4_splat_w(xyzr);

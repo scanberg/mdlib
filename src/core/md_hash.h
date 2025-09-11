@@ -3,6 +3,7 @@
 #include <core/md_compiler.h>
 #include <core/md_intrinsics.h>
 #include <core/md_allocator.h>
+#include <core/md_str.h>
 
 #define XXH_INLINE_ALL
 #include <xxhash.h>
@@ -97,6 +98,8 @@ static inline uint32_t md_hash32(const void* input, size_t len, uint32_t seed) {
 static inline uint64_t md_hash64(const void* input, size_t len, uint64_t seed) {
     return XXH64(input, len, seed);
 }
+
+static inline uint64_t md_hash64_str(str_t str, uint64_t seed) { return XXH64(str.ptr, str.len, seed); }
 
 
 // This is very inspired by the Ourmachinery hash API
