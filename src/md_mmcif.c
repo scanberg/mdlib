@@ -148,8 +148,13 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
             int32_t entity_id = -1;
             
             str_t sym = tok[table[ATOM_SITE_TYPE_SYMBOL]];
-            uint32_t* entry = md_hashmap_get(&elem_map, md_hash64(sym.ptr, sym.len, 0));
-            md_element_t elem = entry ? (md_element_t)*entry : 0;
+            md_element_t elem = 0;
+            
+            // Prefer _atom_site.type_symbol if not '.'
+            if (sym.len > 0 && sym.ptr[0] != '.') {
+                uint32_t* entry = md_hashmap_get(&elem_map, md_hash64(sym.ptr, sym.len, 0));
+                elem = entry ? (md_element_t)*entry : 0;
+            }
 
             md_label_t type = make_label(tok[table[ATOM_SITE_LABEL_ATOM_ID]]);
 
@@ -224,6 +229,34 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
         md_array_ensure(atom->resid,    capacity, alloc);
         md_array_ensure(atom->resname,  capacity, alloc);
         md_array_ensure(atom->chainid,  capacity, alloc);
+    }
+
+    // Fill in missing elements using hash-backed inference
+    for (size_t i = 0; i < (size_t)num_atoms; ++i) {
+        if (atom->element[i] == 0) {
+            // Use hash-backed inference for missing elements
+            str_t atom_label = LBL_TO_STR(atom->type[i]);
+            
+            // Try direct element lookup first
+            md_element_t elem = md_util_element_lookup_ignore_case(atom_label);
+            
+            // If that fails, use the hash-backed inference from md_util_element_guess
+            if (elem == 0) {
+                // Create a temporary molecule structure for the single atom to use element_guess
+                md_molecule_t temp_mol = {0};
+                temp_mol.atom.count = 1;
+                temp_mol.atom.type = &atom->type[i];
+                temp_mol.atom.resname = &atom->resname[i];
+                temp_mol.atom.flags = atom->flags ? &atom->flags[i] : NULL;
+                
+                md_element_t temp_element = 0;
+                if (md_util_element_guess(&temp_element, 1, &temp_mol)) {
+                    elem = temp_element;
+                }
+            }
+            
+            atom->element[i] = elem;
+        }
     }
 
     atom->count = num_atoms;

@@ -666,6 +666,35 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     ASSERT(md_array_size(mol->instance.label) == mol->instance.count);
     ASSERT(md_array_size(mol->instance.atom_range) == mol->instance.count);
 
+    // Fill in missing elements using hash-backed inference
+    for (size_t i = 0; i < mol->atom.count; ++i) {
+        if (mol->atom.element[i] == 0) {
+            // Use hash-backed inference for missing elements
+            str_t atom_name = LBL_TO_STR(mol->atom.type[i]);
+            
+            // Try direct element lookup first
+            md_element_t elem = md_util_element_lookup_ignore_case(atom_name);
+            
+            // If that fails, use the hash-backed inference from md_util_element_guess
+            // This handles cases like CA (carbon alpha vs calcium) using residue context
+            if (elem == 0) {
+                // Create a temporary molecule structure for the single atom to use element_guess
+                md_molecule_t temp_mol = {0};
+                temp_mol.atom.count = 1;
+                temp_mol.atom.type = &mol->atom.type[i];
+                temp_mol.atom.resname = &mol->atom.resname[i];
+                temp_mol.atom.flags = mol->atom.flags ? &mol->atom.flags[i] : NULL;
+                
+                md_element_t temp_element = 0;
+                if (md_util_element_guess(&temp_element, 1, &temp_mol)) {
+                    elem = temp_element;
+                }
+            }
+            
+            mol->atom.element[i] = elem;
+        }
+    }
+
     result = true;
 done:
     md_vm_arena_destroy(temp_alloc);

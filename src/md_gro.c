@@ -169,6 +169,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     mol->atom.y       = md_array_create(float, capacity, alloc);
     mol->atom.z       = md_array_create(float, capacity, alloc);
     mol->atom.type    = md_array_create(md_label_t, capacity, alloc);
+    mol->atom.element = md_array_create(md_element_t, capacity, alloc);
 
     mol->atom.resid   = md_array_create(md_residue_id_t, capacity, alloc);
     mol->atom.resname = md_array_create(md_label_t, capacity, alloc);
@@ -198,6 +199,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         mol->atom.y[i] = y;
         mol->atom.z[i] = z;
         mol->atom.type[i] = make_label(atom_name);
+        mol->atom.element[i] = 0; // Initialize to unknown, will be filled below
         mol->atom.resid[i] =  res_id;
         mol->atom.resname[i] = make_label(res_name);
         mol->atom.flags[i] = flags;
@@ -213,6 +215,9 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     }
 
     mol->unit_cell = md_util_unit_cell_from_matrix(box);
+
+    // Use hash-backed inference to assign elements (GRO typically lacks explicit element information)
+    md_util_element_guess(mol->atom.element, mol->atom.count, mol);
 
     return true;
 }

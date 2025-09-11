@@ -1424,6 +1424,135 @@ bool md_util_element_from_mass(md_element_t element[], const float mass[], size_
     }
 }
 
+bool md_util_lammps_element_from_mass(md_element_t out_element[], const float in_mass[], size_t count) {
+    if (!out_element) {
+        MD_LOG_ERROR("out_element is null");
+        return false;
+    }
+    if (!in_mass) {
+        MD_LOG_ERROR("in_mass is null");
+        return false;
+    }
+    if (count == 0) {
+        return true;
+    }
+
+    // Initialize output to zero (unknown element)
+    for (size_t i = 0; i < count; ++i) {
+        out_element[i] = 0;
+    }
+
+    // Standard atomic masses for common elements used in all-atom simulations
+    typedef struct {
+        md_element_t element;
+        float mass;
+        float tolerance;
+    } element_mass_entry_t;
+
+    static const element_mass_entry_t standard_masses[] = {
+        {H,  1.008f,  0.2f},   // Hydrogen: Z <= 10, tolerance 0.2 amu
+        {C,  12.011f, 0.2f},   // Carbon
+        {N,  14.007f, 0.2f},   // Nitrogen  
+        {O,  15.999f, 0.2f},   // Oxygen
+        {F,  18.998f, 0.2f},   // Fluorine
+        {Na, 22.990f, 0.3f},   // Sodium: Z > 10, <= 20, tolerance 0.3 amu
+        {Mg, 24.305f, 0.3f},   // Magnesium
+        {P,  30.974f, 0.3f},   // Phosphorus
+        {S,  32.06f,  0.3f},   // Sulfur
+        {Cl, 35.45f,  0.3f},   // Chlorine
+        {K,  39.098f, 0.3f},   // Potassium
+        {Ca, 40.078f, 0.3f},   // Calcium
+        {Fe, 55.845f, 0.5f},   // Iron: Z > 20, tolerance 0.5 amu
+        {Zn, 65.38f,  0.5f},   // Zinc
+        {Br, 79.904f, 0.5f},   // Bromine
+        {I,  126.904f, 0.5f},  // Iodine
+    };
+    static const size_t num_standard_masses = sizeof(standard_masses) / sizeof(standard_masses[0]);
+
+    // CG/reduced-units detection heuristics
+    
+    // Count how many unique masses we have
+    float unique_masses[256];
+    size_t unique_count = 0;
+    
+    for (size_t i = 0; i < count; ++i) {
+        const float mass = in_mass[i];
+        if (mass <= 0.0f) continue; // Skip invalid masses
+        
+        // Check if this mass is already in our unique list
+        bool found = false;
+        for (size_t j = 0; j < unique_count; ++j) {
+            if (fabsf(mass - unique_masses[j]) < 1e-6f) {
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found && unique_count < sizeof(unique_masses)/sizeof(unique_masses[0])) {
+            unique_masses[unique_count++] = mass;
+        }
+    }
+    
+    // Heuristic 1: Too few unique masses for the number of atoms suggests CG
+    if (unique_count < 3 && count > 10) {
+        return false; // Likely CG, skip mapping
+    }
+    
+    // Heuristic 2: Check for CG-like mass values (e.g., 72.0, 1.0, etc.)
+    for (size_t i = 0; i < unique_count; ++i) {
+        const float mass = unique_masses[i];
+        // Check for typical CG mass values
+        if (fabsf(mass - 1.0f) < 0.001f ||    // Reduced units
+            fabsf(mass - 72.0f) < 0.001f ||   // Common CG mass
+            fabsf(mass - 36.0f) < 0.001f ||   // Common CG mass
+            mass > 200.0f) {                   // Unrealistically heavy for typical atoms
+            return false; // Likely CG/reduced units, skip mapping
+        }
+    }
+
+    // Perform conservative mass→element mapping
+    size_t successful_mappings = 0;
+    
+    for (size_t i = 0; i < count; ++i) {
+        const float mass = in_mass[i];
+        if (mass <= 0.0f) continue;
+        
+        md_element_t best_element = 0;
+        float best_diff = FLT_MAX;
+        size_t num_candidates = 0;
+        
+        // Find the best matching element
+        for (size_t j = 0; j < num_standard_masses; ++j) {
+            const float diff = fabsf(mass - standard_masses[j].mass);
+            if (diff <= standard_masses[j].tolerance) {
+                num_candidates++;
+                if (diff < best_diff) {
+                    best_diff = diff;
+                    best_element = standard_masses[j].element;
+                }
+            }
+        }
+        
+        // Only assign if we have exactly one candidate (no ambiguity)
+        if (num_candidates == 1) {
+            out_element[i] = best_element;
+            successful_mappings++;
+        }
+        // If multiple elements match within tolerance, leave as 0 (ambiguous)
+    }
+    
+    // If we couldn't map a reasonable fraction, might be CG
+    if (successful_mappings < count / 2) {
+        // Reset all to 0 and return false
+        for (size_t i = 0; i < count; ++i) {
+            out_element[i] = 0;
+        }
+        return false;
+    }
+    
+    return true;
+}
+
 const str_t* md_util_element_symbols(void) {
     return element_symbols;
 }

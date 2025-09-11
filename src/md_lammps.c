@@ -453,8 +453,8 @@ static size_t parse_masses(float* mass_type_table, size_t mass_type_capacity, si
 		}
 		int   type = (int)parse_int(tok[0]);
 		float mass = (float)parse_float(tok[1]);
-		if (type >= (int)mass_type_capacity) {
-			MD_LOG_ERROR("Invalid atom type: %i", (int)num_tok);
+		if (type < 0 || (size_t)type >= mass_type_capacity) {
+			MD_LOG_ERROR("Invalid atom type index in Masses: %d (capacity %zu)", type, mass_type_capacity);
 			return 0;
 		}
 		mass_type_table[type] = mass;
@@ -715,7 +715,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	}
 
 	for (size_t i = 0; i < data->num_atoms; ++i) {
-		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, sizeof(mol->atom.type[i].buf), "%i", data->atoms[i].type);
+		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, sizeof(mol->atom.type[i].buf), "lammps:%i", data->atoms[i].type);
 		mol->atom.x[i] = data->atoms[i].x - data->cell.xlo;
 		mol->atom.y[i] = data->atoms[i].y - data->cell.ylo;
 		mol->atom.z[i] = data->atoms[i].z - data->cell.zlo;
@@ -725,10 +725,11 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		}
 	}
 
-	//Set elements
+	//Set elements using conservative mass→element mapping
 	md_array_resize(mol->atom.element, capacity, alloc);
-	if (!md_util_element_from_mass(mol->atom.element, mol->atom.mass, data->num_atoms)) {
-		MD_LOG_ERROR("One or more masses are missing matching element");
+	if (!md_util_lammps_element_from_mass(mol->atom.element, mol->atom.mass, data->num_atoms)) {
+		// CG/reduced-units detected or mapping failed, leave elements as 0
+		MD_LOG_DEBUG("LAMMPS data appears to be coarse-grained or reduced-units, elements left unassigned");
 	}
 
 	mol->atom.count = data->num_atoms;
