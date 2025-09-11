@@ -3455,7 +3455,7 @@ static int _distance_min(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t min_i, min_j;
-        float min_dist = md_util_unit_cell_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unitcell);
+        float min_dist = md_util_min_distance(&min_i, &min_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unitcell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));
@@ -3495,7 +3495,7 @@ static int _distance_max(data_t* dst, data_t arg[], eval_context_t* ctx) {
         const size_t  b_len = md_array_size(b_pos);
 
         int64_t max_i, max_j;
-        float dist = md_util_unit_cell_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unitcell);
+        float dist = md_util_min_distance(&max_i, &max_j, a_pos, a_len, b_pos, b_len, &ctx->mol->unitcell);
 
         if (dst) {
             ASSERT(is_type_directly_compatible(dst->type, (type_info_t)TI_FLOAT));

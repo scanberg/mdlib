@@ -53,15 +53,6 @@ typedef struct md_trajectory_i {
     // Loads data for frame 'idx' into the supplied buffers. The buffers must be large enough to hold the data.
     // each field is optional and can be NULL if you don't need it.
 	bool (*load_frame)(struct md_trajectory_o* inst, int64_t idx, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
-
-#if 0
-	// --- ADVANCED MODE ---
-	// Returns size in bytes of frame, data_ptr is optional and if supplied, the frame data will be written to it.
-	size_t (*fetch_frame_data)(struct md_trajectory_o* inst, int64_t idx, void* data_ptr);
-
-	// Decodes the raw frame data
-	bool (*decode_frame_data)(struct md_trajectory_o* inst, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z);
-#endif
 } md_trajectory_i;
 
 typedef struct md_trajectory_loader_i {
@@ -129,19 +120,3 @@ static inline bool md_trajectory_load_frame(const md_trajectory_i* traj, int64_t
 	}
 	return false;
 }
-
-#if 0
-static inline size_t md_trajectory_fetch_frame_data(const md_trajectory_i* traj, int64_t idx, void* data_ptr) {
-	if (traj && traj->inst && traj->fetch_frame_data) {
-		return traj->fetch_frame_data(traj->inst, idx, data_ptr);
-	}
-	return 0;
-}
-
-static inline bool md_trajectory_decode_frame_data(const md_trajectory_i* traj, const void* data_ptr, size_t data_size, md_trajectory_frame_header_t* header, float* x, float* y, float* z) {
-	if (traj && traj->inst && traj->decode_frame_data) {
-		return traj->decode_frame_data(traj->inst, data_ptr, data_size, header, x, y, z);
-	}
-	return false;
-}
-#endif

@@ -2,7 +2,6 @@
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
-#include <core/md_pool_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_virtual_allocator.h>
 #include <core/md_linear_allocator.h>

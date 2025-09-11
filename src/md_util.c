@@ -7385,7 +7385,7 @@ void md_util_distance_array(float* out_dist, const vec3_t* coord_a, size_t num_a
     }
 }
 
-float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+float md_util_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     int64_t min_i = 0;
     int64_t min_j = 0;
     float min_dist = FLT_MAX;
@@ -7439,7 +7439,7 @@ float md_util_unit_cell_min_distance(int64_t* out_idx_a, int64_t* out_idx_b, con
     return min_dist;
 }
 
-float md_util_unit_cell_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
+float md_util_max_distance(int64_t* out_idx_a, int64_t* out_idx_b, const vec3_t* coord_a, size_t num_a, const vec3_t* coord_b, size_t num_b, const md_unitcell_t* cell) {
     int64_t max_i = 0;
     int64_t max_j = 0;
     float max_dist = 0;
