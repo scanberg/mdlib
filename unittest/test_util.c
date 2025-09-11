@@ -814,3 +814,105 @@ UTEST(util, radix_sort) {
     	EXPECT_LE(arr[i], arr[i+1]);
     }
 }
+
+UTEST(util, lammps_mass_element_mapping) {
+    // Test conservative mass→element mapping for LAMMPS with various scenarios
+    
+    {
+        // Test all-atom case with standard elements
+        float masses[] = {1.008f, 12.011f, 14.007f, 15.999f, 30.974f, 32.06f};
+        md_element_t elements[6] = {0};
+        size_t count = ARRAY_SIZE(masses);
+        
+        EXPECT_TRUE(md_util_lammps_element_from_mass(elements, masses, count));
+        EXPECT_EQ(elements[0], 1);  // H
+        EXPECT_EQ(elements[1], 6);  // C  
+        EXPECT_EQ(elements[2], 7);  // N
+        EXPECT_EQ(elements[3], 8);  // O
+        EXPECT_EQ(elements[4], 15); // P
+        EXPECT_EQ(elements[5], 16); // S
+    }
+    
+    {
+        // Test with small deviations within tolerance
+        float masses[] = {1.01f, 12.1f, 14.1f, 15.9f}; // Within tolerance, but 1.01 instead of 1.0 to avoid reduced units filter
+        md_element_t elements[4] = {0};
+        size_t count = ARRAY_SIZE(masses);
+        
+        EXPECT_TRUE(md_util_lammps_element_from_mass(elements, masses, count));
+        EXPECT_EQ(elements[0], 1);  // H
+        EXPECT_EQ(elements[1], 6);  // C  
+        EXPECT_EQ(elements[2], 7);  // N
+        EXPECT_EQ(elements[3], 8);  // O
+    }
+    
+    {
+        // Test CG-like masses (should fail and return false)
+        float masses[] = {72.0f, 72.0f, 72.0f, 72.0f, 72.0f}; // Typical CG mass
+        md_element_t elements[5] = {0};
+        size_t count = ARRAY_SIZE(masses);
+        
+        EXPECT_FALSE(md_util_lammps_element_from_mass(elements, masses, count));
+        // All elements should remain 0 (unassigned)
+        for (size_t i = 0; i < count; ++i) {
+            EXPECT_EQ(elements[i], 0);
+        }
+    }
+    
+    {
+        // Test reduced units (should fail and return false)
+        float masses[] = {1.0f, 1.0f, 1.0f, 1.0f}; // Reduced units
+        md_element_t elements[4] = {0};
+        size_t count = ARRAY_SIZE(masses);
+        
+        EXPECT_FALSE(md_util_lammps_element_from_mass(elements, masses, count));
+        // All elements should remain 0 (unassigned)
+        for (size_t i = 0; i < count; ++i) {
+            EXPECT_EQ(elements[i], 0);
+        }
+    }
+    
+    {
+        // Test partial mapping case (some masses match, some don't)
+        float masses[] = {12.011f, 45.0f}; // Carbon matches, 45.0f doesn't match any element well
+        md_element_t elements[2] = {0};
+        size_t count = ARRAY_SIZE(masses);
+        
+        bool result = md_util_lammps_element_from_mass(elements, masses, count);
+        // Should succeed because at least one element can be mapped
+        // The first should map to Carbon, second should remain 0
+        EXPECT_TRUE(result);
+        EXPECT_EQ(elements[0], 6);  // C
+        EXPECT_EQ(elements[1], 0);  // Unknown/unmatched
+    }
+    
+    {
+        // Test too few unique masses for the number of atoms (CG heuristic)
+        float masses[20];
+        for (int i = 0; i < 20; ++i) {
+            masses[i] = (i < 10) ? 36.0f : 72.0f; // Only 2 unique masses for 20 atoms
+        }
+        md_element_t elements[20] = {0};
+        size_t count = ARRAY_SIZE(masses);
+        
+        EXPECT_FALSE(md_util_lammps_element_from_mass(elements, masses, count));
+        // All elements should remain 0 (unassigned)
+        for (size_t i = 0; i < count; ++i) {
+            EXPECT_EQ(elements[i], 0);
+        }
+    }
+    
+    {
+        // Test empty case
+        md_element_t elements[1] = {0};
+        EXPECT_TRUE(md_util_lammps_element_from_mass(elements, NULL, 0));
+    }
+    
+    {
+        // Test invalid input
+        float masses[] = {12.011f};
+        EXPECT_FALSE(md_util_lammps_element_from_mass(NULL, masses, 1));
+        md_element_t elements[1] = {0};
+        EXPECT_FALSE(md_util_lammps_element_from_mass(elements, NULL, 1));
+    }
+}

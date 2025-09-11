@@ -1429,7 +1429,7 @@ bool md_util_lammps_element_from_mass(md_element_t out_element[], const float in
         MD_LOG_ERROR("out_element is null");
         return false;
     }
-    if (!in_mass) {
+    if (count > 0 && !in_mass) {
         MD_LOG_ERROR("in_mass is null");
         return false;
     }
@@ -1501,12 +1501,15 @@ bool md_util_lammps_element_from_mass(md_element_t out_element[], const float in
     // Heuristic 2: Check for CG-like mass values (e.g., 72.0, 1.0, etc.)
     for (size_t i = 0; i < unique_count; ++i) {
         const float mass = unique_masses[i];
-        // Check for typical CG mass values
-        if (fabsf(mass - 1.0f) < 0.001f ||    // Reduced units
-            fabsf(mass - 72.0f) < 0.001f ||   // Common CG mass
+        // Check for typical CG mass values - be careful not to catch legitimate hydrogen masses
+        if (fabsf(mass - 72.0f) < 0.001f ||   // Common CG mass
             fabsf(mass - 36.0f) < 0.001f ||   // Common CG mass
             mass > 200.0f) {                   // Unrealistically heavy for typical atoms
             return false; // Likely CG/reduced units, skip mapping
+        }
+        // Check for reduced units (exactly 1.0, not hydrogen mass around 1.008)
+        if (fabsf(mass - 1.0f) < 1e-6f) {  // Much stricter tolerance for exactly 1.0
+            return false; // Likely reduced units
         }
     }
 
@@ -1542,7 +1545,7 @@ bool md_util_lammps_element_from_mass(md_element_t out_element[], const float in
     }
     
     // If we couldn't map a reasonable fraction, might be CG
-    if (successful_mappings < count / 2) {
+    if (successful_mappings == 0 || successful_mappings < (count + 2) / 3) { // At least 33% success rate
         // Reset all to 0 and return false
         for (size_t i = 0; i < count; ++i) {
             out_element[i] = 0;
