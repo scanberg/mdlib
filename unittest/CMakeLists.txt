@@ -11,10 +11,12 @@ target_link_libraries(md_unittest PRIVATE mdlib ${MD_LIBS})
 
 set (SRC_FILES
     test_allocator.c
+    test_api_equivalence.c
     test_array.c
     test_atomic.c
     test_bitop.c
     test_bitfield.c
+    test_element_guess_compat.c
     test_str.c
     test_hash.c
     test_edr.c
