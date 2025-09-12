@@ -136,17 +136,8 @@ UTEST(element_guess_compat, all_pdb_validation) {
     }
     
     // Validate that we processed at least some files
-    EXPECT_GT(files_processed, 0);
-    
-    // Calculate overall failure percentage across all matches
-    if (total_explicit_elements > 0) {
-        double overall_accuracy = (double)total_correct_inferences / total_explicit_elements;
-        double failure_percentage = (1.0 - overall_accuracy) * 100.0;
-        
-        // Element inference should maintain > 85% accuracy across all test files
-        EXPECT_GT(overall_accuracy, 0.85);
-        EXPECT_LT(failure_percentage, 15.0);
-    }
+    EXPECT_GT(files_processed, 0);    
+    EXPECT_EQ(total_correct_inferences, total_explicit_elements);
     
     md_vm_arena_destroy(alloc);
 }
