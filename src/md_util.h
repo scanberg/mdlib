@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <md_molecule.h>
 #include <core/md_atomic.h>
@@ -49,12 +49,14 @@ int   md_util_element_max_valence(md_element_t element);
 uint32_t md_util_element_cpk_color(md_element_t element);
 
 bool md_util_resname_dna(str_t str);
+bool md_util_resname_rna(str_t str);
 bool md_util_resname_acidic(str_t str);
 bool md_util_resname_basic(str_t str);
 bool md_util_resname_neutral(str_t str);
 bool md_util_resname_water(str_t str);
 bool md_util_resname_hydrophobic(str_t str);
 bool md_util_resname_amino_acid(str_t str);
+bool md_util_resname_nucleotide(str_t str);
 
 static inline bool md_util_backbone_atoms_valid(md_protein_backbone_atoms_t prot) {
     return (prot.ca != prot.c) && (prot.ca != prot.o) && (prot.c != prot.o);

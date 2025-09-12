@@ -1013,7 +1013,7 @@ bool md_util_resname_dna(str_t str) {
     return find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
 
-bool md_util_resname_nucleic_acid(str_t str) {
+bool md_util_resname_nucleotide(str_t str) {
     str = trim_label(str);
     return find_str_in_cstr_arr(NULL, str, rna, ARRAY_SIZE(rna)) || find_str_in_cstr_arr(NULL, str, dna, ARRAY_SIZE(dna));
 }
