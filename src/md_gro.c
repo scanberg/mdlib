@@ -169,6 +169,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
     mol->atom.y       = md_array_create(float, capacity, alloc);
     mol->atom.z       = md_array_create(float, capacity, alloc);
     mol->atom.type    = md_array_create(md_label_t, capacity, alloc);
+    mol->atom.type_idx = md_array_create(md_atom_type_idx_t, capacity, alloc);
     mol->atom.element = md_array_create(md_element_t, capacity, alloc);
 
     mol->atom.resid   = md_array_create(md_residue_id_t, capacity, alloc);
@@ -199,6 +200,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         mol->atom.y[i] = y;
         mol->atom.z[i] = z;
         mol->atom.type[i] = make_label(atom_name);
+        mol->atom.type_idx[i] = -1; // Initialize to -1, will be set in postprocessing
         mol->atom.element[i] = 0; // Initialize to unknown, will be filled below
         mol->atom.resid[i] =  res_id;
         mol->atom.resname[i] = make_label(res_name);
@@ -218,6 +220,18 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
 
     // Use hash-backed inference to assign elements (GRO typically lacks explicit element information)
     md_util_element_guess(mol->atom.element, mol->atom.count, mol);
+
+    // Now populate the atom type table and assign type indices
+    for (size_t i = 0; i < mol->atom.count; ++i) {
+        md_label_t type_name = mol->atom.type[i];
+        md_element_t element = mol->atom.element[i];
+        float mass = md_util_element_atomic_mass(element);
+        float radius = md_util_element_vdw_radius(element);
+        
+        // Find or add the atom type
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
+        mol->atom.type_idx[i] = type_idx;
+    }
 
     return true;
 }

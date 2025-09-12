@@ -209,6 +209,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
             md_array_push(atom->resid,	 res_id,   alloc);
             md_array_push(atom->resname, resname,  alloc);
             md_array_push(atom->chainid, chain_id, alloc);
+            md_array_push(atom->type_idx, -1, alloc); // Initialize to -1, will be set in postprocessing
 
             num_atoms += 1;
             next:
@@ -222,6 +223,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
         size_t capacity = ROUND_UP(num_atoms, 16);
         md_array_ensure(atom->element,  capacity, alloc);
         md_array_ensure(atom->type,     capacity, alloc);
+        md_array_ensure(atom->type_idx, capacity, alloc);
         md_array_ensure(atom->x,        capacity, alloc);
         md_array_ensure(atom->y,        capacity, alloc);
         md_array_ensure(atom->z,        capacity, alloc);
@@ -340,6 +342,20 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
             }
         }
         md_buffered_reader_skip_line(reader);
+    }
+
+    // Populate atom type table and assign type indices if atoms were found
+    if (atom_site_found && mol->atom.count > 0) {
+        for (size_t i = 0; i < mol->atom.count; ++i) {
+            md_label_t type_name = mol->atom.type[i];
+            md_element_t element = mol->atom.element[i];
+            float mass = md_util_element_atomic_mass(element);
+            float radius = md_util_element_vdw_radius(element);
+            
+            // Find or add the atom type
+            md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
+            mol->atom.type_idx[i] = type_idx;
+        }
     }
 
     return atom_site_found;

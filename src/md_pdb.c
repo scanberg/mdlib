@@ -479,6 +479,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
     md_array_ensure(mol->atom.z,       capacity, alloc);
     md_array_ensure(mol->atom.element, capacity, alloc);
     md_array_ensure(mol->atom.type,    capacity, alloc);
+    md_array_ensure(mol->atom.type_idx, capacity, alloc);
     md_array_ensure(mol->atom.resid,   capacity, alloc);
     md_array_ensure(mol->atom.resname, capacity, alloc);
     md_array_ensure(mol->atom.flags,   capacity, alloc);
@@ -550,6 +551,9 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         md_array_push_no_grow(mol->atom.flags, flags);
         md_array_push_no_grow(mol->atom.resname, make_label(res_name));
         md_array_push_no_grow(mol->atom.resid, res_id);
+        
+        // Set type_idx to -1 initially, will be updated in postprocessing
+        md_array_push_no_grow(mol->atom.type_idx, -1);
     }
 
     if (chain_ids) {
@@ -693,6 +697,18 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
             
             mol->atom.element[i] = elem;
         }
+    }
+
+    // Now populate the atom type table and assign type indices
+    for (size_t i = 0; i < mol->atom.count; ++i) {
+        md_label_t type_name = mol->atom.type[i];
+        md_element_t element = mol->atom.element[i];
+        float mass = md_util_element_atomic_mass(element);
+        float radius = md_util_element_vdw_radius(element);
+        
+        // Find or add the atom type
+        md_atom_type_idx_t type_idx = md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
+        mol->atom.type_idx[i] = type_idx;
     }
 
     result = true;

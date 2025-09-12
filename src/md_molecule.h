@@ -289,6 +289,37 @@ static inline size_t md_chain_atom_count(md_chain_data_t chain, size_t chain_idx
     return count;
 }
 
+// Convenience functions to extract atom properties into arrays
+static inline void md_atom_extract_radii(float out_radii[], size_t n, const md_molecule_t* mol) {
+    ASSERT(out_radii);
+    ASSERT(mol);
+    ASSERT(n <= mol->atom.count);
+    
+    for (size_t i = 0; i < n; ++i) {
+        out_radii[i] = md_atom_get_radius(mol, i);
+    }
+}
+
+static inline void md_atom_extract_masses(float out_masses[], size_t n, const md_molecule_t* mol) {
+    ASSERT(out_masses);
+    ASSERT(mol);
+    ASSERT(n <= mol->atom.count);
+    
+    for (size_t i = 0; i < n; ++i) {
+        out_masses[i] = md_atom_get_mass(mol, i);
+    }
+}
+
+static inline void md_atom_extract_elements(md_element_t out_elements[], size_t n, const md_molecule_t* mol) {
+    ASSERT(out_elements);
+    ASSERT(mol);
+    ASSERT(n <= mol->atom.count);
+    
+    for (size_t i = 0; i < n; ++i) {
+        out_elements[i] = md_atom_get_element(mol, i);
+    }
+}
+
 static inline md_bond_iter_t md_bond_iter(const md_bond_data_t* bond_data, size_t atom_idx) {
     md_bond_iter_t it = {0};
     if (bond_data && bond_data->conn.offset && atom_idx < bond_data->conn.offset_count) {
