@@ -1,4 +1,4 @@
-#include <md_lammps.h>
+﻿#include <md_lammps.h>
 
 #include <core/md_common.h>
 #include <core/md_str.h>
@@ -448,7 +448,7 @@ static size_t parse_masses(float* mass_type_table, size_t mass_type_capacity, si
 		}
 		const size_t num_tok = extract_tokens(tok, ARRAY_SIZE(tok), &line);
 		if (num_tok < 2) {
-			MD_LOG_ERROR("Failed to parse mass line, expected 2 tokens, got %i", (int)num_tok);
+			MD_LOG_ERROR("Failed to parse mass line, expected 2 tokens, got %zu", num_tok);
 			return 0;
 		}
 		int   type = (int)parse_int(tok[0]);
@@ -527,7 +527,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 
 	MEMSET(data, 0, sizeof(md_lammps_data_t));
 
-	float mass_table[256] = {0};
+	double atom_type_mass_table[512] = {0};
 
 	str_copy_to_char_buf(data->title, sizeof(data->title), str_trim(line));
 
@@ -547,11 +547,9 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 			// Sort atoms by id
 			qsort(data->atoms, data->num_atoms, sizeof(md_lammps_atom_t), compare_atom);
 
-			if (mass_table) {
-				for (size_t i = 0; i < data->num_atoms; ++i) {
-					int32_t type = data->atoms[i].type;
-					data->atoms[i].mass = type < (int)ARRAY_SIZE(mass_table) ? mass_table[type] : 0.0f;
-				}
+			for (size_t i = 0; i < data->num_atoms; ++i) {
+				int32_t type = data->atoms[i].type;
+				data->atoms[i].mass = type < (int)ARRAY_SIZE(atom_type_mass_table) ? atom_type_mass_table[type] : 0.0f;
 			}
 		} else if (num_tok > 0 && str_eq(tok[0], STR_LIT("Bonds"))) {
 			if (!data->num_bonds) {
@@ -589,7 +587,7 @@ static bool md_lammps_data_parse(md_lammps_data_t* data, md_buffered_reader_t* r
 				return false;
 			}
 			md_buffered_reader_skip_line(reader);
-			if (parse_masses(mass_table, ARRAY_SIZE(mass_table), data->num_atom_types, reader) != data->num_atom_types) {
+			if (parse_masses(atom_type_mass_table, ARRAY_SIZE(atom_type_mass_table), data->num_atom_types, reader) != data->num_atom_types) {
 				MD_LOG_ERROR("Number of masses in table did not match the number of atom types");
 				return false;
 			}
@@ -715,7 +713,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	}
 
 	for (size_t i = 0; i < data->num_atoms; ++i) {
-		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, sizeof(mol->atom.type[i].buf), "lammps:%i", data->atoms[i].type);
+		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, sizeof(mol->atom.type[i].buf), "%i", data->atoms[i].type);
 		mol->atom.x[i] = data->atoms[i].x - data->cell.xlo;
 		mol->atom.y[i] = data->atoms[i].y - data->cell.ylo;
 		mol->atom.z[i] = data->atoms[i].z - data->cell.zlo;
@@ -815,12 +813,12 @@ md_molecule_loader_i* md_lammps_molecule_api(void) {
 
 //Reads data that is useful later when we want to parse a frame from the trajectory
 bool lammps_get_header(struct md_trajectory_o* inst, md_trajectory_header_t* header) {
-	lammps_trajectory_t* dataPtr = (lammps_trajectory_t*)inst;
-	ASSERT(dataPtr);
-	ASSERT(dataPtr->magic == MD_LAMMPS_TRAJ_MAGIC);
+	lammps_trajectory_t* traj = (lammps_trajectory_t*)inst;
+	ASSERT(traj);
+	ASSERT(traj->magic == MD_LAMMPS_TRAJ_MAGIC);
 	ASSERT(header);
 
-	*header = dataPtr->header;
+	*header = traj->header;
 	return true;
 }
 

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stddef.h>
 #include <stdint.h>
@@ -111,7 +111,12 @@ bool str_eq_n_ignore_case(const str_t str_a, const str_t str_b, size_t n);
 // Lexicographical comparison
 int str_cmp_lex(str_t a, str_t b);
 
-bool str_eq_cstr(str_t str, const char* cstr);
+static inline bool str_eq_cstr(str_t str, const char* cstr) {
+    if (!str.ptr || !str.len || !cstr) return false;
+    if (str.ptr[0] != cstr[0]) return false;
+    return (strncmp(str.ptr, cstr, str.len) == 0) && cstr[str.len] == '\0';
+}
+
 bool str_eq_cstr_n(str_t str, const char* cstr, size_t n);
 bool str_eq_cstr_ignore_case(str_t str, const char* cstr);
 bool str_eq_cstr_n_ignore_case(str_t str, const char* cstr, size_t n);

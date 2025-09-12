@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 #include <core/md_atomic.h>
 #include <md_util.h>
 #include <core/md_allocator.h>
@@ -8,32 +8,32 @@ UTEST(atomic, enum_constants) {
     // Test that enum constants are correct
     EXPECT_EQ(MD_Z_X, 0);   // Unknown
     EXPECT_EQ(MD_Z_H, 1);   // Hydrogen
-    EXPECT_EQ(MD_Z_HE, 2);  // Helium
+    EXPECT_EQ(MD_Z_He, 2);  // Helium
     EXPECT_EQ(MD_Z_C, 6);   // Carbon
     EXPECT_EQ(MD_Z_N, 7);   // Nitrogen
     EXPECT_EQ(MD_Z_O, 8);   // Oxygen
     EXPECT_EQ(MD_Z_P, 15);  // Phosphorus
     EXPECT_EQ(MD_Z_S, 16);  // Sulfur
-    EXPECT_EQ(MD_Z_CA, 20); // Calcium
-    EXPECT_EQ(MD_Z_CL, 17); // Chlorine
-    EXPECT_EQ(MD_Z_BR, 35); // Bromine
-    EXPECT_EQ(MD_Z_NA, 11); // Sodium
-    EXPECT_EQ(MD_Z_FE, 26); // Iron
-    EXPECT_EQ(MD_Z_OG, 118); // Oganesson
+    EXPECT_EQ(MD_Z_Ca, 20); // Calcium
+    EXPECT_EQ(MD_Z_Cl, 17); // Chlorine
+    EXPECT_EQ(MD_Z_Br, 35); // Bromine
+    EXPECT_EQ(MD_Z_Na, 11); // Sodium
+    EXPECT_EQ(MD_Z_Fe, 26); // Iron
+    EXPECT_EQ(MD_Z_Og, 118); // Oganesson
 }
 
 UTEST(atomic, symbol_lookup) {
     // Test symbol lookup functions
     EXPECT_EQ(md_atomic_number_from_symbol(STR_LIT("H")), MD_Z_H);
     EXPECT_EQ(md_atomic_number_from_symbol(STR_LIT("C")), MD_Z_C);
-    EXPECT_EQ(md_atomic_number_from_symbol(STR_LIT("He")), MD_Z_HE);
-    EXPECT_EQ(md_atomic_number_from_symbol(STR_LIT("Ca")), MD_Z_CA);
+    EXPECT_EQ(md_atomic_number_from_symbol(STR_LIT("He")), MD_Z_He);
+    EXPECT_EQ(md_atomic_number_from_symbol(STR_LIT("Ca")), MD_Z_Ca);
     EXPECT_EQ(md_atomic_number_from_symbol(STR_LIT("Unknown")), MD_Z_X);
     
     // Test case insensitive lookup
     EXPECT_EQ(md_atomic_number_from_symbol_icase(STR_LIT("h")), MD_Z_H);
-    EXPECT_EQ(md_atomic_number_from_symbol_icase(STR_LIT("ca")), MD_Z_CA);
-    EXPECT_EQ(md_atomic_number_from_symbol_icase(STR_LIT("HE")), MD_Z_HE);
+    EXPECT_EQ(md_atomic_number_from_symbol_icase(STR_LIT("ca")), MD_Z_Ca);
+    EXPECT_EQ(md_atomic_number_from_symbol_icase(STR_LIT("HE")), MD_Z_He);
 }
 
 UTEST(atomic, symbol_from_number) {
@@ -44,7 +44,7 @@ UTEST(atomic, symbol_from_number) {
     str_t c_symbol = md_symbol_from_atomic_number(MD_Z_C);
     EXPECT_TRUE(str_eq_cstr(c_symbol, "C"));
     
-    str_t ca_symbol = md_symbol_from_atomic_number(MD_Z_CA);
+    str_t ca_symbol = md_symbol_from_atomic_number(MD_Z_Ca);
     EXPECT_TRUE(str_eq_cstr(ca_symbol, "Ca"));
 }
 
@@ -89,16 +89,16 @@ UTEST(atomic, inference_nucleic_acid) {
 
 UTEST(atomic, inference_ions) {
     // Test ion inference (residue name is element)
-    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("NA"), STR_LIT("NA")), MD_Z_NA);
+    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("NA"), STR_LIT("NA")), MD_Z_Na);
     EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT(""), STR_LIT("K")), MD_Z_K);
-    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("MG"), STR_LIT("MG")), MD_Z_MG);
-    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("CL"), STR_LIT("CL")), MD_Z_CL);
+    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("MG"), STR_LIT("MG")), MD_Z_Mg);
+    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("CL"), STR_LIT("CL")), MD_Z_Cl);
 }
 
 UTEST(atomic, inference_fallbacks) {
     // Test fallback mechanisms
-    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("CL12"), STR_LIT("")), MD_Z_CL);  // Two-letter heuristic
-    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("BR1"), STR_LIT("")), MD_Z_BR);   // Two-letter heuristic
+    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("CL12"), STR_LIT("")), MD_Z_Cl);  // Two-letter heuristic
+    EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("BR1"), STR_LIT("")), MD_Z_Br);   // Two-letter heuristic
     EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("H123"), STR_LIT("")), MD_Z_H);   // First letter fallback
     EXPECT_EQ(md_atom_infer_atomic_number(STR_LIT("C99"), STR_LIT("")), MD_Z_C);    // First letter fallback
 }
@@ -106,7 +106,7 @@ UTEST(atomic, inference_fallbacks) {
 UTEST(atomic, backward_compatibility) {
     // Test that old API still works through wrappers
     EXPECT_EQ(md_util_element_lookup(STR_LIT("H")), MD_Z_H);
-    EXPECT_EQ(md_util_element_lookup_ignore_case(STR_LIT("ca")), MD_Z_CA);
+    EXPECT_EQ(md_util_element_lookup_ignore_case(STR_LIT("ca")), MD_Z_Ca);
     
     str_t symbol = md_util_element_symbol(MD_Z_C);
     EXPECT_TRUE(str_eq_cstr(symbol, "C"));

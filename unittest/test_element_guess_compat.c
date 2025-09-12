@@ -1,4 +1,4 @@
-#include "utest.h"
+﻿#include "utest.h"
 #include <md_util.h>
 #include <md_molecule.h>
 #include <core/md_allocator.h>
@@ -65,7 +65,7 @@ UTEST(element_guess_compat, basic_inference) {
     EXPECT_EQ(mol.atom.element[0], MD_Z_O);  // Water oxygen
     EXPECT_EQ(mol.atom.element[1], MD_Z_H);  // Water hydrogen
     EXPECT_EQ(mol.atom.element[2], MD_Z_C);  // Alanine alpha carbon (not calcium!)
-    EXPECT_EQ(mol.atom.element[3], MD_Z_NA); // Sodium ion
+    EXPECT_EQ(mol.atom.element[3], MD_Z_Na); // Sodium ion
     EXPECT_EQ(mol.atom.element[4], MD_Z_C);  // Generic carbon from C1
     
     md_vm_arena_destroy(alloc);

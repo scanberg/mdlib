@@ -1,4 +1,4 @@
-#include <core/md_atomic.h>
+﻿#include <core/md_atomic.h>
 #include <md_molecule.h>
 #include <md_util.h>
 
@@ -146,21 +146,21 @@ static void init_lookup_tables(void) {
     char mse_key[64];
     snprintf(mse_key, sizeof(mse_key), "MSE\tSE");
     uint64_t mse_hash = md_hash64(mse_key, strlen(mse_key), 0);
-    md_hashmap_add(&residue_atom_map, mse_hash, MD_Z_SE);
+    md_hashmap_add(&residue_atom_map, mse_hash, MD_Z_Se);
     
     // Atom-only fallbacks
     struct { const char* atom; md_atomic_number_t z; } atom_entries[] = {
         {"H", MD_Z_H}, {"C", MD_Z_C}, {"N", MD_Z_N}, {"O", MD_Z_O}, {"S", MD_Z_S}, {"P", MD_Z_P},
-        {"F", MD_Z_F}, {"CL", MD_Z_CL}, {"BR", MD_Z_BR}, {"I", MD_Z_I},
+        {"F", MD_Z_F}, {"CL", MD_Z_Cl}, {"BR", MD_Z_Br}, {"I", MD_Z_I},
         {"OW", MD_Z_O}, {"OH", MD_Z_O}, {"HW", MD_Z_H},
         {"CA", MD_Z_C}, {"CB", MD_Z_C}, {"CG", MD_Z_C}, {"CD", MD_Z_C}, {"CE", MD_Z_C}, {"CZ", MD_Z_C},
         {"OXT", MD_Z_O},
         // Common ions
-        {"NA", MD_Z_NA}, {"K", MD_Z_K}, {"MG", MD_Z_MG}, {"ZN", MD_Z_ZN}, {"FE", MD_Z_FE},
-        {"MN", MD_Z_MN}, {"CU", MD_Z_CU}, {"CO", MD_Z_CO}, {"NI", MD_Z_NI}, {"CD", MD_Z_CD},
-        {"SR", MD_Z_SR}, {"BA", MD_Z_BA}, {"LI", MD_Z_LI}, {"CS", MD_Z_CS}, {"RB", MD_Z_RB},
-        {"AL", MD_Z_AL}, {"TI", MD_Z_TI}, {"CR", MD_Z_CR}, {"HG", MD_Z_HG}, {"PB", MD_Z_PB},
-        {"AG", MD_Z_AG}, {"AU", MD_Z_AU}, {"PT", MD_Z_PT},
+        {"NA", MD_Z_Na}, {"K", MD_Z_K}, {"MG", MD_Z_Mg}, {"ZN", MD_Z_Zn}, {"FE", MD_Z_Fe},
+        {"MN", MD_Z_Mn}, {"CU", MD_Z_Cu}, {"CO", MD_Z_Co}, {"NI", MD_Z_Ni}, {"CD", MD_Z_Cd},
+        {"SR", MD_Z_Sr}, {"BA", MD_Z_Ba}, {"LI", MD_Z_Li}, {"CS", MD_Z_Cs}, {"RB", MD_Z_Rb},
+        {"AL", MD_Z_Al}, {"TI", MD_Z_Ti}, {"CR", MD_Z_Cr}, {"HG", MD_Z_Hg}, {"PB", MD_Z_Pb},
+        {"AG", MD_Z_Ag}, {"AU", MD_Z_Au}, {"PT", MD_Z_Pt},
     };
     
     // Add atom-only entries
@@ -275,7 +275,7 @@ md_atomic_number_t md_atom_infer_atomic_number(str_t atom_name, str_t res_name) 
     if (atom_result) {
         md_atomic_number_t z = (md_atomic_number_t)*atom_result;
         // Override CA (Calcium) to Carbon if in amino acid context
-        if (z == MD_Z_CA && res_name.len > 0 && md_util_resname_amino_acid(res_name)) {
+        if (z == MD_Z_Ca && res_name.len > 0 && md_util_resname_amino_acid(res_name)) {
             return MD_Z_C;
         }
         return z;
@@ -288,7 +288,7 @@ md_atomic_number_t md_atom_infer_atomic_number(str_t atom_name, str_t res_name) 
         md_atomic_number_t two_z = md_atomic_number_from_symbol_icase(two_letter_str);
         if (two_z != MD_Z_X) {
             // Override CA (Calcium) to Carbon if in amino acid context
-            if (two_z == MD_Z_CA && res_name.len > 0 && md_util_resname_amino_acid(res_name)) {
+            if (two_z == MD_Z_Ca && res_name.len > 0 && md_util_resname_amino_acid(res_name)) {
                 return MD_Z_C;
             }
             return two_z;

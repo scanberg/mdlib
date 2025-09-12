@@ -1,4 +1,4 @@
-// Test to verify API equivalence between old and new systems
+﻿// Test to verify API equivalence between old and new systems
 #include "utest.h"
 #include <core/md_atomic.h>
 #include <md_util.h>
@@ -22,7 +22,7 @@ UTEST(api_equivalence, symbol_lookup_consistency) {
 
 UTEST(api_equivalence, property_consistency) {
     // Test a few key elements for property consistency
-    md_atomic_number_t test_elements[] = {MD_Z_H, MD_Z_C, MD_Z_N, MD_Z_O, MD_Z_CA, MD_Z_FE};
+    md_atomic_number_t test_elements[] = {MD_Z_H, MD_Z_C, MD_Z_N, MD_Z_O, MD_Z_Ca, MD_Z_Fe};
     
     for (size_t i = 0; i < ARRAY_SIZE(test_elements); ++i) {
         md_atomic_number_t z = test_elements[i];
