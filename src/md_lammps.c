@@ -720,7 +720,7 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	// Build atom type table from LAMMPS types - first pass
 	for (int lammps_type = 1; lammps_type <= (int)data->num_atom_types; ++lammps_type) {
 		md_label_t type_name = {0};
-		type_name.len = (uint8_t)snprintf(type_name.buf, sizeof(type_name.buf), "lammps:%i", lammps_type);
+		type_name.len = (uint8_t)snprintf(type_name.buf, sizeof(type_name.buf), "%i", lammps_type);
 		
 		md_element_t element = 0;
 		float mass = 0.0f;
