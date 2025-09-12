@@ -233,33 +233,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
         md_array_ensure(atom->chainid,  capacity, alloc);
     }
 
-    // Fill in missing elements using hash-backed inference
-    for (size_t i = 0; i < (size_t)num_atoms; ++i) {
-        if (atom->element[i] == 0) {
-            // Use hash-backed inference for missing elements
-            str_t atom_label = LBL_TO_STR(atom->type[i]);
-            
-            // Try direct element lookup first
-            md_element_t elem = md_util_element_lookup_ignore_case(atom_label);
-            
-            // If that fails, use the hash-backed inference from md_util_element_guess
-            if (elem == 0) {
-                // Create a temporary molecule structure for the single atom to use element_guess
-                md_molecule_t temp_mol = {0};
-                temp_mol.atom.count = 1;
-                temp_mol.atom.type = &atom->type[i];
-                temp_mol.atom.resname = &atom->resname[i];
-                temp_mol.atom.flags = atom->flags ? &atom->flags[i] : NULL;
-                
-                md_element_t temp_element = 0;
-                if (md_util_element_guess(&temp_element, 1, &temp_mol)) {
-                    elem = temp_element;
-                }
-            }
-            
-            atom->element[i] = elem;
-        }
-    }
+
 
     atom->count = num_atoms;
 done:
@@ -342,6 +316,36 @@ static bool mmcif_parse(md_molecule_t* mol, md_buffered_reader_t* reader, md_all
             }
         }
         md_buffered_reader_skip_line(reader);
+    }
+
+    // Fill in missing elements using hash-backed inference if atoms were found
+    if (atom_site_found && mol->atom.count > 0) {
+        for (size_t i = 0; i < mol->atom.count; ++i) {
+            if (mol->atom.element[i] == 0) {
+                // Use hash-backed inference for missing elements
+                str_t atom_label = LBL_TO_STR(mol->atom.type[i]);
+                
+                // Try direct element lookup first
+                md_element_t elem = md_util_element_lookup_ignore_case(atom_label);
+                
+                // If that fails, use the hash-backed inference from md_util_element_guess
+                if (elem == 0) {
+                    // Create a temporary molecule structure for the single atom to use element_guess
+                    md_molecule_t temp_mol = {0};
+                    temp_mol.atom.count = 1;
+                    temp_mol.atom.type = &mol->atom.type[i];
+                    temp_mol.atom.resname = &mol->atom.resname[i];
+                    temp_mol.atom.flags = mol->atom.flags ? &mol->atom.flags[i] : NULL;
+                    
+                    md_element_t temp_element = 0;
+                    if (md_util_element_guess(&temp_element, 1, &temp_mol)) {
+                        elem = temp_element;
+                    }
+                }
+                
+                mol->atom.element[i] = elem;
+            }
+        }
     }
 
     // Populate atom type table and assign type indices if atoms were found
