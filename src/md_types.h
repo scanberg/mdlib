@@ -75,6 +75,7 @@ typedef int32_t     md_backbone_idx_t;
 typedef int32_t     md_residue_id_t;
 typedef int32_t     md_chain_idx_t;
 typedef int32_t     md_bond_idx_t;
+typedef int32_t     md_atom_type_idx_t;
 typedef uint32_t    md_secondary_structure_t;
 typedef uint32_t    md_flags_t;
 typedef uint8_t     md_element_t;

@@ -700,11 +700,12 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 	MEMSET(mol, 0, sizeof(md_molecule_t));
 	const size_t capacity = ROUND_UP(data->num_atoms, 16);
 
-	md_array_resize(mol->atom.type,  capacity, alloc);
-	md_array_resize(mol->atom.x,	 capacity, alloc);
-	md_array_resize(mol->atom.y,	 capacity, alloc);
-	md_array_resize(mol->atom.z,	 capacity, alloc);
-	md_array_resize(mol->atom.mass,  capacity, alloc);
+	md_array_resize(mol->atom.type,    capacity, alloc);
+	md_array_resize(mol->atom.type_idx, capacity, alloc);
+	md_array_resize(mol->atom.x,	   capacity, alloc);
+	md_array_resize(mol->atom.y,	   capacity, alloc);
+	md_array_resize(mol->atom.z,	   capacity, alloc);
+	md_array_resize(mol->atom.mass,    capacity, alloc);
 
 	bool has_resid = false;
 	if (data->num_atoms > 0 && data->atoms[0].resid != -1) {
@@ -712,8 +713,32 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		has_resid = true;
 	}
 
+	// Prepare for mass→element mapping first
+	md_array_resize(mol->atom.element, capacity, alloc);
+	bool mass_to_element_success = false;
+	
+	// Build atom type table from LAMMPS types - first pass
+	for (int lammps_type = 1; lammps_type <= (int)data->num_atom_types; ++lammps_type) {
+		md_label_t type_name = {0};
+		type_name.len = (uint8_t)snprintf(type_name.buf, sizeof(type_name.buf), "lammps:%i", lammps_type);
+		
+		md_element_t element = 0;
+		float mass = 0.0f;
+		float radius = 0.0f;
+		
+		// Add to atom type table (will be updated after mass-to-element mapping)
+		md_atom_type_find_or_add(&mol->atom_type, type_name, element, mass, radius, alloc);
+	}
+
 	for (size_t i = 0; i < data->num_atoms; ++i) {
-		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, sizeof(mol->atom.type[i].buf), "%i", data->atoms[i].type);
+		int lammps_type = data->atoms[i].type;
+		
+		// Set legacy per-atom type name for backward compatibility
+		mol->atom.type[i].len = (uint8_t)snprintf(mol->atom.type[i].buf, sizeof(mol->atom.type[i].buf), "%i", lammps_type);
+		
+		// Set atom type index (LAMMPS types are 1-indexed, array is 0-indexed)
+		mol->atom.type_idx[i] = lammps_type - 1;
+		
 		mol->atom.x[i] = data->atoms[i].x - data->cell.xlo;
 		mol->atom.y[i] = data->atoms[i].y - data->cell.ylo;
 		mol->atom.z[i] = data->atoms[i].z - data->cell.zlo;
@@ -723,9 +748,21 @@ bool md_lammps_molecule_init(md_molecule_t* mol, const md_lammps_data_t* data, m
 		}
 	}
 
-	//Set elements using conservative mass→element mapping
-	md_array_resize(mol->atom.element, capacity, alloc);
-	if (!md_util_lammps_element_from_mass(mol->atom.element, mol->atom.mass, data->num_atoms)) {
+	// Try mass-to-element mapping using per-atom masses
+	mass_to_element_success = md_util_lammps_element_from_mass(mol->atom.element, mol->atom.mass, data->num_atoms);
+	
+	if (mass_to_element_success) {
+		// Update atom type table with masses and elements
+		for (size_t i = 0; i < data->num_atoms; ++i) {
+			int lammps_type = data->atoms[i].type;
+			md_atom_type_idx_t type_idx = lammps_type - 1;
+			if (type_idx >= 0 && (size_t)type_idx < mol->atom_type.count) {
+				// Update mass and element in atom type table
+				mol->atom_type.mass[type_idx] = mol->atom.mass[i];
+				mol->atom_type.element[type_idx] = mol->atom.element[i];
+			}
+		}
+	} else {
 		// CG/reduced-units detected or mapping failed, leave elements as 0
 		MD_LOG_DEBUG("LAMMPS data appears to be coarse-grained or reduced-units, elements left unassigned");
 	}
