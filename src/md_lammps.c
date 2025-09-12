@@ -437,7 +437,7 @@ static bool parse_dihedrals(md_lammps_dihedral_t out_dihedrals[], size_t dihedra
 	return true;
 }
 
-static size_t parse_masses(float* mass_type_table, size_t mass_type_capacity, size_t expected_count, md_buffered_reader_t* reader) {
+static size_t parse_masses(double* mass_type_table, size_t mass_type_capacity, size_t expected_count, md_buffered_reader_t* reader) {
 	str_t tok[4];
 	str_t line;
 	size_t extracted_count = 0;
@@ -452,7 +452,7 @@ static size_t parse_masses(float* mass_type_table, size_t mass_type_capacity, si
 			return 0;
 		}
 		int   type = (int)parse_int(tok[0]);
-		float mass = (float)parse_float(tok[1]);
+		double mass = parse_float(tok[1]);
 		if (type < 0 || (size_t)type >= mass_type_capacity) {
 			MD_LOG_ERROR("Invalid atom type index in Masses: %d (capacity %zu)", type, mass_type_capacity);
 			return 0;
