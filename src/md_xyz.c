@@ -755,7 +755,7 @@ bool md_xyz_molecule_init(md_molecule_t* mol, const md_xyz_data_t* data, struct 
         md_array_push(mol->atom.element, element, alloc);
         md_array_push(mol->atom.type, make_label(atom_type), alloc);
         md_array_push(mol->atom.flags, 0, alloc);
-        md_array_push(mol->atom.type_idx, -1, alloc); // Initialize to -1, will be set in postprocessing
+        md_array_push(mol->atom.type_idx, -1, alloc); // Will be set after populating atom type table
     }
 
     // Populate atom type table and assign type indices

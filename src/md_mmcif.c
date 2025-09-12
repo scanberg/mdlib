@@ -209,7 +209,7 @@ static bool mmcif_parse_atom_site(md_atom_data_t* atom, md_buffered_reader_t* re
             md_array_push(atom->resid,	 res_id,   alloc);
             md_array_push(atom->resname, resname,  alloc);
             md_array_push(atom->chainid, chain_id, alloc);
-            md_array_push(atom->type_idx, -1, alloc); // Initialize to -1, will be set in postprocessing
+            md_array_push(atom->type_idx, -1, alloc); // Initialize to -1, will be set after populating atom type table
 
             num_atoms += 1;
             next:

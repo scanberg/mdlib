@@ -552,7 +552,7 @@ bool md_pdb_molecule_init(md_molecule_t* mol, const md_pdb_data_t* data, md_pdb_
         md_array_push_no_grow(mol->atom.resname, make_label(res_name));
         md_array_push_no_grow(mol->atom.resid, res_id);
         
-        // Set type_idx to -1 initially, will be updated in postprocessing
+        // Set type_idx to -1 initially, will be updated after populating atom type table
         md_array_push_no_grow(mol->atom.type_idx, -1);
     }
 

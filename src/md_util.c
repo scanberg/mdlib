@@ -8210,20 +8210,8 @@ bool md_util_molecule_postprocess(md_molecule_t* mol, md_allocator_i* alloc, md_
         }
     }
 
-    if (flags & MD_UTIL_POSTPROCESS_ELEMENT_BIT) {
-#ifdef PROFILE
-        md_timestamp_t t0 = md_time_current();
-#endif
-        if (!mol->atom.element) {
-            md_array_resize(mol->atom.element, mol->atom.count, alloc);
-            MEMSET(mol->atom.element, 0, md_array_bytes(mol->atom.element));
-        }
-        md_util_element_guess(mol->atom.element, mol->atom.count, mol);
-#ifdef PROFILE
-        md_timestamp_t t1 = md_time_current();
-        MD_LOG_DEBUG("Postprocess: guess elements %.3f ms\n", md_time_as_milliseconds(t1-t0));
-#endif
-    }
+    // Element inference is now handled within each parser during parsing, not in postprocessing
+    // This ensures atom type table is populated correctly and eliminates dependency on per-atom element field
 
     if (flags & MD_UTIL_POSTPROCESS_RADIUS_BIT) {
 #ifdef PROFILE

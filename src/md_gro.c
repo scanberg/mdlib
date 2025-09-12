@@ -200,7 +200,7 @@ bool md_gro_molecule_init(struct md_molecule_t* mol, const md_gro_data_t* data, 
         mol->atom.y[i] = y;
         mol->atom.z[i] = z;
         mol->atom.type[i] = make_label(atom_name);
-        mol->atom.type_idx[i] = -1; // Initialize to -1, will be set in postprocessing
+        mol->atom.type_idx[i] = -1; // Initialize to -1, will be set after populating atom type table
         mol->atom.element[i] = 0; // Initialize to unknown, will be filled below
         mol->atom.resid[i] =  res_id;
         mol->atom.resname[i] = make_label(res_name);
